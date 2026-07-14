@@ -811,10 +811,20 @@ impl<B: Backend> ControlServer<B> {
                 if !vmm.lapic_wired() {
                     return Err(ControlError::Unsupported);
                 }
+                // - a vector outside the xAPIC's 8-bit identity space (the wire
+                //   field is u32 — per-arch identities exceed 8 bits, ARCH-BOUNDARY
+                //   §C) → `Unsupported`, like any perturbation this machine's
+                //   interrupt fabric cannot deliver;
+                if *vector > u32::from(u8::MAX) {
+                    return Err(ControlError::Unsupported);
+                }
                 // - an architecturally reserved vector (`< 16`) the LAPIC cannot raise
                 //   → `PerturbReservedVector` (a request error the client can fix).
                 if *vector < 16 {
-                    return Err(ControlError::PerturbReservedVector { vector: *vector });
+                    // `< 16` fits the error's u8 by construction.
+                    return Err(ControlError::PerturbReservedVector {
+                        vector: *vector as u8,
+                    });
                 }
             }
         }
@@ -1830,7 +1840,7 @@ fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
 fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
     let vtime = Moment(vns);
     match reason {
-        TerminalReason::Hlt | TerminalReason::DebugExit { code: 0 } => {
+        TerminalReason::Idle | TerminalReason::DebugExit { code: 0 } => {
             StopReason::Quiescent { vtime }
         }
         TerminalReason::DebugExit { code } => StopReason::Crash {
@@ -1945,7 +1955,7 @@ mod tests {
     /// boots fresh VMs scripted with `fork_exits` (each ending in `Hlt` so a
     /// deadline-free run terminates).
     fn server(fork_exits: Vec<Exit>) -> ControlServer<MockBackend> {
-        let live = vmm_at_sync(vec![Exit::Hlt], 500, 0xBA5E);
+        let live = vmm_at_sync(vec![Exit::Idle], 500, 0xBA5E);
         let factory = Box::new(move || {
             let mut m = MockBackend::with_exits(fork_exits.clone());
             m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -1980,11 +1990,11 @@ mod tests {
     fn server_tracked() -> ControlServer<MockBackend> {
         let mut m = MockBackend::new();
         m.enable_dirty_tracking();
-        let live = vmm_at_sync_from(m, vec![Exit::Hlt], 500, 0xBA5E);
+        let live = vmm_at_sync_from(m, vec![Exit::Idle], 500, 0xBA5E);
         // Mirror `server`'s factory (unused by the seal-path tests, present so
         // the composition invariant holds if one branches).
         let factory = Box::new(move || {
-            let mut m = MockBackend::with_exits(vec![Exit::Hlt]);
+            let mut m = MockBackend::with_exits(vec![Exit::Idle]);
             m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
             m.set_msr_filter(&vmm_backend::MsrFilter::default())
                 .unwrap();
@@ -2127,9 +2137,9 @@ mod tests {
     /// to `Remap` by installing one. No silent degrade.
     #[test]
     fn restore_mode_is_memcpy_until_a_remap_factory_installs() {
-        let s = server(vec![Exit::Hlt]);
+        let s = server(vec![Exit::Idle]);
         assert_eq!(s.restore_mode(), super::RestoreMode::Memcpy);
-        let s = server_with_remap(vec![Exit::Hlt], false);
+        let s = server_with_remap(vec![Exit::Idle], false);
         assert_eq!(s.restore_mode(), super::RestoreMode::Remap);
     }
 
@@ -2141,7 +2151,7 @@ mod tests {
         ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
     )]
     fn untracked_seals_always_full_scan() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let first = snap(&mut s);
         let second = snap(&mut s);
@@ -2215,7 +2225,7 @@ mod tests {
         ignore = "materialize uses mmap, which Miri cannot execute; the mode plumbing is covered by the non-mmap tests"
     )]
     fn branch_remap_and_memcpy_agree_bit_for_bit() {
-        let mut s = server_with_remap(vec![Exit::Rdtsc, Exit::Hlt], false);
+        let mut s = server_with_remap(vec![Exit::Rdtsc, Exit::Idle], false);
         hello(&mut s);
         let sp = snap(&mut s);
 
@@ -2269,7 +2279,7 @@ mod tests {
         ignore = "materialize uses mmap, which Miri cannot execute; the mode plumbing is covered by the non-mmap tests"
     )]
     fn remap_restore_failure_keeps_a_usable_session() {
-        let mut s = server_with_remap(vec![Exit::Hlt], true); // sabotaged target
+        let mut s = server_with_remap(vec![Exit::Idle], true); // sabotaged target
         hello(&mut s);
         let sp = snap(&mut s);
         assert_eq!(
@@ -2334,7 +2344,7 @@ mod tests {
 
     #[test]
     fn hello_negotiates_the_pinned_caps() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
@@ -2358,7 +2368,7 @@ mod tests {
     /// wire.
     #[test]
     fn sdk_events_verb_is_routed_to_the_capture() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         match s.handle(&Request::SdkEvents { offset: 0 }).unwrap() {
             Ok(Reply::SdkEvents(events)) => {
@@ -2389,7 +2399,7 @@ mod tests {
     /// marker the fixture loads at offset 0.
     #[test]
     fn read_returns_the_guest_bytes() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         match read(&mut s, 0, 12) {
             Ok(Reply::Bytes(b)) => assert_eq!(&b, b"SERVER_BOOT\n"),
@@ -2410,7 +2420,7 @@ mod tests {
     /// success.
     #[test]
     fn read_out_of_range_is_loud() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         assert_eq!(
             read(&mut s, RAM as u64 - 3, 4),
@@ -2437,7 +2447,7 @@ mod tests {
     /// before any allocation.
     #[test]
     fn read_oversized_len_is_loud() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         assert_eq!(
             read(&mut s, 0, READ_CAP + 1),
@@ -2460,7 +2470,7 @@ mod tests {
     /// names of the single V-time axis, so both equal the live effective V-time.
     #[test]
     fn regs_reports_the_versioned_view_at_the_current_moment() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let v = regs(&mut s);
         assert_eq!(v.version, control_proto::RegsView::VERSION);
@@ -2474,7 +2484,7 @@ mod tests {
     /// session is negotiated nothing is supported.
     #[test]
     fn observations_before_hello_are_unsupported() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         assert_eq!(read(&mut s, 0, 4), Err(ControlError::Unsupported));
         assert_eq!(
             s.handle(&Request::Regs).unwrap(),
@@ -2495,7 +2505,7 @@ mod tests {
     fn read_and_regs_on_a_poisoned_server_are_session_fatal() {
         // A factory that cannot boot poisons the session on the first branch: the
         // live VM is dropped, the factory fails, and `vmm` stays `None`.
-        let live = vmm_at_sync(vec![Exit::Hlt], 500, 0xBA5E);
+        let live = vmm_at_sync(vec![Exit::Idle], 500, 0xBA5E);
         let mut s = ControlServer::new(
             live,
             Box::new(|| Err(VmmError::ContractViolation("no boot".into()))),
@@ -2541,7 +2551,7 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn observations_do_not_perturb_hash_or_recorded_env() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
         s.handle(&Request::Branch {
@@ -2607,7 +2617,7 @@ mod tests {
     /// executing the `read`/`regs` observations, and return the ordered outputs of
     /// every non-observation verb.
     fn run_obs_script(ops: &[ObsOp], include_obs: bool) -> Vec<Rec> {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
         let mut rec = Vec::new();
@@ -2701,7 +2711,7 @@ mod tests {
 
     #[test]
     fn any_verb_before_hello_is_unsupported() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         for req in [
             Request::Snapshot,
             Request::Drop(SnapId(1)),
@@ -2717,7 +2727,7 @@ mod tests {
 
     #[test]
     fn snapshot_mints_fresh_handles_and_drop_releases_them() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let a = snap(&mut s);
         let b = snap(&mut s);
@@ -2748,7 +2758,7 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn replay_restores_the_buggify_policy() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
 
@@ -2789,7 +2799,7 @@ mod tests {
 
     #[test]
     fn branch_validates_the_env_before_touching_the_vm() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
         // Wrong wire version.
@@ -2829,7 +2839,7 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn branch_accepts_host_overrides_but_rejects_guest_or_standing_or_policy() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
         // A HOST override-carrying env is now ENFORCED (task 59): branch accepts it
@@ -2900,7 +2910,7 @@ mod tests {
 
     #[test]
     fn run_resolve_is_always_resolve_without_decision() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let req = Request::Run {
             until: StopConditions {
@@ -2921,7 +2931,7 @@ mod tests {
         ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
     )]
     fn hash_whole_matches_the_vmm_and_other_scopes_are_unsupported() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let h = hash(&mut s);
         assert_eq!(Some(h), s.vmm().map(|v| v.state_hash()));
@@ -2937,7 +2947,7 @@ mod tests {
     fn perturb_stages_faults_and_rejects_the_unenforceable() {
         // The `server()` live VM is advanced past its RDTSC to effective V-time 500
         // (`vmm_at_sync(..., 500, ...)`), so the stage-time floor is 500.
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let perturb = |fault: environment::HostFault, at: u64| Request::Perturb {
             fault: HostFault(fault.encode()),
@@ -3039,7 +3049,7 @@ mod tests {
     )]
     fn run_maps_terminals_workload_blind() {
         // Hlt → Quiescent.
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         assert!(matches!(run_all(&mut s), StopReason::Quiescent { .. }));
 
@@ -3099,7 +3109,7 @@ mod tests {
     fn run_stops_at_a_vtime_deadline_without_entering_when_already_past() {
         // The live VM is at work 500 ⇒ effective V-time 500 ns (1 ns/branch).
         // A deadline at-or-below that stops immediately with Deadline{500}.
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let req = Request::Run {
             until: StopConditions {
@@ -3124,7 +3134,7 @@ mod tests {
     )]
     fn branch_reseeds_and_replay_does_not() {
         // Fork VMs take one RDTSC (to a synchronized point) then halt.
-        let mut s = server(vec![Exit::Rdtsc, Exit::Hlt]);
+        let mut s = server(vec![Exit::Rdtsc, Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
         let h_base = hash(&mut s);
@@ -3166,7 +3176,7 @@ mod tests {
             Exit::Rdtsc,
             Exit::Rdrand { width: 8 },
             Exit::Rdrand { width: 8 },
-            Exit::Hlt,
+            Exit::Idle,
         ];
         let mut s = server(fork_script);
         hello(&mut s);
@@ -3195,7 +3205,7 @@ mod tests {
         // Drive the live VM past a NON-vtime exit (a serial write): the point
         // is not V-time-synchronized, so save_vm_state fails closed and the
         // verb answers NotQuiescent (the caller may run further and retry).
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         // Consume the live VM's scripted Hlt → terminal, which is fine — but
         // first push a serial OUT through a fresh branch? Simpler: build a
@@ -3207,7 +3217,7 @@ mod tests {
                 size: 1,
                 write: Some(b'x' as u32),
             },
-            Exit::Hlt,
+            Exit::Idle,
         ]);
         m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
         m.set_msr_filter(&vmm_backend::MsrFilter::default())
@@ -3239,12 +3249,12 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn a_failed_factory_is_session_fatal_and_poisons_the_server() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
         // Swap in a failing factory by rebuilding the server around the same
         // live VM shape: simplest is a dedicated server.
-        let live = vmm_at_sync(vec![Exit::Hlt], 500, 0xBA5E);
+        let live = vmm_at_sync(vec![Exit::Idle], 500, 0xBA5E);
         let mut s = ControlServer::new(
             live,
             Box::new(|| Err(VmmError::ContractViolation("no fresh VM".into()))),
@@ -3273,11 +3283,11 @@ mod tests {
         // the factory boots forks WITHOUT V-time) — is caught *before* the fresh
         // VM mutates, so it answers the recoverable `RestoreFailed` and KEEPS the
         // intact fresh VM (the session stays usable).
-        let live = vmm_at_sync(vec![Exit::Hlt], 500, 0xBA5E); // V-time wired
+        let live = vmm_at_sync(vec![Exit::Idle], 500, 0xBA5E); // V-time wired
         let factory = Box::new(|| {
             // A fork with NO V-time wired → restoring a V-time-bearing blob into
             // it is a ContractViolation (wiring must match the snapshot source).
-            let mut m = MockBackend::with_exits(vec![Exit::Hlt]);
+            let mut m = MockBackend::with_exits(vec![Exit::Idle]);
             m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
             m.set_msr_filter(&vmm_backend::MsrFilter::default())
                 .unwrap();
@@ -3387,7 +3397,7 @@ mod tests {
         // tears the session down (ServeError) rather than answering the
         // recoverable RestoreFailed and letting a client run from unvouched state.
         let build = || -> Vmm<RestoreFailBackend> {
-            let mut m = MockBackend::with_exits(vec![Exit::Rdtsc, Exit::Hlt]);
+            let mut m = MockBackend::with_exits(vec![Exit::Rdtsc, Exit::Idle]);
             m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
             m.set_msr_filter(&vmm_backend::MsrFilter::default())
                 .unwrap();
@@ -3485,7 +3495,7 @@ mod tests {
             ));
             // Dropping the client closes the stream: EOF between frames.
         });
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         s.serve(server_end).unwrap();
         client_thread.join().unwrap();
     }
@@ -3515,7 +3525,7 @@ mod tests {
             };
             deadlines
         ];
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         let mut m = MockBackend::with_exits(exits);
         m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
         m.set_msr_filter(&vmm_backend::MsrFilter::default())
@@ -3684,7 +3694,7 @@ mod tests {
             Exit::Deadline {
                 reached: vmm_backend::Moment(0),
             },
-            Exit::Hlt,
+            Exit::Idle,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
         mb.set_msr_filter(&vmm_backend::MsrFilter::default())
@@ -3773,7 +3783,7 @@ mod tests {
             Exit::Deadline {
                 reached: vmm_backend::Moment(0),
             },
-            Exit::Hlt,
+            Exit::Idle,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
         mb.set_msr_filter(&vmm_backend::MsrFilter::default())
@@ -3856,7 +3866,7 @@ mod tests {
             Exit::Deadline {
                 reached: vmm_backend::Moment(0),
             },
-            Exit::Hlt,
+            Exit::Idle,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
         mb.set_msr_filter(&vmm_backend::MsrFilter::default())
@@ -3925,7 +3935,7 @@ mod tests {
             },
             Exit::Rdrand { width: 8 }, // synchronized BUT rng_completion_staged
             Exit::Rdtsc,               // the next clean, sealable boundary
-            Exit::Hlt,
+            Exit::Idle,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
         mb.set_msr_filter(&vmm_backend::MsrFilter::default())
@@ -3990,7 +4000,7 @@ mod tests {
                 size: 4,
                 write: Some(n as u32),
             },
-            Exit::Hlt,
+            Exit::Idle,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
         mb.set_msr_filter(&vmm_backend::MsrFilter::default())
@@ -4095,7 +4105,7 @@ mod tests {
         let setup = frame_for(&(4u32 << 24).to_le_bytes());
         assert!(
             matches!(
-                run_with(vec![Exit::Rdtsc, Exit::Hlt], &setup, StopMask::NONE),
+                run_with(vec![Exit::Rdtsc, Exit::Idle], &setup, StopMask::NONE),
                 StopReason::Quiescent { .. }
             ),
             "StopMask::NONE runs through setup_complete straight to the terminal"
@@ -4103,7 +4113,7 @@ mod tests {
         assert!(
             matches!(
                 run_with(
-                    vec![Exit::Rdtsc, Exit::Hlt],
+                    vec![Exit::Rdtsc, Exit::Idle],
                     &setup,
                     StopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT)
                 ),
@@ -4118,7 +4128,7 @@ mod tests {
         let viol = frame_for(&viol);
         assert!(
             matches!(
-                run_with(vec![Exit::Hlt], &viol, StopMask::NONE),
+                run_with(vec![Exit::Idle], &viol, StopMask::NONE),
                 StopReason::Quiescent { .. }
             ),
             "StopMask::NONE runs through an assertion straight to the terminal"
@@ -4126,7 +4136,7 @@ mod tests {
         assert!(
             matches!(
                 run_with(
-                    vec![Exit::Hlt],
+                    vec![Exit::Idle],
                     &viol,
                     StopMask::NONE.arm(control_proto::class_bit::ASSERTION)
                 ),
@@ -4270,7 +4280,7 @@ mod tests {
     /// then Hlt — used to drive the beyond-deadline / overshoot cases with a chosen
     /// V-time landing (no arrival armed, so `run()` returns the scripted RDTSC).
     fn rdtsc_then_hlt_vmm(rdtsc_work: u64) -> Vmm<MockBackend> {
-        let mut m = MockBackend::with_exits(vec![Exit::Rdtsc, Exit::Hlt]);
+        let mut m = MockBackend::with_exits(vec![Exit::Rdtsc, Exit::Idle]);
         m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
         m.set_msr_filter(&vmm_backend::MsrFilter::default())
             .unwrap();
@@ -4470,7 +4480,7 @@ mod tests {
 
         // (i) out-of-range gpa → recoverable PerturbOutOfRange (was a fatal
         // ServeError::Vmm before this fix).
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
         assert_eq!(
@@ -4552,7 +4562,7 @@ mod tests {
         // PR #51 round-5 item 1: a branch whose env carries an inadmissible host
         // fault must reject WITHOUT swapping the VM — the old timeline is untouched,
         // so the client's state is exactly what it was before the (failed) branch.
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
         let before = s.vmm().unwrap().state_hash();
@@ -4608,7 +4618,7 @@ mod tests {
         // silently dropping a possibly-crossed accepted perturb. The round-5
         // `SnapshotWhileArmed` trap stays fixed: poison is rewindable, not a stuck
         // state. Task-60 crash campaigns rewind (`branch`/`replay`) anyway.
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
         // The live VM is at V-time 500 and HLTs (terminal) on the next step. Stage a
@@ -4646,12 +4656,12 @@ mod tests {
         // staging a fault against it could record it at a `Moment` the guest already
         // executed past. `perturb` must reject with `NotSynchronized`; the client
         // rewinds (branch/replay lands on an intercept) and can then stage.
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s); // synchronized (post-RDTSC, V-time 500)
         // Run to the terminal HLT → unsynchronized.
         assert!(matches!(run_all(&mut s), StopReason::Quiescent { .. }));
-        let inject = |vector: u8| Request::Perturb {
+        let inject = |vector: u32| Request::Perturb {
             fault: HostFault(EnvHostFault::InjectInterrupt { vector }.encode()),
             at: Moment(1000),
         };
@@ -4782,7 +4792,7 @@ mod tests {
         // loud `PerturbMomentTaken` (one fault per Moment holds after a branch, not
         // just within a fresh session). Pins the invariant so a future batch-validate
         // refactor can't silently regress it.
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
         assert_eq!(
@@ -4828,7 +4838,7 @@ mod tests {
                 prop_oneof![
                     (0u64..(RAM as u64 - 8), any::<u64>())
                         .prop_map(|(gpa, m)| EnvHostFault::CorruptMemory { gpa, mask: BitMask(m) }),
-                    (16u8..=255u8)
+                    (16u32..=255u32)
                         .prop_map(|vector| EnvHostFault::InjectInterrupt { vector }),
                 ],
                 0..8usize,
@@ -4870,7 +4880,7 @@ mod tests {
             unsafe { self.0.map_memory(gpa, host) }
         }
         fn run(&mut self) -> vmm_backend::Result<Exit> {
-            Ok(Exit::Hlt)
+            Ok(Exit::Idle)
         }
         fn run_until(&mut self, d: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
             Ok(Exit::Deadline { reached: d })
@@ -5216,7 +5226,7 @@ mod tests {
         // Finding 3: a backend that cannot arm the exact-arrival seam (V-time
         // unwired, or deterministic_tsc=false) would apply a staged fault late.
         // Reject perturb up front with Unsupported. Here: a mock with NO V-time wired.
-        let mut m = MockBackend::with_exits(vec![Exit::Hlt]);
+        let mut m = MockBackend::with_exits(vec![Exit::Idle]);
         m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
         m.set_msr_filter(&vmm_backend::MsrFilter::default())
             .unwrap();
@@ -5244,14 +5254,16 @@ mod tests {
         // `PerturbReservedVector`, not a session-fatal apply-time `ServeError`.
         let mut s = arrival_server(); // LAPIC wired, synchronized
         arr_hello(&mut s);
-        for vector in [0u8, 1, 15] {
+        for vector in [0u32, 1, 15] {
             assert_eq!(
                 s.handle(&Request::Perturb {
                     fault: HostFault(EnvHostFault::InjectInterrupt { vector }.encode()),
                     at: Moment(100),
                 })
                 .unwrap(),
-                Err(ControlError::PerturbReservedVector { vector })
+                Err(ControlError::PerturbReservedVector {
+                    vector: vector as u8
+                })
             );
         }
         // A non-reserved vector still stages cleanly.
@@ -5441,7 +5453,7 @@ mod tests {
                             mask: BitMask(m),
                         }
                     }),
-                    (16u8..=255u8).prop_map(|vector| EnvHostFault::InjectInterrupt { vector }),
+                    (16u32..=255u32).prop_map(|vector| EnvHostFault::InjectInterrupt { vector }),
                 ],
                 1u64..=400,
             )
@@ -5562,12 +5574,12 @@ mod tests {
             unsafe { self.0.map_memory(gpa, host) }
         }
         fn run(&mut self) -> vmm_backend::Result<Exit> {
-            Ok(Exit::Hlt)
+            Ok(Exit::Idle)
         }
         fn run_until(&mut self, _d: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
             // The guest idles (a natural HLT) before any deadline — the arrival is
             // reached through the idle jump, not a run_until Deadline.
-            Ok(Exit::Hlt)
+            Ok(Exit::Idle)
         }
         fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
             self.0.inject(e)
@@ -5892,7 +5904,7 @@ mod tests {
                 size: 4,
                 write: Some(bn as u32),
             },
-            Exit::Hlt,
+            Exit::Idle,
         ];
 
         // The env: seed + an always-firing buggify policy + a mid-run reseed marker.
@@ -5915,7 +5927,7 @@ mod tests {
             move || -> ControlServer<MockBackend> {
                 let frame = bug_frame.clone();
                 let exits = fork_exits.clone();
-                let mut live = wire(vec![Exit::Rdtsc, Exit::Hlt], &frame, REQ_GPA, BIG_RAM);
+                let mut live = wire(vec![Exit::Rdtsc, Exit::Idle], &frame, REQ_GPA, BIG_RAM);
                 live.step().unwrap(); // Rdtsc → synchronized, so genesis seals
                 let factory = Box::new(move || Ok(wire(exits.clone(), &frame, REQ_GPA, BIG_RAM)));
                 ControlServer::new(live, factory)
@@ -6038,7 +6050,7 @@ mod tests {
                 size: 4,
                 write: Some(n as u32),
             },
-            Exit::Hlt,
+            Exit::Idle,
         ];
 
         // The branch env: a seed + a policy that faults every NetFlow with a
@@ -6068,7 +6080,7 @@ mod tests {
             move || -> ControlServer<MockBackend> {
                 let frame = net_frame.clone();
                 let exits = fork_exits.clone();
-                let mut live = wire(vec![Exit::Rdtsc, Exit::Hlt], &frame, REQ_GPA, BIG_RAM);
+                let mut live = wire(vec![Exit::Rdtsc, Exit::Idle], &frame, REQ_GPA, BIG_RAM);
                 live.step().unwrap(); // Rdtsc → synchronized, so genesis seals
                 let factory = Box::new(move || Ok(wire(exits.clone(), &frame, REQ_GPA, BIG_RAM)));
                 ControlServer::new(live, factory)
@@ -6217,7 +6229,7 @@ mod tests {
     fn terminal_with_a_staged_reseed_poisons_and_rewind_recovers() {
         // A reseed staged beyond the trajectory is the same loud
         // ScheduleUnsatisfiable class as a crossed fault (the task spec's gate).
-        let mut s = server(vec![Exit::Rdtsc, Exit::Hlt]);
+        let mut s = server(vec![Exit::Rdtsc, Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
         s.handle(&Request::Branch {
@@ -6300,7 +6312,7 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn console_drain_is_determinism_neutral() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let base = snap(&mut s);
 
@@ -6388,7 +6400,7 @@ mod tests {
     /// with empty capture — but the guard fired regardless of the run's outcome.
     #[test]
     fn exec_taints_and_recorded_env_then_fails_loud() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         // Untainted: the reproducer mints.
         assert!(matches!(recorded_env_res(&mut s), Ok(Reply::Recorded(_))));
@@ -6408,7 +6420,7 @@ mod tests {
         ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
     )]
     fn snapshot_reply_carries_the_taint() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let (_clean, clean_taint) = snap_tainted(&mut s);
         assert!(!clean_taint, "a pre-exec snapshot is untainted");
@@ -6426,7 +6438,7 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn branch_and_replay_from_a_tainted_snapshot_stay_tainted() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         exec(&mut s, "ls /");
         let (tainted_snap, t) = snap_tainted(&mut s);
@@ -6454,7 +6466,7 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn rewind_to_an_untainted_ancestor_clears_the_live_taint() {
-        let mut s = server(vec![Exit::Hlt]);
+        let mut s = server(vec![Exit::Idle]);
         hello(&mut s);
         let (clean_snap, _) = snap_tainted(&mut s); // taken before any exec
         exec(&mut s, "rm -rf /"); // sacrifice the live timeline
@@ -6501,7 +6513,7 @@ mod tests {
         #[test]
         #[cfg_attr(miri, ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)")]
         fn taint_propagates_exactly_along_ancestry(ops in arb_taint_ops()) {
-            let mut s = server(vec![Exit::Hlt]);
+            let mut s = server(vec![Exit::Idle]);
             hello(&mut s);
             // Oracle: taint of each snapshot (by creation order; SnapId is monotonic
             // from 1), and the live timeline's taint. Genesis is untainted.

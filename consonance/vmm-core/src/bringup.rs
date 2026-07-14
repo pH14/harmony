@@ -858,7 +858,7 @@ mod tests {
     )]
     fn compose_linux_loads_kernel_and_wires_lapic() {
         let kernel = synthetic_bzimage(0x10_0000, 0x400);
-        let backend = MockBackend::with_exits(vec![Exit::Hlt]);
+        let backend = MockBackend::with_exits(vec![Exit::Idle]);
         let ram = 0x20_0000usize; // 2 MiB (4 KiB-multiple, > pref_address + kernel)
         let mut vmm =
             compose_linux(backend, &kernel, &[], ram, "console=ttyS0").expect("compose_linux");
@@ -866,7 +866,7 @@ mod tests {
         // The Linux path wires the userspace xAPIC.
         assert!(vmm.lapic_wired());
         let r = vmm.run().expect("run");
-        assert_eq!(r.reason, TerminalReason::Hlt);
+        assert_eq!(r.reason, TerminalReason::Idle);
 
         // The kernel was copied to pref_address and boot_params carries the HdrS
         // magic — i.e. the loader actually ran inside compose_linux.

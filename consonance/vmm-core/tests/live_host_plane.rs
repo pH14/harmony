@@ -242,7 +242,7 @@ fn host_plane_record_replay_closure() {
     let m2 = snapshot_vtime + env_u64("HP_M2_OFF", 1_500_000);
     let deadline = snapshot_vtime + env_u64("HP_DELTA", 5_000_000);
     let gpa = env_u64("HP_GPA", 0x0100_0000);
-    let vector = env_u64("HP_VECTOR", 0x60) as u8;
+    let vector = env_u64("HP_VECTOR", 0x60) as u32;
     let corrupt = wire(HostFault::CorruptMemory {
         gpa,
         mask: BitMask(0xD15EA5ED_C0FFEE01),

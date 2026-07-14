@@ -249,7 +249,7 @@ fn host_fault_from(rng: &mut Prng) -> HostFault {
             mask: BitMask(rng.next_u64()),
         },
         _ => HostFault::InjectInterrupt {
-            vector: (rng.next_u64() & 0xFF) as u8,
+            vector: rng.next_u64() as u32,
         },
     }
 }
@@ -338,31 +338,31 @@ mod tests {
 
     #[test]
     fn host_fault_from_arm3_is_exact_inject_interrupt() {
-        // Pick an arm-3 seed whose vector byte is neither 0xFF nor 0x00, so the
-        // exact assertion distinguishes `& 0xFF` from both `| 0xFF` (→ always
-        // 0xFF) and `^ 0xFF` (→ byte ^ 0xFF).
+        // Pick an arm-3 seed whose vector word is neither all-ones nor zero, so
+        // the exact assertion distinguishes the plain truncating cast from a
+        // mutant that ORs/XORs the draw.
         let seed = (0u64..10_000)
             .find(|&s| {
                 let mut p = Prng::new(s);
                 if p.next_u64() % 4 != 3 {
                     return false;
                 }
-                let v = (p.next_u64() & 0xFF) as u8;
-                v != 0xFF && v != 0x00
+                let v = p.next_u64() as u32;
+                v != u32::MAX && v != 0
             })
             .expect("a non-trivial arm-3 seed exists in range");
         let got = host_fault_from(&mut Prng::new(seed));
         let mut e = Prng::new(seed);
         let _arm = e.next_u64();
-        let vector = (e.next_u64() & 0xFF) as u8;
+        let vector = e.next_u64() as u32;
         assert!(
-            vector != 0xFF && vector != 0x00,
-            "chosen seed has a discriminating vector byte"
+            vector != u32::MAX && vector != 0,
+            "chosen seed has a discriminating vector word"
         );
         assert_eq!(
             got,
             HostFault::InjectInterrupt { vector },
-            "arm 3 must map to InjectInterrupt with the exact low byte (kills & -> |/^ on 0xFF)"
+            "arm 3 must map to InjectInterrupt with the exact low word of the draw"
         );
     }
 

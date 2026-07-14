@@ -391,7 +391,7 @@ fn reply_stop_crash() {
         Ok(Reply::Stop(StopReason::Crash {
             vtime: Moment(5),
             info: CrashInfo {
-                kind: CrashKind::TripleFault,
+                kind: CrashKind::UnrecoverableFault,
                 detail: vec![0xEE],
             },
         })),
@@ -399,7 +399,7 @@ fn reply_stop_crash() {
             0x00, 0x04, // RESULT_OK, REPLY_STOP
             0x03, // SR_CRASH
             0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // vtime = 5
-            0x01, // CK_TRIPLE_FAULT
+            0x01, // CK_UNRECOVERABLE_FAULT
             0x01, 0x00, 0x00, 0x00, // detail len = 1
             0xEE, // detail
         ],

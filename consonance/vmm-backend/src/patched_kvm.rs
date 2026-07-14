@@ -129,8 +129,8 @@ impl Backend for PatchedKvmBackend {
         self.inner.complete_ok()
     }
 
-    fn complete_hypercall(&mut self, rax: u64) -> Result<()> {
-        self.inner.complete_hypercall(rax)
+    fn complete_hypercall(&mut self, ret: u64) -> Result<()> {
+        self.inner.complete_hypercall(ret)
     }
 
     fn complete_cpuid(&mut self, eax: u32, ebx: u32, ecx: u32, edx: u32) -> Result<()> {

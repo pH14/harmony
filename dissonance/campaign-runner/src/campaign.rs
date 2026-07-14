@@ -81,7 +81,7 @@ const PROGRESS_INTERVAL: u64 = 32;
 /// no longer keys on the kind (a guest process cannot reach isa-debug-exit here —
 /// see the module doc); kept as the faithful mirror the toy machine stamps.
 pub const CRASH_KIND_PANIC: u8 = 0;
-/// The crash-kind byte for a triple fault (`control_proto::CrashKind::TripleFault`).
+/// The crash-kind byte for a triple fault (`control_proto::CrashKind::UnrecoverableFault`).
 pub const CRASH_KIND_TRIPLE_FAULT: u8 = 1;
 /// The crash-kind byte for a backend `Shutdown` (`control_proto::CrashKind::Shutdown`)
 /// — a guest-initiated shutdown / forced reboot. On this workload the planted

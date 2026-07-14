@@ -93,9 +93,13 @@ pub enum HostFault {
         mask: BitMask,
     },
     /// Delivery-timing perturbation: inject interrupt `vector`.
+    ///
+    /// The vector is a `u32` because interrupt identities are per-arch: x86
+    /// vectors fit 8 bits, but GIC INTIDs exceed them (`docs/ARCH-BOUNDARY.md`
+    /// §C). The enforcing vendor rejects a vector outside its own range.
     InjectInterrupt {
         /// The interrupt vector to deliver.
-        vector: u8,
+        vector: u32,
     },
 }
 

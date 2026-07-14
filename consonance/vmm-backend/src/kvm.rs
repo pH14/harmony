@@ -373,7 +373,7 @@ pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit, Pending)>> {
             Ok(Some((Exit::Wrmsr { index, value }, Pending::Wrmsr)))
         }
         KVM_EXIT_DETERMINISM => decode_determinism(page).map(Some),
-        KVM_EXIT_HLT => Ok(Some((Exit::Hlt, Pending::None))),
+        KVM_EXIT_HLT => Ok(Some((Exit::Idle, Pending::None))),
         KVM_EXIT_SHUTDOWN => Ok(Some((Exit::Shutdown, Pending::None))),
         KVM_EXIT_INTERNAL_ERROR => Err(BackendError::Internal("KVM_EXIT_INTERNAL_ERROR")),
         KVM_EXIT_FAIL_ENTRY => Err(BackendError::Internal("KVM_EXIT_FAIL_ENTRY")),

@@ -389,14 +389,14 @@ fn sdk_events_ride_the_wire_into_a_nonempty_runtrace() {
             size: 4,
             write: Some(n as u32),
         },
-        Exit::Hlt,
+        Exit::Idle,
     ])
     .unwrap();
     // The factory is unused (this test runs the live VM directly, no branch), but
     // the server requires one; a minimal HLT fork suffices.
     let factory = {
         let build = build.clone();
-        Box::new(move || build(vec![Exit::Hlt]))
+        Box::new(move || build(vec![Exit::Idle]))
     };
     let mut server = ControlServer::new(live, factory);
 
@@ -502,12 +502,12 @@ fn setup_complete_yields_a_usable_seal_at_the_next_synchronized_boundary() {
             write: Some(n as u32),
         },
         Exit::Rdtsc,
-        Exit::Hlt,
+        Exit::Idle,
     ])
     .unwrap();
     let factory = {
         let build = build.clone();
-        Box::new(move || build(vec![Exit::Hlt]))
+        Box::new(move || build(vec![Exit::Idle]))
     };
     let mut server = ControlServer::new(live, factory);
 
@@ -572,14 +572,14 @@ fn snapshot_retry_finds_a_boundary_when_the_first_point_is_unsnappable() {
             write: Some(b'x' as u32),
         },
         Exit::Rdtsc,
-        Exit::Hlt,
+        Exit::Idle,
     ])
     .unwrap();
     live.step().unwrap(); // RDTSC → synchronized
     if let Step::Terminal(_) = live.step().unwrap() {
         panic!("serial OUT should not terminate");
     } // serial OUT → NOT synchronized
-    let factory = Box::new(move || build(vec![Exit::Rdtsc, Exit::Hlt]));
+    let factory = Box::new(move || build(vec![Exit::Rdtsc, Exit::Idle]));
     let mut server = ControlServer::new(live, factory);
 
     let cfg = SweepConfig {

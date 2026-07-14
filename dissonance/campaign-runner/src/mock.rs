@@ -279,7 +279,7 @@ pub fn default_fork_script() -> Vec<Exit> {
         Exit::Rdtsc,
         Exit::Rdrand { width: 8 },
         Exit::Rdtsc,
-        Exit::Hlt,
+        Exit::Idle,
     ]
 }
 
@@ -301,7 +301,7 @@ pub fn recording_fork_script() -> Vec<Exit> {
     }
     script.push(Exit::Rdrand { width: 8 });
     script.push(Exit::Rdrand { width: 8 });
-    script.push(Exit::Hlt);
+    script.push(Exit::Idle);
     script
 }
 
@@ -326,7 +326,7 @@ pub fn chain_fork_script(intercepts: usize, draws: bool) -> Vec<Exit> {
             script.push(Exit::Rdtsc);
         }
     }
-    script.push(Exit::Hlt);
+    script.push(Exit::Idle);
     script
 }
 
@@ -375,7 +375,7 @@ mod tests {
     /// advances the exit-driven work counter by exactly one intercept.
     #[test]
     fn mock_vmm_composes_maps_memory_and_ticks_per_exit() {
-        let mut v = vmm(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Hlt], 7).expect("compose");
+        let mut v = vmm(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Idle], 7).expect("compose");
         assert_eq!(v.step().unwrap(), vmm_core::vmm::Step::Continued);
         let vns1 = v.effective_vns().expect("V-time wired");
         assert_eq!(vns1, WORK_STEP, "one serviced exit = one work step");
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn counting_backend_run_until_arrives_between_exits() {
         let work = Arc::new(SharedWork::default());
-        let mut inner = MockBackend::with_exits(vec![Exit::Rdtsc, Exit::Hlt]);
+        let mut inner = MockBackend::with_exits(vec![Exit::Rdtsc, Exit::Idle]);
         inner
             .set_cpuid(&vmm_backend::CpuidModel::default())
             .unwrap();
@@ -435,7 +435,7 @@ mod tests {
     fn counting_backend_far_deadline_rewrites_a_scripted_deadline() {
         let work = Arc::new(SharedWork::default());
         let mut inner =
-            MockBackend::with_exits(vec![Exit::Deadline { reached: Moment(0) }, Exit::Hlt]);
+            MockBackend::with_exits(vec![Exit::Deadline { reached: Moment(0) }, Exit::Idle]);
         inner
             .set_cpuid(&vmm_backend::CpuidModel::default())
             .unwrap();
@@ -474,7 +474,7 @@ mod tests {
         let mut inner = MockBackend::with_exits(vec![
             Exit::Deadline { reached: Moment(0) },
             Exit::Rdtsc,
-            Exit::Hlt,
+            Exit::Idle,
         ]);
         inner
             .set_cpuid(&vmm_backend::CpuidModel::default())
@@ -516,7 +516,7 @@ mod tests {
         let mut inner = MockBackend::with_exits(vec![
             Exit::Deadline { reached: Moment(0) },
             Exit::Rdtsc,
-            Exit::Hlt,
+            Exit::Idle,
         ]);
         inner
             .set_cpuid(&vmm_backend::CpuidModel::default())

@@ -42,6 +42,31 @@ use clap::{Parser, Subcommand};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::{SpecEnvCodec, StreamId};
 use runtrace::{RetentionPolicy, TraceStore};
+use vmm_core::bringup::BackendKind;
+
+/// Per-vendor box-boot configuration data (`docs/ARCH-BOUNDARY.md` §C): every
+/// box-mode default that names an ISA — the kernel image name the vendor's boot
+/// protocol uses, the determinism kernel command line, and the trap backend the
+/// determinism claim rides on. One constant per vendor; every box mode selects
+/// the x86-64 bundle today (the sole vendor).
+struct VendorBootConfig {
+    /// Kernel image filename under guest/build (or guest/linux).
+    kernel_image: &'static str,
+    /// The determinism kernel command line (identical to the branching demo).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    cmdline: &'static str,
+    /// The trap backend the vendor's determinism claim rides on.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    backend: BackendKind,
+}
+
+/// The x86-64 vendor's box-boot bundle.
+const X86_64_BOOT: VendorBootConfig = VendorBootConfig {
+    kernel_image: "bzImage",
+    cmdline: "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 \
+              nokaslr nosmp maxcpus=1 nox2apic hpet=disable",
+    backend: BackendKind::Patched,
+};
 
 #[derive(Parser)]
 #[command(
@@ -115,8 +140,8 @@ struct BenchBoxArgs {
     /// for the box (see IMPLEMENTATION-task69-m2.md's runbook).
     #[arg(long)]
     calibration: Option<PathBuf>,
-    /// Kernel bzImage filename under guest/build (or guest/linux).
-    #[arg(long, default_value = "bzImage")]
+    /// Kernel image filename under guest/build (or guest/linux).
+    #[arg(long, default_value = X86_64_BOOT.kernel_image)]
     kernel: String,
     /// The bug's initramfs (default the fault-timing campaign image; override
     /// per bug, e.g. `initramfs-order.cpio.gz` / `initramfs-uuid.cpio.gz`).
@@ -220,8 +245,8 @@ struct GameBoxArgs {
     /// `--repeat 25`.
     #[arg(long, default_value_t = 1, value_parser = parse_positive_usize)]
     repeat: usize,
-    /// Kernel bzImage filename under guest/build (or guest/linux).
-    #[arg(long, default_value = "bzImage")]
+    /// Kernel image filename under guest/build (or guest/linux).
+    #[arg(long, default_value = X86_64_BOOT.kernel_image)]
     kernel: String,
     /// Initramfs filename — defaults to the task-86 game image.
     #[arg(long, default_value = "initramfs-game.cpio.gz")]
@@ -320,8 +345,8 @@ struct BoxArgs {
     /// Must be > 0: a zero-V-time branch runs no workload past the base.
     #[arg(long, default_value_t = 5_000_000_000, value_parser = parse_positive_u64)]
     deadline_delta: u64,
-    /// Kernel bzImage filename under guest/build (or guest/linux).
-    #[arg(long, default_value = "bzImage")]
+    /// Kernel image filename under guest/build (or guest/linux).
+    #[arg(long, default_value = X86_64_BOOT.kernel_image)]
     kernel: String,
     /// Initramfs filename under guest/build (or guest/linux). Defaults to the
     /// bare-Postgres image; point at `initramfs-docker.cpio.gz` to reuse the
@@ -381,8 +406,8 @@ struct CampaignBoxArgs {
     /// far deadline.
     #[arg(long, default_value_t = 1_000_000, value_parser = parse_u64_flexible)]
     window_hi: u64,
-    /// Kernel bzImage filename under guest/build (or guest/linux).
-    #[arg(long, default_value = "bzImage")]
+    /// Kernel image filename under guest/build (or guest/linux).
+    #[arg(long, default_value = X86_64_BOOT.kernel_image)]
     kernel: String,
     /// Initramfs filename — defaults to the planted-bug campaign image.
     #[arg(long, default_value = "initramfs-campaign.cpio.gz")]

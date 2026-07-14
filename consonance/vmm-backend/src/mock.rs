@@ -35,7 +35,7 @@ pub enum Completion {
     Fault,
     /// `complete_ok()` (a non-fault `Wrmsr` resolution).
     Ok,
-    /// `complete_hypercall(rax)`.
+    /// `complete_hypercall(ret)`.
     Hypercall(u64),
     /// `complete_cpuid(eax, ebx, ecx, edx)`.
     Cpuid {
@@ -84,7 +84,7 @@ fn pending_for(exit: &Exit) -> Pending {
         Exit::Cpuid { .. } => Pending::Cpuid,
         Exit::Io { write: Some(_), .. }
         | Exit::Mmio { write: Some(_), .. }
-        | Exit::Hlt
+        | Exit::Idle
         | Exit::Shutdown
         | Exit::Deadline { .. } => Pending::None,
     }
@@ -440,10 +440,10 @@ impl Backend for MockBackend {
         }
     }
 
-    fn complete_hypercall(&mut self, rax: u64) -> Result<()> {
+    fn complete_hypercall(&mut self, ret: u64) -> Result<()> {
         match self.pending {
             Pending::Hypercall => {
-                self.finish(Completion::Hypercall(rax));
+                self.finish(Completion::Hypercall(ret));
                 Ok(())
             }
             Pending::None => Err(BackendError::NoPendingRead),

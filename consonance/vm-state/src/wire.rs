@@ -321,8 +321,8 @@ fn byte_to_bool(b: u8) -> Option<bool> {
 pub(crate) struct VtimeWire {
     ratio_num: U64,
     ratio_den: U64,
-    tsc_hz: U64,
-    tsc_base: U64,
+    guest_hz: U64,
+    guest_base: U64,
     snapshot_vns: U64,
 }
 
@@ -331,8 +331,8 @@ impl From<&VtimeState> for VtimeWire {
         Self {
             ratio_num: v.ratio_num.into(),
             ratio_den: v.ratio_den.into(),
-            tsc_hz: v.tsc_hz.into(),
-            tsc_base: v.tsc_base.into(),
+            guest_hz: v.guest_hz.into(),
+            guest_base: v.guest_base.into(),
             snapshot_vns: v.snapshot_vns.into(),
         }
     }
@@ -343,8 +343,8 @@ impl From<&VtimeWire> for VtimeState {
         Self {
             ratio_num: w.ratio_num.get(),
             ratio_den: w.ratio_den.get(),
-            tsc_hz: w.tsc_hz.get(),
-            tsc_base: w.tsc_base.get(),
+            guest_hz: w.guest_hz.get(),
+            guest_base: w.guest_base.get(),
             snapshot_vns: w.snapshot_vns.get(),
         }
     }

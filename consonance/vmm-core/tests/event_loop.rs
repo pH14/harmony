@@ -91,8 +91,8 @@ fn isa_debug_exit_codes_distinguished() {
 
 #[test]
 fn hlt_and_shutdown_are_terminal() {
-    let mut hlt = vmm_with(vec![Exit::Hlt]);
-    assert_eq!(hlt.run().unwrap().reason, TerminalReason::Hlt);
+    let mut hlt = vmm_with(vec![Exit::Idle]);
+    assert_eq!(hlt.run().unwrap().reason, TerminalReason::Idle);
     let mut sd = vmm_with(vec![Exit::Shutdown]);
     assert_eq!(sd.run().unwrap().reason, TerminalReason::Shutdown);
 }
@@ -368,10 +368,10 @@ fn cpuid_exit_serviced_from_frozen_model() {
 
 #[test]
 fn step_after_terminal_is_idempotent() {
-    let mut vmm = vmm_with(vec![Exit::Hlt]);
-    assert_eq!(vmm.run().unwrap().reason, TerminalReason::Hlt);
+    let mut vmm = vmm_with(vec![Exit::Idle]);
+    assert_eq!(vmm.run().unwrap().reason, TerminalReason::Idle);
     // A further step() returns the latched terminal without re-running the backend.
-    assert_eq!(vmm.step().unwrap(), Step::Terminal(TerminalReason::Hlt));
+    assert_eq!(vmm.step().unwrap(), Step::Terminal(TerminalReason::Idle));
 }
 
 #[test]
@@ -397,7 +397,7 @@ fn guest_ram_validation_and_accessors() {
 
 #[test]
 fn state_hash_covers_msrs_xsave_and_mp_state() {
-    let mut mock = MockBackend::with_exits(vec![Exit::Hlt]);
+    let mut mock = MockBackend::with_exits(vec![Exit::Idle]);
     mock.set_cpuid(&cpuid_model()).unwrap();
     mock.set_msr_filter(&msr_filter_allow()).unwrap();
     // A rich terminal VcpuState — Halted, with MSRs and an XSAVE blob — so
@@ -412,7 +412,7 @@ fn state_hash_covers_msrs_xsave_and_mp_state() {
     st.msrs.insert(0x277, 0x0007_0406); // IA32_PAT
     mock.set_state(st);
     let mut vmm = Vmm::new(mock, GuestRam::new(4096).unwrap());
-    assert_eq!(vmm.run().unwrap().reason, TerminalReason::Hlt);
+    assert_eq!(vmm.run().unwrap().reason, TerminalReason::Idle);
     assert_eq!(vmm.state_hash(), vmm.state_hash());
     assert_ne!(vmm.state_hash(), [0u8; 32]);
 }
@@ -424,7 +424,7 @@ fn state_hash_distinguishes_segment_and_event_fields() {
     // or event field must hash differently — which kills `encode_segment with ()`
     // and `encode_events with ()` (those would drop the field from the blob).
     let hash_with = |mutate: &dyn Fn(&mut VcpuState)| {
-        let mut mock = MockBackend::with_exits(vec![Exit::Hlt]);
+        let mut mock = MockBackend::with_exits(vec![Exit::Idle]);
         mock.set_cpuid(&cpuid_model()).unwrap();
         mock.set_msr_filter(&msr_filter_allow()).unwrap();
         let mut st = VcpuState::default();
@@ -459,7 +459,7 @@ fn state_hash_masks_only_an_unusable_segments_type() {
     //   * a **usable** segment's `type` MUST reach the hash (live architectural state);
     //   * an **unusable** segment's `type` must NOT (the masked don't-care field).
     let hash_with = |mutate: &dyn Fn(&mut VcpuState)| {
-        let mut mock = MockBackend::with_exits(vec![Exit::Hlt]);
+        let mut mock = MockBackend::with_exits(vec![Exit::Idle]);
         mock.set_cpuid(&cpuid_model()).unwrap();
         mock.set_msr_filter(&msr_filter_allow()).unwrap();
         let mut st = VcpuState::default();

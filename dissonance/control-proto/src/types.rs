@@ -470,8 +470,10 @@ pub enum StopReason {
 pub enum CrashKind {
     /// A guest kernel/userspace panic.
     Panic,
-    /// A CPU triple fault.
-    TripleFault,
+    /// An unrecoverable CPU fault: the guest CPU entered a fault state it
+    /// cannot return from and the substrate surfaced a reset/shutdown (on x86,
+    /// a triple fault).
+    UnrecoverableFault,
     /// An orderly guest-requested shutdown that the test treats as a crash.
     Shutdown,
 }

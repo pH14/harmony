@@ -197,7 +197,7 @@ pub fn mint_scenario_env(seed: u64, spec: &BugSpec, rebase: u64, order_range: u6
             // 4-vector × 16-offset space fired at ~1/16 (too easy — round-2 P2).
             let v = vector as u64;
             let vectors: Vec<u64> = (0..16).map(|k| v ^ k).collect();
-            let vec_pick = one_of(&vectors, &mut p) as u8;
+            let vec_pick = one_of(&vectors, &mut p) as u32;
             // Offset search range past the seal (`order_range`, the recorded
             // `--order-range`). Default 64; widening it lets the search reach the
             // per-iteration vulnerable windows and dials the fire rate into the
@@ -251,9 +251,12 @@ fn scenario_of(env: &Reproducer) -> Scenario {
                 HostFault::CorruptMemory { gpa, mask } => {
                     Some(FaultKind::CorruptMemory { gpa, mask: mask.0 })
                 }
-                HostFault::InjectInterrupt { vector } => {
-                    Some(FaultKind::InjectInterrupt { vector })
-                }
+                // The benchmark manifest's vector is the 8-bit x86 identity; the
+                // wire field is wider (ARCH-BOUNDARY §C), but nothing mints an
+                // out-of-range vector for these scenarios.
+                HostFault::InjectInterrupt { vector } => u8::try_from(vector)
+                    .ok()
+                    .map(|vector| FaultKind::InjectInterrupt { vector }),
                 _ => None,
             };
             kind.map(|kind| Perturbation { at, kind })
@@ -316,7 +319,9 @@ fn exploit_env(parent: &Reproducer, prng: &mut Prng) -> Reproducer {
                 gpa,
                 mask: BitMask(mask),
             },
-            FaultKind::InjectInterrupt { vector } => HostFault::InjectInterrupt { vector },
+            FaultKind::InjectInterrupt { vector } => HostFault::InjectInterrupt {
+                vector: vector.into(),
+            },
         };
         env_spec.perturb(fault, at);
     }
@@ -1202,7 +1207,9 @@ mod tests {
                     gpa,
                     mask: BitMask(mask),
                 },
-                FaultKind::InjectInterrupt { vector } => HostFault::InjectInterrupt { vector },
+                FaultKind::InjectInterrupt { vector } => HostFault::InjectInterrupt {
+                    vector: vector.into(),
+                },
             };
             es.perturb(hf, p.at);
         }

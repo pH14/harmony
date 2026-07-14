@@ -76,7 +76,7 @@ fn snapshot_then_restore_round_trips_a_running_vm() {
     assert_eq!(b.save_vm_state().unwrap(), vm_state);
 
     // And B can run forward (terminal latch cleared by restore).
-    let mut b2 = vmm(vec![Exit::Hlt], 9999, 0x0000);
+    let mut b2 = vmm(vec![Exit::Idle], 9999, 0x0000);
     b2.restore_snapshot(eng.materialize(snap).unwrap().as_slice(), &decoded)
         .unwrap();
     assert!(matches!(b2.step().unwrap(), Step::Terminal(_)));

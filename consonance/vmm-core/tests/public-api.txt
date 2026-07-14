@@ -463,7 +463,7 @@ pub vmm_core::vmm::Step::Terminal(vmm_core::vmm::TerminalReason)
 pub enum vmm_core::vmm::TerminalReason
 pub vmm_core::vmm::TerminalReason::DebugExit
 pub vmm_core::vmm::TerminalReason::DebugExit::code: u8
-pub vmm_core::vmm::TerminalReason::Hlt
+pub vmm_core::vmm::TerminalReason::Idle
 pub vmm_core::vmm::TerminalReason::SdkStop
 pub vmm_core::vmm::TerminalReason::Shutdown
 pub enum vmm_core::vmm::VmmError

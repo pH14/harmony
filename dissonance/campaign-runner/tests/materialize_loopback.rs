@@ -240,7 +240,7 @@ fn chain_gates_pass_on_a_draw_carrying_script() {
         script.push(vmm_backend::Exit::Rdtsc);
         script.push(vmm_backend::Exit::Rdtsc);
     }
-    script.push(vmm_backend::Exit::Hlt);
+    script.push(vmm_backend::Exit::Idle);
     let cfg = MaterializeConfig {
         seed: 0x1234_5678_9ABC_DEF0,
         hops: 3,

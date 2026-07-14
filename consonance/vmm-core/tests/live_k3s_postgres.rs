@@ -488,7 +488,7 @@ fn map_counts(c: &vmm_backend::ExitCounts) -> telemetry::ExitCounts {
         rdtscp: c.rdtscp,
         rdrand: c.rdrand,
         rdseed: c.rdseed,
-        hlt: c.hlt,
+        hlt: c.idle,
         shutdown: c.shutdown,
         deadline: c.deadline,
     }

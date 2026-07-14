@@ -1488,7 +1488,7 @@ impl Backend for KvmBackend {
         Ok(())
     }
 
-    fn complete_hypercall(&mut self, _rax: u64) -> Result<()> {
+    fn complete_hypercall(&mut self, _ret: u64) -> Result<()> {
         // Stock KVM services VMCALL in-kernel; it never surfaces Exit::Hypercall,
         // so there is never a hypercall pending to complete.
         Err(BackendError::NoPendingRead)

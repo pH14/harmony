@@ -10,7 +10,7 @@
 #![cfg(feature = "mock")]
 
 use vmm_backend::{
-    Backend, CpuidModel, Exit, Gpa, HypercallRegs, Injection, MockBackend, Moment, MsrFilter,
+    Backend, CpuidModel, Exit, Gpa, HypercallFrame, Injection, MockBackend, Moment, MsrFilter,
     VcpuState,
 };
 
@@ -38,7 +38,7 @@ fn boxed_backend_forwards_every_method() {
             index: 0x30,
             value: 9,
         },
-        Exit::Hypercall(HypercallRegs::default()),
+        Exit::Hypercall(HypercallFrame::default()),
         Exit::Io {
             port: 0x3F8,
             size: 1,
@@ -97,7 +97,7 @@ fn boxed_backend_forwards_every_method() {
 
     assert_eq!(
         backend.run().unwrap(),
-        Exit::Hypercall(HypercallRegs::default())
+        Exit::Hypercall(HypercallFrame::default())
     );
     backend.complete_hypercall(0x99).unwrap();
 
@@ -146,12 +146,12 @@ fn injection_forwards_through_box() {
     // accepts nothing and `take_accepted_interrupt` → `None`); a dropped/Defaulted
     // `take_accepted_interrupt` returns the wrong value. Both are trait-observable
     // here, so the box forwards are killable (unlike the effect-only `inject`).
-    let mut backend: Box<dyn Backend> = Box::new(MockBackend::with_exits(vec![Exit::Hlt]));
+    let mut backend: Box<dyn Backend> = Box::new(MockBackend::with_exits(vec![Exit::Idle]));
     backend.set_cpuid(&CpuidModel::default()).unwrap();
     backend.set_msr_filter(&MsrFilter::default()).unwrap();
 
     backend.set_pending_irq(Some(0x40)).unwrap();
-    assert_eq!(backend.run().unwrap(), Exit::Hlt); // mock accepts the pending IRQ
+    assert_eq!(backend.run().unwrap(), Exit::Idle); // mock accepts the pending IRQ
     assert_eq!(backend.take_accepted_interrupt(), Some(0x40));
     assert_eq!(backend.take_accepted_interrupt(), None);
 }

@@ -127,8 +127,8 @@ mod tests {
         VClock::new(VClockConfig {
             ratio_num: 1,
             ratio_den: 1,
-            tsc_hz: 2_000_000_000,
-            tsc_base: 0,
+            guest_hz: 2_000_000_000,
+            guest_base: 0,
             vns_base,
         })
         .expect("valid 1:1 config")

@@ -255,7 +255,7 @@ fn decode_rdmsr_and_wrmsr() {
 #[test]
 fn decode_terminal_and_control_exits() {
     for (reason, want) in [
-        (KVM_EXIT_HLT, Exit::Hlt),
+        (KVM_EXIT_HLT, Exit::Idle),
         (KVM_EXIT_SHUTDOWN, Exit::Shutdown),
     ] {
         let s = SynRun::new();

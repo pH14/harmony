@@ -207,7 +207,7 @@ struct ItemVerdict {
 /// interrupt injection + LAPIC MMIO + the idle-skip protocol, which vmm-core does
 /// not model yet (a later phase), so they cannot reach a clean PASS on this event
 /// loop. They are logged and skipped — never run through the gate (which would
-/// hit a `TerminalReason::Hlt` / MMIO `ContractViolation`).
+/// hit a `TerminalReason::Idle` / MMIO `ContractViolation`).
 fn sweep(items: &[CorpusItem], bless: bool) -> Vec<ItemVerdict> {
     let mut verdicts = Vec::new();
     for item in items {

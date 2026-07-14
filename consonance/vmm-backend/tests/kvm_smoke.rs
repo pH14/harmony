@@ -117,11 +117,11 @@ fn bringup_smoke_out_then_hlt() {
         } => assert_eq!(v, 0x42),
         other => panic!("expected OUT to 0x3f8, got {other:?}"),
     }
-    assert_eq!(backend.run().expect("run to HLT"), Exit::Hlt);
+    assert_eq!(backend.run().expect("run to HLT"), Exit::Idle);
 
     let counts = backend.exit_counts();
     assert_eq!(counts.io, 1, "exactly one IO exit");
-    assert_eq!(counts.hlt, 1, "exactly one HLT exit");
+    assert_eq!(counts.idle, 1, "exactly one HLT exit");
     assert_eq!(counts.total(), 2);
 }
 
@@ -202,7 +202,7 @@ fn msr_filter_is_loud() {
     // surfaced Exit::Io, which would fail this assertion loudly.
     backend.complete_fault().expect("complete_fault");
     match backend.run().expect("run after #GP") {
-        Exit::Hlt => {}
+        Exit::Idle => {}
         Exit::Io { port, .. } => {
             panic!("RDMSR was silently allowed (reached out 0x{port:x}) — filter not loud")
         }

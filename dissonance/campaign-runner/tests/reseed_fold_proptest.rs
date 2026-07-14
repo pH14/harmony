@@ -58,7 +58,7 @@ fn period4_script(periods: usize) -> Vec<vmm_backend::Exit> {
         out.push(Exit::Rdtsc);
         out.push(Exit::Rdtsc);
     }
-    out.push(Exit::Hlt);
+    out.push(Exit::Idle);
     out
 }
 

@@ -16,9 +16,9 @@ pub struct VClockConfig {
     /// Denominator of the work→nanosecond ratio. Must be non-zero.
     pub ratio_den: u64,
     /// Virtual TSC frequency in Hz (e.g. `2_000_000_000`).
-    pub tsc_hz: u64,
+    pub guest_hz: u64,
     /// TSC value corresponding to `vns == 0` (snapshot restore sets it).
-    pub tsc_base: u64,
+    pub guest_base: u64,
     /// V-time offset in nanoseconds; `0` for a fresh machine. Snapshot
     /// restore sets it to the snapshot's [`VClock::snapshot_vns`] value.
     pub vns_base: u64,
@@ -28,7 +28,7 @@ pub struct VClockConfig {
 /// events, see the crate docs) to guest-visible time.
 ///
 /// `vns(work) = vns_base + floor(work * ratio_num / ratio_den)` and
-/// `tsc(work) = tsc_base + floor(vns(work) * tsc_hz / 1_000_000_000)`, both
+/// `tsc(work) = guest_base + floor(vns(work) * guest_hz / 1_000_000_000)`, both
 /// computed in `u128` and saturating to `u64::MAX`. Both are monotonic
 /// non-decreasing in `work` by construction, and remain so across
 /// [`VClock::advance_idle`] (which only ever moves `vns_base` forward).
@@ -78,14 +78,14 @@ impl VClock {
         saturate(u128::from(self.cfg.vns_base) + scaled)
     }
 
-    /// Virtual TSC at the given work count:
-    /// `tsc_base + floor(vns(work) * tsc_hz / 1_000_000_000)`, computed in
+    /// Guest-clock ticks at the given work count:
+    /// `guest_base + floor(vns(work) * guest_hz / 1_000_000_000)`, computed in
     /// `u128` from the (saturated, `u64`) [`VClock::vns`] value, saturating to
     /// `u64::MAX`. Monotonic non-decreasing in `work` because `vns` is.
-    pub fn tsc(&self, work: u64) -> u64 {
-        let ticks = u128::from(self.vns(work)) * u128::from(self.cfg.tsc_hz) / NS_PER_SEC;
-        // ticks < 2^128 / 10^9 < 2^99, so adding tsc_base cannot overflow u128.
-        saturate(u128::from(self.cfg.tsc_base) + ticks)
+    pub fn guest_ticks(&self, work: u64) -> u64 {
+        let ticks = u128::from(self.vns(work)) * u128::from(self.cfg.guest_hz) / NS_PER_SEC;
+        // ticks < 2^128 / 10^9 < 2^99, so adding guest_base cannot overflow u128.
+        saturate(u128::from(self.cfg.guest_base) + ticks)
     }
 
     /// Smallest work count `w` with `vns(w) >= vns`; returns 0 if
@@ -134,7 +134,7 @@ impl VClock {
 
     /// Effective V-time at `work`, for storing in a snapshot (equals
     /// `self.vns(work)`). Restoring is [`VClock::new`] with `vns_base` set to
-    /// this value and the same `ratio`/`tsc_hz`/`tsc_base` — the hardware
+    /// this value and the same `ratio`/`guest_hz`/`guest_base` — the hardware
     /// counter restarts at 0, so the restored clock carries the whole
     /// effective V-time in `vns_base`, and `tsc` continues consistently for
     /// free because it is derived from `vns`.
@@ -175,8 +175,8 @@ mod tests {
         VClock::new(VClockConfig {
             ratio_num,
             ratio_den,
-            tsc_hz: 2_000_000_000,
-            tsc_base: 0,
+            guest_hz: 2_000_000_000,
+            guest_base: 0,
             vns_base,
         })
         .expect("valid test config")
@@ -187,8 +187,8 @@ mod tests {
         let err = VClock::new(VClockConfig {
             ratio_num: 1,
             ratio_den: 0,
-            tsc_hz: 1,
-            tsc_base: 0,
+            guest_hz: 1,
+            guest_base: 0,
             vns_base: 0,
         })
         .unwrap_err();
@@ -200,8 +200,8 @@ mod tests {
         let err = VClock::new(VClockConfig {
             ratio_num: 0,
             ratio_den: 1,
-            tsc_hz: 1,
-            tsc_base: 0,
+            guest_hz: 1,
+            guest_base: 0,
             vns_base: 0,
         })
         .unwrap_err();
@@ -214,8 +214,8 @@ mod tests {
         let err = VClock::new(VClockConfig {
             ratio_num: u64::MAX,
             ratio_den: 1,
-            tsc_hz: 1,
-            tsc_base: 0,
+            guest_hz: 1,
+            guest_base: 0,
             vns_base: 1,
         })
         .unwrap_err();
@@ -246,17 +246,17 @@ mod tests {
     fn tsc_matches_formula() {
         // 2 GHz: 1 ns = 2 ticks.
         let clk = clock(5, 1, 0);
-        assert_eq!(clk.tsc(10), 100); // vns = 50 ns -> 100 ticks
+        assert_eq!(clk.guest_ticks(10), 100); // vns = 50 ns -> 100 ticks
         let clk = VClock::new(VClockConfig {
             ratio_num: 1,
             ratio_den: 1,
-            tsc_hz: 1_500_000_000,
-            tsc_base: 7,
+            guest_hz: 1_500_000_000,
+            guest_base: 7,
             vns_base: 0,
         })
         .unwrap();
-        assert_eq!(clk.tsc(2), 7 + 3); // floor(2 * 1.5)
-        assert_eq!(clk.tsc(3), 7 + 4); // floor(3 * 1.5)
+        assert_eq!(clk.guest_ticks(2), 7 + 3); // floor(2 * 1.5)
+        assert_eq!(clk.guest_ticks(3), 7 + 4); // floor(3 * 1.5)
     }
 
     #[test]

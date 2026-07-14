@@ -432,7 +432,7 @@ fn stop_from_wire(stop: control_proto::StopReason) -> StopReason {
         Ws::Crash { vtime, info } => {
             let kind = match info.kind {
                 control_proto::CrashKind::Panic => 0u8,
-                control_proto::CrashKind::TripleFault => 1,
+                control_proto::CrashKind::UnrecoverableFault => 1,
                 control_proto::CrashKind::Shutdown => 2,
             };
             let mut bytes = Vec::with_capacity(1 + info.detail.len());
@@ -772,7 +772,7 @@ mod tests {
         );
         for (kind, byte) in [
             (CrashKind::Panic, 0u8),
-            (CrashKind::TripleFault, 1u8),
+            (CrashKind::UnrecoverableFault, 1u8),
             (CrashKind::Shutdown, 2u8),
         ] {
             let got = stop_from_wire(Ws::Crash {

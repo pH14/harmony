@@ -35,24 +35,21 @@ use explorer::adapter::SocketMachine;
 use explorer::{SpecEnvCodec, StreamId};
 use runtrace::TraceStore;
 use vmm_backend::Backend;
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
+use vmm_core::bringup::boot_linux_selected;
 use vmm_core::control::{ControlServer, VmmFactory};
 use vmm_core::vmm::{Step, Vmm};
 
 use campaign_runner::gamecampaign::{GameCampaignConfig, run_game_campaign};
 
 use super::{
-    BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, finish, finish_campaign, finish_game,
-    finish_recording, parse_game_config, parse_retain, print_game_artifacts, seeds,
+    BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, X86_64_BOOT, finish, finish_campaign,
+    finish_game, finish_recording, parse_game_config, parse_retain, print_game_artifacts, seeds,
 };
 
 /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
 const GUEST_RAM_LEN: usize = 2 << 30;
 /// The boot seed the live VM runs under (matches the branching demo).
 const BOOT_SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
-/// The determinism command line (identical to the branching demo).
-const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check \
-                       lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable";
 /// A safety cap on the boot-to-marker drive (the external `timeout` is the
 /// real bound; this stops a wedged guest from looping forever).
 const MAX_BOOT_STEPS: u64 = 50_000_000_000;
@@ -187,11 +184,11 @@ fn boot_server(
     // post-boot drive to the marker.
     let boot_t0 = mark();
     let mut live = match boot_linux_selected(
-        BackendKind::Patched,
+        X86_64_BOOT.backend,
         &kernel,
         &initramfs,
         GUEST_RAM_LEN,
-        CMDLINE,
+        X86_64_BOOT.cmdline,
         BOOT_SEED,
     ) {
         Ok(v) => v,
@@ -226,11 +223,11 @@ fn boot_server(
     // copies resident for the whole run.
     let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || {
         boot_linux_selected(
-            BackendKind::Patched,
+            X86_64_BOOT.backend,
             &kernel,
             &initramfs,
             GUEST_RAM_LEN,
-            CMDLINE,
+            X86_64_BOOT.cmdline,
             BOOT_SEED,
         )
     });

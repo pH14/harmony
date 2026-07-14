@@ -250,7 +250,7 @@ fn v1_host_fault_from(rng: &mut Prng) -> HostFault {
         }
     } else {
         HostFault::InjectInterrupt {
-            vector: (rng.next_u64() & 0xFF) as u8,
+            vector: (rng.next_u64() & 0xFF) as u32,
         }
     }
 }
@@ -446,7 +446,7 @@ mod tests {
         };
         for i in 0..8u64 {
             spec.perturb(
-                HostFault::InjectInterrupt { vector: i as u8 },
+                HostFault::InjectInterrupt { vector: i as u32 },
                 1_000_000_000 + i * 50,
             );
         }

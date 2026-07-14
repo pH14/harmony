@@ -83,7 +83,7 @@ pub fn arb_host_fault() -> impl Strategy<Value = HostFault> {
             gpa,
             mask: environment::BitMask(mask),
         }),
-        any::<u8>().prop_map(|vector| HostFault::InjectInterrupt { vector }),
+        any::<u32>().prop_map(|vector| HostFault::InjectInterrupt { vector }),
     ]
 }
 

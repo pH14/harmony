@@ -60,8 +60,8 @@ fn advance_lands_clock_at_deadline_or_clamps() {
     let mut clk = VClock::new(VClockConfig {
         ratio_num: 1,
         ratio_den: 1,
-        tsc_hz: 1,
-        tsc_base: 0,
+        guest_hz: 1,
+        guest_base: 0,
         vns_base,
     })
     .expect("1:1 config is always valid");

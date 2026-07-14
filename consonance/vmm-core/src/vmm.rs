@@ -62,8 +62,9 @@ pub enum TerminalReason {
         /// The code byte the guest wrote to `0xF4`.
         code: u8,
     },
-    /// `HLT` (the payload's fallback when isa-debug-exit is absent) — terminal.
-    Hlt,
+    /// An idle halt nothing will wake (the payload's fallback when
+    /// isa-debug-exit is absent, or the kernel's final `cli; hlt`) — terminal.
+    Idle,
     /// Backend `Shutdown` (triple fault / explicit shutdown).
     Shutdown,
     /// The run stopped at a cooperating-SDK stop (task 73) — an assertion — rather
@@ -319,8 +320,8 @@ pub fn contract_vclock_config() -> VClockConfig {
     VClockConfig {
         ratio_num: 1,
         ratio_den: 1,
-        tsc_hz: 2_000_000_000,
-        tsc_base: 0,
+        guest_hz: 2_000_000_000,
+        guest_base: 0,
         vns_base: 0,
     }
 }
@@ -454,7 +455,7 @@ impl VtimeWiring {
     /// `RDMSR(IA32_TSC)` all read this, so they agree exactly; with the default
     /// `tsc_adjust == 0` it is exactly `VClock::tsc(work)`.
     fn visible_tsc(&self, work: u64) -> u64 {
-        self.clock.tsc(work).wrapping_add(self.tsc_adjust)
+        self.clock.guest_ticks(work).wrapping_add(self.tsc_adjust)
     }
 }
 
@@ -491,7 +492,7 @@ const PREEMPTION_TRACE_CAP: usize = 4096;
 /// nothing will satisfy).
 const RFLAGS_IF: u64 = 1 << 9;
 
-/// What an `Exit::Hlt` should do, decided by [`Vmm::idle_action`] (task 52).
+/// What an `Exit::Idle` should do, decided by [`Vmm::idle_action`] (task 52).
 enum IdleAction {
     /// Terminal halt — `IF == 0`, off the determinism path, or no deliverable wake.
     Terminal,
@@ -637,7 +638,7 @@ pub struct Vmm<B: Backend> {
     /// constantly) cannot grow it unbounded.
     preemption_landings: Vec<u64>,
     /// Diagnostic trace of the idle-resume landings (task 52): the **V-time** (ns) the
-    /// clock was warped to when the guest went idle (`Exit::Hlt` with `RFLAGS.IF == 1`
+    /// clock was warped to when the guest went idle (`Exit::Idle` with `RFLAGS.IF == 1`
     /// and an armed timer) and [`Self::resume_idle`] jumped to the timer deadline. The
     /// dual of [`Self::preemption_landings`] — *jumped to* the next event instead of
     /// *executed to* it. It records the **landed V-time** (the deadline), **not** a work
@@ -1239,8 +1240,8 @@ impl<B: Backend> Vmm<B> {
                     // `VtimeWiring::new` enforces `ratio_den == 1`; carry it so the
                     // blob is encodable (a fractional ratio is rejected at encode).
                     ratio_den: 1,
-                    tsc_hz: vt.cfg.tsc_hz,
-                    tsc_base: vt.cfg.tsc_base,
+                    guest_hz: vt.cfg.guest_hz,
+                    guest_base: vt.cfg.guest_base,
                     snapshot_vns: vt.clock.snapshot_vns(vt.last_intercept_work),
                 };
                 // The entropy PRNG position rides the `hypercall` section
@@ -1466,12 +1467,12 @@ impl<B: Backend> Vmm<B> {
             Some(vt) => {
                 if s.vtime.ratio_num != vt.cfg.ratio_num
                     || s.vtime.ratio_den != 1
-                    || s.vtime.tsc_hz != vt.cfg.tsc_hz
-                    || s.vtime.tsc_base != vt.cfg.tsc_base
+                    || s.vtime.guest_hz != vt.cfg.guest_hz
+                    || s.vtime.guest_base != vt.cfg.guest_base
                 {
                     return Err(VmmError::ContractViolation(
-                        "restore_vm_state: V-time clock-rate mismatch (the snapshot's ratio/tsc_hz/\
-                         tsc_base differ from this VM's wired clock)."
+                        "restore_vm_state: V-time clock-rate mismatch (the snapshot's ratio/guest_hz/\
+                         guest_base differ from this VM's wired clock)."
                             .to_string(),
                     ));
                 }
@@ -1489,7 +1490,7 @@ impl<B: Backend> Vmm<B> {
             None => {
                 // Unwired VM: the snapshot must not carry a live V-time block (a
                 // non-zero clock rate means it was taken on a V-time-wired VM).
-                if s.vtime.tsc_hz != 0 || s.vtime.snapshot_vns != 0 {
+                if s.vtime.guest_hz != 0 || s.vtime.snapshot_vns != 0 {
                     return Err(VmmError::ContractViolation(
                         "restore_vm_state: snapshot carries a V-time block but this VM has no V-time \
                          wired — restore into a VM composed like the snapshot source."
@@ -1759,7 +1760,7 @@ impl<B: Backend> Vmm<B> {
             Exit::Rdmsr { index } => self.dispatch_rdmsr(index),
             Exit::Wrmsr { index, value } => self.dispatch_wrmsr(index, value),
             Exit::Cpuid { leaf, subleaf } => self.dispatch_cpuid(leaf, subleaf),
-            Exit::Hlt => self.on_hlt(),
+            Exit::Idle => self.on_idle(),
             Exit::Shutdown => Ok(self.terminate(TerminalReason::Shutdown)),
             Exit::Mmio { gpa, size, write } => self.dispatch_mmio(gpa, size, write),
             Exit::Hypercall(_) => Err(VmmError::ContractViolation(
@@ -1823,7 +1824,7 @@ impl<B: Backend> Vmm<B> {
     ///
     /// The `VTIM` chunk is present **only** when the determinism path is wired
     /// (`PatchedKvmBackend`). It captures the state that governs future RDTSC/RNG
-    /// output — the V-time clock rate (`ratio`/`tsc_hz`/`tsc_base`/`tsc_adjust`),
+    /// output — the V-time clock rate (`ratio`/`guest_hz`/`guest_base`/`tsc_adjust`),
     /// the effective V-time (`vns_base` + work folded into one canonical field), and the entropy
     /// stream position (seed + draws so far) — so two states with identical RAM/regs
     /// but different V-time/seed hash **differently** (the replay-equivalence
@@ -2049,8 +2050,8 @@ impl<B: Backend> Vmm<B> {
             let mut cfg = Vec::new();
             for x in [
                 vt.cfg.ratio_num,
-                vt.cfg.tsc_hz,
-                vt.cfg.tsc_base,
+                vt.cfg.guest_hz,
+                vt.cfg.guest_base,
                 vt.tsc_adjust,
             ] {
                 cfg.extend_from_slice(&x.to_le_bytes());
@@ -3141,11 +3142,19 @@ impl<B: Backend> Vmm<B> {
 
     /// Raise `vector` into the userspace-LAPIC IRR so the existing IRQ
     /// arbitration delivers it — the [`InjectInterrupt`] apply. Fails loud if the
-    /// LAPIC is unwired (there is no arbitration path to assert through) or the
-    /// vector is architecturally reserved (`< 16`).
+    /// LAPIC is unwired (there is no arbitration path to assert through), the
+    /// vector exceeds the xAPIC's 8-bit identity space (the wire field is u32;
+    /// per-arch identities exceed 8 bits, ARCH-BOUNDARY §C), or the vector is
+    /// architecturally reserved (`< 16`).
     ///
     /// [`InjectInterrupt`]: environment::HostFault::InjectInterrupt
-    fn inject_host_interrupt(&mut self, vector: u8) -> Result<(), VmmError> {
+    fn inject_host_interrupt(&mut self, vector: u32) -> Result<(), VmmError> {
+        let Ok(vector) = u8::try_from(vector) else {
+            return Err(VmmError::ContractViolation(format!(
+                "InjectInterrupt vector {vector:#x} exceeds the xAPIC's 8-bit vector space — \
+                 refusing to truncate"
+            )));
+        };
         let Some(lapic) = self.lapic.as_mut() else {
             return Err(VmmError::ContractViolation(format!(
                 "InjectInterrupt vector {vector:#x} but the userspace LAPIC is unwired — no IRQ \
@@ -3210,14 +3219,14 @@ impl<B: Backend> Vmm<B> {
         }
     }
 
-    /// Handle [`Exit::Hlt`]: discriminate a **resumable idle** halt from a **terminal**
+    /// Handle [`Exit::Idle`]: discriminate a **resumable idle** halt from a **terminal**
     /// one and act ([`Self::idle_action`]). The guest is either *waiting for an interrupt
     /// that will come* or *dead*. A resumable idle either delivers an already-pending
     /// interrupt (zero V-time advance) or jumps V-time to a future deliverable timer
     /// ([`Self::resume_idle`]); everything else (the kernel's final `cli; hlt` after
     /// poweroff, or any wait nothing will satisfy) terminates exactly as before — the
     /// strictly-additive change of task 52.
-    fn on_hlt(&mut self) -> Result<Step, VmmError> {
+    fn on_idle(&mut self) -> Result<Step, VmmError> {
         match self.idle_action()? {
             // A deliverable interrupt is already pending in the IRR (e.g. a one-shot
             // timer that fired while `IF == 0`, then `sti; hlt`): re-enter with **no**
@@ -3226,11 +3235,11 @@ impl<B: Backend> Vmm<B> {
             // No interrupt pending now, but a deliverable timer is armed for the future:
             // jump V-time to it and re-enter.
             IdleAction::JumpToDeadline(deadline_vns) => self.resume_idle(deadline_vns),
-            IdleAction::Terminal => Ok(self.terminate(TerminalReason::Hlt)),
+            IdleAction::Terminal => Ok(self.terminate(TerminalReason::Idle)),
         }
     }
 
-    /// Decide what an `Exit::Hlt` should do. **Resumable iff** the guest can take an
+    /// Decide what an `Exit::Idle` should do. **Resumable iff** the guest can take an
     /// interrupt (`RFLAGS.IF == 1`) on the determinism path **and** a *deliverable* wake
     /// event exists — either one already pending in the IRR now
     /// ([`IdleAction::DeliverPending`], zero-advance) **or** a future deliverable armed
@@ -3609,7 +3618,7 @@ impl<B: Backend> Vmm<B> {
                     let work = vt.work.work()?;
                     vt.last_intercept_work = work;
                     // visible_tsc(work) == value ⇔ adjust = value − VClock::tsc(work).
-                    vt.tsc_adjust = value.wrapping_sub(vt.clock.tsc(work));
+                    vt.tsc_adjust = value.wrapping_sub(vt.clock.guest_ticks(work));
                 }
                 IA32_TSC_ADJUST => {
                     // V-time MSR intercept — sample work to keep the hashed effective
@@ -3715,7 +3724,7 @@ impl<B: Backend> Vmm<B> {
                 v.push(1);
                 v.push(code);
             }
-            Some(TerminalReason::Hlt) => v.push(2),
+            Some(TerminalReason::Idle) => v.push(2),
             Some(TerminalReason::Shutdown) => v.push(3),
             // `SdkStop` is a `run` stop reason, never latched as the VM's terminal
             // (only substrate terminals latch via `terminate`), so it is never
@@ -3867,11 +3876,11 @@ fn lookup_cpuid(leaf: u32, subleaf: u32) -> vmm_backend::CpuidEntry {
 }
 
 /// Deterministic, fixed-layout encoding of the V-time + seeded-RNG state for the
-/// `VTIM` hash chunk: the clock-rate config (4 × `u64` LE — `ratio_num`, `tsc_hz`,
-/// `tsc_base`, `tsc_adjust`), then the **single canonical effective-V-time field**
+/// `VTIM` hash chunk: the clock-rate config (4 × `u64` LE — `ratio_num`, `guest_hz`,
+/// `guest_base`, `tsc_adjust`), then the **single canonical effective-V-time field**
 /// (`u64` LE), then the entropy stream position (`SeededEntropy::save_state`, the
 /// trailing bytes — the enclosing chunk is length-prefixed by `put_chunk`). A change
-/// in seed, ratio, `tsc_hz`/`tsc_base`, `tsc_adjust` (`IA32_TSC_ADJUST`), effective
+/// in seed, ratio, `guest_hz`/`guest_base`, `tsc_adjust` (`IA32_TSC_ADJUST`), effective
 /// V-time, or stream position changes the hash. `ratio_den` is **not** encoded:
 /// [`VtimeWiring::new`] enforces it `== 1`, so it is an invariant constant (hashing
 /// it would add nothing and be unkillable).
@@ -3914,8 +3923,8 @@ fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
     let mut v = Vec::new();
     for x in [
         vt.cfg.ratio_num,
-        vt.cfg.tsc_hz,
-        vt.cfg.tsc_base,
+        vt.cfg.guest_hz,
+        vt.cfg.guest_base,
         vt.tsc_adjust,
     ] {
         v.extend_from_slice(&x.to_le_bytes());
@@ -4919,7 +4928,7 @@ mod tests {
                     size: 4,
                     write: Some(n as u32),
                 },
-                Exit::Hlt,
+                Exit::Idle,
             ]),
             GuestRam::new(TEST_RAM).unwrap(),
         );
@@ -5196,7 +5205,7 @@ mod tests {
         };
 
         // A: entropy_fill (stream word 1), then a guest RDRAND (word 2).
-        let mut a = mk(vec![Exit::Rdrand { width: 8 }, Exit::Hlt]);
+        let mut a = mk(vec![Exit::Rdrand { width: 8 }, Exit::Idle]);
         let word1 = u64::from_le_bytes(entropy_fill(&mut a).try_into().unwrap());
         a.run().unwrap();
         let a_stream = vec![word1, reads(&a)[0]];
@@ -5205,7 +5214,7 @@ mod tests {
         let mut b = mk(vec![
             Exit::Rdrand { width: 8 },
             Exit::Rdrand { width: 8 },
-            Exit::Hlt,
+            Exit::Idle,
         ]);
         b.run().unwrap();
 
@@ -5227,7 +5236,7 @@ mod tests {
         use environment::{EnvSpec, FaultPolicy};
         let mk = || {
             let mut vmm = Vmm::new(
-                configured_mock(vec![Exit::Hlt]),
+                configured_mock(vec![Exit::Idle]),
                 GuestRam::new(TEST_RAM).unwrap(),
             );
             vmm.wire_vtime(
@@ -5558,13 +5567,13 @@ mod tests {
     fn rdtsc_completes_with_vtime_tsc_not_host() {
         // work = 10 → vns = 10 (ratio 1:1) → tsc = floor(10 * 2GHz/1e9) = 20.
         let mut vmm = vtime_vmm(
-            vec![Exit::Rdtsc, Exit::Hlt],
+            vec![Exit::Rdtsc, Exit::Idle],
             Box::new(ScriptedWork::at(10)),
             1,
         );
         assert!(vmm.vtime_wired(), "wire_vtime reports the path as wired");
         let r = vmm.run().expect("run");
-        assert_eq!(r.reason, TerminalReason::Hlt);
+        assert_eq!(r.reason, TerminalReason::Idle);
         assert_eq!(vmm.backend.completions(), &[Completion::Read(20)]);
     }
 
@@ -5596,7 +5605,7 @@ mod tests {
         // the top of run().
         let starts = std::rc::Rc::new(Cell::new(0u32));
         let mut vmm = Vmm::new(
-            configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Hlt]),
+            configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Idle]),
             GuestRam::new(0x1000).unwrap(),
         );
         vmm.wire_vtime(
@@ -5618,7 +5627,7 @@ mod tests {
         );
         vmm.step().expect("step 2"); // second entry → must NOT re-fire
         let r = vmm.run().expect("run to terminal"); // run() must NOT re-fire either
-        assert_eq!(r.reason, TerminalReason::Hlt);
+        assert_eq!(r.reason, TerminalReason::Idle);
         assert_eq!(
             starts.get(),
             1,
@@ -5631,7 +5640,7 @@ mod tests {
         // RDTSCP is resolved identically above the trait (the backend supplies
         // ECX=IA32_TSC_AUX below it); the VMM still completes the V-time value.
         let mut vmm = vtime_vmm(
-            vec![Exit::Rdtscp, Exit::Hlt],
+            vec![Exit::Rdtscp, Exit::Idle],
             Box::new(ScriptedWork::at(7)),
             1,
         );
@@ -5643,7 +5652,7 @@ mod tests {
     fn rdtsc_is_strictly_monotonic_when_work_advances() {
         // Three reads, one "branch" between each (step=3): work 0,3,6 → tsc 0,6,12.
         let mut vmm = vtime_vmm(
-            vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Rdtsc, Exit::Hlt],
+            vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Rdtsc, Exit::Idle],
             Box::new(AutoWork {
                 next: Cell::new(0),
                 step: 3,
@@ -5671,7 +5680,7 @@ mod tests {
             vec![
                 Exit::Rdrand { width: 8 },
                 Exit::Rdseed { width: 4 },
-                Exit::Hlt,
+                Exit::Idle,
             ],
             Box::new(ScriptedWork::new()),
             SEED,
@@ -5994,7 +6003,7 @@ mod tests {
         const WORK: u64 = 21; // vns(21)=21 → tsc = floor(21·2GHz/1e9) = 42.
         let run_msr = || {
             let mut v = vtime_vmm(
-                vec![Exit::Rdmsr { index: 0x10 }, Exit::Hlt],
+                vec![Exit::Rdmsr { index: 0x10 }, Exit::Idle],
                 Box::new(ScriptedWork::at(WORK)),
                 1,
             );
@@ -6002,7 +6011,7 @@ mod tests {
             v
         };
         let mut insn = vtime_vmm(
-            vec![Exit::Rdtsc, Exit::Hlt],
+            vec![Exit::Rdtsc, Exit::Idle],
             Box::new(ScriptedWork::at(WORK)),
             1,
         );
@@ -6040,7 +6049,7 @@ mod tests {
                 }, // IA32_TSC = 7777 → adjust = 7777 − 20 = 7757
                 Exit::Rdmsr { index: 0x10 }, // IA32_TSC = 7777
                 Exit::Rdmsr { index: 0x3b }, // IA32_TSC_ADJUST = 7757
-                Exit::Hlt,
+                Exit::Idle,
             ],
             Box::new(ScriptedWork::at(10)),
             1,
@@ -6228,7 +6237,7 @@ mod tests {
         // Differ ONLY in ONE clock-config field (each governs future RDTSC) ⇒
         // different hash. Every variant is still a valid `VClockConfig`. This pins
         // every field of the `VTIM` encoding (a dropped field would let one of these
-        // collide with `a`): `ratio_num`/`tsc_hz`/`tsc_base` are hashed directly,
+        // collide with `a`): `ratio_num`/`guest_hz`/`guest_base` are hashed directly,
         // and `vns_base` feeds the canonical effective-V-time field
         // `snapshot_vns(last_intercept_work)` (here work `0`, so `eff == vns_base`).
         // (`ratio_den` is enforced `== 1` by `VtimeWiring::new`, so it cannot vary
@@ -6243,16 +6252,16 @@ mod tests {
                 },
             ),
             (
-                "tsc_hz",
+                "guest_hz",
                 vtime::VClockConfig {
-                    tsc_hz: 3_000_000_000,
+                    guest_hz: 3_000_000_000,
                     ..base
                 },
             ),
             (
-                "tsc_base",
+                "guest_base",
                 vtime::VClockConfig {
-                    tsc_base: 5,
+                    guest_base: 5,
                     ..base
                 },
             ),
@@ -6329,12 +6338,12 @@ mod tests {
                 report_out(0x0000_0000),
                 report_out(0xDEAD_BEEF),
                 report_out(0x0000_0001),
-                Exit::Hlt,
+                Exit::Idle,
             ]),
             GuestRam::new(0x1000).unwrap(),
         );
         let r = vmm.run().expect("run");
-        assert_eq!(r.reason, TerminalReason::Hlt);
+        assert_eq!(r.reason, TerminalReason::Idle);
         assert_eq!(
             vmm.report_stream(),
             [0x1111_1111, 0x0000_0000, 0xDEAD_BEEF, 0x0000_0001]
@@ -6472,7 +6481,7 @@ mod tests {
     fn expected_draw_matches_completion_for_each_width() {
         for width in [2u8, 4, 8] {
             let mut vmm = vtime_vmm(
-                vec![Exit::Rdrand { width }, Exit::Hlt],
+                vec![Exit::Rdrand { width }, Exit::Idle],
                 Box::new(ScriptedWork::new()),
                 0xFEED,
             );
@@ -6507,7 +6516,7 @@ mod tests {
         }
         let reads = Rc::new(Cell::new(0u32));
         let mut vmm = Vmm::new(
-            configured_mock(vec![Exit::Rdtsc, Exit::Hlt]),
+            configured_mock(vec![Exit::Rdtsc, Exit::Idle]),
             GuestRam::new(0x1000).unwrap(),
         );
         vmm.wire_vtime(
@@ -6571,7 +6580,7 @@ mod tests {
         }
         let run_with_skid = |skid: u64| {
             let mut vmm = Vmm::new(
-                configured_mock(vec![Exit::Rdtsc, Exit::Hlt]),
+                configured_mock(vec![Exit::Rdtsc, Exit::Idle]),
                 GuestRam::new(0x1000).unwrap(),
             );
             vmm.wire_vtime(
@@ -6707,11 +6716,11 @@ mod tests {
                 size: 4,
                 write: Some(0),
             }, // EOI store
-            Exit::Hlt,
+            Exit::Idle,
         ]);
         assert!(v.lapic_wired());
         let r = v.run().expect("run");
-        assert_eq!(r.reason, TerminalReason::Hlt);
+        assert_eq!(r.reason, TerminalReason::Idle);
         assert_eq!(
             v.backend.completions(),
             &[Completion::Read(u64::from(lapic::APIC_VERSION_VALUE))]
@@ -6757,7 +6766,7 @@ mod tests {
                 size: 4,
                 write: None,
             },
-            Exit::Hlt,
+            Exit::Idle,
         ]);
         v.run().expect("run");
         assert_eq!(v.backend.completions(), &[Completion::Read(0xFFFF_FFFF)]);
@@ -6822,7 +6831,7 @@ mod tests {
                 size: 1,
                 write: Some(u32::from(b'i')),
             },
-            Exit::Hlt,
+            Exit::Idle,
         ]);
         v.run().expect("run");
         assert_eq!(v.serial(), b"Hi");
@@ -6871,7 +6880,7 @@ mod tests {
                     size: 4,
                     write: None,
                 }, // read TMCCT at now=W
-                Exit::Hlt,
+                Exit::Idle,
             ]),
             GuestRam::new(0x1000).unwrap(),
         );
@@ -6982,7 +6991,7 @@ mod tests {
         exits.push(read_mmio(isr_gpa(0x40))); // A: anchor still 0 → not delivered
         exits.push(Exit::Rdtsc); // V-time intercept → last_intercept_work = W
         exits.push(read_mmio(isr_gpa(0x40))); // B: anchor = W → delivered
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         let mut v = lapic_vmm(configured_mock(exits), Box::new(ScriptedWork::at(W)));
 
         v.run().expect("run");
@@ -7010,7 +7019,7 @@ mod tests {
         let mut exits = arm_timer_exits(1000);
         exits.push(read_mmio(isr_gpa(0x40))); // A: live work still 0 → not delivered
         exits.push(read_mmio(isr_gpa(0x40))); // B: after bumping live work → delivered
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         let mut v = lapic_vmm(configured_stock_mock(exits), work);
 
         // Steps 1-3 program the timer (live work 0). Step 4 reads ISR (A): not fired.
@@ -7022,7 +7031,7 @@ mod tests {
         assert!(matches!(v.step().unwrap(), Step::Continued)); // ISR read (B)
         assert!(matches!(
             v.step().unwrap(),
-            Step::Terminal(TerminalReason::Hlt)
+            Step::Terminal(TerminalReason::Idle)
         ));
         let reads = read_completions(&v);
         assert_eq!(
@@ -7050,7 +7059,7 @@ mod tests {
         // (= work_for_vns(timer deadline)); the literal here is a placeholder.
         exits.push(Exit::Deadline { reached: Moment(0) });
         exits.push(read_mmio(isr_gpa(0x40))); // after delivery: vector 0x40 in service
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         // Default (deterministic) caps so `preemption_deadline` engages; the
         // ScriptedWork value is irrelevant (the clock reads the intercept anchor).
         let mut v = lapic_vmm(configured_mock(exits), Box::new(ScriptedWork::at(0)));
@@ -7087,7 +7096,7 @@ mod tests {
         // class). Both restore primitives clear it.
         // A fresh V-time-wired VM is at a synchronized, snapshottable point with no
         // staged completion — so both `save_vtime` and `save_vm_state` succeed.
-        let mut v = vtime_vmm(vec![Exit::Hlt], Box::new(ScriptedWork::at(100)), 1);
+        let mut v = vtime_vmm(vec![Exit::Idle], Box::new(ScriptedWork::at(100)), 1);
         let snap = v.save_vtime().unwrap().expect("v-time wired");
         let vm_state = v.save_vm_state().unwrap();
 
@@ -7131,7 +7140,7 @@ mod tests {
         let mut exits = arm_timer_exits(1000);
         exits.push(Exit::Rdrand { width: 8 }); // stages a completion (RNG: both guards)
         exits.push(Exit::Deadline { reached: Moment(0) }); // mock rewrites reached := deadline
-        exits.push(Exit::Hlt); // a real entry that commits the staged completion
+        exits.push(Exit::Idle); // a real entry that commits the staged completion
         let mut v = lapic_vmm(configured_mock(exits), work);
 
         for _ in 0..3 {
@@ -7166,7 +7175,7 @@ mod tests {
         // A real entry (HLT) now commits the staged completion; the guards update.
         assert!(matches!(
             v.step().expect("real entry commits the staged completion"),
-            Step::Terminal(TerminalReason::Hlt)
+            Step::Terminal(TerminalReason::Idle)
         ));
         assert!(
             !v.completion_staged && !v.rng_completion_staged,
@@ -7194,7 +7203,7 @@ mod tests {
         // box-tested in `live_preemption.rs`, since the mock has no run_until PMU.)
         let starts = std::rc::Rc::new(Cell::new(0u32));
         let mut v = Vmm::new(
-            configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Hlt]),
+            configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Idle]),
             GuestRam::new(0x1000).unwrap(),
         );
         v.wire_vtime(
@@ -7235,7 +7244,7 @@ mod tests {
     fn restore_vtime_failure_leaves_counter_a_not_rearmed() {
         let starts = std::rc::Rc::new(Cell::new(0u32));
         let mut v = Vmm::new(
-            SaveFailBackend(configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Hlt])),
+            SaveFailBackend(configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Idle])),
             GuestRam::new(0x1000).unwrap(),
         );
         v.wire_vtime(
@@ -7282,7 +7291,7 @@ mod tests {
         exits.push(Exit::Rdtsc); // advance anchor → timer fires next service (peek 0x40)
         exits.push(tpr_write); // guest raises TPR while 0x40 waits on the window
         exits.push(read_mmio(irr_gpa(0x40))); // 0x40 still pending in IRR
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true); // hold 0x40 un-accepted across the TPR raise
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
@@ -7298,7 +7307,7 @@ mod tests {
         assert!(matches!(v.step().unwrap(), Step::Continued)); // IRR read
         assert!(matches!(
             v.step().unwrap(),
-            Step::Terminal(TerminalReason::Hlt)
+            Step::Terminal(TerminalReason::Idle)
         ));
         assert_eq!(
             v.backend.pending_irq(),
@@ -7324,13 +7333,13 @@ mod tests {
         // it never calls `set_pending_irq`, so those paths' behavior and hash are
         // untouched.
         let mut v = Vmm::new(
-            configured_mock(vec![Exit::Hlt]),
+            configured_mock(vec![Exit::Idle]),
             GuestRam::new(0x1000).unwrap(),
         );
         assert!(!v.lapic_wired());
         assert!(matches!(
             v.step().unwrap(),
-            Step::Terminal(TerminalReason::Hlt)
+            Step::Terminal(TerminalReason::Idle)
         ));
         assert!(
             v.backend.injected().is_empty(),
@@ -7364,7 +7373,7 @@ mod tests {
         // enables IER.THRI; the VMM then injects the COM1 vector (0x34) so the
         // kernel's IRQ-4 handler can drain the TX. Deterministic (edge-driven by the
         // IER write, no V-time), so it works on the deterministic backend at work 0.
-        let mut mock = configured_mock(vec![UNMASK_IRQ4, ENABLE_THRI, Exit::Hlt]);
+        let mut mock = configured_mock(vec![UNMASK_IRQ4, ENABLE_THRI, Exit::Idle]);
         mock.set_defer_accept(true); // hold the injection so the pending slot is observable
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
 
@@ -7380,7 +7389,7 @@ mod tests {
         // Step 3: service sees THRE asserted + IRQ 4 unmasked → injects 0x34.
         assert!(matches!(
             v.step().unwrap(),
-            Step::Terminal(TerminalReason::Hlt)
+            Step::Terminal(TerminalReason::Idle)
         ));
         assert_eq!(
             v.backend.pending_irq(),
@@ -7395,13 +7404,13 @@ mod tests {
         // THRE enabled but IRQ 4 still masked in the 8259 (reset IMR = all-masked):
         // no injection — the VMM honors the PIC mask (e.g. while the kernel's handler
         // runs with the line masked), so a masked line is never re-injected.
-        let mut mock = configured_mock(vec![ENABLE_THRI, Exit::Hlt]);
+        let mut mock = configured_mock(vec![ENABLE_THRI, Exit::Idle]);
         mock.set_defer_accept(true);
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
         assert!(matches!(v.step().unwrap(), Step::Continued)); // IER = THRI
         assert!(matches!(
             v.step().unwrap(),
-            Step::Terminal(TerminalReason::Hlt)
+            Step::Terminal(TerminalReason::Idle)
         ));
         assert_eq!(
             v.backend.pending_irq(),
@@ -7420,7 +7429,7 @@ mod tests {
         exits.push(UNMASK_IRQ4);
         exits.push(ENABLE_THRI);
         exits.push(Exit::Rdtsc); // advance the anchor → the timer fires into IRR
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true);
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
@@ -7439,7 +7448,7 @@ mod tests {
         // 0x34 after acceptance to confirm it is clear.
         let mut exits = vec![UNMASK_IRQ4, ENABLE_THRI];
         exits.push(read_mmio(isr_gpa(COM1_IRQ_VECTOR))); // accepted before this exit
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         // Default mock accepts at run (not deferred).
         let mut v = lapic_vmm(configured_mock(exits), Box::new(ScriptedWork::at(0)));
         v.run().expect("run");
@@ -7504,7 +7513,7 @@ mod tests {
         exits.push(Exit::Rdtsc); // advance the anchor so the timer fires next service
         exits.push(read_mmio(irr_gpa(0x40))); // IRR bank for vec 0x40
         exits.push(read_mmio(isr_gpa(0x40))); // ISR bank for vec 0x40
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true); // never accept → vector stays pending
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
@@ -7541,7 +7550,7 @@ mod tests {
         exits.push(Exit::Rdtsc);
         exits.push(read_mmio(irr_gpa(0x40)));
         exits.push(read_mmio(isr_gpa(0x40)));
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         // Default mock accepts at run (not deferred).
         let mut v = lapic_vmm(configured_mock(exits), Box::new(ScriptedWork::at(W)));
 
@@ -7576,7 +7585,7 @@ mod tests {
         }
         // Stock caps so `lapic_now_vns` reads the live work counter (the failing one).
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         let mut v = lapic_vmm(configured_stock_mock(exits), Box::new(FailingWork));
 
         // The first step's `service_pending_irqs` reads the work counter → error.
@@ -7615,9 +7624,9 @@ mod tests {
         // at anchor 0) and fabricates ZERO retired branches AND does NOT read the live
         // (skid-tainted) HLT work counter.
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Hlt); // the guest idles, waiting for the timer
+        exits.push(Exit::Idle); // the guest idles, waiting for the timer
         exits.push(read_mmio(isr_gpa(0x40))); // after delivery: 0x40 in service
-        exits.push(Exit::Hlt); // one-shot fired → no timer armed → terminal
+        exits.push(Exit::Idle); // one-shot fired → no timer armed → terminal
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
@@ -7667,7 +7676,7 @@ mod tests {
         // The final HLT (one-shot already fired → no armed timer) is terminal.
         assert!(matches!(
             v.step().unwrap(),
-            Step::Terminal(TerminalReason::Hlt)
+            Step::Terminal(TerminalReason::Idle)
         ));
     }
 
@@ -7678,7 +7687,7 @@ mod tests {
         // fault applies there), NOT sail past it to the timer. The idle jump routes
         // through the same min-fold as `run_until_deadline`.
         let mut exits = arm_timer_exits(1_000_000); // a FAR one-shot timer deadline
-        exits.push(Exit::Hlt); // the guest idles before the arrival
+        exits.push(Exit::Idle); // the guest idles before the arrival
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
@@ -7715,7 +7724,7 @@ mod tests {
         // declared terminal.
         let mut v = lapic_vmm(
             {
-                let mut m = configured_mock(vec![Exit::Hlt]);
+                let mut m = configured_mock(vec![Exit::Idle]);
                 m.set_state(if_set_state());
                 m
             },
@@ -7741,7 +7750,7 @@ mod tests {
         // A V-time-wired guest with NO LAPIC that idles (HLT, IF=1) before a staged
         // `Moment` must still wake at the arrival to apply it — otherwise it goes
         // Terminal and silently never applies an accepted perturb.
-        let mut mock = configured_mock(vec![Exit::Hlt]);
+        let mut mock = configured_mock(vec![Exit::Idle]);
         mock.set_state(if_set_state());
         let mut v = Vmm::new(mock, GuestRam::new(0x1000).unwrap());
         v.wire_vtime(
@@ -7764,11 +7773,11 @@ mod tests {
         // IF==0 (the kernel's final `cli; hlt`): terminal even with a timer armed
         // — a wait nothing will satisfy. The byte-identical existing behavior.
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         // Default mock state: rflags == 0 (IF clear).
         let mut v = lapic_vmm(configured_mock(exits), Box::new(ScriptedWork::at(1000)));
         let r = v.run().expect("run");
-        assert_eq!(r.reason, TerminalReason::Hlt);
+        assert_eq!(r.reason, TerminalReason::Idle);
         assert!(
             v.idle_landings().is_empty(),
             "an IF==0 HLT is terminal, never resumed"
@@ -7779,11 +7788,11 @@ mod tests {
     fn hlt_without_armed_timer_is_terminal_even_with_if() {
         // IF==1 but no timer armed (LAPIC wired, never programmed): terminal. The
         // no-timer gate short-circuits before the RFLAGS read.
-        let mut mock = configured_mock(vec![Exit::Hlt]);
+        let mut mock = configured_mock(vec![Exit::Idle]);
         mock.set_state(if_set_state());
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
         let r = v.run().expect("run");
-        assert_eq!(r.reason, TerminalReason::Hlt);
+        assert_eq!(r.reason, TerminalReason::Idle);
         assert!(v.idle_landings().is_empty(), "no armed timer ⇒ terminal");
     }
 
@@ -7793,12 +7802,12 @@ mod tests {
         // IF==1 and a timer armed — the determinism gate (deterministic_tsc)
         // returns no deadline, so the HLT stays terminal (Phase B.1 unchanged).
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         let mut mock = configured_stock_mock(exits);
         mock.set_state(if_set_state());
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
         let r = v.run().expect("run");
-        assert_eq!(r.reason, TerminalReason::Hlt);
+        assert_eq!(r.reason, TerminalReason::Idle);
         assert!(
             v.idle_landings().is_empty(),
             "a non-deterministic backend never idle-resumes"
@@ -7847,14 +7856,14 @@ mod tests {
         };
         let undeliverable_timer_hlt_terminates = |setup: Vec<Exit>| {
             let mut exits = setup;
-            exits.push(Exit::Hlt);
+            exits.push(Exit::Idle);
             let mut mock = configured_mock(exits);
             mock.set_state(if_set_state());
             let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
             let r = v.run().expect("run");
             assert_eq!(
                 r.reason,
-                TerminalReason::Hlt,
+                TerminalReason::Idle,
                 "an armed-but-undeliverable timer HLT is terminal"
             );
             assert!(
@@ -7886,7 +7895,7 @@ mod tests {
         // a save error must fail closed (VmmError::Backend), never guess the
         // disposition (which would risk a wrong terminate/resume).
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Hlt);
+        exits.push(Exit::Idle);
         let mut inner = configured_mock(exits);
         inner.set_state(if_set_state()); // irrelevant — save() fails before the read
         let mut v = Vmm::new(SaveFailBackend(inner), GuestRam::new(0x1000).unwrap());
@@ -7935,9 +7944,9 @@ mod tests {
             w(u64::from(lapic::APIC_SVR), 0x1FF),
             w(u64::from(lapic::APIC_LVT_TIMER), 0x40 | (1 << 17)), // periodic
             w(u64::from(lapic::APIC_TMICT), 1000),
-            Exit::Hlt,                        // idle #1
+            Exit::Idle,                       // idle #1
             w(u64::from(lapic::APIC_EOI), 0), // the timer ISR EOIs (retires 0x40 from ISR)
-            Exit::Hlt,                        // idle #2 (re-armed period; deliverable again)
+            Exit::Idle,                       // idle #2 (re-armed period; deliverable again)
         ];
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
@@ -7983,9 +7992,9 @@ mod tests {
         const W: u64 = 100_000_000; // past the timer deadline → the timer fires into IRR
         let mut exits = arm_timer_exits(1000); // one-shot, vector 0x40
         exits.push(Exit::Rdtsc); // advance the anchor past the deadline → timer fires into IRR
-        exits.push(Exit::Hlt); // sti; hlt with the fired vector still pending, no future timer
+        exits.push(Exit::Idle); // sti; hlt with the fired vector still pending, no future timer
         exits.push(read_mmio(isr_gpa(0x40))); // after delivery: 0x40 in service
-        exits.push(Exit::Hlt); // terminal (vector delivered, no timer armed)
+        exits.push(Exit::Idle); // terminal (vector delivered, no timer armed)
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
         mock.set_defer_accept(true); // hold the fired vector in the IRR across the HLT
@@ -7999,7 +8008,7 @@ mod tests {
         let vns_before = v.vtime.as_ref().unwrap().clock.snapshot_vns(W);
 
         // The HLT step: its service fires the one-shot into the IRR (anchor past the
-        // deadline → disarmed), then on_hlt sees a pending deliverable vector with NO
+        // deadline → disarmed), then on_idle sees a pending deliverable vector with NO
         // future deadline → DeliverPending. It must RESUME (not terminate).
         assert!(
             matches!(v.step().unwrap(), Step::Continued),
@@ -8033,7 +8042,7 @@ mod tests {
         );
         assert!(matches!(
             v.step().unwrap(),
-            Step::Terminal(TerminalReason::Hlt)
+            Step::Terminal(TerminalReason::Idle)
         ));
     }
 
@@ -8056,9 +8065,9 @@ mod tests {
             w(u64::from(lapic::APIC_SVR), 0x1FF),
             w(u64::from(lapic::APIC_LVT_TIMER), 0x40 | (1 << 17)), // periodic
             w(u64::from(lapic::APIC_TMICT), 1000),
-            Exit::Hlt, // idle #1 (with a STALE anchor + high live work)
+            Exit::Idle, // idle #1 (with a STALE anchor + high live work)
             w(u64::from(lapic::APIC_EOI), 0), // timer ISR EOIs
-            Exit::Hlt, // idle #2 (full period later)
+            Exit::Idle, // idle #2 (full period later)
         ];
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
@@ -8126,9 +8135,9 @@ mod tests {
             let work = Box::new(SharedWork(cell.clone()));
             let mut exits = arm_timer_exits(1000);
             exits.push(Exit::Rdtsc); // intercept → skid-free anchor (identical both runs)
-            exits.push(Exit::Hlt); // idle: the live work read here is skid-tainted
+            exits.push(Exit::Idle); // idle: the live work read here is skid-tainted
             exits.push(Exit::Rdtsc); // W_next intercept — where a folded skid would surface
-            exits.push(Exit::Hlt); // terminal (one-shot already fired)
+            exits.push(Exit::Idle); // terminal (one-shot already fired)
             let mut mock = configured_mock(exits);
             mock.set_state(if_set_state());
             let mut v = lapic_vmm(mock, work);
@@ -8147,7 +8156,7 @@ mod tests {
                     break r;
                 }
             };
-            assert_eq!(reason, TerminalReason::Hlt);
+            assert_eq!(reason, TerminalReason::Idle);
             v.state_hash()
         }
 
@@ -8463,11 +8472,11 @@ mod tests {
         bad.vtime.ratio_den = 2;
         reject(&bad, "ratio_den");
         let mut bad = s.clone();
-        bad.vtime.tsc_hz += 1;
-        reject(&bad, "tsc_hz");
+        bad.vtime.guest_hz += 1;
+        reject(&bad, "guest_hz");
         let mut bad = s.clone();
-        bad.vtime.tsc_base += 1;
-        reject(&bad, "tsc_base");
+        bad.vtime.guest_base += 1;
+        reject(&bad, "guest_base");
     }
 
     #[test]
@@ -8478,18 +8487,18 @@ mod tests {
     fn restore_into_unwired_vm_rejects_a_vtime_bearing_blob() {
         // A V-time-wired (no-LAPIC) source yields a blob carrying a live V-time
         // block; restoring it into a VM with no V-time wired is refused (wiring must
-        // match the snapshot source). Both the tsc_hz and the snapshot_vns disjuncts
+        // match the snapshot source). Both the guest_hz and the snapshot_vns disjuncts
         // are pinned individually.
         let mut a = vtime_vmm(vec![Exit::Rdtsc], Box::new(ScriptedWork::at(5)), 1);
         a.step().unwrap();
         let s = a.save_vm_state().unwrap();
         assert!(
-            s.vtime.tsc_hz != 0,
+            s.vtime.guest_hz != 0,
             "source blob carries a live V-time block"
         );
 
         let mut only_hz = s.clone();
-        only_hz.vtime.snapshot_vns = 0; // tsc_hz still nonzero
+        only_hz.vtime.snapshot_vns = 0; // guest_hz still nonzero
         let mut stock1 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         assert!(matches!(
             stock1.restore_vm_state(&only_hz),
@@ -8497,7 +8506,7 @@ mod tests {
         ));
 
         let mut only_vns = s.clone();
-        only_vns.vtime.tsc_hz = 0;
+        only_vns.vtime.guest_hz = 0;
         only_vns.vtime.snapshot_vns = 7;
         let mut stock2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         assert!(matches!(
@@ -9019,7 +9028,7 @@ mod tests {
         const W: u64 = 100_000_000;
         // Quiescent: a wired LAPIC with no timer programmed → nothing pending in the IRR.
         let mut q = lapic_vmm(
-            configured_mock(vec![Exit::Rdtsc, Exit::Hlt]),
+            configured_mock(vec![Exit::Rdtsc, Exit::Idle]),
             Box::new(ScriptedWork::at(W)),
         );
         q.step().unwrap();
@@ -9082,7 +9091,7 @@ mod tests {
 
         // Restore into a fresh, equivalently-wired VM and take one step: its first
         // service must re-derive the SAME pending vector from the restored IRR.
-        let mut bmock = configured_mock(vec![Exit::Rdtsc, Exit::Hlt]);
+        let mut bmock = configured_mock(vec![Exit::Rdtsc, Exit::Idle]);
         bmock.set_defer_accept(true);
         let mut b = lapic_vmm(bmock, Box::new(ScriptedWork::at(W)));
         b.restore_vm_state(&s)

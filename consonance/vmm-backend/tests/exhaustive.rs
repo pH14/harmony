@@ -4,7 +4,7 @@
 //! `ExitCounts::entries()` covers every `ExitReason` exactly once. Portable; no
 //! mock needed.
 
-use vmm_backend::{Exit, ExitCounts, ExitReason, Gpa, HypercallRegs, Moment};
+use vmm_backend::{Exit, ExitCounts, ExitReason, Gpa, HypercallFrame, Moment};
 
 /// Classify every `Exit` with a wildcard-free `match`. If a variant is ever added
 /// without updating this arm, the crate stops compiling — that is the gate.
@@ -20,7 +20,7 @@ fn classify(exit: &Exit) -> ExitReason {
         Exit::Rdtscp => ExitReason::Rdtscp,
         Exit::Rdrand { .. } => ExitReason::Rdrand,
         Exit::Rdseed { .. } => ExitReason::Rdseed,
-        Exit::Hlt => ExitReason::Hlt,
+        Exit::Idle => ExitReason::Idle,
         Exit::Shutdown => ExitReason::Shutdown,
         Exit::Deadline { .. } => ExitReason::Deadline,
     }
@@ -44,7 +44,7 @@ fn one_of_each() -> [Exit; 13] {
             index: 0x6E0,
             value: 0,
         },
-        Exit::Hypercall(HypercallRegs::default()),
+        Exit::Hypercall(HypercallFrame::default()),
         Exit::Cpuid {
             leaf: 1,
             subleaf: 0,
@@ -53,7 +53,7 @@ fn one_of_each() -> [Exit; 13] {
         Exit::Rdtscp,
         Exit::Rdrand { width: 8 },
         Exit::Rdseed { width: 8 },
-        Exit::Hlt,
+        Exit::Idle,
         Exit::Shutdown,
         Exit::Deadline { reached: Moment(0) },
     ]

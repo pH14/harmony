@@ -481,7 +481,7 @@ mod tests {
             Exit::Rdtsc,
             Exit::Rdseed { width: 8 },
             Exit::Rdtsc,
-            Exit::Hlt,
+            Exit::Idle,
         ]
     }
 

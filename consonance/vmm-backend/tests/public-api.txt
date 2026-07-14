@@ -28,8 +28,8 @@ pub vmm_backend::Exit::Cpuid::leaf: u32
 pub vmm_backend::Exit::Cpuid::subleaf: u32
 pub vmm_backend::Exit::Deadline
 pub vmm_backend::Exit::Deadline::reached: vmm_backend::Moment
-pub vmm_backend::Exit::Hlt
-pub vmm_backend::Exit::Hypercall(vmm_backend::HypercallRegs)
+pub vmm_backend::Exit::Hypercall(vmm_backend::HypercallFrame)
+pub vmm_backend::Exit::Idle
 pub vmm_backend::Exit::Io
 pub vmm_backend::Exit::Io::port: u16
 pub vmm_backend::Exit::Io::size: u8
@@ -55,8 +55,8 @@ pub fn vmm_backend::Exit::reason(&self) -> vmm_backend::ExitReason
 pub enum vmm_backend::ExitReason
 pub vmm_backend::ExitReason::Cpuid
 pub vmm_backend::ExitReason::Deadline
-pub vmm_backend::ExitReason::Hlt
 pub vmm_backend::ExitReason::Hypercall
+pub vmm_backend::ExitReason::Idle
 pub vmm_backend::ExitReason::Io
 pub vmm_backend::ExitReason::Mmio
 pub vmm_backend::ExitReason::Rdmsr
@@ -99,8 +99,8 @@ pub vmm_backend::DescriptorTable::limit: u16
 pub struct vmm_backend::ExitCounts
 pub vmm_backend::ExitCounts::cpuid: u64
 pub vmm_backend::ExitCounts::deadline: u64
-pub vmm_backend::ExitCounts::hlt: u64
 pub vmm_backend::ExitCounts::hypercall: u64
+pub vmm_backend::ExitCounts::idle: u64
 pub vmm_backend::ExitCounts::io: u64
 pub vmm_backend::ExitCounts::mmio: u64
 pub vmm_backend::ExitCounts::rdmsr: u64
@@ -114,11 +114,8 @@ impl vmm_backend::ExitCounts
 pub fn vmm_backend::ExitCounts::entries(&self) -> [(vmm_backend::ExitReason, u64); 13]
 pub fn vmm_backend::ExitCounts::total(&self) -> u64
 #[repr(transparent)] pub struct vmm_backend::Gpa(pub u64)
-pub struct vmm_backend::HypercallRegs
-pub vmm_backend::HypercallRegs::rax: u64
-pub vmm_backend::HypercallRegs::rbx: u64
-pub vmm_backend::HypercallRegs::rcx: u64
-pub vmm_backend::HypercallRegs::rdx: u64
+pub struct vmm_backend::HypercallFrame
+pub vmm_backend::HypercallFrame::args: [u64; 4]
 pub struct vmm_backend::KvmBackend
 impl vmm_backend::KvmBackend
 pub fn vmm_backend::KvmBackend::new() -> vmm_backend::Result<vmm_backend::KvmBackend>

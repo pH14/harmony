@@ -111,7 +111,7 @@ pub environment::HostFault::CorruptMemory
 pub environment::HostFault::CorruptMemory::gpa: u64
 pub environment::HostFault::CorruptMemory::mask: environment::BitMask
 pub environment::HostFault::InjectInterrupt
-pub environment::HostFault::InjectInterrupt::vector: u8
+pub environment::HostFault::InjectInterrupt::vector: u32
 pub environment::HostFault::SetClockRate(environment::Ratio)
 pub environment::HostFault::SkewTime(environment::Span)
 impl environment::HostFault

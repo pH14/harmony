@@ -171,9 +171,11 @@ pub trait Backend {
     /// is not a `Wrmsr`.
     fn complete_ok(&mut self) -> Result<()>;
 
-    /// Set guest `RAX` (the response-frame length per INTEGRATION.md §1, or 0 on
-    /// transport error) for a pending `Hypercall`. Errors if none pending.
-    fn complete_hypercall(&mut self, rax: u64) -> Result<()>;
+    /// Set the hypercall return slot (the response-frame length per
+    /// INTEGRATION.md §1, or 0 on transport error) for a pending `Hypercall`.
+    /// Which guest register carries the return is the backend's per-arch
+    /// knowledge (x86: `RAX`). Errors if none pending.
+    fn complete_hypercall(&mut self, ret: u64) -> Result<()>;
 
     /// Supply the four result registers `(eax, ebx, ecx, edx)` for a pending
     /// `Exit::Cpuid`. Stock `KvmBackend` never surfaces `Cpuid` (it answers
@@ -269,8 +271,8 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         (**self).complete_ok()
     }
 
-    fn complete_hypercall(&mut self, rax: u64) -> Result<()> {
-        (**self).complete_hypercall(rax)
+    fn complete_hypercall(&mut self, ret: u64) -> Result<()> {
+        (**self).complete_hypercall(ret)
     }
 
     fn complete_cpuid(&mut self, eax: u32, ebx: u32, ecx: u32, edx: u32) -> Result<()> {

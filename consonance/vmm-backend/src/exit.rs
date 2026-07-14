@@ -17,7 +17,7 @@ use crate::types::{Gpa, Moment};
 /// `Hypercall`, and `Cpuid` stay **pending** until the matching completion is
 /// called; resuming `run` with one un-serviced is
 /// [`BackendError::PendingCompletion`](crate::BackendError::PendingCompletion).
-/// Only `Io` OUT, `Mmio` store, `Hlt`, `Shutdown`, and `Deadline` need no
+/// Only `Io` OUT, `Mmio` store, `Idle`, `Shutdown`, and `Deadline` need no
 /// completion.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Exit {
@@ -57,10 +57,10 @@ pub enum Exit {
         /// The value the guest wrote.
         value: u64,
     },
-    /// VMCALL transport (INTEGRATION.md §1) → `complete_hypercall(rax)`. **Not
+    /// VMCALL transport (INTEGRATION.md §1) → `complete_hypercall(ret)`. **Not
     /// surfaced by stock `KvmBackend`** (stock KVM services VMCALL in-kernel); it
     /// exists for `PatchedKvmBackend`/`DirectVmxBackend`.
-    Hypercall(HypercallRegs),
+    Hypercall(HypercallFrame),
     /// CPUID → `complete_cpuid(eax, ebx, ecx, edx)`. **Stock `KvmBackend`
     /// services CPUID in-kernel from the `set_cpuid` table and does not surface
     /// this**; a backend that does is completed with the dyn-overlaid quad.
@@ -85,9 +85,9 @@ pub enum Exit {
         /// Destination width in bytes (2/4/8).
         width: u8,
     },
-    /// `KVM_EXIT_HLT`. Idle-skip (INTEGRATION.md §3) or terminal; vmm-core
-    /// decides. No completion.
-    Hlt,
+    /// The guest went idle waiting for an event (`KVM_EXIT_HLT`). Idle-skip
+    /// (INTEGRATION.md §3) or terminal; vmm-core decides. No completion.
+    Idle,
     /// `KVM_EXIT_SHUTDOWN` (triple fault / guest shutdown). Terminal. No
     /// completion.
     Shutdown,
@@ -115,7 +115,7 @@ impl Exit {
             Exit::Rdtscp => ExitReason::Rdtscp,
             Exit::Rdrand { .. } => ExitReason::Rdrand,
             Exit::Rdseed { .. } => ExitReason::Rdseed,
-            Exit::Hlt => ExitReason::Hlt,
+            Exit::Idle => ExitReason::Idle,
             Exit::Shutdown => ExitReason::Shutdown,
             Exit::Deadline { .. } => ExitReason::Deadline,
         }
@@ -136,19 +136,15 @@ pub enum Injection {
     Nmi,
 }
 
-/// The VMCALL transport register frame (INTEGRATION.md §1): `RAX` = magic
-/// `0x3150_4348`, `RBX` = request-page GPA, `RCX` = response-page GPA. `RDX` is
-/// carried for forward compatibility.
+/// The hypercall argument frame (INTEGRATION.md §1): four guest argument slots
+/// in transport-ABI order — `args[0]` = the transport magic `0x3150_4348`,
+/// `args[1]` = request-page GPA, `args[2]` = response-page GPA, `args[3]` is
+/// reserved/forward-compat. Which guest registers carry the slots is the
+/// backend's per-arch knowledge (x86: `RAX`, `RBX`, `RCX`, `RDX`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct HypercallRegs {
-    /// `RAX` — the transport magic on entry.
-    pub rax: u64,
-    /// `RBX` — request-page GPA.
-    pub rbx: u64,
-    /// `RCX` — response-page GPA.
-    pub rcx: u64,
-    /// `RDX` — reserved/forward-compat.
-    pub rdx: u64,
+pub struct HypercallFrame {
+    /// The four argument slots, in transport-ABI order.
+    pub args: [u64; 4],
 }
 
 /// What this backend can honestly provide. The unison report reads this to
@@ -195,9 +191,9 @@ pub enum ExitReason {
     Rdrand,
     /// `RDSEED`.
     Rdseed,
-    /// `HLT`.
-    Hlt,
-    /// Shutdown / triple fault.
+    /// Idle halt.
+    Idle,
+    /// Shutdown / unrecoverable guest fault.
     Shutdown,
     /// `run_until` deadline reached.
     Deadline,
@@ -229,8 +225,8 @@ pub struct ExitCounts {
     pub rdrand: u64,
     /// `RDSEED` exits.
     pub rdseed: u64,
-    /// `HLT` exits.
-    pub hlt: u64,
+    /// Idle-halt exits.
+    pub idle: u64,
     /// Shutdown exits.
     pub shutdown: u64,
     /// `run_until` deadline exits.
@@ -262,7 +258,7 @@ impl ExitCounts {
             (ExitReason::Rdtscp, self.rdtscp),
             (ExitReason::Rdrand, self.rdrand),
             (ExitReason::Rdseed, self.rdseed),
-            (ExitReason::Hlt, self.hlt),
+            (ExitReason::Idle, self.idle),
             (ExitReason::Shutdown, self.shutdown),
             (ExitReason::Deadline, self.deadline),
         ]
@@ -287,7 +283,7 @@ impl ExitCounts {
             ExitReason::Rdtscp => &mut self.rdtscp,
             ExitReason::Rdrand => &mut self.rdrand,
             ExitReason::Rdseed => &mut self.rdseed,
-            ExitReason::Hlt => &mut self.hlt,
+            ExitReason::Idle => &mut self.idle,
             ExitReason::Shutdown => &mut self.shutdown,
             ExitReason::Deadline => &mut self.deadline,
         };
