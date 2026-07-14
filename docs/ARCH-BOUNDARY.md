@@ -3,7 +3,37 @@
 Status: **design ruling (2026-07-03); vendor programs ruled 2026-07-12/13** (`docs/ARM-ALTRA.md`,
 `docs/AMD-EPYC.md` — the reserved engine/vendor split names activate with the ARM window);
 **pre-build ruled 2026-07-13** (§Pre-build ruling below — building no longer waits for spike
-GO; trust still does). Supersedes the codebase survey in `docs/ARM-PORT.md`
+GO; trust still does). **§Sequencing steps 1–4 LANDED 2026-07-14** (`tasks/108`, `hm-b5n`):
+the C-list neutralizations, the x86 value-type extraction, the keystone (`Arch` trait +
+generic `Backend` + the engine/vendor module split in `vmm-core`, x86 the sole vendor), and
+`vm-state`'s arch-tagged records (`VM_STATE_VERSION` 2). The seam is now
+**compiler-enforced**: the engine names no vendor device, register, exit, loader, or error
+— not in any signature, field, or error variant — and each vendor's exit enum is
+exhaustively matched by its own dispatch. The concrete `(Backend impl, Arch vendor)` pair
+is named only in a vendor's own composition root (`vendor::x86::bringup`), never in the
+engine. **The additive property is itself gated**: CI cross-checks the workspace for
+`aarch64-unknown-linux-gnu`, where the x86 KVM substrate is `cfg`'d out — so an x86 leak
+into the engine fails CI rather than surfacing on the day the ARM backend starts.
+
+**One stated exception, ruled and deferred (2026-07-14, PR #109) — the snapshot-state
+seam.** `Vendor`'s three snapshot hooks (`build_vm_state` / `validate_restore` /
+`commit_restore`) are typed against the concrete `vm_state::VmState`, whose register
+records are x86-64's. A second vendor therefore **cannot** implement them without a trait
+change (an associated `type Snapshot`, or a vendor-parameterized `VmState`). So the
+additive-sibling promise above is exact for exit dispatch, devices, the interrupt fabric,
+policy, boot, and errors — and **carries this one boundary** for snapshot state. It is
+deferred deliberately: the trait is *designed, not frozen* (AA-3 owns the freeze; the
+pre-build ruling accepts rework), the ARM record set is **AA-6's measured decision** rather
+than something to guess at now, and step 4's arch tag already makes the *format*
+extensible (`VM_STATE_VERSION` 2 + `ARCH_X86_64`; a foreign record set is rejected loudly
+as `UnsupportedArch`, never reinterpreted). The CI arch gate **cannot** catch this class —
+no vendor exists on the aarch64 leg to instantiate the trait — so the structural check is
+the ARM skeleton itself (`hm-cbt`), the first real second implementor. (A stub "dummy
+vendor" purely to force the check was considered and rejected as redundant: `hm-cbt`
+supplies a real one.) **The D-list and the trait
+freeze are unchanged** — the trait is *designed, not frozen*; AA-3's trait-freeze memo (the
+ARM spike) still owns the freeze, and §D stays additive-and-spike-trusted. Supersedes the
+codebase survey in `docs/ARM-PORT.md`
 ("What a port costs, by component" and its "no arch seam exists yet" premise), which predates
 Wave 4/5 and undercounts the tree by most of `vmm-core`, `vmm-backend`, `lapic`, `vm-state`,
 and all seven dissonance crates. ARM-PORT.md's **hardware facts and its viability gate stand
@@ -195,6 +225,18 @@ generic-timer models; the ARM CPU-contract document (the x86 one is the template
 not content); `Image`/DTB loader; arm64 payload runtime (boot shim, exception vectors, PL011,
 GIC init) + new contract payloads + regenerated goldens; the 0004-analogue kernel patch;
 re-measured `skid_margin` / `SimCpu` parameters; arm64 kernel-config audit + `kata/arm64`.
+
+**"Zero edits to the neutral spine" has one ruled exception (2026-07-14, PR #109): the
+snapshot-state seam.** `Vendor`'s snapshot hooks are typed against the concrete
+`vm_state::VmState` (x86 records), so `hm-cbt` — the ARM skeleton — **will** have to change
+that signature (an associated `type Snapshot`, or a vendor-parameterized `VmState`), and
+`vm-state` will gain an arm64 record set under a new arch tag. That trait rework is
+**accepted, not an escape hatch**: the trait is designed-not-frozen (AA-3 owns the freeze),
+the ARM state shape is **AA-6's measured** decision, and the v2 arch tag is the format's
+extension point (the container/version/tag machinery is already arch-neutral and rejects a
+foreign record set loudly). `hm-cbt` is also the *structural check* for the whole seam —
+being the first real second implementor, it is what proves the rest of `Vendor` is
+genuinely additive in a way no cross-compile gate can.
 
 ## Sequencing, cost, risks
 

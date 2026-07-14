@@ -14,9 +14,11 @@
 //!
 //! **Fail-fast, never skip:** on a host without `/dev/kvm`/VMX/Intel these panic
 //! with what is missing and where to run them, rather than silently passing.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use vmm_backend::{Backend, CpuidModel, Exit, Gpa, KvmBackend, MsrFilter, MsrRange};
+use vmm_backend::{
+    Backend, CommonExit, CpuidModel, Exit, Gpa, KvmBackend, MsrFilter, MsrRange, X86Exit, X86Policy,
+};
 
 /// One identity-mapped guest RAM region, page-aligned (the `map_memory` host
 /// alignment invariant), reached by the backend through a raw pointer.
@@ -70,17 +72,17 @@ fn new_backend_or_explain() -> KvmBackend {
 /// every other MSR (including the gate-8 probe) traps to userspace.
 fn configure(backend: &mut KvmBackend) {
     backend
-        .set_cpuid(&CpuidModel::default())
-        .expect("set_cpuid");
-    backend
-        .set_msr_filter(&MsrFilter {
-            // SYSENTER MSRs (0x174..0x177) — present, harmless, in-kernel.
-            allow_inkernel: vec![MsrRange {
-                base: 0x174,
-                count: 3,
-            }],
+        .set_policy(&X86Policy {
+            cpuid: CpuidModel::default(),
+            msr_filter: MsrFilter {
+                // SYSENTER MSRs (0x174..0x177) — present, harmless, in-kernel.
+                allow_inkernel: vec![MsrRange {
+                    base: 0x174,
+                    count: 3,
+                }],
+            },
         })
-        .expect("set_msr_filter");
+        .expect("set_policy");
 }
 
 /// Put the vCPU into flat real mode with `rip` at `entry` (linear == GPA, paging
@@ -110,18 +112,21 @@ fn bringup_smoke_out_then_hlt() {
     enter_real_mode_at(&mut backend, 0x1000);
 
     match backend.run().expect("run to OUT") {
-        Exit::Io {
+        Exit::Arch(X86Exit::Io {
             port: 0x3F8,
             size: 1,
             write: Some(v),
-        } => assert_eq!(v, 0x42),
+        }) => assert_eq!(v, 0x42),
         other => panic!("expected OUT to 0x3f8, got {other:?}"),
     }
-    assert_eq!(backend.run().expect("run to HLT"), Exit::Hlt);
+    assert_eq!(
+        backend.run().expect("run to HLT"),
+        Exit::Common(CommonExit::Idle)
+    );
 
     let counts = backend.exit_counts();
     assert_eq!(counts.io, 1, "exactly one IO exit");
-    assert_eq!(counts.hlt, 1, "exactly one HLT exit");
+    assert_eq!(counts.idle, 1, "exactly one HLT exit");
     assert_eq!(counts.total(), 2);
 }
 
@@ -165,7 +170,7 @@ fn msr_filter_is_loud() {
     //   mov ecx, 0x12345678   (66 b9 ..)   ; denied MSR index
     //   rdmsr                 (0f 32)
     //   mov al, 0x99          (b0 99)       ; only reached if rdmsr *silently allowed*
-    //   out 0x10, al          (e6 10)       ; -> Exit::Io (the silent-value path)
+    //   out 0x10, al          (e6 10)       ; -> X86Exit::Io (the silent-value path)
     //   hlt                   (f4)
     let code: &[u8] = &[
         0x66, 0xB9, 0x78, 0x56, 0x34, 0x12, 0x0F, 0x32, 0xB0, 0x99, 0xE6, 0x10, 0xF4,
@@ -193,17 +198,17 @@ fn msr_filter_is_loud() {
 
     // The denied RDMSR surfaces loudly to userspace, not a silent in-kernel value.
     match backend.run().expect("run to RDMSR") {
-        Exit::Rdmsr { index: 0x1234_5678 } => {}
+        Exit::Arch(X86Exit::Rdmsr { index: 0x1234_5678 }) => {}
         other => panic!("expected RDMSR exit for the denied index, got {other:?}"),
     }
     // Deny it (#GP). The fault vectors through IVT[13] to the HLT handler, so the
     // next exit is HLT — proving the guest took the fault. A silent in-kernel
     // value instead would have advanced past RDMSR into the `out 0x10` and
-    // surfaced Exit::Io, which would fail this assertion loudly.
+    // surfaced X86Exit::Io, which would fail this assertion loudly.
     backend.complete_fault().expect("complete_fault");
     match backend.run().expect("run after #GP") {
-        Exit::Hlt => {}
-        Exit::Io { port, .. } => {
+        Exit::Common(CommonExit::Idle) => {}
+        Exit::Arch(X86Exit::Io { port, .. }) => {
             panic!("RDMSR was silently allowed (reached out 0x{port:x}) — filter not loud")
         }
         other => panic!("expected HLT from the #GP handler, got {other:?}"),
@@ -217,10 +222,13 @@ fn capabilities_are_honest() {
     let backend = new_backend_or_explain();
     let caps = backend.capabilities();
     assert_eq!(caps.name, "kvm-stock");
-    assert!(!caps.deterministic_tsc, "stock KVM cannot trap RDTSC");
+    assert!(!caps.arch.deterministic_tsc, "stock KVM cannot trap RDTSC");
     assert!(
         !caps.deterministic_rng,
         "stock KVM cannot trap RDRAND/RDSEED"
     );
-    assert!(!caps.enforces_tsc_deadline_msr, "stock KVM swallows 0x6E0");
+    assert!(
+        !caps.arch.enforces_tsc_deadline_msr,
+        "stock KVM swallows 0x6E0"
+    );
 }

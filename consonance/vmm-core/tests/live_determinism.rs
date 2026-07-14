@@ -32,9 +32,9 @@
 //! panic (test FAILURE)**, never an early-return `Ok`. macOS builds an empty test
 //! binary; the determinism *logic* is covered there by the `MockBackend` +
 //! `ScriptedWork` unit tests in `src/vmm.rs`.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use vmm_core::bringup::{BackendKind, boot_selected};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_selected};
 use vmm_core::vmm::{Step, TerminalReason};
 
 /// Seed for the deterministic entropy stream RDRAND/RDSEED draw from.
@@ -177,7 +177,8 @@ fn expected_rng(seed: u64) -> (u32, u32) {
 /// Boot the patched backend over the payload, **panicking loudly** with a precise
 /// reason if the box is not ready (no patched `/dev/kvm`, no perf, non-baseline
 /// host) — never an early-return that nextest counts as a vacuous pass.
-fn boot_patched_or_panic() -> vmm_core::vmm::Vmm<Box<dyn vmm_backend::Backend>> {
+fn boot_patched_or_panic() -> vmm_core::vmm::Vmm<Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>>
+{
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the patched KVM \

@@ -22,3 +22,16 @@ pub struct Gpa(pub u64);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(transparent)]
 pub struct Moment(pub u64);
+
+/// Multiprocessor run state — runnable vs halted (`KVM_GET_MP_STATE` on KVM):
+/// a snapshot taken at an idle quiescent point must record the halt, or restore
+/// wrongly resumes a runnable vCPU (R1 Consequence 1). Arch-neutral: every
+/// vendor's vCPU is either runnable or waiting.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MpState {
+    /// `KVM_MP_STATE_RUNNABLE`.
+    #[default]
+    Runnable,
+    /// `KVM_MP_STATE_HALTED`.
+    Halted,
+}

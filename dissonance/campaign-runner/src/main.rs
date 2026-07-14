@@ -42,6 +42,37 @@ use clap::{Parser, Subcommand};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::{SpecEnvCodec, StreamId};
 use runtrace::{RetentionPolicy, TraceStore};
+use vmm_core::vendor::x86::bringup::BackendKind;
+
+/// Per-vendor box-boot configuration data (`docs/ARCH-BOUNDARY.md` §C): every
+/// box-mode default that names an ISA — the kernel image name the vendor's boot
+/// protocol uses, the determinism kernel command line, and the trap backend the
+/// determinism claim rides on. One constant per vendor; every box mode selects
+/// the x86-64 bundle today (the sole vendor).
+struct VendorBootConfig {
+    /// Kernel image filename under guest/build (or guest/linux).
+    kernel_image: &'static str,
+    /// The determinism kernel command line (identical to the branching demo).
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        allow(dead_code)
+    )]
+    cmdline: &'static str,
+    /// The trap backend the vendor's determinism claim rides on.
+    #[cfg_attr(
+        not(all(target_os = "linux", target_arch = "x86_64")),
+        allow(dead_code)
+    )]
+    backend: BackendKind,
+}
+
+/// The x86-64 vendor's box-boot bundle.
+const X86_64_BOOT: VendorBootConfig = VendorBootConfig {
+    kernel_image: "bzImage",
+    cmdline: "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 \
+              nokaslr nosmp maxcpus=1 nox2apic hpet=disable",
+    backend: BackendKind::Patched,
+};
 
 #[derive(Parser)]
 #[command(
@@ -115,8 +146,8 @@ struct BenchBoxArgs {
     /// for the box (see IMPLEMENTATION-task69-m2.md's runbook).
     #[arg(long)]
     calibration: Option<PathBuf>,
-    /// Kernel bzImage filename under guest/build (or guest/linux).
-    #[arg(long, default_value = "bzImage")]
+    /// Kernel image filename under guest/build (or guest/linux).
+    #[arg(long, default_value = X86_64_BOOT.kernel_image)]
     kernel: String,
     /// The bug's initramfs (default the fault-timing campaign image; override
     /// per bug, e.g. `initramfs-order.cpio.gz` / `initramfs-uuid.cpio.gz`).
@@ -220,8 +251,8 @@ struct GameBoxArgs {
     /// `--repeat 25`.
     #[arg(long, default_value_t = 1, value_parser = parse_positive_usize)]
     repeat: usize,
-    /// Kernel bzImage filename under guest/build (or guest/linux).
-    #[arg(long, default_value = "bzImage")]
+    /// Kernel image filename under guest/build (or guest/linux).
+    #[arg(long, default_value = X86_64_BOOT.kernel_image)]
     kernel: String,
     /// Initramfs filename — defaults to the task-86 game image.
     #[arg(long, default_value = "initramfs-game.cpio.gz")]
@@ -320,8 +351,8 @@ struct BoxArgs {
     /// Must be > 0: a zero-V-time branch runs no workload past the base.
     #[arg(long, default_value_t = 5_000_000_000, value_parser = parse_positive_u64)]
     deadline_delta: u64,
-    /// Kernel bzImage filename under guest/build (or guest/linux).
-    #[arg(long, default_value = "bzImage")]
+    /// Kernel image filename under guest/build (or guest/linux).
+    #[arg(long, default_value = X86_64_BOOT.kernel_image)]
     kernel: String,
     /// Initramfs filename under guest/build (or guest/linux). Defaults to the
     /// bare-Postgres image; point at `initramfs-docker.cpio.gz` to reuse the
@@ -381,8 +412,8 @@ struct CampaignBoxArgs {
     /// far deadline.
     #[arg(long, default_value_t = 1_000_000, value_parser = parse_u64_flexible)]
     window_hi: u64,
-    /// Kernel bzImage filename under guest/build (or guest/linux).
-    #[arg(long, default_value = "bzImage")]
+    /// Kernel image filename under guest/build (or guest/linux).
+    #[arg(long, default_value = X86_64_BOOT.kernel_image)]
     kernel: String,
     /// Initramfs filename — defaults to the planted-bug campaign image.
     #[arg(long, default_value = "initramfs-campaign.cpio.gz")]
@@ -477,12 +508,12 @@ fn main() -> ExitCode {
 
 /// Task 69 M2 box benchmark-campaign (GO/NO-GO #2). Linux-only; refuses loudly off
 /// Linux + patched KVM.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn run_benchcampaign_box(args: BenchBoxArgs) -> ExitCode {
     boxrun::run_bench_campaign_box(args)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 fn run_benchcampaign_box(_args: BenchBoxArgs) -> ExitCode {
     eprintln!(
         "[campaign-runner] benchcampaign box needs Linux + patched KVM + a built planted-bug image + \
@@ -685,12 +716,12 @@ fn print_game_artifacts(outcome: &campaign_runner::gamecampaign::GameCampaignOut
 }
 
 /// The box game campaign (task 86 M0). Linux-only; refuses loudly elsewhere.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn run_game_box(args: GameBoxArgs) -> ExitCode {
     boxrun::run_game(args)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 fn run_game_box(_args: GameBoxArgs) -> ExitCode {
     eprintln!(
         "[campaign-runner] game box mode needs Linux + patched KVM + the built game image (make -C \
@@ -730,12 +761,12 @@ fn run_campaign_mock(args: CampaignArgs) -> ExitCode {
 
 /// The box campaign milestone (task 60, gate 1). Linux-only; refuses to run off
 /// Linux + patched KVM loudly.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn run_campaign_box(args: CampaignBoxArgs) -> ExitCode {
     boxrun::run_campaign(args)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 fn run_campaign_box(_args: CampaignBoxArgs) -> ExitCode {
     eprintln!(
         "[campaign-runner] campaign box mode needs Linux + patched KVM + the built Postgres-campaign \
@@ -969,12 +1000,12 @@ fn run_mock(args: SweepArgs) -> ExitCode {
 /// The box demo. Compiled everywhere (so `--help` and the crate build are
 /// portable), but refuses to run off Linux + patched KVM — loudly, never a
 /// vacuous pass.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn run_box(args: BoxArgs) -> ExitCode {
     boxrun::run(args)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 fn run_box(_args: BoxArgs) -> ExitCode {
     eprintln!(
         "[campaign-runner] box mode needs Linux + patched KVM + the built Postgres image + the \
@@ -1026,7 +1057,7 @@ fn finish(
 /// function in it needs a real `/dev/kvm` + patched KVM + a built guest
 /// image, which no portable test (or the coverage job's own runner) can
 /// provide.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod boxrun;
 
 #[cfg(test)]
@@ -1514,13 +1545,13 @@ mod tests {
     // --- off-Linux stubs ------------------------------------------------------
     //
     // `run_box`/`run_campaign_box` resolve to a DIFFERENT function per platform
-    // (`#[cfg(target_os = "linux")]` picks the real `boxrun`-backed one, which
+    // (`#[cfg(all(target_os = "linux", target_arch = "x86_64"))]` picks the real `boxrun`-backed one, which
     // needs `/dev/kvm` + the built guest images + a CPU-pinned host — never
     // something a portable coverage run should invoke). These two tests only
     // exist to pin the non-Linux stub's "loud refusal" contract, so they are
     // gated identically to it — on Linux they simply do not compile/run.
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     #[test]
     fn run_box_refuses_to_run_off_linux() {
         let args = BoxArgs {
@@ -1533,7 +1564,7 @@ mod tests {
         assert_eq!(run_box(args), ExitCode::FAILURE);
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     #[test]
     fn run_campaign_box_refuses_to_run_off_linux() {
         let args = CampaignBoxArgs {

@@ -24,11 +24,11 @@ use super::*;
 // representative fraction** ([`PROOF_NUM`]`/`[`PROOF_DEN`]). With a *concrete*
 // divisor CBMC constant-folds `x / 3` into a reciprocal-multiply+shift, which
 // is cheap, so each harness can range its remaining symbolic inputs (`work`,
-// `vns_base`, `tsc_base`, `tsc_hz`) over a real span instead of OOMing. The
+// `vns_base`, `guest_base`, `guest_hz`) over a real span instead of OOMing. The
 // proven range of each harness is documented on it and summarized in
 // `IMPLEMENTATION.md`.
 
-/// Upper bound for the symbolic `ratio_num`/`ratio_den`/`tsc_hz` in
+/// Upper bound for the symbolic `ratio_num`/`ratio_den`/`guest_hz` in
 /// `new_rejection_rules`. That harness's only division is the `u64 / u64`
 /// `ratio_num / ratio_den` (a 64-bit divider CBMC handles even fully
 /// symbolic), so the ratio stays symbolic; 16 bits keeps the instance small
@@ -44,30 +44,30 @@ const PROOF_NUM: u64 = 7;
 /// Denominator of the fixed [`PROOF_NUM`]`/`[`PROOF_DEN`] proof ratio.
 const PROOF_DEN: u64 = 3;
 
-/// Upper bound for the symbolic `tsc_hz` in `bounded_config`
-/// (`new_rejection_rules` only). `VClock::new` does not touch `tsc_hz`, so
+/// Upper bound for the symbolic `guest_hz` in `bounded_config`
+/// (`new_rejection_rules` only). `VClock::new` does not touch `guest_hz`, so
 /// any bound works; 32 bits (~4 GHz) keeps it realistic.
 const TSC_HZ_BOUND: u64 = (1 << 32) - 1;
 
 /// Fixed TSC frequency for `tsc_matches_saturating_spec`: 2 GHz, a realistic
 /// virtual-TSC rate. Concrete because in `tsc` the product `vns(work) *
-/// tsc_hz` would otherwise be a *symbolic × symbolic* multiply, whose clause
+/// guest_hz` would otherwise be a *symbolic × symbolic* multiply, whose clause
 /// count is ~quadratic and OOMs CBMC (unlike the symbolic × *constant*
-/// multiplies elsewhere). With `tsc_hz` concrete the product and the
+/// multiplies elsewhere). With `guest_hz` concrete the product and the
 /// `/ NS_PER_SEC` divide both fold to cheap constant operations.
 const PROOF_TSC_HZ: u64 = 2_000_000_000;
 
 /// Upper bound (24 bits, ~16.7M) for the symbolic `work`/target arguments
 /// that feed a multiplication. Their products with the fixed ratio stay far
 /// below the saturation point on their own, so saturation is driven by the
-/// **full-`u64`** `vns_base`/`tsc_base` instead (see each harness); the bound
+/// **full-`u64`** `vns_base`/`guest_base` instead (see each harness); the bound
 /// caps the multiplicand magnitude and keeps the constant-divisor instances
 /// small.
 const WORK_BOUND: u64 = (1 << 24) - 1;
 
 /// Aggressive bound (12 bits, 4095) for `tsc_no_saturation` only.
 ///
-/// That harness asserts **exact** equality `tsc == tsc_base + floor(vns*2e9
+/// That harness asserts **exact** equality `tsc == guest_base + floor(vns*2e9
 /// /1e9)`, which pins every bit through the `u128` multiply-*divide*-add.
 /// Exact equality across a 128-bit divide is fundamentally costly for CBMC
 /// (contrast `round_trip`'s 7 s *inequality* at the 24-bit bound), so this
@@ -76,37 +76,37 @@ const WORK_BOUND: u64 = (1 << 24) - 1;
 /// rounding and carry behavior — and solves in seconds.
 const NO_SAT_BOUND: u64 = (1 << 12) - 1;
 
-/// A symbolic [`VClockConfig`] with `ratio_num`/`ratio_den`/`tsc_hz` bounded
+/// A symbolic [`VClockConfig`] with `ratio_num`/`ratio_den`/`guest_hz` bounded
 /// per [`RATIO_BOUND`]/[`TSC_HZ_BOUND`]; `ratio_den` may be `0` (so
-/// `VClock::new`'s rejection of it is reachable). `vns_base`, `tsc_base` are
+/// `VClock::new`'s rejection of it is reachable). `vns_base`, `guest_base` are
 /// unconstrained `u64`. Used only by `new_rejection_rules`.
 fn bounded_config() -> VClockConfig {
     let ratio_num: u64 = kani::any();
     let ratio_den: u64 = kani::any();
-    let tsc_hz: u64 = kani::any();
+    let guest_hz: u64 = kani::any();
     kani::assume(ratio_num <= RATIO_BOUND);
     kani::assume(ratio_den <= RATIO_BOUND);
-    kani::assume(tsc_hz <= TSC_HZ_BOUND);
+    kani::assume(guest_hz <= TSC_HZ_BOUND);
     VClockConfig {
         ratio_num,
         ratio_den,
-        tsc_hz,
-        tsc_base: kani::any(),
+        guest_hz,
+        guest_base: kani::any(),
         vns_base: kani::any(),
     }
 }
 
 /// A clock at the fixed [`PROOF_NUM`]`/`[`PROOF_DEN`] ratio with the given
-/// `vns_base`, `tsc_hz`, and `tsc_base`. Built by direct construction (not
+/// `vns_base`, `guest_hz`, and `guest_base`. Built by direct construction (not
 /// `VClock::new`) so the harness controls every field; the ratio is non-zero
 /// by construction.
-fn fixed_ratio_clock(vns_base: u64, tsc_hz: u64, tsc_base: u64) -> VClock {
+fn fixed_ratio_clock(vns_base: u64, guest_hz: u64, guest_base: u64) -> VClock {
     VClock {
         cfg: VClockConfig {
             ratio_num: PROOF_NUM,
             ratio_den: PROOF_DEN,
-            tsc_hz,
-            tsc_base,
+            guest_hz,
+            guest_base,
             vns_base,
         },
     }
@@ -156,8 +156,8 @@ fn vns_is_monotone() {
 }
 
 // `tsc` is proven in two complementary, each-tractable halves rather than
-// one harness. A single harness with `vns_base`/`tsc_base` symbolic over all
-// of `u64` inside the `u128` multiply-add (`vns(work)*2e9/1e9 + tsc_base`,
+// one harness. A single harness with `vns_base`/`guest_base` symbolic over all
+// of `u64` inside the `u128` multiply-add (`vns(work)*2e9/1e9 + guest_base`,
 // saturating) is intractable for CBMC (it ran >16 min without finishing) —
 // the wide symbolic operands feeding the 128-bit reciprocal-multiply of
 // `/ NS_PER_SEC` blow up. Splitting the input space at the saturation
@@ -166,15 +166,15 @@ fn vns_is_monotone() {
 //     `u64::MAX`; asserts `tsc` returns that exact sum.
 //   * `tsc_saturates` — operands constrained to the regime where the sum
 //     exceeds `u64::MAX`; asserts `tsc` clamps to `u64::MAX`.
-// Together they cover the whole spec `min(tsc_base + ticks, u64::MAX)`: the
+// Together they cover the whole spec `min(guest_base + ticks, u64::MAX)`: the
 // non-saturating path is exact and the saturating path clamps. Both keep the
-// fixed 2 GHz `tsc_hz` ([`PROOF_TSC_HZ`]) and `7/3` ratio.
+// fixed 2 GHz `guest_hz` ([`PROOF_TSC_HZ`]) and `7/3` ratio.
 
-/// `tsc` returns the **exact** unsaturated value `tsc_base + floor(vns(work)
+/// `tsc` returns the **exact** unsaturated value `guest_base + floor(vns(work)
 /// * 2e9 / 1e9)` whenever that value fits in `u64`.
 ///
-/// Proven for the fixed `7/3` ratio and 2 GHz `tsc_hz` over
-/// `vns_base, tsc_base, work ∈ [0, 2^12)` ([`NO_SAT_BOUND`]) — bounds that
+/// Proven for the fixed `7/3` ratio and 2 GHz `guest_hz` over
+/// `vns_base, guest_base, work ∈ [0, 2^12)` ([`NO_SAT_BOUND`]) — bounds that
 /// make the sum provably `< u64::MAX` (so neither `vns` nor `tsc`
 /// saturates), exercising the exact-arithmetic path. The tight bound is
 /// required because exact equality across the `u128` divide is far costlier
@@ -182,34 +182,34 @@ fn vns_is_monotone() {
 #[kani::proof]
 fn tsc_no_saturation() {
     let vns_base: u64 = kani::any();
-    let tsc_base: u64 = kani::any();
+    let guest_base: u64 = kani::any();
     let work: u64 = kani::any();
     kani::assume(vns_base <= NO_SAT_BOUND);
-    kani::assume(tsc_base <= NO_SAT_BOUND);
+    kani::assume(guest_base <= NO_SAT_BOUND);
     kani::assume(work <= NO_SAT_BOUND);
-    let clk = fixed_ratio_clock(vns_base, PROOF_TSC_HZ, tsc_base);
+    let clk = fixed_ratio_clock(vns_base, PROOF_TSC_HZ, guest_base);
 
     let vns = clk.vns(work);
     let ticks = u128::from(vns) * u128::from(PROOF_TSC_HZ) / NS_PER_SEC;
-    let full = u128::from(tsc_base) + ticks;
+    let full = u128::from(guest_base) + ticks;
     // The bounds above keep `full` far below `u64::MAX`, so `tsc` is exact.
     assert!(full < u128::from(u64::MAX));
-    assert_eq!(clk.tsc(work), full as u64);
+    assert_eq!(clk.guest_ticks(work), full as u64);
 }
 
 /// `tsc` **clamps to `u64::MAX`** in the saturating regime — for the concrete
-/// `tsc_base` values this harness drives, every `vns_base`/`work` whose
+/// `guest_base` values this harness drives, every `vns_base`/`work` whose
 /// unsaturated sum exceeds `u64::MAX` returns `u64::MAX`.
 ///
 /// The clamp is *value-independent* by design — `tsc` returns `u64::MAX`
-/// however far the sum overflows — so concrete `tsc_base` values that trigger
-/// saturation are representative; a symbolic high-magnitude `tsc_base` in the
-/// `u128` multiply-add only slows CBMC. This harness iterates `tsc_base` over
+/// however far the sum overflows — so concrete `guest_base` values that trigger
+/// saturation are representative; a symbolic high-magnitude `guest_base` in the
+/// `u128` multiply-add only slows CBMC. This harness iterates `guest_base` over
 /// `{u64::MAX, u64::MAX - 1, u64::MAX - 2^24}` with `vns_base, work ∈
-/// [0, 2^24)` (`work >= 1`), at the fixed `7/3` ratio and 2 GHz `tsc_hz`.
+/// [0, 2^24)` (`work >= 1`), at the fixed `7/3` ratio and 2 GHz `guest_hz`.
 ///
 /// SCOPE: this is *concrete* coverage of the saturating side, not a symbolic
-/// proof over all `tsc_base`. A `tsc_base`-specific defect at a value outside
+/// proof over all `guest_base`. A `guest_base`-specific defect at a value outside
 /// the set above (e.g. a stray special case) is not in scope here; the exact
 /// non-saturating path is covered by `tsc_no_saturation`. The `kani::cover!`
 /// confirms the saturating regime is actually reached, so the guarded
@@ -222,14 +222,14 @@ fn tsc_saturates() {
     kani::assume(vns_base <= WORK_BOUND);
     kani::assume(work >= 1 && work <= WORK_BOUND);
 
-    for &tsc_base in &[u64::MAX, u64::MAX - 1, u64::MAX - WORK_BOUND] {
-        let clk = fixed_ratio_clock(vns_base, PROOF_TSC_HZ, tsc_base);
+    for &guest_base in &[u64::MAX, u64::MAX - 1, u64::MAX - WORK_BOUND] {
+        let clk = fixed_ratio_clock(vns_base, PROOF_TSC_HZ, guest_base);
         let vns = clk.vns(work);
         let ticks = u128::from(vns) * u128::from(PROOF_TSC_HZ) / NS_PER_SEC;
-        let sum = u128::from(tsc_base) + ticks;
+        let sum = u128::from(guest_base) + ticks;
         kani::cover!(sum > u128::from(u64::MAX), "saturating regime reachable");
         if sum > u128::from(u64::MAX) {
-            assert_eq!(clk.tsc(work), u64::MAX);
+            assert_eq!(clk.guest_ticks(work), u64::MAX);
         }
     }
 }

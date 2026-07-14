@@ -13,9 +13,10 @@ use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use vmm_backend::{Backend, Exit, MockBackend};
+use vmm_backend::{Backend, CommonExit, Exit, MockBackend, X86, X86Exit, X86Policy};
 use vmm_core::control::{ControlServer, VmmFactory};
-use vmm_core::vmm::{GuestRam, Step, Vmm, VmmError, VtimeWiring, contract_vclock_config};
+use vmm_core::vendor::x86::contract_vclock_config;
+use vmm_core::vmm::{GuestRam, Step, Vmm, VmmError, VtimeWiring};
 use vmm_core::work::{WorkError, WorkSource};
 
 /// Guest RAM for the mock guest: 16 KiB (4 pages) — enough for a distinctive
@@ -143,11 +144,10 @@ pub struct CountingBackend {
 }
 
 impl Backend for CountingBackend {
-    fn set_cpuid(&mut self, m: &vmm_backend::CpuidModel) -> vmm_backend::Result<()> {
-        self.inner.set_cpuid(m)
-    }
-    fn set_msr_filter(&mut self, f: &vmm_backend::MsrFilter) -> vmm_backend::Result<()> {
-        self.inner.set_msr_filter(f)
+    type A = vmm_backend::X86;
+
+    fn set_policy(&mut self, policy: &vmm_backend::X86Policy) -> vmm_backend::Result<()> {
+        self.inner.set_policy(policy)
     }
     unsafe fn map_memory(
         &mut self,
@@ -157,19 +157,19 @@ impl Backend for CountingBackend {
         // SAFETY: forwards to the inner mock, which only records the region.
         unsafe { self.inner.map_memory(gpa, host) }
     }
-    fn run(&mut self) -> vmm_backend::Result<Exit> {
+    fn run(&mut self) -> vmm_backend::Result<Exit<vmm_backend::X86>> {
         let exit = self.inner.run()?;
         self.work.on_exit();
         Ok(exit)
     }
-    fn run_until(&mut self, d: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
+    fn run_until(&mut self, d: vmm_backend::Moment) -> vmm_backend::Result<Exit<vmm_backend::X86>> {
         let cur = self.work.current();
         if d.0 <= cur {
             // Zero-step: already at/past the deadline — reached == work-before,
             // no guest entry (round-13).
-            return Ok(Exit::Deadline {
+            return Ok(Exit::Common(CommonExit::Deadline {
                 reached: vmm_backend::Moment(cur),
-            });
+            }));
         }
         if d.0
             <= self
@@ -183,12 +183,12 @@ impl Backend for CountingBackend {
             // untouched, so the armed leg services the same script at the same
             // work counts as an unarmed run.
             self.work.arrival.store(d.0, Ordering::Relaxed);
-            return Ok(Exit::Deadline {
+            return Ok(Exit::Common(CommonExit::Deadline {
                 reached: vmm_backend::Moment(d.0),
-            });
+            }));
         }
         // Far deadline: the next scripted exit lands first. Delegate to the
-        // inner mock's `run_until` — NOT `run` — so a scripted `Exit::Deadline`
+        // inner mock's `run_until` — NOT `run` — so a scripted `CommonExit::Deadline`
         // placeholder is rewritten to `reached = d` (PR #62 round-4 blocking
         // fix: falling through to `run()` handed vmm-core the stale scripted
         // value, mis-anchoring V-time and the schedule/reseed drains).
@@ -196,7 +196,7 @@ impl Backend for CountingBackend {
         match &exit {
             // A scripted Deadline placeholder was rewritten to `reached = d`:
             // the guest ran to exactly there — advance the grid TO it.
-            Exit::Deadline { reached } => self.work.on_deadline(reached.0),
+            Exit::Common(CommonExit::Deadline { reached }) => self.work.on_deadline(reached.0),
             _ => self.work.on_exit(),
         }
         Ok(exit)
@@ -222,8 +222,8 @@ impl Backend for CountingBackend {
     fn complete_hypercall(&mut self, rax: u64) -> vmm_backend::Result<()> {
         self.inner.complete_hypercall(rax)
     }
-    fn complete_cpuid(&mut self, a: u32, b: u32, c: u32, d: u32) -> vmm_backend::Result<()> {
-        self.inner.complete_cpuid(a, b, c, d)
+    fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
+        self.inner.complete_arch(c)
     }
     fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
         self.inner.save()
@@ -237,7 +237,7 @@ impl Backend for CountingBackend {
     fn reset_exit_counts(&mut self) {
         self.inner.reset_exit_counts()
     }
-    fn capabilities(&self) -> vmm_backend::Capabilities {
+    fn capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::X86Caps> {
         self.inner.capabilities()
     }
 }
@@ -247,14 +247,16 @@ impl Backend for CountingBackend {
 /// whether to advance it; a restore target must not be). Work is the
 /// exit-driven [`SharedWork`] counter (task 78): V-time advances only with
 /// guest execution, and armed runs stop exactly at their arrival points.
-pub fn vmm(script: Vec<Exit>, seed: u64) -> Result<Vmm<CountingBackend>, VmmError> {
+pub fn vmm(script: Vec<Exit<X86>>, seed: u64) -> Result<Vmm<CountingBackend>, VmmError> {
     let work = Arc::new(SharedWork::default());
     let mut backend = CountingBackend {
         inner: MockBackend::with_exits(script),
         work: Arc::clone(&work),
     };
-    backend.set_cpuid(&vmm_backend::CpuidModel::default())?;
-    backend.set_msr_filter(&vmm_backend::MsrFilter::default())?;
+    backend.set_policy(&X86Policy {
+        cpuid: vmm_backend::CpuidModel::default(),
+        msr_filter: vmm_backend::MsrFilter::default(),
+    })?;
     let mut vmm = Vmm::new(backend, GuestRam::new(RAM)?);
     vmm.wire_vtime(VtimeWiring::new(
         contract_vclock_config(),
@@ -272,14 +274,14 @@ pub fn vmm(script: Vec<Exit>, seed: u64) -> Result<Vmm<CountingBackend>, VmmErro
 /// The default fork script: a run that reads the TSC, draws entropy twice
 /// (so the branch seed reaches the run through the deterministic RDRAND path),
 /// reads the TSC again, and halts cleanly.
-pub fn default_fork_script() -> Vec<Exit> {
+pub fn default_fork_script() -> Vec<Exit<X86>> {
     vec![
-        Exit::Rdtsc,
-        Exit::Rdrand { width: 8 },
-        Exit::Rdtsc,
-        Exit::Rdrand { width: 8 },
-        Exit::Rdtsc,
-        Exit::Hlt,
+        Exit::Arch(X86Exit::Rdtsc),
+        Exit::Arch(X86Exit::Rdrand { width: 8 }),
+        Exit::Arch(X86Exit::Rdtsc),
+        Exit::Arch(X86Exit::Rdrand { width: 8 }),
+        Exit::Arch(X86Exit::Rdtsc),
+        Exit::Common(CommonExit::Idle),
     ]
 }
 
@@ -290,18 +292,18 @@ pub fn default_fork_script() -> Vec<Exit> {
 /// seed-independent (identical across seeds — divergence lives in the env's seed,
 /// not the console), then two RDRAND draws carry the seed into the run and a
 /// clean `Hlt` terminates it.
-pub fn recording_fork_script() -> Vec<Exit> {
-    let mut script = vec![Exit::Rdtsc];
+pub fn recording_fork_script() -> Vec<Exit<X86>> {
+    let mut script = vec![Exit::Arch(X86Exit::Rdtsc)];
     for &b in b"MOCK-READY\n" {
-        script.push(Exit::Io {
+        script.push(Exit::Arch(X86Exit::Io {
             port: 0x3F8,
             size: 1,
             write: Some(b as u32),
-        });
+        }));
     }
-    script.push(Exit::Rdrand { width: 8 });
-    script.push(Exit::Rdrand { width: 8 });
-    script.push(Exit::Hlt);
+    script.push(Exit::Arch(X86Exit::Rdrand { width: 8 }));
+    script.push(Exit::Arch(X86Exit::Rdrand { width: 8 }));
+    script.push(Exit::Common(CommonExit::Idle));
     script
 }
 
@@ -317,16 +319,16 @@ pub fn recording_fork_script() -> Vec<Exit> {
 /// hops draws a different count/sequence than the hop-by-hop chain did — the
 /// round-trip hashes must diverge, documenting the substrate contract
 /// boundary escalated by task 68).
-pub fn chain_fork_script(intercepts: usize, draws: bool) -> Vec<Exit> {
+pub fn chain_fork_script(intercepts: usize, draws: bool) -> Vec<Exit<X86>> {
     let mut script = Vec::with_capacity(intercepts + 1);
     for i in 0..intercepts {
         if draws && !i.is_multiple_of(2) {
-            script.push(Exit::Rdrand { width: 8 });
+            script.push(Exit::Arch(X86Exit::Rdrand { width: 8 }));
         } else {
-            script.push(Exit::Rdtsc);
+            script.push(Exit::Arch(X86Exit::Rdtsc));
         }
     }
-    script.push(Exit::Hlt);
+    script.push(Exit::Common(CommonExit::Idle));
     script
 }
 
@@ -334,8 +336,8 @@ pub fn chain_fork_script(intercepts: usize, draws: bool) -> Vec<Exit> {
 /// (post-RDTSC) boundary — so the session's first `snapshot` seals first-try —
 /// and a factory that boots fork VMs with `fork_script`. Every fork VM is
 /// identical by construction, so a branch's future depends only on its seed.
-pub fn server(fork_script: Vec<Exit>) -> Result<ControlServer<CountingBackend>, VmmError> {
-    let mut live_script = vec![Exit::Rdtsc];
+pub fn server(fork_script: Vec<Exit<X86>>) -> Result<ControlServer<CountingBackend>, VmmError> {
+    let mut live_script = vec![Exit::Arch(X86Exit::Rdtsc)];
     live_script.extend(fork_script.iter().cloned());
     let mut live = vmm(live_script, BOOT_SEED)?;
     // One step services the leading RDTSC: V-time is synchronized and no RNG
@@ -375,7 +377,15 @@ mod tests {
     /// advances the exit-driven work counter by exactly one intercept.
     #[test]
     fn mock_vmm_composes_maps_memory_and_ticks_per_exit() {
-        let mut v = vmm(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Hlt], 7).expect("compose");
+        let mut v = vmm(
+            vec![
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Common(CommonExit::Idle),
+            ],
+            7,
+        )
+        .expect("compose");
         assert_eq!(v.step().unwrap(), vmm_core::vmm::Step::Continued);
         let vns1 = v.effective_vns().expect("V-time wired");
         assert_eq!(vns1, WORK_STEP, "one serviced exit = one work step");
@@ -391,12 +401,12 @@ mod tests {
     #[test]
     fn counting_backend_run_until_arrives_between_exits() {
         let work = Arc::new(SharedWork::default());
-        let mut inner = MockBackend::with_exits(vec![Exit::Rdtsc, Exit::Hlt]);
+        let mut inner = MockBackend::with_exits(vec![
+            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Common(CommonExit::Idle),
+        ]);
         inner
-            .set_cpuid(&vmm_backend::CpuidModel::default())
-            .unwrap();
-        inner
-            .set_msr_filter(&vmm_backend::MsrFilter::default())
+            .set_policy(&vmm_backend::X86Policy::default())
             .unwrap();
         let mut b = CountingBackend {
             inner,
@@ -407,40 +417,39 @@ mod tests {
         let exit = b.run_until(vmm_backend::Moment(40)).unwrap();
         assert_eq!(
             exit,
-            Exit::Deadline {
+            Exit::Common(CommonExit::Deadline {
                 reached: vmm_backend::Moment(40)
-            }
+            })
         );
         assert_eq!(work.current(), 40);
         // Zero-step: at-or-past deadline reports reached == current, no entry.
         let exit = b.run_until(vmm_backend::Moment(40)).unwrap();
         assert_eq!(
             exit,
-            Exit::Deadline {
+            Exit::Common(CommonExit::Deadline {
                 reached: vmm_backend::Moment(40)
-            }
+            })
         );
         // The deferred scripted exit still lands on its natural boundary
         // (100), clearing the transient arrival.
         let exit = b.run_until(vmm_backend::Moment(500)).unwrap();
-        assert_eq!(exit, Exit::Rdtsc);
+        assert_eq!(exit, Exit::Arch(X86Exit::Rdtsc));
         assert_eq!(work.current(), WORK_STEP);
     }
 
     /// The far-deadline path delegates to the inner mock's `run_until`, so a
-    /// scripted `Exit::Deadline` placeholder is rewritten to the armed
+    /// scripted `CommonExit::Deadline` placeholder is rewritten to the armed
     /// deadline — never handed through with its stale scripted `reached`
     /// (PR #62 round-4 blocking fix).
     #[test]
     fn counting_backend_far_deadline_rewrites_a_scripted_deadline() {
         let work = Arc::new(SharedWork::default());
-        let mut inner =
-            MockBackend::with_exits(vec![Exit::Deadline { reached: Moment(0) }, Exit::Hlt]);
+        let mut inner = MockBackend::with_exits(vec![
+            Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+            Exit::Common(CommonExit::Idle),
+        ]);
         inner
-            .set_cpuid(&vmm_backend::CpuidModel::default())
-            .unwrap();
-        inner
-            .set_msr_filter(&vmm_backend::MsrFilter::default())
+            .set_policy(&vmm_backend::X86Policy::default())
             .unwrap();
         let mut b = CountingBackend {
             inner,
@@ -452,9 +461,9 @@ mod tests {
         let exit = b.run_until(Moment(250)).unwrap();
         assert_eq!(
             exit,
-            Exit::Deadline {
+            Exit::Common(CommonExit::Deadline {
                 reached: Moment(250)
-            },
+            }),
             "a scripted Deadline placeholder is rewritten to the armed deadline"
         );
         assert_eq!(
@@ -472,15 +481,12 @@ mod tests {
     fn counting_backend_next_intercept_samples_at_or_above_the_reached_deadline() {
         let work = Arc::new(SharedWork::default());
         let mut inner = MockBackend::with_exits(vec![
-            Exit::Deadline { reached: Moment(0) },
-            Exit::Rdtsc,
-            Exit::Hlt,
+            Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Common(CommonExit::Idle),
         ]);
         inner
-            .set_cpuid(&vmm_backend::CpuidModel::default())
-            .unwrap();
-        inner
-            .set_msr_filter(&vmm_backend::MsrFilter::default())
+            .set_policy(&vmm_backend::X86Policy::default())
             .unwrap();
         let mut b = CountingBackend {
             inner,
@@ -489,15 +495,15 @@ mod tests {
         let exit = b.run_until(Moment(250)).unwrap();
         assert_eq!(
             exit,
-            Exit::Deadline {
+            Exit::Common(CommonExit::Deadline {
                 reached: Moment(250)
-            }
+            })
         );
         assert_eq!(work.current(), 250, "grid at the reached deadline");
         // The following Rdtsc intercept reads 350 — never 200 (one step off
         // the pre-fix +WORK_STEP grid, BELOW the anchored 250).
         let exit = b.run().unwrap();
-        assert_eq!(exit, Exit::Rdtsc);
+        assert_eq!(exit, Exit::Arch(X86Exit::Rdtsc));
         assert_eq!(
             work.current(),
             250 + WORK_STEP,
@@ -514,15 +520,12 @@ mod tests {
     fn counting_backend_saturates_at_the_top_of_the_work_axis() {
         let work = Arc::new(SharedWork::default());
         let mut inner = MockBackend::with_exits(vec![
-            Exit::Deadline { reached: Moment(0) },
-            Exit::Rdtsc,
-            Exit::Hlt,
+            Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Common(CommonExit::Idle),
         ]);
         inner
-            .set_cpuid(&vmm_backend::CpuidModel::default())
-            .unwrap();
-        inner
-            .set_msr_filter(&vmm_backend::MsrFilter::default())
+            .set_policy(&vmm_backend::X86Policy::default())
             .unwrap();
         let mut b = CountingBackend {
             inner,
@@ -532,23 +535,23 @@ mod tests {
         let exit = b.run_until(Moment(u64::MAX)).unwrap();
         assert_eq!(
             exit,
-            Exit::Deadline {
+            Exit::Common(CommonExit::Deadline {
                 reached: Moment(u64::MAX)
-            }
+            })
         );
         assert_eq!(work.current(), u64::MAX, "grid pinned at the axis top");
         // A serviced exit saturates — never wraps below the anchored V-time.
         let exit = b.run().unwrap();
-        assert_eq!(exit, Exit::Rdtsc);
+        assert_eq!(exit, Exit::Arch(X86Exit::Rdtsc));
         assert_eq!(work.current(), u64::MAX, "on_exit saturates at u64::MAX");
         // Re-arming at the pinned top is the zero-step (reached == current),
         // exercising the saturating boundary comparison, not an overflow.
         let exit = b.run_until(Moment(u64::MAX)).unwrap();
         assert_eq!(
             exit,
-            Exit::Deadline {
+            Exit::Common(CommonExit::Deadline {
                 reached: Moment(u64::MAX)
-            },
+            }),
             "at-the-top re-arm is a zero-step"
         );
         assert_eq!(work.current(), u64::MAX);

@@ -10,8 +10,9 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 use vmm_backend::{
-    Backend, BackendError, Capabilities, Completion, CpuidModel, Exit, ExitReason, Gpa,
-    HypercallRegs, Injection, MockBackend, Moment, MsrFilter, VcpuState,
+    Backend, BackendError, Capabilities, CommonExit, Completion, CpuidModel, Exit, ExitReason, Gpa,
+    HypercallFrame, Injection, MockBackend, Moment, MsrFilter, VcpuState, X86, X86Caps,
+    X86Completion, X86Exit, X86Policy,
 };
 
 /// Proptest case count: full per the convention natively, cut to 16 under Miri
@@ -29,32 +30,39 @@ fn cases(native: u32) -> ProptestConfig {
 /// A configured mock (both config calls landed, so `run` is past `NotConfigured`).
 fn configured() -> MockBackend {
     let mut m = MockBackend::new();
-    m.set_cpuid(&CpuidModel::default()).expect("set_cpuid");
-    m.set_msr_filter(&MsrFilter::default())
-        .expect("set_msr_filter");
+    m.set_policy(&X86Policy {
+        cpuid: CpuidModel::default(),
+        msr_filter: MsrFilter::default(),
+    })
+    .expect("set_policy");
     m
 }
 
 /// Apply the matching completion for a just-returned exit (the discipline a live
 /// VMM must follow before the next `run`).
-fn complete_correctly(m: &mut MockBackend, exit: &Exit) -> Result<(), BackendError> {
+fn complete_correctly(m: &mut MockBackend, exit: &Exit<X86>) -> Result<(), BackendError> {
     match exit {
-        Exit::Io { write: None, .. }
-        | Exit::Mmio { write: None, .. }
-        | Exit::Rdtsc
-        | Exit::Rdtscp
-        | Exit::Rdrand { .. }
-        | Exit::Rdseed { .. }
-        | Exit::Rdmsr { .. } => m.complete_read(0),
-        Exit::Wrmsr { .. } => m.complete_ok(),
-        Exit::Hypercall(_) => m.complete_hypercall(0),
-        Exit::Cpuid { .. } => m.complete_cpuid(0, 0, 0, 0),
+        Exit::Arch(X86Exit::Io { write: None, .. })
+        | Exit::Common(CommonExit::Mmio { write: None, .. })
+        | Exit::Arch(X86Exit::Rdtsc)
+        | Exit::Arch(X86Exit::Rdtscp)
+        | Exit::Arch(X86Exit::Rdrand { .. })
+        | Exit::Arch(X86Exit::Rdseed { .. })
+        | Exit::Arch(X86Exit::Rdmsr { .. }) => m.complete_read(0),
+        Exit::Arch(X86Exit::Wrmsr { .. }) => m.complete_ok(),
+        Exit::Common(CommonExit::Hypercall(_)) => m.complete_hypercall(0),
+        Exit::Arch(X86Exit::Cpuid { .. }) => m.complete_arch(X86Completion::Cpuid {
+            eax: 0,
+            ebx: 0,
+            ecx: 0,
+            edx: 0,
+        }),
         // Write-style / terminal exits need no completion.
-        Exit::Io { write: Some(_), .. }
-        | Exit::Mmio { write: Some(_), .. }
-        | Exit::Hlt
-        | Exit::Shutdown
-        | Exit::Deadline { .. } => Ok(()),
+        Exit::Arch(X86Exit::Io { write: Some(_), .. })
+        | Exit::Common(CommonExit::Mmio { write: Some(_), .. })
+        | Exit::Common(CommonExit::Idle)
+        | Exit::Common(CommonExit::Shutdown)
+        | Exit::Common(CommonExit::Deadline { .. }) => Ok(()),
     }
 }
 
@@ -65,39 +73,35 @@ fn complete_correctly(m: &mut MockBackend, exit: &Exit) -> Result<(), BackendErr
 #[test]
 fn run_before_configured_fails_closed() {
     let mut m = MockBackend::new();
-    m.push_exit(Exit::Hlt);
-    assert!(matches!(m.run(), Err(BackendError::NotConfigured)));
-
-    // Only one of the two config calls is not enough — still fail closed.
-    m.set_cpuid(&CpuidModel::default()).unwrap();
+    m.push_exit(Exit::Common(CommonExit::Idle));
     assert!(!m.is_configured());
     assert!(matches!(m.run(), Err(BackendError::NotConfigured)));
 
-    m.set_msr_filter(&MsrFilter::default()).unwrap();
+    m.set_policy(&X86Policy::default()).unwrap();
     assert!(m.is_configured());
-    assert_eq!(m.run().unwrap(), Exit::Hlt);
+    assert_eq!(m.run().unwrap(), Exit::Common(CommonExit::Idle));
 }
 
 #[test]
 fn missed_completion_is_pending_completion() {
     let mut m = configured();
     m.extend_exits([
-        Exit::Io {
+        Exit::Arch(X86Exit::Io {
             port: 0x80,
             size: 1,
             write: None,
-        },
-        Exit::Hlt,
+        }),
+        Exit::Common(CommonExit::Idle),
     ]);
 
     let e = m.run().unwrap();
     assert_eq!(
         e,
-        Exit::Io {
+        Exit::Arch(X86Exit::Io {
             port: 0x80,
             size: 1,
             write: None
-        }
+        })
     );
     assert!(m.has_pending());
     // Resuming with the read un-serviced fails closed.
@@ -105,7 +109,7 @@ fn missed_completion_is_pending_completion() {
     // Service it, then resume.
     m.complete_read(0x55).unwrap();
     assert!(!m.has_pending());
-    assert_eq!(m.run().unwrap(), Exit::Hlt);
+    assert_eq!(m.run().unwrap(), Exit::Common(CommonExit::Idle));
     assert_eq!(m.completions(), &[Completion::Read(0x55)]);
 }
 
@@ -113,39 +117,42 @@ fn missed_completion_is_pending_completion() {
 fn out_exit_needs_no_completion() {
     let mut m = configured();
     m.extend_exits([
-        Exit::Io {
+        Exit::Arch(X86Exit::Io {
             port: 0x80,
             size: 1,
             write: Some(0xAB),
-        },
-        Exit::Mmio {
+        }),
+        Exit::Common(CommonExit::Mmio {
             gpa: Gpa(0xFEE0_0000),
             size: 4,
             write: Some(0x1),
-        },
-        Exit::Hlt,
+        }),
+        Exit::Common(CommonExit::Idle),
     ]);
-    assert!(matches!(m.run().unwrap(), Exit::Io { write: Some(_), .. }));
+    assert!(matches!(
+        m.run().unwrap(),
+        Exit::Arch(X86Exit::Io { write: Some(_), .. })
+    ));
     assert!(!m.has_pending());
     assert!(matches!(
         m.run().unwrap(),
-        Exit::Mmio { write: Some(_), .. }
+        Exit::Common(CommonExit::Mmio { write: Some(_), .. })
     ));
     assert!(!m.has_pending());
-    assert_eq!(m.run().unwrap(), Exit::Hlt);
+    assert_eq!(m.run().unwrap(), Exit::Common(CommonExit::Idle));
 }
 
 #[test]
 fn complete_read_without_pending_errors() {
     let mut m = configured();
-    m.push_exit(Exit::Hlt);
+    m.push_exit(Exit::Common(CommonExit::Idle));
     // Nothing pending yet.
     assert!(matches!(
         m.complete_read(0),
         Err(BackendError::NoPendingRead)
     ));
     // After a no-completion exit, still nothing read-style pending.
-    assert_eq!(m.run().unwrap(), Exit::Hlt);
+    assert_eq!(m.run().unwrap(), Exit::Common(CommonExit::Idle));
     assert!(matches!(
         m.complete_read(0),
         Err(BackendError::NoPendingRead)
@@ -156,14 +163,14 @@ fn complete_read_without_pending_errors() {
 fn rdmsr_accepts_read_or_fault() {
     // value path
     let mut m = configured();
-    m.push_exit(Exit::Rdmsr { index: 0x1B });
+    m.push_exit(Exit::Arch(X86Exit::Rdmsr { index: 0x1B }));
     m.run().unwrap();
     m.complete_read(0xDEAD).unwrap();
     assert_eq!(m.completions(), &[Completion::Read(0xDEAD)]);
 
     // deny-gp path
     let mut m = configured();
-    m.push_exit(Exit::Rdmsr { index: 0x1B });
+    m.push_exit(Exit::Arch(X86Exit::Rdmsr { index: 0x1B }));
     m.run().unwrap();
     m.complete_fault().unwrap();
     assert_eq!(m.completions(), &[Completion::Fault]);
@@ -173,17 +180,22 @@ fn rdmsr_accepts_read_or_fault() {
 fn wrmsr_accepts_ok_or_fault_but_not_read() {
     // A Wrmsr is not read-style: complete_read must be rejected.
     let mut m = configured();
-    m.push_exit(Exit::Wrmsr {
+    m.push_exit(Exit::Arch(X86Exit::Wrmsr {
         index: 0x6E0,
         value: 1,
-    });
+    }));
     m.run().unwrap();
     assert!(matches!(
         m.complete_read(0),
         Err(BackendError::NoPendingRead)
     ));
     assert!(matches!(
-        m.complete_cpuid(0, 0, 0, 0),
+        m.complete_arch(X86Completion::Cpuid {
+            eax: 0,
+            ebx: 0,
+            ecx: 0,
+            edx: 0,
+        }),
         Err(BackendError::BadCompletion)
     ));
     m.complete_ok().unwrap();
@@ -191,10 +203,10 @@ fn wrmsr_accepts_ok_or_fault_but_not_read() {
 
     // deny-gp on a write.
     let mut m = configured();
-    m.push_exit(Exit::Wrmsr {
+    m.push_exit(Exit::Arch(X86Exit::Wrmsr {
         index: 0x6E0,
         value: 1,
-    });
+    }));
     m.run().unwrap();
     m.complete_fault().unwrap();
     assert_eq!(m.completions(), &[Completion::Fault]);
@@ -203,7 +215,9 @@ fn wrmsr_accepts_ok_or_fault_but_not_read() {
 #[test]
 fn hypercall_and_cpuid_completions_are_typed() {
     let mut m = configured();
-    m.push_exit(Exit::Hypercall(HypercallRegs::default()));
+    m.push_exit(Exit::Common(CommonExit::Hypercall(
+        HypercallFrame::default(),
+    )));
     m.run().unwrap();
     assert!(matches!(m.complete_ok(), Err(BackendError::BadCompletion)));
     m.complete_hypercall(48).unwrap();
@@ -216,7 +230,7 @@ fn hypercall_and_cpuid_completions_are_typed() {
         m.complete_hypercall(0),
         Err(BackendError::NoPendingRead)
     ));
-    m.push_exit(Exit::Rdmsr { index: 0x1B });
+    m.push_exit(Exit::Arch(X86Exit::Rdmsr { index: 0x1B }));
     m.run().unwrap();
     assert!(matches!(
         m.complete_hypercall(0),
@@ -224,16 +238,22 @@ fn hypercall_and_cpuid_completions_are_typed() {
     ));
 
     let mut m = configured();
-    m.push_exit(Exit::Cpuid {
+    m.push_exit(Exit::Arch(X86Exit::Cpuid {
         leaf: 1,
         subleaf: 0,
-    });
+    }));
     m.run().unwrap();
     assert!(matches!(
         m.complete_fault(),
         Err(BackendError::BadCompletion)
     ));
-    m.complete_cpuid(0xA, 0xB, 0xC, 0xD).unwrap();
+    m.complete_arch(X86Completion::Cpuid {
+        eax: 0xA,
+        ebx: 0xB,
+        ecx: 0xC,
+        edx: 0xD,
+    })
+    .unwrap();
     assert_eq!(
         m.completions(),
         &[Completion::Cpuid {
@@ -249,24 +269,24 @@ fn hypercall_and_cpuid_completions_are_typed() {
 fn counters_increment_per_reason_and_reset() {
     let mut m = configured();
     m.extend_exits([
-        Exit::Io {
+        Exit::Arch(X86Exit::Io {
             port: 1,
             size: 1,
             write: Some(0),
-        },
-        Exit::Io {
+        }),
+        Exit::Arch(X86Exit::Io {
             port: 2,
             size: 1,
             write: Some(0),
-        },
-        Exit::Hlt,
+        }),
+        Exit::Common(CommonExit::Idle),
     ]);
     m.run().unwrap();
     m.run().unwrap();
     m.run().unwrap();
     let c = m.exit_counts();
     assert_eq!(c.io, 2);
-    assert_eq!(c.hlt, 1);
+    assert_eq!(c.idle, 1);
     assert_eq!(c.total(), 3);
 
     m.reset_exit_counts();
@@ -276,13 +296,13 @@ fn counters_increment_per_reason_and_reset() {
 #[test]
 fn run_until_returns_deadline_with_requested_value() {
     let mut m = configured();
-    m.extend_exits([Exit::Deadline { reached: Moment(0) }]);
+    m.extend_exits([Exit::Common(CommonExit::Deadline { reached: Moment(0) })]);
     let e = m.run_until(Moment(4096)).unwrap();
     assert_eq!(
         e,
-        Exit::Deadline {
+        Exit::Common(CommonExit::Deadline {
             reached: Moment(4096)
-        }
+        })
     );
     assert_eq!(m.exit_counts().deadline, 1);
     assert!(!m.has_pending());
@@ -309,8 +329,8 @@ fn set_pending_irq_overwrites_single_slot() {
     m.set_pending_irq(Some(0x40)).unwrap();
     m.set_pending_irq(Some(0x50)).unwrap(); // re-arbitration: 0x50 replaces 0x40
     assert_eq!(m.pending_irq(), Some(0x50));
-    m.push_exit(Exit::Hlt);
-    assert_eq!(m.run().expect("run"), Exit::Hlt);
+    m.push_exit(Exit::Common(CommonExit::Idle));
+    assert_eq!(m.run().expect("run"), Exit::Common(CommonExit::Idle));
     // Only the last-set vector is accepted; 0x40 was never injected.
     assert_eq!(m.take_accepted_interrupt(), Some(0x50));
     assert_eq!(m.take_accepted_interrupt(), None);
@@ -321,8 +341,8 @@ fn set_pending_irq_overwrites_single_slot() {
     m.set_pending_irq(Some(0x40)).unwrap();
     m.set_pending_irq(None).unwrap(); // TPR raised / vector no longer deliverable
     assert_eq!(m.pending_irq(), None);
-    m.push_exit(Exit::Hlt);
-    assert_eq!(m.run().expect("run"), Exit::Hlt);
+    m.push_exit(Exit::Common(CommonExit::Idle));
+    assert_eq!(m.run().expect("run"), Exit::Common(CommonExit::Idle));
     assert_eq!(
         m.take_accepted_interrupt(),
         None,
@@ -337,8 +357,8 @@ fn deferred_accept_holds_irq_pending() {
     let mut m = configured();
     m.set_defer_accept(true);
     m.set_pending_irq(Some(0x40)).unwrap();
-    m.push_exit(Exit::Hlt);
-    assert_eq!(m.run().expect("run"), Exit::Hlt);
+    m.push_exit(Exit::Common(CommonExit::Idle));
+    assert_eq!(m.run().expect("run"), Exit::Common(CommonExit::Idle));
     assert_eq!(
         m.take_accepted_interrupt(),
         None,
@@ -347,8 +367,8 @@ fn deferred_accept_holds_irq_pending() {
     assert_eq!(m.pending_irq(), Some(0x40), "still pending (un-accepted)");
     // Re-enable acceptance; the next entry accepts it.
     m.set_defer_accept(false);
-    m.push_exit(Exit::Hlt);
-    assert_eq!(m.run().expect("run"), Exit::Hlt);
+    m.push_exit(Exit::Common(CommonExit::Idle));
+    assert_eq!(m.run().expect("run"), Exit::Common(CommonExit::Idle));
     assert_eq!(m.take_accepted_interrupt(), Some(0x40));
 }
 
@@ -357,9 +377,11 @@ fn mock_observability_and_config_getters() {
     // with_capabilities overrides the reported caps.
     let caps = Capabilities {
         name: "test-mock",
-        deterministic_tsc: true,
         deterministic_rng: false,
-        enforces_tsc_deadline_msr: true,
+        arch: X86Caps {
+            deterministic_tsc: true,
+            enforces_tsc_deadline_msr: true,
+        },
     };
     assert_eq!(MockBackend::with_capabilities(caps).capabilities(), caps);
 
@@ -368,12 +390,13 @@ fn mock_observability_and_config_getters() {
     assert!(m.installed_msr_filter().is_none());
     assert!(!m.is_configured());
 
-    let model = CpuidModel::default();
-    let filter = MsrFilter::default();
-    m.set_cpuid(&model).unwrap();
-    m.set_msr_filter(&filter).unwrap();
-    assert_eq!(m.installed_cpuid(), Some(&model));
-    assert_eq!(m.installed_msr_filter(), Some(&filter));
+    let policy = X86Policy {
+        cpuid: CpuidModel::default(),
+        msr_filter: MsrFilter::default(),
+    };
+    m.set_policy(&policy).unwrap();
+    assert_eq!(m.installed_cpuid(), Some(&policy.cpuid));
+    assert_eq!(m.installed_msr_filter(), Some(&policy.msr_filter));
     assert!(m.is_configured());
 
     // map_memory records (gpa, len); set_state feeds save().
@@ -408,7 +431,7 @@ fn mock_map_memory_validation_errors() {
 }
 
 /// Task 95 M2.1: the trait default declines (`Unsupported` — callers full-scan),
-/// and `Box<dyn Backend>` **forwards** the harvest to the inner impl instead of
+/// and `Box<dyn Backend<A = X86>>` **forwards** the harvest to the inner impl instead of
 /// re-answering the default — the shadowing landmine the explicit blanket
 /// forward exists to disarm. The scripted set comes back sorted + deduplicated.
 #[test]
@@ -421,7 +444,7 @@ fn harvest_default_declines_and_box_forwards_to_the_inner_impl() {
 
     let mut m = MockBackend::new();
     m.push_dirty_gfns(vec![9, 2, 2]);
-    let mut boxed: Box<dyn Backend> = Box::new(m);
+    let mut boxed: Box<dyn Backend<A = X86>> = Box::new(m);
     assert_eq!(boxed.harvest_dirty_gfns().unwrap(), vec![2, 9]);
     // Drained: the next harvest window is empty, not a replay of the last.
     assert_eq!(boxed.harvest_dirty_gfns().unwrap(), Vec::<u64>::new());
@@ -431,35 +454,32 @@ fn harvest_default_declines_and_box_forwards_to_the_inner_impl() {
 // Gate 2 — the core run-loop / completion proptest (≥256 cases).
 // ---------------------------------------------------------------------------
 
-/// An arbitrary `Exit` spanning every variant.
-fn arb_exit() -> impl Strategy<Value = Exit> {
+/// An arbitrary `Exit<X86>` spanning every variant.
+fn arb_exit() -> impl Strategy<Value = Exit<X86>> {
     prop_oneof![
-        (any::<u16>(), 1u8..=4, any::<Option<u32>>()).prop_map(|(port, size, write)| Exit::Io {
-            port,
-            size,
-            write
-        }),
-        (any::<u64>(), 1u8..=8, any::<Option<u64>>()).prop_map(|(g, size, write)| Exit::Mmio {
-            gpa: Gpa(g),
-            size,
-            write
-        }),
-        any::<u32>().prop_map(|index| Exit::Rdmsr { index }),
-        (any::<u32>(), any::<u64>()).prop_map(|(index, value)| Exit::Wrmsr { index, value }),
-        any::<[u64; 4]>().prop_map(|r| Exit::Hypercall(HypercallRegs {
-            rax: r[0],
-            rbx: r[1],
-            rcx: r[2],
-            rdx: r[3],
-        })),
-        (any::<u32>(), any::<u32>()).prop_map(|(leaf, subleaf)| Exit::Cpuid { leaf, subleaf }),
-        Just(Exit::Rdtsc),
-        Just(Exit::Rdtscp),
-        (2u8..=8).prop_map(|width| Exit::Rdrand { width }),
-        (2u8..=8).prop_map(|width| Exit::Rdseed { width }),
-        Just(Exit::Hlt),
-        Just(Exit::Shutdown),
-        any::<u64>().prop_map(|v| Exit::Deadline { reached: Moment(v) }),
+        (any::<u16>(), 1u8..=4, any::<Option<u32>>())
+            .prop_map(|(port, size, write)| Exit::Arch(X86Exit::Io { port, size, write })),
+        (any::<u64>(), 1u8..=8, any::<Option<u64>>()).prop_map(|(g, size, write)| Exit::Common(
+            CommonExit::Mmio {
+                gpa: Gpa(g),
+                size,
+                write
+            }
+        )),
+        any::<u32>().prop_map(|index| Exit::Arch(X86Exit::Rdmsr { index })),
+        (any::<u32>(), any::<u64>())
+            .prop_map(|(index, value)| Exit::Arch(X86Exit::Wrmsr { index, value })),
+        any::<[u64; 4]>()
+            .prop_map(|r| Exit::Common(CommonExit::Hypercall(HypercallFrame { args: r }))),
+        (any::<u32>(), any::<u32>())
+            .prop_map(|(leaf, subleaf)| Exit::Arch(X86Exit::Cpuid { leaf, subleaf })),
+        Just(Exit::Arch(X86Exit::Rdtsc)),
+        Just(Exit::Arch(X86Exit::Rdtscp)),
+        (2u8..=8).prop_map(|width| Exit::Arch(X86Exit::Rdrand { width })),
+        (2u8..=8).prop_map(|width| Exit::Arch(X86Exit::Rdseed { width })),
+        Just(Exit::Common(CommonExit::Idle)),
+        Just(Exit::Common(CommonExit::Shutdown)),
+        any::<u64>().prop_map(|v| Exit::Common(CommonExit::Deadline { reached: Moment(v) })),
     ]
 }
 
@@ -498,17 +518,17 @@ proptest! {
         let mut m = configured();
         m.extend_exits(script.clone());
         // One extra exit so there is always a "next" run to probe.
-        m.push_exit(Exit::Shutdown);
+        m.push_exit(Exit::Common(CommonExit::Shutdown));
 
         for scripted in &script {
             let got = m.run().expect("run");
             let needs_completion = m.has_pending();
             // The pending flag is exactly "this exit needs a completion".
             let is_read_style = matches!(scripted,
-                Exit::Io { write: None, .. } | Exit::Mmio { write: None, .. }
-                | Exit::Rdmsr { .. } | Exit::Wrmsr { .. } | Exit::Hypercall(_)
-                | Exit::Cpuid { .. } | Exit::Rdtsc | Exit::Rdtscp
-                | Exit::Rdrand { .. } | Exit::Rdseed { .. });
+                Exit::Arch(X86Exit::Io { write: None, .. }) | Exit::Common(CommonExit::Mmio { write: None, .. })
+                | Exit::Arch(X86Exit::Rdmsr { .. }) | Exit::Arch(X86Exit::Wrmsr { .. }) | Exit::Common(CommonExit::Hypercall(_))
+                | Exit::Arch(X86Exit::Cpuid { .. }) | Exit::Arch(X86Exit::Rdtsc) | Exit::Arch(X86Exit::Rdtscp)
+                | Exit::Arch(X86Exit::Rdrand { .. }) | Exit::Arch(X86Exit::Rdseed { .. }));
             prop_assert_eq!(needs_completion, is_read_style);
 
             if needs_completion {
@@ -519,6 +539,6 @@ proptest! {
                 prop_assert!(!m.has_pending());
             }
         }
-        prop_assert_eq!(m.run().expect("trailing run"), Exit::Shutdown);
+        prop_assert_eq!(m.run().expect("trailing run"), Exit::Common(CommonExit::Shutdown));
     }
 }

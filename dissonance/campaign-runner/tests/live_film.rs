@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! **Task-86 M0 film live gate** (task 87's re-homed box gate) —
-//! `#![cfg(target_os = "linux")]` **and** `#[ignore]`: needs real + LOADED
+//! `#![cfg(all(target_os = "linux", target_arch = "x86_64"))]` **and** `#[ignore]`: needs real + LOADED
 //! patched KVM, the det-cfl-v1 host, and the built game image
 //! (`initramfs-game.cpio.gz` with the ROM baked in). One test drives the whole
 //! re-homed gate:
@@ -59,7 +59,7 @@
 //! stock + verified after the run (the `box-window.sh` lease does this on
 //! release).
 
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::{Read, Write};
 
@@ -70,9 +70,9 @@ use film::{
     Server, Session, blake3_hex, contact_sheet, film, write_ppm,
 };
 use resolution::{SessionError, SocketServer};
-use vmm_backend::Backend;
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
+use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, VmmFactory};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, Vmm};
 
 /// 2 GiB guest RAM (the game-image boot shape, matching `campaign-runner game box`).
@@ -122,7 +122,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64, String> {
+fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend<A = X86>>>, marker: &[u8]) -> Result<u64, String> {
     let stderr = std::io::stderr();
     let mut printed = vmm.serial().len();
     let overlap = marker.len().saturating_sub(1);
@@ -157,7 +157,7 @@ fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64
     Err(format!("marker not seen within {MAX_BOOT_STEPS} steps"))
 }
 
-fn boot_game_server() -> ControlServer<Box<dyn Backend>> {
+fn boot_game_server() -> ControlServer<Box<dyn Backend<A = X86>>> {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run on the determinism box (patched KVM loaded)"
@@ -177,7 +177,7 @@ fn boot_game_server() -> ControlServer<Box<dyn Backend>> {
     .expect("patched boot");
     let steps = drive_to_marker(&mut live, marker.as_bytes()).expect("boot to GAME_READY");
     eprintln!("\n[live_film] readiness at step {steps}");
-    let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || {
+    let factory: VmmFactory<Box<dyn Backend<A = X86>>> = Box::new(move || {
         boot_linux_selected(
             BackendKind::Patched,
             &kernel,

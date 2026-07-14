@@ -47,12 +47,12 @@
 //!
 //! Fail-fast, never skip: a missing `/dev/kvm`, an unbuilt payload, or a non-patched
 //! backend is a loud panic. macOS builds an empty test binary.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::path::PathBuf;
 
 use lapic::{Lapic, LapicConfig};
-use vmm_core::bringup::{BackendKind, boot_selected};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_selected};
 use vmm_core::vmm::TerminalReason;
 
 /// Two seeds. The preemption *instant* is a pure, deterministic function of the seed,
@@ -107,7 +107,7 @@ fn run_irq_landing_rng(seed: u64) -> Run {
 ///
 /// `landings` is the VMM-MEASURED preemption work (`vmm.preemption_landings()`): the
 /// retired-branch count at which `run_until` actually delivered each LAPIC timer
-/// (`Exit::Deadline { reached }`). This is the **load-bearing** seed signal (P2 round-13):
+/// (`CommonExit::Deadline { reached }`). This is the **load-bearing** seed signal (P2 round-13):
 /// it is what the backend measured, NOT the ICR the guest programmed — a backend that
 /// ignored the deadline but still delivered IRQs would have seed-varying *reports* anyway
 /// (the RDRAND inputs differ), so only the measured LANDING work proves seed-dependent

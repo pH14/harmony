@@ -31,7 +31,7 @@ use parse::{Contract, Subleaf};
 /// The ratified contract artifact (`docs/cpu-msr-contract.toml`), embedded at
 /// compile time. The path is relative to this source file; a docs/ move breaks
 /// the build loudly (intended — the contract is a hard input, not optional).
-const CONTRACT_TOML: &str = include_str!("../../../../docs/cpu-msr-contract.toml");
+const CONTRACT_TOML: &str = include_str!("../../../../../../docs/cpu-msr-contract.toml");
 
 /// The parsed contract, built once on first use.
 fn contract() -> &'static Contract {
@@ -194,7 +194,7 @@ pub fn wrmsr_disposition(index: u32, value: u64) -> MsrDisposition {
 /// This is the **frozen base only** — the three dynamic cells (OSXSAVE, the
 /// `0xB`/`0x1F` level echo, the `0xD.0` XSAVE size) are recomputed in-kernel by
 /// stock KVM (`kvm_update_cpuid_runtime`), so the base table is correct and no
-/// CPUID exit fires; a backend surfacing a userspace `Exit::Cpuid` must overlay
+/// CPUID exit fires; a backend surfacing a userspace `X86Exit::Cpuid` must overlay
 /// them via [`resolve_cpuid`].
 pub fn cpuid_model() -> CpuidModel {
     let c = contract();
@@ -223,7 +223,7 @@ pub fn cpuid_model() -> CpuidModel {
 }
 
 /// Overlay the three dynamic CPUID cells (see [`cpuid_model`]) onto the frozen
-/// `base` entry when servicing a userspace `Exit::Cpuid`, from the guest's live
+/// `base` entry when servicing a userspace `X86Exit::Cpuid`, from the guest's live
 /// `CR4`/`XCR0` (`base.leaf`/`base.subleaf` select which rule applies). Never
 /// called for stock `KvmBackend` (CPUID is in-kernel); it exists so the
 /// patched/direct path stays contract-correct. Pure.

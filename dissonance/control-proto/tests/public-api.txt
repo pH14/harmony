@@ -45,7 +45,7 @@ pub control_proto::ControlError::Unsupported
 pub enum control_proto::CrashKind
 pub control_proto::CrashKind::Panic
 pub control_proto::CrashKind::Shutdown
-pub control_proto::CrashKind::TripleFault
+pub control_proto::CrashKind::UnrecoverableFault
 pub enum control_proto::HashScope
 pub control_proto::HashScope::Disk
 pub control_proto::HashScope::Region

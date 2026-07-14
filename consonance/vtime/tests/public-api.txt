@@ -76,16 +76,16 @@ pub struct vtime::TimerToken(pub u64)
 pub struct vtime::VClock
 impl vtime::VClock
 pub fn vtime::VClock::advance_idle(&mut self, u64)
+pub fn vtime::VClock::guest_ticks(&self, u64) -> u64
 pub fn vtime::VClock::new(vtime::VClockConfig) -> core::result::Result<vtime::VClock, vtime::VtimeError>
 pub fn vtime::VClock::snapshot_vns(&self, u64) -> u64
-pub fn vtime::VClock::tsc(&self, u64) -> u64
 pub fn vtime::VClock::vns(&self, u64) -> u64
 pub fn vtime::VClock::work_for_vns(&self, u64) -> u64
 pub struct vtime::VClockConfig
+pub vtime::VClockConfig::guest_base: u64
+pub vtime::VClockConfig::guest_hz: u64
 pub vtime::VClockConfig::ratio_den: u64
 pub vtime::VClockConfig::ratio_num: u64
-pub vtime::VClockConfig::tsc_base: u64
-pub vtime::VClockConfig::tsc_hz: u64
 pub vtime::VClockConfig::vns_base: u64
 pub trait vtime::CpuBackend
 pub fn vtime::CpuBackend::run_until_overflow(&mut self, u64) -> core::result::Result<u64, vtime::BackendError>

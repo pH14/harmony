@@ -459,7 +459,7 @@ pub(crate) fn stop_detail(stop: &StopReason) -> Option<String> {
         StopReason::Crash { info, .. } => {
             let kind = match info.kind {
                 control_proto::CrashKind::Panic => "panic",
-                control_proto::CrashKind::TripleFault => "triple-fault",
+                control_proto::CrashKind::UnrecoverableFault => "unrecoverable-fault",
                 control_proto::CrashKind::Shutdown => "shutdown",
             };
             Some(format!("{kind}: {}", String::from_utf8_lossy(&info.detail)))

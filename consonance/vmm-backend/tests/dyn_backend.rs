@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Gate 4 — object-safety / dyn-compatibility **and** the `impl Backend for
 //! Box<B>` blanket-forward (task 21). The composition root holds a
-//! `Box<dyn Backend>` and injects the concrete backend at `fn main`; this test
+//! `Box<dyn Backend<A = X86>>` and injects the concrete backend at `fn main`; this test
 //! constructs one and drives **every** trait method through it, so each blanket
 //! forward is exercised with a trait-observable assertion (a mutant that drops a
 //! forward is caught: a skipped completion leaves the exit pending, so the next
@@ -10,14 +10,14 @@
 #![cfg(feature = "mock")]
 
 use vmm_backend::{
-    Backend, CpuidModel, Exit, Gpa, HypercallRegs, Injection, MockBackend, Moment, MsrFilter,
-    VcpuState,
+    Backend, CommonExit, CpuidModel, Exit, Gpa, HypercallFrame, Injection, MockBackend, Moment,
+    MsrFilter, VcpuState, X86, X86Completion, X86Exit, X86Policy,
 };
 
 /// Compiles only while `Backend` is dyn-compatible (no generic methods, no
-/// `Self`-by-value returns). `Box<dyn Backend>: Backend` is proven by the test
+/// `Self`-by-value returns). `Box<dyn Backend<A = X86>>: Backend` is proven by the test
 /// body, which drives the blanket impl directly.
-fn _assert_object_safe(_: &dyn Backend) {}
+fn _assert_object_safe(_: &dyn Backend<A = X86>) {}
 
 #[test]
 fn boxed_backend_forwards_every_method() {
@@ -25,33 +25,37 @@ fn boxed_backend_forwards_every_method() {
     // is driven and observed. Each exit is followed by another op, so a dropped
     // completion forward surfaces as a `PendingCompletion` on the next `run`.
     let script = [
-        Exit::Cpuid {
+        Exit::Arch(X86Exit::Cpuid {
             leaf: 1,
             subleaf: 0,
-        },
-        Exit::Rdmsr { index: 0x10 },
-        Exit::Wrmsr {
+        }),
+        Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+        Exit::Arch(X86Exit::Wrmsr {
             index: 0x20,
             value: 7,
-        },
-        Exit::Wrmsr {
+        }),
+        Exit::Arch(X86Exit::Wrmsr {
             index: 0x30,
             value: 9,
-        },
-        Exit::Hypercall(HypercallRegs::default()),
-        Exit::Io {
+        }),
+        Exit::Common(CommonExit::Hypercall(HypercallFrame::default())),
+        Exit::Arch(X86Exit::Io {
             port: 0x3F8,
             size: 1,
             write: None,
-        },
-        Exit::Deadline { reached: Moment(0) },
+        }),
+        Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
     ];
-    let mut backend: Box<dyn Backend> = Box::new(MockBackend::with_exits(script));
+    let mut backend: Box<dyn Backend<A = X86>> = Box::new(MockBackend::with_exits(script));
 
     // set_cpuid / set_msr_filter forwards: if either is dropped, `run` below fails
     // `NotConfigured`.
-    backend.set_cpuid(&CpuidModel::default()).unwrap();
-    backend.set_msr_filter(&MsrFilter::default()).unwrap();
+    backend
+        .set_policy(&X86Policy {
+            cpuid: CpuidModel::default(),
+            msr_filter: MsrFilter::default(),
+        })
+        .unwrap();
 
     // map_memory forward (an `unsafe fn` even through `dyn`): a valid map succeeds,
     // and a misaligned one errors — a dropped forward would skip the mock's
@@ -67,47 +71,57 @@ fn boxed_backend_forwards_every_method() {
     // the completion forward landed).
     assert_eq!(
         backend.run().unwrap(),
-        Exit::Cpuid {
+        Exit::Arch(X86Exit::Cpuid {
             leaf: 1,
             subleaf: 0
-        }
+        })
     );
-    backend.complete_cpuid(0xA, 0xB, 0xC, 0xD).unwrap();
+    backend
+        .complete_arch(X86Completion::Cpuid {
+            eax: 0xA,
+            ebx: 0xB,
+            ecx: 0xC,
+            edx: 0xD,
+        })
+        .unwrap();
 
-    assert_eq!(backend.run().unwrap(), Exit::Rdmsr { index: 0x10 });
+    assert_eq!(
+        backend.run().unwrap(),
+        Exit::Arch(X86Exit::Rdmsr { index: 0x10 })
+    );
     backend.complete_read(0x42).unwrap();
 
     assert_eq!(
         backend.run().unwrap(),
-        Exit::Wrmsr {
+        Exit::Arch(X86Exit::Wrmsr {
             index: 0x20,
             value: 7
-        }
+        })
     );
     backend.complete_ok().unwrap();
 
     assert_eq!(
         backend.run().unwrap(),
-        Exit::Wrmsr {
+        Exit::Arch(X86Exit::Wrmsr {
             index: 0x30,
             value: 9
-        }
+        })
     );
     backend.complete_fault().unwrap();
 
     assert_eq!(
         backend.run().unwrap(),
-        Exit::Hypercall(HypercallRegs::default())
+        Exit::Common(CommonExit::Hypercall(HypercallFrame::default()))
     );
     backend.complete_hypercall(0x99).unwrap();
 
     assert_eq!(
         backend.run().unwrap(),
-        Exit::Io {
+        Exit::Arch(X86Exit::Io {
             port: 0x3F8,
             size: 1,
             write: None
-        }
+        })
     );
     backend.complete_read(0x55).unwrap();
 
@@ -115,7 +129,7 @@ fn boxed_backend_forwards_every_method() {
     // so a dropped forward (or wrong value) fails this assertion.
     assert_eq!(
         backend.run_until(Moment(5)).unwrap(),
-        Exit::Deadline { reached: Moment(5) }
+        Exit::Common(CommonExit::Deadline { reached: Moment(5) })
     );
 
     // inject forward: exercised through the box (its effect is not trait-observable
@@ -146,12 +160,19 @@ fn injection_forwards_through_box() {
     // accepts nothing and `take_accepted_interrupt` → `None`); a dropped/Defaulted
     // `take_accepted_interrupt` returns the wrong value. Both are trait-observable
     // here, so the box forwards are killable (unlike the effect-only `inject`).
-    let mut backend: Box<dyn Backend> = Box::new(MockBackend::with_exits(vec![Exit::Hlt]));
-    backend.set_cpuid(&CpuidModel::default()).unwrap();
-    backend.set_msr_filter(&MsrFilter::default()).unwrap();
+    let mut backend: Box<dyn Backend<A = X86>> =
+        Box::new(MockBackend::with_exits(vec![Exit::Common(
+            CommonExit::Idle,
+        )]));
+    backend
+        .set_policy(&X86Policy {
+            cpuid: CpuidModel::default(),
+            msr_filter: MsrFilter::default(),
+        })
+        .unwrap();
 
     backend.set_pending_irq(Some(0x40)).unwrap();
-    assert_eq!(backend.run().unwrap(), Exit::Hlt); // mock accepts the pending IRQ
+    assert_eq!(backend.run().unwrap(), Exit::Common(CommonExit::Idle)); // mock accepts the pending IRQ
     assert_eq!(backend.take_accepted_interrupt(), Some(0x40));
     assert_eq!(backend.take_accepted_interrupt(), None);
 }

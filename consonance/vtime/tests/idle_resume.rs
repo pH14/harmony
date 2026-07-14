@@ -90,8 +90,8 @@ proptest! {
         let cfg = VClockConfig {
             ratio_num,
             ratio_den: 1,
-            tsc_hz: 2_000_000_000,
-            tsc_base: 0,
+            guest_hz: 2_000_000_000,
+            guest_base: 0,
             vns_base: initial_idle_vns, // the idle accumulator's starting value
         };
         let mut clk = VClock::new(cfg).expect("ratio_den==1 config is valid");
@@ -154,7 +154,7 @@ proptest! {
     ) {
         fn run(ratio_num: u64, ops: &[Op]) -> (Vec<u64>, u64) {
             let cfg = VClockConfig {
-                ratio_num, ratio_den: 1, tsc_hz: 2_000_000_000, tsc_base: 0, vns_base: 0,
+                ratio_num, ratio_den: 1, guest_hz: 2_000_000_000, guest_base: 0, vns_base: 0,
             };
             let mut clk = VClock::new(cfg).unwrap();
             let planner = IdlePlanner::new();

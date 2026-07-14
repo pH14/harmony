@@ -152,9 +152,9 @@ pub struct VtimeState {
     /// Denominator of the work→nanosecond ratio. Must be `1` to be encodable.
     pub ratio_den: u64,
     /// Virtual TSC frequency in Hz.
-    pub tsc_hz: u64,
+    pub guest_hz: u64,
     /// TSC value corresponding to `vns == 0`.
-    pub tsc_base: u64,
+    pub guest_base: u64,
     /// The captured `VClock::snapshot_vns(work)` result (whole nanoseconds).
     pub snapshot_vns: u64,
 }

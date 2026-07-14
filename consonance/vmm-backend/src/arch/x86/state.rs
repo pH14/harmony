@@ -14,6 +14,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::types::MpState;
+
 /// Full guest-visible vCPU state for snapshot/restore. The per-vCPU input to the
 /// M2 state hash (`docs/BRINGUP.md` step 6).
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -230,16 +232,4 @@ pub struct VcpuEvents {
     /// A triple fault is **pending** (`KVM_VCPUEVENT_VALID_TRIPLE_FAULT`). Without
     /// it a snapshot taken with a queued triple fault restores as if none occurred.
     pub triple_fault_pending: u8,
-}
-
-/// Multiprocessor run state (`KVM_GET_MP_STATE`): a snapshot taken at an
-/// idle/`HLT` quiescent point must record the halt, or restore wrongly resumes a
-/// runnable vCPU (R1 Consequence 1).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum MpState {
-    /// `KVM_MP_STATE_RUNNABLE`.
-    #[default]
-    Runnable,
-    /// `KVM_MP_STATE_HALTED`.
-    Halted,
 }

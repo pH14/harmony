@@ -56,15 +56,15 @@
 //! Knobs (env): `WORKLOAD_MARKER` (the serial substring after which the scan/seal looks
 //! for a mid-workload non-quiescent point, default the postmaster-ready banner),
 //! `BOOT_CMDLINE` (overrides the kernel command line, as in `live_postgres.rs`).
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::Write;
 use std::time::{Duration, Instant};
 
 use snapshot_store::SnapshotId;
-use vmm_backend::Backend;
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
+use vmm_backend::{Backend, X86};
 use vmm_core::snapshot::SnapshotEngine;
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
 /// 2 GiB of guest RAM — identical to `live_postgres.rs` / `live_branching_demo.rs`.
@@ -126,7 +126,7 @@ fn require_kvm() {
 
 /// Require the §1.1 `det-cfl-v1` host baseline, else **panic** with the report.
 fn require_host_baseline() {
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
     eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 baseline:");
     for o in &report {
@@ -167,7 +167,7 @@ fn hex(d: &[u8; 32]) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-type DynVmm = Vmm<Box<dyn Backend>>;
+type DynVmm = Vmm<Box<dyn Backend<A = X86>>>;
 
 /// Boot the Postgres image on the patched backend at `seed`. Panics loudly if the box
 /// is not ready (no early-return that nextest would count as a vacuous pass).

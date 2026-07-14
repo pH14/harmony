@@ -34,25 +34,22 @@ use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
 use explorer::{SpecEnvCodec, StreamId};
 use runtrace::TraceStore;
-use vmm_backend::Backend;
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
+use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, VmmFactory};
+use vmm_core::vendor::x86::bringup::boot_linux_selected;
 use vmm_core::vmm::{Step, Vmm};
 
 use campaign_runner::gamecampaign::{GameCampaignConfig, run_game_campaign};
 
 use super::{
-    BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, finish, finish_campaign, finish_game,
-    finish_recording, parse_game_config, parse_retain, print_game_artifacts, seeds,
+    BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, X86_64_BOOT, finish, finish_campaign,
+    finish_game, finish_recording, parse_game_config, parse_retain, print_game_artifacts, seeds,
 };
 
 /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
 const GUEST_RAM_LEN: usize = 2 << 30;
 /// The boot seed the live VM runs under (matches the branching demo).
 const BOOT_SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
-/// The determinism command line (identical to the branching demo).
-const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check \
-                       lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable";
 /// A safety cap on the boot-to-marker drive (the external `timeout` is the
 /// real bound; this stops a wedged guest from looping forever).
 const MAX_BOOT_STEPS: u64 = 50_000_000_000;
@@ -89,7 +86,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// ever-growing buffer every step would be `O(steps × serial_len)` — on a
 /// real Postgres boot (millions of steps, a large console) that alone can
 /// make the drive look hung.
-fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64, String> {
+fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend<A = X86>>>, marker: &[u8]) -> Result<u64, String> {
     let stderr = std::io::stderr();
     let mut printed = vmm.serial().len();
     // Where the next marker scan starts: keep a marker-1 overlap behind
@@ -148,7 +145,7 @@ fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64
 /// boot-to-ready wall-clock (µs, task 96 — observation only), and the boot
 /// serial transcript up to the readiness marker (the game path's ROM-hash
 /// cross-check input).
-type BootedServer = (ControlServer<Box<dyn Backend>>, u64, Vec<u8>);
+type BootedServer = (ControlServer<Box<dyn Backend<A = X86>>>, u64, Vec<u8>);
 
 fn boot_server(
     kernel_name: &str,
@@ -163,7 +160,7 @@ fn boot_server(
         return Err(ExitCode::FAILURE);
     }
     // The frozen contract cannot run off the det-cfl-v1 baseline.
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     if let Some(bad) = report.iter().find(|o| !o.pass) {
         eprintln!(
             "[campaign-runner] host is not the det-cfl-v1 baseline (first failing assertion: {} \
@@ -187,11 +184,11 @@ fn boot_server(
     // post-boot drive to the marker.
     let boot_t0 = mark();
     let mut live = match boot_linux_selected(
-        BackendKind::Patched,
+        X86_64_BOOT.backend,
         &kernel,
         &initramfs,
         GUEST_RAM_LEN,
-        CMDLINE,
+        X86_64_BOOT.cmdline,
         BOOT_SEED,
     ) {
         Ok(v) => v,
@@ -224,13 +221,13 @@ fn boot_server(
     // kernel/initramfs copies into the closure rather than cloning them —
     // an initramfs is tens/hundreds of MB, and cloning would keep two
     // copies resident for the whole run.
-    let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || {
+    let factory: VmmFactory<Box<dyn Backend<A = X86>>> = Box::new(move || {
         boot_linux_selected(
-            BackendKind::Patched,
+            X86_64_BOOT.backend,
             &kernel,
             &initramfs,
             GUEST_RAM_LEN,
-            CMDLINE,
+            X86_64_BOOT.cmdline,
             BOOT_SEED,
         )
     });

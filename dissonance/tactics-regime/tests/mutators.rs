@@ -29,7 +29,7 @@ fn v1_host() -> impl Strategy<Value = HostFault> {
             gpa,
             mask: BitMask(m)
         }),
-        any::<u8>().prop_map(|vector| HostFault::InjectInterrupt { vector }),
+        any::<u32>().prop_map(|vector| HostFault::InjectInterrupt { vector }),
     ]
 }
 

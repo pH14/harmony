@@ -7,7 +7,7 @@
 //! untrusted image bytes, so this is the totality gate.
 
 use proptest::prelude::*;
-use vmm_core::linux_loader::{self, SETUP_HEADER_OFFSET};
+use vmm_core::vendor::x86::linux_loader::{self, SETUP_HEADER_OFFSET};
 
 /// Image-size bound: a few KiB natively (enough to plant a full setup header and
 /// a protected-mode tail); tiny under Miri (allocation + interpreted copies

@@ -18,7 +18,7 @@
 
 use vmm_backend::{MpState, Segment, VcpuRegs, VcpuSregs, VcpuState};
 
-use crate::multiboot::MULTIBOOT_BOOTLOADER_MAGIC;
+use crate::vendor::x86::multiboot::MULTIBOOT_BOOTLOADER_MAGIC;
 
 /// Guest-physical address of the minimal Multiboot info struct (a fixed low-RAM
 /// page below 1 MiB, outside the payload load region and the boot page-tables).
@@ -154,14 +154,16 @@ pub fn protected_mode_entry(entry_addr: u32, mbi_gpa: u32) -> VcpuState {
 /// Write a minimal Multiboot info struct (`flags = 0`; the rest zeroed) into
 /// `guest_ram` at [`BOOT_INFO_GPA`] and return that GPA for `EBX`. The task-04
 /// shims do not read it; this only guarantees `EBX` points at valid, mapped,
-/// zeroed RAM. Errors with [`crate::multiboot::LoadError::OutOfRange`] if it would
+/// zeroed RAM. Errors with [`crate::vendor::x86::multiboot::LoadError::OutOfRange`] if it would
 /// not fit.
-pub fn write_boot_info(guest_ram: &mut [u8]) -> Result<u32, crate::multiboot::LoadError> {
+pub fn write_boot_info(
+    guest_ram: &mut [u8],
+) -> Result<u32, crate::vendor::x86::multiboot::LoadError> {
     let start = BOOT_INFO_GPA as usize;
     let end = start
         .checked_add(BOOT_INFO_LEN)
         .filter(|&e| e <= guest_ram.len())
-        .ok_or(crate::multiboot::LoadError::OutOfRange(
+        .ok_or(crate::vendor::x86::multiboot::LoadError::OutOfRange(
             BOOT_INFO_GPA as u64,
             BOOT_INFO_GPA as u64 + BOOT_INFO_LEN as u64,
         ))?;
@@ -418,7 +420,7 @@ mod tests {
         // `BOOT_INFO_GPA + BOOT_INFO_LEN` arithmetic (kills the `+`→`-`/`*` mutants).
         assert_eq!(
             write_boot_info(&mut ram),
-            Err(crate::multiboot::LoadError::OutOfRange(
+            Err(crate::vendor::x86::multiboot::LoadError::OutOfRange(
                 BOOT_INFO_GPA as u64,
                 BOOT_INFO_GPA as u64 + BOOT_INFO_LEN as u64,
             ))

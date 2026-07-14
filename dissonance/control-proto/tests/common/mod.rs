@@ -125,7 +125,7 @@ pub fn arb_regs_view() -> impl Strategy<Value = RegsView> {
 fn arb_crash_kind() -> impl Strategy<Value = CrashKind> {
     prop_oneof![
         Just(CrashKind::Panic),
-        Just(CrashKind::TripleFault),
+        Just(CrashKind::UnrecoverableFault),
         Just(CrashKind::Shutdown),
     ]
 }

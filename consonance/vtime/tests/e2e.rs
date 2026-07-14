@@ -51,8 +51,8 @@ fn run_scenario(seed: u64) -> ScenarioLog {
     let mut clock = VClock::new(VClockConfig {
         ratio_num: RATIO_NUM,
         ratio_den: 1,
-        tsc_hz: 2_000_000_000,
-        tsc_base: 0,
+        guest_hz: 2_000_000_000,
+        guest_base: 0,
         vns_base: 0,
     })
     .expect("valid clock config");
@@ -134,7 +134,7 @@ fn run_scenario(seed: u64) -> ScenarioLog {
             single_steps_used,
             idle,
             vns_after: now_vns,
-            tsc_after: clock.tsc(cpu.work()),
+            tsc_after: clock.guest_ticks(cpu.work()),
         });
     }
 

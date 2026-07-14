@@ -224,23 +224,23 @@ pub fn campaign_runner::mock::CountedWork::reset(&mut self) -> core::result::Res
 pub fn campaign_runner::mock::CountedWork::work(&self) -> core::result::Result<u64, vmm_core::work::WorkError>
 pub struct campaign_runner::mock::CountingBackend
 impl vmm_backend::backend::Backend for campaign_runner::mock::CountingBackend
-pub fn campaign_runner::mock::CountingBackend::capabilities(&self) -> vmm_backend::exit::Capabilities
-pub fn campaign_runner::mock::CountingBackend::complete_cpuid(&mut self, u32, u32, u32, u32) -> vmm_backend::error::Result<()>
+pub type campaign_runner::mock::CountingBackend::A = vmm_backend::arch::x86::X86
+pub fn campaign_runner::mock::CountingBackend::capabilities(&self) -> vmm_backend::exit::Capabilities<vmm_backend::arch::x86::X86Caps>
+pub fn campaign_runner::mock::CountingBackend::complete_arch(&mut self, vmm_backend::arch::x86::X86Completion) -> vmm_backend::error::Result<()>
 pub fn campaign_runner::mock::CountingBackend::complete_fault(&mut self) -> vmm_backend::error::Result<()>
 pub fn campaign_runner::mock::CountingBackend::complete_hypercall(&mut self, u64) -> vmm_backend::error::Result<()>
 pub fn campaign_runner::mock::CountingBackend::complete_ok(&mut self) -> vmm_backend::error::Result<()>
 pub fn campaign_runner::mock::CountingBackend::complete_read(&mut self, u64) -> vmm_backend::error::Result<()>
 pub fn campaign_runner::mock::CountingBackend::exit_counts(&self) -> vmm_backend::exit::ExitCounts
-pub fn campaign_runner::mock::CountingBackend::inject(&mut self, vmm_backend::exit::Injection) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::error::Result<()>
 pub unsafe fn campaign_runner::mock::CountingBackend::map_memory(&mut self, vmm_backend::types::Gpa, &mut [u8]) -> vmm_backend::error::Result<()>
 pub fn campaign_runner::mock::CountingBackend::reset_exit_counts(&mut self)
-pub fn campaign_runner::mock::CountingBackend::restore(&mut self, &vmm_backend::state::VcpuState) -> vmm_backend::error::Result<()>
-pub fn campaign_runner::mock::CountingBackend::run(&mut self) -> vmm_backend::error::Result<vmm_backend::exit::Exit>
-pub fn campaign_runner::mock::CountingBackend::run_until(&mut self, vmm_backend::types::Moment) -> vmm_backend::error::Result<vmm_backend::exit::Exit>
-pub fn campaign_runner::mock::CountingBackend::save(&self) -> vmm_backend::error::Result<vmm_backend::state::VcpuState>
-pub fn campaign_runner::mock::CountingBackend::set_cpuid(&mut self, &vmm_backend::config::CpuidModel) -> vmm_backend::error::Result<()>
-pub fn campaign_runner::mock::CountingBackend::set_msr_filter(&mut self, &vmm_backend::config::MsrFilter) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::restore(&mut self, &vmm_backend::arch::x86::state::VcpuState) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::run(&mut self) -> vmm_backend::error::Result<vmm_backend::exit::Exit<vmm_backend::arch::x86::X86>>
+pub fn campaign_runner::mock::CountingBackend::run_until(&mut self, vmm_backend::types::Moment) -> vmm_backend::error::Result<vmm_backend::exit::Exit<vmm_backend::arch::x86::X86>>
+pub fn campaign_runner::mock::CountingBackend::save(&self) -> vmm_backend::error::Result<vmm_backend::arch::x86::state::VcpuState>
 pub fn campaign_runner::mock::CountingBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::error::Result<()>
 pub fn campaign_runner::mock::CountingBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
 pub struct campaign_runner::mock::SharedWork
 pub struct campaign_runner::mock::TickingWork
@@ -252,11 +252,11 @@ pub fn campaign_runner::mock::TickingWork::work(&self) -> core::result::Result<u
 pub const campaign_runner::mock::BOOT_SEED: u64
 pub const campaign_runner::mock::RAM: usize
 pub const campaign_runner::mock::WORK_STEP: u64
-pub fn campaign_runner::mock::chain_fork_script(usize, bool) -> alloc::vec::Vec<vmm_backend::exit::Exit>
-pub fn campaign_runner::mock::default_fork_script() -> alloc::vec::Vec<vmm_backend::exit::Exit>
-pub fn campaign_runner::mock::recording_fork_script() -> alloc::vec::Vec<vmm_backend::exit::Exit>
-pub fn campaign_runner::mock::server(alloc::vec::Vec<vmm_backend::exit::Exit>) -> core::result::Result<vmm_core::control::ControlServer<campaign_runner::mock::CountingBackend>, vmm_core::vmm::VmmError>
-pub fn campaign_runner::mock::vmm(alloc::vec::Vec<vmm_backend::exit::Exit>, u64) -> core::result::Result<vmm_core::vmm::Vmm<campaign_runner::mock::CountingBackend>, vmm_core::vmm::VmmError>
+pub fn campaign_runner::mock::chain_fork_script(usize, bool) -> alloc::vec::Vec<vmm_backend::exit::Exit<vmm_backend::arch::x86::X86>>
+pub fn campaign_runner::mock::default_fork_script() -> alloc::vec::Vec<vmm_backend::exit::Exit<vmm_backend::arch::x86::X86>>
+pub fn campaign_runner::mock::recording_fork_script() -> alloc::vec::Vec<vmm_backend::exit::Exit<vmm_backend::arch::x86::X86>>
+pub fn campaign_runner::mock::server(alloc::vec::Vec<vmm_backend::exit::Exit<vmm_backend::arch::x86::X86>>) -> core::result::Result<vmm_core::control::ControlServer<campaign_runner::mock::CountingBackend>, vmm_core::vmm::VmmError>
+pub fn campaign_runner::mock::vmm(alloc::vec::Vec<vmm_backend::exit::Exit<vmm_backend::arch::x86::X86>>, u64) -> core::result::Result<vmm_core::vmm::Vmm<campaign_runner::mock::CountingBackend>, vmm_core::vmm::VmmError>
 pub mod campaign_runner::planted
 pub struct campaign_runner::planted::ToyPlantedMachine
 impl campaign_runner::planted::ToyPlantedMachine
@@ -305,7 +305,7 @@ pub campaign_runner::record::RecordedRun::state_hash: [u8; 32]
 pub campaign_runner::record::RecordedRun::stop: explorer::StopReason
 pub campaign_runner::record::RecordedRun::trace_id: runtrace::error::TraceId
 pub fn campaign_runner::record::render_record_table(&campaign_runner::record::RecordReport) -> alloc::string::String
-pub fn campaign_runner::record::run_recording<B: vmm_backend::backend::Backend>(&mut vmm_core::control::ControlServer<B>, &runtrace::store::TraceStore, &campaign_runner::record::RecordConfig) -> core::result::Result<campaign_runner::record::RecordReport, campaign_runner::record::RecordError>
+pub fn campaign_runner::record::run_recording<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(&mut vmm_core::control::ControlServer<B>, &runtrace::store::TraceStore, &campaign_runner::record::RecordConfig) -> core::result::Result<campaign_runner::record::RecordReport, campaign_runner::record::RecordError>
 pub fn campaign_runner::record::stamp(explorer::spine::Moment) -> explorer::spine::Moment
 pub fn campaign_runner::record::verify_record(&campaign_runner::record::RecordReport, usize) -> alloc::vec::Vec<alloc::string::String>
 pub fn campaign_runner::record::verify_store_reload(&runtrace::store::TraceStore, &campaign_runner::record::RecordReport) -> alloc::vec::Vec<alloc::string::String>
@@ -367,7 +367,7 @@ pub fn campaign_runner::hex(&[u8; 32]) -> alloc::string::String
 pub fn campaign_runner::materialize_client(std::os::unix::net::stream::UnixStream, environment::recorded::EnvSpec, campaign_runner::materialize::MaterializeConfig) -> core::result::Result<campaign_runner::materialize::MaterializeReport, explorer::error::MachineError>
 pub fn campaign_runner::probe_vtime<M: explorer::seam::Machine>(&mut M) -> core::result::Result<u64, explorer::error::MachineError>
 pub fn campaign_runner::render_table(&campaign_runner::SweepReport) -> alloc::string::String
-pub fn campaign_runner::run_session<B, T>(&mut vmm_core::control::ControlServer<B>, impl core::ops::function::FnOnce(std::os::unix::net::stream::UnixStream) -> T + core::marker::Send + 'static) -> (core::result::Result<(), vmm_core::control::ServeError>, T) where B: vmm_backend::backend::Backend, T: core::marker::Send + 'static
+pub fn campaign_runner::run_session<B, T>(&mut vmm_core::control::ControlServer<B>, impl core::ops::function::FnOnce(std::os::unix::net::stream::UnixStream) -> T + core::marker::Send + 'static) -> (core::result::Result<(), vmm_core::control::ServeError>, T) where B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>, T: core::marker::Send + 'static
 pub fn campaign_runner::run_sweep<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &campaign_runner::SweepConfig) -> core::result::Result<campaign_runner::SweepReport, explorer::error::MachineError>
 pub fn campaign_runner::sweep_client(std::os::unix::net::stream::UnixStream, environment::recorded::EnvSpec, campaign_runner::SweepConfig) -> core::result::Result<campaign_runner::SweepReport, explorer::error::MachineError>
 pub fn campaign_runner::verify(&campaign_runner::SweepReport, usize) -> alloc::vec::Vec<alloc::string::String>

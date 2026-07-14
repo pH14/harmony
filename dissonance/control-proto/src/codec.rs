@@ -78,7 +78,7 @@ const SR_ASSERTION: u8 = 6;
 
 // ---- CrashKind discriminants. ----
 const CK_PANIC: u8 = 0;
-const CK_TRIPLE_FAULT: u8 = 1;
+const CK_UNRECOVERABLE_FAULT: u8 = 1;
 const CK_SHUTDOWN: u8 = 2;
 
 // ---- HashScope discriminants. ----
@@ -635,7 +635,7 @@ fn read_stop_reason(r: &mut Reader) -> Result<StopReason, ProtocolError> {
 fn write_crash_info(w: &mut Vec<u8>, info: &CrashInfo) {
     w.push(match info.kind {
         CrashKind::Panic => CK_PANIC,
-        CrashKind::TripleFault => CK_TRIPLE_FAULT,
+        CrashKind::UnrecoverableFault => CK_UNRECOVERABLE_FAULT,
         CrashKind::Shutdown => CK_SHUTDOWN,
     });
     put_bytes(w, &info.detail);
@@ -644,7 +644,7 @@ fn write_crash_info(w: &mut Vec<u8>, info: &CrashInfo) {
 fn read_crash_info(r: &mut Reader) -> Result<CrashInfo, ProtocolError> {
     let kind = match r.u8()? {
         CK_PANIC => CrashKind::Panic,
-        CK_TRIPLE_FAULT => CrashKind::TripleFault,
+        CK_UNRECOVERABLE_FAULT => CrashKind::UnrecoverableFault,
         CK_SHUTDOWN => CrashKind::Shutdown,
         _ => return Err(ProtocolError::ShortFrame),
     };

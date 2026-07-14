@@ -23,8 +23,8 @@ fn saturate(v: u128) -> u64 {
 
 /// The defining tsc formula, recomputed independently from the *observed*
 /// vns value (which already includes any idle warps).
-fn tsc_formula(tsc_base: u64, tsc_hz: u64, vns: u64) -> u64 {
-    saturate(u128::from(tsc_base) + u128::from(vns) * u128::from(tsc_hz) / NS_PER_SEC)
+fn tsc_formula(guest_base: u64, guest_hz: u64, vns: u64) -> u64 {
+    saturate(u128::from(guest_base) + u128::from(vns) * u128::from(guest_hz) / NS_PER_SEC)
 }
 
 // --- (a) advance_idle keeps all invariants -------------------------------
@@ -36,8 +36,8 @@ proptest! {
     fn advance_idle_keeps_monotonicity_and_tsc_formula(
         ratio_num in 1u64..=1 << 20,
         ratio_den in 1u64..=1 << 20,
-        tsc_hz in prop_oneof![3 => 1u64..=10_000_000_000, 1 => (u64::MAX - 1_000)..=u64::MAX],
-        tsc_base in 0u64..=1 << 40,
+        guest_hz in prop_oneof![3 => 1u64..=10_000_000_000, 1 => (u64::MAX - 1_000)..=u64::MAX],
+        guest_base in 0u64..=1 << 40,
         vns_base in 0u64..=1 << 40,
         // Interleaved guest work and idle warps; occasional huge warps push
         // vns_base into saturation, which must stay monotone too.
@@ -50,33 +50,33 @@ proptest! {
         ),
     ) {
         let mut clock = VClock::new(VClockConfig {
-            ratio_num, ratio_den, tsc_hz, tsc_base, vns_base,
+            ratio_num, ratio_den, guest_hz, guest_base, vns_base,
         }).expect("moderate ratio/base: always accepted");
 
         let mut work = 0u64;
         let mut prev_vns = clock.vns(work);
-        let mut prev_tsc = clock.tsc(work);
-        prop_assert_eq!(prev_tsc, tsc_formula(tsc_base, tsc_hz, prev_vns));
+        let mut prev_tsc = clock.guest_ticks(work);
+        prop_assert_eq!(prev_tsc, tsc_formula(guest_base, guest_hz, prev_vns));
 
         for (work_delta, idle_delta) in script {
             // Guest runs: work advances.
             work = work.saturating_add(work_delta);
             let mut vns = clock.vns(work);
-            let mut tsc = clock.tsc(work);
+            let mut tsc = clock.guest_ticks(work);
             prop_assert!(vns >= prev_vns);
             prop_assert!(tsc >= prev_tsc);
-            prop_assert_eq!(tsc, tsc_formula(tsc_base, tsc_hz, vns));
+            prop_assert_eq!(tsc, tsc_formula(guest_base, guest_hz, vns));
             (prev_vns, prev_tsc) = (vns, tsc);
 
             // Guest HLTs: V-time warps forward at frozen work.
             clock.advance_idle(idle_delta);
             vns = clock.vns(work);
-            tsc = clock.tsc(work);
+            tsc = clock.guest_ticks(work);
             prop_assert!(vns >= prev_vns, "advance_idle moved vns backwards");
             prop_assert!(tsc >= prev_tsc, "advance_idle moved tsc backwards");
             // tsc still equals the defining formula applied to the new total
             // vns — it is derived, never tracked separately.
-            prop_assert_eq!(tsc, tsc_formula(tsc_base, tsc_hz, vns));
+            prop_assert_eq!(tsc, tsc_formula(guest_base, guest_hz, vns));
             // The warp itself is exact (when not saturating): vns advanced by
             // exactly idle_delta at frozen work.
             if vns < u64::MAX && prev_vns.checked_add(idle_delta).is_some() {
@@ -96,13 +96,13 @@ proptest! {
     fn restored_clock_continues_without_discontinuity(
         ratio_num in 1u64..=1 << 20,
         ratio_den in 1u64..=1 << 20,
-        tsc_hz in 1u64..=10_000_000_000,
-        tsc_base in 0u64..=1 << 40,
+        guest_hz in 1u64..=10_000_000_000,
+        guest_base in 0u64..=1 << 40,
         vns_base in 0u64..=1 << 40,
         snap_work in 0u64..=1 << 30,
         deltas in proptest::collection::vec(0u64..=1 << 24, 1..16),
     ) {
-        let cfg = VClockConfig { ratio_num, ratio_den, tsc_hz, tsc_base, vns_base };
+        let cfg = VClockConfig { ratio_num, ratio_den, guest_hz, guest_base, vns_base };
         let original = VClock::new(cfg).expect("moderate config");
         let snap = original.snapshot_vns(snap_work);
         // Work counter restarts at 0; everything else carries over.
@@ -111,7 +111,7 @@ proptest! {
 
         // No discontinuity at the restore instant.
         prop_assert_eq!(restored.vns(0), original.vns(snap_work));
-        prop_assert_eq!(restored.tsc(0), original.tsc(snap_work));
+        prop_assert_eq!(restored.guest_ticks(0), original.guest_ticks(snap_work));
 
         let mut d = 0u64;
         let mut prev = restored.vns(0);
@@ -127,10 +127,10 @@ proptest! {
                 prop_assert_eq!(r_vns, o_vns, "integer ratios must restore exactly");
             }
             // tsc inherits the bound through its own floor.
-            let r_tsc = restored.tsc(d);
-            let o_tsc = original.tsc(snap_work + d);
+            let r_tsc = restored.guest_ticks(d);
+            let o_tsc = original.guest_ticks(snap_work + d);
             prop_assert!(r_tsc <= o_tsc);
-            prop_assert!(o_tsc - r_tsc <= tsc_hz / 1_000_000_000 + 1);
+            prop_assert!(o_tsc - r_tsc <= guest_hz / 1_000_000_000 + 1);
             // Monotone after restore.
             prop_assert!(r_vns >= prev);
             prev = r_vns;
@@ -249,8 +249,8 @@ fn make_rig(p: &RestoreParams) -> Rig {
     let clock = VClock::new(VClockConfig {
         ratio_num: p.ratio_num,
         ratio_den: 1, // integer ratio: snapshot quantization loses nothing
-        tsc_hz: 2_000_000_000,
-        tsc_base: 1 << 30,
+        guest_hz: 2_000_000_000,
+        guest_base: 1 << 30,
         vns_base: 0,
     })
     .expect("valid clock");
@@ -335,12 +335,12 @@ proptest! {
         let snap_work = restored.cpu.work();
         let snap_vns = restored.clock.snapshot_vns(snap_work);
         let pre_vns = restored.clock.vns(snap_work);
-        let pre_tsc = restored.clock.tsc(snap_work);
+        let pre_tsc = restored.clock.guest_ticks(snap_work);
         restored.clock = VClock::new(VClockConfig {
             ratio_num: p.ratio_num,
             ratio_den: 1,
-            tsc_hz: 2_000_000_000,
-            tsc_base: 1 << 30,
+            guest_hz: 2_000_000_000,
+            guest_base: 1 << 30,
             vns_base: snap_vns,
         }).expect("restored config valid");
         restored.cpu.reset_work_counter();
@@ -349,7 +349,7 @@ proptest! {
 
         // No discontinuity across the restore.
         prop_assert_eq!(restored.clock.vns(0), pre_vns);
-        prop_assert_eq!(restored.clock.tsc(0), pre_tsc);
+        prop_assert_eq!(restored.clock.guest_ticks(0), pre_tsc);
 
         rest_firings.extend(restored.fire_n(TOTAL_FIRINGS - p.fire_before_snapshot));
 

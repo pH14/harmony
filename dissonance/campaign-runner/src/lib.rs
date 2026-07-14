@@ -61,7 +61,7 @@ pub fn run_session<B, T>(
     client: impl FnOnce(UnixStream) -> T + Send + 'static,
 ) -> (Result<(), ServeError>, T)
 where
-    B: Backend,
+    B: Backend<A = vmm_backend::X86>,
     T: Send + 'static,
 {
     // A socketpair failure means the harness itself cannot run — loud is right.

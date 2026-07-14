@@ -23,7 +23,7 @@ use resolution::{
 fn host_action() -> impl Strategy<Value = Action> {
     prop_oneof![
         any::<u64>().prop_map(|v| Action::Host(HostFault::SkewTime(Span(v)))),
-        any::<u8>().prop_map(|vector| Action::Host(HostFault::InjectInterrupt { vector })),
+        any::<u32>().prop_map(|vector| Action::Host(HostFault::InjectInterrupt { vector })),
         (any::<u64>(), any::<u64>()).prop_map(|(gpa, m)| Action::Host(HostFault::CorruptMemory {
             gpa,
             mask: BitMask(m)

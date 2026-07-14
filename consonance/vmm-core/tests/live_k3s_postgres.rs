@@ -12,7 +12,7 @@
 //!
 //! These boot `guest/build/bzImage` (the *unchanged* task-36 container-class
 //! kernel) + `guest/build/initramfs-k3s.cpio.gz` (built by
-//! `guest/linux/build-k3s-image.sh`) via [`vmm_core::bringup::boot_linux_selected`],
+//! `guest/linux/build-k3s-image.sh`) via [`vmm_core::vendor::x86::bringup::boot_linux_selected`],
 //! selecting the k3s `/init` with `rdinit=/k3s-init` (`k3s-init.sh`). That init
 //! brings up the cluster, waits for the postgres pod Ready, applies the client pod,
 //! and streams the client's workload output to `ttyS0`.
@@ -74,7 +74,7 @@
 //! `state_hash`/`observable_digest`, so it cannot perturb the deterministic run (the
 //! `Observer` contract). A viewer artifact only — a failure to open/write it is a
 //! warning, never a gate failure.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -82,7 +82,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use telemetry::{Event, EventKind, NdjsonRecorder, Observer};
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
 /// The telemetry recording sink for a single boot: a lossless [`NdjsonRecorder`]
@@ -186,7 +186,7 @@ fn require_kvm() {
 /// Require the §1.1 `det-cfl-v1` host baseline, else **panic** with the report
 /// (`boot_linux` would also refuse such a host).
 fn require_host_baseline() {
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
     eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 baseline:");
     for o in &report {
@@ -359,7 +359,7 @@ impl BootOutcome {
 /// `vmm.exit_counts()` (a read-only accessor) and writes its own file — it never
 /// reads or feeds `state_hash`/`observable_digest`, so attaching it CANNOT perturb
 /// the deterministic run (the `Observer` read-only contract). A viewer artifact.
-fn run_bounded<B: vmm_backend::Backend>(
+fn run_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(
     vmm: &mut Vmm<B>,
     rec: &mut Option<Recorder>,
 ) -> BootOutcome {
@@ -488,7 +488,7 @@ fn map_counts(c: &vmm_backend::ExitCounts) -> telemetry::ExitCounts {
         rdtscp: c.rdtscp,
         rdrand: c.rdrand,
         rdseed: c.rdseed,
-        hlt: c.hlt,
+        hlt: c.idle,
         shutdown: c.shutdown,
         deadline: c.deadline,
     }

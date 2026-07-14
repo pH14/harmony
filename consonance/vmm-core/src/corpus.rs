@@ -9,7 +9,8 @@
 //! It is the frontier glue the dissonance ruling places **in vmm-core** (above the
 //! `Backend` trait): the bridge is generic over the backend, so the stream-digest
 //! and `Subject`-contract logic is unit-tested on macOS against a scripted
-//! `MockBackend`, while the live `boot_patched_payload` path is box-only.
+//! `MockBackend`, while the live patched path (a vendor composition root —
+//! `vendor::x86::bringup::boot_patched_corpus`) is box-only.
 //!
 //! ## Two digests, two oracles
 //!
@@ -46,11 +47,14 @@ use sha2::Digest as _;
 use unison::{RunOutcome, Subject, SubjectError};
 use vmm_backend::Backend;
 
+use crate::vendor::Vendor;
+
 use crate::vmm::Vmm;
 
 /// A [`unison::Subject`] over a [`Vmm`] running one corpus payload. Generic over
 /// the backend so the bridge is exercised by both the macOS `MockBackend` unit
-/// tests and the box-only patched backend ([`boot_patched_payload`]).
+/// tests and the box-only patched backend (composed by
+/// `vendor::x86::bringup::boot_patched_corpus` — box-only, so not an intra-doc link).
 ///
 /// `run_to` runs the payload to terminal on first call (see the module docs on
 /// granularity); `work` is `0` before that run and `1` after (a fresh machine
@@ -58,7 +62,7 @@ use crate::vmm::Vmm;
 /// hash — the full `Vmm::state_hash` folded with the report-stream digest, so O1
 /// sees the report channel; `observable_digest` is the report-stream + serial
 /// O2/O3 digest.
-pub struct CorpusMachine<B: Backend> {
+pub struct CorpusMachine<B: Backend<A: Vendor>> {
     vmm: Vmm<B>,
     ran: bool,
     /// The stringified [`crate::vmm::VmmError`] if the terminal run failed; `None`
@@ -67,7 +71,7 @@ pub struct CorpusMachine<B: Backend> {
     error: Option<String>,
 }
 
-impl<B: Backend> CorpusMachine<B> {
+impl<B: Backend<A: Vendor>> CorpusMachine<B> {
     /// Wrap a configured, ready-to-run [`Vmm`] (the payload already loaded and the
     /// backend composed). The machine has not run yet (`work() == 0`); the first
     /// [`Subject::run_to`] drives it to terminal.
@@ -92,7 +96,7 @@ impl<B: Backend> CorpusMachine<B> {
     }
 }
 
-impl<B: Backend> Subject for CorpusMachine<B> {
+impl<B: Backend<A: Vendor>> Subject for CorpusMachine<B> {
     fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
         // Per the `Subject` contract, a rewind (`target < work()`) is an error checked
         // **before anything else**, even on a halted machine — e.g. `run_to(0)` after a
@@ -138,32 +142,6 @@ impl<B: Backend> Subject for CorpusMachine<B> {
     }
 }
 
-/// Boot the **patched** backend over a built payload ELF and wrap it as a
-/// [`CorpusMachine`], ready for the corpus oracles (box-only). The `seed` flows to
-/// the seeded entropy stream `RDRAND`/`RDSEED` and the `Entropy` hypercall draw
-/// from, so an RNG-consuming payload's observable output varies with it (O3) while
-/// its control flow — and thus its work count — does not.
-///
-/// Box-only (`#[cfg(target_os = "linux")]`): the patched backend + `perf_event`
-/// work counter need bare-metal KVM (`boot_selected`). Fallible — a missing
-/// patched `/dev/kvm`, a non-baseline host, or a malformed payload is a
-/// [`crate::vmm::VmmError`], never a panic; the box runner turns that into a loud
-/// test failure.
-#[cfg(target_os = "linux")]
-pub fn boot_patched_payload(
-    payload: &[u8],
-    guest_ram_len: usize,
-    seed: u64,
-) -> Result<CorpusMachine<Box<dyn Backend>>, crate::vmm::VmmError> {
-    let vmm = crate::bringup::boot_selected(
-        crate::bringup::BackendKind::Patched,
-        payload,
-        guest_ram_len,
-        seed,
-    )?;
-    Ok(CorpusMachine::new(vmm))
-}
-
 /// The domain-separated digest of an ordered report stream and a serial banner —
 /// the same bytes [`Vmm::observable_digest`] hashes, exposed as a free function so
 /// a host-side tool can recompute an O2 golden from a captured report stream
@@ -185,44 +163,44 @@ pub fn observable_digest_of(report_stream: &[u32], serial: &[u8]) -> [u8; 32] {
 mod tests {
     //! The bridge's pure logic — the stream digest and the `Subject` contract —
     //! driven by a scripted `MockBackend` on every platform (no `/dev/kvm`). The
-    //! live patched path ([`boot_patched_payload`]) is box-only and covered by the
+    //! live patched path (`vendor::x86::bringup::boot_patched_corpus`) is box-only and covered by the
     //! `box_corpus` integration test.
 
     use super::*;
-    use crate::devices::{ISA_DEBUG_EXIT_PORT, REPORT_PORT, UART_PORT_BASE};
+    use crate::vendor::x86::devices::{ISA_DEBUG_EXIT_PORT, REPORT_PORT, UART_PORT_BASE};
     use crate::vmm::GuestRam;
     use unison::{SubjectFactory, Verdict, compare_runs};
-    use vmm_backend::{CpuidModel, Exit, MockBackend, MsrFilter};
+    use vmm_backend::{CommonExit, Exit, MockBackend, X86, X86Exit, X86Policy};
 
     /// A scripted exit sequence: emit `name`'s serial banner over the UART, report
     /// `values` (each as two report-port dwords, low then high), then a clean
     /// isa-debug-exit PASS.
-    fn script(name: &str, values: &[u64]) -> Vec<Exit> {
+    fn script(name: &str, values: &[u64]) -> Vec<Exit<X86>> {
         let mut exits = Vec::new();
         for &b in format!("PAYLOAD {name} PASS\n").as_bytes() {
-            exits.push(Exit::Io {
+            exits.push(Exit::Arch(X86Exit::Io {
                 port: UART_PORT_BASE,
                 size: 1,
                 write: Some(u32::from(b)),
-            });
+            }));
         }
         for &v in values {
-            exits.push(Exit::Io {
+            exits.push(Exit::Arch(X86Exit::Io {
                 port: REPORT_PORT,
                 size: 4,
                 write: Some(v as u32),
-            });
-            exits.push(Exit::Io {
+            }));
+            exits.push(Exit::Arch(X86Exit::Io {
                 port: REPORT_PORT,
                 size: 4,
                 write: Some((v >> 32) as u32),
-            });
+            }));
         }
-        exits.push(Exit::Io {
+        exits.push(Exit::Arch(X86Exit::Io {
             port: ISA_DEBUG_EXIT_PORT,
             size: 1,
             write: Some(0),
-        });
+        }));
         exits
     }
 
@@ -238,11 +216,8 @@ mod tests {
         fn spawn(&self, _seed: u64) -> Self::M {
             let mut backend = MockBackend::with_exits(script(&self.name, &self.values));
             backend
-                .set_cpuid(&CpuidModel::default())
-                .expect("set_cpuid");
-            backend
-                .set_msr_filter(&MsrFilter::default())
-                .expect("set_msr_filter");
+                .set_policy(&X86Policy::default())
+                .expect("set_policy");
             CorpusMachine::new(Vmm::new(backend, GuestRam::new(0x1000).unwrap()))
         }
     }
@@ -389,7 +364,8 @@ mod tests {
     // mock with a shared-thread work source, driven through the real `compare_runs`.
     // -----------------------------------------------------------------------
 
-    use crate::vmm::{VtimeWiring, contract_vclock_config};
+    use crate::vendor::x86::contract_vclock_config;
+    use crate::vmm::VtimeWiring;
     use crate::work::{WorkError, WorkSource};
     use std::cell::Cell;
     use std::rc::Rc;
@@ -444,7 +420,7 @@ mod tests {
     /// entropy via `VtimeWiring::new`); only the work counter's thread tally is shared.
     struct SharedWorkFactory {
         thread: Rc<Cell<u64>>,
-        exits: Vec<Exit>,
+        exits: Vec<Exit<X86>>,
         reset_on_start: bool,
     }
     impl SubjectFactory for SharedWorkFactory {
@@ -452,11 +428,8 @@ mod tests {
         fn spawn(&self, seed: u64) -> Self::M {
             let mut backend = MockBackend::with_exits(self.exits.clone());
             backend
-                .set_cpuid(&CpuidModel::default())
-                .expect("set_cpuid");
-            backend
-                .set_msr_filter(&MsrFilter::default())
-                .expect("set_msr_filter");
+                .set_policy(&X86Policy::default())
+                .expect("set_policy");
             let mut vmm = Vmm::new(backend, GuestRam::new(0x1000).unwrap());
             vmm.wire_vtime(
                 VtimeWiring::new(
@@ -475,13 +448,13 @@ mod tests {
 
     /// An entropy-/V-time-consuming script: RDRAND/RDSEED + RDTSC are V-time
     /// intercepts that read the work counter and set the hashed `last_intercept_work`.
-    fn vtime_consuming_script() -> Vec<Exit> {
+    fn vtime_consuming_script() -> Vec<Exit<X86>> {
         vec![
-            Exit::Rdrand { width: 8 },
-            Exit::Rdtsc,
-            Exit::Rdseed { width: 8 },
-            Exit::Rdtsc,
-            Exit::Hlt,
+            Exit::Arch(X86Exit::Rdrand { width: 8 }),
+            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Arch(X86Exit::Rdseed { width: 8 }),
+            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Common(CommonExit::Idle),
         ]
     }
 

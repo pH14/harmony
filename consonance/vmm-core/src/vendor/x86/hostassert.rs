@@ -158,7 +158,7 @@ mod probe {
     use core::arch::x86_64::{__cpuid, __cpuid_count, _fxsave64, CpuidResult};
 
     use super::Outcome;
-    use crate::contract::host_expectations;
+    use crate::vendor::x86::contract::host_expectations;
 
     /// Evaluate every §1.1 assertion against the live CPU.
     pub(super) fn evaluate() -> Vec<Outcome> {

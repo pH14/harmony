@@ -24,7 +24,7 @@
 //! `det-cfl-v1` host; `#[ignore]`d so a plain `cargo nextest` shows it not-run.
 //! Run CPU-pinned per `docs/BOX-PINNING.md`, reverting KVM to stock afterwards:
 //!   `cargo test -p vmm-core --release --test live_sdk -- --ignored --nocapture`
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::path::PathBuf;
 
@@ -32,11 +32,11 @@ use control_proto::{
     HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
 };
 use environment::{EnvSpec, FaultPolicy};
-use vmm_backend::Backend;
-use vmm_core::bringup::{BackendKind, boot_selected};
+use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, VmmFactory, server_caps};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_selected};
 
-type DynServer = ControlServer<Box<dyn Backend>>;
+type DynServer = ControlServer<Box<dyn Backend<A = X86>>>;
 
 /// A captured raw SDK event stream: `(Moment, event_id, detail bytes)` triples.
 type SdkEvents = Vec<(u64, u32, Vec<u8>)>;
@@ -86,7 +86,7 @@ fn require_kvm() {
 }
 
 fn require_host_baseline() {
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
     for o in &report {
         if !o.pass {
@@ -103,7 +103,7 @@ fn require_host_baseline() {
     );
 }
 
-fn boot_demo(payload: &[u8], seed: u64) -> vmm_core::vmm::Vmm<Box<dyn Backend>> {
+fn boot_demo(payload: &[u8], seed: u64) -> vmm_core::vmm::Vmm<Box<dyn Backend<A = X86>>> {
     let mut vmm = boot_selected(BackendKind::Patched, payload, GUEST_RAM_LEN, seed).expect(
         "boot_selected(Patched, sdk-demo) — needs the LOADED patched KVM + perf + det-cfl-v1 host",
     );
@@ -114,7 +114,8 @@ fn boot_demo(payload: &[u8], seed: u64) -> vmm_core::vmm::Vmm<Box<dyn Backend>> 
 fn server(seed: u64) -> DynServer {
     let payload = payload_bytes();
     let live = boot_demo(&payload, seed);
-    let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || Ok(boot_demo(&payload, seed)));
+    let factory: VmmFactory<Box<dyn Backend<A = X86>>> =
+        Box::new(move || Ok(boot_demo(&payload, seed)));
     ControlServer::new(live, factory)
 }
 

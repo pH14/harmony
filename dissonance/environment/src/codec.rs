@@ -202,7 +202,7 @@ pub(crate) fn write_host_fault(w: &mut Vec<u8>, f: &HostFault) {
         }
         HostFault::InjectInterrupt { vector } => {
             w.push(HF_INJECT_INTERRUPT);
-            w.push(*vector);
+            put_u32(w, *vector);
         }
     }
 }
@@ -222,7 +222,7 @@ pub(crate) fn read_host_fault(r: &mut Reader) -> Result<HostFault, EnvError> {
             gpa: r.u64()?,
             mask: BitMask(r.u64()?),
         },
-        HF_INJECT_INTERRUPT => HostFault::InjectInterrupt { vector: r.u8()? },
+        HF_INJECT_INTERRUPT => HostFault::InjectInterrupt { vector: r.u32()? },
         _ => return Err(EnvError::Malformed),
     };
     Ok(f)

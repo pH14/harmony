@@ -235,12 +235,14 @@ fn sequential_entropy_fold_is_bit_identical_reseed_markers_flip_the_task68_pin()
 fn chain_gates_pass_on_a_draw_carrying_script() {
     let mut script = Vec::new();
     for _ in 0..18 {
-        script.push(vmm_backend::Exit::Rdtsc);
-        script.push(vmm_backend::Exit::Rdrand { width: 8 });
-        script.push(vmm_backend::Exit::Rdtsc);
-        script.push(vmm_backend::Exit::Rdtsc);
+        script.push(vmm_backend::Exit::Arch(vmm_backend::X86Exit::Rdtsc));
+        script.push(vmm_backend::Exit::Arch(vmm_backend::X86Exit::Rdrand {
+            width: 8,
+        }));
+        script.push(vmm_backend::Exit::Arch(vmm_backend::X86Exit::Rdtsc));
+        script.push(vmm_backend::Exit::Arch(vmm_backend::X86Exit::Rdtsc));
     }
-    script.push(vmm_backend::Exit::Hlt);
+    script.push(vmm_backend::Exit::Common(vmm_backend::CommonExit::Idle));
     let cfg = MaterializeConfig {
         seed: 0x1234_5678_9ABC_DEF0,
         hops: 3,
