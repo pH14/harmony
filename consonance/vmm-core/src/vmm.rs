@@ -1827,6 +1827,15 @@ where
                 }
                 None => bytes.push(0),
             }
+            // The registration CAPABILITY (V-time wired + a deterministic work
+            // counter), not just the offer (cross-model r6 P1). Two offered VMs
+            // with V-time wired but different `deterministic_clock` backends have
+            // different futures — the next registration succeeds on one and
+            // answers `UnknownService` on the other — so they must hash
+            // differently, exactly as `registrable` makes them restore-
+            // incompatible. Without this the fold would carry the offer but not
+            // the capability the offer's future turns on.
+            bytes.push(u8::from(self.pvclock_available()));
             put_chunk(&mut out, b"PVCK", &bytes);
         }
         // The canonical `vm_state` blob, folded into the hash **only** when the
@@ -2508,6 +2517,14 @@ where
             let vt = self.vtime.as_mut().expect("checked above");
             vt.last_intercept_work = work;
         }
+        // The doorbell `OUT` is now treated as an exact V-time boundary (we just
+        // anchored to its frozen work count), so V-time IS synchronized here —
+        // exactly as `complete_tsc` sets it after an RDTSC (cross-model r6 P2).
+        // A `step()` clears this flag before entry, so without restoring it a
+        // direct caller that registers and then snapshots gets a spurious
+        // `NotQuiescent`, even though the point is as synchronized as any RDTSC
+        // boundary.
+        self.vtime_synchronized = true;
         {
             let pv = self.pvclock.as_mut().expect("checked above");
             pv.gpa = Some(gpa);
@@ -9494,6 +9511,90 @@ mod tests {
             registered.state_blob(),
             "a registration is a different future — must reach the hash"
         );
+    }
+
+    /// PVCK folds the registration **capability**, not just the offer
+    /// (cross-model r6 P1). Two VMs identical but for `deterministic_clock` have
+    /// different futures — the next registration succeeds on one and answers
+    /// `UnknownService` on the other — so `state_hash` must separate them, or the
+    /// `registrable` carry in the restore record guards a difference the hash
+    /// itself does not see.
+    #[test]
+    fn pvclock_state_hash_separates_registrable_from_unregistrable() {
+        let build = |deterministic: bool| {
+            let mut caps = MOCK_TEST_CAPS;
+            caps.arch.deterministic_tsc = deterministic;
+            let mut m = MockBackend::with_capabilities(caps);
+            m.set_policy(&X86Policy {
+                cpuid: CpuidModel::default(),
+                msr_filter: MsrFilter::default(),
+            })
+            .unwrap();
+            let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
+            vmm.wire_vtime(
+                VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(42)), 7)
+                    .unwrap(),
+            );
+            vmm.enable_pvclock(PVCLOCK_DEFAULT_DELTA_WORK);
+            vmm
+        };
+        let registrable = build(true);
+        let not = build(false);
+        assert!(registrable.pvclock_available() && !not.pvclock_available());
+        assert_ne!(
+            registrable.state_blob(),
+            not.state_blob(),
+            "an offered VM that CAN register and one that cannot hash identically — the \
+             capability their futures turn on is outside the hash"
+        );
+    }
+
+    /// A crafted v4 device blob with the impossible tuple `(delta, Some(gpa),
+    /// registrable=false)` is rejected at decode (cross-model r6 P1) — a
+    /// registered page can only exist on a VM that could register, so this cannot
+    /// come from a valid seal. Accepting it would commit an active registration
+    /// onto a target the capability check would refuse (the next refresh errors
+    /// with no V-time; the page freezes with no deterministic backend).
+    #[test]
+    fn pvclock_decode_rejects_registered_but_non_registrable() {
+        use crate::vendor::x86::records::{DeviceState, encode_device_blob};
+        // A well-formed source: registered AND registrable.
+        let good = DeviceState {
+            pvclock: Some((PVCLOCK_DEFAULT_DELTA_WORK, Some(PV_GPA), true)),
+            ..DeviceState::default()
+        };
+        let mut blob = encode_device_blob(&good).0;
+        // The registrable flag is the LAST byte of the blob (trailing pvclock
+        // record). Flip it to the impossible `false` and re-decode.
+        assert_eq!(*blob.last().unwrap(), 1, "the registrable byte is the tail");
+        *blob.last_mut().unwrap() = 0;
+        assert!(
+            crate::vendor::x86::records::decode_device_blob(&blob).is_err(),
+            "a registered-but-non-registrable v4 record must be rejected at the wire"
+        );
+    }
+
+    /// Registration is a synchronized V-time boundary (cross-model r6 P2): it
+    /// anchors to the frozen doorbell-`OUT` work count exactly like an RDTSC, so
+    /// a direct caller can snapshot immediately after a successful registration
+    /// rather than getting a spurious `NotQuiescent`.
+    #[test]
+    fn pvclock_registration_is_a_synchronized_snapshot_point() {
+        let mut vmm = pvclock_vmm(vec![], Box::new(ScriptedWork::at(10)), 7);
+        // Force the flag to the mid-entry state a real `step()` would leave, so
+        // the test proves registration RESTORES it rather than merely inheriting
+        // a stale `true`.
+        vmm.vtime_synchronized = false;
+        let (status, _) = ring_pvclock_register(&mut vmm, PV_GPA);
+        assert_eq!(status, Status::Ok as u16);
+        assert!(
+            vmm.vtime_synchronized,
+            "registration left V-time unsynchronized — a snapshot right here would be refused \
+             NotQuiescent despite the anchor being exact"
+        );
+        // And a seal at this exact point succeeds (the observable consequence).
+        vmm.save_vm_state()
+            .expect("snapshot immediately after registration must succeed");
     }
 
     /// The §2 point-1 natural-exit refresh runs at NON-intercept exits too

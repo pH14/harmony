@@ -1010,6 +1010,19 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
             _ => return Err(bad("bad pvclock gpa flag")),
         };
         let registrable = r.bool().ok_or(bad("bad pvclock registrable flag"))?;
+        // INTERNAL INVARIANT (cross-model r6 P1): a registered page (`Some(gpa)`)
+        // can only exist on a VM that could register — a real source always
+        // stamps `registrable = true` alongside a GPA. The crafted tuple
+        // `(delta, Some(gpa), false)` cannot come from any valid seal; accepting
+        // it would let a blob commit an *active* registration onto a target the
+        // capability check would otherwise refuse (no V-time ⇒ the next refresh
+        // errors; no deterministic backend ⇒ no Δ deadline arms and the page can
+        // freeze). Reject it at the wire, before it reaches the validator.
+        if gpa.is_some() && !registrable {
+            return Err(bad(
+                "pvclock record marks a registered page non-registrable (impossible tuple)",
+            ));
+        }
         Some((delta_work, gpa, registrable))
     } else {
         None

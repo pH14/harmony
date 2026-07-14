@@ -46,7 +46,7 @@ use control_proto::{
 };
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::{Backend, X86};
-use vmm_core::control::ControlServer;
+use vmm_core::control::{ControlServer, server_caps};
 use vmm_core::exec::ExecSession;
 use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{PVCLOCK_DEFAULT_DELTA_WORK, TerminalReason, Vmm};
@@ -466,6 +466,11 @@ fn g1_arm(kernel: &[u8], initramfs: &[u8], seals: u64, v0: u64, dv: u64) -> (Vec
         ))
     });
     let mut s = ControlServer::new(vmm, factory);
+    // The server refuses every verb until the Hello handshake, so negotiate it
+    // before driving Run/Snapshot (cross-model r6 P1) — otherwise the first
+    // `Run` comes back `ControlError::Unsupported` and `expect_ok` panics before
+    // the gate ever reaches its hash comparison.
+    expect_ok(&mut s, &Request::Hello(server_caps()));
     let mut hashes = Vec::new();
     let mut vt = 0u64;
     for k in 0..seals {
@@ -876,7 +881,7 @@ fn n4_perf_postgres_window_page_off_vs_page_on() {
 
     let arm = |page_on: bool| -> (u64, u64, u64) {
         let mut vmm = boot(&kernel, &initramfs, SEED, page_on);
-        let _ = run_bounded(
+        let obs = run_bounded(
             &mut vmm,
             u64::MAX,
             Duration::from_secs(1800),
@@ -886,6 +891,25 @@ fn n4_perf_postgres_window_page_off_vs_page_on() {
                 !(step % 1_000 == 0 && vmm.effective_vns().unwrap_or(0) >= window)
             },
         );
+        let vns = vmm.effective_vns().unwrap_or(0);
+        // The window must actually COMPLETE (cross-model r6 P2). `run_bounded`
+        // also stops on a step error, a guest terminal, or the 30-minute wall
+        // cap — any of which leaves a truncated window with still-positive
+        // counts that the final sanity check would wave through as valid
+        // kill-condition evidence. Rates from a partial (and page-off-vs-page-on
+        // unequal) window are not a measurement; fail loudly instead.
+        assert!(
+            obs.step_error.is_none(),
+            "page-{} arm hit a step error before the window closed: {:?}",
+            if page_on { "on" } else { "off" },
+            obs.step_error
+        );
+        assert!(
+            vns >= window,
+            "page-{} arm ended at {vns} vns, short of the {window} vns window (guest terminal or \
+             wall timeout?) — a truncated window is not valid perf evidence",
+            if page_on { "on" } else { "off" }
+        );
         let counts = vmm.exit_counts();
         if page_on {
             assert!(
@@ -893,11 +917,7 @@ fn n4_perf_postgres_window_page_off_vs_page_on() {
                 "page-on arm never registered"
             );
         }
-        (
-            counts.rdtsc + counts.rdtscp,
-            counts.total(),
-            vmm.effective_vns().unwrap_or(0),
-        )
+        (counts.rdtsc + counts.rdtscp, counts.total(), vns)
     };
     let (off_rdtsc, off_total, off_vns) = arm(false);
     let (on_rdtsc, on_total, on_vns) = arm(true);
