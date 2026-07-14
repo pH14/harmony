@@ -87,15 +87,19 @@ step 4's `vm-state` header (below).
 - **The trait is designed, NOT frozen.** Doc notes at both `Backend` and `Vendor` say so
   and point at the AA-3 trait-freeze memo. `run_until`'s late-only-stop contract is
   untouched, exactly as instructed.
-- **`VmmError` still carries `Load`/`LinuxLoad`** (multiboot / bzImage) variants — engine
-  error type, vendor-specific payloads. Honest wart; it dissolves at the crate split, and
-  forcing it now would have meant a boxed vendor error for no gate-visible gain.
+- ~~`VmmError` still carries `Load`/`LinuxLoad`~~ — **fixed in round 1** (review
+  suggestion (a)). The engine's error type no longer enumerates one vendor's loaders: a
+  neutral `VendorBoot(Box<dyn Error + Send + Sync>)` carries the cause opaquely (still
+  reachable via `source()` / `downcast_ref`), constructed by the vendor's own composition
+  root through `VmmError::vendor_boot`. `SnapshotError::Lapic` got the same treatment
+  (`DeviceRestore`). Nothing matched on the old typed variants, so the change is free.
 - **`ExitReason`/`ExitCounts` remain a flat roster** (common + x86 today). They are
   *observability*, not dispatch — default-deny lives in the two-level `Exit` — so a
   vendor adds variants additively when it lands. Called out in the type's doc.
 - **`control-proto::RegsView` is an x86-shaped wire view.** I did not change the wire
-  (out of surface); instead the engine now fills it through a `Vendor::regs_view` hook,
-  so the leak is confined to the vendor and visible for whoever specs the ARM wire.
+  (out of surface); instead the engine fills it through a `Vendor::regs_view` hook, so
+  the leak is confined to the vendor and visible for whoever specs the ARM wire. This is
+  the one remaining x86 shape above the seam, and it is deliberate + contained.
 - `cargo fix` will strip test-module imports that only the vendor tests use — if you
   re-run it, re-check `bringup.rs`/`control.rs` test preludes.
 
@@ -130,10 +134,12 @@ step 4's `vm-state` header (below).
   against `--target x86_64-unknown-linux-gnu` — the diff is the reviewable record of
   exactly how the API moved.
 
-## Round 1 — the cross-model pass (PR #109)
+## Round 1 (PR #109)
 
-All three findings were real. Each is verified below by the check that now *fails
-without* the fix.
+All three P1s were real. Each is verified below by a check that now *fails without* the
+fix. The review's two `[suggestion]`s were cheap, so I folded both in rather than
+documenting around them — doing so is what lets the ARCH-BOUNDARY landed-note claim be
+*exactly* true instead of hedged.
 
 1. **The arch seam did not actually compile additively** (`vmm-backend/src/kvm.rs`).
    The x86 KVM substrate was gated on `target_os = "linux"` alone, but `kvm_bindings`
@@ -174,7 +180,33 @@ without* the fix.
    **Observation, not fixed (pre-existing):** the generator can still mint reserved
    identities (`< 16`, ~6% of that arm), which the control plane rejects at stage time.
    That predates this task and is a separate (small) efficiency question — I did not
-   change it, to keep the fix to the regression I caused.
+   change it, to keep the fix scoped to the regression I caused.
+
+### The two suggestions, both folded in
+
+- **(a) The engine's error type named one vendor's loaders.** *(Bonus: the old
+  `#[error("linux load error")]` dropped the cause from `Display` entirely — it was only
+  reachable via `source()`. The new `#[error("vendor boot error: {0}")]` interpolates it,
+  so a box boot failure now prints WHY, not just that it failed.)* `VmmError::{Load,
+  LinuxLoad}` `#[from]`'d `multiboot::LoadError` / `linux_loader::LinuxLoadError`. Which
+  loaders a machine has is per-vendor (ARM loads an `Image` + DTB; Multiboot is *deleted*
+  for it, not ported — §B), so the engine must not enumerate them. Replaced by a neutral
+  `VendorBoot(Box<dyn Error + Send + Sync>)` + `VmmError::vendor_boot(e)`; the typed cause
+  survives via `source()` / `downcast_ref`, and **nothing in the tree matched on the old
+  variants**, so it cost nothing. `SnapshotError::Lapic` — an engine error naming an x86
+  device — became `DeviceRestore` for the same reason.
+- **(b) `bringup` was x86-concrete in the engine namespace.** It genuinely *is* a vendor
+  boot composition root (it installs the x86 CPU-contract policy, runs the Multiboot v1 /
+  bzImage loaders, builds the x86 entry state), and every consumer was already x86-gated —
+  so rather than bless it in place, it **moved** to `vendor::x86::bringup`.
+  `corpus::boot_patched_payload` moved with it (`vendor::x86::bringup::boot_patched_corpus`).
+
+**Result — the rider, satisfied exactly.** The engine namespace now names **no vendor at
+all**: no device, register, exit, loader, or error variant, in any signature, field, or
+error type. Verified by sweeping every engine module's production code (pre-`#[cfg(test)]`)
+for vendor identifiers — zero hits. The ARCH-BOUNDARY landed-note says exactly that, with
+no hedge. (Test modules still name x86, of course — a test needs *a* vendor to run
+against.)
 
 ## Box-gate readiness (NOT run — the box is under the nested-x86 re-cert lock)
 
@@ -191,6 +223,13 @@ expect:
 | Host plane (task 59) | `--test live_host_plane` | Unchanged. **Note:** `HP_VECTOR` is now a `u32` env-parsed value; behavior for any x86 vector (16–255) is identical |
 | Snapshot / branch / dirty-remap | `--test live_snapshot_branch`, `--test live_dirty_remap`, `--test live_nonquiescent_snapshot` | Round-trips bit-identical. **`state_hash` on snapshot-hashing-wired paths moves by the two `vm_state` v2 header bytes** — this is the deliberate step-4 change. Compare *relative* (same-seed-twice, and restore-vs-fresh), not against any pre-task-108 absolute hash |
 | k3s / Postgres | `--test live_k3s_postgres`, `--test live_postgres` | Unchanged |
+
+### Paths that moved (for anyone re-running a box command from memory)
+
+`vmm_core::bringup::*` → `vmm_core::vendor::x86::bringup::*` (and
+`corpus::boot_patched_payload` → `vendor::x86::bringup::boot_patched_corpus`). The box
+test *files* and their `--test` names are unchanged, so every command in the table above
+is still correct as written; only in-source import paths moved.
 
 **The one thing to watch:** any box artifact that recorded an *absolute* `state_hash`
 from a snapshot-hashing-wired run before this task will not match, by exactly the v2
