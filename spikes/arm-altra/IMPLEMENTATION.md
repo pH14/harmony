@@ -323,6 +323,61 @@ host-supplied count is bounded (`checked_add`, a 65 536 sanity cap) before alloc
 `smoke.sh` resolves `timeout`→`gtimeout` so the Mac-local gate does not exit 127 on a
 stock Homebrew setup.
 
+## Round-4 review fixes (PR #108, closing round)
+
+A narrow, mechanical set — all implemented (none needed rebuttal; the one option-shaped
+finding, Miri for the payload crates, was resolved via the reviewer-sanctioned per-crate
+documentation).
+
+- **Live timer registers in the state digest** — the flagship. `KVM_GET_REG_LIST`
+  includes the generic-timer *counters* (`CNTVCT_EL0`, `CNTPCT_EL0`, their `…SS`
+  variants, `KVM_REG_ARM_TIMER_CNT`), whose value advances with elapsed host time, so
+  hashing them would make two same-seed runs digest differently the moment scheduling
+  differs — replay identity dead on arrival day. `digest_state` now excludes them via a
+  portable, Miri-tested `is_host_time_register` (they are the arm64 sysreg coordinates
+  `op0=3, op1=3, CRn=14`; the deterministic controls/comparators/CNTFRQ are kept). The
+  fixture (a sys.rs test) proves two runs differing only in the live counter digest
+  identically, while a real pc difference still diverges.
+- **The PMU probe passed without scheduling the event** — it opened a *disabled*
+  descriptor and closed it, so a pinned event that cannot actually be placed on the PMU
+  reported the AA-0 row green. It now enables the event, runs a little branch work, and
+  reads it back with `TOTAL_TIME_ENABLED`/`RUNNING`: green only if the counter advanced
+  and ran for the whole enabled window (`enabled == running`, non-multiplexed).
+- **A stray external `SIGUSR1` could be counted as a stock delivery.** The handler is
+  now `SA_SIGINFO` and classifies the source by `si_code` — a perf-fd `O_ASYNC` signal
+  carries a `POLL_*` code, a `kill()` carries `SI_USER`. `Machine::run` counts a
+  `SignalKick` only for a perf-sourced kick and re-enters the guest on a foreign signal,
+  so an injected signal cannot certify a delivery the counter never made.
+- **Runs failing before the first counter opened lost their evidence.** The write was
+  gated on an armed attr, so a failure in `Machine::new` / the patch probe /
+  `PerfCounter::open` on the first sample wrote nothing and the totality gap vanished on
+  rerun. Evidence is now written unconditionally (the intended counting-mode perf config
+  when nothing armed), and an empty plan (`--reps 0`) is rejected outright.
+- **Repetitions grouped by absolute target split same-input runs.** The plan reuses one
+  target *delta*, but the stored target is `work_begin + delta`; a divergent `work_begin`
+  gave different absolute targets and replay-identity reported "no group." The
+  repetition key is now `target - work_begin` (checked), and a `target < work_begin`
+  (negative delta) is flagged as malformed rather than producing a phantom group.
+- **`pinned: true` with `core: null` passed.** The recorded core is required evidence
+  for the rr #3607 migration condition; an unrecorded core is now a pinning failure
+  (fixture `reject-pinned-no-core`).
+- **Schema-invalid evidence passed at load.** serde checks Rust types and
+  `deny_unknown_fields`, not the schema's `pattern`/`minLength`/`minimum` — so a manifest
+  with `sha256: ""` loaded and could pass every semantic check. A new `well-formed`
+  check enforces the load-bearing constraints (hash formats, non-empty required strings,
+  the sampling-period minimum) at grade time (fixture `reject-malformed-hash`, which the
+  schema-conformance test also confirms is genuinely schema-invalid).
+- **Miri for the payload crates** — documented per-crate rather than gated, because the
+  limit is intrinsic: `runtime`/`oracles` are `no_std`/`aarch64-unknown-none` and every
+  unsafe op is inline `asm!` or physical-address MMIO the interpreter cannot execute or
+  model, with no non-privileged logic left to seam. The runtime crate doc and the CI
+  comment now spell that out per-crate; the Miri-checkable pointer logic was already
+  factored into `arm-harness`.
+- **P2:** the governor is read from the *pinned* core's sysfs path (`cpu{core}`), not
+  CPU 0's.
+
+Fixtures: 24 (four accept, twenty reject). Miri now runs 78 tests (was 76).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

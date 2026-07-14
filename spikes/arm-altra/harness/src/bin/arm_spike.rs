@@ -512,6 +512,16 @@ fn execute(args: RunArgs) -> Result<(), String> {
         &args.condition,
     ));
     let attempted = samples.len() as u64;
+    // An empty plan measures nothing. `--reps 0` (or no payloads/scales) would
+    // otherwise write an empty, all-passing run-set — a green verdict over zero
+    // evidence, which is exactly the vacuity the whole apparatus refuses.
+    if attempted == 0 {
+        return Err(
+            "the plan is empty (0 attempted samples): nothing would be measured, and an empty \
+             run-set must never read as a pass"
+                .to_string(),
+        );
+    }
 
     let mechanism_kind = match args.mechanism {
         MechanismArg::Stock => sys::Mechanism::SignalKick,
@@ -578,10 +588,14 @@ fn execute(args: RunArgs) -> Result<(), String> {
         }
     }
 
-    // Assemble and WRITE the evidence regardless of whether a sample failed. The perf
-    // block needs an armed attr; if not one sample got that far, there is nothing to
-    // write and the failure is the whole story.
-    if let Some(attr) = armed_attr {
+    // Assemble and WRITE the evidence regardless of whether a sample failed — even if
+    // the FIRST sample failed in Machine::new / the patch probe / PerfCounter::open,
+    // so `armed_attr` is None. Losing that first-sample failure would let a reliability
+    // failure vanish on rerun and hide the gap from the totality checker. The perf
+    // block then reflects the INTENDED work-clock config (counting mode), which is
+    // truthful: no overflow was armed, and the empty/short records make totality fail.
+    {
+        let attr = armed_attr.unwrap_or_else(|| sys::br_retired_attr(None));
         let mut images = vec![ImagePin {
             path: args.host_kernel_image.display().to_string(),
             sha256: host_kernel_sha256.clone(),
@@ -628,9 +642,13 @@ fn execute(args: RunArgs) -> Result<(), String> {
             pinning: Pinning {
                 pinned: true,
                 core: Some(args.core),
-                governor: std::fs::read_to_string(
-                    "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
-                )
+                // The governor of the core the vCPU is PINNED to, not CPU 0's —
+                // frequency policy can differ per core, and the retained posture must
+                // describe the core that actually ran.
+                governor: std::fs::read_to_string(format!(
+                    "/sys/devices/system/cpu/cpu{}/cpufreq/scaling_governor",
+                    args.core
+                ))
                 .unwrap_or_default()
                 .trim()
                 .to_string(),

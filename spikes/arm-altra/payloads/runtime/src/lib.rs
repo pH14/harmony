@@ -20,11 +20,37 @@
 //! register, and each store is an MMIO exit at which the harness samples
 //! `BR_RETIRED`. One device, two environments, byte-identical payloads.
 //!
-//! # `unsafe`
+//! # `unsafe`, and why this crate is Miri-exempt
 //!
 //! Granted for this directory by task 109 §Constraints (bare-metal MMIO, system
 //! registers, raw asm). It is confined to this crate and the payload asm; the
 //! harness's orchestration, scanning and checking logic contains none.
+//!
+//! **This crate cannot run under Miri, and the reason is intrinsic, not an
+//! omission.** It is `#![no_std]`, targets `aarch64-unknown-none`, and *every* unsafe
+//! operation it performs is one the interpreter fundamentally cannot execute:
+//!
+//! - inline `asm!` / `global_asm!` (`boot.s`, `vectors.s`, the `HLT` exit, the `MRS`
+//!   system-register reads) — Miri does not execute machine code;
+//! - `read_volatile`/`write_volatile` to **fixed physical addresses** — the GICv3
+//!   distributor at `0x0800_0000` (`gic.rs`), the PL011 at `UART_BASE` (`uart.rs`),
+//!   and the two harness-shared pages at `PARAMS_GPA`/`PVCLOCK_GPA`
+//!   (`params.rs`/`pvclock.rs`). Miri has no such memory; those pointers are invalid
+//!   under it.
+//!
+//! The repository's unsafe⇒Miri contract's own escape hatch — "privileged or
+//! inline-assembly operations behind a `cfg(miri)` seam, with the pointer logic
+//! driven by an in-process loopback" — presupposes there is *non-privileged* logic
+//! left to interpret once the privileged parts are seamed out. Here there is none:
+//! the crate's entire purpose is the privileged parts. Seaming them all behind
+//! `cfg(miri)` would leave an empty interpreter run that proves nothing.
+//!
+//! So this crate's behaviour is exercised by the **TCG smoke** (`payloads/smoke.sh`),
+//! which runs the real instructions on an emulated N1 — the only thing that *can*
+//! execute physical MMIO and `asm!`. The portable, allocation-and-pointer logic that
+//! Miri *can* check (the ELF loader, the `kvm_run` decode, the state digest) lives in
+//! `arm-harness` and is gated under Miri there. The same applies to the `oracles`
+//! crate, whose thin payload `main`s call straight into this runtime.
 
 #![no_std]
 

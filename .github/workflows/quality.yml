@@ -140,12 +140,20 @@ jobs:
   # ioctl paths remain `cfg(target_os="linux")` and are the documented asm/privileged
   # exception (Miri cannot issue a syscall).
   #
-  # The bare-metal `runtime`/`oracles` crates are deliberately NOT Miri-gated: they are
-  # `no_std`, target `aarch64-unknown-none`, and their `unsafe` is inline `asm!` and
-  # MMIO to physical addresses (the GIC, the PL011, the boot shim) — none of which the
-  # interpreter can execute or model. That is exactly the asm/privileged-class
-  # exception `tasks/00-CONVENTIONS.md` names; their behaviour is exercised by the TCG
-  # smoke instead, which runs the real instructions on an emulated N1.
+  # The bare-metal payload crates are deliberately NOT Miri-gated, and the reason is
+  # intrinsic to each — documented per-crate, not waved away:
+  #   - `runtime` (payloads/runtime/src/lib.rs, its own crate doc): `#![no_std]`, targets
+  #     aarch64-unknown-none; every unsafe op is inline `asm!`/`global_asm!` (boot.s,
+  #     vectors.s, the HLT exit, MRS reads) or `read/write_volatile` to FIXED PHYSICAL
+  #     addresses (the GICv3 dist at 0x0800_0000, the PL011 at UART_BASE, the shared
+  #     GPAs). Miri executes no machine code and has no such memory — those pointers are
+  #     invalid under it. There is no non-privileged logic left to interpret once the
+  #     privileged parts are seamed, so the cfg(miri)-seam escape hatch does not apply.
+  #   - `oracles`: thin payload `main`s that call straight into `runtime`; same limit.
+  # Their behaviour is exercised by the TCG smoke (real instructions on an emulated N1,
+  # the only thing that CAN run physical MMIO + asm). The portable pointer/allocation
+  # logic that Miri CAN check — the ELF loader, the kvm_run decode, the state digest —
+  # was factored into `arm-harness` precisely so it is gated under Miri above.
   #
   # NOT gated here: the qemu-system-aarch64 TCG payload smoke (payloads/smoke.sh). It
   # needs qemu on the runner, which this self-hosted box does not have and which no
