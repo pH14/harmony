@@ -47,6 +47,14 @@ pub const RAM_SIZE: usize = 64 << 20;
 /// thing it does is exist, so `KVM_RUN` returns `EINTR`.
 const KICK_SIGNAL: i32 = libc::SIGUSR1;
 
+/// Whether the last `KICK_SIGNAL` was **sourced by the armed perf fd**, not injected
+/// externally. Set by the `SA_SIGINFO` handler from `si_code`: a signal from a file
+/// descriptor's `O_ASYNC` notification carries a `POLL_*` code (positive), while a
+/// `kill(SIGUSR1)` from anywhere else carries `SI_USER` (0) or `SI_QUEUE` (negative).
+/// The run loop only counts a stock delivery when this is set, so a stray external
+/// `SIGUSR1` cannot masquerade as the overflow kick and certify a broken counter.
+static PERF_SOURCED_KICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// `F_SETSIG` — the signal a file descriptor's `O_ASYNC` notification raises. The
 /// `libc` crate does not export it; it is 10 on every Linux ABI (`asm-generic/fcntl.h`,
 /// and the arch-specific headers that override `F_*` do not override this one).
@@ -202,14 +210,27 @@ pub fn pin_to_core(core: u32) -> Result<(), SysError> {
 /// # Errors
 /// [`SysError::Errno`] if `sigaction` failed.
 pub fn install_kick_signal() -> Result<(), SysError> {
-    extern "C" fn on_kick(_sig: i32) {}
+    // `SA_SIGINFO` so the handler can read `si_code` and record whether this signal
+    // came from a file descriptor (the armed perf event) or was injected externally.
+    // The handler does the classification; the run loop reads the flag. Async-signal
+    // safe: it only reads an integer field and stores to an atomic.
+    extern "C" fn on_kick(_sig: i32, info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
+        use std::sync::atomic::Ordering;
+        // A POLL/fd-sourced signal carries a positive `si_code` (POLL_IN == 1, …); a
+        // `kill()` carries SI_USER (0) or SI_QUEUE (negative). Treat only the former as
+        // the perf overflow kick.
+        // SAFETY: `info` is the kernel-provided siginfo for this delivery; `si_code`
+        // is a plain int field always present.
+        let from_fd = !info.is_null() && unsafe { (*info).si_code } > 0;
+        PERF_SOURCED_KICK.store(from_fd, Ordering::SeqCst);
+    }
 
-    // SAFETY: a zeroed sigaction is valid; we set a handler with an empty body and
-    // no flags (notably no SA_RESTART), which is exactly the semantics required.
+    // SAFETY: a zeroed sigaction is valid; SA_SIGINFO selects the three-argument
+    // handler above, and no SA_RESTART means the signal makes KVM_RUN return EINTR.
     unsafe {
         let mut act: libc::sigaction = core::mem::zeroed();
         act.sa_sigaction = on_kick as *const () as usize;
-        act.sa_flags = 0;
+        act.sa_flags = libc::SA_SIGINFO;
         libc::sigemptyset(&raw mut act.sa_mask);
         if libc::sigaction(KICK_SIGNAL, &raw const act, core::ptr::null_mut()) != 0 {
             return Err(err("sigaction(SIGUSR1)"));
@@ -599,28 +620,39 @@ impl Vcpu for Machine {
     /// stock kernel can never produce the latter. That is what lets a record attest
     /// its mechanism honestly.
     fn run(&mut self) -> Result<VcpuExit, RunError> {
-        // SAFETY: `vcpu_fd` is valid; KVM_RUN takes no argument and returns 0 or -1.
-        let rc = unsafe { libc::ioctl(self.vcpu_fd, kvm::RUN as libc::c_ulong, 0_u64) };
-        if rc < 0 {
-            let e = errno();
-            if e == libc::EINTR {
-                // The stock mechanism: a host signal kicked the vCPU out.
-                return Ok(VcpuExit::SignalKick);
+        use std::sync::atomic::Ordering;
+        loop {
+            // SAFETY: `vcpu_fd` is valid; KVM_RUN takes no argument and returns 0 or -1.
+            let rc = unsafe { libc::ioctl(self.vcpu_fd, kvm::RUN as libc::c_ulong, 0_u64) };
+            if rc < 0 {
+                let e = errno();
+                if e == libc::EINTR {
+                    // A signal kicked the vCPU out — but only the stock overflow kick,
+                    // sourced by the armed perf fd, is a SignalKick. An externally
+                    // injected SIGUSR1 (kill/sigqueue) must NOT be counted as an
+                    // overflow: it would certify a delivery the counter never made. The
+                    // SA_SIGINFO handler classified the source; a foreign signal is
+                    // absorbed by re-entering the guest.
+                    if PERF_SOURCED_KICK.swap(false, Ordering::SeqCst) {
+                        return Ok(VcpuExit::SignalKick);
+                    }
+                    continue;
+                }
+                return Err(RunError::Seam {
+                    context: "ioctl(KVM_RUN)",
+                    message: format!("errno {e}"),
+                });
             }
-            return Err(RunError::Seam {
-                context: "ioctl(KVM_RUN)",
-                message: format!("errno {e}"),
-            });
-        }
 
-        // Snapshot the shared mapping once (volatile: the kernel is the external
-        // writer, though it has finished by the time KVM_RUN returned and the vCPU is
-        // stopped), then decode through the portable, Miri-tested seam. The pointer
-        // read is here; the field logic is `super::decode_kvm_run`.
-        // SAFETY: `self.run` is a live MAP_SHARED mapping of at least
-        // size_of::<KvmRun>() bytes (checked at construction).
-        let snapshot = unsafe { core::ptr::read_volatile(self.run) };
-        Ok(super::decode_kvm_run(&snapshot))
+            // Snapshot the shared mapping once (volatile: the kernel is the external
+            // writer, though it has finished by the time KVM_RUN returned and the vCPU
+            // is stopped), then decode through the portable, Miri-tested seam. The
+            // pointer read is here; the field logic is `super::decode_kvm_run`.
+            // SAFETY: `self.run` is a live MAP_SHARED mapping of at least
+            // size_of::<KvmRun>() bytes (checked at construction).
+            let snapshot = unsafe { core::ptr::read_volatile(self.run) };
+            return Ok(super::decode_kvm_run(&snapshot));
+        }
     }
 
     /// Stage the value of an MMIO **read** into the shared `kvm_run.mmio.data`, so the

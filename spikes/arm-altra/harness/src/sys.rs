@@ -419,11 +419,61 @@ pub fn digest_state(regs: &std::collections::BTreeMap<u64, Vec<u8>>, ram: &[u8])
     let mut h = Sha256::new();
     h.update(b"arm-spike-state-v1");
     for (id, value) in regs {
+        // Host-time-derived registers (the generic-timer counters) advance with real
+        // elapsed time, so hashing them would make two otherwise-identical same-seed
+        // runs digest differently the moment host scheduling differs — replay identity
+        // dead on arrival. They are excluded: they are not contract-visible
+        // deterministic state (the paravirt-clock design closes raw counter access at
+        // the contract level, §1), and what AA-3/AA-6 compare is the guest's
+        // deterministic state, not the wall clock.
+        if is_host_time_register(*id) {
+            continue;
+        }
         h.update(id.to_le_bytes());
         h.update(value);
     }
     h.update(ram);
     format!("sha256:{}", crate::evidence::hex_lower(&h.finalize()))
+}
+
+/// Whether a `KVM_GET_ONE_REG` id names a **host-time-derived** register — one whose
+/// value advances with elapsed real time and so must not enter a determinism digest.
+///
+/// These are the generic-timer *counters*: `CNTPCT_EL0`, `CNTVCT_EL0`, their
+/// self-synchronized `…SS` variants, and the `KVM_REG_ARM_TIMER_CNT` pseudo-register.
+/// All live at the arm64 system-register coordinates `op0=3, op1=3, CRn=14`. The
+/// *comparators* (`…CVAL`), *controls* (`…CTL`, `CNTKCTL`), and the constant
+/// `CNTFRQ` are deterministic guest-programmed state and are kept.
+///
+/// Pinned by [`tests::host_time_registers_are_the_generic_timer_counters`]; a wrong
+/// mask would either leak the wall clock into the digest (replay dead) or drop real
+/// guest state (divergence hidden), and neither fails loudly.
+#[must_use]
+pub fn is_host_time_register(id: u64) -> bool {
+    // Only arm64 system registers carry timer counters.
+    const KVM_REG_ARM64: u64 = 0x6000_0000_0000_0000;
+    const KVM_REG_SIZE_U64: u64 = 0x0030_0000_0000_0000;
+    const KVM_REG_ARM64_SYSREG: u64 = 0x0013_0000_0000_0000;
+    const SYSREG_PREFIX: u64 = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG;
+    const PREFIX_MASK: u64 = 0xFFFF_0000_0000_0000;
+    if id & PREFIX_MASK != SYSREG_PREFIX {
+        return false;
+    }
+    let op0 = (id >> 14) & 0x3;
+    let op1 = (id >> 11) & 0x7;
+    let crn = (id >> 7) & 0xF;
+    let crm = (id >> 3) & 0xF;
+    let op2 = id & 0x7;
+    if (op0, op1, crn) != (3, 3, 14) {
+        return false;
+    }
+    // The counter registers, by (CRm, op2):
+    //   CNTPCT_EL0   = (0, 1)   CNTVCT_EL0   = (0, 2)
+    //   CNTPCTSS_EL0 = (0, 5)   CNTVCTSS_EL0 = (0, 6)
+    //   KVM_REG_ARM_TIMER_CNT = ARM64_SYS_REG(3,3,14,3,2) = (3, 2)
+    // The controls/comparators/frequency (CNTFRQ (0,0), *CTL, *CVAL, CNTKCTL) are
+    // deterministic guest state and are NOT excluded.
+    matches!((crm, op2), (0, 1) | (0, 2) | (0, 5) | (0, 6) | (3, 2))
 }
 
 /// A capability the running kernel either has or does not.
@@ -552,19 +602,32 @@ mod imp {
         unsafe { libc::syscall(libc::SYS_perf_event_open, attr, pid, cpu, group_fd, flags) }
     }
 
-    /// Whether raw `BR_RETIRED` opens as a pinned, guest-only event (AA-0's PMU
-    /// row, and the precondition for the entire work-clock bet).
+    /// Whether raw `BR_RETIRED` can be **scheduled** as a pinned, guest-only event
+    /// (AA-0's PMU row, and the precondition for the entire work-clock bet).
+    ///
+    /// Opening the descriptor is not enough: a pinned event that cannot actually be
+    /// placed on the PMU (too many competing counters) fails only once *scheduling* is
+    /// attempted — `perf_event_open` succeeds, the fd is valid, and yet the counter
+    /// never runs. So this enables the event, does a little work, and reads it back
+    /// with `TOTAL_TIME_ENABLED`/`TOTAL_TIME_RUNNING`: the row is green only if the
+    /// counter actually advanced and ran for the whole time it was enabled
+    /// (`enabled == running` — not multiplexed). This is the "non-multiplexed counter"
+    /// the AA-0 row is about, not just an openable descriptor.
     fn probe_br_retired() -> Result<bool, SysError> {
-        let attr = br_retired_attr(None);
+        // PERF_FORMAT_TOTAL_TIME_ENABLED (1<<0) | PERF_FORMAT_TOTAL_TIME_RUNNING (1<<1):
+        // read() then returns [count, time_enabled, time_running].
+        const READ_FORMAT: u64 = 0b11;
+        let mut attr = br_retired_attr(None);
+        attr.read_format = READ_FORMAT;
+
         // SAFETY: `attr` is a fully initialized perf_event_attr on this frame; the
-        // pointer is valid for the call. Counting this thread (pid 0) on whatever
-        // CPU it runs on (-1), no group.
+        // pointer is valid for the call. Counting this thread (pid 0) on whatever CPU
+        // it runs on (-1), no group.
         let fd = unsafe { perf_event_open(&raw const attr, 0, -1, -1, 0) };
         if fd < 0 {
             let e = errno();
-            // ENOENT/EOPNOTSUPP mean the event is not implemented here — a real
-            // "no". Any other errno is a failure to probe, and must not be
-            // flattened into one.
+            // ENOENT/EOPNOTSUPP mean the event is not implemented here — a real "no".
+            // Any other errno is a failure to probe, and must not be flattened into one.
             if e == libc::ENOENT || e == libc::EOPNOTSUPP {
                 return Ok(false);
             }
@@ -573,10 +636,45 @@ mod imp {
                 errno: e,
             });
         }
-        // SAFETY: `fd` is a valid descriptor returned just above.
-        unsafe { libc::close(fd as i32) };
+        let fd = fd as i32;
         let _ = BR_RETIRED_RAW;
-        Ok(true)
+
+        // Enable, run a little branch-y work, read back.
+        const PERF_IOC_ENABLE: libc::c_ulong = 0x2400;
+        const PERF_IOC_RESET: libc::c_ulong = 0x2403;
+        // SAFETY: `fd` is a valid perf descriptor; these ioctls take an integer arg.
+        let scheduled = unsafe {
+            libc::ioctl(fd, PERF_IOC_RESET, 0_u64);
+            if libc::ioctl(fd, PERF_IOC_ENABLE, 0_u64) < 0 {
+                libc::close(fd);
+                return Err(err("PERF_EVENT_IOC_ENABLE(BR_RETIRED probe)"));
+            }
+            // A small, volatile loop so the branches actually retire and cannot be
+            // optimized away.
+            let mut acc: u64 = 0;
+            for i in 0..10_000u64 {
+                acc = core::hint::black_box(acc.wrapping_add(i));
+            }
+            core::hint::black_box(acc);
+
+            // read() -> [count, time_enabled, time_running].
+            let mut buf = [0u64; 3];
+            let n = libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), 24);
+            libc::close(fd);
+            if n != 24 {
+                return Err(SysError::Errno {
+                    call: "read(BR_RETIRED probe)",
+                    errno: errno(),
+                });
+            }
+            let (count, enabled, running) = (buf[0], buf[1], buf[2]);
+            // Scheduled and non-multiplexed: the counter ran for the whole time it was
+            // enabled, and it actually advanced. A running < enabled means the pinned
+            // event was multiplexed off — not the guaranteed-on work clock the row
+            // requires; running == 0 means it never scheduled at all.
+            running > 0 && running == enabled && count > 0
+        };
+        Ok(scheduled)
     }
 
     /// Open `/dev/kvm`.
@@ -876,6 +974,70 @@ mod tests {
         assert_ne!(digest_state(&a, &ram), digest_state(&c, &ram));
 
         assert!(digest_state(&a, &ram).starts_with("sha256:"));
+    }
+
+    #[test]
+    fn host_time_registers_are_the_generic_timer_counters() {
+        // ARM64_SYS_REG(op0,op1,crn,crm,op2) id builder.
+        const P: u64 = 0x6000_0000_0000_0000 | 0x0030_0000_0000_0000 | 0x0013_0000_0000_0000;
+        let sysreg = |op0: u64, op1: u64, crn: u64, crm: u64, op2: u64| {
+            P | (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2
+        };
+
+        // The live counters — excluded.
+        assert!(is_host_time_register(sysreg(3, 3, 14, 0, 1)), "CNTPCT_EL0");
+        assert!(is_host_time_register(sysreg(3, 3, 14, 0, 2)), "CNTVCT_EL0");
+        assert!(
+            is_host_time_register(sysreg(3, 3, 14, 0, 5)),
+            "CNTPCTSS_EL0"
+        );
+        assert!(
+            is_host_time_register(sysreg(3, 3, 14, 0, 6)),
+            "CNTVCTSS_EL0"
+        );
+        assert!(is_host_time_register(sysreg(3, 3, 14, 3, 2)), "TIMER_CNT");
+
+        // Deterministic timer state — KEPT.
+        assert!(!is_host_time_register(sysreg(3, 3, 14, 0, 0)), "CNTFRQ_EL0");
+        assert!(!is_host_time_register(sysreg(3, 3, 14, 3, 1)), "CNTV_CTL");
+        assert!(!is_host_time_register(sysreg(3, 3, 14, 0, 3)), "a CVAL");
+        assert!(
+            !is_host_time_register(sysreg(3, 0, 14, 1, 0)),
+            "CNTKCTL_EL1"
+        );
+
+        // A core register (the pc) is not a sysreg and is kept.
+        assert!(!is_host_time_register(
+            kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC
+        ));
+    }
+
+    #[test]
+    fn a_digest_ignores_the_live_clock_so_replay_survives_scheduling_jitter() {
+        // The flagship fix: two same-seed runs whose ONLY difference is the live
+        // virtual counter must digest identically, or replay-identity is dead on real
+        // hardware where the counter advances between runs.
+        use std::collections::BTreeMap;
+        const P: u64 = 0x6000_0000_0000_0000 | 0x0030_0000_0000_0000 | 0x0013_0000_0000_0000;
+        let cntvct = P | (3 << 14) | (3 << 11) | (14 << 7) | 2; // op0=3,op1=3,crn=14,crm=0,op2=2
+
+        let ram = vec![7u8; 32];
+        let mut run_a = BTreeMap::new();
+        run_a.insert(kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC, vec![0xAA; 8]);
+        run_a.insert(cntvct, 1_000u64.to_le_bytes().to_vec());
+        let mut run_b = run_a.clone();
+        run_b.insert(cntvct, 9_999_999u64.to_le_bytes().to_vec()); // the clock moved
+
+        assert_eq!(
+            digest_state(&run_a, &ram),
+            digest_state(&run_b, &ram),
+            "the live counter must not reach the digest"
+        );
+
+        // But a real guest-state difference (the pc) still diverges.
+        let mut run_c = run_a.clone();
+        run_c.insert(kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC, vec![0xBB; 8]);
+        assert_ne!(digest_state(&run_a, &ram), digest_state(&run_c, &ram));
     }
 
     #[test]
