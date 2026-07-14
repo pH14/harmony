@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # nested-x86 re-certification: the N-3 nested matrix at the BINDING floors
 # (bead hm-jpu): >=1,000 same-seed repetitions bit-identical PER condition
 # (solo / co-tenant other-core / co-tenant same-core / vCPU migration /

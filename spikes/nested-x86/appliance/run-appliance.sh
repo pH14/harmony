@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # nested-x86: boot the consonance appliance under stock-KVM L0. One run-set.
 # Usage: run-appliance.sh <results-dir> [timeout-seconds] [extra-cmdline]
 #   extra-cmdline e.g. "harmony.gates=n2_nested_hammer harmony.env=N2_DEADLINES=250000"

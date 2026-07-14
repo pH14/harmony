@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /* nested-x86 N-0 capability probe.
  *
  * Runs as PID-adjacent process inside a minimal L1 guest (initramfs). Reports,

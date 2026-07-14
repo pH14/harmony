@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # nested-x86 re-certification: machine-check the binding floors AGAINST THE
 # RETAINED EVIDENCE (never asserted from memory) — hm-jpu/hm-60k requirement.
 # Run from the repo root. Exits 0 iff every check passes; prints one line per
@@ -53,30 +54,46 @@ grep -q '"migration_status": "completed"' "$ce" && grep -q '"finished_on": "dest
   && say "OK  migrate-live-recert-002: completed, finished on destination" \
   || bad "migrate-live-recert-002: $(cat $ce 2>/dev/null | tr -d '\n')"
 
-# --- N-2: >=1,000,000 armed deadlines cumulative, all exact, oracle-agreed,
-# --- zero lost/throttle/violations, PatchedKvmBackend recorded in every start
-total=0
+# --- N-2: >=1,000,000 ARMED PMIs cumulative. The armed-PMI count is
+# --- recomputed from records.samples — the perf-record ground truth — NEVER
+# --- from a summary field the harness asserted about itself (the PR #98
+# --- floor-accounting finding: the old `"armed"` summary field included
+# --- MTF-only deadlines that arm no PMI, and this checker read it back).
+# --- Per-deadline exactness/oracle/record-cleanliness checks still use the
+# --- summary's per-run tallies (each is cross-guaranteed by the gate's rc=0
+# --- assert), but the FLOOR line uses samples only.
+total_deadlines=0
+total_armed_pmi=0
 for d in $R/n2/cond-*-recert-001 $R/n2/smoke-recert-001; do
   rs=$(basename "$d")
   s=$(grep -o 'N2JSON {"event":"summary".*' "$d/console.log" | tail -1)
   [ -n "$s" ] || { bad "$rs: no N2 summary"; continue; }
-  armed=$(echo "$s" | grep -o '"armed":[0-9]*' | cut -d: -f2)
+  # legacy runsets emitted "armed" (which conflated the two classes); the
+  # fixed hammer emits "deadlines". Read whichever names the total.
+  dl=$(echo "$s" | grep -o '"deadlines":[0-9]*' | cut -d: -f2)
+  [ -n "$dl" ] || dl=$(echo "$s" | grep -o '"armed":[0-9]*' | cut -d: -f2)
   exact=$(echo "$s" | grep -o '"exact":[0-9]*' | cut -d: -f2)
   ok=$(echo "$s" | grep -o '"oracle_ok":[0-9]*' | cut -d: -f2)
   rv=$(echo "$s" | grep -o '"record_violations":[0-9]*' | cut -d: -f2)
+  samples=$(echo "$s" | grep -o '"samples":[0-9]*' | cut -d: -f2)
   lost=$(echo "$s" | grep -o '"lost":[0-9]*' | cut -d: -f2)
   thr=$(echo "$s" | grep -o '"throttle":[0-9]*' | cut -d: -f2)
   backend=$(grep -o '"backend":"[A-Za-z]*"' "$d/console.log" | head -1 | cut -d'"' -f4)
-  if [ "$exact" = "$armed" ] && [ "$ok" = "$armed" ] && [ "$rv" = 0 ] \
+  if [ "$exact" = "$dl" ] && [ "$ok" = "$dl" ] && [ "$rv" = 0 ] \
      && [ "$lost" = 0 ] && [ "$thr" = 0 ] && [ "$backend" = PatchedKvmBackend ]; then
-    say "OK  n2/$rs: $exact/$armed exact, oracle==exact, records clean, $backend"
-    total=$((total + armed))
+    say "OK  n2/$rs: $exact/$dl deadlines exact, oracle==exact, armed PMIs (from records)=$samples, records clean, $backend"
+    total_deadlines=$((total_deadlines + dl))
+    total_armed_pmi=$((total_armed_pmi + samples))
   else
-    bad "$rs: armed=$armed exact=$exact oracle=$ok rv=$rv lost=$lost throttle=$thr backend=$backend"
+    bad "$rs: deadlines=$dl exact=$exact oracle=$ok rv=$rv lost=$lost throttle=$thr backend=$backend"
   fi
 done
-if [ "$total" -ge 1000000 ]; then say "OK  n2 cumulative armed deadlines: $total >= 1,000,000"
-else bad "n2 cumulative $total < 1,000,000"; fi
+say "n2 cumulative deadlines driven: $total_deadlines (informational — NOT the floor axis)"
+if [ "$total_armed_pmi" -ge 1000000 ]; then
+  say "OK  n2 cumulative ARMED PMIs (from records.samples): $total_armed_pmi >= 1,000,000"
+else
+  bad "n2 cumulative ARMED PMIs (from records.samples): $total_armed_pmi < 1,000,000 — floor UNMET; ruling pending (top-up vs criterion revision)"
+fi
 
 # --- cross-substrate: nested control final_work == metal hammer final_work
 nw=$(grep -o '"final_work":[0-9]*' $R/n2/cond-idle-control10k-recert-001/console.log | tail -1 | cut -d: -f2)

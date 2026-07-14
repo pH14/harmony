@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # nested-x86 N-5: the one-command demonstration.
 #
 #   ./spikes/nested-x86/n5-demo.sh /root/nested-x86-n5
@@ -46,6 +47,10 @@ echo "=== N5 [4/4] verdict + evidence bundle"
 C="$WORK/results/n5-demo/console.log"
 grep -E "GATE_RC" "$C"
 PASS=1
+# the harness's own verdict (pin verify + L1_DONE + all gate RCs) folds in
+# first — a nonzero run-appliance rc can never be papered over by the two
+# named-gate greps below (PR #98 round-2)
+[ "$rc" -eq 0 ] || PASS=0
 grep -q "NESTED_X86_GATE_RC live_determinism rc=0" "$C" || PASS=0
 grep -q "NESTED_X86_GATE_RC n3_repeat_gate rc=0" "$C" || PASS=0
 SUMMARY=$(grep -o 'N3JSON {"event":"summary".*' "$C" | tail -1)

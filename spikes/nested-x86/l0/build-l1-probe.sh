@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # nested-x86 N-0: build the minimal L1 probe initramfs on the box.
 # Produces /root/nested-x86-spike/n0/l1-probe.cpio.gz + build-manifest.json
 set -euo pipefail

@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # nested-x86 N-3 condition 4: pause/resume mid-gate.
 # Runs the repeat gate nested while alternately pausing the L1 QEMU with
 # SIGSTOP/SIGCONT or (mode=qmp) QMP stop/cont.

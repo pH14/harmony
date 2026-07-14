@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # stop the n3 pauser loop (safe /proc scan, excludes self and ssh)
 ME=$$
 for d in /proc/[0-9]*; do

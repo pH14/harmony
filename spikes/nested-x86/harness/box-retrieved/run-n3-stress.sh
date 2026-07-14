@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # N-3 conditions 2-3: repeat gate under L0 stress / migration (reuses N-2 condition shapes)
 set -euo pipefail
 COND="${1:?condition}"; REPS="${2:?reps}"; RS_NAME="${3:?runset}"

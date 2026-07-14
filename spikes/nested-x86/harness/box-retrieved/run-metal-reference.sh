@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # N-3 portability references + N-4 metal timings: one patched-module session.
 set -euo pipefail
 RS=/root/nested-x86-spike/n3/results/metal-reference-001

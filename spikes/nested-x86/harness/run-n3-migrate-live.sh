@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # nested-x86 N-3 condition 5: cloud-migration rehearsal — QEMU local live
 # migration of the running L1 mid-gate. Pass criterion: the gate completes
 # with rc=0 on the DESTINATION after a completed migration, OR the migration

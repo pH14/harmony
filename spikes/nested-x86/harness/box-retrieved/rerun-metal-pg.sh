@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 set -euo pipefail
 RS=/root/nested-x86-spike/n3/results/metal-reference-001
 cd /root/harmony-nested

@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # nested-x86: init for the consonance appliance L1 guest.
 # Loads the PATCHED kvm modules, verifies the L2 image pins from inside L1,
 # then runs the gate sequence named on the kernel cmdline:

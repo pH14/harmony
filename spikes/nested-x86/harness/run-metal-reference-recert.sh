@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # nested-x86 re-certification: the metal reference session (bead hm-jpu,
 # portability gate + the N-2 metal control). COMMITTED — the original
 # metal-reference harness lived only on the box (audit provenance gap).

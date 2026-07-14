@@ -148,6 +148,17 @@ pub(crate) unsafe fn drain_ring_counting_at(
         let head = std::ptr::read_volatile(base.add(DATA_HEAD_OFF).cast::<u64>());
         let mut tail = std::ptr::read_volatile(base.add(DATA_TAIL_OFF).cast::<u64>());
         std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+        // Validate the ring cursors BEFORE any record deref (PR #98 round-2):
+        // head/tail are monotonic byte counters with tail <= head and at most
+        // data_size bytes outstanding (the kernel stops writing when full).
+        // A violated invariant means a corrupt/foreign control page — never
+        // walk it; count one `other`, still publish tail := head so the ring
+        // drains rather than wedging full.
+        if tail > head || head - tail > data_size as u64 {
+            stats.other += 1;
+            std::ptr::write_volatile(base.add(DATA_TAIL_OFF).cast::<u64>(), head);
+            return stats;
+        }
         let data = base.add(page_size);
         while tail.saturating_add(8) <= head {
             let pos = (tail % data_size as u64) as usize;
@@ -371,6 +382,26 @@ mod tests {
         );
         assert_eq!(stats.other, 1, "the corrupt header is counted, not spun on");
         assert_eq!(ring.tail(), head, "the ring still drains fully");
+    }
+
+    /// Corrupt ring cursors (tail > head, or more than `data_size` bytes
+    /// outstanding) are refused BEFORE any record deref: one `other` counted,
+    /// no walk, and the ring still drains (tail := head).
+    #[test]
+    fn drain_refuses_corrupt_cursors_without_walking() {
+        for (head, tail) in [(8u64, 16u64), (DATA as u64 + 16, 0u64)] {
+            let mut ring = FakeRing::new();
+            ring.push(0, PERF_RECORD_SAMPLE, 8);
+            ring.set(head, tail);
+            // SAFETY: as above.
+            let stats = unsafe { drain_ring_counting_at(ring.base(), PAGE, DATA) };
+            assert_eq!(
+                (stats.samples, stats.other),
+                (0, 1),
+                "corrupt cursors (head={head}, tail={tail}) are refused, not walked"
+            );
+            assert_eq!(ring.tail(), head, "the ring still drains (tail := head)");
+        }
     }
 
     /// `PmuOverflowStats::add` accumulates field-wise (the box counter folds each

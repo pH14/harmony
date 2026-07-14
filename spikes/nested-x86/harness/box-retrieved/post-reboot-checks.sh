@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 set -euo pipefail
 # 1. N-0 capability identity after L0 reboot (runset-005)
 bash /root/nested-x86-spike/n0/src/run-l1-probe.sh runset-005

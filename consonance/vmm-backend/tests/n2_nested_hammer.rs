@@ -234,7 +234,16 @@ fn n2_deadline_hammer() {
     };
 
     let mut target = 0u64;
-    let mut armed = 0u64;
+    // `deadlines` counts EVERY driven deadline. It is NOT an armed-PMI count:
+    // a `d <= SKID_MARGIN` deadline is MTF-stepped with NO overflow armed. The
+    // two classes are counted separately (`armed_pmi` / `mtf_only`) — the PR
+    // #98 floor-accounting finding was exactly this conflation (a summary
+    // field named `armed` that included unarmed deadlines, read back by the
+    // floor checker). The authoritative armed-PMI count for floor purposes is
+    // `records.samples` (counted from perf records), never a summary field.
+    let mut deadlines = 0u64;
+    let mut armed_pmi = 0u64;
+    let mut mtf_only = 0u64;
     let mut exact = 0u64;
     let mut oracle_ok = 0u64;
     let mut mismatches: Vec<String> = Vec::new();
@@ -249,7 +258,12 @@ fn n2_deadline_hammer() {
     for i in 0..total {
         let d = delta(&mut rng, i);
         target += d;
-        armed += 1;
+        deadlines += 1;
+        if d > SKID_MARGIN {
+            armed_pmi += 1;
+        } else {
+            mtf_only += 1;
+        }
         match backend.run_until(Vtime(target)) {
             Ok(Exit::Deadline { reached }) if reached.0 == target => {
                 exact += 1;
@@ -296,7 +310,7 @@ fn n2_deadline_hammer() {
         }
         if progress_every != 0 && (i + 1) % progress_every == 0 {
             println!(
-                "N2JSON {{\"event\":\"progress\",\"armed\":{armed},\"exact\":{exact},\"oracle_ok\":{oracle_ok},\"mismatches\":{},\"record_violations\":{},\"records\":{{\"samples\":{},\"lost\":{},\"throttle\":{},\"other\":{}}}}}",
+                "N2JSON {{\"event\":\"progress\",\"deadlines\":{deadlines},\"armed_pmi\":{armed_pmi},\"mtf_only\":{mtf_only},\"exact\":{exact},\"oracle_ok\":{oracle_ok},\"mismatches\":{},\"record_violations\":{},\"records\":{{\"samples\":{},\"lost\":{},\"throttle\":{},\"other\":{}}}}}",
                 mismatches.len(),
                 record_violations.len(),
                 stats_after.samples,
@@ -309,7 +323,7 @@ fn n2_deadline_hammer() {
 
     let totals = read_stats(&backend);
     println!(
-        "N2JSON {{\"event\":\"summary\",\"armed\":{armed},\"exact\":{exact},\"oracle_ok\":{oracle_ok},\"mismatches\":{},\"record_violations\":{},\"final_work\":{target},\"records\":{{\"samples\":{},\"lost\":{},\"throttle\":{},\"other\":{}}}}}",
+        "N2JSON {{\"event\":\"summary\",\"deadlines\":{deadlines},\"armed_pmi\":{armed_pmi},\"mtf_only\":{mtf_only},\"exact\":{exact},\"oracle_ok\":{oracle_ok},\"mismatches\":{},\"record_violations\":{},\"final_work\":{target},\"records\":{{\"samples\":{},\"lost\":{},\"throttle\":{},\"other\":{}}}}}",
         mismatches.len(),
         record_violations.len(),
         totals.samples,
@@ -326,14 +340,16 @@ fn n2_deadline_hammer() {
     assert!(
         mismatches.is_empty()
             && record_violations.is_empty()
-            && exact == armed
+            && exact == deadlines
             && oracle_ok == exact,
-        "N-2 hammer: {} mismatches + {} record violations over {} armed deadlines \
-         (exact={}, oracle_ok={}) — one unexplained mismatch is blocking \
-         (docs/NESTED-X86.md §kill conditions)",
+        "N-2 hammer: {} mismatches + {} record violations over {} deadlines \
+         ({} armed-PMI + {} MTF-only; exact={}, oracle_ok={}) — one unexplained \
+         mismatch is blocking (docs/NESTED-X86.md §kill conditions)",
         mismatches.len(),
         record_violations.len(),
-        armed,
+        deadlines,
+        armed_pmi,
+        mtf_only,
         exact,
         oracle_ok
     );

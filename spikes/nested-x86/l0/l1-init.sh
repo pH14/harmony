@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # nested-x86 N-0: init for the minimal L1 probe guest.
 export PATH=/bin
 mount -t proc proc /proc

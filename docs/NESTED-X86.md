@@ -1,23 +1,23 @@
 # x86 nested-virtualization backend — feasibility spike
 
-> **✅ RE-CERTIFIED (2026-07-14).** The PR #98 evidence-integrity review
-> (2026-07-12) voided the original ALL-GO record (stock backend in the N-2
-> hammer, green-on-fail harness, unmet N-3 floors, unpinned appliance
-> provenance — see `spikes/nested-x86/results/AUDIT-2026-07-12.md`). Paul
-> ratified a re-certification program (beads hm-b5b → hm-dbh ∥ hm-jpu →
-> hm-60k); it completed 2026-07-14 with the fixed instruments: gate-RC-checked
-> green, pre-boot pin verification, per-runset build manifests,
-> `PatchedKvmBackend` enforced in the hammer, an independent guest-memory work
-> oracle, per-record PMI accounting, confirmed-only pause counting at a
-> recorded cadence, and a split-console-aware migration verdict. **Every floor
-> and threshold is machine-checked against the retained evidence** by
-> `spikes/nested-x86/harness/check-recert-floors.sh` (ALL PASS). The N-2 and
-> N-3 dispositions below are **re-recorded from the new evidence only**
-> (`*-recert-*` runsets); the audited-invalid historical runsets remain marked
-> in the audit note and carry no weight. N-0/N-1/N-5 stand on their
-> audited-VALID original runsets (unchanged mechanism, re-exercised by every
-> recert boot); N-4's characterization stands with one figure corrected from
-> new data (see its note).
+> **RE-CERTIFICATION STATUS (2026-07-14): N-3 re-certified GO; N-2 floor
+> UNMET, ruling pending.** The PR #98 evidence-integrity review (2026-07-12)
+> voided the original ALL-GO record (stock backend in the N-2 hammer,
+> green-on-fail harness, unmet N-3 floors, unpinned appliance provenance — see
+> `spikes/nested-x86/results/AUDIT-2026-07-12.md`). The ratified re-run
+> program (beads hm-b5b → hm-dbh ∥ hm-jpu → hm-60k) executed 2026-07-13/14
+> with fixed instruments. **N-3 is re-certified GO** from `*-recert-*`
+> evidence (every floor machine-checked). **N-2 is NOT certified**: the
+> round-2 cross-model pass found the hammer's `armed` summary counter included
+> `d ≤ SKID_MARGIN` MTF-only deadlines that arm **no PMI**, and the floor
+> checker read that self-asserted field back. Recomputed from the perf-record
+> ground truth (`records.samples`), the recert evidence carries **588,923
+> armed PMIs — below the ≥1,000,000 floor** (plus 473,077 MTF-only deadlines;
+> all 1,062,000 landings exact, oracle-agreed, zero lost/throttle). Per the
+> program's own rule this is escalated to Paul (top-up run vs ruled criterion
+> revision), never silently relaxed; `check-recert-floors.sh` reports the
+> unmet floor RED until the ruling. N-0/N-1/N-5 stand on audited-VALID
+> original runsets; N-4's characterization stands with one corrected figure.
 
 Status: **research spike (2026-07-09).** This document is a de-risking program, not a claim
 that the backend is feasible. It is the x86 sibling of `docs/APPLE-SILICON.md`: the same
@@ -343,28 +343,30 @@ supported mechanism actually enforces that condition and is itself probeable at 
 > (175286435), and the repeat gate reproduced the reference hash 100/100
 > (`results/n3/post-reboot-001/`).
 >
-> **Disposition VOIDED (2026-07-12) and RE-CERTIFIED: GO (2026-07-14).** The
-> review found the original evidence ran the *stock* backend (see the header
-> banner and the audit note); it was reclassified characterization-only. The
+> **Disposition VOIDED (2026-07-12); re-run 2026-07-13/14: FLOOR UNMET,
+> RULING PENDING (2026-07-14).** The first review found the original evidence
+> ran the *stock* backend; it was reclassified characterization-only. The
 > re-run (bead hm-dbh, `results/n2/*-recert-001`) used the fixed instruments —
 > `PatchedKvmBackend` enforced (every runset's start line records the backend;
 > the constructor fails loudly without patches 0004/0005), an **independent
-> guest-memory work oracle** (the spin loop increments a guest-RAM dword per
-> counted branch; every landing must satisfy `counter == target mod 2^32`), and
-> **per-record PMI accounting** (perf-ring records parsed and counted:
-> `PmuOverflowStats`). Result: **1,062,000 armed deadlines cumulative →
-> 1,062,000 exact landings, oracle-agreed on every landing, 0 LOST records,
-> 0 THROTTLE records, 0 record-count violations** across the matrix — idle
-> 400k · other-core stress 200k · same-core stress 150k · memory pressure
-> 100k · same-core timer storm 100k · vCPU migration 100k (2,323 forced
-> cross-pCPU migrations) · 10k idle control · 2k smoke; distinct high-spaced
-> seeds (the historical `seed|1` collapse avoided). The production
-> `skid_margin = 256` held on every landing (an over-margin skid surfaces as a
-> loud `SkidExceeded`). Cross-substrate exactness on the patched mechanism:
-> nested `final_work` **bit-equal to bare metal** at both shared seeds
-> (34146909 at the smoke seed; 175379628 at the 10k control seed), with
-> identical per-run record counts (1101 and 5504 SAMPLE records respectively).
-> All thresholds machine-checked by `check-recert-floors.sh`.
+> guest-memory work oracle** (every landing must satisfy
+> `counter == target mod 2^32`), and **per-record PMI accounting** (perf-ring
+> records parsed and counted: `PmuOverflowStats`). What the evidence supports,
+> counted from the perf records: **588,923 armed overflow PMIs, every one
+> delivered and observed within its arithmetic bound, plus 473,077 MTF-only
+> deadlines (`d ≤ SKID_MARGIN`, no PMI armed) — 1,062,000/1,062,000 landings
+> exact, oracle-agreed on all, 0 LOST, 0 THROTTLE, 0 record-count violations**
+> across the matrix (idle 400k · other-core 200k · same-core 150k · mempress
+> 100k · timerstorm 100k · migrate 100k with 2,323 forced migrations · 10k
+> control · 2k smoke; distinct seeds). `skid_margin = 256` held on every
+> landing. Cross-substrate: nested `final_work` **bit-equal to bare metal** at
+> both shared seeds (34146909 smoke; 175379628 control) with identical record
+> counts. **What is NOT met: the stage's own floor** — ≥1,000,000 armed
+> deadlines read as armed *PMIs* gives 588,923 < 1,000,000 (a round-2 finding:
+> the hammer's old `armed` counter conflated the two classes and the checker
+> read it back; both instruments now count from records). Escalated to Paul
+> for a top-up run or a ruled criterion revision — the floor is not relaxed
+> here, and `check-recert-floors.sh` holds the line RED pending the ruling.
 
 ### N-3 — full-stack determinism gates nested + adversarial L0 + the portability gate
 

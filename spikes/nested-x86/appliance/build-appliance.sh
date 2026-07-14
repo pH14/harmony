@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # nested-x86 N-1: assemble the consonance appliance initramfs on the box.
 #
 # Contents: busybox + glibc runtime + the vmm-core live-gate test binaries +

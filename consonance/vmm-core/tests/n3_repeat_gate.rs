@@ -52,9 +52,7 @@ fn n3_repeat_gate() {
         )
     });
 
-    println!(
-        "N3JSON {{\"event\":\"start\",\"item\":\"{item}\",\"reps\":{reps},\"seed\":{seed}}}"
-    );
+    println!("N3JSON {{\"event\":\"start\",\"item\":\"{item}\",\"reps\":{reps},\"seed\":{seed}}}");
 
     let mut reference: Option<(String, String)> = None;
     let mut attempted = 0u64;
@@ -63,9 +61,8 @@ fn n3_repeat_gate() {
 
     for rep in 0..reps {
         attempted += 1;
-        let mut m = boot_patched_payload(&payload, GUEST_RAM_LEN, seed).unwrap_or_else(|e| {
-            panic!("boot_patched_payload({item}) failed at rep {rep}: {e}")
-        });
+        let mut m = boot_patched_payload(&payload, GUEST_RAM_LEN, seed)
+            .unwrap_or_else(|e| panic!("boot_patched_payload({item}) failed at rep {rep}: {e}"));
         let outcome = m.run_to(LIMIT).expect("run_to is infallible");
         let sh = hex32(&m.state_hash());
         let od = hex32(&m.observable_digest());

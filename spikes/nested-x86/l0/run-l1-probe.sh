@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # nested-x86 N-0: launch the minimal L1 probe under stock-KVM L0. One run-set.
 # Usage: run-l1-probe.sh <runset-name>
 set -euo pipefail
