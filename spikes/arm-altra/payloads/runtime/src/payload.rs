@@ -26,13 +26,21 @@
 use crate::park;
 use crate::println;
 
-/// AArch64 semihosting operation `SYS_EXIT`.
-const SYS_EXIT: u64 = 0x18;
+/// AArch64 semihosting operation `SYS_EXIT_EXTENDED` (`0x20`).
+///
+/// **Not `SYS_EXIT` (`0x18`).** The two-word `{reason, status}` parameter block — the
+/// only way to convey an application *exit code* rather than just a stop reason — is
+/// the defined interface of `SYS_EXIT_EXTENDED`. Plain `SYS_EXIT` on AArch32 takes a
+/// bare reason and no status; relying on QEMU's AArch64 extension of `0x18` to read a
+/// block is version-dependent, and where it does not, a payload's `exit(1)` still
+/// reports process success and the smoke gate's status check goes blind to failures.
+/// `SYS_EXIT_EXTENDED` reads `{reason, status}` unambiguously on both widths.
+const SYS_EXIT_EXTENDED: u64 = 0x20;
 /// `ADP_Stopped_ApplicationExit` — a normal application exit, whose second
 /// parameter-block word QEMU uses as the process exit status.
 const ADP_STOPPED_APPLICATION_EXIT: u64 = 0x2_0026;
 
-/// The semihosting `SYS_EXIT` parameter block.
+/// The semihosting `SYS_EXIT_EXTENDED` parameter block.
 #[repr(C)]
 struct ExitBlock {
     /// [`ADP_STOPPED_APPLICATION_EXIT`].
@@ -93,7 +101,7 @@ pub fn exit(code: u8) -> ! {
     unsafe {
         core::arch::asm!(
             "hlt #0xF000",
-            in("x0") SYS_EXIT,
+            in("x0") SYS_EXIT_EXTENDED,
             in("x1") &raw const block as u64,
             options(nostack),
         );

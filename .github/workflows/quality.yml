@@ -225,6 +225,16 @@ jobs:
       # fixture target is `#![cfg(not(miri))]`.)
       - name: miri — arm-harness (the unsafe perf/KVM seam)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path "$SPIKE/Cargo.toml" -p arm-harness
+      # The payload crates (runtime, oracles) contain `unsafe`, but they are
+      # `#![no_std]`/`aarch64-unknown-none` with top-level `global_asm!` — `cargo miri
+      # test` cannot even compile them for a host target, and their unsafe is asm +
+      # fixed-GPA MMIO Miri cannot execute. Their one Miri-checkable piece — the
+      # clock-page byte layout both the runtime and the harness write — is seamed into
+      # oracle-model as pure `[u8]` packing, so Miri covers it here. (oracle-model is
+      # `forbid(unsafe_code)`; this run validates that shared layout, the PRNG, and the
+      # count derivations under the interpreter.)
+      - name: miri — oracle-model (shared page layout + count derivations)
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path "$SPIKE/oracle-model/Cargo.toml" --features std
 
   # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
   # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`

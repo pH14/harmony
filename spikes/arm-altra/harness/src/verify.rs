@@ -95,16 +95,41 @@ pub fn verify(elf: &Elf, payload: Payload) -> Result<Verdict, ElfError> {
                     )),
                 }
             }
-            // Target: an immediate branch must land inside the counting window. A
-            // target redirected out of the loop changes the control flow.
-            if let Some(target) = b.target
-                && !(base..end).contains(&target)
-            {
-                failures.push(format!(
-                    "branch #{i} at {:#x}: target {target:#x} is outside the window \
-                     [{base:#x}, {end:#x}) — a redirected branch changes the counted control flow",
-                    b.addr
-                ));
+            // Target: an immediate branch must land at the EXACT address the model
+            // declares (`window_base + offset`), not merely somewhere in the window.
+            // In-window-only verification accepts a backedge or CBZ/TBZ retargeted to a
+            // different in-window label — same class, same condition, different control
+            // flow and taken-branch count. The exact check catches that.
+            match (
+                b.target,
+                model.inline_branch_targets.get(i).copied().flatten(),
+            ) {
+                (Some(target), Some(off)) => {
+                    let want = base.wrapping_add_signed(i64::from(off));
+                    if target != want {
+                        failures.push(format!(
+                            "branch #{i} at {:#x}: target {target:#x} != model's {want:#x} \
+                             (window_base {base:#x} + offset {off}) — a retargeted branch \
+                             changes the counted control flow",
+                            b.addr
+                        ));
+                    }
+                }
+                // The model declares no exact target for this immediate branch (a
+                // modelling gap): fall back to the weaker in-window requirement rather
+                // than accepting anything.
+                (Some(target), None) => {
+                    if !(base..end).contains(&target) {
+                        failures.push(format!(
+                            "branch #{i} at {:#x}: target {target:#x} is outside the window \
+                             [{base:#x}, {end:#x})",
+                            b.addr
+                        ));
+                    }
+                }
+                // A register/indirect branch has no static target; the model agrees
+                // (None). Its destination is a runtime register value, out of scope here.
+                (None, _) => {}
             }
         }
     }

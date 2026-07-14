@@ -41,16 +41,26 @@
 //! The repository's unsafe⇒Miri contract's own escape hatch — "privileged or
 //! inline-assembly operations behind a `cfg(miri)` seam, with the pointer logic
 //! driven by an in-process loopback" — presupposes there is *non-privileged* logic
-//! left to interpret once the privileged parts are seamed out. Here there is none:
-//! the crate's entire purpose is the privileged parts. Seaming them all behind
-//! `cfg(miri)` would leave an empty interpreter run that proves nothing.
+//! left to interpret once the privileged parts are seamed out. The crate cannot even
+//! be *built* for a Miri host target: the top-level `global_asm!` (`boot.s`,
+//! `vectors.s`) is aarch64 machine code the host assembler rejects, so `cargo miri
+//! test` on this crate does not compile, let alone run.
 //!
-//! So this crate's behaviour is exercised by the **TCG smoke** (`payloads/smoke.sh`),
-//! which runs the real instructions on an emulated N1 — the only thing that *can*
-//! execute physical MMIO and `asm!`. The portable, allocation-and-pointer logic that
-//! Miri *can* check (the ELF loader, the `kvm_run` decode, the state digest) lives in
-//! `arm-harness` and is gated under Miri there. The same applies to the `oracles`
-//! crate, whose thin payload `main`s call straight into this runtime.
+//! What Miri *can* check is the one piece of non-privileged logic these payloads have:
+//! the **byte layout** of the harness-shared clock page. That is now seamed into
+//! [`oracle_model::pvclock`] — a pure `[u8]` packing with no MMIO — and is interpreted
+//! under Miri there (the nightly Miri job runs `oracle-model`). Both writers of the
+//! page, this runtime's self-seeded fallback (`pvclock.rs`) and the harness's managed
+//! publish (`arm-harness`), build from that one shared, Miri-checked layout; the code
+//! here only writes it through the seqlock protocol to a fixed GPA. The rest of the
+//! crate's `unsafe` — `asm!`/`global_asm!` and fixed-address volatile MMIO — is machine
+//! code and physical memory Miri fundamentally cannot execute or model (those pointers
+//! are integer literals with no Rust provenance to validate), and it is exercised by
+//! the **TCG smoke** (`payloads/smoke.sh`) on an emulated N1 instead. The wider
+//! Miri-checkable harness logic (the ELF loader, the `kvm_run` decode, the state
+//! digest) lives in `arm-harness` and is gated under Miri there. The same applies to
+//! the `oracles` crate, whose thin payload `main`s are aarch64 asm loops that call
+//! straight into this runtime.
 
 #![no_std]
 

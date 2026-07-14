@@ -98,6 +98,57 @@ pub const PVCLOCK_GPA: u64 = 0x4000_1000;
 /// `HARMONY_PVCLOCK_ABI` (`docs/PARAVIRT-CLOCK.md` §1).
 pub const PVCLOCK_ABI: u32 = 1;
 
+/// The work-derived clock page's byte layout and its pure page builder.
+///
+/// The layout is written by **two** parties — the harness publishes the *managed* page
+/// ([`crate::PVCLOCK_GPA`], `arm-harness`) and, under TCG where the harness never runs,
+/// the payload runtime self-seeds a fallback (`payloads/runtime/src/pvclock.rs`). Both
+/// must agree on the offsets to the byte, so the offsets and the packing live here,
+/// once, rather than in each writer. This module is also the payloads' one piece of
+/// **Miri-checkable** byte logic: the page layout is pure `[u8]` packing (no MMIO, no
+/// asm), so it is interpreted here — the runtime and harness only *blit* what this
+/// builds. (Their remaining `unsafe` is `asm!` and fixed-GPA volatile access, which
+/// Miri fundamentally cannot execute; see `payloads/runtime/src/lib.rs`.)
+pub mod pvclock {
+    /// `abi_version` (u32) — equals [`super::PVCLOCK_ABI`] on a valid page.
+    pub const OFF_ABI: usize = 0x00;
+    /// `seq` (u32) — odd while an update is in progress, even when stable.
+    pub const OFF_SEQ: usize = 0x04;
+    /// `vns` (u64) — materialized V-time in nanoseconds.
+    pub const OFF_VNS: usize = 0x08;
+    /// `guest_clock` (u64) — the materialized virtual counter.
+    pub const OFF_GUEST_CLOCK: usize = 0x10;
+    /// `guest_clock_hz` (u64).
+    pub const OFF_HZ: usize = 0x18;
+    /// `flags` (u32) — bit 0 is [`FLAG_MATERIALIZED`].
+    pub const OFF_FLAGS: usize = 0x20;
+    /// The page's used length in bytes.
+    pub const PAGE_LEN: usize = 0x28;
+
+    /// `flags` bit 0: the value is finished — do not interpolate against a live
+    /// counter. Always set for ABI 1.
+    pub const FLAG_MATERIALIZED: u32 = 1;
+
+    /// Build the clock-page bytes for a **stable** (even-`seq`) materialized page: the
+    /// ABI marker, `seq = 2`, the given V-time/counter/frequency, and the materialized
+    /// flag. Everything else is zero. Little-endian, matching the guest's reads.
+    ///
+    /// This is the shared, Miri-interpreted layout; a writer either blits the result or
+    /// (for the live seqlock protocol) writes these fields in odd→even order using the
+    /// `OFF_*` offsets above.
+    #[must_use]
+    pub fn materialize(vns: u64, guest_clock: u64, hz: u64) -> [u8; PAGE_LEN] {
+        let mut p = [0u8; PAGE_LEN];
+        p[OFF_ABI..OFF_ABI + 4].copy_from_slice(&super::PVCLOCK_ABI.to_le_bytes());
+        p[OFF_SEQ..OFF_SEQ + 4].copy_from_slice(&2u32.to_le_bytes());
+        p[OFF_VNS..OFF_VNS + 8].copy_from_slice(&vns.to_le_bytes());
+        p[OFF_GUEST_CLOCK..OFF_GUEST_CLOCK + 8].copy_from_slice(&guest_clock.to_le_bytes());
+        p[OFF_HZ..OFF_HZ + 8].copy_from_slice(&hz.to_le_bytes());
+        p[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&FLAG_MATERIALIZED.to_le_bytes());
+        p
+    }
+}
+
 /// PL011 UART data register — the guest's one MMIO window, and therefore the
 /// harness's counter-read point. QEMU `virt` maps the PL011 here; the harness
 /// models it at the same GPA so payloads are byte-identical across both.
@@ -486,6 +537,14 @@ pub struct Expectation {
     /// therefore different taken-branch count — is caught, where a class-only check
     /// would pass it.
     pub inline_branch_conds: &'static [Option<u8>],
+    /// The expected **exact target** of each branch, position-aligned with
+    /// [`Expectation::inline_branch_seq`]: `Some(off)` is the destination as a byte
+    /// offset from the window base, `None` a register/indirect branch with no static
+    /// target. The verifier resolves each immediate branch's target from the ELF and
+    /// checks it equals `window_base + off`, so a backedge or `CBZ`/`TBZ` retargeted to
+    /// a different in-window label — same class, same condition, different control flow
+    /// and taken-branch count — is caught, where an in-window-only check would pass it.
+    pub inline_branch_targets: &'static [Option<i32>],
 }
 
 impl Expectation {
@@ -674,6 +733,34 @@ mod seq {
     pub const LSE_ATOMICS_CONDS: &[Option<u8>] = &[Some(NE)];
     pub const CLOCK_PAGE_CONDS: &[Option<u8>] = &[None, Some(NE), Some(NE)];
     pub const NONE_CONDS: &[Option<u8>] = &[];
+
+    /// The **exact** target of each immediate window branch, as a byte offset from the
+    /// window base (`target - window_base`), position-aligned with the `BranchKind`
+    /// slices above. `Some(off)` pins the destination exactly; `None` is a register/
+    /// indirect branch with no static target. In-window-only verification accepts a
+    /// backedge or `CBZ`/`TBZ` retargeted to a *different* in-window label — which
+    /// changes control flow and the taken-branch count while keeping class and
+    /// condition. These pin the destination, so such a retarget fails the gate. The
+    /// values are the by-construction control flow: forward exits skip ahead, the
+    /// single `B.NE` backedge returns to the loop top.
+    pub const STRAIGHT_LINE_TARGETS: &[Option<i32>] = &[Some(8)];
+    pub const BRANCH_DENSE_TARGETS: &[Option<i32>] = &[
+        Some(48),
+        Some(56),
+        Some(64),
+        Some(72),
+        Some(80),
+        Some(88),
+        Some(100),
+        Some(24),
+    ];
+    pub const SVC_TARGETS: &[Option<i32>] = &[Some(0)];
+    pub const EXCEPTION_ABORT_TARGETS: &[Option<i32>] = &[Some(4)];
+    pub const WFI_IDLE_TARGETS: &[Option<i32>] = &[Some(0)];
+    pub const LLSC_ATOMICS_TARGETS: &[Option<i32>] = &[Some(4), Some(4)];
+    pub const LSE_ATOMICS_TARGETS: &[Option<i32>] = &[Some(4)];
+    pub const CLOCK_PAGE_TARGETS: &[Option<i32>] = &[Some(20), Some(20), Some(20)];
+    pub const NONE_TARGETS: &[Option<i32>] = &[];
 }
 
 /// The expected count for a (payload, scale, seed).
@@ -734,6 +821,7 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
         has_reported_term: false,
         inline_branch_seq: seq::NONE,
         inline_branch_conds: seq::NONE_CONDS,
+        inline_branch_targets: seq::NONE_TARGETS,
     };
 
     match payload {
@@ -743,6 +831,7 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
         Payload::StraightLine => {
             e.inline_branch_seq = seq::STRAIGHT_LINE;
             e.inline_branch_conds = seq::STRAIGHT_LINE_CONDS;
+            e.inline_branch_targets = seq::STRAIGHT_LINE_TARGETS;
         }
         Payload::BranchDense => {
             let mut rng = XorShift64Star::new(seed);
@@ -753,6 +842,7 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
             e.certain_taken = back_edges.saturating_add(data_taken);
             e.inline_branch_seq = seq::BRANCH_DENSE;
             e.inline_branch_conds = seq::BRANCH_DENSE_CONDS;
+            e.inline_branch_targets = seq::BRANCH_DENSE_TARGETS;
         }
         Payload::Svc => {
             e.exception_entries = trips;
@@ -760,12 +850,14 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
             e.svc_instructions = trips;
             e.inline_branch_seq = seq::SVC;
             e.inline_branch_conds = seq::SVC_CONDS;
+            e.inline_branch_targets = seq::SVC_TARGETS;
         }
         Payload::ExceptionAbort => {
             e.exception_entries = trips;
             e.exception_returns = trips;
             e.inline_branch_seq = seq::EXCEPTION_ABORT;
             e.inline_branch_conds = seq::EXCEPTION_ABORT_CONDS;
+            e.inline_branch_targets = seq::EXCEPTION_ABORT_TARGETS;
         }
         Payload::WfiIdle => {
             e.exception_entries = trips;
@@ -773,20 +865,24 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
             e.wfi_instructions = trips;
             e.inline_branch_seq = seq::WFI_IDLE;
             e.inline_branch_conds = seq::WFI_IDLE_CONDS;
+            e.inline_branch_targets = seq::WFI_IDLE_TARGETS;
         }
         Payload::LlscAtomics => {
             e.has_reported_term = true;
             e.inline_branch_seq = seq::LLSC_ATOMICS;
             e.inline_branch_conds = seq::LLSC_ATOMICS_CONDS;
+            e.inline_branch_targets = seq::LLSC_ATOMICS_TARGETS;
         }
         Payload::LseAtomics => {
             e.inline_branch_seq = seq::LSE_ATOMICS;
             e.inline_branch_conds = seq::LSE_ATOMICS_CONDS;
+            e.inline_branch_targets = seq::LSE_ATOMICS_TARGETS;
         }
         Payload::ClockPage => {
             e.has_reported_term = true;
             e.inline_branch_seq = seq::CLOCK_PAGE;
             e.inline_branch_conds = seq::CLOCK_PAGE_CONDS;
+            e.inline_branch_targets = seq::CLOCK_PAGE_TARGETS;
         }
     }
 
@@ -1019,6 +1115,46 @@ mod tests {
             assert_eq!(Payload::from_name(p.name()), Some(p));
         }
         assert_eq!(Payload::from_name("nope"), None);
+    }
+
+    #[test]
+    fn pvclock_page_layout_packs_at_the_declared_offsets() {
+        // The one payload-side byte layout Miri can interpret: pure `[u8]` packing, no
+        // MMIO. A wrong offset or endianness here would corrupt the guest's clock-page
+        // read the same in both the harness (managed) and runtime (self-seeded) writers,
+        // since both build from this. Reading each field back pins the layout.
+        use pvclock::*;
+        let p = materialize(0x1122_3344_5566_7788, 0x00de_00ad_00be_00ef, 1_000_000_000);
+        let u32_at = |o: usize| u32::from_le_bytes(p[o..o + 4].try_into().unwrap());
+        let u64_at = |o: usize| u64::from_le_bytes(p[o..o + 8].try_into().unwrap());
+        assert_eq!(u32_at(OFF_ABI), PVCLOCK_ABI, "ABI marker");
+        assert_eq!(u32_at(OFF_SEQ), 2, "seq is stable/even");
+        assert_eq!(u64_at(OFF_VNS), 0x1122_3344_5566_7788, "V-time");
+        assert_eq!(u64_at(OFF_GUEST_CLOCK), 0x00de_00ad_00be_00ef, "counter");
+        assert_eq!(u64_at(OFF_HZ), 1_000_000_000, "frequency");
+        assert_eq!(u32_at(OFF_FLAGS), FLAG_MATERIALIZED, "materialized flag");
+    }
+
+    #[test]
+    fn branch_metadata_is_position_aligned_with_the_sequence() {
+        // The verifier indexes conds/targets by branch position, so a slice that fell
+        // out of alignment with `inline_branch_seq` would check the wrong branch (or
+        // silently skip one). Every payload's three slices must be the same length.
+        for p in ALL_PAYLOADS {
+            let e = expected(p, Scale::Smoke, DEFAULT_SEED);
+            assert_eq!(
+                e.inline_branch_seq.len(),
+                e.inline_branch_conds.len(),
+                "{}: conds not aligned with seq",
+                p.name()
+            );
+            assert_eq!(
+                e.inline_branch_seq.len(),
+                e.inline_branch_targets.len(),
+                "{}: targets not aligned with seq",
+                p.name()
+            );
+        }
     }
 
     #[test]

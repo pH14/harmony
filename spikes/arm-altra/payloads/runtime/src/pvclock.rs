@@ -31,24 +31,12 @@
 //! counts retries anyway, branch-free, and reports the total — so if that argument
 //! is ever wrong, it fails loudly instead of quietly corrupting the oracle.
 
+use oracle_model::pvclock::{OFF_ABI, OFF_FLAGS, OFF_GUEST_CLOCK, OFF_HZ, OFF_SEQ, OFF_VNS};
 use oracle_model::{PVCLOCK_ABI, PVCLOCK_GPA};
 
-/// `abi_version`.
-const OFF_ABI: u64 = 0x00;
-/// `seq` — odd means an update is in progress.
-const OFF_SEQ: u64 = 0x04;
-/// `vns` — materialized V-time in nanoseconds.
-const OFF_VNS: u64 = 0x08;
-/// `guest_clock` — the materialized virtual counter.
-const OFF_GUEST_CLOCK: u64 = 0x10;
-/// `guest_clock_hz`.
-const OFF_HZ: u64 = 0x18;
-/// `flags`.
-const OFF_FLAGS: u64 = 0x20;
-
-/// `flags` bit 0: the value is finished — do not interpolate against a live
-/// counter. Always set for ABI 1.
-pub const FLAG_MATERIALIZED: u32 = 1;
+/// `flags` bit 0: the materialized-value flag (`oracle_model::pvclock::FLAG_MATERIALIZED`),
+/// re-exported so the `clock-page` payload can test it as `pvclock::FLAG_MATERIALIZED`.
+pub use oracle_model::pvclock::FLAG_MATERIALIZED;
 
 /// A plausible counter frequency for the self-seeded page. Never used by a
 /// managed run; present only so the TCG protocol exercise has a nonzero field.
@@ -77,10 +65,14 @@ impl Mode {
 /// Ensure a valid clock page exists, publishing a static one if the harness did
 /// not. Returns which happened.
 pub fn ensure() -> Mode {
+    // The field values and offsets are the shared, Miri-tested layout
+    // (`oracle_model::pvclock`); the writes here are the payload-side seqlock protocol
+    // that layout is written *through*. `at(off)` turns a page offset into its GPA.
+    let at = |off: usize| PVCLOCK_GPA + off as u64;
     // SAFETY: PVCLOCK_GPA is the second page of guest RAM, mapped Normal by the
     // boot shim and left uncovered by every output section of `linker.ld`.
     unsafe {
-        let abi = core::ptr::read_volatile((PVCLOCK_GPA + OFF_ABI) as *const u32);
+        let abi = core::ptr::read_volatile(at(OFF_ABI) as *const u32);
         if abi == PVCLOCK_ABI {
             return Mode::Managed;
         }
@@ -88,15 +80,15 @@ pub fn ensure() -> Mode {
         // Publish a static page in the seqlock's own update order (odd, publish,
         // even), so the TCG path exercises the real protocol rather than a
         // shortcut.
-        core::ptr::write_volatile((PVCLOCK_GPA + OFF_SEQ) as *mut u32, 1);
+        core::ptr::write_volatile(at(OFF_SEQ) as *mut u32, 1);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-        core::ptr::write_volatile((PVCLOCK_GPA + OFF_VNS) as *mut u64, 0);
-        core::ptr::write_volatile((PVCLOCK_GPA + OFF_GUEST_CLOCK) as *mut u64, 0);
-        core::ptr::write_volatile((PVCLOCK_GPA + OFF_HZ) as *mut u64, SELF_SEED_HZ);
-        core::ptr::write_volatile((PVCLOCK_GPA + OFF_FLAGS) as *mut u32, FLAG_MATERIALIZED);
-        core::ptr::write_volatile((PVCLOCK_GPA + OFF_ABI) as *mut u32, PVCLOCK_ABI);
+        core::ptr::write_volatile(at(OFF_VNS) as *mut u64, 0);
+        core::ptr::write_volatile(at(OFF_GUEST_CLOCK) as *mut u64, 0);
+        core::ptr::write_volatile(at(OFF_HZ) as *mut u64, SELF_SEED_HZ);
+        core::ptr::write_volatile(at(OFF_FLAGS) as *mut u32, FLAG_MATERIALIZED);
+        core::ptr::write_volatile(at(OFF_ABI) as *mut u32, PVCLOCK_ABI);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-        core::ptr::write_volatile((PVCLOCK_GPA + OFF_SEQ) as *mut u32, 2);
+        core::ptr::write_volatile(at(OFF_SEQ) as *mut u32, 2);
 
         Mode::SelfSeeded
     }
@@ -108,8 +100,8 @@ pub fn header() -> (u32, u32) {
     // SAFETY: as [`ensure`].
     unsafe {
         (
-            core::ptr::read_volatile((PVCLOCK_GPA + OFF_ABI) as *const u32),
-            core::ptr::read_volatile((PVCLOCK_GPA + OFF_FLAGS) as *const u32),
+            core::ptr::read_volatile((PVCLOCK_GPA + OFF_ABI as u64) as *const u32),
+            core::ptr::read_volatile((PVCLOCK_GPA + OFF_FLAGS as u64) as *const u32),
         )
     }
 }

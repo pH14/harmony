@@ -52,6 +52,14 @@ use thiserror::Error;
 use crate::console::{Console, Event};
 use crate::evidence::{ExitReason, OverflowRecord, RunRecord};
 
+/// The default per-`KVM_RUN` watchdog budget, in seconds — generous enough that a
+/// healthy WFI/idle payload waiting on a real timer interrupt never trips it, tight
+/// enough that a genuine wedge (a lost interrupt, a WFI with no wake, a livelocked
+/// exclusive) is caught in bounded time. Lives here — the portable run module — so the
+/// CLI can name it on any target; the Linux seam ([`crate::sys::machine`]) is what
+/// arms `ITIMER_REAL` against it. A liveness backstop, not a measurement parameter.
+pub const DEFAULT_WATCHDOG_SECS: u64 = 300;
+
 /// The PL011 data register, the guest's one MMIO door for *output*. Every byte the
 /// guest "prints" is a store here, and every store is a `KVM_EXIT_MMIO`.
 pub const PL011_DR: u64 = UART_BASE;
@@ -126,6 +134,15 @@ pub enum RunError {
         context: &'static str,
         /// What the seam said.
         message: String,
+    },
+    /// The vCPU stayed inside a single `KVM_RUN` past the per-sample watchdog deadline
+    /// — a wedged guest (a lost interrupt, a WFI with no wake, a livelocked exclusive).
+    /// The watchdog converts the hang into this error so the caller can record the
+    /// failed attempt and keep the evidence total, rather than blocking forever.
+    #[error("the vCPU wedged inside KVM_RUN past the {secs}s watchdog deadline (no exit returned)")]
+    Watchdog {
+        /// The deadline that was exceeded, in seconds.
+        secs: u64,
     },
     /// The guest reached its exit sentinel without ever opening the counting
     /// window. There is no count to record, and a zero would be a lie.
@@ -837,6 +854,30 @@ mod tests {
         assert!(matches!(
             run_sample(&mut vcpu, &mut counter, &spec(Some(500))),
             Err(RunError::AdvisoryExitStorm { .. })
+        ));
+    }
+
+    #[test]
+    fn a_wedged_vcpu_surfaces_as_an_error_not_a_hang_or_a_record() {
+        // The watchdog turns a KVM_RUN that never returns into RunError::Watchdog. The
+        // run loop must propagate it (so the caller records a failed attempt), never
+        // absorb it into a record — a wedge has no measured window.
+        struct Wedged;
+        impl Vcpu for Wedged {
+            fn run(&mut self) -> Result<VcpuExit, RunError> {
+                Err(RunError::Watchdog { secs: 300 })
+            }
+            fn complete_mmio_read(&mut self, _data: &[u8]) -> Result<(), RunError> {
+                Ok(())
+            }
+            fn state_digest(&mut self) -> Result<String, RunError> {
+                Ok("sha256:00".into())
+            }
+        }
+        let mut counter = ScriptedCounter::new(&[]);
+        assert!(matches!(
+            run_sample(&mut Wedged, &mut counter, &spec(Some(500))),
+            Err(RunError::Watchdog { secs: 300 })
         ));
     }
 

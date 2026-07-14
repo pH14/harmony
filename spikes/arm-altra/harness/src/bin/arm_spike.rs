@@ -156,6 +156,10 @@ struct RunOpts {
     /// Draw seeded-random target deltas over 1..=100000 (AA-3).
     #[arg(long)]
     with_targets: bool,
+    /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables. A wedged guest past this
+    /// deadline is recorded as a failed attempt rather than hanging the run.
+    #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
+    watchdog_secs: u64,
 }
 
 /// A measurement scale, on the command line.
@@ -372,6 +376,7 @@ struct RunArgs {
     seed: u64,
     reps: u64,
     with_targets: bool,
+    watchdog_secs: u64,
 }
 
 /// A payload ELF loaded from the payload directory, hashed and verified against its
@@ -557,6 +562,7 @@ fn execute(args: RunArgs) -> Result<(), String> {
         let result = (|| {
             let mut machine = Machine::new(&loaded.image, &params)
                 .map_err(|e| format!("create the machine: {e}"))?;
+            machine.set_watchdog_secs(args.watchdog_secs);
             // The patch marker, probed on the VM actually running the sample — the
             // positive proof of §Evidence integrity #4, not a build-time assumption.
             patch_marker = machine
@@ -724,6 +730,7 @@ fn run() -> Result<(), String> {
                 seed: opts.seed,
                 reps: opts.reps,
                 with_targets: opts.with_targets,
+                watchdog_secs: opts.watchdog_secs,
             })
         }
     }

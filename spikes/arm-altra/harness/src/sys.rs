@@ -216,8 +216,13 @@ pub mod kvm {
     pub const SET_USER_MEMORY_REGION: u64 = 0x4020_AE46;
     /// `KVM_RUN` — `_IO(KVMIO, 0x80)`.
     pub const RUN: u64 = 0xAE80;
-    /// `KVM_GET_ONE_REG` — `_IOR(KVMIO, 0xab, struct kvm_one_reg)`.
-    pub const GET_ONE_REG: u64 = 0x8010_AEAB;
+    /// `KVM_GET_ONE_REG` — `_IOW(KVMIO, 0xab, struct kvm_one_reg)`. **Note the
+    /// direction: `_IOW`, not `_IOR`.** KVM's get-register ioctl is encoded write —
+    /// userspace *writes* the `kvm_one_reg` descriptor (id + a pointer to where the
+    /// value goes) into the kernel; the kernel fills the pointed-at buffer, not the
+    /// struct. A `_IOR` encoding (`0x8010_AEAB`) is simply a different, unknown ioctl
+    /// number and returns `ENOTTY`, so every real `state_digest` read fails.
+    pub const GET_ONE_REG: u64 = 0x4010_AEAB;
     /// `KVM_SET_ONE_REG` — `_IOW(KVMIO, 0xac, struct kvm_one_reg)`.
     pub const SET_ONE_REG: u64 = 0x4010_AEAC;
     /// `KVM_ARM_VCPU_INIT` — `_IOW(KVMIO, 0xae, struct kvm_vcpu_init)`.
@@ -252,14 +257,26 @@ pub mod kvm {
     pub const DEV_ARM_VGIC_GRP_ADDR: u32 = 0;
     /// `KVM_DEV_ARM_VGIC_GRP_CTRL`.
     pub const DEV_ARM_VGIC_GRP_CTRL: u32 = 4;
-    /// `KVM_DEV_ARM_VGIC_GRP_DIST_REGS` — the distributor register save/restore group.
-    /// The `attr` is the GICD register offset; reading it returns that register, which
-    /// is where the guest-visible interrupt state (enable/pending/active) lives.
-    pub const DEV_ARM_VGIC_GRP_DIST_REGS: u32 = 5;
+    /// `KVM_DEV_ARM_VGIC_GRP_DIST_REGS` = **1** — the distributor register save group.
+    /// The `attr` is the GICD register offset. The distributor holds the **SPI** state
+    /// (interrupt IDs ≥ 32); the SGI/PPI (IDs 0–31) enable/pending/active words are
+    /// RAZ/WI here on GICv3 — they live in the redistributor (see [`DEV_ARM_VGIC_GRP_REDIST_REGS`]).
+    pub const DEV_ARM_VGIC_GRP_DIST_REGS: u32 = 1;
+    /// `KVM_DEV_ARM_VGIC_GRP_REDIST_REGS` = **5** — the redistributor register save
+    /// group. The **private-interrupt** (SGI/PPI, IDs 0–31) enable/pending/active state
+    /// lives in the redistributor's SGI frame (`RD_base + 0x1_0000`), and that is where
+    /// the timer PPIs land — so the injection state AA-6 exercises is read from here,
+    /// not the distributor. The `attr` low bits are the offset from `RD_base`; the high
+    /// 32 bits are the target vCPU's `mpidr` (0 for the single-affinity spike guest).
+    pub const DEV_ARM_VGIC_GRP_REDIST_REGS: u32 = 5;
     /// `KVM_DEV_ARM_VGIC_CTRL_INIT`.
     pub const DEV_ARM_VGIC_CTRL_INIT: u64 = 0;
-    /// `KVM_GET_DEVICE_ATTR` — `_IOWR(KVMIO, 0xe2, struct kvm_device_attr)`.
-    pub const GET_DEVICE_ATTR: u64 = 0xC018_AEE2;
+    /// `KVM_GET_DEVICE_ATTR` — `_IOW(KVMIO, 0xe2, struct kvm_device_attr)`, the same
+    /// `_IOW` direction as `SET_DEVICE_ATTR`: userspace writes the `kvm_device_attr`
+    /// (group/attr + a pointer to the value buffer) and the kernel fills the buffer.
+    /// A `_IOWR` encoding (`0xC018_AEE2`) is an unknown ioctl and returns `ENOTTY`,
+    /// so the vGIC state read fails and no digest is produced.
+    pub const GET_DEVICE_ATTR: u64 = 0x4018_AEE2;
     /// `KVM_VGIC_V3_ADDR_TYPE_DIST`.
     pub const VGIC_V3_ADDR_TYPE_DIST: u64 = 2;
     /// `KVM_VGIC_V3_ADDR_TYPE_REDIST`.
@@ -472,13 +489,26 @@ pub fn digest_state(
 /// guest state (divergence hidden), and neither fails loudly.
 #[must_use]
 pub fn is_host_time_register(id: u64) -> bool {
-    // Only arm64 system registers carry timer counters.
+    // Only arm64 system registers carry timer counters. The register id packs, from
+    // the top: the architecture (`KVM_REG_ARM64`, bits 56–63), the value size
+    // (`KVM_REG_SIZE_U64`, bits 52–55), and the coprocessor selector
+    // (`KVM_REG_ARM_COPROC_MASK`, bits **16–27**) — `KVM_REG_ARM64_SYSREG` is
+    // `0x0013 << 16`, in the LOW selector bits, NOT bit 48. Encoding it at bit 48 (as
+    // an earlier draft did) makes this predicate match no real register id, so every
+    // live CNTVCT/CNTPCT read leaks into the digest and same-seed replay dies.
     const KVM_REG_ARM64: u64 = 0x6000_0000_0000_0000;
+    const KVM_REG_ARCH_MASK: u64 = 0xFF00_0000_0000_0000;
     const KVM_REG_SIZE_U64: u64 = 0x0030_0000_0000_0000;
-    const KVM_REG_ARM64_SYSREG: u64 = 0x0013_0000_0000_0000;
-    const SYSREG_PREFIX: u64 = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG;
-    const PREFIX_MASK: u64 = 0xFFFF_0000_0000_0000;
-    if id & PREFIX_MASK != SYSREG_PREFIX {
+    const KVM_REG_SIZE_MASK: u64 = 0x00F0_0000_0000_0000;
+    const KVM_REG_ARM_COPROC_MASK: u64 = 0x0FFF_0000;
+    const KVM_REG_ARM64_SYSREG: u64 = 0x0013 << 16;
+    if id & KVM_REG_ARCH_MASK != KVM_REG_ARM64 {
+        return false;
+    }
+    if id & KVM_REG_SIZE_MASK != KVM_REG_SIZE_U64 {
+        return false;
+    }
+    if id & KVM_REG_ARM_COPROC_MASK != KVM_REG_ARM64_SYSREG {
         return false;
     }
     let op0 = (id >> 14) & 0x3;
@@ -1032,7 +1062,10 @@ mod tests {
     #[test]
     fn host_time_registers_are_the_generic_timer_counters() {
         // ARM64_SYS_REG(op0,op1,crn,crm,op2) id builder.
-        const P: u64 = 0x6000_0000_0000_0000 | 0x0030_0000_0000_0000 | 0x0013_0000_0000_0000;
+        // KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG (0x0013 << 16 — the
+        // coprocessor selector lives in the LOW bits, not bit 48). A real timer-counter
+        // id has this exact prefix; the earlier bit-48 form matched nothing.
+        const P: u64 = 0x6000_0000_0000_0000 | 0x0030_0000_0000_0000 | (0x0013 << 16);
         let sysreg = |op0: u64, op1: u64, crn: u64, crm: u64, op2: u64| {
             P | (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2
         };
@@ -1063,6 +1096,20 @@ mod tests {
         assert!(!is_host_time_register(
             kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC
         ));
+
+        // The load-bearing anti-regression: a *literal* real KVM register id, not one
+        // built from the same prefix the predicate uses, so the SYSREG selector position
+        // is pinned independently. `CNTVCT_EL0` = ARM64_SYS_REG(3,3,14,0,2): the
+        // coprocessor selector `0x0013` sits at bits 16–27 (`…_0013_DF02`), never bit 48.
+        assert_eq!(
+            sysreg(3, 3, 14, 0, 2),
+            0x6030_0000_0013_DF02,
+            "CNTVCT_EL0 id"
+        );
+        assert!(
+            is_host_time_register(0x6030_0000_0013_DF02),
+            "the real CNTVCT_EL0 id must be recognized"
+        );
     }
 
     #[test]
@@ -1071,7 +1118,10 @@ mod tests {
         // virtual counter must digest identically, or replay-identity is dead on real
         // hardware where the counter advances between runs.
         use std::collections::BTreeMap;
-        const P: u64 = 0x6000_0000_0000_0000 | 0x0030_0000_0000_0000 | 0x0013_0000_0000_0000;
+        // KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG (0x0013 << 16 — the
+        // coprocessor selector lives in the LOW bits, not bit 48). A real timer-counter
+        // id has this exact prefix; the earlier bit-48 form matched nothing.
+        const P: u64 = 0x6000_0000_0000_0000 | 0x0030_0000_0000_0000 | (0x0013 << 16);
         let cntvct = P | (3 << 14) | (3 << 11) | (14 << 7) | 2; // op0=3,op1=3,crn=14,crm=0,op2=2
 
         let ram = vec![7u8; 32];
@@ -1120,7 +1170,11 @@ mod tests {
         assert_eq!(kvm::RUN, io(0x80));
         // struct kvm_userspace_memory_region is 32 bytes; kvm_one_reg 16; kvm_vcpu_init 32.
         assert_eq!(kvm::SET_USER_MEMORY_REGION, iow(0x46, 32));
-        assert_eq!(kvm::GET_ONE_REG, ior(0xab, 16));
+        // Both ONE_REG ioctls are _IOW: the get form encodes write because userspace
+        // writes the descriptor and the kernel fills a pointed-at buffer. Pinning them
+        // to their literal ABI numbers so the direction can't drift back to _IOR.
+        assert_eq!(kvm::GET_ONE_REG, iow(0xab, 16));
+        assert_eq!(kvm::GET_ONE_REG, 0x4010_AEAB);
         assert_eq!(kvm::SET_ONE_REG, iow(0xac, 16));
         assert_eq!(kvm::ARM_VCPU_INIT, iow(0xae, 32));
         assert_eq!(kvm::ARM_PREFERRED_TARGET, ior(0xaf, 32));
@@ -1128,8 +1182,10 @@ mod tests {
         // struct kvm_enable_cap is 104 bytes; kvm_create_device 12; kvm_device_attr 24.
         assert_eq!(kvm::ENABLE_CAP, iow(0xa3, 104));
         assert_eq!(kvm::CREATE_DEVICE, iowr(0xe0, 12));
+        // Both DEVICE_ATTR ioctls are _IOW (same reason as ONE_REG): get is not _IOWR.
         assert_eq!(kvm::SET_DEVICE_ATTR, iow(0xe1, 24));
-        assert_eq!(kvm::GET_DEVICE_ATTR, iowr(0xe2, 24));
+        assert_eq!(kvm::GET_DEVICE_ATTR, iow(0xe2, 24));
+        assert_eq!(kvm::GET_DEVICE_ATTR, 0x4018_AEE2);
         // The patch draft's two additions (host/patches/0001-…).
         assert_eq!(kvm::ARM_PREEMPT_EXIT, io(0xe4));
         assert_eq!(kvm::EXIT_PREEMPT, 42);

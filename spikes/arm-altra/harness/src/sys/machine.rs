@@ -55,6 +55,24 @@ const KICK_SIGNAL: i32 = libc::SIGUSR1;
 /// `SIGUSR1` cannot masquerade as the overflow kick and certify a broken counter.
 static PERF_SOURCED_KICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The watchdog signal. `SIGALRM` (raised by `setitimer(ITIMER_REAL)`) so a wedged
+/// `KVM_RUN` — a guest stuck in WFI with no wake, a lost PMI, a livelocked exclusive —
+/// returns `EINTR` and the run loop regains control instead of hanging forever.
+const WATCHDOG_SIGNAL: i32 = libc::SIGALRM;
+
+/// Set by the `SIGALRM` handler when the per-sample deadline fires. The run loop
+/// checks it on `EINTR` and turns a wedge into [`RunError::Watchdog`] rather than
+/// re-entering the guest. Distinct from [`PERF_SOURCED_KICK`]: a watchdog `EINTR` is a
+/// failure to record, a perf kick is a delivery to count.
+static WATCHDOG_FIRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The default per-`KVM_RUN` watchdog budget — re-exported from the portable run
+/// module ([`crate::run::DEFAULT_WATCHDOG_SECS`]) so the value has one home the CLI can
+/// reach on any target. It is a liveness backstop, not a measurement parameter, so a
+/// sane default (overridable) is appropriate; nothing in the acceptance criteria rests
+/// on its value.
+pub use crate::run::DEFAULT_WATCHDOG_SECS;
+
 /// `F_SETSIG` — the signal a file descriptor's `O_ASYNC` notification raises. The
 /// `libc` crate does not export it; it is 10 on every Linux ABI (`asm-generic/fcntl.h`,
 /// and the arch-specific headers that override `F_*` do not override this one).
@@ -239,6 +257,30 @@ pub fn install_kick_signal() -> Result<(), SysError> {
     Ok(())
 }
 
+/// Install the watchdog `SIGALRM` handler — likewise **without** `SA_RESTART`, so a
+/// fired deadline makes the blocked `KVM_RUN` return `EINTR`.
+///
+/// # Errors
+/// [`SysError::Errno`] if `sigaction` failed.
+pub fn install_watchdog_signal() -> Result<(), SysError> {
+    // Async-signal safe: it stores to one atomic and nothing else.
+    extern "C" fn on_alarm(_sig: i32, _info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
+        WATCHDOG_FIRED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    // SAFETY: a zeroed sigaction is valid; no SA_RESTART means SIGALRM makes KVM_RUN
+    // return EINTR rather than resuming transparently.
+    unsafe {
+        let mut act: libc::sigaction = core::mem::zeroed();
+        act.sa_sigaction = on_alarm as *const () as usize;
+        act.sa_flags = libc::SA_SIGINFO;
+        libc::sigemptyset(&raw mut act.sa_mask);
+        if libc::sigaction(WATCHDOG_SIGNAL, &raw const act, core::ptr::null_mut()) != 0 {
+            return Err(err("sigaction(SIGALRM)"));
+        }
+    }
+    Ok(())
+}
+
 /// The single-vCPU KVM machine: `/dev/kvm`, a VM, one memory slot, one vCPU.
 ///
 /// **Untested on silicon.**
@@ -251,6 +293,9 @@ pub struct Machine {
     run_size: usize,
     mem: *mut u8,
     mem_size: usize,
+    /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables it. See
+    /// [`DEFAULT_WATCHDOG_SECS`].
+    watchdog_secs: u64,
 }
 
 impl Machine {
@@ -278,9 +323,55 @@ impl Machine {
             run_size: 0,
             mem: core::ptr::null_mut(),
             mem_size: 0,
+            watchdog_secs: DEFAULT_WATCHDOG_SECS,
         };
         m.build(image, params)?;
         Ok(m)
+    }
+
+    /// Override the per-`KVM_RUN` watchdog budget (seconds; 0 disables). A wedged guest
+    /// past this deadline surfaces as [`RunError::Watchdog`] instead of a hang.
+    pub fn set_watchdog_secs(&mut self, secs: u64) {
+        self.watchdog_secs = secs;
+    }
+
+    /// Arm `ITIMER_REAL` to raise `SIGALRM` after `watchdog_secs`, clearing any stale
+    /// fired flag first. A zero budget disarms (leaves the timer off).
+    fn arm_watchdog(&self) {
+        WATCHDOG_FIRED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let it = libc::itimerval {
+            it_interval: libc::timeval {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
+            it_value: libc::timeval {
+                tv_sec: self.watchdog_secs as libc::time_t,
+                tv_usec: 0,
+            },
+        };
+        // SAFETY: `it` is a fully-initialized itimerval; ITIMER_REAL is a valid timer.
+        unsafe {
+            libc::setitimer(libc::ITIMER_REAL, &raw const it, core::ptr::null_mut());
+        }
+    }
+
+    /// Disarm `ITIMER_REAL` so a pending deadline cannot fire during the non-`KVM_RUN`
+    /// work (state digest, evidence assembly) that follows an exit.
+    fn disarm_watchdog(&self) {
+        let off = libc::itimerval {
+            it_interval: libc::timeval {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
+            it_value: libc::timeval {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
+        };
+        // SAFETY: `off` is a fully-initialized zero itimerval; disarms ITIMER_REAL.
+        unsafe {
+            libc::setitimer(libc::ITIMER_REAL, &raw const off, core::ptr::null_mut());
+        }
     }
 
     /// The build sequence, factored out so [`Machine`]'s `Drop` cleans up a partial
@@ -408,6 +499,11 @@ impl Machine {
         self.write_params(params);
         self.publish_pvclock_page();
         self.set_pc(image.entry())?;
+
+        // The KVM_RUN watchdog handler — installed here so every Machine that can enter
+        // the guest can also be pulled back out of a wedge. Orthogonal to the counter's
+        // kick signal (which PerfCounter::setup installs only for the stock mechanism).
+        install_watchdog_signal()?;
         Ok(())
     }
 
@@ -555,23 +651,12 @@ impl Machine {
     /// pre-silicon apparatus needs to exercise the managed-vs-self-seeded attestation.
     /// The page is published for every stage — non-AA-5 payloads simply do not read it.
     fn publish_pvclock_page(&mut self) {
-        // Layout mirrors `payloads/runtime/src/pvclock.rs`.
-        const OFF_ABI: usize = 0x00; // u32 == PVCLOCK_ABI (the managed marker)
-        const OFF_SEQ: usize = 0x04; // u32, even == stable
-        const OFF_VNS: usize = 0x08; // u64, materialized V-time
-        const OFF_GUEST_CLOCK: usize = 0x10; // u64, materialized virtual counter
-        const OFF_HZ: usize = 0x18; // u64
-        const OFF_FLAGS: usize = 0x20; // u32, bit0 = materialized
-        const FLAG_MATERIALIZED: u32 = 1;
-
+        // The page bytes are built by the shared, Miri-tested layout in oracle-model —
+        // the same builder the runtime's self-seeded fallback uses — so the managed and
+        // fallback pages cannot drift. A materialized page with V-time and counter 0 (a
+        // quiescent clock; AA-5's live materialization is `hm-8h8`'s, not the spike's).
+        let page = oracle_model::pvclock::materialize(0, 0, 1_000_000_000);
         let base = (oracle_model::PVCLOCK_GPA - RAM_BASE) as usize;
-        let mut page = [0u8; 0x28];
-        page[OFF_ABI..OFF_ABI + 4].copy_from_slice(&oracle_model::PVCLOCK_ABI.to_le_bytes());
-        page[OFF_SEQ..OFF_SEQ + 4].copy_from_slice(&2u32.to_le_bytes());
-        page[OFF_VNS..OFF_VNS + 8].copy_from_slice(&0u64.to_le_bytes());
-        page[OFF_GUEST_CLOCK..OFF_GUEST_CLOCK + 8].copy_from_slice(&0u64.to_le_bytes());
-        page[OFF_HZ..OFF_HZ + 8].copy_from_slice(&1_000_000_000u64.to_le_bytes());
-        page[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&FLAG_MATERIALIZED.to_le_bytes());
 
         // SAFETY: `PVCLOCK_GPA` is the second page of guest RAM, well inside the
         // `self.mem_size`-byte mapping, and the vCPU is not running.
@@ -660,11 +745,28 @@ impl Vcpu for Machine {
     fn run(&mut self) -> Result<VcpuExit, RunError> {
         use std::sync::atomic::Ordering;
         loop {
+            // Arm the per-KVM_RUN watchdog: a guest that wedges (WFI with no wake, a
+            // lost PMI, a livelocked exclusive) blocks the ioctl forever, and only a
+            // signal can bring control back. SIGALRM after the budget makes it return
+            // EINTR; below, a fired watchdog becomes RunError::Watchdog so the caller
+            // records a failed attempt instead of hanging.
+            if self.watchdog_secs > 0 {
+                self.arm_watchdog();
+            }
             // SAFETY: `vcpu_fd` is valid; KVM_RUN takes no argument and returns 0 or -1.
             let rc = unsafe { libc::ioctl(self.vcpu_fd, kvm::RUN as libc::c_ulong, 0_u64) };
             if rc < 0 {
                 let e = errno();
                 if e == libc::EINTR {
+                    // The watchdog deadline fired: the vCPU stayed inside this one
+                    // KVM_RUN past the budget. This is a wedge, not a delivery — never
+                    // re-enter, never count it. Disarm and surface it.
+                    if WATCHDOG_FIRED.swap(false, Ordering::SeqCst) {
+                        self.disarm_watchdog();
+                        return Err(RunError::Watchdog {
+                            secs: self.watchdog_secs,
+                        });
+                    }
                     // A signal kicked the vCPU out — but only the stock overflow kick,
                     // sourced by the armed perf fd, is a SignalKick. An externally
                     // injected SIGUSR1 (kill/sigqueue) must NOT be counted as an
@@ -672,16 +774,21 @@ impl Vcpu for Machine {
                     // SA_SIGINFO handler classified the source; a foreign signal is
                     // absorbed by re-entering the guest.
                     if PERF_SOURCED_KICK.swap(false, Ordering::SeqCst) {
+                        self.disarm_watchdog();
                         return Ok(VcpuExit::SignalKick);
                     }
                     continue;
                 }
+                self.disarm_watchdog();
                 return Err(RunError::Seam {
                     context: "ioctl(KVM_RUN)",
                     message: format!("errno {e}"),
                 });
             }
 
+            // A real exit: disarm the deadline so it cannot fire during the state digest
+            // and evidence assembly that follow before the next KVM_RUN.
+            self.disarm_watchdog();
             // Snapshot the shared mapping once (volatile: the kernel is the external
             // writer, though it has finished by the time KVM_RUN returned and the vCPU
             // is stopped), then decode through the portable, Miri-tested seam. The
@@ -739,8 +846,8 @@ impl Vcpu for Machine {
         }
 
         let vgic = self
-            .vgic_dist_state()
-            .map_err(|e| seam("ioctl(KVM_GET_DEVICE_ATTR, vGIC dist)", e))?;
+            .vgic_state()
+            .map_err(|e| seam("ioctl(KVM_GET_DEVICE_ATTR, vGIC)", e))?;
 
         // SAFETY: `self.mem` is a live mapping of `self.mem_size` bytes and the vCPU
         // is not running (we are between exits), so nothing else writes it. The hashing
@@ -751,65 +858,97 @@ impl Vcpu for Machine {
 }
 
 impl Machine {
-    /// Dump the in-kernel vGIC distributor's injection-relevant registers via
-    /// `KVM_GET_DEVICE_ATTR` / `KVM_DEV_ARM_VGIC_GRP_DIST_REGS`.
+    /// Dump the in-kernel vGIC's injection-relevant registers via
+    /// `KVM_GET_DEVICE_ATTR`, reading **both** the redistributor (private interrupts)
+    /// and the distributor (SPIs).
     ///
-    /// The bytes returned are the GICD enable/pending/active state for the first
-    /// blocks of interrupt IDs (private + the low SPIs the payloads use — the timer
-    /// PPI and any test SPI land here), read in a fixed, documented offset order so
-    /// the concatenation is a stable digest input. Two AA-6 reps that differ only in
-    /// which interrupt is pending/active carry identical vCPU registers and RAM; this
-    /// is the byte that makes that difference visible to the bit-identity floor.
+    /// The GICv3 split is load-bearing here: SGI/PPI (interrupt IDs 0–31) enable/
+    /// pending/active state lives in the **redistributor's SGI frame**
+    /// (`RD_base + 0x1_0000`), not the distributor — and the guest's timer interrupts
+    /// are PPIs, so the injection state AA-6 exercises is in the redistributor. The
+    /// distributor's `ISENABLER0`/`ISPENDR0`/`ISACTIVER0` are RAZ/WI on GICv3, so the
+    /// distributor read starts at word 1 (SPIs, IDs 32+). Reading only the distributor
+    /// words (as an earlier draft did) missed the timer-PPI and SGI state entirely, and
+    /// used the wrong group number (5 is `REDIST_REGS`, not `DIST_REGS`).
     ///
-    /// At AA-3 (no injection) the distributor is quiescent and identical across reps,
-    /// so this contributes the same bytes to every rep's digest — it strengthens AA-6
+    /// Both frames are read in a fixed, documented offset order so the concatenation is
+    /// a stable digest input. Two AA-6 reps differing only in which interrupt is
+    /// pending/active carry identical vCPU registers and RAM; this is the byte that
+    /// makes that difference visible to the bit-identity floor. At AA-3 (no injection)
+    /// everything here is quiescent and identical across reps, so it strengthens AA-6
     /// without disturbing AA-3's replay identity.
-    fn vgic_dist_state(&self) -> Result<Vec<u8>, SysError> {
+    fn vgic_state(&self) -> Result<Vec<u8>, SysError> {
         // No vGIC (should not happen after build, which always creates one): nothing to
         // hash, and hashing a fabricated zero would be worse than an honest empty.
         if self.vgic_fd < 0 {
             return Ok(Vec::new());
         }
 
-        // GICD register offsets, in ascending order. CTLR carries the group-enable
-        // state; ISENABLER/ISPENDR/ISACTIVER word `n` covers interrupt IDs
-        // `32*n .. 32*n+31`, so words 0..3 span IDs 0..95 — the private range plus the
-        // low SPIs. (GICD_CTLR = 0x0000, ISENABLERn = 0x0100+4n, ISPENDRn = 0x0200+4n,
-        // ISACTIVERn = 0x0300+4n.)
-        const OFFSETS: &[u64] = &[
+        // The redistributor SGI frame sits one 64 KiB frame past RD_base on GICv3.
+        const SGI_BASE: u64 = 0x1_0000;
+        // Private-interrupt (SGI/PPI, IDs 0–31) state, in the redistributor SGI frame:
+        // GICR_CTLR at RD_base+0, then ISENABLER0/ISPENDR0/ISACTIVER0 in the SGI frame.
+        let redist: &[u64] = &[
+            0x0000,            // GICR_CTLR (RD_base)
+            SGI_BASE + 0x0100, // GICR_ISENABLER0
+            SGI_BASE + 0x0200, // GICR_ISPENDR0
+            SGI_BASE + 0x0300, // GICR_ISACTIVER0
+        ];
+        // SPI (IDs 32+) state, in the distributor. Word `n` (n≥1) covers IDs
+        // `32*n .. 32*n+31`; words 1..2 span IDs 32..95. GICD_CTLR carries the
+        // group-enable. (ISENABLERn = 0x0100+4n, ISPENDRn = 0x0200+4n, ISACTIVERn =
+        // 0x0300+4n.)
+        let dist: &[u64] = &[
             0x0000, // GICD_CTLR
-            0x0100, 0x0104, 0x0108, // ISENABLER0..2
-            0x0200, 0x0204, 0x0208, // ISPENDR0..2
-            0x0300, 0x0304, 0x0308, // ISACTIVER0..2
+            0x0104, 0x0108, // ISENABLER1..2
+            0x0204, 0x0208, // ISPENDR1..2
+            0x0304, 0x0308, // ISACTIVER1..2
         ];
 
-        let mut out = Vec::with_capacity(OFFSETS.len() * 4);
-        for &offset in OFFSETS {
-            // The DIST_REGS accessor writes the 32-bit register value into the buffer
-            // the attr's `addr` points at. `attr` = mpidr(63:32) | offset(31:0); mpidr
-            // is 0 for the single-affinity spike guest.
-            let mut value: u32 = 0;
-            let da = KvmDeviceAttr {
-                flags: 0,
-                group: kvm::DEV_ARM_VGIC_GRP_DIST_REGS,
-                attr: offset,
-                addr: (&raw mut value) as u64,
-            };
-            // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u32 on this frame,
-            // which is what KVM_GET_DEVICE_ATTR's DIST_REGS accessor writes.
-            if unsafe {
-                libc::ioctl(
-                    self.vgic_fd,
-                    kvm::GET_DEVICE_ATTR as libc::c_ulong,
-                    &raw const da,
-                )
-            } < 0
-            {
-                return Err(err("ioctl(KVM_GET_DEVICE_ATTR, vGIC dist)"));
-            }
-            out.extend_from_slice(&value.to_le_bytes());
+        let mut out = Vec::with_capacity((redist.len() + dist.len()) * 4);
+        for &offset in redist {
+            out.extend_from_slice(
+                &self
+                    .vgic_reg(kvm::DEV_ARM_VGIC_GRP_REDIST_REGS, offset)?
+                    .to_le_bytes(),
+            );
+        }
+        for &offset in dist {
+            out.extend_from_slice(
+                &self
+                    .vgic_reg(kvm::DEV_ARM_VGIC_GRP_DIST_REGS, offset)?
+                    .to_le_bytes(),
+            );
         }
         Ok(out)
+    }
+
+    /// Read one 32-bit vGIC save-register through `KVM_GET_DEVICE_ATTR`.
+    ///
+    /// The DIST/REDIST accessors write the register value into the buffer the attr's
+    /// `addr` points at. `attr` = mpidr(63:32) | offset(31:0); mpidr is 0 for the
+    /// single-affinity spike guest.
+    fn vgic_reg(&self, group: u32, offset: u64) -> Result<u32, SysError> {
+        let mut value: u32 = 0;
+        let da = KvmDeviceAttr {
+            flags: 0,
+            group,
+            attr: offset,
+            addr: (&raw mut value) as u64,
+        };
+        // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u32 on this frame,
+        // which is what KVM_GET_DEVICE_ATTR's DIST/REDIST accessor writes.
+        if unsafe {
+            libc::ioctl(
+                self.vgic_fd,
+                kvm::GET_DEVICE_ATTR as libc::c_ulong,
+                &raw const da,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_GET_DEVICE_ATTR, vGIC)"));
+        }
+        Ok(value)
     }
 
     /// `KVM_GET_REG_LIST`: ask for the count, then the ids.

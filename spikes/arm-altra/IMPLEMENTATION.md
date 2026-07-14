@@ -460,6 +460,84 @@ just check, so both are now caught pre-merge.
 Fixtures unchanged in count (24); only the `accept` fixture's records changed (now 2
 reps × 8 inputs). Miri still runs 78 tests.
 
+## Round-6 review fixes (PR #108, cross-model pass r6)
+
+The r5 skid-landing rebuttal was **accepted** as an arrival-day deferral. r6 returned 8
+P1s, three of them wrong *kernel-UAPI constants* (the foreman independently confirmed
+two) — the sharpest class yet, because the portable ABI tests self-validated the same
+wrong constants and so passed while the real KVM path would `ENOTTY`. All 8 implemented;
+one carries a scoped rebuttal for the part that cannot host-compile.
+
+- **`KVM_GET_ONE_REG`/`KVM_GET_DEVICE_ATTR` had the wrong direction bits.** Both are
+  `_IOW` in the KVM ABI (the *get* encodes write — userspace writes the descriptor, the
+  kernel fills a pointed-at buffer), not `_IOR`/`_IOWR`. The code had `GET_ONE_REG =
+  0x8010_AEAB` (`_IOR`) and `GET_DEVICE_ATTR = 0xC018_AEE2` (`_IOWR`); both select
+  *unknown* ioctls and return `ENOTTY`, so **every** completed real-KVM sample would fail
+  in `state_digest`. Corrected to `0x4010_AEAB` / `0x4018_AEE2` and pinned to their
+  literal ABI numbers (the tests had asserted the wrong directions — self-validation).
+- **The live-clock filter matched no real register — the r4 leak was back.**
+  `is_host_time_register` encoded `KVM_REG_ARM64_SYSREG` at bit 48 (`0x0013 <<
+  48`), but the coprocessor selector lives in the **low** bits (`0x0013 << 16`). A real
+  timer-counter id has `0x0013_0000` there, so the predicate returned false for every
+  one and the live `CNTVCT`/`CNTPCT` values re-entered the digest — same-seed replay dead
+  again. Fixed to mask arch/size/coproc at their real positions, and pinned with a
+  *literal* real id (`CNTVCT_EL0 = 0x6030_0000_0013_DF02`) so the encoding cannot silently
+  regress from a builder that shares the bug.
+- **The vGIC digest read the wrong group and missed the timer-PPI state.** `DIST_REGS`
+  is group **1**, not 5 (5 is `REDIST_REGS`); and on GICv3 the SGI/PPI (private
+  interrupt, IDs 0–31) enable/pending/active state — where the guest's **timer PPIs**
+  land — lives in the **redistributor** SGI frame, not the distributor. The round-5 dump
+  read distributor words 0–2 under the wrong group number, so it captured neither the
+  SGI/PPI state nor valid SPI words. Now reads the redistributor SGI frame (`RD_base +
+  0x1_0000`, `GICR_CTLR`/`ISENABLER0`/`ISPENDR0`/`ISACTIVER0`) for private interrupts and
+  the distributor (word 1+, SPIs) for the rest — so an AA-6 injection divergence in the
+  timer PPI is actually visible.
+- **Payloads exited via `SYS_EXIT` (`0x18`), not `SYS_EXIT_EXTENDED` (`0x20`).** The
+  two-word `{reason, status}` block that conveys an exit *code* is the defined interface
+  of the extended call; relying on QEMU's AArch64 extension of `0x18` to read a block is
+  version-dependent, and where it does not, a payload's `exit(1)` reports process success
+  and the smoke's status gate goes blind to failures. Switched to the unambiguous `0x20`.
+- **Window verification checked in-window targets, not *exact* ones.** A backedge, `CBZ`,
+  or `TBZ` retargeted to a *different* in-window label keeps its class, its condition, and
+  its in-window-ness while changing control flow and the taken-branch count. The oracle
+  model now declares each branch's exact target (byte offset from the window base,
+  extracted by construction from the built ELF), and `verify` checks the decoded target
+  equals `base + offset`. All 18 window branches across the 8 payloads are pinned.
+- **`ident` read BR_RETIRED support from `PMCEID1_EL0`** (bit 1), not `PMCEID0>>0x21` —
+  this was the r5 finding #8; r6 re-flagged the *decode* which is now correct and pinned.
+  (No change needed beyond r5; verified in place.)
+- **No watchdog around `KVM_RUN`.** A guest wedged in WFI with no wake, a lost PMI, or a
+  livelocked exclusive blocks the ioctl forever, so the command hangs and never writes the
+  partial manifest — violating the bounded/total evidence requirement. Added a per-`KVM_RUN`
+  `SIGALRM`/`ITIMER_REAL` watchdog (`--watchdog-secs`, default 300, 0 disables): a fired
+  deadline makes the blocked ioctl return `EINTR`, and the run loop turns that into
+  `RunError::Watchdog` — distinct from the perf kick — so the caller records a failed
+  attempt instead of hanging. Portable test: a wedged `Vcpu` surfaces the error through
+  `run_sample`, never a record.
+- **AA-2 could pass with no single-step observed.** An ordinary `--stage aa2` run is
+  unarmed and ends at the console sentinel, so the mechanism check graded nothing and the
+  floor could report PASS having stepped not once. Added `check_debug_evidence`: at AA-2 it
+  requires a debug-exit record (`ExitReason::Debug`) and reports NOT-REQUESTED (never PASS)
+  when none is present — the same anti-vacuity shape as r5's replay-identity fix. The
+  single-step *run path* stays arrival-day (the loop still refuses an unrequested debug
+  exit, and the stepping loop would presume AA-2's own result — consistent with the
+  accepted r5 deferral), so today AA-2 reads honestly-unexercised.
+- **[PARTIAL REBUTTAL] Miri for the payload crates.** The runtime and oracles crates
+  cannot be *built* for a Miri host target: their top-level `global_asm!` is aarch64
+  machine code the host assembler rejects, and their `unsafe` is `asm!` + fixed-GPA
+  volatile MMIO (integer-literal addresses with no Rust provenance for Miri to validate).
+  So `cargo miri test` on them does not compile, let alone run — that part is rebutted
+  with the compile-time fact. What Miri *can* check — the clock-page **byte layout** both
+  the runtime (self-seeded) and the harness (managed) write — is now seamed into
+  `oracle_model::pvclock` as pure `[u8]` packing, de-duplicating the two writers onto one
+  layout, and **oracle-model is added to the nightly Miri job**. So the payloads' one
+  Miri-checkable piece is now interpreted, and the residual is documented per-crate as
+  intrinsic (the r4 disposition, strengthened).
+
+The vGIC digest bumped `arm-spike-state` v1→v2 in r5; the group/offset fix here changes
+which bytes it reads but not the version. Miri now runs the arm-harness seam (80 tests)
+plus oracle-model (24 tests, incl. the shared clock-page layout).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

@@ -110,6 +110,9 @@ pub enum CheckId {
     ClockPageMode,
     /// Same-input repetitions landed on bit-identical state digests.
     ReplayIdentity,
+    /// AA-2's records carry single-step (debug-exit) evidence — the observation the
+    /// stage exists to make.
+    DebugEvidence,
     /// Every payload's in-guest self-checks passed (`payload_status == 0`).
     PayloadStatus,
     /// The armed-overflow count meets `--min-armed-overflows`.
@@ -140,6 +143,7 @@ impl CheckId {
             CheckId::ParamsMode => "params-mode",
             CheckId::ClockPageMode => "clockpage-mode",
             CheckId::ReplayIdentity => "replay-identity",
+            CheckId::DebugEvidence => "debug-evidence",
             CheckId::PayloadStatus => "payload-status",
             CheckId::ArmedOverflowFloor => "armed-overflow-floor",
             CheckId::RepFloor => "rep-floor",
@@ -302,6 +306,7 @@ pub fn check_run_set(dir: &Path, floors: &Floors) -> Result<CheckReport, LoadErr
     check_params_mode(&records, &mut outcomes);
     check_clockpage_mode(&run_set, &records, &mut outcomes);
     check_replay_identity(run_set.stage, &records, &mut outcomes);
+    check_debug_evidence(run_set.stage, &records, &mut outcomes);
     check_payload_status(&records, &mut outcomes);
     check_floors(&run_set, floors, &records, &mut outcomes);
 
@@ -1382,6 +1387,47 @@ const fn requires_replay_identity(stage: Stage) -> bool {
     matches!(stage, Stage::Aa3 | Stage::Aa6)
 }
 
+/// AA-2 exists to *characterize single-stepping* — does one step retire exactly one
+/// instruction, and with what skid. Its evidence is the debug exit
+/// ([`ExitReason::Debug`]). An ordinary `--stage aa2` run is unarmed and ends at the
+/// console sentinel (`Mmio`), so without this check the floor reports PASS having
+/// observed not one step — the same vacuity class as replay-identity on zero
+/// comparisons.
+///
+/// This does NOT vacuously pass and it does NOT hard-fail an honest run: it requires a
+/// debug-exit record and reports NOT-REQUESTED when none is present. The single-step
+/// *run path* is arrival-day work — the run loop rejects an unrequested `Debug` exit
+/// today, and building the stepping loop presumes AA-2's own result (which single-step
+/// primitive lands exactly one instruction), exactly the AA-1/AA-2 unknowns the
+/// pre-build ruling forbids inventing (`docs/ARCH-BOUNDARY.md` §Pre-build ruling; the
+/// r5 skid-landing rebuttal, accepted). So today AA-2 reads NOT-REQUESTED — honestly
+/// unexercised — and flips to a real verdict once arrival day produces stepped records.
+fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    if stage != Stage::Aa2 {
+        return;
+    }
+    let stepped = records
+        .iter()
+        .filter(|r| r.exit_reason == ExitReason::Debug)
+        .count();
+    if stepped == 0 {
+        out.push(not_requested(
+            CheckId::DebugEvidence,
+            "AA-2 certifies single-stepping, whose evidence is the debug exit, but no \
+             record carries ExitReason::Debug — not a single step was observed. The \
+             single-step run path is arrival-day (the run loop refuses an unrequested \
+             debug exit, and the stepping loop would presume AA-2's own single-step \
+             result); this verdict cannot accept AA-2 as exercised until stepped records \
+             exist. NOT a pass.",
+        ));
+    } else {
+        out.push(pass(
+            CheckId::DebugEvidence,
+            format!("{stepped} record(s) carry single-step (debug-exit) evidence (AA-2)"),
+        ));
+    }
+}
+
 fn check_payload_status(records: &[RunRecord], out: &mut Vec<Outcome>) {
     let mut bad: Vec<(u64, i32)> = records
         .iter()
@@ -2156,6 +2202,33 @@ mod tests {
         let mut out = Vec::new();
         check_floors(&rs, &Floors::default(), &[a_record(0)], &mut out);
         assert_eq!(status(&out, CheckId::RepFloor), Some(Status::NotRequested));
+    }
+
+    #[test]
+    fn aa2_without_a_debug_exit_is_not_requested_never_a_pass() {
+        // The vacuity: an AA-2 run of ordinary unarmed records that end at the console
+        // sentinel observed no single step, but nothing here graded that — the floor
+        // could report PASS. It must read NOT-REQUESTED instead (the single-step run
+        // path is arrival-day), and never PASS.
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &[a_record(0)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::NotRequested),
+            "AA-2 with no stepped record must not pass silently"
+        );
+
+        // A record that DID land on a debug exit is the evidence AA-2 is about.
+        let mut stepped = a_record(0);
+        stepped.exit_reason = ExitReason::Debug;
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &[stepped], &mut out);
+        assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Pass));
+
+        // The check does not fire outside AA-2, where single-stepping is not the subject.
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa3, &[a_record(0)], &mut out);
+        assert!(out.is_empty());
     }
 
     #[test]
