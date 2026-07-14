@@ -196,8 +196,12 @@ jobs:
           # bare-metal target with default features.
           cargo build --manifest-path "$SPIKE/oracle-model/Cargo.toml" --target aarch64-unknown-none
           cargo deny --manifest-path "$SPIKE/oracle-model/Cargo.toml" check --config deny.toml
-      - name: harness cross-build for the box (aarch64-linux syscall seam)
-        run: cargo check --manifest-path "$SPIKE/Cargo.toml" -p arm-harness --all-targets --target aarch64-unknown-linux-gnu
+      - name: harness cross-clippy for the box (aarch64-linux syscall seam)
+        # clippy, not check: the aarch64 syscall seam is `cfg(target_os = "linux")`, so
+        # the native (x86 host) clippy job never compiles it — target-specific lints
+        # (e.g. the useless_conversion class that only aarch64 clippy exposes, r5) would
+        # otherwise merge undetected. `-D warnings` makes them fail the job.
+        run: cargo clippy --manifest-path "$SPIKE/Cargo.toml" -p arm-harness --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
       - name: payloads (bare-metal build + the window-vs-oracle gate)
         # cd, not --manifest-path: the payload workspace's .cargo/config.toml pins the
         # aarch64-unknown-none target and the static relocation model, and cargo only
@@ -225,14 +229,19 @@ jobs:
       # fixture target is `#![cfg(not(miri))]`.)
       - name: miri — arm-harness (the unsafe perf/KVM seam)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path "$SPIKE/Cargo.toml" -p arm-harness
-      # The payload crates (runtime, oracles) contain `unsafe`, but they are
-      # `#![no_std]`/`aarch64-unknown-none` with top-level `global_asm!` — `cargo miri
-      # test` cannot even compile them for a host target, and their unsafe is asm +
-      # fixed-GPA MMIO Miri cannot execute. Their one Miri-checkable piece — the
-      # clock-page byte layout both the runtime and the harness write — is seamed into
-      # oracle-model as pure `[u8]` packing, so Miri covers it here. (oracle-model is
+      # The payload crates (runtime, oracles) contain `unsafe` but are architecturally
+      # outside the unsafe⇒Miri path, by the contract's own terms — see the rebuttal in
+      # payloads/runtime/src/lib.rs (§`unsafe`, and why this crate is Miri-exempt), which
+      # quotes AGENTS.md:48-55 and tasks/00-CONVENTIONS.md:104-117. Two facts: (1) their
+      # top-level `global_asm!` is aarch64 machine code the host assembler rejects, so
+      # `cargo miri test -p runtime`/`-p oracles` does not compile — no interpreter run
+      # to gate; (2) the residual unsafe is the rule's own `asm!` carve-out plus
+      # fixed-GPA volatile MMIO (integer-literal addresses with no provenance, nothing to
+      # loopback). The rule's actual target — "the pointer/bounds logic" — is, for these
+      # payloads, the clock-page byte layout, seamed into oracle-model as pure `[u8]`
+      # packing and interpreted under Miri right here. (oracle-model is
       # `forbid(unsafe_code)`; this run validates that shared layout, the PRNG, and the
-      # count derivations under the interpreter.)
+      # count derivations.)
       - name: miri — oracle-model (shared page layout + count derivations)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path "$SPIKE/oracle-model/Cargo.toml" --features std
 

@@ -55,7 +55,10 @@ use std::collections::BTreeMap;
 /// per-sample fact about the mechanism, so they are recorded rather than silently
 /// absorbed; and the state that AA-3's replay identity is *about* is the state at the
 /// landing, not at the payload's eventual exit.
-pub const SCHEMA_VERSION: u32 = 2;
+///
+/// **v3** added [`RunRecord::step`] — the structured single-step measurement AA-2's
+/// floor validates, so a bare `exit_reason: debug` can no longer certify the stage.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Which stage produced a run-set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -263,6 +266,31 @@ pub struct OverflowRecord {
     pub landed_digest: String,
 }
 
+/// One single-step measurement (AA-2).
+///
+/// AA-2 exists to *characterize single-stepping*: does one step retire exactly one
+/// instruction, and what is its `BR_RETIRED` weight. The evidence is not the enum label
+/// `exit_reason: debug` — that a rehashed run-set can flip in one byte — but these
+/// measured numbers. The AA-2 floor validates them: a step must advance the PC
+/// (`pc_after != pc_before`) and retire exactly one instruction (`insn_retired == 1`).
+///
+/// **Untested on silicon and unproduced pre-silicon:** the single-step *run path*
+/// (`KVM_SET_GUEST_DEBUG` + the stepping loop) is arrival-day work, so no current run
+/// emits this. The field exists so the AA-2 floor is non-forgeable now and ready then.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StepRecord {
+    /// The PC before the step.
+    pub pc_before: u64,
+    /// The PC after the step — must differ from `pc_before`.
+    pub pc_after: u64,
+    /// Instructions retired by the step. AA-2's single-step semantics require exactly 1.
+    pub insn_retired: u64,
+    /// `BR_RETIRED` delta across the step: 0 for a non-branch, 1 for a taken branch —
+    /// the per-instruction work-clock weight AA-2 characterizes.
+    pub br_retired_delta: u64,
+}
+
 /// One attempted sample.
 ///
 /// Every attempted sample gets a record, including ones that failed — §Evidence
@@ -300,6 +328,11 @@ pub struct RunRecord {
     pub exit_reason: ExitReason,
     /// Overflow bookkeeping, when the sample armed one.
     pub overflow: Option<OverflowRecord>,
+    /// Single-step measurement, when this sample was a stepped one (AA-2). `None` for
+    /// every non-stepped run. The AA-2 floor requires this structured evidence — a
+    /// bare `exit_reason: debug` proves nothing — and validates that the step retired
+    /// exactly one instruction and advanced the PC.
+    pub step: Option<StepRecord>,
     /// Digest of the landed guest state, for replay-identity checks.
     pub state_digest: String,
     /// The `PARAMS mode=` the guest itself printed. The checker demands `managed`:
@@ -498,6 +531,7 @@ mod tests {
                 skid: 0,
                 landed_digest: "sha256:aa".into(),
             }),
+            step: None,
             state_digest: "sha256:00".into(),
             params_mode: "managed".into(),
             clockpage_mode: None,

@@ -38,29 +38,45 @@
 //!   (`params.rs`/`pvclock.rs`). Miri has no such memory; those pointers are invalid
 //!   under it.
 //!
-//! The repository's unsafe⇒Miri contract's own escape hatch — "privileged or
-//! inline-assembly operations behind a `cfg(miri)` seam, with the pointer logic
-//! driven by an in-process loopback" — presupposes there is *non-privileged* logic
-//! left to interpret once the privileged parts are seamed out. The crate cannot even
-//! be *built* for a Miri host target: the top-level `global_asm!` (`boot.s`,
-//! `vectors.s`) is aarch64 machine code the host assembler rejects, so `cargo miri
-//! test` on this crate does not compile, let alone run.
+//! The contract's escape hatch resolves this by its own terms. `AGENTS.md` (review-bar
+//! rule 5) requires "a Miri-exercisable test path (the privileged/asm bits behind a
+//! seam so the unsafe logic runs under the interpreter)", and `tasks/00-CONVENTIONS.md`
+//! spells out the pattern: "privileged/`asm!` paths (which Miri cannot execute) sit
+//! behind a seam and are `#[cfg(not(miri))]`-excluded, with the unsafe logic driven by
+//! an in-process loopback." Two independent facts put these crates outside that path:
 //!
-//! What Miri *can* check is the one piece of non-privileged logic these payloads have:
-//! the **byte layout** of the harness-shared clock page. That is now seamed into
-//! [`oracle_model::pvclock`] — a pure `[u8]` packing with no MMIO — and is interpreted
-//! under Miri there (the nightly Miri job runs `oracle-model`). Both writers of the
-//! page, this runtime's self-seeded fallback (`pvclock.rs`) and the harness's managed
-//! publish (`arm-harness`), build from that one shared, Miri-checked layout; the code
-//! here only writes it through the seqlock protocol to a fixed GPA. The rest of the
-//! crate's `unsafe` — `asm!`/`global_asm!` and fixed-address volatile MMIO — is machine
-//! code and physical memory Miri fundamentally cannot execute or model (those pointers
-//! are integer literals with no Rust provenance to validate), and it is exercised by
-//! the **TCG smoke** (`payloads/smoke.sh`) on an emulated N1 instead. The wider
-//! Miri-checkable harness logic (the ELF loader, the `kvm_run` decode, the state
-//! digest) lives in `arm-harness` and is gated under Miri there. The same applies to
-//! the `oracles` crate, whose thin payload `main`s are aarch64 asm loops that call
-//! straight into this runtime.
+//! 1. **They cannot be built for a Miri host target at all.** The top-level
+//!    `global_asm!` (`boot.s`, `vectors.s`) is aarch64 machine code the host assembler
+//!    rejects, so `cargo miri test -p runtime` / `-p oracles` does not compile — there
+//!    is no interpreter run to gate. A `#[cfg(not(miri))]` seam presupposes a crate that
+//!    *compiles* under `cfg(miri)`; this one does not.
+//! 2. **The loopback pattern needs a substitutable allocation; the residual unsafe has
+//!    none.** The backend-crate precedent (`tasks/14-backend.md`) seams the "pointer /
+//!    region bookkeeping" around an `mmap`'d region and `cfg(not(miri))`-gates only the
+//!    raw syscall, because the bookkeeping is "ordinary Rust that Miri must cover." Here
+//!    the residual unsafe is `asm!`/`global_asm!` (the rule's explicit asm carve-out,
+//!    invoked as precedent by `IMPLEMENTATION-task61.md` and `dissonance/film`) and
+//!    `read_volatile`/`write_volatile` to **fixed physical addresses** — the GICv3
+//!    distributor at `0x0800_0000`, the PL011 at `UART_BASE`, the pages at
+//!    `PARAMS_GPA`/`PVCLOCK_GPA`. Those are integer-literal addresses with no Rust
+//!    provenance and no allocation to substitute; Miri would reject the int-to-ptr
+//!    outright, not check it. There is no "region bookkeeping" to loopback.
+//!
+//! What the rule actually targets — "the pointer / bounds logic" — is, for these
+//! payloads, exactly one thing: the **byte layout** of the harness-shared clock page.
+//! Per the escape hatch's intent, it is seamed OUT into [`oracle_model::pvclock`] as
+//! pure `[u8]` packing (no MMIO) and **is** interpreted under Miri there — oracle-model
+//! is on the `miri` job's `-p` list, and `pvclock_page_layout_packs_at_the_declared_offsets`
+//! exercises it. Both writers of the page — this runtime's self-seeded fallback
+//! (`pvclock.rs`) and the harness's managed publish (`arm-harness`) — build from that
+//! one shared, Miri-checked layout; the code here only *writes* it through the seqlock
+//! protocol to a fixed GPA. So the rule's target is covered; the un-coverable residual
+//! is exclusively the asm carve-out and provenance-free MMIO, exercised instead by the
+//! **TCG smoke** (`payloads/smoke.sh`) on an emulated N1. The wider Miri-checkable
+//! harness logic (the ELF loader, the `kvm_run` decode, the state digest) lives in
+//! `arm-harness` and is gated under Miri there. The same reasoning covers the `oracles`
+//! crate, whose thin payload `main`s are `#![no_main]` aarch64 asm loops — no pointer
+//! logic, and likewise un-host-compilable.
 
 #![no_std]
 

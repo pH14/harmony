@@ -548,6 +548,9 @@ pub fn run_sample(
         // a mechanism it never exercised.
         exit_reason: mechanism_exit.unwrap_or(ExitReason::Mmio),
         overflow,
+        // AA-2's single-step run path is arrival-day; this loop measures counting
+        // windows, not steps, so it never produces step evidence.
+        step: None,
         state_digest,
         params_mode,
         clockpage_mode,

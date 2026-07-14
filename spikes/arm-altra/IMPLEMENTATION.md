@@ -538,6 +538,72 @@ The vGIC digest bumped `arm-spike-state` v1→v2 in r5; the group/offset fix her
 which bytes it reads but not the version. Miri now runs the arm-harness seam (80 tests)
 plus oracle-model (24 tests, incl. the shared clock-page layout).
 
+## Round-7 review fixes (PR #108, cross-model pass r7)
+
+Five P1 + three P2. Two carried explicit foreman steering (Miri exclusion — third
+appearance, "no third partial measure"; and the AA-5 static page). All eight resolved:
+seven implemented, one (the Miri exclusion) resolved as a definitive, contract-quoting
+rebuttal.
+
+- **The runtime/oracles Miri exclusion — resolved definitively as a rebuttal
+  (`payloads/runtime/src/lib.rs`).** The foreman offered either real `cfg(miri)` seams or
+  a contract-quoting rebuttal. The rebuttal is the correct resolution *by the contract's
+  own terms*: `AGENTS.md:48-55` and `tasks/00-CONVENTIONS.md:104-117` require the
+  privileged/`asm!` paths to be `#[cfg(not(miri))]`-excluded with "the unsafe logic driven
+  by an in-process loopback" — which presupposes (a) the crate *compiles* under
+  `cfg(miri)` and (b) there is a substitutable allocation for the loopback. Neither holds:
+  the crates' top-level `global_asm!` is aarch64 machine code the host assembler rejects
+  (so `cargo miri test -p runtime`/`-p oracles` does not compile), and the residual unsafe
+  is the rule's explicit `asm!` carve-out plus fixed-GPA volatile MMIO (integer-literal
+  addresses, no provenance, no allocation to loopback). The rule's actual target — "the
+  pointer/bounds logic" (`tasks/14-backend.md`) — is, for these payloads, the clock-page
+  byte layout, which *is* seamed into `oracle_model::pvclock` and Miri-run. The doc comment
+  now quotes the contract verbatim and lays this out; the CI comment points to it. Not a
+  third partial — the rule's target is covered and the residual is the sanctioned carve-out.
+- **AA-5 static pages no longer pass (`machine.rs`, `pvclock`, `check_clockpage_mode`).**
+  Publishing a one-time zero page let the guest report `managed` and AA-5 accept it —
+  a static page certifying a clock that is supposed to be work-derived and refreshed.
+  Added `FLAG_WORK_DERIVED` to the shared page layout; the harness's static placeholder
+  sets only `FLAG_MATERIALIZED`, so the guest now reports `managed-static`, and the AA-5
+  check reads that as **NOT-REQUESTED** — the plumbing works, but the work-derived clock
+  (`hm-8h8`) is a silicon-day item, the accepted-deferral shape. `work-derived` passes,
+  `self-seeded`/absent hard-fails. (The TCG golden is unchanged: TCG self-seeds.)
+- **Zero acceptance floors are rejected (`check_floors`).** `--min-armed-overflows 0`
+  passed `0 >= 0`, and `--min-reps 0` was as vacuous. Both now fail closed: a floor of
+  zero is met by a run that armed/repeated nothing, exactly the pass the floor exists to
+  prevent. (Sub-normative *nonzero* floors stay valid — the fixtures use small floors to
+  test the checker's logic, and the verdict names the exact floor a disposition rests on.)
+- **AA-2 now validates a measured step, not a forgeable label (`StepRecord`).** The r6
+  check keyed on `exit_reason == Debug` — one enum byte a rehashed run-set can flip. Added
+  a structured `StepRecord` (pc before/after, instructions retired, `BR_RETIRED` delta) to
+  the record schema (v2→v3); the AA-2 check requires it and validates the PC advanced and
+  exactly one instruction retired. No run emits one yet (the stepping run path is
+  arrival-day), so AA-2 reads NOT-REQUESTED — but a bare enum flip no longer satisfies it.
+- **AA-6 verifies the whole matrix before grading reps (`check_aa6_matrix`).** The rep
+  floor only grades inputs that are present, so 1,000 copies of one payload satisfied
+  `--min-reps 1000` while the rest of the matrix was silently absent — and the
+  `accept-aa6-gate` fixture was itself that vacuity (one payload). Now every windowed
+  payload must be present; missing payloads fail. The accept fixture is the full 8-payload
+  matrix, each bit-identically repeated. (Full-system AA-6 coverage — the AA-5 Linux
+  guest, the AA-0 truth-table — needs arrival-day artifacts and is scoped as silicon-day.)
+- **P2: the harness refuses to overwrite a run-set (`arm_spike.rs`).** Reusing `--out`
+  truncated prior evidence (and a mid-write failure left new records beside an old
+  manifest). It now refuses an existing output directory and writes each file with
+  exclusive creation (`create_new`) — a run-set is immutable evidence.
+- **P2: watchdog setup failures propagate (`arm_watchdog`).** A `--watchdog-secs` past
+  `time_t` range cast negative and `setitimer` returned `EINVAL`, silently ignored — the
+  harness then entered `KVM_RUN` believing a watchdog was armed. It now validates the
+  conversion and checks `setitimer`'s return, surfacing a seam error so no run proceeds
+  with a phantom watchdog.
+- **P2: CI runs aarch64 *clippy*, not just check (`quality.yml`).** The cross-target job
+  ran `cargo check`, so the `cfg(target_os = "linux")` seam's target-specific lints (the
+  `useless_conversion` class from r5) could merge undetected. Now `cargo clippy -- -D
+  warnings`.
+
+Fixtures: 24, unchanged in count; `accept-aa6-gate` is now the full 8-payload matrix, and
+every record carries the new `step: null`. Schema v3. Miri runs arm-harness (80) plus
+oracle-model (24, incl. the shared clock-page layout with the work-derived flag).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

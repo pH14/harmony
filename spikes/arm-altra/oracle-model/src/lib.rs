@@ -129,22 +129,36 @@ pub mod pvclock {
     /// counter. Always set for ABI 1.
     pub const FLAG_MATERIALIZED: u32 = 1;
 
+    /// `flags` bit 1: the value is **work-derived and refreshed** — the harness computed
+    /// V-time and the virtual counter from the guest's `BR_RETIRED` work and updates the
+    /// page as work advances. This — not merely a published static page — is what AA-5
+    /// certifies. A static placeholder sets [`FLAG_MATERIALIZED`] but NOT this; the
+    /// work-derived refresh mechanism is `hm-8h8`'s (`docs/PARAVIRT-CLOCK.md`), not the
+    /// spike's, so the spike's harness leaves this clear and AA-5 reads unfulfilled.
+    pub const FLAG_WORK_DERIVED: u32 = 1 << 1;
+
     /// Build the clock-page bytes for a **stable** (even-`seq`) materialized page: the
-    /// ABI marker, `seq = 2`, the given V-time/counter/frequency, and the materialized
-    /// flag. Everything else is zero. Little-endian, matching the guest's reads.
+    /// ABI marker, `seq = 2`, the given V-time/counter/frequency, and the flags. When
+    /// `work_derived` is set, [`FLAG_WORK_DERIVED`] rides alongside [`FLAG_MATERIALIZED`]
+    /// (an AA-5-certifying page); otherwise only [`FLAG_MATERIALIZED`] (a static
+    /// placeholder). Everything else is zero. Little-endian, matching the guest's reads.
     ///
     /// This is the shared, Miri-interpreted layout; a writer either blits the result or
     /// (for the live seqlock protocol) writes these fields in odd→even order using the
     /// `OFF_*` offsets above.
     #[must_use]
-    pub fn materialize(vns: u64, guest_clock: u64, hz: u64) -> [u8; PAGE_LEN] {
+    pub fn materialize(vns: u64, guest_clock: u64, hz: u64, work_derived: bool) -> [u8; PAGE_LEN] {
+        let mut flags = FLAG_MATERIALIZED;
+        if work_derived {
+            flags |= FLAG_WORK_DERIVED;
+        }
         let mut p = [0u8; PAGE_LEN];
         p[OFF_ABI..OFF_ABI + 4].copy_from_slice(&super::PVCLOCK_ABI.to_le_bytes());
         p[OFF_SEQ..OFF_SEQ + 4].copy_from_slice(&2u32.to_le_bytes());
         p[OFF_VNS..OFF_VNS + 8].copy_from_slice(&vns.to_le_bytes());
         p[OFF_GUEST_CLOCK..OFF_GUEST_CLOCK + 8].copy_from_slice(&guest_clock.to_le_bytes());
         p[OFF_HZ..OFF_HZ + 8].copy_from_slice(&hz.to_le_bytes());
-        p[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&FLAG_MATERIALIZED.to_le_bytes());
+        p[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
         p
     }
 }
@@ -1124,7 +1138,12 @@ mod tests {
         // read the same in both the harness (managed) and runtime (self-seeded) writers,
         // since both build from this. Reading each field back pins the layout.
         use pvclock::*;
-        let p = materialize(0x1122_3344_5566_7788, 0x00de_00ad_00be_00ef, 1_000_000_000);
+        let p = materialize(
+            0x1122_3344_5566_7788,
+            0x00de_00ad_00be_00ef,
+            1_000_000_000,
+            false,
+        );
         let u32_at = |o: usize| u32::from_le_bytes(p[o..o + 4].try_into().unwrap());
         let u64_at = |o: usize| u64::from_le_bytes(p[o..o + 8].try_into().unwrap());
         assert_eq!(u32_at(OFF_ABI), PVCLOCK_ABI, "ABI marker");
@@ -1132,7 +1151,22 @@ mod tests {
         assert_eq!(u64_at(OFF_VNS), 0x1122_3344_5566_7788, "V-time");
         assert_eq!(u64_at(OFF_GUEST_CLOCK), 0x00de_00ad_00be_00ef, "counter");
         assert_eq!(u64_at(OFF_HZ), 1_000_000_000, "frequency");
-        assert_eq!(u32_at(OFF_FLAGS), FLAG_MATERIALIZED, "materialized flag");
+        // A static placeholder is materialized but NOT work-derived.
+        assert_eq!(
+            u32_at(OFF_FLAGS),
+            FLAG_MATERIALIZED,
+            "materialized, not work-derived"
+        );
+
+        // A work-derived page rides FLAG_WORK_DERIVED alongside it — the AA-5-certifying
+        // page the harness does not yet publish.
+        let w = materialize(0, 0, 1_000_000_000, true);
+        let wflags = u32::from_le_bytes(w[OFF_FLAGS..OFF_FLAGS + 4].try_into().unwrap());
+        assert_eq!(
+            wflags,
+            FLAG_MATERIALIZED | FLAG_WORK_DERIVED,
+            "work-derived flag"
+        );
     }
 
     #[test]

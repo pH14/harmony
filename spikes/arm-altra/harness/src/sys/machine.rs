@@ -336,8 +336,20 @@ impl Machine {
     }
 
     /// Arm `ITIMER_REAL` to raise `SIGALRM` after `watchdog_secs`, clearing any stale
-    /// fired flag first. A zero budget disarms (leaves the timer off).
-    fn arm_watchdog(&self) {
+    /// fired flag first.
+    ///
+    /// # Errors
+    /// Returns a seam error if `watchdog_secs` does not fit `time_t` (an out-of-range
+    /// value would cast negative and make `setitimer` fail `EINVAL`) or if `setitimer`
+    /// itself fails. This MUST propagate: silently ignoring it would enter `KVM_RUN`
+    /// believing a watchdog is armed when it is not, so a wedged guest would block
+    /// forever with no partial evidence — the exact failure the watchdog exists to
+    /// prevent.
+    fn arm_watchdog(&self) -> Result<(), RunError> {
+        let secs = libc::time_t::try_from(self.watchdog_secs).map_err(|_| RunError::Seam {
+            context: "arm watchdog",
+            message: format!("watchdog-secs {} exceeds time_t range", self.watchdog_secs),
+        })?;
         WATCHDOG_FIRED.store(false, std::sync::atomic::Ordering::SeqCst);
         let it = libc::itimerval {
             it_interval: libc::timeval {
@@ -345,14 +357,17 @@ impl Machine {
                 tv_usec: 0,
             },
             it_value: libc::timeval {
-                tv_sec: self.watchdog_secs as libc::time_t,
+                tv_sec: secs,
                 tv_usec: 0,
             },
         };
         // SAFETY: `it` is a fully-initialized itimerval; ITIMER_REAL is a valid timer.
-        unsafe {
-            libc::setitimer(libc::ITIMER_REAL, &raw const it, core::ptr::null_mut());
+        let rc =
+            unsafe { libc::setitimer(libc::ITIMER_REAL, &raw const it, core::ptr::null_mut()) };
+        if rc != 0 {
+            return Err(seam("setitimer(ITIMER_REAL, arm)", err("setitimer")));
         }
+        Ok(())
     }
 
     /// Disarm `ITIMER_REAL` so a pending deadline cannot fire during the non-`KVM_RUN`
@@ -651,11 +666,14 @@ impl Machine {
     /// pre-silicon apparatus needs to exercise the managed-vs-self-seeded attestation.
     /// The page is published for every stage — non-AA-5 payloads simply do not read it.
     fn publish_pvclock_page(&mut self) {
-        // The page bytes are built by the shared, Miri-tested layout in oracle-model —
-        // the same builder the runtime's self-seeded fallback uses — so the managed and
-        // fallback pages cannot drift. A materialized page with V-time and counter 0 (a
-        // quiescent clock; AA-5's live materialization is `hm-8h8`'s, not the spike's).
-        let page = oracle_model::pvclock::materialize(0, 0, 1_000_000_000);
+        // The page bytes are built by the shared, Miri-tested layout in oracle-model. A
+        // materialized STATIC placeholder — `work_derived = false` — with V-time and
+        // counter 0: it proves the page-publication plumbing (the guest reads a managed
+        // page, not its self-seeded fallback), but it is NOT the work-derived, refreshed
+        // clock AA-5 certifies. That mechanism is `hm-8h8`'s (`docs/PARAVIRT-CLOCK.md`),
+        // so the spike leaves FLAG_WORK_DERIVED clear and the AA-5 floor reads unfulfilled
+        // (`check_clockpage_mode`) rather than a static page passing for a real clock.
+        let page = oracle_model::pvclock::materialize(0, 0, 1_000_000_000, false);
         let base = (oracle_model::PVCLOCK_GPA - RAM_BASE) as usize;
 
         // SAFETY: `PVCLOCK_GPA` is the second page of guest RAM, well inside the
@@ -751,7 +769,7 @@ impl Vcpu for Machine {
             // EINTR; below, a fired watchdog becomes RunError::Watchdog so the caller
             // records a failed attempt instead of hanging.
             if self.watchdog_secs > 0 {
-                self.arm_watchdog();
+                self.arm_watchdog()?;
             }
             // SAFETY: `vcpu_fd` is valid; KVM_RUN takes no argument and returns 0 or -1.
             let rc = unsafe { libc::ioctl(self.vcpu_fd, kvm::RUN as libc::c_ulong, 0_u64) };

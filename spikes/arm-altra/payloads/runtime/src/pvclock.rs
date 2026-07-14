@@ -31,7 +31,9 @@
 //! counts retries anyway, branch-free, and reports the total — so if that argument
 //! is ever wrong, it fails loudly instead of quietly corrupting the oracle.
 
-use oracle_model::pvclock::{OFF_ABI, OFF_FLAGS, OFF_GUEST_CLOCK, OFF_HZ, OFF_SEQ, OFF_VNS};
+use oracle_model::pvclock::{
+    FLAG_WORK_DERIVED, OFF_ABI, OFF_FLAGS, OFF_GUEST_CLOCK, OFF_HZ, OFF_SEQ, OFF_VNS,
+};
 use oracle_model::{PVCLOCK_ABI, PVCLOCK_GPA};
 
 /// `flags` bit 0: the materialized-value flag (`oracle_model::pvclock::FLAG_MATERIALIZED`),
@@ -42,12 +44,18 @@ pub use oracle_model::pvclock::FLAG_MATERIALIZED;
 /// managed run; present only so the TCG protocol exercise has a nonzero field.
 const SELF_SEED_HZ: u64 = 1_000_000_000;
 
-/// Where the clock page came from.
+/// Where the clock page came from, and — for a harness page — whether it is the
+/// work-derived clock AA-5 certifies or a static placeholder.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
-    /// The harness published it.
-    Managed,
-    /// No valid page: this payload published a static one (the TCG case).
+    /// The harness published a **work-derived, refreshed** page (`FLAG_WORK_DERIVED`):
+    /// the clock AA-5 is about.
+    WorkDerived,
+    /// The harness published a page, but a **static** one — materialized without
+    /// `FLAG_WORK_DERIVED`. The publication plumbing works; the clock is not yet
+    /// work-derived (that mechanism is `hm-8h8`'s). AA-5 reads this as unfulfilled.
+    ManagedStatic,
+    /// No valid page: this payload published a static one itself (the TCG case).
     SelfSeeded,
 }
 
@@ -56,14 +64,15 @@ impl Mode {
     #[must_use]
     pub const fn token(self) -> &'static str {
         match self {
-            Mode::Managed => "managed",
+            Mode::WorkDerived => "work-derived",
+            Mode::ManagedStatic => "managed-static",
             Mode::SelfSeeded => "self-seeded",
         }
     }
 }
 
 /// Ensure a valid clock page exists, publishing a static one if the harness did
-/// not. Returns which happened.
+/// not. Returns which happened — and, for a harness page, whether it is work-derived.
 pub fn ensure() -> Mode {
     // The field values and offsets are the shared, Miri-tested layout
     // (`oracle_model::pvclock`); the writes here are the payload-side seqlock protocol
@@ -74,7 +83,12 @@ pub fn ensure() -> Mode {
     unsafe {
         let abi = core::ptr::read_volatile(at(OFF_ABI) as *const u32);
         if abi == PVCLOCK_ABI {
-            return Mode::Managed;
+            // A harness page: is it the work-derived clock, or a static placeholder?
+            let flags = core::ptr::read_volatile(at(OFF_FLAGS) as *const u32);
+            if flags & FLAG_WORK_DERIVED != 0 {
+                return Mode::WorkDerived;
+            }
+            return Mode::ManagedStatic;
         }
 
         // Publish a static page in the seqlock's own update order (odd, publish,

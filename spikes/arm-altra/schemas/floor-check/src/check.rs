@@ -40,7 +40,7 @@ use std::path::Path;
 
 use arm_harness::evidence::{ExitReason, RunRecord, RunSet, SCHEMA_VERSION, Stage};
 use arm_harness::sys::BR_RETIRED_RAW;
-use oracle_model::{Expectation, Payload, Scale, Weights, expected};
+use oracle_model::{ALL_PAYLOADS, Expectation, Payload, Scale, Weights, expected};
 use sha2::{Digest, Sha256};
 
 use crate::error::LoadError;
@@ -48,11 +48,17 @@ use crate::error::LoadError;
 /// The conventional manifest file name inside a run-set directory.
 pub const MANIFEST_FILE: &str = "run-set.json";
 
-/// The `CLOCKPAGE mode=` token a harness-maintained (work-derived) clock page makes
-/// the guest print. The alternative, `self-seeded`, means the payload published its
-/// own static page because the harness never did — the static fallback, not the
-/// mechanism AA-5 exists to validate (`payloads/runtime/src/pvclock.rs`).
-const MANAGED_CLOCKPAGE: &str = "managed";
+/// The three `CLOCKPAGE mode=` tokens the guest can print
+/// (`payloads/runtime/src/pvclock.rs`), in order of what AA-5 makes of each:
+/// - `work-derived` — the harness published a page it refreshes from work. This, and
+///   only this, is what AA-5 certifies.
+/// - `managed-static` — the harness published a page, but a static placeholder (the
+///   publication plumbing works; the work-derived refresh, `hm-8h8`, is not built). AA-5
+///   reads this as unfulfilled, not a pass.
+/// - `self-seeded` — the payload published its own static page because the harness never
+///   did. The fallback; a hard fail at AA-5.
+const WORK_DERIVED_CLOCKPAGE: &str = "work-derived";
+const MANAGED_STATIC_CLOCKPAGE: &str = "managed-static";
 
 /// Which floors the caller asked the checker to enforce.
 ///
@@ -119,6 +125,10 @@ pub enum CheckId {
     ArmedOverflowFloor,
     /// The sample count meets `--min-reps`.
     RepFloor,
+    /// AA-6's run-set covers every required payload in the determinism matrix (the rep
+    /// floor only grades inputs that are present, so a missing payload is otherwise
+    /// invisible).
+    Aa6Matrix,
 }
 
 impl CheckId {
@@ -147,6 +157,7 @@ impl CheckId {
             CheckId::PayloadStatus => "payload-status",
             CheckId::ArmedOverflowFloor => "armed-overflow-floor",
             CheckId::RepFloor => "rep-floor",
+            CheckId::Aa6Matrix => "aa6-matrix",
         }
     }
 }
@@ -307,6 +318,7 @@ pub fn check_run_set(dir: &Path, floors: &Floors) -> Result<CheckReport, LoadErr
     check_clockpage_mode(&run_set, &records, &mut outcomes);
     check_replay_identity(run_set.stage, &records, &mut outcomes);
     check_debug_evidence(run_set.stage, &records, &mut outcomes);
+    check_aa6_matrix(run_set.stage, &records, &mut outcomes);
     check_payload_status(&records, &mut outcomes);
     check_floors(&run_set, floors, &records, &mut outcomes);
 
@@ -1171,30 +1183,27 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
         return;
     }
 
-    let mut bad: Vec<(u64, String)> = clockpage
+    let mode_of = |r: &RunRecord| {
+        r.clockpage_mode
+            .clone()
+            .unwrap_or_else(|| "none".to_string())
+    };
+
+    // A `self-seeded` (or absent) mode is a hard fail: the harness never published a
+    // page, so the guest fell back to its own static one — AA-5's forbidden fallback.
+    let mut fallback: Vec<(u64, String)> = clockpage
         .iter()
-        .filter(|r| r.clockpage_mode.as_deref() != Some(MANAGED_CLOCKPAGE))
-        .map(|r| {
-            (
-                r.sample_id,
-                r.clockpage_mode
-                    .clone()
-                    .unwrap_or_else(|| "none".to_string()),
+        .filter(|r| {
+            !matches!(
+                r.clockpage_mode.as_deref(),
+                Some(WORK_DERIVED_CLOCKPAGE) | Some(MANAGED_STATIC_CLOCKPAGE)
             )
         })
+        .map(|r| (r.sample_id, mode_of(r)))
         .collect();
-    bad.sort_by(|a, b| a.0.cmp(&b.0));
-
-    if bad.is_empty() {
-        out.push(pass(
-            CheckId::ClockPageMode,
-            format!(
-                "all {} clock-page record(s) attest the {MANAGED_CLOCKPAGE} clock page (AA-5)",
-                clockpage.len()
-            ),
-        ));
-    } else {
-        let shown: Vec<String> = bad
+    fallback.sort_by_key(|&(id, _)| id);
+    if !fallback.is_empty() {
+        let shown: Vec<String> = fallback
             .iter()
             .take(8)
             .map(|(id, mode)| format!("sample {id}={mode}"))
@@ -1202,11 +1211,42 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
         out.push(fail(
             CheckId::ClockPageMode,
             format!(
-                "{} AA-5 record(s) do not attest the harness-maintained clock page: {} \
-                 (`self-seeded` is the payload's own static page — the fallback, not the \
-                 work-derived mechanism AA-5 certifies)",
-                bad.len(),
+                "{} AA-5 record(s) show a self-seeded/absent clock page: {} — the payload's own \
+                 static fallback, not a harness-published page. AA-5 certifies the harness's clock.",
+                fallback.len(),
                 shown.join(", ")
+            ),
+        ));
+        return;
+    }
+
+    // Every record is at least `managed-static`. AA-5 acceptance needs `work-derived`;
+    // a static placeholder proves only the publication plumbing. If any record is
+    // static, the run does not certify AA-5 — but this is the accepted silicon-day
+    // deferral (the work-derived refresh is `hm-8h8`'s), so it reads NOT-REQUESTED, not
+    // a fail, and not a pass.
+    let static_reps = clockpage
+        .iter()
+        .filter(|r| r.clockpage_mode.as_deref() == Some(MANAGED_STATIC_CLOCKPAGE))
+        .count();
+    if static_reps > 0 {
+        out.push(not_requested(
+            CheckId::ClockPageMode,
+            format!(
+                "{static_reps} of {} clock-page record(s) attest a `{MANAGED_STATIC_CLOCKPAGE}` \
+                 page: the harness published it (the plumbing works), but it is a static \
+                 placeholder, not the work-derived, refreshed clock AA-5 certifies. That \
+                 mechanism is `hm-8h8` (docs/PARAVIRT-CLOCK.md) — a silicon-day item; this \
+                 verdict cannot accept AA-5 until a `{WORK_DERIVED_CLOCKPAGE}` page exists.",
+                clockpage.len()
+            ),
+        ));
+    } else {
+        out.push(pass(
+            CheckId::ClockPageMode,
+            format!(
+                "all {} clock-page record(s) attest the {WORK_DERIVED_CLOCKPAGE} clock page (AA-5)",
+                clockpage.len()
             ),
         ));
     }
@@ -1388,42 +1428,129 @@ const fn requires_replay_identity(stage: Stage) -> bool {
 }
 
 /// AA-2 exists to *characterize single-stepping* — does one step retire exactly one
-/// instruction, and with what skid. Its evidence is the debug exit
-/// ([`ExitReason::Debug`]). An ordinary `--stage aa2` run is unarmed and ends at the
-/// console sentinel (`Mmio`), so without this check the floor reports PASS having
-/// observed not one step — the same vacuity class as replay-identity on zero
-/// comparisons.
+/// instruction, and with what `BR_RETIRED` weight. Its evidence is the **measured**
+/// [`StepRecord`](arm_harness::evidence::StepRecord) (PC before/after, instructions retired), not the `exit_reason: debug`
+/// enum label, which a rehashed run-set can flip in a single byte. An ordinary
+/// `--stage aa2` run ends at the console sentinel with no step record, so without this
+/// check the floor reports PASS having observed not one step — the same vacuity class
+/// as replay-identity on zero comparisons.
 ///
-/// This does NOT vacuously pass and it does NOT hard-fail an honest run: it requires a
-/// debug-exit record and reports NOT-REQUESTED when none is present. The single-step
-/// *run path* is arrival-day work — the run loop rejects an unrequested `Debug` exit
-/// today, and building the stepping loop presumes AA-2's own result (which single-step
-/// primitive lands exactly one instruction), exactly the AA-1/AA-2 unknowns the
-/// pre-build ruling forbids inventing (`docs/ARCH-BOUNDARY.md` §Pre-build ruling; the
-/// r5 skid-landing rebuttal, accepted). So today AA-2 reads NOT-REQUESTED — honestly
-/// unexercised — and flips to a real verdict once arrival day produces stepped records.
+/// So this requires the structured evidence and validates it: a step must advance the
+/// PC (`pc_after != pc_before`) and retire exactly one instruction (`insn_retired == 1`).
+/// A malformed step FAILS; a run carrying no step record at all is NOT-REQUESTED, never
+/// PASS. The single-step *run path* is arrival-day (the run loop refuses an unrequested
+/// `Debug` exit, and the stepping loop would presume AA-2's own single-step result —
+/// the AA-1/AA-2 unknowns the pre-build ruling forbids inventing; the accepted r5
+/// skid-landing rebuttal). So today no run emits a `StepRecord` and AA-2 reads
+/// NOT-REQUESTED — honestly unexercised — flipping to a real verdict on arrival day.
 fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>) {
     if stage != Stage::Aa2 {
         return;
     }
-    let stepped = records
-        .iter()
-        .filter(|r| r.exit_reason == ExitReason::Debug)
-        .count();
-    if stepped == 0 {
+    let stepped: Vec<&RunRecord> = records.iter().filter(|r| r.step.is_some()).collect();
+    if stepped.is_empty() {
         out.push(not_requested(
             CheckId::DebugEvidence,
-            "AA-2 certifies single-stepping, whose evidence is the debug exit, but no \
-             record carries ExitReason::Debug — not a single step was observed. The \
-             single-step run path is arrival-day (the run loop refuses an unrequested \
-             debug exit, and the stepping loop would presume AA-2's own single-step \
-             result); this verdict cannot accept AA-2 as exercised until stepped records \
-             exist. NOT a pass.",
+            "AA-2 certifies single-stepping, and its evidence is the measured step (PC \
+             before/after, one instruction retired) — not the exit_reason label. No record \
+             carries a step measurement, so not a single step was validated. The stepping \
+             run path is arrival-day (the run loop refuses an unrequested debug exit, and \
+             the stepping loop would presume AA-2's own single-step result); this verdict \
+             cannot accept AA-2 until stepped records exist. NOT a pass.",
         ));
-    } else {
+        return;
+    }
+
+    let mut bad: Vec<String> = Vec::new();
+    for r in &stepped {
+        // `stepped` only holds records whose `step` is Some.
+        let s = r.step.as_ref().expect("filtered to Some");
+        if s.pc_after == s.pc_before {
+            bad.push(format!(
+                "sample {}: step did not advance the PC (pc_before == pc_after == {:#x})",
+                r.sample_id, s.pc_before
+            ));
+        }
+        if s.insn_retired != 1 {
+            bad.push(format!(
+                "sample {}: step retired {} instructions, not the exactly 1 AA-2's single-step \
+                 semantics require",
+                r.sample_id, s.insn_retired
+            ));
+        }
+    }
+    if bad.is_empty() {
         out.push(pass(
             CheckId::DebugEvidence,
-            format!("{stepped} record(s) carry single-step (debug-exit) evidence (AA-2)"),
+            format!(
+                "{} record(s) carry a valid single-step measurement — PC advanced, one \
+                 instruction retired (AA-2)",
+                stepped.len()
+            ),
+        ));
+    } else {
+        out.push(fail(
+            CheckId::DebugEvidence,
+            format!(
+                "{} AA-2 step measurement(s) are not a valid single step: {}",
+                bad.len(),
+                join_problems(&bad)
+            ),
+        ));
+    }
+}
+
+/// The payloads AA-6's determinism matrix must cover — every payload with a counting
+/// window. The `ident` capability report has no window and no measured count, so it is
+/// not part of the rep matrix.
+fn required_aa6_payloads() -> Vec<Payload> {
+    ALL_PAYLOADS
+        .iter()
+        .copied()
+        .filter(|p| p.has_window())
+        .collect()
+}
+
+/// AA-6's mini determinism gate is over a **matrix** of payloads, not one input. The
+/// rep floor ([`check_floors`]) only grades inputs that are *present*, so 1,000 copies
+/// of a single `straight-line` record satisfies `--min-reps 1000` while every other
+/// required payload is silently absent. This verifies the matrix is complete *before*
+/// the rep floor's per-group count means anything.
+///
+/// Scope: the payloads the spike can produce pre-silicon. The full-system AA-6 coverage
+/// the spec also names — the AA-5 Linux guest, the AA-0 truth-table cross-check — needs
+/// artifacts that do not exist until arrival day; those remain silicon-day matrix items
+/// (`docs/ARM-ALTRA.md` AA-6), not something this checker can synthesize.
+fn check_aa6_matrix(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    if stage != Stage::Aa6 {
+        return;
+    }
+    let present: BTreeSet<Payload> = records.iter().map(|r| r.payload).collect();
+    let required = required_aa6_payloads();
+    let missing: Vec<Payload> = required
+        .iter()
+        .copied()
+        .filter(|p| !present.contains(p))
+        .collect();
+    if missing.is_empty() {
+        out.push(pass(
+            CheckId::Aa6Matrix,
+            format!(
+                "all {} required payloads present in the AA-6 determinism matrix",
+                required.len()
+            ),
+        ));
+    } else {
+        let names: Vec<&str> = missing.iter().map(|p| p.name()).collect();
+        out.push(fail(
+            CheckId::Aa6Matrix,
+            format!(
+                "AA-6's determinism matrix is incomplete: missing {}. The rep floor only \
+                 grades inputs that are present, so a run of only the payloads it happens to \
+                 contain (e.g. 1000 copies of one) would satisfy --min-reps while the mandated \
+                 matrix is absent — the matrix must be verified, not inferred from what showed up.",
+                names.join(", ")
+            ),
         ));
     }
 }
@@ -1479,6 +1606,16 @@ fn check_floors(run_set: &RunSet, floors: &Floors, records: &[RunRecord], out: &
     // is enforced on the STAGE, independent of what the records happened to contain.
     let requires_armed = requires_patched_mechanism(run_set.stage);
     match floors.min_armed_overflows {
+        // A floor of zero is not a floor: `armed >= 0` holds for a run that armed no
+        // deadline at all, so `--min-armed-overflows 0` is exactly the vacuous pass the
+        // floor exists to prevent. Reject it outright.
+        Some(0) => out.push(fail(
+            CheckId::ArmedOverflowFloor,
+            "a --min-armed-overflows floor of 0 certifies nothing: it is met by a run that \
+             armed no deadline. Pass a nonzero floor (the AA-1/AA-3 acceptance floor is \
+             1000000 cumulative)."
+                .to_string(),
+        )),
         Some(min) if armed >= min => out.push(pass(
             CheckId::ArmedOverflowFloor,
             format!("{armed} armed overflows meets the floor of {min}"),
@@ -1517,6 +1654,14 @@ fn check_floors(run_set: &RunSet, floors: &Floors, records: &[RunRecord], out: &
     // floor is the count of the *least-repeated* distinct input: every group must meet
     // it. (replay-identity then checks those reps actually landed identically.)
     match floors.min_reps {
+        // A rep floor of zero is vacuous the same way: every input trivially has "at
+        // least 0" repetitions. Reject it.
+        Some(0) => out.push(fail(
+            CheckId::RepFloor,
+            "a --min-reps floor of 0 certifies nothing: every input meets it. Pass a nonzero \
+             floor (AA-6's mini gate is 1000 same-input repetitions)."
+                .to_string(),
+        )),
         Some(min) => {
             let mut groups: BTreeMap<RepKey, u64> = BTreeMap::new();
             for r in records {
@@ -1595,6 +1740,7 @@ mod tests {
     //! modes, and the not-requested floors.
 
     use super::*;
+    use arm_harness::evidence::StepRecord;
     use arm_harness::evidence::{
         Environment, ImagePin, Mechanism, OverflowRecord, PerfConfig, Pinning,
     };
@@ -1628,6 +1774,7 @@ mod tests {
                 skid: 0,
                 landed_digest: "sha256:aa".into(),
             }),
+            step: None,
             state_digest: "sha256:00".into(),
             params_mode: "managed".into(),
             clockpage_mode: None,
@@ -1887,7 +2034,7 @@ mod tests {
     }
 
     #[test]
-    fn aa5_records_must_attest_the_managed_clock_page() {
+    fn aa5_certifies_only_a_work_derived_clock_page() {
         let mut rs = a_run_set();
         rs.stage = Stage::Aa5;
 
@@ -1899,7 +2046,7 @@ mod tests {
             r
         };
 
-        // The self-seeded fallback: the payload published its own static page.
+        // The self-seeded fallback: the payload published its own static page. Hard fail.
         let mut out = Vec::new();
         check_clockpage_mode(&rs, &[clockpage(Some("self-seeded"))], &mut out);
         assert_eq!(status(&out, CheckId::ClockPageMode), Some(Status::Fail));
@@ -1909,13 +2056,24 @@ mod tests {
         check_clockpage_mode(&rs, &[clockpage(None)], &mut out);
         assert_eq!(status(&out, CheckId::ClockPageMode), Some(Status::Fail));
 
-        // The managed page: what AA-5 exists to certify.
+        // A static managed page: the harness published it (plumbing OK), but it is not
+        // the work-derived clock AA-5 certifies. NOT-REQUESTED (silicon-day deferral),
+        // never a pass — a static page must not certify AA-5.
         let mut out = Vec::new();
-        check_clockpage_mode(&rs, &[clockpage(Some("managed"))], &mut out);
+        check_clockpage_mode(&rs, &[clockpage(Some("managed-static"))], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ClockPageMode),
+            Some(Status::NotRequested),
+            "a static managed page proves plumbing, not the work-derived clock"
+        );
+
+        // The work-derived page: the only thing AA-5 accepts.
+        let mut out = Vec::new();
+        check_clockpage_mode(&rs, &[clockpage(Some("work-derived"))], &mut out);
         assert_eq!(status(&out, CheckId::ClockPageMode), Some(Status::Pass));
 
         // An AA-5 run-set with NO clock-page records at all is a vacuous pass waiting
-        // to happen — the mechanism AA-5 certifies was never exercised. Finding 4.
+        // to happen — the mechanism AA-5 certifies was never exercised.
         let mut out = Vec::new();
         check_clockpage_mode(&rs, &[a_record(0)], &mut out);
         assert_eq!(
@@ -1927,7 +2085,7 @@ mod tests {
         // And the check does not fire outside AA-5, where the page is not the subject.
         let rs = a_run_set();
         let mut out = Vec::new();
-        check_clockpage_mode(&rs, &[clockpage(Some("managed"))], &mut out);
+        check_clockpage_mode(&rs, &[clockpage(Some("work-derived"))], &mut out);
         assert!(out.is_empty());
     }
 
@@ -2205,24 +2363,53 @@ mod tests {
     }
 
     #[test]
-    fn aa2_without_a_debug_exit_is_not_requested_never_a_pass() {
-        // The vacuity: an AA-2 run of ordinary unarmed records that end at the console
-        // sentinel observed no single step, but nothing here graded that — the floor
-        // could report PASS. It must read NOT-REQUESTED instead (the single-step run
-        // path is arrival-day), and never PASS.
+    fn aa2_requires_a_valid_step_measurement_not_a_debug_label() {
+        // The vacuity: an AA-2 run of ordinary records observed no single step, but
+        // nothing graded that — the floor could report PASS. It must read NOT-REQUESTED
+        // (the single-step run path is arrival-day), never PASS.
         let mut out = Vec::new();
         check_debug_evidence(Stage::Aa2, &[a_record(0)], &mut out);
         assert_eq!(
             status(&out, CheckId::DebugEvidence),
             Some(Status::NotRequested),
-            "AA-2 with no stepped record must not pass silently"
+            "AA-2 with no step measurement must not pass silently"
         );
 
-        // A record that DID land on a debug exit is the evidence AA-2 is about.
-        let mut stepped = a_record(0);
-        stepped.exit_reason = ExitReason::Debug;
+        // The forgery the r6 check let through: flipping the exit_reason enum to Debug is
+        // NOT step evidence. Without a StepRecord it still reads NOT-REQUESTED.
+        let mut labelled = a_record(0);
+        labelled.exit_reason = ExitReason::Debug;
         let mut out = Vec::new();
-        check_debug_evidence(Stage::Aa2, &[stepped], &mut out);
+        check_debug_evidence(Stage::Aa2, &[labelled], &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::NotRequested),
+            "a bare exit_reason=debug is not a single-step measurement"
+        );
+
+        // A step measurement that does not advance the PC or retires ≠1 instruction is
+        // not a valid single step — it FAILS, it is not accepted.
+        let mut bad_step = a_record(0);
+        bad_step.step = Some(StepRecord {
+            pc_before: 0x8000,
+            pc_after: 0x8000, // did not advance
+            insn_retired: 3,  // not one instruction
+            br_retired_delta: 0,
+        });
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &[bad_step], &mut out);
+        assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Fail));
+
+        // A valid single step: PC advanced, exactly one instruction retired.
+        let mut good_step = a_record(0);
+        good_step.step = Some(StepRecord {
+            pc_before: 0x8000,
+            pc_after: 0x8004,
+            insn_retired: 1,
+            br_retired_delta: 0,
+        });
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &[good_step], &mut out);
         assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Pass));
 
         // The check does not fire outside AA-2, where single-stepping is not the subject.

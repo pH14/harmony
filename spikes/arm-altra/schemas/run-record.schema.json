@@ -18,6 +18,7 @@
     "reported_taken",
     "exit_reason",
     "overflow",
+    "step",
     "state_digest",
     "params_mode",
     "clockpage_mode",
@@ -78,6 +79,17 @@
       "oneOf": [
         {
           "$ref": "#/$defs/overflow-record"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "step": {
+      "description": "Single-step measurement, for a stepped AA-2 sample; `null` for every non-stepped run. The AA-2 floor validates this structured evidence (PC advanced, exactly one instruction retired) rather than trusting the `exit_reason: debug` label. Unproduced pre-silicon: the stepping run path is arrival-day.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/step-record"
         },
         {
           "type": "null"
@@ -195,6 +207,39 @@
         "landed_digest": {
           "description": "Digest of the guest state AT THE LANDING, sampled before the guest resumed \u2014 the state AA-3's replay identity is about. The final state_digest can converge (two different landings reach the same exit state), so it cannot establish landing identity. Empty when nothing was delivered.",
           "type": "string"
+        }
+      }
+    },
+    "step-record": {
+      "description": "One single-step measurement (`arm_harness::evidence::StepRecord`), for a stepped AA-2 sample. AA-2 characterizes single-stepping, and its evidence is these measured numbers, not the `exit_reason: debug` label a rehashed run-set can flip in one byte. The AA-2 floor validates them: the PC must advance and exactly one instruction must retire. Unproduced pre-silicon \u2014 the stepping run path (KVM_SET_GUEST_DEBUG + the stepping loop) is arrival-day.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pc_before",
+        "pc_after",
+        "insn_retired",
+        "br_retired_delta"
+      ],
+      "properties": {
+        "pc_before": {
+          "description": "The PC before the step.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "pc_after": {
+          "description": "The PC after the step \u2014 must differ from pc_before (a step advanced the guest).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "insn_retired": {
+          "description": "Instructions retired by the step. AA-2's single-step semantics require exactly 1.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "br_retired_delta": {
+          "description": "BR_RETIRED delta across the step: 0 for a non-branch, 1 for a taken branch \u2014 the per-instruction work-clock weight AA-2 characterizes.",
+          "type": "integer",
+          "minimum": 0
         }
       }
     }

@@ -177,12 +177,13 @@ fn generate_record(sample_id: u64, payload: Payload, exit: ExitReason) -> RunRec
     // carry one `sample_period` truthfully; a real varying-period run would carry
     // `null` and let each record state its own (target - work_begin).
     let target = work_begin + SYNTHETIC_PERIOD;
-    // The token the guest actually prints when the harness published the page
-    // (`payloads/runtime/src/pvclock.rs`): `managed`, versus `self-seeded` for the
-    // payload's own static fallback. The AA-5 check reads this field, so a fixture
-    // that invented a third token would be testing a string no guest can emit.
+    // The token the guest prints when the harness published its STATIC page
+    // (`payloads/runtime/src/pvclock.rs`): `managed-static` — the publication plumbing
+    // works, but it is not the `work-derived` clock AA-5 certifies (that mechanism is
+    // `hm-8h8`). The AA-5 check reads this field; a fixture that invented a token no
+    // guest can emit would be testing a fiction.
     let clockpage_mode = if payload == Payload::ClockPage {
-        Some("managed".to_string())
+        Some("managed-static".to_string())
     } else {
         None
     };
@@ -210,6 +211,8 @@ fn generate_record(sample_id: u64, payload: Payload, exit: ExitReason) -> RunRec
                 synth_sha256(&format!("landed-{sample_id}-{}", payload.name()))
             ),
         }),
+        // No fixture is a stepped AA-2 run (the run path is arrival-day).
+        step: None,
         state_digest: format!(
             "sha256:{}",
             synth_sha256(&format!("state-{sample_id}-{}", payload.name()))
@@ -366,25 +369,36 @@ fn accept_aa1_skid() -> Fixture {
 /// floor is 1,000, but the fixtures test the checker's *logic*, not the number.
 const AA6_REPS: u64 = 4;
 
-/// One repetition of the SAME input, landing bit-identically: same payload, scale,
-/// seed, condition, target, AND the same `landed_digest`. Distinct only by
-/// `sample_id`, which does not enter the [`RepKey`].
-fn aa6_rep(sample_id: u64) -> RunRecord {
-    let mut r = generate_record(sample_id, Payload::StraightLine, ExitReason::Preempt);
-    // Bit-identical landings: every repetition of one input lands on one state, so the
-    // whole group shares a single digest (what replay-identity compares).
-    if let Some(o) = r.overflow.as_mut() {
-        o.landed_digest = format!("sha256:{}", synth_sha256("aa6-landed"));
-    }
-    r.state_digest = format!("sha256:{}", synth_sha256("aa6-final"));
-    r
+/// `AA6_REPS` bit-identical repetitions of one payload's input: same payload, scale,
+/// seed, condition, target, AND — within the payload — the same `landed_digest` and
+/// `state_digest`. Distinct only by `sample_id`, which does not enter the [`RepKey`].
+/// Each payload gets its own digests, so the reps form one group per payload.
+fn aa6_reps_of(payload: Payload, first_id: u64) -> Vec<RunRecord> {
+    (0..AA6_REPS)
+        .map(|k| {
+            let mut r = generate_record(first_id + k, payload, ExitReason::Preempt);
+            // Bit-identical landings: every repetition of one input lands on one state,
+            // so the whole group shares a single digest (what replay-identity compares).
+            let name = payload.name();
+            if let Some(o) = r.overflow.as_mut() {
+                o.landed_digest = format!("sha256:{}", synth_sha256(&format!("aa6-landed-{name}")));
+            }
+            r.state_digest = format!("sha256:{}", synth_sha256(&format!("aa6-final-{name}")));
+            r
+        })
+        .collect()
 }
 
-/// The valid AA-6 mini-gate accept fixture: the SAME input repeated [`AA6_REPS`]
-/// times, all bit-identical. This is what a real AA-6 gate looks like in miniature —
-/// one input, many reps — and the per-input rep floor accepts it.
+/// The valid AA-6 mini-gate accept fixture: the FULL determinism matrix — every
+/// windowed payload, each repeated [`AA6_REPS`] times bit-identically. A run of one
+/// payload repeated N times would satisfy the per-input rep floor yet fail the matrix
+/// check; a real AA-6 gate covers the whole matrix, and this is that in miniature.
 fn accept_aa6_gate() -> Fixture {
-    let records: Vec<RunRecord> = (0..AA6_REPS).map(aa6_rep).collect();
+    let mut records = Vec::new();
+    for &p in &WINDOWED {
+        let first = records.len() as u64;
+        records.extend(aa6_reps_of(p, first));
+    }
     let run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
     fixture("accept-aa6-gate", &run_set, &records)
 }

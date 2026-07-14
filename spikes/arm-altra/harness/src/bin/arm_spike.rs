@@ -667,12 +667,30 @@ fn execute(args: RunArgs) -> Result<(), String> {
         };
         let (manifest, records_jsonl) = assemble_run_set(context, &records)
             .map_err(|e| format!("assemble the run-set: {e}"))?;
+        // A run-set is immutable evidence: reusing `--out` must never silently truncate
+        // a prior run's records (and a failure mid-write would leave new records beside
+        // an old manifest). Refuse an output directory that already exists, and create
+        // each file with exclusive creation so even a race cannot clobber one.
+        if args.out.exists() {
+            return Err(format!(
+                "refusing to overwrite {}: a run-set is immutable evidence — choose a fresh \
+                 --out or move the existing directory aside",
+                args.out.display()
+            ));
+        }
         std::fs::create_dir_all(&args.out)
             .map_err(|e| format!("create {}: {e}", args.out.display()))?;
-        std::fs::write(args.out.join("records.jsonl"), &records_jsonl)
-            .map_err(|e| format!("write records.jsonl: {e}"))?;
-        std::fs::write(args.out.join("run-set.json"), &manifest)
-            .map_err(|e| format!("write run-set.json: {e}"))?;
+        let write_new = |name: &str, bytes: &[u8]| -> Result<(), String> {
+            let path = args.out.join(name);
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|e| format!("create {}: {e}", path.display()))?;
+            std::io::Write::write_all(&mut f, bytes).map_err(|e| format!("write {name}: {e}"))
+        };
+        write_new("records.jsonl", records_jsonl.as_bytes())?;
+        write_new("run-set.json", manifest.as_bytes())?;
         println!(
             "wrote {} of {attempted} attempted records to {}",
             records.len(),

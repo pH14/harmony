@@ -24,7 +24,7 @@
   "properties": {
     "schema_version": {
       "description": "`arm_harness::evidence::SCHEMA_VERSION`. A checker refuses a version it does not know rather than silently misreading it.",
-      "const": 2
+      "const": 3
     },
     "stage": {
       "$ref": "#/$defs/stage"

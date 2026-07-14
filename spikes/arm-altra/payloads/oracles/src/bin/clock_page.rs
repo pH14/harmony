@@ -34,8 +34,10 @@ extern "C" fn payload_main() -> ! {
     );
 
     // Under the harness the page is already published; under TCG nobody published
-    // one, so we do — and say so. AA-5's acceptance requires `managed`; the TCG
-    // golden requires `self-seeded`. Neither can masquerade as the other.
+    // one, so we do — and say so. AA-5's acceptance requires `work-derived` (a page the
+    // harness refreshes from work, `hm-8h8`); the spike's static harness page reports
+    // `managed-static` (plumbing OK, clock unfulfilled), and the TCG golden requires
+    // `self-seeded`. None can masquerade as another.
     let mode = pvclock::ensure();
     let (abi, flags) = pvclock::header();
     println!("CLOCKPAGE mode={} abi={abi} flags={flags:#x}", mode.token());

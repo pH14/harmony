@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "stage": "aa6",
   "run_set_id": "fixture-aa6",
   "environment": {
@@ -55,7 +55,7 @@
     "window_offset": 2
   },
   "skid_margin": 64,
-  "attempted": 4,
+  "attempted": 32,
   "records_file": "records.jsonl",
-  "records_sha256": "ecb6d5dd5f80c1e9dc23e9097ea8a28fc3a269232758fbba8b8257d8ff508db0"
+  "records_sha256": "c9ec108845d9164f2f68ad879ba68eb4f34bf650db1dc36ba6a75ed997a2fff2"
 }
