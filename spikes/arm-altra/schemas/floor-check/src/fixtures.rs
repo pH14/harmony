@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The fixture generator.
 //!
-//! Seventeen synthetic run-sets the checker must reject (one per failure mode) and
-//! three it must accept (a patched AA-3 landing run, an AA-1 counting run, and an
-//! AA-1(c) skid-distribution run with early/late landings). They are **generated from the oracle model**, not hand
+//! Twenty-four checked-in run-sets: twenty the checker must reject (one per failure
+//! mode) and four it must accept (a patched AA-3 landing run, an AA-1 counting run, an
+//! AA-1(c) early/late skid-distribution run, and an AA-6 same-input gate). They are **generated from the oracle model**, not hand
 //! written: the accept fixture's counts are the exact values
 //! [`oracle_model::expected`] predicts under a chosen (synthetic) weights pack, so
 //! the fixtures stay consistent with the model as it evolves, and a reject fixture
@@ -616,6 +616,29 @@ pub fn all_fixtures() -> Vec<Fixture> {
         fixtures.push(fixture("reject-divergent-digests", &run_set, &records));
     }
 
+    // 18. reject-pinned-no-core — pinned: true with core: null. The recorded core is
+    //     required evidence for the rr #3607 migration condition; the schema itself
+    //     describes this tuple as unverifiable.
+    {
+        let records = base_records(ExitReason::Preempt);
+        let mut run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
+        run_set.pinning.pinned = true;
+        run_set.pinning.core = None;
+        fixtures.push(fixture("reject-pinned-no-core", &run_set, &records));
+    }
+
+    // 19. reject-malformed-hash — an image sha256 that serde accepts (it is a String)
+    //     but the schema's `^[0-9a-f]{64}$` pattern does not. Serde's type check is not
+    //     the schema's constraint check; the well-formed gate is.
+    {
+        let records = base_records(ExitReason::Preempt);
+        let mut run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
+        if let Some(img) = run_set.images.get_mut(0) {
+            img.sha256 = String::new(); // empty: not 64 hex
+        }
+        fixtures.push(fixture("reject-malformed-hash", &run_set, &records));
+    }
+
     fixtures
 }
 
@@ -640,13 +663,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_twenty_two_fixtures_with_unique_names() {
+    fn there_are_twenty_four_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 22);
+        assert_eq!(fixtures.len(), 24);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 22, "fixture names must be unique");
+        assert_eq!(names.len(), 24, "fixture names must be unique");
     }
 
     #[test]

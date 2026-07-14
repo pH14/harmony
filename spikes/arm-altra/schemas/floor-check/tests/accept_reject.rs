@@ -119,6 +119,20 @@ fn reject_aa6_rep_floor_counts_per_input_not_total() {
 }
 
 #[test]
+fn reject_pinned_no_core() {
+    // pinned: true with core: null — the recorded core is required evidence for the
+    // rr #3607 migration condition; an unrecorded core cannot be verified.
+    assert_single_failure("reject-pinned-no-core", no_floors(), CheckId::Pinning);
+}
+
+#[test]
+fn reject_malformed_hash() {
+    // An empty sha256: serde accepts it (it is a String), the schema's 64-hex pattern
+    // does not, and the well-formed gate enforces the schema constraint serde skips.
+    assert_single_failure("reject-malformed-hash", no_floors(), CheckId::WellFormed);
+}
+
+#[test]
 fn reject_short_count() {
     // The fixture is valid; it fails only because a floor larger than its
     // armed-overflow count is demanded. That makes the floor the sole failure.

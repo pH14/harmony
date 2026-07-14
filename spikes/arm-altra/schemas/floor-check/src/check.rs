@@ -76,6 +76,10 @@ pub struct Floors {
 pub enum CheckId {
     /// The manifest's `schema_version` is one this checker understands.
     SchemaVersion,
+    /// Every field the canonical JSON Schema constrains (hash formats, non-empty
+    /// required strings, minimums) is well-formed — enforced here because serde only
+    /// checks Rust types, not the schema's `pattern`/`minLength`/`minimum`.
+    WellFormed,
     /// sha256 of the records file equals the manifest's `records_sha256`.
     RecordsSha256,
     /// The sample ids are exactly `0..attempted`, each present once.
@@ -121,6 +125,7 @@ impl CheckId {
     pub const fn name(self) -> &'static str {
         match self {
             CheckId::SchemaVersion => "schema-version",
+            CheckId::WellFormed => "well-formed",
             CheckId::RecordsSha256 => "records-sha256",
             CheckId::Totality => "totality",
             CheckId::Multiplicity => "multiplicity",
@@ -284,6 +289,7 @@ pub fn check_run_set(dir: &Path, floors: &Floors) -> Result<CheckReport, LoadErr
     let mut outcomes = Vec::new();
 
     check_schema_version(&run_set, &mut outcomes);
+    check_well_formed(&run_set, &records, &mut outcomes);
     check_records_sha256(&run_set, &records_bytes, &mut outcomes);
     check_totality(&run_set, &records, &mut outcomes);
     check_multiplicity(&records, &mut outcomes);
@@ -377,6 +383,95 @@ fn check_schema_version(run_set: &RunSet, out: &mut Vec<Outcome>) {
             ),
         ));
     }
+}
+
+/// Exactly `len` lowercase hex digits.
+fn is_lower_hex(s: &str, len: usize) -> bool {
+    s.len() == len
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Enforce the constraints the canonical JSON Schemas encode but serde does not.
+///
+/// `serde_json` checks Rust types and `deny_unknown_fields`; it does NOT check the
+/// schema's `pattern`, `minLength`, or `minimum`. So a manifest with `sha256: ""` or a
+/// `sample_period: 0` deserializes cleanly and could make every *semantic* check pass —
+/// `floor-check` would exit 0 on schema-invalid evidence, though the module documents
+/// malformed evidence as a load error. This check closes that at the point the
+/// evidence is graded: it enforces the load-bearing constraints (hash formats, the
+/// non-empty required identifiers, the sampling-period minimum) so schema-invalid
+/// evidence fails rather than passing vacuously.
+fn check_well_formed(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    let mut problems: Vec<String> = Vec::new();
+
+    // sha256 fields: `^(sha256:)?[0-9a-f]{64}$` (the pinned records hash and each image
+    // pin), md5 when present `^[0-9a-f]{32}$`.
+    let check_sha256 = |problems: &mut Vec<String>, what: &str, h: &str| {
+        if !is_lower_hex(normalise_hash(h).as_str(), 64) {
+            problems.push(format!("{what} is not a 64-hex sha256: {h:?}"));
+        }
+    };
+    check_sha256(&mut problems, "records_sha256", &run_set.records_sha256);
+    check_sha256(
+        &mut problems,
+        "mechanism.host_kernel_sha256",
+        &run_set.mechanism.host_kernel_sha256,
+    );
+    for (i, img) in run_set.images.iter().enumerate() {
+        check_sha256(&mut problems, &format!("images[{i}].sha256"), &img.sha256);
+        if let Some(md5) = &img.md5
+            && !is_lower_hex(md5, 32)
+        {
+            problems.push(format!(
+                "images[{i}].md5 is present but not 32-hex: {md5:?}"
+            ));
+        }
+        if img.path.trim().is_empty() {
+            problems.push(format!("images[{i}].path is empty"));
+        }
+    }
+
+    // Non-empty required identifiers (schema `minLength: 1`).
+    for (what, s) in [
+        ("run_set_id", run_set.run_set_id.as_str()),
+        ("environment.soc", run_set.environment.soc.as_str()),
+        (
+            "environment.host_kernel",
+            run_set.environment.host_kernel.as_str(),
+        ),
+        (
+            "environment.kvm_mode",
+            run_set.environment.kvm_mode.as_str(),
+        ),
+        ("condition", run_set.condition.as_str()),
+        ("pinning.governor", run_set.pinning.governor.as_str()),
+        ("records_file", run_set.records_file.as_str()),
+    ] {
+        if s.trim().is_empty() {
+            problems.push(format!("{what} is empty (schema requires minLength 1)"));
+        }
+    }
+
+    // sample_period, when present, is a sampling deadline: schema `minimum: 1`.
+    if run_set.perf.sample_period == Some(0) {
+        problems.push("perf.sample_period is 0 (schema minimum is 1)".to_string());
+    }
+
+    // Every record's condition is non-empty, and its state_digest is a well-formed
+    // sha256 (records carry no md5).
+    for r in records {
+        if r.condition.trim().is_empty() {
+            problems.push(format!("record {}: condition is empty", r.sample_id));
+        }
+    }
+
+    verdict(
+        CheckId::WellFormed,
+        &problems,
+        "every schema-constrained field is well-formed",
+        out,
+    );
 }
 
 /// Normalise a recorded hash: drop an optional `sha256:` prefix and lowercase it.
@@ -974,11 +1069,19 @@ fn check_pinning(run_set: &RunSet, out: &mut Vec<Outcome>) {
     }
 
     if p.pinned {
-        let detail = match p.core {
-            Some(c) => format!("pinned to core {c}"),
-            None => "pinned (core unrecorded)".to_string(),
-        };
-        out.push(pass(CheckId::Pinning, detail));
+        // The recorded core is required evidence, not decoration: pinning is the N1
+        // migration mitigation (rr #3607), and a `pinned: true` with no core cannot be
+        // checked against the standing core-assignment table — the schema itself
+        // describes that tuple as unverifiable. A missing core is a pinning failure.
+        match p.core {
+            Some(c) => out.push(pass(CheckId::Pinning, format!("pinned to core {c}"))),
+            None => out.push(fail(
+                CheckId::Pinning,
+                "pinned: true but core: null — the pinned core is required evidence for the \
+                 rr #3607 migration condition, and an unrecorded core cannot be verified against \
+                 the standing core-assignment table",
+            )),
+        }
     } else if p.migration_probe {
         out.push(pass(
             CheckId::Pinning,
@@ -1068,8 +1171,17 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
 }
 
 /// The key a repetition is *the same run* under: same payload, scale, seed,
-/// condition and target. Two records with this key must land on the same state.
-type RepKey = (String, String, u64, String, Option<u64>);
+/// condition, and — for an armed run — the same target **delta**.
+///
+/// The delta is `target - work_begin`, NOT the absolute target. The plan reuses one
+/// `target_delta` across every repetition of an input, but the stored target is
+/// `work_begin + delta`; if pre-window execution diverges and `work_begin` differs,
+/// the absolute targets differ and same-input records split into different groups —
+/// so replay-identity would report "no repeated group" instead of catching the
+/// divergent landed states. Keying by delta groups them correctly. A malformed
+/// record where `target < work_begin` (a negative delta) is caught separately by
+/// [`check_replay_identity`].
+type RepKey = (String, String, u64, String, Option<i128>);
 
 fn rep_key(r: &RunRecord) -> RepKey {
     (
@@ -1077,7 +1189,9 @@ fn rep_key(r: &RunRecord) -> RepKey {
         r.scale.name().to_string(),
         r.seed,
         r.condition.clone(),
-        r.overflow.as_ref().map(|o| o.target),
+        r.overflow
+            .as_ref()
+            .map(|o| i128::from(o.target) - i128::from(r.work_begin)),
     )
 }
 
@@ -1107,6 +1221,29 @@ fn comparison_digest(r: &RunRecord) -> &str {
 /// compare equal to every other empty digest) is a failure in its own right.
 fn check_replay_identity(records: &[RunRecord], out: &mut Vec<Outcome>) {
     let mut problems: Vec<String> = Vec::new();
+
+    // A malformed record whose overflow deadline is BEFORE the window opened
+    // (`target < work_begin`, a negative delta) cannot be a real landing — the
+    // repetition key is derived from `target - work_begin`, so this is caught here
+    // rather than quietly producing a negative-delta group.
+    let mut underflow: Vec<u64> = records
+        .iter()
+        .filter(|r| {
+            r.overflow
+                .as_ref()
+                .is_some_and(|o| i128::from(o.target) < i128::from(r.work_begin))
+        })
+        .map(|r| r.sample_id)
+        .collect();
+    underflow.sort_unstable();
+    if !underflow.is_empty() {
+        problems.push(format!(
+            "{} record(s) have a target before the window opened (target < work_begin): \
+             samples {} — a negative overflow delta is malformed",
+            underflow.len(),
+            preview(underflow.iter().copied())
+        ));
+    }
 
     let mut blank: Vec<u64> = records
         .iter()
@@ -1767,6 +1904,85 @@ mod tests {
         let mut out = Vec::new();
         check_floors(&a_run_set(), &floors, &[a_record(0)], &mut out);
         assert_eq!(status(&out, CheckId::RepFloor), Some(Status::Fail));
+    }
+
+    #[test]
+    fn repetitions_group_by_delta_so_a_divergent_work_begin_does_not_split_them() {
+        // Two reps of the same input, same target DELTA (500), but different
+        // work_begin (pre-window execution diverged). Their absolute targets differ,
+        // so a target-keyed grouping would split them into singleton groups and
+        // replay-identity would find nothing to compare. Keyed by delta, they are one
+        // group — and their divergent landed digests are caught.
+        let mut a = a_record(0);
+        let mut b = a_record(1);
+        // a: work_begin 1000, target 1500 (delta 500). b: work_begin 2000, target 2500
+        // (delta 500). Same input, same delta; different landings.
+        a.work_begin = 1_000;
+        b.work_begin = 2_000;
+        if let Some(o) = a.overflow.as_mut() {
+            o.target = 1_500;
+            o.landed = 1_500;
+            o.skid = 0;
+            o.landed_digest = "sha256:aaaa".into();
+        }
+        if let Some(o) = b.overflow.as_mut() {
+            o.target = 2_500;
+            o.landed = 2_500;
+            o.skid = 0;
+            o.landed_digest = "sha256:bbbb".into();
+        }
+        let mut out = Vec::new();
+        check_replay_identity(&[a, b], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::Fail),
+            "same-delta reps must group despite divergent work_begin, and their \
+             divergent landings must be caught"
+        );
+    }
+
+    #[test]
+    fn a_target_before_the_window_is_malformed() {
+        let mut r = a_record(0);
+        r.work_begin = 2_000;
+        if let Some(o) = r.overflow.as_mut() {
+            o.target = 1_000; // before work_begin — negative delta
+        }
+        let mut out = Vec::new();
+        check_replay_identity(&[r], &mut out);
+        assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
+    }
+
+    #[test]
+    fn pinned_true_with_no_core_fails() {
+        let mut rs = a_run_set();
+        rs.pinning.pinned = true;
+        rs.pinning.core = None;
+        rs.pinning.migration_probe = false;
+        let mut out = Vec::new();
+        check_pinning(&rs, &mut out);
+        assert_eq!(status(&out, CheckId::Pinning), Some(Status::Fail));
+    }
+
+    #[test]
+    fn an_empty_hash_fails_the_well_formed_gate() {
+        let mut rs = a_run_set();
+        rs.images[0].sha256 = String::new();
+        let mut out = Vec::new();
+        check_well_formed(&rs, &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::WellFormed), Some(Status::Fail));
+
+        // A zero sampling period likewise.
+        let mut rs = a_run_set();
+        rs.perf.sample_period = Some(0);
+        let mut out = Vec::new();
+        check_well_formed(&rs, &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::WellFormed), Some(Status::Fail));
+
+        // The baseline is well-formed.
+        let mut out = Vec::new();
+        check_well_formed(&a_run_set(), &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::WellFormed), Some(Status::Pass));
     }
 
     #[test]

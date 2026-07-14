@@ -213,6 +213,11 @@ fn every_fixture_conforms_to_the_committed_json_schemas() {
     let mut checked_manifests = 0;
     let mut checked_records = 0;
 
+    // `reject-malformed-hash` is INTENTIONALLY schema-invalid (its empty sha256 is the
+    // very thing the checker's well-formed gate catches, which serde's type check does
+    // not), so it is the one fixture that must NOT conform. Every other fixture must.
+    const INTENTIONALLY_SCHEMA_INVALID: &[&str] = &["reject-malformed-hash"];
+
     let entries = std::fs::read_dir(fixtures_dir()).expect("fixtures dir");
     for entry in entries {
         let dir = entry.expect("dir entry").path();
@@ -222,6 +227,15 @@ fn every_fixture_conforms_to_the_committed_json_schemas() {
         let name = dir.file_name().unwrap().to_string_lossy().to_string();
 
         let manifest = load(&dir.join("run-set.json"));
+        if INTENTIONALLY_SCHEMA_INVALID.contains(&name.as_str()) {
+            // Confirm it really is invalid (so the skip cannot mask a fixture that
+            // silently became valid), then move on.
+            assert!(
+                !run_set_schema.errors(&manifest).is_empty(),
+                "{name} is on the intentionally-invalid list but conforms to the schema"
+            );
+            continue;
+        }
         run_set_schema.check(&manifest, &format!("{name}/run-set.json"));
         checked_manifests += 1;
 
@@ -240,8 +254,8 @@ fn every_fixture_conforms_to_the_committed_json_schemas() {
 
     // The gate is only meaningful if it actually validated something.
     assert!(
-        checked_manifests >= 20,
-        "expected ≥20 fixture manifests, saw {checked_manifests}"
+        checked_manifests >= 23,
+        "expected ≥23 conforming fixture manifests, saw {checked_manifests}"
     );
     assert!(checked_records > 0, "no records were validated");
 }
