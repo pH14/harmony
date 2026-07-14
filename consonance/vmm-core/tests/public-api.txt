@@ -581,6 +581,7 @@ pub fn vmm_core::vmm::Vmm<B>::can_arm_arrival(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::clear_arrival(&mut self)
 pub fn vmm_core::vmm::Vmm<B>::effective_vns(&self) -> core::option::Option<u64>
 pub fn vmm_core::vmm::Vmm<B>::enable_net(&mut self) -> &mut Self
+pub fn vmm_core::vmm::Vmm<B>::enable_pvclock(&mut self, u64) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::enable_sdk(&mut self, environment::recorded::RecordedEnv, &environment::policy::FaultPolicy) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::entropy_state(&self) -> core::option::Option<u64>
 pub fn vmm_core::vmm::Vmm<B>::exit_counts(&self) -> vmm_backend::exit::ExitCounts
@@ -599,6 +600,12 @@ pub fn vmm_core::vmm::Vmm<B>::net_snapshot(&self) -> core::option::Option<vmm_co
 pub fn vmm_core::vmm::Vmm<B>::new(B, vmm_core::vmm::GuestRam) -> Self
 pub fn vmm_core::vmm::Vmm<B>::observable_digest(&self) -> [u8; 32]
 pub fn vmm_core::vmm::Vmm<B>::preemption_landings(&self) -> &[u64]
+pub fn vmm_core::vmm::Vmm<B>::pvclock_check_oracle(&self) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::pvclock_offered(&self) -> bool
+pub fn vmm_core::vmm::Vmm<B>::pvclock_page(&self) -> core::option::Option<&[u8]>
+pub fn vmm_core::vmm::Vmm<B>::pvclock_refreshes(&self) -> &[(u64, u64, u64)]
+pub fn vmm_core::vmm::Vmm<B>::pvclock_registration(&self) -> core::option::Option<u64>
+pub fn vmm_core::vmm::Vmm<B>::pvclock_restore(&mut self, core::option::Option<u64>) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::ram_backing_is_snapshot(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::report_stream(&self) -> &[u32]
 pub fn vmm_core::vmm::Vmm<B>::reseed_entropy(&mut self, u64) -> core::result::Result<(), vmm_core::vmm::VmmError>
@@ -608,7 +615,7 @@ pub fn vmm_core::vmm::Vmm<B>::restore_snapshot(&mut self, &[u8], &vm_state::VmSt
 pub fn vmm_core::vmm::Vmm<B>::restore_vm_state(&mut self, &vm_state::VmState) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::restore_vtime(&mut self, &vmm_core::vmm::VtimeSnapshot) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::run(&mut self) -> core::result::Result<vmm_core::vmm::RunResult, vmm_core::vmm::VmmError>
-pub fn vmm_core::vmm::Vmm<B>::save_vm_state(&self) -> core::result::Result<vm_state::VmState, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::save_vm_state(&mut self) -> core::result::Result<vm_state::VmState, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::save_vtime(&self) -> core::result::Result<core::option::Option<vmm_core::vmm::VtimeSnapshot>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::sdk_buggify(&self) -> &[(u64, environment::catalog::Answer)]
 pub fn vmm_core::vmm::Vmm<B>::sdk_events(&self) -> &[(u64, u32, alloc::vec::Vec<u8>)]
@@ -636,6 +643,7 @@ pub vmm_core::vmm::VtimeSnapshot::vns: u64
 pub struct vmm_core::vmm::VtimeWiring
 impl vmm_core::vmm::VtimeWiring
 pub fn vmm_core::vmm::VtimeWiring::new(vtime::clock::VClockConfig, alloc::boxed::Box<dyn vmm_core::work::WorkSource>, u64) -> core::result::Result<vmm_core::vmm::VtimeWiring, vmm_core::vmm::VmmError>
+pub const vmm_core::vmm::PVCLOCK_DEFAULT_DELTA_WORK: u64
 pub type vmm_core::vmm::VcpuOf<B> = <<B as vmm_backend::backend::Backend>::A as vmm_backend::arch::Arch>::VcpuState
 pub mod vmm_core::work
 pub enum vmm_core::work::WorkError

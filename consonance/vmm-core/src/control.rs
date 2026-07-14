@@ -311,6 +311,15 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// prefix) so a fork's `net_decide` answers do not diverge from the sequential
     /// run. Ephemeral, removed with its snapshot on `drop`.
     net_snaps: BTreeMap<u64, NetSnap>,
+    /// Per-snapshot pvclock registration (task 110), same discipline as the
+    /// channel snapshots: the guest-published clock-page GPA in force when the
+    /// snapshot was sealed (present iff registered). The page *bytes* ride the
+    /// RAM image; this is the host-side "keep stamping there" note a
+    /// `branch`/`replay` re-establishes via [`Vmm::pvclock_restore`] — without
+    /// it a restored guest that already registered would read a frozen page
+    /// and hang on its first busy-wait. Ephemeral, removed with its snapshot
+    /// on `drop`.
+    pvclock_snaps: BTreeMap<u64, u64>,
     /// **The lineage taint bit** for the *current live timeline* (task 81). Set the
     /// instant an [`Request::Exec`] improvisation is issued (conservatively, before
     /// it runs — so no failure mode leaves an improvised timeline looking clean),
@@ -413,6 +422,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             schedule_poisoned: None,
             sdk_snaps: BTreeMap::new(),
             net_snaps: BTreeMap::new(),
+            pvclock_snaps: BTreeMap::new(),
             // A fresh session's live timeline is untainted; no snapshots exist yet.
             timeline_tainted: false,
             tainted_snaps: BTreeSet::new(),
@@ -927,6 +937,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // Task 61: capture the Net channel's flow-policy stream position + decision
         // log the same way (owned, so the borrow ends before touching self).
         let net_channel = vmm.net_snapshot();
+        // Task 110: capture the pvclock registration in force at the seal (the
+        // page bytes themselves ride the just-sealed RAM image, canonical per
+        // §1.1 — `save_vm_state` re-stamped them above).
+        let pvclock_gpa = vmm.pvclock_registration();
         let id = self.next_snap;
         self.next_snap += 1;
         self.snaps.insert(id, store_id);
@@ -941,6 +955,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             // the seal-time policy must be restored before the Net env materializes.
             let policy = self.recorded.policy().clone();
             self.net_snaps.insert(id, NetSnap { channel, policy });
+        }
+        if let Some(gpa) = pvclock_gpa {
+            self.pvclock_snaps.insert(id, gpa);
         }
         // Task 81: a snapshot inherits the live timeline's taint. If the timeline
         // was tainted by an `exec` improvisation, record the handle (so any
@@ -968,6 +985,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.sdk_snaps.remove(&snap.0);
         // Task 61: drop the Net channel snapshot with its handle too.
         self.net_snaps.remove(&snap.0);
+        // Task 110: drop the pvclock registration note with its handle too.
+        self.pvclock_snaps.remove(&snap.0);
         // Task 81: drop its taint record with the handle. (The `SnapId` is
         // monotonic — [`next_snap`] never reuses a number — so a later snapshot can
         // never inherit this one's taint by handle reuse.)
@@ -1288,6 +1307,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if let Some(n) = net_snap {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
             vmm.net_restore(&n.channel);
+        }
+        // Task 110: re-establish the snapshot's pvclock registration (the
+        // restore cleared it — the stale-arm class), so the restored guest's
+        // already-registered page keeps being stamped and its first busy-wait
+        // does not hang on a frozen clock. The page bytes were restored with
+        // the RAM image; this is only the host-side "stamp there" note. A
+        // composition mismatch (the factory did not offer the page this
+        // snapshot's VM had) fails loud as substrate breakage.
+        {
+            let gpa = self.pvclock_snaps.get(&snap.0).copied();
+            let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+            vmm.pvclock_restore(gpa).map_err(ServeError::from)?;
         }
         for (m, fault) in host {
             self.schedule.insert(m, fault);
@@ -6635,5 +6666,165 @@ mod tests {
                 }
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 110: the pvclock registration rides snapshot/branch like the SDK
+    // channel — captured at seal, re-established on the restored fork.
+    // -----------------------------------------------------------------------
+
+    /// The registered clock-page GPA survives a `snapshot` → `branch`: the
+    /// fork's VM keeps stamping the page the restored guest already published
+    /// (without the carry, its first busy-wait would hang on a frozen clock).
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the pvclock carry logic itself is pure and covered natively"
+    )]
+    fn branch_carries_the_pvclock_registration() {
+        const REQ_GPA: usize = 0xE000;
+        const PV_GPA: u64 = 0x4000;
+        let compose = |exits: Vec<Exit<X86>>, work: u64| {
+            let mut mb = MockBackend::with_exits(exits);
+            mb.set_policy(&X86Policy {
+                cpuid: vmm_backend::CpuidModel::default(),
+                msr_filter: vmm_backend::MsrFilter::default(),
+            })
+            .unwrap();
+            let mut v = Vmm::new(mb, GuestRam::new(BIG_RAM).unwrap());
+            v.wire_vtime(
+                VtimeWiring::new(
+                    contract_vclock_config(),
+                    Box::new(ScriptedWork::at(work)),
+                    9,
+                )
+                .unwrap(),
+            );
+            v.wire_snapshot_hashing();
+            v.enable_pvclock(crate::vmm::PVCLOCK_DEFAULT_DELTA_WORK);
+            v
+        };
+        // Live VM: sync at an RDTSC, then register the clock page.
+        let mut live = compose(
+            vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
+            100,
+        );
+        let mut frame = [0_u8; 64];
+        let n = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Pvclock,
+            1,
+            1,
+            &PV_GPA.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        live.restore_guest_memory(&ram).unwrap();
+        assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued); // RDTSC → synchronized
+        live.service_doorbell(n as u32).unwrap();
+        assert_eq!(live.pvclock_registration(), Some(PV_GPA));
+
+        let factory = Box::new(move || {
+            Ok(compose(
+                vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
+                9_999,
+            ))
+        });
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        let base = snap(&mut s);
+        match s
+            .handle(&Request::Branch {
+                snap: base,
+                env: seeded_env(7),
+            })
+            .unwrap()
+        {
+            Ok(Reply::Unit) => {}
+            other => panic!("branch failed: {other:?}"),
+        }
+        // The fork's VM carries the registration and a canonical, oracle-true
+        // page (the sealed image restored it; the carry re-armed the stamping).
+        let vmm = s.vmm().unwrap();
+        assert_eq!(vmm.pvclock_registration(), Some(PV_GPA));
+        vmm.pvclock_check_oracle()
+            .expect("restored page matches the restored clock");
+    }
+
+    /// A factory that does NOT offer the pvclock cannot restore a snapshot
+    /// whose VM had a registered page: the composition mismatch is substrate
+    /// breakage (a `ServeError`), never a silent frozen clock.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the mismatch rejection is pure and covered natively via Vmm::pvclock_restore"
+    )]
+    fn branch_into_an_unoffered_composition_fails_loud() {
+        const REQ_GPA: usize = 0xE000;
+        const PV_GPA: u64 = 0x4000;
+        let mut mb = MockBackend::with_exits(vec![
+            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Common(CommonExit::Idle),
+        ]);
+        mb.set_policy(&X86Policy {
+            cpuid: vmm_backend::CpuidModel::default(),
+            msr_filter: vmm_backend::MsrFilter::default(),
+        })
+        .unwrap();
+        let mut live = Vmm::new(mb, GuestRam::new(BIG_RAM).unwrap());
+        live.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(100)), 9).unwrap(),
+        );
+        live.wire_snapshot_hashing();
+        live.enable_pvclock(crate::vmm::PVCLOCK_DEFAULT_DELTA_WORK);
+        let mut frame = [0_u8; 64];
+        let n = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Pvclock,
+            1,
+            1,
+            &PV_GPA.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        live.restore_guest_memory(&ram).unwrap();
+        assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
+        live.service_doorbell(n as u32).unwrap();
+
+        // The factory forgets enable_pvclock — a composition mismatch.
+        let factory = Box::new(|| {
+            let mut mb = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+            mb.set_policy(&X86Policy {
+                cpuid: vmm_backend::CpuidModel::default(),
+                msr_filter: vmm_backend::MsrFilter::default(),
+            })
+            .unwrap();
+            let mut v = Vmm::new(mb, GuestRam::new(BIG_RAM).unwrap());
+            v.wire_vtime(
+                VtimeWiring::new(
+                    contract_vclock_config(),
+                    Box::new(ScriptedWork::at(9_999)),
+                    9,
+                )
+                .unwrap(),
+            );
+            v.wire_snapshot_hashing();
+            Ok(v)
+        });
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        let base = snap(&mut s);
+        assert!(
+            matches!(
+                s.handle(&Request::Branch {
+                    snap: base,
+                    env: seeded_env(7),
+                }),
+                Err(ServeError::Vmm(_))
+            ),
+            "a pvclock composition mismatch tears the session down loudly"
+        );
     }
 }

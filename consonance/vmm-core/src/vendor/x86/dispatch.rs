@@ -127,10 +127,13 @@ impl<B: Backend<A = X86>> Vmm<B> {
             self.report_stream.push(value);
             return Ok(Step::Continued);
         }
-        // Task 73: the hypercall doorbell. Serviced only when an SDK channel is
-        // wired; otherwise it falls through to the default-deny below (so no
-        // non-SDK path is affected). One `OUT` = one atomic exchange.
-        if port == DOORBELL_PORT && (self.sdk.is_some() || self.net.is_some()) {
+        // Task 73: the hypercall doorbell. Serviced only when a channel is
+        // wired (SDK / Net, or the task-110 pvclock offer); otherwise it falls
+        // through to the default-deny below (so no channel-less path is
+        // affected). One `OUT` = one atomic exchange.
+        if port == DOORBELL_PORT
+            && (self.sdk.is_some() || self.net.is_some() || self.pvclock_offered())
+        {
             require_dword_io("OUT", DOORBELL_PORT, size)?;
             return self.service_doorbell(value);
         }

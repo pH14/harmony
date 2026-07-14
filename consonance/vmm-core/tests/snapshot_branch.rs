@@ -387,12 +387,8 @@ fn snapshot_hashing_round_trips_at_a_residual_events_point() {
     let hash_a = a.state_hash();
 
     let mut eng = SnapshotEngine::new(RAM);
-    let snap = eng
-        .snapshot_base(
-            a.guest_memory(),
-            &a.save_vm_state().unwrap().encode().unwrap(),
-        )
-        .unwrap();
+    let blob = a.save_vm_state().unwrap().encode().unwrap();
+    let snap = eng.snapshot_base(a.guest_memory(), &blob).unwrap();
 
     let mut b = vmm(vec![], 9999, 0);
     b.wire_snapshot_hashing();
@@ -421,25 +417,17 @@ fn derive_captures_only_pages_dirtied_since_the_parent() {
     a.step().unwrap();
 
     let mut eng = SnapshotEngine::new(RAM);
-    let base = eng
-        .snapshot_base(
-            a.guest_memory(),
-            &a.save_vm_state().unwrap().encode().unwrap(),
-        )
-        .unwrap();
+    let blob = a.save_vm_state().unwrap().encode().unwrap();
+    let base = eng.snapshot_base(a.guest_memory(), &blob).unwrap();
 
     // Dirty exactly one page (page 1, previously zero), advance V-time, snapshot.
     let mut dirtied = booted_image();
     dirtied[4096..2 * 4096].fill(0xCC);
     a.restore_guest_memory(&dirtied).unwrap();
     a.step().unwrap();
+    let blob2 = a.save_vm_state().unwrap().encode().unwrap();
     let child = eng
-        .snapshot_derive(
-            base,
-            a.guest_memory(),
-            Some(&[1]),
-            &a.save_vm_state().unwrap().encode().unwrap(),
-        )
+        .snapshot_derive(base, a.guest_memory(), Some(&[1]), &blob2)
         .unwrap();
     assert_eq!(
         eng.stats(child).unwrap().owned_pages,
@@ -461,12 +449,8 @@ fn n_branches_share_one_boot_image_and_fork_entropy() {
     boot.step().unwrap();
 
     let mut eng = SnapshotEngine::new(RAM);
-    let base = eng
-        .snapshot_base(
-            boot.guest_memory(),
-            &boot.save_vm_state().unwrap().encode().unwrap(),
-        )
-        .unwrap();
+    let boot_blob = boot.save_vm_state().unwrap().encode().unwrap();
+    let base = eng.snapshot_base(boot.guest_memory(), &boot_blob).unwrap();
     let unique_after_base = eng.store_stats().stored_unique_pages;
     assert_eq!(unique_after_base, 2, "base interned 2 non-zero pages");
 
