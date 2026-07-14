@@ -735,7 +735,10 @@ mod tests {
     // through the loop, which the interpreter runs ~100x slower — minutes for a bound
     // check whose logic (a `>` comparison) has no unsafe and nothing for Miri to
     // verify. Convention: keep the interpreted suite quick.
-    #[cfg_attr(miri, ignore = "100k scripted iterations; a plain bound check, no unsafe")]
+    #[cfg_attr(
+        miri,
+        ignore = "100k scripted iterations; a plain bound check, no unsafe"
+    )]
     #[test]
     fn an_advisory_storm_with_no_progress_is_refused_not_spun_on() {
         // If the guest never advances, an unbounded stream of advisory exits would

@@ -132,7 +132,20 @@ jobs:
   #
   # Miri runs in THIS job rather than the nightly one: arm-harness carries `unsafe`
   # (the perf/KVM syscall seam), the suite is seconds not minutes, and the repo bar is
-  # that unsafe crates run clean under the pinned interpreter.
+  # that unsafe crates run clean under the pinned interpreter. The interpreter reaches
+  # the memory-safety-critical logic through a seam: the payload-image copy that used
+  # to live in the (Linux-only, un-interpretable) KVM harness is factored into
+  # `elf::Elf::load_into`, safe code over a `&mut [u8]` that Miri drives against an
+  # in-process buffer — including the malformed `p_filesz > p_memsz` case. The mmap +
+  # ioctl paths remain `cfg(target_os="linux")` and are the documented asm/privileged
+  # exception (Miri cannot issue a syscall).
+  #
+  # The bare-metal `runtime`/`oracles` crates are deliberately NOT Miri-gated: they are
+  # `no_std`, target `aarch64-unknown-none`, and their `unsafe` is inline `asm!` and
+  # MMIO to physical addresses (the GIC, the PL011, the boot shim) — none of which the
+  # interpreter can execute or model. That is exactly the asm/privileged-class
+  # exception `tasks/00-CONVENTIONS.md` names; their behaviour is exercised by the TCG
+  # smoke instead, which runs the real instructions on an emulated N1.
   #
   # NOT gated here: the qemu-system-aarch64 TCG payload smoke (payloads/smoke.sh). It
   # needs qemu on the runner, which this self-hosted box does not have and which no

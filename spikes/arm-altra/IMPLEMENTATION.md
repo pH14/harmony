@@ -162,6 +162,111 @@ can print** (`payloads/runtime/src/pvclock.rs` emits `managed` or `self-seeded`)
 new AA-5 check reads that field, so a fixture inventing a third token would have been
 testing a string no guest can emit. Corrected to `managed`.
 
+## Round-2 review fixes (PR #108, cross-model pass)
+
+A blind GPT-5.6 pass over the round-1 head found ~21 issues, almost all in the *new*
+`sys/machine.rs` + `run.rs` + `arm-spike run` plumbing round 1 added. Every one was
+verified against the code before fixing; all held. They cluster:
+
+**KVM/perf ABI — the harness could not have booted or armed anything.**
+
+- **PC set to the wrong register.** `KVM_REG_ARM_CORE_REG(regs.pc)` is `0x100/4 = 0x40`;
+  the code used `0x44`, which names `sp_el1`. Every launch wrote the EL1 stack pointer
+  and left `PC` at reset — the guest never entered the payload. The constant is now
+  *derived* from the field offset and pinned by a test.
+- **No vGICv3.** The payload runtime programs the GIC distributor at `0x0800_0000`
+  before it prints a byte; with no in-kernel vGIC those are MMIO exits the loop
+  refuses. `Machine::new` now issues `KVM_CREATE_DEVICE` + the dist/redist addresses +
+  `CTRL_INIT` at the addresses `gic.rs` expects. Nothing boots without it.
+- **Deterministic-intercepts cap advertised but never enabled.** The patch gates
+  `KVM_ARM_PREEMPT_EXIT` on a per-VM flag only `KVM_ENABLE_CAP` sets; the code only
+  *checked* the cap was advertised, so every arm would `EINVAL` on the patched kernel.
+  `enable_deterministic_intercepts` now issues the enable for the patched mechanism.
+- **`PERF_EVENT_IOC_PERIOD` passed by value.** It is an `_IOW` taking a `*u64`; the
+  value was passed directly, so the kernel read the deadline as an address and returned
+  `EFAULT` — no overflow ever armed. Now passed by pointer.
+
+**The counting-window + rearm contract — armed records would have been wrong.**
+
+- **Period live before `MARK_BEGIN`.** The event was opened with `sample_period` set and
+  enabled at construction, so a small delta overflowed during boot and the kick arrived
+  unarmed. The fd now opens in *counting* mode; the period is programmed at
+  `arm_overflow`, which the loop calls at the mark. The manifest still reports the
+  intended sampling config, derived from a reporting attr.
+- **Advisory exits counted as deliveries.** The patch's own arch note: on arm64 the PMU
+  overflow is a maskable IRQ, so the armed vCPU exits on *any* host IRQ and every
+  `KVM_EXIT_PREEMPT` is **advisory** — re-read the counter, re-arm if the target was not
+  reached. The loop now reads the counter at each mechanism exit: `work < target` is an
+  advisory exit (recorded in the new `advisory_exits` field, re-armed, re-entered), only
+  `work >= target` is a delivery. An early timer tick can no longer masquerade as an
+  exactly-once PMI. A no-progress storm is bounded and refused rather than spun on.
+- **Counter frozen after the one-shot.** `REFRESH(1)` disables the event on overflow, so
+  `work_end` would read the landing, not the window's end, and every armed count would
+  disagree with the whole-window oracle. `resume_counting` re-enables with an
+  out-of-reach period after the landing.
+- **Landing digest taken at the wrong Moment.** The digest was sampled at the exit
+  sentinel, where two different landed states can converge. AA-3's replay identity is
+  about the state *at the landing*, so the loop now captures a `landed_digest` there,
+  before resuming, and the checker's replay-identity compares that for armed records.
+- **Scale hard-coded to Smoke.** `arm-spike run` offered no scale override, so the AA-1
+  1e6/1e7/1e8 differential sweep — the whole existential measurement — could not be run.
+  Added `--scale` (repeatable) threaded through the plan.
+
+**Evidence integrity.**
+
+- **Failed attempts vanished.** A sample error `?`-returned before any evidence was
+  written, so neither the failure nor the prior attempts reached the totality checker —
+  a reliability failure that disappears on rerun. `arm-spike run` now writes the partial
+  run-set (with `attempted` = full plan) before surfacing the error; the gap is in the
+  evidence, which is what totality catches.
+- **One ELF booted under every label.** `--payload` was one file booted for all eight
+  classes while the record label changed — mislabeled evidence. Replaced with
+  `--payload-dir`; each sample loads the ELF matching *its* payload, each content-pinned.
+- **Repetitions re-drew their seed.** `reps` advanced the RNG per repetition, so no two
+  records shared a `(payload, scale, seed, condition, target)` key — the round-1
+  replay-identity check found nothing to compare and passed, and `--min-reps` counted
+  rows. AA-6 could go green without comparing a single same-seed pair. The matrix is now
+  drawn once, above the rep loop; a repetition repeats the input.
+- **`solve()`'s fractional truncation.** The SVC and WFI weights were computed by integer
+  division that silently truncated a remainder, and the residual was recomputed from the
+  SVC row alone (which reproduces itself), so `solve` could return `Ok` with residual 0
+  while its weights did not reproduce the WFI measurement — hiding the unexplained count
+  mismatch the program calls blocking. Division is now exact (`NonIntegralWeight` on any
+  remainder) and the residual is the worst over *every* supplied observation.
+- **Host kernel never content-verified.** `host_kernel_sha256` was an operator-typed
+  string the checker only checked was nonempty. Replaced with `--host-kernel-image`: the
+  image is read and hashed, and that hash is both the mechanism identity and a verified
+  image pin — so §Evidence integrity #3, which names host kernels, actually covers it.
+- **Truth-table expectations unconstrained.** A mandatory row could claim
+  `expected: absent, found: absent, confirmed: true` for an existential capability,
+  hiding the failure. The schema now pins the normative `expected` per row id, requires a
+  confirmed row's `found` to match it, and requires an unconfirmed row's to actually
+  differ. Verified against a Draft 2020-12 validator: the exact evasion is rejected.
+- **Condition hard-coded in the plan** while the manifest used `--condition` — the two
+  could disagree about which experiment ran. `--condition` now threads into every sample.
+
+**Gates / quality.**
+
+- **Miri coverage for the new unsafe.** The memory-safety-critical payload-image copy
+  (including the `p_filesz > p_memsz` OOB the review found separately) is factored out of
+  the Linux-only KVM harness into `elf::Elf::load_into` — safe code over a `&mut [u8]`
+  that Miri drives against an in-process buffer. The mmap/ioctl paths stay
+  `cfg(target_os="linux")`. The bare-metal `runtime`/`oracles` crates are documented as
+  the asm/privileged-class Miri exception (no_std, inline asm, physical MMIO — the
+  interpreter cannot model them; the TCG smoke exercises them instead).
+- **`CPU_SET` OOB panic.** `--core ≥ CPU_SETSIZE` panicked libc's `CPU_SET` on CLI input;
+  now bounded with a clean error.
+- **SPDX headers** added to all 38 new Rust files, the 10 `.s` files, and `host/verify.sh`
+  (the repo's `AGENTS.md`-mandated header; 346/346 first-party `.rs` files carry it).
+- **Fixtures validated against the JSON Schemas.** A new `schema_conformance` test
+  structurally validates every fixture manifest and record against the committed
+  `run-set`/`run-record` schemas (a dependency-free Draft-2020-12 subset validator) and
+  asserts the schema's pinned `schema_version` equals the Rust constant — which
+  immediately caught that the schemas had drifted (still v1, missing the two new overflow
+  fields). Schemas updated to v2.
+
+The evidence schema is now `SCHEMA_VERSION = 2` (added `advisory_exits`, `landed_digest`).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;
