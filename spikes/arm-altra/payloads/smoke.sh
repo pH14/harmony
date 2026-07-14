@@ -40,6 +40,19 @@ if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
     exit 1
 fi
 
+# `timeout` is coreutils; stock macOS has neither, and Homebrew's coreutils installs
+# it as `gtimeout` unless the gnubin dir is on PATH. Resolve whichever exists so the
+# documented Mac-local smoke does not exit 127 before QEMU even starts.
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT=gtimeout
+else
+    echo "FAIL: no timeout command found." >&2
+    echo "      macOS: brew install coreutils (provides gtimeout)    Linux: coreutils has timeout" >&2
+    exit 1
+fi
+
 echo "== building payloads (aarch64-unknown-none, release)"
 cargo build --release
 
@@ -75,7 +88,7 @@ run_one() {
     got="$tmpdir/$payload.$run.txt"
     status=0
     # A generous per-payload timeout: WFI/idle takes real emulated interrupts.
-    timeout 120 qemu-system-aarch64 \
+    "$TIMEOUT" 120 qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu "$CPU" -m 512 -nographic -no-reboot \
         -semihosting-config enable=on,target=native \
         -kernel "$BIN/$payload" </dev/null >"$raw" 2>"$tmpdir/qemu.err" || status=$?

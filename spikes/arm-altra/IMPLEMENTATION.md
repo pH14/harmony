@@ -267,6 +267,62 @@ verified against the code before fixing; all held. They cluster:
 
 The evidence schema is now `SCHEMA_VERSION = 2` (added `advisory_exits`, `landed_digest`).
 
+## Round-3 review fixes (PR #108, converging)
+
+A smaller cross-model set, all verified against the code first.
+
+- **The KVM loop could not boot a real payload.** A booting guest writes the PL011
+  config registers (CR/IBRD/FBRD/LCR_H) and *reads* the flag register before it can
+  print; with no in-kernel PL011 those are all MMIO exits, and the round-2 loop
+  accepted only DR writes, rejecting the very first `runtime_init` write. The loop now
+  models the PL011: config-register writes are accepted no-ops, and an FR read is
+  answered "ready" (TXFF/BUSY clear, so the guest's polls are single-pass, exactly as
+  QEMU's FIFO-disabled model — and those polls sit outside the counting window, so no
+  counted branch is touched). This needed a `complete_mmio_read` seam on `Vcpu` (the
+  KVM MMIO-read protocol: stage the value into `kvm_run.mmio.data` and re-enter).
+- **The skid rules rejected the evidence AA-1 exists to collect.** AA-1(c) *measures*
+  the early/late skid distribution to derive the margin, so a landing at `target + 1`
+  is a datum there, not a violation; the no-overshoot/within-margin/exact rules are the
+  patched *landing contract* (AA-3/AA-4/AA-6). `check_skid` is now stage-and-mechanism
+  aware: at AA-1 it enforces only that the recorded skid is self-consistent; the
+  contract binds on the patched-mechanism stages. Fixtures both ways —
+  `accept-aa1-skid` (early/late landings accepted) and `reject-overshoot`/
+  `reject-skid-exceeds-margin` moved to AA-4 where the contract binds.
+- **The AA-6 rep floor counted total rows.** `--reps 125` over an eight-payload matrix
+  is 1,000 records but only 125 reps of each input, and `--min-reps 1000` passed —
+  though no input was repeated 1,000 times. The floor is now the count of the
+  *least-repeated* distinct `(payload, scale, seed, condition, target)` input; every
+  group must meet it. Fixtures: `accept-aa6-gate` (the same input repeated,
+  bit-identical) and `reject-aa6-rep-floor` (total meets the floor, per-input does not).
+- **Artifacts were hashed but not verified against trusted identities.** `arm-spike run`
+  hashed whatever bytes were present and asserted `verified_before_boot: true`. It now
+  takes `--payload-pins` (a JSON map of trusted expected sha256 per payload) and
+  `--host-kernel-sha256`, hashes each loaded artifact, and compares: a mismatch is a
+  hard error, and only a match attests verification. A swapped or rebuilt artifact can
+  no longer receive a fresh accepted identity.
+- **Emitted md5 pins were schema-invalid.** Every real run-set wrote an empty `md5`,
+  which violates the schema's `^[0-9a-f]{32}$`. No md5 implementation is on the
+  whitelist and sha256 is the identity, so `ImagePin::md5` is now `Option<String>`
+  (nullable in the schema), and the harness emits `None` — a canonical, schema-valid
+  manifest.
+- **Miri had no coverage of the machine-layer pointer logic.** The KVM harness is
+  Linux-only and the interpreter runs on the Mac, so its ioctls are the documented
+  asm/privileged exception — but the pure pointer logic they hand off to is not. The
+  `kvm_run` decode, the MMIO-read staging, and the state-digest hashing are factored
+  into portable `sys` functions (`decode_kvm_run`, `stage_mmio_read`, `digest_state`)
+  driven under Miri against an in-process `KvmRun`; `machine` forms the references from
+  its mapped pointer and calls straight through. Miri now runs 76 tests (up from 72).
+
+P2s: the manifest's `sample_period` is per-sample (each AA-3 cell draws its own
+`target_delta`), so it is derived from the records — `Some(p)` only when every armed
+record shares one uniform period, else `None` (the per-sample truth is each record's
+`target - work_begin`), and `check_perf` cross-checks the uniform claim. The
+schema-conformance validator now enforces `pattern`/`minimum`/`minLength` (and panics on
+any pattern it does not recognise, so a new one can't slip in unchecked). `KVM_GET_REG_LIST`'s
+host-supplied count is bounded (`checked_add`, a 65 536 sanity cap) before allocating.
+`smoke.sh` resolves `timeout`→`gtimeout` so the Mac-local gate does not exit 127 on a
+stock Homebrew setup.
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;
