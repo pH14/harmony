@@ -124,9 +124,11 @@ step 4's `vm-state` header (below).
     artifact is ever linked or run — so that is sound).
 - `cargo fmt -- --check`, `cargo deny check` — clean.
 - **Miri** (`nightly-2026-06-16`, `-Zmiri-permissive-provenance`) — clean on every crate
-  with a Miri job: `vmm-core` (**308 passed, 0 failed**, its own nightly job, ~68 min
-  interpreted), `vmm-backend`, and `vm-state`. No new `unsafe` was introduced; the moved
-  pointer seams kept their `// SAFETY:` comments verbatim, and the `map_memory`
+  with a Miri job, **re-run on the round-1 code** (the `unsafe` `map_memory` seam moved
+  modules when `bringup` went under `vendor::x86`, so it needed re-verifying, not just
+  re-asserting): `vmm-core` **308 passed, 0 failed** (its own nightly job, ~68 min
+  interpreted), plus `vmm-backend`, `vm-state`, and `environment`. No new `unsafe` was
+  introduced; the moved pointer seams kept their `// SAFETY:` comments verbatim, and the
   pointer-retention test still drives the seam through the interpreter.
 - **public-api snapshots** regenerated for `vmm-backend`, `vmm-core`, `vm-state`,
   `vtime`, `environment`, `control-proto`, `campaign-runner`. The `vmm-backend` /
