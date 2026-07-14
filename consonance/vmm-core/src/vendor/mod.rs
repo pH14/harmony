@@ -87,6 +87,11 @@ pub trait Vendor: Arch + Sized {
 
     /// Whether a deliverable interrupt is **already pending** in the fabric (x86:
     /// a vector in the LAPIC IRR that arbitration would deliver).
+    ///
+    /// Peeks **without advancing** the fabric: the run loop advances it before
+    /// every entry ([`service_pending_irqs`](Vendor::service_pending_irqs)), so at
+    /// an idle exit it is already current, and advancing again here would be a
+    /// second (V-time-identical, but gratuitous) tick on the snapshot path.
     fn pending_deliverable_interrupt<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,
     ) -> Result<bool, VmmError>;
@@ -115,8 +120,12 @@ pub trait Vendor: Arch + Sized {
     ) -> Result<(), VmmError>;
 
     /// Whether a genuine guest interrupt is pending delivery but not yet accepted
-    /// (the architecturally in-flight event a synchronized snapshot may capture),
-    /// after advancing the fabric. Includes the vendor's legacy lines.
+    /// (the architecturally in-flight event a synchronized snapshot may capture).
+    /// Unlike [`pending_deliverable_interrupt`](Vendor::pending_deliverable_interrupt)
+    /// this **advances** the fabric first (it is called from outside the run loop,
+    /// where the fabric may be stale) and folds in the vendor's legacy lines. The
+    /// advance is idempotent with the run loop's per-entry service, so it does not
+    /// perturb a snapshot.
     fn has_pending_guest_interrupt<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,
     ) -> Result<bool, VmmError>;
