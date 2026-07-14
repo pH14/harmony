@@ -164,6 +164,14 @@ CONFIG_X86_IOPL_IOPERM=y
 # the two fixed hypercall pages (REQ 0xE000 / RESP 0xF000 — reserved out of
 # the guest's e820, deliberately) out of /dev/mem, and the allnoconfig seed
 # ships no CONFIG_DEVMEM at all ("/dev/mem: No such file or directory").
-# Same interim status and determinism argument as IOPL above; STRICT_DEVMEM
-# stays off (the mapped pages are reserved, not kernel RAM). Asserted.
+# Same interim status and determinism argument as IOPL above.
 CONFIG_DEVMEM=y
+# STRICT_DEVMEM MUST be off, explicitly (cross-model r7 P2). `olddefconfig`
+# assigns x86's `default y` to any symbol we leave unset, so the earlier
+# "stays off" was a comment, not a setting — the built kernel actually had
+# CONFIG_STRICT_DEVMEM=y. That breaks G3: `pvclock-spin` mmaps `harmony_page`,
+# which lives in kernel `.bss` (System RAM, not an E820-reserved page), and
+# strict /dev/mem rejects an mmap of System RAM — the spinner would report
+# PVSPIN_FAIL mmap instead of testing liveness. Set off here AND asserted off in
+# build-kernel.sh so olddefconfig can never silently re-enable it.
+# CONFIG_STRICT_DEVMEM is not set

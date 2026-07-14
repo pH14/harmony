@@ -91,7 +91,12 @@ assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
 # choice it is inert (it selects nothing), so it harmlessly stays =y.
 assert_off NUMA CPU_FREQ MODULES TRANSPARENT_HUGEPAGE KSM SUSPEND \
     HIBERNATION X86_PM_TIMER HIGH_RES_TIMERS RANDOMIZE_BASE \
-    LOCALVERSION_AUTO HW_RANDOM NO_HZ_COMMON NO_HZ_FULL NO_HZ_IDLE TICK_ONESHOT
+    LOCALVERSION_AUTO HW_RANDOM NO_HZ_COMMON NO_HZ_FULL NO_HZ_IDLE TICK_ONESHOT \
+    STRICT_DEVMEM
+# STRICT_DEVMEM off is load-bearing for G3 (task 110): the pvclock-spin gate
+# mmaps the clock page (kernel .bss / System RAM) through /dev/mem, which strict
+# mode forbids. olddefconfig would otherwise re-enable it (x86 default y), so it
+# is set off in config-fragment AND asserted here (cross-model r7 P2).
 # Empty version suffix: git/build state must not leak into the bytes.
 if ! grep -qxF 'CONFIG_LOCALVERSION=""' "$KOBJ/.config"; then
     echo "FAIL: CONFIG_LOCALVERSION must be empty (reproducibility)" >&2

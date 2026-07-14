@@ -42,10 +42,21 @@
 # decompressor that unpacks the kernel, and the kernel proper. Scanning only
 # `vmlinux` left the first two unscanned — an rdtsc added to the decompressor
 # would have sailed through a gate that calls itself a final-image reachability
-# scan. All three are scanned from their (symbol-bearing) ELF build products,
-# and allowlist entries are ARTIFACT-QUALIFIED (`artifact:function count`) so
-# same-named symbols in different artifacts (`startup_32` exists in two) cannot
-# alias each other's budget.
+# scan.
+#
+# TWO SCAN MODES, by artifact (cross-model r7 P2). The kernel proper (`vmlinux`)
+# is a 64-bit ELF whose symbol-attributed disassembly is reliable, so it uses the
+# objdump + ARTIFACT-QUALIFIED allowlist path (`artifact:function count`, so the
+# same symbol name in two artifacts cannot alias budgets). The **setup** and
+# **decompressor** artifacts run 16-bit real-mode code and mode transitions, and
+# a single `objdump -d` mode can mis-length an instruction there — a real
+# `0f 31` / `0f 01 f9` could be consumed as another instruction's operand bytes
+# and never emitted as an rdtsc mnemonic, evading the scan. So those two get a
+# **fail-closed raw executable-byte scan on every build**: their executable
+# (X-flag) sections are extracted and searched for the opcode byte sequences
+# directly, decode-mode-independent. They carry ZERO counter reads today, so any
+# hit fails the build (no allowlist — a real counter read there is never
+# survivable-by-trap in the same way and must be reviewed by a human).
 #
 # Usage: scan-counter-opcodes.sh <vmlinux> [allowlist]
 #   <vmlinux> is the UNCOMPRESSED kernel ELF; the sibling boot artifacts are
@@ -58,11 +69,11 @@ set -euo pipefail
 VMLINUX=${1:?usage: scan-counter-opcodes.sh <vmlinux> [allowlist]}
 ALLOWLIST=${2:-"$(dirname "$0")/rdtsc-allowlist.txt"}
 
-# The executable boot artifacts, as `tag=path` (tag prefixes every allowlist
-# entry from that artifact). KOBJ is vmlinux's build tree.
+# The boot artifacts. `vmlinux` (the kernel proper) is scanned by symbol-
+# attributed objdump against the allowlist; `setup`/`decompressor` (16-bit /
+# mode-mixed) by the raw executable-byte scan. KOBJ is vmlinux's build tree.
 KOBJ=$(dirname "$VMLINUX")
-ARTIFACTS=(
-    "vmlinux=$VMLINUX"
+RAW_ARTIFACTS=(
     "setup=$KOBJ/arch/x86/boot/setup.elf"
     "decompressor=$KOBJ/arch/x86/boot/compressed/vmlinux"
 )
@@ -90,24 +101,70 @@ sites() {
     ' "$1" | sort
 }
 
-# all_sites: disassemble every executable boot artifact and emit the combined,
-# artifact-qualified site list. FAILS if an artifact is missing — a gate that
-# silently skips an unbuilt component is a gate that passes vacuously.
+# all_sites: disassemble the kernel proper and emit its artifact-qualified site
+# list (setup/decompressor go through the raw-byte scan instead). FAILS if
+# vmlinux is missing — a gate that silently skips its target passes vacuously.
 all_sites() {
-    local a tag path dis
-    for a in "${ARTIFACTS[@]}"; do
-        tag=${a%%=*}
-        path=${a#*=}
-        if [ ! -f "$path" ]; then
-            echo "FAIL: boot artifact '$tag' not found at $path — every executable component of" >&2
-            echo "  bzImage must be scanned (setup + decompressor + kernel); build first." >&2
-            return 1
+    if [ ! -f "$VMLINUX" ]; then
+        echo "FAIL: kernel ELF '$VMLINUX' not found — scan the uncompressed vmlinux." >&2
+        return 1
+    fi
+    local dis
+    dis=$(mktemp)
+    objdump -d "$VMLINUX" > "$dis"
+    sites "$dis" vmlinux
+    rm -f "$dis"
+}
+
+# raw_byte_scan: fail-closed raw executable-byte scan of the 16-bit / mode-mixed
+# boot artifacts (setup, decompressor) — decode-independent, so an rdtsc/rdtscp
+# that a single objdump mode would mis-length cannot hide. Extracts each
+# executable (X-flag) section and searches its raw bytes for `0f 31` (rdtsc) and
+# `0f 01 f9` (rdtscp). These artifacts carry ZERO counter reads, so ANY hit
+# fails the build. Runs on every build (r7 P2), not once. Returns 1 on any hit
+# or missing artifact.
+# raw_byte_scan_one <path> <tag>: scan one artifact's executable sections. 0 =
+# clean, 1 = a hit or a structural problem (missing/no-sections).
+raw_byte_scan_one() {
+    local path=$1 tag=$2 names s hex n31 n01f9 rc=0
+    if [ ! -f "$path" ]; then
+        echo "FAIL: boot artifact '$tag' not found at $path — every executable component of" >&2
+        echo "  bzImage must be scanned (setup + decompressor + kernel); build first." >&2
+        return 1
+    fi
+    # Executable (X-flag) section names, from readelf's section table.
+    names=$(readelf -SW "$path" 2>/dev/null \
+        | sed -n 's/.*\] \([.][A-Za-z0-9_.]*\) *PROGBITS.*\bAX\b.*/\1/p')
+    if [ -z "$names" ]; then
+        echo "FAIL: $tag ($path) has no executable sections — cannot have been scanned" >&2
+        return 1
+    fi
+    for s in $names; do
+        hex=$(objcopy -O binary --only-section="$s" "$path" /dev/stdout 2>/dev/null \
+            | od -An -v -tx1 | tr -d ' \n')
+        n31=$(grep -oE '0f31' <<<"$hex" | wc -l | tr -d ' ')
+        n01f9=$(grep -oE '0f01f9' <<<"$hex" | wc -l | tr -d ' ')
+        if [ "$n31" != 0 ] || [ "$n01f9" != 0 ]; then
+            echo "FAIL: raw counter-opcode bytes in $tag section $s — rdtsc(0f31)=$n31" >&2
+            echo "  rdtscp(0f01f9)=$n01f9. These 16-bit/mode-mixed artifacts must carry NONE;" >&2
+            echo "  a real counter read here is not trap-survivable — review by hand." >&2
+            rc=1
         fi
-        dis=$(mktemp)
-        objdump -d "$path" > "$dis"
-        sites "$dis" "$tag"
-        rm -f "$dis"
-    done | sort
+    done
+    return $rc
+}
+
+# raw_byte_scan: fail-closed raw-byte scan across every RAW_ARTIFACTS entry.
+raw_byte_scan() {
+    command -v objcopy >/dev/null 2>&1 && command -v readelf >/dev/null 2>&1 || {
+        echo "FAIL: objcopy/readelf not found (binutils required for the raw-byte scan)" >&2
+        return 1
+    }
+    local a rc=0
+    for a in "${RAW_ARTIFACTS[@]}"; do
+        raw_byte_scan_one "${a#*=}" "${a%%=*}" || rc=1
+    done
+    return $rc
 }
 
 # allowed <allowlist-file>: emit the reviewed "function count" entries
@@ -237,35 +294,48 @@ EOF
         exit 1
     fi
 
-    # ARTIFACT QUALIFICATION (r4 P2). Two artifacts define the same symbol
-    # (`startup_32` really does exist in both the decompressor and the kernel).
-    # An rdtsc planted in ONE of them must not be absolved by the other's
-    # allowlist entry — the tag is what keeps their budgets separate.
+    # ARTIFACT QUALIFICATION (r4 P2): a `vmlinux:`-tagged allowlist entry must
+    # not absolve a same-named site scanned under a different tag.
     cat > "$d/kernel.dis" << 'EOF'
 ffffffff81000000 <startup_32>:
 ffffffff81000000:	0f 31                	rdtsc
 ffffffff81000002:	c3                   	ret
 EOF
-    cat > "$d/decomp.dis" << 'EOF'
-00000000 <startup_32>:
-       0:	0f 31                	rdtsc
-       2:	c3                   	ret
-EOF
     printf 'vmlinux:startup_32 1\n' > "$d/tagged.txt"
-    # The kernel's own site is allowlisted → clean on its own.
     if ! scan_sites "$(sites "$d/kernel.dis" vmlinux)" "$d/tagged.txt" >/dev/null 2>&1; then
         echo "FAIL: self-test — the tagged clean fixture must pass" >&2
         exit 1
     fi
-    # The SAME function name in the decompressor is a different, unreviewed
-    # site: scanning both artifacts must FAIL (unlisted decompressor:startup_32).
-    if scan_sites "$(sites "$d/kernel.dis" vmlinux
-        sites "$d/decomp.dis" decompressor | sort)" "$d/tagged.txt" >/dev/null 2>&1; then
-        echo "FAIL: self-test — an rdtsc in the decompressor was absolved by the KERNEL's" >&2
-        echo "  allowlist entry for the same symbol name (artifact qualification broken)" >&2
+    if scan_sites "$(sites "$d/kernel.dis" other)" "$d/tagged.txt" >/dev/null 2>&1; then
+        echo "FAIL: self-test — a site tagged 'other' was absolved by the vmlinux allowlist" >&2
+        echo "  entry for the same symbol name (artifact qualification broken)" >&2
         exit 1
     fi
-    echo "ok: scan self-test (planted-new, planted-inside-allowlisted, stale-entry, bare-entry, and cross-artifact-alias fixtures all caught)"
+
+    # RAW-BYTE SCAN (r7 P2): the fail-closed scan must catch a counter opcode in
+    # an executable section regardless of decode mode. Assemble a tiny ELF whose
+    # AX `.text` carries a raw `0f 31` (rdtsc), and a clean one, and drive
+    # `raw_byte_scan_one` against each. `as` is part of the binutils this script
+    # already needs.
+    if command -v as >/dev/null 2>&1 && command -v objcopy >/dev/null 2>&1 \
+        && command -v readelf >/dev/null 2>&1; then
+        printf '.section .text,"ax"\n.byte 0x0f,0x31\n.byte 0xc3\n' \
+            | as -o "$d/dirty.elf" - 2>/dev/null && dirty_ok=1
+        printf '.section .text,"ax"\n.byte 0x90,0x90\n.byte 0xc3\n' \
+            | as -o "$d/clean.elf" - 2>/dev/null && clean_ok=1
+        if [ "${dirty_ok:-0}" = 1 ] && [ "${clean_ok:-0}" = 1 ]; then
+            if ! raw_byte_scan_one "$d/clean.elf" clean >/dev/null 2>&1; then
+                echo "FAIL: self-test — raw-byte scan flagged a clean fixture" >&2
+                exit 1
+            fi
+            if raw_byte_scan_one "$d/dirty.elf" dirty >/dev/null 2>&1; then
+                echo "FAIL: self-test — raw-byte scan MISSED a planted 0f 31 in a .text section" >&2
+                exit 1
+            fi
+            raw_selftest="raw-byte-scan, "
+        fi
+    fi
+    echo "ok: scan self-test (planted-new, planted-inside-allowlisted, stale-entry, bare-entry, artifact-qualification, ${raw_selftest:-}fixtures all caught)"
 }
 
 self_test
@@ -284,7 +354,7 @@ command -v objdump >/dev/null 2>&1 || {
     exit 1
 }
 
-# Every executable boot artifact, artifact-qualified (r4 P2).
+# (1) The kernel proper: symbol-attributed sites, artifact-qualified (r4 P2).
 FOUND=$(all_sites)
 
 if unarmed "$ALLOWLIST"; then
@@ -298,9 +368,16 @@ if unarmed "$ALLOWLIST"; then
     exit 1
 fi
 
-if scan_sites "$FOUND" "$ALLOWLIST"; then
-    N=$(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' "$ALLOWLIST" | wc -l | tr -d ' ')
-    echo "ok: counter-opcode scan — every rdtsc/rdtscp site across all ${#ARTIFACTS[@]} executable boot artifacts (setup, decompressor, kernel) matches one of the $N reviewed allowlist entries (artifact + function + count)"
-else
+if ! scan_sites "$FOUND" "$ALLOWLIST"; then
     exit 1
 fi
+
+# (2) The 16-bit / mode-mixed boot artifacts: fail-closed raw executable-byte
+# scan, every build (r7 P2). Decode-independent, so no counter opcode can hide
+# behind an objdump mode mis-length.
+if ! raw_byte_scan; then
+    exit 1
+fi
+
+N=$(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' "$ALLOWLIST" | wc -l | tr -d ' ')
+echo "ok: counter-opcode scan — kernel proper: every rdtsc/rdtscp site matches one of the $N reviewed allowlist entries (function + count); setup + decompressor: raw executable-byte scan clean (${#RAW_ARTIFACTS[@]} artifacts, decode-independent)"
