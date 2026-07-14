@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://harmony.invalid/spikes/arm-altra/schemas/run-set.schema.json",
-  "title": "run-set.json — the ARM spike run-set manifest",
-  "description": "The manifest half of a run-set (docs/ARM-ALTRA.md §Evidence integrity; the Rust definition is `arm_harness::evidence::RunSet` and this schema mirrors it field for field). It states what was ATTEMPTED and under what conditions. It deliberately carries NO result totals: a checker that read a total from here would be checking the harness's opinion of itself, which §Evidence integrity #2 forbids. Every number a floor checker may use is derived from `records.jsonl`, whose sha256 this manifest pins. UNTESTED ON SILICON: no run-set matching this schema has ever been produced by hardware.",
+  "title": "run-set.json \u2014 the ARM spike run-set manifest",
+  "description": "The manifest half of a run-set (docs/ARM-ALTRA.md \u00a7Evidence integrity; the Rust definition is `arm_harness::evidence::RunSet` and this schema mirrors it field for field). It states what was ATTEMPTED and under what conditions. It deliberately carries NO result totals: a checker that read a total from here would be checking the harness's opinion of itself, which \u00a7Evidence integrity #2 forbids. Every number a floor checker may use is derived from `records.jsonl`, whose sha256 this manifest pins. UNTESTED ON SILICON: no run-set matching this schema has ever been produced by hardware.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -24,39 +24,66 @@
   "properties": {
     "schema_version": {
       "description": "`arm_harness::evidence::SCHEMA_VERSION`. A checker refuses a version it does not know rather than silently misreading it.",
-      "const": 1
+      "const": 2
     },
-    "stage": { "$ref": "#/$defs/stage" },
+    "stage": {
+      "$ref": "#/$defs/stage"
+    },
     "run_set_id": {
       "description": "Identifier of this run-set. Golden evidence is immutable; a rerun creates a new run-set rather than overwriting one.",
       "type": "string",
       "minLength": 1
     },
-    "environment": { "$ref": "#/$defs/environment" },
-    "mechanism": { "$ref": "#/$defs/mechanism" },
+    "environment": {
+      "$ref": "#/$defs/environment"
+    },
+    "mechanism": {
+      "$ref": "#/$defs/mechanism"
+    },
     "images": {
-      "description": "Every boot artifact, pinned by content and verified immediately before use (§Evidence integrity #3). A run-set that pins nothing has attested nothing.",
+      "description": "Every boot artifact, pinned by content and verified immediately before use (\u00a7Evidence integrity #3). A run-set that pins nothing has attested nothing.",
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/image-pin" }
+      "items": {
+        "$ref": "#/$defs/image-pin"
+      }
     },
-    "perf": { "$ref": "#/$defs/perf-config" },
-    "pinning": { "$ref": "#/$defs/pinning" },
+    "perf": {
+      "$ref": "#/$defs/perf-config"
+    },
+    "pinning": {
+      "$ref": "#/$defs/pinning"
+    },
     "condition": {
-      "description": "The experimental condition this run-set sweeps (`pinned-solo`, `co-tenant-load`, …).",
+      "description": "The experimental condition this run-set sweeps (`pinned-solo`, `co-tenant-load`, \u2026).",
       "type": "string",
       "minLength": 1
     },
     "weights": {
-      "description": "The MEASURED `oracle_model::Weights` used to predict counts. `null` before stage AA-1 has produced them — and a checker handed `null` refuses to check counts rather than substituting a default (task 109: skid margins, densities and count offsets are spike deliverables, never defaults).",
-      "oneOf": [{ "$ref": "#/$defs/weights" }, { "type": "null" }]
+      "description": "The MEASURED `oracle_model::Weights` used to predict counts. `null` before stage AA-1 has produced them \u2014 and a checker handed `null` refuses to check counts rather than substituting a default (task 109: skid margins, densities and count offsets are spike deliverables, never defaults).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/weights"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "skid_margin": {
       "description": "The N1 skid margin, measured by AA-1. `null` for the same reason as `weights`: a checker cannot bound skid without it and must say so rather than guess. The x86 `skid_margin = 256` is folklore here until AA-1 produces the N1 number.",
-      "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "attempted": {
-      "description": "How many samples were ATTEMPTED. Every one of them must appear in `records.jsonl` with a `sample_id` in `0..attempted`, exactly once — a missing sample is a failure to account, not a pass (§Evidence integrity #6).",
+      "description": "How many samples were ATTEMPTED. Every one of them must appear in `records.jsonl` with a `sample_id` in `0..attempted`, exactly once \u2014 a missing sample is a failure to account, not a pass (\u00a7Evidence integrity #6).",
       "type": "integer",
       "minimum": 0
     },
@@ -75,18 +102,38 @@
     "stage": {
       "description": "Which stage produced this run-set (`arm_harness::evidence::Stage`). The stage is evidence, not a CLI convenience: the floor checker reads AA-3's exact-landing contract out of it.",
       "type": "string",
-      "enum": ["aa0", "aa1", "aa2", "aa3", "aa4", "aa5", "aa6"]
+      "enum": [
+        "aa0",
+        "aa1",
+        "aa2",
+        "aa3",
+        "aa4",
+        "aa5",
+        "aa6"
+      ]
     },
     "exit-reason": {
       "description": "How a `KVM_RUN` ended (`arm_harness::evidence::ExitReason`). `preempt` is the patched 0004-analogue exit (`KVM_EXIT_PREEMPT`); `signal-kick` is AA-1(c)'s pre-patch host-side kick and AA-3's forbidden fallback.",
       "type": "string",
-      "enum": ["preempt", "signal-kick", "mmio", "debug", "other"]
+      "enum": [
+        "preempt",
+        "signal-kick",
+        "mmio",
+        "debug",
+        "other"
+      ]
     },
     "environment": {
       "description": "The machine, as found (`arm_harness::evidence::Environment`).",
       "type": "object",
       "additionalProperties": false,
-      "required": ["midr", "soc", "firmware", "host_kernel", "kvm_mode"],
+      "required": [
+        "midr",
+        "soc",
+        "firmware",
+        "host_kernel",
+        "kvm_mode"
+      ],
       "properties": {
         "midr": {
           "description": "`MIDR_EL1`.",
@@ -100,7 +147,9 @@
         "firmware": {
           "description": "Firmware versions. A sorted map (`BTreeMap`, never `HashMap`): key order reaches the serialized bytes, and the bytes are hashed.",
           "type": "object",
-          "additionalProperties": { "type": "string" }
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "host_kernel": {
           "description": "`uname -r` of the running host kernel.",
@@ -109,12 +158,15 @@
         "kvm_mode": {
           "description": "`vhe` or `nvhe`.",
           "type": "string",
-          "enum": ["vhe", "nvhe"]
+          "enum": [
+            "vhe",
+            "nvhe"
+          ]
         }
       }
     },
     "mechanism": {
-      "description": "What mechanism this run CLAIMS to have exercised, and the proof (`arm_harness::evidence::Mechanism`). §Evidence integrity #4: a silent fallback must be structurally unable to masquerade as the mechanism under test — the PR-98 review found an existential-stage harness quietly exercising the stock backend and reporting green.",
+      "description": "What mechanism this run CLAIMS to have exercised, and the proof (`arm_harness::evidence::Mechanism`). \u00a7Evidence integrity #4: a silent fallback must be structurally unable to masquerade as the mechanism under test \u2014 the PR-98 review found an existential-stage harness quietly exercising the stock backend and reporting green.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -144,13 +196,18 @@
       }
     },
     "image-pin": {
-      "description": "A boot artifact, pinned by content and verified immediately before use (`arm_harness::evidence::ImagePin`). Recording a hash without verifying it is the anti-pattern §Evidence integrity #3 exists to kill.",
+      "description": "A boot artifact, pinned by content and verified immediately before use (`arm_harness::evidence::ImagePin`). Recording a hash without verifying it is the anti-pattern \u00a7Evidence integrity #3 exists to kill.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256", "md5", "verified_before_boot"],
+      "required": [
+        "path",
+        "sha256",
+        "md5",
+        "verified_before_boot"
+      ],
       "properties": {
         "path": {
-          "description": "Path the artifact was loaded from. Never trusted — the hash is the identity.",
+          "description": "Path the artifact was loaded from. Never trusted \u2014 the hash is the identity.",
           "type": "string"
         },
         "sha256": {
@@ -183,23 +240,35 @@
       ],
       "properties": {
         "raw_event": {
-          "description": "The raw event. `BR_RETIRED` is `0x21` = 33 — retired TAKEN branches (docs/ARM-PORT.md, docs/ARM-ALTRA.md §2). Recorded rather than assumed, so a run that silently counted a different event is visible as such.",
+          "description": "The raw event. `BR_RETIRED` is `0x21` = 33 \u2014 retired TAKEN branches (docs/ARM-PORT.md, docs/ARM-ALTRA.md \u00a72). Recorded rather than assumed, so a run that silently counted a different event is visible as such.",
           "type": "integer",
           "minimum": 0
         },
         "exclude_host": {
-          "description": "`exclude_host` — the count must be guest-only.",
+          "description": "`exclude_host` \u2014 the count must be guest-only.",
           "type": "boolean"
         },
-        "exclude_guest": { "type": "boolean" },
-        "exclude_hv": { "type": "boolean" },
+        "exclude_guest": {
+          "type": "boolean"
+        },
+        "exclude_hv": {
+          "type": "boolean"
+        },
         "pinned": {
           "description": "Whether the event was opened pinned (never multiplexed). A multiplexed counter scales its count, silently corrupting every measurement.",
           "type": "boolean"
         },
         "sample_period": {
           "description": "The sampling period armed, when the run arms overflow. `null` in counting mode.",
-          "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -207,7 +276,12 @@
       "description": "Core pinning and frequency posture (`arm_harness::evidence::Pinning`). Pinning is a CORRECTNESS condition on the N1/V1 lineage, not hygiene: the arm64 kernel can miss PMU overflow interrupts on core migration (rr issue #3607), and a missed overflow means `run_until` never breaks out of `KVM_RUN`.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["pinned", "core", "governor", "migration_probe"],
+      "required": [
+        "pinned",
+        "core",
+        "governor",
+        "migration_probe"
+      ],
       "properties": {
         "pinned": {
           "description": "Whether the vCPU thread and its perf context were hard-pinned. The checker demands `true` everywhere except AA-1's one sanctioned migration probe.",
@@ -215,14 +289,22 @@
         },
         "core": {
           "description": "The core they were pinned to. A pinned run that did not record its core is unverifiable.",
-          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "governor": {
           "description": "The cpufreq governor. V-time counts are frequency-independent; this matters only for wall-clock numbers, and is recorded so that is checkable.",
           "type": "string"
         },
         "migration_probe": {
-          "description": "Set ONLY for AA-1's deliberate, bounded migration probe — the one sanctioned unpinned run.",
+          "description": "Set ONLY for AA-1's deliberate, bounded migration probe \u2014 the one sanctioned unpinned run.",
           "type": "boolean"
         }
       }

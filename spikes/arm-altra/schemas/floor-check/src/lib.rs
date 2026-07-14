@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The ARM spike evidence floor checker.
 //!
 //! Given a retained run-set — a `run-set.json` manifest plus a `records.jsonl`

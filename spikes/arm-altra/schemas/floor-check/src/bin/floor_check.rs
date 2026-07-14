@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `floor-check` — recompute a run-set's acceptance floors from its retained
 //! records and print a per-check PASS/FAIL verdict.
 //!

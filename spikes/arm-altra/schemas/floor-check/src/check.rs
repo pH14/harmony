@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The checks themselves.
 //!
 //! [`check_run_set`] loads a run-set from a directory and returns a
@@ -745,12 +746,19 @@ fn check_mechanism(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcom
         ));
     }
 
-    // Every record's exit reason must be the one the manifest claims. This is the
-    // other half: a run that silently exercised the stock signal-kick path while
-    // claiming the patched Preempt exit fails here.
+    // Every record that ARMED an overflow must carry the claimed mechanism exit.
+    // This is the other half: a run that silently exercised the stock signal-kick
+    // path while claiming the patched Preempt exit fails here.
+    //
+    // A record that armed NOTHING (AA-1(b) counting mode, `--with-targets` absent)
+    // legitimately ends at the console sentinel with `ExitReason::Mmio` — there was
+    // no mechanism to attest. `expected_exit_reason` describes the armed landing, so
+    // comparing it against an unarmed record's exit would reject every count-only run
+    // outright. The comparison is therefore scoped to armed records.
     let mut mismatched: Vec<(u64, ExitReason)> = Vec::new();
     for r in records {
-        if r.exit_reason != m.expected_exit_reason {
+        let armed = r.overflow.as_ref().is_some_and(|o| o.armed);
+        if armed && r.exit_reason != m.expected_exit_reason {
             mismatched.push((r.sample_id, r.exit_reason));
         }
     }
@@ -1017,27 +1025,44 @@ fn rep_key(r: &RunRecord) -> RepKey {
     )
 }
 
+/// The digest a repetition is compared on.
+///
+/// For an armed AA-3 landing, that is the **landed** digest — the state at the
+/// Moment the deadline was hit, sampled before the guest resumed. The final
+/// `state_digest`, taken at the exit sentinel, can converge: two different landed
+/// states can run on to the same final state, so it cannot establish landing
+/// identity. For an unarmed counting run there is no landing, and the final state is
+/// the thing to compare.
+fn comparison_digest(r: &RunRecord) -> &str {
+    match &r.overflow {
+        Some(o) if o.armed && o.deliveries >= 1 => o.landed_digest.trim(),
+        _ => r.state_digest.trim(),
+    }
+}
+
 /// Repetitions of the same input must land on **bit-identical** state.
 ///
 /// This is the axis the rep floor exists for, and nothing used to check it: 1,000
 /// same-seed reps with 1,000 *divergent* digests met a `--min-reps 1000` floor,
 /// though the floor's whole meaning is "repetitions bit-identical" (AA-6), and
-/// AA-3's replay-identity rides the same field. `state_digest` appeared only in
-/// fixture data — no check ever read it. Now one does, and an empty digest (which
-/// would compare equal to every other empty digest) is a failure in its own right.
+/// AA-3's replay-identity rides the same field. The digest appeared only in fixture
+/// data — no check ever read it. Now one does, on the digest that actually matters
+/// for the record's mode ([`comparison_digest`]), and an empty digest (which would
+/// compare equal to every other empty digest) is a failure in its own right.
 fn check_replay_identity(records: &[RunRecord], out: &mut Vec<Outcome>) {
     let mut problems: Vec<String> = Vec::new();
 
     let mut blank: Vec<u64> = records
         .iter()
-        .filter(|r| r.state_digest.trim().is_empty())
+        .filter(|r| comparison_digest(r).is_empty())
         .map(|r| r.sample_id)
         .collect();
     blank.sort_unstable();
     if !blank.is_empty() {
         problems.push(format!(
-            "{} record(s) carry an empty state_digest: samples {} — a digest that cannot diverge \
-             satisfies every determinism comparison without measuring anything",
+            "{} record(s) carry an empty comparison digest: samples {} — a digest that cannot \
+             diverge satisfies every determinism comparison without measuring anything (an armed \
+             landing must carry its landed_digest; a counting run its state_digest)",
             blank.len(),
             preview(blank.iter().copied())
         ));
@@ -1050,7 +1075,7 @@ fn check_replay_identity(records: &[RunRecord], out: &mut Vec<Outcome>) {
         groups
             .entry(rep_key(r))
             .or_default()
-            .entry(r.state_digest.clone())
+            .entry(comparison_digest(r).to_string())
             .or_default()
             .push(r.sample_id);
     }
@@ -1249,9 +1274,11 @@ mod tests {
             overflow: Some(OverflowRecord {
                 armed: true,
                 deliveries: 1,
+                advisory_exits: 0,
                 target: measured,
                 landed: measured,
                 skid: 0,
+                landed_digest: "sha256:aa".into(),
             }),
             state_digest: "sha256:00".into(),
             params_mode: "managed".into(),
@@ -1514,34 +1541,99 @@ mod tests {
         assert!(out.is_empty());
     }
 
+    /// Set the digest a record is COMPARED on — landed for an armed landing, final
+    /// for a counting run.
+    fn set_landed_digest(r: &mut RunRecord, d: &str) {
+        if let Some(o) = r.overflow.as_mut() {
+            o.landed_digest = d.to_string();
+        }
+    }
+
     #[test]
-    fn divergent_digests_fail_the_replay_identity_check() {
-        // The vacuity this closes: two reps of the same input, two different states —
-        // which a rep floor counting rows would have accepted.
+    fn divergent_landed_digests_fail_the_replay_identity_check() {
+        // The vacuity this closes: two reps of the same input, two different LANDED
+        // states — which a rep floor counting rows would have accepted.
         let mut a = a_record(0);
         let mut b = a_record(1);
-        a.state_digest = "sha256:aaaa".into();
-        b.state_digest = "sha256:bbbb".into();
+        set_landed_digest(&mut a, "sha256:aaaa");
+        set_landed_digest(&mut b, "sha256:bbbb");
         let mut out = Vec::new();
         check_replay_identity(&[a, b], &mut out);
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
     }
 
     #[test]
-    fn identical_digests_pass_and_a_blank_one_does_not() {
+    fn armed_replay_compares_the_landed_digest_not_the_converged_final_state() {
+        // Two runs that landed on DIFFERENT states but converged to the same final
+        // state must still fail: the final state can converge, so it cannot establish
+        // landing identity. The landed digest is what AA-3's claim is about.
+        let mut a = a_record(0);
+        let mut b = a_record(1);
+        a.state_digest = "sha256:converged".into();
+        b.state_digest = "sha256:converged".into();
+        set_landed_digest(&mut a, "sha256:landed-a");
+        set_landed_digest(&mut b, "sha256:landed-b");
+        let mut out = Vec::new();
+        check_replay_identity(&[a, b], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::Fail),
+            "identical final states must not paper over divergent landings"
+        );
+    }
+
+    #[test]
+    fn identical_landed_digests_pass_and_a_blank_one_does_not() {
         let a = a_record(0);
         let b = a_record(1);
         let mut out = Vec::new();
         check_replay_identity(&[a, b], &mut out);
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Pass));
 
-        // An empty digest compares equal to every other empty digest: it would make
-        // the whole check — and the AA-6 floor above it — vacuous.
+        // An empty comparison digest compares equal to every other empty one: it
+        // would make the whole check — and the AA-6 floor above it — vacuous.
         let mut a = a_record(0);
-        a.state_digest = String::new();
+        set_landed_digest(&mut a, "");
         let mut out = Vec::new();
         check_replay_identity(&[a], &mut out);
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
+    }
+
+    #[test]
+    fn a_counting_run_ending_on_mmio_is_not_a_mechanism_mismatch() {
+        // AA-1(b): no overflow armed, so the record legitimately ends at the console
+        // sentinel with ExitReason::Mmio. The manifest's expected_exit_reason is about
+        // the ARMED landing; comparing it against an unarmed record rejected every
+        // count-only run. The comparison is now scoped to armed records.
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa1;
+        rs.mechanism = Mechanism {
+            kvm_patched: false,
+            host_kernel_sha256: "0".repeat(64),
+            expected_exit_reason: ExitReason::SignalKick,
+            patch_marker_observed: false,
+        };
+        let mut r = a_record(0);
+        r.overflow = None; // a pure counting run
+        r.exit_reason = ExitReason::Mmio;
+        let mut out = Vec::new();
+        check_mechanism(&rs, &[r], &mut out);
+        assert_eq!(
+            status(&out, CheckId::MechanismAttestation),
+            Some(Status::Pass),
+            "an unarmed counting record ending on Mmio is not a masquerade"
+        );
+
+        // But an ARMED record still must carry the claimed mechanism exit.
+        let mut r = a_record(0);
+        r.exit_reason = ExitReason::Mmio; // armed, yet no mechanism landing
+        let mut out = Vec::new();
+        check_mechanism(&rs, &[r], &mut out);
+        assert_eq!(
+            status(&out, CheckId::MechanismAttestation),
+            Some(Status::Fail),
+            "an armed record that did not land the mechanism is still a mismatch"
+        );
     }
 
     #[test]

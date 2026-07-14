@@ -1,7 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The fixture generator.
 //!
 //! Seventeen synthetic run-sets the checker must reject (one per failure mode) and
-//! one it must accept. They are **generated from the oracle model**, not hand
+//! two it must accept (a patched AA-3 landing run and an AA-1 counting run). They are **generated from the oracle model**, not hand
 //! written: the accept fixture's counts are the exact values
 //! [`oracle_model::expected`] predicts under a chosen (synthetic) weights pack, so
 //! the fixtures stay consistent with the model as it evolves, and a reject fixture
@@ -189,9 +190,14 @@ fn generate_record(sample_id: u64, payload: Payload, exit: ExitReason) -> RunRec
         overflow: Some(OverflowRecord {
             armed: true,
             deliveries: 1,
+            advisory_exits: 0,
             target: measured_taken,
             landed: measured_taken,
             skid: 0,
+            landed_digest: format!(
+                "sha256:{}",
+                synth_sha256(&format!("landed-{sample_id}-{}", payload.name()))
+            ),
         }),
         state_digest: format!(
             "sha256:{}",
@@ -284,10 +290,28 @@ fn accept() -> Fixture {
     fixture("accept", &run_set, &records)
 }
 
-/// Generate all eighteen fixtures.
+/// The valid AA-1 **counting-mode** accept fixture: no overflow armed, so every
+/// record legitimately ends at the console sentinel with `ExitReason::Mmio`. The
+/// checker used to reject this by comparing every record's exit reason against the
+/// manifest's `expected_exit_reason` (which describes the armed landing) — so a
+/// count-only run, the whole of AA-1(b), could not pass. It must now be accepted.
+fn accept_counting() -> Fixture {
+    let mut records = base_records(ExitReason::Mmio);
+    for r in &mut records {
+        // Counting mode: nothing armed, no landing, no sampling period.
+        r.overflow = None;
+    }
+    let mut run_set = build_run_set(Stage::Aa1, stock_mechanism(), &records);
+    // A counting run's perf event carries no sampling period.
+    run_set.perf.sample_period = None;
+    run_set.records_sha256 = synth_sha256_of_bytes(records_jsonl(&records).as_bytes());
+    fixture("accept-counting", &run_set, &records)
+}
+
+/// Generate all fixtures.
 #[must_use]
 pub fn all_fixtures() -> Vec<Fixture> {
-    let mut fixtures = vec![accept()];
+    let mut fixtures = vec![accept(), accept_counting()];
 
     // 1. reject-short-count — a valid but small run-set. The checker rejects it
     //    only when a floor larger than its armed-overflow count is demanded; the
@@ -537,13 +561,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_eighteen_fixtures_with_unique_names() {
+    fn there_are_nineteen_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 18);
+        assert_eq!(fixtures.len(), 19);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 18, "fixture names must be unique");
+        assert_eq!(names.len(), 19, "fixture names must be unique");
     }
 
     #[test]

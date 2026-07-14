@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Load errors.
 //!
 //! These are the failures that stop the checker before it can even judge the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Every test here reads a committed fixture off disk, and Miri's isolation forbids
 // `open`. The crate has no `unsafe`, so the interpreter has nothing to say about it
 // anyway — and disabling isolation to satisfy a file-reading test is exactly the
@@ -64,6 +65,21 @@ fn accept_is_accepted() {
     assert!(
         report.passed(),
         "accept fixture was rejected: {:?}",
+        report.failed()
+    );
+    assert_eq!(report.exit_code(), 0);
+}
+
+#[test]
+fn accept_counting_is_accepted() {
+    // AA-1(b): a count-only run whose records end on ExitReason::Mmio (no overflow
+    // armed). The checker used to reject every such run by comparing the unarmed
+    // exit against the manifest's expected mechanism; it must now accept it. No
+    // armed-overflow floor is requested because nothing armed one.
+    let report = check("accept-counting", no_floors());
+    assert!(
+        report.passed(),
+        "the counting-mode fixture was rejected: {:?}",
         report.failed()
     );
     assert_eq!(report.exit_code(), 0);

@@ -1,37 +1,191 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://harmony.invalid/spikes/arm-altra/schemas/truth-table.schema.json",
-  "title": "truth-table.json — the AA-0 capability truth table",
-  "description": "Stage AA-0's deliverable (docs/ARM-ALTRA.md §AA-0): what the delivered Ampere Altra actually exposes, recorded from real silicon as expect-vs-found rows. Its acceptance is that the table is complete and machine-readable, BYTE-IDENTICAL ACROSS TWO REBOOTS, and that every `expect` row is either confirmed or recorded as a deviation with an explicit disposition — including a FAVOURABLE deviation (ECV unexpectedly present would still require a recorded ruling before any stage relied on it). Because byte-identity across reboots is the acceptance, this schema carries no capture-specific field: the capture identity lives in the path (`results/aa-0/<capture>/truth-table.json`), never in the bytes, so that two captures can be diffed directly. UNTESTED ON SILICON: no truth table matching this schema has ever been produced by hardware; the `expect` column is what docs/ARM-ALTRA.md predicts, and the whole point of AA-0 is that predictions are not findings.",
+  "title": "truth-table.json \u2014 the AA-0 capability truth table",
+  "description": "Stage AA-0's deliverable (docs/ARM-ALTRA.md \u00a7AA-0): what the delivered Ampere Altra actually exposes, recorded from real silicon as expect-vs-found rows. Its acceptance is that the table is complete and machine-readable, BYTE-IDENTICAL ACROSS TWO REBOOTS, and that every `expect` row is either confirmed or recorded as a deviation with an explicit disposition \u2014 including a FAVOURABLE deviation (ECV unexpectedly present would still require a recorded ruling before any stage relied on it). Because byte-identity across reboots is the acceptance, this schema carries no capture-specific field: the capture identity lives in the path (`results/aa-0/<capture>/truth-table.json`), never in the bytes, so that two captures can be diffed directly. UNTESTED ON SILICON: no truth table matching this schema has ever been produced by hardware; the `expect` column is what docs/ARM-ALTRA.md predicts, and the whole point of AA-0 is that predictions are not findings.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "identity", "topology", "rows"],
+  "required": [
+    "schema_version",
+    "identity",
+    "topology",
+    "rows"
+  ],
   "properties": {
     "schema_version": {
       "description": "Bumped when a field's meaning changes. A reader refuses a version it does not know rather than silently misreading it.",
       "const": 1
     },
-    "identity": { "$ref": "#/$defs/identity" },
-    "topology": { "$ref": "#/$defs/topology" },
+    "identity": {
+      "$ref": "#/$defs/identity"
+    },
+    "topology": {
+      "$ref": "#/$defs/topology"
+    },
     "rows": {
-      "description": "The expect-vs-found rows. Every mandatory row below must be present; extra rows are welcome (an unlisted capability that turned out to matter is a finding, not a schema error). The thirteen mandatory ids are exactly the facts docs/ARM-ALTRA.md §AA-0 requires — INCLUDING the two existential work-clock rows (`perf_event_open` of raw 0x21 as a pinned, non-multiplexed event SUCCEEDS; a trivial host-side overflow test DELIVERS a sample/signal) and the writable-ID-register surface. Those three were once absent from this list, which meant a schema-valid truth table could leave the PMU-open, overflow-delivery and writable-ID facts unmeasured — and AA-1, the whole point of AA-0, rests on the first two.",
+      "description": "The expect-vs-found rows. Every mandatory row below must be present; extra rows are welcome (an unlisted capability that turned out to matter is a finding, not a schema error). The thirteen mandatory ids are exactly the facts docs/ARM-ALTRA.md \u00a7AA-0 requires \u2014 INCLUDING the two existential work-clock rows (`perf_event_open` of raw 0x21 as a pinned, non-multiplexed event SUCCEEDS; a trivial host-side overflow test DELIVERS a sample/signal) and the writable-ID-register surface. Those three were once absent from this list, which meant a schema-valid truth table could leave the PMU-open, overflow-delivery and writable-ID facts unmeasured \u2014 and AA-1, the whole point of AA-0, rests on the first two.",
       "type": "array",
       "minItems": 13,
-      "items": { "$ref": "#/$defs/row" },
+      "items": {
+        "$ref": "#/$defs/row"
+      },
       "allOf": [
-        { "contains": { "properties": { "id": { "const": "ecv" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "lse" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "pmuver" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "sve" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "nested-virt" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "br-retired-pmceid0" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "perf-raw-0x21-pinned" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "host-overflow-delivers" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "dev-kvm" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "kvm-mode" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "kvm-cap-set-guest-debug" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "vgicv3-creatable" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "writable-id-registers" } }, "required": ["id"] } }
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "ecv"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "lse"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "pmuver"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "sve"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "nested-virt"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "br-retired-pmceid0"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "perf-raw-0x21-pinned"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "host-overflow-delivers"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "dev-kvm"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "kvm-mode"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "kvm-cap-set-guest-debug"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "vgicv3-creatable"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "writable-id-registers"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        }
       ]
     }
   },
@@ -40,7 +194,17 @@
       "description": "Who this machine is. Recorded from the silicon, never from the procurement order.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["midr", "implementer", "part_num", "variant", "revision", "soc", "core_count", "host_kernel", "firmware"],
+      "required": [
+        "midr",
+        "implementer",
+        "part_num",
+        "variant",
+        "revision",
+        "soc",
+        "core_count",
+        "host_kernel",
+        "firmware"
+      ],
       "properties": {
         "midr": {
           "description": "`MIDR_EL1`, raw.",
@@ -59,15 +223,23 @@
           "minimum": 0,
           "maximum": 4095
         },
-        "variant": { "type": "integer", "minimum": 0, "maximum": 15 },
-        "revision": { "type": "integer", "minimum": 0, "maximum": 15 },
+        "variant": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
         "soc": {
           "description": "The SoC part as the platform reports it (e.g. an Ampere Altra Q80-30).",
           "type": "string",
           "minLength": 1
         },
         "core_count": {
-          "description": "Online cores. N1 cores are single-threaded — there is no SMT sibling to idle, and one whole x86 confound class is absent.",
+          "description": "Online cores. N1 cores are single-threaded \u2014 there is no SMT sibling to idle, and one whole x86 confound class is absent.",
           "type": "integer",
           "minimum": 1
         },
@@ -79,7 +251,9 @@
         "firmware": {
           "description": "Firmware versions, sorted key/value (never a hash map: these bytes are diffed across reboots).",
           "type": "object",
-          "additionalProperties": { "type": "string" }
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     },
@@ -87,19 +261,33 @@
       "description": "The standing core-assignment table for this box (docs/BOX-PINNING.md discipline, Altra edition). Pinning is a correctness condition on this lineage (rr #3607), so the assignment is evidence, not hygiene.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["housekeeping_cores", "measurement_cores", "guest_cores", "governor"],
+      "required": [
+        "housekeeping_cores",
+        "measurement_cores",
+        "guest_cores",
+        "governor"
+      ],
       "properties": {
         "housekeeping_cores": {
           "type": "array",
-          "items": { "type": "integer", "minimum": 0 }
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
         },
         "measurement_cores": {
           "type": "array",
-          "items": { "type": "integer", "minimum": 0 }
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
         },
         "guest_cores": {
           "type": "array",
-          "items": { "type": "integer", "minimum": 0 }
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
         },
         "governor": {
           "description": "The cpufreq governor the box stands at. V-time counts are frequency-independent; this is recorded so that claim is checkable.",
@@ -109,13 +297,22 @@
       }
     },
     "row": {
-      "description": "One expect-vs-found row. `confirmed` must be true exactly when `found` equals `expected`; when it is false the row is a DEVIATION and `disposition` must carry the explicit ruling AA-0's acceptance demands.",
+      "description": "One expect-vs-found row. `confirmed` must be true exactly when `found` equals `expected`, and for every row with a NORMATIVE polarity (the existential capability rows and the expect-absent rows) the schema pins `expected` to what docs/ARM-ALTRA.md predicts, requires a confirmed row's `found` to match it, and requires an unconfirmed row's `found` to actually differ. This closes the evasion where a mandatory row (e.g. perf-raw-0x21-pinned) claims `expected: absent, found: absent, confirmed: true` and hides an existential capability failure. Graded rows (pmuver, kvm-mode) keep a free `expected` string. When `confirmed` is false the row is a DEVIATION and `disposition` must carry the explicit ruling AA-0's acceptance demands.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "question", "expected", "found", "raw", "confirmed", "disposition"],
+      "required": [
+        "id",
+        "kind",
+        "question",
+        "expected",
+        "found",
+        "raw",
+        "confirmed",
+        "disposition"
+      ],
       "properties": {
         "id": {
-          "description": "Stable row identifier. The mandatory ones are named in the `rows` constraint above; these are the ones docs/ARM-ALTRA.md §AA-0 requires.",
+          "description": "Stable row identifier. The mandatory ones are named in the `rows` constraint above; these are the ones docs/ARM-ALTRA.md \u00a7AA-0 requires.",
           "type": "string",
           "minLength": 1,
           "examples": [
@@ -137,10 +334,16 @@
         "kind": {
           "description": "Which surface the row was read from.",
           "type": "string",
-          "enum": ["id-register", "pmu", "perf", "kvm", "platform"]
+          "enum": [
+            "id-register",
+            "pmu",
+            "perf",
+            "kvm",
+            "platform"
+          ]
         },
         "question": {
-          "description": "The row in one sentence, with its architectural source (e.g. `ID_AA64MMFR0_EL1.ECV — is FEAT_ECV present? Expect absent: Armv8.2 predates it, and no reachable ARM server part has it.`).",
+          "description": "The row in one sentence, with its architectural source (e.g. `ID_AA64MMFR0_EL1.ECV \u2014 is FEAT_ECV present? Expect absent: Armv8.2 predates it, and no reachable ARM server part has it.`).",
           "type": "string",
           "minLength": 1
         },
@@ -155,7 +358,7 @@
           "minLength": 1
         },
         "raw": {
-          "description": "The raw evidence behind `found` — the register field value, the `PMCEID0_EL0` bit, the ioctl return. Free-form, but never empty: a row with no raw evidence is an assertion, not a reading.",
+          "description": "The raw evidence behind `found` \u2014 the register field value, the `PMCEID0_EL0` bit, the ioctl return. Free-form, but never empty: a row with no raw evidence is an assertion, not a reading.",
           "type": "string",
           "minLength": 1
         },
@@ -164,18 +367,794 @@
           "type": "boolean"
         },
         "disposition": {
-          "description": "The explicit recorded ruling for a deviation — required whenever `confirmed` is false, INCLUDING a favourable deviation. `null` only on a confirmed row.",
-          "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          "description": "The explicit recorded ruling for a deviation \u2014 required whenever `confirmed` is false, INCLUDING a favourable deviation. `null` only on a confirmed row.",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "confirmed": { "const": false } }, "required": ["confirmed"] },
-          "then": { "properties": { "disposition": { "type": "string", "minLength": 1 } } }
+          "if": {
+            "properties": {
+              "confirmed": {
+                "const": false
+              }
+            },
+            "required": [
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "disposition": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
         },
         {
-          "if": { "properties": { "confirmed": { "const": true } }, "required": ["confirmed"] },
-          "then": { "properties": { "disposition": { "type": "null" } } }
+          "if": {
+            "properties": {
+              "confirmed": {
+                "const": true
+              }
+            },
+            "required": [
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "disposition": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "lse"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "lse"
+              },
+              "confirmed": {
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "lse"
+              },
+              "confirmed": {
+                "const": false
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "not": {
+                  "const": "present"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "br-retired-pmceid0"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "br-retired-pmceid0"
+              },
+              "confirmed": {
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "br-retired-pmceid0"
+              },
+              "confirmed": {
+                "const": false
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "not": {
+                  "const": "present"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "perf-raw-0x21-pinned"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "perf-raw-0x21-pinned"
+              },
+              "confirmed": {
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "perf-raw-0x21-pinned"
+              },
+              "confirmed": {
+                "const": false
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "not": {
+                  "const": "present"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "host-overflow-delivers"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "host-overflow-delivers"
+              },
+              "confirmed": {
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "host-overflow-delivers"
+              },
+              "confirmed": {
+                "const": false
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "not": {
+                  "const": "present"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "dev-kvm"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "dev-kvm"
+              },
+              "confirmed": {
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "dev-kvm"
+              },
+              "confirmed": {
+                "const": false
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "not": {
+                  "const": "present"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "kvm-cap-set-guest-debug"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "kvm-cap-set-guest-debug"
+              },
+              "confirmed": {
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "kvm-cap-set-guest-debug"
+              },
+              "confirmed": {
+                "const": false
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "not": {
+                  "const": "present"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "vgicv3-creatable"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "vgicv3-creatable"
+              },
+              "confirmed": {
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "vgicv3-creatable"
+              },
+              "confirmed": {
+                "const": false
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "not": {
+                  "const": "present"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "writable-id-registers"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "writable-id-registers"
+              },
+              "confirmed": {
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "const": "present"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "writable-id-registers"
+              },
+              "confirmed": {
+                "const": false
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "not": {
+                  "const": "present"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "ecv"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "const": "absent"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "ecv"
+              },
+              "confirmed": {
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "const": "absent"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "ecv"
+              },
+              "confirmed": {
+                "const": false
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "not": {
+                  "const": "absent"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "sve"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "const": "absent"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "sve"
+              },
+              "confirmed": {
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "const": "absent"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "sve"
+              },
+              "confirmed": {
+                "const": false
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "not": {
+                  "const": "absent"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "nested-virt"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "const": "absent"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "nested-virt"
+              },
+              "confirmed": {
+                "const": true
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "const": "absent"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "nested-virt"
+              },
+              "confirmed": {
+                "const": false
+              }
+            },
+            "required": [
+              "id",
+              "confirmed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "found": {
+                "not": {
+                  "const": "absent"
+                }
+              }
+            }
+          }
         }
       ]
     }

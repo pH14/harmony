@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "stage": "aa3",
   "run_set_id": "fixture-aa3",
   "environment": {
@@ -57,5 +57,5 @@
   "skid_margin": 64,
   "attempted": 8,
   "records_file": "records.jsonl",
-  "records_sha256": "bef72c231c93bfad99dce16bef73b620b376e0ced8ef01de6f3c7932c61455fc"
+  "records_sha256": "169a79a265d35cdbf622e95788b3c699e44cbcc785c84b87bd6b3bd202c4ad6f"
 }
