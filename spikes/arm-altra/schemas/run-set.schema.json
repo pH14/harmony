@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harmony.invalid/spikes/arm-altra/schemas/run-set.schema.json",
+  "title": "run-set.json — the ARM spike run-set manifest",
+  "description": "The manifest half of a run-set (docs/ARM-ALTRA.md §Evidence integrity; the Rust definition is `arm_harness::evidence::RunSet` and this schema mirrors it field for field). It states what was ATTEMPTED and under what conditions. It deliberately carries NO result totals: a checker that read a total from here would be checking the harness's opinion of itself, which §Evidence integrity #2 forbids. Every number a floor checker may use is derived from `records.jsonl`, whose sha256 this manifest pins. UNTESTED ON SILICON: no run-set matching this schema has ever been produced by hardware.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "stage",
+    "run_set_id",
+    "environment",
+    "mechanism",
+    "images",
+    "perf",
+    "pinning",
+    "condition",
+    "weights",
+    "skid_margin",
+    "attempted",
+    "records_file",
+    "records_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "`arm_harness::evidence::SCHEMA_VERSION`. A checker refuses a version it does not know rather than silently misreading it.",
+      "const": 1
+    },
+    "stage": { "$ref": "#/$defs/stage" },
+    "run_set_id": {
+      "description": "Identifier of this run-set. Golden evidence is immutable; a rerun creates a new run-set rather than overwriting one.",
+      "type": "string",
+      "minLength": 1
+    },
+    "environment": { "$ref": "#/$defs/environment" },
+    "mechanism": { "$ref": "#/$defs/mechanism" },
+    "images": {
+      "description": "Every boot artifact, pinned by content and verified immediately before use (§Evidence integrity #3). A run-set that pins nothing has attested nothing.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/image-pin" }
+    },
+    "perf": { "$ref": "#/$defs/perf-config" },
+    "pinning": { "$ref": "#/$defs/pinning" },
+    "condition": {
+      "description": "The experimental condition this run-set sweeps (`pinned-solo`, `co-tenant-load`, …).",
+      "type": "string",
+      "minLength": 1
+    },
+    "weights": {
+      "description": "The MEASURED `oracle_model::Weights` used to predict counts. `null` before stage AA-1 has produced them — and a checker handed `null` refuses to check counts rather than substituting a default (task 109: skid margins, densities and count offsets are spike deliverables, never defaults).",
+      "oneOf": [{ "$ref": "#/$defs/weights" }, { "type": "null" }]
+    },
+    "skid_margin": {
+      "description": "The N1 skid margin, measured by AA-1. `null` for the same reason as `weights`: a checker cannot bound skid without it and must say so rather than guess. The x86 `skid_margin = 256` is folklore here until AA-1 produces the N1 number.",
+      "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+    },
+    "attempted": {
+      "description": "How many samples were ATTEMPTED. Every one of them must appear in `records.jsonl` with a `sample_id` in `0..attempted`, exactly once — a missing sample is a failure to account, not a pass (§Evidence integrity #6).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "records_file": {
+      "description": "The records file, relative to this manifest. Conventionally `records.jsonl`.",
+      "type": "string",
+      "minLength": 1
+    },
+    "records_sha256": {
+      "description": "sha256 of the records file's bytes, so a swapped or truncated one is caught. Lowercase hex; an optional `sha256:` prefix is tolerated.",
+      "type": "string",
+      "pattern": "^(sha256:)?[0-9a-f]{64}$"
+    }
+  },
+  "$defs": {
+    "stage": {
+      "description": "Which stage produced this run-set (`arm_harness::evidence::Stage`). The stage is evidence, not a CLI convenience: the floor checker reads AA-3's exact-landing contract out of it.",
+      "type": "string",
+      "enum": ["aa0", "aa1", "aa2", "aa3", "aa4", "aa5", "aa6"]
+    },
+    "exit-reason": {
+      "description": "How a `KVM_RUN` ended (`arm_harness::evidence::ExitReason`). `preempt` is the patched 0004-analogue exit (`KVM_EXIT_PREEMPT`); `signal-kick` is AA-1(c)'s pre-patch host-side kick and AA-3's forbidden fallback.",
+      "type": "string",
+      "enum": ["preempt", "signal-kick", "mmio", "debug", "other"]
+    },
+    "environment": {
+      "description": "The machine, as found (`arm_harness::evidence::Environment`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["midr", "soc", "firmware", "host_kernel", "kvm_mode"],
+      "properties": {
+        "midr": {
+          "description": "`MIDR_EL1`.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "soc": {
+          "description": "The SoC part, as reported by the platform.",
+          "type": "string"
+        },
+        "firmware": {
+          "description": "Firmware versions. A sorted map (`BTreeMap`, never `HashMap`): key order reaches the serialized bytes, and the bytes are hashed.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "host_kernel": {
+          "description": "`uname -r` of the running host kernel.",
+          "type": "string"
+        },
+        "kvm_mode": {
+          "description": "`vhe` or `nvhe`.",
+          "type": "string",
+          "enum": ["vhe", "nvhe"]
+        }
+      }
+    },
+    "mechanism": {
+      "description": "What mechanism this run CLAIMS to have exercised, and the proof (`arm_harness::evidence::Mechanism`). §Evidence integrity #4: a silent fallback must be structurally unable to masquerade as the mechanism under test — the PR-98 review found an existential-stage harness quietly exercising the stock backend and reporting green.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kvm_patched",
+        "host_kernel_sha256",
+        "expected_exit_reason",
+        "patch_marker_observed"
+      ],
+      "properties": {
+        "kvm_patched": {
+          "description": "`true` when the host kernel carries the 0004-analogue patch. Stock KVM (`false`) is a legitimate thing to run (AA-1's pre-patch signal-kick) but may never be reported as if it were the patched path.",
+          "type": "boolean"
+        },
+        "host_kernel_sha256": {
+          "description": "sha256 of the running host kernel image. arm64 KVM is built in (`CONFIG_KVM=y`), so the kernel IS the module identity.",
+          "type": "string",
+          "pattern": "^(sha256:)?[0-9a-f]{64}$"
+        },
+        "expected_exit_reason": {
+          "description": "The exit reason every landing in this run-set must carry. The checker enforces it per record, so a run that silently fell back cannot pass.",
+          "$ref": "#/$defs/exit-reason"
+        },
+        "patch_marker_observed": {
+          "description": "Whether the patch's marker was OBSERVED in the running kernel (a positive probe), not merely assumed from the build. A run-set claiming `kvm_patched` with this `false` is refused.",
+          "type": "boolean"
+        }
+      }
+    },
+    "image-pin": {
+      "description": "A boot artifact, pinned by content and verified immediately before use (`arm_harness::evidence::ImagePin`). Recording a hash without verifying it is the anti-pattern §Evidence integrity #3 exists to kill.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "md5", "verified_before_boot"],
+      "properties": {
+        "path": {
+          "description": "Path the artifact was loaded from. Never trusted — the hash is the identity.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "sha256 of the bytes actually loaded.",
+          "type": "string",
+          "pattern": "^(sha256:)?[0-9a-f]{64}$"
+        },
+        "md5": {
+          "description": "md5 cross-reference, per the box-gate image discipline.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "verified_before_boot": {
+          "description": "Whether the hash was recomputed and compared IMMEDIATELY BEFORE the artifact was used. `false` fails the checker.",
+          "type": "boolean"
+        }
+      }
+    },
+    "perf-config": {
+      "description": "The perf event configuration behind the work clock (`arm_harness::evidence::PerfConfig`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "raw_event",
+        "exclude_host",
+        "exclude_guest",
+        "exclude_hv",
+        "pinned",
+        "sample_period"
+      ],
+      "properties": {
+        "raw_event": {
+          "description": "The raw event. `BR_RETIRED` is `0x21` = 33 — retired TAKEN branches (docs/ARM-PORT.md, docs/ARM-ALTRA.md §2). Recorded rather than assumed, so a run that silently counted a different event is visible as such.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "exclude_host": {
+          "description": "`exclude_host` — the count must be guest-only.",
+          "type": "boolean"
+        },
+        "exclude_guest": { "type": "boolean" },
+        "exclude_hv": { "type": "boolean" },
+        "pinned": {
+          "description": "Whether the event was opened pinned (never multiplexed). A multiplexed counter scales its count, silently corrupting every measurement.",
+          "type": "boolean"
+        },
+        "sample_period": {
+          "description": "The sampling period armed, when the run arms overflow. `null` in counting mode.",
+          "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+        }
+      }
+    },
+    "pinning": {
+      "description": "Core pinning and frequency posture (`arm_harness::evidence::Pinning`). Pinning is a CORRECTNESS condition on the N1/V1 lineage, not hygiene: the arm64 kernel can miss PMU overflow interrupts on core migration (rr issue #3607), and a missed overflow means `run_until` never breaks out of `KVM_RUN`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pinned", "core", "governor", "migration_probe"],
+      "properties": {
+        "pinned": {
+          "description": "Whether the vCPU thread and its perf context were hard-pinned. The checker demands `true` everywhere except AA-1's one sanctioned migration probe.",
+          "type": "boolean"
+        },
+        "core": {
+          "description": "The core they were pinned to. A pinned run that did not record its core is unverifiable.",
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "governor": {
+          "description": "The cpufreq governor. V-time counts are frequency-independent; this matters only for wall-clock numbers, and is recorded so that is checkable.",
+          "type": "string"
+        },
+        "migration_probe": {
+          "description": "Set ONLY for AA-1's deliberate, bounded migration probe — the one sanctioned unpinned run.",
+          "type": "boolean"
+        }
+      }
+    },
+    "weights": {
+      "description": "The measured per-occurrence `BR_RETIRED` contributions (`oracle_model::Weights`). Deliberately has no `Default` in code and no default here: whether an exception entry, an `ERET`, an `SVC` or a `WFI` is counted by `BR_RETIRED` on Neoverse N1 is exactly the kind of microarchitectural fact this apparatus must not guess.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exception_entry",
+        "exception_return",
+        "svc_instruction",
+        "wfi_instruction",
+        "window_offset"
+      ],
+      "properties": {
+        "exception_entry": {
+          "description": "`BR_RETIRED` contribution of one exception entry.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "exception_return": {
+          "description": "`BR_RETIRED` contribution of one `ERET`.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "svc_instruction": {
+          "description": "`BR_RETIRED` contribution of one `SVC`.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "wfi_instruction": {
+          "description": "`BR_RETIRED` contribution of one `WFI`.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_offset": {
+          "description": "The constant offset of the counting window itself. x86's analogue measured n+2; on N1 it is unknown until AA-1 measures it.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

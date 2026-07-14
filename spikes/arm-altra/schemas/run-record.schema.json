@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harmony.invalid/spikes/arm-altra/schemas/run-record.schema.json",
+  "title": "records.jsonl — one attempted sample per line",
+  "description": "The records half of a run-set: `records.jsonl` holds one instance of this schema per line, one line per ATTEMPTED sample (the Rust definition is `arm_harness::evidence::RunRecord` and this schema mirrors it field for field). Every attempted sample gets a record, including ones that failed — there is no way to express 'this sample did not work out' by omitting it, because omission is exactly what the totality check catches (docs/ARM-ALTRA.md §Evidence integrity #6: a missing sample is a failure to account, not a pass). These records are the ONLY numbers a floor checker may use; the manifest carries no totals to believe. UNTESTED ON SILICON.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sample_id",
+    "payload",
+    "scale",
+    "seed",
+    "trips",
+    "condition",
+    "work_begin",
+    "work_end",
+    "measured_taken",
+    "reported_taken",
+    "exit_reason",
+    "overflow",
+    "state_digest",
+    "params_mode",
+    "clockpage_mode",
+    "payload_status"
+  ],
+  "properties": {
+    "sample_id": {
+      "description": "Dense index into the attempted samples, `0..attempted`. The totality check is exactly: these are present, once each, with no gaps.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "payload": { "$ref": "#/$defs/payload" },
+    "scale": { "$ref": "#/$defs/scale" },
+    "seed": {
+      "description": "The seed the params page carried. The checker re-derives the expected count from `(payload, scale, seed)` — it never reads a predicted count out of the evidence.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "trips": {
+      "description": "The trip count the payload was given. `oracle_model::trips(payload, scale)` is the single definition; this field records what the harness actually passed.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "condition": {
+      "description": "The experimental condition (`pinned-solo`, `co-tenant-load`, …).",
+      "type": "string",
+      "minLength": 1
+    },
+    "work_begin": {
+      "description": "`BR_RETIRED` sampled at the window's opening mark (the MMIO store of `MARK_BEGIN`).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "work_end": {
+      "description": "`BR_RETIRED` sampled at the window's closing mark (`MARK_END`).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "measured_taken": {
+      "description": "`work_end - work_begin` — the measured taken-branch count of the window. The checker RECOMPUTES this from the two endpoints rather than believing it, and fails a record whose own field disagrees.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "reported_taken": {
+      "description": "The retry count the payload reported in-band (`STXR` retries, seqlock retries). Zero for payloads with no reported term — and the checker fails a nonzero value on such a payload, since it would otherwise silently inflate the predicted count.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "exit_reason": { "$ref": "#/$defs/exit-reason" },
+    "overflow": {
+      "description": "Overflow bookkeeping, when the sample armed one. `null` for a counting-mode sample (AA-1(a)/(b)).",
+      "oneOf": [{ "$ref": "#/$defs/overflow-record" }, { "type": "null" }]
+    },
+    "state_digest": {
+      "description": "Digest of the landed guest state, for replay-identity checks. Two samples that share (payload, scale, seed, condition, target) must carry the same digest — that is the same-seed determinism claim, and the checker enforces it from the records.",
+      "type": "string",
+      "minLength": 1
+    },
+    "params_mode": {
+      "description": "The `PARAMS mode=` the guest itself printed — the in-band attestation that the harness really published the params page. The checker demands `managed`: a harness that forgot to publish it would otherwise run the smoke scale while the manifest claimed 1e8.",
+      "type": "string",
+      "enum": ["managed", "self-seeded"]
+    },
+    "clockpage_mode": {
+      "description": "The `CLOCKPAGE mode=` the guest printed, for AA-5 runs. `null` elsewhere.",
+      "oneOf": [{ "type": "string" }, { "type": "null" }]
+    },
+    "payload_status": {
+      "description": "The payload's own exit status. Nonzero means the payload's in-guest self-checks failed, and the sample is a failure however good its counts look.",
+      "type": "integer"
+    }
+  },
+  "$defs": {
+    "payload": {
+      "description": "The oracle payload class (`oracle_model::Payload`). `ident` has no counting window.",
+      "type": "string",
+      "enum": [
+        "ident",
+        "straight-line",
+        "branch-dense",
+        "svc",
+        "exception-abort",
+        "wfi-idle",
+        "llsc-atomics",
+        "lse-atomics",
+        "clock-page"
+      ]
+    },
+    "scale": {
+      "description": "The run scale (`oracle_model::Scale`). Note the serialized spellings are `s1e6`/`s1e7`/`s1e8` (serde kebab-case of the Rust variants), not `1e6`.",
+      "type": "string",
+      "enum": ["smoke", "s1e6", "s1e7", "s1e8"]
+    },
+    "exit-reason": {
+      "description": "How this sample's `KVM_RUN` ended (`arm_harness::evidence::ExitReason`). Checked per record against `Mechanism::expected_exit_reason`, so a run that silently exercised the stock signal-kick path while claiming the patched exit cannot pass.",
+      "type": "string",
+      "enum": ["preempt", "signal-kick", "mmio", "debug", "other"]
+    },
+    "overflow-record": {
+      "description": "The overflow bookkeeping for one sample (`arm_harness::evidence::OverflowRecord`). §Evidence integrity #6: exactly-once is shown PER RECORD, never inferred from a total.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["armed", "deliveries", "target", "landed", "skid"],
+      "properties": {
+        "armed": {
+          "description": "Whether an overflow was armed for this sample.",
+          "type": "boolean"
+        },
+        "deliveries": {
+          "description": "How many times the armed overflow was delivered. Must be exactly 1 — 0 is a lost PMI, >1 is a duplicate, and both are blocking.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "target": {
+          "description": "The work target the deadline was set for.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "landed": {
+          "description": "The work count actually landed on. AA-3's acceptance is `work == target` on EVERY landing.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "skid": {
+          "description": "`landed - target`. Negative means the landing was early (inside the skid margin, which is the design); positive means it OVERSHOT, which the late-only-stop contract forbids outright. The checker recomputes it from `landed` and `target` rather than believing the field.",
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

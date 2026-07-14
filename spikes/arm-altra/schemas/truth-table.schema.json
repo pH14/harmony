@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harmony.invalid/spikes/arm-altra/schemas/truth-table.schema.json",
+  "title": "truth-table.json — the AA-0 capability truth table",
+  "description": "Stage AA-0's deliverable (docs/ARM-ALTRA.md §AA-0): what the delivered Ampere Altra actually exposes, recorded from real silicon as expect-vs-found rows. Its acceptance is that the table is complete and machine-readable, BYTE-IDENTICAL ACROSS TWO REBOOTS, and that every `expect` row is either confirmed or recorded as a deviation with an explicit disposition — including a FAVOURABLE deviation (ECV unexpectedly present would still require a recorded ruling before any stage relied on it). Because byte-identity across reboots is the acceptance, this schema carries no capture-specific field: the capture identity lives in the path (`results/aa-0/<capture>/truth-table.json`), never in the bytes, so that two captures can be diffed directly. UNTESTED ON SILICON: no truth table matching this schema has ever been produced by hardware; the `expect` column is what docs/ARM-ALTRA.md predicts, and the whole point of AA-0 is that predictions are not findings.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "identity", "topology", "rows"],
+  "properties": {
+    "schema_version": {
+      "description": "Bumped when a field's meaning changes. A reader refuses a version it does not know rather than silently misreading it.",
+      "const": 1
+    },
+    "identity": { "$ref": "#/$defs/identity" },
+    "topology": { "$ref": "#/$defs/topology" },
+    "rows": {
+      "description": "The expect-vs-found rows. Every mandatory row below must be present; extra rows are welcome (an unlisted capability that turned out to matter is a finding, not a schema error).",
+      "type": "array",
+      "minItems": 10,
+      "items": { "$ref": "#/$defs/row" },
+      "allOf": [
+        { "contains": { "properties": { "id": { "const": "ecv" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "lse" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "pmuver" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "sve" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "nested-virt" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "br-retired-pmceid0" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "dev-kvm" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "kvm-mode" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "kvm-cap-set-guest-debug" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "vgicv3-creatable" } }, "required": ["id"] } }
+      ]
+    }
+  },
+  "$defs": {
+    "identity": {
+      "description": "Who this machine is. Recorded from the silicon, never from the procurement order.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["midr", "implementer", "part_num", "variant", "revision", "soc", "core_count", "host_kernel", "firmware"],
+      "properties": {
+        "midr": {
+          "description": "`MIDR_EL1`, raw.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "implementer": {
+          "description": "`MIDR_EL1.Implementer` (0x41 = Arm Ltd).",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "part_num": {
+          "description": "`MIDR_EL1.PartNum` (0xd0c = Neoverse N1). Recorded, not asserted: a box that is not the N1 we think it is must be visible as such.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "variant": { "type": "integer", "minimum": 0, "maximum": 15 },
+        "revision": { "type": "integer", "minimum": 0, "maximum": 15 },
+        "soc": {
+          "description": "The SoC part as the platform reports it (e.g. an Ampere Altra Q80-30).",
+          "type": "string",
+          "minLength": 1
+        },
+        "core_count": {
+          "description": "Online cores. N1 cores are single-threaded — there is no SMT sibling to idle, and one whole x86 confound class is absent.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "host_kernel": {
+          "description": "`uname -r` of the running host kernel.",
+          "type": "string",
+          "minLength": 1
+        },
+        "firmware": {
+          "description": "Firmware versions, sorted key/value (never a hash map: these bytes are diffed across reboots).",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "topology": {
+      "description": "The standing core-assignment table for this box (docs/BOX-PINNING.md discipline, Altra edition). Pinning is a correctness condition on this lineage (rr #3607), so the assignment is evidence, not hygiene.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["housekeeping_cores", "measurement_cores", "guest_cores", "governor"],
+      "properties": {
+        "housekeeping_cores": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "measurement_cores": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "guest_cores": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "governor": {
+          "description": "The cpufreq governor the box stands at. V-time counts are frequency-independent; this is recorded so that claim is checkable.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "row": {
+      "description": "One expect-vs-found row. `confirmed` must be true exactly when `found` equals `expected`; when it is false the row is a DEVIATION and `disposition` must carry the explicit ruling AA-0's acceptance demands.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "question", "expected", "found", "raw", "confirmed", "disposition"],
+      "properties": {
+        "id": {
+          "description": "Stable row identifier. The mandatory ones are named in the `rows` constraint above; these are the ones docs/ARM-ALTRA.md §AA-0 requires.",
+          "type": "string",
+          "minLength": 1,
+          "examples": [
+            "ecv",
+            "lse",
+            "pmuver",
+            "sve",
+            "nested-virt",
+            "br-retired-pmceid0",
+            "perf-raw-0x21-pinned",
+            "host-overflow-delivers",
+            "dev-kvm",
+            "kvm-mode",
+            "kvm-cap-set-guest-debug",
+            "vgicv3-creatable",
+            "writable-id-registers"
+          ]
+        },
+        "kind": {
+          "description": "Which surface the row was read from.",
+          "type": "string",
+          "enum": ["id-register", "pmu", "perf", "kvm", "platform"]
+        },
+        "question": {
+          "description": "The row in one sentence, with its architectural source (e.g. `ID_AA64MMFR0_EL1.ECV — is FEAT_ECV present? Expect absent: Armv8.2 predates it, and no reachable ARM server part has it.`).",
+          "type": "string",
+          "minLength": 1
+        },
+        "expected": {
+          "description": "What docs/ARM-ALTRA.md predicts. `absent` for ECV / SVE / nested-virt; `present` for LSE, BR_RETIRED-in-PMCEID0, /dev/kvm, KVM_CAP_SET_GUEST_DEBUG and a creatable vGICv3; a free string for graded facts (PMUVer, VHE-vs-nVHE).",
+          "type": "string",
+          "minLength": 1
+        },
+        "found": {
+          "description": "What the silicon said. The whole reason this stage exists.",
+          "type": "string",
+          "minLength": 1
+        },
+        "raw": {
+          "description": "The raw evidence behind `found` — the register field value, the `PMCEID0_EL0` bit, the ioctl return. Free-form, but never empty: a row with no raw evidence is an assertion, not a reading.",
+          "type": "string",
+          "minLength": 1
+        },
+        "confirmed": {
+          "description": "`found == expected`. False makes this row a deviation.",
+          "type": "boolean"
+        },
+        "disposition": {
+          "description": "The explicit recorded ruling for a deviation — required whenever `confirmed` is false, INCLUDING a favourable deviation. `null` only on a confirmed row.",
+          "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "confirmed": { "const": false } }, "required": ["confirmed"] },
+          "then": { "properties": { "disposition": { "type": "string", "minLength": 1 } } }
+        },
+        {
+          "if": { "properties": { "confirmed": { "const": true } }, "required": ["confirmed"] },
+          "then": { "properties": { "disposition": { "type": "null" } } }
+        }
+      ]
+    }
+  }
+}

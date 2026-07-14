@@ -11,6 +11,13 @@
 # the tree. (The patched-KVM determinism recipe is NOT here — it lives, tracked, at
 # consonance/vmm-backend/kvm-patches/.)
 spikes/*
+# ...with one exception, ruled by docs/ARM-ALTRA.md §Repository layout: the ARM
+# vendor spike program's *apparatus* is tracked by design. Its payloads, harness,
+# evidence schemas and floor checkers are arrival-day load-bearing and are reviewed
+# and merged like any other code (tasks/109); only its measurement *outputs* are the
+# untracked kind this rule was written for. spikes/arm-altra/.gitignore draws that
+# line inside the directory.
+!spikes/arm-altra/
 /mutants.out
 /mutants.out.old
 

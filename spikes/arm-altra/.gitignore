@@ -1,0 +1,9 @@
+# The apparatus is tracked (docs/ARM-ALTRA.md §Repository layout, tasks/109); its
+# build and measurement outputs are not.
+target/
+
+# Stage evidence is written here on the box. Raw per-sample volume too large for
+# git is content-addressed with a checked-in manifest, summary and reproduction
+# command (§Evidence integrity) — so the manifests land, the raw sample dumps do
+# not.
+results/**/raw/
