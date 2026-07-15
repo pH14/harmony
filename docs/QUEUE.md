@@ -62,8 +62,11 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   cadence ruling moot if the loop reaches zero): **rounds 1–23 fixed** through head
   `48309f2` (2026-07-15 ~07:54; recent species: writable-ID-surface enumeration, AA-3
   case/target coverage binding, CASP-is-LSE, truth-table schema validation; the
-  Miri-payload item stays adjudicated-settled). **Blind r24 pass in flight; foreman
-  verification is the next iteration's heavy op.**
+  Miri-payload item stays adjudicated-settled). **r24 dispatched 2026-07-15 ~15:35**
+  (rounds 1–23 foreman-verified; 6 live P1 + 1 P2 — kernel-pin artifact binding and the
+  migration-probe grading contradiction are the load-bearing two; the Miri-payload
+  re-flag stays settled). **Cadence trajectory 6→4→7 findings is NOT converging** —
+  re-flagged to Paul on the PR; the r12 pre-silicon-bar recommendation stands.
 
 Landed since the midday refresh: **conductor full-suite Miri restoration MERGED**
 (tasks/104, PR #105 — 12× cut to ~11.5 min, foreman-confirmed, triple vacuity guard;
