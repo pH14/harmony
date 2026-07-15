@@ -105,10 +105,7 @@ Reach-matrix lane (foreman-owned or spawnable next):
   closes an arrival bead when its box is racked; the execution surfaces dispatch-ready.
   Arrival day now lands on pre-built tooling: the preflight truth-table probes (`hm-69y`
   rider) and the harness lanes (`hm-8v4` / `hm-2kj`).
-- **Nested-x86 spike findings** — stale insn-cpuid golden (`hm-zc2`) **SPAWNED 2026-07-15
-  ~20:55** (tasks/113, agent-insn-cpuid-golden-refresh, Opus 4.8: diagnose-before-regenerate,
-  provenance discipline, hm-xdp image-family check); SIGSTOP-cycling wedge (`hm-440`) still
-  ready.
+- **Nested-x86 spike findings** — SIGSTOP-cycling wedge (`hm-440`) still ready.
 - **macOS-backend design exploration** (`hm-dj0`, P2, background-session filed).
 
 General ready (foreman spawns as slots free):
@@ -181,6 +178,12 @@ spawn these until that lane re-opens):
 
 ## Recently done (this week)
 
+- **Stale insn-cpuid golden FIXED AND MERGED same evening** (tasks/113, `hm-zc2`, PR #112,
+  2026-07-15): root cause = never re-blessed after the v3→v4 ARAT contract correction
+  (PR #36) — NOT microcode, NOT the hm-xdp image family; refreshed via DETCORPUS_BLESS
+  on the patched backend, O2 gate re-run green, cross-reboot invariance proven by the
+  spike leg + this bless straddling the 07-10 reboot; full payload-hash provenance
+  committed. Spawn→diagnose→bless→review→merge in ~2.5 h.
 - **Campaign-runner full-suite Miri box confirmation CLOSED** (`hm-d4y`, 2026-07-15):
   foreman-dispatched nightly run 29444065376 fully GREEN on the box — campaign-runner
   step success inside the unsafe-crates Miri job (63.4 min vs the 155 ceiling), vmm-core
