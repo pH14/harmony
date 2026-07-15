@@ -3497,6 +3497,11 @@ where
     /// arrival needs the exact-count `run_until` seam, which stock KVM / M1 / M2
     /// do not provide. When it returns `false` the caller falls back to running to
     /// a natural exit and comparing [`effective_vns`](Vmm::effective_vns).
+    ///
+    /// **A `moment` in the past is rejected** (returns `false`, arms nothing;
+    /// cross-model r20 P2): arming below the current anchor would let the overdue
+    /// landing rewind `last_intercept_work` and publish a lower `vns`, so the
+    /// public API refuses it rather than let a caller rewind the monotone clock.
     pub fn arm_arrival(&mut self, moment: environment::Moment) -> bool {
         if !self.can_arm_arrival() {
             self.arrival_deadline = None;
@@ -3506,7 +3511,23 @@ where
             .vtime
             .as_ref()
             .expect("can_arm_arrival implies V-time wired");
-        self.arrival_deadline = Some(Moment(vt.clock.work_for_vns(moment)));
+        let target = vt.clock.work_for_vns(moment);
+        let anchor = vt.last_intercept_work;
+        // Reject a PAST arrival (cross-model r20 P2). A `target` work count BELOW
+        // the current anchor takes the overdue zero-entry landing in
+        // [`on_deadline`], which sets `last_intercept_work = target` — replacing the
+        // newer anchor with the older one — so the next step-tail pvclock refresh
+        // publishes a LOWER `vns`. That rewinds the very clock this task keeps
+        // monotone. The frontier ([`ControlServer`]) already rejects past
+        // perturbations, so the shipped composition is safe; this is the
+        // **public-API** guard, so a direct caller can never rewind published time.
+        // `target == anchor` (an arrival AT the current moment) is fine — the anchor
+        // is unchanged. Leave any prior arm cleared, mirroring the capability path.
+        if target < anchor {
+            self.arrival_deadline = None;
+            return false;
+        }
+        self.arrival_deadline = Some(Moment(target));
         true
     }
 
@@ -9444,6 +9465,67 @@ mod tests {
             vmm.pvclock_refresh_deadline().is_some(),
             "the counter read arms the Δ deadline"
         );
+    }
+
+    /// r20 P2: a PAST arrival Moment must be rejected — never armed — so a
+    /// public-API caller cannot rewind the published pvclock `vns`. An arrival
+    /// below the current anchor would take the overdue landing that replaces
+    /// `last_intercept_work` with the older target, and the next refresh would
+    /// publish a lower vns. The current moment and any future moment still arm.
+    #[test]
+    fn arm_arrival_rejects_a_past_moment_and_cannot_rewind_published_vns() {
+        let mut vmm = pvclock_vmm(
+            vec![Exit::Arch(X86Exit::Rdtsc)],
+            Box::new(ScriptedWork::at(1000)),
+            7,
+        );
+        assert!(
+            vmm.can_arm_arrival(),
+            "the deterministic mock can arm exact arrivals (else this test is vacuous)"
+        );
+        ring_pvclock_register(&mut vmm, PV_GPA);
+        vmm.step().unwrap(); // handshake at anchor 1000 → effective/published vns 1000
+        let published = vmm.effective_vns().expect("V-time wired");
+        assert_eq!(published, 1000);
+        let page_vns = vtime::pvclock::read(vmm.pvclock_page().unwrap())
+            .unwrap()
+            .vns;
+        assert_eq!(page_vns, 1000);
+        let anchor = vmm.vtime.as_ref().unwrap().last_intercept_work;
+
+        // A PAST arrival (vns 500 < the current 1000) is REJECTED and arms nothing.
+        assert!(
+            !vmm.arm_arrival(500),
+            "arm_arrival must reject a Moment in the past"
+        );
+        assert_eq!(
+            vmm.arrival_deadline, None,
+            "a rejected past arm must not arm"
+        );
+        assert_eq!(
+            vmm.vtime.as_ref().unwrap().last_intercept_work,
+            anchor,
+            "a rejected past arm must not move the anchor (that would rewind the published vns)"
+        );
+        assert_eq!(
+            vmm.effective_vns().unwrap(),
+            published,
+            "the effective vns must not rewind after a rejected past arm"
+        );
+        assert_eq!(
+            vtime::pvclock::read(vmm.pvclock_page().unwrap())
+                .unwrap()
+                .vns,
+            page_vns,
+            "the page's published vns must not rewind after a rejected past arm"
+        );
+
+        // The current moment (== anchor) and any future moment DO arm (no rewind).
+        assert!(
+            vmm.arm_arrival(1000),
+            "an arrival AT the current moment arms"
+        );
+        assert!(vmm.arm_arrival(2000), "a future arrival arms");
     }
 
     /// Bad GPAs are clean `OutOfRange` rejections that record nothing:

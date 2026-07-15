@@ -763,6 +763,18 @@ fn g3_busy_wait_on_page_time_terminates_within_delta() {
     let mut session = ExecSession::new(&spin, 1);
     let input = session.input().to_vec();
     vmm.inject_serial_input(&input);
+    // Capture the page's CURRENT publication as the window BASELINE before
+    // clearing (r20 P2). Clearing the log to isolate the spin window drops the
+    // baseline, so the FIRST logged spin refresh has no predecessor and a first
+    // refresh delayed past Δ would escape the max-gap check while later Δ-spaced
+    // ones pass. Prepending this baseline makes the first interval (baseline →
+    // first spin refresh) count. It is the most-recent publication = the page's
+    // live state; boot produced thousands, so it is always present.
+    let g3_baseline = vmm
+        .pvclock_refreshes()
+        .last()
+        .copied()
+        .expect("boot published at least one refresh before the spin");
     // Re-arm the refresh log at the measured window's start (cross-model r1
     // P1): a boot-saturated trace would record nothing during the spin and
     // `max_gap` below would vacuously read 0.
@@ -818,20 +830,27 @@ fn g3_busy_wait_on_page_time_terminates_within_delta() {
         "the refresh log saturated during the spin window — gaps beyond the cap are unobserved, \
          so the ≤Δ bound cannot be asserted; raise the cap or shorten the window"
     );
-    // The published vns must be MONOTONE across the spin window (r15 P2). The
-    // guest spinner now fails on a backward step, and asserting it host-side too
-    // means a backward page cannot slip past even here — the `max_gap`
-    // `saturating_sub` on the work anchor would otherwise clamp it to 0 and hide it.
+    // Prepend the pre-clear BASELINE so the FIRST interval of the spin (baseline →
+    // first logged refresh) counts against both the monotonicity and max-gap
+    // checks (r20 P2) — a first refresh delayed past Δ would otherwise escape.
+    let gapped: Vec<(u64, u64, u64)> = std::iter::once(g3_baseline)
+        .chain(window.iter().copied())
+        .collect();
+    // The published vns must be MONOTONE across the window, INCLUDING from the
+    // baseline (r15 P2 + r20 P2). The guest spinner now fails on a backward step,
+    // and asserting it host-side too means a backward page cannot slip past even
+    // here — the `max_gap` `saturating_sub` on the work anchor would otherwise
+    // clamp it to 0 and hide it.
     assert!(
-        window.windows(2).all(|p| p[0].1 <= p[1].1),
-        "the pvclock page published a BACKWARD vns during the G3 spin window — a determinism/ABA \
-         bug the max-gap saturating_sub would mask"
+        gapped.windows(2).all(|p| p[0].1 <= p[1].1),
+        "the pvclock page published a BACKWARD vns during the G3 spin window (baseline included) — \
+         a determinism/ABA bug the max-gap saturating_sub would mask"
     );
-    let max_gap = window
+    let max_gap = gapped
         .windows(2)
         .map(|p| p[1].0.saturating_sub(p[0].0))
         .max()
-        .expect("len >= 2 checked above");
+        .expect("baseline + >= 2 window refreshes ⇒ >= 3 points");
     // ATTRIBUTION (r4 P1): how many of those refreshes did the Δ deadline
     // itself force — as opposed to the guest's periodic tick, which refreshes
     // the page for free every ~10 ms and would otherwise carry this gate?
