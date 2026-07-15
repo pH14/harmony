@@ -1,0 +1,555 @@
+[
+  {
+    "payload": "straight-line",
+    "scale": "smoke",
+    "seed": 6840227782638526189,
+    "trips": 1000,
+    "certain_taken": 999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "straight-line",
+    "scale": "1e6",
+    "seed": 6840227782638526189,
+    "trips": 1000000,
+    "certain_taken": 999999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "straight-line",
+    "scale": "1e7",
+    "seed": 6840227782638526189,
+    "trips": 10000000,
+    "certain_taken": 9999999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "straight-line",
+    "scale": "1e8",
+    "seed": 6840227782638526189,
+    "trips": 100000000,
+    "certain_taken": 99999999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "branch-dense",
+    "scale": "smoke",
+    "seed": 6840227782638526189,
+    "trips": 1000,
+    "certain_taken": 3981,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "Tbz",
+      "Tbz",
+      "Tbz",
+      "Tbz",
+      "Tbnz",
+      "Tbnz",
+      "Cbz",
+      "BCond"
+    ]
+  },
+  {
+    "payload": "branch-dense",
+    "scale": "1e6",
+    "seed": 6840227782638526189,
+    "trips": 1000000,
+    "certain_taken": 4004522,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "Tbz",
+      "Tbz",
+      "Tbz",
+      "Tbz",
+      "Tbnz",
+      "Tbnz",
+      "Cbz",
+      "BCond"
+    ]
+  },
+  {
+    "payload": "branch-dense",
+    "scale": "1e7",
+    "seed": 6840227782638526189,
+    "trips": 10000000,
+    "certain_taken": 40035553,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "Tbz",
+      "Tbz",
+      "Tbz",
+      "Tbz",
+      "Tbnz",
+      "Tbnz",
+      "Cbz",
+      "BCond"
+    ]
+  },
+  {
+    "payload": "branch-dense",
+    "scale": "1e8",
+    "seed": 6840227782638526189,
+    "trips": 100000000,
+    "certain_taken": 400362358,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "Tbz",
+      "Tbz",
+      "Tbz",
+      "Tbz",
+      "Tbnz",
+      "Tbnz",
+      "Cbz",
+      "BCond"
+    ]
+  },
+  {
+    "payload": "svc",
+    "scale": "smoke",
+    "seed": 6840227782638526189,
+    "trips": 1000,
+    "certain_taken": 999,
+    "exception_entry_count": 1000,
+    "exception_return_count": 1000,
+    "svc_count": 1000,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "svc",
+    "scale": "1e6",
+    "seed": 6840227782638526189,
+    "trips": 1000000,
+    "certain_taken": 999999,
+    "exception_entry_count": 1000000,
+    "exception_return_count": 1000000,
+    "svc_count": 1000000,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "svc",
+    "scale": "1e7",
+    "seed": 6840227782638526189,
+    "trips": 10000000,
+    "certain_taken": 9999999,
+    "exception_entry_count": 10000000,
+    "exception_return_count": 10000000,
+    "svc_count": 10000000,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "svc",
+    "scale": "1e8",
+    "seed": 6840227782638526189,
+    "trips": 100000000,
+    "certain_taken": 99999999,
+    "exception_entry_count": 100000000,
+    "exception_return_count": 100000000,
+    "svc_count": 100000000,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "exception-abort",
+    "scale": "smoke",
+    "seed": 6840227782638526189,
+    "trips": 1000,
+    "certain_taken": 999,
+    "exception_entry_count": 1000,
+    "exception_return_count": 1000,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "exception-abort",
+    "scale": "1e6",
+    "seed": 6840227782638526189,
+    "trips": 1000000,
+    "certain_taken": 999999,
+    "exception_entry_count": 1000000,
+    "exception_return_count": 1000000,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "exception-abort",
+    "scale": "1e7",
+    "seed": 6840227782638526189,
+    "trips": 10000000,
+    "certain_taken": 9999999,
+    "exception_entry_count": 10000000,
+    "exception_return_count": 10000000,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "exception-abort",
+    "scale": "1e8",
+    "seed": 6840227782638526189,
+    "trips": 100000000,
+    "certain_taken": 99999999,
+    "exception_entry_count": 100000000,
+    "exception_return_count": 100000000,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "wfi-idle",
+    "scale": "smoke",
+    "seed": 6840227782638526189,
+    "trips": 200,
+    "certain_taken": 199,
+    "exception_entry_count": 200,
+    "exception_return_count": 200,
+    "svc_count": 0,
+    "wfi_count": 200,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "wfi-idle",
+    "scale": "1e6",
+    "seed": 6840227782638526189,
+    "trips": 10000,
+    "certain_taken": 9999,
+    "exception_entry_count": 10000,
+    "exception_return_count": 10000,
+    "svc_count": 0,
+    "wfi_count": 10000,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "wfi-idle",
+    "scale": "1e7",
+    "seed": 6840227782638526189,
+    "trips": 100000,
+    "certain_taken": 99999,
+    "exception_entry_count": 100000,
+    "exception_return_count": 100000,
+    "svc_count": 0,
+    "wfi_count": 100000,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "wfi-idle",
+    "scale": "1e8",
+    "seed": 6840227782638526189,
+    "trips": 1000000,
+    "certain_taken": 999999,
+    "exception_entry_count": 1000000,
+    "exception_return_count": 1000000,
+    "svc_count": 0,
+    "wfi_count": 1000000,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "llsc-atomics",
+    "scale": "smoke",
+    "seed": 6840227782638526189,
+    "trips": 1000,
+    "certain_taken": 999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": true,
+    "inline_branches": [
+      "Cbnz",
+      "BCond"
+    ]
+  },
+  {
+    "payload": "llsc-atomics",
+    "scale": "1e6",
+    "seed": 6840227782638526189,
+    "trips": 1000000,
+    "certain_taken": 999999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": true,
+    "inline_branches": [
+      "Cbnz",
+      "BCond"
+    ]
+  },
+  {
+    "payload": "llsc-atomics",
+    "scale": "1e7",
+    "seed": 6840227782638526189,
+    "trips": 10000000,
+    "certain_taken": 9999999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": true,
+    "inline_branches": [
+      "Cbnz",
+      "BCond"
+    ]
+  },
+  {
+    "payload": "llsc-atomics",
+    "scale": "1e8",
+    "seed": 6840227782638526189,
+    "trips": 100000000,
+    "certain_taken": 99999999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": true,
+    "inline_branches": [
+      "Cbnz",
+      "BCond"
+    ]
+  },
+  {
+    "payload": "lse-atomics",
+    "scale": "smoke",
+    "seed": 6840227782638526189,
+    "trips": 1000,
+    "certain_taken": 999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "lse-atomics",
+    "scale": "1e6",
+    "seed": 6840227782638526189,
+    "trips": 1000000,
+    "certain_taken": 999999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "lse-atomics",
+    "scale": "1e7",
+    "seed": 6840227782638526189,
+    "trips": 10000000,
+    "certain_taken": 9999999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "lse-atomics",
+    "scale": "1e8",
+    "seed": 6840227782638526189,
+    "trips": 100000000,
+    "certain_taken": 99999999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": false,
+    "inline_branches": [
+      "BCond"
+    ]
+  },
+  {
+    "payload": "clock-page",
+    "scale": "smoke",
+    "seed": 6840227782638526189,
+    "trips": 1000,
+    "certain_taken": 999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": true,
+    "inline_branches": [
+      "Tbnz",
+      "BCond",
+      "BCond"
+    ]
+  },
+  {
+    "payload": "clock-page",
+    "scale": "1e6",
+    "seed": 6840227782638526189,
+    "trips": 1000000,
+    "certain_taken": 999999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": true,
+    "inline_branches": [
+      "Tbnz",
+      "BCond",
+      "BCond"
+    ]
+  },
+  {
+    "payload": "clock-page",
+    "scale": "1e7",
+    "seed": 6840227782638526189,
+    "trips": 10000000,
+    "certain_taken": 9999999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": true,
+    "inline_branches": [
+      "Tbnz",
+      "BCond",
+      "BCond"
+    ]
+  },
+  {
+    "payload": "clock-page",
+    "scale": "1e8",
+    "seed": 6840227782638526189,
+    "trips": 100000000,
+    "certain_taken": 99999999,
+    "exception_entry_count": 0,
+    "exception_return_count": 0,
+    "svc_count": 0,
+    "wfi_count": 0,
+    "window_offset": "measured-AA-1 (unknown pre-silicon)",
+    "has_reported_term": true,
+    "inline_branches": [
+      "Tbnz",
+      "BCond",
+      "BCond"
+    ]
+  }
+]
+PASS

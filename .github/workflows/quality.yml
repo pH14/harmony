@@ -144,6 +144,158 @@ jobs:
           cargo deny --manifest-path guest/play-agent/Cargo.toml check --config deny.toml licenses
           cargo build --manifest-path guest/play-agent/Cargo.toml --bin play-agent
 
+  # spikes/arm-altra (task 109) — the ARM pre-build apparatus: three out-of-workspace
+  # workspaces (harness+floor-check, oracle-model, payloads) that the root gates above
+  # cannot see. It is gated here, and not left to a local-only script, for one reason:
+  # the floor-checkers are ARRIVAL-DAY LOAD-BEARING evidence-integrity code. They are
+  # what a stage disposition will rest on when the Altra lands, and between merge and
+  # arrival there is nothing else to stop them rotting green.
+  #
+  # Miri runs in THIS job rather than the nightly one: arm-harness carries `unsafe`
+  # (the perf/KVM syscall seam), the suite is seconds not minutes, and the repo bar is
+  # that unsafe crates run clean under the pinned interpreter. The interpreter reaches
+  # the memory-safety-critical logic through a seam: the payload-image copy that used
+  # to live in the (Linux-only, un-interpretable) KVM harness is factored into
+  # `elf::Elf::load_into`, safe code over a `&mut [u8]` that Miri drives against an
+  # in-process buffer — including the malformed `p_filesz > p_memsz` case. The mmap +
+  # ioctl paths remain `cfg(target_os="linux")` and are the documented asm/privileged
+  # exception (Miri cannot issue a syscall).
+  #
+  # The bare-metal payload crates are deliberately NOT Miri-gated, and the reason is
+  # intrinsic to each — documented per-crate, not waved away:
+  #   - `runtime` (payloads/runtime/src/lib.rs, its own crate doc): `#![no_std]`, targets
+  #     aarch64-unknown-none; every unsafe op is inline `asm!`/`global_asm!` (boot.s,
+  #     vectors.s, the HLT exit, MRS reads) or `read/write_volatile` to FIXED PHYSICAL
+  #     addresses (the GICv3 dist at 0x0800_0000, the PL011 at UART_BASE, the shared
+  #     GPAs). Miri executes no machine code and has no such memory — those pointers are
+  #     invalid under it. There is no non-privileged logic left to interpret once the
+  #     privileged parts are seamed, so the cfg(miri)-seam escape hatch does not apply.
+  #   - `oracles`: thin payload `main`s that call straight into `runtime`; same limit.
+  # Their behaviour is exercised by the TCG smoke (real instructions on an emulated N1,
+  # the only thing that CAN run physical MMIO + asm). The portable pointer/allocation
+  # logic that Miri CAN check — the ELF loader, the kvm_run decode, the state digest —
+  # was factored into `arm-harness` precisely so it is gated under Miri above.
+  #
+  # NOT gated here: the qemu-system-aarch64 TCG payload smoke (payloads/smoke.sh). It
+  # needs qemu on the runner, which this self-hosted box does not have and which no
+  # job may `sudo apt-get` into place. It stays the documented LOCAL gate — run it
+  # before pushing anything under payloads/ (spikes/arm-altra/README.md says so, and
+  # says what it does and does not prove). The window-verification gate below is the
+  # part of that smoke which needs no emulator, and it is the part that checks the
+  # oracle's central claim: that each payload's branches are the ones the model says.
+  spike-arm-altra:
+    name: spikes/arm-altra (ARM pre-build apparatus)
+    runs-on: self-hosted
+    env:
+      PINNED_NIGHTLY: nightly-2026-06-16
+      MIRIFLAGS: -Zmiri-permissive-provenance
+      SPIKE: spikes/arm-altra
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchains + cross targets
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          # The bare-metal payload target, and the Altra's Linux target: `cargo check`
+          # for aarch64-linux is what proves the KVM/perf syscall seam COMPILES for the
+          # box (it cannot be run here, and it has never run anywhere — the hardware is
+          # not yet in hand).
+          rustup target add aarch64-unknown-none aarch64-unknown-linux-gnu
+          rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - name: harness + floor-check (fmt, clippy, tests, deny)
+        run: |
+          cargo fmt --manifest-path "$SPIKE/Cargo.toml" --all -- --check
+          cargo clippy --manifest-path "$SPIKE/Cargo.toml" --all-features --all-targets -- -D warnings
+          cargo test --manifest-path "$SPIKE/Cargo.toml" --all-features
+          cargo deny --manifest-path "$SPIKE/Cargo.toml" check --config deny.toml
+      - name: oracle-model (own workspace; no_std + std)
+        run: |
+          cargo fmt --manifest-path "$SPIKE/oracle-model/Cargo.toml" --all -- --check
+          cargo clippy --manifest-path "$SPIKE/oracle-model/Cargo.toml" --features std --all-targets -- -D warnings
+          cargo test --manifest-path "$SPIKE/oracle-model/Cargo.toml" --features std
+          # The model is shared with the no_std payloads: it must still build for the
+          # bare-metal target with default features.
+          cargo build --manifest-path "$SPIKE/oracle-model/Cargo.toml" --target aarch64-unknown-none
+          cargo deny --manifest-path "$SPIKE/oracle-model/Cargo.toml" check --config deny.toml
+      - name: harness cross-clippy for the box (aarch64-linux syscall seam)
+        # clippy, not check: the aarch64 syscall seam is `cfg(target_os = "linux")`, so
+        # the native (x86 host) clippy job never compiles it — target-specific lints
+        # (e.g. the useless_conversion class that only aarch64 clippy exposes, r5) would
+        # otherwise merge undetected. `-D warnings` makes them fail the job.
+        run: cargo clippy --manifest-path "$SPIKE/Cargo.toml" -p arm-harness --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
+      - name: payloads (bare-metal build + the window-vs-oracle gate)
+        # cd, not --manifest-path: the payload workspace's .cargo/config.toml pins the
+        # aarch64-unknown-none target and the static relocation model, and cargo only
+        # reads that config from the working directory upward.
+        run: |
+          cd "$SPIKE/payloads"
+          cargo fmt --all -- --check
+          # No `--all-targets`: aarch64-unknown-none has no `test` crate, so building
+          # the (nonexistent) test targets of a `no_std` bare-metal workspace fails
+          # E0463. The payloads' behaviour is gated by the TCG smoke locally and by
+          # the window-vs-oracle scan below; clippy here covers the lib and the bins.
+          cargo clippy --bins -- -D warnings
+          cargo build --release
+          cargo deny check --config ../../../deny.toml
+          cd ../harness
+          # The claim "the taken-branch count is known by construction", machine-checked:
+          # every payload's window is disassembled out of the built ELF and its branch
+          # sequence must equal the oracle model's. RC propagates.
+          cargo run --quiet --bin arm-scan -- windows ../payloads/target/aarch64-unknown-none/release
+      - name: kernel patch — format + parse gate
+        # The FULL patch gate (`host/verify.sh`: apply onto pristine 6.18.35 + compile
+        # against the KVM tree) needs a native-aarch64 builder with the pinned kernel
+        # tree (`host/BUILD.md`) — it cannot run on this x86 runner, and is run there.
+        # What CI CAN and now DOES cover is the most likely regression: a later edit that
+        # corrupts, truncates, or malforms the patch so it stops applying. Each patch is
+        # validated as a well-formed git mail-format patch whose diff parses — a mangled
+        # patch fails here instead of merging green. RC propagates (`set -e`).
+        run: |
+          set -e
+          cd "$SPIKE/host"
+          # Job-unique scratch files: concurrent jobs share this runner, and fixed
+          # /tmp/msg + /tmp/patch would race (one job's mailinfo clobbering another's).
+          # $RUNNER_TEMP is per-job; mktemp under it is unique even within this job.
+          msg="$(mktemp "${RUNNER_TEMP:-/tmp}/patch-msg.XXXXXX")"
+          patch="$(mktemp "${RUNNER_TEMP:-/tmp}/patch-diff.XXXXXX")"
+          trap 'rm -f "$msg" "$patch"' EXIT
+          test -d patches && ls patches/*.patch >/dev/null
+          for p in patches/*.patch; do
+            test -s "$p"                                   # present and non-empty
+            git mailinfo "$msg" "$patch" < "$p" >/dev/null # valid mail-format patch
+            git apply --stat "$patch" >/dev/null           # the diff parses (hunks well-formed)
+          done
+          echo "patch format + parse OK; the apply-onto-6.18.35 + compile gate runs on the aarch64 builder (host/BUILD.md §0)"
+      # arm-harness is the crate with `unsafe` (the perf/KVM syscall seam), so the
+      # repo's unsafe⇒Miri bar applies to it. The Machine's raw-pointer ops that a real
+      # KVM mapping otherwise hides from the interpreter — the volatile kvm_run
+      # read-modify-write (`complete_mmio_read`) and guest-RAM `from_raw_parts`
+      # (`state_digest`) — are extracted into the portable `sys::write_mmio_read` /
+      # `sys::guest_ram` seams and exercised HERE under Miri against allocation-backed
+      # buffers (`sys::tests::write_mmio_read_stages_over_an_allocation`,
+      # `guest_ram_borrows_the_allocation`). floor-check is deliberately NOT here:
+      # it contains no `unsafe`, its fixture tests are filesystem reads Miri's
+      # isolation forbids, and interpreting it would buy minutes of CI for no UB
+      # coverage. (`cargo miri test -p floor-check` still works locally — its
+      # fixture target is `#![cfg(not(miri))]`.)
+      - name: miri — arm-harness (the unsafe perf/KVM seam)
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path "$SPIKE/Cargo.toml" -p arm-harness
+      # The payload crates (runtime, oracles) contain `unsafe` but are architecturally
+      # outside the unsafe⇒Miri path, by the contract's own terms — see the rebuttal in
+      # payloads/runtime/src/lib.rs (§`unsafe`, and why this crate is Miri-exempt), which
+      # quotes AGENTS.md:48-55 and tasks/00-CONVENTIONS.md:104-117. Two facts: (1) their
+      # top-level `global_asm!` is aarch64 machine code the host assembler rejects, so
+      # `cargo miri test -p runtime`/`-p oracles` does not compile — no interpreter run
+      # to gate; (2) the residual unsafe is the rule's own `asm!` carve-out plus
+      # fixed-GPA volatile MMIO (integer-literal addresses with no provenance, nothing to
+      # loopback). The rule's actual target — "the pointer/bounds logic" — is, for these
+      # payloads, the clock-page byte layout, seamed into oracle-model as pure `[u8]`
+      # packing and interpreted under Miri right here. (oracle-model is
+      # `forbid(unsafe_code)`; this run validates that shared layout, the PRNG, and the
+      # count derivations.)
+      - name: miri — oracle-model (shared page layout + count derivations)
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path "$SPIKE/oracle-model/Cargo.toml" --features std
+
   # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
   # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`
   # under PR concurrency the Miri run was OOM/timeout-flaky (SIGKILL/137) and

@@ -1,0 +1,50 @@
+[package]
+name = "oracles"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# The analytical oracle payloads. One bin per class from `docs/ARM-ALTRA.md`
+# stages AA-1/AA-2/AA-4/AA-5. Each bin's counted body is hand-written aarch64 asm
+# (src/asm/<name>.s) so its taken-branch count is a property of the *instructions*,
+# not of whatever the compiler decided to emit this week; the Rust half only does
+# setup, reporting and the self-checks.
+[dependencies]
+oracle-model = { path = "../../oracle-model", version = "0.1.0" }
+runtime = { path = "../runtime", version = "0.1.0" }
+
+[[bin]]
+name = "ident"
+path = "src/bin/ident.rs"
+
+[[bin]]
+name = "straight-line"
+path = "src/bin/straight_line.rs"
+
+[[bin]]
+name = "branch-dense"
+path = "src/bin/branch_dense.rs"
+
+[[bin]]
+name = "svc"
+path = "src/bin/svc.rs"
+
+[[bin]]
+name = "exception-abort"
+path = "src/bin/exception_abort.rs"
+
+[[bin]]
+name = "wfi-idle"
+path = "src/bin/wfi_idle.rs"
+
+[[bin]]
+name = "llsc-atomics"
+path = "src/bin/llsc_atomics.rs"
+
+[[bin]]
+name = "lse-atomics"
+path = "src/bin/lse_atomics.rs"
+
+[[bin]]
+name = "clock-page"
+path = "src/bin/clock_page.rs"

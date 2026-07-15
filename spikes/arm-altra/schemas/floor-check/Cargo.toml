@@ -1,0 +1,34 @@
+# The evidence floor checker. Given a retained run-set (`run-set.json` manifest +
+# `records.jsonl`), it recomputes every acceptance floor from the raw per-sample
+# records and never believes a summary — the manifest deliberately carries no
+# totals to believe (docs/ARM-ALTRA.md §Evidence integrity #2). Its verdict, not a
+# harness done-marker, is what a stage disposition may rest on.
+#
+# Pure logic only: no `unsafe`, no syscalls, no box. It depends on `arm-harness`
+# solely for `arm_harness::evidence` (the canonical shapes) and on `oracle-model`
+# for the independent count oracle. Both are portable and run natively on this Mac.
+[package]
+name = "floor-check"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oracle-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+sha2.workspace = true
+arm-harness = { path = "../../harness", version = "0.1.0" }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "floor-check"
+path = "src/bin/floor_check.rs"
+
+[[bin]]
+name = "gen-fixtures"
+path = "src/bin/gen_fixtures.rs"

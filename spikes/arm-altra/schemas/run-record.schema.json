@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harmony.invalid/spikes/arm-altra/schemas/run-record.schema.json",
+  "title": "records.jsonl \u2014 one attempted sample per line",
+  "description": "The records half of a run-set: `records.jsonl` holds one instance of this schema per line, one line per ATTEMPTED sample (the Rust definition is `arm_harness::evidence::RunRecord` and this schema mirrors it field for field). Every attempted sample gets a record, including ones that failed \u2014 there is no way to express 'this sample did not work out' by omitting it, because omission is exactly what the totality check catches (docs/ARM-ALTRA.md \u00a7Evidence integrity #6: a missing sample is a failure to account, not a pass). These records are the ONLY numbers a floor checker may use; the manifest carries no totals to believe. UNTESTED ON SILICON.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sample_id",
+    "payload",
+    "scale",
+    "seed",
+    "trips",
+    "condition",
+    "work_begin",
+    "work_end",
+    "measured_taken",
+    "reported_taken",
+    "exit_reason",
+    "overflow",
+    "step",
+    "state_digest",
+    "params_mode",
+    "clockpage_mode",
+    "payload_status"
+  ],
+  "properties": {
+    "sample_id": {
+      "description": "Dense index into the attempted samples, `0..attempted`. The totality check is exactly: these are present, once each, with no gaps.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "payload": {
+      "$ref": "#/$defs/payload"
+    },
+    "scale": {
+      "$ref": "#/$defs/scale"
+    },
+    "seed": {
+      "description": "The seed the params page carried. The checker re-derives the expected count from `(payload, scale, seed)` \u2014 it never reads a predicted count out of the evidence.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "trips": {
+      "description": "The trip count the payload was given. `oracle_model::trips(payload, scale)` is the single definition; this field records what the harness actually passed.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "condition": {
+      "description": "The experimental condition (`pinned-solo`, `co-tenant-load`, \u2026).",
+      "type": "string",
+      "minLength": 1
+    },
+    "work_begin": {
+      "description": "`BR_RETIRED` sampled at the window's opening mark (the MMIO store of `MARK_BEGIN`).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "work_end": {
+      "description": "`BR_RETIRED` sampled at the window's closing mark (`MARK_END`).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "measured_taken": {
+      "description": "`work_end - work_begin` \u2014 the measured taken-branch count of the window. The checker RECOMPUTES this from the two endpoints rather than believing it, and fails a record whose own field disagrees.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "reported_taken": {
+      "description": "The retry count the payload reported in-band (`STXR` retries, seqlock retries). Zero for payloads with no reported term \u2014 and the checker fails a nonzero value on such a payload, since it would otherwise silently inflate the predicted count.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "exit_reason": {
+      "$ref": "#/$defs/exit-reason"
+    },
+    "overflow": {
+      "description": "Overflow bookkeeping, when the sample armed one. `null` for a counting-mode sample (AA-1(a)/(b)).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/overflow-record"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "step": {
+      "description": "Single-step measurement, for a stepped AA-2 sample; `null` for every non-stepped run. The AA-2 floor validates this structured evidence (PC advanced, exactly one instruction retired) rather than trusting the `exit_reason: debug` label. Unproduced pre-silicon: the stepping run path is arrival-day.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/step-record"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state_digest": {
+      "description": "Digest of the landed guest state, for replay-identity checks. Two samples that share (payload, scale, seed, condition, target) must carry the same digest \u2014 that is the same-seed determinism claim, and the checker enforces it from the records.",
+      "type": "string",
+      "minLength": 1
+    },
+    "params_mode": {
+      "description": "The `PARAMS mode=` the guest itself printed \u2014 the in-band attestation that the harness really published the params page. The checker demands `managed`: a harness that forgot to publish it would otherwise run the smoke scale while the manifest claimed 1e8.",
+      "type": "string",
+      "enum": [
+        "managed",
+        "self-seeded"
+      ]
+    },
+    "clockpage_mode": {
+      "description": "The `CLOCKPAGE mode=` the guest printed, for AA-5 runs. `null` elsewhere.",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "payload_status": {
+      "description": "The payload's own exit status. Nonzero means the payload's in-guest self-checks failed, and the sample is a failure however good its counts look.",
+      "type": "integer"
+    }
+  },
+  "$defs": {
+    "payload": {
+      "description": "The oracle payload class (`oracle_model::Payload`). `ident` and `linux-guest` have no counting window; `linux-guest` is the AA-5 Linux VM the AA-6 determinism matrix requires (a full guest, not a bare-metal payload).",
+      "type": "string",
+      "enum": [
+        "ident",
+        "straight-line",
+        "branch-dense",
+        "svc",
+        "exception-abort",
+        "wfi-idle",
+        "llsc-atomics",
+        "lse-atomics",
+        "clock-page",
+        "linux-guest"
+      ]
+    },
+    "scale": {
+      "description": "The run scale (`oracle_model::Scale`). Note the serialized spellings are `s1e6`/`s1e7`/`s1e8` (serde kebab-case of the Rust variants), not `1e6`.",
+      "type": "string",
+      "enum": [
+        "smoke",
+        "s1e6",
+        "s1e7",
+        "s1e8"
+      ]
+    },
+    "exit-reason": {
+      "description": "How this sample's `KVM_RUN` ended (`arm_harness::evidence::ExitReason`). Checked per record against `Mechanism::expected_exit_reason`, so a run that silently exercised the stock signal-kick path while claiming the patched exit cannot pass.",
+      "type": "string",
+      "enum": [
+        "preempt",
+        "signal-kick",
+        "mmio",
+        "debug",
+        "other"
+      ]
+    },
+    "overflow-record": {
+      "description": "The overflow bookkeeping for one sample (`arm_harness::evidence::OverflowRecord`). \u00a7Evidence integrity #6: exactly-once is shown PER RECORD, never inferred from a total.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "armed",
+        "deliveries",
+        "advisory_exits",
+        "target",
+        "landed",
+        "skid",
+        "landed_digest"
+      ],
+      "properties": {
+        "armed": {
+          "description": "Whether an overflow was armed for this sample.",
+          "type": "boolean"
+        },
+        "deliveries": {
+          "description": "How many times the armed overflow was delivered. Must be exactly 1 \u2014 0 is a lost PMI, >1 is a duplicate, and both are blocking.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "advisory_exits": {
+          "description": "Exits that left KVM_RUN while armed but BEFORE the counter reached the target \u2014 the arm64 'any host IRQ' advisory exits (the patch fires KVM_EXIT_PREEMPT on any IRQ, not only the PMU overflow). Recorded, not hidden: 'the mechanism fires on unrelated IRQs' is a measured property of this silicon, not noise.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "target": {
+          "description": "The work target the deadline was set for.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "landed": {
+          "description": "The work count actually landed on. AA-3's acceptance is `work == target` on EVERY landing.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "skid": {
+          "description": "`landed - target`. Negative means the landing was early (inside the skid margin, which is the design); positive means it OVERSHOT, which the late-only-stop contract forbids outright. The checker recomputes it from `landed` and `target` rather than believing the field.",
+          "type": "integer"
+        },
+        "landed_digest": {
+          "description": "Digest of the guest state AT THE LANDING, sampled before the guest resumed \u2014 the state AA-3's replay identity is about. The final state_digest can converge (two different landings reach the same exit state), so it cannot establish landing identity. Empty when nothing was delivered.",
+          "type": "string"
+        }
+      }
+    },
+    "step-record": {
+      "description": "One single-step measurement (`arm_harness::evidence::StepRecord`), for a stepped AA-2 sample. AA-2 characterizes single-stepping, and its evidence is these measured numbers, not the `exit_reason: debug` label a rehashed run-set can flip in one byte. The AA-2 floor validates them: the PC must advance and exactly one instruction must retire. Unproduced pre-silicon \u2014 the stepping run path (KVM_SET_GUEST_DEBUG + the stepping loop) is arrival-day.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pc_before",
+        "pc_after",
+        "insn_retired",
+        "br_retired_delta",
+        "transition",
+        "step_digest"
+      ],
+      "properties": {
+        "pc_before": {
+          "description": "The PC before the step.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "pc_after": {
+          "description": "The PC after the step \u2014 must differ from pc_before (a step advanced the guest).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "insn_retired": {
+          "description": "Instructions retired by the step. AA-2's single-step semantics require exactly 1.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "br_retired_delta": {
+          "description": "BR_RETIRED delta across the step, validated against `transition`: 0 for sequential, 1 for a taken branch, and a measured 0-or-1 for the exception/WFI/injection classes AA-2 characterizes.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "transition": {
+          "$ref": "#/$defs/step-transition"
+        },
+        "step_digest": {
+          "description": "Digest of the guest state AT THE STEP MOMENT (not the exit sentinel). AA-2's acceptance is replay-identical stepped states across repeated inputs; replay identity compares this, because the final state_digest can converge.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "step-transition": {
+      "description": "What kind of transition a single step made (`arm_harness::evidence::StepTransition`), recorded from the stepped opcode/trap syndrome rather than inferred from PC arithmetic \u2014 because `pc_after != pc_before + 4` cannot tell a retired taken branch from an exception transfer, and BR_RETIRED counts the former, not the latter. The AA-2 floor validates the delta against the class and requires the full matrix (including an LL/SC exclusive) to be covered.",
+      "type": "string",
+      "enum": [
+        "sequential",
+        "taken-branch",
+        "exception-entry",
+        "exception-return",
+        "wfi",
+        "injection",
+        "llsc-exclusive"
+      ]
+    }
+  }
+}

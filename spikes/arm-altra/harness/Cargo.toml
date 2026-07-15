@@ -1,0 +1,36 @@
+[package]
+name = "arm-harness"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# The minimal ioctl-level KVM harness (single vCPU, pinned, raw 0x21 armed
+# guest-only) plus run orchestration, the aarch64 opcode scanner, and the evidence
+# writer.
+#
+# The pure logic — scanning, ELF reading, console decoding, planning, count
+# bookkeeping, evidence emission — is portable and is tested natively on the
+# development Mac (which is itself aarch64). The perf_event/KVM syscalls obviously
+# cannot run on macOS; they live behind the `sys` seam, are the crate's only
+# `unsafe`, and are compiled only on Linux.
+[dependencies]
+oracle-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+sha2.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "arm-spike"
+path = "src/bin/arm_spike.rs"
+
+[[bin]]
+name = "arm-scan"
+path = "src/bin/arm_scan.rs"
