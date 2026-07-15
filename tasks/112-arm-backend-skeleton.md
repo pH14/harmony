@@ -133,7 +133,9 @@ Additive unless marked. Nothing else may be touched.
 | `consonance/vmm-core/src/snapshot.rs` | the engine snapshot glue made generic over `Vendor::Snapshot` (seals encoded bytes — already opaque) | **sanctioned spine edit** |
 | `consonance/vm-state/src/` | add `ARCH_AARCH64 = 2`, a `SnapshotRecords` codec trait (arch-neutral), and a **minimal** `Arm64VmState` record set (full sysreg set TODO→AA-6) | **sanctioned spine edit** |
 | `consonance/gicv3/` | new crate: GICv3 distributor/redistributor + generic-timer model (the ARM analogue of the `lapic` crate) | additive crate |
-| `.github/workflows/quality.yml` | add the new/`unsafe`-bearing crates to the `miri` job `-p` list | additive lines |
+| `consonance/{vm-state,vmm-backend,vmm-core}/tests/public-api.txt` | regenerate: M0/M1 add public API (`SnapshotRecords`, `Vendor::Snapshot`, the `Arm64*` types + re-exports), so the `cargo public-api` goldens the `quality.yml` `public-api` job diffs must be updated — **Linux-frozen** (regenerated on the box: the KVM-gated `Arm64KvmBackend` surface only appears on the aarch64-linux leg, so a Mac-regenerated snapshot would drop it; the `hm-rk5`/PR #110 precedent) | golden update |
+| `consonance/gicv3/tests/{public-api.txt,public_api.rs}` | new: the new public crate joins the `public-api` gate, mirroring `lapic/tests/` (a new public crate silently outside the frozen-API gate is the smell this row closes) | additive |
+| `.github/workflows/nightly.yml` | add the new/`unsafe`-bearing crates to the per-crate Miri jobs — **Miri lives here, not `quality.yml`** (moved 2026-06-24 for OOM/timeout headroom); pinned `nightly-2026-06-16` + `MIRIFLAGS=-Zmiri-permissive-provenance` | additive lines |
 
 The sanctioned spine edits (the `Vendor::Snapshot` associated type, its engine glue, and the
 `vm-state` arm64 record set) are the §D exception and **nothing more**. If the implementer finds
@@ -193,10 +195,12 @@ The engine's `snapshot.rs` holds/seals `<B::A as Vendor>::Snapshot` via `Snapsho
   one that catches a canonical-form slip — `docs/ARCH-BOUNDARY.md` §Cost).
 - `cargo clippy … -- -D warnings`, `cargo fmt --check`, `cargo deny check`.
 - The CI aarch64 cross-check (`aarch64-unknown-linux-gnu`, x86 KVM `cfg`'d out) still compiles.
-- **Box (edged to `hm-7pb`, arrival-day):** the existing x86 live-boot + `state_hash`
-  determinism box gates re-run unchanged through the re-typed hooks — the proof the seam edit is
-  x86-behavior-neutral on real KVM, not just in the mock. Runnable now on the x86 determinism box
-  independent of Altra; note it in Environment.
+- **Box — BLOCKING, runnable today (NOT edged to `hm-7pb`):** the existing x86 live-boot +
+  `state_hash` determinism box gates re-run unchanged through the re-typed hooks, on the existing
+  x86 determinism box (`DET_BOX_SSH`), which is available now. This is the proof the seam edit is
+  x86-behavior-neutral **on real KVM**, not just in the mock — a live-KVM-only snapshot save/restore
+  regression the mock cannot see must **not** merge on Mac-local greens. M0 does not merge until this
+  passes. Only the *ARM*-KVM gates (M4) edge to Altra arrival; the M0 x86 box gate does not.
 
 ### M1 — the `Arm64` `Arch` value types + `Vendor` skeleton compiling against the engine (the keystone check)
 
@@ -212,7 +216,7 @@ impl Arch for Arm64 {
     type Injection = Injection;                      // Interrupt{ intid: GicIntId } | (no NMI on arm64)
     type VcpuState = Arm64VcpuState;                 // x0..x30, sp, pc, pstate, EL1 sysregs (skeleton subset; full set TODO(AA-6))
     type Policy = Arm64Policy;                       // IdRegModel + SysregTrapPolicy (default-deny skeleton; rows TODO(AA-6))
-    type IntId = GicIntId;                           // u32-wide: SGIs 0..16, PPIs 16..32, SPIs 32.. (exceeds x86's u8)
+    type IntId = GicIntId;                           // u32-wide (GICv3): SGI 0..16, PPI 16..32, SPI 32..=impl-limit (arch max 1019; 1020..1024 special, 1023 = spurious). Exceeds x86's u8.
     type Caps = Arm64Caps;                           // deterministic_clock via the work-derived guest clock (AA-5 validates)
     type Completion = Arm64Completion;               // arch-payload completions (skeleton: none/minimal)
 }
@@ -220,7 +224,11 @@ impl Arch for Arm64 {
 // The arch-specific half of the two-level Exit<Arm64>. Cross-arch exits (Mmio, Hypercall,
 // Idle == WFI, Shutdown, Deadline) stay in CommonExit — do NOT duplicate them here.
 pub enum Arm64Exit {
-    Sysreg { /* trapped ID/PMU/timer sysreg read or write — the MSR-filter analogue */ },
+    // PATCHED-ABI surface, NOT stock: stock KVM/arm64 emulates supported sysregs and UNDEFs
+    // unsupported ones IN-KERNEL — it never surfaces a sysreg trap to userspace (there is no
+    // MSR-filter analogue). So `Sysreg` is unreachable on the stock backend, exactly as x86's
+    // `Cpuid`/`Rdtsc`/`Hypercall` are patched-only. It exists for the AA-3 patched backend.
+    Sysreg { /* trapped ID/PMU/timer sysreg read or write */ },  // TODO(patched-abi)
     // (skeleton starts minimal; grow exactly as the AA-6 contract truth table dictates,
     //  each variant exhaustively matched by dispatch_arch — no wildcard arm, default-deny structural)
 }
@@ -228,17 +236,28 @@ pub enum Arm64Exit {
 
 Key seam points the skeleton must get right (all grounded in the read-first files):
 
-- **Idle is `CommonExit::Idle`.** WFI and HLT are one concept above the trait
-  (`exit.rs`); do not add an arm64 idle variant. On KVM/arm64 a doorbell/WFx surfaces as
-  `KVM_EXIT_MMIO`/`KVM_EXIT_HYPERCALL`/`KVM_EXIT_SYSTEM_EVENT`, **not** `KVM_EXIT_IO` — that
-  per-arch exit-decode knowledge lives in the backend (M4), not the engine.
-- **The hypercall doorbell is a reserved MMIO GPA or `HVC`**, surfacing as `CommonExit::Hypercall`
-  with the same `HypercallFrame { args: [u64; 4] }` (`x0..x3` carry the slots; the transport
-  magic is unchanged). `docs/ARCH-BOUNDARY.md` §4 rules this per-vendor.
+- **Idle stays `CommonExit::Idle`, but is patched-ABI on arm64.** WFI and HLT are one concept
+  above the trait (`exit.rs`); do not add an arm64 idle variant. But the mechanism is asymmetric:
+  x86 *stock* KVM surfaces `HLT` as `KVM_EXIT_HLT` → `Idle`, whereas *stock* KVM/arm64 handles WFI
+  **in-kernel** (the vCPU is descheduled/blocked — there is no `KVM_EXIT_WFI`). Surfacing WFI as a
+  deterministic `Idle` exit needs the opt-in/patched trap surface (the AA-3 bead), so the stock
+  `Arm64KvmBackend` **never returns `Idle`** — do not claim idle-skip on the stock path.
+- **The hypercall doorbell is a reserved-MMIO-GPA store** → surfaces as `KVM_EXIT_MMIO` on **stock**
+  KVM/arm64 (so bring-up boot needs no patch), recognized by the vendor's `dispatch_mmio` at the
+  reserved GPA and handled as the hypercall doorbell (`docs/ARCH-BOUNDARY.md` §4: "on arm64 a
+  doorbell surfaces as `KVM_EXIT_MMIO`/hypercall-class, not `KVM_EXIT_IO` … `DOORBELL_PORT` becomes
+  a reserved MMIO GPA"). The same `HypercallFrame { args: [u64; 4] }` applies (`x0..x3` name the
+  slots via the request/response pages; the transport magic is unchanged). An **`HVC`-based**
+  doorbell surfacing as `CommonExit::Hypercall` is the patched alternative — stock KVM services
+  guest `HVC` (PSCI) in-kernel, so it is not a stock path.
 - **`check_wire_interrupt`/`inject_wire_interrupt` take the `u32` wire already.** The arm64 vendor
-  answers with GIC ranges: `0..16` are deliverable SGIs (**not** reserved as on x86), `16..32` are
-  PPIs, `32..` are SPIs; out-of-range → `InterruptReject::OutOfRange`. Never bake x86's
-  `< 16 reserved` into the control plane (`vendor/mod.rs` `InterruptReject` docs).
+  validates against the **implemented, distributor-bounded** GICv3 identity space, not a bare
+  `≥ 32 ⇒ SPI` rule: SGIs `0..16` (deliverable — **not** reserved as on x86), PPIs `16..32`, SPIs
+  `32..=impl_limit` where `impl_limit` is the distributor-configured maximum (`GICD_TYPER.
+  ITLinesNumber`, architectural max **1019**); `1020..1024` are special INTIDs (`1023` = spurious);
+  `1024..` (extended SPI / LPI) require extended/LPI support the skeleton does not model. Anything
+  past the implemented range → `InterruptReject::OutOfRange`. Never bake x86's `< 16 reserved` into
+  the control plane (`vendor/mod.rs` `InterruptReject` docs).
 - **`Vendor::Snapshot = Arm64VmState`** (the M0 seam), a **minimal** record set — enough to
   encode/decode a trivial vCPU state and round-trip through the container — with the full sysreg
   record set a `// TODO(AA-6):` (AA-6 owns which sysregs a snapshot must carry). `ARCH_TAG =
@@ -267,20 +286,33 @@ out; **zero crate dependency on `vtime`** (the vmm run loop joins them, exactly 
 Wire it into `Arm64Devices` and fill the fabric methods of `Vendor for Arm64`
 (`service_pending_irqs`, `complete_irq_delivery`, `pending_deliverable_interrupt`,
 `next_timer_deadline_vns`, `deliverable_timer_deadline_vns`, `has_pending_guest_interrupt`,
-`inject_wire_interrupt`, `guest_interruptible` via `PSTATE.{I,F}`).
+`inject_wire_interrupt`, `guest_interruptible` via `PSTATE.{I,F}`). **These compute
+arbitration and deadlines — they do not, in the skeleton, deliver into the guest** (see the
+delivery bullet).
 
-- **INTID model:** SGIs/PPIs/SPIs as above; priority + enable + pending/active register files;
-  arbitration returns the one highest-priority deliverable INTID (the `set_pending_irq` slot the
-  backend re-arbitrates each entry).
-- **Generic-timer deadline** flows through the existing `TimerQueue`/idle seams. The timer's
+- **INTID model:** SGIs/PPIs/SPIs over the implemented, distributor-bounded range (M1 §INTID;
+  `≤ impl_limit ≤ 1019`); priority + enable + pending/active register files; arbitration returns
+  the one highest-priority deliverable INTID (the `set_pending_irq` slot the backend re-arbitrates
+  each entry). This arbitration is **pure, deterministic, and fully testable now** — it is the
+  half of the fabric that the skeleton actually finishes.
+- **Delivery is explicitly OFFLINE in the skeleton, pending AA-6.** Unlike x86 (userspace LAPIC
+  under `KVM_IRQCHIP_NONE`, injected via `KVM_INTERRUPT`), **stock KVM/arm64 has no arbitrary-INTID
+  queue into a userspace GIC model**: the GIC CPU interface and the generic-timer PPI couple to the
+  *in-kernel* vGICv3. Real delivery therefore requires either (a) the in-kernel vGICv3
+  (`KVM_CREATE_DEVICE`/`KVM_DEV_TYPE_ARM_VGIC_V3` + `KVM_IRQ_LINE`), whose **bit-identical
+  save/restore is exactly AA-6's measured open question** (`docs/ARM-ALTRA.md` §5/AA-6), or (b) a
+  userspace model with a patched injection seam. So the stock `Arm64KvmBackend`'s
+  `inject`/`set_pending_irq` return `Unsupported` and `Vendor::inject_wire_interrupt` reports "no
+  delivery fabric wired" — mirroring x86 **stock** `KvmBackend::inject` being `Unsupported` at
+  bring-up (the `bringup.rs` note: interrupt injection is moot until it lands). The `gicv3` crate's
+  arbitration logic is complete and tested; wiring it to a real guest interrupt is a `// TODO(AA-6):`
+  gated on the vGIC round-trip verdict. Do not claim guest interrupt delivery on any skeleton path.
+- **Generic-timer deadline** flows through the existing `TimerQueue`/idle seams as a *computed
+  deadline* (the same pure output as the arbitration above — not a delivered interrupt). The timer's
   *counter read* is the clock-page's job later (`hm-rk5`); the skeleton models the timer
-  *interrupt/deadline* only (`docs/PARAVIRT-CLOCK.md` §3.2). **No timing constants invented** —
+  *deadline* only (`docs/PARAVIRT-CLOCK.md` §3.2). **No timing constants invented** —
   `CNTFRQ`/timer-input Hz is a documented DTB value the composition root fixes (like x86's
-  `LAPIC_TIMER_HZ`), and it governs deadline arithmetic that is moot until injection lands.
-- **In-kernel vGIC vs userspace model** is AA-6's measured decision (`docs/ARM-ALTRA.md` §5/AA-6:
-  can the in-kernel vGICv3 state be saved/restored bit-identically?). The skeleton builds the
-  **userspace GIC model** (the shape the x86 seam already proves deterministic); a `// TODO(AA-6):`
-  records the in-kernel-vGIC decision input. Do not assume the in-kernel path.
+  `LAPIC_TIMER_HZ`), and it governs deadline arithmetic that is moot until delivery lands (AA-6).
 
 **Gate (independently green):** `-p gicv3` build/clippy/fmt/nextest; property tests (≥256 cases,
 reduced under Miri) over the register-file + arbitration + deadline logic; Miri clean for any
@@ -313,10 +345,13 @@ deadline; no float.
 
 **Gate (independently green):** portable unit tests for `Image` parsing (valid/garbage/truncated),
 the DTB writer (structure + a round-trip parse-back check), and the entry overlay — all native +
-Miri, mock-backed like `bringup.rs`'s tests. **TCG smoke** (`qemu-system-aarch64`, local): a
-minimal arm64 payload built against this boot path boots under TCG to a console marker and its
-exit protocol round-trips — **liveness/shape only, no counts** (mirrors `tasks/109`'s TCG
-discipline; propagate every gate RC — a done-marker is never success).
+Miri, mock-backed like `bringup.rs`'s tests. **TCG smoke** (`qemu-system-aarch64`, local): the
+`Image`+DTB **boot artifacts** this milestone produces are booted on qemu's own emulated aarch64
+machine to a console marker — proving the *guest image is well-formed and boots*, **liveness/shape
+only, no counts**. Note precisely what it is **not**: TCG is qemu's own VMM, so it does **not**
+exercise `Arm64KvmBackend` (that path talks to `/dev/kvm`; it is M4's, arrival-day). This gate
+validates the artifacts, not our ioctls (mirrors `tasks/109`'s TCG discipline; propagate every
+gate RC — a done-marker is never success).
 
 ### M4 — the KVM/arm64 stock backend + composition root (Linux+aarch64-gated); box gates edged
 
@@ -333,22 +368,41 @@ crate):
   `Backend::map_memory` contract).
 - Register save/restore via `KVM_GET_ONE_REG`/`KVM_SET_ONE_REG` over the core + EL1 sysreg IDs
   the `Arm64VcpuState` subset carries (full set TODO→AA-6).
-- `KVM_RUN` exit decode: `KVM_EXIT_MMIO` → `CommonExit::Mmio`; the doorbell (`HVC`/reserved-GPA
-  MMIO) → `CommonExit::Hypercall`; `KVM_EXIT_SYSTEM_EVENT` (shutdown/reset) → `CommonExit::
-  Shutdown`; WFx/idle → `CommonExit::Idle`; trapped sysregs → `Arm64Exit::Sysreg`. Each mapping
-  cites the documented ABI; the box confirms.
-- `set_policy` installs the `Arm64Policy` skeleton (the `ID_AA64*` freeze via KVM's
-  writable-ID-register surface + the `HCR_EL2`/`MDCR_EL2` trap-group shape). `run_until` =
-  `Unsupported` (non-goal 3). `capabilities()` reports every determinism field **honestly false**
-  for the stock backend (mirrors stock `KvmBackend`).
+- `KVM_RUN` exit decode — **the stock/patched split is load-bearing and must be honest** (mirrors
+  x86, where stock surfaces Io/Mmio/MSR/Shutdown and Hypercall/Cpuid/instruction exits are
+  patched-only). **Reachable on the STOCK backend:** `KVM_EXIT_MMIO` → `CommonExit::Mmio`
+  (including the reserved-GPA doorbell store, which `dispatch_mmio` recognizes and handles as the
+  hypercall doorbell — so the bring-up boot needs no patch); `KVM_EXIT_SYSTEM_EVENT` (PSCI
+  `SYSTEM_OFF`/`RESET`) → `CommonExit::Shutdown`. That is the **entire** stock surface — the stock
+  `run` returns only `Mmio`/`Shutdown`. **Patched-ABI only (the decode arms exist for the AA-3
+  backend, `// TODO(patched-abi)`, and the stock backend never returns them):** WFx → `Idle`
+  (stock blocks WFI in-kernel); trapped sysregs → `Arm64Exit::Sysreg` (stock emulates/UNDEFs
+  in-kernel, no userspace trap); an `HVC`-based doorbell → `CommonExit::Hypercall` (stock services
+  guest `HVC`/PSCI in-kernel). Each mapping cites the documented ABI; the box confirms.
+- `inject`/`set_pending_irq` return `Unsupported`, `take_accepted_interrupt` returns `None`: the
+  stock backend has **no delivery path** into the guest for a userspace GIC (M2 §Delivery) — this
+  mirrors stock x86 `KvmBackend::inject` at bring-up. Delivery is AA-6-gated, not this backend's.
+- `set_policy` installs the `Arm64Policy` skeleton. **What actually works on stock:** the
+  `ID_AA64*` freeze is a **config-time** write via KVM's writable-ID-register surface
+  (`KVM_SET_ONE_REG` on the ID regs before the first `KVM_RUN`) — reachable now. **What is
+  patched-only:** the `HCR_EL2`/`MDCR_EL2` trap-group *enforcement* that turns a denied sysreg into
+  a userspace `Sysreg` exit — the skeleton records the trap-table shape but its runtime exits are
+  AA-3's (`// TODO(patched-abi)`; full row set AA-6). `run_until` = `Unsupported` (non-goal 3).
+  `capabilities()` reports every determinism field **honestly false** for the stock backend
+  (mirrors stock `KvmBackend`).
 - **Composition root** `vendor::arm64::bringup::boot_selected` — the one place the
   `(Arm64KvmBackend, Arm64)` pair is named — mirroring x86's `boot_selected`, Linux+aarch64-gated.
 
 **Gate:**
 - **Local:** `cargo build -p vmm-backend --all-features` on the Mac (KVM layer `cfg`'d out — the
   pure decode/mock logic compiles native) **and** the CI aarch64-linux cross-check compiles the
-  full KVM layer (without running it). A `MockArm64Backend`-driven exit-decode unit test covers
-  the pure mapping logic; TCG smoke exercises the ioctl/boot shape as far as emulation allows.
+  full KVM layer (without running it). A `MockArm64Backend`-driven exit-decode unit test covers the
+  pure `kvm_run` → `Exit` mapping logic. For **ioctl-sequence shape** (request numbers, argument
+  struct layout, call ordering: `KVM_ARM_VCPU_INIT` before the first `KVM_SET_ONE_REG`, etc.), seam
+  the syscall boundary behind a thin trait and assert against a **syscall-fake/ioctl-trace** double
+  — portable + Miri, no `/dev/kvm`. **TCG does NOT enter here:** qemu emulates its own machine, so
+  it never issues our ioctls; the real ioctl path against `/dev/kvm` is **arrival-day-only** on the
+  Altra (there is no local KVM loop — `hm-8l3` REFUSE).
 - **Box (edged to `hm-7pb`, ARRIVAL-DAY — not runnable now):** on the Altra, a real
   `KVM_RUN` boots the `Image`+DTB path to a console marker, and a same-seed pair holds a
   bit-identical `state_hash` (the determinism gate). These gates are **specified here but
@@ -365,14 +419,22 @@ cargo nextest run -p <crate> --all-features        # ≥256 proptest cases; tota
 cargo clippy  -p <crate> --all-features --all-targets -- -D warnings   # workspace clippy.toml determinism lints
 cargo fmt     -p <crate> -- --check
 cargo deny check
-cargo +nightly miri test -p <crate>                # every crate with unsafe + allocation-backed seam (PR #99)
+# public-api: regenerate the frozen goldens the quality.yml `public-api` job diffs (M0/M1 move the
+# public surface). Linux-frozen — regenerate on the box, else the KVM-gated Arm64KvmBackend surface
+# is dropped (hm-rk5/PR #110 precedent). New crate `gicv3` gets its own tests/public-api.txt.
+cargo test -p <crate> --test public_api -- --ignored --nocapture
+# Miri lives in .github/workflows/nightly.yml (NOT quality.yml), pinned toolchain + MIRIFLAGS:
+MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly-2026-06-16 miri test -p <crate>   # unsafe + alloc-backed seam (PR #99)
 ```
 
 Plus the task-specific gates: the CI `aarch64-unknown-linux-gnu` cross-check (additivity — the
-x86 substrate `cfg`'d out must still compile the tree); the **TCG smoke** (M3/M4, liveness/shape
-only); and every **x86 gate green unchanged through M0's spine edit** (the neutrality proof). The
-**box/KVM gates (M0 x86-neutrality re-run, M4 arm64 boot + determinism) are arrival-day**, edged
-to `hm-7pb`, and stated in Environment — never blocking the Mac-local green.
+x86 substrate `cfg`'d out must still compile the tree); the **TCG smoke** (**M3 boot artifacts
+only** — the `Image`+DTB payload boots on qemu's own VMM; TCG never runs `Arm64KvmBackend`); and
+every **x86 gate green unchanged through M0's spine edit** (the neutrality proof). Box classification
+is **not uniform**: the **M0 x86-neutrality box gate is BLOCKING and runnable today** (existing x86
+determinism box — a live-KVM snapshot regression must not merge on Mac greens); **only the M4 arm64
+boot + `state_hash` determinism gates are arrival-day**, edged to `hm-7pb`. Both are stated in
+Environment.
 
 Determinism discipline is non-negotiable (rule #4): no `HashMap`/`HashSet` reaching a hash,
 deadline, or encoded byte (`BTreeMap`/sorted); no float in anything affecting state; library code
@@ -387,18 +449,23 @@ paths sit behind a seam and are `#[cfg(not(miri))]`-excluded.
   (`rustup target add aarch64-unknown-linux-gnu`); TCG via `qemu-system-aarch64` (Homebrew).
 - **No local KVM ioctl dev loop.** `hm-8l3` = REFUSE: this host is an Apple M1 Max (pre-M3), so
   Virtualization.framework nested virt is unavailable and an aarch64 Linux guest cannot expose a
-  hardware `/dev/kvm`. TCG is the only local oracle for the ioctl/boot path.
-- **Box (arrival-day, edged to `hm-7pb`):** the Ampere Altra (Neoverse N1), reached via
-  `ARM_BOX_SSH` (the `docs/BOX-PINNING.md` `DET_BOX_SSH` convention extended; the repo hard-codes
-  no host). The M4 arm64 boot + `state_hash` determinism gates run there. **M0's x86-neutrality
-  box re-run** uses the existing x86 determinism box (`hetzner`/`DET_BOX_SSH`) and is runnable
-  independent of Altra.
+  hardware `/dev/kvm`. TCG is the local oracle for the guest **boot artifacts** only (it runs
+  qemu's own VMM, not our backend); the `Arm64KvmBackend` **ioctl path has no local oracle** — its
+  *shape* is asserted by a syscall-fake/trace, and the real ioctls are arrival-day-only.
+- **x86 determinism box — BLOCKING, available now:** the existing box (`hetzner`/`DET_BOX_SSH`,
+  `docs/BOX-PINNING.md`) runs **M0's x86-neutrality re-run** (live-boot + `state_hash` through the
+  re-typed snapshot hooks). This is not arrival-day — it gates M0's merge today.
+- **Altra box — arrival-day, edged to `hm-7pb`:** the Ampere Altra (Neoverse N1), reached via
+  `ARM_BOX_SSH` (the `DET_BOX_SSH` convention extended; the repo hard-codes no host). **Only** the
+  M4 arm64 boot + `state_hash` determinism gates run here, and every count/PMI/skid claim they
+  could make is the spike's (`docs/ARM-ALTRA.md`), never this task's.
 
 ## Deliverables (definition of done for the IMPLEMENTATION task this spec spawns)
 
 A branch `task/arm-backend-skeleton` (or as the foreman dispatches) containing only the surface
 list, with:
-1. M0–M4 all green on every Mac-local gate; the box gates specified and edged to `hm-7pb`.
+1. M0–M4 all green on every Mac-local gate; **M0's x86-neutrality box gate green on the existing
+   x86 box (blocking, now)**; only the M4 arm64-KVM box gates edged to `hm-7pb`.
 2. The keystone proven: `Arm64` instantiates every `Vendor`/`Backend`/`Arch` method the engine
    calls; x86 gates green unchanged through the M0 spine edit.
 3. Every spike-measured quantity a `// TODO(AA-N):` bound to its stage; every would-be-frozen seam
