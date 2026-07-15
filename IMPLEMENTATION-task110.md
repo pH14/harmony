@@ -30,7 +30,7 @@ clocksource: Switched to clocksource harmony-pvclock          ← selected, not 
 | **G1** same-seed bit-identical `state_hash`, page ON | **PASS** | 3/3 seals MATCH across two same-seed Postgres boots (page bytes hashed in full) — zero refresh/canonicalization entropy leaks into guest RAM; re-confirmed bit-identical on the r8 re-validation (final head, default schedule) |
 | **N-4 perf** (kill condition 3) | **PASS (≈25×)** | RDTSC-exit-rate reduction over the actual Postgres workload (boot excluded) — see below; far above the 2× "worth it" threshold |
 | **G2** page-stamp == RDTSC-trap-oracle at refresh Moments | **PASS** (re-validated r18 at full strength) | **4843 oracle checks — EVERY synchronized registered boundary** (r18: was a step%1000 sample of 5) + terminal, 4096 refreshes, **deliberate-fault detected** (the gate can fail) |
-| **G3** busy-wait liveness within Δ | **PASS** | syscall-free `pvclock-spin` completed; 2182 refreshes, **1921 (88%) forced by the Δ deadline**, max anchor gap = Δ exactly |
+| **G3** busy-wait liveness within Δ | **PASS** (re-validated r20, baseline-inclusive) | syscall-free `pvclock-spin` completed (`PVSPIN_DONE`); 2182 refreshes, **1921 (88%) forced by the Δ deadline**, max anchor gap = Δ exactly — now measured **including the first interval** (pre-clear baseline → first spin refresh, r20) |
 | **det-corpus O1** (run-vs-run determinism, page-off) | **PASS** (all payloads) | insn-rdtsc / insn-rng / insn-cpuid all deterministic same-seed on the patched backend — the page-off path my task must not regress is intact |
 | **det-corpus O2** (conformance-to-golden) | insn-rdtsc ✓, insn-rng ✓, **insn-cpuid ✗ (pre-existing)** | the insn-cpuid digest is *deterministic* (identical run-to-run) but ≠ its committed golden — a CPUID conformance-golden drift (microcode/golden staleness). **My branch touches no golden/CPUID/corpus file** (diff is `consonance` + `docs` + `guest/linux` only), and pvclock touches no CPUID, so this is orthogonal to the page — flagged for the foreman to reconcile against main, NOT a pvclock regression |
 
@@ -542,6 +542,31 @@ perf arms PASS at the new strength — **Postgres workload reduction re-confirme
 registered *and* selected), the minimal boot-inclusive arm ≈1.02× as documented
 (calibration-bound, reported honestly, ratio not asserted). The recorded
 kill-condition PASS is unchanged; this future-proofs the arm against mislabeling.
+
+**Review round 20 folded in — 2 P2 + G3 box re-validated** (cross-model r20: 0 P1,
+2 P2; portable-only — no kernel rebuild). (a) **`arm_arrival` rejects a past Moment
+(P2).** A target work count below the current anchor took the overdue zero-entry
+landing in `on_deadline`, which sets `last_intercept_work = target` (replacing the
+newer anchor with the older one), so the next step-tail pvclock refresh published a
+LOWER `vns` — a public-API caller could rewind the monotone clock (the frontier
+already rejects past perturbations, but the API itself didn't). `arm_arrival` now
+returns `false` and arms nothing for a Moment strictly below the current anchor;
+the current and future moments still arm, and the existing arrival tests are
+unaffected. Portable regression test
+`arm_arrival_rejects_a_past_moment_and_cannot_rewind_published_vns` (rejected +
+anchor unmoved + effective_vns and page vns unchanged). (b) **G3 counts the first
+interval (P2).** Clearing the refresh log to isolate the spin window dropped the
+baseline publication, so the first logged spin refresh had no predecessor and a
+first refresh delayed past Δ escaped the max-gap check while later Δ-spaced ones
+passed. G3 now captures the page's current publication as the window baseline
+before clearing and prepends it to both the monotonicity and max-gap checks, so the
+first interval (baseline → first spin refresh) counts. **Box G0+G3 re-run** on the
+real patched KVM (det-cfl-v1 `hypervizor`, core 2, exec image rebuilt fresh
+`b97b740b…` per the runbook, window reverted-to-stock 1396736): **G0 PASS**, **G3
+PASS at the new strength** — `PVSPIN_DONE`, 2182 refreshes, 1921 (88%) Δ-forced,
+**max anchor gap = Δ exactly (1000000) with the baseline included** (so the first
+interval is within Δ too). Only these two harness assertions changed, so only G0 +
+G3 needed the box; the other gates' r8–r19 results stand.
 
 ## What landed (by deliverable)
 
