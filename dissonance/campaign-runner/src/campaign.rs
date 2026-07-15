@@ -430,11 +430,10 @@ pub fn run_campaign<M: Machine>(
     // in practice) overflow case rather than panicking. 0 when wall_secs == 0
     // — no division panic, and a zero-duration report never claims an
     // infinite rate.
-    let branches_per_hour_x10 = if wall_secs == 0 {
-        0
-    } else {
-        explored.saturating_mul(36_000) / wall_secs
-    };
+    let branches_per_hour_x10 = explored
+        .saturating_mul(36_000)
+        .checked_div(wall_secs)
+        .unwrap_or(0);
 
     Ok(CampaignReport {
         base_vtime,
@@ -1118,11 +1117,11 @@ mod tests {
         );
         assert_eq!(
             report.branches_per_hour_x10,
-            if report.wall_secs == 0 {
-                0
-            } else {
-                report.branches_explored.saturating_mul(36_000) / report.wall_secs
-            }
+            report
+                .branches_explored
+                .saturating_mul(36_000)
+                .checked_div(report.wall_secs)
+                .unwrap_or(0)
         );
     }
 
