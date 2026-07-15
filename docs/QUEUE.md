@@ -105,8 +105,6 @@ Reach-matrix lane (foreman-owned or spawnable next):
   closes an arrival bead when its box is racked; the execution surfaces dispatch-ready.
   Arrival day now lands on pre-built tooling: the preflight truth-table probes (`hm-69y`
   rider) and the harness lanes (`hm-8v4` / `hm-2kj`).
-- **Campaign-runner Miri box confirmation** (`hm-d4y` residue) — one green box-dispatched
-  nightly once the re-cert window frees the box (~13 min expected vs the 155 ceiling).
 - **Nested-x86 spike findings** — stale insn-cpuid golden (`hm-zc2`), SIGSTOP-cycling
   wedge (`hm-440`), both P2 bugs on main.
 - **macOS-backend design exploration** (`hm-dj0`, P2, background-session filed).
@@ -181,6 +179,10 @@ spawn these until that lane re-opens):
 
 ## Recently done (this week)
 
+- **Campaign-runner full-suite Miri box confirmation CLOSED** (`hm-d4y`, 2026-07-15):
+  foreman-dispatched nightly run 29444065376 fully GREEN on the box — campaign-runner
+  step success inside the unsafe-crates Miri job (63.4 min vs the 155 ceiling), vmm-core
+  Miri 45.8 min. The pinned-nightly jobs dodge the hm-ph7 stable-toolchain corruption.
 - **Mac nested-KVM dev-loop probe CLOSED same hour it spawned** (tasks/111, `hm-8l3`,
   2026-07-15): honest **REFUSE** — the Mac's host stack lacks nested virtualization, so
   no local /dev/kvm dev loop; **QEMU TCG is the local oracle for the ARM ioctl/boot
