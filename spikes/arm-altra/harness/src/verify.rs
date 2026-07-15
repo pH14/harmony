@@ -17,8 +17,8 @@
 //! identifiability argument, so it is verified rather than asserted.
 
 use crate::elf::{Elf, ElfError};
-use crate::scan::{branch_sequence, window_branches};
-use oracle_model::{BranchKind, Payload, Scale, expected};
+use crate::scan::{branch_sequence, window_branches, window_oracle_ops};
+use oracle_model::{BranchKind, OracleOp, Payload, Scale, expected};
 use serde::Serialize;
 
 /// The verdict for one payload.
@@ -32,6 +32,8 @@ pub struct Verdict {
     pub found_branches: Vec<BranchKind>,
     /// The handler's branches, when the payload has one.
     pub handler_branches: Option<Vec<BranchKind>>,
+    /// The non-branch oracle-load-bearing opcodes found in the window.
+    pub found_ops: Vec<OracleOp>,
     /// Everything agreed.
     pub ok: bool,
     /// Why not, when `ok` is false.
@@ -153,6 +155,22 @@ pub fn verify(elf: &Elf, payload: Payload) -> Result<Verdict, ElfError> {
         }
     }
 
+    // Verify the non-branch, oracle-load-bearing opcodes. The branch checks above cannot
+    // see an `SVC` or a `subs …, #1`: removing the SVC (so no syscall is counted) or
+    // retuning the decrement to `#2` (so the loop runs half as often) leaves every branch
+    // class, predicate, operand and target — and the smoke console output — unchanged while
+    // the model still assumes `trips` SVCs and `trips - 1` backedges. So each payload's
+    // required non-branch ops (`Payload::required_window_ops`) must appear in its window.
+    let found_ops = window_oracle_ops(code);
+    for required in payload.required_window_ops() {
+        if !found_ops.contains(required) {
+            failures.push(format!(
+                "window is missing the oracle-load-bearing opcode {required:?}: the count model \
+                 assumes it runs, but it is not in the linked window (found {found_ops:?})"
+            ));
+        }
+    }
+
     let handler_branches = match handler_stem(payload) {
         Some(stem) => {
             let (hbase, hcode) = elf.handler(stem)?;
@@ -177,6 +195,7 @@ pub fn verify(elf: &Elf, payload: Payload) -> Result<Verdict, ElfError> {
         expected_branches,
         found_branches,
         handler_branches,
+        found_ops,
         ok: failures.is_empty(),
         failures,
     })

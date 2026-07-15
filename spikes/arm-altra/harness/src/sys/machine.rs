@@ -29,6 +29,8 @@
 //! visibly the fallback — which is what the floor checker's mechanism check rejects.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::{KvmRun, PerfEventAttr, SysError, br_retired_attr, kvm};
 use crate::run::{RunError, Vcpu, VcpuExit, WorkCounter};
@@ -86,6 +88,17 @@ const PERF_IOC_RESET: u64 = 0x2403;
 const PERF_IOC_REFRESH: u64 = 0x2402;
 /// `PERF_EVENT_IOC_PERIOD` — `_IOW('$', 4, __u64)`. Sets the overflow deadline.
 const PERF_IOC_PERIOD: u64 = 0x4008_2404;
+
+/// The "parked" sampling period — large enough that the event never overflows within a
+/// window (used to open an armed event so it is sampling from the start, and to resume it
+/// after a landing), yet with **bit 63 CLEAR**. Linux rejects a `sample_period` whose top
+/// bit is set: `perf_event_open` and `PERF_EVENT_IOC_PERIOD` both return `EINVAL`, so a
+/// `u64::MAX` sentinel EINVALs every armed run before the first sample (the r8 sampling-mode
+/// fix regressed here). `i64::MAX` is the largest period the kernel accepts.
+const PARKED_PERIOD: u64 = i64::MAX as u64;
+// The invariant the whole armed path depends on, pinned at compile time: bit 63 clear, so
+// Linux does not EINVAL the period. A regression back to `u64::MAX` fails the build here.
+const _: () = assert!(PARKED_PERIOD & (1u64 << 63) == 0);
 
 /// Which mechanism a run arms the overflow through.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -245,6 +258,97 @@ pub fn allowed_cores() -> Result<Vec<u32>, SysError> {
             .collect()
     };
     Ok(cores)
+}
+
+/// This thread's kernel task id (`gettid`), for a churner to target with
+/// `sched_setaffinity`.
+#[must_use]
+pub fn current_tid() -> libc::pid_t {
+    // SAFETY: SYS_gettid takes no arguments and cannot fail.
+    unsafe { libc::syscall(libc::SYS_gettid) as libc::pid_t }
+}
+
+/// A background thread that continuously moves a target thread across a set of cores.
+///
+/// AA-1's migration probe must migrate the vCPU thread **while its perf overflow is armed**
+/// — that is the rr #3607 missed-PMI failure mode. Re-pinning between samples (r13) never
+/// does this: the counter is opened AFTER the move and dropped before the next, so no armed
+/// context ever migrates. This churner instead rotates the *live* vCPU thread's affinity
+/// underneath it, so an armed `KVM_RUN` in progress is forced across cores mid-run. It runs
+/// for the whole probe, targeting the vCPU thread's tid; the main loop opens/arms/reads the
+/// counter as usual. **Untested on silicon.**
+pub struct MigrationChurner {
+    stop: Arc<AtomicBool>,
+    /// How many affinity moves the churner has issued — evidence the probe actually churned
+    /// (a zero here means the background move never ran, and the "migration" was a no-op).
+    moves: Arc<AtomicU64>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl MigrationChurner {
+    /// Start churning `tid`'s affinity across `cores` (which must be non-empty and in range,
+    /// as [`allowed_cores`] guarantees) until dropped or [`MigrationChurner::stop`]ped.
+    #[must_use]
+    pub fn start(tid: libc::pid_t, cores: Vec<u32>) -> MigrationChurner {
+        let stop = Arc::new(AtomicBool::new(false));
+        let moves = Arc::new(AtomicU64::new(0));
+        let (stop_t, moves_t) = (Arc::clone(&stop), Arc::clone(&moves));
+        let handle = std::thread::spawn(move || {
+            let mut i = 0usize;
+            while !stop_t.load(Ordering::Relaxed) {
+                let core = cores[i % cores.len()];
+                // SAFETY: a zeroed cpu_set_t is a valid empty set; `core` is an allowed-cpuset
+                // index (< CPU_SETSIZE) so CPU_SET cannot go out of range; setaffinity targets
+                // the vCPU thread by tid. A failed move is best-effort (the thread may be mid
+                // guest-exit); only a SUCCESSFUL one is counted, so `moves` is honest.
+                unsafe {
+                    let mut set: libc::cpu_set_t = core::mem::zeroed();
+                    libc::CPU_SET(core as usize, &mut set);
+                    let rc = libc::sched_setaffinity(
+                        tid,
+                        core::mem::size_of::<libc::cpu_set_t>(),
+                        &raw const set,
+                    );
+                    if rc == 0 {
+                        moves_t.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                i += 1;
+                // Fast enough that any armed KVM_RUN sees at least one move, without busy-spin.
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+        });
+        MigrationChurner {
+            stop,
+            moves,
+            handle: Some(handle),
+        }
+    }
+
+    /// How many affinity moves the churner has successfully issued so far.
+    #[must_use]
+    pub fn moves(&self) -> u64 {
+        self.moves.load(Ordering::Relaxed)
+    }
+
+    /// Stop churning and join the thread, returning the total successful moves.
+    pub fn stop(mut self) -> u64 {
+        self.shutdown();
+        self.moves()
+    }
+
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+impl Drop for MigrationChurner {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 /// Install the no-op handler for the stock overflow kick.
@@ -1201,10 +1305,11 @@ impl PerfCounter {
         //   at MARK_BEGIN — rejects a non-sampling event (`!is_sampling_event`, i.e.
         //   `sample_period == 0`) with `EINVAL`. Opening it non-sampling therefore breaks
         //   the very first arm on real hardware. It is opened with a period beyond any
-        //   window's reach (`u64::MAX`), so the event is sampling from the start yet does
+        //   window's reach ([`PARKED_PERIOD`], `i64::MAX` — NOT `u64::MAX`, whose bit 63
+        //   makes Linux EINVAL the open), so the event is sampling from the start yet does
         //   not overflow during the guest's boot; `arm_overflow` reprograms it to the
         //   real `delta` at the mark.
-        let open_attr = br_retired_attr(sample_period.map(|_| u64::MAX));
+        let open_attr = br_retired_attr(sample_period.map(|_| PARKED_PERIOD));
         // SAFETY: `open_attr` is a fully initialised perf_event_attr on this frame.
         // Counting the calling thread (pid 0) wherever it runs (-1) — the thread is
         // pinned, so "wherever" is the one core.
@@ -1363,12 +1468,12 @@ impl WorkCounter for PerfCounter {
     /// and `work_end` is the window's true end rather than the landing.
     ///
     /// The one-shot REFRESH disabled the event when it overflowed. The period cannot
-    /// be set to zero (the kernel rejects it), so it is set beyond any window's reach
-    /// — the count keeps advancing, and no further overflow fires before `MARK_END`,
-    /// which is what stops a post-landing tick from being recorded as a second
-    /// delivery.
+    /// be set to zero (the kernel rejects it) or to `u64::MAX` (bit 63 → EINVAL), so it
+    /// is set to [`PARKED_PERIOD`] — beyond any window's reach yet accepted — the count
+    /// keeps advancing, and no further overflow fires before `MARK_END`, which is what
+    /// stops a post-landing tick from being recorded as a second delivery.
     fn resume_counting(&mut self) -> Result<(), RunError> {
-        self.set_period(u64::MAX)
+        self.set_period(PARKED_PERIOD)
             .map_err(|e| seam("PERF_EVENT_IOC_PERIOD (resume)", e))?;
         self.ioctl(PERF_IOC_ENABLE, 0, "PERF_EVENT_IOC_ENABLE (resume)")
             .map_err(|e| seam("PERF_EVENT_IOC_ENABLE (resume)", e))?;
@@ -1519,34 +1624,65 @@ fn probe_writable_id_registers_on_vcpu(
         return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
     }
 
-    // Read the current ID_AA64PFR0_EL1.
-    let mut value: u64 = 0;
+    // Read the current (host) ID_AA64PFR0_EL1.
+    let mut orig: u64 = 0;
     let get = KvmOneReg {
         id: kvm::REG_ID_AA64PFR0_EL1,
-        addr: (&raw mut value) as u64,
+        addr: (&raw mut orig) as u64,
     };
     // SAFETY: `vcpu_fd` is valid; `get.addr` points at a live u64 the kernel writes.
     if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get) } < 0 {
         return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64PFR0_EL1)"));
     }
 
-    // Write the same value back: the row is "yes" iff the SET is accepted.
-    let set = KvmOneReg {
-        id: kvm::REG_ID_AA64PFR0_EL1,
-        addr: (&raw const value) as u64,
-    };
-    // SAFETY: `vcpu_fd` is valid; `set.addr` points at a live u64 the kernel reads.
-    let rc = unsafe { libc::ioctl(vcpu_fd, kvm::SET_ONE_REG as libc::c_ulong, &raw const set) };
-    if rc < 0 {
-        let e = errno();
-        // A read-only ID register is rejected with EINVAL (or EPERM/ENOENT on some
-        // kernels): a clean "no". Any other errno is a failure to probe.
-        if e == libc::EINVAL || e == libc::EPERM || e == libc::ENOENT {
-            Ok(false)
-        } else {
-            Err(err("ioctl(KVM_SET_ONE_REG, ID_AA64PFR0_EL1)"))
+    // AA-6 installs a BELOW-HOST synthetic feature model, so the row is about writing a
+    // CHANGED, reduced feature value — NOT an identity write. Some KVM versions accept an
+    // identity `SET_ONE_REG` (for migration compatibility) while rejecting any changed
+    // invariant/ID value, so writing the value just read would false-green this mandatory
+    // row. Instead, reduce one feature nibble by 1, write it, and READ IT BACK: the row is
+    // TRUE only if a reduced value is both accepted AND observed. The exception-level fields
+    // (bits[15:0], nibbles 0..4) are skipped — lowering EL support breaks the VM — as are
+    // absent (0) or not-implemented (0xF) fields, which cannot be cleanly lowered.
+    for nibble in 4..16u32 {
+        let shift = nibble * 4;
+        let field = (orig >> shift) & 0xF;
+        if field == 0 || field == 0xF {
+            continue;
         }
-    } else {
-        Ok(true)
+        let reduced = (orig & !(0xFu64 << shift)) | ((field - 1) << shift);
+        let set = KvmOneReg {
+            id: kvm::REG_ID_AA64PFR0_EL1,
+            addr: (&raw const reduced) as u64,
+        };
+        // SAFETY: `vcpu_fd` is valid; `set.addr` points at a live u64 the kernel reads.
+        let rc = unsafe { libc::ioctl(vcpu_fd, kvm::SET_ONE_REG as libc::c_ulong, &raw const set) };
+        if rc < 0 {
+            let e = errno();
+            // This field is read-only on this kernel — try another. A non-{EINVAL,EPERM,
+            // ENOENT} errno is a failure to probe, not a clean "no".
+            if e == libc::EINVAL || e == libc::EPERM || e == libc::ENOENT {
+                continue;
+            }
+            return Err(err("ioctl(KVM_SET_ONE_REG, ID_AA64PFR0_EL1)"));
+        }
+        // The SET was accepted — confirm the reduction actually took, rather than being
+        // silently clamped back to the host value (accepting the ioctl but ignoring the
+        // change is exactly the identity-write false-green this probe exists to defeat).
+        let mut readback: u64 = 0;
+        let get2 = KvmOneReg {
+            id: kvm::REG_ID_AA64PFR0_EL1,
+            addr: (&raw mut readback) as u64,
+        };
+        // SAFETY: `vcpu_fd` is valid; `get2.addr` points at a live u64 the kernel writes.
+        if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get2) } < 0 {
+            return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64PFR0_EL1 readback)"));
+        }
+        if readback == reduced {
+            return Ok(true);
+        }
+        // Accepted but unchanged: not a real feature write. Try the next field.
     }
+    // No feature field could be reduced and read back: this kernel does not accept a
+    // below-host ID-register model, so AA-6's synthetic feature install is impossible here.
+    Ok(false)
 }

@@ -278,6 +278,20 @@ impl Payload {
     pub const fn has_reported_term(self) -> bool {
         matches!(self, Payload::LlscAtomics | Payload::ClockPage)
     }
+
+    /// The non-branch [`OracleOp`]s this payload's counting window must contain (at least
+    /// one of each) for its oracle count to hold. Empty for payloads whose count is fully
+    /// determined by the branch sequence (verified separately) plus a hash-neutral
+    /// accumulator — those have no non-branch opcode the count depends on.
+    #[must_use]
+    pub const fn required_window_ops(self) -> &'static [OracleOp] {
+        match self {
+            Payload::Svc => &[OracleOp::Svc, OracleOp::SubsDecrement],
+            Payload::WfiIdle => &[OracleOp::Wfi, OracleOp::SubsDecrement],
+            Payload::LlscAtomics => &[OracleOp::LlscExclusive, OracleOp::SubsDecrement],
+            _ => &[],
+        }
+    }
 }
 
 /// The run scales. AA-1(a) sweeps counts "differentially across 1e6/1e7/1e8
@@ -408,6 +422,30 @@ pub enum BranchKind {
     /// `ERET` — exception return. Whether `BR_RETIRED` counts it is
     /// [`Ambiguity::ExceptionReturn`], an unknown.
     Eret,
+}
+
+/// A non-branch instruction class whose presence in a payload's counting window is
+/// load-bearing for that payload's oracle count — the class the count formula assumes runs.
+///
+/// The window gate checks the branch sequence exhaustively, but a count can also rest on
+/// non-branch opcodes: `svc`'s count is `trips` SVCs, `wfi-idle`'s is `trips` WFIs, and a
+/// looped window's backedge count is driven by a `SUBS`-decrement whose immediate is the
+/// loop step. Removing the `SVC`, or changing `subs …, #1` to `#2`, leaves the branch
+/// classes/predicates/targets — and the smoke output — unchanged while breaking the count.
+/// So the model declares the non-branch ops each window must contain
+/// ([`Payload::required_window_ops`]) and the gate verifies them.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "std", serde(rename_all = "kebab-case"))]
+pub enum OracleOp {
+    /// `SVC #0` — the synchronous exception the `svc` payload counts once per trip.
+    Svc,
+    /// `WFI` — the wait the `wfi-idle` payload counts once per trip.
+    Wfi,
+    /// An LL/SC exclusive (`LDXR`/`STXR`) — the `llsc-atomics` retry primitive.
+    LlscExclusive,
+    /// A `SUBS Xd, Xn, #1` — the loop-counter decrement whose backedge the model counts.
+    SubsDecrement,
 }
 
 /// The classes whose per-occurrence `BR_RETIRED` contribution is **not known

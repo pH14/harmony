@@ -628,47 +628,65 @@ fn check_aa1_condition_matrix(
 
     let mut problems: Vec<String> = Vec::new();
 
-    // The differential scale sweep. AA-1 establishes stable per-class offsets by measuring
-    // at 1e6/1e7/1e8 and differencing; a smoke-only run (the CLI default scale) cannot
-    // certify the stage however many conditions it covers. Enforced for a normative
-    // certification — a `--sub-normative` reduced-scope run relaxes the sweep as it relaxes
-    // the floor magnitude, so the checker's own tests and reduced runs are not forced to
-    // carry 1e8 records.
+    // The differential scale sweep, PER acceptance-bearing payload class. AA-1 establishes
+    // each class's OWN stable count offset by measuring that class at 1e6/1e7/1e8 and
+    // differencing, so the union of scale labels across DIFFERENT classes proves nothing:
+    // 1e6 on `straight-line` and 1e7/1e8 on `branch-dense` gives no class a differential
+    // sweep. Every class that carries armed count evidence must itself cover every required
+    // scale. Enforced for a normative certification only — `--sub-normative` relaxes it as
+    // it relaxes the floor magnitude.
     if !floors.sub_normative {
-        let scales_present: BTreeSet<Scale> = loaded
-            .iter()
-            .flat_map(|(_, records, _)| records.iter().map(|r| r.scale))
-            .collect();
-        let missing: Vec<&str> = REQUIRED_AA1_SWEEP_SCALES
-            .iter()
-            .filter(|s| !scales_present.contains(s))
-            .map(|s| s.name())
-            .collect();
-        if !missing.is_empty() {
-            let present: Vec<&str> = scales_present.iter().map(|s| s.name()).collect();
-            problems.push(format!(
-                "the AA-1 differential scale sweep is incomplete — scales [{}] are absent from the \
-                 records (present: [{}]). AA-1 derives per-class offsets from the 1e6/1e7/1e8 \
-                 sweep; smoke-only evidence cannot certify the stage (pass --sub-normative for a \
-                 reduced-scope run)",
-                missing.join(", "),
-                present.join(", ")
-            ));
+        let mut scales_by_payload: BTreeMap<&str, BTreeSet<Scale>> = BTreeMap::new();
+        for (_, records, _) in loaded {
+            for r in records {
+                if r.overflow.as_ref().is_some_and(|o| o.armed) {
+                    scales_by_payload
+                        .entry(r.payload.name())
+                        .or_default()
+                        .insert(r.scale);
+                }
+            }
+        }
+        for (payload, scales) in &scales_by_payload {
+            let missing: Vec<&str> = REQUIRED_AA1_SWEEP_SCALES
+                .iter()
+                .filter(|s| !scales.contains(s))
+                .map(|s| s.name())
+                .collect();
+            if !missing.is_empty() {
+                let present: Vec<&str> = scales.iter().map(|s| s.name()).collect();
+                problems.push(format!(
+                    "payload class {payload} is missing scales [{}] from its differential sweep \
+                     (has [{}]): AA-1 derives each class's OWN offset from the 1e6/1e7/1e8 sweep, \
+                     so every acceptance-bearing class must cover all three — the union of labels \
+                     across classes does not (pass --sub-normative for a reduced-scope run)",
+                    missing.join(", "),
+                    present.join(", ")
+                ));
+            }
         }
 
         // The bounded migration probe is a REQUIRED AA-1 certification input, not an
         // optional extra: the four pinned contamination conditions never leave their core,
         // so they cannot supply the cross-core-migration evidence (the rr #3607 missed-PMI
-        // failure mode) the stage contract calls for. A report of only pinned conditions
-        // must not certify. At least one run-set must carry the probe (`migration_probe`);
-        // `check_pinning` separately proves that probe is genuinely unpinned.
-        let has_migration_probe = loaded.iter().any(|(rs, _, _)| rs.pinning.migration_probe);
-        if !has_migration_probe {
+        // failure mode) the stage contract calls for. And the probe must have run UNDER AN
+        // ARMED OVERFLOW — a counting-mode probe set migrates nothing that could miss a PMI,
+        // so a manifest merely LABELLED `migration_probe: true` while all armed records come
+        // from the pinned sets does not cover the experiment. So the probe set(s) must
+        // themselves contribute armed overflows. (`check_pinning` separately proves that
+        // probe is genuinely unpinned.)
+        let probe_armed: u64 = loaded
+            .iter()
+            .filter(|(rs, _, _)| rs.pinning.migration_probe)
+            .map(|(_, records, _)| count_armed(records))
+            .sum();
+        if probe_armed == 0 {
             problems.push(
-                "no run-set carries the AA-1 bounded migration probe (pinning.migration_probe): \
-                 the cross-core-migration evidence (rr #3607) is a required AA-1 certification \
-                 input, and four pinned contamination conditions cannot supply it (pass \
-                 --sub-normative for a reduced-scope run)"
+                "no armed overflow came from an AA-1 migration-probe run-set \
+                 (pinning.migration_probe with armed records): the cross-core-migration \
+                 evidence (rr #3607) must be measured UNDER an armed overflow, and neither an \
+                 absent probe nor a counting-mode one labelled as the probe supplies it — the \
+                 pinned conditions never migrate (pass --sub-normative for a reduced-scope run)"
                     .to_string(),
             );
         }
@@ -819,8 +837,14 @@ fn check_well_formed(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outc
     // sha256 fields: `^(sha256:)?[0-9a-f]{64}$` (the pinned records hash and each image
     // pin), md5 when present `^[0-9a-f]{32}$`.
     let check_sha256 = |problems: &mut Vec<String>, what: &str, h: &str| {
-        if !is_lower_hex(normalise_hash(h).as_str(), 64) {
-            problems.push(format!("{what} is not a 64-hex sha256: {h:?}"));
+        // Strip ONLY the optional lowercase `sha256:` prefix — do NOT lowercase the digits.
+        // The schema pattern is `[0-9a-f]{64}`, so an UPPERCASE hash is schema-invalid; but
+        // `normalise_hash` (used for the case-insensitive records-hash MATCH) would lowercase
+        // it first and let it pass this FORMAT check. Well-formedness is about the canonical
+        // form, so validate the raw digits.
+        let raw = h.strip_prefix("sha256:").unwrap_or(h);
+        if !is_lower_hex(raw, 64) {
+            problems.push(format!("{what} is not a 64-lowercase-hex sha256: {h:?}"));
         }
     };
     check_sha256(&mut problems, "records_sha256", &run_set.records_sha256);
@@ -3321,6 +3345,126 @@ mod tests {
             ),
             Some(Status::Pass),
             "sub-normative relaxes the sweep magnitude"
+        );
+    }
+
+    /// Build a swept AA-1 set (one payload, 1e6/1e7/1e8) that is also the migration probe.
+    fn swept_migration_probe(id: &str, hash: &str) -> (RunSet, Vec<RunRecord>, Vec<u8>) {
+        let mut set = a_loaded_set(Stage::Aa1, id, "pinned-solo", hash, 3);
+        set.1[0].scale = Scale::S1e6;
+        set.1[1].scale = Scale::S1e7;
+        set.1[2].scale = Scale::S1e8;
+        set.0.pinning.pinned = false;
+        set.0.pinning.core = None;
+        set.0.pinning.migration_probe = true;
+        set
+    }
+
+    #[test]
+    fn aa1_migration_probe_must_contribute_armed_records() {
+        let normative = Floors {
+            min_armed_overflows: Some(4),
+            min_reps: None,
+            sub_normative: false,
+        };
+        let swept = |id: &str, cond: &str, hash: &str| -> (RunSet, Vec<RunRecord>, Vec<u8>) {
+            let mut set = a_loaded_set(Stage::Aa1, id, cond, hash, 3);
+            set.1[0].scale = Scale::S1e6;
+            set.1[1].scale = Scale::S1e7;
+            set.1[2].scale = Scale::S1e8;
+            set
+        };
+        let conditions = || {
+            [
+                swept("c0", "pinned-solo", &"a".repeat(64)),
+                swept("c1", "co-tenant-other-core", &"b".repeat(64)),
+                swept("c2", "co-tenant-same-core", &"c".repeat(64)),
+                swept("c3", "memory-pressure", &"d".repeat(64)),
+            ]
+        };
+
+        // A migration-probe set whose records are COUNTING MODE (unarmed) — labelled as the
+        // probe but migrating nothing under an armed overflow. It must not satisfy the check.
+        let mut counting_probe = swept_migration_probe("mig", &"e".repeat(64));
+        for r in &mut counting_probe.1 {
+            r.overflow = None;
+        }
+        let mut with_counting_probe: Vec<_> = conditions().into_iter().collect();
+        with_counting_probe.push(counting_probe);
+        assert_eq!(
+            status(
+                &aggregate(&with_counting_probe, &normative).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Fail),
+            "a counting-mode probe set migrates nothing under an armed overflow"
+        );
+
+        // An ARMED migration-probe set supplies the evidence → passes.
+        let mut with_armed_probe: Vec<_> = conditions().into_iter().collect();
+        with_armed_probe.push(swept_migration_probe("mig", &"e".repeat(64)));
+        assert_eq!(
+            status(
+                &aggregate(&with_armed_probe, &normative).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Pass),
+            "an armed migration-probe set covers the rr #3607 experiment"
+        );
+    }
+
+    #[test]
+    fn aa1_scale_sweep_is_per_payload_not_the_union_of_labels() {
+        let normative = Floors {
+            min_armed_overflows: Some(4),
+            min_reps: None,
+            sub_normative: false,
+        };
+        let swept = |id: &str, cond: &str, hash: &str| -> (RunSet, Vec<RunRecord>, Vec<u8>) {
+            let mut set = a_loaded_set(Stage::Aa1, id, cond, hash, 3);
+            set.1[0].scale = Scale::S1e6;
+            set.1[1].scale = Scale::S1e7;
+            set.1[2].scale = Scale::S1e8;
+            set
+        };
+        // straight-line has a complete sweep across the conditions + probe; now inject a
+        // single branch-dense record at 1e7 only. The UNION of scale labels is still
+        // {1e6,1e7,1e8}, but branch-dense's OWN sweep is incomplete → the matrix fails.
+        let mut c0 = swept("c0", "pinned-solo", &"a".repeat(64));
+        let mut extra = a_record(99);
+        extra.payload = Payload::BranchDense;
+        extra.scale = Scale::S1e7;
+        c0.1.push(extra);
+        let split = [
+            c0,
+            swept("c1", "co-tenant-other-core", &"b".repeat(64)),
+            swept("c2", "co-tenant-same-core", &"c".repeat(64)),
+            swept("c3", "memory-pressure", &"d".repeat(64)),
+            swept_migration_probe("mig", &"e".repeat(64)),
+        ];
+        assert_eq!(
+            status(
+                &aggregate(&split, &normative).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Fail),
+            "branch-dense at 1e7 only has no per-class sweep, though the union of labels does"
+        );
+    }
+
+    #[test]
+    fn an_uppercase_hash_is_schema_invalid_not_normalized_away() {
+        // `normalise_hash` lowercases for the case-insensitive records-hash MATCH, but the
+        // schema pattern is [0-9a-f]: an UPPERCASE sha256 is schema-invalid and must fail
+        // well-formedness rather than being normalized into a pass.
+        let mut rs = a_run_set();
+        rs.records_sha256 = "A".repeat(64); // 64 uppercase hex
+        let mut out = Vec::new();
+        check_well_formed(&rs, &[a_record(0)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::WellFormed),
+            Some(Status::Fail),
+            "an uppercase hash is not canonical [0-9a-f]"
         );
     }
 

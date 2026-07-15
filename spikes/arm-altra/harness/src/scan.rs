@@ -147,6 +147,46 @@ pub fn is_exclusive(word: u32) -> bool {
     class == 0b001000 && o2 == 0
 }
 
+/// Classify a word as one of the non-branch [`OracleOp`] classes a payload's count can
+/// rest on, if it is one. Used by the window gate to verify the load-bearing non-branch
+/// opcodes (an `SVC` removed, or a `subs …, #1` retuned to `#2`, leaves the branch sequence
+/// and the smoke output unchanged while breaking the count).
+#[must_use]
+pub fn classify_oracle_op(word: u32) -> Option<oracle_model::OracleOp> {
+    use oracle_model::OracleOp;
+    // `SVC #imm` = 0xD400_0000 | (imm16 << 5) | 0b00001. The payloads issue `svc #0`.
+    if word == 0xD400_0001 {
+        return Some(OracleOp::Svc);
+    }
+    // `WFI` = 0xD503_207F (a fixed hint encoding).
+    if word == 0xD503_207F {
+        return Some(OracleOp::Wfi);
+    }
+    // LL/SC exclusive load/store — reuse the exclusive-family decoder.
+    if is_exclusive(word) {
+        return Some(OracleOp::LlscExclusive);
+    }
+    // `SUBS Xd, Xn, #imm` (add/subtract immediate, op=SUB, S=set-flags): bits[30:24] =
+    // 0b1110001 (0x71), any `sf`. A loop-counter decrement has shift `sh == 0` and `imm12
+    // == 1`; a change to `#2` (or a shifted immediate) no longer matches, which is exactly
+    // the retune the count depends on. (`CMP`/`CMN` and non-flag `SUB` do not match.)
+    if word & 0x7F00_0000 == 0x7100_0000 && (word >> 22) & 0x3 == 0 && (word >> 10) & 0xFFF == 1 {
+        return Some(OracleOp::SubsDecrement);
+    }
+    None
+}
+
+/// The non-branch [`OracleOp`] classes present in a window, in program order.
+#[must_use]
+pub fn window_oracle_ops(code: &[u8]) -> Vec<oracle_model::OracleOp> {
+    code.chunks_exact(4)
+        .filter_map(|chunk| {
+            let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            classify_oracle_op(word)
+        })
+        .collect()
+}
+
 /// Decode an `MRS` of a counter register, if that is what this is.
 ///
 /// `MRS Xt, <sysreg>` is `0xD53_....`; the system register is
@@ -398,6 +438,36 @@ mod tests {
         assert!(!is_exclusive(0xC8A0_7C41)); // cas x0, x1, [x2]
         assert!(!is_exclusive(0xB820_0041)); // ldadd w0, w1, [x2]  (LSE)
         assert!(!is_exclusive(0xF820_0041)); // ldadd x0, x1, [x2]  (LSE)
+    }
+
+    #[test]
+    fn classifies_the_oracle_load_bearing_opcodes() {
+        use oracle_model::OracleOp;
+        // The defining ops.
+        assert_eq!(classify_oracle_op(0xD400_0001), Some(OracleOp::Svc)); // svc #0
+        assert_eq!(classify_oracle_op(0xD503_207F), Some(OracleOp::Wfi)); // wfi
+        assert_eq!(
+            classify_oracle_op(0xC85F_7C41),
+            Some(OracleOp::LlscExclusive)
+        ); // ldxr x1,[x2]
+        // The loop-counter decrement, and its exact-immediate sensitivity.
+        assert_eq!(
+            classify_oracle_op(0xF100_0421),
+            Some(OracleOp::SubsDecrement)
+        ); // subs x1,x1,#1
+        assert_eq!(
+            classify_oracle_op(0x7100_0421),
+            Some(OracleOp::SubsDecrement)
+        ); // subs w1,w1,#1
+        assert_eq!(classify_oracle_op(0xF100_0821), None); // subs x1,x1,#2 — not a -1 decrement
+        assert_eq!(classify_oracle_op(0xF140_0421), None); // subs …,#1,lsl#12 — a shifted imm
+        // A plain SUB (no flags) and a CMP are not the flag-setting decrement the loop needs.
+        assert_eq!(classify_oracle_op(0xD100_0421), None); // sub x1,x1,#1 (S=0)
+        // svc #1 is not the counted svc #0.
+        assert_eq!(classify_oracle_op(0xD400_0021), None); // svc #1
+        // Unrelated instructions.
+        assert_eq!(classify_oracle_op(0xD503_201F), None); // nop
+        assert_eq!(classify_oracle_op(0x1400_0001), None); // b .+4
     }
 
     #[test]

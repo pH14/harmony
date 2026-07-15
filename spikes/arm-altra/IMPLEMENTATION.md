@@ -926,6 +926,63 @@ oracle-model 22 + 2, clippy `-D warnings` native + aarch64-linux (the affinity, 
 migration-probe code compiles for the box), three `cargo deny`, the window-vs-oracle scan,
 TCG smoke, kernel-patch format/parse, and Miri (arm-harness + oracle-model).
 
+## Round-14 review fixes (PR #108, cross-model pass r14)
+
+Eight findings fixed, one (Miri on the payload crates) stays adjudicated-settled. The first
+is a **regression** the r13 work's predecessor introduced; the rest continue the species.
+
+- **Perf sample-period sentinel below bit 63 (CRITICAL regression).** The r8 sampling-mode
+  fix opened an armed event, and resumed it after a landing, with `sample_period = u64::MAX`.
+  Linux rejects a period whose top bit is set (`perf_event_open` and `PERF_EVENT_IOC_PERIOD`
+  both `EINVAL`), so every `--with-targets` run failed before the first sample. Both sites now
+  use `PARKED_PERIOD = i64::MAX`, and a compile-time assertion pins bit 63 clear so the
+  regression cannot recur.
+- **Migrate a LIVE armed perf context, and require armed probe records.** Two coupled fixes.
+  (a) r13's per-sample re-pin changed affinity BEFORE each fresh `PerfCounter` was opened and
+  dropped it before the next, so no armed context ever migrated — it could not exercise the rr
+  #3607 missed-overflow mode. The probe now runs a background `MigrationChurner` that rotates
+  the LIVE vCPU thread across the cpuset while the sample loop arms and reads its counter, so
+  an armed `KVM_RUN` in progress is forced across cores; the run fails if the churner issued
+  zero moves. (b) The checker's AA-1 predicate now requires ARMED overflows FROM the
+  migration-probe set(s), not merely a `migration_probe: true` label — a counting-mode probe
+  migrates nothing under an armed overflow.
+- **AA-1 scale sweep per payload class.** The union-level check passed when 1e6/1e7/1e8 each
+  occurred for DIFFERENT classes, though that gives no class a differential sweep. Every
+  acceptance-bearing (armed) payload class must now itself cover all three scales.
+- **Verify the non-branch oracle-load-bearing opcodes.** The window gate checked only
+  branches; removing an `svc #0` or retuning `subs …, #1` to `#2` leaves the branch classes,
+  predicates, targets, and smoke output unchanged while breaking the count. The model now
+  declares each payload's required non-branch ops (`Payload::required_window_ops`: SVC, WFI,
+  LL/SC exclusive, the `subs #1` loop decrement) and the gate verifies them, with a new
+  opcode decoder (`scan::classify_oracle_op`, calibrated against the built payloads and pinned
+  by encoding tests).
+- **Probe a real ID-register feature CHANGE.** The r11 writable-ID probe wrote the value it
+  just read; some KVM versions accept an identity `SET_ONE_REG` (migration compatibility)
+  while rejecting any changed invariant, false-greening the row though AA-6 cannot install its
+  below-host synthetic model. The probe now reduces one feature nibble by 1 (skipping the
+  exception-level and absent/0xF fields), writes it, and READS IT BACK: the row is true only
+  if a reduced value is both accepted and observed.
+- **PMCEID-backed BR_RETIRED proof, not a clean open.** ARM perf accepts arbitrary raw event
+  encodings, so a clean `perf_event_open` of raw 0x21 is not proof the architectural event
+  exists (it opens and reads zero). The `br-retired-pmceid0` probe now reads the PMU's
+  `events/br_retired` sysfs file — which the PMUv3 driver exposes only when the PMCEID bit is
+  set — and confirms it encodes `event=0x21` (`sysfs_event_encodes`, unit-tested off the box).
+- **Validate hash casing before normalization.** `normalise_hash` lowercases for the
+  case-insensitive records-hash match, so an UPPERCASE sha256 passed the well-formed FORMAT
+  check though the schema pattern is `[0-9a-f]`. The format check now strips only the optional
+  `sha256:` prefix and validates the raw digits.
+
+The Miri-on-payload-crates finding stays adjudicated-settled (r11): the payload crates'
+top-level `global_asm!` is aarch64 the host assembler rejects, so `cargo miri test -p runtime`
+cannot build an interpreter run to gate; the byte-layout logic is seamed into `oracle-model`
+and Miri'd there.
+
+No schema change. Gates re-run green: harness 90 tests, floor-check 47 + 27 + 3, oracle-model
+22 + 2 (the model gained `OracleOp`), clippy `-D warnings` native + aarch64-linux (the perf,
+churner, ID-probe and PMCEID code compiles for the box), three `cargo deny`, the
+window-vs-oracle scan (now opcode-checked), TCG smoke, kernel-patch format/parse, and Miri
+(arm-harness + oracle-model).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

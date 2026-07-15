@@ -488,14 +488,15 @@ fn execute(args: RunArgs) -> Result<(), String> {
 
     // Pin the thread that will call KVM_RUN: the perf context follows the thread, and on
     // this lineage an unpinned sample is not a slower sample, it is an untrusted one (rr
-    // #3607). The ONE sanctioned exception is AA-1's bounded migration probe — and it may
-    // not merely leave the thread unpinned, because on a quiet host the scheduler can leave
-    // it on one CPU for the entire run, exercising no migration at all (r13). So the probe
-    // DELIBERATELY rotates the thread across the allowed cpuset, one core per sample, to
-    // force cross-core movement; the evidence still records `pinned: false` / no single
-    // core, which is the truth (the run was not pinned to one core). A single-core lease
-    // cannot move, so the probe refuses to run in one rather than certify a no-op.
-    let migration_cores: Vec<u32> = if args.migration_probe {
+    // #3607). The ONE sanctioned exception is AA-1's bounded migration probe — and it must
+    // migrate the thread WHILE its overflow is armed, which is the rr #3607 missed-PMI mode.
+    // Re-pinning between samples (r13) never does this: the counter is opened after the move
+    // and dropped before the next, so no armed context migrates. So the probe instead runs a
+    // background churner that rotates the *live* vCPU thread across the allowed cpuset while
+    // the sample loop below arms and reads its counter — an armed KVM_RUN in progress is
+    // forced across cores mid-run. A single-core lease cannot move, so the probe refuses
+    // rather than certify a no-op; the evidence records `pinned: false` / no single core.
+    let churner = if args.migration_probe {
         let cores = sys::allowed_cores().map_err(|e| format!("read the allowed cpuset: {e}"))?;
         if cores.len() < 2 {
             return Err(format!(
@@ -504,10 +505,10 @@ fn execute(args: RunArgs) -> Result<(), String> {
                  cross-core-migration failure mode"
             ));
         }
-        cores
+        Some(sys::MigrationChurner::start(sys::current_tid(), cores))
     } else {
         pin_to_core(args.core).map_err(|e| format!("pin to core {}: {e}", args.core))?;
-        Vec::new()
+        None
     };
 
     // Content-verify the host kernel against its TRUSTED expected pin: hash the image
@@ -582,18 +583,9 @@ fn execute(args: RunArgs) -> Result<(), String> {
     let mut failure: Option<String> = None;
 
     for (i, s) in samples.iter().enumerate() {
-        // The migration probe forces the vCPU thread onto a DIFFERENT allowed core before
-        // each sample, so the run genuinely moves across cores rather than resting on one
-        // (rr #3607). Non-probe runs stay pinned to the single core set above.
-        if args.migration_probe {
-            let core = migration_cores[i % migration_cores.len()];
-            if let Err(e) = pin_to_core(core) {
-                failure = Some(format!(
-                    "sample {i}: move to migration-probe core {core}: {e}"
-                ));
-                break;
-            }
-        }
+        // In migration-probe mode the background churner is moving this thread across cores
+        // underneath the loop — no per-sample re-pin (that would fight it and, as r13 did,
+        // migrate no armed context).
         let loaded = match payloads.get(s.payload.name()) {
             Some(l) => l,
             None => {
@@ -642,6 +634,20 @@ fn execute(args: RunArgs) -> Result<(), String> {
                 failure = Some(format!("sample {i} ({}): {e}", s.payload.name()));
                 break;
             }
+        }
+    }
+
+    // Stop the migration churner and confirm it actually moved the thread. A probe whose
+    // background move never issued a single successful `sched_setaffinity` migrated nothing,
+    // so its "armed migration" evidence would be a no-op — fail rather than write it.
+    if let Some(churner) = churner {
+        let moves = churner.stop();
+        if failure.is_none() && moves == 0 {
+            failure = Some(
+                "the migration probe's background churner issued 0 affinity moves: the thread \
+                 never migrated, so no armed context was exercised across cores (rr #3607)"
+                    .to_string(),
+            );
         }
     }
 

@@ -542,6 +542,34 @@ pub fn is_host_time_register(id: u64) -> bool {
     matches!((crm, op2), (0, 1) | (0, 2) | (0, 5) | (0, 6) | (3, 2))
 }
 
+/// Whether a PMU `events/<name>` sysfs value encodes the given raw event number.
+///
+/// The sysfs contents are a comma-separated term list like `event=0x21` (or
+/// `event=0x21,umask=0x0`); only the `event=` term carries the event id. This is the
+/// PMCEID-backed proof `probe_br_retired_implemented` uses, factored out here so it is
+/// unit-testable off the box. (Only the Linux probe calls it; on other hosts it is reached
+/// solely by its native test.)
+#[must_use]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn sysfs_event_encodes(contents: &str, raw_event: u64) -> bool {
+    contents
+        .trim()
+        .split(',')
+        .filter_map(|term| term.trim().strip_prefix("event="))
+        .any(|v| parse_hex_or_dec(v.trim()) == Some(raw_event))
+}
+
+/// Parse an unsigned integer written as `0x..` hex or plain decimal.
+#[must_use]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_hex_or_dec(s: &str) -> Option<u64> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        s.parse::<u64>().ok()
+    }
+}
+
 /// A capability the running kernel either has or does not.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Capability {
@@ -552,9 +580,11 @@ pub enum Capability {
     PerfBrRetired,
     /// `KVM_CAP_SET_GUEST_DEBUG` (single-step) is advertised.
     GuestDebug,
-    /// `BR_RETIRED` (event 0x21) is an **implemented** PMU event — `perf_event_open` of
-    /// the raw event does not return `ENOENT`. The truth table's `br-retired-pmceid0` row:
-    /// the whole work-clock bet rests on this event existing on N1's PMU.
+    /// `BR_RETIRED` (event 0x21) is a **PMCEID-implemented** PMU event — the PMU exposes
+    /// an `events/br_retired` (= `event=0x21`) file, which the PMUv3 driver gates on the
+    /// PMCEID bitmap. NOT merely a clean `perf_event_open` (ARM perf accepts arbitrary raw
+    /// encodings that then never count). The truth table's `br-retired-pmceid0` row: the
+    /// whole work-clock bet rests on this event existing on N1's PMU.
     Pmceid,
     /// A **host-side overflow actually delivers**: arm a small `BR_RETIRED` sample period,
     /// run a branchy loop past it, and confirm the kernel wrote an overflow sample. AA-1's
@@ -678,6 +708,7 @@ mod imp {
 
     use super::{
         BR_RETIRED_RAW, Capability, PerfEventAttr, SysError, br_retired_attr, kvm, perf_flags,
+        sysfs_event_encodes,
     };
 
     /// The last errno, read immediately after a failed libc call.
@@ -799,29 +830,44 @@ mod imp {
     }
 
     /// The truth-table `br-retired-pmceid0` row: is raw `BR_RETIRED` (0x21) an
-    /// **implemented** PMU event at all? `perf_event_open` returns `ENOENT`/`EOPNOTSUPP`
-    /// for an event the PMU does not implement; any clean open means it exists (this is
-    /// the weaker "implemented" row — [`probe_br_retired`] then checks it can be
-    /// *scheduled* pinned and non-multiplexed).
+    /// **implemented** PMU event, PMCEID-backed?
+    ///
+    /// A clean `perf_event_open` of the raw event is NOT proof: the ARM PMUv3 driver accepts
+    /// arbitrary raw event encodings without checking whether the event's PMCEID bit is set,
+    /// so an unimplemented 0x21 opens successfully and then reads zero — reporting the
+    /// architectural row present when it is false. The PMU's `events/<name>` sysfs files are
+    /// exposed ONLY for events whose PMCEID bit is implemented
+    /// (`armv8pmu_event_attr_is_visible` gates them on the PMCEID bitmap), so the presence of
+    /// an `events/br_retired` file encoding `event=0x21` on a PMUv3 device is a direct,
+    /// implementation-specific PMCEID proof. Search every PMU device for it.
     fn probe_br_retired_implemented() -> Result<bool, SysError> {
-        let mut attr = br_retired_attr(None);
-        attr.flags &= !perf_flags::EXCLUDE_HOST;
-        attr.flags |= perf_flags::EXCLUDE_KERNEL;
-        // SAFETY: `attr` is fully initialized; count this thread (pid 0), any cpu, no group.
-        let fd = unsafe { perf_event_open(&raw const attr, 0, -1, -1, 0) };
-        if fd < 0 {
-            let e = errno();
-            if e == libc::ENOENT || e == libc::EOPNOTSUPP {
-                return Ok(false);
+        let devices = match std::fs::read_dir("/sys/bus/event_source/devices") {
+            Ok(d) => d,
+            // No perf device tree at all: a clean "no", not a failure to probe.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => {
+                return Err(SysError::Errno {
+                    call: "read_dir(/sys/bus/event_source/devices)",
+                    errno: errno(),
+                });
             }
-            return Err(SysError::Errno {
-                call: "perf_event_open(BR_RETIRED pmceid)",
-                errno: e,
-            });
+        };
+        for entry in devices.flatten() {
+            let name = entry.file_name();
+            // PMUv3 CPU-PMU devices are named `armv8_*` (`armv8_pmuv3_0`, `armv8_cortex_*`, …).
+            if !name.to_string_lossy().starts_with("armv8") {
+                continue;
+            }
+            // The driver exposes this file only if BR_RETIRED's PMCEID bit is set here.
+            let path = entry.path().join("events").join("br_retired");
+            if let Ok(contents) = std::fs::read_to_string(&path)
+                && sysfs_event_encodes(&contents, BR_RETIRED_RAW)
+            {
+                return Ok(true);
+            }
         }
-        // SAFETY: `fd` is a valid descriptor this function owns.
-        unsafe { libc::close(fd as i32) };
-        Ok(true)
+        // Searched every PMU device and none exposes a PMCEID-backed BR_RETIRED: absent.
+        Ok(false)
     }
 
     /// The truth-table `host-overflow-delivers` row: arm a small `BR_RETIRED` sample
@@ -996,7 +1042,10 @@ mod imp {
 pub mod machine;
 
 #[cfg(target_os = "linux")]
-pub use machine::{Machine, Mechanism, ParamsPage, PerfCounter, allowed_cores, pin_to_core};
+pub use machine::{
+    Machine, Mechanism, MigrationChurner, ParamsPage, PerfCounter, allowed_cores, current_tid,
+    pin_to_core,
+};
 
 #[cfg(test)]
 mod tests {
@@ -1413,6 +1462,20 @@ mod tests {
             kvm::REG_ID_AA64PFR0_EL1 & kvm::REG_SIZE_MASK,
             kvm::REG_ARM64_CORE_U64 & kvm::REG_SIZE_MASK
         );
+    }
+
+    #[test]
+    fn sysfs_event_string_encodes_the_raw_event() {
+        // The PMCEID-backed proof reads the PMU's `events/br_retired` file; it must accept
+        // exactly the event encoding, in either radix, and reject a different event or a
+        // string with no `event=` term (which would false-green on an unrelated file).
+        assert!(sysfs_event_encodes("event=0x21", 0x21));
+        assert!(sysfs_event_encodes("event=0x21\n", 0x21)); // trailing newline (sysfs)
+        assert!(sysfs_event_encodes("event=0x21,umask=0x0", 0x21)); // extra terms ignored
+        assert!(sysfs_event_encodes("event=33", 0x21)); // decimal 33 == 0x21
+        assert!(!sysfs_event_encodes("event=0x22", 0x21)); // a different event
+        assert!(!sysfs_event_encodes("config=0x21", 0x21)); // no `event=` term
+        assert!(!sysfs_event_encodes("", 0x21));
     }
 
     #[test]
