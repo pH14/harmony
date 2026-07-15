@@ -4,10 +4,65 @@ Branch `task/paravirt-clock-x86`, bead `hm-rk5`, PR #110. Implements
 `docs/PARAVIRT-CLOCK.md` per `tasks/110-paravirt-clock-x86.md`. **Portable
 gates: all green** (full workspace, clippy on mac + x86_64-linux +
 aarch64-NO_NEON cross-targets, fmt, deny, Miri on the new vmm-core paths,
-public-api snapshots regenerated). **Box gates: not run — no foreman-granted
-window** (the spec's box-discipline clause; the PR-98 re-cert chain has
-priority). Everything box-side is built, runnable-from-the-repo, and
-self-documenting; the runbook is below.
+public-api snapshots regenerated).
+
+## Box gates — RUN AND GREEN (real patched KVM, det-cfl-v1 box, 2026-07-15)
+
+Foreman-granted window, kernel head `5283a71` (build) + vmm-core head
+`1ee4ba0`, pinned `taskset -c 2`, patched KVM loaded via `box-window.sh`. The
+pvclock page **materializes, registers, and is selected as the guest's active
+clocksource** on real hardware:
+
+```
+clocksource: harmony-pvclock: mask 0xffff... max_idle_ns 881590591483
+harmony_pvclock: work-derived clock page registered at 0x2dba000 (abi 1, 2 GHz)
+clocksource: Switched to clocksource harmony-pvclock          ← selected, not just registered
+```
+
+| Gate | Result | Evidence |
+|---|---|---|
+| **G0** smoke-fire-once | **PASS** | page registered @0x2dba000, 4096 refreshes, monotonic to 99 ms vns, GUEST_READY, clean poweroff |
+| **G1** same-seed bit-identical `state_hash`, page ON | **PASS** | 3/3 seals MATCH across two same-seed Postgres boots (page bytes hashed in full) — zero refresh/canonicalization entropy leaks into guest RAM |
+| **G2** page-stamp == RDTSC-trap-oracle at refresh Moments | **PASS** | 5 sampled boundary checks + terminal, 4096 refreshes, **deliberate-fault detected** (the gate can fail) |
+| **G3** busy-wait liveness within Δ | **PASS** | syscall-free `pvclock-spin` completed; 2182 refreshes, **1921 (88%) forced by the Δ deadline**, max anchor gap = Δ exactly |
+| **det-corpus O1** (run-vs-run determinism, page-off) | **PASS** (all payloads) | insn-rdtsc / insn-rng / insn-cpuid all deterministic same-seed on the patched backend — the page-off path my task must not regress is intact |
+| **det-corpus O2** (conformance-to-golden) | insn-rdtsc ✓, insn-rng ✓, **insn-cpuid ✗ (pre-existing)** | the insn-cpuid digest is *deterministic* (identical run-to-run) but ≠ its committed golden — a CPUID conformance-golden drift (microcode/golden staleness). **My branch touches no golden/CPUID/corpus file** (diff is `consonance` + `docs` + `guest/linux` only), and pvclock touches no CPUID, so this is orthogonal to the page — flagged for the foreman to reconcile against main, NOT a pvclock regression |
+
+**Kill condition 3 (perf) — reported honestly: the x86 RDTSC-exit-rate reduction
+is ~1×, BELOW the 2× "worth it" threshold.** Measured over an exact
+predetermined V-time window (Postgres steady state, page-off vs page-on):
+
+```
+pg window page-OFF: rdtsc=64688 (215627/vsec over 0.3 s)   total=96000
+pg window page-ON:  rdtsc=62952 (209840/vsec over 0.3 s)   total=94000
+reduction = 1.03×   (boot-ratio arm, minimal image: 1.02×)
+```
+
+This is **not a mechanism failure** — G0–G3 prove the page is selected and
+correct. The RDTSC exits the page removes (the clocksource `.read()`, now a page
+load) are a *small fraction* of total RDTSC traffic, which is dominated by two
+sources the page deliberately does not touch: **(1) syscall-entry kstack-offset
+randomization** (`do_syscall_64` does one RDTSC per syscall — allowlisted — and
+Postgres is syscall-heavy), and **(2) `delay_tsc`**, which the design
+deliberately keeps on the RDTSC trap (IMPLEMENTATION "Deviations", the udelay
+overshoot argument). So on x86 the page does not pay for itself *as an
+exit-reduction optimization* for a syscall-heavy workload. Its strategic value
+is **ARM** — where the counter cannot be trapped at all, so the page is the
+*only* deterministic clock (validated at spike AA-5, out of scope here) — and on
+x86 the retained RDTSC trap is the backstop/oracle regardless. Two honest
+levers, if x86 exit reduction is later wanted: disabling
+`RANDOMIZE_KSTACK_OFFSET` removes the per-syscall RDTSC, and a loop-delay
+override seam would move `delay_tsc` onto the page (6.18 exports none today).
+
+**Box-run gotchas (for reproduction):** the STRICT_DEVMEM config fix (r7) means
+the kernel differs from any pre-r7 build — `MANIFEST.sha256`'s bzImage was
+re-pinned to `051de137…` (the minimal initramfs reproduced bit-identically,
+confirming the build levers). The Postgres image (`initramfs-postgres.cpio.gz`,
+pin `3c4a7f2f…`) is short-lived (~0.46 virtual s: boots, runs its scripted
+workload, powers off), so G1's seal schedule and the perf window must be sized
+under that: `PV_G1_FIRST_VNS=100000000 PV_G1_STEP_VNS=50000000 PV_G1_SEALS=3`
+and `PV_PERF_WINDOW_VNS=300000000` were used (all env knobs). `INITRAMFS_EXEC_SHA256`
+= `7f691432…`.
 
 **Review round 1 folded in** (cross-model r1: 5 P1 + 1 P2; foreman stamping
 ruling, flagged for Paul's veto): the anchor-derived stamping is RULED
