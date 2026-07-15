@@ -3654,13 +3654,21 @@ where
         // The deterministic intercept point is the deadline TARGET, not the
         // (possibly skid-tainted, on an overdue real-backend landing) `reached`.
         let anchor = target.unwrap_or(reached).0;
+        // V-time is synchronized ONLY when the anchor equals the current work,
+        // i.e. the guest actually stopped AT the deadline (`reached == target`),
+        // not on an **overdue** zero-entry landing where the live counter sits
+        // past the (deterministic) target (cross-model r9 P1). Marking an overdue
+        // boundary synchronized would let a snapshot be taken while the live work
+        // is at `reached > anchor`: restore re-baselines the counter to 0 from the
+        // anchor-derived V-time, so the restored VM and the uninterrupted one
+        // (whose counter is at `reached`) would produce different time at the next
+        // intercept or page refresh. Leaving it unsynchronized defers the snapshot
+        // to a real intercept where `anchor == current work`.
+        let exact = anchor == reached.0;
         match self.vtime.as_mut() {
             Some(vt) => {
                 vt.last_intercept_work = anchor;
-                // The preemption point is an exact work boundary, so V-time is
-                // synchronized (a snapshot taken right here is exact, like any
-                // other intercept).
-                self.vtime_synchronized = true;
+                self.vtime_synchronized = exact;
                 Ok(Step::Continued)
             }
             // A `Deadline` only ever answers a `run_until`, which the VMM issues
@@ -9430,29 +9438,32 @@ mod tests {
     /// — comes from the deterministic `target`, so two same-seed runs whose skid
     /// differs still land the identical anchor and identical page bytes.
     #[test]
-    fn overdue_deadline_anchors_to_target_not_the_live_landing_count() {
+    fn overdue_deadline_anchors_to_target_and_is_not_synchronized() {
         // Anchor + Δ is the deterministic target; an overdue landing reports some
         // work strictly past it, and that reported value is the nondeterministic
-        // skid we must NOT promote.
+        // skid we must NOT promote (r8) — and must NOT declare synchronized (r9).
         let anchor = 1_000u64;
         let target = Moment(anchor + PVCLOCK_DEFAULT_DELTA_WORK);
-        let run_with_skid = |skid: u64| -> (u64, Vec<u8>) {
+        let run = |reached: u64| -> (u64, bool, Vec<u8>) {
             let mut vmm = pvclock_vmm(vec![], Box::new(ScriptedWork::at(0)), 7);
             vmm.vtime.as_mut().unwrap().last_intercept_work = anchor;
             ring_pvclock_register(&mut vmm, PV_GPA);
-            // The overdue landing: reached = target + skid (a real backend's live
-            // count); the target is the deterministic deadline that was armed.
-            vmm.on_deadline(Moment(target.0 + skid), Some(target))
-                .unwrap();
+            // Arm the channel (as the handshake would) so the refresh stamps.
+            vmm.pvclock.as_mut().unwrap().armed = true;
+            vmm.on_deadline(Moment(reached), Some(target)).unwrap();
             // Re-stamp the page from the new anchor, as step()'s tail would.
             vmm.pvclock_refresh().unwrap();
             (
                 vmm.vtime.as_ref().unwrap().last_intercept_work,
+                vmm.vtime_synchronized,
                 vmm.pvclock_page().unwrap().to_vec(),
             )
         };
-        let (anchor_a, page_a) = run_with_skid(12_345);
-        let (anchor_b, page_b) = run_with_skid(99_999);
+        // OVERDUE landings with DIFFERENT live counts (the nondeterministic skid a
+        // real backend returns): the anchor and page are deterministic (= target),
+        // and V-time is NOT declared synchronized.
+        let (anchor_a, sync_a, page_a) = run(target.0 + 12_345);
+        let (anchor_b, sync_b, page_b) = run(target.0 + 99_999);
         assert_eq!(
             anchor_a, target.0,
             "the anchor took the overdue landing's live count, not the deterministic target — \
@@ -9463,6 +9474,16 @@ mod tests {
             "the anchor diverged with the (nondeterministic) skid"
         );
         assert_eq!(page_a, page_b, "the page bytes diverged with the skid");
+        assert!(
+            !sync_a && !sync_b,
+            "an OVERDUE deadline (reached > target) falsely declared V-time synchronized — a \
+             snapshot there would restore inexactly (r9 P1)"
+        );
+        // An EXACT landing (the guest stopped AT the deadline, reached == target)
+        // IS synchronized — the anchor equals the current work.
+        let (anchor_exact, sync_exact, _) = run(target.0);
+        assert_eq!(anchor_exact, target.0);
+        assert!(sync_exact, "an exact deadline landing must be synchronized");
     }
 
     /// The pure-opt-in gate, host side: an offered-but-vtime-unwired VM and a

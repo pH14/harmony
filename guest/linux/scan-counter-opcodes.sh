@@ -148,16 +148,31 @@ raw_byte_scan_one() {
         echo "  bzImage must be scanned (setup + decompressor + kernel); build first." >&2
         return 1
     fi
-    # Executable (X-flag) section names, from readelf's section table.
-    names=$(readelf -SW "$path" 2>/dev/null \
-        | sed -n 's/.*\] \([.][A-Za-z0-9_.]*\) *PROGBITS.*\bAX\b.*/\1/p')
+    # Executable section names: every PROGBITS section whose flags field contains
+    # the X (executable) bit — NOT just an exact `AX` token, so combined flags
+    # like `WAX` / `AXl` are covered too (cross-model r9 P2). readelf -SW columns
+    # after PROGBITS are addr, off, size, ES, Flg — so the flags are the field 5
+    # past PROGBITS, and the section name is the field just before it.
+    names=$(readelf -SW "$path" 2>/dev/null | awk '
+        { for (i = 1; i <= NF; i++)
+              if ($i == "PROGBITS") { if ($(i + 5) ~ /X/) print $(i - 1); break } }')
     if [ -z "$names" ]; then
         echo "FAIL: $tag ($path) has no executable sections — cannot have been scanned" >&2
         return 1
     fi
     for s in $names; do
-        hex=$(objcopy -O binary --only-section="$s" "$path" /dev/stdout 2>/dev/null \
-            | od -An -v -tx1 | tr -d ' \n')
+        # Extract the section's raw bytes as hex. FAIL-CLOSED on any extraction
+        # failure (objcopy / od / tr) — `pipefail` is set, so the pipeline's exit
+        # status is checked explicitly here; otherwise a swallowed failure (this
+        # runs under `if ! raw_byte_scan`, where errexit is off) would leave an
+        # empty `hex`, match nothing, and silently green the gate (cross-model
+        # r9 P1).
+        if ! hex=$(objcopy -O binary --only-section="$s" "$path" /dev/stdout 2>/dev/null \
+            | od -An -v -tx1 | tr -d ' \n'); then
+            echo "FAIL: could not extract bytes for $tag section $s (objcopy/od/tr failed) —" >&2
+            echo "  refusing to green a scan that did not read the section (fail-closed)." >&2
+            return 1
+        fi
         n31=$(grep -oE '0f31' <<<"$hex" | wc -l | tr -d ' ')
         n01f9=$(grep -oE '0f01f9' <<<"$hex" | wc -l | tr -d ' ')
         if [ "$n31" != 0 ] || [ "$n01f9" != 0 ]; then
@@ -352,6 +367,11 @@ EOF
             | as -o "$d/dirty.elf" - 2>/dev/null && dirty_ok=1
         printf '.section .text,"ax"\n.byte 0x90,0x90\n.byte 0xc3\n' \
             | as -o "$d/clean.elf" - 2>/dev/null && clean_ok=1
+        # A WRITABLE-executable section (flags "awx" → readelf "WAX"): the X-flag
+        # selection must still scan it (an exact-`AX`-token match would miss it,
+        # and a forbidden opcode there would pass — cross-model r9 P2).
+        printf '.section .wtext,"awx"\n.byte 0x0f,0x31\n.byte 0xc3\n' \
+            | as -o "$d/wax.elf" - 2>/dev/null && wax_ok=1
         if [ "${dirty_ok:-0}" = 1 ] && [ "${clean_ok:-0}" = 1 ]; then
             if ! raw_byte_scan_one "$d/clean.elf" clean >/dev/null 2>&1; then
                 echo "FAIL: self-test — raw-byte scan flagged a clean fixture" >&2
@@ -359,6 +379,12 @@ EOF
             fi
             if raw_byte_scan_one "$d/dirty.elf" dirty >/dev/null 2>&1; then
                 echo "FAIL: self-test — raw-byte scan MISSED a planted 0f 31 in a .text section" >&2
+                exit 1
+            fi
+            if [ "${wax_ok:-0}" = 1 ] \
+                && raw_byte_scan_one "$d/wax.elf" wax >/dev/null 2>&1; then
+                echo "FAIL: self-test — raw-byte scan MISSED a 0f 31 in a WAX (writable+exec)" >&2
+                echo "  section — the X-flag selection is not catching combined flags" >&2
                 exit 1
             fi
             raw_selftest="raw-byte-scan, "

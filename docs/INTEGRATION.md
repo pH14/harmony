@@ -146,11 +146,17 @@ its module doc):
   numbering never moves (a released wire ABI).
 - **`Pvclock = 7` (task 110, `docs/PARAVIRT-CLOCK.md`).** The guest publishes the guest-physical
   address of its 4 KiB paravirt work-derived clock page (one 8-byte little-endian page-aligned GPA);
-  the host validates it (page-aligned, wholly inside guest RAM, clear of the doorbell frame pages),
-  records it, stamps the page from the V-time clock, and answers the 4-byte little-endian page-layout
-  ABI version (`HARMONY_PVCLOCK_ABI = 1`). A host not composed with the clock page — or one without a
-  deterministic work counter to derive stamps from — answers `Status::UnknownService`, and the guest
-  keeps its trap-backstopped time paths (the page is pure opt-in on both sides).
+  the host validates it (page-aligned, wholly inside guest RAM, clear of the doorbell frame pages and
+  of any device-MMIO hole), **records it as pending**, and answers the 4-byte little-endian
+  page-layout ABI version (`HARMONY_PVCLOCK_ABI = 1`). **Registration is a two-step handshake: the
+  response does NOT stamp the page.** Because the doorbell `OUT` is a PIO, not a V-time intercept, the
+  host lays down the first stamp and arms its staleness refresh only at the guest's **required**
+  post-response counter read (an `RDTSC`/`RDTSCP` — a skid-free intercept). A conforming guest must
+  perform that read before reading the page; reading immediately after the response observes stale
+  bytes (ABI version zero). A guest that omits the handshake is out of contract (unstamped, never
+  refreshed). A host not composed with the clock page — or one without a deterministic work counter to
+  derive stamps from — answers `Status::UnknownService`, and the guest keeps its trap-backstopped time
+  paths (the page is pure opt-in on both sides).
 - An unregistered service id is `Status::UnknownService`; an opcode a service does not implement is
   `Status::UnknownOpcode` — never a silent drop.
 

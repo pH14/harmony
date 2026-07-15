@@ -111,13 +111,24 @@ pub enum ServiceId {
     /// `docs/PARAVIRT-CLOCK.md` §3.1): the guest publishes the guest-physical
     /// address of its 4 KiB clock page (op 1, `pvclock_register` — an 8-byte
     /// little-endian GPA). The host validates the GPA (page-aligned, inside
-    /// guest RAM, clear of the doorbell frame pages), records it, stamps the
-    /// page, and answers with the 4-byte little-endian page-layout ABI version
-    /// (`HARMONY_PVCLOCK_ABI = 1`). A host not composed with the clock page —
-    /// or one whose backend has no deterministic work counter to derive the
-    /// stamps from — answers [`Status::UnknownService`], and the guest keeps
-    /// its trap-backstopped time paths (the page is pure opt-in on both
-    /// sides).
+    /// guest RAM, clear of the doorbell frame pages and of any device-MMIO
+    /// hole), **records it as pending**, and answers with the 4-byte
+    /// little-endian page-layout ABI version (`HARMONY_PVCLOCK_ABI = 1`).
+    ///
+    /// **Registration is a two-step handshake — the page is NOT stamped by the
+    /// response.** The doorbell `OUT` is a plain PIO exit, not a V-time
+    /// intercept, so the host lays down the first page stamp and arms its
+    /// staleness refresh only at the guest's **required** post-response counter
+    /// read (an `RDTSC`/`RDTSCP` — a genuine skid-free intercept). A conforming
+    /// guest MUST execute that read before reading the page: reading the page
+    /// immediately after the response would observe stale bytes (ABI version
+    /// zero / no `MATERIALIZED` flag). A guest that omits the handshake is out of
+    /// contract — its page is never stamped and never refreshed.
+    ///
+    /// A host not composed with the clock page — or one whose backend has no
+    /// deterministic work counter to derive the stamps from — answers
+    /// [`Status::UnknownService`], and the guest keeps its trap-backstopped time
+    /// paths (the page is pure opt-in on both sides).
     Pvclock = 7,
 }
 
@@ -641,6 +652,13 @@ mod guest {
         /// never trusted. The caller must treat any error (including the
         /// [`Status::UnknownService`] a clock-page-less host answers) as "no
         /// page offered" and keep its trap-backstopped time paths.
+        ///
+        /// **The response only records a pending registration — it does NOT
+        /// stamp the page (see [`ServiceId::Pvclock`]).** After a successful
+        /// response the caller MUST perform the registration handshake — a
+        /// single `RDTSC`/`RDTSCP` — before reading the page; that counter read
+        /// is the intercept at which the host writes the first stamp. Reading the
+        /// page between the response and the handshake observes stale bytes.
         pub fn pvclock_register(&mut self, gpa: u64) -> Result<u32, ClientError<T::Error>> {
             let mut payload = [0_u8; 8];
             put_u64(&mut payload, gpa);
