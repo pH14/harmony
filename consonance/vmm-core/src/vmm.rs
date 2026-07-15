@@ -2636,9 +2636,13 @@ where
     /// Re-stamp the registered pvclock page from the current clock — the §2
     /// refresh. Called by [`step`](Self::step) at every deterministic
     /// clock-advance boundary (V-time intercepts, deadline landings, idle
-    /// warps — wherever `vtime_synchronized` holds at the end of a step) and,
-    /// in canonical form, by [`save_vm_state`](Self::save_vm_state) at every
-    /// seal quiescent point. A no-op without a registration.
+    /// warps — wherever `vtime_synchronized` holds at the end of a step); in
+    /// canonical form only at the registration **handshake** (the first stamp)
+    /// and the armed re-stamp of a V-time-only restore. **[`save_vm_state`] does
+    /// NOT call this** — a seal captures the page **verbatim** (§1.1, the r4
+    /// verbatim-seal ruling; canonicalizing a live page is the ABA hazard that
+    /// ruling removed), so the seal path is side-effect-free. A no-op without a
+    /// registration.
     ///
     /// The stamped values derive from the **skid-free anchor**
     /// (`last_intercept_work`), never a live counter read — the page is hashed

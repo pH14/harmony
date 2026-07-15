@@ -1033,6 +1033,16 @@ fn n4_perf_postgres_window_page_off_vs_page_on() {
     // (cross-model r8 P2, the "default within the pinned workload" concern). Set
     // it to measure a shorter fixed sub-window of a longer workload.
     let cap = env_u64("PV_PERF_WINDOW_VNS", u64::MAX);
+    // Refuse a ZERO cap before either arm runs (r21 P2): the window loop stops as
+    // soon as `span >= cap`, so `cap == 0` closes the window at the first step —
+    // a one-step sample would pass as the steady-state workload measurement. A
+    // zero override is an operator error, not a valid measurement.
+    assert!(
+        cap > 0,
+        "PV_PERF_WINDOW_VNS=0 is refused — a zero window would report a one-step \
+         sample as the workload measurement; set a positive ns cap or leave it unset \
+         (the default measures the whole workload)."
+    );
 
     // (rdtsc+rdtscp delta, total delta, V-time span) measured OVER THE WORKLOAD.
     let arm = |page_on: bool| -> (u64, u64, u64) {

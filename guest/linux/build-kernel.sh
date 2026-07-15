@@ -106,9 +106,6 @@ fi
 echo "== kernel: building bzImage"
 make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 
-install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/bzImage"
-echo "ok: $ART_DIR/bzImage"
-
 # Task 110: the counter-opcode reachability gate (PARAVIRT-CLOCK.md §3.3, x86
 # half) — every rdtsc/rdtscp left in the image must match a reviewed,
 # trap-backstopped allowlist entry (function + exact instruction count). Scans
@@ -117,5 +114,16 @@ echo "ok: $ART_DIR/bzImage"
 # GATE-UNARMED marker in the allowlist (re-baselining only, e.g. a kernel
 # version bump) makes the scan print the new capture and FAIL the build until
 # the reviewed baseline lands. See scan-counter-opcodes.sh for the workflow.
+#
+# The scan runs on `$KOBJ/vmlinux` (built above) and MUST pass BEFORE the image
+# is published to the canonical `$ART_DIR/bzImage` (cross-model r21 P2): with
+# `set -e`, a failed scan aborts here, so a REJECTED kernel never reaches the
+# path campaign-runner consumes. (Publishing first, then scanning, would leave
+# the rejected artifact at the canonical path on failure.) Proven locally by
+# `test-publish-gate.sh` with a planted rejection.
 echo "== kernel: counter-opcode scan (rdtsc/rdtscp reachability gate)"
 bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" "$LINUX_DIR/rdtsc-allowlist.txt"
+
+# Publish ONLY after the scan passed.
+install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/bzImage"
+echo "ok: $ART_DIR/bzImage"

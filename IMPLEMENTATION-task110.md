@@ -630,13 +630,17 @@ G3 needed the box; the other gates' r8–r19 results stand.
    page load (vns, ns-native, registered at 1 GHz, rating 450); sched_clock
    routed through the same read (`paravirt_set_sched_clock`);
    `mark_tsc_unstable` makes the TSC unselectable for timekeeping once the
-   page is live. The registration is still bracketed by two deliberate `rdtsc`
-   traps, but since r5 **nothing depends on them**: the VMM anchors V-time from
-   a fresh work read inside `pvclock_register` itself and arms the Δ deadline
-   there, so a guest that registers and immediately busy-waits is forced out on
-   the host's own guarantee rather than on the reference kernel's courtesy. The
-   traps stay as belt-and-braces (and are allowlisted). Runtime-gated on the
-   `harmony_pvclock` parameter → one image is both measurement arms.
+   page is live. Registration follows the r8 **handshake** contract (sharpened
+   r17): the doorbell `OUT` records the GPA as **pending** — no stamp, no Δ arm
+   — and the guest's **required post-response RDTSC** (a counter read
+   *specifically*, not any synchronized exit — r17) completes the handshake at a
+   fresh, skid-free anchor, where the page's first (canonical) stamp is laid and
+   the Δ deadline is armed. The post-doorbell RDTSC is therefore **normative, not
+   courtesy**: a guest that registers but never does the counter read is out of
+   contract and keeps a stale, pre-registration page (an integrator must emit
+   the handshake read, not assume `register` stamps+arms). The retained RDTSC
+   trap is the enforcement backstop and G2 oracle (allowlisted). Runtime-gated on
+   the `harmony_pvclock` parameter → one image is both measurement arms.
    **Compiles and boots proven portably**: the full linux/amd64 container
    build produces bzImage and passes the reproducibility + QEMU-boot gates
    (`run-tests.sh`), whose regenerated `MANIFEST.sha256` is committed.
