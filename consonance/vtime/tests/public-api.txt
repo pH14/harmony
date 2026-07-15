@@ -1,4 +1,30 @@
 pub mod vtime
+pub mod vtime::pvclock
+pub struct vtime::pvclock::PvclockFields
+pub vtime::pvclock::PvclockFields::abi_version: u32
+pub vtime::pvclock::PvclockFields::flags: u32
+pub vtime::pvclock::PvclockFields::guest_clock: u64
+pub vtime::pvclock::PvclockFields::guest_clock_hz: u64
+pub vtime::pvclock::PvclockFields::seq: u32
+pub vtime::pvclock::PvclockFields::vcpu_index: u32
+pub vtime::pvclock::PvclockFields::vns: u64
+pub const vtime::pvclock::ABI_VERSION_OFF: usize
+pub const vtime::pvclock::FLAGS_OFF: usize
+pub const vtime::pvclock::GUEST_CLOCK_HZ_OFF: usize
+pub const vtime::pvclock::GUEST_CLOCK_OFF: usize
+pub const vtime::pvclock::PVCLOCK_ABI_VERSION: u32
+pub const vtime::pvclock::PVCLOCK_FLAGS_V1: u32
+pub const vtime::pvclock::PVCLOCK_FLAG_MATERIALIZED: u32
+pub const vtime::pvclock::PVCLOCK_FLAG_WORK_DERIVED: u32
+pub const vtime::pvclock::PVCLOCK_PAGE_LEN: usize
+pub const vtime::pvclock::RESERVED_OFF: usize
+pub const vtime::pvclock::SEQ_OFF: usize
+pub const vtime::pvclock::VCPU_INDEX_OFF: usize
+pub const vtime::pvclock::VNS_OFF: usize
+pub fn vtime::pvclock::published(&[u8], u64, u64, u64) -> bool
+pub fn vtime::pvclock::read(&[u8]) -> core::option::Option<vtime::pvclock::PvclockFields>
+pub fn vtime::pvclock::stamp(&mut [u8], u64, u64, u64) -> bool
+pub fn vtime::pvclock::stamp_canonical(&mut [u8], u64, u64, u64) -> bool
 pub mod vtime::sim
 pub enum vtime::sim::SimEvent
 pub vtime::sim::SimEvent::Armed

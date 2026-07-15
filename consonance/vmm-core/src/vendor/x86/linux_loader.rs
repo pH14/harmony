@@ -133,7 +133,9 @@ const E820_RESERVED: u32 = 2;
 /// `docs/CPU-MSR-CONTRACT.md` §6 / the LAPIC-timer rows). The IOAPIC page
 /// (`0xFEC00000`) is deliberately NOT reserved: Linux runs in virtual-wire mode (no
 /// MADT) and never uses it.
-const LAPIC_MMIO_PAGE: u64 = 0xFEE0_0000;
+pub(crate) const LAPIC_MMIO_PAGE: u64 = 0xFEE0_0000;
+/// The size of that hole (one 4 KiB page) — what `map_memory` splits around.
+pub(crate) const LAPIC_MMIO_PAGE_LEN: u64 = 0x1000;
 /// GPA of the minimal ACPI tables (RSDP -> XSDT -> MADT). Placed in the legacy
 /// BIOS region `[0xA0000, 0x100000)`, which the memslot backs but the usable-RAM
 /// E820 map deliberately omits — so the kernel reads the tables via the RSDP

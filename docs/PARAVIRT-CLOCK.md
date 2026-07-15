@@ -58,20 +58,28 @@ busy-wait-on-time guest live.
 
 ## 1. Page layout (ABI `HARMONY_PVCLOCK_ABI = 1`)
 
-One 4 KiB guest page at a fixed, contract-reserved GPA, single-vCPU (this project is
-single-vCPU; the layout reserves a vCPU-index field for a future fan-out but pins it to 0). All
-fields little-endian, matching the codebase's wire discipline (`consonance/vm-state/src/
-types.rs:11`). Seqlock-versioned exactly as kvmclock, so a single-vCPU guest reader never sees a
-torn update:
+One 4 KiB page of guest RAM at a **guest-registered GPA**: the guest publishes the address
+**once** via the §3.1 transport, the vmm validates it (page-aligned, wholly inside guest RAM,
+clear of the transport's frame pages) and pins it for the machine's life — **re-registration
+is a guest fault, rejected**; the stamping target never moves. *(RULED at the task-110 review
+(foreman, 2026-07-14, flagged for Paul's veto, same window as the §2 stamping ruling): this
+section originally said "a fixed, contract-reserved GPA", contradicting §3.1's
+publish-and-validate transport; ABI v1 is the guest-registered one-shot GPA — the kvmclock
+precedent of an address-carrying registration, and what makes the guest's page placement a
+deterministic function of its own build rather than a contract row.)* Single-vCPU (this
+project is single-vCPU; the layout reserves a vCPU-index field for a future fan-out but pins
+it to 0). All fields little-endian, matching the codebase's wire discipline
+(`consonance/vm-state/src/types.rs:11`). Seqlock-versioned exactly as kvmclock, so a
+single-vCPU guest reader never sees a torn update:
 
 | Offset | Width | Field | Meaning |
 |---|---|---|---|
 | 0x00 | u32 | `abi_version` | Layout ABI = 1. Read once at clocksource registration; a mismatch is a guest-side hard fault, never a silent reinterpret. |
 | 0x04 | u32 | `seq` | Seqlock counter. **Odd ⇒ update in progress** (retry); even ⇒ stable. The torn-read guard. |
 | 0x08 | u64 | `vns` | Materialized V-time in nanoseconds = `VClock::vns(work)` at the refresh's work count (`consonance/vtime/src/clock.rs:74`). The generic-timer/monotonic clocksource value. |
-| 0x10 | u64 | `guest_clock` | Materialized virtual counter = `VClock::guest_clock(work)` (today `VClock::tsc(work)`, `clock.rs:85`; renamed per §5). The vendor-counter analogue the guest's counter-shaped clocksource reads. |
+| 0x10 | u64 | `guest_clock` | Materialized virtual counter — the **guest-visible** clock: `VClock::guest_ticks(work)` **plus the vendor clock-offset register** (x86: `IA32_TSC_ADJUST`, wrapping mod 2⁶⁴), exactly what the retained RDTSC trap completes with, so the §6 G2 oracle equality is definitional (offset `0` for every audited payload). *(Offset term recorded at the task-110 review under the stamping ruling.)* The vendor-counter analogue the guest's counter-shaped clocksource reads. |
 | 0x18 | u64 | `guest_clock_hz` | Counter frequency in Hz (`VClockConfig::tsc_hz`, renamed §5). Constant for the machine's life; lets the guest scale `guest_clock` to ns if it wants a counter-native read. |
-| 0x20 | u32 | `flags` | Bit 0 `MATERIALIZED` (always 1 for this ABI — signals "value is finished, do not interpolate against a live counter"). Remaining bits reserved-zero. |
+| 0x20 | u32 | `flags` | Bit 0 `MATERIALIZED` (always 1 for this ABI — signals "value is finished, do not interpolate against a live counter"). Bit 1 `WORK_DERIVED` (always 1 when a **real stamping path** writes the page — the values derive from the deterministic work counter; a *static placeholder page*, e.g. the ARM vendor spike's pre-integration stand-in, deliberately leaves it clear so a consumer or gate that requires it — AA-5 — **fails closed** against a page nothing is actually deriving. *Ruled at the PR #108 r9 / task-110 coordination, 2026-07-14.*) Remaining bits reserved-zero. |
 | 0x24 | u32 | `vcpu_index` | Pinned 0. |
 | 0x28 | .. | reserved-zero | To end of page. |
 
@@ -113,18 +121,42 @@ and their rulings:
 
 - **`seq` carries refresh count.** If the guest is snapshotted with whatever `seq` happened to
   accumulate, and a same-seed sibling run refreshed a different number of times before the same
-  Moment, the two pages hash differently → nondeterminism. **Ruling: at every seal/snapshot
-  quiescent point the page is re-stamped to canonical form** — `seq = 0` (even, stable),
-  `vns = VClock::vns(w)`, `guest_clock = VClock::guest_clock(w)` for the exact seal work count
-  `w`, `flags`/`vcpu_index`/reserved at their fixed values. The canonical page is thus a total
-  function of `(w, config)` and nothing else. The guest never observes `seq = 0` as special: it
-  only reads the page while running, never at the seal boundary (a seal is taken at an HLT
-  quiescent Moment, `consonance/vm-state/src/types.rs:118`).
-- **Refresh count is deterministic-in-principle but we do not lean on it.** The exit/refresh
-  schedule is itself a pure function of the seed (§2), so `seq` *would* be reproducible — but it
-  is fragile against a change in the staleness window Δ or backend skid, so canonicalization at
-  seal is the robust guarantee, not an accident of scheduling. The determinism gate (§6) is what
-  proves it.
+  Moment, the two pages hash differently → nondeterminism.
+
+  **Original ruling (superseded): re-stamp the page to canonical form at every seal/snapshot
+  quiescent point** — `seq = 0`, values at the exact seal work count `w`, reserved tail zeroed —
+  so the sealed page is a total function of `(w, config)`. Its safety argument was that "the
+  guest only reads the page while running, never at the seal boundary (a seal is taken at an HLT
+  quiescent Moment)".
+
+  **AMENDED RULING (PR #110 cross-model r4, 2026-07-14): the page is sealed VERBATIM; nothing
+  canonicalizes a live page except registration.** The original ruling's premise is false —
+  since **task 41** a seal is taken at *any* V-time-synchronized intercept, not only at an HLT
+  quiescent Moment, so a guest reader **can** be mid-seqlock-read across a seal. Resetting a
+  live `seq` to a fixed epoch is then an **ABA**: a reader that sampled `seq = 0`, took an exit
+  before its validating re-read, and resumed after a refresh-then-canonicalize would see `seq =
+  0` again, accept the values it had already loaded, and miss the refresh — *taking a snapshot
+  would change the guest's future*. Canonicalizing only the snapshot **copy** is no better: it
+  makes the sealed image differ from live guest RAM, which breaks both the snapshot engine's
+  derive path (`snapshot_derive` diffs live RAM against the parent *image*) and same-state ⇒
+  same-future (a parent that seals and continues would diverge, by exactly its `seq`, from a
+  child restored from its own snapshot).
+
+  What replaces canonicalization is **value-keyed stamping** (§2, ruled at r1): a stamp that
+  publishes values the page already carries writes **nothing** and does not move the epoch. So
+  `seq` advances only on *distinct-value* publications, whose stream is a pure function of the
+  deterministic execution — the epoch is reproducible by construction, and a restored run
+  inherits its parent's epoch and continues in lockstep. Two same-seed runs cannot refresh a
+  *different number of value-changing times*, which is the only thing the page bytes see.
+
+  The two fragilities the original ruling cited are closed by other rulings in the same PR, so
+  the "accident of scheduling" it feared is now a contract: **backend skid** cannot reach the
+  values (stamps use the skid-free `last_intercept_work` anchor, r1), and **Δ** is machine
+  configuration carried in the sealed device blob and cross-validated on restore (r3) — a Δ
+  mismatch is *rejected*, never silently divergent. Canonical form survives as the
+  **registration** form (a fresh page, no reader possible, no prior epoch to alias), which is
+  what gives the channel a known starting epoch and a zeroed tail regardless of what the guest's
+  allocator left behind. The determinism gate (§6, G1) is what proves the whole story.
 
 ---
 
@@ -135,10 +167,21 @@ are exits the run loop already takes, plus one bounded forced refresh. Enumerate
 existing `consonance/vtime` seams:
 
 1. **`run_until` / any natural exit returns.** Every time `KVM_RUN` exits (hypercall, MMIO,
-   deadline, HLT, the forced overflow below), the vmm holds the current work count from
-   `CpuBackend::work()` (`consonance/vtime/src/planner.rs:16`) and stamps
-   `vns = VClock::vns(work)`, `guest_clock = VClock::guest_clock(work)`. This is the natural,
-   zero-added-cost refresh: the exit was going to happen anyway.
+   deadline, HLT, the forced overflow below), the vmm re-stamps the page with the clock at the
+   **skid-free anchor** — the work count of the last deterministic clock-advance boundary
+   (`last_intercept_work`: the V-time intercepts, `Deadline` landings, and idle warps), the
+   same value the RDTSC-trap oracle returns — and stamps
+   `vns = VClock::vns(anchor)`, `guest_clock` = the guest-visible clock at `anchor` (§1). The
+   stamp is **value-keyed**: between two clock advances the anchor cannot move, so the refresh
+   at a non-intercept exit republishes identical bytes (a no-op), and the published value
+   stream advances exactly at the deterministic boundaries. This is the natural,
+   zero-added-cost refresh: the exit was going to happen anyway. *(Amended at the task-110
+   implementation review — the foreman's 2026-07-14 stamping ruling, flagged for Paul's veto:
+   the original text read "the current work count from `CpuBackend::work()`", but a live
+   counter read at a non-intercept boundary carries non-deterministic exit-path skid (the
+   task-27 O1 evidence), and the page is hashed guest RAM — the literal reading contradicted
+   this section's own determinism argument. The anchor formulation is the intent made
+   implementable.)*
 2. **Deadline landings.** When `TimerQueue::pop_due` (`consonance/vtime/src/queue.rs:106`) fires
    a timer, the run loop is at the exact injection work count reached by
    `InjectionPlanner::stop_at` → `PlanOutcome::ReadyToInject` (`planner.rs:119`). The page is
@@ -196,7 +239,23 @@ raw-counter path survives.
   hypercall doorbell (`docs/GLOSSARY.md` hypercall-doorbell) or a contract-reserved MSR write
   that the CPU contract handles; the vmm validates the GPA lands in guest RAM and begins
   stamping. (Exact transport is an implementation choice for the follow-on bead; both are
-  already-modeled seams.)
+  already-modeled seams. Task 110 chose the doorbell — `hypercall-proto` service id 7 —
+  with the host advertising its offer via the `harmony_pvclock` kernel parameter.) Registration
+  is a **two-step handshake** (the r8 ruling). The doorbell `OUT` only **records a pending
+  registration** — it does not stamp the page or arm the Δ forced-refresh deadline, because the
+  `OUT` is a plain PIO exit, not a V-time intercept: the work counter read there carries
+  exit-path skid, and the pre-`OUT` anchor may be stale. The guest then **must** execute one
+  V-time intercept — an `rdtsc` — immediately after the doorbell; this **handshake intercept** is
+  where the host lays down the first (canonical) page stamp and arms the Δ deadline, both off the
+  intercept's fresh, skid-free anchor (so the target `anchor + Δ` is current and can never be
+  born overdue). The post-doorbell `rdtsc` is therefore **protocol, not courtesy** — a guest
+  that omits it is **out of contract**: its page stays at the pre-registration bytes (stale but
+  deterministic) and no refresh arms, which is an acceptable degradation for a non-conforming
+  guest and requires no host-side arming off a skid-tainted or stale anchor. *(Ruled at the
+  task-110 r8 review; supersedes the r5/r6 "fresh work read at the OUT … like RDTSC" wording and
+  the r7 "immediate arm off the existing (possibly stale) anchor" wording — the former anchored
+  on a skid-tainted PIO read, the latter could arm an overdue deadline whose landing imports a
+  live count. The handshake resolves both: nothing arms until a genuine skid-free intercept.)*
 - **Pinned kernel config / no-fallback.** `CONFIG_HARMONY_PVCLOCK=y` (the new clocksource),
   and the TSC clocksource must be **unselectable**: mark TSC unstable / drop it from the
   clocksource registry so the kernel can never fall back to raw `rdtsc` for timekeeping. RDTSC
@@ -226,11 +285,25 @@ for raw counter opcodes:
 - arm64: `mrs xN, CNTVCT_EL0`, `mrs xN, CNTPCT_EL0`, `mrs xN, CNTVCTSS_EL0`/`CNTPCTSS_EL0`;
 - x86: `rdtsc` (`0F 31`), `rdtscp` (`0F 01 F9`).
 
-Any hit on a reachable path fails the build. The scan inherits task-100's enforcement ladder:
-kernel-config guarantee → static opcode scan → **W^X + rescan-on-exec** for any page the guest
-makes executable at runtime (so a JIT/self-modifying guest cannot introduce a counter read the
-static scan never saw). A guest that can mint executable counter-read code the vmm cannot re-scan
-is out of contract — see §7.
+The scan inherits task-100's enforcement ladder: kernel-config guarantee → static opcode scan →
+**W^X + rescan-on-exec** for any page the guest makes executable at runtime (so a JIT/self-modifying
+guest cannot introduce a counter read the static scan never saw). A guest that can mint executable
+counter-read code the vmm cannot re-scan is out of contract — see §7.
+
+**The bar is per-vendor, because closure is (§4):**
+
+- **x86 — reviewed reachable reads are allowed, trap-backstopped.** The gate is an *allowlist*: a
+  raw `rdtsc`/`rdtscp` left in the image is admissible **iff** it is a known, reviewed site
+  (recorded `symbol+0xOFFSET`), because the retained RDTSC/RDTSCP trap (§4.1) completes *any*
+  reachable read — allowlisted or not — with the same work-derived value the page carries. A
+  reachable read is therefore **contract-safe** on x86, never a determinism hole; the allowlist
+  exists only to force human review of *new* reads (so nobody adds an unreviewed timekeeping path),
+  not because a reviewed read is unsafe. An **unlisted or moved** site fails the build.
+- **ARM — the bar is strictly zero reachable reads.** There is no `CNTVCT`/`CNTPCT` trap available
+  on the reachable non-ECV silicon (§4.2), so a reachable counter read is an *actual* escape from
+  work-derived time — unbackstopped. The transposed gate therefore carries an **empty allowlist by
+  necessity**: any hit fails the build. This strict zero-reachable requirement is the ARM no-trap
+  closure story, validated at spike stage AA-5 — it is **not** the x86 bar.
 
 ---
 

@@ -39,6 +39,17 @@ if ! grep -qxF 'CONFIG_STATIC=y' "$BBOBJ/.config"; then
 fi
 make -C "$BBSRC" O="$BBOBJ" -j"$(nproc)" busybox
 
+# --- the G3 busy-wait: static pvclock-spin -----------------------------------
+# G3's guest must spin on the clock page with NO syscalls and NO raw counter
+# reads in the loop — a shell `date` loop syscalls, and this kernel's syscall
+# entry carries an rdtsc (kstack randomization), which is a V-time intercept
+# that refreshes the page for free and makes the gate vacuous (cross-model r5).
+# See pvclock-spin.c. Static + -O2, like campaign-super.
+echo "== exec-image: compiling static pvclock-spin (G3's syscall-free busy-wait)"
+cc -static -O2 -Wall -Wextra -fno-asynchronous-unwind-tables \
+    -o "$BUILD_ROOT/pvclock-spin" "$LINUX_DIR/pvclock-spin.c"
+[ -x "$BUILD_ROOT/pvclock-spin" ] || { echo "FAIL: pvclock-spin did not build" >&2; exit 1; }
+
 echo "== exec-image: packing with gen_init_cpio"
 cc -O2 -o "$BUILD_ROOT/gen_init_cpio" "$KSRC/usr/gen_init_cpio.c"
 
@@ -46,11 +57,13 @@ spec=$BUILD_ROOT/initramfs-exec.spec
 cat >"$spec" <<EOF
 dir /dev 0755 0 0
 nod /dev/console 0600 0 0 c 5 1
+nod /dev/mem 0600 0 0 c 1 1
 dir /proc 0755 0 0
 dir /sys 0755 0 0
 dir /bin 0755 0 0
 file /bin/busybox $BBOBJ/busybox 0755 0 0
 slink /bin/sh /bin/busybox 0777 0 0
+file /bin/pvclock-spin $BUILD_ROOT/pvclock-spin 0755 0 0
 file /init $LINUX_DIR/exec-init.sh 0755 0 0
 EOF
 

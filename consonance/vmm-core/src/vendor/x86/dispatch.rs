@@ -127,10 +127,18 @@ impl<B: Backend<A = X86>> Vmm<B> {
             self.report_stream.push(value);
             return Ok(Step::Continued);
         }
-        // Task 73: the hypercall doorbell. Serviced only when an SDK channel is
-        // wired; otherwise it falls through to the default-deny below (so no
-        // non-SDK path is affected). One `OUT` = one atomic exchange.
-        if port == DOORBELL_PORT && (self.sdk.is_some() || self.net.is_some()) {
+        // Task 73: the hypercall doorbell. The port is a **modeled** device, so a
+        // write to it is always serviced — reaching the default-deny doorbell
+        // DISPATCHER, which answers `UnknownService` for a service this
+        // composition does not offer (cross-model r10 P1). A clock-aware guest
+        // probing service 7 on a VM with no channels must get that clean
+        // `UnknownService` (the protocol's own promise, hypercall-proto §1), not a
+        // fatal "unmodeled port" ContractViolation. This is byte-for-byte
+        // unchanged for every non-cooperating path (M1/M2/corpus/stock never write
+        // this port), and the per-service availability gates inside the dispatcher
+        // still keep an unoffered service from fabricating a success or an
+        // `SdkStop` (the PR-68 lesson). One `OUT` = one atomic exchange.
+        if port == DOORBELL_PORT {
             require_dword_io("OUT", DOORBELL_PORT, size)?;
             return self.service_doorbell(value);
         }
@@ -405,7 +413,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     /// Complete a pending `RDTSC`/`RDTSCP` with the **V-time** TSC,
-    /// [`VtimeWiring::visible_tsc`] (`VClock::tsc(work)` + `IA32_TSC_ADJUST`) — never
+    /// [`VtimeWiring::guest_clock`] (`VClock::guest_ticks(work)` + `IA32_TSC_ADJUST`) — never
     /// a host TSC, and identical to what `RDMSR(IA32_TSC)` returns. `work` is read
     /// from the host counter at this exit; the backend writes the value to EDX:EAX
     /// (and, for RDTSCP, the guest's `IA32_TSC_AUX` to ECX, which the backend
@@ -432,6 +440,12 @@ impl<B: Backend<A = X86>> Vmm<B> {
         // A V-time intercept: `last_intercept_work` is now the exact current work, so
         // a snapshot here would be exact (see `save_vtime`).
         self.vtime_synchronized = true;
+        // This synchronized boundary is an RDTSC/RDTSCP COUNTER READ specifically —
+        // the only exit the pvclock registration handshake may complete on (r17;
+        // the §3.1/r8 wire contract promises the guest reads the counter after the
+        // doorbell). The other V-time intercepts (TSC MSR, RDRAND) and synchronized
+        // points (deadline, idle warp) leave this false.
+        self.tsc_read_intercept = true;
         Ok(Step::Continued)
     }
 
@@ -478,7 +492,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     /// Service an `emulate-vtime` `WRMSR`. `WRMSR(IA32_TSC, X)` sets the guest-visible
-    /// TSC to `X` by choosing the adjust `X − VClock::tsc(work)` (architecturally a
+    /// TSC to `X` by choosing the adjust `X − VClock::guest_ticks(work)` (architecturally a
     /// TSC write also moves `IA32_TSC_ADJUST` by the same delta — this is exactly
     /// that); `WRMSR(IA32_TSC_ADJUST, Y)` sets the adjust to `Y`, shifting the visible
     /// TSC by `Y − old`. Both are honored (`complete_ok`); the write is deterministic
@@ -496,7 +510,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 IA32_TSC => {
                     let work = vt.work.work()?;
                     vt.last_intercept_work = work;
-                    // visible_tsc(work) == value ⇔ adjust = value − VClock::tsc(work).
+                    // guest_clock(work) == value ⇔ adjust = value − VClock::guest_ticks(work).
                     vt.guest_clock_offset = value.wrapping_sub(vt.clock.guest_ticks(work));
                 }
                 IA32_TSC_ADJUST => {
@@ -684,6 +698,12 @@ impl<B: Backend<A = X86>> Vmm<B> {
             // `KVM_SET_VCPU_EVENTS` corrupts the resumed guest. All-zero at a quiescent
             // point, so M1/M2/corpus blobs are unchanged.
             events: records::canonical_events(&vcpu.events),
+            // The task-110 pvclock channel (v4): offer + Δ + the one-shot
+            // registration, so the direct restore path carries the stamping
+            // obligation with the state it governs (same-state ⇒ same-future).
+            pvclock: self
+                .pvclock_snapshot()
+                .map(|s| (s.delta_work, s.gpa, s.registrable)),
         };
         s.devices = records::encode_device_blob(&dev);
         s.contract_hash = contract::contract_hash();
@@ -748,6 +768,10 @@ impl<B: Backend<A = X86>> Vmm<B> {
                     .to_string(),
             ));
         }
+        // The task-110 pvclock channel record must validate symmetrically
+        // against this VM's composition (offer/Δ/GPA/deterministic backend) —
+        // still committing nothing (reject-before-mutation).
+        self.pvclock_validate_restore(dev.pvclock.as_ref())?;
         // Build the vCPU state (pure). The typed records yield the reduced `vm_state`
         // event subset; overwrite `events` with the device blob's **full**
         // `kvm_vcpu_events` (task 41) so an in-flight interrupt/exception injection is
@@ -784,8 +808,10 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     /// The x86 half of the restore **commit** (all infallible): install the prepared
-    /// xAPIC, the legacy-platform latches, the UART residual state, and the restored
-    /// guest-observable report stream.
+    /// xAPIC, the legacy-platform latches, the UART residual state, the restored
+    /// guest-observable report stream, and the task-110 pvclock channel state
+    /// (the sealed registration resumes stamping into the restored RAM's page;
+    /// a sealed-unregistered record clears any stale-timeline registration).
     pub(crate) fn commit_restore_x86(&mut self, prep: X86RestorePrep) {
         let X86RestorePrep { lapic, dev } = prep;
         if let Some(l) = lapic {
@@ -797,6 +823,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
         self.devices
             .uart
             .restore(dev.uart.capture, dev.uart.regs, dev.uart.dlab, dev.uart.dlm);
+        self.pvclock_commit_restore(dev.pvclock.as_ref());
         self.report_stream = dev.report_stream;
     }
 }

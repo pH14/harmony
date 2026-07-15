@@ -74,6 +74,173 @@ const X86_64_BOOT: VendorBootConfig = VendorBootConfig {
     backend: BackendKind::Patched,
 };
 
+/// The effective determinism cmdline for a box boot: the vendor base, plus the
+/// ` harmony_pvclock` clocksource advertisement iff the page is offered
+/// host-side (task 110 deliverable 7). This is the GUEST half of the page-on
+/// composition; the box composition root pairs it with the HOST half
+/// (`enable_pvclock`) from the same `page_on` knob, so the two cannot drift (the
+/// `live_pvclock.rs` "one body, one knob" discipline). Portable + unit-tested
+/// here; the box boot in `boxrun.rs` (Linux-only) is its sole non-test caller.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn pvclock_cmdline(base: &str, page_on: bool) -> String {
+    if page_on {
+        format!("{base} harmony_pvclock")
+    } else {
+        base.to_string()
+    }
+}
+
+/// The kernel clocksource-SWITCH marker: Linux prints this once it SELECTS the
+/// harmony page as the active timekeeping source — not merely registers it.
+const CLOCKSOURCE_SWITCH_MARKER: &[u8] = b"Switched to clocksource harmony-pvclock";
+
+/// Validate that a `--page-on` box run actually reached the page-on composition
+/// before its result is reported (r15 P1): the host must have registered the
+/// guest's clock page AND Linux must have SELECTED `harmony-pvclock` as the
+/// active clocksource. A stale (non-pvclock) image, a failed registration, or a
+/// TSC-still-active guest (page registered-but-unused) must NOT pass as page-on —
+/// else a determinism/throughput result would be an effectively page-OFF run
+/// mislabeled page-on. Portable + unit-tested; `boxrun.rs` is the non-test caller.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn require_page_on_active(registered: bool, serial: &[u8]) -> Result<(), String> {
+    if !registered {
+        return Err(
+            "the guest never registered the clock page (doorbell/ABI mismatch, or a \
+                    stale non-pvclock image) — a --page-on run must not report a page-OFF result"
+                .to_string(),
+        );
+    }
+    let switched = serial
+        .windows(CLOCKSOURCE_SWITCH_MARKER.len())
+        .any(|w| w == CLOCKSOURCE_SWITCH_MARKER);
+    if !switched {
+        return Err(
+            "the page registered but Linux never SELECTED harmony-pvclock as the active \
+                    clocksource (still on the TSC) — the page is registered-but-unused, so a \
+                    --page-on result would be effectively page-OFF"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Branch throughput (branches/second) for one campaign sweep arm — the
+/// denominator of deliverable 7's page-off-vs-page-on campaign-throughput ppm
+/// comparison. A zero-duration sweep reports `0.0` rather than dividing by zero.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn branch_throughput_per_sec(branches: u64, sweep_us: u64) -> f64 {
+    if sweep_us == 0 {
+        return 0.0;
+    }
+    branches as f64 / (sweep_us as f64 / 1e6)
+}
+
+/// The page-on / page-off throughput A/B ratio (> 1 ⇒ page-on completes more
+/// branches per second). An unmeasurable baseline (`off_bps <= 0`) reports
+/// `0.0`, never a divide-by-zero or infinity.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn throughput_ab_ratio(off_bps: f64, on_bps: f64) -> f64 {
+    if off_bps <= 0.0 {
+        return 0.0;
+    }
+    on_bps / off_bps
+}
+
+/// The `[REPORT]` throughput line ONE campaign sweep arm emits — comparable
+/// across a page-off and a page-on invocation, so the A/B ratio is producible
+/// ([`render_throughput_ab`]).
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn render_sweep_throughput(page_on: bool, branches: u64, sweep_us: u64) -> String {
+    format!(
+        "[REPORT] campaign sweep page-{}: {branches} branches in {:.2}s = {:.1} branches/s",
+        if page_on { "ON" } else { "OFF" },
+        sweep_us as f64 / 1e6,
+        branch_throughput_per_sec(branches, sweep_us),
+    )
+}
+
+/// The A/B ratio REPORT (deliverable 7's campaign-throughput ppm comparison):
+/// given the two arms' `(branches, sweep_us)`, render the page-on speedup over
+/// page-off.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn render_throughput_ab(off_branches: u64, off_us: u64, on_branches: u64, on_us: u64) -> String {
+    let off = branch_throughput_per_sec(off_branches, off_us);
+    let on = branch_throughput_per_sec(on_branches, on_us);
+    format!(
+        "[REPORT] campaign throughput A/B: page-OFF {off:.1} branches/s vs page-ON {on:.1} \
+         branches/s = {:.2}x (page-on / page-off)",
+        throughput_ab_ratio(off, on),
+    )
+}
+
+/// One campaign sweep arm's throughput plus the sweep parameters that MUST match
+/// across arms for an A/B ratio to be meaningful.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+struct ArmThroughput {
+    branches: u64,
+    sweep_us: u64,
+    seeds: usize,
+    runs_per_seed: usize,
+    deadline_delta: u64,
+}
+
+/// The A/B campaign-throughput report (deliverable 7), with the arms VALIDATED to
+/// have run the same sweep (r17): a ratio across different seed counts,
+/// runs-per-seed, or deadline compares apples to oranges, so a mismatch returns
+/// an `Err` describing it rather than a misleading number. The `box --page-on-ab`
+/// path runs both arms over one `BoxArgs` (parameters identical by construction);
+/// this check is the belt-and-braces guard that keeps the two comparable and is
+/// what makes the formatter part of the runnable path, not dead code.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn ab_report(off: &ArmThroughput, on: &ArmThroughput) -> Result<String, String> {
+    if off.seeds != on.seeds
+        || off.runs_per_seed != on.runs_per_seed
+        || off.deadline_delta != on.deadline_delta
+    {
+        return Err(format!(
+            "the page-off and page-on arms ran DIFFERENT sweeps (off: {} seeds x {} runs, \
+             deadline {} ns; on: {} seeds x {} runs, deadline {} ns) — an A/B throughput ratio \
+             across mismatched parameters is meaningless",
+            off.seeds,
+            off.runs_per_seed,
+            off.deadline_delta,
+            on.seeds,
+            on.runs_per_seed,
+            on.deadline_delta,
+        ));
+    }
+    Ok(render_throughput_ab(
+        off.branches,
+        off.sweep_us,
+        on.branches,
+        on.sweep_us,
+    ))
+}
+
 #[derive(Parser)]
 #[command(
     name = "campaign-runner",
@@ -364,6 +531,21 @@ struct BoxArgs {
     /// postmaster-ready banner.
     #[arg(long, default_value = "database system is ready to accept connections")]
     ready_marker: String,
+    /// Offer the task-110 paravirt clock page **page-on** (deliverable 7's
+    /// perf letter): the host offers the page (`enable_pvclock`) AND the guest
+    /// cmdline advertises ` harmony_pvclock`, for both the live VM and every
+    /// forked branch, so the Postgres campaign smoke genuinely runs with the
+    /// page active. Off by default — the page is pure opt-in, so a default box
+    /// run is byte-for-byte today's behavior.
+    #[arg(long)]
+    page_on: bool,
+    /// Run BOTH arms (page-off baseline, then page-on) over the same sweep and
+    /// emit the validated A/B campaign-throughput ratio (deliverable 7's ppm
+    /// comparison, in one invocation). Supersedes `--page-on`; incompatible with
+    /// `--record` (a comparison run records nothing). Both arms use identical
+    /// sweep parameters by construction, cross-checked before the ratio is emitted.
+    #[arg(long)]
+    page_on_ab: bool,
 }
 
 /// Box-campaign arguments: the image/marker knobs of a `box` sweep, plus the
@@ -1137,6 +1319,125 @@ mod tests {
         );
     }
 
+    // --- task 110: the page-on campaign composition knob (r14 P1) -----------
+
+    /// The GUEST half of the page-on composition: the cmdline advertises
+    /// ` harmony_pvclock` iff the page is offered, and page-off is byte-for-byte
+    /// the untouched vendor base (the page is pure opt-in). This is the half the
+    /// box composition root pairs with the host `enable_pvclock` from the same
+    /// knob, so a page-on run genuinely reaches the guest clocksource.
+    #[test]
+    fn pvclock_cmdline_appends_the_clocksource_only_when_page_on() {
+        let base = X86_64_BOOT.cmdline;
+        assert_eq!(
+            pvclock_cmdline(base, false),
+            base,
+            "page-off must be the untouched base cmdline"
+        );
+        let on = pvclock_cmdline(base, true);
+        assert!(on.starts_with(base), "page-on preserves the base cmdline");
+        assert!(
+            on.ends_with(" harmony_pvclock"),
+            "page-on advertises the harmony clocksource"
+        );
+        assert_eq!(
+            on.matches("harmony_pvclock").count(),
+            1,
+            "the clocksource is advertised exactly once"
+        );
+    }
+
+    /// r15 P1: a `--page-on` run is only reported as page-on if the page is
+    /// ACTIVE — registered AND selected as the clocksource. A stale image (no
+    /// registration) or a registered-but-unused page (TSC still active) is
+    /// rejected, so a page-off result can never be mislabeled page-on.
+    #[test]
+    fn require_page_on_active_rejects_stale_or_unused_pages() {
+        let switched = b"boot... clocksource: Switched to clocksource harmony-pvclock\nready";
+        // Registered AND switched → accepted.
+        assert!(require_page_on_active(true, switched).is_ok());
+        // Never registered → rejected even if (impossibly) the marker is present.
+        assert!(require_page_on_active(false, switched).is_err());
+        // Registered but never switched (still on the TSC) → rejected.
+        assert!(require_page_on_active(true, b"registered but stayed on tsc").is_err());
+        // Both missing → rejected.
+        assert!(require_page_on_active(false, b"").is_err());
+    }
+
+    /// r15 P1: the campaign-throughput ppm comparison (deliverable 7) is
+    /// producible — per-arm throughput is well-defined and the A/B ratio renders
+    /// the page-on speedup, with the degenerate denominators defined out.
+    #[test]
+    fn campaign_throughput_and_ab_ratio_are_producible() {
+        // 100 branches in 2 s = 50 branches/s.
+        assert!((branch_throughput_per_sec(100, 2_000_000) - 50.0).abs() < 1e-9);
+        // Zero-duration and zero-baseline are defined, never NaN/inf.
+        assert_eq!(branch_throughput_per_sec(100, 0), 0.0);
+        assert_eq!(throughput_ab_ratio(0.0, 50.0), 0.0);
+        // Page-on twice as fast as page-off → 2.0x.
+        assert!((throughput_ab_ratio(25.0, 50.0) - 2.0).abs() < 1e-9);
+        // The per-arm line is labelled and carries the rate; the A/B line carries
+        // the ratio — both producible from recorded numbers.
+        assert!(render_sweep_throughput(true, 100, 2_000_000).contains("page-ON"));
+        assert!(render_sweep_throughput(false, 100, 2_000_000).contains("page-OFF"));
+        let ab = render_throughput_ab(100, 4_000_000, 100, 2_000_000); // off 25/s, on 50/s
+        assert!(
+            ab.contains("2.00x"),
+            "A/B report must carry the ratio: {ab}"
+        );
+    }
+
+    /// r17: `ab_report` is the A/B path's validator — matching sweep parameters
+    /// produce the ratio; a differing seed count, runs-per-seed, or deadline is
+    /// refused (a ratio across different sweeps is meaningless), never a
+    /// misleading number. This is what wires the formatter into the runnable path.
+    #[test]
+    fn ab_report_validates_matching_sweep_parameters() {
+        let arm =
+            |branches: u64, sweep_us: u64, seeds: usize, runs: usize, dd: u64| ArmThroughput {
+                branches,
+                sweep_us,
+                seeds,
+                runs_per_seed: runs,
+                deadline_delta: dd,
+            };
+        let off = arm(100, 4_000_000, 8, 2, 5_000_000_000); // 25 branches/s
+        // Matching parameters → the 2.0x ratio (off 25/s vs on 50/s).
+        let report =
+            ab_report(&off, &arm(100, 2_000_000, 8, 2, 5_000_000_000)).expect("matching arms");
+        assert!(report.contains("2.00x"), "{report}");
+        // A differing seed count / runs-per-seed / deadline each refuses.
+        assert!(
+            ab_report(&off, &arm(100, 2_000_000, 9, 2, 5_000_000_000)).is_err(),
+            "different seed count must be refused"
+        );
+        assert!(
+            ab_report(&off, &arm(100, 2_000_000, 8, 3, 5_000_000_000)).is_err(),
+            "different runs-per-seed must be refused"
+        );
+        assert!(
+            ab_report(&off, &arm(100, 2_000_000, 8, 2, 9_000_000_000)).is_err(),
+            "different deadline must be refused"
+        );
+    }
+
+    /// The `--page-on` knob threads into `BoxArgs` (the Postgres campaign smoke),
+    /// defaulting OFF so a bare `box` run stays byte-for-byte the page-off boot.
+    #[test]
+    fn box_mode_parses_the_page_on_knob() {
+        use clap::Parser;
+        let off = Cli::try_parse_from(["campaign-runner", "box"]).expect("bare box parses");
+        let on =
+            Cli::try_parse_from(["campaign-runner", "box", "--page-on"]).expect("--page-on parses");
+        match (off.mode, on.mode) {
+            (Mode::Box(a), Mode::Box(b)) => {
+                assert!(!a.page_on, "page-on defaults off");
+                assert!(b.page_on, "--page-on sets the knob");
+            }
+            _ => panic!("expected box mode both times"),
+        }
+    }
+
     // --- degenerate budgets (task 103 finding 1a) ---------------------------
 
     /// The vacuous-pass fixtures from PR #93's round-9 pass, driven through the
@@ -1560,6 +1861,8 @@ mod tests {
             kernel: "bzImage".to_string(),
             initramfs: "initramfs-postgres.cpio.gz".to_string(),
             ready_marker: "ready".to_string(),
+            page_on: true,
+            page_on_ab: false,
         };
         assert_eq!(run_box(args), ExitCode::FAILURE);
     }

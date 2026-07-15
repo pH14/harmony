@@ -15,9 +15,12 @@
 //! | [`Event`](ServiceId::Event)     | 4 | `1` = emit `(event_id, bytes)` (fire-and-forget) |
 //! | [`Net`](ServiceId::Net)         | 5 | `1` = `net_decide` (round-trips a per-flow policy answer) |
 //! | [`Sdk`](ServiceId::Sdk)         | 6 | `1` = `buggify_decide` (round-trips a one-byte fire / no-fire answer) |
+//! | [`Pvclock`](ServiceId::Pvclock) | 7 | `1` = `pvclock_register` (publishes the guest clock-page GPA) |
 //!
 //! Id **5** is the task-61 `Net` vertical (the first guest-plane fault path); the
-//! task-73 SDK control service ([`Sdk`](ServiceId::Sdk)) takes id **6**. An
+//! task-73 SDK control service ([`Sdk`](ServiceId::Sdk)) takes id **6**; the
+//! task-110 paravirt work-derived clock registration ([`Pvclock`](ServiceId::Pvclock))
+//! takes id **7**. An
 //! unregistered service id or an opcode a service does not implement is a
 //! [`Status::UnknownService`] / [`Status::UnknownOpcode`], never a silent drop.
 //!
@@ -104,6 +107,29 @@ pub enum ServiceId {
     /// (fire / don't fire); the host resolves it through its `Environment::decide`
     /// seam and records it at the surfacing `Moment`.
     Sdk = 6,
+    /// Paravirt work-derived clock registration (task 110,
+    /// `docs/PARAVIRT-CLOCK.md` §3.1): the guest publishes the guest-physical
+    /// address of its 4 KiB clock page (op 1, `pvclock_register` — an 8-byte
+    /// little-endian GPA). The host validates the GPA (page-aligned, inside
+    /// guest RAM, clear of the doorbell frame pages and of any device-MMIO
+    /// hole), **records it as pending**, and answers with the 4-byte
+    /// little-endian page-layout ABI version (`HARMONY_PVCLOCK_ABI = 1`).
+    ///
+    /// **Registration is a two-step handshake — the page is NOT stamped by the
+    /// response.** The doorbell `OUT` is a plain PIO exit, not a V-time
+    /// intercept, so the host lays down the first page stamp and arms its
+    /// staleness refresh only at the guest's **required** post-response counter
+    /// read (an `RDTSC`/`RDTSCP` — a genuine skid-free intercept). A conforming
+    /// guest MUST execute that read before reading the page: reading the page
+    /// immediately after the response would observe stale bytes (ABI version
+    /// zero / no `MATERIALIZED` flag). A guest that omits the handshake is out of
+    /// contract — its page is never stamped and never refreshed.
+    ///
+    /// A host not composed with the clock page — or one whose backend has no
+    /// deterministic work counter to derive the stamps from — answers
+    /// [`Status::UnknownService`], and the guest keeps its trap-backstopped time
+    /// paths (the page is pure opt-in on both sides).
+    Pvclock = 7,
 }
 
 impl ServiceId {
@@ -616,6 +642,32 @@ mod guest {
                 return Err(ClientError::Protocol(ProtoError::BadPayload));
             }
             Ok(copied)
+        }
+
+        /// Publish the guest's paravirt clock-page GPA to the host (task 110's
+        /// [`ServiceId::Pvclock`], op 1) and return the host's page-layout ABI
+        /// version (`HARMONY_PVCLOCK_ABI`). One request carries the 8-byte
+        /// little-endian page-aligned `gpa`; the response is exactly the 4-byte
+        /// little-endian ABI version — any other length is a protocol error,
+        /// never trusted. The caller must treat any error (including the
+        /// [`Status::UnknownService`] a clock-page-less host answers) as "no
+        /// page offered" and keep its trap-backstopped time paths.
+        ///
+        /// **The response only records a pending registration — it does NOT
+        /// stamp the page (see [`ServiceId::Pvclock`]).** After a successful
+        /// response the caller MUST perform the registration handshake — a
+        /// single `RDTSC`/`RDTSCP` — before reading the page; that counter read
+        /// is the intercept at which the host writes the first stamp. Reading the
+        /// page between the response and the handshake observes stale bytes.
+        pub fn pvclock_register(&mut self, gpa: u64) -> Result<u32, ClientError<T::Error>> {
+            let mut payload = [0_u8; 8];
+            put_u64(&mut payload, gpa);
+            let mut out = [0_u8; 4];
+            let copied = self.call_copy(ServiceId::Pvclock, 1, &payload, &mut out)?;
+            if copied != 4 {
+                return Err(ClientError::Protocol(ProtoError::BadPayload));
+            }
+            read_u32(&out, 0).map_err(ClientError::Protocol)
         }
 
         fn call_expect_empty(
@@ -1461,9 +1513,139 @@ mod host {
         }
     }
 
+    /// Deterministic **reference** paravirt-clock registrar for loopback tests
+    /// (task 110, [`ServiceId::Pvclock`]): validates the 8-byte little-endian
+    /// GPA payload of a `pvclock_register` (op 1) against a fixed guest-RAM
+    /// size and page alignment, records it, and answers the 4-byte ABI
+    /// version. The production host is `vmm-core`'s doorbell dispatch, which
+    /// additionally stamps the page and gates on its V-time wiring; this
+    /// reference exists so the guest [`Client::pvclock_register`] verb and the
+    /// frame shape are loopback-testable with no VM.
+    pub struct PvclockRegistrar {
+        ram_len: u64,
+        abi_version: u32,
+        registered: Option<u64>,
+    }
+
+    impl PvclockRegistrar {
+        /// A registrar validating GPAs against `ram_len` bytes of guest RAM
+        /// and answering `abi_version`.
+        pub fn new(ram_len: u64, abi_version: u32) -> Self {
+            Self {
+                ram_len,
+                abi_version,
+                registered: None,
+            }
+        }
+
+        /// The registered page GPA, if the guest has published one.
+        pub fn registered(&self) -> Option<u64> {
+            self.registered
+        }
+
+        /// A GPA is a valid clock-page target iff it is 4 KiB-aligned and its
+        /// whole 4 KiB page lies inside `ram_len` bytes of guest RAM. Both the
+        /// live registration ([`Service::handle`]) and a restored registration
+        /// ([`Service::restore_state`]) MUST agree on this, so both route
+        /// through here — a restore can never resurrect a GPA `handle` would
+        /// have rejected.
+        fn gpa_fits(gpa: u64, ram_len: u64) -> bool {
+            gpa.is_multiple_of(4096) && gpa.checked_add(4096).is_some_and(|end| end <= ram_len)
+        }
+    }
+
+    impl Service for PvclockRegistrar {
+        fn handle(
+            &mut self,
+            opcode: u16,
+            payload: &[u8],
+            resp_payload: &mut [u8],
+        ) -> (Status, usize) {
+            if opcode != 1 {
+                return (Status::UnknownOpcode, 0);
+            }
+            let Ok(gpa) = read_u64(payload, 0) else {
+                return (Status::BadRequest, 0);
+            };
+            if payload.len() != 8 {
+                return (Status::BadRequest, 0);
+            }
+            // One-shot (the frozen ABI, mirroring the production host): the
+            // first accepted registration pins the target for the machine's
+            // life; ANY second register — same GPA or not — is a guest fault,
+            // rejected before the range check exactly as production orders it,
+            // so loopback tests exercise the semantics real guests will hit.
+            if self.registered.is_some() {
+                return (Status::BadRequest, 0);
+            }
+            // Page-aligned and wholly inside guest RAM, else OutOfRange.
+            if !Self::gpa_fits(gpa, self.ram_len) {
+                return (Status::OutOfRange, 0);
+            }
+            if resp_payload.len() < 4 {
+                return (Status::Internal, 0);
+            }
+            self.registered = Some(gpa);
+            resp_payload[..4].copy_from_slice(&self.abi_version.to_le_bytes());
+            (Status::Ok, 4)
+        }
+
+        fn save_state(&self) -> Vec<u8> {
+            let mut out = Vec::new();
+            out.extend_from_slice(&self.ram_len.to_le_bytes());
+            out.extend_from_slice(&self.abi_version.to_le_bytes());
+            match self.registered {
+                Some(gpa) => {
+                    out.push(1);
+                    out.extend_from_slice(&gpa.to_le_bytes());
+                }
+                None => out.push(0),
+            }
+            out
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ProtoError> {
+            let mut offset = 0;
+            let ram_len = take_u64(state, &mut offset)?;
+            let abi_version = take_u32(state, &mut offset)?;
+            let tag = take_u8(state, &mut offset)?;
+            let registered = match tag {
+                0 => None,
+                1 => {
+                    let gpa = take_u64(state, &mut offset)?;
+                    // Re-validate the decoded registration with the SAME
+                    // alignment + RAM-containment rule `handle` enforces,
+                    // against the blob's own `ram_len` (the size the source
+                    // validated against). A malformed or hostile state blob
+                    // therefore cannot restore a registration `handle` would
+                    // have rejected — an unaligned or out-of-RAM GPA that would
+                    // later stamp outside the page window (cross-model r12 P2).
+                    if !Self::gpa_fits(gpa, ram_len) {
+                        return Err(ProtoError::BadState);
+                    }
+                    Some(gpa)
+                }
+                _ => return Err(ProtoError::BadState),
+            };
+            if offset != state.len() {
+                return Err(ProtoError::BadState);
+            }
+            self.ram_len = ram_len;
+            self.abi_version = abi_version;
+            self.registered = registered;
+            Ok(())
+        }
+    }
+
     fn put_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
         out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
         out.extend_from_slice(bytes);
+    }
+
+    fn take_u8(state: &[u8], offset: &mut usize) -> Result<u8, ProtoError> {
+        let v = *state.get(*offset).ok_or(ProtoError::BadState)?;
+        *offset += 1;
+        Ok(v)
     }
 
     fn take_u16(state: &[u8], offset: &mut usize) -> Result<u16, ProtoError> {
@@ -1496,6 +1678,6 @@ mod host {
 
 #[cfg(feature = "host")]
 pub use host::{
-    ConsoleSink, Dispatcher, EventSink, MemBlockDevice, NetDecider, NetFlowPoint, SdkBuggify,
-    SeededEntropy, Service,
+    ConsoleSink, Dispatcher, EventSink, MemBlockDevice, NetDecider, NetFlowPoint, PvclockRegistrar,
+    SdkBuggify, SeededEntropy, Service,
 };

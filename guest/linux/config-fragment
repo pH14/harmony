@@ -73,6 +73,16 @@ CONFIG_HZ_100=y
 # instead — the hypervisor will simply not expose one, and the boot gate
 # passes -machine hpet=off (alternative: the hpet=disable boot parameter).
 # CONFIG_X86_PM_TIMER is not set
+# The harmony paravirt work-derived clock (task 110, docs/PARAVIRT-CLOCK.md
+# §3.1): a clocksource + sched_clock whose read path is a seqlock page load —
+# never a raw counter read. The source is added by patches/apply-guest-patches.py
+# before the config merge. Compiled in but RUNTIME-INERT without the
+# harmony_pvclock kernel parameter (which only the vmm appends when it offers
+# the page), so this image boots byte-for-byte as before everywhere else and
+# one image serves as both the page-on and page-off measurement arm. When
+# active it marks the TSC unstable, closing the kernel-timekeeping raw-RDTSC
+# path (the RDTSC trap stays underneath as the backstop for everything else).
+CONFIG_HARMONY_PVCLOCK=y
 
 ## Entropy / randomness
 # No hardware RNG drivers — entropy must come from our hypercall channel.
@@ -154,6 +164,14 @@ CONFIG_X86_IOPL_IOPERM=y
 # the two fixed hypercall pages (REQ 0xE000 / RESP 0xF000 — reserved out of
 # the guest's e820, deliberately) out of /dev/mem, and the allnoconfig seed
 # ships no CONFIG_DEVMEM at all ("/dev/mem: No such file or directory").
-# Same interim status and determinism argument as IOPL above; STRICT_DEVMEM
-# stays off (the mapped pages are reserved, not kernel RAM). Asserted.
+# Same interim status and determinism argument as IOPL above.
 CONFIG_DEVMEM=y
+# STRICT_DEVMEM MUST be off, explicitly (cross-model r7 P2). `olddefconfig`
+# assigns x86's `default y` to any symbol we leave unset, so the earlier
+# "stays off" was a comment, not a setting — the built kernel actually had
+# CONFIG_STRICT_DEVMEM=y. That breaks G3: `pvclock-spin` mmaps `harmony_page`,
+# which lives in kernel `.bss` (System RAM, not an E820-reserved page), and
+# strict /dev/mem rejects an mmap of System RAM — the spinner would report
+# PVSPIN_FAIL mmap instead of testing liveness. Set off here AND asserted off in
+# build-kernel.sh so olddefconfig can never silently re-enable it.
+# CONFIG_STRICT_DEVMEM is not set

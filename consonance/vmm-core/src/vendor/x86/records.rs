@@ -638,12 +638,27 @@ pub(crate) fn has_active_event_injection(e: &vmm_backend::VcpuEvents) -> bool {
 
 /// Device-blob magic: `"DEV1"` read little-endian.
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
-/// Device-blob layout version. Bump on any layout change (independent of
-/// `VM_STATE_VERSION`, since this lives inside the opaque device section).
-/// v2 added the ordered conformance `report_stream`; v3 added the **full
-/// `kvm_vcpu_events`** record (task 41 — non-quiescent capture, so an in-flight
-/// interrupt/exception injection round-trips instead of being fail-closed-rejected).
-const DEVICE_BLOB_VERSION: u16 = 3;
+/// Device-blob layout version for a VM with **no pvclock channel** — the shape
+/// every composition that never called `enable_pvclock` encodes, byte-for-byte
+/// as before task 110. v2 added the ordered conformance `report_stream`; v3
+/// added the **full `kvm_vcpu_events`** record (task 41 — non-quiescent capture,
+/// so an in-flight interrupt/exception injection round-trips instead of being
+/// fail-closed-rejected).
+const DEVICE_BLOB_VERSION_BASE: u16 = 3;
+
+/// Device-blob layout version for a VM that **offers the task-110 pvclock
+/// channel**: v3 plus a trailing channel record (Δ + the one-shot registration),
+/// so the direct `save_vm_state`/`restore_snapshot` path carries the stamping
+/// obligation with the state it governs — a restored guest whose RAM contains an
+/// active clock page gets a VMM that keeps refreshing it (same-state ⇒
+/// same-future), with no control-server side channel required.
+///
+/// **The version IS the offer flag** (cross-model r4 P1): an unoffered VM
+/// encodes [`DEVICE_BLOB_VERSION_BASE`] with no trailing record at all, so
+/// page-off blobs — and the `VMST` hashes over them — are byte-identical to
+/// main's, and a v3 blob written by main still decodes here. The decoder accepts
+/// exactly these two versions; v4 with no channel is not a representable state.
+const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 4;
 
 /// The 8250 UART residual state a snapshot carries: the serial capture buffer (so a
 /// restored continuation reproduces byte-identical console output), the eight
@@ -691,6 +706,18 @@ pub(crate) struct DeviceState {
     /// authoritative events on restore — it supersedes the reduced typed record, which
     /// `vm-state` still carries unchanged for task-39 codec compatibility.
     pub events: vmm_backend::VcpuEvents,
+    /// The task-110 pvclock channel configuration (v4): `None` = the page was
+    /// not offered on the sealing VM; `Some((delta_work, gpa, registrable))` =
+    /// offered with staleness bound Δ, the guest's one-shot registration when
+    /// `gpa` is `Some`, and whether the sealing VM could register a page at all
+    /// (`Vmm::pvclock_available` — V-time wired and a deterministic work
+    /// counter). `registrable` is carried because a snapshot sealed BEFORE
+    /// registration has no GPA to re-validate yet still promises a future
+    /// registration (cross-model r5 P1). Validated symmetrically against the
+    /// restore target's own composition (offer / Δ / capability / GPA) before any
+    /// mutation and committed with the rest of the restore — the engine's
+    /// `pvclock_validate_restore`/`pvclock_commit_restore` pair.
+    pub pvclock: Option<(u64, Option<u64>, bool)>,
 }
 
 fn put_u16(out: &mut Vec<u8>, v: u16) {
@@ -768,7 +795,15 @@ fn put_lapic(out: &mut Vec<u8>, s: &LapicState) {
 pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     let mut out = Vec::new();
     put_u32(&mut out, DEVICE_BLOB_MAGIC);
-    put_u16(&mut out, DEVICE_BLOB_VERSION);
+    // The version records whether a pvclock channel follows — an unoffered VM
+    // encodes the v3 shape exactly as before task 110.
+    put_u16(
+        &mut out,
+        match d.pvclock {
+            Some(_) => DEVICE_BLOB_VERSION_PVCLOCK,
+            None => DEVICE_BLOB_VERSION_BASE,
+        },
+    );
     put_u64(&mut out, d.tsc_adjust);
     put_u32(&mut out, d.report_stream.len() as u32);
     for &word in &d.report_stream {
@@ -795,9 +830,23 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
         }
         None => out.push(0),
     }
-    // The full kvm_vcpu_events (task 41) — last, a fixed-width trailing record so the
+    // The full kvm_vcpu_events (task 41) — a fixed-width record so the
     // earlier field offsets are unchanged from v2.
     put_events(&mut out, &d.events);
+    // The pvclock channel record (task 110, v4 only) — trailing, so every
+    // earlier offset is unchanged from v3, and ABSENT entirely at v3, so an
+    // unoffered VM's bytes are identical to main's.
+    if let Some((delta_work, gpa, registrable)) = &d.pvclock {
+        put_u64(&mut out, *delta_work);
+        match gpa {
+            Some(g) => {
+                out.push(1);
+                put_u64(&mut out, *g);
+            }
+            None => out.push(0),
+        }
+        out.push(u8::from(*registrable));
+    }
     DeviceBlob(out)
 }
 
@@ -916,7 +965,11 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
     if r.u32().ok_or(bad("truncated header"))? != DEVICE_BLOB_MAGIC {
         return Err(bad("bad magic"));
     }
-    if r.u16().ok_or(bad("truncated version"))? != DEVICE_BLOB_VERSION {
+    // v3 (no pvclock channel) and v4 (channel record trailing) are both current
+    // shapes — the version is the offer flag, so a page-off blob from main
+    // decodes unchanged and a page-on one carries its channel.
+    let version = r.u16().ok_or(bad("truncated version"))?;
+    if version != DEVICE_BLOB_VERSION_BASE && version != DEVICE_BLOB_VERSION_PVCLOCK {
         return Err(bad("unsupported version"));
     }
     let tsc_adjust = r.u64().ok_or(bad("truncated tsc_adjust"))?;
@@ -949,6 +1002,31 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         _ => return Err(bad("bad legacy flag")),
     };
     let events = r.events().ok_or(bad("truncated vcpu events"))?;
+    let pvclock = if version == DEVICE_BLOB_VERSION_PVCLOCK {
+        let delta_work = r.u64().ok_or(bad("truncated pvclock delta"))?;
+        let gpa = match r.u8().ok_or(bad("truncated pvclock gpa flag"))? {
+            0 => None,
+            1 => Some(r.u64().ok_or(bad("truncated pvclock gpa"))?),
+            _ => return Err(bad("bad pvclock gpa flag")),
+        };
+        let registrable = r.bool().ok_or(bad("bad pvclock registrable flag"))?;
+        // INTERNAL INVARIANT (cross-model r6 P1): a registered page (`Some(gpa)`)
+        // can only exist on a VM that could register — a real source always
+        // stamps `registrable = true` alongside a GPA. The crafted tuple
+        // `(delta, Some(gpa), false)` cannot come from any valid seal; accepting
+        // it would let a blob commit an *active* registration onto a target the
+        // capability check would otherwise refuse (no V-time ⇒ the next refresh
+        // errors; no deterministic backend ⇒ no Δ deadline arms and the page can
+        // freeze). Reject it at the wire, before it reaches the validator.
+        if gpa.is_some() && !registrable {
+            return Err(bad(
+                "pvclock record marks a registered page non-registrable (impossible tuple)",
+            ));
+        }
+        Some((delta_work, gpa, registrable))
+    } else {
+        None
+    };
     if r.pos != blob.len() {
         return Err(bad("trailing bytes"));
     }
@@ -964,6 +1042,7 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         lapic,
         legacy,
         events,
+        pvclock,
     })
 }
 
@@ -1255,6 +1334,8 @@ mod tests {
                 slave_imr: 0xFF,
             }),
             events: full_events(),
+            // A registered pvclock channel (task 110, v4).
+            pvclock: Some((10_000_000, Some(0x4000), true)),
         };
         let blob = encode_device_blob(&d);
         let decoded = decode_device_blob(&blob.0).unwrap();
@@ -1874,9 +1955,75 @@ mod tests {
             lapic: None,
             legacy: None,
             events: vmm_backend::VcpuEvents::default(),
+            pvclock: None,
         };
         let blob = encode_device_blob(&d);
         assert_eq!(decode_device_blob(&blob.0).unwrap(), d);
+    }
+
+    #[test]
+    fn unoffered_pvclock_encodes_the_v3_shape_byte_for_byte() {
+        // The task-110 "page off = byte-identical" claim, pinned at the wire
+        // (cross-model r4 P1). A VM that never called `enable_pvclock` must
+        // encode EXACTLY what main encodes: version word 3, and not one trailing
+        // byte of pvclock record. Anything else changes every existing snapshot's
+        // bytes — and the `VMST` hash over them — for an opt-in feature.
+        let d = DeviceState {
+            tsc_adjust: 0x1234,
+            report_stream: vec![7],
+            uart: UartState::default(),
+            lapic: None,
+            legacy: None,
+            events: vmm_backend::VcpuEvents::default(),
+            pvclock: None,
+        };
+        let off = encode_device_blob(&d).0;
+        assert_eq!(
+            u16::from_le_bytes([off[4], off[5]]),
+            DEVICE_BLOB_VERSION_BASE,
+            "an unoffered VM must still encode the v3 version word"
+        );
+        // Offering the channel is the ONLY thing that appends bytes, and it
+        // bumps the version — so the v3 prefix is untouched.
+        let on = encode_device_blob(&DeviceState {
+            pvclock: Some((10_000_000, Some(0x4000), true)),
+            ..d.clone()
+        })
+        .0;
+        assert_eq!(
+            u16::from_le_bytes([on[4], on[5]]),
+            DEVICE_BLOB_VERSION_PVCLOCK
+        );
+        assert_eq!(
+            &on[6..off.len()],
+            &off[6..],
+            "the v4 encoding must extend the v3 body, not reshuffle it"
+        );
+        assert_eq!(
+            on.len(),
+            off.len() + 8 + 1 + 8 + 1,
+            "v4 appends exactly Δ (u64) + the GPA-present flag + the GPA (u64) + the \
+             registrable flag"
+        );
+        // Both decode back to what they encoded, and the v3 blob (what main
+        // writes) decodes here as "no channel" rather than being rejected.
+        assert_eq!(decode_device_blob(&off).unwrap(), d);
+        assert_eq!(
+            decode_device_blob(&on).unwrap().pvclock,
+            Some((10_000_000, Some(0x4000), true))
+        );
+        // The registrable bit round-trips independently of the GPA — it is the
+        // whole point of carrying it (a snapshot with NO registration still
+        // records whether the source COULD register). r5 P1.
+        let unreg = encode_device_blob(&DeviceState {
+            pvclock: Some((10_000_000, None, false)),
+            ..d.clone()
+        })
+        .0;
+        assert_eq!(
+            decode_device_blob(&unreg).unwrap().pvclock,
+            Some((10_000_000, None, false))
+        );
     }
 
     #[test]
