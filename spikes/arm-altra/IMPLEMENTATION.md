@@ -983,6 +983,56 @@ churner, ID-probe and PMCEID code compiles for the box), three `cargo deny`, the
 window-vs-oracle scan (now opcode-checked), TCG smoke, kernel-patch format/parse, and Miri
 (arm-harness + oracle-model).
 
+## Round-15 review fixes (PR #108, cross-model pass r15)
+
+Seven P1s, mostly corner cases in the r13/r14 migration and window-gate machinery.
+
+- **Keep the vCPU signals off the migration helper.** The r14 churner thread inherited
+  unblocked `SIGUSR1` (the stock overflow kick) and `SIGALRM` (the watchdog). Both are
+  process-directed (`F_SETOWN(getpid())`, process-wide `ITIMER_REAL`), so the kernel could
+  run either handler on the churner instead of the vCPU thread blocked in `KVM_RUN` — the
+  handler would set its global atomic without interrupting the ioctl, reporting a real
+  overflow lost or leaving a wedge unbroken. The churner now `pthread_sigmask`s both signals
+  blocked, forcing delivery to the vCPU thread.
+- **Consume perf kicks that race a normal exit.** A stock `SIGUSR1` can be handled just
+  AFTER `KVM_RUN` returned an MMIO exit; the handler set `PERF_SOURCED_KICK` but only the
+  `EINTR` branch consumed it, so the next `KVM_RUN` re-entered after the one-shot counter had
+  disabled itself and blocked for a second signal that never came (a lost PMI → timeout or
+  zero deliveries). `Machine::run` now checks the flag at the top of its loop and surfaces a
+  pending kick as the `SignalKick` it is before re-entering.
+- **Attest migration within an ARMED interval.** The churner starts before kernel hashing,
+  payload loading, planning and VM construction, and the r14 check considered only its
+  lifetime move total — which could be satisfied entirely before the first `arm_overflow`.
+  The harness now snapshots the churner's move count around each sample and requires that at
+  least one ARMED sample saw the thread move; a probe with no move during any armed interval
+  fails rather than certifying a no-op.
+- **Enforce the explicit AA-1 payload × condition × scale grid.** The r14 per-payload scale
+  check unioned scales across conditions and checked conditions only by armed totals, so a
+  submission of only `straight-line` at three scales under four conditions plus the probe
+  passed though it never measured the WFI/exception classes, and disjoint payloads per
+  condition gave no contamination comparison. A normative verdict now requires an armed
+  record in every `REQUIRED_AA1_PAYLOADS` × condition × scale cell (the five distinct
+  `BR_RETIRED`-behaviour classes: sequential, branch-dense, synchronous-exception, wait,
+  async-abort).
+- **Include the step moment in the replay key.** For unarmed AA-2 records the `RepKey`
+  omitted the step moment, so two step points of one input — an `SVC` entry and its `ERET` —
+  grouped together and their necessarily-different `step_digest`s read as false divergence.
+  `RepKey` now carries `(pc_before, transition)`, grouping each step point with its own
+  repetitions.
+- **Require the exact non-branch opcode sequence (order + multiplicity).** Two coupled
+  fixes. The model's `required_window_ops` fell through to `&[]` for `exception-abort` and
+  the other counted loops, so retuning their `subs …, #1` to `#2` (halving the iterations)
+  passed the branch gate and the golden output. And the window gate used `contains`, so a
+  SECOND `svc #0` in the loop (doubling the exception contribution) also passed. The model
+  now declares each window's EXACT ordered class sequence — every counted loop's
+  `SubsDecrement`, both sides of the LL/SC pair — calibrated against the built payloads, and
+  the gate compares the decoded sequence verbatim.
+
+No schema change. Gates re-run green: harness 91 tests, floor-check 47 + 27 + 3,
+oracle-model 22 + 2 (the model's `required_window_ops` became the exact sequence), clippy
+`-D warnings` native + aarch64-linux, three `cargo deny`, the opcode-checked window scan,
+TCG smoke, kernel-patch format/parse, and Miri (arm-harness + oracle-model).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

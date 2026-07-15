@@ -294,6 +294,22 @@ impl MigrationChurner {
         let moves = Arc::new(AtomicU64::new(0));
         let (stop_t, moves_t) = (Arc::clone(&stop), Arc::clone(&moves));
         let handle = std::thread::spawn(move || {
+            // Block the vCPU signals on THIS helper thread. `PerfCounter::setup` uses
+            // process-directed `F_SETOWN(getpid())` for the stock overflow kick, and the
+            // watchdog uses process-wide `ITIMER_REAL` — both process-directed, so the kernel
+            // is free to run either handler on whichever thread has the signal unblocked. If it
+            // picked this churner, the handler would set its global atomic without interrupting
+            // the vCPU thread blocked in `KVM_RUN` — a real overflow reported lost, or a
+            // watchdog that never breaks a wedge. Blocking them here forces delivery to the
+            // vCPU thread (which leaves them unblocked).
+            // SAFETY: a zeroed sigset is valid; sigaddset/pthread_sigmask take valid pointers.
+            unsafe {
+                let mut mask: libc::sigset_t = core::mem::zeroed();
+                libc::sigemptyset(&raw mut mask);
+                libc::sigaddset(&raw mut mask, libc::SIGUSR1);
+                libc::sigaddset(&raw mut mask, libc::SIGALRM);
+                libc::pthread_sigmask(libc::SIG_BLOCK, &raw const mask, core::ptr::null_mut());
+            }
             let mut i = 0usize;
             while !stop_t.load(Ordering::Relaxed) {
                 let core = cores[i % cores.len()];
@@ -894,6 +910,17 @@ impl Vcpu for Machine {
     fn run(&mut self) -> Result<VcpuExit, RunError> {
         use std::sync::atomic::Ordering;
         loop {
+            // A stock overflow can be DELIVERED — its SIGUSR1 handled, setting
+            // PERF_SOURCED_KICK — in the narrow window AFTER a prior KVM_RUN already returned
+            // a normal (MMIO) exit, which does not consume the flag. The one-shot counter
+            // disabled itself on that overflow, so re-entering KVM_RUN would block for a second
+            // signal that never comes (a lost PMI → the sample times out or records zero
+            // deliveries). So consume a pending kick FIRST and surface it as the SignalKick it
+            // is, before touching the ioctl. (On the patched path nothing sets this flag, so
+            // this is inert there.)
+            if PERF_SOURCED_KICK.swap(false, Ordering::SeqCst) {
+                return Ok(VcpuExit::SignalKick);
+            }
             // Arm the per-KVM_RUN watchdog: a guest that wedges (WFI with no wake, a
             // lost PMI, a livelocked exclusive) blocks the ioctl forever, and only a
             // signal can bring control back. SIGALRM after the budget makes it return

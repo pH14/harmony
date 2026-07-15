@@ -471,6 +471,29 @@ mod tests {
     }
 
     #[test]
+    fn window_oracle_ops_preserves_order_and_multiplicity() {
+        use oracle_model::OracleOp;
+        // A window with SVC, then a decrement, then a SECOND SVC (the doubling the exact-
+        // sequence gate must catch — `contains` would not). Interleaved with a NOP that is
+        // not classified.
+        let mut code = Vec::new();
+        for w in [
+            0xD400_0001u32, // svc #0
+            0xD503_201F,    // nop (ignored)
+            0xF100_0421,    // subs x1,x1,#1
+            0xD400_0001,    // svc #0 (second)
+        ] {
+            code.extend_from_slice(&w.to_le_bytes());
+        }
+        assert_eq!(
+            window_oracle_ops(&code),
+            vec![OracleOp::Svc, OracleOp::SubsDecrement, OracleOp::Svc],
+            "the classified sequence keeps order and multiplicity, dropping only unclassified \
+             instructions"
+        );
+    }
+
+    #[test]
     fn decodes_the_counter_reads() {
         assert_eq!(decode_counter_read(0xD53B_E040), Some(CounterReg::Cntvct)); // mrs x0, cntvct_el0
         assert_eq!(decode_counter_read(0xD53B_E020), Some(CounterReg::Cntpct)); // mrs x0, cntpct_el0

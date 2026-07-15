@@ -279,17 +279,35 @@ impl Payload {
         matches!(self, Payload::LlscAtomics | Payload::ClockPage)
     }
 
-    /// The non-branch [`OracleOp`]s this payload's counting window must contain (at least
-    /// one of each) for its oracle count to hold. Empty for payloads whose count is fully
-    /// determined by the branch sequence (verified separately) plus a hash-neutral
-    /// accumulator — those have no non-branch opcode the count depends on.
+    /// The EXACT ordered sequence of non-branch [`OracleOp`]s this payload's counting window
+    /// must contain — order AND multiplicity, not mere presence — for its oracle count to
+    /// hold. The window gate compares the decoded window's class sequence against this
+    /// verbatim, so a changed `subs …, #1` decrement, an added second `SVC`, or a dropped
+    /// side of an LL/SC pair fails even though the branch sequence and golden output are
+    /// unchanged. EVERY counted loop carries the `SubsDecrement` its `trips - 1` backedge
+    /// count depends on; `ident` has no window. (Calibrated against the built payloads and
+    /// pinned by the `arm-scan windows` gate.)
     #[must_use]
     pub const fn required_window_ops(self) -> &'static [OracleOp] {
         match self {
+            Payload::Ident => &[],
             Payload::Svc => &[OracleOp::Svc, OracleOp::SubsDecrement],
             Payload::WfiIdle => &[OracleOp::Wfi, OracleOp::SubsDecrement],
-            Payload::LlscAtomics => &[OracleOp::LlscExclusive, OracleOp::SubsDecrement],
-            _ => &[],
+            Payload::LlscAtomics => &[
+                // Both sides of the exclusive pair (LDXR, STXR), then the loop decrement.
+                OracleOp::LlscExclusive,
+                OracleOp::LlscExclusive,
+                OracleOp::SubsDecrement,
+            ],
+            // Straight-line, branch-dense, exception-abort, lse-atomics and clock-page are
+            // all counted loops whose backedge count assumes a single `subs …, #1`.
+            Payload::StraightLine
+            | Payload::BranchDense
+            | Payload::ExceptionAbort
+            | Payload::LseAtomics
+            | Payload::ClockPage => &[OracleOp::SubsDecrement],
+            // A guest CLASS with no bare-metal window (AA-5's Linux guest).
+            Payload::LinuxGuest => &[],
         }
     }
 }

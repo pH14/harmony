@@ -440,6 +440,21 @@ const REQUIRED_AA1_CONDITIONS: &[&str] = &[
 /// The CLI default is `smoke`; a smoke-only AA-1 run must therefore not certify the stage.
 const REQUIRED_AA1_SWEEP_SCALES: &[Scale] = &[Scale::S1e6, Scale::S1e7, Scale::S1e8];
 
+/// The payload classes AA-1 must characterize — the distinct `BR_RETIRED` behaviours whose
+/// per-class offset it establishes: pure sequential (`straight-line`), branch-dense, a
+/// synchronous exception (`svc`), a wait (`wfi-idle`), and an asynchronous abort
+/// (`exception-abort`). A normative AA-1 verdict requires EVERY one of these measured at
+/// EVERY contamination condition and EVERY sweep scale (a full grid), because a submission of
+/// only `straight-line` never measures the WFI/exception classes, and disjoint payloads per
+/// condition give no per-class contamination comparison.
+const REQUIRED_AA1_PAYLOADS: &[Payload] = &[
+    Payload::StraightLine,
+    Payload::BranchDense,
+    Payload::Svc,
+    Payload::WfiIdle,
+    Payload::ExceptionAbort,
+];
+
 /// The cumulative verdict over a set of already-loaded run-sets. Factored from the disk
 /// loading so the aggregation rules — one stage, no duplicates, the condition matrix, the
 /// summed floor — are unit-testable without fixtures on disk.
@@ -628,42 +643,52 @@ fn check_aa1_condition_matrix(
 
     let mut problems: Vec<String> = Vec::new();
 
-    // The differential scale sweep, PER acceptance-bearing payload class. AA-1 establishes
-    // each class's OWN stable count offset by measuring that class at 1e6/1e7/1e8 and
-    // differencing, so the union of scale labels across DIFFERENT classes proves nothing:
-    // 1e6 on `straight-line` and 1e7/1e8 on `branch-dense` gives no class a differential
-    // sweep. Every class that carries armed count evidence must itself cover every required
-    // scale. Enforced for a normative certification only — `--sub-normative` relaxes it as
-    // it relaxes the floor magnitude.
+    // The full AA-1 grid: every required payload class × every contamination condition ×
+    // every sweep scale must carry an armed record. A union-of-labels check (each scale
+    // occurs SOMEWHERE, each condition has SOME armed record) is not enough: a submission of
+    // only `straight-line` at three scales under four conditions leaves the WFI/exception
+    // classes unmeasured, and disjoint payloads per condition give no per-class contamination
+    // comparison. Requiring the explicit cross-product closes both. Normative only —
+    // `--sub-normative` relaxes it as it relaxes the floor magnitude.
     if !floors.sub_normative {
-        let mut scales_by_payload: BTreeMap<&str, BTreeSet<Scale>> = BTreeMap::new();
+        let mut armed_cells: BTreeSet<(&str, &str, Scale)> = BTreeSet::new();
         for (_, records, _) in loaded {
             for r in records {
                 if r.overflow.as_ref().is_some_and(|o| o.armed) {
-                    scales_by_payload
-                        .entry(r.payload.name())
-                        .or_default()
-                        .insert(r.scale);
+                    armed_cells.insert((r.payload.name(), r.condition.as_str(), r.scale));
                 }
             }
         }
-        for (payload, scales) in &scales_by_payload {
-            let missing: Vec<&str> = REQUIRED_AA1_SWEEP_SCALES
-                .iter()
-                .filter(|s| !scales.contains(s))
-                .map(|s| s.name())
-                .collect();
-            if !missing.is_empty() {
-                let present: Vec<&str> = scales.iter().map(|s| s.name()).collect();
-                problems.push(format!(
-                    "payload class {payload} is missing scales [{}] from its differential sweep \
-                     (has [{}]): AA-1 derives each class's OWN offset from the 1e6/1e7/1e8 sweep, \
-                     so every acceptance-bearing class must cover all three — the union of labels \
-                     across classes does not (pass --sub-normative for a reduced-scope run)",
-                    missing.join(", "),
-                    present.join(", ")
-                ));
+        let mut missing_cells: Vec<String> = Vec::new();
+        for payload in REQUIRED_AA1_PAYLOADS {
+            for &cond in REQUIRED_AA1_CONDITIONS {
+                for &scale in REQUIRED_AA1_SWEEP_SCALES {
+                    if !armed_cells.contains(&(payload.name(), cond, scale)) {
+                        missing_cells.push(format!("{}×{cond}×{}", payload.name(), scale.name()));
+                    }
+                }
             }
+        }
+        if !missing_cells.is_empty() {
+            let shown = missing_cells
+                .iter()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let suffix = if missing_cells.len() > 8 {
+                format!(" (+{} more)", missing_cells.len() - 8)
+            } else {
+                String::new()
+            };
+            problems.push(format!(
+                "the AA-1 matrix is incomplete: {} required (payload × condition × scale) cell(s) \
+                 have no armed record — {shown}{suffix}. AA-1 must measure every characterized \
+                 class at every contamination condition and every sweep scale; the union of \
+                 labels, or disjoint payloads per condition, gives no per-class differential and \
+                 no contamination comparison (pass --sub-normative for a reduced-scope run)",
+                missing_cells.len()
+            ));
         }
 
         // The bounded migration probe is a REQUIRED AA-1 certification input, not an
@@ -1758,7 +1783,8 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
 }
 
 /// The key a repetition is *the same run* under: same payload, scale, seed,
-/// condition, and — for an armed run — the same target **delta**.
+/// condition, the same target **delta** (armed runs), and the same **step moment**
+/// (stepped AA-2 runs).
 ///
 /// The delta is `target - work_begin`, NOT the absolute target. The plan reuses one
 /// `target_delta` across every repetition of an input, but the stored target is
@@ -1768,7 +1794,20 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
 /// divergent landed states. Keying by delta groups them correctly. A malformed
 /// record where `target < work_begin` (a negative delta) is caught separately by
 /// [`check_replay_identity`].
-type RepKey = (String, String, u64, String, Option<i128>);
+///
+/// The step moment (`pc_before`, transition) is what makes an AA-2 stepped record a
+/// distinct experiment: two step points of the SAME input — an `SVC` exception entry and
+/// its `ERET` — share payload/scale/seed/condition and carry no target, so without it they
+/// group together and their necessarily-different `step_digest`s read as false divergence.
+/// Keying by the step moment groups each point with its own repetitions instead.
+type RepKey = (
+    String,
+    String,
+    u64,
+    String,
+    Option<i128>,
+    Option<(u64, StepTransition)>,
+);
 
 fn rep_key(r: &RunRecord) -> RepKey {
     (
@@ -1779,6 +1818,7 @@ fn rep_key(r: &RunRecord) -> RepKey {
         r.overflow
             .as_ref()
             .map(|o| i128::from(o.target) - i128::from(r.work_begin)),
+        r.step.as_ref().map(|s| (s.pc_before, s.transition)),
     )
 }
 
@@ -3260,94 +3300,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn normative_aa1_requires_the_full_differential_scale_sweep() {
-        // A set whose records span 1e6/1e7/1e8 (the sweep), one condition each.
-        let swept = |id: &str, cond: &str, hash: &str| -> (RunSet, Vec<RunRecord>, Vec<u8>) {
-            let mut set = a_loaded_set(Stage::Aa1, id, cond, hash, 3);
-            set.1[0].scale = Scale::S1e6;
-            set.1[1].scale = Scale::S1e7;
-            set.1[2].scale = Scale::S1e8;
-            set
-        };
-        // The AA-1 migration probe: unpinned, no core, its records span the sweep too.
-        let migration = || {
-            let mut set = swept("mig", "pinned-solo", &"e".repeat(64));
-            set.0.pinning.pinned = false;
-            set.0.pinning.core = None;
-            set.0.pinning.migration_probe = true;
-            set
-        };
-        // Four pinned conditions, full sweep, but NO migration probe.
-        let contamination_only = [
-            swept("c0", "pinned-solo", &"a".repeat(64)),
-            swept("c1", "co-tenant-other-core", &"b".repeat(64)),
-            swept("c2", "co-tenant-same-core", &"c".repeat(64)),
-            swept("c3", "memory-pressure", &"d".repeat(64)),
-        ];
-        // The same, plus the migration probe → a complete AA-1 certification input set.
-        let full_sweep = [
-            swept("c0", "pinned-solo", &"a".repeat(64)),
-            swept("c1", "co-tenant-other-core", &"b".repeat(64)),
-            swept("c2", "co-tenant-same-core", &"c".repeat(64)),
-            swept("c3", "memory-pressure", &"d".repeat(64)),
-            migration(),
-        ];
-        let smoke_only = [
-            a_loaded_set(Stage::Aa1, "c0", "pinned-solo", &"a".repeat(64), 3),
-            a_loaded_set(Stage::Aa1, "c1", "co-tenant-other-core", &"b".repeat(64), 3),
-            a_loaded_set(Stage::Aa1, "c2", "co-tenant-same-core", &"c".repeat(64), 3),
-            a_loaded_set(Stage::Aa1, "c3", "memory-pressure", &"d".repeat(64), 3),
-        ];
-        let normative = Floors {
-            min_armed_overflows: Some(4),
-            min_reps: None,
-            sub_normative: false,
-        };
-
-        // Normative: smoke-only (the CLI default scale) must not certify AA-1.
-        assert_eq!(
-            status(
-                &aggregate(&smoke_only, &normative).outcomes,
-                CheckId::ConditionMatrix
-            ),
-            Some(Status::Fail),
-            "a smoke-only AA-1 run has not run the 1e6/1e7/1e8 differential sweep"
-        );
-        // Full sweep but no migration probe: still not a certification (rr #3607 evidence
-        // is missing).
-        assert_eq!(
-            status(
-                &aggregate(&contamination_only, &normative).outcomes,
-                CheckId::ConditionMatrix
-            ),
-            Some(Status::Fail),
-            "four pinned conditions without the migration probe cannot certify AA-1"
-        );
-        // The full sweep plus the migration probe passes the matrix.
-        assert_eq!(
-            status(
-                &aggregate(&full_sweep, &normative).outcomes,
-                CheckId::ConditionMatrix
-            ),
-            Some(Status::Pass),
-            "the full sweep across every condition plus the migration probe certifies"
-        );
-        // A --sub-normative reduced-scope run relaxes the sweep as it relaxes the floor.
-        let sub = Floors {
-            sub_normative: true,
-            ..normative
-        };
-        assert_eq!(
-            status(
-                &aggregate(&smoke_only, &sub).outcomes,
-                CheckId::ConditionMatrix
-            ),
-            Some(Status::Pass),
-            "sub-normative relaxes the sweep magnitude"
-        );
-    }
-
     /// Build a swept AA-1 set (one payload, 1e6/1e7/1e8) that is also the migration probe.
     fn swept_migration_probe(id: &str, hash: &str) -> (RunSet, Vec<RunRecord>, Vec<u8>) {
         let mut set = a_loaded_set(Stage::Aa1, id, "pinned-solo", hash, 3);
@@ -3360,6 +3312,119 @@ mod tests {
         set
     }
 
+    /// A COMPLETE AA-1 certification input: every required payload class at every
+    /// contamination condition and every sweep scale (armed), plus an armed migration probe.
+    fn full_aa1_grid() -> Vec<(RunSet, Vec<RunRecord>, Vec<u8>)> {
+        let conditions = [
+            ("c0", "pinned-solo", "a"),
+            ("c1", "co-tenant-other-core", "b"),
+            ("c2", "co-tenant-same-core", "c"),
+            ("c3", "memory-pressure", "d"),
+        ];
+        let mut sets = Vec::new();
+        for (id, cond, hash) in conditions {
+            let mut set = a_loaded_set(Stage::Aa1, id, cond, &hash.repeat(64), 0);
+            // This helper exercises the ConditionMatrix grid, not counts; `weights: None`
+            // makes the count check refuse (NOT-REQUESTED) instead of simulating 1e8 trips per
+            // cell — keeping the test fast while leaving the grid verdict unchanged.
+            set.0.weights = None;
+            let mut records = Vec::new();
+            let mut sample_id = 0u64;
+            for &p in REQUIRED_AA1_PAYLOADS {
+                for &sc in REQUIRED_AA1_SWEEP_SCALES {
+                    let mut r = a_record(sample_id);
+                    r.payload = p;
+                    r.scale = sc;
+                    r.condition = cond.to_string();
+                    records.push(r);
+                    sample_id += 1;
+                }
+            }
+            set.1 = records;
+            sets.push(set);
+        }
+        let mut probe = swept_migration_probe("mig", &"e".repeat(64));
+        probe.0.weights = None;
+        sets.push(probe);
+        sets
+    }
+
+    #[test]
+    fn normative_aa1_requires_the_full_matrix_grid() {
+        let normative = Floors {
+            min_armed_overflows: Some(4),
+            min_reps: None,
+            sub_normative: false,
+        };
+
+        // The complete grid + armed migration probe certifies.
+        assert_eq!(
+            status(
+                &aggregate(&full_aa1_grid(), &normative).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Pass),
+            "every class × condition × scale cell, plus the armed migration probe, certifies"
+        );
+
+        // Drop the WFI class entirely — a submission of only the other classes never measures
+        // it, which the union-of-labels check missed but the grid catches.
+        let mut no_wfi = full_aa1_grid();
+        for (_, records, _) in &mut no_wfi {
+            records.retain(|r| r.payload != Payload::WfiIdle);
+        }
+        assert_eq!(
+            status(
+                &aggregate(&no_wfi, &normative).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Fail),
+            "a grid missing the WFI class is incomplete"
+        );
+
+        // Drop one condition for one class (svc only at pinned-solo): disjoint payloads per
+        // condition give no per-class contamination comparison.
+        let mut disjoint = full_aa1_grid();
+        for (rs, records, _) in &mut disjoint {
+            if rs.condition != "pinned-solo" {
+                records.retain(|r| r.payload != Payload::Svc);
+            }
+        }
+        assert_eq!(
+            status(
+                &aggregate(&disjoint, &normative).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Fail),
+            "svc measured under only one condition has no contamination comparison"
+        );
+
+        // Smoke-only (no sweep scales) → fail; --sub-normative relaxes the whole grid.
+        let mut smoke = full_aa1_grid();
+        for (_, records, _) in &mut smoke {
+            for r in records {
+                r.scale = Scale::Smoke;
+            }
+        }
+        assert_eq!(
+            status(
+                &aggregate(&smoke, &normative).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Fail),
+            "smoke-only has no differential sweep for any class"
+        );
+        let sub = Floors {
+            sub_normative: true,
+            ..normative
+        };
+        assert_eq!(
+            status(&aggregate(&smoke, &sub).outcomes, CheckId::ConditionMatrix),
+            Some(Status::Pass),
+            "sub-normative relaxes the grid"
+        );
+    }
+
     #[test]
     fn aa1_migration_probe_must_contribute_armed_records() {
         let normative = Floors {
@@ -3367,88 +3432,32 @@ mod tests {
             min_reps: None,
             sub_normative: false,
         };
-        let swept = |id: &str, cond: &str, hash: &str| -> (RunSet, Vec<RunRecord>, Vec<u8>) {
-            let mut set = a_loaded_set(Stage::Aa1, id, cond, hash, 3);
-            set.1[0].scale = Scale::S1e6;
-            set.1[1].scale = Scale::S1e7;
-            set.1[2].scale = Scale::S1e8;
-            set
-        };
-        let conditions = || {
-            [
-                swept("c0", "pinned-solo", &"a".repeat(64)),
-                swept("c1", "co-tenant-other-core", &"b".repeat(64)),
-                swept("c2", "co-tenant-same-core", &"c".repeat(64)),
-                swept("c3", "memory-pressure", &"d".repeat(64)),
-            ]
-        };
 
-        // A migration-probe set whose records are COUNTING MODE (unarmed) — labelled as the
-        // probe but migrating nothing under an armed overflow. It must not satisfy the check.
-        let mut counting_probe = swept_migration_probe("mig", &"e".repeat(64));
-        for r in &mut counting_probe.1 {
+        // The complete grid but with a COUNTING-MODE probe (unarmed) — labelled as the probe
+        // but migrating nothing under an armed overflow. The grid stays complete (the pinned
+        // conditions cover its cells), so the ONLY failure is the missing armed probe.
+        let mut counting = full_aa1_grid();
+        let probe = counting.last_mut().expect("grid has the probe set");
+        for r in &mut probe.1 {
             r.overflow = None;
         }
-        let mut with_counting_probe: Vec<_> = conditions().into_iter().collect();
-        with_counting_probe.push(counting_probe);
         assert_eq!(
             status(
-                &aggregate(&with_counting_probe, &normative).outcomes,
+                &aggregate(&counting, &normative).outcomes,
                 CheckId::ConditionMatrix
             ),
             Some(Status::Fail),
             "a counting-mode probe set migrates nothing under an armed overflow"
         );
 
-        // An ARMED migration-probe set supplies the evidence → passes.
-        let mut with_armed_probe: Vec<_> = conditions().into_iter().collect();
-        with_armed_probe.push(swept_migration_probe("mig", &"e".repeat(64)));
+        // The same grid with the probe armed → passes.
         assert_eq!(
             status(
-                &aggregate(&with_armed_probe, &normative).outcomes,
+                &aggregate(&full_aa1_grid(), &normative).outcomes,
                 CheckId::ConditionMatrix
             ),
             Some(Status::Pass),
             "an armed migration-probe set covers the rr #3607 experiment"
-        );
-    }
-
-    #[test]
-    fn aa1_scale_sweep_is_per_payload_not_the_union_of_labels() {
-        let normative = Floors {
-            min_armed_overflows: Some(4),
-            min_reps: None,
-            sub_normative: false,
-        };
-        let swept = |id: &str, cond: &str, hash: &str| -> (RunSet, Vec<RunRecord>, Vec<u8>) {
-            let mut set = a_loaded_set(Stage::Aa1, id, cond, hash, 3);
-            set.1[0].scale = Scale::S1e6;
-            set.1[1].scale = Scale::S1e7;
-            set.1[2].scale = Scale::S1e8;
-            set
-        };
-        // straight-line has a complete sweep across the conditions + probe; now inject a
-        // single branch-dense record at 1e7 only. The UNION of scale labels is still
-        // {1e6,1e7,1e8}, but branch-dense's OWN sweep is incomplete → the matrix fails.
-        let mut c0 = swept("c0", "pinned-solo", &"a".repeat(64));
-        let mut extra = a_record(99);
-        extra.payload = Payload::BranchDense;
-        extra.scale = Scale::S1e7;
-        c0.1.push(extra);
-        let split = [
-            c0,
-            swept("c1", "co-tenant-other-core", &"b".repeat(64)),
-            swept("c2", "co-tenant-same-core", &"c".repeat(64)),
-            swept("c3", "memory-pressure", &"d".repeat(64)),
-            swept_migration_probe("mig", &"e".repeat(64)),
-        ];
-        assert_eq!(
-            status(
-                &aggregate(&split, &normative).outcomes,
-                CheckId::ConditionMatrix
-            ),
-            Some(Status::Fail),
-            "branch-dense at 1e7 only has no per-class sweep, though the union of labels does"
         );
     }
 
@@ -3924,6 +3933,43 @@ mod tests {
             &mut out,
         );
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
+    }
+
+    #[test]
+    fn two_step_moments_of_one_input_are_not_false_divergence() {
+        // Two DIFFERENT step points of the same input — an SVC exception entry and its ERET —
+        // share (payload, scale, seed, condition) and carry no target. Without the step moment
+        // in the RepKey they group together and their necessarily-different step_digests read
+        // as false divergence. With it, each point groups with its OWN repetitions and, when
+        // each is individually replay-identical, the check passes.
+        let step_at = |id: u64, pc: u64, tr: StepTransition, digest: &str| {
+            let mut r = a_record_seeded(id, 7); // same seed for all four
+            r.step = Some(StepRecord {
+                pc_before: pc,
+                pc_after: pc + 4,
+                insn_retired: 1,
+                br_retired_delta: 0,
+                transition: tr,
+                step_digest: digest.into(),
+            });
+            r
+        };
+        // Point A (exception entry) repeated twice, point B (ERET) repeated twice; each
+        // point's two reps are bit-identical, the two points differ.
+        let records = [
+            step_at(0, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
+            step_at(1, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
+            step_at(2, 0x2000, StepTransition::ExceptionReturn, "sha256:eret"),
+            step_at(3, 0x2000, StepTransition::ExceptionReturn, "sha256:eret"),
+        ];
+        let mut out = Vec::new();
+        check_replay_identity(Stage::Aa2, &records, &mut out);
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::Pass),
+            "two distinct step moments of one input, each individually replay-identical, are \
+             not divergence"
+        );
     }
 
     #[test]

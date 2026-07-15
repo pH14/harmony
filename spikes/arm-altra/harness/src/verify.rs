@@ -161,14 +161,20 @@ pub fn verify(elf: &Elf, payload: Payload) -> Result<Verdict, ElfError> {
     // class, predicate, operand and target — and the smoke console output — unchanged while
     // the model still assumes `trips` SVCs and `trips - 1` backedges. So each payload's
     // required non-branch ops (`Payload::required_window_ops`) must appear in its window.
+    // Compare the EXACT sequence — order AND multiplicity — not mere presence. `contains`
+    // would pass a window with a SECOND `svc #0` (doubling the exception contribution while
+    // the branch gate and the `all-svcs-returned` golden stay unchanged), or one missing the
+    // `subs …, #1` decrement of a counted loop (so a 1000-trip run executes 500 iterations).
+    // The model declares the full ordered class sequence, including both sides of an LL/SC
+    // pair, and the window must match it exactly.
     let found_ops = window_oracle_ops(code);
-    for required in payload.required_window_ops() {
-        if !found_ops.contains(required) {
-            failures.push(format!(
-                "window is missing the oracle-load-bearing opcode {required:?}: the count model \
-                 assumes it runs, but it is not in the linked window (found {found_ops:?})"
-            ));
-        }
+    if found_ops != payload.required_window_ops() {
+        failures.push(format!(
+            "window non-branch opcode sequence differs: model says {:?}, ELF has {found_ops:?} \
+             (a changed decrement, an added SVC, or a dropped exclusive changes the count while \
+             the branch sequence and golden output stay identical)",
+            payload.required_window_ops()
+        ));
     }
 
     let handler_branches = match handler_stem(payload) {
