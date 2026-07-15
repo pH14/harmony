@@ -525,6 +525,24 @@ synchronized registered boundary, vs the old 5-sample) + terminal + deliberate-f
 detected. Only G2's strength changed, so only G0 (smoke discipline) + G2 needed the
 box; the other gates' r8–r11 results stand.
 
+**Review round 19 folded in — perf arms assert SELECTION + box re-validated**
+(cross-model r19: 1 P1; portable-only — no kernel rebuild). Both page-on perf arms
+(`perf_arm`, minimal image; and the Postgres workload-window `arm`) asserted only
+`pvclock_registration().is_some()` before their counts fed a ratio. A page that
+registers but never becomes the **active** clocksource (a rating/initcall
+regression) leaves the guest on the TSC, so a filtered perf-only invocation would
+emit a "page-on" ratio for an effectively page-OFF run. G0 checks the switch, but
+it is an independent `#[ignore]` test a perf-only run does not execute. Both arms
+now also assert the console shows `Switched to clocksource harmony-pvclock` (shared
+`CLOCKSOURCE_SWITCH_MARKER`, reused by G0) before emitting any ratio. **Box
+perf-arm re-run on the real patched KVM** (det-cfl-v1 `hypervizor`, core 2, window
+acquired+reverted-to-stock 1396736): **G0 PASS** (clocksource switched), and BOTH
+perf arms PASS at the new strength — **Postgres workload reduction re-confirmed
+24.93×** (page-OFF rdtsc 1397 → page-ON 56 over the workload window, both arms
+registered *and* selected), the minimal boot-inclusive arm ≈1.02× as documented
+(calibration-bound, reported honestly, ratio not asserted). The recorded
+kill-condition PASS is unchanged; this future-proofs the arm against mislabeling.
+
 ## What landed (by deliverable)
 
 1. **Rename ride-along** — already fully landed by tasks/108 (`guest_hz`/
