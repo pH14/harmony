@@ -37,13 +37,14 @@ use runtrace::TraceStore;
 use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, VmmFactory};
 use vmm_core::vendor::x86::bringup::boot_linux_selected;
-use vmm_core::vmm::{Step, Vmm};
+use vmm_core::vmm::{PVCLOCK_DEFAULT_DELTA_WORK, Step, Vmm};
 
 use campaign_runner::gamecampaign::{GameCampaignConfig, run_game_campaign};
 
 use super::{
     BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, X86_64_BOOT, finish, finish_campaign,
-    finish_game, finish_recording, parse_game_config, parse_retain, print_game_artifacts, seeds,
+    finish_game, finish_recording, parse_game_config, parse_retain, print_game_artifacts,
+    pvclock_cmdline, seeds,
 };
 
 /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
@@ -151,6 +152,7 @@ fn boot_server(
     kernel_name: &str,
     initramfs_name: &str,
     ready_marker: &str,
+    page_on: bool,
 ) -> Result<BootedServer, ExitCode> {
     if !std::path::Path::new("/dev/kvm").exists() {
         eprintln!(
@@ -178,6 +180,12 @@ fn boot_server(
         return Err(ExitCode::FAILURE);
     };
 
+    // The page-on composition (task 110 deliverable 7): the guest cmdline
+    // advertises ` harmony_pvclock` AND the host offers the page
+    // (`enable_pvclock`) — both from the ONE `page_on` knob, on the live VM and
+    // every forked branch, so the A/B arms cannot drift (the live_pvclock.rs
+    // discipline). Page-off is byte-for-byte today's boot.
+    let cmdline = pvclock_cmdline(X86_64_BOOT.cmdline, page_on);
     // "Boot" starts here (task 96 §4: "from server boot start to the readiness
     // marker") — before `boot_linux_selected`, so the phase covers KVM backend
     // creation + guest RAM load + the initial restore, not just the
@@ -188,7 +196,7 @@ fn boot_server(
         &kernel,
         &initramfs,
         GUEST_RAM_LEN,
-        X86_64_BOOT.cmdline,
+        &cmdline,
         BOOT_SEED,
     ) {
         Ok(v) => v,
@@ -197,6 +205,9 @@ fn boot_server(
             return Err(ExitCode::FAILURE);
         }
     };
+    if page_on {
+        live.enable_pvclock(PVCLOCK_DEFAULT_DELTA_WORK);
+    }
     println!("[campaign-runner] box: booting the guest to the readiness marker {ready_marker:?} …");
     let boot_us = match drive_to_marker(&mut live, ready_marker.as_bytes()) {
         Ok(steps) => {
@@ -221,15 +232,24 @@ fn boot_server(
     // kernel/initramfs copies into the closure rather than cloning them —
     // an initramfs is tens/hundreds of MB, and cloning would keep two
     // copies resident for the whole run.
+    let factory_cmdline = cmdline.clone();
     let factory: VmmFactory<Box<dyn Backend<A = X86>>> = Box::new(move || {
-        boot_linux_selected(
+        let mut v = boot_linux_selected(
             X86_64_BOOT.backend,
             &kernel,
             &initramfs,
             GUEST_RAM_LEN,
-            X86_64_BOOT.cmdline,
+            &factory_cmdline,
             BOOT_SEED,
-        )
+        )?;
+        // A forked branch must be composed EXACTLY like the live VM (same-state
+        // ⇒ same-future): offer the page here too when page-on, else a restored
+        // branch would answer the guest's registration `UnknownService` where the
+        // source accepted it (the pvclock_validate_restore capability check).
+        if page_on {
+            v.enable_pvclock(PVCLOCK_DEFAULT_DELTA_WORK);
+        }
+        Ok(v)
     });
     // The serial transcript up to readiness rides back to the caller: the
     // game path cross-checks the operator's `--rom-sha256` against the
@@ -257,11 +277,15 @@ pub fn run(args: BoxArgs) -> ExitCode {
     }
     // `SweepReport` carries no timing (task 96 only extends `CampaignReport`)
     // — the boot duration is already in the printed readiness line above.
-    let (mut server, _boot_us, _serial) =
-        match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
-            Ok(s) => s,
-            Err(code) => return code,
-        };
+    let (mut server, _boot_us, _serial) = match boot_server(
+        &args.kernel,
+        &args.initramfs,
+        &args.ready_marker,
+        args.page_on,
+    ) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
 
     // Postgres is interrupt-driven; the snapshot search may need many steps
     // to find a sealable boundary at/after readiness. Generous retry budget
@@ -384,7 +408,7 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         // `boot_us` is the task-96 stopwatch's boot-to-ready wall-clock —
         // host-side observation only (printed, never fed to the campaign).
         let (mut server, boot_us, serial) =
-            match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+            match boot_server(&args.kernel, &args.initramfs, &args.ready_marker, false) {
                 Ok(s) => s,
                 Err(code) => return code,
             };
@@ -516,7 +540,7 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
 
 pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
     let (mut server, boot_us, _serial) =
-        match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+        match boot_server(&args.kernel, &args.initramfs, &args.ready_marker, false) {
             Ok(s) => s,
             Err(code) => return code,
         };
@@ -671,7 +695,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
     //    timed phase (no PhaseStats report is built on this measurement path), so
     //    there is nothing further to time; the boot phase is the only timed segment.
     let (mut server, boot_us, _serial) =
-        match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+        match boot_server(&args.kernel, &args.initramfs, &args.ready_marker, false) {
             Ok(t) => t,
             Err(code) => return code,
         };

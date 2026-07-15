@@ -74,6 +74,25 @@ const X86_64_BOOT: VendorBootConfig = VendorBootConfig {
     backend: BackendKind::Patched,
 };
 
+/// The effective determinism cmdline for a box boot: the vendor base, plus the
+/// ` harmony_pvclock` clocksource advertisement iff the page is offered
+/// host-side (task 110 deliverable 7). This is the GUEST half of the page-on
+/// composition; the box composition root pairs it with the HOST half
+/// (`enable_pvclock`) from the same `page_on` knob, so the two cannot drift (the
+/// `live_pvclock.rs` "one body, one knob" discipline). Portable + unit-tested
+/// here; the box boot in `boxrun.rs` (Linux-only) is its sole non-test caller.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn pvclock_cmdline(base: &str, page_on: bool) -> String {
+    if page_on {
+        format!("{base} harmony_pvclock")
+    } else {
+        base.to_string()
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "campaign-runner",
@@ -364,6 +383,14 @@ struct BoxArgs {
     /// postmaster-ready banner.
     #[arg(long, default_value = "database system is ready to accept connections")]
     ready_marker: String,
+    /// Offer the task-110 paravirt clock page **page-on** (deliverable 7's
+    /// perf letter): the host offers the page (`enable_pvclock`) AND the guest
+    /// cmdline advertises ` harmony_pvclock`, for both the live VM and every
+    /// forked branch, so the Postgres campaign smoke genuinely runs with the
+    /// page active. Off by default — the page is pure opt-in, so a default box
+    /// run is byte-for-byte today's behavior.
+    #[arg(long)]
+    page_on: bool,
 }
 
 /// Box-campaign arguments: the image/marker knobs of a `box` sweep, plus the
@@ -1137,6 +1164,51 @@ mod tests {
         );
     }
 
+    // --- task 110: the page-on campaign composition knob (r14 P1) -----------
+
+    /// The GUEST half of the page-on composition: the cmdline advertises
+    /// ` harmony_pvclock` iff the page is offered, and page-off is byte-for-byte
+    /// the untouched vendor base (the page is pure opt-in). This is the half the
+    /// box composition root pairs with the host `enable_pvclock` from the same
+    /// knob, so a page-on run genuinely reaches the guest clocksource.
+    #[test]
+    fn pvclock_cmdline_appends_the_clocksource_only_when_page_on() {
+        let base = X86_64_BOOT.cmdline;
+        assert_eq!(
+            pvclock_cmdline(base, false),
+            base,
+            "page-off must be the untouched base cmdline"
+        );
+        let on = pvclock_cmdline(base, true);
+        assert!(on.starts_with(base), "page-on preserves the base cmdline");
+        assert!(
+            on.ends_with(" harmony_pvclock"),
+            "page-on advertises the harmony clocksource"
+        );
+        assert_eq!(
+            on.matches("harmony_pvclock").count(),
+            1,
+            "the clocksource is advertised exactly once"
+        );
+    }
+
+    /// The `--page-on` knob threads into `BoxArgs` (the Postgres campaign smoke),
+    /// defaulting OFF so a bare `box` run stays byte-for-byte the page-off boot.
+    #[test]
+    fn box_mode_parses_the_page_on_knob() {
+        use clap::Parser;
+        let off = Cli::try_parse_from(["campaign-runner", "box"]).expect("bare box parses");
+        let on =
+            Cli::try_parse_from(["campaign-runner", "box", "--page-on"]).expect("--page-on parses");
+        match (off.mode, on.mode) {
+            (Mode::Box(a), Mode::Box(b)) => {
+                assert!(!a.page_on, "page-on defaults off");
+                assert!(b.page_on, "--page-on sets the knob");
+            }
+            _ => panic!("expected box mode both times"),
+        }
+    }
+
     // --- degenerate budgets (task 103 finding 1a) ---------------------------
 
     /// The vacuous-pass fixtures from PR #93's round-9 pass, driven through the
@@ -1560,6 +1632,7 @@ mod tests {
             kernel: "bzImage".to_string(),
             initramfs: "initramfs-postgres.cpio.gz".to_string(),
             ready_marker: "ready".to_string(),
+            page_on: true,
         };
         assert_eq!(run_box(args), ExitCode::FAILURE);
     }

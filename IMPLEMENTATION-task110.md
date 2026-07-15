@@ -401,6 +401,38 @@ present in every green box run, IMPLEMENTATION §Box gates line "Switched to
 clocksource harmony-pvclock", so this tightens the gate without needing a new
 box run; box re-confirmation rides the next foreman-granted window.)
 
+**Review round 14 folded in — APPROVE round** (cross-model r14: 1 P1 + 1 P2;
+portable-only — no kernel rebuild). (a) **The page-on campaign composition knob
+(P1, deliverable 7's letter).** The box Postgres campaign (`campaign-runner box`,
+the real-Postgres sweep) had no way to actually run **page-on**, so deliverable
+7's "postgres campaign smoke … page-off vs page-on" wasn't genuinely runnable
+from the composition root. Added a `--page-on` knob that wires BOTH halves of the
+composition from one flag — the guest cmdline (` harmony_pvclock` appended) and
+the host offer (`enable_pvclock`) — for the live VM AND every forked branch
+(same-state ⇒ same-future: a branch must offer the page too, else the guest's
+registration answers `UnknownService` where the source accepted it). The cmdline
+half is a portable `pvclock_cmdline(base, page_on)` helper (unit-tested); the host
+`enable_pvclock` half lives in the Linux-only `boxrun.rs` composition root next to
+it, mirroring the `live_pvclock.rs` "one body, one knob" discipline so the arms
+can't drift. Off by default — a bare `box` run is byte-for-byte today's page-off
+boot. Tests: `pvclock_cmdline_appends_the_clocksource_only_when_page_on`,
+`box_mode_parses_the_page_on_knob` (both portable). (b) **Deadline-cause
+classification anchors to the target, not the skidded count (P2).** `on_deadline`
+classified a landing's cause (timer / arrival / pvclock-Δ) by comparing the
+armed deadlines against `reached` — but on an **overdue** real-backend landing
+`reached` is a live PMU read that skids PAST the deterministic target, so a
+deadline sitting between `target` and `reached` (one the guest never actually
+stopped for) tested as "due" and misattributed the landing — e.g. crediting a
+timer/arrival the skid crossed and stealing a genuine Δ-forced pvclock refresh,
+corrupting G3's attribution evidence exactly on the overdue path it exists to
+measure. Now classified against `target.unwrap_or(reached)` (the same
+deterministic point the anchor already uses; `reached` only when a `Deadline`
+arrives targetless, a backend contract violation). The MEASURED-landing trace
+still records `reached` — that IS the seed-dependence signal; only the cause
+classification uses the deterministic point. The mock rewrites `reached :=
+deadline`, so the overdue path is driven by a direct `on_deadline(reached >
+target)` call. Test: `overdue_landing_classifies_against_the_target_not_the_skidded_count`.
+
 ## What landed (by deliverable)
 
 1. **Rename ride-along** — already fully landed by tasks/108 (`guest_hz`/

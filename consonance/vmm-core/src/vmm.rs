@@ -3702,15 +3702,28 @@ where
         reached: Moment,
         target: Option<Moment>,
     ) -> Result<Step, VmmError> {
+        // Classify the landing's CAUSE against the SELECTED deadline `target`, not
+        // the live `reached` count (cross-model r14 P2). On an OVERDUE real-backend
+        // landing `reached` is a live PMU read that skids PAST the deterministic
+        // target, so a deadline sitting between `target` and `reached` — one the
+        // guest did NOT actually stop for — would test as "due" and misattribute the
+        // landing (e.g. crediting a timer tick the skid happened to cross, stealing
+        // a genuine Δ-forced pvclock refresh). `target` is the pure-deterministic
+        // stopping point the VMM ran `run_until` against; fall back to `reached`
+        // only when a `Deadline` somehow arrived with NO target (a backend contract
+        // violation, handled below). This is the SAME point the anchor uses.
+        let classify = target.unwrap_or(reached).0;
         // Trace the MEASURED landing work (diagnostic, not hashed) for the seed-dependence
         // gate — capped so a constantly-preempting guest can't grow it unbounded.
         // ONLY when a timer/arrival deadline was actually due at the landing (r3
         // P2): the pvclock staleness refresh rides the same `CommonExit::Deadline`,
         // and recording its forced refreshes here would hand page-enabled gates
         // bogus timer-preemption evidence. A pure refresh landing (nearer than
-        // both the timer and any staged arrival) is exactly NOT a preemption.
-        let timer_due = self.preemption_deadline().is_some_and(|p| reached.0 >= p.0);
-        let arrival_due = self.arrival_deadline.is_some_and(|a| reached.0 >= a.0);
+        // both the timer and any staged arrival) is exactly NOT a preemption. The
+        // trace records the MEASURED `reached` (that IS the seed-dependence signal);
+        // only the cause classification above uses the deterministic `classify`.
+        let timer_due = self.preemption_deadline().is_some_and(|p| classify >= p.0);
+        let arrival_due = self.arrival_deadline.is_some_and(|a| classify >= a.0);
         if (timer_due || arrival_due) && self.preemption_landings.len() < PREEMPTION_TRACE_CAP {
             self.preemption_landings.push(reached.0);
         }
@@ -3720,7 +3733,7 @@ where
         // pvclock deadline rather than to the guest's 100 Hz tick.
         let pvclock_due = self
             .pvclock_refresh_deadline()
-            .is_some_and(|p| reached.0 >= p.0);
+            .is_some_and(|p| classify >= p.0);
         if pvclock_due
             && !timer_due
             && !arrival_due
@@ -3730,7 +3743,7 @@ where
         }
         // The deterministic intercept point is the deadline TARGET, not the
         // (possibly skid-tainted, on an overdue real-backend landing) `reached`.
-        let anchor = target.unwrap_or(reached).0;
+        let anchor = classify;
         // V-time is synchronized ONLY when the anchor equals the current work,
         // i.e. the guest actually stopped AT the deadline (`reached == target`),
         // not on an **overdue** zero-entry landing where the live counter sits
@@ -10730,6 +10743,45 @@ mod tests {
             0,
             "a timer-caused landing was miscounted as a Δ forced refresh — G3's attribution \
              would then be satisfied by the tick alone, exactly the vacuity it must rule out"
+        );
+    }
+
+    /// r14 P2: on an OVERDUE landing the live `reached` count skids PAST the
+    /// deterministic target, so classifying the landing's cause by `reached`
+    /// would credit a deadline the skid merely crossed — here stealing a genuine
+    /// Δ-forced pvclock refresh for an arrival deadline that was NOT due. The mock
+    /// rewrites `reached := deadline` for its stepped landings, so this drives the
+    /// overdue path by calling `on_deadline` directly with `reached > target`.
+    #[test]
+    fn overdue_landing_classifies_against_the_target_not_the_skidded_count() {
+        let mut vmm = pvclock_vmm(
+            vec![Exit::Arch(X86Exit::Rdtsc)],
+            Box::new(ScriptedWork::at(100)),
+            7,
+        );
+        ring_pvclock_register(&mut vmm, PV_GPA);
+        vmm.step().unwrap(); // handshake: arms the Δ deadline at anchor 100
+        let pv_target = vmm
+            .pvclock_refresh_deadline()
+            .expect("Δ armed off the anchor");
+        // An arrival deadline sitting FARTHER than the pvclock target — NOT the
+        // cause of this landing, but on an overdue landing the live count skids
+        // past it. (No LAPIC timer wired, so `preemption_deadline` is None.)
+        vmm.arrival_deadline = Some(Moment(pv_target.0 + 1000));
+        assert!(vmm.preemption_deadline().is_none(), "no timer armed");
+        // The SELECTED target is the nearer pvclock deadline; the live count
+        // skidded past the arrival deadline (an overdue real-backend landing).
+        let reached = Moment(pv_target.0 + 2000);
+        vmm.on_deadline(reached, Some(pv_target)).unwrap();
+        assert_eq!(
+            vmm.pvclock_forced_landings(),
+            1,
+            "an overdue pvclock landing must be attributed to Δ (classified by target), not \
+             stolen by a deadline the skid crossed"
+        );
+        assert!(
+            vmm.preemption_landings().is_empty(),
+            "the skidded-past arrival must not be counted as a preemption on a pvclock landing"
         );
     }
 
