@@ -32,7 +32,7 @@ throughput; the vendor spikes gate *trust* (measured constants, the trait freeze
 fill), not construction. The ruled 5-lane queue and its risk acceptance live in
 `docs/ARCH-BOUNDARY.md` §Pre-build ruling.
 
-## In flight (2 active workers; PR #98 awaiting the re-cert discussion)
+## In flight (4 active workers)
 
 - **ARM backend skeleton — IMPLEMENTATION** (tasks/112, `hm-cbt`, spec merged as PR #111)
   — **SPAWNED 2026-07-15 ~23:40 on Fable 5** (agent-arm-backend-skeleton): M0 snapshot-seam
@@ -41,8 +41,11 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   to the Altra (`hm-7pb`).
 - **Postgres-image drift gate restoration** (tasks/115, `hm-xdp`+`hm-2nt`) — worker
   mid-diagnosis (box window ahead).
-- **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — **⛔ MERGE HALTED
-  AT THE LAST GATE, ESCALATED TO PAUL (2026-07-14 ~10:20)**: N-3 is fully green (six
+- **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — **⚖️ PAUL RULED
+  TOP-UP 2026-07-15 eve (floor stands as written)**: worker dispatched to reach ≥1.05M
+  cumulative true armed PMIs (sized by the measured ~55% rate, round-2 fixed
+  instruments, smoke-fire-once first, box window after the image-drift release);
+  `hm-60k` gated on met-floor + foreman re-review. Original halt context: N-3 is fully green (six
   conditions 1000/1000 bit-identical, live-migration green on destination, metal reference
   at floor strength, nested==metal equal at both seeds — foreman re-ran the machine
   floor-check independently) and the box is restore-verified + FREE. But the fresh
