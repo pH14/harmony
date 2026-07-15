@@ -5,20 +5,21 @@
 # transposed to counter reads: rdtsc `0F 31`, rdtscp `0F 01 F9`).
 #
 # WHAT IT PROVES on x86: every raw counter read left in the image is a KNOWN,
-# REVIEWED site — the committed allowlist records each containing function AND
-# its exact instruction count, so a NEW rdtsc added inside an already-reviewed
-# function is caught (its count moves), as is a removed one (the entry goes
-# stale). Each is allowlistable ONLY because the retained RDTSC/RDTSCP trap
-# completes it with the same work-derived value the pvclock page carries
-# (§4.1 — on x86 a raw read is survivable-by-trap, never a determinism hole).
-# Exact accounting in both directions: an unlisted (or count-changed) site
-# fails the build; a stale entry fails too. (On ARM, where no trap exists, the
-# transposed gate has an EMPTY allowlist by necessity; that discipline is
-# validated at spike stage AA-5, not here.)
+# REVIEWED site — the committed allowlist records each site as
+# `symbol+0xOFFSET` (the instruction's byte offset within its function), so a
+# NEW rdtsc added inside an already-reviewed function is caught (a new site), a
+# removed one goes stale, AND a removed+ADDED pair in one function is caught too
+# (the offsets change even though the count would not — cross-model r10 P1).
+# Each is allowlistable ONLY because the retained RDTSC/RDTSCP trap completes it
+# with the same work-derived value the pvclock page carries (§4.1 — on x86 a raw
+# read is survivable-by-trap, never a determinism hole). Exact accounting in both
+# directions: an unlisted (or moved) site fails the build; a stale entry fails
+# too. (On ARM, where no trap exists, the transposed gate has an EMPTY allowlist
+# by necessity; that discipline is validated at spike stage AA-5, not here.)
 #
 # ARMING: while the allowlist carries a `# GATE-UNARMED` marker line, the
 # scan runs in CAPTURE mode — it prints every found site in paste-ready
-# `function count` form under a loud banner and then **FAILS the build**
+# `symbol+0xOFFSET` form (one line per site) under a loud banner and then **FAILS the build**
 # (fail-closed, the PR #110 r2 disposition: a disarmed reachability gate must
 # never let a kernel build pass). The marker exists only for re-baselining
 # (e.g. a kernel version bump): capture the printed baseline in a linux/amd64
@@ -46,7 +47,7 @@
 #
 # TWO SCAN MODES, by artifact (cross-model r7 P2). The kernel proper (`vmlinux`)
 # is a 64-bit ELF whose symbol-attributed disassembly is reliable, so it uses the
-# objdump + ARTIFACT-QUALIFIED allowlist path (`artifact:function count`, so the
+# objdump + ARTIFACT-QUALIFIED allowlist path (`artifact:symbol+0xOFFSET`, so the
 # same symbol name in two artifacts cannot alias budgets). The **setup** and
 # **decompressor** artifacts run 16-bit real-mode code and mode transitions, and
 # a single `objdump -d` mode can mis-length an instruction there — a real
@@ -78,25 +79,24 @@ RAW_ARTIFACTS=(
     "decompressor=$KOBJ/arch/x86/boot/compressed/vmlinux"
 )
 
-# sites <disasm-file> [artifact-tag]: emit "[tag:]function count" per function
-# containing rdtsc/rdtscp instructions (mnemonic-field match — never a
-# symbol-name or byte-pattern substring), sorted by name. The tag namespaces the
-# entry to one boot artifact; the self-test fixtures drive it untagged.
+# sites <disasm-file> [artifact-tag]: emit "[tag:]symbol+0xOFFSET" per rdtsc/
+# rdtscp instruction — one line PER SITE, identified by the instruction's byte
+# offset within its containing function (cross-model r10 P1). A per-function
+# COUNT can miss a removed+added pair inside one function (the count is
+# unchanged), so the gate would pass a moved/replaced counter read; a per-site
+# offset changes, so the removed site goes stale and the added site is unlisted —
+# both caught. The mnemonic match is prefix-aware (a legal `66 0f 31` renders
+# `data16 rdtsc`, so the first token would misread `data16`): walk the mnemonic
+# field skipping the x86 prefix tokens objdump emits separately. rdtsc/rdtscp
+# take NO operands, so the first non-prefix token IS the mnemonic — a symbol
+# named "...rdtsc..." in some other instruction's operand cannot false-match.
 sites() {
-    awk -v tag="${2:-}" '
+    awk '
         /^[0-9a-f]+ <[^>]+>:$/ {
-            sym = $2; gsub(/[<>:]/, "", sym); next
+            fstart = $1; sym = $2; gsub(/[<>:]/, "", sym); next
         }
         /^[[:space:]]*[0-9a-f]+:\t/ {
-            # objdump instruction line: addr:\tbytes\tmnemonic [operands].
-            # The mnemonic may be PREFIXED: a legal `66 0f 31` renders as
-            # `data16 rdtsc`, and taking only the first token would read `data16`
-            # and miss the counter read (cross-model r8 P2). Walk the mnemonic
-            # field, skipping the x86 prefix tokens objdump emits separately, and
-            # test the first real mnemonic. rdtsc/rdtscp take NO operands, so the
-            # first non-prefix token IS the mnemonic — no operand can be reached,
-            # so a symbol named "...rdtsc..." in some other instruction cannot
-            # false-match.
+            addr = $1; sub(/:$/, "", addr)
             n = split($0, f, "\t")
             if (n >= 3) {
                 cnt = split(f[3], toks, /[[:space:]]+/)
@@ -108,13 +108,15 @@ sites() {
                     mn = t
                     break
                 }
-                if (mn == "rdtsc" || mn == "rdtscp") count[sym]++
+                if (mn == "rdtsc" || mn == "rdtscp") print sym, addr, fstart
             }
         }
-        END {
-            for (s in count) print (tag == "" ? s : tag ":" s), count[s]
-        }
-    ' "$1" | sort
+    ' "$1" | while read -r sym addr fstart; do
+        # Offset = instruction address − function start. bash arithmetic is
+        # 64-bit two's-complement, so even with the high kernel bit set the
+        # same-function subtraction yields the exact low-bits offset.
+        printf '%s%s+0x%x\n' "${2:+$2:}" "$sym" "$(( 0x$addr - 0x$fstart ))"
+    done | sort
 }
 
 # all_sites: disassemble the kernel proper and emit its artifact-qualified site
@@ -198,18 +200,20 @@ raw_byte_scan() {
     return $rc
 }
 
-# allowed <allowlist-file>: emit the reviewed "function count" entries
-# (comments/blank lines stripped), sorted; FAIL on a count-less entry (the
-# per-instruction accounting is the gate — a bare name would silently weaken
-# it back to function granularity).
+# allowed <allowlist-file>: emit the reviewed per-site entries (comments/blank
+# lines stripped), sorted; FAIL on a malformed entry. Every entry is a single
+# token `[tag:]symbol+0xOFFSET` — the per-SITE identity is the gate (cross-model
+# r10 P1); a bare function name (or the old `function count` form) would silently
+# weaken it back to function granularity and miss a removed+added pair.
 allowed() {
     local entries
     entries=$(sed -e 's/#.*$//' -e 's/[[:space:]]*$//' -e '/^$/d' "$1")
     if [ -n "$entries" ] && ! printf '%s\n' "$entries" \
-        | awk 'NF != 2 || $2 !~ /^[0-9]+$/ { bad = 1 } END { exit bad }'; then
-        echo "FAIL: malformed allowlist entry — every entry is 'function count' (the" >&2
-        echo "  per-instruction accounting); offending line(s):" >&2
-        printf '%s\n' "$entries" | awk 'NF != 2 || $2 !~ /^[0-9]+$/' | sed 's/^/  /' >&2
+        | awk 'NF != 1 || $1 !~ /\+0x[0-9a-f]+$/ { bad = 1 } END { exit bad }'; then
+        echo "FAIL: malformed allowlist entry — every entry is a single" >&2
+        echo "  '[tag:]symbol+0xOFFSET' site token (the per-site accounting);" >&2
+        echo "  offending line(s):" >&2
+        printf '%s\n' "$entries" | awk 'NF != 1 || $1 !~ /\+0x[0-9a-f]+$/' | sed 's/^/  /' >&2
         return 2
     fi
     printf '%s\n' "$entries" | sed '/^$/d' | sort
@@ -277,7 +281,7 @@ ffffffff81000020 <trace_rdtsc_event>:
 ffffffff81000020:	31 c0                	xor    %eax,%eax
 ffffffff81000022:	c3                   	ret
 EOF
-    printf 'native_sched_clock 1\n' > "$d/allow.txt"
+    printf 'native_sched_clock+0x0\n' > "$d/allow.txt"
     if ! scan "$d/clean.dis" "$d/allow.txt" >/dev/null 2>&1; then
         echo "FAIL: self-test — the clean fixture must pass" >&2
         exit 1
@@ -310,8 +314,8 @@ EOF
         exit 1
     fi
 
-    # A SECOND rdtsc planted inside an ALREADY-allowlisted function (count
-    # 1 → 2): MUST fail — the per-instruction accounting (cross-model r1 P1).
+    # A SECOND rdtsc planted inside an ALREADY-allowlisted function (a new site
+    # at offset 0x3): MUST fail — the per-site accounting catches the extra site.
     cat > "$d/planted-inside.dis" << 'EOF'
 ffffffff81000000 <native_sched_clock>:
 ffffffff81000000:	0f 31                	rdtsc
@@ -324,17 +328,36 @@ EOF
         exit 1
     fi
 
+    # REMOVED+ADDED pair inside one function (cross-model r10 P1): the rdtsc moves
+    # from offset 0x0 to 0x3 — the COUNT is unchanged (still 1), so a per-function
+    # count would pass it, but the per-SITE offset changed. MUST fail (the old
+    # site goes stale AND the new one is unlisted).
+    cat > "$d/moved.dis" << 'EOF'
+ffffffff81000000 <native_sched_clock>:
+ffffffff81000000:	90                   	nop
+ffffffff81000001:	90                   	nop
+ffffffff81000002:	90                   	nop
+ffffffff81000003:	0f 31                	rdtsc
+ffffffff81000005:	c3                   	ret
+EOF
+    if scan "$d/moved.dis" "$d/allow.txt" >/dev/null 2>&1; then
+        echo "FAIL: self-test — a removed+added rdtsc pair (count unchanged, site moved 0x0→0x3)" >&2
+        echo "  was NOT caught — the per-site offset accounting is not working" >&2
+        exit 1
+    fi
+
     # Stale allowlist entry: MUST fail.
-    printf 'native_sched_clock 1\nremoved_function 1\n' > "$d/stale.txt"
+    printf 'native_sched_clock+0x0\nremoved_function+0x0\n' > "$d/stale.txt"
     if scan "$d/clean.dis" "$d/stale.txt" >/dev/null 2>&1; then
         echo "FAIL: self-test — a stale allowlist entry was NOT caught" >&2
         exit 1
     fi
 
-    # A count-less (function-granularity) entry: MUST be rejected as malformed.
+    # A bare, offset-less (function-granularity) entry: MUST be rejected as
+    # malformed — it would weaken the gate back to per-function.
     printf 'native_sched_clock\n' > "$d/bare.txt"
     if scan "$d/clean.dis" "$d/bare.txt" >/dev/null 2>&1; then
-        echo "FAIL: self-test — a count-less allowlist entry was NOT rejected" >&2
+        echo "FAIL: self-test — a bare (offset-less) allowlist entry was NOT rejected" >&2
         exit 1
     fi
 
@@ -345,7 +368,7 @@ ffffffff81000000 <startup_32>:
 ffffffff81000000:	0f 31                	rdtsc
 ffffffff81000002:	c3                   	ret
 EOF
-    printf 'vmlinux:startup_32 1\n' > "$d/tagged.txt"
+    printf 'vmlinux:startup_32+0x0\n' > "$d/tagged.txt"
     if ! scan_sites "$(sites "$d/kernel.dis" vmlinux)" "$d/tagged.txt" >/dev/null 2>&1; then
         echo "FAIL: self-test — the tagged clean fixture must pass" >&2
         exit 1
@@ -390,7 +413,7 @@ EOF
             raw_selftest="raw-byte-scan, "
         fi
     fi
-    echo "ok: scan self-test (planted-new, planted-prefixed, planted-inside-allowlisted, stale-entry, bare-entry, artifact-qualification, ${raw_selftest:-}fixtures all caught)"
+    echo "ok: scan self-test (planted-new, planted-prefixed, planted-inside-allowlisted, removed+added-pair, stale-entry, bare-entry, artifact-qualification, ${raw_selftest:-}fixtures all caught)"
 }
 
 self_test
@@ -435,4 +458,4 @@ if ! raw_byte_scan; then
 fi
 
 N=$(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' "$ALLOWLIST" | wc -l | tr -d ' ')
-echo "ok: counter-opcode scan — kernel proper: every rdtsc/rdtscp site matches one of the $N reviewed allowlist entries (function + count); setup + decompressor: raw executable-byte scan clean (${#RAW_ARTIFACTS[@]} artifacts, decode-independent)"
+echo "ok: counter-opcode scan — kernel proper: every rdtsc/rdtscp site matches one of the $N reviewed per-site allowlist entries (symbol+offset); setup + decompressor: raw executable-byte scan clean (${#RAW_ARTIFACTS[@]} artifacts, decode-independent)"

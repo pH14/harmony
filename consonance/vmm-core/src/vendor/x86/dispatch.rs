@@ -127,13 +127,18 @@ impl<B: Backend<A = X86>> Vmm<B> {
             self.report_stream.push(value);
             return Ok(Step::Continued);
         }
-        // Task 73: the hypercall doorbell. Serviced only when a channel is
-        // wired (SDK / Net, or the task-110 pvclock offer); otherwise it falls
-        // through to the default-deny below (so no channel-less path is
-        // affected). One `OUT` = one atomic exchange.
-        if port == DOORBELL_PORT
-            && (self.sdk.is_some() || self.net.is_some() || self.pvclock_offered())
-        {
+        // Task 73: the hypercall doorbell. The port is a **modeled** device, so a
+        // write to it is always serviced — reaching the default-deny doorbell
+        // DISPATCHER, which answers `UnknownService` for a service this
+        // composition does not offer (cross-model r10 P1). A clock-aware guest
+        // probing service 7 on a VM with no channels must get that clean
+        // `UnknownService` (the protocol's own promise, hypercall-proto §1), not a
+        // fatal "unmodeled port" ContractViolation. This is byte-for-byte
+        // unchanged for every non-cooperating path (M1/M2/corpus/stock never write
+        // this port), and the per-service availability gates inside the dispatcher
+        // still keep an unoffered service from fabricating a success or an
+        // `SdkStop` (the PR-68 lesson). One `OUT` = one atomic exchange.
+        if port == DOORBELL_PORT {
             require_dword_io("OUT", DOORBELL_PORT, size)?;
             return self.service_doorbell(value);
         }

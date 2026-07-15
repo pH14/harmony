@@ -4440,15 +4440,48 @@ mod tests {
         assert_eq!(ring(&mut v, setup_id, &[]), (Status::Ok as u16, false, 1));
     }
 
-    /// A doorbell `OUT` on a Vmm with **no** SDK channel wired stays the
-    /// default-deny contract violation (every non-SDK path is unchanged).
+    /// A doorbell `OUT` on a Vmm with **no** channels reaches the default-deny
+    /// dispatcher and answers `UnknownService` — the protocol's own promise — NOT
+    /// a fatal `ContractViolation` (cross-model r10 P1). A clock-aware guest may
+    /// probe service 7 (pvclock) on a VM that never offered it, and must be able
+    /// to fall back to its trap-backstopped time instead of being killed.
     #[test]
-    fn doorbell_without_sdk_is_a_contract_violation() {
+    fn doorbell_probe_on_a_channel_less_vm_answers_unknown_service() {
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        assert!(matches!(
-            vmm.dispatch_out(DOORBELL_PORT, 4, 24),
-            Err(VmmError::ContractViolation(_))
-        ));
+        // Stage the exact probe: a service-7 (pvclock) op-1 register request.
+        let mut buf = [0u8; HC_PAGE];
+        let n = hypercall_proto::encode_request(
+            ServiceId::Pvclock,
+            1,
+            5,
+            &0x4000u64.to_le_bytes(),
+            &mut buf,
+        )
+        .unwrap();
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
+        // The doorbell port is modeled — the write is serviced (not fatal).
+        let step = vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
+        assert_eq!(step, Step::Continued);
+        // The composition offers no pvclock, so the dispatcher answers a clean
+        // `UnknownService` frame echoing the probed service/opcode/seq.
+        let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+        let (hdr, pl) = decode(&page).expect("a response frame is written, not a silent drop");
+        assert_eq!(
+            hdr.status,
+            Status::UnknownService as u16,
+            "clean UnknownService"
+        );
+        assert_eq!(
+            hdr.service,
+            ServiceId::Pvclock as u16,
+            "echoes the probed service id"
+        );
+        assert_eq!(
+            (hdr.opcode, hdr.seq),
+            (1, 5),
+            "echoes the request opcode + seq"
+        );
+        assert!(pl.is_empty(), "an error frame carries no payload");
     }
 
     /// An unrecognized doorbell **service** id is answered with a clean
