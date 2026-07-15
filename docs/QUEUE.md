@@ -64,11 +64,15 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   cadence ruling moot if the loop reaches zero): **rounds 1–23 fixed** through head
   `48309f2` (2026-07-15 ~07:54; recent species: writable-ID-surface enumeration, AA-3
   case/target coverage binding, CASP-is-LSE, truth-table schema validation; the
-  Miri-payload item stays adjudicated-settled). **r24 dispatched 2026-07-15 ~15:35**
-  (rounds 1–23 foreman-verified; 6 live P1 + 1 P2 — kernel-pin artifact binding and the
-  migration-probe grading contradiction are the load-bearing two; the Miri-payload
-  re-flag stays settled). **Cadence trajectory 6→4→7 findings is NOT converging** —
-  re-flagged to Paul on the PR; the r12 pre-silicon-bar recommendation stands.
+  Miri-payload item stays adjudicated-settled). r24 fixed same hour; **r25 found the
+  migration-probe fix incomplete on its own root cause (foreman-confirmed) — the formal
+  escalation trigger is MET** (root-cause recurrence + 6→4→7→6 non-convergence).
+  **Surgical final round dispatched ~16:55** (3 decision-invariant P1s: no-delivery
+  migration recording, probe-loss exit-reason handling, ELF checked_add); the 3
+  evidence-refinement P2s filed as **arrival-day validation items `hm-f99`** (← Altra
+  arrival `hm-7pb`). **On its green landing the PR parks merge-ready for Paul** under
+  the recommended pre-silicon bar; loop-to-zero alternative dispatches `hm-f99` as r26
+  instead. Escalated by push + PR comment 2026-07-15.
 
 Landed since the midday refresh: **conductor full-suite Miri restoration MERGED**
 (tasks/104, PR #105 — 12× cut to ~11.5 min, foreman-confirmed, triple vacuity guard;
