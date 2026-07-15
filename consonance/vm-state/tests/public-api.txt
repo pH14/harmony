@@ -99,6 +99,13 @@ impl vm_state::VmState
 pub fn vm_state::VmState::decode(&[u8]) -> core::result::Result<vm_state::VmState, vm_state::VmStateError>
 pub fn vm_state::VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
 pub fn vm_state::VmState::peek_version(&[u8]) -> core::result::Result<u16, vm_state::VmStateError>
+impl vm_state::SnapshotRecords for vm_state::VmState
+pub const vm_state::VmState::ARCH_TAG: u16
+pub fn vm_state::VmState::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
+pub fn vm_state::VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+pub fn vm_state::VmState::entropy_bytes(&self) -> &[u8]
+pub fn vm_state::VmState::timers(&self) -> &vm_state::TimerQueueState
+pub fn vm_state::VmState::vtime(&self) -> &vm_state::VtimeState
 pub struct vm_state::VtimeState
 pub vm_state::VtimeState::guest_base: u64
 pub vm_state::VtimeState::guest_hz: u64
@@ -108,6 +115,21 @@ pub vm_state::VtimeState::snapshot_vns: u64
 pub struct vm_state::Xcrs
 pub vm_state::Xcrs::xcr0: u64
 pub struct vm_state::XsaveImage(pub alloc::vec::Vec<u8>)
+pub const vm_state::ARCH_AARCH64: u16
 pub const vm_state::ARCH_X86_64: u16
 pub const vm_state::VM_STATE_MAGIC: u32
 pub const vm_state::VM_STATE_VERSION: u16
+pub trait vm_state::SnapshotRecords: core::marker::Sized
+pub const vm_state::SnapshotRecords::ARCH_TAG: u16
+pub fn vm_state::SnapshotRecords::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
+pub fn vm_state::SnapshotRecords::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+pub fn vm_state::SnapshotRecords::entropy_bytes(&self) -> &[u8]
+pub fn vm_state::SnapshotRecords::timers(&self) -> &vm_state::TimerQueueState
+pub fn vm_state::SnapshotRecords::vtime(&self) -> &vm_state::VtimeState
+impl vm_state::SnapshotRecords for vm_state::VmState
+pub const vm_state::VmState::ARCH_TAG: u16
+pub fn vm_state::VmState::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
+pub fn vm_state::VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+pub fn vm_state::VmState::entropy_bytes(&self) -> &[u8]
+pub fn vm_state::VmState::timers(&self) -> &vm_state::TimerQueueState
+pub fn vm_state::VmState::vtime(&self) -> &vm_state::VtimeState

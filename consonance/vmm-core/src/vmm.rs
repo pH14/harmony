@@ -15,6 +15,7 @@ use hypercall_proto::{
     encode_response,
 };
 use sha2::{Digest, Sha256};
+use vm_state::SnapshotRecords;
 use vmm_backend::{Arch, ArchCaps, Backend, CommonExit, Exit, Moment};
 use vtime::{IdlePlanner, VClock, VClockConfig};
 
@@ -1392,7 +1393,7 @@ where
     /// [`crate::snapshot::unrepresentable_state`]); [`VmmError::Backend`] if reading the
     /// live vCPU state fails (a snapshot **fails closed** rather than sealing a zeroed or
     /// lossy vCPU).
-    pub fn save_vm_state(&self) -> Result<vm_state::VmState, VmmError> {
+    pub fn save_vm_state(&self) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
         // The boundary gate is the shared `can_snapshot()` predicate (so the SDK
         // snapshot-point surface can never advertise a point this rejects); when
         // it fails, report WHICH precondition failed for a precise diagnostic.
@@ -1483,7 +1484,7 @@ where
     /// a V-time wiring/rate mismatch, or a rejected entropy blob;
     /// [`VmmError::Backend`]/[`VmmError::Vtime`]/[`VmmError::Work`] from the
     /// backend/clock/counter.
-    pub fn restore_vm_state(&mut self, s: &vm_state::VmState) -> Result<(), VmmError> {
+    pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
         // 0. Refuse if **any** backend completion is staged (not just RNG). A
         //    read-style / MSR / CPUID / determinism exit this VM serviced leaves a
         //    pending reg-write/RIP-advance in the backend's `kvm_run`; `Backend::restore`
@@ -1499,12 +1500,15 @@ where
                     .to_string(),
             ));
         }
-        // 1. Validate, committing nothing.
+        // 1. Validate, committing nothing. The engine reads only the arch-neutral
+        //    blocks of the snapshot — the V-time clock, the timer queue, and the
+        //    entropy bytes — through the `SnapshotRecords` accessors; the vendor
+        //    record set stays the vendor's own (`validate_restore` below).
         // 1a-bis. A non-empty timer queue cannot be applied: the engine has no
         //     `vtime::TimerQueue` (the only timer is the vendor fabric's, carried in
         //     the device blob), so a non-default `timers` section would be silently
         //     dropped. Fail closed (a well-formed vmm-core blob always seals it empty).
-        if s.timers != vm_state::TimerQueueState::default() {
+        if *s.timers() != vm_state::TimerQueueState::default() {
             return Err(VmmError::ContractViolation(
                 "restore_vm_state: snapshot carries a non-empty timer queue, but vmm-core has no \
                  TimerQueue to apply it — restoring would silently drop it. (A vmm-core snapshot \
@@ -1520,12 +1524,13 @@ where
         //     V-time commit, and the prepared devices.
         let (vcpu, clock_offset, prep) = <B::A as Vendor>::validate_restore(self, s)?;
         // 1c. V-time: validate the rate matches and pre-build the clock + entropy.
+        let svt = s.vtime();
         let vtime_commit = match self.vtime.as_ref() {
             Some(vt) => {
-                if s.vtime.ratio_num != vt.cfg.ratio_num
-                    || s.vtime.ratio_den != 1
-                    || s.vtime.guest_hz != vt.cfg.guest_hz
-                    || s.vtime.guest_base != vt.cfg.guest_base
+                if svt.ratio_num != vt.cfg.ratio_num
+                    || svt.ratio_den != 1
+                    || svt.guest_hz != vt.cfg.guest_hz
+                    || svt.guest_base != vt.cfg.guest_base
                 {
                     return Err(VmmError::ContractViolation(
                         "restore_vm_state: V-time clock-rate mismatch (the snapshot's ratio/guest_hz/\
@@ -1534,10 +1539,10 @@ where
                     ));
                 }
                 let mut cfg = vt.cfg;
-                cfg.vns_base = s.vtime.snapshot_vns;
+                cfg.vns_base = svt.snapshot_vns;
                 let clock = VClock::new(cfg)?;
                 let mut entropy = vt.entropy.clone();
-                entropy.restore_state(&s.hypercall).map_err(|e| {
+                entropy.restore_state(s.entropy_bytes()).map_err(|e| {
                     VmmError::ContractViolation(format!(
                         "entropy snapshot rejected on restore: {e:?}"
                     ))
@@ -1547,7 +1552,7 @@ where
             None => {
                 // Unwired VM: the snapshot must not carry a live V-time block (a
                 // non-zero clock rate means it was taken on a V-time-wired VM).
-                if s.vtime.guest_hz != 0 || s.vtime.snapshot_vns != 0 {
+                if svt.guest_hz != 0 || svt.snapshot_vns != 0 {
                     return Err(VmmError::ContractViolation(
                         "restore_vm_state: snapshot carries a V-time block but this VM has no V-time \
                          wired — restore into a VM composed like the snapshot source."
@@ -1626,7 +1631,7 @@ where
     pub fn restore_snapshot(
         &mut self,
         memory: &[u8],
-        vm_state: &vm_state::VmState,
+        vm_state: &<B::A as Vendor>::Snapshot,
     ) -> Result<(), VmmError> {
         // All-or-nothing: pre-check the image length so a wrong-sized image is
         // rejected before either half mutates. Then restore the vm_state (itself

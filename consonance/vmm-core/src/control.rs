@@ -110,6 +110,7 @@ use control_proto::{
 };
 use environment::{EnvError, EnvSpec, FaultPolicy};
 use snapshot_store::SnapshotId;
+use vm_state::SnapshotRecords;
 use vmm_backend::Backend;
 
 use crate::vendor::{InterruptReject, Vendor};
@@ -1066,7 +1067,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let Ok(mapping) = self.engine.materialize(store_id) else {
             return Ok(Err(ControlError::RestoreFailed));
         };
-        let Ok(vm_state) = self.engine.vm_state(store_id) else {
+        let Ok(vm_state) = self.engine.vm_state::<<B::A as Vendor>::Snapshot>(store_id) else {
             return Ok(Err(ControlError::RestoreFailed));
         };
         // 1b. **Validate the branch env's host schedule BEFORE any swap (PR #51
@@ -1079,7 +1080,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         //     `Moment` — ruling B), reply the recoverable `ControlError` with the old
         //     VM untouched. (The `RestoreFailed` path below still mutates — a genuine
         //     restore failure cannot be pre-validated — and is documented there.)
-        let restored_floor = vm_state.vtime.snapshot_vns;
+        // (`vtime()` is the arch-neutral `SnapshotRecords` accessor — the one
+        // engine read of the decoded snapshot; the record set stays opaque.)
+        let restored_floor = vm_state.vtime().snapshot_vns;
         let mut seen: std::collections::BTreeSet<environment::Moment> =
             std::collections::BTreeSet::new();
         for (m, fault) in &host {
