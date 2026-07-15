@@ -66,28 +66,34 @@ The counted-event distance Phase 2 must cover is at most `skid_margin`, so at mo
 **consecutive no-progress steps** (a guest retiring no counted event). We bound exactly
 that:
 
-- **`vtime`**: new `PlannerConfig.max_stall_steps` — the max consecutive single-steps
-  with no work progress before failing closed. `stop_at`'s Phase 2 tracks a `stall`
+- **`vtime`**: the budget lives on **`InjectionPlanner`**, not `PlannerConfig` — the
+  frozen tasks/05 `PlannerConfig { pub skid_margin: u64 }` contract stays byte-for-byte, so
+  bare `PlannerConfig { skid_margin: N }` still compiles (source-compatible). `new` bakes
+  in `DEFAULT_MAX_STALL_STEPS = 1 << 24` (the backstop is **on by default** — never a
+  silent hang for any planner user); a consuming builder `with_max_stall_steps(n)` overrides
+  it (tiny values in tests, `u64::MAX` to disable). `stop_at`'s Phase 2 tracks a `stall`
   counter that **resets on every step that advances work** and trips only when it exceeds
   the budget, returning the new `VtimeError::StepBudgetExceeded { target, last_work,
   stall_steps }`. Because it resets on progress, it never trips on a merely *sparse* (but
   progressing) stream — only on a genuine stall. The loop is now **provably terminating**
   (total steps ≤ `skid_margin · (max_stall_steps + 1)`).
 - **`vmm-backend`**: `drive_run_until` maps `StepBudgetExceeded` to a loud, self-
-  describing `BackendError::Internal` (alongside the existing `SkidExceeded` arm). The
-  production budget is `run_until::STALL_STEP_BUDGET = 1 << 24` (~16.7M): far above the
-  longest branch-free run any certified workload (the insn gates, Postgres) shows between
-  two counted events near a deadline — so it never fires in normal operation (a
-  compile-time `const _` asserts `SKID_MARGIN < STALL_STEP_BUDGET < u64::MAX`) — yet
-  finite, so a real wedge fails loud in bounded time (~seconds of single-stepping)
-  instead of hanging forever. `Vmm::step`'s `?` then propagates it out of the run loop:
-  the hang becomes a returned error.
+  describing `BackendError::Internal` (alongside the existing `SkidExceeded` arm). The box
+  `KvmBackend::run_until` constructs the planner with bare `new`, so it inherits the
+  default backstop. `Vmm::step`'s `?` then propagates it out of the run loop: the hang
+  becomes a returned error.
+- **The default value (`1 << 24`, ~16.7M).** Far above the longest branch-free run any
+  certified workload (the insn gates, Postgres) shows between two counted events near a
+  deadline — so it never fires in normal operation — yet finite, so a real wedge fails
+  loud in bounded time (~seconds of single-stepping) instead of hanging forever.
 
 **Behaviour-preserving on the reaching path.** For any backend that reaches the target,
 `current`/`stopped_at`/`single_steps_used` and the returned `Exit` are byte-identical to
-before (the `stall` bookkeeping only adds a monotonic guard). Existing planner/`run_until`
-tests set `max_stall_steps: u64::MAX` (backstop disabled) so their outcomes are unchanged;
-only the box `KvmBackend` and the new tests use a finite budget.
+before (the `stall` bookkeeping only adds a monotonic guard). Every existing planner/
+`run_until` test keeps its **bare** construction and now runs with the default backstop;
+none can trip it (they drive `SimCpu`/`ScriptedCpu`, which always progress), so their
+outcomes are unchanged. Only the new tests set a finite budget (via the builder) to
+exercise the guard.
 
 ## Regression tests (portable, mock-driven — the SIGSTOP-cycle repro surface)
 
@@ -118,15 +124,15 @@ freeze, retires no further counted event (a lost work-clock completion).
 - **The QEMU L1 wedge is not our code.** In the spike, the *outer* L1 VMM is QEMU; the
   spike harness (`harness/run-n3-pause.sh`) already parameterizes + records the cadence
   and counts only confirmed pauses (PR #98 recert). No spike-harness change is warranted.
-- **Residual (box-only, out of scope): the Phase-1 blocked-`KVM_RUN` variant.** If the
-  *overflow itself* is lost, `run_until_overflow` (a single blocking `ioctl(KVM_RUN)` in
-  `consonance/vmm-backend/src/kvm_sys.rs`, `#[cfg(target_os = "linux")]`) never returns —
-  a blocked syscall, not a pure-logic loop. A step budget cannot interrupt a blocked
-  ioctl; that needs an ioctl-level watchdog / `KVM_RUN` timeout, which is box-bound and
-  cannot be portably reproduced or tested. The FINDING is genuinely ambiguous between the
-  two ("PMI **or** MTF completion"); this change closes the pure-logic (single-step) half
-  loudly and names the ioctl half explicitly. **Suggested follow-up:** a `KVM_RUN`
-  suspension watchdog on the box backend (file as a P3 if pursued).
+- **The "blocked-`KVM_RUN`" residual was REFUTED (r1).** I initially flagged a second,
+  box-only variant — a lost *overflow* leaving `run_until_overflow` blocked in
+  `ioctl(KVM_RUN)` forever. The spike's own diagnostics refute it: the wedged thread is
+  `72.7% Rl` — **running** (R), burning CPU — not `S`/`D` blocked in an uninterruptible
+  ioctl wait. A blocked-on-a-lost-event ioctl would sit idle in `S`. So the wedge is a
+  **spin/livelock**, which is exactly the single-step-walk case this change fixes (the
+  vCPU is actively issuing single-step `KVM_RUN`s, or the guest is busy-spinning and the
+  walk is stuck at a fixed work count). There is no separate blocked-ioctl hang to guard.
+  Any remaining box-only nuance is tracked in a residual bead; **no action here.**
 
 ## Deviations considered and rejected
 
@@ -136,23 +142,29 @@ freeze, retires no further counted event (a lost work-clock completion).
 - **Bounding total steps rather than consecutive no-progress steps.** Rejected: a total
   bound risks false-positiving a legitimately sparse-but-progressing stream. Resetting on
   every counted event bounds only a genuine stall, never sparsity.
-- **A module `const` instead of a `PlannerConfig` field.** Rejected: a config field keeps
-  the backstop first-class/tunable and lets the regression tests trip it with a tiny
-  budget (a handful of steps) instead of looping ~16.7M times — fast, deterministic tests.
+- **A required `PlannerConfig` field (r1 revision).** My first cut added
+  `PlannerConfig.max_stall_steps`, which broke bare `PlannerConfig { skid_margin: N }`
+  construction — the frozen tasks/05 contract must keep compiling. Rejected in favour of
+  putting the budget on `InjectionPlanner` (default in `new` + `with_max_stall_steps`
+  builder): `PlannerConfig` is untouched (source-compatible), and the public-API snapshot
+  records the change as an **addition** (a new method + a new error variant), not a break.
 - **Delivering the imprecise stop instead of erroring.** Rejected: it would inject at a
   non-exact work count — a determinism violation. Fail-closed is the contract.
 
 ## Known limitations / integrator notes
 
-- `PlannerConfig` gains a **required** field (`max_stall_steps`); all in-tree
-  constructors (both crates, all in this surface) are updated. `vtime`'s frozen public-
-  API snapshot (`consonance/vtime/tests/public-api.txt`) is updated for the new field and
-  the new `StepBudgetExceeded` variant.
-- The production budget (`STALL_STEP_BUDGET = 1 << 24`) is a **liveness backstop, not a
-  perf knob**: it is not meant to fire in normal operation. If a future workload
-  legitimately single-steps through a >16.7M-instruction branch-free region at a deadline
-  (it would already be pathologically slow, and none of the certified workloads do), it
-  should be raised — the value is documented at its definition with that reasoning.
+- **`PlannerConfig` is unchanged** — the frozen tasks/05 contract
+  (`{ pub skid_margin: u64 }`) and `InjectionPlanner::new(cfg)` both keep their exact
+  signatures; bare construction still compiles (proved by the whole workspace building
+  against reverted-to-bare call sites). `vtime`'s public-API snapshot
+  (`consonance/vtime/tests/public-api.txt`) records two **additions**:
+  `InjectionPlanner::with_max_stall_steps` and `VtimeError::StepBudgetExceeded`.
+- The default backstop (`DEFAULT_MAX_STALL_STEPS = 1 << 24`, private in `vtime`) is a
+  **liveness backstop, not a perf knob**: it is not meant to fire in normal operation. If
+  a future workload legitimately single-steps through a >16.7M-instruction branch-free
+  region at a deadline (it would already be pathologically slow, and none of the certified
+  workloads do), pass a larger value via `with_max_stall_steps`. The reasoning is
+  documented at the const's definition.
 - No `unsafe` touched, so Miri was not required by the task gate; the new `run_until`
   test is Miri-compatible (pure logic) and runs under the existing `cases()`-gated suite.
 

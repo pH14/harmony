@@ -48,37 +48,6 @@ use vtime::{CpuBackend, InjectionPlanner, PlanOutcome, VtimeError};
 /// margin → a genuine determinism violation, surfaced loudly.
 pub(crate) const SKID_MARGIN: u64 = 256;
 
-/// The **liveness backstop** for the single-step walk: the max consecutive
-/// single-steps [`vtime::InjectionPlanner::stop_at`] may take with no
-/// counted-event progress before it fails closed
-/// ([`vtime::VtimeError::StepBudgetExceeded`]) rather than stepping forever.
-///
-/// Phase 2 single-steps to the exact deadline; a guest that retires no further
-/// counted event never reaches it and the loop is otherwise unbounded — a
-/// **silent hang**. That is the nested-x86 N-3 SIGSTOP-cycling wedge (bead
-/// `hm-440`): under a host process suspend/resume a work-clock completion (a
-/// vPMU overflow PMI or an MTF single-step trap) is lost, the guest makes no
-/// counted-event progress, and `run_until` wedges. This bound turns that hang
-/// into a loud, typed error.
-///
-/// It is a backstop, **not** a determinism input on the reaching path: the
-/// stall counter resets on every step that advances work, so it only ever
-/// trips on a genuine stall, never on a merely sparse (but progressing) stream.
-/// `1 << 24` (~16.7M instructions) sits far above the longest branch-free run
-/// any certified workload (the insn gates, Postgres) exhibits between two
-/// counted events near a deadline — so it never fires in normal operation —
-/// while staying finite, so a real wedge fails loud in bounded time (~seconds
-/// of single-stepping) instead of hanging indefinitely.
-pub(crate) const STALL_STEP_BUDGET: u64 = 1 << 24;
-
-// The backstop must sit above the single-step walk's counted-event span
-// (`skid_margin ≤ SKID_MARGIN`, so it never trips while making progress toward
-// a deadline) yet stay finite (so a real wedge fails loud in bounded time
-// rather than hanging). A compile-time check — it also keeps both consts
-// referenced on non-Linux builds, where the `KvmBackend` consumer is
-// `#[cfg(target_os = "linux")]`-gated out.
-const _: () = assert!(STALL_STEP_BUDGET > SKID_MARGIN && STALL_STEP_BUDGET < u64::MAX);
-
 /// A [`vtime::CpuBackend`] that can also surface a **genuine guest exit** taken
 /// before the deadline (and recover the typed backend error the opaque
 /// [`VtimeError::Backend`] cannot carry across the pure planner).
@@ -907,13 +876,12 @@ mod tests {
     }
 
     fn planner() -> InjectionPlanner {
+        // The default backstop (`vtime::DEFAULT_MAX_STALL_STEPS`) can never trip
+        // here: these tests drive a `SimCpu`, which always makes progress. The
+        // backstop itself is covered by `stalled_guest_fails_closed_not_hung`
+        // and by vtime's planner unit tests.
         InjectionPlanner::new(PlannerConfig {
             skid_margin: SKID_MARGIN,
-            // These tests drive a `SimCpu`, which always makes progress, so the
-            // stall backstop can never trip; disable it to keep the existing
-            // outcomes exact. The backstop itself is covered by the dedicated
-            // stall tests below and by vtime's planner unit tests.
-            max_stall_steps: u64::MAX,
         })
     }
 
@@ -1152,8 +1120,8 @@ mod tests {
         let budget = 64;
         let planner = InjectionPlanner::new(PlannerConfig {
             skid_margin: SKID_MARGIN,
-            max_stall_steps: budget,
-        });
+        })
+        .with_max_stall_steps(budget);
         let deadline = 10_000;
         let mut cpu = StalledCpu {
             work: 0,

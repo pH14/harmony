@@ -66,8 +66,8 @@ pub struct vtime::InjectionPlanner
 impl vtime::InjectionPlanner
 pub fn vtime::InjectionPlanner::new(vtime::PlannerConfig) -> Self
 pub fn vtime::InjectionPlanner::stop_at(&self, &mut dyn vtime::CpuBackend, u64) -> core::result::Result<vtime::PlanOutcome, vtime::VtimeError>
+pub fn vtime::InjectionPlanner::with_max_stall_steps(self, u64) -> Self
 pub struct vtime::PlannerConfig
-pub vtime::PlannerConfig::max_stall_steps: u64
 pub vtime::PlannerConfig::skid_margin: u64
 pub struct vtime::TimerQueue
 impl vtime::TimerQueue
