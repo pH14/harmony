@@ -348,6 +348,21 @@ fn g0_smoke_boot_registers_and_reads_sane_time() {
         "the guest never registered the clock page — check the guest 'harmony_pvclock:' log \
          lines above (doorbell/ABI mismatch?)"
     );
+    // r13 P2: registration is NOT selection. If the page registers and stamps but
+    // Linux keeps timekeeping on the TSC, every other G0/G3/perf assertion can
+    // still pass (they read the page directly or only report a ratio) while the
+    // guest never actually uses the clock — the RDTSC exits the perf lever counts
+    // on never leave the hot path. Require the kernel's clocksource-SWITCH line, so
+    // a TSC-still-active guest fails the smoke gate loudly.
+    assert!(
+        find(
+            serial.as_bytes(),
+            b"Switched to clocksource harmony-pvclock"
+        ),
+        "the guest registered the page but never SELECTED harmony-pvclock as its \
+         active clocksource — it is still on the TSC (registered-but-unused). Check \
+         the guest 'clocksource' log lines above."
+    );
     // The page tracks the oracle at the terminal boundary.
     vmm.pvclock_check_oracle()
         .expect("G2 oracle equality at the smoke terminal");

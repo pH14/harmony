@@ -360,6 +360,47 @@ window). Fix: both paths now route through one `gpa_fits(gpa, ram_len)` helper �
 `BadState` on failure (before any commit — no partial restore). Test:
 `pvclock_registrar_restore_revalidates_the_gpa`.
 
+**Review round 13 folded in** (cross-model r13: 2 P1 + 1 P2, all fallout of the
+r12 restore fix; portable-only — no kernel rebuild). (a) **The re-stamp uses the
+epoch-advancing REFRESH, not canonical `seq = 0` (P1).** r12 re-stamped the
+armed page with `StampKind::Canonical`, which resets `seq` to 0 — and the page
+is **live**. A guest reader that sampled `seq = 0`, then took a V-time exit
+mid-read (e.g. an interrupt during its two `seq` loads) and resumed *after* the
+restore, would find `seq = 0` again and accept its pre-restore `vns` instead of
+retrying: the exact ABA the seal ruling (r4) forbids and the `stamp_canonical`
+module doc calls out as "snapshot copies only." Fixed to `StampKind::Refresh`,
+which republishes the restored value **and advances the epoch on the distinct
+value**, so a straddling reader sees the change and retries. This also corrects
+the r12 note above: the re-stamp is *not* canonical seq-0, and the "byte-
+identical across two VMs" property r12 claimed was wrong — that determinism story
+belongs to `restore_vm_state` (verbatim page bytes ride the RAM image; a sibling
+fork inherits the parent's exact epoch), never to the live-page V-time-only path.
+The test now asserts the epoch **advances** (ABA-safety) rather than resets.
+(b) **A pending registration is unsealable (P1).** `restore_vtime` can leave a
+registration pending (`armed == false`) yet mark V-time synchronized, so
+`save_vm_state` could legally seal it — but the v4 device record carries the GPA,
+not the pending-vs-armed bit, and `pvclock_commit_restore` arms every carried
+GPA. A restored child would therefore come up armed (normal refresh, Δ deadline
+live) while the source still owes its canonical handshake stamp: different bytes,
+different future. Chose **reject over serialize** (the reviewer offered both): a
+pending seal now fails closed alongside `check_sealable_vcpu` — no blob-ABI bump,
+consistent with the existing "define out the hard boundary" seal guards (a
+pending registration is never at a synchronized boundary in normal operation; the
+`OUT` is a PIO and the first synchronized point after it is the arming
+handshake). `pvclock_commit_restore`'s "arm every carried GPA" is now provably
+faithful. Tests: `save_vm_state_rejects_a_pending_pvclock_registration`; the
+`branch_into_an_unoffered_composition_fails_loud` control test was snapshotting in
+the pending window and now completes the handshake first (matching the real
+doorbell→RDTSC order). (c) **G0 smoke asserts the clocksource switch (P2).** The
+box G0 gate logged but did not *assert* the `Switched to clocksource
+harmony-pvclock` line, so a guest that registered+stamped the page but kept
+timekeeping on the TSC (page registered-but-unused) would pass every executable
+assertion while the perf lever's RDTSC exits never left the hot path. Now
+asserted — a TSC-still-active guest fails G0 loudly. (The switch line was already
+present in every green box run, IMPLEMENTATION §Box gates line "Switched to
+clocksource harmony-pvclock", so this tightens the gate without needing a new
+box run; box re-confirmation rides the next foreman-granted window.)
+
 ## What landed (by deliverable)
 
 1. **Rename ride-along** — already fully landed by tasks/108 (`guest_hz`/

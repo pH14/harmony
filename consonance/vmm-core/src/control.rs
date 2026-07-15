@@ -6778,8 +6778,12 @@ mod tests {
         let mut ram = vec![0u8; BIG_RAM];
         ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
         live.restore_guest_memory(&ram).unwrap();
-        assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
         live.service_doorbell(n as u32).unwrap();
+        // Complete the registration HANDSHAKE (the guest's post-doorbell RDTSC) so
+        // the page is ARMED before the seal: a pending (un-armed) registration is
+        // unsealable (r13 P1), and this branch test only needs an armed snapshot
+        // carrying a pvclock record to drive the cross-composition validation.
+        assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
 
         // The factory forgets enable_pvclock — a composition mismatch.
         let factory = Box::new(|| {
