@@ -789,6 +789,29 @@ fn execute(args: RunArgs) -> Result<(), String> {
              running — refusing to attest the wrong host kernel"
         ));
     }
+    // BIND the hashed artifact to the RUNNING kernel. The two checks above are independent:
+    // one hashes the file, the other matches the running build-id against an operator-supplied
+    // expectation — nothing links the artifact the pin covers to the kernel that actually
+    // booted (a stale image hashes fine while another kernel runs; the expected build-id is
+    // just another operator value). The file's OWN build-id, extracted from the same bytes we
+    // hashed, is that link: require it to equal the running kernel's. A file with no build-id
+    // note (a stripped /boot/Image) cannot be bound and so cannot carry verified_before_boot.
+    let file_build_id = sys::elf_gnu_build_id(&host_kernel_bytes).ok_or_else(|| {
+        format!(
+            "the host kernel image {} carries no GNU build-id note, so it cannot be bound to the \
+             running kernel — hashing a file that is not provably the booted kernel is not \
+             evidence. Supply the build-id-bearing vmlinux ELF as --host-kernel-image, not a \
+             stripped Image.",
+            args.host_kernel_image.display()
+        )
+    })?;
+    if file_build_id != running_build_id {
+        return Err(format!(
+            "the hashed host kernel image has build-id {file_build_id}, but the RUNNING kernel's \
+             build-id is {running_build_id}: the pinned, hashed artifact is NOT the booted \
+             kernel — refusing to attest verified_before_boot for the wrong image"
+        ));
+    }
     let running_release = sys::running_kernel_release()
         .map_err(|e| format!("read the running kernel release: {e}"))?;
     if running_release != args.environment.host_kernel {

@@ -1347,6 +1347,51 @@ Miri item stays adjudicated-settled. Gates re-run green: harness 102 tests, floo
 three `cargo deny`, the opcode-checked window scan, TCG smoke, kernel-patch format/parse, and
 arm-harness Miri.
 
+## Round-24 review fixes (PR #108, cross-model pass r24)
+
+Six P1 + one P2. (The "Miri-test the unsafe payload crates" re-flag stays
+adjudicated-settled — `global_asm!` aarch64 machine code cannot build under host Miri. Item 6
+below is the DISTINCT arm-harness Machine-seam item, which had no prior disposition and is
+BUILT here.)
+
+- **Bind the running kernel to the preboot image pin** (load-bearing). Hashing `/boot/Image`
+  and matching the running build-id against an operator-supplied value were two independent
+  facts — nothing bound the hashed artifact to the booted kernel. New `sys::elf_gnu_build_id`
+  extracts the GNU build-id from the SAME bytes hashed (an ELF64 `PT_NOTE` scan), and `probe`
+  requires it to equal the running kernel's build-id; a file with no build-id note (a stripped
+  Image) cannot be bound and cannot carry `verified_before_boot`.
+- **Grade migration-probe losses outside pinned acceptance** (load-bearing). An armed record
+  with `deliveries == 0` — the rr #3607 lost-PMI signature the unpinned probe EXISTS to record
+  — failed the unconditional multiplicity check, an internal contradiction with a passing
+  pinned matrix. `check_multiplicity` now takes the run-set: for a `migration_probe` set a lost
+  PMI is the expected signature (PASS, reported), only a DOUBLE delivery fails; pinned sets keep
+  the strict exactly-once rule.
+- **Enumerate the whole ID surface.** The r22 six-register list let a host with those six
+  reducible but `ID_AA64ISAR1_EL1`/`ID_AA64PFR1_EL1` frozen read TRUE. The probe now spans the
+  full `ID_AA64*` set (PFR0/PFR1, ISAR0/1/2, MMFR0/1/2, DFR0/1), and `reduce_and_readback_id_field`
+  is tri-state — a register with reducible fields that are frozen gates (`Some(false)`); one
+  with no reducible feature at all (SVE's ZFR0 on an N1) has nothing to freeze and does not.
+- **Deduplicate cases across contamination conditions.** `distinct_armed_cases` keyed by
+  `rep_key`, which includes `condition`, so four same-seed condition run-sets (which draw
+  IDENTICAL cases) counted as four and satisfied `--min-cases 4`. New `case_key` omits condition
+  — `(payload, scale, seed, target_delta)` — so a case run under four conditions is one case.
+- **Validate the mandatory truth-table ID set, not the row count.** The probe emits a 14th
+  `patch-marker` row, so `rows.len() >= 13` passed with a mandatory row dropped. `schema_violations`
+  now checks each of the thirteen `MANDATORY_ROW_IDS` is present exactly once (missing OR
+  duplicated is a violation).
+- **Miri-exercise the arm-harness Machine seam (item 6, BUILT — no prior disposition).** The
+  volatile `kvm_run` read-modify-write (`complete_mmio_read`) and guest-RAM `from_raw_parts`
+  (`state_digest`) were behind a KVM mapping the interpreter can't build. They are extracted into
+  the portable `sys::write_mmio_read` / `sys::guest_ram` seams and Miri-exercised against
+  allocation-backed buffers (per the PR #99 precedent); the CI Miri comment records it.
+- **Job-unique patch files in quality.yml (P2).** The shared `/tmp/msg`+`/tmp/patch` could race
+  across concurrent jobs; now `mktemp` under `$RUNNER_TEMP` with a cleanup trap.
+
+Gates re-run green: harness 105 tests (104 under Miri, no UB — including the three new
+pointer-path tests), floor-check 65 + 27 + 3, oracle-model 23 + 2, clippy `-D warnings` native +
+aarch64-linux, three `cargo deny`, the opcode-checked window scan, TCG smoke, kernel-patch
+format/parse.
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

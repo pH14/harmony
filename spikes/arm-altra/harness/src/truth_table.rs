@@ -149,6 +149,27 @@ impl RowInput {
     }
 }
 
+/// The thirteen mandatory AA-0 row ids `docs/ARM-ALTRA.md` §AA-0 and the canonical
+/// `truth-table.schema.json` require — INCLUDING the two existential work-clock rows and the
+/// writable-ID surface. The emitted table may carry extra rows (e.g. `patch-marker`), so
+/// acceptance validates these by id rather than by count. Kept in sync with the schema's
+/// per-id `contains` constraints.
+pub const MANDATORY_ROW_IDS: [&str; 13] = [
+    "ecv",
+    "lse",
+    "pmuver",
+    "sve",
+    "nested-virt",
+    "br-retired-pmceid1",
+    "perf-raw-0x21-pinned",
+    "host-overflow-delivers",
+    "dev-kvm",
+    "kvm-mode",
+    "kvm-cap-set-guest-debug",
+    "vgicv3-creatable",
+    "writable-id-registers",
+];
+
 /// The disposition an UNRESOLVED deviation carries — a machine cannot invent a ruling, so a
 /// deviation with no operator ruling is flagged here and gates AA-0 acceptance. A deviation
 /// WITH a ruling (from the `--rulings` input) carries that ruling instead and is acceptable.
@@ -262,12 +283,21 @@ impl TruthTable {
         if self.identity.core_count < 1 {
             v.push("identity.core_count is 0 (schema minimum 1)".to_string());
         }
-        // The thirteen mandatory AA-0 facts (schema `rows.minItems`).
-        if self.rows.len() < 13 {
-            v.push(format!(
-                "rows has {} entries, below the schema minItems of 13 (the mandatory AA-0 facts)",
-                self.rows.len()
-            ));
+        // The schema requires the THIRTEEN mandatory AA-0 facts BY ID, not merely 13+ rows: the
+        // probe emits an extra `patch-marker` row, so `rows.len() >= 13` passes even with a
+        // mandatory row dropped. Check each mandatory id is present exactly once (missing OR
+        // duplicated is a violation) — that is what the schema's per-id `contains` constraints
+        // enforce.
+        for id in MANDATORY_ROW_IDS {
+            match self.rows.iter().filter(|r| r.id == *id).count() {
+                1 => {}
+                0 => v.push(format!(
+                    "mandatory AA-0 row {id:?} is missing (schema requires all thirteen by id)"
+                )),
+                n => v.push(format!(
+                    "mandatory AA-0 row {id:?} appears {n} times (must be present exactly once)"
+                )),
+            }
         }
         const KINDS: [&str; 5] = ["id-register", "pmu", "perf", "kvm", "platform"];
         for (i, r) in self.rows.iter().enumerate() {
@@ -380,13 +410,26 @@ mod tests {
         t.topology.governor = "   ".into();
         assert!(has(&t, "topology.governor"));
 
-        // core_count 0, and fewer than the 13 mandatory rows.
+        // core_count 0.
         let mut t = conforming_table();
         t.identity.core_count = 0;
         assert!(has(&t, "core_count"));
+
+        // A dropped mandatory row is a violation — BY ID, not by count. The load-bearing case:
+        // drop one mandatory row but add an unrelated extra, so the count still reaches 13 (the
+        // probe emits a 14th `patch-marker` row in practice). A count check would miss this.
         let mut t = conforming_table();
-        t.rows.truncate(12);
-        assert!(has(&t, "minItems"));
+        t.rows[3].id = "patch-marker".into(); // was "sve" — now a mandatory id is gone
+        assert_eq!(t.rows.len(), 13);
+        assert!(
+            has(&t, "sve") && has(&t, "missing"),
+            "a mandatory row replaced by an extra one, with the count intact, must be caught"
+        );
+
+        // A DUPLICATED mandatory id is also a violation.
+        let mut t = conforming_table();
+        t.rows[1].id = "ecv".into(); // "lse" -> a second "ecv"
+        assert!(has(&t, "appears 2 times") && has(&t, "lse"));
 
         // A blank disposition string (must be null on a confirmed row), and a bad `kind`.
         let mut t = conforming_table();

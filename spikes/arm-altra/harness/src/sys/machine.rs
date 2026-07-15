@@ -998,18 +998,11 @@ impl Vcpu for Machine {
     /// The bounded copy is `super::stage_mmio_read` — portable and Miri-tested; this
     /// wrapper only supplies the mapped struct and writes it back volatilely.
     fn complete_mmio_read(&mut self, data: &[u8]) -> Result<(), RunError> {
-        // SAFETY: `self.run` is a live MAP_SHARED mapping of at least
-        // size_of::<KvmRun>() bytes; snapshot it, stage the read into the snapshot via
-        // the portable seam, and write the mmio.data bytes back. Volatile: the kernel
-        // reads them on re-entry.
-        unsafe {
-            let mut snapshot = core::ptr::read_volatile(self.run);
-            super::stage_mmio_read(&mut snapshot, data);
-            let dst = (&raw mut (*self.run).mmio.data).cast::<u8>();
-            for (i, b) in snapshot.mmio.data.iter().enumerate() {
-                core::ptr::write_volatile(dst.add(i), *b);
-            }
-        }
+        // The volatile read-modify-write is the portable, Miri-exercised `super::write_mmio_read`
+        // — this wrapper only supplies the mapped struct pointer.
+        // SAFETY: `self.run` is a live MAP_SHARED mapping of at least size_of::<KvmRun>() bytes
+        // (checked at construction) and the vCPU is stopped, so nothing else writes it.
+        unsafe { super::write_mmio_read(self.run, data) };
         Ok(())
     }
 
@@ -1041,9 +1034,10 @@ impl Vcpu for Machine {
             .map_err(|e| seam("ioctl(KVM_GET_DEVICE_ATTR, vGIC)", e))?;
 
         // SAFETY: `self.mem` is a live mapping of `self.mem_size` bytes and the vCPU
-        // is not running (we are between exits), so nothing else writes it. The hashing
-        // and the sorted-order discipline are the portable, Miri-tested `digest_state`.
-        let ram = unsafe { core::slice::from_raw_parts(self.mem, self.mem_size) };
+        // is not running (we are between exits), so nothing else writes it. The borrow is the
+        // portable, Miri-exercised `super::guest_ram`; the hashing and sorted-order discipline
+        // are the portable, Miri-tested `digest_state`.
+        let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
         Ok(super::digest_state(&regs, ram, &vgic))
     }
 }
@@ -1742,18 +1736,29 @@ fn probe_writable_id_registers_on_vcpu(
     // `(register, skip_low_nibbles)`: PFR0's low four nibbles are EL0..3 support — lowering EL
     // support breaks the VM — so they are skipped; the other registers' low nibbles are
     // ordinary feature fields.
+    // The full ID_AA64* feature surface AA-6's shrunk-feature model spans — NOT a subset:
+    // enumerating six (r22) let a host with those six reducible but `ID_AA64ISAR1_EL1` /
+    // `ID_AA64PFR1_EL1` frozen still read TRUE, though the whole-surface model cannot install.
+    // A register that carries NO reducible feature on this host (all fields absent/max — SVE's
+    // ZFR0 on an N1, say) has nothing to freeze and does not gate; a register with real fields
+    // that are FROZEN does. That distinction is why the probe is tri-state, not a bare bool.
     let relevant: &[(u64, u32, &str)] = &[
         (kvm::REG_ID_AA64PFR0_EL1, 4, "ID_AA64PFR0_EL1"),
+        (kvm::REG_ID_AA64PFR1_EL1, 0, "ID_AA64PFR1_EL1"),
         (kvm::REG_ID_AA64ISAR0_EL1, 0, "ID_AA64ISAR0_EL1"),
+        (kvm::REG_ID_AA64ISAR1_EL1, 0, "ID_AA64ISAR1_EL1"),
+        (kvm::REG_ID_AA64ISAR2_EL1, 0, "ID_AA64ISAR2_EL1"),
         (kvm::REG_ID_AA64MMFR0_EL1, 0, "ID_AA64MMFR0_EL1"),
         (kvm::REG_ID_AA64MMFR1_EL1, 0, "ID_AA64MMFR1_EL1"),
         (kvm::REG_ID_AA64MMFR2_EL1, 0, "ID_AA64MMFR2_EL1"),
         (kvm::REG_ID_AA64DFR0_EL1, 0, "ID_AA64DFR0_EL1"),
+        (kvm::REG_ID_AA64DFR1_EL1, 0, "ID_AA64DFR1_EL1"),
     ];
     for &(reg, skip, _name) in relevant {
-        if !reduce_and_readback_id_field(vcpu_fd, reg, skip)? {
-            // This register accepts no below-host feature value: the surface AA-6 needs is not
-            // fully writable, so the row is FALSE — a partial surface cannot be enumerated.
+        // `Some(false)` = this register HAS reducible feature fields but none is writable — the
+        // surface AA-6 needs is not fully writable, so the row is FALSE. `Some(true)` (writable)
+        // and `None` (nothing to freeze here) both pass this register.
+        if reduce_and_readback_id_field(vcpu_fd, reg, skip)? == Some(false) {
             return Ok(false);
         }
     }
@@ -1768,12 +1773,16 @@ fn probe_writable_id_registers_on_vcpu(
 /// an identity `SET_ONE_REG` (for migration compatibility) while rejecting any changed
 /// invariant/ID value, so writing the value just read would false-green. Absent (0) or
 /// not-implemented (0xF) fields cannot be cleanly lowered and are skipped.
+/// Returns `Some(true)` if a field was accepted AND observed reduced (the register is
+/// writable), `Some(false)` if the register HAS reducible feature fields but none could be
+/// (frozen or silently clamped), and `None` if the register carries no reducible feature at all
+/// (every field absent (0) or not-implemented (0xF)) — nothing to freeze, so it does not gate.
 #[cfg(target_os = "linux")]
 fn reduce_and_readback_id_field(
     vcpu_fd: libc::c_int,
     reg: u64,
     skip_low_nibbles: u32,
-) -> Result<bool, SysError> {
+) -> Result<Option<bool>, SysError> {
     let mut orig: u64 = 0;
     let get = KvmOneReg {
         id: reg,
@@ -1783,12 +1792,14 @@ fn reduce_and_readback_id_field(
     if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get) } < 0 {
         return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64*)"));
     }
+    let mut had_candidate = false;
     for nibble in skip_low_nibbles..16u32 {
         let shift = nibble * 4;
         let field = (orig >> shift) & 0xF;
         if field == 0 || field == 0xF {
             continue;
         }
+        had_candidate = true;
         let reduced = (orig & !(0xFu64 << shift)) | ((field - 1) << shift);
         let set = KvmOneReg {
             id: reg,
@@ -1818,11 +1829,13 @@ fn reduce_and_readback_id_field(
             return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64* readback)"));
         }
         if readback == reduced {
-            return Ok(true);
+            return Ok(Some(true));
         }
         // Accepted but unchanged: not a real feature write. Try the next field.
     }
-    Ok(false)
+    // No field could be reduced: `Some(false)` if there WERE reducible candidates (frozen),
+    // `None` if the register carries no reducible feature at all (nothing to freeze).
+    Ok(if had_candidate { Some(false) } else { None })
 }
 
 /// The host feature ID registers a guest would see, read from a disposable VM's vCPU — the

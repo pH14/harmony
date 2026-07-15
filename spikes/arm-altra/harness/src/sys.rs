@@ -367,10 +367,18 @@ pub mod kvm {
     /// The feature ID registers AA-0's truth table reads (and `MIDR_EL1` for identity), by
     /// their architected `(op0,op1,crn,crm,op2)`.
     pub const REG_MIDR_EL1: u64 = arm64_sysreg(3, 0, 0, 0, 0);
+    /// `ID_AA64PFR1_EL1` — processor feature register 1 (BT, SSBS, MTE, …).
+    pub const REG_ID_AA64PFR1_EL1: u64 = arm64_sysreg(3, 0, 0, 4, 1);
     /// `ID_AA64DFR0_EL1` — PMUVer lives here.
     pub const REG_ID_AA64DFR0_EL1: u64 = arm64_sysreg(3, 0, 0, 5, 0);
+    /// `ID_AA64DFR1_EL1` — debug feature register 1.
+    pub const REG_ID_AA64DFR1_EL1: u64 = arm64_sysreg(3, 0, 0, 5, 1);
     /// `ID_AA64ISAR0_EL1` — Atomic (LSE) lives here.
     pub const REG_ID_AA64ISAR0_EL1: u64 = arm64_sysreg(3, 0, 0, 6, 0);
+    /// `ID_AA64ISAR1_EL1` — instruction-set attrs 1 (DPB, JSCVT, LRCPC, GPA, …).
+    pub const REG_ID_AA64ISAR1_EL1: u64 = arm64_sysreg(3, 0, 0, 6, 1);
+    /// `ID_AA64ISAR2_EL1` — instruction-set attrs 2.
+    pub const REG_ID_AA64ISAR2_EL1: u64 = arm64_sysreg(3, 0, 0, 6, 2);
     /// `ID_AA64MMFR0_EL1` — ECV lives here.
     pub const REG_ID_AA64MMFR0_EL1: u64 = arm64_sysreg(3, 0, 0, 7, 0);
     /// `ID_AA64MMFR1_EL1` — VH (VHE) lives here (bits[11:8]).
@@ -470,6 +478,91 @@ pub fn decode_kvm_run(run: &KvmRun) -> crate::run::VcpuExit {
 pub fn stage_mmio_read(run: &mut KvmRun, data: &[u8]) {
     let n = data.len().min(run.mmio.data.len());
     run.mmio.data[..n].copy_from_slice(&data[..n]);
+}
+
+/// Volatile read-modify-write of an MMIO-read result into a mapped `kvm_run`, so the next
+/// `KVM_RUN` resumes the guest with it. Split out of `Machine::complete_mmio_read` — which is
+/// Linux-only and whose `self.run` is a real `MAP_SHARED` mapping the interpreter cannot build
+/// — so the raw-pointer path (the `read_volatile` of the mapped struct, the `mmio.data` field
+/// projection and cast, and the byte-wise `write_volatile`) is exercisable under **Miri**
+/// against an allocation-backed `kvm_run` (see `tests::write_mmio_read_stages_over_an_allocation`).
+///
+/// # Safety
+/// `run` must point at a live, writable [`KvmRun`] (a `MAP_SHARED` mapping on the box, or a
+/// boxed one under test) that no other thread writes concurrently while this runs.
+pub unsafe fn write_mmio_read(run: *mut KvmRun, data: &[u8]) {
+    // SAFETY: the caller guarantees `run` is a live writable `KvmRun`. Snapshot it, stage the
+    // read into the snapshot via the bounded portable seam, and write the `mmio.data` bytes
+    // back volatilely — the kernel reads them on re-entry.
+    unsafe {
+        let mut snapshot = core::ptr::read_volatile(run);
+        stage_mmio_read(&mut snapshot, data);
+        let dst = (&raw mut (*run).mmio.data).cast::<u8>();
+        for (i, b) in snapshot.mmio.data.iter().enumerate() {
+            core::ptr::write_volatile(dst.add(i), *b);
+        }
+    }
+}
+
+/// Borrow guest RAM as a byte slice for hashing. Split out of `Machine::state_digest` so the
+/// `from_raw_parts` — its provenance and length reasoning — is Miri-exercisable against an
+/// allocation-backed buffer (see `tests::guest_ram_borrows_the_allocation`).
+///
+/// # Safety
+/// `mem` must point at `len` initialised, readable bytes that no other thread writes while the
+/// borrow is live (on the box the vCPU is stopped between exits).
+#[must_use]
+pub unsafe fn guest_ram<'a>(mem: *const u8, len: usize) -> &'a [u8] {
+    // SAFETY: the caller guarantees `len` readable bytes at `mem`, unwritten for the borrow.
+    unsafe { core::slice::from_raw_parts(mem, len) }
+}
+
+/// Extract the GNU build-id (lowercase hex) from a little-endian ELF64 image's `PT_NOTE`
+/// segments — the build-id of the artifact ON DISK, so the caller can bind the hashed kernel
+/// image to the RUNNING kernel's build-id (`/sys/kernel/notes`). Hashing the file and reading
+/// the running build-id are otherwise independent facts; the file's own build-id is what links
+/// the pinned artifact to the kernel that booted.
+///
+/// `None` if the bytes are not a little-endian ELF64 or carry no build-id note (e.g. a stripped
+/// `/boot/Image`, which is a flat binary with no notes) — the caller treats that as "cannot
+/// bind: supply the vmlinux ELF". Every field access is bounds- and overflow-checked: the input
+/// is an untrusted file.
+#[must_use]
+pub fn elf_gnu_build_id(bytes: &[u8]) -> Option<String> {
+    // ELF magic, ELFCLASS64 (2), ELFDATA2LSB (1).
+    if bytes.get(0..4)? != b"\x7fELF" || *bytes.get(4)? != 2 || *bytes.get(5)? != 1 {
+        return None;
+    }
+    let u16le = |o: usize| -> Option<usize> {
+        Some(u16::from_le_bytes(bytes.get(o..o + 2)?.try_into().ok()?) as usize)
+    };
+    let u32le = |o: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(bytes.get(o..o + 4)?.try_into().ok()?))
+    };
+    let uoff = |o: usize| -> Option<usize> {
+        usize::try_from(u64::from_le_bytes(bytes.get(o..o + 8)?.try_into().ok()?)).ok()
+    };
+    // ELF64 header: e_phoff@32, e_phentsize@54, e_phnum@56.
+    let phoff = uoff(32)?;
+    let phentsize = u16le(54)?;
+    let phnum = u16le(56)?;
+    if phentsize < 56 {
+        return None; // a well-formed ELF64 program header is 56 bytes
+    }
+    for i in 0..phnum {
+        let ph = phoff.checked_add(i.checked_mul(phentsize)?)?;
+        // Program header: p_type@0, p_offset@8, p_filesz@32.
+        if u32le(ph)? != 4 {
+            continue; // not PT_NOTE
+        }
+        let p_offset = uoff(ph + 8)?;
+        let p_filesz = uoff(ph + 32)?;
+        let notes = bytes.get(p_offset..p_offset.checked_add(p_filesz)?)?;
+        if let Some(id) = parse_gnu_build_id(notes) {
+            return Some(id);
+        }
+    }
+    None
 }
 
 /// Hash a landed guest state — every architectural register (in sorted id order),
@@ -1428,6 +1521,75 @@ mod tests {
         let wide = [1u8; 16];
         stage_mmio_read(&mut run, &wide);
         assert_eq!(run.mmio.data, [1; 8]);
+    }
+
+    #[test]
+    fn write_mmio_read_stages_over_an_allocation() {
+        // The Machine seam's volatile read-modify-write, exercised against a HEAP-backed
+        // kvm_run so the raw-pointer path (read_volatile of the mapped struct, the mmio.data
+        // field projection/cast, byte-wise write_volatile) runs under Miri — a real KVM
+        // MAP_SHARED mapping is unavailable to the interpreter.
+        let mut run = Box::new(blank_kvm_run());
+        run.mmio.data = [0xFF; 8]; // preexisting bytes the stage must overwrite
+        let value = [0xDE, 0xAD, 0xBE, 0xEF];
+        // SAFETY: `run` is a live, uniquely-owned boxed KvmRun.
+        unsafe { write_mmio_read(&raw mut *run, &value) };
+        assert_eq!(&run.mmio.data[..4], &value);
+        // A width over 8 is clamped by the bounded seam — no write past the field.
+        // SAFETY: as above.
+        unsafe { write_mmio_read(&raw mut *run, &[7u8; 16]) };
+        assert_eq!(run.mmio.data, [7; 8]);
+    }
+
+    #[test]
+    fn guest_ram_borrows_the_allocation() {
+        // `state_digest`'s from_raw_parts, exercised against a heap buffer under Miri.
+        let buf = vec![1u8, 2, 3, 4, 5];
+        // SAFETY: `buf` owns `len` initialised bytes, unwritten for the borrow's lifetime.
+        let slice = unsafe { guest_ram(buf.as_ptr(), buf.len()) };
+        assert_eq!(slice, &[1, 2, 3, 4, 5]);
+        // Feeds the portable digest seam exactly as the Machine does.
+        let empty: &[u8] = &[];
+        assert_eq!(
+            digest_state(&std::collections::BTreeMap::new(), slice, empty),
+            digest_state(&std::collections::BTreeMap::new(), &buf, empty)
+        );
+    }
+
+    #[test]
+    fn elf_gnu_build_id_reads_the_note_and_rejects_non_elf() {
+        // A minimal little-endian ELF64 whose single PT_NOTE segment carries an NT_GNU_BUILD_ID
+        // note with a two-byte build-id (0xAB, 0xCD).
+        let mut note = Vec::new();
+        note.extend_from_slice(&4u32.to_le_bytes()); // namesz = "GNU\0"
+        note.extend_from_slice(&2u32.to_le_bytes()); // descsz = 2 build-id bytes
+        note.extend_from_slice(&3u32.to_le_bytes()); // NT_GNU_BUILD_ID
+        note.extend_from_slice(b"GNU\0"); // name (already 4-aligned)
+        note.extend_from_slice(&[0xAB, 0xCD]); // desc
+        note.extend_from_slice(&[0, 0]); // 4-align the desc
+
+        let ehsize = 64usize;
+        let phoff = ehsize;
+        let phentsize = 56usize;
+        let note_off = phoff + phentsize;
+
+        let mut elf = vec![0u8; note_off];
+        elf[0..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2; // ELFCLASS64
+        elf[5] = 1; // ELFDATA2LSB
+        elf[32..40].copy_from_slice(&(phoff as u64).to_le_bytes()); // e_phoff
+        elf[54..56].copy_from_slice(&(phentsize as u16).to_le_bytes()); // e_phentsize
+        elf[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
+        // Program header: p_type = PT_NOTE(4) @0, p_offset @8, p_filesz @32.
+        elf[phoff..phoff + 4].copy_from_slice(&4u32.to_le_bytes());
+        elf[phoff + 8..phoff + 16].copy_from_slice(&(note_off as u64).to_le_bytes());
+        elf[phoff + 32..phoff + 40].copy_from_slice(&(note.len() as u64).to_le_bytes());
+        elf.extend_from_slice(&note);
+
+        assert_eq!(elf_gnu_build_id(&elf).as_deref(), Some("abcd"));
+        // A non-ELF (a stripped /boot/Image is a flat binary) has no note → None (cannot bind).
+        assert_eq!(elf_gnu_build_id(b"MZ not an elf at all"), None);
+        assert_eq!(elf_gnu_build_id(&[]), None);
     }
 
     #[test]

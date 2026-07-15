@@ -359,7 +359,7 @@ fn run_stage_checks(
     check_well_formed(run_set, records, out);
     check_records_sha256(run_set, records_bytes, out);
     check_totality(run_set, records, out);
-    check_multiplicity(records, out);
+    check_multiplicity(run_set, records, out);
     check_weights_and_counts(run_set, records, out);
     check_skid(run_set, records, out);
     check_mechanism(run_set, records, out);
@@ -502,7 +502,7 @@ fn aggregate(loaded: &[(RunSet, Vec<RunRecord>, Vec<u8>)], floors: &Floors) -> C
     // Cumulative distinct-case coverage: the UNION of armed cases across every condition. A
     // case that recurs in two conditions is still one case, so the set is unioned across the
     // aggregate rather than summing per-set counts.
-    let mut cases: BTreeSet<RepKey> = BTreeSet::new();
+    let mut cases: BTreeSet<CaseKey> = BTreeSet::new();
     for (_, records, _) in loaded {
         cases.extend(distinct_armed_cases(records));
     }
@@ -1215,7 +1215,7 @@ fn check_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome
     out.push(fail(CheckId::Totality, problems.join("; ")));
 }
 
-fn check_multiplicity(records: &[RunRecord], out: &mut Vec<Outcome>) {
+fn check_multiplicity(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
     let mut lost: Vec<u64> = Vec::new();
     let mut duplicated: Vec<u64> = Vec::new();
     let mut armed = 0u64;
@@ -1234,6 +1234,37 @@ fn check_multiplicity(records: &[RunRecord], out: &mut Vec<Outcome>) {
     }
     lost.sort_unstable();
     duplicated.sort_unstable();
+
+    // The migration probe is the ONE unpinned set, and its whole purpose is to RECORD the
+    // rr #3607 lost-PMI signature: an armed overflow that a cross-core migration caused KVM to
+    // MISS (deliveries == 0). Grading that as a multiplicity FAILURE — the pinned matrix's
+    // exactly-once requirement — would make the probe unable to record the very signature it
+    // exists for, an internal contradiction with the pinned matrix passing beside it. So for
+    // the probe, deliveries == 0 is the EXPECTED signature (reported, not failed); only a
+    // DUPLICATE delivery (> 1) is anomalous. The pinned sets keep the strict exactly-once rule.
+    if run_set.pinning.migration_probe {
+        if duplicated.is_empty() {
+            out.push(pass(
+                CheckId::Multiplicity,
+                format!(
+                    "migration probe: {armed} armed overflow(s), {} lost to migration \
+                     (deliveries == 0 — the recorded rr #3607 missed-PMI signature), none \
+                     duplicated",
+                    lost.len()
+                ),
+            ));
+        } else {
+            out.push(fail(
+                CheckId::Multiplicity,
+                format!(
+                    "migration probe: duplicate deliveries (> 1) at samples {} — a missed PMI is \
+                     the expected signature, but a DOUBLE delivery is not",
+                    preview(duplicated.iter().copied())
+                ),
+            ));
+        }
+        return;
+    }
 
     if lost.is_empty() && duplicated.is_empty() {
         out.push(pass(
@@ -2798,7 +2829,7 @@ fn count_armed(records: &[RunRecord]) -> u64 {
 /// target_delta)` armed, delivered input. Reps of a case share its [`RepKey`], so this counts
 /// inputs, not deadlines. The target delta (not the absolute target) is used, matching
 /// [`rep_key`], so reps whose pre-window execution shifted `work_begin` still count as one case.
-fn distinct_armed_cases(records: &[RunRecord]) -> BTreeSet<RepKey> {
+fn distinct_armed_cases(records: &[RunRecord]) -> BTreeSet<CaseKey> {
     records
         .iter()
         .filter(|r| {
@@ -2806,8 +2837,27 @@ fn distinct_armed_cases(records: &[RunRecord]) -> BTreeSet<RepKey> {
                 .as_ref()
                 .is_some_and(|o| o.armed && o.deliveries >= 1)
         })
-        .map(rep_key)
+        .map(case_key)
         .collect()
+}
+
+/// The key a distinct armed CASE is counted under — `(payload, scale, seed, target_delta)`,
+/// deliberately OMITTING `condition`. A case is a distinct seeded-random input drawn by the
+/// plan; the contamination `condition` is the sweep axis run OVER each case, not part of the
+/// case's identity. Keying by `rep_key` (which includes `condition`) let four same-seed
+/// condition run-sets — which draw IDENTICAL cases — count as four distinct cases and satisfy
+/// `--min-cases 4` with a single target. The delta (not the absolute target) matches `rep_key`.
+type CaseKey = (String, String, u64, Option<i128>);
+
+fn case_key(r: &RunRecord) -> CaseKey {
+    (
+        r.payload.name().to_string(),
+        r.scale.name().to_string(),
+        r.seed,
+        r.overflow
+            .as_ref()
+            .map(|o| i128::from(o.target) - i128::from(r.work_begin)),
+    )
 }
 
 /// The `--min-cases` floor, over an ALREADY-COLLECTED distinct-case count. AA-1/AA-3 rest on a
@@ -5369,7 +5419,91 @@ mod tests {
         assert_eq!(status(&out, CheckId::Skid), Some(Status::Pass));
 
         let mut out = Vec::new();
-        check_multiplicity(&[r], &mut out);
+        check_multiplicity(&a_run_set(), &[r], &mut out);
         assert_eq!(status(&out, CheckId::Multiplicity), Some(Status::Fail));
+    }
+
+    #[test]
+    fn the_migration_probe_records_lost_pmis_as_its_signature_not_a_failure() {
+        // A lost PMI (deliveries == 0) fails multiplicity for a normal (pinned) set...
+        let mut r = a_record(0);
+        if let Some(o) = r.overflow.as_mut() {
+            o.deliveries = 0;
+        }
+        let mut out = Vec::new();
+        check_multiplicity(&a_run_set(), &[r.clone()], &mut out);
+        assert_eq!(
+            status(&out, CheckId::Multiplicity),
+            Some(Status::Fail),
+            "a pinned set must land exactly once"
+        );
+
+        // ...but for the MIGRATION PROBE it is the expected rr #3607 signature → PASS.
+        let mut probe = a_run_set();
+        probe.pinning.pinned = false;
+        probe.pinning.core = None;
+        probe.pinning.migration_probe = true;
+        let mut out = Vec::new();
+        check_multiplicity(&probe, &[r], &mut out);
+        assert_eq!(
+            status(&out, CheckId::Multiplicity),
+            Some(Status::Pass),
+            "the probe EXISTS to record a migration-lost PMI — grading it a failure is the \
+             internal contradiction r24 flags"
+        );
+
+        // A DOUBLE delivery is anomalous even for the probe → FAIL.
+        let mut dup = a_record(1);
+        if let Some(o) = dup.overflow.as_mut() {
+            o.deliveries = 2;
+        }
+        let mut out = Vec::new();
+        check_multiplicity(&probe, &[dup], &mut out);
+        assert_eq!(status(&out, CheckId::Multiplicity), Some(Status::Fail));
+    }
+
+    #[test]
+    fn distinct_armed_cases_dedup_across_contamination_conditions() {
+        // The r24 hole: four same-seed condition run-sets draw IDENTICAL cases. Because the
+        // case key omits `condition`, four records that differ ONLY in condition are ONE case,
+        // so four conditions × one target no longer satisfies --min-cases 4.
+        let one_case_four_conditions: Vec<RunRecord> = [
+            "pinned-solo",
+            "co-tenant-other-core",
+            "co-tenant-same-core",
+            "memory-pressure",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, cond)| {
+            let mut r = a_record_seeded(i as u64, 7); // same seed, same payload/scale/target
+            r.condition = (*cond).into();
+            r
+        })
+        .collect();
+        assert_eq!(
+            distinct_armed_cases(&one_case_four_conditions).len(),
+            1,
+            "one case run under four conditions is one case, not four"
+        );
+
+        // Genuinely distinct seeds ARE distinct cases regardless of condition.
+        let four_seeds: Vec<RunRecord> = (0..4u64).map(|i| a_record_seeded(i, i + 1)).collect();
+        assert_eq!(distinct_armed_cases(&four_seeds).len(), 4);
+
+        // End to end: the four-condition, one-case set fails --min-cases 4.
+        let mut out = Vec::new();
+        check_case_coverage(
+            Stage::Aa1,
+            &Floors {
+                min_armed_overflows: Some(4),
+                min_reps: None,
+                min_cases: Some(4),
+                sub_normative: true,
+            },
+            distinct_armed_cases(&one_case_four_conditions).len() as u64,
+            &mut out,
+        );
+        assert_eq!(status(&out, CheckId::CaseCoverage), Some(Status::Fail));
     }
 }

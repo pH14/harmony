@@ -232,15 +232,27 @@ jobs:
         run: |
           set -e
           cd "$SPIKE/host"
+          # Job-unique scratch files: concurrent jobs share this runner, and fixed
+          # /tmp/msg + /tmp/patch would race (one job's mailinfo clobbering another's).
+          # $RUNNER_TEMP is per-job; mktemp under it is unique even within this job.
+          msg="$(mktemp "${RUNNER_TEMP:-/tmp}/patch-msg.XXXXXX")"
+          patch="$(mktemp "${RUNNER_TEMP:-/tmp}/patch-diff.XXXXXX")"
+          trap 'rm -f "$msg" "$patch"' EXIT
           test -d patches && ls patches/*.patch >/dev/null
           for p in patches/*.patch; do
             test -s "$p"                                   # present and non-empty
-            git mailinfo /tmp/msg /tmp/patch < "$p" >/dev/null  # valid mail-format patch
-            git apply --stat /tmp/patch >/dev/null         # the diff parses (hunks well-formed)
+            git mailinfo "$msg" "$patch" < "$p" >/dev/null # valid mail-format patch
+            git apply --stat "$patch" >/dev/null           # the diff parses (hunks well-formed)
           done
           echo "patch format + parse OK; the apply-onto-6.18.35 + compile gate runs on the aarch64 builder (host/BUILD.md §0)"
       # arm-harness is the crate with `unsafe` (the perf/KVM syscall seam), so the
-      # repo's unsafe⇒Miri bar applies to it. floor-check is deliberately NOT here:
+      # repo's unsafe⇒Miri bar applies to it. The Machine's raw-pointer ops that a real
+      # KVM mapping otherwise hides from the interpreter — the volatile kvm_run
+      # read-modify-write (`complete_mmio_read`) and guest-RAM `from_raw_parts`
+      # (`state_digest`) — are extracted into the portable `sys::write_mmio_read` /
+      # `sys::guest_ram` seams and exercised HERE under Miri against allocation-backed
+      # buffers (`sys::tests::write_mmio_read_stages_over_an_allocation`,
+      # `guest_ram_borrows_the_allocation`). floor-check is deliberately NOT here:
       # it contains no `unsafe`, its fixture tests are filesystem reads Miri's
       # isolation forbids, and interpreting it would buy minutes of CI for no UB
       # coverage. (`cargo miri test -p floor-check` still works locally — its
