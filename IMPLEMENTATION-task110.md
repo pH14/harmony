@@ -22,47 +22,54 @@ clocksource: Switched to clocksource harmony-pvclock          ← selected, not 
 | Gate | Result | Evidence |
 |---|---|---|
 | **G0** smoke-fire-once | **PASS** | page registered @0x2dba000, 4096 refreshes, monotonic to 99 ms vns, GUEST_READY, clean poweroff |
-| **G1** same-seed bit-identical `state_hash`, page ON | **PASS** | 3/3 seals MATCH across two same-seed Postgres boots (page bytes hashed in full) — zero refresh/canonicalization entropy leaks into guest RAM |
+| **G1** same-seed bit-identical `state_hash`, page ON | **PASS** | 3/3 seals MATCH across two same-seed Postgres boots (page bytes hashed in full) — zero refresh/canonicalization entropy leaks into guest RAM; re-confirmed bit-identical on the r8 re-validation (final head, default schedule) |
+| **N-4 perf** (kill condition 3) | **PASS (≈25×)** | RDTSC-exit-rate reduction over the actual Postgres workload (boot excluded) — see below; far above the 2× "worth it" threshold |
 | **G2** page-stamp == RDTSC-trap-oracle at refresh Moments | **PASS** | 5 sampled boundary checks + terminal, 4096 refreshes, **deliberate-fault detected** (the gate can fail) |
 | **G3** busy-wait liveness within Δ | **PASS** | syscall-free `pvclock-spin` completed; 2182 refreshes, **1921 (88%) forced by the Δ deadline**, max anchor gap = Δ exactly |
 | **det-corpus O1** (run-vs-run determinism, page-off) | **PASS** (all payloads) | insn-rdtsc / insn-rng / insn-cpuid all deterministic same-seed on the patched backend — the page-off path my task must not regress is intact |
 | **det-corpus O2** (conformance-to-golden) | insn-rdtsc ✓, insn-rng ✓, **insn-cpuid ✗ (pre-existing)** | the insn-cpuid digest is *deterministic* (identical run-to-run) but ≠ its committed golden — a CPUID conformance-golden drift (microcode/golden staleness). **My branch touches no golden/CPUID/corpus file** (diff is `consonance` + `docs` + `guest/linux` only), and pvclock touches no CPUID, so this is orthogonal to the page — flagged for the foreman to reconcile against main, NOT a pvclock regression |
 
-**Kill condition 3 (perf) — reported honestly: the x86 RDTSC-exit-rate reduction
-is ~1×, BELOW the 2× "worth it" threshold.** Measured over an exact
-predetermined V-time window (Postgres steady state, page-off vs page-on):
+**Kill condition 3 (perf) — PASSES: the x86 RDTSC-exit-rate reduction over the
+actual Postgres workload is ≈25×, far above the 2× "worth it" threshold.**
+Measured `PG37: workload begin` → `PG37: workload end` (boot excluded), page-off
+vs page-on, on the r8 re-validation (final head):
 
 ```
-pg window page-OFF: rdtsc=64688 (215627/vsec over 0.3 s)   total=96000
-pg window page-ON:  rdtsc=62952 (209840/vsec over 0.3 s)   total=94000
-reduction = 1.03×   (boot-ratio arm, minimal image: 1.02×)
+pg workload page-OFF: rdtsc=1399 (242505/vsec)   total=8189   span=5.77M vns
+pg workload page-ON:  rdtsc=  56 (  9718/vsec)   total=6846   span=5.76M vns
+reduction = 24.95×    (workload begin→end, boot excluded)
 ```
 
-This is **not a mechanism failure** — G0–G3 prove the page is selected and
-correct. The RDTSC exits the page removes (the clocksource `.read()`, now a page
-load) are a *small fraction* of total RDTSC traffic, which is dominated by two
-sources the page deliberately does not touch: **(1) syscall-entry kstack-offset
-randomization** (`do_syscall_64` does one RDTSC per syscall — allowlisted — and
-Postgres is syscall-heavy), and **(2) `delay_tsc`**, which the design
-deliberately keeps on the RDTSC trap (IMPLEMENTATION "Deviations", the udelay
-overshoot argument). So on x86 the page does not pay for itself *as an
-exit-reduction optimization* for a syscall-heavy workload. Its strategic value
-is **ARM** — where the counter cannot be trapped at all, so the page is the
-*only* deterministic clock (validated at spike AA-5, out of scope here) — and on
-x86 the retained RDTSC trap is the backstop/oracle regardless. Two honest
-levers, if x86 exit reduction is later wanted: disabling
-`RANDOMIZE_KSTACK_OFFSET` removes the per-syscall RDTSC, and a loop-delay
-override seam would move `delay_tsc` onto the page (6.18 exports none today).
+**This corrects the first box pass's ≈1× number, which was a measurement
+artifact, not the mechanism's behavior.** That pass measured *cumulative from VM
+boot*, and boot is dominated by the kernel's pre-registration TSC calibration
+(the harmony clocksource only takes over at `early_initcall`, after hundreds of
+calibration RDTSCs). Those boot RDTSCs are identical page-on and page-off, so a
+boot-inclusive window swamps the steady-state signal and reads ≈1×. Measuring
+the workload itself (r8 P2d) shows the page removes **~96% of the workload's
+RDTSC exits** (1399 → 56): once the clocksource is live, `clock_gettime` reads
+the page instead of trapping. The residual 56 are the sources the page
+deliberately doesn't touch — syscall-entry kstack-offset randomization
+(`do_syscall_64`, allowlisted) and `delay_tsc` (kept on the trap by design) —
+now shown to be a small tail, not the dominant term. The retained RDTSC trap
+remains the backstop/oracle regardless, and the same page is the *only*
+deterministic clock on ARM (AA-5, out of scope). (Boot-ratio arm, minimal image:
+still ≈1× — boot is calibration-bound by construction and is not the
+kill-condition workload.)
 
 **Box-run gotchas (for reproduction):** the STRICT_DEVMEM config fix (r7) means
 the kernel differs from any pre-r7 build — `MANIFEST.sha256`'s bzImage was
 re-pinned to `051de137…` (the minimal initramfs reproduced bit-identically,
 confirming the build levers). The Postgres image (`initramfs-postgres.cpio.gz`,
 pin `3c4a7f2f…`) is short-lived (~0.46 virtual s: boots, runs its scripted
-workload, powers off), so G1's seal schedule and the perf window must be sized
-under that: `PV_G1_FIRST_VNS=100000000 PV_G1_STEP_VNS=50000000 PV_G1_SEALS=3`
-and `PV_PERF_WINDOW_VNS=300000000` were used (all env knobs). `INITRAMFS_EXEC_SHA256`
-= `7f691432…`.
+workload, powers off). Since **r8** the G1 and perf defaults are sized to fit it
+(G1 seals at 0.1 s / 0.05 s / ×3; the perf measures the actual workload,
+`PG37: workload begin` → `PG37: workload end`, boot excluded), so the **default**
+`g1_`/`n4_perf_postgres` invocations run without any override. `PV_G1_*` and
+`PV_PERF_WINDOW_VNS` remain env knobs for a longer-lived image. `INITRAMFS_EXEC_SHA256`
+= `7f691432…` (G3 only). The first box pass (before r8) used explicit overrides
+and a fixed cumulative window; the r8 re-validation reran G1 + the workload-
+relative perf on the final head with defaults.
 
 **Review round 1 folded in** (cross-model r1: 5 P1 + 1 P2; foreman stamping
 ruling, flagged for Paul's veto): the anchor-derived stamping is RULED
