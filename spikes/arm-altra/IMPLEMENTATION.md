@@ -1275,6 +1275,45 @@ Miri item stays adjudicated-settled. Gates re-run green: harness 101 tests, floo
 three `cargo deny`, the opcode-checked window scan, TCG smoke, kernel-patch format/parse, and
 arm-harness Miri.
 
+## Round-22 review fixes (PR #108, cross-model pass r22)
+
+Five P1 + one P2 (no Miri item this round).
+
+- **Enumerate the whole writable-ID surface.** The probe returned `Ok(true)` on the first
+  reducible `ID_AA64PFR0_EL1` nibble, so a host with a writable PFR0 but frozen
+  `ISAR0`/`MMFR*`/`DFR0` was green-lit even though AA-6's shrunk-ID model needs the whole
+  surface. It now runs the reduce-and-read-back probe (factored into
+  `reduce_and_readback_id_field`) over every relevant register and requires each to accept a
+  below-host value; a partial surface reads FALSE.
+- **Complete AA-4 evidence set.** Any armed delivered overflow — straight-line included — was
+  acceptance-bearing at AA-4, so repeated non-LSE landings could pass the atomics contract.
+  `is_acceptance_bearing(Aa4)` now requires an armed **lse-atomics** landing, and a new
+  `check_aa4_contract` reads NOT-REQUESTED enumerating AA-4's structured evidence (LSE
+  invariance under injection, LL/SC divergence, the three enforcement levels, the recorded
+  ruling) — the last three arrival-day and not representable in the record schema, so AA-4
+  never PASSes pre-silicon.
+- **Reject an all-probe AA-1 aggregate.** An aggregate where every set was a migration probe
+  found no non-probe reference and skipped pinning entirely, while the condition matrix counted
+  the probes' records. `check_aggregation` now requires at most one probe and at least one
+  pinned set at AA-1, and `check_aa1_condition_matrix` EXCLUDES migration-probe records from
+  both condition-coverage sums.
+- **Reject records that mix step and overflow modes.** A record with both `step` and an armed
+  `overflow` made `comparison_digest` early-return `step_digest` while divergent landed digests
+  went unchecked. `comparison_digest` now selects by acceptance mode (an armed landing takes
+  precedence over `step`, AA-6 excepted), and `check_well_formed` rejects any record carrying
+  both.
+- **Bind AA-2 step evidence to Debug exits.** `check_debug_evidence` accepted any `step:
+  Some` record regardless of exit reason, so an `mmio`-labelled step matrix passed. Every step
+  record must now carry a `Debug` exit, and a `Debug` exit with no step measurement is rejected.
+- **Preserve a pending perf kick across foreign signals (P2).** The kick handler stored
+  `from_fd` unconditionally, so a foreign SIGUSR1 racing in after a real overflow erased the
+  pending kick (a hang / apparent lost PMI). It now only SETS the flag on a perf-sourced
+  signal, leaving an already-pending `true` for the run loop (the sole consumer) to swap out.
+
+Gates re-run green: harness 101 tests, floor-check 62 + 27 + 3, oracle-model 23 + 2 (unchanged
+this round), clippy `-D warnings` native + aarch64-linux, three `cargo deny`, the opcode-checked
+window scan, TCG smoke, kernel-patch format/parse, and arm-harness Miri.
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

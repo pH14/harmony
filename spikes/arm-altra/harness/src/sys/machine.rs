@@ -395,7 +395,14 @@ pub fn install_kick_signal() -> Result<(), SysError> {
         // SAFETY: `info` is the kernel-provided siginfo for this delivery; `si_code`
         // is a plain int field always present.
         let from_fd = !info.is_null() && unsafe { (*info).si_code } > 0;
-        PERF_SOURCED_KICK.store(from_fd, Ordering::SeqCst);
+        // Only a perf-sourced signal SETS the pending kick; a foreign SIGUSR1 must NOT clear
+        // an already-pending `true`. The run loop is the sole consumer (it swaps the flag to
+        // false). Storing `from_fd` unconditionally would let a foreign signal racing in after
+        // a real overflow erase it — the EINTR is then absorbed and KVM_RUN re-entered with the
+        // one-shot perf event already disabled, producing a hang or an apparent lost PMI.
+        if from_fd {
+            PERF_SOURCED_KICK.store(true, Ordering::SeqCst);
+        }
     }
 
     // SAFETY: a zeroed sigaction is valid; SA_SIGINFO selects the three-argument
@@ -1725,26 +1732,58 @@ fn probe_writable_id_registers_on_vcpu(
         return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
     }
 
-    // Read the current (host) ID_AA64PFR0_EL1.
+    // AA-6 installs a BELOW-HOST synthetic feature model across the WHOLE `ID_AA64*` surface,
+    // not just PFR0: a host where one PFR0 nibble is writable but `ISAR0`/`MMFR*`/`DFR0` are
+    // frozen cannot provide that model. So enumerate EVERY relevant register and require each
+    // to accept a reduced, read-back-confirmed feature value — returning `true` on the first
+    // PFR0 success (as an earlier draft did) green-lights a host that cannot actually freeze
+    // the surface AA-6 needs.
+    //
+    // `(register, skip_low_nibbles)`: PFR0's low four nibbles are EL0..3 support — lowering EL
+    // support breaks the VM — so they are skipped; the other registers' low nibbles are
+    // ordinary feature fields.
+    let relevant: &[(u64, u32, &str)] = &[
+        (kvm::REG_ID_AA64PFR0_EL1, 4, "ID_AA64PFR0_EL1"),
+        (kvm::REG_ID_AA64ISAR0_EL1, 0, "ID_AA64ISAR0_EL1"),
+        (kvm::REG_ID_AA64MMFR0_EL1, 0, "ID_AA64MMFR0_EL1"),
+        (kvm::REG_ID_AA64MMFR1_EL1, 0, "ID_AA64MMFR1_EL1"),
+        (kvm::REG_ID_AA64MMFR2_EL1, 0, "ID_AA64MMFR2_EL1"),
+        (kvm::REG_ID_AA64DFR0_EL1, 0, "ID_AA64DFR0_EL1"),
+    ];
+    for &(reg, skip, _name) in relevant {
+        if !reduce_and_readback_id_field(vcpu_fd, reg, skip)? {
+            // This register accepts no below-host feature value: the surface AA-6 needs is not
+            // fully writable, so the row is FALSE — a partial surface cannot be enumerated.
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Try to reduce ONE feature nibble of an `ID_AA64*` register by 1, write it, and READ IT
+/// BACK. `Ok(true)` if some field was both accepted AND observed reduced; `Ok(false)` if no
+/// field could be. Nibbles `[0, skip_low_nibbles)` are skipped (PFR0's EL-support fields).
+///
+/// The row is about a CHANGED, reduced value — NOT an identity write: some KVM versions accept
+/// an identity `SET_ONE_REG` (for migration compatibility) while rejecting any changed
+/// invariant/ID value, so writing the value just read would false-green. Absent (0) or
+/// not-implemented (0xF) fields cannot be cleanly lowered and are skipped.
+#[cfg(target_os = "linux")]
+fn reduce_and_readback_id_field(
+    vcpu_fd: libc::c_int,
+    reg: u64,
+    skip_low_nibbles: u32,
+) -> Result<bool, SysError> {
     let mut orig: u64 = 0;
     let get = KvmOneReg {
-        id: kvm::REG_ID_AA64PFR0_EL1,
+        id: reg,
         addr: (&raw mut orig) as u64,
     };
     // SAFETY: `vcpu_fd` is valid; `get.addr` points at a live u64 the kernel writes.
     if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get) } < 0 {
-        return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64PFR0_EL1)"));
+        return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64*)"));
     }
-
-    // AA-6 installs a BELOW-HOST synthetic feature model, so the row is about writing a
-    // CHANGED, reduced feature value — NOT an identity write. Some KVM versions accept an
-    // identity `SET_ONE_REG` (for migration compatibility) while rejecting any changed
-    // invariant/ID value, so writing the value just read would false-green this mandatory
-    // row. Instead, reduce one feature nibble by 1, write it, and READ IT BACK: the row is
-    // TRUE only if a reduced value is both accepted AND observed. The exception-level fields
-    // (bits[15:0], nibbles 0..4) are skipped — lowering EL support breaks the VM — as are
-    // absent (0) or not-implemented (0xF) fields, which cannot be cleanly lowered.
-    for nibble in 4..16u32 {
+    for nibble in skip_low_nibbles..16u32 {
         let shift = nibble * 4;
         let field = (orig >> shift) & 0xF;
         if field == 0 || field == 0xF {
@@ -1752,7 +1791,7 @@ fn probe_writable_id_registers_on_vcpu(
         }
         let reduced = (orig & !(0xFu64 << shift)) | ((field - 1) << shift);
         let set = KvmOneReg {
-            id: kvm::REG_ID_AA64PFR0_EL1,
+            id: reg,
             addr: (&raw const reduced) as u64,
         };
         // SAFETY: `vcpu_fd` is valid; `set.addr` points at a live u64 the kernel reads.
@@ -1764,27 +1803,25 @@ fn probe_writable_id_registers_on_vcpu(
             if e == libc::EINVAL || e == libc::EPERM || e == libc::ENOENT {
                 continue;
             }
-            return Err(err("ioctl(KVM_SET_ONE_REG, ID_AA64PFR0_EL1)"));
+            return Err(err("ioctl(KVM_SET_ONE_REG, ID_AA64*)"));
         }
         // The SET was accepted — confirm the reduction actually took, rather than being
         // silently clamped back to the host value (accepting the ioctl but ignoring the
         // change is exactly the identity-write false-green this probe exists to defeat).
         let mut readback: u64 = 0;
         let get2 = KvmOneReg {
-            id: kvm::REG_ID_AA64PFR0_EL1,
+            id: reg,
             addr: (&raw mut readback) as u64,
         };
         // SAFETY: `vcpu_fd` is valid; `get2.addr` points at a live u64 the kernel writes.
         if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get2) } < 0 {
-            return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64PFR0_EL1 readback)"));
+            return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64* readback)"));
         }
         if readback == reduced {
             return Ok(true);
         }
         // Accepted but unchanged: not a real feature write. Try the next field.
     }
-    // No feature field could be reduced and read back: this kernel does not accept a
-    // below-host ID-register model, so AA-6's synthetic feature install is impossible here.
     Ok(false)
 }
 

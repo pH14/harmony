@@ -152,6 +152,9 @@ pub enum CheckId {
     /// At AA-1, the cumulative run covers the required distinct contamination-condition
     /// matrix.
     ConditionMatrix,
+    /// AA-4's LSE-only atomics contract: the structured evidence set (LSE-invariance under
+    /// injection, LL/SC divergence, the three enforcement levels, the recorded ruling).
+    Aa4Contract,
 }
 
 impl CheckId {
@@ -184,6 +187,7 @@ impl CheckId {
             CheckId::Aggregation => "aggregation",
             CheckId::ConditionConsistency => "condition-consistency",
             CheckId::ConditionMatrix => "condition-matrix",
+            CheckId::Aa4Contract => "aa4-contract",
         }
     }
 }
@@ -349,6 +353,7 @@ fn run_stage_checks(
     check_replay_identity(run_set.stage, records, out);
     check_debug_evidence(run_set.stage, records, out);
     check_aa6_matrix(run_set.stage, records, out);
+    check_aa4_contract(run_set.stage, records, out);
     check_condition_consistency(run_set, records, out);
     check_payload_status(records, out);
     check_rep_floor(run_set, floors, records, out);
@@ -626,6 +631,33 @@ fn check_aggregation(
         }
     }
 
+    // AA-1's contract permits exactly ONE bounded migration probe, then PERMANENT repinning.
+    // More than one probe, or an aggregate that is ENTIRELY probes (no repinned measurement),
+    // is a fully-unpinned matrix masquerading as a certification — and the all-probe case also
+    // leaves the posture check above with no non-probe reference, silently skipping it.
+    if stage == Stage::Aa1 {
+        let probes: Vec<&str> = loaded
+            .iter()
+            .filter(|(rs, _, _)| rs.pinning.migration_probe)
+            .map(|(rs, _, _)| rs.run_set_id.as_str())
+            .collect();
+        if probes.len() > 1 {
+            problems.push(format!(
+                "AA-1 aggregate carries {} migration-probe run-sets ({}) — the contract permits \
+                 exactly one bounded probe, then permanent repinning",
+                probes.len(),
+                probes.join(", ")
+            ));
+        }
+        if !loaded.is_empty() && loaded.iter().all(|(rs, _, _)| rs.pinning.migration_probe) {
+            problems.push(
+                "every AA-1 run-set is a migration probe — a fully unpinned matrix. AA-1 permits \
+                 one bounded probe amid PINNED measurement, not an all-unpinned population"
+                    .to_string(),
+            );
+        }
+    }
+
     verdict(
         CheckId::Aggregation,
         &problems,
@@ -656,9 +688,16 @@ fn check_aa1_condition_matrix(
     if stage != Stage::Aa1 {
         return;
     }
-    // Armed overflows contributed under each condition (summed across its run-sets).
+    // Armed overflows contributed under each condition (summed across its run-sets). The
+    // MIGRATION PROBE is excluded: it is a bounded, unpinned experiment of its own, so its
+    // armed records must not count toward the pinned condition matrix — otherwise a fully
+    // unpinned probe could satisfy a required contamination condition it never measured under
+    // the pinned posture AA-1's count invariance is about.
     let mut armed_by_condition: BTreeMap<&str, u64> = BTreeMap::new();
     for (rs, records, _) in loaded {
+        if rs.pinning.migration_probe {
+            continue;
+        }
         *armed_by_condition.entry(rs.condition.as_str()).or_default() += count_armed(records);
     }
     let total_armed: u64 = armed_by_condition.values().sum();
@@ -688,7 +727,12 @@ fn check_aa1_condition_matrix(
     // `--sub-normative` relaxes it as it relaxes the floor magnitude.
     if !floors.sub_normative {
         let mut armed_cells: BTreeSet<(&str, &str, Scale)> = BTreeSet::new();
-        for (_, records, _) in loaded {
+        for (rs, records, _) in loaded {
+            // The migration probe is excluded from grid coverage for the same reason: its
+            // unpinned armed records do not measure a pinned matrix cell.
+            if rs.pinning.migration_probe {
+                continue;
+            }
             for r in records {
                 if r.overflow.as_ref().is_some_and(|o| o.armed) {
                     armed_cells.insert((r.payload.name(), r.condition.as_str(), r.scale));
@@ -1014,6 +1058,18 @@ fn check_well_formed(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outc
             problems.push(format!(
                 "record {}: state_digest is empty (schema minLength 1) — every record must carry \
                  its complete-state digest, even one that also carries a landed or step digest",
+                r.sample_id
+            ));
+        }
+        // Step and armed-overflow are MUTUALLY EXCLUSIVE modes: a record is EITHER an AA-2
+        // single-step OR an armed landing, never both. The schema permits both Option fields,
+        // but a record carrying both is two mechanisms wearing one name — and it would let a
+        // crafted record's `step_digest` stand in for replay while its divergent LANDED digests
+        // went unchecked. Reject it here rather than letting comparison_digest pick.
+        if r.step.is_some() && r.overflow.as_ref().is_some_and(|o| o.armed) {
+            problems.push(format!(
+                "record {}: carries BOTH a step and an armed overflow — a record is a \
+                 single-step OR an armed landing, never both",
                 r.sample_id
             ));
         }
@@ -1988,13 +2044,25 @@ fn rep_key(r: &RunRecord) -> RepKey {
 /// land identically at the injection Moment then diverge handling the event. Comparing
 /// `landed_digest` for AA-6 would pass that divergence.
 fn comparison_digest(stage: Stage, r: &RunRecord) -> &str {
+    // An armed, delivered LANDING compares the landed state — EXCEPT at AA-6, whose acceptance
+    // is that the whole event (interrupt processing included) replays, so it compares the final
+    // `state_digest`. This takes precedence over a `step` field: a record's acceptance mode is
+    // decided by its overflow, never diverted to `step_digest` because a step is also present.
+    // (A record carrying BOTH a step and an armed overflow is malformed and rejected by
+    // check_well_formed; this precedence makes the exploit harmless even so.)
+    if let Some(o) = &r.overflow
+        && o.armed
+        && o.deliveries >= 1
+        && stage != Stage::Aa6
+    {
+        return o.landed_digest.trim();
+    }
+    // A NON-armed stepped record (AA-2) compares the step-moment state; the final digest can
+    // converge, so it cannot establish step identity.
     if let Some(s) = &r.step {
         return s.step_digest.trim();
     }
-    match &r.overflow {
-        Some(o) if o.armed && o.deliveries >= 1 && stage != Stage::Aa6 => o.landed_digest.trim(),
-        _ => r.state_digest.trim(),
-    }
+    r.state_digest.trim()
 }
 
 /// Whether a record is **acceptance-bearing** for AA-2 or AA-3: the record whose replay
@@ -2010,12 +2078,21 @@ fn comparison_digest(stage: Stage, r: &RunRecord) -> &str {
 fn is_acceptance_bearing(stage: Stage, r: &RunRecord) -> bool {
     match stage {
         Stage::Aa2 => r.step.is_some(),
-        // AA-3's landed state, and AA-4's LSE-only landing under the same injection schedule,
-        // are both armed, delivered records — the injection is what each replays.
-        Stage::Aa3 | Stage::Aa4 => r
+        // AA-3's landed state: any armed, delivered landing.
+        Stage::Aa3 => r
             .overflow
             .as_ref()
             .is_some_and(|o| o.armed && o.deliveries >= 1),
+        // AA-4's acceptance is the LSE payload replayed under the same injection schedule — so
+        // an armed landing of a NON-LSE payload (straight-line, etc.) is NOT acceptance-bearing
+        // here. This is what stops repeated straight-line landings from certifying the atomics
+        // contract; the rest of AA-4's evidence is graded by check_aa4_contract.
+        Stage::Aa4 => {
+            r.payload == Payload::LseAtomics
+                && r.overflow
+                    .as_ref()
+                    .is_some_and(|o| o.armed && o.deliveries >= 1)
+        }
         _ => false,
     }
 }
@@ -2325,7 +2402,19 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
         return;
     }
     let stepped: Vec<&RunRecord> = records.iter().filter(|r| r.step.is_some()).collect();
-    if stepped.is_empty() {
+
+    // The "vice versa": a `Debug` exit with NO step measurement is a bare exit label, not AA-2
+    // evidence. A synthetic matrix that flipped `exit_reason` to `debug` without producing a
+    // real single step is caught here, and this must fire even when there are no valid stepped
+    // records at all — so it is computed before the not-requested early return.
+    let mut debug_without_step: Vec<u64> = records
+        .iter()
+        .filter(|r| r.exit_reason == ExitReason::Debug && r.step.is_none())
+        .map(|r| r.sample_id)
+        .collect();
+    debug_without_step.sort_unstable();
+
+    if stepped.is_empty() && debug_without_step.is_empty() {
         out.push(not_requested(
             CheckId::DebugEvidence,
             "AA-2 certifies single-stepping, and its evidence is the measured step (PC \
@@ -2339,11 +2428,27 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
     }
 
     let mut bad: Vec<String> = Vec::new();
+    for id in &debug_without_step {
+        bad.push(format!(
+            "sample {id}: exit_reason is Debug but the record carries no step measurement — a \
+             debug exit without a validated single step is not AA-2 evidence"
+        ));
+    }
     let mut covered: BTreeSet<StepTransition> = BTreeSet::new();
     for r in &stepped {
         // `stepped` only holds records whose `step` is Some.
         let s = r.step.as_ref().expect("filtered to Some");
         covered.insert(s.transition);
+        // A real single step lands on KVM_EXIT_DEBUG. A step record carrying any other exit
+        // was not produced by KVM_GUESTDBG_SINGLESTEP — binding the (byte-flippable)
+        // exit_reason label to the measured step is what stops a `mmio`-labelled step matrix.
+        if r.exit_reason != ExitReason::Debug {
+            bad.push(format!(
+                "sample {}: carries a step measurement but exit_reason is {:?}, not Debug — a \
+                 single step lands on KVM_EXIT_DEBUG",
+                r.sample_id, r.exit_reason
+            ));
+        }
         if s.pc_after == s.pc_before {
             bad.push(format!(
                 "sample {}: step did not advance the PC (pc_before == pc_after == {:#x})",
@@ -2542,6 +2647,53 @@ fn check_aa6_matrix(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>)
             ),
         ));
     }
+}
+
+/// AA-4 is the **LSE-only atomics contract** (`docs/ARM-ALTRA.md` §4). Its acceptance is a
+/// STRUCTURED set of experiments, none of which a repeated non-LSE landing satisfies:
+///   1. the LSE payload's count-invariance under injection — an armed `lse-atomics` landing,
+///      replayed on the same schedule (enforced as the acceptance-bearing record in
+///      [`check_replay_identity`], so a straight-line landing is not one);
+///   2. the LL/SC DIVERGENCE demonstration that motivates the ban — `llsc-atomics` shown
+///      non-deterministic under injection;
+///   3. the THREE enforcement levels — build-level LSE-only kernel+userspace, the boot-time
+///      exclusive scan, and trap-and-emulate of residual exclusives;
+///   4. the recorded LL/SC RULING — mechanically-unreachable vs cooperative-residual.
+///
+/// Experiments (2)–(4) are ARRIVAL-DAY: the guest kernel build, the exclusive scan, the
+/// `HCR_EL2`/`MDCR_EL2` trap tables, and the ruling are not representable in the current record
+/// schema (no run produces them pre-silicon). So AA-4 reads NOT-REQUESTED — honestly
+/// unexercised — never PASS: repeated non-LSE landings must not certify the atomics contract.
+fn check_aa4_contract(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    if stage != Stage::Aa4 {
+        return;
+    }
+    let armed_lse = records.iter().any(|r| {
+        r.payload == Payload::LseAtomics
+            && r.overflow
+                .as_ref()
+                .is_some_and(|o| o.armed && o.deliveries >= 1)
+    });
+    let llsc_present = records.iter().any(|r| r.payload == Payload::LlscAtomics);
+    out.push(not_requested(
+        CheckId::Aa4Contract,
+        format!(
+            "AA-4 (the LSE-only atomics contract, docs/ARM-ALTRA.md §4) rests on a structured \
+             evidence set: an armed lse-atomics landing replayed under injection [{}], the LL/SC \
+             divergence demonstration [{}], the three enforcement levels (build-level LSE-only \
+             kernel+userspace, boot-time exclusive scan, trap-and-emulate of residual \
+             exclusives), and the recorded LL/SC ruling (mechanically-unreachable vs \
+             cooperative-residual). The enforcement levels and the ruling are arrival-day \
+             deliverables not representable in the record schema, so this verdict cannot accept \
+             AA-4 — a straight-line landing must not certify the atomics contract.",
+            if armed_lse { "present" } else { "ABSENT" },
+            if llsc_present {
+                "llsc-atomics records present"
+            } else {
+                "no llsc-atomics records"
+            },
+        ),
+    ));
 }
 
 fn check_payload_status(records: &[RunRecord], out: &mut Vec<Outcome>) {
@@ -3695,6 +3847,103 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_all_probe_or_multi_probe_aa1_aggregate_is_rejected() {
+        let floors = Floors {
+            min_armed_overflows: Some(2),
+            min_reps: None,
+            sub_normative: true,
+        };
+        let make_probe = |set: &mut (RunSet, Vec<RunRecord>, Vec<u8>)| {
+            set.0.pinning.pinned = false;
+            set.0.pinning.core = None;
+            set.0.pinning.migration_probe = true;
+        };
+
+        // Every set a probe → a fully unpinned matrix (and no non-probe reference).
+        let mut all_probe = [
+            a_loaded_set(Stage::Aa1, "p1", "pinned-solo", &"a".repeat(64), 2),
+            a_loaded_set(Stage::Aa1, "p2", "co-tenant-other-core", &"b".repeat(64), 2),
+        ];
+        all_probe.iter_mut().for_each(make_probe);
+        assert_eq!(
+            status(
+                &aggregate(&all_probe, &floors).outcomes,
+                CheckId::Aggregation
+            ),
+            Some(Status::Fail),
+            "an all-probe AA-1 aggregate is a fully unpinned matrix"
+        );
+
+        // A single set that is itself a probe is also rejected (no pinned measurement at all).
+        let mut single = [a_loaded_set(
+            Stage::Aa1,
+            "p",
+            "pinned-solo",
+            &"a".repeat(64),
+            2,
+        )];
+        make_probe(&mut single[0]);
+        assert_eq!(
+            status(&aggregate(&single, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Fail),
+            "a lone probe is not a certification population"
+        );
+
+        // Two probes beside a pinned set → more than one bounded probe is refused.
+        let mut two_probes = [
+            a_loaded_set(Stage::Aa1, "solo", "pinned-solo", &"a".repeat(64), 2),
+            a_loaded_set(Stage::Aa1, "p1", "co-tenant-other-core", &"b".repeat(64), 2),
+            a_loaded_set(Stage::Aa1, "p2", "memory-pressure", &"c".repeat(64), 2),
+        ];
+        make_probe(&mut two_probes[1]);
+        make_probe(&mut two_probes[2]);
+        assert_eq!(
+            status(
+                &aggregate(&two_probes, &floors).outcomes,
+                CheckId::Aggregation
+            ),
+            Some(Status::Fail),
+            "AA-1 permits exactly one bounded probe, not two"
+        );
+    }
+
+    #[test]
+    fn the_migration_probe_does_not_satisfy_condition_coverage() {
+        // Part B: the probe's armed records must NOT count toward the pinned condition matrix.
+        // `--sub-normative` relaxes the full grid + magnitude but keeps the per-condition
+        // "nonzero armed" requirement, which is the exact axis this isolates.
+        let sub = Floors {
+            min_armed_overflows: Some(4),
+            min_reps: None,
+            sub_normative: true,
+        };
+        // The full grid (4 pinned conditions + one probe) covers every condition → PASS.
+        assert_eq!(
+            status(
+                &aggregate(&full_aa1_grid(), &sub).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Pass),
+            "the four pinned conditions each carry armed records"
+        );
+
+        // Now drop the memory-pressure PINNED set (index 3) and relabel the probe (index 4) to
+        // memory-pressure. If the probe counted, the condition would still read covered; because
+        // it is excluded, memory-pressure has zero pinned armed records and the matrix fails.
+        let mut grid = full_aa1_grid();
+        grid[4].0.condition = "memory-pressure".into();
+        for r in &mut grid[4].1 {
+            r.condition = "memory-pressure".into();
+        }
+        grid.remove(3);
+        assert_eq!(
+            status(&aggregate(&grid, &sub).outcomes, CheckId::ConditionMatrix),
+            Some(Status::Fail),
+            "an unpinned probe cannot stand in for a required contamination condition"
+        );
+    }
+
     /// Build a swept AA-1 set (one payload, 1e6/1e7/1e8) that is also the migration probe.
     fn swept_migration_probe(id: &str, hash: &str) -> (RunSet, Vec<RunRecord>, Vec<u8>) {
         let mut set = a_loaded_set(Stage::Aa1, id, "pinned-solo", hash, 3);
@@ -4173,9 +4422,12 @@ mod tests {
         assert_eq!(status(&out, CheckId::RepFloor), Some(Status::NotRequested));
     }
 
-    /// A record carrying one stepped measurement.
+    /// A record carrying one stepped measurement. A real single step lands on a Debug exit and
+    /// arms no overflow, so the helper sets both (matching what the harness would emit).
     fn a_step(id: u64, pc_after: u64, delta: u64, transition: StepTransition) -> RunRecord {
         let mut r = a_record(id);
+        r.exit_reason = ExitReason::Debug;
+        r.overflow = None;
         r.step = Some(StepRecord {
             pc_before: 0x8000,
             pc_after,
@@ -4210,14 +4462,17 @@ mod tests {
             Some(Status::NotRequested)
         );
 
-        // A bare exit_reason=debug is not a step measurement — still NOT-REQUESTED.
+        // A bare exit_reason=debug with no step measurement is not AA-2 evidence — it is now
+        // REJECTED (a debug exit must carry a validated single step), not silently ignored.
         let mut labelled = a_record(0);
         labelled.exit_reason = ExitReason::Debug;
+        labelled.overflow = None;
         let mut out = Vec::new();
         check_debug_evidence(Stage::Aa2, &[labelled], &mut out);
         assert_eq!(
             status(&out, CheckId::DebugEvidence),
-            Some(Status::NotRequested)
+            Some(Status::Fail),
+            "a debug exit without a step measurement is rejected, not ignored"
         );
 
         // A single valid step is NOT the AA-2 matrix — the coverage requirement (r10) fails
@@ -4319,6 +4574,7 @@ mod tests {
         // A step record for a chosen input seed and step-moment digest.
         let step_of = |id: u64, seed: u64, digest: &str| {
             let mut r = a_record_seeded(id, seed);
+            r.overflow = None; // a stepped record is not armed (they are mutually exclusive)
             r.step = Some(StepRecord {
                 pc_before: 0x8000,
                 pc_after: 0x8004,
@@ -4345,6 +4601,7 @@ mod tests {
         // replay identity holds.
         let mk = |id: u64, digest: &str| {
             let mut r = a_record_seeded(id, 7);
+            r.overflow = None; // a stepped record is not armed (they are mutually exclusive)
             r.step = Some(StepRecord {
                 pc_before: 0x8000,
                 pc_after: 0x8004,
@@ -4689,25 +4946,42 @@ mod tests {
             requires_replay_identity(Stage::Aa4),
             "AA-4's acceptance is the LSE-only landing replayed under the same injection schedule"
         );
-        // A single armed LSE landing → nothing replayed → NOT-REQUESTED, not a silent PASS.
-        let mut out = Vec::new();
-        check_replay_identity(Stage::Aa4, &[a_record_seeded(0, 7)], &mut out);
-        assert_eq!(
-            status(&out, CheckId::ReplayIdentity),
-            Some(Status::NotRequested),
-            "a singleton AA-4 run demonstrated no injection-schedule invariance"
-        );
-        // Two bit-identical armed reps of the same input → PASS.
+        // AA-4's acceptance-bearing record is an armed LSE-payload landing — a straight-line
+        // landing is NOT one, so it cannot certify the atomics contract.
+        let lse = |id: u64, seed: u64| {
+            let mut r = a_record_seeded(id, seed);
+            r.payload = Payload::LseAtomics;
+            r
+        };
+
+        // Repeated straight-line landings are not acceptance-bearing at AA-4 → NOT-REQUESTED.
         let mut out = Vec::new();
         check_replay_identity(
             Stage::Aa4,
             &[a_record_seeded(0, 7), a_record_seeded(1, 7)],
             &mut out,
         );
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::NotRequested),
+            "repeated straight-line landings are not the LSE experiment AA-4 certifies"
+        );
+
+        // A single armed LSE landing → nothing replayed → NOT-REQUESTED, not a silent PASS.
+        let mut out = Vec::new();
+        check_replay_identity(Stage::Aa4, &[lse(0, 7)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::NotRequested),
+            "a singleton AA-4 run demonstrated no injection-schedule invariance"
+        );
+        // Two bit-identical armed LSE reps of the same input → PASS.
+        let mut out = Vec::new();
+        check_replay_identity(Stage::Aa4, &[lse(0, 7), lse(1, 7)], &mut out);
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Pass));
-        // Two reps whose landed digests DIVERGE → FAIL.
-        let mut a = a_record_seeded(0, 7);
-        let mut b = a_record_seeded(1, 7);
+        // Two LSE reps whose landed digests DIVERGE → FAIL.
+        let mut a = lse(0, 7);
+        let mut b = lse(1, 7);
         if let Some(o) = a.overflow.as_mut() {
             o.landed_digest = "sha256:aa".into();
         }
@@ -4717,6 +4991,56 @@ mod tests {
         let mut out = Vec::new();
         check_replay_identity(Stage::Aa4, &[a, b], &mut out);
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
+
+        // check_aa4_contract always reads NOT-REQUESTED (enforcement levels + ruling are
+        // arrival-day), so AA-4 never PASSes on landings alone.
+        let mut out = Vec::new();
+        check_aa4_contract(Stage::Aa4, &[lse(0, 7), lse(1, 7)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::Aa4Contract),
+            Some(Status::NotRequested),
+            "AA-4's enforcement levels and ruling are arrival-day — never a pass pre-silicon"
+        );
+    }
+
+    #[test]
+    fn a_record_with_both_a_step_and_an_armed_overflow_is_malformed() {
+        // The modes are mutually exclusive: a record is a single-step OR an armed landing.
+        // A crafted record with both would let its step_digest stand in for replay while its
+        // divergent landed digests went unchecked, so it is rejected as malformed.
+        let mut r = a_record(0); // a_record carries an armed, delivered overflow
+        r.step = Some(StepRecord {
+            pc_before: 0x8000,
+            pc_after: 0x8004,
+            insn_retired: 1,
+            br_retired_delta: 0,
+            transition: StepTransition::Sequential,
+            step_digest: "sha256:s".into(),
+        });
+        let mut out = Vec::new();
+        check_well_formed(&a_run_set(), &[r], &mut out);
+        assert_eq!(
+            status(&out, CheckId::WellFormed),
+            Some(Status::Fail),
+            "a record carrying both a step and an armed overflow is two mechanisms in one"
+        );
+    }
+
+    #[test]
+    fn a_step_matrix_must_carry_debug_exits() {
+        // A complete, well-formed step matrix whose records claim exit_reason=mmio was not
+        // produced by KVM_GUESTDBG_SINGLESTEP — binding the exit label to the step catches it.
+        let mut matrix = full_step_matrix();
+        for r in &mut matrix {
+            r.exit_reason = ExitReason::Mmio;
+        }
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &matrix, &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::Fail),
+            "a step matrix labelled mmio is not KVM_GUESTDBG_SINGLESTEP evidence"
+        );
     }
 
     #[test]
