@@ -89,9 +89,11 @@ classifier-blocked. Local + box gates are unaffected (the real signals stay gree
 
 Reach-matrix lane (foreman-owned or spawnable next):
 
-- **Mac nested-KVM dev-loop probe** (`hm-8l3`, P3) — **SPAWNED 2026-07-15 ~17:30**
-  (tasks/111, agent-mac-kvm-devloop-probe, Opus 4.8): bead-only evidence task, GO/refuse
-  on `hm-cbt`; TCG stays the fallback oracle either way.
+- **ARM backend skeleton — spec drafting** (`hm-cbt` claimed, tasks/112 stub) —
+  **SPAWNED 2026-07-15 ~17:50** (agent-arm-backend-skeleton, Opus 4.8): replaces the
+  stub with the full implementation spec (D-list scope, TCG-first gates per the probe
+  verdict, no invented constants), opens a docs PR for light-tier review. The
+  implementation task spawns from the merged spec (Fable-tier).
 - **Hardware-arrival lane** — Altra arrival blocker `hm-7pb` (P1) → ARM spike execution
   `hm-idb`; Epyc arrival blocker `hm-9wt` (P2) → AMD spike execution `hm-u1n`. Paul
   closes an arrival bead when its box is racked; the execution surfaces dispatch-ready.
@@ -172,6 +174,12 @@ spawn these until that lane re-opens):
   and `.4` before claiming Explorer integration.
 
 ## Recently done (this week)
+
+- **Mac nested-KVM dev-loop probe CLOSED same hour it spawned** (tasks/111, `hm-8l3`,
+  2026-07-15): honest **REFUSE** — the Mac's host stack lacks nested virtualization, so
+  no local /dev/kvm dev loop; **QEMU TCG is the local oracle for the ARM ioctl/boot
+  path until the Altra racks** (consequence recorded on `hm-cbt`). Zero installs, zero
+  box time.
 
 - **The ARCH-BOUNDARY restructure MERGED** (tasks/108, PR #109 squash, 2026-07-14 midday):
   the keystone Arch trait + two-level Exit + engine/vendor split + vm-state v2 arch tag;
