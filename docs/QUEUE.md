@@ -105,8 +105,10 @@ Reach-matrix lane (foreman-owned or spawnable next):
   closes an arrival bead when its box is racked; the execution surfaces dispatch-ready.
   Arrival day now lands on pre-built tooling: the preflight truth-table probes (`hm-69y`
   rider) and the harness lanes (`hm-8v4` / `hm-2kj`).
-- **Nested-x86 spike findings** — stale insn-cpuid golden (`hm-zc2`), SIGSTOP-cycling
-  wedge (`hm-440`), both P2 bugs on main.
+- **Nested-x86 spike findings** — stale insn-cpuid golden (`hm-zc2`) **SPAWNED 2026-07-15
+  ~20:55** (tasks/113, agent-insn-cpuid-golden-refresh, Opus 4.8: diagnose-before-regenerate,
+  provenance discipline, hm-xdp image-family check); SIGSTOP-cycling wedge (`hm-440`) still
+  ready.
 - **macOS-backend design exploration** (`hm-dj0`, P2, background-session filed).
 
 General ready (foreman spawns as slots free):
