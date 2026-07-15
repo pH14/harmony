@@ -30,14 +30,18 @@ trap 'rm -rf "$work"' EXIT
 printf 'FAKE-BZIMAGE\n' >"$work/bzImage.built"
 art="$work/bzImage"
 
-# build-kernel.sh's gated tail, verbatim in shape: publish ONLY if the scan
-# passed (both under `set -e`, so a non-zero scan aborts before `install`).
+# build-kernel.sh's gated tail, verbatim in shape, run as a SEPARATE `set -e`
+# process (like build-kernel.sh itself — so errexit is never disabled by an `if`
+# condition around it): scan THEN install, so a non-zero scan aborts before the
+# publish. Returns the process exit status; sets nothing.
+GATE_TAIL="$work/gate-tail.sh"
+cat >"$GATE_TAIL" <<'EOF'
+set -euo pipefail
+bash "$1" "$2" "$3" >/dev/null 2>&1   # the counter-opcode scan
+install -m 0644 "$4" "$5"             # publish ONLY if the scan passed
+EOF
 publish_gate() { # <vmlinux> <allowlist>
-    (
-        set -e
-        bash "$SCAN" "$1" "$2" >/dev/null 2>&1
-        install -m 0644 "$work/bzImage.built" "$art"
-    )
+    bash "$GATE_TAIL" "$SCAN" "$1" "$2" "$work/bzImage.built" "$art"
 }
 
 # --- NEGATIVE: a PLANTED rejection must NOT be published ----------------------
@@ -61,7 +65,14 @@ if bash "$SCAN" "$work/planted.o" "$work/empty-allow.txt" >/dev/null 2>&1; then
 fi
 
 rm -f "$art"
-if publish_gate "$work/planted.o" "$work/empty-allow.txt"; then
+# Capture the gate's exit WITHOUT an `if`/`&&` context, so the separate process's
+# own `set -e` governs it (errexit is disabled inside functions/subshells tested
+# by a condition — the very pitfall this harness must not fall into).
+set +e
+publish_gate "$work/planted.o" "$work/empty-allow.txt"
+gate_rc=$?
+set -e
+if [ "$gate_rc" -eq 0 ]; then
     echo "FAIL: the publish-gate returned success on a planted rejection" >&2
     exit 1
 fi
