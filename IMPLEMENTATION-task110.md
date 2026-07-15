@@ -568,6 +568,31 @@ PASS at the new strength** — `PVSPIN_DONE`, 2182 refreshes, 1921 (88%) Δ-forc
 interval is within Δ too). Only these two harness assertions changed, so only G0 +
 G3 needed the box; the other gates' r8–r19 results stand.
 
+**Review round 21 folded in — FINAL DISPATCHED SET** (cross-model r21: 0 P1, 4 P2;
+portable-only — no kernel/clock behavior change, no box KVM window; same stop-rule
+as PR #108). (a) **Scan before publish (P2).** `build-kernel.sh` installed the
+bzImage to the canonical `guest/build/bzImage` BEFORE the counter-opcode scan, so a
+scan failure (`set -e` abort) left the REJECTED artifact at the path
+campaign-runner consumes. The scan now runs on `$KOBJ/vmlinux` and must pass
+*before* the install; a failed scan aborts before publish. Proven locally by the
+new `guest/linux/test-publish-gate.sh` — it plants a **real** rejection (an
+un-allowlisted `rdtsc`), drives the **real** scan (which rejects it), and asserts
+the `scan && install` gate publishes nothing on failure (Linux+binutils, no kernel
+build, no KVM window; **ran green on the box**). (b) **Refuse
+`PV_PERF_WINDOW_VNS=0` (P2).** A zero cap closes the workload window at the first
+step, so a one-step sample would pass as the steady-state measurement — now refused
+before either arm runs. (c) **Handshake summary corrected (P2).** The "what landed"
+§ still described pre-r8 behavior (register stamps+arms, traps optional); rewritten
+to the normative contract: pending-at-`OUT` + **required post-response RDTSC**
+counter read (r17) that lays the first canonical stamp and arms Δ; the trap is the
+enforcement backstop, not courtesy — an integrator must emit the handshake read.
+(d) **Stale seal-canonicalization doc deleted (P2).** `pvclock_stamp`'s doc still
+claimed `save_vm_state` re-stamps canonically at every seal — the exact ABA hazard
+the r4 verbatim-seal ruling removed; corrected to: canonical form is only the
+handshake first stamp (+ the armed restore re-stamp), and `save_vm_state` seals
+**verbatim** (side-effect-free). Items (c)/(d) matter for Paul's veto window, which
+reviews those rulings.
+
 ## What landed (by deliverable)
 
 1. **Rename ride-along** — already fully landed by tasks/108 (`guest_hz`/
