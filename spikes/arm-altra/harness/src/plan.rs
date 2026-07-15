@@ -86,7 +86,10 @@ pub struct PlanSpec {
     /// The plan's master seed. Everything else is derived from it.
     pub seed: u64,
     /// Inclusive range of work deltas to draw deadlines from. `None` for counting
-    /// runs (AA-1(a)/(b)); AA-3 drives seeded-random targets over `1..=100_000`.
+    /// runs (AA-1(a)/(b)); AA-3 drives seeded-random targets over `1..=100_000`. The
+    /// ceiling is clamped per (payload, scale) to that cell's landable window
+    /// ([`oracle_model::max_landable_delta`]) so a deadline never overshoots a small
+    /// window and records `deliveries: 0`.
     pub target_delta_range: Option<(u64, u64)>,
 }
 
@@ -157,6 +160,14 @@ pub fn plan(spec: &PlanSpec) -> Result<Vec<PlannedSample>, PlanError> {
             // a target, so adding a range does not shift the seed stream.
             let draw = rng.next_u64();
             let target_delta = spec.target_delta_range.map(|(lo, hi)| {
+                // Clamp the requested ceiling to THIS cell's landable window. A deadline drawn
+                // for a small window (WFI's scales, any smoke run) that exceeds it never fires
+                // — the guest exits first and records `deliveries: 0` — so the requested range
+                // is narrowed per (payload, scale) to what can actually land inside. The draw
+                // itself is unconditional above, so this does not shift the seed stream.
+                let hi = oracle_model::max_landable_delta(*payload, *scale)
+                    .map_or(hi, |cap| hi.min(cap));
+                let lo = lo.min(hi);
                 if hi <= lo {
                     lo
                 } else {
@@ -332,6 +343,41 @@ mod tests {
     }
 
     #[test]
+    fn deadlines_are_bounded_to_each_cells_landable_window() {
+        // The fix: a fixed 1..=100_000 draw overshoots a small window (WFI's scales, any
+        // smoke run), so the overflow never fires and the cell records deliveries: 0. The
+        // draw is now clamped per (payload, scale) to what can land inside.
+        let mut s = spec();
+        s.payloads = vec![Payload::WfiIdle, Payload::StraightLine];
+        s.scales = vec![Scale::Smoke];
+        s.conditions = vec!["pinned-solo".into()];
+        s.cases = 8;
+        s.reps = 1;
+        s.target_delta_range = Some((1, 100_000));
+        for sample in plan(&s).unwrap() {
+            let cap = oracle_model::max_landable_delta(sample.payload, sample.scale)
+                .expect("windowed payload has a landable cap");
+            let t = sample.target_delta.expect("range given");
+            assert!(
+                (1..=cap).contains(&t),
+                "{:?}/{:?} target {t} exceeds its landable window {cap}",
+                sample.payload,
+                sample.scale
+            );
+        }
+        // WFI at smoke: trips 200 → cap 100, far below the requested 100_000 ceiling.
+        assert_eq!(
+            oracle_model::max_landable_delta(Payload::WfiIdle, Scale::Smoke),
+            Some(100)
+        );
+        // The windowless ident payload has no cap.
+        assert_eq!(
+            oracle_model::max_landable_delta(Payload::Ident, Scale::Smoke),
+            None
+        );
+    }
+
+    #[test]
     fn a_degenerate_range_does_not_divide_by_zero() {
         let mut s = spec();
         s.target_delta_range = Some((7, 7));
@@ -364,7 +410,10 @@ mod tests {
         // build panicked on the add, a release build wrapped the divisor to 0 and
         // panicked on the modulo. `PlanSpec` is public and takes untrusted input, so
         // it must not panic. Every drawn delta must still be a valid u64 in range.
+        // Use the windowless `ident` payload so the per-cell landable-window clamp does
+        // not narrow the ceiling — the point of this test is the full-u64 draw arithmetic.
         let mut s = spec();
+        s.payloads = vec![Payload::Ident];
         s.target_delta_range = Some((0, u64::MAX));
         let samples = plan(&s).unwrap();
         assert!(!samples.is_empty());

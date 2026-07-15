@@ -40,6 +40,23 @@ pub enum LoadError {
         source: std::io::Error,
     },
 
+    /// The manifest's `records_file` is not a plain relative path INSIDE the run-set
+    /// directory. `records_file` is untrusted, and `Path::join` follows an absolute path
+    /// or `..` components right out of the selected directory — so the checker would read,
+    /// hash, and grade evidence from outside the retained package (or an arbitrary external
+    /// file). A self-contained evidence package names its records with a relative path that
+    /// stays inside it; anything else is refused before a byte is read.
+    #[error(
+        "records_file {records_file:?} escapes the run-set directory {dir}: it must be a \
+         relative path with no `..` or absolute/root component"
+    )]
+    RecordsPathEscapesDir {
+        /// The run-set directory the records must stay inside.
+        dir: PathBuf,
+        /// The offending `records_file` value from the manifest.
+        records_file: String,
+    },
+
     /// A line of the records file was not valid JSON for a
     /// [`RunRecord`](arm_harness::evidence::RunRecord). A malformed record is
     /// unreadable evidence, not a check to grade — the line number is 1-based.

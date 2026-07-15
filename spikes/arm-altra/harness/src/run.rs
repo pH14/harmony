@@ -46,6 +46,9 @@
 //! seam that cannot produce one fails the sample rather than writing an empty
 //! string that every comparison would trivially satisfy.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
 use oracle_model::{Payload, Scale, UART_BASE};
 use thiserror::Error;
 
@@ -359,6 +362,50 @@ pub struct SampleSpec {
     /// Work events past `MARK_BEGIN` to arm the overflow at. `None` in counting
     /// mode (AA-1(b)): no deadline is armed and no mechanism exit is expected.
     pub target_delta: Option<u64>,
+    /// The migration-probe handle, when AA-1's churner is running. `run_sample` reads it at
+    /// `arm_overflow` and at the landing to attest a move that fell STRICTLY inside this
+    /// sample's armed interval — not one that merely happened during the sample. `None`
+    /// outside the migration probe.
+    pub migration_probe: Option<ArmedMigrationProbe>,
+}
+
+/// Reads the migration churner's live move counter so [`run_sample`] can attest an affinity
+/// move that falls strictly inside a sample's ARMED interval (`arm_overflow` → landing).
+///
+/// A whole-sample before/after count is not that: VM/vGIC creation, image load, perf setup,
+/// and the guest's own boot all precede the arm, and the churner moves every 200µs, so a
+/// sample-wide count is satisfied by boot-time moves even when the short armed window saw
+/// none — vacuously satisfying AA-1's required armed-migration probe. Snapshotting at the arm
+/// and reading again at the landing bounds the observation to the interval that matters.
+#[derive(Clone, Debug)]
+pub struct ArmedMigrationProbe {
+    moves: Arc<AtomicU64>,
+    observed: Arc<AtomicBool>,
+}
+
+impl ArmedMigrationProbe {
+    /// Wrap the churner's live move counter (see [`crate::sys::MigrationChurner::moves_handle`]).
+    #[must_use]
+    pub fn new(moves: Arc<AtomicU64>) -> Self {
+        Self {
+            moves,
+            observed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn moves(&self) -> u64 {
+        self.moves.load(Ordering::Relaxed)
+    }
+
+    fn mark_observed(&self) {
+        self.observed.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether any sample saw an affinity move within its armed interval.
+    #[must_use]
+    pub fn observed(&self) -> bool {
+        self.observed.load(Ordering::Relaxed)
+    }
 }
 
 /// Run one sample to completion and assemble its [`RunRecord`].
@@ -398,6 +445,10 @@ pub fn run_sample(
     let mut landed: Option<u64> = None;
     let mut landed_digest: Option<String> = None;
     let mut mechanism_exit: Option<ExitReason> = None;
+    // The churner's move count AT the arm — the lower bound of the armed interval. A move
+    // between here and the landing migrated a LIVE armed context, the rr #3607 mode AA-1
+    // probes; a move before the arm (boot, setup) does not, and must not count.
+    let mut moves_at_arm: Option<u64> = None;
 
     'run: while status.is_none() {
         match vcpu.run()? {
@@ -454,6 +505,11 @@ pub fn run_sample(
                         if let Some(delta) = spec.target_delta {
                             counter.arm_overflow(delta)?;
                             target = Some(begin.saturating_add(delta));
+                            // Open the armed interval for the migration probe here, at the arm.
+                            moves_at_arm = spec
+                                .migration_probe
+                                .as_ref()
+                                .map(ArmedMigrationProbe::moves);
                         }
                     }
                     Some(Event::MarkEnd) => {
@@ -539,6 +595,15 @@ pub fn run_sample(
                 if landed.is_none() {
                     landed = Some(work);
                     mechanism_exit = Some(reason);
+                    // Close the armed interval: if the churner moved the thread between the
+                    // arm and this landing, a live armed context migrated across cores. This
+                    // is the only place a move counts toward AA-1's armed-migration probe.
+                    if let (Some(at_arm), Some(probe)) =
+                        (moves_at_arm, spec.migration_probe.as_ref())
+                        && probe.moves() > at_arm
+                    {
+                        probe.mark_observed();
+                    }
                     // Digest the state HERE — at the landing, before the guest is
                     // resumed. This is the state AA-3's replay identity is about; the
                     // one at the exit sentinel can converge from different landings.
@@ -838,6 +903,7 @@ mod tests {
             trips: 1_000,
             condition: "pinned-solo".into(),
             target_delta,
+            migration_probe: None,
         }
     }
 

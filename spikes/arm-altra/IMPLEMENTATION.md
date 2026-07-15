@@ -1203,6 +1203,42 @@ aarch64-linux, three `cargo deny`, the opcode-checked window scan, TCG smoke, ke
 format/parse, and arm-harness Miri (floor-check is safe Rust — its unit suite is the gate
 there; oracle-model unchanged, its r17 Miri stands).
 
+## Round-20 review fixes (PR #108, cross-model pass r20)
+
+Four P1 + one P2 (the sixth listed item, "add Miri paths for the unsafe payload crates",
+stays adjudicated-settled — bare-metal `global_asm!` crates cannot build under Miri).
+
+- **Decode FEAT_NV from the right field.** The AA-0 probe read `ID_AA64MMFR2_EL1[35:32]` (the
+  `AT` field) as `NV`; NV is `[27:24]`. On an N1 with AT present but NV absent this reported
+  nested virtualization present, blocking or bogusly deviation-ruling a mandatory row. Fixed to
+  shift 24.
+- **Measure churn only inside the armed interval.** The migration probe compared the churner's
+  move count across the WHOLE sample — VM/vGIC creation, image load, perf setup, and guest boot
+  all precede `arm_overflow`, and the churner moves every 200µs, so boot-time moves vacuously
+  satisfied AA-1's required armed-migration probe. `run_sample` now snapshots the move count at
+  the arm and again at the landing (via a new `ArmedMigrationProbe` threaded through
+  `SampleSpec`), so only a move STRICTLY between `arm_overflow` and the landing counts.
+- **Bound generated deadlines to each payload's window.** Every cell drew a delta in
+  `1..=100_000`, but a delta past a payload's window branch budget never fires (the guest exits
+  first, recording `deliveries: 0`) — fatal for WFI's shortened scales and any smoke run. The
+  plan now clamps the drawn ceiling per (payload, scale) to `oracle_model::max_landable_delta`
+  (half the trip count — a sound lower bound on window branches, ≥1 backedge/trip), so a
+  deadline always lands inside.
+- **Require replay identity for AA-4.** AA-4 (the LSE-only contract) was omitted from
+  `requires_replay_identity` and the acceptance-bearing set, so a singleton AA-4 run took the
+  generic PASS path without showing the LSE landing replays under the same injection schedule.
+  AA-4 now requires a repeated armed landing like AA-3; a singleton reads NOT-REQUESTED.
+- **Confine records_file to the run-set directory (P2).** `dir.join(records_file)` followed an
+  absolute path or `..` out of the selected directory, so a manifest could pass every check on
+  records outside the retained package (or an arbitrary external file). `load_run_set` now
+  rejects any `records_file` that is empty, absolute, or contains `..` before touching the
+  filesystem (`RecordsPathEscapesDir`).
+
+Miri item stays adjudicated-settled. Gates re-run green: harness 101 tests, floor-check 57 + 27
++ 3, oracle-model 23 + 2 (all with new tests), clippy `-D warnings` native + aarch64-linux,
+three `cargo deny`, the opcode-checked window scan, TCG smoke, kernel-patch format/parse, and
+arm-harness Miri.
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

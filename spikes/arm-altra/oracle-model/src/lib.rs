@@ -403,6 +403,31 @@ pub const fn trips(payload: Payload, scale: Scale) -> u64 {
     }
 }
 
+/// The largest work delta (BR_RETIRED past `MARK_BEGIN`) at which an armed overflow is
+/// guaranteed to land INSIDE a windowed payload's counting window, at the given scale.
+///
+/// A deadline past the window's branch budget never fires: the guest reaches its exit
+/// sentinel first and the sample records `deliveries: 0`. A fixed `1..=100_000` draw
+/// therefore cannot arm a landable deadline in a small window — WFI's deliberately shortened
+/// scales, or ANY payload at smoke, whose window is only ~`trips` branches — so the required
+/// AA-1 cells (and the default smoke plan) cannot produce an accepted overflow run.
+///
+/// Every windowed payload loops with at least one retired branch per trip (the loop
+/// backedge), so its window holds **at least [`trips`] branches**. A deadline in the FIRST
+/// HALF of that guaranteed minimum lands no later than the window's midpoint — clear of the
+/// close by at least `trips / 2` branches, which absorbs positive skid. `None` for
+/// [`Payload::Ident`], which has no window.
+#[must_use]
+pub const fn max_landable_delta(payload: Payload, scale: Scale) -> Option<u64> {
+    if !payload.has_window() {
+        return None;
+    }
+    // `trips` is ≥ 200 for every windowed payload/scale, so the half is ≥ 100; the `max(1)`
+    // is a floor against a hypothetical single-trip window, never a real one.
+    let half = trips(payload, scale) / 2;
+    Some(if half == 0 { 1 } else { half })
+}
+
 /// Virtual-timer interval, in counter ticks, that [`Payload::WfiIdle`] arms per
 /// trip. Interval choice is not load-bearing for counts: the payload masks
 /// interrupts before arming, so the interrupt is *taken* at the unmask, whatever
@@ -1470,6 +1495,32 @@ mod tests {
         assert_eq!(e.certain_taken, 0);
         assert_eq!(e.trips, 0);
         assert!(e.inline_branch_seq.is_empty());
+    }
+
+    #[test]
+    fn a_landable_delta_never_exceeds_the_guaranteed_window() {
+        // The cap is half the trip count (a sound lower bound on window branches), so a
+        // deadline drawn under it lands no later than the window midpoint. The windowless
+        // ident payload has no cap.
+        assert_eq!(max_landable_delta(Payload::Ident, Scale::Smoke), None);
+        for &scale in &[Scale::Smoke, Scale::S1e6, Scale::S1e7, Scale::S1e8] {
+            for &payload in ALL_PAYLOADS.iter().filter(|p| p.has_window()) {
+                let cap = max_landable_delta(payload, scale).expect("windowed payload has a cap");
+                assert!(
+                    cap >= 1,
+                    "{payload:?}/{scale:?} cap must admit at least delta 1"
+                );
+                assert!(
+                    cap <= trips(payload, scale),
+                    "{payload:?}/{scale:?} cap {cap} exceeds its trip count — not a sound window bound"
+                );
+            }
+        }
+        // WFI at smoke is the tightest: 200 trips → cap 100, far below the 100_000 default.
+        assert_eq!(
+            max_landable_delta(Payload::WfiIdle, Scale::Smoke),
+            Some(100)
+        );
     }
 
     #[test]

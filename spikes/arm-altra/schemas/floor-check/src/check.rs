@@ -36,7 +36,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::Path;
+use std::path::{Component, Path};
 
 use arm_harness::evidence::{ExitReason, RunRecord, RunSet, SCHEMA_VERSION, Stage, StepTransition};
 use arm_harness::sys::BR_RETIRED_RAW;
@@ -755,6 +755,17 @@ fn check_aa1_condition_matrix(
     );
 }
 
+/// Whether a manifest's `records_file` is a plain relative path that stays INSIDE its
+/// run-set directory: non-empty, and built only of normal (or `.`) components — no `..`,
+/// no absolute/root/prefix. `Path::join` follows an absolute path or `..` out of the base,
+/// so anything else would read evidence from outside the retained package.
+fn records_file_is_confined(records_file: &str) -> bool {
+    !records_file.is_empty()
+        && Path::new(records_file)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+}
+
 /// Load one run-set (manifest + records + raw record bytes) from a directory.
 fn load_run_set(dir: &Path) -> Result<(RunSet, Vec<RunRecord>, Vec<u8>), LoadError> {
     let manifest_path = dir.join(MANIFEST_FILE);
@@ -768,6 +779,17 @@ fn load_run_set(dir: &Path) -> Result<(RunSet, Vec<RunRecord>, Vec<u8>), LoadErr
             path: manifest_path.clone(),
             source,
         })?;
+    // Confine records_file to the run-set directory BEFORE touching the filesystem.
+    // `records_file` is untrusted, and `Path::join` follows an absolute path or `..`
+    // components straight out of `dir` — so an unconfined path would let a manifest pass
+    // every hash and floor check on records outside the retained package (or an arbitrary
+    // external file).
+    if !records_file_is_confined(&run_set.records_file) {
+        return Err(LoadError::RecordsPathEscapesDir {
+            dir: dir.to_path_buf(),
+            records_file: run_set.records_file.clone(),
+        });
+    }
     let records_path = dir.join(&run_set.records_file);
     let records_bytes = std::fs::read(&records_path).map_err(|source| LoadError::ReadRecords {
         path: records_path.clone(),
@@ -1934,7 +1956,9 @@ fn comparison_digest(stage: Stage, r: &RunRecord) -> &str {
 fn is_acceptance_bearing(stage: Stage, r: &RunRecord) -> bool {
     match stage {
         Stage::Aa2 => r.step.is_some(),
-        Stage::Aa3 => r
+        // AA-3's landed state, and AA-4's LSE-only landing under the same injection schedule,
+        // are both armed, delivered records — the injection is what each replays.
+        Stage::Aa3 | Stage::Aa4 => r
             .overflow
             .as_ref()
             .is_some_and(|o| o.armed && o.deliveries >= 1),
@@ -2120,15 +2144,16 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
         return;
     }
 
-    // AA-2/AA-3 rest on the ACCEPTANCE-BEARING groups alone (stepped states / armed landings),
-    // because the existential `compared > 0` above is not enough: one stepped record per
-    // transition (each a singleton group) beside two duplicate UNSTEPPED records makes
-    // `compared == 1` and would pass, though not one stepped state was ever replayed; likewise
-    // a unique armed AA-3 landing. So a repeated unrelated group cannot stand in for the ones
-    // the stage certifies.
-    if matches!(stage, Stage::Aa2 | Stage::Aa3) {
+    // AA-2/AA-3/AA-4 rest on the ACCEPTANCE-BEARING groups alone (stepped states / armed
+    // landings / LSE-only landings), because the existential `compared > 0` above is not
+    // enough: one stepped record per transition (each a singleton group) beside two duplicate
+    // UNSTEPPED records makes `compared == 1` and would pass, though not one stepped state was
+    // ever replayed; likewise a unique armed AA-3/AA-4 landing. So a repeated unrelated group
+    // cannot stand in for the ones the stage certifies.
+    if matches!(stage, Stage::Aa2 | Stage::Aa3 | Stage::Aa4) {
         let what = match stage {
             Stage::Aa2 => "stepped",
+            Stage::Aa4 => "lse-only landing",
             _ => "armed-landing",
         };
         let mut bearing_groups: BTreeMap<RepKey, Vec<u64>> = BTreeMap::new();
@@ -2213,12 +2238,16 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
 }
 
 /// Whether a stage's acceptance **is** replay identity: AA-2 (replay-identical *stepped*
-/// state), AA-3 (replay-identical landed state), AA-5 (bit-identical same-seed clock-page and
-/// Linux-guest runs) and AA-6 (≥1,000 same-input bit-identical). At those, comparing zero
-/// digests is not a pass, so a run with no repeated group reads NOT-REQUESTED. AA-1/AA-4 do
-/// not rest on it.
+/// state), AA-3 (replay-identical landed state), AA-4 (the LSE-only payload replayed under the
+/// same injection schedule with bit-identical counts and digests), AA-5 (bit-identical
+/// same-seed clock-page and Linux-guest runs) and AA-6 (≥1,000 same-input bit-identical). At
+/// those, comparing zero digests is not a pass, so a run with no repeated group reads
+/// NOT-REQUESTED. Only AA-1 does not rest on it.
 const fn requires_replay_identity(stage: Stage) -> bool {
-    matches!(stage, Stage::Aa2 | Stage::Aa3 | Stage::Aa5 | Stage::Aa6)
+    matches!(
+        stage,
+        Stage::Aa2 | Stage::Aa3 | Stage::Aa4 | Stage::Aa5 | Stage::Aa6
+    )
 }
 
 /// AA-2 exists to *characterize single-stepping* — does one step retire exactly one
@@ -4534,6 +4563,59 @@ mod tests {
             status(&out, CheckId::ArmedOverflowFloor),
             Some(Status::NotRequested)
         );
+    }
+
+    #[test]
+    fn aa4_requires_replay_evidence_for_the_lse_landing() {
+        assert!(
+            requires_replay_identity(Stage::Aa4),
+            "AA-4's acceptance is the LSE-only landing replayed under the same injection schedule"
+        );
+        // A single armed LSE landing → nothing replayed → NOT-REQUESTED, not a silent PASS.
+        let mut out = Vec::new();
+        check_replay_identity(Stage::Aa4, &[a_record_seeded(0, 7)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::NotRequested),
+            "a singleton AA-4 run demonstrated no injection-schedule invariance"
+        );
+        // Two bit-identical armed reps of the same input → PASS.
+        let mut out = Vec::new();
+        check_replay_identity(
+            Stage::Aa4,
+            &[a_record_seeded(0, 7), a_record_seeded(1, 7)],
+            &mut out,
+        );
+        assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Pass));
+        // Two reps whose landed digests DIVERGE → FAIL.
+        let mut a = a_record_seeded(0, 7);
+        let mut b = a_record_seeded(1, 7);
+        if let Some(o) = a.overflow.as_mut() {
+            o.landed_digest = "sha256:aa".into();
+        }
+        if let Some(o) = b.overflow.as_mut() {
+            o.landed_digest = "sha256:bb".into();
+        }
+        let mut out = Vec::new();
+        check_replay_identity(Stage::Aa4, &[a, b], &mut out);
+        assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
+    }
+
+    #[test]
+    fn records_file_must_stay_inside_the_run_set_dir() {
+        for ok in ["records.jsonl", "./records.jsonl", "sub/records.jsonl"] {
+            assert!(records_file_is_confined(ok), "{ok} should be confined");
+        }
+        for bad in [
+            "",
+            "../records.jsonl",
+            "../../etc/passwd",
+            "/etc/passwd",
+            "sub/../../escape",
+            "a/../../../b",
+        ] {
+            assert!(!records_file_is_confined(bad), "{bad} must be rejected");
+        }
     }
 
     #[test]

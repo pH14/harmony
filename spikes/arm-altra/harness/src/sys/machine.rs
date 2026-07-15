@@ -347,6 +347,14 @@ impl MigrationChurner {
         self.moves.load(Ordering::Relaxed)
     }
 
+    /// A clonable handle to the live move counter, so the run loop can bound a move to a
+    /// sample's armed interval (`arm_overflow` → landing) rather than the whole sample. See
+    /// [`crate::run::ArmedMigrationProbe`].
+    #[must_use]
+    pub fn moves_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.moves)
+    }
+
     /// Stop churning and join the thread, returning the total successful moves.
     pub fn stop(mut self) -> u64 {
         self.shutdown();

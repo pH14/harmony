@@ -458,7 +458,9 @@ fn probe(box_config: PathBuf, rulings: Option<PathBuf>, out: PathBuf) -> Result<
         present(sve != 0),
         format!("ID_AA64PFR0_EL1.SVE = {sve:#x}"),
     ));
-    let nv = f4(regs.id_aa64mmfr2, 32);
+    // NV is ID_AA64MMFR2_EL1[27:24]; [35:32] is the AT field. Reading AT would report nested
+    // virtualization present on an N1 that has AT but not NV, mislabelling this mandatory row.
+    let nv = f4(regs.id_aa64mmfr2, 24);
     rows.push(RowInput::cap(
         "nested-virt",
         "id-register",
@@ -680,7 +682,7 @@ fn execute(args: RunArgs) -> Result<(), String> {
     use arm_harness::evidence::{
         ExitReason, ImagePin, Mechanism, Pinning, RunSetContext, assemble_run_set, hex_lower,
     };
-    use arm_harness::run::{SampleSpec, run_sample};
+    use arm_harness::run::{ArmedMigrationProbe, SampleSpec, run_sample};
     use arm_harness::sys::{self, Machine, ParamsPage, PerfCounter, perf_config, pin_to_core};
     use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
@@ -841,11 +843,15 @@ fn execute(args: RunArgs) -> Result<(), String> {
     let mut armed_attr = None;
     let mut patch_marker = false;
     let mut failure: Option<String> = None;
-    // Set once the churner is observed to have moved the thread DURING an ARMED sample — the
-    // rr #3607 live-armed migration. A lifetime move total is not enough: the churner starts
-    // before kernel hashing/loading/planning/VM build, so its moves can all fall before the
-    // first `arm_overflow`, or a short armed sample can finish during a churn sleep.
-    let mut armed_migration_observed = false;
+    // The armed-migration probe, shared across every sample. `run_sample` sets its `observed`
+    // flag only when the churner moves the thread STRICTLY between a sample's `arm_overflow`
+    // and its landing — the rr #3607 live-armed migration. A lifetime move total is not
+    // enough: the churner starts before kernel hashing/loading/planning/VM build, so its
+    // moves can all fall before the first `arm_overflow`. Bounding the observation to the
+    // armed interval is what makes it real (a whole-sample count is satisfied by boot moves).
+    let migration_probe = churner
+        .as_ref()
+        .map(|c| ArmedMigrationProbe::new(c.moves_handle()));
 
     for (i, s) in samples.iter().enumerate() {
         // In migration-probe mode the background churner is moving this thread across cores
@@ -867,10 +873,6 @@ fn execute(args: RunArgs) -> Result<(), String> {
             scale_index: s.scale.index(),
             seed: s.seed,
         };
-        // Snapshot the churner's move count around this sample. For an ARMED sample the
-        // guest spends the bulk of run_sample inside the armed counting window, so a move
-        // during it is a move under an armed overflow — the interval the probe must attest.
-        let moves_before = churner.as_ref().map(sys::MigrationChurner::moves);
         let result = (|| {
             let mut machine = Machine::new(&loaded.image, &params)
                 .map_err(|e| format!("create the machine: {e}"))?;
@@ -894,17 +896,10 @@ fn execute(args: RunArgs) -> Result<(), String> {
                 trips: oracle_model::trips(s.payload, s.scale),
                 condition: s.condition.clone(),
                 target_delta: s.target_delta,
+                migration_probe: migration_probe.clone(),
             };
             run_sample(&mut machine, &mut counter, &spec).map_err(|e| e.to_string())
         })();
-        // If this was an armed sample and the churner moved the thread during it, a live
-        // armed context migrated across cores — the rr #3607 experiment actually ran.
-        if let (Some(before), Some(c)) = (moves_before, churner.as_ref())
-            && s.target_delta.is_some()
-            && c.moves() > before
-        {
-            armed_migration_observed = true;
-        }
         match result {
             Ok(record) => records.push(record),
             Err(e) => {
@@ -914,16 +909,20 @@ fn execute(args: RunArgs) -> Result<(), String> {
         }
     }
 
-    // Stop the migration churner and confirm it moved the thread DURING an armed sample.
+    // Stop the migration churner and confirm it moved the thread DURING an armed interval.
     // A lifetime move total > 0 is not enough — those moves can all fall before the first
-    // arm_overflow — so the probe fails unless at least one armed sample saw the thread move.
+    // arm_overflow — so the probe fails unless at least one sample saw the thread move
+    // strictly between its arm_overflow and its landing (attested by `migration_probe`).
+    let armed_migration_observed = migration_probe
+        .as_ref()
+        .is_some_and(ArmedMigrationProbe::observed);
     if let Some(churner) = churner {
         let moves = churner.stop();
         if failure.is_none() && !armed_migration_observed {
             failure = Some(format!(
-                "the migration probe issued {moves} affinity move(s), but none fell within an \
-                 ARMED sample's interval: no armed perf context migrated across cores, so the rr \
-                 #3607 missed-overflow mode was never exercised"
+                "the migration probe issued {moves} affinity move(s), but none fell between a \
+                 sample's arm_overflow and its landing: no armed perf context migrated across \
+                 cores, so the rr #3607 missed-overflow mode was never exercised"
             ));
         }
     }
