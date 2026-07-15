@@ -32,7 +32,7 @@ throughput; the vendor spikes gate *trust* (measured constants, the trait freeze
 fill), not construction. The ruled 5-lane queue and its risk acceptance live in
 `docs/ARCH-BOUNDARY.md` §Pre-build ruling.
 
-## In flight (2 active workers; 2 PRs in foreman review)
+## In flight (1 active worker; 3 PRs parked on Paul)
 
 - **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — **⛔ MERGE HALTED
   AT THE LAST GATE, ESCALATED TO PAUL (2026-07-14 ~10:20)**: N-3 is fully green (six
@@ -53,12 +53,14 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   after the r8 workload-relative correction) and **rounds 1–17 fixed-and-verified**
   (the accumulated rulings: seal-verbatim, GPA one-shot, deterministic-anchor stamping,
   two-step registration handshake — r17 sharpened it to the RDTSC/RDTSCP read
-  specifically). r18 + r19 each fixed-and-box-re-validated within the hour (G2 at EVERY
-  synchronized boundary, 4,843 oracle checks; perf arms assert clocksource SELECTION,
-  24.93x with the guard live). **r20 dispatched ~17:10 — first round with ZERO P1s**
-  (2 P2s: arm_arrival must reject past Moments so the public API can't rewind published
-  vns; G3 must count the first refresh interval — G3-only window granted). On a clean
-  r21 the PR is at APPROVE, then **parks merge-ready for Paul's veto window**.
+  specifically). Rounds r18–r21 each fixed-and-verified within the hour (G2 at EVERY
+  synchronized boundary 4,843 checks; perf arms assert clocksource SELECTION, 24.93x
+  live; arm_arrival rejects past Moments; scan-before-publish + planted proof; the
+  seal-verbatim + handshake docs match the rulings). **⛔ VERIFIED AND PARKED
+  MERGE-READY 2026-07-15 ~18:05 (comment 4983751155) — PAUL'S VETO WINDOW over the 5
+  accumulated rulings; merge is his.** On merge `hm-rfz` becomes spawnable. (The
+  formal gh approval object is classifier-blocked as self-approval — the comment is
+  the verdict record.)
 - **ARM pre-build apparatus** (tasks/109, `hm-2kj`, PR #108) — the r13 hold was released
   same night (held set dispatched + fixed as round 13; loop-to-zero de facto, Paul's
   cadence ruling moot if the loop reaches zero): **rounds 1–23 fixed** through head
