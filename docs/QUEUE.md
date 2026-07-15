@@ -53,26 +53,24 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   after the r8 workload-relative correction) and **rounds 1–17 fixed-and-verified**
   (the accumulated rulings: seal-verbatim, GPA one-shot, deterministic-anchor stamping,
   two-step registration handshake — r17 sharpened it to the RDTSC/RDTSCP read
-  specifically). r18 fixed + box-re-validated same hour (G2 at EVERY synchronized
-  boundary, 4,843 oracle checks green). **r19 dispatched 2026-07-15 ~16:20** (1 P1:
-  page-on perf arms must assert clocksource SELECTION before emitting ratios; perf-arm
-  re-run window granted — the recorded ~25x stands, G0 proved selection). Stream is
-  converging (2 P2 → 1 → 1, all harness gate-strength). On a clean r20 the PR is at
-  APPROVE, then **parks merge-ready for Paul's veto window** over the rulings.
+  specifically). r18 + r19 each fixed-and-box-re-validated within the hour (G2 at EVERY
+  synchronized boundary, 4,843 oracle checks; perf arms assert clocksource SELECTION,
+  24.93x with the guard live). **r20 dispatched ~17:10 — first round with ZERO P1s**
+  (2 P2s: arm_arrival must reject past Moments so the public API can't rewind published
+  vns; G3 must count the first refresh interval — G3-only window granted). On a clean
+  r21 the PR is at APPROVE, then **parks merge-ready for Paul's veto window**.
 - **ARM pre-build apparatus** (tasks/109, `hm-2kj`, PR #108) — the r13 hold was released
   same night (held set dispatched + fixed as round 13; loop-to-zero de facto, Paul's
   cadence ruling moot if the loop reaches zero): **rounds 1–23 fixed** through head
   `48309f2` (2026-07-15 ~07:54; recent species: writable-ID-surface enumeration, AA-3
   case/target coverage binding, CASP-is-LSE, truth-table schema validation; the
-  Miri-payload item stays adjudicated-settled). r24 fixed same hour; **r25 found the
-  migration-probe fix incomplete on its own root cause (foreman-confirmed) — the formal
-  escalation trigger is MET** (root-cause recurrence + 6→4→7→6 non-convergence).
-  **Surgical final round dispatched ~16:55** (3 decision-invariant P1s: no-delivery
-  migration recording, probe-loss exit-reason handling, ELF checked_add); the 3
-  evidence-refinement P2s filed as **arrival-day validation items `hm-f99`** (← Altra
-  arrival `hm-7pb`). **On its green landing the PR parks merge-ready for Paul** under
-  the recommended pre-silicon bar; loop-to-zero alternative dispatches `hm-f99` as r26
-  instead. Escalated by push + PR comment 2026-07-15.
+  Miri-payload item stays adjudicated-settled). The escalation trigger was MET at r25
+  (migration-probe root-cause recurrence + 6→4→7→6 non-convergence) → **surgical final
+  round dispatched, fixed in 10 min, foreman-verified in source, gates 203/203 + clippy
+  clean → ⛔ PR PARKED MERGE-READY, PAUL'S CALL** (comment 4983393599, escalated by
+  push): merge under the recommended pre-silicon bar (arrival-day residue = `hm-f99` ←
+  `hm-7pb`), or rule loop-to-zero and `hm-f99` dispatches as r26. No further foreman
+  rounds without the ruling.
 
 Landed since the midday refresh: **conductor full-suite Miri restoration MERGED**
 (tasks/104, PR #105 — 12× cut to ~11.5 min, foreman-confirmed, triple vacuity guard;
@@ -91,9 +89,9 @@ classifier-blocked. Local + box gates are unaffected (the real signals stay gree
 
 Reach-matrix lane (foreman-owned or spawnable next):
 
-- **Mac nested-KVM dev-loop probe** (`hm-8l3`, P3, ~an hour) — can an aarch64 Linux VM on
-  this Mac expose /dev/kvm for the ARM backend's ioctl dev loop? GO/refuse note recorded on
-  `hm-cbt`; TCG stays the fallback oracle either way.
+- **Mac nested-KVM dev-loop probe** (`hm-8l3`, P3) — **SPAWNED 2026-07-15 ~17:30**
+  (tasks/111, agent-mac-kvm-devloop-probe, Opus 4.8): bead-only evidence task, GO/refuse
+  on `hm-cbt`; TCG stays the fallback oracle either way.
 - **Hardware-arrival lane** — Altra arrival blocker `hm-7pb` (P1) → ARM spike execution
   `hm-idb`; Epyc arrival blocker `hm-9wt` (P2) → AMD spike execution `hm-u1n`. Paul
   closes an arrival bead when its box is racked; the execution surfaces dispatch-ready.
