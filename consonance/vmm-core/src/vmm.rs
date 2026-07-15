@@ -1704,7 +1704,10 @@ where
                  cooperating-guest channel rides the doorbell)"
                     .to_string(),
             )),
-            Exit::Common(CommonExit::Deadline { reached }) => self.on_deadline(reached),
+            // Pass the run_until `deadline` target: an overdue landing's `reached`
+            // is a skid-tainted live count on the real backend, so the anchor must
+            // come from the deterministic target (cross-model r8 P1).
+            Exit::Common(CommonExit::Deadline { reached }) => self.on_deadline(reached, deadline),
             Exit::Arch(e) => <B::A as Vendor>::dispatch_arch(self, e),
         }?;
         // Task 110: refresh the pvclock page at the tail of EVERY serviced
@@ -2644,9 +2647,12 @@ where
     /// forced out, because the deadline is live the moment the page is registered
     /// — no wait for another intercept, no dependence on the reference kernel's
     /// courtesy `rdtsc`. If the anchor is stale enough that `anchor + Δ` is
-    /// already in the past, the existing overdue `Deadline` handling forces the
-    /// guest out at the next `run_until` and advances the anchor; the staleness is
-    /// bounded by Δ, the same one-window contract as any refresh.
+    /// already in the past, the overdue `Deadline` forces the guest out at the
+    /// next `run_until` and [`on_deadline`](Self::on_deadline) advances the anchor
+    /// to the **deterministic target** `anchor + Δ` — NOT the overdue landing's
+    /// live PMU count (cross-model r8 P1: that count is skid-tainted on the real
+    /// backend). So the arm stays deterministic even when born overdue; the
+    /// staleness is bounded by Δ, the same one-window contract as any refresh.
     pub(crate) fn pvclock_refresh_deadline(&self) -> Option<Moment> {
         let pv = self.pvclock.as_ref()?;
         pv.gpa?;
@@ -3568,14 +3574,35 @@ where
         <B::A as Vendor>::next_timer_deadline_vns(self)
     }
 
-    /// Handle [`CommonExit::Deadline`]: the guest was preempted at exactly `reached`
-    /// retired branches (a pure function of the seed — bit-identical across same-seed
-    /// runs even mid-spin). Advance the skid-free last-intercept anchor to it — a
-    /// deterministic V-time intercept, like an RDTSC trap — so the NEXT `step`'s
-    /// [`Self::service_pending_irqs`] sees [`Self::lapic_now_vns`] at the timer
-    /// deadline, fires the timer into the LAPIC IRR, and injects it at the first
-    /// injectable entry. No completion (the backend left nothing pending).
-    pub(crate) fn on_deadline(&mut self, reached: Moment) -> Result<Step, VmmError> {
+    /// Handle [`CommonExit::Deadline`]: the guest was preempted at the `run_until`
+    /// deadline. Advance the skid-free last-intercept anchor to the **deterministic
+    /// deadline target** (`target`, the exact-count the backend was told to stop
+    /// at) — a deterministic V-time intercept, like an RDTSC trap — so the NEXT
+    /// `step`'s [`Self::service_pending_irqs`] sees [`Self::lapic_now_vns`] at the
+    /// timer deadline, fires the timer into the LAPIC IRR, and injects it at the
+    /// first injectable entry. No completion (the backend left nothing pending).
+    ///
+    /// **Anchor to `target`, not `reached` (cross-model r8 P1).** For a landing
+    /// that actually reached the deadline, `reached == target` and this is
+    /// identical to before. But on the real backend an **overdue** deadline (the
+    /// `AtOrPastDeadline` path — the target was already in the guest's past when
+    /// `run_until` was called) returns `reached =` a **live PMU count**, which
+    /// carries exit-path skid. Promoting that into `last_intercept_work` would
+    /// leak nondeterminism straight into the next page stamp and the state hash —
+    /// the exact skid the r7 registration fix avoids at the doorbell, sneaking
+    /// back in via a pvclock deadline armed off a stale anchor. `target` is a pure
+    /// function of the deterministic anchor + Δ (and the timer/arrival deadlines),
+    /// and is always `<= reached` (the backend never stops *before* the deadline),
+    /// so anchoring to it is deterministic AND monotone (the anchor never runs
+    /// ahead of the guest's real work). The mock rewrites `reached := deadline`, so
+    /// portable tests never exercised the skid — this is a real-backend-only hole.
+    /// `target` is `None` only if a `Deadline` somehow arrived without a
+    /// `run_until` (a backend contract violation); fall back to `reached` then.
+    pub(crate) fn on_deadline(
+        &mut self,
+        reached: Moment,
+        target: Option<Moment>,
+    ) -> Result<Step, VmmError> {
         // Trace the MEASURED landing work (diagnostic, not hashed) for the seed-dependence
         // gate — capped so a constantly-preempting guest can't grow it unbounded.
         // ONLY when a timer/arrival deadline was actually due at the landing (r3
@@ -3602,9 +3629,12 @@ where
         {
             pv.forced_landings = pv.forced_landings.saturating_add(1);
         }
+        // The deterministic intercept point is the deadline TARGET, not the
+        // (possibly skid-tainted, on an overdue real-backend landing) `reached`.
+        let anchor = target.unwrap_or(reached).0;
         match self.vtime.as_mut() {
             Some(vt) => {
-                vt.last_intercept_work = reached.0;
+                vt.last_intercept_work = anchor;
                 // The preemption point is an exact work boundary, so V-time is
                 // synchronized (a snapshot taken right here is exact, like any
                 // other intercept).
@@ -9326,6 +9356,52 @@ mod tests {
             3,
             "every landing here is the Δ bound's doing — nothing else is armed"
         );
+    }
+
+    /// An OVERDUE deadline anchors to the deterministic target, never to the
+    /// landing's live count (cross-model r8 P1). On the real backend an overdue
+    /// `run_until` (the pvclock deadline armed off a stale anchor, born in the
+    /// guest's past) returns `reached =` a **live PMU count** carrying exit-path
+    /// skid; the mock instead rewrites `reached := deadline`, so the portable
+    /// suite could not see this. Drive `on_deadline` directly with a divergent
+    /// overdue `reached` (the skid a real backend would return) and confirm
+    /// `last_intercept_work` — which feeds the next page stamp and the state hash
+    /// — comes from the deterministic `target`, so two same-seed runs whose skid
+    /// differs still land the identical anchor and identical page bytes.
+    #[test]
+    fn overdue_deadline_anchors_to_target_not_the_live_landing_count() {
+        // Anchor + Δ is the deterministic target; an overdue landing reports some
+        // work strictly past it, and that reported value is the nondeterministic
+        // skid we must NOT promote.
+        let anchor = 1_000u64;
+        let target = Moment(anchor + PVCLOCK_DEFAULT_DELTA_WORK);
+        let run_with_skid = |skid: u64| -> (u64, Vec<u8>) {
+            let mut vmm = pvclock_vmm(vec![], Box::new(ScriptedWork::at(0)), 7);
+            vmm.vtime.as_mut().unwrap().last_intercept_work = anchor;
+            ring_pvclock_register(&mut vmm, PV_GPA);
+            // The overdue landing: reached = target + skid (a real backend's live
+            // count); the target is the deterministic deadline that was armed.
+            vmm.on_deadline(Moment(target.0 + skid), Some(target))
+                .unwrap();
+            // Re-stamp the page from the new anchor, as step()'s tail would.
+            vmm.pvclock_refresh().unwrap();
+            (
+                vmm.vtime.as_ref().unwrap().last_intercept_work,
+                vmm.pvclock_page().unwrap().to_vec(),
+            )
+        };
+        let (anchor_a, page_a) = run_with_skid(12_345);
+        let (anchor_b, page_b) = run_with_skid(99_999);
+        assert_eq!(
+            anchor_a, target.0,
+            "the anchor took the overdue landing's live count, not the deterministic target — \
+             skid would flow into the state hash"
+        );
+        assert_eq!(
+            anchor_a, anchor_b,
+            "the anchor diverged with the (nondeterministic) skid"
+        );
+        assert_eq!(page_a, page_b, "the page bytes diverged with the skid");
     }
 
     /// The pure-opt-in gate, host side: an offered-but-vtime-unwired VM and a

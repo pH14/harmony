@@ -88,10 +88,26 @@ sites() {
             sym = $2; gsub(/[<>:]/, "", sym); next
         }
         /^[[:space:]]*[0-9a-f]+:\t/ {
-            # objdump instruction line: addr:\tbytes\tmnemonic [operands]
+            # objdump instruction line: addr:\tbytes\tmnemonic [operands].
+            # The mnemonic may be PREFIXED: a legal `66 0f 31` renders as
+            # `data16 rdtsc`, and taking only the first token would read `data16`
+            # and miss the counter read (cross-model r8 P2). Walk the mnemonic
+            # field, skipping the x86 prefix tokens objdump emits separately, and
+            # test the first real mnemonic. rdtsc/rdtscp take NO operands, so the
+            # first non-prefix token IS the mnemonic — no operand can be reached,
+            # so a symbol named "...rdtsc..." in some other instruction cannot
+            # false-match.
             n = split($0, f, "\t")
             if (n >= 3) {
-                mn = f[3]; sub(/[[:space:]].*$/, "", mn)
+                cnt = split(f[3], toks, /[[:space:]]+/)
+                mn = ""
+                for (i = 1; i <= cnt; i++) {
+                    t = toks[i]
+                    if (t ~ /^(data16|data32|addr16|addr32|lock|rep|repz|repe|repnz|repne|rex|rex\..*|cs|ds|es|fs|gs|ss|bnd|notrack)$/)
+                        continue
+                    mn = t
+                    break
+                }
                 if (mn == "rdtsc" || mn == "rdtscp") count[sym]++
             }
         }
@@ -266,6 +282,19 @@ EOF
         exit 1
     fi
 
+    # A PREFIXED counter read (`66 0f 31` → objdump renders `data16 rdtsc`):
+    # MUST be caught — a first-token parse would read `data16` and miss it
+    # (cross-model r8 P2).
+    cat > "$d/planted-prefixed.dis" << 'EOF'
+ffffffff81000040 <prefixed_reader>:
+ffffffff81000040:	66 0f 31             	data16 rdtsc
+ffffffff81000043:	c3                   	ret
+EOF
+    if scan "$d/planted-prefixed.dis" "$d/allow.txt" >/dev/null 2>&1; then
+        echo "FAIL: self-test — a prefixed 'data16 rdtsc' was NOT caught (first-token parse bug)" >&2
+        exit 1
+    fi
+
     # A SECOND rdtsc planted inside an ALREADY-allowlisted function (count
     # 1 → 2): MUST fail — the per-instruction accounting (cross-model r1 P1).
     cat > "$d/planted-inside.dis" << 'EOF'
@@ -335,7 +364,7 @@ EOF
             raw_selftest="raw-byte-scan, "
         fi
     fi
-    echo "ok: scan self-test (planted-new, planted-inside-allowlisted, stale-entry, bare-entry, artifact-qualification, ${raw_selftest:-}fixtures all caught)"
+    echo "ok: scan self-test (planted-new, planted-prefixed, planted-inside-allowlisted, stale-entry, bare-entry, artifact-qualification, ${raw_selftest:-}fixtures all caught)"
 }
 
 self_test

@@ -524,9 +524,14 @@ fn g1_same_seed_state_hash_bit_identical_page_on() {
     require_host_baseline();
     let kernel = pvclock_kernel();
     let initramfs = pg_initramfs();
+    // Defaults sized to the pinned Postgres artifact's ~0.46 virtual-second
+    // lifetime (cross-model r8 P2): first seal at 0.1 s, then every 0.05 s, so
+    // all three seals land while the guest is alive. A 2 s first seal — the old
+    // default — reaches terminal before any seal and the DEFAULT G1 invocation
+    // fails; override for a longer-lived image.
     let seals = env_u64("PV_G1_SEALS", 3);
-    let v0 = env_u64("PV_G1_FIRST_VNS", 2_000_000_000);
-    let dv = env_u64("PV_G1_STEP_VNS", 500_000_000);
+    let v0 = env_u64("PV_G1_FIRST_VNS", 100_000_000);
+    let dv = env_u64("PV_G1_STEP_VNS", 50_000_000);
 
     let (ha, gpa_a) = g1_arm(&kernel, &initramfs, seals, v0, dv);
     let (hb, gpa_b) = g1_arm(&kernel, &initramfs, seals, v0, dv);
@@ -902,80 +907,99 @@ fn n4_perf_postgres_window_page_off_vs_page_on() {
     require_host_baseline();
     let kernel = pvclock_kernel();
     let initramfs = pg_initramfs();
-    let window = env_u64("PV_PERF_WINDOW_VNS", 10_000_000_000);
+    // Optional early cap on the workload window, in V-time ns. Default: the WHOLE
+    // workload (`workload begin` → `workload end`), which self-sizes to the
+    // pinned artifact — so the default invocation works without any override
+    // (cross-model r8 P2, the "default within the pinned workload" concern). Set
+    // it to measure a shorter fixed sub-window of a longer workload.
+    let cap = env_u64("PV_PERF_WINDOW_VNS", u64::MAX);
 
+    // (rdtsc+rdtscp delta, total delta, V-time span) measured OVER THE WORKLOAD.
     let arm = |page_on: bool| -> (u64, u64, u64) {
+        let side = if page_on { "on" } else { "off" };
         let mut vmm = boot(&kernel, &initramfs, SEED, page_on);
-        let obs = run_bounded(
-            &mut vmm,
-            u64::MAX,
-            Duration::from_secs(1800),
-            |vmm, step| {
-                // Close the measurement window at `window` virtual ns (checked
-                // periodically — effective_vns is a clock read, not free).
-                !(step % 1_000 == 0 && vmm.effective_vns().unwrap_or(0) >= window)
-            },
-        );
-        let vns = vmm.effective_vns().unwrap_or(0);
-        // The window must actually COMPLETE (cross-model r6 P2). `run_bounded`
-        // also stops on a step error, a guest terminal, or the 30-minute wall
-        // cap — any of which leaves a truncated window with still-positive
-        // counts that the final sanity check would wave through as valid
-        // kill-condition evidence. Rates from a partial (and page-off-vs-page-on
-        // unequal) window are not a measurement; fail loudly instead.
+        // 1. Boot to workload READINESS. Everything before `PG37: workload begin`
+        //    is kernel + Postgres startup, NOT steady state — counting from VM
+        //    boot would report mostly-startup as a workload measurement
+        //    (cross-model r8 P2). Fail loudly if the workload never begins
+        //    (Postgres crashed / hung), rather than reporting startup.
+        let boot_obs = run_bounded(&mut vmm, u64::MAX, Duration::from_secs(900), |vmm, _| {
+            !find(vmm.serial(), b"PG37: workload begin")
+        });
         assert!(
-            obs.step_error.is_none(),
-            "page-{} arm hit a step error before the window closed: {:?}",
-            if page_on { "on" } else { "off" },
-            obs.step_error
+            boot_obs.step_error.is_none(),
+            "page-{side} boot step error before workload readiness: {:?}",
+            boot_obs.step_error
         );
         assert!(
-            vns >= window,
-            "page-{} arm ended at {vns} vns, short of the {window} vns window (guest terminal or \
-             wall timeout?) — a truncated window is not valid perf evidence",
-            if page_on { "on" } else { "off" }
+            find(vmm.serial(), b"PG37: workload begin"),
+            "page-{side} arm never reached 'PG37: workload begin' — Postgres did not start its \
+             workload (terminal={:?}). A run that never enters the workload cannot be reported \
+             as a steady-state Postgres measurement.",
+            boot_obs.reason
         );
-        let counts = vmm.exit_counts();
+        // 2. BASELINE the counters and V-time at readiness — deltas from here.
+        let base = vmm.exit_counts();
+        let base_vns = vmm.effective_vns().unwrap_or(0);
+        // 3. Measure to `PG37: workload end` (or the optional V-time cap).
+        let win_obs = run_bounded(&mut vmm, u64::MAX, Duration::from_secs(900), |vmm, _| {
+            !(find(vmm.serial(), b"PG37: workload end")
+                || vmm.effective_vns().unwrap_or(0).saturating_sub(base_vns) >= cap)
+        });
+        assert!(
+            win_obs.step_error.is_none(),
+            "page-{side} arm step error mid-workload: {:?}",
+            win_obs.step_error
+        );
+        let end_vns = vmm.effective_vns().unwrap_or(0);
+        let span = end_vns.saturating_sub(base_vns);
+        // 4. The window must CLOSE on the end marker or the cap, with a non-trivial
+        //    span — not on a mid-workload guest terminal (a truncated window is not
+        //    valid evidence; cross-model r6/r8).
+        let reached_end = find(vmm.serial(), b"PG37: workload end");
+        assert!(
+            reached_end || span >= cap,
+            "page-{side} workload window truncated: span={span} vns, end_marker={reached_end}, \
+             terminal={:?} — the guest ended mid-workload, not valid steady-state evidence",
+            win_obs.reason
+        );
+        assert!(span > 0, "page-{side} workload window had zero V-time span");
         if page_on {
             assert!(
                 vmm.pvclock_registration().is_some(),
-                "page-on arm never registered"
+                "page-on arm never registered the clock page"
             );
         }
-        (counts.rdtsc + counts.rdtscp, counts.total(), vns)
+        let now = vmm.exit_counts();
+        (
+            (now.rdtsc + now.rdtscp) - (base.rdtsc + base.rdtscp),
+            now.total() - base.total(),
+            span,
+        )
     };
-    let (off_rdtsc, off_total, off_vns) = arm(false);
-    let (on_rdtsc, on_total, on_vns) = arm(true);
-    // DENOMINATOR = the exact predetermined `window` (cross-model r7 P2), NOT each
-    // arm's measured `effective_vns()`. After the run stops, V-time is not
-    // synchronized and `effective_vns()` is only a last-intercept LOWER BOUND —
-    // and its bias is NOT common-mode, because page-off takes the very clocksource
-    // RDTSC exits page-on removes, so the two arms' lower bounds are stale by
-    // different amounts. Dividing by a single predetermined interval both arms ran
-    // *past* (`vns >= window` asserted above) removes that differential bias; the
-    // ratio is then the pure exit-count ratio. Each arm slightly overshoots
-    // `window` (the periodic ~1000-step boundary check), page-on by a little more
-    // (fewer exits/vsec ⇒ coarser granularity), which only *understates* the
-    // reduction — the conservative direction for the kill-condition verdict.
-    let window_secs = window as f64 / 1e9;
-    let per_vsec = |n: u64| n as f64 / window_secs;
+    let (off_rdtsc, off_total, off_span) = arm(false);
+    let (on_rdtsc, on_total, on_span) = arm(true);
+    // Each arm's rate is its OWN workload-span delta (boot excluded, deltas from
+    // the readiness baseline). The two spans differ slightly — the page changes
+    // the timekeeping instruction stream, hence the retired-branch V-time of the
+    // same logical SQL — so the fair comparison is the RATE (exits per vsec),
+    // which normalizes for that.
+    let per_vsec = |n: u64, span: u64| n as f64 / (span.max(1) as f64 / 1e9);
     eprintln!(
-        "[REPORT] pg window page-OFF: rdtsc={off_rdtsc} ({:.0}/vsec over the {window}-vns window) \
-         total={off_total} measured_vns={off_vns}",
-        per_vsec(off_rdtsc)
+        "[REPORT] pg workload page-OFF: rdtsc={off_rdtsc} ({:.0}/vsec) total={off_total} span={off_span} vns",
+        per_vsec(off_rdtsc, off_span)
     );
     eprintln!(
-        "[REPORT] pg window page-ON:  rdtsc={on_rdtsc} ({:.0}/vsec over the {window}-vns window) \
-         total={on_total} measured_vns={on_vns}",
-        per_vsec(on_rdtsc)
+        "[REPORT] pg workload page-ON:  rdtsc={on_rdtsc} ({:.0}/vsec) total={on_total} span={on_span} vns",
+        per_vsec(on_rdtsc, on_span)
     );
     eprintln!(
-        "[REPORT] pg window: rdtsc-exit-rate reduction = {:.2}x over the exact {window}-vns \
-         interval (kill condition 3 threshold: 2x)",
-        per_vsec(off_rdtsc) / per_vsec(on_rdtsc).max(f64::MIN_POSITIVE)
+        "[REPORT] pg workload: rdtsc-exit-rate reduction = {:.2}x (workload begin→end, boot \
+         excluded; kill condition 3 threshold: 2x)",
+        per_vsec(off_rdtsc, off_span) / per_vsec(on_rdtsc, on_span).max(f64::MIN_POSITIVE)
     );
     assert!(
         off_rdtsc > 0,
-        "not a real measurement (page-off took no RDTSC exits)"
+        "not a real measurement (page-off workload took no RDTSC exits)"
     );
 }
