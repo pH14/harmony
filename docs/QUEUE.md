@@ -105,9 +105,7 @@ Reach-matrix lane (foreman-owned or spawnable next):
   closes an arrival bead when its box is racked; the execution surfaces dispatch-ready.
   Arrival day now lands on pre-built tooling: the preflight truth-table probes (`hm-69y`
   rider) and the harness lanes (`hm-8v4` / `hm-2kj`).
-- **Nested-x86 spike findings** — SIGSTOP-cycling wedge (`hm-440`) **SPAWNED 2026-07-15
-  ~22:20** (tasks/114, agent-sigstop-cycling-wedge, Opus 4.8: mine spike evidence →
-  reproduce → fix-or-fail-closed + regression test).
+
 - **macOS-backend design exploration** (`hm-dj0`, P2, background-session filed).
 
 General ready (foreman spawns as slots free):
@@ -180,6 +178,12 @@ spawn these until that lane re-opens):
 
 ## Recently done (this week)
 
+- **SIGSTOP-cycling wedge FIXED AND MERGED same evening** (tasks/114, `hm-440`, PR #113,
+  2026-07-15): the observed wedge was a single-step LIVELOCK (72% CPU, work never
+  advancing after a suspend-lost work-clock completion) — now step-budget-bounded and
+  fail-closed with a typed error at the run_until seam; deterministic + neutrality-tested;
+  PlannerConfig stays frozen-shape. One codex P1 refuted with the process-state evidence;
+  the unobserved blocked-ioctl sibling filed as `hm-efc` (P3). Spawn→merge ~1.5 h.
 - **Stale insn-cpuid golden FIXED AND MERGED same evening** (tasks/113, `hm-zc2`, PR #112,
   2026-07-15): root cause = never re-blessed after the v3→v4 ARAT contract correction
   (PR #36) — NOT microcode, NOT the hm-xdp image family; refreshed via DETCORPUS_BLESS
