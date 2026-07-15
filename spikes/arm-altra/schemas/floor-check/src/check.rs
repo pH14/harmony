@@ -538,13 +538,15 @@ fn check_aggregation(
 
     // Comparability. Summing records across conditions and grading count invariance is only
     // meaningful if every set was measured under ONE constants pack and ONE measurement
-    // environment — the sweep varies the `condition` (and, for AA-1's probe, the pinning
-    // posture), nothing else. If the sets differ in `weights`, `perf`, `environment`, or
-    // `mechanism`, a condition-dependent count change can be absorbed by a compensating
-    // per-set difference (a different count offset in each `weights` pack, say) and the
-    // aggregate still "passes" count invariance. So require those four to match the first
-    // set. `condition` and `pinning` are deliberately NOT compared — they are the sweep.
-    // The workload identity is the set of image content hashes (paths are never trusted).
+    // environment — the sweep varies the `condition`, nothing else. If the sets differ in
+    // `weights`, `perf`, `environment`, or `mechanism`, a condition-dependent count change can
+    // be absorbed by a compensating per-set difference (a different count offset in each
+    // `weights` pack, say) and the aggregate still "passes" count invariance. So require those
+    // four to match the first set. `condition` is the sweep and is not compared. `pinning` is
+    // part of the measurement environment EXCEPT at AA-1, whose sweep legitimately varies the
+    // pinning posture (the sanctioned bounded migration probe runs unpinned beside the pinned
+    // sets) — so pinning is compared at every stage but AA-1 (see below). The workload identity
+    // is the set of image content hashes (paths are never trusted).
     let image_ids = |rs: &RunSet| -> Vec<String> {
         let mut v: Vec<String> = rs
             .images
@@ -575,13 +577,22 @@ fn check_aggregation(
             if image_ids(rs) != image_ids(first) {
                 diffs.push("images");
             }
+            // Pinning is the PMU/skid measurement environment: two AA-3 half-million-deadline
+            // sets pinned to DIFFERENT cores (or under different governors) are a different
+            // measurement, not one million deadlines, so they must not be summed into one
+            // verdict. The one exception is AA-1, whose sweep varies the pinning posture (the
+            // sanctioned migration probe runs unpinned); there pinning legitimately differs and
+            // is graded by check_pinning instead.
+            if stage != Stage::Aa1 && rs.pinning != first.pinning {
+                diffs.push("pinning");
+            }
             if !diffs.is_empty() {
                 problems.push(format!(
                     "run-set {} differs from {} in [{}] — aggregated conditions must share one \
                      constants pack (weights), measurement environment (perf, environment, \
-                     mechanism), and payload images; only `condition` (and AA-1's pinning \
-                     posture) may vary, or a condition-dependent count change hides behind a \
-                     per-set difference",
+                     mechanism, and — outside AA-1 — pinning), and payload images; only \
+                     `condition` (and AA-1's pinning posture) may vary, or a condition-dependent \
+                     count change hides behind a per-set difference",
                     rs.run_set_id,
                     first.run_set_id,
                     diffs.join(", ")
@@ -1910,14 +1921,16 @@ fn comparison_digest(stage: Stage, r: &RunRecord) -> &str {
     }
 }
 
-/// Whether a record is **acceptance-bearing** for a replay-identity stage: the record
-/// whose replay identity IS the stage's acceptance. At AA-2 that is a stepped record (the
-/// step-moment state); at AA-3 an armed, delivered landing (the landed state); at AA-5 the
-/// `clock-page` and Linux-guest records whose same-seed runs must be bit-identical. A record
-/// that is none of these — a counting run at AA-3, an unarmed sample — is not what the stage
-/// certifies, so its being a singleton is not a gap. AA-6 rests on replay identity too but
-/// over the ordinary state digest of every record, so it is covered by the existing per-group
-/// divergence check, not by this per-class repetition requirement.
+/// Whether a record is **acceptance-bearing** for AA-2 or AA-3: the record whose replay
+/// identity IS the stage's acceptance. At AA-2 that is a stepped record (the step-moment
+/// state); at AA-3 an armed, delivered landing (the landed state). A record that is neither —
+/// a counting run at AA-3, an unarmed sample — is not what the stage certifies, so its being
+/// a singleton is not a gap.
+///
+/// AA-5 is NOT handled here: its acceptance needs BOTH the clock-page and the Linux-guest
+/// class present and repeated, a per-CLASS requirement [`check_replay_identity`] enforces in
+/// a dedicated branch. AA-6 rests on replay identity too but over the ordinary state digest
+/// of every record, covered by the per-group divergence check, not this per-class rule.
 fn is_acceptance_bearing(stage: Stage, r: &RunRecord) -> bool {
     match stage {
         Stage::Aa2 => r.step.is_some(),
@@ -1925,9 +1938,6 @@ fn is_acceptance_bearing(stage: Stage, r: &RunRecord) -> bool {
             .overflow
             .as_ref()
             .is_some_and(|o| o.armed && o.deliveries >= 1),
-        // AA-5's binding acceptance is bit-identical same-seed clock-page runs and two
-        // identical Linux-guest runs — both must actually be REPEATED to establish it.
-        Stage::Aa5 => matches!(r.payload, Payload::ClockPage | Payload::LinuxGuest),
         _ => false,
     }
 }
@@ -2034,18 +2044,92 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
         return;
     }
 
-    // AA-2/AA-3/AA-5 rest on the ACCEPTANCE-BEARING groups alone (stepped states / armed
-    // landings / clock-page + Linux-guest runs), because the existential `compared > 0` above
-    // is not enough: one stepped record per transition (each a singleton group) beside two
-    // duplicate UNSTEPPED records makes `compared == 1` and would pass, though not one stepped
-    // state was ever replayed; likewise a unique armed AA-3 landing or a single work-derived
-    // clock-page record. So a repeated unrelated group cannot stand in for the ones the stage
-    // certifies.
-    if matches!(stage, Stage::Aa2 | Stage::Aa3 | Stage::Aa5) {
+    // AA-5 acceptance is TWO bit-identical mechanisms: a work-derived clock-page run AND a
+    // Linux-guest boot, each replayed same-seed. BOTH classes must be present AND repeated — a
+    // run of only repeated clock-page records has not established the guest boot AA-5(c)
+    // requires, and repeated guest boots alone say nothing about the paravirt clock page. The
+    // generic acceptance-bearing branch below would PASS on either class alone (its groups are
+    // pooled across classes), so AA-5 gets its own per-CLASS branch.
+    if stage == Stage::Aa5 {
+        let class_groups = |want: Payload| -> Vec<Vec<u64>> {
+            let mut g: BTreeMap<RepKey, Vec<u64>> = BTreeMap::new();
+            for r in records.iter().filter(|r| r.payload == want) {
+                g.entry(rep_key(r)).or_default().push(r.sample_id);
+            }
+            g.into_values().collect()
+        };
+        let mut missing: Vec<&str> = Vec::new();
+        let mut unrepeated: Vec<&str> = Vec::new();
+        let mut singletons: Vec<u64> = Vec::new();
+        for (want, label) in [
+            (Payload::ClockPage, "clock-page"),
+            (Payload::LinuxGuest, "linux-guest"),
+        ] {
+            let groups = class_groups(want);
+            if groups.is_empty() {
+                missing.push(label);
+            } else if groups.iter().all(|ids| ids.len() < 2) {
+                unrepeated.push(label);
+            }
+            singletons.extend(
+                groups
+                    .iter()
+                    .filter(|ids| ids.len() < 2)
+                    .flat_map(|ids| ids.iter().copied()),
+            );
+        }
+        singletons.sort_unstable();
+
+        if !missing.is_empty() {
+            out.push(not_requested(
+                CheckId::ReplayIdentity,
+                format!(
+                    "AA-5 acceptance is a bit-identical clock-page run AND a bit-identical \
+                     Linux-guest boot, but the records carry no {} record: that half of AA-5 was \
+                     never exercised, so this verdict cannot accept it",
+                    missing.join(" and no ")
+                ),
+            ));
+        } else if !unrepeated.is_empty() {
+            out.push(not_requested(
+                CheckId::ReplayIdentity,
+                format!(
+                    "AA-5's {} class(es) carry no repeated (payload, scale, seed, condition) group \
+                     (--reps 1): that state was never replayed, so replay identity is untested. \
+                     Submit repeated inputs",
+                    unrepeated.join(" and ")
+                ),
+            ));
+        } else if !singletons.is_empty() {
+            out.push(fail(
+                CheckId::ReplayIdentity,
+                format!(
+                    "AA-5: samples {} appear once and were never replayed — EVERY clock-page and \
+                     Linux-guest group must be repeated (≥2 reps), not just some",
+                    preview(singletons.iter().copied())
+                ),
+            ));
+        } else {
+            out.push(pass(
+                CheckId::ReplayIdentity,
+                "both AA-5 classes (clock-page and linux-guest) replayed on bit-identical state \
+                 digests"
+                    .to_string(),
+            ));
+        }
+        return;
+    }
+
+    // AA-2/AA-3 rest on the ACCEPTANCE-BEARING groups alone (stepped states / armed landings),
+    // because the existential `compared > 0` above is not enough: one stepped record per
+    // transition (each a singleton group) beside two duplicate UNSTEPPED records makes
+    // `compared == 1` and would pass, though not one stepped state was ever replayed; likewise
+    // a unique armed AA-3 landing. So a repeated unrelated group cannot stand in for the ones
+    // the stage certifies.
+    if matches!(stage, Stage::Aa2 | Stage::Aa3) {
         let what = match stage {
             Stage::Aa2 => "stepped",
-            Stage::Aa3 => "armed-landing",
-            _ => "clock-page/linux-guest",
+            _ => "armed-landing",
         };
         let mut bearing_groups: BTreeMap<RepKey, Vec<u64>> = BTreeMap::new();
         for r in records.iter().filter(|r| is_acceptance_bearing(stage, r)) {
@@ -2577,8 +2661,23 @@ fn check_rep_floor(
                 ));
             } else {
                 let tag = if below { " [SUB-NORMATIVE]" } else { "" };
+                // AA-6's floor is over repetitions UNDER INJECTION. A group of one armed
+                // record and 999 `armed: false` records sharing the same target is not 1,000
+                // injected reps: check_replay_identity compares their (final) digests, but the
+                // rep FLOOR must not read 1,000 there. So at AA-6 only armed, delivered records
+                // count toward the floor; other stages that opt into a floor count every record
+                // (their acceptance is not injection).
+                let counted: Vec<&RunRecord> = records
+                    .iter()
+                    .filter(|r| {
+                        run_set.stage != Stage::Aa6
+                            || r.overflow
+                                .as_ref()
+                                .is_some_and(|o| o.armed && o.deliveries >= 1)
+                    })
+                    .collect();
                 let mut groups: BTreeMap<RepKey, u64> = BTreeMap::new();
-                for r in records {
+                for r in &counted {
                     *groups.entry(rep_key(r)).or_default() += 1;
                 }
                 let distinct = groups.len();
@@ -2596,10 +2695,11 @@ fn check_rep_floor(
                         CheckId::RepFloor,
                         format!(
                             "the least-repeated input appears only {min_group} time(s), below the \
-                             per-input rep floor of {min} (there are {distinct} distinct inputs across \
-                             {} records; a total-count floor would have hidden this — AA-6 needs {min} \
-                             reps of the SAME input){tag}",
-                            records.len()
+                             per-input rep floor of {min} (there are {distinct} distinct input(s) \
+                             across {} counted record(s); a total-count floor — or counting unarmed \
+                             records at AA-6 — would have hidden this: AA-6 needs {min} reps of the \
+                             SAME input UNDER injection){tag}",
+                            counted.len()
                         ),
                     ));
                 }
@@ -3396,6 +3496,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn aggregation_holds_pinning_fixed_outside_aa1() {
+        let floors = Floors {
+            min_armed_overflows: Some(2),
+            min_reps: None,
+            sub_normative: true,
+        };
+        // Two AA-3 sets that agree on everything the sweep does not vary.
+        let pair = || {
+            [
+                a_loaded_set(Stage::Aa3, "a", "pinned-solo", &"a".repeat(64), 2),
+                a_loaded_set(Stage::Aa3, "b", "pinned-solo", &"b".repeat(64), 2),
+            ]
+        };
+        assert_eq!(
+            status(&aggregate(&pair(), &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Pass),
+            "same core + governor → comparable"
+        );
+
+        // A different pinned core → refused: the PMU/skid measurement environment moved, so
+        // two half-floors are not one floor of one measurement.
+        let mut c = pair();
+        c[1].0.pinning.core = Some(3);
+        assert_eq!(
+            status(&aggregate(&c, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Fail),
+            "AA-3 sets pinned to different cores must not be summed"
+        );
+
+        // A different governor → refused for the same reason.
+        let mut g = pair();
+        g[1].0.pinning.governor = "schedutil".into();
+        assert_eq!(
+            status(&aggregate(&g, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Fail)
+        );
+
+        // At AA-1 the pinning posture IS the sweep (the sanctioned migration probe runs
+        // unpinned beside the pinned sets), so the same core difference is allowed.
+        let mut a1 = [
+            a_loaded_set(Stage::Aa1, "a", "pinned-solo", &"a".repeat(64), 2),
+            a_loaded_set(Stage::Aa1, "b", "co-tenant-other-core", &"b".repeat(64), 2),
+        ];
+        a1[1].0.pinning.core = Some(3);
+        assert_eq!(
+            status(&aggregate(&a1, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Pass),
+            "AA-1's sweep varies the pinning posture — cores may differ"
+        );
+    }
+
     /// Build a swept AA-1 set (one payload, 1e6/1e7/1e8) that is also the migration probe.
     fn swept_migration_probe(id: &str, hash: &str) -> (RunSet, Vec<RunRecord>, Vec<u8>) {
         let mut set = a_loaded_set(Stage::Aa1, id, "pinned-solo", hash, 3);
@@ -3781,6 +3933,50 @@ mod tests {
         ];
         let mut out = Vec::new();
         check_floors(&a_run_set(), &floors, &three_reps, &mut out);
+        assert_eq!(status(&out, CheckId::RepFloor), Some(Status::Pass));
+    }
+
+    #[test]
+    fn aa6_rep_floor_counts_only_injected_repetitions() {
+        // AA-6's floor is over repetitions UNDER injection. One armed record beside three
+        // `armed: false` records of the same input is not three injected reps.
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa6;
+        let floors = Floors {
+            min_armed_overflows: None,
+            min_reps: Some(3),
+            sub_normative: true, // 3 < 1000: accept the weakened floor for the unit
+        };
+        let unarmed = |id: u64| {
+            let mut r = a_record_seeded(id, 7);
+            if let Some(o) = r.overflow.as_mut() {
+                o.armed = false;
+                o.deliveries = 0;
+            }
+            r
+        };
+        let one_injected = vec![
+            a_record_seeded(0, 7), // armed + delivered
+            unarmed(1),
+            unarmed(2),
+            unarmed(3),
+        ];
+        let mut out = Vec::new();
+        check_floors(&rs, &floors, &one_injected, &mut out);
+        assert_eq!(
+            status(&out, CheckId::RepFloor),
+            Some(Status::Fail),
+            "one injected rep beside three unarmed records is not three reps under injection"
+        );
+
+        // Three actually-injected reps of the same input meet the floor.
+        let three_injected = vec![
+            a_record_seeded(0, 7),
+            a_record_seeded(1, 7),
+            a_record_seeded(2, 7),
+        ];
+        let mut out = Vec::new();
+        check_floors(&rs, &floors, &three_injected, &mut out);
         assert_eq!(status(&out, CheckId::RepFloor), Some(Status::Pass));
     }
 
@@ -4187,35 +4383,95 @@ mod tests {
     }
 
     #[test]
-    fn aa5_requires_repeated_clock_page_groups() {
-        let clock = |id: u64, seed: u64, state: &str| {
+    fn aa5_requires_both_clock_page_and_linux_guest_each_repeated() {
+        let rec = |id: u64, seed: u64, payload: Payload, state: &str| {
             let mut r = a_record_seeded(id, seed);
-            r.payload = Payload::ClockPage;
-            r.overflow = None; // AA-5 clock-page is counting-mode
+            r.payload = payload;
+            r.overflow = None; // AA-5's acceptance-bearing records are counting-mode
             r.state_digest = state.to_string();
             r
         };
-        // A single work-derived clock-page record: nothing to replay → NOT-REQUESTED, not PASS.
+        let cp = |id, seed, state| rec(id, seed, Payload::ClockPage, state);
+        let lg = |id, seed, state| rec(id, seed, Payload::LinuxGuest, state);
+
+        // Repeated clock-page runs but NO Linux guest → NOT-REQUESTED: half of AA-5 (the guest
+        // boot AA-5(c) requires) was never exercised, so this cannot read as a PASS.
         let mut out = Vec::new();
-        check_replay_identity(Stage::Aa5, &[clock(0, 1, "sha256:cp")], &mut out);
+        check_replay_identity(
+            Stage::Aa5,
+            &[cp(0, 7, "sha256:same"), cp(1, 7, "sha256:same")],
+            &mut out,
+        );
         assert_eq!(
             status(&out, CheckId::ReplayIdentity),
             Some(Status::NotRequested),
-            "a single clock-page record has no repeated group — AA-5 cannot certify on it"
+            "repeated clock-page alone never boots the Linux guest AA-5 also certifies"
         );
-        // Two bit-identical reps of the same input → PASS.
+
+        // Repeated Linux guest but NO clock page → likewise NOT-REQUESTED.
         let mut out = Vec::new();
         check_replay_identity(
             Stage::Aa5,
-            &[clock(0, 7, "sha256:same"), clock(1, 7, "sha256:same")],
+            &[lg(0, 7, "sha256:g"), lg(1, 7, "sha256:g")],
+            &mut out,
+        );
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::NotRequested)
+        );
+
+        // Both classes present but each a single rep → NOT-REQUESTED (nothing replayed).
+        let mut out = Vec::new();
+        check_replay_identity(
+            Stage::Aa5,
+            &[cp(0, 7, "sha256:c"), lg(1, 9, "sha256:g")],
+            &mut out,
+        );
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::NotRequested)
+        );
+
+        // Both classes, each repeated bit-identically → PASS.
+        let mut out = Vec::new();
+        check_replay_identity(
+            Stage::Aa5,
+            &[
+                cp(0, 7, "sha256:c"),
+                cp(1, 7, "sha256:c"),
+                lg(2, 9, "sha256:g"),
+                lg(3, 9, "sha256:g"),
+            ],
             &mut out,
         );
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Pass));
-        // Two divergent reps → FAIL.
+
+        // Both present and repeated, but the clock-page reps DIVERGE → FAIL.
         let mut out = Vec::new();
         check_replay_identity(
             Stage::Aa5,
-            &[clock(0, 7, "sha256:a"), clock(1, 7, "sha256:b")],
+            &[
+                cp(0, 7, "sha256:a"),
+                cp(1, 7, "sha256:b"),
+                lg(2, 9, "sha256:g"),
+                lg(3, 9, "sha256:g"),
+            ],
+            &mut out,
+        );
+        assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
+
+        // Both classes repeated, but one extra clock-page rep is a singleton group → FAIL:
+        // EVERY acceptance-bearing group must be repeated, not just some.
+        let mut out = Vec::new();
+        check_replay_identity(
+            Stage::Aa5,
+            &[
+                cp(0, 7, "sha256:c"),
+                cp(1, 7, "sha256:c"),
+                cp(2, 5, "sha256:solo"),
+                lg(3, 9, "sha256:g"),
+                lg(4, 9, "sha256:g"),
+            ],
             &mut out,
         );
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));

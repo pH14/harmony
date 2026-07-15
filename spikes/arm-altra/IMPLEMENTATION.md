@@ -1168,6 +1168,41 @@ harness 100 tests, floor-check 53 + 27 + 3 (fixtures regenerated), oracle-model 
 opcode-checked window scan, TCG smoke, kernel-patch format/parse, and Miri (arm-harness;
 oracle-model unchanged this round, its r17 run stands).
 
+## Round-19 review fixes (PR #108, cross-model pass r19)
+
+Four fresh P1s (the fifth listed item, "run Miri for every unsafe payload crate", stays
+adjudicated-settled — bare-metal `global_asm!` crates cannot build under Miri).
+
+- **Retain the timer comparator (CVAL) in the digest.** `is_host_time_register` excluded
+  `(crm, op2) == (0, 2)` as the live `CNTVCT_EL0`, but the KVM one-reg ABI REMAPS the timer
+  pseudo-registers off the architectural encodings: id `ARM64_SYS_REG(3,3,14,0,2)` is
+  `KVM_REG_ARM_TIMER_CVAL` (the guest's programmed virtual-timer deadline, deterministic
+  state), and the live counter is `KVM_REG_ARM_TIMER_CNT` at `(3, 2)`. Two guests differing
+  only in their timer deadline hashed identically. The filter now excludes only the live
+  counters `(0,1) | (0,5) | (0,6) | (3,2)` and keeps `(0,2)`; the flagship digest test now
+  also asserts a CVAL change DOES diverge.
+- **Count only injected AA-6 repetitions toward the rep floor.** `check_rep_floor` counted every
+  record in a `RepKey` group regardless of `overflow.armed`, so an AA-6 group of one injected
+  record and 999 `armed: false` records sharing a target met a 1,000-rep floor without 1,000
+  reps under injection. At AA-6 only armed, delivered records now count toward the floor (other
+  stages that opt into a floor still count every record).
+- **Require BOTH AA-5 classes.** `is_acceptance_bearing` filtered whichever AA-5 class happened
+  to exist and never required both, so a run of repeated `clock-page` records with no
+  `linux-guest` read a full PASS. AA-5 now has its own per-CLASS replay branch: both the
+  clock-page and the Linux-guest class must be present AND repeated; a missing or singleton
+  class reads NOT-REQUESTED (a divergent repeated group still fails).
+- **Hold pinning fixed across aggregated normal runs.** Comparability omitted `pinning` for
+  every stage, so two AA-3 half-million-deadline sets pinned to different cores could sum into a
+  passing million-deadline verdict though the PMU/skid environment changed. Pinning is now part
+  of comparability at every stage EXCEPT AA-1, whose sweep legitimately varies the pinning
+  posture (the sanctioned bounded migration probe runs unpinned).
+
+Miri item stays adjudicated-settled. Gates re-run green: harness 100 tests, floor-check 55 + 27
++ 3 (two new lib tests), oracle-model 22 + 2 (unchanged), clippy `-D warnings` native +
+aarch64-linux, three `cargo deny`, the opcode-checked window scan, TCG smoke, kernel-patch
+format/parse, and arm-harness Miri (floor-check is safe Rust — its unit suite is the gate
+there; oracle-model unchanged, its r17 Miri stands).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

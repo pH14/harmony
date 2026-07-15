@@ -523,11 +523,14 @@ pub fn digest_state(
 /// Whether a `KVM_GET_ONE_REG` id names a **host-time-derived** register — one whose
 /// value advances with elapsed real time and so must not enter a determinism digest.
 ///
-/// These are the generic-timer *counters*: `CNTPCT_EL0`, `CNTVCT_EL0`, their
-/// self-synchronized `…SS` variants, and the `KVM_REG_ARM_TIMER_CNT` pseudo-register.
+/// These are the generic-timer *counters*: the physical `CNTPCT_EL0`, the two
+/// self-synchronized `…SS` variants, and the live `KVM_REG_ARM_TIMER_CNT` pseudo-register.
 /// All live at the arm64 system-register coordinates `op0=3, op1=3, CRn=14`. The
 /// *comparators* (`…CVAL`), *controls* (`…CTL`, `CNTKCTL`), and the constant
-/// `CNTFRQ` are deterministic guest-programmed state and are kept.
+/// `CNTFRQ` are deterministic guest-programmed state and are kept — and note the KVM
+/// one-reg remap: id `ARM64_SYS_REG(3,3,14,0,2)`, the architectural `CNTVCT_EL0` slot, is
+/// `KVM_REG_ARM_TIMER_CVAL` (the programmed deadline) in a real register list, so it too is
+/// kept; the live counter is `KVM_REG_ARM_TIMER_CNT` at `(3,3,14,3,2)`.
 ///
 /// Pinned by [`tests::host_time_registers_are_the_generic_timer_counters`]; a wrong
 /// mask would either leak the wall clock into the digest (replay dead) or drop real
@@ -564,13 +567,19 @@ pub fn is_host_time_register(id: u64) -> bool {
     if (op0, op1, crn) != (3, 3, 14) {
         return false;
     }
-    // The counter registers, by (CRm, op2):
-    //   CNTPCT_EL0   = (0, 1)   CNTVCT_EL0   = (0, 2)
-    //   CNTPCTSS_EL0 = (0, 5)   CNTVCTSS_EL0 = (0, 6)
+    // The live host-time counters to exclude, by (CRm, op2):
+    //   CNTPCT_EL0   = (0, 1)   CNTPCTSS_EL0 = (0, 5)   CNTVCTSS_EL0 = (0, 6)
     //   KVM_REG_ARM_TIMER_CNT = ARM64_SYS_REG(3,3,14,3,2) = (3, 2)
-    // The controls/comparators/frequency (CNTFRQ (0,0), *CTL, *CVAL, CNTKCTL) are
-    // deterministic guest state and are NOT excluded.
-    matches!((crm, op2), (0, 1) | (0, 2) | (0, 5) | (0, 6) | (3, 2))
+    // NOT (0, 2): the KVM one-reg ABI REMAPS the timer pseudo-registers off the architectural
+    // sysreg encodings, so id ARM64_SYS_REG(3,3,14,0,2) — which architecturally names
+    // CNTVCT_EL0 — is KVM_REG_ARM_TIMER_CVAL, the guest's PROGRAMMED virtual-timer deadline
+    // (deterministic guest state), while the live counter is KVM_REG_ARM_TIMER_CNT at (3, 2).
+    // KVM enumerates the timer as these pseudo-registers, not the architectural counters, so
+    // the only (0, 2) entry in a real register list is CVAL and it is KEPT — excluding it (an
+    // earlier draft did) drops the programmed deadline, so two guests whose only difference is
+    // their virtual-timer deadline would hash identically. The controls/comparators/frequency
+    // (CNTFRQ (0,0), *CTL, CVAL, CNTKCTL) are deterministic guest state and are NOT excluded.
+    matches!((crm, op2), (0, 1) | (0, 5) | (0, 6) | (3, 2))
 }
 
 /// Whether a PMU `events/<name>` sysfs value encodes the given raw event number.
@@ -1462,9 +1471,8 @@ mod tests {
             P | (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2
         };
 
-        // The live counters — excluded.
+        // The live host-time counters — excluded.
         assert!(is_host_time_register(sysreg(3, 3, 14, 0, 1)), "CNTPCT_EL0");
-        assert!(is_host_time_register(sysreg(3, 3, 14, 0, 2)), "CNTVCT_EL0");
         assert!(
             is_host_time_register(sysreg(3, 3, 14, 0, 5)),
             "CNTPCTSS_EL0"
@@ -1473,12 +1481,23 @@ mod tests {
             is_host_time_register(sysreg(3, 3, 14, 0, 6)),
             "CNTVCTSS_EL0"
         );
-        assert!(is_host_time_register(sysreg(3, 3, 14, 3, 2)), "TIMER_CNT");
+        assert!(
+            is_host_time_register(sysreg(3, 3, 14, 3, 2)),
+            "KVM_REG_ARM_TIMER_CNT"
+        );
 
-        // Deterministic timer state — KEPT.
+        // Deterministic timer state — KEPT. In the KVM one-reg ABI id (3,3,14,0,2) is
+        // KVM_REG_ARM_TIMER_CVAL — the programmed virtual-timer deadline, NOT the live
+        // CNTVCT_EL0 the architectural encoding names — so it must survive into the digest.
+        assert!(
+            !is_host_time_register(sysreg(3, 3, 14, 0, 2)),
+            "KVM_REG_ARM_TIMER_CVAL"
+        );
         assert!(!is_host_time_register(sysreg(3, 3, 14, 0, 0)), "CNTFRQ_EL0");
-        assert!(!is_host_time_register(sysreg(3, 3, 14, 3, 1)), "CNTV_CTL");
-        assert!(!is_host_time_register(sysreg(3, 3, 14, 0, 3)), "a CVAL");
+        assert!(
+            !is_host_time_register(sysreg(3, 3, 14, 3, 1)),
+            "KVM_REG_ARM_TIMER_CTL"
+        );
         assert!(
             !is_host_time_register(sysreg(3, 0, 14, 1, 0)),
             "CNTKCTL_EL1"
@@ -1489,39 +1508,54 @@ mod tests {
             kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC
         ));
 
-        // The load-bearing anti-regression: a *literal* real KVM register id, not one
-        // built from the same prefix the predicate uses, so the SYSREG selector position
-        // is pinned independently. `CNTVCT_EL0` = ARM64_SYS_REG(3,3,14,0,2): the
-        // coprocessor selector `0x0013` sits at bits 16–27 (`…_0013_DF02`), never bit 48.
+        // The load-bearing anti-regression: *literal* real KVM register ids, not ones built
+        // from the same prefix the predicate uses, so the SYSREG selector position is pinned
+        // independently. KVM_REG_ARM_TIMER_CNT = ARM64_SYS_REG(3,3,14,3,2) is the live counter
+        // and MUST be excluded; its CVAL alias ARM64_SYS_REG(3,3,14,0,2) is the deadline and
+        // must NOT be. The coprocessor selector `0x0013` sits at bits 16–27 (`…_0013_DF1A` /
+        // `…_0013_DF02`), never bit 48.
+        assert_eq!(
+            sysreg(3, 3, 14, 3, 2),
+            0x6030_0000_0013_DF1A,
+            "TIMER_CNT id"
+        );
+        assert!(
+            is_host_time_register(0x6030_0000_0013_DF1A),
+            "the live KVM_REG_ARM_TIMER_CNT id must be excluded"
+        );
         assert_eq!(
             sysreg(3, 3, 14, 0, 2),
             0x6030_0000_0013_DF02,
-            "CNTVCT_EL0 id"
+            "TIMER_CVAL id"
         );
         assert!(
-            is_host_time_register(0x6030_0000_0013_DF02),
-            "the real CNTVCT_EL0 id must be recognized"
+            !is_host_time_register(0x6030_0000_0013_DF02),
+            "the KVM_REG_ARM_TIMER_CVAL deadline must be retained in the digest"
         );
     }
 
     #[test]
     fn a_digest_ignores_the_live_clock_so_replay_survives_scheduling_jitter() {
-        // The flagship fix: two same-seed runs whose ONLY difference is the live
-        // virtual counter must digest identically, or replay-identity is dead on real
-        // hardware where the counter advances between runs.
+        // The flagship fix: two same-seed runs whose ONLY difference is the live counter
+        // must digest identically, or replay-identity is dead on real hardware where the
+        // counter advances between runs — but a difference in the PROGRAMMED timer deadline
+        // (CVAL) is real guest state and MUST diverge.
         use std::collections::BTreeMap;
         // KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG (0x0013 << 16 — the
-        // coprocessor selector lives in the LOW bits, not bit 48). A real timer-counter
-        // id has this exact prefix; the earlier bit-48 form matched nothing.
+        // coprocessor selector lives in the LOW bits, not bit 48). The live counter is
+        // KVM_REG_ARM_TIMER_CNT = (3,3,14,3,2); the programmed deadline is
+        // KVM_REG_ARM_TIMER_CVAL = (3,3,14,0,2) — the KVM one-reg remap.
         const P: u64 = 0x6000_0000_0000_0000 | 0x0030_0000_0000_0000 | (0x0013 << 16);
-        let cntvct = P | (3 << 14) | (3 << 11) | (14 << 7) | 2; // op0=3,op1=3,crn=14,crm=0,op2=2
+        let timer_cnt = P | (3 << 14) | (3 << 11) | (14 << 7) | (3 << 3) | 2;
+        let timer_cval = P | (3 << 14) | (3 << 11) | (14 << 7) | 2;
 
         let ram = vec![7u8; 32];
         let mut run_a = BTreeMap::new();
         run_a.insert(kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC, vec![0xAA; 8]);
-        run_a.insert(cntvct, 1_000u64.to_le_bytes().to_vec());
+        run_a.insert(timer_cnt, 1_000u64.to_le_bytes().to_vec());
+        run_a.insert(timer_cval, 5_000u64.to_le_bytes().to_vec());
         let mut run_b = run_a.clone();
-        run_b.insert(cntvct, 9_999_999u64.to_le_bytes().to_vec()); // the clock moved
+        run_b.insert(timer_cnt, 9_999_999u64.to_le_bytes().to_vec()); // the clock moved
 
         let vgic: &[u8] = &[];
         assert_eq!(
@@ -1530,7 +1564,17 @@ mod tests {
             "the live counter must not reach the digest"
         );
 
-        // But a real guest-state difference (the pc) still diverges.
+        // The programmed virtual-timer deadline (CVAL) IS guest state — changing it must
+        // change the digest, or two guests with different deadlines would replay-alias.
+        let mut run_d = run_a.clone();
+        run_d.insert(timer_cval, 6_000u64.to_le_bytes().to_vec());
+        assert_ne!(
+            digest_state(&run_a, &ram, vgic),
+            digest_state(&run_d, &ram, vgic),
+            "the programmed timer deadline (CVAL) must reach the digest"
+        );
+
+        // And a real guest-state difference (the pc) still diverges.
         let mut run_c = run_a.clone();
         run_c.insert(kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC, vec![0xBB; 8]);
         assert_ne!(
