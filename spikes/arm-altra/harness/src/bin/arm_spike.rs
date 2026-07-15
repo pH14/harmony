@@ -87,6 +87,11 @@ enum Command {
         /// expected values for the graded rows (PMUVer, KVM mode).
         #[arg(long)]
         box_config: PathBuf,
+        /// Optional JSON map of `{ "<row-id>": "<recorded ruling>" }` — the operator's
+        /// explicit dispositions for expected DEVIATIONS (including a favourable one, e.g. ECV
+        /// unexpectedly present). A ruled deviation is acceptable; an unruled one gates the RC.
+        #[arg(long)]
+        rulings: Option<PathBuf>,
         /// Where to write `truth-table.json` (e.g. `results/aa-0/<capture>/truth-table.json`).
         #[arg(long)]
         out: PathBuf,
@@ -346,13 +351,20 @@ fn probe_cap(cap: Capability) -> (Found, String) {
 /// expected) — including a favourable one — because AA-0's acceptance is that every row is
 /// confirmed or has an explicit recorded ruling, which a machine cannot invent.
 #[cfg(target_os = "linux")]
-fn probe(box_config: PathBuf, out: PathBuf) -> Result<(), String> {
+fn probe(box_config: PathBuf, rulings: Option<PathBuf>, out: PathBuf) -> Result<(), String> {
     let cfg: BoxConfig = read_json(&box_config)?;
     let regs = sys::read_host_id_registers().map_err(|e| format!("read host ID registers: {e}"))?;
     let host_kernel = sys::running_kernel_release().map_err(|e| format!("read uname: {e}"))?;
-    let core_count = std::thread::available_parallelism()
-        .map(|n| n.get() as u32)
-        .unwrap_or(0);
+    // The MACHINE's online CPU count — NOT available_parallelism(), which under taskset / a
+    // systemd CPU set / a leased partition reports the calling process's allowance, not the
+    // Altra's topology.
+    let core_count =
+        sys::online_cpu_count().map_err(|e| format!("read the online-CPU set: {e}"))?;
+    // The EFFECTIVE KVM mode KVM selected at boot, not the architectural VHE feature bit
+    // (VH stays nonzero on an nvhe-booted host).
+    let kvm_mode = sys::kvm_mode()
+        .map_err(|e| format!("read the KVM mode: {e}"))?
+        .unwrap_or_else(|| "unknown".to_string());
 
     let f4 = |v: u64, shift: u32| (v >> shift) & 0xf;
     let present = |b: bool| if b { Found::Present } else { Found::Absent };
@@ -466,14 +478,15 @@ fn probe(box_config: PathBuf, out: PathBuf) -> Result<(), String> {
         raw: format!("ID_AA64DFR0_EL1.PMUVer = {pmuver:#x}"),
     });
     let vh = f4(regs.id_aa64mmfr1, 8);
-    let kvm_mode = if vh != 0 { "vhe" } else { "nvhe" };
     rows.push(RowInput {
         id: "kvm-mode",
         kind: "kvm",
-        question: "VHE vs nVHE — derived from ID_AA64MMFR1_EL1.VH (the host's VHE capability).",
+        question: "The EFFECTIVE KVM mode (kvm_arm.mode), not the architectural VHE bit.",
         expected: cfg.kvm_mode_expected.trim().to_string(),
-        found: kvm_mode.to_string(),
-        raw: format!("ID_AA64MMFR1_EL1.VH = {vh:#x}"),
+        found: kvm_mode.clone(),
+        raw: format!(
+            "/sys/module/kvm_arm/parameters/mode = {kvm_mode} (ID_AA64MMFR1_EL1.VH = {vh:#x})"
+        ),
     });
 
     let identity = Identity {
@@ -488,38 +501,50 @@ fn probe(box_config: PathBuf, out: PathBuf) -> Result<(), String> {
         firmware: cfg.firmware,
     };
 
-    let table = truth_table::assemble(identity, cfg.topology, rows);
+    // The operator's recorded dispositions for expected deviations (row-id → ruling).
+    let rulings: std::collections::BTreeMap<String, String> = match &rulings {
+        Some(path) => read_json(path)?,
+        None => std::collections::BTreeMap::new(),
+    };
+
+    let table = truth_table::assemble(identity, cfg.topology, rows, &rulings);
     let json =
         serde_json::to_string_pretty(&table).map_err(|e| format!("serialize truth table: {e}"))?;
     std::fs::write(&out, format!("{json}\n"))
         .map_err(|e| format!("write {}: {e}", out.display()))?;
 
     for r in &table.rows {
-        let tag = if r.confirmed { "ok      " } else { "DEVIATE " };
+        let tag = match (&r.disposition, r.confirmed) {
+            (_, true) => "ok      ",
+            (Some(d), false) if d != truth_table::UNRULED_DEVIATION => "RULED   ",
+            _ => "UNRULED ",
+        };
         println!("{tag} {}: expected {}, found {}", r.id, r.expected, r.found);
     }
-    if table.all_confirmed() {
+    // Acceptance gates only UNRESOLVED deviations: a ruled one (even favourable) is
+    // acceptable. The artifact is always written — a deviation is a finding to record and
+    // diff, not to hide.
+    let unresolved = table.unresolved();
+    if unresolved.is_empty() {
         println!(
-            "truth-table.json written to {}: all {} rows confirmed",
+            "truth-table.json written to {}: {} rows, every deviation confirmed or ruled",
             out.display(),
             table.rows.len()
         );
         Ok(())
     } else {
-        // The artifact is still written (a deviation is a finding to record and diff), but the
-        // RC is nonzero until every deviation carries a ruling.
         Err(format!(
-            "{} row(s) deviate from AA-0's prediction and need an explicit ruling before any \
-             stage relies on them: {} (truth-table.json written to {})",
-            table.deviations().len(),
-            table.deviations().join(", "),
+            "{} row(s) deviate with NO recorded ruling: {} — supply dispositions via --rulings \
+             (truth-table.json written to {})",
+            unresolved.len(),
+            unresolved.join(", "),
             out.display()
         ))
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn probe(_box_config: PathBuf, _out: PathBuf) -> Result<(), String> {
+fn probe(_box_config: PathBuf, _rulings: Option<PathBuf>, _out: PathBuf) -> Result<(), String> {
     Err(
         "`arm-spike probe` issues KVM/perf syscalls and reads /sys to build truth-table.json: \
          it is Linux-only, and this host is not Linux."
@@ -736,6 +761,34 @@ fn execute(args: RunArgs) -> Result<(), String> {
             "the running kernel is {running_release}, but the environment block declares \
              host_kernel = {}: the recorded identity does not match the live kernel",
             args.environment.host_kernel
+        ));
+    }
+
+    // Cross-check EVERY live-readable identity field the manifest records, not just the
+    // kernel release. The manifest copies the operator-supplied environment verbatim, so a
+    // reboot into a different KVM mode, or the same-release artifacts run on another machine,
+    // would retain stale MIDR/KVM-mode values and the checker would treat different
+    // environments as identical. Bind the run to the live host: MIDR (the exact silicon) and
+    // the effective KVM mode (kvm_arm.mode, not the VHE feature bit) must match what is
+    // recorded, before any measurement is written under that identity.
+    let live_midr = sys::read_host_id_registers()
+        .map_err(|e| format!("read the running MIDR: {e}"))?
+        .midr;
+    if live_midr != args.environment.midr {
+        return Err(format!(
+            "the live MIDR_EL1 is {live_midr:#x}, but the environment block declares \
+             {:#x}: the recorded identity does not match the running silicon",
+            args.environment.midr
+        ));
+    }
+    let live_kvm_mode = sys::kvm_mode()
+        .map_err(|e| format!("read the KVM mode: {e}"))?
+        .unwrap_or_else(|| "unknown".to_string());
+    if live_kvm_mode != args.environment.kvm_mode {
+        return Err(format!(
+            "the effective KVM mode is {live_kvm_mode}, but the environment block declares \
+             {}: a reboot into a different mode makes the recorded identity stale",
+            args.environment.kvm_mode
         ));
     }
 
@@ -1009,7 +1062,11 @@ fn run() -> Result<(), String> {
             reps,
             with_targets,
         } => emit_plan(seed, cases, reps, with_targets),
-        Command::Probe { box_config, out } => probe(box_config, out),
+        Command::Probe {
+            box_config,
+            rulings,
+            out,
+        } => probe(box_config, rulings, out),
         Command::Run(opts) => {
             let environment: Environment = read_json(&opts.environment)?;
             let weights: Option<Weights> = match &opts.weights {

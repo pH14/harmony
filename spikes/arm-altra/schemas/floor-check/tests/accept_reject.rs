@@ -97,18 +97,28 @@ fn accept_is_accepted() {
 }
 
 #[test]
-fn accept_counting_is_accepted() {
-    // AA-1(b): a count-only run whose records end on ExitReason::Mmio (no overflow
-    // armed). The checker used to reject every such run by comparing the unarmed
-    // exit against the manifest's expected mechanism; it must now accept it. No
-    // armed-overflow floor is requested because nothing armed one.
+fn accept_counting_is_a_sub_experiment_not_a_stage_pass() {
+    // AA-1(b): a count-only run whose records end on ExitReason::Mmio (no overflow armed).
+    // Its counting-mode checks stand on their own and must not FAIL — but AA-1 the STAGE is
+    // certified by the ≥1000000 armed-overflow floor, so a counting-only run must NOT read
+    // as a stage-level PASS. The armed floor is reported NOT-REQUESTED (a distinguished
+    // sub-experiment verdict), never silently omitted, and the overall RC is nonzero.
     let report = check("accept-counting", no_floors());
     assert!(
-        report.passed(),
-        "the counting-mode fixture was rejected: {:?}",
+        report.failed().is_empty(),
+        "the counting-mode checks must not fail: {:?}",
         report.failed()
     );
-    assert_eq!(report.exit_code(), 0);
+    assert_eq!(
+        report.status_of(CheckId::ArmedOverflowFloor),
+        Some(Status::NotRequested),
+        "a counting-only AA-1 run is a sub-experiment, not a stage acceptance"
+    );
+    assert!(
+        !report.passed(),
+        "a counting-only AA-1 run must not read as an AA-1 stage PASS"
+    );
+    assert_ne!(report.exit_code(), 0);
 }
 
 #[test]

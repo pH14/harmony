@@ -1189,9 +1189,20 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
             ));
         }
 
-        let predicted = e.total(weights, r.reported_taken);
-        if predicted != r.measured_taken {
-            problems.push(format!(
+        // The oracle prediction is CHECKED arithmetic: `None` means the (weights, reported
+        // term) would overflow u64. That is malformed evidence — a saturated u64::MAX
+        // prediction would be matched by a record whose own measured_taken is u64::MAX — so
+        // it fails closed rather than being read as a valid oracle count.
+        match e.total(weights, r.reported_taken) {
+            None => problems.push(format!(
+                "sample {}: payload {} scale {} seed {}: the oracle prediction overflows u64 \
+                 (weights or reported term unrepresentably large) — malformed evidence, refused",
+                r.sample_id,
+                r.payload.name(),
+                r.scale.name(),
+                r.seed
+            )),
+            Some(predicted) if predicted != r.measured_taken => problems.push(format!(
                 "sample {}: payload {} scale {} seed {}: oracle predicts {predicted} \
                  taken branches but the record measured {}",
                 r.sample_id,
@@ -1199,7 +1210,8 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
                 r.scale.name(),
                 r.seed,
                 r.measured_taken
-            ));
+            )),
+            Some(_) => {}
         }
     }
 
@@ -2370,7 +2382,14 @@ fn check_armed_floor(stage: Stage, floors: &Floors, armed: u64, out: &mut Vec<Ou
     // emit no floor outcome at all, and the mechanism and skid checks have nothing to
     // inspect — so AA-3 would pass without testing a single deadline. The requirement
     // is enforced on the STAGE, independent of what the records happened to contain.
-    let requires_armed = requires_patched_mechanism(stage);
+    // AA-1 is certified BY its armed floor too (≥1000000 armed overflows for the skid/count
+    // distribution), not only the patched landing stages. A counting-only AA-1(b) run is a
+    // legitimate SUB-EXPERIMENT, but it must never read as an AA-1 STAGE PASS: emitting no
+    // floor outcome at all let `accept-counting` exit RESULT: PASS while reporting zero armed
+    // overflows. So any stage with a normative armed floor requires one, distinguishing the
+    // counting sub-experiment (NOT-REQUESTED) from a stage acceptance.
+    let requires_armed =
+        requires_patched_mechanism(stage) || normative_armed_floor(stage).is_some();
     match floors.min_armed_overflows {
         // A floor of zero is not a floor: `armed >= 0` holds for a run that armed no
         // deadline at all, so `--min-armed-overflows 0` is exactly the vacuous pass the
@@ -2416,10 +2435,11 @@ fn check_armed_floor(stage: Stage, floors: &Floors, armed: u64, out: &mut Vec<Ou
         None if requires_armed => out.push(not_requested(
             CheckId::ArmedOverflowFloor,
             format!(
-                "stage {stage:?} rests on armed deadlines (AA-3's acceptance is ≥1000000 armed \
-                 overflows landed exactly), but no --min-armed-overflows floor was requested and \
-                 the records carry {armed} armed overflow(s). This verdict cannot accept a landing \
-                 stage that tested no deadline; pass the floor explicitly."
+                "stage {stage:?} is certified BY its armed-overflow floor (AA-1's skid/count \
+                 distribution and AA-3's exact landings both rest on ≥1000000 cumulative armed \
+                 overflows), but no --min-armed-overflows floor was requested and the records \
+                 carry {armed} armed overflow(s). This is a counting SUB-EXPERIMENT, not a \
+                 stage-level acceptance — pass the floor explicitly to certify the stage."
             ),
         )),
         None if armed > 0 => out.push(not_requested(
@@ -4077,6 +4097,27 @@ mod tests {
         let mut out = Vec::new();
         check_counts(&Weights::measured(0, 0, 0, 0, 2), &[r], &mut out);
         assert_eq!(status(&out, CheckId::CountExactness), Some(Status::Fail));
+    }
+
+    #[test]
+    fn an_overflowing_oracle_prediction_fails_closed() {
+        // Malformed evidence with huge weights makes the checked oracle total overflow u64.
+        // A saturated u64::MAX would be MATCHED by a record whose measured_taken is u64::MAX;
+        // the checked total returns None and count exactness fails closed instead.
+        let mut r = a_record(0);
+        r.payload = Payload::Svc; // has exception/svc terms the weights multiply
+        r.scale = Scale::S1e8;
+        r.work_begin = 0;
+        r.work_end = u64::MAX;
+        r.measured_taken = u64::MAX;
+        let huge = Weights::measured(u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX);
+        let mut out = Vec::new();
+        check_counts(&huge, &[r], &mut out);
+        assert_eq!(
+            status(&out, CheckId::CountExactness),
+            Some(Status::Fail),
+            "an unrepresentable prediction is malformed evidence, not a valid count"
+        );
     }
 
     #[test]

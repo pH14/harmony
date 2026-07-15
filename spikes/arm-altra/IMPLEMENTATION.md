@@ -1083,6 +1083,49 @@ aarch64-linux (the build-id, uname, ID-register and truth-table code compiles fo
 three `cargo deny`, the opcode-checked window scan, TCG smoke, kernel-patch format/parse, and
 Miri arm-harness.
 
+## Round-17 review fixes (PR #108, cross-model pass r17)
+
+Two P1 + five P2 — the review is narrowing.
+
+- **AA-1 counting-only runs get a distinguished verdict, never a silent stage PASS.** A
+  counting-only AA-1 run (zero armed, no floor) emitted no `ArmedOverflowFloor` outcome, so
+  `accept-counting` exited `RESULT: PASS` while reporting zero armed overflows — but AA-1's
+  stage acceptance is the ≥10⁶ armed-overflow floor. Any stage with a normative armed floor
+  (AA-1, AA-3) now requires one; a counting-only AA-1(b) run reads NOT-REQUESTED on the floor
+  (a distinguished sub-experiment verdict), its counting-mode checks stand on their own, and
+  the overall RC is nonzero.
+- **Machine-supported AA-0 deviation rulings.** `probe` failed on ANY deviation (even the
+  explicitly allowed favourable one, ECV present) because it gated on "all confirmed", with no
+  way to supply a ruling. `probe` now takes `--rulings` (a `{ row-id: ruling }` JSON map); a
+  deviation WITH a recorded ruling carries it as its disposition and is acceptable, an unruled
+  one keeps the placeholder and gates the RC. Acceptance is now over *unresolved* rows, not all
+  deviations.
+- **Effective KVM mode, not the VHE feature bit (P2).** The `kvm-mode` row read
+  `ID_AA64MMFR1_EL1.VH`, which stays nonzero on an `nvhe`-booted host. It now reads
+  `/sys/module/kvm_arm/parameters/mode`, the mode KVM actually selected.
+- **Online-CPU count, not affinity-available (P2).** `core_count` used
+  `available_parallelism()`, which reflects the process's affinity/cgroup allowance — under
+  `taskset`/a systemd CPU set that records the lease size, not the Altra's topology. It now
+  reads `/sys/devices/system/cpu/online`.
+- **Oracle totals fail closed on overflow (P2).** `Expectation::total` saturated, so a
+  malformed record with huge weights predicted `u64::MAX`, which a record whose `measured_taken`
+  is `u64::MAX` (`work_begin = 0`, `work_end = u64::MAX`) then matched. It is now checked
+  arithmetic returning `Option`; the checker reads `None` as a count-exactness failure.
+- **PMU probe I/O errors propagate as unprobed (P2).** The PMCEID probe's `flatten()`/`if let
+  Ok` silently discarded a dir-iteration or `events/br_retired` read error (`EACCES`/`EIO`),
+  returning `Ok(false)` — absence. Only `NotFound` is now absence; other errors propagate as
+  `Err` for an `unprobed` truth-table row.
+- **Cross-check live identity into the manifest (P2).** `execute` recorded the operator's
+  environment verbatim and verified only the kernel release, so stale MIDR/KVM-mode survived a
+  reboot or a move to another machine. It now also requires the live `MIDR_EL1` and the
+  effective KVM mode to match the environment block before writing any measurement.
+
+`truth-table.schema.json` unchanged this round (the disposition path uses the existing
+`disposition` field). Gates re-run green: harness 99 tests, floor-check 48 + 27 + 3,
+oracle-model 22 + 2, clippy `-D warnings` native + aarch64-linux, three `cargo deny`, the
+opcode-checked window scan, TCG smoke, kernel-patch format/parse, and Miri (arm-harness +
+oracle-model).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

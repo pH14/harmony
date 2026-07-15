@@ -665,17 +665,22 @@ impl Expectation {
     /// The full expected count, given measured [`Weights`] and the retry count the
     /// payload reported (0 for payloads with no reported term).
     ///
-    /// Saturating throughout: this is called on untrusted evidence records by the
-    /// floor checker, and library code must never panic on untrusted input.
+    /// **Checked, not saturating** — `None` on overflow. This is called on UNTRUSTED
+    /// evidence (a malformed record with huge weights or a huge reported term), and a
+    /// saturated `u64::MAX` prediction would then be MATCHED by a record whose own
+    /// `measured_taken` is `u64::MAX` (`work_begin = 0`, `work_end = u64::MAX`), passing
+    /// count exactness on unrepresentable arithmetic. So an overflow fails closed: the
+    /// checker treats `None` as a count-check failure rather than a valid oracle count.
+    /// It still never panics — `checked_*` returns `None`, it does not abort.
     #[must_use]
-    pub fn total(&self, w: &Weights, reported_taken: u64) -> u64 {
+    pub fn total(&self, w: &Weights, reported_taken: u64) -> Option<u64> {
         self.certain_taken
-            .saturating_add(reported_taken)
-            .saturating_add(w.exception_entry.saturating_mul(self.exception_entries))
-            .saturating_add(w.exception_return.saturating_mul(self.exception_returns))
-            .saturating_add(w.svc_instruction.saturating_mul(self.svc_instructions))
-            .saturating_add(w.wfi_instruction.saturating_mul(self.wfi_instructions))
-            .saturating_add(w.window_offset)
+            .checked_add(reported_taken)?
+            .checked_add(w.exception_entry.checked_mul(self.exception_entries)?)?
+            .checked_add(w.exception_return.checked_mul(self.exception_returns)?)?
+            .checked_add(w.svc_instruction.checked_mul(self.svc_instructions)?)?
+            .checked_add(w.wfi_instruction.checked_mul(self.wfi_instructions)?)?
+            .checked_add(w.window_offset)
     }
 }
 
@@ -1217,8 +1222,14 @@ pub fn solve(observations: &[Observation]) -> Result<Solved, SolveError> {
     let mut residual: i128 = 0;
     let mut worst = sv.expectation.payload;
     for o in observations {
-        let predicted = o.expectation.total(&weights, o.reported_taken);
-        let r = i128::from(o.measured) - i128::from(predicted);
+        // An overflowing prediction (checked `total` returns `None`) means these candidate
+        // weights cannot fit this observation at all — treat it as an unbounded residual so
+        // it is never mistaken for a clean solve.
+        let predicted = o
+            .expectation
+            .total(&weights, o.reported_taken)
+            .map_or(i128::MAX, i128::from);
+        let r = i128::from(o.measured) - predicted;
         if r.unsigned_abs() > residual.unsigned_abs() {
             residual = r;
             worst = o.expectation.payload;
@@ -1462,12 +1473,16 @@ mod tests {
     }
 
     #[test]
-    fn total_saturates_rather_than_overflowing() {
-        // The floor checker calls this on untrusted records; a crafted weight must
-        // not panic in a release-mode debug_assert or wrap into a plausible value.
+    fn total_fails_closed_on_overflow_rather_than_saturating() {
+        // The floor checker calls this on untrusted records; a crafted weight must neither
+        // panic nor SATURATE to u64::MAX (which a record whose measured_taken is u64::MAX
+        // would then match). It returns None — the checker reads that as malformed evidence.
         let e = expected(Payload::Svc, Scale::S1e8, DEFAULT_SEED);
         let w = Weights::measured(u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX);
-        assert_eq!(e.total(&w, u64::MAX), u64::MAX);
+        assert_eq!(e.total(&w, u64::MAX), None);
+        // A representable case still computes.
+        let small = Weights::measured(1, 1, 1, 1, 0);
+        assert!(e.total(&small, 0).is_some());
     }
 
     /// Build a synthetic, self-consistent measurement set for a chosen ground
@@ -1487,7 +1502,9 @@ mod tests {
             let expectation = expected(p, scale, DEFAULT_SEED);
             Observation {
                 expectation,
-                measured: expectation.total(w, 0),
+                measured: expectation
+                    .total(w, 0)
+                    .expect("synthetic weights do not overflow"),
                 reported_taken: 0,
             }
         })
@@ -1567,7 +1584,7 @@ mod tests {
             Observation {
                 expectation: lse,
                 // 7 taken branches the model cannot account for.
-                measured: lse.total(&truth, 0) + 7,
+                measured: lse.total(&truth, 0).expect("representable") + 7,
                 reported_taken: 0,
             },
         ];
@@ -1577,7 +1594,7 @@ mod tests {
         assert_eq!(solved.worst, Payload::LseAtomics);
 
         // And with that row explained, the residual is zero again.
-        obs[5].measured = lse.total(&truth, 0);
+        obs[5].measured = lse.total(&truth, 0).expect("representable");
         assert_eq!(solve(&obs).expect("solvable").residual, 0);
     }
 

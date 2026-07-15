@@ -642,6 +642,65 @@ pub fn running_kernel_build_id() -> Result<Option<String>, SysError> {
     }
 }
 
+/// Count the CPUs in a Linux CPU-list string (`/sys/devices/system/cpu/online`), e.g.
+/// `"0-79"` or `"0,2-4,7"`. Factored out so it is testable off the box.
+#[must_use]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_cpu_list(s: &str) -> u32 {
+    let mut count = 0u32;
+    for part in s.trim().split(',') {
+        if part.is_empty() {
+            continue;
+        }
+        match part.split_once('-') {
+            Some((a, b)) => {
+                if let (Ok(a), Ok(b)) = (a.trim().parse::<u32>(), b.trim().parse::<u32>())
+                    && b >= a
+                {
+                    count += b - a + 1;
+                }
+            }
+            None if part.trim().parse::<u32>().is_ok() => count += 1,
+            None => {}
+        }
+    }
+    count
+}
+
+/// The machine's ONLINE CPU count, from `/sys/devices/system/cpu/online`.
+///
+/// NOT `available_parallelism()`, which reflects the calling process's affinity or cgroup
+/// CPU allowance — under `taskset`/a systemd CPU set/a leased housekeeping partition that
+/// records the lease size (possibly 1), not the Altra's real topology.
+///
+/// # Errors
+/// [`SysError`] if the online-CPU set cannot be read.
+pub fn online_cpu_count() -> Result<u32, SysError> {
+    match std::fs::read_to_string("/sys/devices/system/cpu/online") {
+        Ok(s) => Ok(parse_cpu_list(&s)),
+        Err(_) => Err(SysError::Protocol(
+            "cannot read /sys/devices/system/cpu/online to count the machine's online CPUs"
+                .to_string(),
+        )),
+    }
+}
+
+/// The host's EFFECTIVE KVM mode, from `/sys/module/kvm_arm/parameters/mode`
+/// (`"vhe"`/`"nvhe"`/`"protected"`/…) — the mode KVM actually selected at boot, not the
+/// architectural VHE feature bit. `Ok(None)` when the parameter is absent (an older kernel).
+///
+/// # Errors
+/// [`SysError`] if the parameter exists but cannot be read.
+pub fn kvm_mode() -> Result<Option<String>, SysError> {
+    match std::fs::read_to_string("/sys/module/kvm_arm/parameters/mode") {
+        Ok(s) => Ok(Some(s.trim().to_string())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(SysError::Protocol(
+            "cannot read /sys/module/kvm_arm/parameters/mode".to_string(),
+        )),
+    }
+}
+
 /// The running kernel's `uname -r` release string.
 ///
 /// # Errors
@@ -942,7 +1001,13 @@ mod imp {
                 });
             }
         };
-        for entry in devices.flatten() {
+        for entry in devices {
+            // A dir-iteration error (a read failure on the directory) is an inability to
+            // probe, not an absence — surface it (`unprobed`), never flatten it away.
+            let entry = entry.map_err(|e| SysError::Errno {
+                call: "read_dir entry (/sys/bus/event_source/devices)",
+                errno: e.raw_os_error().unwrap_or(0),
+            })?;
             let name = entry.file_name();
             // PMUv3 CPU-PMU devices are named `armv8_*` (`armv8_pmuv3_0`, `armv8_cortex_*`, …).
             if !name.to_string_lossy().starts_with("armv8") {
@@ -950,10 +1015,21 @@ mod imp {
             }
             // The driver exposes this file only if BR_RETIRED's PMCEID bit is set here.
             let path = entry.path().join("events").join("br_retired");
-            if let Ok(contents) = std::fs::read_to_string(&path)
-                && sysfs_event_encodes(&contents, BR_RETIRED_RAW)
-            {
-                return Ok(true);
+            match std::fs::read_to_string(&path) {
+                Ok(contents) if sysfs_event_encodes(&contents, BR_RETIRED_RAW) => {
+                    return Ok(true);
+                }
+                Ok(_) => {}
+                // The file is absent here (this PMU's PMCEID bit is clear): keep searching.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // The file exists but could not be READ (EACCES/EIO/…): an inability to
+                // probe, not absence — the AA-0 row must read `unprobed`, never `absent`.
+                Err(e) => {
+                    return Err(SysError::Errno {
+                        call: "read(events/br_retired)",
+                        errno: e.raw_os_error().unwrap_or(0),
+                    });
+                }
             }
         }
         // Searched every PMU device and none exposes a PMCEID-backed BR_RETIRED: absent.
@@ -1566,6 +1642,18 @@ mod tests {
         assert!(!sysfs_event_encodes("event=0x22", 0x21)); // a different event
         assert!(!sysfs_event_encodes("config=0x21", 0x21)); // no `event=` term
         assert!(!sysfs_event_encodes("", 0x21));
+    }
+
+    #[test]
+    fn parse_cpu_list_counts_the_online_set() {
+        // The /sys/devices/system/cpu/online formats: a single range, disjoint ranges +
+        // singletons, and a lone CPU. This is the MACHINE's online count, which the topology
+        // must record — not the process's affinity allowance.
+        assert_eq!(parse_cpu_list("0-79"), 80);
+        assert_eq!(parse_cpu_list("0-79\n"), 80);
+        assert_eq!(parse_cpu_list("0,2-4,7"), 5);
+        assert_eq!(parse_cpu_list("0"), 1);
+        assert_eq!(parse_cpu_list(""), 0);
     }
 
     #[test]

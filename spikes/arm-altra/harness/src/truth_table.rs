@@ -149,17 +149,37 @@ impl RowInput {
     }
 }
 
-/// Assemble the complete truth table from the probed inputs, identity and topology.
+/// The disposition an UNRESOLVED deviation carries — a machine cannot invent a ruling, so a
+/// deviation with no operator ruling is flagged here and gates AA-0 acceptance. A deviation
+/// WITH a ruling (from the `--rulings` input) carries that ruling instead and is acceptable.
+pub const UNRULED_DEVIATION: &str = "UNRULED deviation (found != expected): AA-0 acceptance requires an explicit recorded \
+     ruling for this row (supply one via --rulings)";
+
+/// Assemble the complete truth table from the probed inputs, identity, topology, and the
+/// operator's recorded `rulings` (row-id → disposition).
 ///
-/// A row is `confirmed` exactly when `found == expected`; an unconfirmed (deviation) row
-/// carries the standard "unruled deviation" disposition (AA-0's acceptance demands an
-/// explicit ruling, which a machine cannot invent), and a confirmed row carries `null`.
+/// A row is `confirmed` exactly when `found == expected` (disposition `null`). A deviation
+/// with a ruling in `rulings` carries THAT ruling as its disposition — an acceptable, recorded
+/// deviation, including a favourable one (ECV unexpectedly present). A deviation with no ruling
+/// carries [`UNRULED_DEVIATION`] and gates acceptance ([`TruthTable::unresolved`]).
 #[must_use]
-pub fn assemble(identity: Identity, topology: Topology, rows: Vec<RowInput>) -> TruthTable {
+pub fn assemble(
+    identity: Identity,
+    topology: Topology,
+    rows: Vec<RowInput>,
+    rulings: &BTreeMap<String, String>,
+) -> TruthTable {
     let rows = rows
         .into_iter()
         .map(|r| {
             let confirmed = r.found == r.expected;
+            let disposition = if confirmed {
+                None
+            } else if let Some(ruling) = rulings.get(r.id) {
+                Some(ruling.clone())
+            } else {
+                Some(UNRULED_DEVIATION.to_string())
+            };
             Row {
                 id: r.id.to_string(),
                 kind: r.kind.to_string(),
@@ -168,15 +188,7 @@ pub fn assemble(identity: Identity, topology: Topology, rows: Vec<RowInput>) -> 
                 found: r.found,
                 raw: r.raw,
                 confirmed,
-                disposition: if confirmed {
-                    None
-                } else {
-                    Some(
-                        "unruled deviation (found != expected): AA-0 acceptance requires an \
-                         explicit ruling before any stage relies on this row"
-                            .to_string(),
-                    )
-                },
+                disposition,
             }
         })
         .collect();
@@ -189,14 +201,24 @@ pub fn assemble(identity: Identity, topology: Topology, rows: Vec<RowInput>) -> 
 }
 
 impl TruthTable {
-    /// Whether every row is confirmed (no deviation). AA-0's RC rests on this: a deviation —
-    /// even a favourable one — is a finding that needs a recorded ruling, not a pass.
+    /// The ids of deviation rows with NO recorded ruling — the rows that gate AA-0 acceptance.
+    /// A ruled deviation (even a favourable one) is acceptable; an unruled one is not.
     #[must_use]
-    pub fn all_confirmed(&self) -> bool {
-        self.rows.iter().all(|r| r.confirmed)
+    pub fn unresolved(&self) -> Vec<&str> {
+        self.rows
+            .iter()
+            .filter(|r| !r.confirmed && r.disposition.as_deref() == Some(UNRULED_DEVIATION))
+            .map(|r| r.id.as_str())
+            .collect()
     }
 
-    /// The ids of the rows that are deviations, for the operator to rule on.
+    /// Whether AA-0 is acceptable: every row is either confirmed or a RULED deviation.
+    #[must_use]
+    pub fn all_resolved(&self) -> bool {
+        self.unresolved().is_empty()
+    }
+
+    /// The ids of the deviation rows (confirmed == false), ruled or not.
     #[must_use]
     pub fn deviations(&self) -> Vec<&str> {
         self.rows
@@ -254,7 +276,7 @@ mod tests {
                 "0xf".into(),
             ),
         ];
-        let tt = assemble(identity(), topology(), rows);
+        let tt = assemble(identity(), topology(), rows, &BTreeMap::new());
         assert_eq!(tt.schema_version, SCHEMA_VERSION);
         assert!(tt.rows[0].confirmed);
         assert_eq!(tt.rows[0].disposition, None);
@@ -262,9 +284,53 @@ mod tests {
             !tt.rows[1].confirmed,
             "ECV found present but expected absent"
         );
-        assert!(tt.rows[1].disposition.is_some());
-        assert!(!tt.all_confirmed());
+        assert_eq!(tt.rows[1].disposition.as_deref(), Some(UNRULED_DEVIATION));
         assert_eq!(tt.deviations(), vec!["ecv"]);
+        assert_eq!(tt.unresolved(), vec!["ecv"], "an unruled deviation gates");
+        assert!(!tt.all_resolved());
+    }
+
+    #[test]
+    fn a_ruled_deviation_is_acceptable_an_unruled_one_gates() {
+        // A favourable, RULED deviation (ECV present, with a recorded ruling) is acceptable;
+        // a second, unruled deviation still gates AA-0.
+        let rows = vec![
+            RowInput::cap(
+                "ecv",
+                "id-register",
+                "q",
+                Found::Absent,
+                Found::Present,
+                "0x1".into(),
+            ),
+            RowInput::cap(
+                "sve",
+                "id-register",
+                "q",
+                Found::Absent,
+                Found::Present,
+                "0x1".into(),
+            ),
+        ];
+        let rulings = BTreeMap::from([(
+            "ecv".to_string(),
+            "FAVOURABLE: FEAT_ECV present; ruled acceptable — the paravirt clock is unaffected \
+             and no stage leans on ECV (ruling 2026-07-XX)"
+                .to_string(),
+        )]);
+        let tt = assemble(identity(), topology(), rows, &rulings);
+        // ecv carries the operator's ruling, not the placeholder — resolved.
+        assert!(
+            tt.rows[0]
+                .disposition
+                .as_deref()
+                .unwrap()
+                .starts_with("FAVOURABLE")
+        );
+        // sve has no ruling — unresolved, and gates.
+        assert_eq!(tt.rows[1].disposition.as_deref(), Some(UNRULED_DEVIATION));
+        assert_eq!(tt.unresolved(), vec!["sve"]);
+        assert!(!tt.all_resolved(), "one unruled deviation remains");
     }
 
     #[test]
@@ -277,9 +343,9 @@ mod tests {
             Found::Unprobed,
             "probe failed".into(),
         )];
-        let tt = assemble(identity(), topology(), rows);
+        let tt = assemble(identity(), topology(), rows, &BTreeMap::new());
         assert!(!tt.rows[0].confirmed, "unprobed != present");
-        assert!(!tt.all_confirmed());
+        assert!(!tt.all_resolved());
     }
 
     #[test]
@@ -295,7 +361,9 @@ mod tests {
                 Found::Present,
                 "0x2".into(),
             )],
+            &BTreeMap::new(),
         );
+        assert!(tt.all_resolved(), "a confirmed-only table is acceptable");
         let json = serde_json::to_string(&tt).unwrap();
         let back: TruthTable = serde_json::from_str(&json).unwrap();
         assert_eq!(tt, back);

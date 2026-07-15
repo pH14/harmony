@@ -169,7 +169,9 @@ fn generate_record(sample_id: u64, payload: Payload, exit: ExitReason) -> RunRec
     let seed = DEFAULT_SEED;
     let e = expected(payload, scale, seed);
     let reported_taken = 0;
-    let measured_taken = e.total(&synthetic_weights(), reported_taken);
+    let measured_taken = e
+        .total(&synthetic_weights(), reported_taken)
+        .expect("synthetic fixture weights are small and do not overflow");
     let work_begin = 1_000;
     let work_end = work_begin + measured_taken;
     // The overflow deadline is `work_begin + SYNTHETIC_PERIOD`, a UNIFORM period across
@@ -738,7 +740,8 @@ mod tests {
             let e = expected(r.payload, r.scale, r.seed);
             assert_eq!(
                 r.measured_taken,
-                e.total(&synthetic_weights(), r.reported_taken),
+                e.total(&synthetic_weights(), r.reported_taken)
+                    .expect("synthetic weights do not overflow"),
                 "payload {}",
                 r.payload.name()
             );
