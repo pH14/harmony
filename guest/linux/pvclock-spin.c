@@ -92,22 +92,25 @@ int main(int argc, char **argv) {
 
     // ---- the measured window: no syscalls, no rdtsc, only page loads --------
     uint64_t vns0 = read_vns(page);
+    uint64_t prev = vns0;
     uint64_t vns1 = vns0;
     uint64_t iters = 0;
     while (vns1 - vns0 < span_ns) {
         vns1 = read_vns(page);
         iters++;
-        // The page clock must be MONOTONE. If it moved backward, unsigned
-        // `vns1 - vns0` would wrap to a near-`UINT64_MAX` value, the loop
-        // condition would read false, and the spin would exit as a false
-        // PVSPIN_DONE — a determinism/ABA bug masquerading as liveness. Detect
-        // the backward step explicitly and fail (r15 P2); the host G3 gate keys
-        // on PVSPIN_DONE, so this failure is surfaced, never mistaken for a pass.
-        if (vns1 < vns0) {
-            printf("PVSPIN_FAIL backward %llu %llu\n", (unsigned long long)vns0,
+        // The page clock must be MONOTONE. Compare each sample against its
+        // PREDECESSOR, not just `vns0`: a dip that stays above the start (e.g.
+        // 100 -> 150 -> 120) is still a backward step, yet `vns1 < vns0` would
+        // miss it and `vns1 - vns0` would not wrap, so the elapsed-span test
+        // would pass it as a false PVSPIN_DONE — a determinism/ABA bug
+        // masquerading as liveness (r16 P3, sharpening r15 P2). The host G3 gate
+        // keys on PVSPIN_DONE, so this failure is surfaced, never a pass.
+        if (vns1 < prev) {
+            printf("PVSPIN_FAIL backward %llu %llu\n", (unsigned long long)prev,
                    (unsigned long long)vns1);
             return 6;
         }
+        prev = vns1;
     }
     // ---- end of the measured window -----------------------------------------
 

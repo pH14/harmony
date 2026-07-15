@@ -328,6 +328,17 @@ fn sample_at_sync(vmm: &mut DynVmm) -> (vmm_backend::ExitCounts, u64) {
             !vmm.is_synchronized()
         });
     }
+    // FAIL rather than sample a lower bound (cross-model r16 P2): if the drive
+    // could not reach a synchronized boundary (the guest terminated or wedged
+    // first), `effective_vns()` is a last-intercept LOWER BOUND, and returning it
+    // silently would re-introduce the very per-arm bias r15 removed. A vacuous
+    // "denominator" is worse than a loud gate failure.
+    assert!(
+        vmm.is_synchronized(),
+        "sample_at_sync could not reach a synchronized V-time boundary within {SYNC_SAMPLE_CAP} \
+         steps — the guest terminated or wedged before an intercept. Refusing to sample the \
+         last-intercept lower-bound V-time (it would bias the reported rate/reduction)."
+    );
     (vmm.exit_counts(), vmm.effective_vns().unwrap_or(0))
 }
 
@@ -886,8 +897,15 @@ fn perf_arm(kernel: &[u8], initramfs: &[u8], page_on: bool) -> PerfArm {
             "page-on arm never registered — the measurement would be page-off vs page-off"
         );
     }
-    let (counts, vns) =
-        last_sync.unwrap_or_else(|| (vmm.exit_counts(), vmm.effective_vns().unwrap_or(0)));
+    // FAIL rather than fall back to the (unsynchronized) terminal sample (r16
+    // P2): `last_sync` is `Some` iff the run passed through at least one
+    // synchronized boundary — which a real boot always does (every RDTSC
+    // intercept). If it never did, the terminal `effective_vns()` is a lower
+    // bound, and reporting it would bias the arm; refuse loudly instead.
+    let (counts, vns) = last_sync.expect(
+        "perf_arm never observed a synchronized V-time boundary during the whole-boot run — the \
+         terminal effective_vns is only a lower bound and must not be reported as the denominator",
+    );
     PerfArm {
         rdtsc_exits: counts.rdtsc + counts.rdtscp,
         total_exits: counts.total(),

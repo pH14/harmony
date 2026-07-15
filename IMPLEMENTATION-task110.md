@@ -466,6 +466,21 @@ the work-anchor `saturating_sub` can't mask a backward step. (c)/(d) are box/gue
 code, compile-checked on the x86_64-linux cross target and `cc -fsyntax-only`; box
 re-confirmation of the perf/G3 gates rides the next foreman-granted window.
 
+**Review round 16 folded in** (cross-model r16: 1 P2 + 1 P3, sharpening r15;
+portable-only — no kernel rebuild). (a) **The synchronized-sampling helper fails
+rather than sampling a lower bound (P2).** `sample_at_sync` did a best-effort
+drive to a synchronized boundary and then sampled `effective_vns()` regardless —
+so if the guest terminated or wedged before an intercept, it silently returned the
+last-intercept LOWER BOUND, re-introducing the very per-arm bias r15 removed. It
+now asserts `is_synchronized()` after the drive and fails loud otherwise; `perf_arm`
+likewise `expect`s its `last_sync` (a real boot always passes through an
+intercept), never falling back to the unsynchronized terminal. (b) **The G3 spinner
+checks each sample against its predecessor (P3).** `pvclock-spin.c` compared
+`vns1 < vns0` (the START), so a dip that stayed above the start — 100 → 150 → 120 —
+was missed and `vns1 - vns0` did not wrap. It now tracks `prev` and fails on
+`vns1 < prev`, catching any backward step, not just one below the first sample.
+Box/guest code, compile-checked on x86_64-linux and `cc -fsyntax-only`.
+
 ## What landed (by deliverable)
 
 1. **Rename ride-along** — already fully landed by tasks/108 (`guest_hz`/
