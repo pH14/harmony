@@ -240,22 +240,22 @@ raw-counter path survives.
   that the CPU contract handles; the vmm validates the GPA lands in guest RAM and begins
   stamping. (Exact transport is an implementation choice for the follow-on bead; both are
   already-modeled seams. Task 110 chose the doorbell — `hypercall-proto` service id 7 —
-  with the host advertising its offer via the `harmony_pvclock` kernel parameter.) The
-  registration **stamps the page and arms the Δ forced-refresh deadline immediately, off the
-  existing deterministic anchor** (`last_intercept_work`, the last V-time intercept's frozen,
-  skid-free count). The doorbell `OUT` is a **plain PIO exit, not a V-time intercept** — the
-  work counter read there carries exit-path skid — so registration must **not** read live work,
-  update the anchor, or mark V-time synchronized; doing so would publish nondeterministic page
-  bytes and arm a nondeterministic Δ target. The immediate arm off the deterministic anchor is
-  load-bearing, not an optimization: a guest that registers and *then busy-waits on the page*
-  takes no other intercept, so an arm deferred to "the next clock advance" would never fire and
-  its page would freeze. If `anchor + Δ` is already in the past (a stale anchor), the existing
-  overdue-`Deadline` handling forces the guest out and advances the anchor with no fresh live
-  read — staleness is bounded by Δ, the same one-window contract as any refresh. *(Amended at
-  the task-110 r5/r6/r7 review; supersedes both the original "doorbell OUT is not a V-time
-  intercept, so the first value may lag" wording and the r5/r6 "fresh work read … like RDTSC"
-  wording — the former forced a busy-wait freeze, the latter anchored on a skid-tainted PIO
-  read.)*
+  with the host advertising its offer via the `harmony_pvclock` kernel parameter.) Registration
+  is a **two-step handshake** (the r8 ruling). The doorbell `OUT` only **records a pending
+  registration** — it does not stamp the page or arm the Δ forced-refresh deadline, because the
+  `OUT` is a plain PIO exit, not a V-time intercept: the work counter read there carries
+  exit-path skid, and the pre-`OUT` anchor may be stale. The guest then **must** execute one
+  V-time intercept — an `rdtsc` — immediately after the doorbell; this **handshake intercept** is
+  where the host lays down the first (canonical) page stamp and arms the Δ deadline, both off the
+  intercept's fresh, skid-free anchor (so the target `anchor + Δ` is current and can never be
+  born overdue). The post-doorbell `rdtsc` is therefore **protocol, not courtesy** — a guest
+  that omits it is **out of contract**: its page stays at the pre-registration bytes (stale but
+  deterministic) and no refresh arms, which is an acceptable degradation for a non-conforming
+  guest and requires no host-side arming off a skid-tainted or stale anchor. *(Ruled at the
+  task-110 r8 review; supersedes the r5/r6 "fresh work read at the OUT … like RDTSC" wording and
+  the r7 "immediate arm off the existing (possibly stale) anchor" wording — the former anchored
+  on a skid-tainted PIO read, the latter could arm an overdue deadline whose landing imports a
+  live count. The handshake resolves both: nothing arms until a genuine skid-free intercept.)*
 - **Pinned kernel config / no-fallback.** `CONFIG_HARMONY_PVCLOCK=y` (the new clocksource),
   and the TSC clocksource must be **unselectable**: mark TSC unstable / drop it from the
   clocksource registry so the kernel can never fall back to raw `rdtsc` for timekeeping. RDTSC

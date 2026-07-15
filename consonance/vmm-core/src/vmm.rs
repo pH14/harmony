@@ -590,8 +590,23 @@ pub(crate) struct PvclockChannel {
     /// of the doorbell frame pages — validated at registration). `None` until
     /// the guest publishes one; **one-shot** — re-registration is rejected as
     /// a guest fault and the stamping target never moves for the machine's
-    /// life (the PR #110 r2 GPA ruling).
+    /// life (the PR #110 r2 GPA ruling). Set at the doorbell `OUT`, but only
+    /// *pending* until the handshake completes ([`armed`](Self::armed)).
     gpa: Option<u64>,
+    /// Whether the registration handshake has completed (the r8 ruling). The
+    /// doorbell `OUT` records the GPA (pending); the Δ deadline arms and the
+    /// **first stamp** happen only at the **handshake intercept** — the guest's
+    /// required post-doorbell V-time intercept (the reference kernel's RDTSC,
+    /// now protocol, not courtesy), whose anchor is skid-free by construction.
+    /// Nothing arms in between: a doorbell `OUT` is a PIO, not a V-time
+    /// intercept, so arming or stamping off it (or off the possibly-stale
+    /// pre-`OUT` anchor) would risk publishing a non-fresh — and, in the
+    /// overdue-deadline case, skid-tainted — clock. A guest that never performs
+    /// the handshake is **out of contract**: its page stays at the pre-
+    /// registration bytes (stale but deterministic) and no Δ refresh arms.
+    /// Restore sets this `true` directly — a restored VM's anchor is exactly 0,
+    /// a synchronized boundary by construction, so it needs no handshake.
+    armed: bool,
     /// Diagnostic refresh log (**not** hashed, like
     /// [`Vmm::preemption_landings`]): `(work anchor, vns, guest_clock)` for
     /// every *value-publishing* stamp, **read back from the page bytes** after
@@ -2159,6 +2174,7 @@ where
         self.pvclock = Some(PvclockChannel {
             delta_work: delta_work.max(1),
             gpa: None,
+            armed: false,
             refreshes: Vec::new(),
             forced_landings: 0,
         });
@@ -2328,12 +2344,14 @@ where
     pub(crate) fn pvclock_commit_restore(&mut self, rec: Option<&(u64, Option<u64>, bool)>) {
         if let Some(pv) = self.pvclock.as_mut() {
             // A restored VM's anchor is exactly 0 (the work counter restarts and
-            // `restore_vm_state` anchors there — synchronized by construction),
-            // so a restored registration arms the Δ refresh immediately: `0 + Δ`
-            // is strictly ahead of the re-baselined counter. Since r5 the live
-            // registration path arms from a fresh anchor too, so both paths now
-            // establish the same invariant and neither can be born overdue.
-            pv.gpa = rec.and_then(|(_, g, _)| *g);
+            // `restore_vm_state` anchors there — a synchronized boundary by
+            // construction), so a restored registration is **already armed**: it
+            // needs no live handshake, and `0 + Δ` is strictly ahead of the
+            // re-baselined counter (never overdue). Only a *registered* record
+            // arms; an unregistered one clears any stale-timeline registration.
+            let gpa = rec.and_then(|(_, g, _)| *g);
+            pv.armed = gpa.is_some();
+            pv.gpa = gpa;
             pv.refreshes.clear();
             pv.forced_landings = 0;
         }
@@ -2479,10 +2497,8 @@ where
         Ok(())
     }
 
-    /// Register the guest-published pvclock page: validate the GPA, record it,
-    /// and stamp the page to **canonical form** at the existing skid-free
-    /// anchor (a deterministic baseline regardless of what the guest left in
-    /// those bytes). Returns the doorbell `Status` + the ABI version to
+    /// Register the guest-published pvclock page: validate the GPA and **record
+    /// it as pending**. Returns the doorbell `Status` + the ABI version to
     /// answer. Gated on the determinism-complete path — a stock/M1/M2
     /// composition answers `UnknownService` ("not offered"), so a probing
     /// guest cleanly keeps its trap-backstopped time paths.
@@ -2492,21 +2508,17 @@ where
     /// re-registration — same GPA or not — is a guest fault, rejected with
     /// `BadRequest` and touching nothing. The stamping target never moves.
     ///
-    /// **Deterministic-anchor immediate arm (cross-model r7 P1, foreman-ruled).**
-    /// The doorbell `OUT` is a plain PIO exit, **not** a V-time intercept — on
-    /// real patched KVM the work counter read at a PIO carries exit-path skid
-    /// (the same reason this module treats a live `work()` read at a non-intercept
-    /// boundary as skid-tainted, task-27 O1). So registration does **not** read
-    /// live work, does **not** update `last_intercept_work`, and does **not** mark
-    /// V-time synchronized (an r5/r6 mistake that would publish nondeterministic
-    /// page bytes and arm a nondeterministic Δ target). It stamps and arms off the
-    /// **existing** `last_intercept_work` — deterministic, staleness-bounded by
-    /// the same one-window contract as any refresh. The Δ deadline
-    /// ([`Vmm::pvclock_refresh_deadline`]) therefore arms **immediately** at
-    /// `last_intercept_work + Δ`; if that target is already in the past, the
-    /// existing overdue `Deadline` handling forces the guest out and advances the
-    /// anchor with no fresh live read. Liveness is preserved (a register-then-spin
-    /// guest is still forced out) with zero skid-tainted reads.
+    /// **The doorbell `OUT` only records a PENDING registration (the r8
+    /// handshake ruling).** It does **not** stamp the page and does **not** arm
+    /// the Δ refresh — a doorbell `OUT` is a plain PIO exit, not a V-time
+    /// intercept, so the counter read there is skid-tainted on the real backend
+    /// (task-27 O1) and the pre-`OUT` anchor may be stale. The first stamp and
+    /// the Δ arm happen only at the **handshake intercept**: the guest's required
+    /// post-doorbell V-time intercept (the reference kernel's RDTSC, now
+    /// protocol), whose anchor is skid-free and fresh. See
+    /// [`pvclock_refresh`](Self::pvclock_refresh) for the handshake and
+    /// [`PvclockChannel::armed`]. A guest that never performs the handshake is
+    /// out of contract: it gets a stale-but-deterministic page and no refresh.
     fn pvclock_register(&mut self, gpa: u64) -> (Status, Option<u32>) {
         if !self.pvclock_available() {
             return (Status::UnknownService, None);
@@ -2517,20 +2529,11 @@ where
         if self.pvclock_validate_gpa(gpa).is_err() {
             return (Status::OutOfRange, None);
         }
-        {
-            let pv = self.pvclock.as_mut().expect("checked above");
-            pv.gpa = Some(gpa);
-        }
-        // Canonical initial stamp at the EXISTING deterministic anchor — a total
-        // function of the clock values there, never of whatever the guest's
-        // allocator left in the page, and never of a skid-tainted PIO read.
-        match self.pvclock_stamp(StampKind::Canonical) {
-            Ok(()) => (Status::Ok, Some(vtime::pvclock::PVCLOCK_ABI_VERSION)),
-            // A stamp failure here is a validated-GPA slice failing to
-            // materialize — substrate breakage; answer Internal, never a
-            // silent success.
-            Err(_) => (Status::Internal, None),
-        }
+        // Record the GPA as PENDING. No stamp, no arm — those wait for the
+        // handshake intercept (r8). `armed` stays false.
+        let pv = self.pvclock.as_mut().expect("checked above");
+        pv.gpa = Some(gpa);
+        (Status::Ok, Some(vtime::pvclock::PVCLOCK_ABI_VERSION))
     }
 
     /// Re-stamp the registered pvclock page from the current clock — the §2
@@ -2611,22 +2614,45 @@ where
     }
 
     /// The [`step`](Self::step)-tail refresh — the §2 point-1 "every natural
-    /// exit" refresh: re-stamp the page at the tail of **every** serviced
-    /// exit, publishing the clock at the **skid-free anchor**
-    /// (`last_intercept_work`), the exit's deterministic work count. Between
-    /// two clock advances the anchor (and the offset) cannot move, so the
-    /// stamp at a non-intercept exit (PIO/MMIO/doorbell/serial) republishes
-    /// identical values and the value-keyed [`pvclock_stamp`](Self::pvclock_stamp)
-    /// leaves the page bytes untouched — the refresh *runs* at all four §2
-    /// points, and the published value stream advances exactly at the
-    /// deterministic clock-advance boundaries (intercepts, `Deadline`
-    /// landings, idle warps). A fresh live counter read here would be the
-    /// task-27 skid hazard: nondeterministic bytes straight into hashed guest
-    /// RAM and guest-visible time. The one observable effect of the
-    /// non-advance stamps is self-healing: a (deterministic) guest scribble
-    /// on the page is repaired at the next exit, not merely the next
-    /// intercept.
+    /// exit" refresh, plus the **registration handshake** (r8). Re-stamp the page
+    /// at the tail of **every** serviced exit, publishing the clock at the
+    /// **skid-free anchor** (`last_intercept_work`), the exit's deterministic work
+    /// count. Between two clock advances the anchor cannot move, so the stamp at a
+    /// non-intercept exit (PIO/MMIO/doorbell/serial) republishes identical values
+    /// and the value-keyed [`pvclock_stamp`](Self::pvclock_stamp) leaves the page
+    /// untouched — the refresh *runs* at all four §2 points, and the published
+    /// value stream advances exactly at the deterministic clock-advance
+    /// boundaries.
+    ///
+    /// **The handshake (r8 ruling).** A registration recorded at the doorbell
+    /// `OUT` is *pending* ([`PvclockChannel::armed`] `== false`) — no stamp, no Δ
+    /// arm. It becomes active at the **first V-time-synchronized intercept** after
+    /// the `OUT` (the reference kernel's required post-doorbell RDTSC): there
+    /// `last_intercept_work` is a fresh, skid-free anchor, so the first stamp is
+    /// canonical from it and the Δ deadline arms off it — never overdue, never off
+    /// a stale or PIO-skid anchor. A pending registration at a non-intercept exit
+    /// stamps nothing (the page keeps its pre-registration bytes — deterministic,
+    /// and out of contract for a guest that never handshakes). `vtime_synchronized`
+    /// is cleared before every entry and set only by a real intercept, so it is
+    /// exactly the "did this step end at a skid-free boundary" signal the
+    /// handshake needs.
     fn pvclock_refresh(&mut self) -> Result<(), VmmError> {
+        let Some(pv) = self.pvclock.as_ref() else {
+            return Ok(());
+        };
+        if pv.gpa.is_none() {
+            return Ok(()); // nothing registered
+        }
+        if !pv.armed {
+            // Pending registration: arm only at the handshake intercept.
+            if !self.vtime_synchronized {
+                return Ok(()); // still between the OUT and the handshake
+            }
+            // The handshake: promote to armed and lay down the first (canonical)
+            // stamp from this fresh, skid-free anchor.
+            self.pvclock.as_mut().expect("checked above").armed = true;
+            return self.pvclock_stamp(StampKind::Canonical);
+        }
         self.pvclock_stamp(StampKind::Refresh)
     }
 
@@ -2637,25 +2663,21 @@ where
     /// out — and the page re-stamped — within Δ. `None` without a
     /// registration, so every existing path arms exactly as before.
     ///
-    /// **Armed immediately at registration, off the deterministic anchor**
-    /// (cross-model r7 P1, superseding the r5 fresh-read arm). The target is
-    /// `last_intercept_work + Δ` — a pure function of the *existing* deterministic
-    /// anchor, never of a skid-tainted PIO read (the r7 P1 fix: the doorbell `OUT`
-    /// is not a V-time intercept, so reading live work there would leak
-    /// nondeterminism into the armed target and thence into hashed guest RAM).
-    /// A guest that registers and immediately busy-waits on the page still gets
-    /// forced out, because the deadline is live the moment the page is registered
-    /// — no wait for another intercept, no dependence on the reference kernel's
-    /// courtesy `rdtsc`. If the anchor is stale enough that `anchor + Δ` is
-    /// already in the past, the overdue `Deadline` forces the guest out at the
-    /// next `run_until` and [`on_deadline`](Self::on_deadline) advances the anchor
-    /// to the **deterministic target** `anchor + Δ` — NOT the overdue landing's
-    /// live PMU count (cross-model r8 P1: that count is skid-tainted on the real
-    /// backend). So the arm stays deterministic even when born overdue; the
-    /// staleness is bounded by Δ, the same one-window contract as any refresh.
+    /// **Armed only once the registration handshake has completed** (the r8
+    /// ruling). `None` for a *pending* registration ([`PvclockChannel::armed`]
+    /// `== false`) — the doorbell `OUT` records the GPA but nothing arms until the
+    /// handshake intercept. Once armed, the handshake ran at a fresh V-time
+    /// intercept, so `last_intercept_work` was skid-free and current there; the
+    /// target `last_intercept_work + Δ` is therefore strictly ahead of the guest
+    /// (never born overdue) and is a pure function of the deterministic anchor.
+    /// A conforming guest performs the handshake (its required post-doorbell
+    /// RDTSC) immediately, so the arm is effectively at registration; a guest that
+    /// never handshakes is out of contract and simply never gets a Δ refresh.
     pub(crate) fn pvclock_refresh_deadline(&self) -> Option<Moment> {
         let pv = self.pvclock.as_ref()?;
-        pv.gpa?;
+        if pv.gpa.is_none() || !pv.armed {
+            return None;
+        }
         if !self.backend.capabilities().arch.deterministic_clock() {
             return None;
         }
@@ -9165,30 +9187,48 @@ mod tests {
     /// booted-image regions the other tests use.
     const PV_GPA: u64 = 0x4000;
 
-    /// Registration validates + records the GPA, stamps the page to canonical
-    /// form at the current anchor, answers the ABI version, and marks the page
-    /// host-dirty (the task-95 M2.1 safety rule).
+    /// Registration records the GPA and answers the ABI version but leaves the
+    /// page **pending** (r8 handshake ruling); the **handshake** — the guest's
+    /// post-doorbell RDTSC — is what stamps the page to canonical form at the
+    /// fresh anchor and marks it host-dirty (the task-95 M2.1 safety rule).
     #[test]
-    fn pvclock_registration_stamps_canonical_page_and_answers_abi() {
-        let mut vmm = pvclock_vmm(vec![], Box::new(ScriptedWork::at(500)), 7);
+    fn pvclock_registration_is_pending_and_the_handshake_stamps() {
+        let mut vmm = pvclock_vmm(
+            vec![Exit::Arch(X86Exit::Rdtsc)],
+            Box::new(ScriptedWork::at(500)),
+            7,
+        );
         // Make the anchor non-trivial: pretend the last intercept was at 500.
         vmm.vtime.as_mut().unwrap().last_intercept_work = 500;
         let (status, payload) = ring_pvclock_register(&mut vmm, PV_GPA);
         assert_eq!(status, Status::Ok as u16);
         assert_eq!(payload, PVCLOCK_ABI_VERSION.to_le_bytes());
         assert_eq!(vmm.pvclock_registration(), Some(PV_GPA));
-        // The page is canonical (seq 0) and publishes the anchor clock: the
-        // contract clock is 1 ns/branch, 2 GHz -> vns 500, guest_clock 1000.
+        // PENDING: the doorbell OUT did NOT stamp the page — it reads back
+        // un-stamped (abi != 1), and no Δ deadline is armed.
+        assert!(
+            vtime::pvclock::read(vmm.pvclock_page().unwrap()).is_none(),
+            "the page must not be stamped before the handshake"
+        );
+        assert_eq!(
+            vmm.pvclock_refresh_deadline(),
+            None,
+            "pending must not arm Δ"
+        );
+        // The HANDSHAKE (the RDTSC): stamps canonical at the fresh anchor 500.
+        // The contract clock is 1 ns/branch, 2 GHz -> vns 500, guest_clock 1000.
+        assert_eq!(vmm.step().unwrap(), Step::Continued);
         let f = vtime::pvclock::read(vmm.pvclock_page().unwrap()).expect("stable frame");
         assert_eq!((f.seq, f.vns, f.guest_clock), (0, 500, 1000));
         assert_eq!(f.guest_clock_hz, 2_000_000_000);
         // The ABI-v1 flags word: MATERIALIZED | WORK_DERIVED (bit 1 is the
         // real-stamping-path attestation the ARM placeholder lacks).
         assert_eq!(f.flags, vtime::pvclock::PVCLOCK_FLAGS_V1);
-        // The oracle check holds at registration (G2's function equality).
+        // The oracle check holds after the handshake (G2's function equality).
         vmm.pvclock_check_oracle()
             .expect("page matches the trap oracle");
-        // Host-dirty: the stamped page and the doorbell response page.
+        // Host-dirty: the doorbell response page (register) and the stamped page
+        // (handshake).
         let mut gfns = vmm.host_dirty.iter().copied().collect::<Vec<_>>();
         gfns.sort_unstable();
         assert_eq!(gfns, vec![PV_GPA / 4096, (RESP_GPA as u64) / 4096]);
@@ -9306,37 +9346,58 @@ mod tests {
         assert_eq!(vmm.pvclock_registration(), None);
     }
 
-    /// The headline case the r5 P1 first-arm fix exists for: a guest that
-    /// registers and then **busy-waits on the page**, taking no other intercept
-    /// at all (no timer, no RDTSC, no MSR). The Δ deadline must arm off the
-    /// registration itself — otherwise nothing ever forces the guest out, the
-    /// page never advances, and the busy-wait hangs forever on a frozen clock.
-    /// (Before r5 this arm waited for some *other* deterministic clock advance,
-    /// which this guest never produces; the reference kernel's courtesy `rdtsc`
-    /// hid it, but the public protocol cannot depend on that.)
+    /// The handshake contract (r8 ruling): a guest that performs the required
+    /// post-doorbell handshake (an RDTSC) and *then* busy-waits on the page is
+    /// forced out every Δ; a guest that registers and busy-waits **without**
+    /// handshaking is out of contract — it never arms and is never forced out
+    /// (its page stays at the pre-registration bytes, deterministic).
     #[test]
-    fn pvclock_registering_guest_that_only_busy_waits_is_still_forced_out() {
+    fn pvclock_handshake_gates_the_forced_refresh_arm() {
         const DELTA: u64 = 1_000;
-        // The ONLY exits this guest ever takes are the forced-refresh landings.
-        let mut vmm = Vmm::new(
-            configured_mock(vec![
-                Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
-                Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
-                Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
-            ]),
-            GuestRam::new(TEST_RAM).unwrap(),
+        let build = || {
+            let mut vmm = Vmm::new(
+                configured_mock(vec![
+                    // The handshake, then busy-wait landings.
+                    Exit::Arch(X86Exit::Rdtsc),
+                    Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+                    Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+                    Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+                ]),
+                GuestRam::new(TEST_RAM).unwrap(),
+            );
+            vmm.wire_vtime(
+                VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::new()), 7)
+                    .unwrap(),
+            );
+            vmm.enable_pvclock(DELTA);
+            vmm
+        };
+
+        // OUT OF CONTRACT: register, then never handshake (a pure busy-wait needs
+        // a Deadline to be armed, but nothing arms without the handshake) — so
+        // `run_until_deadline` stays None and no forced refresh ever fires.
+        let mut no_handshake = build();
+        ring_pvclock_register(&mut no_handshake, PV_GPA);
+        assert_eq!(
+            no_handshake.run_until_deadline(),
+            None,
+            "a pending (un-handshaked) registration must NOT arm the Δ refresh"
         );
-        vmm.wire_vtime(
-            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::new()), 7).unwrap(),
-        );
-        vmm.enable_pvclock(DELTA);
+
+        // CONFORMING: register, handshake (RDTSC), then busy-wait — armed, and
+        // forced out every Δ.
+        let mut vmm = build();
         ring_pvclock_register(&mut vmm, PV_GPA);
-        // Armed immediately — no intervening intercept.
+        assert_eq!(
+            vmm.run_until_deadline(),
+            None,
+            "pending before the handshake"
+        );
+        assert_eq!(vmm.step().unwrap(), Step::Continued); // the RDTSC handshake
         assert_eq!(
             vmm.run_until_deadline(),
             Some(Moment(DELTA)),
-            "the busy-waiting guest was never armed: its page would freeze and it would spin \
-             forever"
+            "the handshake arms the Δ refresh off its fresh anchor"
         );
         // And it keeps being forced out, advancing the page every Δ.
         let mut last = 0;
@@ -9683,19 +9744,23 @@ mod tests {
     /// before the last refresh — a snapshot would change the guest's future.
     #[test]
     fn pvclock_seal_never_touches_the_live_page() {
-        // TSC_ADJUST (not a bare RDTSC): since r5 the registration already
-        // publishes the current values, so only a genuine clock CHANGE moves the
-        // epoch off its canonical 0 — which is the precondition this test needs.
+        // A handshake (RDTSC) canonical-stamps at seq 0; then a distinct-value
+        // refresh (TSC_ADJUST) moves the epoch off 0 — the non-canonical live
+        // page this test seals.
         let mut vmm = pvclock_vmm(
-            vec![Exit::Arch(X86Exit::Wrmsr {
-                index: IA32_TSC_ADJUST,
-                value: 5,
-            })],
+            vec![
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Wrmsr {
+                    index: IA32_TSC_ADJUST,
+                    value: 5,
+                }),
+            ],
             Box::new(ScriptedWork::at(10)),
             7,
         );
         ring_pvclock_register(&mut vmm, PV_GPA);
-        vmm.step().unwrap(); // synchronized; page re-stamped, seq moved off 0
+        vmm.step().unwrap(); // RDTSC: the handshake (canonical, seq 0)
+        vmm.step().unwrap(); // TSC_ADJUST: distinct value, seq moves off 0
         // Drain the registration's dirty bookkeeping so the assertion below
         // isolates the seal attempt.
         vmm.host_dirty.clear();
@@ -9813,13 +9878,11 @@ mod tests {
         let f = vtime::pvclock::read(vmm.pvclock_page().unwrap()).unwrap();
         assert_eq!((f.guest_clock, f.seq), (25, seq_before));
 
-        // The refresh log records the two distinct-value publishes: step 1's
-        // RDTSC (anchor 10 → vns 10, clock 20) and step 2's TSC_ADJUST (clock
-        // 25). Since r7 the registration stamps at the EXISTING deterministic
-        // anchor (not a fresh PIO read), which differs from the work-10 values,
-        // so step 1's RDTSC is a genuine publish rather than a value-keyed no-op.
-        // (The registration's own canonical stamp is not a refresh-log entry.)
-        assert_eq!(vmm.pvclock_refreshes(), &[(10, 10, 20), (10, 10, 25)]);
+        // The refresh log records ONE distinct-value publish: step 2's TSC_ADJUST
+        // (clock 25). Step 1's RDTSC is the r8 HANDSHAKE — a canonical first stamp
+        // (vns 10, clock 20), which is not a refresh-log entry — so the first
+        // logged publish is step 2, and step 3's RDTSC is a value-keyed no-op.
+        assert_eq!(vmm.pvclock_refreshes(), &[(10, 10, 25)]);
     }
 
     /// G2's evidence-integrity bar (the deliberate-fault test the task spec
@@ -9887,15 +9950,11 @@ mod tests {
         assert_eq!(vmm.run_until_deadline(), None);
         let (status, _) = ring_pvclock_register(&mut vmm, PV_GPA);
         assert_eq!(status, Status::Ok as u16);
-        // REGISTRATION ARMS IT (cross-model r5 P1) — no second guest trap needed.
-        // The registration anchored V-time from a fresh work read, so `anchor + Δ`
-        // is strictly ahead of the guest and cannot be born overdue. This is what
-        // a guest that registers and immediately busy-waits on the page depends
-        // on: it takes no other intercept, so if the arm waited for one (the r2
-        // behaviour) it would never be forced out and its page would freeze.
-        assert_eq!(vmm.run_until_deadline(), Some(Moment(DELTA)));
-        // An intervening RDTSC intercept re-anchors at the same work (0 here) and
-        // leaves the bound where it is.
+        // PENDING — the doorbell OUT records the GPA but does NOT arm (the r8
+        // handshake ruling). The Δ deadline is None until the handshake intercept.
+        assert_eq!(vmm.run_until_deadline(), None);
+        // The HANDSHAKE: the guest's post-doorbell RDTSC. Its fresh anchor (work
+        // 0 here) is where the first stamp lands and the Δ deadline arms.
         assert_eq!(vmm.step().unwrap(), Step::Continued);
         assert_eq!(vmm.run_until_deadline(), Some(Moment(DELTA)));
         // The forced refresh lands exactly at the bound (the mock rewrites the
@@ -10004,23 +10063,23 @@ mod tests {
     /// path carries the channel with the state).
     #[test]
     fn pvclock_seal_is_verbatim_and_restore_carries_the_registration() {
-        // The clock must actually MOVE after registration for the epoch to leave
-        // its canonical 0 — and since r5 the registration itself already publishes
-        // the current values, so a plain RDTSC at the same work is a byte no-op.
-        // An IA32_TSC_ADJUST write changes the guest-visible clock at the same
-        // anchor: a genuine distinct-value publish, so seq advances.
+        // The handshake (RDTSC) lays down a canonical seq-0 stamp; then a
+        // distinct-value refresh (a TSC_ADJUST write, which changes the guest-
+        // visible clock at the same anchor) advances the epoch off 0. Only then
+        // is the epoch non-canonical, which is the state this test seals.
         let mut a = pvclock_vmm(
             vec![
+                Exit::Arch(X86Exit::Rdtsc),
                 Exit::Arch(X86Exit::Wrmsr {
                     index: IA32_TSC_ADJUST,
                     value: 5,
                 }),
-                Exit::Arch(X86Exit::Rdtsc),
             ],
             Box::new(ScriptedWork::at(10)),
             7,
         );
         ring_pvclock_register(&mut a, PV_GPA);
+        a.step().unwrap(); // RDTSC: the handshake — canonical stamp, seq 0
         a.step().unwrap(); // TSC_ADJUST: the clock changes, so the epoch moves
         let live = vtime::pvclock::read(a.pvclock_page().unwrap()).unwrap();
         assert_ne!(live.seq, 0, "a mid-run refresh bumped the epoch");

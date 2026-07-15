@@ -6682,9 +6682,14 @@ mod tests {
             v.enable_pvclock(crate::vmm::PVCLOCK_DEFAULT_DELTA_WORK);
             v
         };
-        // Live VM: sync at an RDTSC, then register the clock page.
+        // Live VM: sync at an RDTSC, register the clock page, then perform the
+        // handshake (a second RDTSC) — which is what stamps the page (r8 ruling).
         let mut live = compose(
-            vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
+            vec![
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Common(CommonExit::Idle),
+            ],
             100,
         );
         let mut frame = [0_u8; 64];
@@ -6702,6 +6707,10 @@ mod tests {
         assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued); // RDTSC → synchronized
         live.service_doorbell(n as u32).unwrap();
         assert_eq!(live.pvclock_registration(), Some(PV_GPA));
+        // The handshake: the next RDTSC intercept arms the channel and lays down
+        // the first (canonical) stamp, so the sealed image carries an oracle-true
+        // page (r8 — registration alone no longer stamps).
+        assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
 
         let factory = Box::new(move || {
             Ok(compose(

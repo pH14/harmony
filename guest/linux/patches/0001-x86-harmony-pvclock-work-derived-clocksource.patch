@@ -9,8 +9,10 @@ live. Runtime-inert without the `harmony_pvclock` kernel parameter, which only
 the harmony vmm appends when it offers the page — one image serves as both the
 page-on and page-off measurement arm. Registration rides the hypercall
 doorbell (service 7 op 1), one-shot per the ABI ruling, bracketed by two
-deliberate rdtsc traps (fresh initial stamp; the deterministic
-post-registration clock advance the host's staleness-bound refresh arms off).
+deliberate rdtsc traps: an anchor-freshener before ringing, and the REQUIRED
+post-doorbell handshake rdtsc that the host stamps the page and arms its Δ
+refresh from (the OUT only records a pending registration — r8 handshake
+ruling).
 
 This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
 guest/linux/patches/ per the repo's kernel-patch licensing exception
@@ -55,7 +57,7 @@ reads in its reviewed allowlist.
  obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
 --- /dev/null
 +++ b/arch/x86/kernel/harmony_pvclock.c
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,302 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * harmony_pvclock — clocksource + sched_clock over the harmony deterministic
@@ -248,12 +250,12 @@ reads in its reviewed allowlist.
 +	/*
 +	 * One raw rdtsc immediately before ringing — deliberately: it traps to
 +	 * the hypervisor (the retained backstop) as a V-time intercept, which
-+	 * refreshes the host's skid-free anchor to within a few branches of
-+	 * this point. The initial page stamp is then fresh, and the host's Δ
-+	 * forced refresh arms off a current anchor at the first
-+	 * post-registration clock advance (the host defers that first arm — a
-+	 * stale-anchor arm could be born overdue). This is the one intentional
-+	 * rdtsc in this file; the §3.3 opcode-scan allowlist records it.
++	 * refreshes the host's skid-free anchor to within a few branches of this
++	 * point. This keeps the anchor fresh across the doorbell OUT; the actual
++	 * page stamp and Δ arm happen at the REQUIRED post-registration handshake
++	 * rdtsc below (the OUT itself is a PIO, not an intercept). This is one of
++	 * two intentional rdtscs in this file; the §3.3 opcode-scan allowlist
++	 * records both.
 +	 */
 +	(void)rdtsc();
 +
@@ -327,24 +329,26 @@ reads in its reviewed allowlist.
 +	}
 +
 +	/*
-+	 * One more deliberate rdtsc, now that the page is REGISTERED: its trap
-+	 * is a V-time intercept at a point where the host's stamping target
-+	 * exists, which (a) re-stamps the page at a fresh anchor and (b) is the
-+	 * deterministic post-registration clock advance the host's Δ forced
-+	 * refresh arms off (the host defers that first arm until one occurs —
-+	 * without this, a guest that registered and immediately busy-waited on
-+	 * the page with no timer armed and no further traps would spin on a
-+	 * frozen clock forever). Executed BEFORE the clocksource/sched_clock
-+	 * switch below, so by the time any kernel path reads page time, the
-+	 * staleness bound is armed. The §3.3 opcode-scan allowlist records both
-+	 * deliberate reads in this file.
++	 * The REGISTRATION HANDSHAKE (harmony PARAVIRT-CLOCK.md §3.1, the r8
++	 * ruling). The doorbell OUT above only records a *pending* registration;
++	 * the host lays down the first (canonical) page stamp and arms its Δ
++	 * forced refresh **only** at the first V-time intercept after the OUT —
++	 * because the OUT is a PIO, not an intercept, so its counter read is
++	 * skid-tainted and the pre-OUT anchor may be stale. This deliberate rdtsc
++	 * IS that intercept: it is REQUIRED PROTOCOL, not a courtesy. Its trap is
++	 * skid-free, so the host stamps + arms off a fresh, current anchor (never
++	 * born overdue). Executed BEFORE the clocksource/sched_clock switch below,
++	 * so by the time any kernel path reads page time, the page is stamped and
++	 * the staleness bound is armed. A guest that omits this handshake is out of
++	 * contract: its page stays unstamped and no refresh arms. The §3.3
++	 * opcode-scan allowlist records both deliberate reads in this file.
 +	 */
 +	(void)rdtsc();
 +
 +	/*
-+	 * The page is live (the host stamped it at registration). Route the
-+	 * kernel's time paths through it and make the TSC unselectable for
-+	 * timekeeping — raw rdtsc still executes (and traps to the same
++	 * The page is live (the host stamped it at the handshake rdtsc above).
++	 * Route the kernel's time paths through it and make the TSC unselectable
++	 * for timekeeping — raw rdtsc still executes (and traps to the same
 +	 * work-derived value), but the kernel never keeps time by it again.
 +	 */
 +	mark_tsc_unstable("harmony-pvclock");
