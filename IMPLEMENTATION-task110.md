@@ -29,7 +29,7 @@ clocksource: Switched to clocksource harmony-pvclock          ← selected, not 
 | **G0** smoke-fire-once | **PASS** | page registered @0x2dba000, 4096 refreshes, monotonic to 99 ms vns, GUEST_READY, clean poweroff |
 | **G1** same-seed bit-identical `state_hash`, page ON | **PASS** | 3/3 seals MATCH across two same-seed Postgres boots (page bytes hashed in full) — zero refresh/canonicalization entropy leaks into guest RAM; re-confirmed bit-identical on the r8 re-validation (final head, default schedule) |
 | **N-4 perf** (kill condition 3) | **PASS (≈25×)** | RDTSC-exit-rate reduction over the actual Postgres workload (boot excluded) — see below; far above the 2× "worth it" threshold |
-| **G2** page-stamp == RDTSC-trap-oracle at refresh Moments | **PASS** | 5 sampled boundary checks + terminal, 4096 refreshes, **deliberate-fault detected** (the gate can fail) |
+| **G2** page-stamp == RDTSC-trap-oracle at refresh Moments | **PASS** (re-validated r18 at full strength) | **4843 oracle checks — EVERY synchronized registered boundary** (r18: was a step%1000 sample of 5) + terminal, 4096 refreshes, **deliberate-fault detected** (the gate can fail) |
 | **G3** busy-wait liveness within Δ | **PASS** | syscall-free `pvclock-spin` completed; 2182 refreshes, **1921 (88%) forced by the Δ deadline**, max anchor gap = Δ exactly |
 | **det-corpus O1** (run-vs-run determinism, page-off) | **PASS** (all payloads) | insn-rdtsc / insn-rng / insn-cpuid all deterministic same-seed on the patched backend — the page-off path my task must not regress is intact |
 | **det-corpus O2** (conformance-to-golden) | insn-rdtsc ✓, insn-rng ✓, **insn-cpuid ✗ (pre-existing)** | the insn-cpuid digest is *deterministic* (identical run-to-run) but ≠ its committed golden — a CPUID conformance-golden drift (microcode/golden staleness). **My branch touches no golden/CPUID/corpus file** (diff is `consonance` + `docs` + `guest/linux` only), and pvclock touches no CPUID, so this is orthogonal to the page — flagged for the foreman to reconcile against main, NOT a pvclock regression |
@@ -505,6 +505,25 @@ composed identically. The dead_code allowance is gone (the formatter is reachabl
 from the Linux runnable path). Test: `ab_report_validates_matching_sweep_parameters`.
 (a) is portable vmm-core; (b)'s box path is compile-checked on x86_64-linux, its
 validator tested portably.
+
+**Review round 18 folded in — G2 strengthened + box re-validated** (cross-model
+r18: 1 P1; portable-only — no kernel rebuild). The G2 gate sampled
+`pvclock_check_oracle` only at `step % 1_000` synchronized boundaries, so a
+regression that left the page stale at an *unsampled* synchronized boundary (a
+refresh that should have fired and didn't) and repaired it before the next sampled
+step would pass — while the gate's own claim is stamp == oracle at **every** refresh
+Moment. Fixed to run the oracle check at **every** synchronized registered boundary
+(`pvclock_check_oracle` is O(1), and synchronized boundaries are the intercept
+steps, not every step, so it stays cheap); the vacuity guards are all kept (checked
+> 0, registration present, terminal check, monotonic-refresh-log, live
+deliberate-fault re-check). **Box G0+G2 re-validation on the real patched KVM**
+(det-cfl-v1, `hypervizor`, leased core 2, window acquired+reverted-to-stock 1396736
+per `docs/BOX-PINNING.md`, bzImage rebuilt reproducibly to the committed pin
+`e1c83dc3`): **G0 PASS** (clocksource switched to `harmony-pvclock`, page @0x2dba000,
+4096 refreshes), **G2 PASS at the new strength — 4843 oracle checks** (every
+synchronized registered boundary, vs the old 5-sample) + terminal + deliberate-fault
+detected. Only G2's strength changed, so only G0 (smoke discipline) + G2 needed the
+box; the other gates' r8–r11 results stand.
 
 ## What landed (by deliverable)
 
