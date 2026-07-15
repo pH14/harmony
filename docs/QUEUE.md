@@ -32,8 +32,15 @@ throughput; the vendor spikes gate *trust* (measured constants, the trait freeze
 fill), not construction. The ruled 5-lane queue and its risk acceptance live in
 `docs/ARCH-BOUNDARY.md` §Pre-build ruling.
 
-## In flight (1 active worker; 3 PRs parked on Paul)
+## In flight (2 active workers; PR #98 awaiting the re-cert discussion)
 
+- **ARM backend skeleton — IMPLEMENTATION** (tasks/112, `hm-cbt`, spec merged as PR #111)
+  — **SPAWNED 2026-07-15 ~23:40 on Fable 5** (agent-arm-backend-skeleton): M0 snapshot-seam
+  (x86-neutral, Intel-box gate BLOCKING) → M1 keystone Vendor skeleton → M2 gicv3 crate →
+  M3 Image+DTB boot → M4 stock KVM/arm64 backend; TCG-first gates, real-KVM gates edged
+  to the Altra (`hm-7pb`).
+- **Postgres-image drift gate restoration** (tasks/115, `hm-xdp`+`hm-2nt`) — worker
+  mid-diagnosis (box window ahead).
 - **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — **⛔ MERGE HALTED
   AT THE LAST GATE, ESCALATED TO PAUL (2026-07-14 ~10:20)**: N-3 is fully green (six
   conditions 1000/1000 bit-identical, live-migration green on destination, metal reference
@@ -48,31 +55,6 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   revision** — see PR #98 comment 4970278590. Worker meanwhile fixing the instrument
   (armed-PMI recompute from records, disposition walk-back, fmt/SPDX/stressor/migration/
   n5-demo/pmu-cursor findings). `hm-60k` blocked on the ruling.
-- **Paravirt work-derived clock, x86** (tasks/110, `hm-rk5`, PR #110) — **box gates GREEN
-  on real KVM** (clocksource selected; G0–G3 + det-corpus O1; perf kill-condition ~25x
-  after the r8 workload-relative correction) and **rounds 1–17 fixed-and-verified**
-  (the accumulated rulings: seal-verbatim, GPA one-shot, deterministic-anchor stamping,
-  two-step registration handshake — r17 sharpened it to the RDTSC/RDTSCP read
-  specifically). Rounds r18–r21 each fixed-and-verified within the hour (G2 at EVERY
-  synchronized boundary 4,843 checks; perf arms assert clocksource SELECTION, 24.93x
-  live; arm_arrival rejects past Moments; scan-before-publish + planted proof; the
-  seal-verbatim + handshake docs match the rulings). **⛔ VERIFIED AND PARKED
-  MERGE-READY 2026-07-15 ~18:05 (comment 4983751155) — PAUL'S VETO WINDOW over the 5
-  accumulated rulings; merge is his.** On merge `hm-rfz` becomes spawnable. (The
-  formal gh approval object is classifier-blocked as self-approval — the comment is
-  the verdict record.)
-- **ARM pre-build apparatus** (tasks/109, `hm-2kj`, PR #108) — the r13 hold was released
-  same night (held set dispatched + fixed as round 13; loop-to-zero de facto, Paul's
-  cadence ruling moot if the loop reaches zero): **rounds 1–23 fixed** through head
-  `48309f2` (2026-07-15 ~07:54; recent species: writable-ID-surface enumeration, AA-3
-  case/target coverage binding, CASP-is-LSE, truth-table schema validation; the
-  Miri-payload item stays adjudicated-settled). The escalation trigger was MET at r25
-  (migration-probe root-cause recurrence + 6→4→7→6 non-convergence) → **surgical final
-  round dispatched, fixed in 10 min, foreman-verified in source, gates 203/203 + clippy
-  clean → ⛔ PR PARKED MERGE-READY, PAUL'S CALL** (comment 4983393599, escalated by
-  push): merge under the recommended pre-silicon bar (arrival-day residue = `hm-f99` ←
-  `hm-7pb`), or rule loop-to-zero and `hm-f99` dispatches as r26. No further foreman
-  rounds without the ruling.
 
 Landed since the midday refresh: **conductor full-suite Miri restoration MERGED**
 (tasks/104, PR #105 — 12× cut to ~11.5 min, foreman-confirmed, triple vacuity guard;
@@ -81,25 +63,14 @@ MERGED** (tasks/105, PR #106 — the GLOSSARY slate is code: campaign-runner, sd
 Reproducer, Moment/Span, Subject; wire bytes golden-proven; zero findings across both
 reviewers; Exemplar→Entry structural merge deferred as `hm-74w`).
 
-**Infrastructure (P1, needs Paul's hands): CI runner rustup corruption** (`hm-ph7`) —
-every quality job on every branch fails in ~6s at 'Install stable toolchain' (the runner
-user's stable-toolchain musl std manifest is missing; foreman-verified on the box
-2026-07-15). The repair one-liner is in the bead; the foreman's ssh write was
-classifier-blocked. Local + box gates are unaffected (the real signals stay green).
+**CI runner toolchain REPAIRED 2026-07-15 eve** (`hm-ph7`, closing on the green rerun):
+Paul's root-side run + the foreman's runner-user stable-toolchain reinstall (uninstall →
+minimal install → clippy/rustfmt/llvm-tools + musl/none targets). Quality rerun in flight.
 
 ## Ready (unblocked, waiting for a worker slot or Paul)
 
 Reach-matrix lane (foreman-owned or spawnable next):
 
-- **ARM backend skeleton — spec** (`hm-cbt`, tasks/112, **PR #111**) — worker drafted the
-  full 420-line spec in one 10-min turn (M0 seam-first milestones, no-invented-constants
-  discipline); foreman opened the PR; **cross-model r1 found 5 real P1s** (stock-KVM
-  WFI/sysreg exits unreachable on arm64; the userspace-GIC ↔ stock-KVM interrupt-delivery
-  gap — vGICv3/KVM_IRQ_LINE; TCG never executes our ioctls; public-api goldens missing
-  from the surface; the M0 Intel-box neutrality gate must be blocking) — fixed same hour
-  (242ed76), **all 7 foreman-verified → MERGE-READY, parked for Paul** (self-merge of a
-  foreman-opened PR is classifier-blocked; 30-second squash for him). The Fable-tier
-  implementation task spawns from the merged spec.
 - **Hardware-arrival lane** — Altra arrival blocker `hm-7pb` (P1) → ARM spike execution
   `hm-idb`; Epyc arrival blocker `hm-9wt` (P2) → AMD spike execution `hm-u1n`. Paul
   closes an arrival bead when its box is racked; the execution surfaces dispatch-ready.
@@ -179,6 +150,12 @@ spawn these until that lane re-opens):
 
 ## Recently done (this week)
 
+- **THE PRE-BUILD TRIPLE MERGED 2026-07-15 eve (Paul)**: the paravirt work-derived clock
+  (tasks/110, PR #110 — 21 rounds, box all-green, 24.93x workload RDTSC-exit reduction;
+  `hm-rk5` closed, `hm-rfz` W^X follow-up unblocked); the ARM pre-build apparatus
+  (tasks/109, PR #108 — 25 rounds, pre-silicon bar, arrival-day residue `hm-f99`;
+  `hm-2kj` closed); and the ARM backend skeleton spec (tasks/112, PR #111 — Fable
+  implementation spawned from it same hour).
 - **SIGSTOP-cycling wedge FIXED AND MERGED same evening** (tasks/114, `hm-440`, PR #113,
   2026-07-15): the observed wedge was a single-step LIVELOCK (72% CPU, work never
   advancing after a suspend-lost work-clock completion) — now step-budget-bounded and
