@@ -48,25 +48,22 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   revision** — see PR #98 comment 4970278590. Worker meanwhile fixing the instrument
   (armed-PMI recompute from records, disposition walk-back, fmt/SPDX/stressor/migration/
   n5-demo/pmu-cursor findings). `hm-60k` blocked on the ruling.
-- **Paravirt work-derived clock, x86** (tasks/110, `hm-rk5`) — **portable side DONE,
-  PR #110 OPEN** (2026-07-14 ~14:05, 7 commits): vtime::pvclock ABI-v1 page + stamping,
-  hypercall Pvclock service, vmm-core refresh channel (anchor-derived + Δ forced-refresh +
-  seal canonical re-stamp + snapshot carry), guest CONFIG_HARMONY_PVCLOCK clocksource,
-  counter-opcode reachability gate, G0/G1/G2/G3 + perf harnesses. One flagged ruling for
-  review: skid-free-anchor stamping vs the doc's literal live work() read (ABI freezes
-  through this review). Box gates await a granted window. Foreman substantive review next.
-- **ARM pre-build apparatus** (tasks/109, `hm-2kj`, PR #108) — **rounds 1–12 fixed-and-
-  verified; r13 HELD as the scope-ruling exhibit** (comment 4975470223): three consecutive
-  rounds returned the same species (checker cross-validations, the twice-adjudicated
-  Miri-payload item), so per the foreman recommendation r12 was the final mechanical round.
-  **Awaiting Paul's scope ruling** — loop-to-zero dispatches the held set as r13; declared
-  pre-silicon bar files them as the arrival-day validation items (README table already in
-  place) and the PR parks merge-ready.
-- **Paravirt work-derived clock** (tasks/110, `hm-rk5`, PR #110) — **box gates GREEN on real
-  KVM** (guest switched to the pvclock clocksource; box released + reverted) with r7's
-  findings folded in the same session; **closing mini-round r8 in flight** (1 P1: one more
-  live-count import on the overdue-registration path, same family as r7's anchor fix; 4 P2s).
-  On its completion + cheap box re-validation the PR parks **merge-ready for Paul**.
+- **Paravirt work-derived clock, x86** (tasks/110, `hm-rk5`, PR #110) — **box gates GREEN
+  on real KVM** (clocksource selected; G0–G3 + det-corpus O1; perf kill-condition ~25x
+  after the r8 workload-relative correction) and **rounds 1–17 fixed-and-verified**
+  (the accumulated rulings: seal-verbatim, GPA one-shot, deterministic-anchor stamping,
+  two-step registration handshake — r17 sharpened it to the RDTSC/RDTSCP read
+  specifically). **r18 dispatched 2026-07-15 ~15:05** (1 P1: G2's oracle check sampled
+  only step%1000 boundaries — strengthen to every synchronized registered boundary;
+  G2-only box re-validation window granted). On a clean r19 the PR is at APPROVE, then
+  **parks merge-ready for Paul's veto window** over the rulings.
+- **ARM pre-build apparatus** (tasks/109, `hm-2kj`, PR #108) — the r13 hold was released
+  same night (held set dispatched + fixed as round 13; loop-to-zero de facto, Paul's
+  cadence ruling moot if the loop reaches zero): **rounds 1–23 fixed** through head
+  `48309f2` (2026-07-15 ~07:54; recent species: writable-ID-surface enumeration, AA-3
+  case/target coverage binding, CASP-is-LSE, truth-table schema validation; the
+  Miri-payload item stays adjudicated-settled). **Blind r24 pass in flight; foreman
+  verification is the next iteration's heavy op.**
 
 Landed since the midday refresh: **conductor full-suite Miri restoration MERGED**
 (tasks/104, PR #105 — 12× cut to ~11.5 min, foreman-confirmed, triple vacuity guard;
@@ -74,6 +71,12 @@ Landed since the midday refresh: **conductor full-suite Miri restoration MERGED*
 MERGED** (tasks/105, PR #106 — the GLOSSARY slate is code: campaign-runner, sdk-events,
 Reproducer, Moment/Span, Subject; wire bytes golden-proven; zero findings across both
 reviewers; Exemplar→Entry structural merge deferred as `hm-74w`).
+
+**Infrastructure (P1, needs Paul's hands): CI runner rustup corruption** (`hm-ph7`) —
+every quality job on every branch fails in ~6s at 'Install stable toolchain' (the runner
+user's stable-toolchain musl std manifest is missing; foreman-verified on the box
+2026-07-15). The repair one-liner is in the bead; the foreman's ssh write was
+classifier-blocked. Local + box gates are unaffected (the real signals stay green).
 
 ## Ready (unblocked, waiting for a worker slot or Paul)
 
@@ -174,10 +177,10 @@ spawn these until that lane re-opens):
   budget-gated machine-lease CLI is Paul's personal toolchain outside this repo's task
   queue; this repo just consumes it. Spec committed to main for reference
   (tasks/106-cloud-vendor-cli.md, b565d58).
-- **Nested-x86 N-2 re-run CLOSED** (`hm-dbh`, 2026-07-14): 1,052,000/1,052,000 accounted
-  at the ≥1M floor on the patched mechanism, with the review-demanded instruments
-  (PatchedKvmBackend hammer, per-record PMI overflow accounting, independent guest work
-  oracle). Evidence on `spike/nested-x86` results/.
+- ~~**Nested-x86 N-2 re-run CLOSED** (`hm-dbh`, 2026-07-14): 1,052,000/1,052,000 accounted
+  at the ≥1M floor~~ — **SUPERSEDED SAME DAY**: the armed count was inflated (MTF-only
+  deadlines counted); true armed PMIs 588,923 of the ≥1M floor. `hm-dbh` REOPENED,
+  escalated to Paul (top-up vs criterion revision) — see the In-flight row for PR #98.
 - **vmm-core Miri gate CLOSED** (tasks/98, PR #99, 2026-07-13, Paul ruled merge-now over
   a re-litigated codex finding): own nightly job box-demonstrated twice (~48-50 min vs a
   120-min contention-derived ceiling); both `map_memory` seams Miri-run (the new
