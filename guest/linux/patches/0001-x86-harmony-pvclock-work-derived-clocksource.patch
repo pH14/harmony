@@ -57,7 +57,7 @@ reads in its reviewed allowlist.
  obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
 --- /dev/null
 +++ b/arch/x86/kernel/harmony_pvclock.c
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,311 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * harmony_pvclock — clocksource + sched_clock over the harmony deterministic
@@ -110,6 +110,13 @@ reads in its reviewed allowlist.
 +
 +#define HARMONY_PVCLOCK_ABI		1u
 +#define HARMONY_FLAG_MATERIALIZED	(1u << 0)
++#define HARMONY_FLAG_WORK_DERIVED	(1u << 1)
++/* The exact ABI-v1 flags word every real stamp publishes; all other bits are
++ * reserved-zero. The reader requires this word exactly (not just a bit test),
++ * so a placeholder page — e.g. the ARM spike's static page that leaves
++ * WORK_DERIVED clear — fails closed. */
++#define HARMONY_FLAGS_V1 \
++	(HARMONY_FLAG_MATERIALIZED | HARMONY_FLAG_WORK_DERIVED)
 +
 +struct harmony_pvclock_page {
 +	u32 abi_version;
@@ -117,7 +124,7 @@ reads in its reviewed allowlist.
 +	u64 vns;		/* materialized V-time, nanoseconds */
 +	u64 guest_clock;	/* materialized virtual counter */
 +	u64 guest_clock_hz;	/* counter frequency, Hz */
-+	u32 flags;		/* bit 0: MATERIALIZED */
++	u32 flags;		/* bit 0 MATERIALIZED | bit 1 WORK_DERIVED; rest reserved 0 */
 +	u32 vcpu_index;		/* pinned 0 (single vCPU) */
 +	u8 reserved[PAGE_SIZE - 0x28];
 +} __packed;
@@ -340,10 +347,10 @@ reads in its reviewed allowlist.
 +	 */
 +	if (abi != HARMONY_PVCLOCK_ABI ||
 +	    READ_ONCE(harmony_page.abi_version) != HARMONY_PVCLOCK_ABI ||
-+	    !(READ_ONCE(harmony_page.flags) & HARMONY_FLAG_MATERIALIZED)) {
-+		pr_err("ABI mismatch (host answered %u, page says %u, flags %#x); refusing the page\n",
++	    READ_ONCE(harmony_page.flags) != HARMONY_FLAGS_V1) {
++		pr_err("ABI mismatch (host answered %u, page says %u, flags %#x want %#x); refusing the page\n",
 +		       abi, READ_ONCE(harmony_page.abi_version),
-+		       READ_ONCE(harmony_page.flags));
++		       READ_ONCE(harmony_page.flags), HARMONY_FLAGS_V1);
 +		return 0;
 +	}
 +

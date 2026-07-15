@@ -285,11 +285,25 @@ for raw counter opcodes:
 - arm64: `mrs xN, CNTVCT_EL0`, `mrs xN, CNTPCT_EL0`, `mrs xN, CNTVCTSS_EL0`/`CNTPCTSS_EL0`;
 - x86: `rdtsc` (`0F 31`), `rdtscp` (`0F 01 F9`).
 
-Any hit on a reachable path fails the build. The scan inherits task-100's enforcement ladder:
-kernel-config guarantee → static opcode scan → **W^X + rescan-on-exec** for any page the guest
-makes executable at runtime (so a JIT/self-modifying guest cannot introduce a counter read the
-static scan never saw). A guest that can mint executable counter-read code the vmm cannot re-scan
-is out of contract — see §7.
+The scan inherits task-100's enforcement ladder: kernel-config guarantee → static opcode scan →
+**W^X + rescan-on-exec** for any page the guest makes executable at runtime (so a JIT/self-modifying
+guest cannot introduce a counter read the static scan never saw). A guest that can mint executable
+counter-read code the vmm cannot re-scan is out of contract — see §7.
+
+**The bar is per-vendor, because closure is (§4):**
+
+- **x86 — reviewed reachable reads are allowed, trap-backstopped.** The gate is an *allowlist*: a
+  raw `rdtsc`/`rdtscp` left in the image is admissible **iff** it is a known, reviewed site
+  (recorded `symbol+0xOFFSET`), because the retained RDTSC/RDTSCP trap (§4.1) completes *any*
+  reachable read — allowlisted or not — with the same work-derived value the page carries. A
+  reachable read is therefore **contract-safe** on x86, never a determinism hole; the allowlist
+  exists only to force human review of *new* reads (so nobody adds an unreviewed timekeeping path),
+  not because a reviewed read is unsafe. An **unlisted or moved** site fails the build.
+- **ARM — the bar is strictly zero reachable reads.** There is no `CNTVCT`/`CNTPCT` trap available
+  on the reachable non-ECV silicon (§4.2), so a reachable counter read is an *actual* escape from
+  work-derived time — unbackstopped. The transposed gate therefore carries an **empty allowlist by
+  necessity**: any hit fails the build. This strict zero-reachable requirement is the ARM no-trap
+  closure story, validated at spike stage AA-5 — it is **not** the x86 bar.
 
 ---
 

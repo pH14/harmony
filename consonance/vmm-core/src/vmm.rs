@@ -1854,6 +1854,16 @@ where
             // incompatible. Without this the fold would carry the offer but not
             // the capability the offer's future turns on.
             bytes.push(u8::from(self.pvclock_available()));
+            // The HANDSHAKE state (cross-model r11 P2): a *pending* registration
+            // (`armed == false`, between the doorbell `OUT` and the handshake
+            // intercept) and an *armed* one have DIFFERENT futures — the pending
+            // one's next synchronized step stamps the page and arms the Δ refresh,
+            // the armed one refreshes normally — so pending-vs-armed belongs in
+            // state identity. (This bit is only ever observed mid-run: a snapshot
+            // is taken only at a synchronized point, and a pending registration
+            // exists only at non-synchronized points, so a sealed state is always
+            // armed — restore derives it. It is folded here for the mid-run hash.)
+            bytes.push(u8::from(pv.armed));
             put_chunk(&mut out, b"PVCK", &bytes);
         }
         // The canonical `vm_state` blob, folded into the hash **only** when the
@@ -9641,10 +9651,20 @@ mod tests {
         let mut registered = build(PVCLOCK_DEFAULT_DELTA_WORK);
         let (status, _) = ring_pvclock_register(&mut registered, PV_GPA);
         assert_eq!(status, Status::Ok as u16);
+        let pending = registered.state_blob();
         assert_ne!(
-            base,
-            registered.state_blob(),
+            base, pending,
             "a registration is a different future — must reach the hash"
+        );
+        // The HANDSHAKE state is in the hash too (cross-model r11 P2): a PENDING
+        // registration (just recorded at the OUT) and an ARMED one (handshake
+        // done) have different futures — the pending one still owes its first
+        // stamp + Δ arm — so they must hash differently even at the same (Δ, GPA).
+        registered.pvclock.as_mut().unwrap().armed = true;
+        assert_ne!(
+            pending,
+            registered.state_blob(),
+            "pending vs armed is a different future — the handshake bit must reach the hash"
         );
     }
 
