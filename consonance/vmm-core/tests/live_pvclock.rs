@@ -55,6 +55,12 @@ type DynVmm = Vmm<Box<dyn Backend<A = X86>>>;
 
 const GUEST_RAM_LEN: usize = 2 << 30;
 const SEED: u64 = 0x0110_5EED_C10C_4B17;
+/// The kernel's clocksource-SELECTION line: Linux prints this once it makes the
+/// harmony page the ACTIVE timekeeping source — not merely registers it. A page
+/// that registers but fails selection (a rating/initcall regression) would keep
+/// the guest on the TSC, so a perf arm that checked only registration could emit
+/// a "page-on" ratio for an effectively page-OFF run (r19).
+const CLOCKSOURCE_SWITCH_MARKER: &[u8] = b"Switched to clocksource harmony-pvclock";
 const DEFAULT_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliable \
      no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable";
 
@@ -390,10 +396,7 @@ fn g0_smoke_boot_registers_and_reads_sane_time() {
     // on never leave the hot path. Require the kernel's clocksource-SWITCH line, so
     // a TSC-still-active guest fails the smoke gate loudly.
     assert!(
-        find(
-            serial.as_bytes(),
-            b"Switched to clocksource harmony-pvclock"
-        ),
+        find(serial.as_bytes(), CLOCKSOURCE_SWITCH_MARKER),
         "the guest registered the page but never SELECTED harmony-pvclock as its \
          active clocksource — it is still on the TSC (registered-but-unused). Check \
          the guest 'clocksource' log lines above."
@@ -904,6 +907,17 @@ fn perf_arm(kernel: &[u8], initramfs: &[u8], page_on: bool) -> PerfArm {
             vmm.pvclock_registration().is_some(),
             "page-on arm never registered — the measurement would be page-off vs page-off"
         );
+        // Registration is NOT selection (r19 P1): a page that registers but never
+        // becomes the active clocksource (a rating/initcall regression) leaves the
+        // guest on the TSC, so this "page-on" arm would report a page-OFF ratio.
+        // G0 checks the switch, but it is an independent ignored test that a
+        // perf-only invocation does not run — assert it here too, before any ratio.
+        assert!(
+            find(vmm.serial(), CLOCKSOURCE_SWITCH_MARKER),
+            "page-on arm registered the clock page but Linux never SELECTED \
+             harmony-pvclock as the active clocksource (still on the TSC) — the ratio \
+             would mislabel an effectively page-OFF run. Check the guest 'clocksource' lines."
+        );
     }
     // FAIL rather than fall back to the (unsynchronized) terminal sample (r16
     // P2): `last_sync` is `Some` iff the run passed through at least one
@@ -1058,7 +1072,17 @@ fn n4_perf_postgres_window_page_off_vs_page_on() {
         if page_on {
             assert!(
                 vmm.pvclock_registration().is_some(),
-                "page-on arm never registered the clock page"
+                "page-{side} arm never registered the clock page"
+            );
+            // Registration is NOT selection (r19 P1): assert the guest actually
+            // SELECTED harmony-pvclock before this arm's counts feed a ratio, else
+            // a registered-but-unused page would report a page-OFF workload as
+            // page-on.
+            assert!(
+                find(vmm.serial(), CLOCKSOURCE_SWITCH_MARKER),
+                "page-{side} arm registered the clock page but Linux never SELECTED \
+                 harmony-pvclock as the active clocksource (still on the TSC) — the ratio \
+                 would mislabel an effectively page-OFF run"
             );
         }
         (
