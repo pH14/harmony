@@ -57,7 +57,7 @@ reads in its reviewed allowlist.
  obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
 --- /dev/null
 +++ b/arch/x86/kernel/harmony_pvclock.c
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,304 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * harmony_pvclock — clocksource + sched_clock over the harmony deterministic
@@ -314,10 +314,29 @@ reads in its reviewed allowlist.
 +		return 0;
 +	}
 +	/*
++	 * The REGISTRATION HANDSHAKE (harmony PARAVIRT-CLOCK.md §3.1, the r8
++	 * ruling). The doorbell OUT above only records a *pending* registration;
++	 * the host lays down the first (canonical) page stamp and arms its Δ
++	 * forced refresh **only** at the first V-time intercept after the OUT —
++	 * the OUT is a PIO, not an intercept, so its counter read is skid-tainted
++	 * and the pre-OUT anchor may be stale. This deliberate rdtsc IS that
++	 * intercept: REQUIRED PROTOCOL, not a courtesy. Its trap is skid-free, so
++	 * the host stamps + arms off a fresh, current anchor (never born overdue).
++	 * It MUST precede the ABI validation below: the validation reads the page's
++	 * abi_version/flags, which the host only writes at this handshake, so a
++	 * guest that validated first would see an unstamped page and refuse it. A
++	 * guest that omits the handshake is out of contract: its page stays
++	 * unstamped and no refresh arms. The §3.3 opcode-scan allowlist records
++	 * both deliberate reads in this file.
++	 */
++	(void)rdtsc();
++
++	/*
 +	 * An ABI mismatch is a hard fault, never a silent reinterpret
 +	 * (PARAVIRT-CLOCK.md §1): refuse the page entirely — and loudly —
 +	 * rather than read fields whose layout this reader does not know.
-+	 * The trap backstop keeps time correct meanwhile.
++	 * The trap backstop keeps time correct meanwhile. (The page is now
++	 * stamped by the handshake above, so these reads see the real values.)
 +	 */
 +	if (abi != HARMONY_PVCLOCK_ABI ||
 +	    READ_ONCE(harmony_page.abi_version) != HARMONY_PVCLOCK_ABI ||
@@ -327,23 +346,6 @@ reads in its reviewed allowlist.
 +		       READ_ONCE(harmony_page.flags));
 +		return 0;
 +	}
-+
-+	/*
-+	 * The REGISTRATION HANDSHAKE (harmony PARAVIRT-CLOCK.md §3.1, the r8
-+	 * ruling). The doorbell OUT above only records a *pending* registration;
-+	 * the host lays down the first (canonical) page stamp and arms its Δ
-+	 * forced refresh **only** at the first V-time intercept after the OUT —
-+	 * because the OUT is a PIO, not an intercept, so its counter read is
-+	 * skid-tainted and the pre-OUT anchor may be stale. This deliberate rdtsc
-+	 * IS that intercept: it is REQUIRED PROTOCOL, not a courtesy. Its trap is
-+	 * skid-free, so the host stamps + arms off a fresh, current anchor (never
-+	 * born overdue). Executed BEFORE the clocksource/sched_clock switch below,
-+	 * so by the time any kernel path reads page time, the page is stamped and
-+	 * the staleness bound is armed. A guest that omits this handshake is out of
-+	 * contract: its page stays unstamped and no refresh arms. The §3.3
-+	 * opcode-scan allowlist records both deliberate reads in this file.
-+	 */
-+	(void)rdtsc();
 +
 +	/*
 +	 * The page is live (the host stamped it at the handshake rdtsc above).
