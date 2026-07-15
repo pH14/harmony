@@ -533,14 +533,23 @@ pub fn elf_gnu_build_id(bytes: &[u8]) -> Option<String> {
     if bytes.get(0..4)? != b"\x7fELF" || *bytes.get(4)? != 2 || *bytes.get(5)? != 1 {
         return None;
     }
+    // Every offset+width is `checked_add`ed before forming a slice range: `bytes` is an
+    // untrusted operator-supplied kernel image, and a hostile `e_phoff`/`p_offset` near
+    // `usize::MAX` would otherwise overflow the `o + width` and panic in an overflow-checked
+    // build. The contract is return-None, never panic.
     let u16le = |o: usize| -> Option<usize> {
-        Some(u16::from_le_bytes(bytes.get(o..o + 2)?.try_into().ok()?) as usize)
+        Some(u16::from_le_bytes(bytes.get(o..o.checked_add(2)?)?.try_into().ok()?) as usize)
     };
     let u32le = |o: usize| -> Option<u32> {
-        Some(u32::from_le_bytes(bytes.get(o..o + 4)?.try_into().ok()?))
+        Some(u32::from_le_bytes(
+            bytes.get(o..o.checked_add(4)?)?.try_into().ok()?,
+        ))
     };
     let uoff = |o: usize| -> Option<usize> {
-        usize::try_from(u64::from_le_bytes(bytes.get(o..o + 8)?.try_into().ok()?)).ok()
+        usize::try_from(u64::from_le_bytes(
+            bytes.get(o..o.checked_add(8)?)?.try_into().ok()?,
+        ))
+        .ok()
     };
     // ELF64 header: e_phoff@32, e_phentsize@54, e_phnum@56.
     let phoff = uoff(32)?;
@@ -551,12 +560,12 @@ pub fn elf_gnu_build_id(bytes: &[u8]) -> Option<String> {
     }
     for i in 0..phnum {
         let ph = phoff.checked_add(i.checked_mul(phentsize)?)?;
-        // Program header: p_type@0, p_offset@8, p_filesz@32.
+        // Program header: p_type@0, p_offset@8, p_filesz@32 — every field offset checked.
         if u32le(ph)? != 4 {
             continue; // not PT_NOTE
         }
-        let p_offset = uoff(ph + 8)?;
-        let p_filesz = uoff(ph + 32)?;
+        let p_offset = uoff(ph.checked_add(8)?)?;
+        let p_filesz = uoff(ph.checked_add(32)?)?;
         let notes = bytes.get(p_offset..p_offset.checked_add(p_filesz)?)?;
         if let Some(id) = parse_gnu_build_id(notes) {
             return Some(id);
@@ -1590,6 +1599,16 @@ mod tests {
         // A non-ELF (a stripped /boot/Image is a flat binary) has no note → None (cannot bind).
         assert_eq!(elf_gnu_build_id(b"MZ not an elf at all"), None);
         assert_eq!(elf_gnu_build_id(&[]), None);
+
+        // Hostile, operator-supplied offsets must return None, NEVER panic in an
+        // overflow-checked build: `e_phoff` near usize::MAX would overflow `o + width` when
+        // forming a slice bound. checked_add makes it a clean None.
+        let mut hostile = elf.clone();
+        hostile[32..40].copy_from_slice(&u64::MAX.to_le_bytes()); // e_phoff = usize::MAX
+        assert_eq!(elf_gnu_build_id(&hostile), None);
+        let mut hostile = elf.clone();
+        hostile[32..40].copy_from_slice(&(u64::MAX - 1).to_le_bytes());
+        assert_eq!(elf_gnu_build_id(&hostile), None);
     }
 
     #[test]

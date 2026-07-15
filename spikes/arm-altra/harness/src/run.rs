@@ -595,9 +595,10 @@ pub fn run_sample(
                 if landed.is_none() {
                     landed = Some(work);
                     mechanism_exit = Some(reason);
-                    // Close the armed interval: if the churner moved the thread between the
-                    // arm and this landing, a live armed context migrated across cores. This
-                    // is the only place a move counts toward AA-1's armed-migration probe.
+                    // Close the armed interval AT THE LANDING: if the churner moved the thread
+                    // between the arm and this landing, a live armed context migrated across
+                    // cores. The NO-DELIVERY case (a lost PMI) is closed symmetrically after the
+                    // run loop — see below — since the probe exists to observe exactly that.
                     if let (Some(at_arm), Some(probe)) =
                         (moves_at_arm, spec.migration_probe.as_ref())
                         && probe.moves() > at_arm
@@ -617,6 +618,18 @@ pub fn run_sample(
 
             VcpuExit::Other(reason) => return Err(RunError::UnexpectedExit(reason)),
         }
+    }
+
+    // A LOST PMI closes the armed interval too. `mark_observed` at the landing fires only on a
+    // delivery; but the migration probe exists to observe exactly the NO-DELIVERY case — an
+    // armed overflow that a cross-core migration caused KVM to MISS (rr #3607). If a deadline
+    // was armed but nothing landed, the armed interval ran from the arm to here, so a churner
+    // move within it still migrated a live armed context and must be recorded on this path.
+    if landed.is_none()
+        && let (Some(at_arm), Some(probe)) = (moves_at_arm, spec.migration_probe.as_ref())
+        && probe.moves() > at_arm
+    {
+        probe.mark_observed();
     }
 
     let status = status.ok_or(RunError::NoExitSentinel)?;
@@ -1103,6 +1116,67 @@ mod tests {
         let o = record.overflow.expect("armed");
         assert_eq!(o.deliveries, 0, "a lost PMI is visible, not absorbed");
         assert_eq!(o.landed, 0);
+    }
+
+    #[test]
+    fn a_lost_pmi_records_the_migration_on_the_no_delivery_path() {
+        // A counter that "migrates" the thread (bumps the churn count) on every read, so a move
+        // falls strictly inside the armed interval — after the arm, before the run ends.
+        struct MigratingCounter {
+            readings: std::collections::VecDeque<u64>,
+            moves: Arc<AtomicU64>,
+        }
+        impl WorkCounter for MigratingCounter {
+            fn read(&mut self) -> Result<u64, RunError> {
+                self.moves.fetch_add(1, Ordering::Relaxed);
+                self.readings.pop_front().ok_or(RunError::Seam {
+                    context: "migrating counter",
+                    message: "ran out of readings".into(),
+                })
+            }
+            fn arm_overflow(&mut self, _: u64) -> Result<(), RunError> {
+                Ok(())
+            }
+            fn rearm(&mut self) -> Result<(), RunError> {
+                Ok(())
+            }
+            fn resume_counting(&mut self) -> Result<(), RunError> {
+                Ok(())
+            }
+        }
+
+        // An armed sample whose transcript ends at the sentinel with NO mechanism exit → a LOST
+        // PMI (deliveries == 0, no landing). A churn move inside its armed interval must still
+        // be recorded — the migration probe exists to observe exactly this rr #3607 case.
+        let moves = Arc::new(AtomicU64::new(0));
+        let probe = ArmedMigrationProbe::new(Arc::clone(&moves));
+        let mut s = spec(Some(500));
+        s.migration_probe = Some(probe.clone());
+        let mut vcpu = ScriptedVcpu::printing(&transcript(), &[]);
+        let mut counter = MigratingCounter {
+            readings: [1_000u64, 2_001].into_iter().collect(),
+            moves,
+        };
+        let record = run_sample(&mut vcpu, &mut counter, &s).expect("a lost PMI is a valid record");
+        assert_eq!(
+            record.overflow.as_ref().unwrap().deliveries,
+            0,
+            "no delivery"
+        );
+        assert!(
+            probe.observed(),
+            "a move inside a LOST PMI's armed interval must be recorded on the no-delivery path"
+        );
+
+        // Control: no migration (a plain counter that never moves) → not observed.
+        let moves = Arc::new(AtomicU64::new(0));
+        let probe = ArmedMigrationProbe::new(Arc::clone(&moves));
+        let mut s = spec(Some(500));
+        s.migration_probe = Some(probe.clone());
+        let mut vcpu = ScriptedVcpu::printing(&transcript(), &[]);
+        let mut counter = ScriptedCounter::new(&[1_000, 2_001]);
+        run_sample(&mut vcpu, &mut counter, &s).expect("measured");
+        assert!(!probe.observed(), "no move → nothing to record");
     }
 
     #[test]

@@ -1622,15 +1622,22 @@ fn check_mechanism(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcom
     // This is the other half: a run that silently exercised the stock signal-kick
     // path while claiming the patched Preempt exit fails here.
     //
-    // A record that armed NOTHING (AA-1(b) counting mode, `--with-targets` absent)
-    // legitimately ends at the console sentinel with `ExitReason::Mmio` — there was
-    // no mechanism to attest. `expected_exit_reason` describes the armed landing, so
-    // comparing it against an unarmed record's exit would reject every count-only run
-    // outright. The comparison is therefore scoped to armed records.
+    // `expected_exit_reason` describes the armed LANDING, so the comparison is scoped to armed
+    // records that actually DELIVERED (`deliveries >= 1`) — the only ones with a mechanism exit
+    // to attest. Two record classes legitimately end at the console sentinel with
+    // `ExitReason::Mmio` and must NOT be graded here: a count-only run that armed nothing
+    // (AA-1(b), `--with-targets` absent), and a LOST PMI (armed but `deliveries == 0` — the
+    // rr #3607 signature the migration probe records). Grading the lost PMI's sentinel exit as a
+    // mechanism mismatch would contradict r24's multiplicity carve-out, which accepts exactly
+    // that signature for the probe; the delivery count is graded by `check_multiplicity`, not
+    // here.
     let mut mismatched: Vec<(u64, ExitReason)> = Vec::new();
     for r in records {
-        let armed = r.overflow.as_ref().is_some_and(|o| o.armed);
-        if armed && r.exit_reason != m.expected_exit_reason {
+        let delivered = r
+            .overflow
+            .as_ref()
+            .is_some_and(|o| o.armed && o.deliveries >= 1);
+        if delivered && r.exit_reason != m.expected_exit_reason {
             mismatched.push((r.sample_id, r.exit_reason));
         }
     }
@@ -3389,6 +3396,38 @@ mod tests {
         assert_eq!(
             status(&out, CheckId::MechanismAttestation),
             Some(Status::Fail)
+        );
+    }
+
+    #[test]
+    fn a_lost_pmi_sentinel_exit_is_not_a_mechanism_mismatch() {
+        // Consistent with r24's multiplicity carve-out: a LOST PMI (armed, deliveries == 0) ends
+        // at the console sentinel with ExitReason::Mmio, NOT the mechanism exit. Grading it as an
+        // exit-reason mismatch would re-penalise the probe-loss signature the multiplicity check
+        // now accepts. The exit-reason comparison is scoped to DELIVERED overflows.
+        let rs = a_run_set(); // AA-3, expected_exit_reason = Preempt
+        let mut lost = a_record(0);
+        if let Some(o) = lost.overflow.as_mut() {
+            o.deliveries = 0;
+        }
+        lost.exit_reason = ExitReason::Mmio;
+        let mut out = Vec::new();
+        check_mechanism(&rs, &[lost], &mut out);
+        assert_ne!(
+            status(&out, CheckId::MechanismAttestation),
+            Some(Status::Fail),
+            "a lost PMI ends at the sentinel, not the mechanism exit — not a mismatch"
+        );
+
+        // A genuinely DELIVERED record with the wrong exit still fails.
+        let mut wrong = a_record(1); // armed, deliveries == 1
+        wrong.exit_reason = ExitReason::SignalKick; // not the claimed Preempt
+        let mut out = Vec::new();
+        check_mechanism(&rs, &[wrong], &mut out);
+        assert_eq!(
+            status(&out, CheckId::MechanismAttestation),
+            Some(Status::Fail),
+            "a delivered record must carry the claimed mechanism exit"
         );
     }
 

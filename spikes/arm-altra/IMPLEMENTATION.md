@@ -1392,6 +1392,34 @@ pointer-path tests), floor-check 65 + 27 + 3, oracle-model 23 + 2, clippy `-D wa
 aarch64-linux, three `cargo deny`, the opcode-checked window scan, TCG smoke, kernel-patch
 format/parse.
 
+## Round-25 review fixes (PR #108, cross-model pass r25 — surgical final set)
+
+Three decision-invariant P1s completing the r24 migration-probe fix at its root cause. (The
+three evidence-refinement P2s are FILED as arrival-day validation items — bead `hm-f99`, edged
+to the Altra arrival `hm-7pb` — not fixed this round. Miri-on-payload-crates stays
+adjudicated-settled.)
+
+- **Record armed-context migration on the no-delivery path.** `mark_observed()` was reachable
+  only inside the delivery-landing branch, so a genuinely LOST PMI — the exact rr #3607 case the
+  probe exists to observe — recorded no migration. `run_sample` now also closes the armed
+  interval AFTER the run loop when nothing landed: if a deadline was armed, no delivery came,
+  and the churner moved between the arm and the run's end, the migration is recorded on this
+  path too.
+- **Scope exit-reason matching to delivered overflows.** `check_mechanism` compared
+  `expected_exit_reason` against every ARMED record, so a lost PMI (armed, `deliveries == 0`)
+  ending at the console sentinel (`Mmio`) read as a mechanism mismatch — contradicting r24's
+  multiplicity carve-out that accepts exactly that probe-loss signature. The comparison is now
+  scoped to DELIVERED overflows (`armed && deliveries >= 1`); the delivery count is graded by
+  `check_multiplicity`, not here.
+- **Checked arithmetic on ELF program-header offsets.** `elf_gnu_build_id` formed slice bounds
+  with unchecked `o + width` / `ph + N`, so a hostile operator-supplied `e_phoff` near
+  `usize::MAX` would panic in an overflow-checked build. Every offset+width is now `checked_add`ed
+  — the function's contract is return-None, never panic.
+
+Gates re-run green: harness 106 tests (105 under Miri, no UB), floor-check 66 + 27 + 3,
+oracle-model 23 + 2, clippy `-D warnings` native + aarch64-linux, three `cargo deny`, the
+opcode-checked window scan, TCG smoke, kernel-patch format/parse.
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;
