@@ -280,6 +280,25 @@ initramfs images reproduced bit-identically. Re-validated on the box: G0–G3 +
 Postgres perf all green, clocksource correctly `harmony-pvclock` (see the box
 gates section above).
 
+**Review round 9 folded in — final polish** (cross-model r9: 2 P1 + 2 P2).
+(a) **Overdue snapshot exactness** — `on_deadline` now marks V-time synchronized
+only when `anchor == reached` (the guest actually stopped AT the deterministic
+target), not on an overdue zero-entry landing where the live counter sits past
+it; the latter would let a snapshot restore inexactly (the restored counter
+re-baselines from the anchor while the uninterrupted VM's sits at `reached`).
+(b) **Scanner fail-closed** — `raw_byte_scan_one` runs under `if ! …` (errexit
+off), so a swallowed `objcopy`/`od`/`tr` failure could green the gate without
+reading a section; the extraction pipeline's status is now checked explicitly.
+(c) **X-flag section selection** — the raw scan selects any PROGBITS section
+whose flags contain `X` (an exact `AX` token missed combined flags like `WAX`);
+self-test gains a `WAX` fixture. (d) **Public contract** — `hypercall-proto`
+(the `Pvclock` service + `pvclock_register` docs) and `docs/INTEGRATION.md` now
+describe the two-step handshake (the response records a *pending* registration
+and does not stamp the page; the guest's required post-response RDTSC is the
+stamping intercept). No kernel change; confirming box G1 on the r9 head is
+bit-identical to the handshake-kernel run (the overdue-not-synchronized edge
+never fires for a conforming guest).
+
 ## What landed (by deliverable)
 
 1. **Rename ride-along** — already fully landed by tasks/108 (`guest_hz`/
