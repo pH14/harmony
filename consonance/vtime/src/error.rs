@@ -67,6 +67,37 @@ pub enum VtimeError {
         /// Where execution actually stopped (`> target`).
         stopped_at: u64,
     },
+    /// The single-step phase ran for `stall_steps` consecutive instructions
+    /// without the work counter advancing — the guest is retiring **no further
+    /// counted event**, so the target work count can never be reached and
+    /// [`stop_at`](crate::InjectionPlanner::stop_at) would otherwise
+    /// single-step **forever** (a silent hang).
+    ///
+    /// A determinism substrate must never silently hang under a stalled work
+    /// clock — the motivating condition (bead `hm-440`, the nested-x86 spike
+    /// N-3 finding) is a work-clock completion (a vPMU overflow PMI or an MTF
+    /// single-step trap) lost across a host process suspend/resume
+    /// (SIGSTOP/SIGCONT cycling, a cloud live-migration rehearsal): the guest
+    /// then makes no counted-event progress and the run loop wedges. This
+    /// converts that unbounded wait into a **loud, typed refusal** — the fail-
+    /// closed half of the bead's "survive it or refuse it loudly" contract.
+    /// The bound is [`PlannerConfig::max_stall_steps`](crate::PlannerConfig::max_stall_steps);
+    /// it is a liveness backstop set well above any legitimate branch-free run,
+    /// not a determinism input on the reaching path.
+    #[error(
+        "run_until stalled: single-stepped {stall_steps} consecutive instructions with no \
+         counted-event progress toward target {target} (work stuck at {last_work}); the \
+         deadline can never be reached — failing closed rather than hanging"
+    )]
+    StepBudgetExceeded {
+        /// The exact work count the caller asked to stop at (never reached).
+        target: u64,
+        /// The work count execution stalled at (`< target`, unchanging).
+        last_work: u64,
+        /// Consecutive single-steps taken with no work progress before the
+        /// bound tripped (`> max_stall_steps`).
+        stall_steps: u64,
+    },
     /// A [`CpuBackend`](crate::CpuBackend) call failed.
     #[error(transparent)]
     Backend(#[from] BackendError),

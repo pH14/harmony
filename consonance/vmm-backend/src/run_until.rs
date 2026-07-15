@@ -157,7 +157,10 @@ pub(crate) trait PreemptCpu: CpuBackend {
 ///
 /// Also: `TargetInPast` (deadline already past on entry) → an overdue `Deadline` at
 /// `now`; a backend syscall failure → its typed [`BackendError`];
-/// [`VtimeError::SkidExceeded`] → a loud [`BackendError::Internal`].
+/// [`VtimeError::SkidExceeded`] → a loud [`BackendError::Internal`];
+/// [`VtimeError::StepBudgetExceeded`] (the guest retired no counted event, so the
+/// single-step walk would hang — the hm-440 SIGSTOP-cycling wedge) → a loud
+/// [`BackendError::Internal`], failing closed rather than hanging.
 ///
 /// Issues no syscall; all I/O is inside `cpu`'s trait methods.
 pub(crate) fn drive_run_until<C: PreemptCpu>(
@@ -217,9 +220,21 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
         Err(VtimeError::SkidExceeded { .. }) => Err(BackendError::Internal(
             "run_until: PMU skid exceeded the configured margin (determinism hazard)",
         )),
-        // The only other error `stop_at` returns is `VtimeError::Backend` (a cpu
-        // syscall failure) — recover its typed error. (The remaining `VtimeError`s
-        // are VClock/sim-config faults that cannot arise here, since no clock is
+        // The single-step walk stalled: the guest retired no further counted
+        // event, so the deadline work count can never be reached and the loop
+        // would step forever (the nested-x86 SIGSTOP-cycling wedge, hm-440 —
+        // a work-clock completion lost across a host suspend/resume). Fail
+        // CLOSED with a loud, typed error rather than hang. The VMM propagates
+        // this out of the run loop (never a silent hang); a substrate that is
+        // suspended into this state refuses loudly instead of wedging.
+        Err(VtimeError::StepBudgetExceeded { .. }) => Err(BackendError::Internal(
+            "run_until: guest retired no counted event across the single-step budget — the \
+             V-time deadline is unreachable (a work-clock completion was lost, e.g. across a \
+             host process suspend/resume); failing closed rather than hanging",
+        )),
+        // The remaining `stop_at` error is `VtimeError::Backend` (a cpu syscall
+        // failure) — recover its typed error. (The other `VtimeError`s are
+        // VClock/sim-config faults that cannot arise here, since no clock is
         // built in this path; they fall through to the same fail-closed default.)
         // One arm, so it stays covered by the backend-failure test rather than
         // splitting off an unreachable catch-all.
@@ -861,6 +876,10 @@ mod tests {
     }
 
     fn planner() -> InjectionPlanner {
+        // The default backstop (`vtime::DEFAULT_MAX_STALL_STEPS`) can never trip
+        // here: these tests drive a `SimCpu`, which always makes progress. The
+        // backstop itself is covered by `stalled_guest_fails_closed_not_hung`
+        // and by vtime's planner unit tests.
         InjectionPlanner::new(PlannerConfig {
             skid_margin: SKID_MARGIN,
         })
@@ -1050,6 +1069,74 @@ mod tests {
         .failing();
         let err = drive_run_until(&planner(), &mut cpu, 10_000).expect_err("must error");
         assert!(matches!(err, BackendError::Internal(_)));
+    }
+
+    /// A [`PreemptCpu`] modeling the SIGSTOP-cycling wedge (hm-440): the overflow
+    /// carries execution to just short of the deadline, then every single-step
+    /// retires an instruction that is NOT a counted event — the guest makes no
+    /// work progress (a work-clock completion lost across a host suspend/resume),
+    /// so the deadline work count can never be reached. `steps` counts the
+    /// single-steps taken so the test can assert the walk is BOUNDED, not hung.
+    struct StalledCpu {
+        work: u64,
+        overflow_stop: u64,
+        steps: u64,
+    }
+    impl CpuBackend for StalledCpu {
+        fn work(&self) -> u64 {
+            self.work
+        }
+        fn run_until_overflow(
+            &mut self,
+            _armed_at: u64,
+        ) -> std::result::Result<u64, vtime::BackendError> {
+            // The PMU never fires early; stop no earlier than the current work.
+            self.work = self.overflow_stop.max(self.work);
+            Ok(self.work)
+        }
+        fn single_step(&mut self) -> std::result::Result<u64, vtime::BackendError> {
+            // No counted event ever retires: work is stuck below the deadline.
+            self.steps += 1;
+            Ok(self.work)
+        }
+    }
+    impl PreemptCpu for StalledCpu {
+        type A = X86;
+        fn take_guest_exit(&mut self) -> Option<(Exit<X86>, u64)> {
+            None
+        }
+        fn take_error(&mut self) -> Option<BackendError> {
+            None
+        }
+    }
+
+    /// hm-440 (the nested-x86 SIGSTOP-cycling wedge). A guest that retires no
+    /// further counted event would make `run_until`'s single-step walk hang
+    /// forever. `drive_run_until` must instead FAIL CLOSED — a loud, self-
+    /// describing [`BackendError::Internal`] — and do so in **bounded** time
+    /// (the walk stops after `max_stall_steps + 1` steps; it does not hang).
+    #[test]
+    fn stalled_guest_fails_closed_not_hung() {
+        let budget = 64;
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: SKID_MARGIN,
+        })
+        .with_max_stall_steps(budget);
+        let deadline = 10_000;
+        let mut cpu = StalledCpu {
+            work: 0,
+            overflow_stop: deadline - 1, // overflow lands one short; the walk must finish it
+            steps: 0,
+        };
+        match drive_run_until(&planner, &mut cpu, deadline) {
+            Err(BackendError::Internal(msg)) => assert!(
+                msg.contains("no counted event") && msg.contains("failing closed"),
+                "the wedge surfaces as a loud, self-describing refusal: {msg}"
+            ),
+            other => panic!("a stalled guest must fail closed, never hang or succeed: {other:?}"),
+        }
+        // Bounded: the walk stopped after budget + 1 single-steps — not a hang.
+        assert_eq!(cpu.steps, budget + 1);
     }
 
     proptest! {

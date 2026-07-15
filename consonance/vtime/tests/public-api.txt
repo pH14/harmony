@@ -44,6 +44,10 @@ pub vtime::VtimeError::SkidExceeded
 pub vtime::VtimeError::SkidExceeded::armed_at: u64
 pub vtime::VtimeError::SkidExceeded::stopped_at: u64
 pub vtime::VtimeError::SkidExceeded::target: u64
+pub vtime::VtimeError::StepBudgetExceeded
+pub vtime::VtimeError::StepBudgetExceeded::last_work: u64
+pub vtime::VtimeError::StepBudgetExceeded::stall_steps: u64
+pub vtime::VtimeError::StepBudgetExceeded::target: u64
 pub vtime::VtimeError::ZeroPeriod
 pub vtime::VtimeError::ZeroRatioDen
 pub vtime::VtimeError::ZeroRatioNum
@@ -62,6 +66,7 @@ pub struct vtime::InjectionPlanner
 impl vtime::InjectionPlanner
 pub fn vtime::InjectionPlanner::new(vtime::PlannerConfig) -> Self
 pub fn vtime::InjectionPlanner::stop_at(&self, &mut dyn vtime::CpuBackend, u64) -> core::result::Result<vtime::PlanOutcome, vtime::VtimeError>
+pub fn vtime::InjectionPlanner::with_max_stall_steps(self, u64) -> Self
 pub struct vtime::PlannerConfig
 pub vtime::PlannerConfig::skid_margin: u64
 pub struct vtime::TimerQueue
