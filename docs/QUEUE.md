@@ -96,10 +96,10 @@ Reach-matrix lane (foreman-owned or spawnable next):
   discipline); foreman opened the PR; **cross-model r1 found 5 real P1s** (stock-KVM
   WFI/sysreg exits unreachable on arm64; the userspace-GIC ↔ stock-KVM interrupt-delivery
   gap — vGICv3/KVM_IRQ_LINE; TCG never executes our ioctls; public-api goldens missing
-  from the surface; the M0 Intel-box neutrality gate must be blocking) **— fix round
-  dispatched ~18:40**. Merges on clean verification; the implementation task (Fable-tier)
-  spawns from the merged spec. (Direct merge of the foreman-opened PR was
-  classifier-blocked pending a real review record — which r1 now is.)
+  from the surface; the M0 Intel-box neutrality gate must be blocking) — fixed same hour
+  (242ed76), **all 7 foreman-verified → MERGE-READY, parked for Paul** (self-merge of a
+  foreman-opened PR is classifier-blocked; 30-second squash for him). The Fable-tier
+  implementation task spawns from the merged spec.
 - **Hardware-arrival lane** — Altra arrival blocker `hm-7pb` (P1) → ARM spike execution
   `hm-idb`; Epyc arrival blocker `hm-9wt` (P2) → AMD spike execution `hm-u1n`. Paul
   closes an arrival bead when its box is racked; the execution surfaces dispatch-ready.
