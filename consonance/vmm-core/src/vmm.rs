@@ -1197,7 +1197,10 @@ where
     /// [`VmmError::Work`] on a clock/counter error. **Atomic:** every fallible step
     /// that can reject an untrusted `snap` (the clock-config rebuild and the
     /// entropy-blob validation) runs **before** any live state is mutated, so a bad
-    /// snapshot leaves the timeline fully intact rather than half-restored.
+    /// snapshot leaves the timeline fully intact rather than half-restored. The one
+    /// fallible step AFTER the commit — the armed-pvclock canonical re-stamp — is a
+    /// mechanism step, not `snap` validation: it can only fail on a host-side
+    /// stamping bug (fail-closed), never on untrusted input.
     pub fn restore_vtime(&mut self, snap: &VtimeSnapshot) -> Result<(), VmmError> {
         // 0. Refuse at an RNG mid-exit boundary (symmetric with `save_vtime`): a
         //    staged RDRAND/RDSEED completion lives in the backend and is not undone
@@ -1287,6 +1290,34 @@ where
         // `clear_arrival`), else it would bound the first post-restore `step` at a
         // now-meaningless work count (the #34/#55 stale-arm class; PR #51 round-3).
         self.arrival_deadline = None;
+        // P1 (cross-model r12). Re-stamp an ARMED registration's page to canonical
+        // form at the just-restored anchor BEFORE returning. Unlike a full
+        // `restore_vm_state` — whose page bytes ride the RAM image and are already
+        // canonical from the seal — a V-time-only restore rebases the timeline but
+        // leaves the live RAM (and its page) untouched, so the page still holds the
+        // PRE-restore stamp: a value from the old timeline that can sit AHEAD of the
+        // new effective V-time (`vns_base` at anchor 0). If we returned now, the
+        // guest's next entry would read that stale-ahead value and then, at the step
+        // tail's refresh, watch it drop to the restored value — a backward vns jump
+        // the seqlock cannot mask. Two VMs restored from different pre-restore
+        // timelines to the SAME snapshot would also hold DIFFERENT page bytes,
+        // forking `state_hash`. Canonical (anchor 0, seq 0) is exactly the
+        // handshake's first-stamp posture; every later refresh only moves the page
+        // forward (work counts up from 0), so this is the single point where the page
+        // could otherwise go backward. A PENDING registration is left alone — its
+        // page is intentionally at pre-registration bytes until the handshake
+        // intercept. This re-stamp is a MECHANISM step, not snapshot validation: its
+        // only failure is a host-side stamping bug (RAM slice moved / read-back
+        // mismatch) that fails closed exactly as it does on the step-tail refresh; an
+        // untrusted `snap` was already fully rejected in step 1 before any mutation,
+        // so the all-or-nothing guarantee for bad input is unaffected.
+        if self
+            .pvclock
+            .as_ref()
+            .is_some_and(|pv| pv.gpa.is_some() && pv.armed)
+        {
+            self.pvclock_stamp(StampKind::Canonical)?;
+        }
         Ok(())
     }
 
@@ -10124,6 +10155,99 @@ mod tests {
         );
         b.pvclock_check_oracle()
             .expect("restored page matches the restored clock");
+    }
+
+    /// P1 (cross-model r12). A **V-time-only** `restore_vtime` on a VM with an
+    /// ARMED registration re-stamps the page to the restored timeline BEFORE
+    /// returning — unlike a full `restore_vm_state`, it never touches the RAM
+    /// page, so without the re-stamp the page would keep its PRE-restore value.
+    /// Two hazards close together: (1) that value can sit AHEAD of the restored
+    /// effective V-time, so the guest's next read then step-tail refresh would
+    /// see the clock jump BACKWARD; (2) two VMs rewound from different timelines
+    /// to the SAME snapshot would hold DIFFERENT page bytes, forking
+    /// `state_hash`. After the fix the page is canonical (seq 0) at the restored
+    /// anchor, byte-identical across the two, and matches the trap oracle.
+    #[test]
+    fn restore_vtime_restamps_the_armed_page_to_the_restored_timeline() {
+        const SEED: u64 = 7;
+        // Advance an armed VM to a LARGE clock value (handshake stamps canonical
+        // at the RDTSC anchor). `advanced_to(work)` returns that armed VM.
+        let advanced_to = |work: u64| {
+            let mut v = pvclock_vmm(
+                vec![Exit::Arch(X86Exit::Rdtsc)],
+                Box::new(ScriptedWork::at(work)),
+                SEED,
+            );
+            ring_pvclock_register(&mut v, PV_GPA);
+            v.step().unwrap(); // handshake: arm + canonical stamp at `work`
+            v
+        };
+        let mut a = advanced_to(1000);
+        let ahead = vtime::pvclock::read(a.pvclock_page().unwrap()).unwrap();
+        assert_eq!(
+            (ahead.seq, ahead.vns),
+            (0, 1000),
+            "armed at the large anchor"
+        );
+
+        // A rewind snapshot: effective V-time 42, far BEHIND the page's 1000.
+        let snap = VtimeSnapshot {
+            vns: 42,
+            guest_clock_offset: 0,
+            entropy: SeededEntropy::new(SEED).save_state(),
+        };
+        a.restore_vtime(&snap).unwrap();
+
+        // The page now reflects the RESTORED timeline immediately — canonical,
+        // at vns 42 — so a guest reading it post-restore never sees the stale
+        // 1000 (no backward jump when the next step tail refreshes).
+        let after = vtime::pvclock::read(a.pvclock_page().unwrap()).unwrap();
+        assert_eq!(
+            (after.seq, after.vns),
+            (0, 42),
+            "restore_vtime must re-stamp the armed page to the restored anchor"
+        );
+        assert!(
+            after.vns < ahead.vns,
+            "the page moved BACK to the restored time"
+        );
+        a.pvclock_check_oracle()
+            .expect("re-stamped page matches the restored-clock oracle");
+
+        // Determinism: a SECOND VM rewound from a DIFFERENT pre-restore timeline
+        // to the SAME snapshot holds a BYTE-IDENTICAL page (the fix closes the
+        // state_hash fork the stale page would otherwise cause).
+        let mut b = advanced_to(5000);
+        b.restore_vtime(&snap).unwrap();
+        assert_eq!(
+            a.pvclock_page().unwrap(),
+            b.pvclock_page().unwrap(),
+            "two VMs restored to the same snapshot must hold byte-identical pages"
+        );
+    }
+
+    /// The re-stamp above is gated on `armed`: a **pending** registration (GPA
+    /// recorded at the doorbell OUT but the handshake not yet done) keeps its
+    /// pre-registration bytes across a `restore_vtime` — the first stamp still
+    /// belongs to the handshake intercept, never to a restore.
+    #[test]
+    fn restore_vtime_leaves_a_pending_registration_unstamped() {
+        let mut v = pvclock_vmm(vec![], Box::new(ScriptedWork::new()), 7);
+        ring_pvclock_register(&mut v, PV_GPA); // pending: OUT recorded, no handshake
+        assert!(
+            vtime::pvclock::read(v.pvclock_page().unwrap()).is_none(),
+            "pending registration is un-stamped before restore"
+        );
+        let snap = VtimeSnapshot {
+            vns: 42,
+            guest_clock_offset: 0,
+            entropy: SeededEntropy::new(7).save_state(),
+        };
+        v.restore_vtime(&snap).unwrap();
+        assert!(
+            vtime::pvclock::read(v.pvclock_page().unwrap()).is_none(),
+            "restore_vtime must not stamp a pending (un-armed) registration"
+        );
     }
 
     /// §1.1 as amended at r4: a seal captures the page **verbatim**, so the

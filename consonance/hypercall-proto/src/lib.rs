@@ -1542,6 +1542,16 @@ mod host {
         pub fn registered(&self) -> Option<u64> {
             self.registered
         }
+
+        /// A GPA is a valid clock-page target iff it is 4 KiB-aligned and its
+        /// whole 4 KiB page lies inside `ram_len` bytes of guest RAM. Both the
+        /// live registration ([`Service::handle`]) and a restored registration
+        /// ([`Service::restore_state`]) MUST agree on this, so both route
+        /// through here — a restore can never resurrect a GPA `handle` would
+        /// have rejected.
+        fn gpa_fits(gpa: u64, ram_len: u64) -> bool {
+            gpa.is_multiple_of(4096) && gpa.checked_add(4096).is_some_and(|end| end <= ram_len)
+        }
     }
 
     impl Service for PvclockRegistrar {
@@ -1569,7 +1579,7 @@ mod host {
                 return (Status::BadRequest, 0);
             }
             // Page-aligned and wholly inside guest RAM, else OutOfRange.
-            if gpa % 4096 != 0 || gpa.checked_add(4096).is_none_or(|end| end > self.ram_len) {
+            if !Self::gpa_fits(gpa, self.ram_len) {
                 return (Status::OutOfRange, 0);
             }
             if resp_payload.len() < 4 {
@@ -1601,7 +1611,20 @@ mod host {
             let tag = take_u8(state, &mut offset)?;
             let registered = match tag {
                 0 => None,
-                1 => Some(take_u64(state, &mut offset)?),
+                1 => {
+                    let gpa = take_u64(state, &mut offset)?;
+                    // Re-validate the decoded registration with the SAME
+                    // alignment + RAM-containment rule `handle` enforces,
+                    // against the blob's own `ram_len` (the size the source
+                    // validated against). A malformed or hostile state blob
+                    // therefore cannot restore a registration `handle` would
+                    // have rejected — an unaligned or out-of-RAM GPA that would
+                    // later stamp outside the page window (cross-model r12 P2).
+                    if !Self::gpa_fits(gpa, ram_len) {
+                        return Err(ProtoError::BadState);
+                    }
+                    Some(gpa)
+                }
                 _ => return Err(ProtoError::BadState),
             };
             if offset != state.len() {

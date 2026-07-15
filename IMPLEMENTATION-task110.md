@@ -329,6 +329,37 @@ split** — clarified that a reviewed reachable `rdtsc` is contract-safe on x86 
 the retained trap backstop (the gate is an allowlist), while the strict
 zero-reachable (empty allowlist) bar is the ARM no-trap story.
 
+**Review round 12 folded in** (cross-model r12: 1 P1 + 1 P2, portable-only — no
+kernel rebuild). (a) **`restore_vtime` re-stamps the armed page (P1).** A
+*V-time-only* `restore_vtime` (the standalone restore and the `resume_idle`
+epoch-rebase) rebases the timeline but — unlike a full `restore_vm_state`, whose
+page bytes ride the restored RAM image — never touches the live RAM page. So an
+**armed** registration's page kept its PRE-restore stamp, a value from the old
+timeline that can sit *ahead* of the just-restored effective V-time. Two hazards:
+the guest's next entry would read the stale-ahead value and then watch the
+step-tail refresh drop it (a backward `vns` jump the seqlock cannot mask), and
+two VMs rewound from different timelines to the *same* snapshot would hold
+different page bytes → a `state_hash` fork. Fix: at the tail of `restore_vtime`,
+if the registration is armed, re-stamp the page to **canonical** form (seq 0) at
+the restored anchor (exactly the handshake's first-stamp posture) — every later
+refresh only moves it forward. A *pending* (un-armed) registration is left alone
+(its first stamp still belongs to the handshake intercept). The re-stamp is the
+sole fallible step after the commit but is a *mechanism* step, not `snap`
+validation — it can only fail on a host-side stamping bug (fail-closed), never on
+untrusted input, so the reject-a-bad-snapshot-before-mutation atomicity is
+intact. Tests: `restore_vtime_restamps_the_armed_page_to_the_restored_timeline`
+(backward-jump + byte-identical-across-two-VMs) and
+`restore_vtime_leaves_a_pending_registration_unstamped`. (b) **Registrar restore
+re-validates the GPA (P2).** `PvclockRegistrar::restore_state` (hypercall-proto's
+reference registrar) decoded the registered GPA from the state blob *without*
+re-checking it, while `handle` enforces 4 KiB alignment + RAM containment. A
+malformed/hostile blob could therefore restore a registration `handle` would
+reject (an unaligned or out-of-RAM GPA that later stamps outside the page
+window). Fix: both paths now route through one `gpa_fits(gpa, ram_len)` helper —
+`restore_state` re-runs it against the blob's own `ram_len` and returns
+`BadState` on failure (before any commit — no partial restore). Test:
+`pvclock_registrar_restore_revalidates_the_gpa`.
+
 ## What landed (by deliverable)
 
 1. **Rename ride-along** — already fully landed by tasks/108 (`guest_hz`/

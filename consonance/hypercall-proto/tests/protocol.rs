@@ -736,6 +736,48 @@ fn pvclock_registrar_state_round_trips() {
     assert_eq!(restored.registered(), Some(0x7000));
 }
 
+/// A hostile/corrupt state blob cannot restore a registration `handle` would
+/// have rejected: `restore_state` re-runs the SAME 4 KiB-alignment +
+/// RAM-containment check on the decoded GPA (cross-model r12 P2). Without the
+/// check a crafted blob could pin an unaligned or out-of-RAM GPA that the live
+/// registration path forbids, and the host would then stamp outside the page
+/// window.
+#[test]
+fn pvclock_registrar_restore_revalidates_the_gpa() {
+    // Blob shape mirrors PvclockRegistrar::save_state:
+    //   ram_len (8 LE) | abi_version (4 LE) | tag (1) | gpa (8 LE, iff tag==1)
+    let blob = |ram_len: u64, gpa: u64| {
+        let mut b = Vec::new();
+        b.extend_from_slice(&ram_len.to_le_bytes());
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.push(1);
+        b.extend_from_slice(&gpa.to_le_bytes());
+        b
+    };
+    let ram_len = 1u64 << 20;
+
+    // Misaligned GPA — `handle` answers OutOfRange, so restore must reject it.
+    let mut svc = PvclockRegistrar::new(0, 0);
+    assert_eq!(
+        svc.restore_state(&blob(ram_len, 0x7001)),
+        Err(ProtoError::BadState)
+    );
+    assert_eq!(svc.registered(), None, "no partial restore on rejection");
+
+    // Out-of-RAM GPA (page runs off the end) — likewise rejected.
+    let mut svc = PvclockRegistrar::new(0, 0);
+    assert_eq!(
+        svc.restore_state(&blob(ram_len, ram_len)),
+        Err(ProtoError::BadState)
+    );
+    assert_eq!(svc.registered(), None);
+
+    // A valid, page-aligned, in-RAM GPA still restores cleanly.
+    let mut svc = PvclockRegistrar::new(0, 0);
+    svc.restore_state(&blob(ram_len, ram_len - 4096)).unwrap();
+    assert_eq!(svc.registered(), Some(ram_len - 4096));
+}
+
 /// An unknown pvclock opcode and a malformed payload are clean statuses.
 #[test]
 fn pvclock_registrar_rejects_bad_frames() {
