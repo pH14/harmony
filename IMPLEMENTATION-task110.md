@@ -8,9 +8,14 @@ public-api snapshots regenerated).
 
 ## Box gates — RUN AND GREEN (real patched KVM, det-cfl-v1 box, 2026-07-15)
 
-Foreman-granted window, kernel head `5283a71` (build) + vmm-core head
-`1ee4ba0`, pinned `taskset -c 2`, patched KVM loaded via `box-window.sh`. The
-pvclock page **materializes, registers, and is selected as the guest's active
+All gates re-validated on the **registration-handshake** kernel (r8, bzImage
+`e4591ea8`, head `03b91d2`), pinned `taskset -c 2`, patched KVM via
+`box-window.sh`. The handshake reorder (the guest's post-doorbell RDTSC now
+precedes its page-ABI validation) was **caught and fixed on the box**: without
+it the guest logged `harmony_pvclock: ABI mismatch (page says 0) refusing the
+page` and fell back to TSC (the host defers the first stamp to the handshake, so
+a guest that validates before handshaking sees an unstamped page). With the fix
+the page **materializes, registers, and is selected as the guest's active
 clocksource** on real hardware:
 
 ```
@@ -57,10 +62,11 @@ deterministic clock on ARM (AA-5, out of scope). (Boot-ratio arm, minimal image:
 still ≈1× — boot is calibration-bound by construction and is not the
 kill-condition workload.)
 
-**Box-run gotchas (for reproduction):** the STRICT_DEVMEM config fix (r7) means
-the kernel differs from any pre-r7 build — `MANIFEST.sha256`'s bzImage was
-re-pinned to `051de137…` (the minimal initramfs reproduced bit-identically,
-confirming the build levers). The Postgres image (`initramfs-postgres.cpio.gz`,
+**Box-run gotchas (for reproduction):** the kernel has been re-pinned twice — the
+STRICT_DEVMEM config fix (r7, → `051de137`) and the r8 handshake RDTSC reorder
+(→ **`e4591ea8`**, the current MANIFEST pin). Both times the two initramfs images
+reproduced bit-identically (they are kernel-independent), confirming the build
+levers isolate the deliberate kernel change. The Postgres image (`initramfs-postgres.cpio.gz`,
 pin `3c4a7f2f…`) is short-lived (~0.46 virtual s: boots, runs its scripted
 workload, powers off). Since **r8** the G1 and perf defaults are sized to fit it
 (G1 seals at 0.1 s / 0.05 s / ×3; the perf measures the actual workload,
@@ -246,6 +252,33 @@ deliberately leaves the bit clear, so AA-5 fails closed against a page
 nothing is actually deriving. The guest kernel's `MATERIALIZED` check is
 unaffected (bit 0 unchanged) — the committed kernel image and MANIFEST stay
 valid.
+
+**Review round 8 folded in — the REGISTRATION HANDSHAKE ruling** (cross-model r8,
+foreman-ruled; supersedes the r5/r6/r7 registration-anchor iterations). The
+tension across r5–r7 was: arm the Δ refresh at the doorbell `OUT` and you either
+read a skid-tainted PIO counter (r5/r6) or arm off a possibly-stale anchor whose
+overdue deadline imports a live count (r7/first-r8); defer the arm and a
+register-then-spin guest freezes (the r5 concern). The ruling resolves it:
+**the doorbell `OUT` + the guest's REQUIRED post-doorbell RDTSC together are the
+registration handshake.** The `OUT` records a *pending* registration; the first
+stamp and the Δ arm happen only at the handshake intercept (a genuine skid-free
+RDTSC), off a fresh anchor that can never be born overdue. A guest that omits the
+handshake is explicitly **out of contract** (stale-but-deterministic page, no
+refresh) — so the host never arms off a skid or stale anchor, and liveness for a
+conforming guest is preserved. Host side: `PvclockChannel::armed`, pending at
+`OUT`, promote+stamp+arm at the first `vtime_synchronized` step-tail; restore
+arms immediately (anchor 0 is synchronized). The r8 `on_deadline`
+deterministic-target change is **kept** — it makes "`vtime_synchronized` ⇒
+deterministic anchor" hold universally, which the handshake stamp relies on.
+Guest side: the kernel patch's post-doorbell RDTSC is now **protocol**, and — the
+part the **box caught** — it had to be **reordered before the kernel's page-ABI
+validation** (the validation reads the page's `abi_version`/`flags`, which the
+host writes only at the handshake; validating first saw an unstamped page and
+refused it, falling back to TSC). §3.1 rewritten to the two-step handshake. The
+reorder changed the bzImage (`051de137` → `e4591ea8`, MANIFEST re-pinned); both
+initramfs images reproduced bit-identically. Re-validated on the box: G0–G3 +
+Postgres perf all green, clocksource correctly `harmony-pvclock` (see the box
+gates section above).
 
 ## What landed (by deliverable)
 
