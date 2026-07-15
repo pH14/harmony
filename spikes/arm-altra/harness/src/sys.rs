@@ -849,7 +849,17 @@ mod imp {
         let fd = fd as i32;
 
         // A perf ring buffer: one metadata page + a power-of-two count of data pages.
-        let page = 4096usize;
+        // The perf ABI counts these in HOST pages, and arm64 hosts run 4 KiB, 16 KiB, or
+        // 64 KiB pages. A hard-coded 4 KiB would round a 64 KiB-page host's 36 KiB mapping
+        // down to a single (metadata-only) page with ZERO data pages, so `mmap` rejects it
+        // and this mandatory AA-0 row could never be probed. Query the running page size.
+        // SAFETY: `sysconf` takes an integer name and returns a `c_long`; no pointers.
+        let page = match unsafe { libc::sysconf(libc::_SC_PAGESIZE) } {
+            n if n >= 4096 => n as usize,
+            // sysconf failed (-1) or returned an implausibly small value: fall back to the
+            // universal minimum rather than build a malformed (zero-data-page) geometry.
+            _ => 4096,
+        };
         let len = page * (1 + 8);
         // SAFETY: mmap a MAP_SHARED perf ring over the event fd, as the perf ABI requires.
         let map = unsafe {

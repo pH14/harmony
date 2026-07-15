@@ -167,6 +167,35 @@ pub enum RunError {
          count is unaccountable, and a defaulted 0 would be a fabricated report"
     )]
     MissingReportedTerm(Payload),
+    /// The `scale=` the guest printed on its `PARAMS` line disagrees with the scale the
+    /// harness is recording this sample under. The guest reports what it *actually saw*
+    /// on the params page; a mismatch means the record would be labelled with an input the
+    /// guest never ran (a stale/mis-written page), so the count and replay checks would
+    /// grade evidence attributed to the wrong scale.
+    #[error(
+        "the guest ran scale {found:?} but this sample is recorded as {expected:?}: the params \
+         page the guest saw disagrees with the sample spec — the record would be mislabelled"
+    )]
+    ReportedScaleMismatch {
+        /// The scale the harness intended (from the sample spec).
+        expected: &'static str,
+        /// The `scale=` token the guest actually printed, if any.
+        found: Option<String>,
+    },
+    /// The `seed=` the guest printed disagrees with the seed the harness is recording this
+    /// sample under — the same mislabelling risk as [`RunError::ReportedScaleMismatch`],
+    /// and it is exactly the seed-ignoring payloads (`straight-line`) whose counts and
+    /// replay would still pass on the wrong seed, so the cross-check is what catches it.
+    #[error(
+        "the guest ran seed {found:?} but this sample is recorded as {expected:#x}: the params \
+         page the guest saw disagrees with the sample spec — the record would be mislabelled"
+    )]
+    ReportedSeedMismatch {
+        /// The seed the harness intended (from the sample spec).
+        expected: u64,
+        /// The `seed=` token the guest actually printed, if any.
+        found: Option<String>,
+    },
     /// The guest never reached `PAYLOAD EXIT`.
     #[error("the guest never reached its exit sentinel")]
     NoExitSentinel,
@@ -351,6 +380,10 @@ pub fn run_sample(
     let mut work_begin: Option<u64> = None;
     let mut work_end: Option<u64> = None;
     let mut params_mode: Option<String> = None;
+    // The scale and seed the guest attests it saw on the params page, cross-checked against
+    // the sample spec at assembly so a stale/mis-written page cannot mislabel the record.
+    let mut reported_scale: Option<String> = None;
+    let mut reported_seed: Option<String> = None;
     let mut clockpage_mode: Option<String> = None;
     // `None` until the guest prints its `retries=` term. A payload with a reported term
     // that never supplied one is refused below — a defaulted 0 would let the record claim
@@ -433,7 +466,14 @@ pub fn run_sample(
                         work_end = Some(counter.read()?);
                     }
                     Some(Event::Line(line)) => {
-                        absorb_line(&line, &mut params_mode, &mut clockpage_mode, &mut reported);
+                        absorb_line(
+                            &line,
+                            &mut params_mode,
+                            &mut reported_scale,
+                            &mut reported_seed,
+                            &mut clockpage_mode,
+                            &mut reported,
+                        );
                     }
                     Some(Event::Exit(code)) => {
                         status = Some(code);
@@ -516,6 +556,31 @@ pub fn run_sample(
     }
     let params_mode = params_mode.ok_or(RunError::NoParamsMode)?;
 
+    // Cross-check the scale and seed the GUEST attested against the sample spec. The guest
+    // prints what it read off the params page; if that disagrees with the (payload, scale,
+    // seed) this record is being labelled with, the page was stale or mis-written and the
+    // record would attribute its counts to an input the guest never ran. It is precisely
+    // the seed-ignoring payloads whose counts still pass on a wrong seed, so this is the
+    // only thing that catches a stale seed on them.
+    match reported_scale.as_deref() {
+        Some(s) if s == spec.scale.name() => {}
+        found => {
+            return Err(RunError::ReportedScaleMismatch {
+                expected: spec.scale.name(),
+                found: found.map(str::to_string),
+            });
+        }
+    }
+    match reported_seed.as_deref().map(parse_hex_u64) {
+        Some(Some(seed)) if seed == spec.seed => {}
+        _ => {
+            return Err(RunError::ReportedSeedMismatch {
+                expected: spec.seed,
+                found: reported_seed,
+            });
+        }
+    }
+
     // A payload whose count includes an in-band runtime term (`STXR`/seqlock retries)
     // MUST have printed it. If it did not, the count is unaccountable — defaulting to 0
     // would let the record match the oracle while claiming a reported term it never made,
@@ -584,12 +649,24 @@ pub fn run_sample(
 fn absorb_line(
     line: &str,
     params_mode: &mut Option<String>,
+    reported_scale: &mut Option<String>,
+    reported_seed: &mut Option<String>,
     clockpage_mode: &mut Option<String>,
     reported: &mut Option<u64>,
 ) {
     if let Some(rest) = line.strip_prefix("PARAMS ") {
+        // The guest prints `PARAMS mode=<m> scale=<s> seed=<hex>` — the params page it
+        // actually saw. All three are attested: `mode` guards published-vs-self-seeded,
+        // and `scale`/`seed` are cross-checked against the sample spec so a stale or
+        // mis-written page cannot mislabel the record (checked at record assembly).
         if let Some(mode) = field(rest, "mode") {
             *params_mode = Some(mode.to_string());
+        }
+        if let Some(scale) = field(rest, "scale") {
+            *reported_scale = Some(scale.to_string());
+        }
+        if let Some(seed) = field(rest, "seed") {
+            *reported_seed = Some(seed.to_string());
         }
     } else if let Some(rest) = line.strip_prefix("CLOCKPAGE ") {
         if let Some(mode) = field(rest, "mode") {
@@ -609,6 +686,16 @@ fn absorb_line(
 fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     line.split_whitespace()
         .find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))
+}
+
+/// Parse a `seed=` token, which the guest prints as `{:#x}` (a `0x`-prefixed hex u64).
+/// Tolerates a missing prefix; `None` on anything that is not a hex integer.
+fn parse_hex_u64(token: &str) -> Option<u64> {
+    let digits = token
+        .strip_prefix("0x")
+        .or_else(|| token.strip_prefix("0X"))
+        .unwrap_or(token);
+    u64::from_str_radix(digits, 16).ok()
 }
 
 #[cfg(test)]
@@ -969,7 +1056,7 @@ mod tests {
     #[test]
     fn the_reported_retry_term_is_taken_from_the_guest_not_assumed() {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x1\n");
+        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x5eed\n");
         bytes.push(MARK_BEGIN);
         bytes.push(MARK_END);
         bytes.extend_from_slice(b"LLSC retries=17 final=1000\n");
@@ -991,7 +1078,7 @@ mod tests {
 
         // No retries= line at all → refused.
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x1\n");
+        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x5eed\n");
         bytes.push(MARK_BEGIN);
         bytes.push(MARK_END);
         bytes.extend_from_slice(b"PAYLOAD EXIT 0\n");
@@ -1004,7 +1091,7 @@ mod tests {
 
         // With the line — even `retries=0` — it is accepted: 0 REPORTED is not 0 DEFAULTED.
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x1\n");
+        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x5eed\n");
         bytes.push(MARK_BEGIN);
         bytes.push(MARK_END);
         bytes.extend_from_slice(b"LLSC retries=0 final=1000\n");
@@ -1016,9 +1103,56 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_scale_or_seed_the_guest_reports_is_refused() {
+        // The guest prints the (scale, seed) it ACTUALLY read off the params page. A stale
+        // or mis-written page — a wrong seed on a seed-ignoring payload whose counts still
+        // match the oracle — is caught by cross-checking that report against the sample
+        // spec, which is the only thing that catches it (the counts do not).
+        let mk = |line: &str| {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(line.as_bytes());
+            bytes.push(MARK_BEGIN);
+            bytes.push(MARK_END);
+            bytes.extend_from_slice(b"PAYLOAD EXIT 0\n");
+            bytes
+        };
+        // spec() is Scale::Smoke, seed 0x5eed.
+        let run = |line: &str| {
+            let bytes = mk(line);
+            let mut vcpu = ScriptedVcpu::printing(&bytes, &[]);
+            let mut counter = ScriptedCounter::new(&[10, 20]);
+            run_sample(&mut vcpu, &mut counter, &spec(None))
+        };
+
+        // A seed the guest ran that is not the sample's seed.
+        assert!(matches!(
+            run("PARAMS mode=managed scale=smoke seed=0xdead\n"),
+            Err(RunError::ReportedSeedMismatch {
+                expected: 0x5eed,
+                ..
+            })
+        ));
+        // A scale the guest ran that is not the sample's scale (checked before seed).
+        assert!(matches!(
+            run("PARAMS mode=managed scale=1e6 seed=0x5eed\n"),
+            Err(RunError::ReportedScaleMismatch {
+                expected: "smoke",
+                ..
+            })
+        ));
+        // A PARAMS line that omits the seed entirely is refused, not silently accepted.
+        assert!(matches!(
+            run("PARAMS mode=managed scale=smoke\n"),
+            Err(RunError::ReportedSeedMismatch { found: None, .. })
+        ));
+        // The matching report is accepted.
+        assert!(run("PARAMS mode=managed scale=smoke seed=0x5eed\n").is_ok());
+    }
+
+    #[test]
     fn the_clockpage_mode_is_taken_from_the_guest() {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x1\n");
+        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x5eed\n");
         bytes.extend_from_slice(b"CLOCKPAGE mode=managed abi=1 flags=0x1\n");
         bytes.push(MARK_BEGIN);
         bytes.push(MARK_END);
@@ -1036,7 +1170,7 @@ mod tests {
         // A payload that ran to completion but failed its own self-checks is a
         // failed sample, however good its counts look.
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x1\n");
+        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x5eed\n");
         bytes.push(MARK_BEGIN);
         bytes.push(MARK_END);
         bytes.extend_from_slice(b"PAYLOAD EXIT 3\n");
@@ -1051,7 +1185,7 @@ mod tests {
     #[test]
     fn a_guest_that_never_opened_its_window_is_refused() {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x1\n");
+        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x5eed\n");
         bytes.extend_from_slice(b"PAYLOAD EXIT 0\n");
         let mut vcpu = ScriptedVcpu::printing(&bytes, &[]);
         let mut counter = ScriptedCounter::new(&[10, 20]);
@@ -1064,7 +1198,7 @@ mod tests {
     #[test]
     fn a_guest_that_never_closed_its_window_is_refused() {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x1\n");
+        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x5eed\n");
         bytes.push(MARK_BEGIN);
         bytes.extend_from_slice(b"PAYLOAD EXIT 0\n");
         let mut vcpu = ScriptedVcpu::printing(&bytes, &[]);
@@ -1094,7 +1228,7 @@ mod tests {
     #[test]
     fn a_guest_that_never_reached_its_sentinel_is_refused() {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x1\n");
+        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x5eed\n");
         bytes.push(MARK_BEGIN);
         bytes.push(MARK_END);
         let mut vcpu = ScriptedVcpu::printing(&bytes, &[]);
@@ -1263,7 +1397,7 @@ mod tests {
     #[test]
     fn a_double_window_open_is_refused() {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x1\n");
+        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x5eed\n");
         bytes.push(MARK_BEGIN);
         bytes.push(MARK_BEGIN);
         bytes.extend_from_slice(b"PAYLOAD EXIT 0\n");

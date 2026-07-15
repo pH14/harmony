@@ -434,6 +434,12 @@ const REQUIRED_AA1_CONDITIONS: &[&str] = &[
     "memory-pressure",
 ];
 
+/// The scales AA-1's **differential sweep** must cover. AA-1 derives the stable per-class
+/// count offsets by measuring at 1e6, 1e7 and 1e8 and differencing — the offset is what is
+/// left when the scale-proportional term is removed, and one scale cannot separate the two.
+/// The CLI default is `smoke`; a smoke-only AA-1 run must therefore not certify the stage.
+const REQUIRED_AA1_SWEEP_SCALES: &[Scale] = &[Scale::S1e6, Scale::S1e7, Scale::S1e8];
+
 /// The cumulative verdict over a set of already-loaded run-sets. Factored from the disk
 /// loading so the aggregation rules — one stage, no duplicates, the condition matrix, the
 /// summed floor — are unit-testable without fixtures on disk.
@@ -514,10 +520,48 @@ fn check_aggregation(
             ));
         }
     }
+
+    // Comparability. Summing records across conditions and grading count invariance is only
+    // meaningful if every set was measured under ONE constants pack and ONE measurement
+    // environment — the sweep varies the `condition` (and, for AA-1's probe, the pinning
+    // posture), nothing else. If the sets differ in `weights`, `perf`, `environment`, or
+    // `mechanism`, a condition-dependent count change can be absorbed by a compensating
+    // per-set difference (a different count offset in each `weights` pack, say) and the
+    // aggregate still "passes" count invariance. So require those four to match the first
+    // set. `condition` and `pinning` are deliberately NOT compared — they are the sweep.
+    if let [(first, _, _), rest @ ..] = loaded {
+        for (rs, _, _) in rest {
+            let mut diffs: Vec<&str> = Vec::new();
+            if rs.weights != first.weights {
+                diffs.push("weights");
+            }
+            if rs.perf != first.perf {
+                diffs.push("perf");
+            }
+            if rs.environment != first.environment {
+                diffs.push("environment");
+            }
+            if rs.mechanism != first.mechanism {
+                diffs.push("mechanism");
+            }
+            if !diffs.is_empty() {
+                problems.push(format!(
+                    "run-set {} differs from {} in [{}] — aggregated conditions must share one \
+                     constants pack (weights) and measurement environment (perf, environment, \
+                     mechanism); only `condition` (and AA-1's pinning posture) may vary, or a \
+                     condition-dependent count change hides behind a per-set difference",
+                    rs.run_set_id,
+                    first.run_set_id,
+                    diffs.join(", ")
+                ));
+            }
+        }
+    }
+
     verdict(
         CheckId::Aggregation,
         &problems,
-        "one stage, distinct run-sets (no duplicate evidence)",
+        "one stage, distinct run-sets, one constants pack + measurement environment",
         out,
     );
 }
@@ -566,6 +610,36 @@ fn check_aa1_condition_matrix(
     };
 
     let mut problems: Vec<String> = Vec::new();
+
+    // The differential scale sweep. AA-1 establishes stable per-class offsets by measuring
+    // at 1e6/1e7/1e8 and differencing; a smoke-only run (the CLI default scale) cannot
+    // certify the stage however many conditions it covers. Enforced for a normative
+    // certification — a `--sub-normative` reduced-scope run relaxes the sweep as it relaxes
+    // the floor magnitude, so the checker's own tests and reduced runs are not forced to
+    // carry 1e8 records.
+    if !floors.sub_normative {
+        let scales_present: BTreeSet<Scale> = loaded
+            .iter()
+            .flat_map(|(_, records, _)| records.iter().map(|r| r.scale))
+            .collect();
+        let missing: Vec<&str> = REQUIRED_AA1_SWEEP_SCALES
+            .iter()
+            .filter(|s| !scales_present.contains(s))
+            .map(|s| s.name())
+            .collect();
+        if !missing.is_empty() {
+            let present: Vec<&str> = scales_present.iter().map(|s| s.name()).collect();
+            problems.push(format!(
+                "the AA-1 differential scale sweep is incomplete — scales [{}] are absent from the \
+                 records (present: [{}]). AA-1 derives per-class offsets from the 1e6/1e7/1e8 \
+                 sweep; smoke-only evidence cannot certify the stage (pass --sub-normative for a \
+                 reduced-scope run)",
+                missing.join(", "),
+                present.join(", ")
+            ));
+        }
+    }
+
     for &cond in REQUIRED_AA1_CONDITIONS {
         let armed = armed_by_condition.get(cond).copied().unwrap_or(0);
         if armed == 0 {
@@ -1221,6 +1295,27 @@ fn check_mechanism(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcom
         ));
     }
 
+    // AA-1's armed skid measurement is AA-1(c): the PRE-PATCH host signal kick
+    // (`ExitReason::SignalKick`). AA-3 replaces that with the in-kernel force-exit
+    // (`Preempt`), which has different delivery and skid behaviour — so an AA-1 run armed
+    // through the patched Preempt path is measuring a different mechanism than the stage is
+    // about, and cannot certify it. Only AA-3/AA-4/AA-6 get the patched constraint above;
+    // without this, `--mechanism patched` at AA-1 produces a self-consistent Preempt tuple
+    // that no stage-specific check rejects. A counting-mode AA-1 run (AA-1(a)/(b)) arms
+    // nothing and ends at the console sentinel, so this is scoped to armed runs.
+    let any_armed = records
+        .iter()
+        .any(|r| r.overflow.as_ref().is_some_and(|o| o.armed));
+    if stage == Stage::Aa1 && any_armed && m.expected_exit_reason != ExitReason::SignalKick {
+        problems.push(format!(
+            "stage AA-1 armed overflows but declares expected_exit_reason={:?}: AA-1(c) measures \
+             the pre-patch host signal kick (signal-kick), which the in-kernel Preempt path \
+             (AA-3's) replaces with different delivery and skid behaviour. An AA-1 skid \
+             measurement must run the stock signal-kick mechanism, not the patched force-exit",
+            m.expected_exit_reason
+        ));
+    }
+
     // Every record that ARMED an overflow must carry the claimed mechanism exit.
     // This is the other half: a run that silently exercised the stock signal-kick
     // path while claiming the patched Preempt exit fails here.
@@ -1414,6 +1509,25 @@ fn check_pinning(run_set: &RunSet, out: &mut Vec<Outcome>) {
                  AA-1's alone (bounded, once — docs/ARM-ALTRA.md §AA-1). Pinning is a \
                  correctness condition on this lineage (rr #3607); one manifest field may not \
                  exempt another stage's run from it"
+            ),
+        ));
+        return;
+    }
+
+    // The sanctioned migration probe is deliberately UNPINNED — its whole purpose is to
+    // exercise the rr #3607 cross-core-migration failure mode. A `migration_probe: true`
+    // that is nonetheless `pinned` (or carries a pinned core) never migrates, so it cannot
+    // supply that evidence: the tuple is self-contradictory and is refused rather than
+    // read as a normal pinning pass (which the `if p.pinned` branch below would do first).
+    if p.migration_probe && (p.pinned || p.core.is_some()) {
+        out.push(fail(
+            CheckId::Pinning,
+            format!(
+                "migration_probe is set but the run is pinned (pinned={}, core={:?}): the \
+                 migration probe is unpinned BY DESIGN to exercise the rr #3607 migration \
+                 failure mode. A pinned probe never migrates, so this contradictory tuple \
+                 cannot claim migration evidence — require pinned=false and no pinned core",
+                p.pinned, p.core
             ),
         ));
         return;
@@ -1617,6 +1731,24 @@ fn comparison_digest(r: &RunRecord) -> &str {
     }
 }
 
+/// Whether a record is **acceptance-bearing** for a replay-identity stage: the record
+/// whose replay identity IS the stage's acceptance. At AA-2 that is a stepped record (the
+/// step-moment state); at AA-3 an armed, delivered landing (the landed state). A record
+/// that is neither — a counting run, an unarmed sample — is not what the stage certifies,
+/// so its being a singleton is not a gap. AA-6 rests on replay identity too but over the
+/// ordinary state digest of every record, so it is covered by the existing per-group
+/// divergence check, not by this per-class repetition requirement.
+fn is_acceptance_bearing(stage: Stage, r: &RunRecord) -> bool {
+    match stage {
+        Stage::Aa2 => r.step.is_some(),
+        Stage::Aa3 => r
+            .overflow
+            .as_ref()
+            .is_some_and(|o| o.armed && o.deliveries >= 1),
+        _ => false,
+    }
+}
+
 /// Repetitions of the same input must land on **bit-identical** state.
 ///
 /// This is the axis the rep floor exists for, and nothing used to check it: 1,000
@@ -1713,16 +1845,83 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
         }
     }
 
-    // A stage whose acceptance IS replay identity (AA-3's replay-identical landings,
-    // AA-6's ≥1000 same-input bit-identity) may not PASS this check having compared
-    // NOTHING. With the default `--reps 1` there is no repeated group, so grading zero
-    // comparisons as a pass would let evidence claim replay identity without a single
-    // replay — the exact vacuous-pass the evidence-integrity bar forbids. So when the
-    // stage requires it and no repeated group exists, the check is NOT-REQUESTED
-    // (nonzero, not a pass); the operator must submit repeated inputs (`--reps`).
+    // A divergent repeated group is the hard failure, whatever the stage — surface it first.
     if !problems.is_empty() {
         out.push(fail(CheckId::ReplayIdentity, join_problems(&problems)));
-    } else if compared == 0 && requires_replay_identity(stage) {
+        return;
+    }
+
+    // AA-2/AA-3 rest on the ACCEPTANCE-BEARING groups alone (stepped states / armed
+    // landings), because the existential `compared > 0` above is not enough: one stepped
+    // record per transition (each a singleton group) beside two duplicate UNSTEPPED records
+    // makes `compared == 1` and would pass, though not one stepped state was ever replayed;
+    // likewise a unique armed AA-3 landing can ride beside a repeated unarmed group. So a
+    // repeated unrelated group cannot stand in for the ones the stage certifies.
+    if matches!(stage, Stage::Aa2 | Stage::Aa3) {
+        let what = if stage == Stage::Aa2 {
+            "stepped"
+        } else {
+            "armed-landing"
+        };
+        let mut bearing_groups: BTreeMap<RepKey, Vec<u64>> = BTreeMap::new();
+        for r in records.iter().filter(|r| is_acceptance_bearing(stage, r)) {
+            bearing_groups
+                .entry(rep_key(r))
+                .or_default()
+                .push(r.sample_id);
+        }
+        let repeated = bearing_groups.values().filter(|ids| ids.len() >= 2).count();
+        let mut singletons: Vec<u64> = bearing_groups
+            .values()
+            .filter(|ids| ids.len() < 2)
+            .flat_map(|ids| ids.iter().copied())
+            .collect();
+        singletons.sort_unstable();
+
+        if bearing_groups.is_empty() {
+            out.push(not_requested(
+                CheckId::ReplayIdentity,
+                format!(
+                    "stage {stage:?} rests on replay-identical {what} state, but no record carries \
+                     one — there is nothing to replay. Submit {what} repetitions (--reps); this \
+                     verdict cannot accept replay identity it never tested"
+                ),
+            ));
+        } else if repeated == 0 {
+            out.push(not_requested(
+                CheckId::ReplayIdentity,
+                format!(
+                    "stage {stage:?} carries {} {what} record(s) but not one is repeated \
+                     (--reps 1): no {what} state was replayed, so replay identity is untested — \
+                     and an unrelated repeated group does not stand in for a {what} one. Submit \
+                     repeated inputs",
+                    singletons.len()
+                ),
+            ));
+        } else if !singletons.is_empty() {
+            out.push(fail(
+                CheckId::ReplayIdentity,
+                format!(
+                    "stage {stage:?}: {repeated} {what} (payload, scale, seed, condition, target) \
+                     group(s) were replayed, but samples {} appear once and were never replayed — \
+                     EVERY acceptance-bearing group must be repeated (≥2 reps), not just some",
+                    preview(singletons.iter().copied())
+                ),
+            ));
+        } else {
+            out.push(pass(
+                CheckId::ReplayIdentity,
+                format!("{repeated} {what} group(s) each replayed on bit-identical state digests"),
+            ));
+        }
+        return;
+    }
+
+    // AA-6 (replay identity over every record's ordinary digest) and the non-replay stages.
+    // AA-6 may not PASS having compared NOTHING (with --reps 1 there is no repeated group),
+    // so it reads NOT-REQUESTED until the operator submits repeated inputs; the per-group
+    // divergence check above already graded any repeated group it does carry.
+    if compared == 0 && requires_replay_identity(stage) {
         out.push(not_requested(
             CheckId::ReplayIdentity,
             format!(
@@ -2374,14 +2573,33 @@ mod tests {
 
     #[test]
     fn the_sanctioned_migration_probe_may_be_unpinned_at_aa1_only() {
-        // AA-1's bounded probe: legitimate.
+        // AA-1's bounded probe: legitimate — unpinned AND no pinned core, so it really
+        // does migrate (the rr #3607 failure mode it exists to exercise).
         let mut rs = a_run_set();
         rs.stage = Stage::Aa1;
         rs.pinning.pinned = false;
+        rs.pinning.core = None;
         rs.pinning.migration_probe = true;
         let mut out = Vec::new();
         check_pinning(&rs, &mut out);
         assert_eq!(status(&out, CheckId::Pinning), Some(Status::Pass));
+
+        // A "migration probe" that is nonetheless pinned, or carries a pinned core, is
+        // contradictory — it never migrates — and is refused even at AA-1.
+        for (pinned, core) in [(true, None), (false, Some(2)), (true, Some(2))] {
+            let mut rs = a_run_set();
+            rs.stage = Stage::Aa1;
+            rs.pinning.pinned = pinned;
+            rs.pinning.core = core;
+            rs.pinning.migration_probe = true;
+            let mut out = Vec::new();
+            check_pinning(&rs, &mut out);
+            assert_eq!(
+                status(&out, CheckId::Pinning),
+                Some(Status::Fail),
+                "a pinned migration probe is contradictory (pinned={pinned}, core={core:?})"
+            );
+        }
 
         // The same field at AA-3 is one manifest boolean exempting a landing run from
         // a correctness condition. Refused — even if the run also claims to be pinned.
@@ -2892,6 +3110,163 @@ mod tests {
     }
 
     #[test]
+    fn aggregated_run_sets_must_share_constants_and_environment() {
+        let floors = Floors {
+            min_armed_overflows: Some(2),
+            min_reps: None,
+            sub_normative: true,
+        };
+        let pair = || {
+            [
+                a_loaded_set(Stage::Aa1, "a", "pinned-solo", &"a".repeat(64), 2),
+                a_loaded_set(Stage::Aa1, "b", "co-tenant-other-core", &"b".repeat(64), 2),
+            ]
+        };
+
+        // Identical constants pack + environment → the aggregation check itself passes
+        // (condition `a`/`b` are the sweep variable and are allowed to differ).
+        assert_eq!(
+            status(&aggregate(&pair(), &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Pass)
+        );
+
+        // A different weights (constants) pack → refused: a condition-dependent count change
+        // could hide behind the compensating offset.
+        let mut w = pair();
+        w[1].0.weights = Some(Weights::measured(9, 9, 9, 9, 2));
+        assert_eq!(
+            status(&aggregate(&w, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Fail)
+        );
+
+        // A different measurement environment (kernel) → refused.
+        let mut e = pair();
+        e[1].0.environment.host_kernel = "6.18.35-other".into();
+        assert_eq!(
+            status(&aggregate(&e, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Fail)
+        );
+
+        // A different perf configuration → refused.
+        let mut p = pair();
+        p[1].0.perf.exclude_hv = false;
+        assert_eq!(
+            status(&aggregate(&p, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Fail)
+        );
+    }
+
+    #[test]
+    fn normative_aa1_requires_the_full_differential_scale_sweep() {
+        // A set whose records span 1e6/1e7/1e8 (the sweep), one condition each.
+        let swept = |id: &str, cond: &str, hash: &str| -> (RunSet, Vec<RunRecord>, Vec<u8>) {
+            let mut set = a_loaded_set(Stage::Aa1, id, cond, hash, 3);
+            set.1[0].scale = Scale::S1e6;
+            set.1[1].scale = Scale::S1e7;
+            set.1[2].scale = Scale::S1e8;
+            set
+        };
+        let full_sweep = [
+            swept("c0", "pinned-solo", &"a".repeat(64)),
+            swept("c1", "co-tenant-other-core", &"b".repeat(64)),
+            swept("c2", "co-tenant-same-core", &"c".repeat(64)),
+            swept("c3", "memory-pressure", &"d".repeat(64)),
+        ];
+        let smoke_only = [
+            a_loaded_set(Stage::Aa1, "c0", "pinned-solo", &"a".repeat(64), 3),
+            a_loaded_set(Stage::Aa1, "c1", "co-tenant-other-core", &"b".repeat(64), 3),
+            a_loaded_set(Stage::Aa1, "c2", "co-tenant-same-core", &"c".repeat(64), 3),
+            a_loaded_set(Stage::Aa1, "c3", "memory-pressure", &"d".repeat(64), 3),
+        ];
+        let normative = Floors {
+            min_armed_overflows: Some(4),
+            min_reps: None,
+            sub_normative: false,
+        };
+
+        // Normative: smoke-only (the CLI default scale) must not certify AA-1.
+        assert_eq!(
+            status(
+                &aggregate(&smoke_only, &normative).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Fail),
+            "a smoke-only AA-1 run has not run the 1e6/1e7/1e8 differential sweep"
+        );
+        // The full sweep passes the matrix.
+        assert_eq!(
+            status(
+                &aggregate(&full_sweep, &normative).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Pass),
+            "the full 1e6/1e7/1e8 sweep across every condition certifies"
+        );
+        // A --sub-normative reduced-scope run relaxes the sweep as it relaxes the floor.
+        let sub = Floors {
+            sub_normative: true,
+            ..normative
+        };
+        assert_eq!(
+            status(
+                &aggregate(&smoke_only, &sub).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Pass),
+            "sub-normative relaxes the sweep magnitude"
+        );
+    }
+
+    #[test]
+    fn aa1_armed_runs_must_use_the_stock_signal_mechanism() {
+        // An armed AA-1 run declaring the patched Preempt path measures AA-3's mechanism,
+        // not AA-1(c)'s pre-patch signal kick — refused.
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa1;
+        // a_record is armed and carries Preempt; the manifest declares the patched path.
+        let mut out = Vec::new();
+        check_mechanism(&rs, &[a_record(0)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::MechanismAttestation),
+            Some(Status::Fail),
+            "AA-1 armed through the patched Preempt path is the wrong mechanism"
+        );
+
+        // The stock signal-kick mechanism with signal-kick records → attested.
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa1;
+        rs.mechanism = Mechanism {
+            kvm_patched: false,
+            host_kernel_sha256: "0".repeat(64),
+            expected_exit_reason: ExitReason::SignalKick,
+            patch_marker_observed: false,
+        };
+        let mut r = a_record(0);
+        r.exit_reason = ExitReason::SignalKick;
+        let mut out = Vec::new();
+        check_mechanism(&rs, &[r], &mut out);
+        assert_eq!(
+            status(&out, CheckId::MechanismAttestation),
+            Some(Status::Pass)
+        );
+
+        // A counting-mode AA-1 run (nothing armed) is exempt — it ends at the console
+        // sentinel with no mechanism to attest.
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa1;
+        let mut r = a_record(0);
+        r.overflow = None;
+        r.exit_reason = ExitReason::Mmio;
+        let mut out = Vec::new();
+        check_mechanism(&rs, &[r], &mut out);
+        assert_eq!(
+            status(&out, CheckId::MechanismAttestation),
+            Some(Status::Pass),
+            "counting-mode AA-1 arms nothing, so the stock-mechanism rule does not bite"
+        );
+    }
+
+    #[test]
     fn a_zero_attempt_run_set_is_refused_not_vacuously_passed() {
         // `attempted: 0` with an empty records file passes totality and every per-record
         // check vacuously — a verdict over a run that never happened. It must fail closed.
@@ -3261,6 +3636,86 @@ mod tests {
             &mut out,
         );
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
+    }
+
+    #[test]
+    fn replay_identity_is_not_satisfied_by_an_unrelated_repeated_group() {
+        // AA-2: the review's scenario — one stepped record (singleton) beside two duplicate
+        // UNSTEPPED records. The unstepped pair must NOT make the stepped state's replay
+        // identity "pass"; with no repeated stepped group it reads NOT-REQUESTED.
+        let stepped = |id: u64, seed: u64| {
+            let mut r = a_record_seeded(id, seed);
+            r.step = Some(StepRecord {
+                pc_before: 0x8000,
+                pc_after: 0x8004,
+                insn_retired: 1,
+                br_retired_delta: 0,
+                transition: StepTransition::Sequential,
+                step_digest: "sha256:step".into(),
+            });
+            r
+        };
+        let unstepped = |id: u64, seed: u64| {
+            let mut r = a_record_seeded(id, seed);
+            r.step = None;
+            r
+        };
+        let mut out = Vec::new();
+        check_replay_identity(
+            Stage::Aa2,
+            &[stepped(0, 1), unstepped(1, 2), unstepped(2, 2)],
+            &mut out,
+        );
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::NotRequested),
+            "a lone stepped record is unreplayed; an unstepped repeated group is no stand-in"
+        );
+
+        // AA-3: a lone armed landing beside a repeated UNARMED group — same vacuity.
+        let armed = a_record_seeded(0, 1); // a_record is armed, delivered
+        let unarmed = |id: u64, seed: u64| {
+            let mut r = a_record_seeded(id, seed);
+            r.overflow = None;
+            r.exit_reason = ExitReason::Mmio;
+            r
+        };
+        let mut out = Vec::new();
+        check_replay_identity(Stage::Aa3, &[armed, unarmed(1, 2), unarmed(2, 2)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::NotRequested),
+            "a lone armed landing is unreplayed; an unarmed repeated group is no stand-in"
+        );
+    }
+
+    #[test]
+    fn aa3_replay_requires_every_armed_landing_replayed_not_just_some() {
+        // Two armed landings replayed (seed 7 pair) but a third armed landing (seed 9) left
+        // as a singleton: partial coverage is a real gap → FAIL.
+        let mixed = [
+            a_record_seeded(0, 7),
+            a_record_seeded(1, 7),
+            a_record_seeded(2, 9),
+        ];
+        let mut out = Vec::new();
+        check_replay_identity(Stage::Aa3, &mixed, &mut out);
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::Fail),
+            "an armed landing left as a singleton beside a replayed group is a coverage gap"
+        );
+
+        // Every armed group replayed → PASS.
+        let all_paired = [
+            a_record_seeded(0, 7),
+            a_record_seeded(1, 7),
+            a_record_seeded(2, 9),
+            a_record_seeded(3, 9),
+        ];
+        let mut out = Vec::new();
+        check_replay_identity(Stage::Aa3, &all_paired, &mut out);
+        assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Pass));
     }
 
     #[test]

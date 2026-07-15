@@ -813,6 +813,65 @@ files). Gates re-run green: harness 86 tests, floor-check 39 + 27 + 3, oracle-mo
 2, both clippy targets and all three `cargo deny` clean, the window-vs-oracle scan and TCG
 smoke pass, and Miri runs arm-harness (85) plus oracle-model.
 
+## Round-12 review fixes (PR #108, cross-model pass r12 — intended final mechanical round)
+
+The review's 6 P1 + 2 P2; the Miri-on-payload-crates item stays adjudicated-settled (the
+`runtime`/`oracles` `global_asm!` is aarch64 the host assembler rejects, so `cargo miri
+test -p runtime` cannot even build an interpreter run to gate — the rule's actual target,
+the byte-layout logic, is seamed into `oracle-model` and interpreted under Miri already;
+this is the r11 adjudication and CI documents it at `quality.yml`'s Miri step). The other
+seven are fixed.
+
+- **Aggregated run-sets must share one constants pack + measurement environment.** Summing
+  records across contamination conditions and grading count invariance is only meaningful
+  if every set was measured under the same `weights`, `perf`, `environment`, and
+  `mechanism`; otherwise a condition-dependent count change hides behind a compensating
+  per-set difference (a different offset in each `weights` pack) and the aggregate still
+  "passes" invariance. `check_aggregation` now requires those four to match across the
+  union; only `condition` (and AA-1's pinning posture) may vary — they are the sweep.
+- **AA-1 differential scale sweep enforced.** An AA-1 run carrying only the CLI-default
+  `smoke` scale could be certified, though the binding method derives the per-class offsets
+  from the 1e6/1e7/1e8 sweep (one scale cannot separate the offset from the
+  scale-proportional term). A normative AA-1 verdict now requires all three sweep scales
+  present; `--sub-normative` relaxes it as it already relaxes the floor magnitude.
+- **AA-1 armed runs must use the stock signal mechanism.** Only AA-3/AA-4/AA-6 had a
+  stage-specific mechanism constraint, so `--mechanism patched` at AA-1 produced a
+  self-consistent `Preempt` tuple that passed — but AA-1(c) measures the *pre-patch* host
+  signal kick, and the in-kernel force-exit (AA-3's) has different delivery and skid
+  behaviour. `check_mechanism` now requires an armed AA-1 run to declare `signal-kick`
+  (counting-mode AA-1 arms nothing and is exempt).
+- **Replay identity must cover EVERY acceptance-bearing group.** The existential
+  `compared > 0` let one stepped record per AA-2 transition (each a singleton) ride beside
+  two duplicate *unstepped* records and pass, though not one stepped state was replayed;
+  likewise a unique armed AA-3 landing beside a repeated unarmed group. AA-2/AA-3 now rest
+  on the acceptance-bearing groups alone (stepped states / armed landings): all singletons
+  reads NOT-REQUESTED (submit reps), a mix of replayed-and-singleton is a FAIL (a specific
+  input left unreplayed), all-repeated passes. An unrelated repeated group is never a
+  stand-in. AA-6 keeps its whole-record digest logic.
+- **Reject pinned runs labelled as the migration probe (P2).** `migration_probe: true` with
+  `pinned: true` (or a pinned core) reported a normal pinning pass, but the sanctioned probe
+  is unpinned *by design* to exercise the rr #3607 migration failure mode — a pinned probe
+  never migrates. The contradictory tuple is now refused.
+- **Perf ring geometry from `_SC_PAGESIZE` (P2).** The `host-overflow-delivers` AA-0 probe
+  mmap'd `4096 * (1 + 8)`; on a 64 KiB-page Altra host that 36 KiB rounds to a single
+  metadata page with ZERO data pages, so `mmap` fails and the mandatory row cannot be
+  probed at all. The geometry now derives from the runtime page size (a real arrival-day
+  breaker, not a portability nicety).
+- **Guest-reported scale/seed cross-checked (beyond the named 4 P1 + 2 P2).** The guest
+  prints `PARAMS mode=<m> scale=<s> seed=<hex>` — the params page it *actually saw* — but
+  the harness kept only `mode` and labelled the record's scale/seed from the sample spec.
+  A stale or mis-written page on a seed-ignoring payload (`straight-line`) whose counts
+  still match the oracle would be accepted, attributed to an input the guest never ran.
+  `run_sample` now cross-checks the reported scale and seed against the spec and refuses a
+  mismatch (`ReportedScaleMismatch`/`ReportedSeedMismatch`) — the exact parallel of the
+  existing `params_mode` cross-check. Verified it holds and fixed it here per the round's
+  "fix what holds" discipline; called out separately so it can be deferred if unwanted.
+
+No schema change (no new record fields; the rest is checker/probe logic). Gates re-run
+green: harness 87 tests, floor-check 44 + 27 + 3, oracle-model 22 + 2, both clippy targets
+and all three `cargo deny` clean, the window-vs-oracle scan and TCG smoke pass, the
+kernel-patch format/parse gate, and Miri runs arm-harness plus oracle-model.
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

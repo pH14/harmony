@@ -88,6 +88,40 @@ disposition may rest on (`docs/ARM-ALTRA.md` §Evidence integrity). The apparatu
 built so that when the numbers exist, they are checked against a model that was
 frozen before the numbers were seen.
 
+### Arrival-day validation items (a named class, for a bar Paul may set)
+
+A distinct class of hardening runs *ahead* of the evidence it grades: **checker
+cross-validation strengthenings** — closing paths by which arrival-day evidence could
+pass a floor without having measured what the floor is about. These are validated *here*
+only in the negative (the check fires on a crafted-bad in-memory run-set or fixture, and
+its logic is unit-tested); their real bite is on silicon, because the evidence they scrutinise
+(armed overflows, stepped states, a contamination sweep, a Linux guest) is exactly what
+only a real N1 produces. They are collected here so that if Paul rules a higher pre-silicon
+bar, the class has a home rather than arriving one review-finding at a time:
+
+- **Guest-attested vs. harness-claimed cross-checks** — the record's `params_mode`, and now
+  its `scale`/`seed`, are the guest's own words checked against the sample spec, so a stale
+  or mis-written params page cannot mislabel a record whose counts still match. The class:
+  *every* field the guest can attest should be cross-checked, not trusted from the manifest.
+- **Comparability before aggregation** — a cumulative verdict over a contamination sweep
+  requires one constants pack + measurement environment across the summed sets, so a
+  condition-dependent change cannot hide behind a per-set difference. The class: what must
+  be *held equal* before records from different run-sets may be summed or differenced.
+- **Coverage, not existence** — a stage whose acceptance is a matrix (the AA-1 condition ×
+  scale sweep, the AA-2 single-step transition set, per-group replay identity) must have
+  measured *every* required cell, not one existential example beside unrelated filler.
+- **Mechanism/posture fidelity** — the mechanism a stage certifies (AA-1's stock signal
+  kick vs. AA-3's patched force-exit) and the posture it requires (a migration probe that
+  actually migrates) must match the stage, so a self-consistent-but-wrong tuple is refused.
+- **Fail-closed on absent/partial evidence** — an unprobed AA-0 row, a missing reported
+  term, a zero-attempt run-set, an empty digest: each reads as a failure or NOT-REQUESTED,
+  never a vacuous pass.
+
+None of these is a silicon measurement; each is a property of the *checker*, provable now.
+Whether to keep fortifying the checker ahead of the box, or freeze it at the current bar
+until real evidence exists, is a cadence question for Paul — this subsection is where the
+declared answer, and any further items, belong.
+
 ## Evidence integrity is baked in, not bolted on
 
 The six countermeasures of `docs/ARM-ALTRA.md` §Evidence integrity (the PR-98
