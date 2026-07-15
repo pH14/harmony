@@ -543,10 +543,11 @@ fn check_aggregation(
     // be absorbed by a compensating per-set difference (a different count offset in each
     // `weights` pack, say) and the aggregate still "passes" count invariance. So require those
     // four to match the first set. `condition` is the sweep and is not compared. `pinning` is
-    // part of the measurement environment EXCEPT at AA-1, whose sweep legitimately varies the
-    // pinning posture (the sanctioned bounded migration probe runs unpinned beside the pinned
-    // sets) — so pinning is compared at every stage but AA-1 (see below). The workload identity
-    // is the set of image content hashes (paths are never trusted).
+    // part of the measurement environment, but its ONE sanctioned exception is per-SET, not
+    // per-stage: only AA-1's migration probe (the one set that runs unpinned by design) may
+    // differ; every normal set — AA-1's ordinary condition sets included — must share one
+    // posture, checked against a non-probe reference below. The workload identity is the set
+    // of image content hashes (paths are never trusted).
     let image_ids = |rs: &RunSet| -> Vec<String> {
         let mut v: Vec<String> = rs
             .images
@@ -577,25 +578,49 @@ fn check_aggregation(
             if image_ids(rs) != image_ids(first) {
                 diffs.push("images");
             }
-            // Pinning is the PMU/skid measurement environment: two AA-3 half-million-deadline
-            // sets pinned to DIFFERENT cores (or under different governors) are a different
-            // measurement, not one million deadlines, so they must not be summed into one
-            // verdict. The one exception is AA-1, whose sweep varies the pinning posture (the
-            // sanctioned migration probe runs unpinned); there pinning legitimately differs and
-            // is graded by check_pinning instead.
-            if stage != Stage::Aa1 && rs.pinning != first.pinning {
-                diffs.push("pinning");
-            }
             if !diffs.is_empty() {
                 problems.push(format!(
                     "run-set {} differs from {} in [{}] — aggregated conditions must share one \
                      constants pack (weights), measurement environment (perf, environment, \
-                     mechanism, and — outside AA-1 — pinning), and payload images; only \
-                     `condition` (and AA-1's pinning posture) may vary, or a condition-dependent \
-                     count change hides behind a per-set difference",
+                     mechanism), and payload images; only `condition` (and AA-1's migration-probe \
+                     pinning) may vary, or a condition-dependent count change hides behind a \
+                     per-set difference",
                     rs.run_set_id,
                     first.run_set_id,
                     diffs.join(", ")
+                ));
+            }
+        }
+    }
+
+    // Pinning is the PMU/skid measurement environment: two sets pinned to DIFFERENT cores (or
+    // under different governors) are a different measurement, not one summed population, so
+    // NORMAL sets must share one pinning posture. The ONE exception is AA-1's sanctioned
+    // migration probe, which runs UNPINNED by design — so it is exempt, while every other set
+    // (AA-1's ordinary condition sets included) is held to the first non-probe set's posture.
+    // Comparing against a non-probe reference (not simply the first set) is what stops a probe
+    // that happens to sort first from letting the normal sets diverge. Outside AA-1 there is no
+    // probe, so this reduces to "all sets share pinning".
+    if let Some(reference) = loaded
+        .iter()
+        .map(|(rs, _, _)| rs)
+        .find(|rs| !rs.pinning.migration_probe)
+    {
+        for (rs, _, _) in loaded {
+            if !rs.pinning.migration_probe && rs.pinning != reference.pinning {
+                problems.push(format!(
+                    "run-set {} pins to a different posture (pinned {:?}, core {:?}, governor {}) \
+                     than the aggregate ({} — pinned {:?}, core {:?}, governor {}): normal sets \
+                     must share ONE pinned core and governor; only AA-1's migration probe may \
+                     run unpinned",
+                    rs.run_set_id,
+                    rs.pinning.pinned,
+                    rs.pinning.core,
+                    rs.pinning.governor,
+                    reference.run_set_id,
+                    reference.pinning.pinned,
+                    reference.pinning.core,
+                    reference.pinning.governor,
                 ));
             }
         }
@@ -791,11 +816,35 @@ fn load_run_set(dir: &Path) -> Result<(RunSet, Vec<RunRecord>, Vec<u8>), LoadErr
         });
     }
     let records_path = dir.join(&run_set.records_file);
-    let records_bytes = std::fs::read(&records_path).map_err(|source| LoadError::ReadRecords {
-        path: records_path.clone(),
+    // The lexical check rejects `..`/absolute in the manifest STRING, but a symlinked
+    // records.jsonl INSIDE the directory can still resolve outside it — and `std::fs::read`
+    // follows the link. Canonicalize both the directory and the records path (resolving every
+    // symlink) and require the real records file to stay beneath the real directory before
+    // reading a byte. Both are canonicalized so a symlinked ancestor of `dir` itself (e.g.
+    // `/tmp` → `/private/tmp`) does not spuriously fail the containment test.
+    let canon_dir = dir
+        .canonicalize()
+        .map_err(|source| LoadError::ReadRecords {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+    let canon_records = records_path
+        .canonicalize()
+        .map_err(|source| LoadError::ReadRecords {
+            path: records_path.clone(),
+            source,
+        })?;
+    if !canon_records.starts_with(&canon_dir) {
+        return Err(LoadError::RecordsPathEscapesDir {
+            dir: canon_dir,
+            records_file: run_set.records_file.clone(),
+        });
+    }
+    let records_bytes = std::fs::read(&canon_records).map_err(|source| LoadError::ReadRecords {
+        path: canon_records.clone(),
         source,
     })?;
-    let records = parse_records(&records_path, &records_bytes)?;
+    let records = parse_records(&canon_records, &records_bytes)?;
     Ok((run_set, records, records_bytes))
 }
 
@@ -1785,23 +1834,25 @@ fn check_params_mode(records: &[RunRecord], out: &mut Vec<Outcome>) {
 /// `self-seeded` tested the fallback and would have been graded as if it had tested
 /// the mechanism.
 ///
-/// Only the [`Payload::ClockPage`] payload emits a `CLOCKPAGE` line; the other seven
-/// windowed payloads legitimately carry `clockpage_mode: None`. The default AA-5 plan
-/// runs the whole matrix, so this check is **scoped to clock-page records** — grading
-/// every record would reject the standard AA-5 run unconditionally, though its
-/// clock-page samples proved managed mode correctly. But it still requires that at
-/// least one clock-page record exists: an AA-5 run with none tested the mechanism not
-/// at all.
+/// The [`Payload::ClockPage`] payload AND the AA-5 [`Payload::LinuxGuest`] are the
+/// **clock-attesting** records: each must evidence the harness's work-derived clock. The
+/// other seven windowed payloads legitimately carry `clockpage_mode: None` and are excluded
+/// (grading them would reject the standard matrix), but the Linux guest is NOT — a guest that
+/// merely BOOTED is not evidence it consumed work-derived time, so its `clockpage_mode` is
+/// graded exactly like the clock-page payload's. The mechanism itself must be exercised: at
+/// least one clock-page record must exist, or AA-5 tested it not at all.
 fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
     if run_set.stage != Stage::Aa5 {
         return;
     }
 
-    let clockpage: Vec<&RunRecord> = records
+    // The records whose clock attestation AA-5 grades: the clock-page payload and the Linux
+    // guest. Presence of a guest record is not evidence — its mode is graded like the rest.
+    let clock_attesting: Vec<&RunRecord> = records
         .iter()
-        .filter(|r| r.payload == Payload::ClockPage)
+        .filter(|r| matches!(r.payload, Payload::ClockPage | Payload::LinuxGuest))
         .collect();
-    if clockpage.is_empty() {
+    if !records.iter().any(|r| r.payload == Payload::ClockPage) {
         out.push(fail(
             CheckId::ClockPageMode,
             "AA-5 run-set contains no clock-page records: the paravirt-clock mechanism AA-5 \
@@ -1818,7 +1869,7 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
 
     // A `self-seeded` (or absent) mode is a hard fail: the harness never published a
     // page, so the guest fell back to its own static one — AA-5's forbidden fallback.
-    let mut fallback: Vec<(u64, String)> = clockpage
+    let mut fallback: Vec<(u64, String)> = clock_attesting
         .iter()
         .filter(|r| {
             !matches!(
@@ -1838,8 +1889,9 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
         out.push(fail(
             CheckId::ClockPageMode,
             format!(
-                "{} AA-5 record(s) show a self-seeded/absent clock page: {} — the payload's own \
-                 static fallback, not a harness-published page. AA-5 certifies the harness's clock.",
+                "{} AA-5 clock-attesting record(s) (clock-page/linux-guest) show a \
+                 self-seeded/absent clock page: {} — the payload's own static fallback, not a \
+                 harness-published page. AA-5 certifies the harness's clock.",
                 fallback.len(),
                 shown.join(", ")
             ),
@@ -1847,12 +1899,12 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
         return;
     }
 
-    // Every record is at least `managed-static`. AA-5 acceptance needs `work-derived`;
-    // a static placeholder proves only the publication plumbing. If any record is
-    // static, the run does not certify AA-5 — but this is the accepted silicon-day
-    // deferral (the work-derived refresh is `hm-8h8`'s), so it reads NOT-REQUESTED, not
-    // a fail, and not a pass.
-    let static_reps = clockpage
+    // Every clock-attesting record is at least `managed-static`. AA-5 acceptance needs
+    // `work-derived`; a static placeholder proves only the publication plumbing. If any is
+    // static, the run does not certify AA-5 — but this is the accepted silicon-day deferral
+    // (the work-derived refresh is `hm-8h8`'s), so it reads NOT-REQUESTED, not a fail, and not
+    // a pass.
+    let static_reps = clock_attesting
         .iter()
         .filter(|r| r.clockpage_mode.as_deref() == Some(MANAGED_STATIC_CLOCKPAGE))
         .count();
@@ -1860,20 +1912,22 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
         out.push(not_requested(
             CheckId::ClockPageMode,
             format!(
-                "{static_reps} of {} clock-page record(s) attest a `{MANAGED_STATIC_CLOCKPAGE}` \
-                 page: the harness published it (the plumbing works), but it is a static \
-                 placeholder, not the work-derived, refreshed clock AA-5 certifies. That \
-                 mechanism is `hm-8h8` (docs/PARAVIRT-CLOCK.md) — a silicon-day item; this \
-                 verdict cannot accept AA-5 until a `{WORK_DERIVED_CLOCKPAGE}` page exists.",
-                clockpage.len()
+                "{static_reps} of {} clock-attesting record(s) attest a \
+                 `{MANAGED_STATIC_CLOCKPAGE}` page: the harness published it (the plumbing \
+                 works), but it is a static placeholder, not the work-derived, refreshed clock \
+                 AA-5 certifies. That mechanism is `hm-8h8` (docs/PARAVIRT-CLOCK.md) — a \
+                 silicon-day item; this verdict cannot accept AA-5 until a \
+                 `{WORK_DERIVED_CLOCKPAGE}` page exists.",
+                clock_attesting.len()
             ),
         ));
     } else {
         out.push(pass(
             CheckId::ClockPageMode,
             format!(
-                "all {} clock-page record(s) attest the {WORK_DERIVED_CLOCKPAGE} clock page (AA-5)",
-                clockpage.len()
+                "all {} clock-attesting record(s) (clock-page + linux-guest) attest the \
+                 {WORK_DERIVED_CLOCKPAGE} clock page (AA-5)",
+                clock_attesting.len()
             ),
         ));
     }
@@ -3142,6 +3196,35 @@ mod tests {
         check_clockpage_mode(&rs, &[clockpage(Some("work-derived"))], &mut out);
         assert_eq!(status(&out, CheckId::ClockPageMode), Some(Status::Pass));
 
+        // The Linux guest is clock-attesting too: a work-derived clock-page beside a guest
+        // that attests NO work-derived time is not AA-5 — presence is not evidence.
+        let guest = |mode: Option<&str>| {
+            let mut r = a_record(1);
+            r.payload = Payload::LinuxGuest;
+            r.clockpage_mode = mode.map(str::to_string);
+            r
+        };
+        let mut out = Vec::new();
+        check_clockpage_mode(
+            &rs,
+            &[clockpage(Some("work-derived")), guest(None)],
+            &mut out,
+        );
+        assert_eq!(
+            status(&out, CheckId::ClockPageMode),
+            Some(Status::Fail),
+            "a Linux guest with no clock attestation fails even beside a work-derived clock-page"
+        );
+
+        // Both classes work-derived → PASS.
+        let mut out = Vec::new();
+        check_clockpage_mode(
+            &rs,
+            &[clockpage(Some("work-derived")), guest(Some("work-derived"))],
+            &mut out,
+        );
+        assert_eq!(status(&out, CheckId::ClockPageMode), Some(Status::Pass));
+
         // An AA-5 run-set with NO clock-page records at all is a vacuous pass waiting
         // to happen — the mechanism AA-5 certifies was never exercised.
         let mut out = Vec::new();
@@ -3526,7 +3609,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregation_holds_pinning_fixed_outside_aa1() {
+    fn aggregation_holds_pinning_fixed_except_the_migration_probe() {
         let floors = Floors {
             min_armed_overflows: Some(2),
             min_reps: None,
@@ -3563,8 +3646,8 @@ mod tests {
             Some(Status::Fail)
         );
 
-        // At AA-1 the pinning posture IS the sweep (the sanctioned migration probe runs
-        // unpinned beside the pinned sets), so the same core difference is allowed.
+        // At AA-1, ONLY the migration probe (unpinned by design) may differ. Two NORMAL AA-1
+        // condition sets on different cores are still a different measurement → refused.
         let mut a1 = [
             a_loaded_set(Stage::Aa1, "a", "pinned-solo", &"a".repeat(64), 2),
             a_loaded_set(Stage::Aa1, "b", "co-tenant-other-core", &"b".repeat(64), 2),
@@ -3572,8 +3655,43 @@ mod tests {
         a1[1].0.pinning.core = Some(3);
         assert_eq!(
             status(&aggregate(&a1, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Fail),
+            "normal AA-1 sets on different cores are not one measurement — only the probe is exempt"
+        );
+
+        // The migration probe, unpinned, aggregates fine beside the pinned condition set —
+        // even though its posture differs, because it is the one sanctioned exception.
+        let mut probe = [
+            a_loaded_set(Stage::Aa1, "a", "pinned-solo", &"a".repeat(64), 2),
+            a_loaded_set(Stage::Aa1, "b", "migration-probe", &"b".repeat(64), 2),
+        ];
+        probe[1].0.pinning.pinned = false;
+        probe[1].0.pinning.core = None;
+        probe[1].0.pinning.migration_probe = true;
+        assert_eq!(
+            status(&aggregate(&probe, &floors).outcomes, CheckId::Aggregation),
             Some(Status::Pass),
-            "AA-1's sweep varies the pinning posture — cores may differ"
+            "AA-1's migration probe runs unpinned by design — it alone may differ"
+        );
+
+        // And if the FIRST set is the probe, the normal sets are still held to a shared
+        // posture (the reference is the first NON-probe set, not simply the first set).
+        let mut probe_first = [
+            a_loaded_set(Stage::Aa1, "a", "migration-probe", &"a".repeat(64), 2),
+            a_loaded_set(Stage::Aa1, "b", "pinned-solo", &"b".repeat(64), 2),
+            a_loaded_set(Stage::Aa1, "c", "co-tenant-other-core", &"c".repeat(64), 2),
+        ];
+        probe_first[0].0.pinning.pinned = false;
+        probe_first[0].0.pinning.core = None;
+        probe_first[0].0.pinning.migration_probe = true;
+        probe_first[2].0.pinning.core = Some(3); // a normal set on a different core
+        assert_eq!(
+            status(
+                &aggregate(&probe_first, &floors).outcomes,
+                CheckId::Aggregation
+            ),
+            Some(Status::Fail),
+            "a probe sorting first must not let the normal sets diverge in posture"
         );
     }
 
@@ -4616,6 +4734,44 @@ mod tests {
         ] {
             assert!(!records_file_is_confined(bad), "{bad} must be rejected");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_records_file_resolving_outside_is_rejected() {
+        // The lexical check passes a plain name like "records.jsonl", but if that name is a
+        // SYMLINK to a file outside the run-set directory, `std::fs::read` would follow it and
+        // hash external bytes as retained evidence. load_run_set must refuse on the resolved
+        // path. (Unix-only: the test plants a symlink.)
+        let base = std::env::temp_dir().join(format!("floorcheck-symlink-{}", std::process::id()));
+        let inside = base.join("rs");
+        let outside = base.join("outside");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let evil = outside.join("evil.jsonl");
+        std::fs::write(&evil, b"").unwrap();
+
+        let mut rs = a_run_set();
+        rs.records_file = "records.jsonl".into();
+        std::fs::write(inside.join(MANIFEST_FILE), serde_json::to_vec(&rs).unwrap()).unwrap();
+        std::os::unix::fs::symlink(&evil, inside.join("records.jsonl")).unwrap();
+
+        let err = load_run_set(&inside).unwrap_err();
+        assert!(
+            matches!(err, LoadError::RecordsPathEscapesDir { .. }),
+            "a symlink resolving outside the run-set dir must be refused, got {err:?}"
+        );
+
+        // A REAL records file at the same name loads fine (containment holds).
+        std::fs::remove_file(inside.join("records.jsonl")).unwrap();
+        std::fs::write(inside.join("records.jsonl"), b"").unwrap();
+        assert!(
+            load_run_set(&inside).is_ok(),
+            "an ordinary records.jsonl inside the dir must load"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

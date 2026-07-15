@@ -1239,6 +1239,42 @@ Miri item stays adjudicated-settled. Gates re-run green: harness 101 tests, floo
 three `cargo deny`, the opcode-checked window scan, TCG smoke, kernel-patch format/parse, and
 arm-harness Miri.
 
+## Round-21 review fixes (PR #108, cross-model pass r21)
+
+Four P1 + one P2 (the sixth listed item, "add Miri paths for every unsafe payload crate",
+stays adjudicated-settled — bare-metal `global_asm!` crates cannot build under Miri).
+
+- **AA-5 Linux guest must attest work-derived time.** `check_clockpage_mode` graded only
+  `ClockPage` records, so a package with valid work-derived clock-page records plus Linux-guest
+  records whose `clockpage_mode` was absent/self-seeded passed — presence of the guest stood in
+  for evidence it consumed the clock. The graded set is now the clock-ATTESTING records
+  (`ClockPage` **and** `LinuxGuest`); each must attest work-derived (or managed-static →
+  NOT-REQUESTED). A clock-page record must still exist (the mechanism was exercised).
+- **Align the PMCEID row with the code.** The harness validates `BR_RETIRED` via `PMCEID1`
+  (event 0x21 is bit 1 of `PMCEID1_EL0`, which covers 0x20..0x3f; `PMCEID0_EL0` covers only
+  0x00..0x1f), but the binding table (`docs/ARM-ALTRA.md`) and `schemas/README.md` still said
+  `PMCEID0`. Both docs updated to `PMCEID1` with the bit rationale; the code (`sys.rs`, the
+  `ident` payload, `truth-table.schema.json`) was already right. (`docs/ARM-ALTRA.md` is the
+  repo-root binding doc, edited this round at the reviewer's + Paul's direction to keep the
+  normative table and the code in agreement.)
+- **Normal AA-1 sets share one pinning posture.** The r20 pinning comparability exempted the
+  whole AA-1 stage, so two ordinary AA-1 condition sets on different cores could aggregate into
+  one population. The exemption is now per-SET: only a `migration_probe` set may differ; every
+  normal set (AA-1's condition sets included) is held to the first NON-probe set's posture — so
+  a probe that sorts first cannot let the normal sets diverge.
+- **Reject symlinked records files (P2).** The lexical `..`/absolute check passed a plain name
+  that was a SYMLINK to a file outside the run-set directory, and `std::fs::read` followed it.
+  `load_run_set` now canonicalizes both the directory and the records path (resolving symlinks)
+  and requires the real file to stay beneath the real directory before reading.
+- **Checked CPU-range arithmetic (P2).** `parse_cpu_list` did `b - a + 1` on host sysfs input;
+  a range like `0-4294967295` overflowed and panicked in debug (and multiple ranges could
+  overflow the running sum). It now uses checked arithmetic and returns `SysError::Protocol`.
+
+Miri item stays adjudicated-settled. Gates re-run green: harness 101 tests, floor-check 58 + 27
++ 3, oracle-model 23 + 2 (unchanged this round), clippy `-D warnings` native + aarch64-linux,
+three `cargo deny`, the opcode-checked window scan, TCG smoke, kernel-patch format/parse, and
+arm-harness Miri.
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

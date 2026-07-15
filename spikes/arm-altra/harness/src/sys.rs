@@ -661,9 +661,14 @@ pub fn running_kernel_build_id() -> Result<Option<String>, SysError> {
 
 /// Count the CPUs in a Linux CPU-list string (`/sys/devices/system/cpu/online`), e.g.
 /// `"0-79"` or `"0,2-4,7"`. Factored out so it is testable off the box.
-#[must_use]
+///
+/// # Errors
+/// [`SysError::Protocol`] if the counted set overflows a `u32` — the content is host input,
+/// so a full-width range like `0-4294967295` (whose `b - a + 1` overflows), or many valid
+/// ranges that sum past `u32::MAX`, is a protocol error, never a panic.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn parse_cpu_list(s: &str) -> u32 {
+fn parse_cpu_list(s: &str) -> Result<u32, SysError> {
+    let overflow = || SysError::Protocol(format!("online-CPU list {s:?} overflows a u32 count"));
     let mut count = 0u32;
     for part in s.trim().split(',') {
         if part.is_empty() {
@@ -674,14 +679,21 @@ fn parse_cpu_list(s: &str) -> u32 {
                 if let (Ok(a), Ok(b)) = (a.trim().parse::<u32>(), b.trim().parse::<u32>())
                     && b >= a
                 {
-                    count += b - a + 1;
+                    // `b - a` cannot underflow (b >= a); `+ 1` and the running sum can both
+                    // overflow on hostile input, so both are checked.
+                    count = (b - a)
+                        .checked_add(1)
+                        .and_then(|span| count.checked_add(span))
+                        .ok_or_else(overflow)?;
                 }
             }
-            None if part.trim().parse::<u32>().is_ok() => count += 1,
+            None if part.trim().parse::<u32>().is_ok() => {
+                count = count.checked_add(1).ok_or_else(overflow)?;
+            }
             None => {}
         }
     }
-    count
+    Ok(count)
 }
 
 /// The machine's ONLINE CPU count, from `/sys/devices/system/cpu/online`.
@@ -694,7 +706,7 @@ fn parse_cpu_list(s: &str) -> u32 {
 /// [`SysError`] if the online-CPU set cannot be read.
 pub fn online_cpu_count() -> Result<u32, SysError> {
     match std::fs::read_to_string("/sys/devices/system/cpu/online") {
-        Ok(s) => Ok(parse_cpu_list(&s)),
+        Ok(s) => parse_cpu_list(&s),
         Err(_) => Err(SysError::Protocol(
             "cannot read /sys/devices/system/cpu/online to count the machine's online CPUs"
                 .to_string(),
@@ -1701,11 +1713,22 @@ mod tests {
         // The /sys/devices/system/cpu/online formats: a single range, disjoint ranges +
         // singletons, and a lone CPU. This is the MACHINE's online count, which the topology
         // must record — not the process's affinity allowance.
-        assert_eq!(parse_cpu_list("0-79"), 80);
-        assert_eq!(parse_cpu_list("0-79\n"), 80);
-        assert_eq!(parse_cpu_list("0,2-4,7"), 5);
-        assert_eq!(parse_cpu_list("0"), 1);
-        assert_eq!(parse_cpu_list(""), 0);
+        assert_eq!(parse_cpu_list("0-79").unwrap(), 80);
+        assert_eq!(parse_cpu_list("0-79\n").unwrap(), 80);
+        assert_eq!(parse_cpu_list("0,2-4,7").unwrap(), 5);
+        assert_eq!(parse_cpu_list("0").unwrap(), 1);
+        assert_eq!(parse_cpu_list("").unwrap(), 0);
+
+        // Host input: a full-width range whose `b - a + 1` overflows u32 is a protocol
+        // error, not a panic. So is a set of valid ranges that sums past u32::MAX.
+        assert!(matches!(
+            parse_cpu_list("0-4294967295"),
+            Err(SysError::Protocol(_))
+        ));
+        assert!(matches!(
+            parse_cpu_list("0-3000000000,0-3000000000"),
+            Err(SysError::Protocol(_))
+        ));
     }
 
     #[test]

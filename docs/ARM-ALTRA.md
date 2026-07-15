@@ -411,9 +411,10 @@ machine-readable truth table:
   absent** — confirms the §1 premise), `ID_AA64ISAR0_EL1.Atomic` (**expect LSE present**),
   `ID_AA64DFR0_EL1.PMUVer` (PMUv3 version), SVE (**expect absent**), nested-virt (**expect
   absent**);
-- PMU: `BR_RETIRED` (0x21) present in `PMCEID0_EL0`; `perf_event_open` of raw 0x21 as a
-  pinned, non-multiplexed event succeeds; a trivial host-side overflow test delivers a
-  sample/signal;
+- PMU: `BR_RETIRED` (0x21) present in `PMCEID1_EL0` (bit 1: `PMCEID1_EL0` enumerates events
+  `0x20..0x3f`, so event `0x21` is its bit 1; `PMCEID0_EL0` covers only `0x00..0x1f`);
+  `perf_event_open` of raw 0x21 as a pinned, non-multiplexed event succeeds; a trivial
+  host-side overflow test delivers a sample/signal;
 - KVM: `/dev/kvm` present; VHE vs nVHE mode recorded; `KVM_CAP_SET_GUEST_DEBUG`
   (single-step) present; vGICv3 device creatable; the writable-ID-register surface
   enumerated;
