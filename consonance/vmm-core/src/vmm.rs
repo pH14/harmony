@@ -791,6 +791,19 @@ where
     /// replay-equivalence *to the last intercept* and is correct at any exit (see
     /// [`encode_vtime`]); only the *snapshot* needs exactness here.
     pub(crate) vtime_synchronized: bool,
+    /// Whether the synchronized boundary this step ended on was reached by an
+    /// **RDTSC/RDTSCP counter read specifically** (`complete_tsc`) — as opposed to
+    /// the other V-time intercepts (a TSC MSR, RDRAND/RDSEED) or the other
+    /// synchronized points (a deadline landing, an idle-warp restore). Gates the
+    /// pvclock registration **handshake** (r17): the wire contract (§3.1, r8)
+    /// promises the guest publishes its page GPA over the doorbell and then does a
+    /// **counter read**, so only that read may complete the handshake (stamp + arm
+    /// the pending page). A superset of nothing — it is a strict subset of
+    /// `vtime_synchronized` (every RDTSC boundary is synchronized, but not vice
+    /// versa). Cleared with `vtime_synchronized` before each entry; set `true`
+    /// **only** by [`complete_tsc`](crate::vendor::x86::dispatch). Not hashed (a
+    /// transient run-control flag).
+    pub(crate) tsc_read_intercept: bool,
     /// `false` until the **first guest entry** (the first `backend.run()`, whether
     /// reached via [`step`](Vmm::step) or [`run`](Vmm::run)). On that first entry the
     /// work counter is prepared ([`WorkSource::start_run`](crate::work::WorkSource::start_run))
@@ -880,6 +893,9 @@ where
             // A fresh VM is at work 0: the effective V-time is exactly `vns_base`, so
             // a snapshot here is exact (synchronized).
             vtime_synchronized: true,
+            // No intercept has happened yet, let alone a counter read — a fresh VM's
+            // synchronized boundary is not an RDTSC handshake.
+            tsc_read_intercept: false,
             first_entry_done: false,
             snapshot_hashing: false,
             arrival_deadline: None,
@@ -1687,6 +1703,10 @@ where
         // `save_vtime` would then emit a stale anchor instead of failing closed). A
         // V-time-intercept completion below re-sets it to `true` on success.
         self.vtime_synchronized = false;
+        // Likewise clear the RDTSC-handshake flag: only `complete_tsc` re-sets it,
+        // so a non-RDTSC synchronized boundary (a TSC MSR, RDRAND, a deadline, an
+        // idle warp) leaves it false and cannot complete the pvclock handshake (r17).
+        self.tsc_read_intercept = false;
         // Advance the V-time LAPIC timer + the serial COM1 line and hand any
         // now-deliverable vector to the backend for injection at the next safe
         // VM-entry (Linux path only; a no-op when the xAPIC is unwired, so
@@ -2701,18 +2721,22 @@ where
     /// value stream advances exactly at the deterministic clock-advance
     /// boundaries.
     ///
-    /// **The handshake (r8 ruling).** A registration recorded at the doorbell
-    /// `OUT` is *pending* ([`PvclockChannel::armed`] `== false`) — no stamp, no Δ
-    /// arm. It becomes active at the **first V-time-synchronized intercept** after
-    /// the `OUT` (the reference kernel's required post-doorbell RDTSC): there
-    /// `last_intercept_work` is a fresh, skid-free anchor, so the first stamp is
-    /// canonical from it and the Δ deadline arms off it — never overdue, never off
-    /// a stale or PIO-skid anchor. A pending registration at a non-intercept exit
-    /// stamps nothing (the page keeps its pre-registration bytes — deterministic,
-    /// and out of contract for a guest that never handshakes). `vtime_synchronized`
-    /// is cleared before every entry and set only by a real intercept, so it is
-    /// exactly the "did this step end at a skid-free boundary" signal the
-    /// handshake needs.
+    /// **The handshake (r8 ruling, sharpened r17).** A registration recorded at
+    /// the doorbell `OUT` is *pending* ([`PvclockChannel::armed`] `== false`) — no
+    /// stamp, no Δ arm. It becomes active at the **first RDTSC/RDTSCP counter read**
+    /// after the `OUT` — the specific exit the §3.1 wire contract promises the guest
+    /// performs — where `last_intercept_work` is a fresh, skid-free anchor, so the
+    /// first stamp is canonical from it and the Δ deadline arms off it (never
+    /// overdue, never off a stale or PIO-skid anchor). Other synchronized boundaries
+    /// do NOT complete the handshake: a TSC MSR read/write, an RDRAND/RDSEED draw, a
+    /// deadline landing, or an idle-warp restore is `vtime_synchronized` too, but
+    /// arming off one would publish the page on an exit the contract does not
+    /// promise. [`tsc_read_intercept`](Self::tsc_read_intercept) — cleared before
+    /// every entry, set `true` **only** by the RDTSC/RDTSCP completion — is exactly
+    /// the "did this step end on the promised counter read" signal the handshake
+    /// needs. A pending registration at any other exit stamps nothing (the page
+    /// keeps its pre-registration bytes — deterministic, and out of contract for a
+    /// guest that never does the counter read).
     fn pvclock_refresh(&mut self) -> Result<(), VmmError> {
         let Some(pv) = self.pvclock.as_ref() else {
             return Ok(());
@@ -2721,9 +2745,16 @@ where
             return Ok(()); // nothing registered
         }
         if !pv.armed {
-            // Pending registration: arm only at the handshake intercept.
-            if !self.vtime_synchronized {
-                return Ok(()); // still between the OUT and the handshake
+            // Pending registration: arm ONLY at the RDTSC/RDTSCP handshake
+            // intercept (r17). The wire contract (§3.1, r8) promises the guest
+            // publishes its GPA over the doorbell and then does a COUNTER READ, so
+            // only that read completes the handshake. Every other synchronized
+            // boundary — a TSC MSR, an RDRAND/RDSEED draw, a deadline landing, an
+            // idle-warp restore — is `vtime_synchronized` too, but must NOT stamp or
+            // arm the pending page (a page armed off an RDRAND draw or a deadline
+            // would publish the clock the contract says only the counter read may).
+            if !self.tsc_read_intercept {
+                return Ok(()); // synchronized, but not the promised counter read
             }
             // The handshake: promote to armed and lay down the first (canonical)
             // stamp from this fresh, skid-free anchor.
@@ -9363,6 +9394,56 @@ mod tests {
         let mut gfns = vmm.host_dirty.iter().copied().collect::<Vec<_>>();
         gfns.sort_unstable();
         assert_eq!(gfns, vec![PV_GPA / 4096, (RESP_GPA as u64) / 4096]);
+    }
+
+    /// r17: the handshake arms ONLY on an RDTSC/RDTSCP **counter read** (the §3.1
+    /// wire contract). Other V-time intercepts — a TSC MSR, an RDRAND draw — reach
+    /// a synchronized boundary too, but must NOT stamp or arm the pending page: a
+    /// page armed off one would publish the clock on an exit the contract does not
+    /// promise the guest performs.
+    #[test]
+    fn pvclock_handshake_arms_only_on_a_counter_read() {
+        let mut vmm = pvclock_vmm(
+            vec![
+                Exit::Arch(X86Exit::Wrmsr {
+                    index: IA32_TSC_ADJUST,
+                    value: 5,
+                }),
+                Exit::Arch(X86Exit::Rdrand { width: 8 }),
+                Exit::Arch(X86Exit::Rdtsc),
+            ],
+            Box::new(ScriptedWork::at(100)),
+            7,
+        );
+        ring_pvclock_register(&mut vmm, PV_GPA);
+        // A TSC MSR write is a V-time intercept (synchronized) — but not the
+        // promised counter read, so the page stays pending.
+        vmm.step().unwrap();
+        assert!(
+            vmm.is_synchronized(),
+            "the WRMSR is a synchronized boundary"
+        );
+        assert!(
+            vtime::pvclock::read(vmm.pvclock_page().unwrap()).is_none(),
+            "a TSC MSR intercept must not stamp the pending page"
+        );
+        assert_eq!(vmm.pvclock_refresh_deadline(), None, "and must not arm Δ");
+        // An RDRAND draw is a V-time intercept too — still not the counter read.
+        vmm.step().unwrap();
+        assert!(
+            vtime::pvclock::read(vmm.pvclock_page().unwrap()).is_none(),
+            "an RDRAND intercept must not stamp the pending page"
+        );
+        assert_eq!(vmm.pvclock_refresh_deadline(), None, "and must not arm Δ");
+        // The RDTSC counter read: THE handshake — canonical stamp + Δ armed.
+        vmm.step().unwrap();
+        let f = vtime::pvclock::read(vmm.pvclock_page().unwrap())
+            .expect("armed and stamped at the counter read");
+        assert_eq!(f.seq, 0, "the handshake lays a canonical stamp");
+        assert!(
+            vmm.pvclock_refresh_deadline().is_some(),
+            "the counter read arms the Δ deadline"
+        );
     }
 
     /// Bad GPAs are clean `OutOfRange` rejections that record nothing:

@@ -440,6 +440,12 @@ impl<B: Backend<A = X86>> Vmm<B> {
         // A V-time intercept: `last_intercept_work` is now the exact current work, so
         // a snapshot here would be exact (see `save_vtime`).
         self.vtime_synchronized = true;
+        // This synchronized boundary is an RDTSC/RDTSCP COUNTER READ specifically —
+        // the only exit the pvclock registration handshake may complete on (r17;
+        // the §3.1/r8 wire contract promises the guest reads the counter after the
+        // doorbell). The other V-time intercepts (TSC MSR, RDRAND) and synchronized
+        // points (deadline, idle warp) leave this false.
+        self.tsc_read_intercept = true;
         Ok(Step::Continued)
     }
 

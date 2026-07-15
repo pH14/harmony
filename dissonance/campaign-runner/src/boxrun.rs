@@ -42,9 +42,9 @@ use vmm_core::vmm::{PVCLOCK_DEFAULT_DELTA_WORK, Step, Vmm};
 use campaign_runner::gamecampaign::{GameCampaignConfig, run_game_campaign};
 
 use super::{
-    BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, X86_64_BOOT, finish, finish_campaign,
-    finish_game, finish_recording, parse_game_config, parse_retain, print_game_artifacts,
-    pvclock_cmdline, render_sweep_throughput, require_page_on_active, seeds,
+    ArmThroughput, BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, X86_64_BOOT, ab_report,
+    finish, finish_campaign, finish_game, finish_recording, parse_game_config, parse_retain,
+    print_game_artifacts, pvclock_cmdline, render_sweep_throughput, require_page_on_active, seeds,
 };
 
 /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
@@ -292,8 +292,87 @@ pub fn run(args: BoxArgs) -> ExitCode {
     if !super::seeds_ok(args.sweep.seeds, 8) {
         return ExitCode::FAILURE;
     }
-    // `SweepReport` carries no timing (task 96 only extends `CampaignReport`)
-    // — the boot duration is already in the printed readiness line above.
+    // Deliverable 7's A/B campaign-throughput comparison: run BOTH arms over the
+    // same sweep and emit the validated page-on/page-off ratio in one invocation.
+    if args.page_on_ab {
+        return run_ab(args);
+    }
+    // `--record` is its own single-arm mode (a comparison records nothing).
+    if args.sweep.record.is_some() {
+        return run_recording_box(&args);
+    }
+    // A single sweep arm (page-on per `--page-on`, else page-off).
+    match sweep_arm(&args, args.page_on) {
+        Ok((_arm, code)) => code,
+        Err(code) => code,
+    }
+}
+
+/// Postgres is interrupt-driven; the snapshot search may need many steps to find
+/// a sealable boundary at/after readiness (task 41 made mid-workload points
+/// snapshottable). Shared by every box sweep mode.
+const SNAPSHOT_RETRY: (u64, usize) = (1_000_000, 100_000);
+
+/// One campaign sweep arm: boot the guest page-{on,off}, seal the base, run the
+/// sweep, print the per-arm throughput REPORT line, and run the determinism gate
+/// (via [`finish`]). Returns the arm's throughput record plus the gate `ExitCode`,
+/// or a boot-failure `ExitCode`. Shared by the single-arm [`run`] and the two-arm
+/// [`run_ab`], so the arms are composed identically.
+fn sweep_arm(args: &BoxArgs, page_on: bool) -> Result<(ArmThroughput, ExitCode), ExitCode> {
+    let (mut server, _boot_us, _serial) =
+        boot_server(&args.kernel, &args.initramfs, &args.ready_marker, page_on)?;
+    let (snapshot_retry_step, snapshot_max_attempts) = SNAPSHOT_RETRY;
+    let cfg = SweepConfig {
+        seeds: seeds(args.sweep.seeds),
+        runs_per_seed: args.sweep.runs.max(2),
+        deadline_delta: Some(args.deadline_delta),
+        snapshot_retry_step,
+        snapshot_max_attempts,
+    };
+    let seeds_n = cfg.seeds.len();
+    let runs_n = cfg.runs_per_seed;
+    let initial = boot_env();
+    println!(
+        "[campaign-runner] box mode (page-{}): {seeds_n} seeds x {runs_n} runs; each branch runs \
+         {} ns of V-time past the snapshot.\n",
+        if page_on { "on" } else { "off" },
+        args.deadline_delta
+    );
+    // Time the sweep so deliverable 7's campaign-throughput comparison is
+    // producible (r15): wall duration + branch count → a page-labelled throughput
+    // line. The stopwatch is print-only (task 96 — nothing in the search loop
+    // branches on a duration), so this never touches state or a hash.
+    let sweep_t0 = mark();
+    let (served, client) = run_session(&mut server, move |stream| {
+        sweep_client(stream, initial, cfg)
+    });
+    let sweep_us = sweep_t0.elapsed_us();
+    // Actual completed branches from the report (a partial sweep reports what it
+    // finished; 0 if it errored — `finish` tells that story).
+    let branches: u64 = client
+        .as_ref()
+        .ok()
+        .map(|r| r.rows.iter().map(|s| s.runs.len() as u64).sum())
+        .unwrap_or(0);
+    println!("{}", render_sweep_throughput(page_on, branches, sweep_us));
+    let code = finish("box", served, client);
+    Ok((
+        ArmThroughput {
+            branches,
+            sweep_us,
+            seeds: seeds_n,
+            runs_per_seed: runs_n,
+            deadline_delta: args.deadline_delta,
+        },
+        code,
+    ))
+}
+
+/// The `--record` single-arm box mode: boot, seal, and record each run's RunTrace,
+/// checking byte-stability (the task-65 gate). The readiness banner is already
+/// confirmed present by `boot_server`, so the recorded per-run console is the
+/// post-snapshot workload.
+fn run_recording_box(args: &BoxArgs) -> ExitCode {
     let (mut server, _boot_us, _serial) = match boot_server(
         &args.kernel,
         &args.initramfs,
@@ -303,92 +382,94 @@ pub fn run(args: BoxArgs) -> ExitCode {
         Ok(s) => s,
         Err(code) => return code,
     };
-
-    // Postgres is interrupt-driven; the snapshot search may need many steps
-    // to find a sealable boundary at/after readiness. Generous retry budget
-    // (task 41 made mid-workload points snapshottable).
-    let (snapshot_retry_step, snapshot_max_attempts) = (1_000_000u64, 100_000usize);
-
-    // The task-65 box gate: record each run's RunTrace and check byte-
-    // stability. The readiness banner is already confirmed present above (the
-    // boot drive only returns Ok once the marker is seen), so the recorded
-    // per-run console is the post-snapshot workload.
-    if let Some(dir) = args.sweep.record.clone() {
-        let Some(retain) = parse_retain(&args.sweep.retain) else {
-            return ExitCode::FAILURE;
-        };
-        let store = match TraceStore::open(&dir) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!(
-                    "[campaign-runner] cannot open trace store {}: {e}",
-                    dir.display()
-                );
-                return ExitCode::FAILURE;
-            }
-        };
-        let cfg = RecordConfig {
-            sweep: SweepConfig {
-                seeds: seeds(args.sweep.seeds),
-                runs_per_seed: args.sweep.runs.max(2),
-                deadline_delta: Some(args.deadline_delta),
-                snapshot_retry_step,
-                snapshot_max_attempts,
-            },
-            retain,
-            stream: StreamId(0),
-        };
-        println!(
-            "[campaign-runner] box recording: {} seeds x {} runs, retain={}, into {}\n",
-            cfg.sweep.seeds.len(),
-            cfg.sweep.runs_per_seed,
-            retain.as_str(),
-            dir.display()
-        );
-        return match run_recording(&mut server, &store, &cfg) {
-            Ok(report) => finish_recording("box", &report, 2, &store, &dir),
-            Err(e) => {
-                eprintln!("[campaign-runner] box recording failed: {e}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-
-    let cfg = SweepConfig {
-        seeds: seeds(args.sweep.seeds),
-        runs_per_seed: args.sweep.runs.max(2),
-        deadline_delta: Some(args.deadline_delta),
-        snapshot_retry_step,
-        snapshot_max_attempts,
+    let Some(dir) = args.sweep.record.clone() else {
+        return ExitCode::FAILURE; // only reached via run()'s is_some() guard
     };
-    let initial = boot_env();
+    let Some(retain) = parse_retain(&args.sweep.retain) else {
+        return ExitCode::FAILURE;
+    };
+    let store = match TraceStore::open(&dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "[campaign-runner] cannot open trace store {}: {e}",
+                dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let (snapshot_retry_step, snapshot_max_attempts) = SNAPSHOT_RETRY;
+    let cfg = RecordConfig {
+        sweep: SweepConfig {
+            seeds: seeds(args.sweep.seeds),
+            runs_per_seed: args.sweep.runs.max(2),
+            deadline_delta: Some(args.deadline_delta),
+            snapshot_retry_step,
+            snapshot_max_attempts,
+        },
+        retain,
+        stream: StreamId(0),
+    };
     println!(
-        "[campaign-runner] box mode: {} seeds x {} runs; each branch runs {} ns of V-time past the \
-         snapshot.\n",
-        cfg.seeds.len(),
-        cfg.runs_per_seed,
-        args.deadline_delta
+        "[campaign-runner] box recording: {} seeds x {} runs, retain={}, into {}\n",
+        cfg.sweep.seeds.len(),
+        cfg.sweep.runs_per_seed,
+        retain.as_str(),
+        dir.display()
     );
-    // Time the sweep so deliverable 7's campaign-throughput ppm comparison is
-    // producible (r15 P1): record wall duration + branch count, print a
-    // page-{on,off}-labelled throughput REPORT line comparable across arms. The
-    // stopwatch is print-only (task 96 — nothing in the search loop branches on
-    // a duration), so this never touches state or a hash.
-    let sweep_t0 = mark();
-    let (served, client) = run_session(&mut server, move |stream| {
-        sweep_client(stream, initial, cfg)
-    });
-    let sweep_us = sweep_t0.elapsed_us();
-    // Actual completed branches from the report (a partial sweep reports what it
-    // finished); skip the line if the sweep errored — `finish` tells that story.
-    if let Ok(report) = client.as_ref() {
-        let branches: u64 = report.rows.iter().map(|s| s.runs.len() as u64).sum();
-        println!(
-            "{}",
-            render_sweep_throughput(args.page_on, branches, sweep_us)
-        );
+    match run_recording(&mut server, &store, &cfg) {
+        Ok(report) => finish_recording("box", &report, 2, &store, &dir),
+        Err(e) => {
+            eprintln!("[campaign-runner] box recording failed: {e}");
+            ExitCode::FAILURE
+        }
     }
-    finish("box", served, client)
+}
+
+/// Deliverable 7's A/B campaign-throughput comparison, in one invocation: run the
+/// page-OFF baseline and the page-ON arm over the **same** sweep, then emit the
+/// validated ratio ([`ab_report`]). Both arms must pass their determinism gates —
+/// a ratio over a broken arm is meaningless — and use matching sweep parameters
+/// (true by construction here, one `BoxArgs`, and re-checked in `ab_report`). This
+/// is the runnable path the A/B formatter is wired into (r17).
+fn run_ab(args: BoxArgs) -> ExitCode {
+    if args.sweep.record.is_some() {
+        eprintln!(
+            "[campaign-runner] --page-on-ab is a throughput comparison and records nothing — \
+             drop --record."
+        );
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "[campaign-runner] box A/B: the page-OFF baseline, then the page-ON arm, over the same \
+         sweep.\n"
+    );
+    let (off, off_code) = match sweep_arm(&args, false) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    if off_code != ExitCode::SUCCESS {
+        eprintln!("[campaign-runner] A/B: the page-OFF arm failed its gates — no ratio emitted.");
+        return off_code;
+    }
+    let (on, on_code) = match sweep_arm(&args, true) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    if on_code != ExitCode::SUCCESS {
+        eprintln!("[campaign-runner] A/B: the page-ON arm failed its gates — no ratio emitted.");
+        return on_code;
+    }
+    match ab_report(&off, &on) {
+        Ok(line) => {
+            println!("{line}");
+            ExitCode::SUCCESS
+        }
+        Err(why) => {
+            eprintln!("[campaign-runner] A/B report refused: {why}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// The task-60 box milestone: boot the Postgres-**campaign** image (the

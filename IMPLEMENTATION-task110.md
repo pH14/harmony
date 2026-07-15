@@ -481,6 +481,31 @@ was missed and `vns1 - vns0` did not wrap. It now tracks `prev` and fails on
 `vns1 < prev`, catching any backward step, not just one below the first sample.
 Box/guest code, compile-checked on x86_64-linux and `cc -fsyntax-only`.
 
+**Review round 17 folded in** (cross-model r17: 2 P2s; portable-only — no kernel
+rebuild). (a) **Arming is gated on an explicit RDTSC/RDTSCP handshake flag (P2).**
+The pending→armed handshake promoted on ANY `vtime_synchronized` boundary, but the
+§3.1/r8 wire contract promises the guest publishes its GPA over the doorbell and
+then does a **counter read** specifically. A new `tsc_read_intercept` flag —
+cleared before every entry, set `true` **only** by `complete_tsc` (RDTSC/RDTSCP) —
+now gates the handshake, so the other V-time intercepts (a TSC MSR, an RDRAND/RDSEED
+draw) and the other synchronized points (a deadline landing, an idle-warp restore)
+no longer stamp+arm the pending page (arming off one would publish the clock on an
+exit the contract doesn't promise). The ongoing ARMED refresh still runs at every
+synchronized boundary (§2 point 1) — only the one-shot handshake is RDTSC-specific.
+Test: `pvclock_handshake_arms_only_on_a_counter_read` (a WRMSR then an RDRAND leave
+the page pending; the RDTSC arms it). (b) **The A/B ratio formatter is wired into
+the runnable campaign path (P2).** `render_throughput_ab` was test-only
+`#[allow(dead_code)]`. A new `campaign-runner box --page-on-ab` mode runs BOTH arms
+(page-off baseline, then page-on) over the same `BoxArgs` and emits the ratio via
+`ab_report`, which VALIDATES the arms ran matching sweep parameters (seed count,
+runs-per-seed, deadline) — refusing a meaningless ratio across mismatched sweeps —
+and both arms must pass their determinism gates first. `run` was refactored into a
+dispatcher over `sweep_arm` / `run_recording_box` / `run_ab` so the arms are
+composed identically. The dead_code allowance is gone (the formatter is reachable
+from the Linux runnable path). Test: `ab_report_validates_matching_sweep_parameters`.
+(a) is portable vmm-core; (b)'s box path is compile-checked on x86_64-linux, its
+validator tested portably.
+
 ## What landed (by deliverable)
 
 1. **Rename ride-along** — already fully landed by tasks/108 (`guest_hz`/

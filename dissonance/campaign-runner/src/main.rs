@@ -147,10 +147,10 @@ fn branch_throughput_per_sec(branches: u64, sweep_us: u64) -> f64 {
 /// The page-on / page-off throughput A/B ratio (> 1 ⇒ page-on completes more
 /// branches per second). An unmeasurable baseline (`off_bps <= 0`) reports
 /// `0.0`, never a divide-by-zero or infinity.
-// Produces the A/B report from two arms' recorded throughputs (the box harness
-// emits one arm per invocation via `render_sweep_throughput`); exercised by the
-// unit tests and the box runbook, so `dead_code` is allowed on every target.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
 fn throughput_ab_ratio(off_bps: f64, on_bps: f64) -> f64 {
     if off_bps <= 0.0 {
         return 0.0;
@@ -176,8 +176,11 @@ fn render_sweep_throughput(page_on: bool, branches: u64, sweep_us: u64) -> Strin
 
 /// The A/B ratio REPORT (deliverable 7's campaign-throughput ppm comparison):
 /// given the two arms' `(branches, sweep_us)`, render the page-on speedup over
-/// page-off. Fed the two `render_sweep_throughput` arms an operator recorded.
-#[allow(dead_code)]
+/// page-off.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
 fn render_throughput_ab(off_branches: u64, off_us: u64, on_branches: u64, on_us: u64) -> String {
     let off = branch_throughput_per_sec(off_branches, off_us);
     let on = branch_throughput_per_sec(on_branches, on_us);
@@ -186,6 +189,56 @@ fn render_throughput_ab(off_branches: u64, off_us: u64, on_branches: u64, on_us:
          branches/s = {:.2}x (page-on / page-off)",
         throughput_ab_ratio(off, on),
     )
+}
+
+/// One campaign sweep arm's throughput plus the sweep parameters that MUST match
+/// across arms for an A/B ratio to be meaningful.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+struct ArmThroughput {
+    branches: u64,
+    sweep_us: u64,
+    seeds: usize,
+    runs_per_seed: usize,
+    deadline_delta: u64,
+}
+
+/// The A/B campaign-throughput report (deliverable 7), with the arms VALIDATED to
+/// have run the same sweep (r17): a ratio across different seed counts,
+/// runs-per-seed, or deadline compares apples to oranges, so a mismatch returns
+/// an `Err` describing it rather than a misleading number. The `box --page-on-ab`
+/// path runs both arms over one `BoxArgs` (parameters identical by construction);
+/// this check is the belt-and-braces guard that keeps the two comparable and is
+/// what makes the formatter part of the runnable path, not dead code.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn ab_report(off: &ArmThroughput, on: &ArmThroughput) -> Result<String, String> {
+    if off.seeds != on.seeds
+        || off.runs_per_seed != on.runs_per_seed
+        || off.deadline_delta != on.deadline_delta
+    {
+        return Err(format!(
+            "the page-off and page-on arms ran DIFFERENT sweeps (off: {} seeds x {} runs, \
+             deadline {} ns; on: {} seeds x {} runs, deadline {} ns) — an A/B throughput ratio \
+             across mismatched parameters is meaningless",
+            off.seeds,
+            off.runs_per_seed,
+            off.deadline_delta,
+            on.seeds,
+            on.runs_per_seed,
+            on.deadline_delta,
+        ));
+    }
+    Ok(render_throughput_ab(
+        off.branches,
+        off.sweep_us,
+        on.branches,
+        on.sweep_us,
+    ))
 }
 
 #[derive(Parser)]
@@ -486,6 +539,13 @@ struct BoxArgs {
     /// run is byte-for-byte today's behavior.
     #[arg(long)]
     page_on: bool,
+    /// Run BOTH arms (page-off baseline, then page-on) over the same sweep and
+    /// emit the validated A/B campaign-throughput ratio (deliverable 7's ppm
+    /// comparison, in one invocation). Supersedes `--page-on`; incompatible with
+    /// `--record` (a comparison run records nothing). Both arms use identical
+    /// sweep parameters by construction, cross-checked before the ratio is emitted.
+    #[arg(long)]
+    page_on_ab: bool,
 }
 
 /// Box-campaign arguments: the image/marker knobs of a `box` sweep, plus the
@@ -1327,6 +1387,40 @@ mod tests {
         );
     }
 
+    /// r17: `ab_report` is the A/B path's validator — matching sweep parameters
+    /// produce the ratio; a differing seed count, runs-per-seed, or deadline is
+    /// refused (a ratio across different sweeps is meaningless), never a
+    /// misleading number. This is what wires the formatter into the runnable path.
+    #[test]
+    fn ab_report_validates_matching_sweep_parameters() {
+        let arm =
+            |branches: u64, sweep_us: u64, seeds: usize, runs: usize, dd: u64| ArmThroughput {
+                branches,
+                sweep_us,
+                seeds,
+                runs_per_seed: runs,
+                deadline_delta: dd,
+            };
+        let off = arm(100, 4_000_000, 8, 2, 5_000_000_000); // 25 branches/s
+        // Matching parameters → the 2.0x ratio (off 25/s vs on 50/s).
+        let report =
+            ab_report(&off, &arm(100, 2_000_000, 8, 2, 5_000_000_000)).expect("matching arms");
+        assert!(report.contains("2.00x"), "{report}");
+        // A differing seed count / runs-per-seed / deadline each refuses.
+        assert!(
+            ab_report(&off, &arm(100, 2_000_000, 9, 2, 5_000_000_000)).is_err(),
+            "different seed count must be refused"
+        );
+        assert!(
+            ab_report(&off, &arm(100, 2_000_000, 8, 3, 5_000_000_000)).is_err(),
+            "different runs-per-seed must be refused"
+        );
+        assert!(
+            ab_report(&off, &arm(100, 2_000_000, 8, 2, 9_000_000_000)).is_err(),
+            "different deadline must be refused"
+        );
+    }
+
     /// The `--page-on` knob threads into `BoxArgs` (the Postgres campaign smoke),
     /// defaulting OFF so a bare `box` run stays byte-for-byte the page-off boot.
     #[test]
@@ -1768,6 +1862,7 @@ mod tests {
             initramfs: "initramfs-postgres.cpio.gz".to_string(),
             ready_marker: "ready".to_string(),
             page_on: true,
+            page_on_ab: false,
         };
         assert_eq!(run_box(args), ExitCode::FAILURE);
     }
