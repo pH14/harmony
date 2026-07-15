@@ -55,14 +55,18 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   counter-opcode reachability gate, G0/G1/G2/G3 + perf harnesses. One flagged ruling for
   review: skid-free-anchor stamping vs the doc's literal live work() read (ABI freezes
   through this review). Box gates await a granted window. Foreman substantive review next.
-- **ARM pre-build apparatus** (tasks/109, `hm-2kj`) — **round 5 in flight** (PR #108).
-  Rounds 1–4 each fixed-and-verified (r1's 8 evidence-integrity threads, r2's KVM machine
-  layer, r3's semantic edges, r4's 8 fail-closed/accounting items incl. live-clock-filtered
-  digests + SA_SIGINFO kick classification — foreman spot-checked all 8 in code). The r5
-  blind pass (head 19f0d90) returned 10 P1s of the same species; foreman independently
-  confirmed the two hardware-ABI ones (EXCLUDE_HOST makes the AA-0 host-loop probe
-  uncountable; no pvclock-page publication → AA-5 self-seeds unconditionally). Round 5
-  dispatched to the live worker (comment 4971638529).
+- **ARM pre-build apparatus** (tasks/109, `hm-2kj`, PR #108) — **rounds 1–12 fixed-and-
+  verified; r13 HELD as the scope-ruling exhibit** (comment 4975470223): three consecutive
+  rounds returned the same species (checker cross-validations, the twice-adjudicated
+  Miri-payload item), so per the foreman recommendation r12 was the final mechanical round.
+  **Awaiting Paul's scope ruling** — loop-to-zero dispatches the held set as r13; declared
+  pre-silicon bar files them as the arrival-day validation items (README table already in
+  place) and the PR parks merge-ready.
+- **Paravirt work-derived clock** (tasks/110, `hm-rk5`, PR #110) — **box gates GREEN on real
+  KVM** (guest switched to the pvclock clocksource; box released + reverted) with r7's
+  findings folded in the same session; **closing mini-round r8 in flight** (1 P1: one more
+  live-count import on the overdue-registration path, same family as r7's anchor fix; 4 P2s).
+  On its completion + cheap box re-validation the PR parks **merge-ready for Paul**.
 
 Landed since the midday refresh: **conductor full-suite Miri restoration MERGED**
 (tasks/104, PR #105 — 12× cut to ~11.5 min, foreman-confirmed, triple vacuity guard;
