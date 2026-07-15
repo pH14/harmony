@@ -331,7 +331,15 @@ fn g0_smoke_boot_registers_and_reads_sane_time() {
         "[smoke] steps={} wall={:?} reason={:?}",
         obs.steps, obs.wall, obs.reason
     );
-    for line in serial.lines().filter(|l| l.contains("harmony_pvclock")) {
+    // Surface the registration line (`harmony_pvclock:`) AND the kernel's
+    // clocksource-selection line (`Switched to clocksource harmony-pvclock`) — the
+    // two are spelled differently (underscore vs hyphen), and confirming the
+    // *switch*, not just registration, is what tells the perf story apart (page
+    // selected as the timekeeping source vs merely registered-and-unused).
+    for line in serial
+        .lines()
+        .filter(|l| l.contains("harmony_pvclock") || l.contains("clocksource"))
+    {
         eprintln!("[smoke] guest: {line}");
     }
     assert!(obs.step_error.is_none(), "step error: {:?}", obs.step_error);
