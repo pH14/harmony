@@ -510,10 +510,43 @@ fn probe(box_config: PathBuf, rulings: Option<PathBuf>, out: PathBuf) -> Result<
     };
 
     let table = truth_table::assemble(identity, cfg.topology, rows, &rulings);
+
+    // Validate the COMPLETE emitted table against the canonical schema BEFORE writing it or
+    // reporting success. `assemble` is pure logic over probed values, so schema-invalid
+    // operator metadata (an empty `soc` or `topology.governor`, a short row set) would
+    // otherwise serialize fine and pass the gate, which only inspects unresolved rows — a
+    // schema-violating AA-0 artifact under a green gate. A malformed table is not evidence, so
+    // it is not written at all.
+    let violations = table.schema_violations();
+    if !violations.is_empty() {
+        return Err(format!(
+            "the assembled truth table violates schemas/truth-table.schema.json and was NOT \
+             written: {}",
+            violations.join("; ")
+        ));
+    }
+
     let json =
         serde_json::to_string_pretty(&table).map_err(|e| format!("serialize truth table: {e}"))?;
-    std::fs::write(&out, format!("{json}\n"))
-        .map_err(|e| format!("write {}: {e}", out.display()))?;
+    // Exclusive-create: a reused `--out` path must NOT be silently truncated. The post-reboot
+    // capture is diffed byte-for-byte against the first, so an existing golden is immutable
+    // evidence — reject rather than overwrite (as the run-set writer does).
+    {
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&out)
+            .map_err(|e| {
+                format!(
+                    "create {}: {e} — refusing to overwrite an existing AA-0 capture (the \
+                     post-reboot comparison is byte-for-byte; write to a fresh --out)",
+                    out.display()
+                )
+            })?;
+        f.write_all(format!("{json}\n").as_bytes())
+            .map_err(|e| format!("write {}: {e}", out.display()))?;
+    }
 
     for r in &table.rows {
         let tag = match (&r.disposition, r.confirmed) {

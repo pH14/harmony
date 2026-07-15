@@ -1314,6 +1314,39 @@ Gates re-run green: harness 101 tests, floor-check 62 + 27 + 3, oracle-model 23 
 this round), clippy `-D warnings` native + aarch64-linux, three `cargo deny`, the opcode-checked
 window scan, TCG smoke, kernel-patch format/parse, and arm-harness Miri.
 
+## Round-23 review fixes (PR #108, cross-model pass r23)
+
+Four fresh findings (the fifth listed item, "add the unsafe payload crates to the Miri gate",
+stays adjudicated-settled — bare-metal `global_asm!` crates cannot build under Miri).
+
+- **Enforce distinct case/target coverage separately from the deadline total.** `--cases 1
+  --reps 125000` met the ≥10⁶ armed floor from only eight target/seed cases, and the rep/count
+  checks count every repetition, so the seeded-random target distribution went barely
+  exercised. New `--min-cases` floor (`Floors.min_cases`) + `check_case_coverage`: it counts
+  DISTINCT armed cases (`distinct_armed_cases`, keyed like `rep_key`), enforced per-set and
+  cumulatively. Absent for an armed AA-1/AA-3 run it reads NOT-REQUESTED — never a silent pass.
+- **Exclude CASP from the LL/SC scanner.** `is_exclusive` flagged any class-`001000`, `o2==0`
+  word, but `CASP` (LSE compare-and-swap pair, e.g. `0x48207c82`) shares `o2==0`/`o1==1` with
+  the exclusive pair `STXP`/`LDXP`. They are told apart by `size`: an exclusive pair is a
+  word/dword element (bit 31 set), `CASP` uses `0b0x`. `is_exclusive` now returns true only for
+  `o1==0` or (`o1==1` and `size >= 0b10`), so `arm-scan exclusives` no longer rejects a
+  compliant LSE-only kernel.
+- **Validate the emitted truth table before success.** `assemble` is pure logic, so
+  schema-invalid operator metadata (an empty `soc`/`topology.governor`, a short row set)
+  serialized fine and `probe` reported success (it only inspects unresolved rows).
+  `TruthTable::schema_violations` now mirrors the schema's `minLength`/`minimum`/`minItems`/
+  `enum` constraints (no JSON-Schema validator is whitelisted), and `probe` refuses — writing
+  nothing — if the table violates them.
+- **Exclusive-create the AA-0 capture.** `std::fs::write(&out, …)` silently truncated an
+  existing `truth-table.json`, destroying the immutable golden the post-reboot byte-diff needs.
+  The write now uses `create_new(true)` (as the run-set writer does) and rejects an existing
+  `--out`.
+
+Miri item stays adjudicated-settled. Gates re-run green: harness 102 tests, floor-check 63 + 27
++ 3, oracle-model 23 + 2 (unchanged this round), clippy `-D warnings` native + aarch64-linux,
+three `cargo deny`, the opcode-checked window scan, TCG smoke, kernel-patch format/parse, and
+arm-harness Miri.
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

@@ -234,6 +234,67 @@ impl TruthTable {
             .map(|r| r.id.as_str())
             .collect()
     }
+
+    /// The ways the assembled table VIOLATES `schemas/truth-table.schema.json`'s structural
+    /// constraints — the `minLength`/`minimum`/`minItems`/`enum` rules that operator-supplied
+    /// metadata or a short row set can break. [`assemble`] is pure logic over probed values, so
+    /// it will happily serialize an empty `soc`/`governor` or a short row set; `probe` would
+    /// then report success on a table that violates the canonical schema (it only inspects
+    /// unresolved rows). Validating the complete emitted table here closes that. Returns an
+    /// empty vec when the table conforms.
+    ///
+    /// This mirrors the schema's structural constraints rather than running a general JSON-Schema
+    /// validator (none is on the dependency whitelist). The confirmed⇔`found==expected` relation
+    /// is upheld by [`assemble`] and so is not re-checked.
+    #[must_use]
+    pub fn schema_violations(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        // Returns a violation for an empty (schema minLength 1) string, or None. Returning
+        // rather than capturing `v` keeps the per-field and per-row pushes borrow-clean.
+        let empty = |field: &str, s: &str| -> Option<String> {
+            s.trim()
+                .is_empty()
+                .then(|| format!("{field} is empty (schema minLength 1)"))
+        };
+        v.extend(empty("identity.soc", &self.identity.soc));
+        v.extend(empty("identity.host_kernel", &self.identity.host_kernel));
+        v.extend(empty("topology.governor", &self.topology.governor));
+        if self.identity.core_count < 1 {
+            v.push("identity.core_count is 0 (schema minimum 1)".to_string());
+        }
+        // The thirteen mandatory AA-0 facts (schema `rows.minItems`).
+        if self.rows.len() < 13 {
+            v.push(format!(
+                "rows has {} entries, below the schema minItems of 13 (the mandatory AA-0 facts)",
+                self.rows.len()
+            ));
+        }
+        const KINDS: [&str; 5] = ["id-register", "pmu", "perf", "kvm", "platform"];
+        for (i, r) in self.rows.iter().enumerate() {
+            v.extend(empty(&format!("rows[{i}].id"), &r.id));
+            v.extend(empty(&format!("rows[{i}].question"), &r.question));
+            v.extend(empty(&format!("rows[{i}].expected"), &r.expected));
+            v.extend(empty(&format!("rows[{i}].found"), &r.found));
+            v.extend(empty(&format!("rows[{i}].raw"), &r.raw));
+            if !KINDS.contains(&r.kind.as_str()) {
+                v.push(format!(
+                    "rows[{i}].kind {:?} is not one of the schema enum {KINDS:?}",
+                    r.kind
+                ));
+            }
+            // `disposition` is `null` on a confirmed row; when present it must be non-empty
+            // (schema minLength 1) — a blank ruling is not a ruling.
+            if let Some(d) = &r.disposition
+                && d.trim().is_empty()
+            {
+                v.push(format!(
+                    "rows[{i}].disposition is an empty string (schema minLength 1; use null for a \
+                     confirmed row)"
+                ));
+            }
+        }
+        v
+    }
 }
 
 #[cfg(test)]
@@ -261,6 +322,85 @@ mod tests {
             guest_cores: vec![1, 2, 3],
             governor: "performance".into(),
         }
+    }
+
+    /// A conforming 13-row table, to mutate into schema violations.
+    fn conforming_table() -> TruthTable {
+        let ids = [
+            "ecv",
+            "lse",
+            "pmuver",
+            "sve",
+            "nested-virt",
+            "br-retired-pmceid1",
+            "perf-raw-0x21-pinned",
+            "host-overflow-delivers",
+            "dev-kvm",
+            "kvm-mode",
+            "kvm-cap-set-guest-debug",
+            "vgicv3-creatable",
+            "writable-id-registers",
+        ];
+        TruthTable {
+            schema_version: SCHEMA_VERSION,
+            identity: identity(),
+            topology: topology(),
+            rows: ids
+                .iter()
+                .map(|id| Row {
+                    id: (*id).into(),
+                    kind: "kvm".into(),
+                    question: "q".into(),
+                    expected: "present".into(),
+                    found: "present".into(),
+                    raw: "1".into(),
+                    confirmed: true,
+                    disposition: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn schema_violations_catch_invalid_metadata_and_short_row_sets() {
+        assert!(
+            conforming_table().schema_violations().is_empty(),
+            "a conforming table has no violations: {:?}",
+            conforming_table().schema_violations()
+        );
+
+        let has =
+            |t: &TruthTable, needle: &str| t.schema_violations().iter().any(|s| s.contains(needle));
+
+        // An empty/whitespace `soc` or `governor` — the reviewer's examples.
+        let mut t = conforming_table();
+        t.identity.soc = String::new();
+        assert!(has(&t, "identity.soc"));
+        let mut t = conforming_table();
+        t.topology.governor = "   ".into();
+        assert!(has(&t, "topology.governor"));
+
+        // core_count 0, and fewer than the 13 mandatory rows.
+        let mut t = conforming_table();
+        t.identity.core_count = 0;
+        assert!(has(&t, "core_count"));
+        let mut t = conforming_table();
+        t.rows.truncate(12);
+        assert!(has(&t, "minItems"));
+
+        // A blank disposition string (must be null on a confirmed row), and a bad `kind`.
+        let mut t = conforming_table();
+        t.rows[0].confirmed = false;
+        t.rows[0].disposition = Some(String::new());
+        assert!(has(&t, "disposition"));
+        let mut t = conforming_table();
+        t.rows[0].kind = "bogus".into();
+        assert!(has(&t, "kind"));
+
+        // An empty required row string.
+        let mut t = conforming_table();
+        t.rows[0].raw = String::new();
+        assert!(has(&t, "raw"));
     }
 
     #[test]

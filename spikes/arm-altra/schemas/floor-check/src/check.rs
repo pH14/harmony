@@ -83,6 +83,14 @@ pub struct Floors {
     /// `--min-reps`: the run-set must contain at least this many samples (AA-6's
     /// same-seed repetition floor).
     pub min_reps: Option<u64>,
+    /// `--min-cases`: the run-set must contain at least this many DISTINCT armed
+    /// target/seed cases (a case is one `(payload, scale, seed, condition, target_delta)`
+    /// input; reps of it share the key). This binds the `cases` plan dimension SEPARATELY
+    /// from the deadline total: without it, `--cases 1 --reps N` meets the ≥10⁶ armed floor
+    /// by cloning a handful of targets, so the seeded-random target/skid distribution
+    /// AA-1/AA-3 rest on is barely exercised. Absent for an armed AA-1/AA-3 run reads
+    /// NOT-REQUESTED (never a silent pass); other stages have no case dimension.
+    pub min_cases: Option<u64>,
     /// `--sub-normative`: permit a floor BELOW the stage's normative minimum (AA-1/AA-3's
     /// 1,000,000 armed overflows, AA-6's 1,000 repetitions). Off by default: a
     /// below-normative floor fails closed, so a weakened verdict cannot be produced by
@@ -155,6 +163,9 @@ pub enum CheckId {
     /// AA-4's LSE-only atomics contract: the structured evidence set (LSE-invariance under
     /// injection, LL/SC divergence, the three enforcement levels, the recorded ruling).
     Aa4Contract,
+    /// At AA-1/AA-3, the armed deadlines span at least `--min-cases` DISTINCT target/seed
+    /// cases — the `cases` plan dimension, bound separately from the deadline total.
+    CaseCoverage,
 }
 
 impl CheckId {
@@ -188,6 +199,7 @@ impl CheckId {
             CheckId::ConditionConsistency => "condition-consistency",
             CheckId::ConditionMatrix => "condition-matrix",
             CheckId::Aa4Contract => "aa4-contract",
+            CheckId::CaseCoverage => "case-coverage",
         }
     }
 }
@@ -316,8 +328,14 @@ pub fn check_run_set(dir: &Path, floors: &Floors) -> Result<CheckReport, LoadErr
 
     let mut outcomes = Vec::new();
     run_stage_checks(&run_set, floors, &records, &records_bytes, &mut outcomes);
-    // One run-set: the armed floor is over this set's own overflows.
+    // One run-set: the armed floor and case coverage are over this set's own overflows.
     check_armed_floor(run_set.stage, floors, count_armed(&records), &mut outcomes);
+    check_case_coverage(
+        run_set.stage,
+        floors,
+        distinct_armed_cases(&records).len() as u64,
+        &mut outcomes,
+    );
 
     Ok(CheckReport {
         run_set_id: run_set.run_set_id,
@@ -480,6 +498,15 @@ fn aggregate(loaded: &[(RunSet, Vec<RunRecord>, Vec<u8>)], floors: &Floors) -> C
     // The cumulative armed-overflow floor, over every condition's overflows.
     let total_armed: u64 = loaded.iter().map(|(_, r, _)| count_armed(r)).sum();
     check_armed_floor(stage, floors, total_armed, &mut outcomes);
+
+    // Cumulative distinct-case coverage: the UNION of armed cases across every condition. A
+    // case that recurs in two conditions is still one case, so the set is unioned across the
+    // aggregate rather than summing per-set counts.
+    let mut cases: BTreeSet<RepKey> = BTreeSet::new();
+    for (_, records, _) in loaded {
+        cases.extend(distinct_armed_cases(records));
+    }
+    check_case_coverage(stage, floors, cases.len() as u64, &mut outcomes);
 
     let run_set_id = if let [(rs, _, _)] = loaded {
         rs.run_set_id.clone()
@@ -2767,6 +2794,79 @@ fn count_armed(records: &[RunRecord]) -> u64 {
         .count() as u64
 }
 
+/// Distinct armed CASES across a record set — one per `(payload, scale, seed, condition,
+/// target_delta)` armed, delivered input. Reps of a case share its [`RepKey`], so this counts
+/// inputs, not deadlines. The target delta (not the absolute target) is used, matching
+/// [`rep_key`], so reps whose pre-window execution shifted `work_begin` still count as one case.
+fn distinct_armed_cases(records: &[RunRecord]) -> BTreeSet<RepKey> {
+    records
+        .iter()
+        .filter(|r| {
+            r.overflow
+                .as_ref()
+                .is_some_and(|o| o.armed && o.deliveries >= 1)
+        })
+        .map(rep_key)
+        .collect()
+}
+
+/// The `--min-cases` floor, over an ALREADY-COLLECTED distinct-case count. AA-1/AA-3 rest on a
+/// DISTRIBUTION of seeded-random targets, not one target cloned across reps to the deadline
+/// total: `--cases 1 --reps N` meets the ≥10⁶ armed floor from a handful of cases while the
+/// target/skid distribution is barely exercised, and the rep/count checks — which count every
+/// repetition — do not catch it. So distinct-case coverage is enforced SEPARATELY here.
+///
+/// Fires only where a stage defines an armed floor (AA-1/AA-3) and only when deadlines were
+/// actually armed (a counting-mode AA-1(b) run has no target distribution — the armed floor
+/// reports its absence). An armed run with no `--min-cases` reads NOT-REQUESTED — the
+/// distinct-case coverage was never bounded — never a silent pass.
+fn check_case_coverage(stage: Stage, floors: &Floors, armed_cases: u64, out: &mut Vec<Outcome>) {
+    if normative_armed_floor(stage).is_none() || armed_cases == 0 {
+        return;
+    }
+    match floors.min_cases {
+        // A floor of zero is vacuous: every run has "at least 0" distinct cases.
+        Some(0) => out.push(fail(
+            CheckId::CaseCoverage,
+            "a --min-cases floor of 0 certifies nothing: it is met by a run that cloned a single \
+             target across every rep. Pass a nonzero floor — AA-1/AA-3 rest on a DISTRIBUTION of \
+             seeded-random targets, not one target repeated to the deadline total."
+                .to_string(),
+        )),
+        Some(min) => {
+            if armed_cases >= min {
+                out.push(pass(
+                    CheckId::CaseCoverage,
+                    format!(
+                        "{armed_cases} distinct armed target/seed case(s) meets the --min-cases \
+                         floor of {min}"
+                    ),
+                ));
+            } else {
+                out.push(fail(
+                    CheckId::CaseCoverage,
+                    format!(
+                        "only {armed_cases} distinct armed target/seed case(s), below the \
+                         --min-cases floor of {min}: the armed floor was met by cloning a handful \
+                         of cases across reps, so the seeded-random target/skid distribution \
+                         AA-1/AA-3 rest on was barely exercised. The `cases` dimension must bind, \
+                         not just `reps`."
+                    ),
+                ));
+            }
+        }
+        None => out.push(not_requested(
+            CheckId::CaseCoverage,
+            format!(
+                "{armed_cases} distinct armed target/seed case(s) present, but no --min-cases \
+                 floor was requested: the ≥10⁶ armed floor can be met by cloning a few cases \
+                 across many reps, so the distinct-case coverage AA-1/AA-3 rest on must be bound \
+                 separately from the deadline count. This verdict cannot accept it un-bounded."
+            ),
+        )),
+    }
+}
+
 /// The armed-overflow floor, over an ALREADY-SUMMED armed count. Split out of
 /// [`check_floors`] so a condition-matrix run — one run-set per contamination condition
 /// — checks the CUMULATIVE 1,000,000 floor over the union of all conditions, which is
@@ -3507,6 +3607,7 @@ mod tests {
         let below = Floors {
             min_armed_overflows: Some(8),
             min_reps: None,
+            min_cases: None,
             sub_normative: false,
         };
         let mut out = Vec::new();
@@ -3518,6 +3619,7 @@ mod tests {
         );
 
         let opted = Floors {
+            min_cases: None,
             sub_normative: true,
             ..below
         };
@@ -3537,6 +3639,7 @@ mod tests {
         let normative = Floors {
             min_armed_overflows: Some(1_000_000),
             min_reps: None,
+            min_cases: None,
             sub_normative: false,
         };
         let mut out = Vec::new();
@@ -3577,6 +3680,7 @@ mod tests {
         let floors = Floors {
             min_armed_overflows: Some(32),
             min_reps: None,
+            min_cases: None,
             sub_normative: true,
         };
 
@@ -3630,6 +3734,7 @@ mod tests {
         let floors = Floors {
             min_armed_overflows: Some(2),
             min_reps: None,
+            min_cases: None,
             sub_normative: true,
         };
 
@@ -3692,6 +3797,7 @@ mod tests {
         let floors = Floors {
             min_armed_overflows: Some(4),
             min_reps: None,
+            min_cases: None,
             sub_normative: true,
         };
         assert_eq!(
@@ -3709,6 +3815,7 @@ mod tests {
         let floors = Floors {
             min_armed_overflows: Some(2),
             min_reps: None,
+            min_cases: None,
             sub_normative: true,
         };
         let pair = || {
@@ -3765,6 +3872,7 @@ mod tests {
         let floors = Floors {
             min_armed_overflows: Some(2),
             min_reps: None,
+            min_cases: None,
             sub_normative: true,
         };
         // Two AA-3 sets that agree on everything the sweep does not vary.
@@ -3852,6 +3960,7 @@ mod tests {
         let floors = Floors {
             min_armed_overflows: Some(2),
             min_reps: None,
+            min_cases: None,
             sub_normative: true,
         };
         let make_probe = |set: &mut (RunSet, Vec<RunRecord>, Vec<u8>)| {
@@ -3916,6 +4025,7 @@ mod tests {
         let sub = Floors {
             min_armed_overflows: Some(4),
             min_reps: None,
+            min_cases: None,
             sub_normative: true,
         };
         // The full grid (4 pinned conditions + one probe) covers every condition → PASS.
@@ -3998,6 +4108,7 @@ mod tests {
         let normative = Floors {
             min_armed_overflows: Some(4),
             min_reps: None,
+            min_cases: None,
             sub_normative: false,
         };
 
@@ -4059,6 +4170,7 @@ mod tests {
             "smoke-only has no differential sweep for any class"
         );
         let sub = Floors {
+            min_cases: None,
             sub_normative: true,
             ..normative
         };
@@ -4074,6 +4186,7 @@ mod tests {
         let normative = Floors {
             min_armed_overflows: Some(4),
             min_reps: None,
+            min_cases: None,
             sub_normative: false,
         };
 
@@ -4199,6 +4312,7 @@ mod tests {
         let floors = Floors {
             min_armed_overflows: None,
             min_reps: Some(1_000),
+            min_cases: None,
             sub_normative: false,
         };
         let mut out = Vec::new();
@@ -4311,6 +4425,7 @@ mod tests {
         let floors = Floors {
             min_armed_overflows: None,
             min_reps: Some(3),
+            min_cases: None,
             sub_normative: false,
         };
         let mut out = Vec::new();
@@ -4341,6 +4456,7 @@ mod tests {
         let floors = Floors {
             min_armed_overflows: None,
             min_reps: Some(3),
+            min_cases: None,
             sub_normative: true, // 3 < 1000: accept the weakened floor for the unit
         };
         let unarmed = |id: u64| {
@@ -4374,6 +4490,63 @@ mod tests {
         let mut out = Vec::new();
         check_floors(&rs, &floors, &three_injected, &mut out);
         assert_eq!(status(&out, CheckId::RepFloor), Some(Status::Pass));
+    }
+
+    #[test]
+    fn distinct_case_coverage_binds_separately_from_the_deadline_total() {
+        let armed_floor = |min_cases| Floors {
+            min_armed_overflows: Some(1000),
+            min_reps: None,
+            min_cases,
+            sub_normative: true,
+        };
+
+        // 1000 armed reps of ONE input = one distinct case (the --cases 1 --reps 1000 vacuity).
+        let one_case: Vec<RunRecord> = (0..1000u64).map(|i| a_record_seeded(i, 7)).collect();
+        assert_eq!(
+            distinct_armed_cases(&one_case).len(),
+            1,
+            "1000 reps of one seed is one case, not 1000"
+        );
+
+        // No --min-cases → NOT-REQUESTED even with 1000 armed deadlines: never a silent pass.
+        let mut out = Vec::new();
+        check_case_coverage(Stage::Aa3, &armed_floor(None), 1, &mut out);
+        assert_eq!(
+            status(&out, CheckId::CaseCoverage),
+            Some(Status::NotRequested),
+            "the distinct-case coverage was never bounded"
+        );
+
+        // --min-cases 8 with only one distinct case → FAIL (deadlines met the floor by cloning).
+        let mut out = Vec::new();
+        check_case_coverage(Stage::Aa3, &armed_floor(Some(8)), 1, &mut out);
+        assert_eq!(status(&out, CheckId::CaseCoverage), Some(Status::Fail));
+
+        // Eight distinct cases meets a floor of 8 → PASS.
+        let eight: Vec<RunRecord> = (0..8u64).map(|i| a_record_seeded(i, i + 1)).collect();
+        assert_eq!(distinct_armed_cases(&eight).len(), 8);
+        let mut out = Vec::new();
+        check_case_coverage(Stage::Aa3, &armed_floor(Some(8)), 8, &mut out);
+        assert_eq!(status(&out, CheckId::CaseCoverage), Some(Status::Pass));
+
+        // A --min-cases floor of 0 is vacuous → FAIL.
+        let mut out = Vec::new();
+        check_case_coverage(Stage::Aa3, &armed_floor(Some(0)), 5, &mut out);
+        assert_eq!(status(&out, CheckId::CaseCoverage), Some(Status::Fail));
+
+        // Zero armed cases (a counting-mode run) → no case-coverage outcome at all.
+        let mut out = Vec::new();
+        check_case_coverage(Stage::Aa1, &armed_floor(Some(4)), 0, &mut out);
+        assert!(
+            out.is_empty(),
+            "no armed deadlines → no target distribution to bound"
+        );
+
+        // A stage with no armed floor (AA-2) → no case-coverage outcome regardless.
+        let mut out = Vec::new();
+        check_case_coverage(Stage::Aa2, &armed_floor(Some(4)), 10, &mut out);
+        assert!(out.is_empty(), "AA-2 has no target/case dimension");
     }
 
     #[test]
@@ -4922,6 +5095,7 @@ mod tests {
         let floors = Floors {
             min_armed_overflows: None,
             min_reps: Some(4),
+            min_cases: None,
             sub_normative: true,
         };
         let mut out = Vec::new();

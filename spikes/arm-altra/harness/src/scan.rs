@@ -133,18 +133,36 @@ pub fn decode_branch(word: u32) -> Option<BranchKind> {
     None
 }
 
-/// Whether the word is a load/store **exclusive**.
+/// Whether the word is a load/store **exclusive** (monitor-based `LDXR`/`STXR`/`LDXP`/`STXP`
+/// and their acquire/release variants) — the instructions AA-4's LL/SC hazard is about.
 ///
-/// The encoding class (`bits[29:24] == 0b001000`) also contains `LDAR`/`STLR` and
-/// the LSE `CAS` family. Only `o2 == 0` (bit 23) is the exclusive family — the
-/// monitor-based instructions that AA-4's hazard is about. `CAS` is an LSE atomic
-/// and is the *answer*, not the hazard; flagging it would be a false positive that
-/// makes the whole scan untrustworthy.
+/// The encoding class (`bits[29:24] == 0b001000`) also contains `LDAR`/`STLR` and the LSE
+/// compare-and-swap family, which are the *answer*, not the hazard, so flagging them would be a
+/// false positive that rejects a compliant LSE-only kernel:
+///   - `CAS`/`CASA`/`CASL`/`CASAL` (single) carry `o2 == 1` (bit 23) and are excluded by that.
+///   - `CASP`/`CASPA`/`CASPL`/`CASPAL` (PAIR) carry `o2 == 0` AND `o1 == 1` (bit 21), which they
+///     SHARE with the exclusive pair `STXP`/`LDXP`. They are told apart by `size` (bits[31:30]):
+///     an exclusive pair is a word/dword element (`size >= 0b10`, i.e. bit 31 set), while
+///     `CASP` uses `size` `0b0x` (bit 31 clear) to select 32/64-bit. So `o1 == 1` with bit 31
+///     clear is `CASP` — an LSE compare-and-swap pair — and must NOT be flagged. (E.g.
+///     `casp x0, x1, x2, x3, [x4]` = `0x48207c82`: class `001000`, `o2 == 0`, `o1 == 1`, but
+///     `size == 0b01`, so it is CASP, not an exclusive.)
 #[must_use]
 pub fn is_exclusive(word: u32) -> bool {
     let class = (word >> 24) & 0x3F;
+    if class != 0b001000 {
+        return false;
+    }
     let o2 = (word >> 23) & 1;
-    class == 0b001000 && o2 == 0
+    if o2 != 0 {
+        return false; // the CAS (compare-and-swap) family — an LSE atomic, not the hazard
+    }
+    let o1 = (word >> 21) & 1;
+    let size = (word >> 30) & 0x3;
+    // o1 == 0: exclusive REGISTER (LDXR/STXR/LDAXR/STLXR), any size.
+    // o1 == 1: shares its encoding with CASP. A real exclusive PAIR (STXP/LDXP) needs a
+    //          word/dword element (size >= 0b10); size < 0b10 with o1 == 1 is CASP.
+    o1 == 0 || size >= 0b10
 }
 
 /// Classify a word as one of the non-branch [`OracleOp`] classes a payload's count can
@@ -426,6 +444,23 @@ mod tests {
         assert!(is_exclusive(0xC85F_FC41)); // ldaxr x1, [x2]
         assert!(is_exclusive(0xC800_FC41)); // stlxr w0, x1, [x2]
         assert!(is_exclusive(0x885F_7C41)); // ldxr w1, [x2]
+
+        // The exclusive PAIR (STXP/LDXP) also carries the monitor and must be flagged. It has
+        // o1 == 1 with a word/dword element (bit31 set, size >= 0b10). Built from the fields
+        // (l = the L load/store bit, sz selects 32/64-bit) so the size distinction from CASP
+        // is explicit.
+        let excl_pair = |l: u32, sz: u32| {
+            (1u32 << 31)
+                | (sz << 30)
+                | (0b001000 << 24)
+                | (l << 22)
+                | (1 << 21)
+                | (0x1F << 10)
+                | (2 << 5)
+                | 1
+        };
+        assert!(is_exclusive(excl_pair(0, 1)), "stxp (64-bit pair)");
+        assert!(is_exclusive(excl_pair(1, 0)), "ldxp (32-bit pair)");
     }
 
     #[test]
@@ -438,6 +473,15 @@ mod tests {
         assert!(!is_exclusive(0xC8A0_7C41)); // cas x0, x1, [x2]
         assert!(!is_exclusive(0xB820_0041)); // ldadd w0, w1, [x2]  (LSE)
         assert!(!is_exclusive(0xF820_0041)); // ldadd x0, x1, [x2]  (LSE)
+
+        // CASP (compare-and-swap PAIR, LSE) shares o2==0 AND o1==1 with the exclusive pair,
+        // but uses size 0b0x (bit31 clear). It is the ANSWER, not the hazard — flagging it
+        // rejects a compliant LSE-only kernel and blocks AA-4. The real encoding of
+        // `casp x0, x1, x2, x3, [x4]` is 0x48207c82.
+        assert!(!is_exclusive(0x4820_7C82), "casp x0,x1,x2,x3,[x4]");
+        let casp = |sz: u32| (sz << 30) | (0b001000 << 24) | (1 << 21) | (0x1F << 10);
+        assert!(!is_exclusive(casp(0)), "32-bit CASP");
+        assert!(!is_exclusive(casp(1)), "64-bit CASP");
     }
 
     #[test]

@@ -45,6 +45,13 @@ struct Cli {
     #[arg(long)]
     min_reps: Option<u64>,
 
+    /// Fail unless the armed deadlines span at least this many DISTINCT target/seed cases.
+    /// Binds the `cases` plan dimension separately from the deadline total, so an AA-1/AA-3
+    /// run cannot meet the ≥10⁶ armed floor by cloning a handful of targets across reps.
+    /// Absent for an armed AA-1/AA-3 run reads NOT-REQUESTED, never a silent pass.
+    #[arg(long)]
+    min_cases: Option<u64>,
+
     /// Permit a floor BELOW the stage-normative minimum. Off by default so a weakened
     /// verdict is never produced by accident; when on, sub-normative outcomes are marked
     /// `[SUB-NORMATIVE]` and can never be read as a normative acceptance. For fixtures
@@ -58,6 +65,7 @@ fn main() -> ExitCode {
     let floors = Floors {
         min_armed_overflows: cli.min_armed_overflows,
         min_reps: cli.min_reps,
+        min_cases: cli.min_cases,
         sub_normative: cli.sub_normative,
     };
 

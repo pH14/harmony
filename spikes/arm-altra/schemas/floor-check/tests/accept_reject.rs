@@ -47,6 +47,7 @@ fn passing_the_same_run_set_twice_is_rejected_not_double_counted() {
     let floors = Floors {
         min_armed_overflows: Some(32),
         min_reps: None,
+        min_cases: None,
         sub_normative: true,
     };
     let report = floor_check::check_run_sets(&dirs, &floors).expect("aggregate loads");
@@ -85,6 +86,10 @@ fn accept_is_accepted() {
     let floors = Floors {
         min_armed_overflows: Some(8),
         min_reps: None,
+        // The accept fixture is eight DISTINCT armed target/seed cases (two reps each), so
+        // its distinct-case coverage meets a floor of 8 — the `cases` dimension is bound,
+        // not just the deadline total.
+        min_cases: Some(8),
         sub_normative: true,
     };
     let report = check("accept", floors);
@@ -129,6 +134,7 @@ fn accept_aa6_gate_is_accepted() {
     let floors = Floors {
         min_armed_overflows: Some(4),
         min_reps: Some(4),
+        min_cases: None,
         sub_normative: true,
     };
     let report = check("accept-aa6-gate", floors);
@@ -148,6 +154,7 @@ fn reject_aa6_rep_floor_counts_per_input_not_total() {
     let floors = Floors {
         min_armed_overflows: Some(8),
         min_reps: Some(2),
+        min_cases: None,
         sub_normative: true,
     };
     assert_single_failure("reject-aa6-rep-floor", floors, CheckId::RepFloor);
@@ -174,6 +181,7 @@ fn reject_short_count() {
     let floors = Floors {
         min_armed_overflows: Some(1_000_000),
         min_reps: None,
+        min_cases: None,
         sub_normative: true,
     };
     assert_single_failure("reject-short-count", floors, CheckId::ArmedOverflowFloor);
@@ -214,6 +222,7 @@ fn reject_overshoot() {
     let floors = Floors {
         min_armed_overflows: Some(1),
         min_reps: None,
+        min_cases: None,
         sub_normative: true,
     };
     assert_single_failure("reject-overshoot", floors, CheckId::Skid);
@@ -224,6 +233,7 @@ fn reject_skid_exceeds_margin() {
     let floors = Floors {
         min_armed_overflows: Some(1),
         min_reps: None,
+        min_cases: None,
         sub_normative: true,
     };
     assert_single_failure("reject-skid-exceeds-margin", floors, CheckId::Skid);
@@ -238,6 +248,9 @@ fn accept_aa1_skid_is_accepted_positive_skid_and_all() {
     let floors = Floors {
         min_armed_overflows: Some(8),
         min_reps: None,
+        // Eight distinct armed target/seed cases — the skid distribution rests on them, so
+        // the case floor binds at 8.
+        min_cases: Some(8),
         sub_normative: true,
     };
     let report = check("accept-aa1-skid", floors);
@@ -354,6 +367,7 @@ fn reject_divergent_digests() {
     let floors = Floors {
         min_armed_overflows: None,
         min_reps: Some(2),
+        min_cases: None,
         sub_normative: true,
     };
     assert_single_failure("reject-divergent-digests", floors, CheckId::ReplayIdentity);
@@ -363,7 +377,9 @@ fn reject_divergent_digests() {
 fn an_unrequested_floor_is_not_an_accepted_one() {
     // §Evidence integrity #2: the checker's output IS retained evidence. Checking an
     // overflow-bearing run-set with no --min-armed-overflows must not read as full
-    // acceptance — the omission is on the face of the verdict, and the RC is nonzero.
+    // acceptance — the omission is on the face of the verdict, and the RC is nonzero. With no
+    // floors at all, the armed-overflow floor AND the distinct-case coverage are both
+    // unrequested, and both are named.
     let report = check("accept", no_floors());
     assert!(
         !report.passed(),
@@ -372,8 +388,8 @@ fn an_unrequested_floor_is_not_an_accepted_one() {
     assert_eq!(report.failed(), Vec::new(), "nothing actually FAILED");
     assert_eq!(
         report.not_requested(),
-        vec![CheckId::ArmedOverflowFloor],
-        "the unrequested floor is named in the retained verdict"
+        vec![CheckId::ArmedOverflowFloor, CheckId::CaseCoverage],
+        "the unrequested floors are named in the retained verdict"
     );
     assert_ne!(report.exit_code(), 0);
 }
