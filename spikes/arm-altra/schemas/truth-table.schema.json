@@ -94,7 +94,7 @@
           "contains": {
             "properties": {
               "id": {
-                "const": "br-retired-pmceid0"
+                "const": "br-retired-pmceid1"
               }
             },
             "required": [
@@ -321,7 +321,7 @@
             "pmuver",
             "sve",
             "nested-virt",
-            "br-retired-pmceid0",
+            "br-retired-pmceid1",
             "perf-raw-0x21-pinned",
             "host-overflow-delivers",
             "dev-kvm",
@@ -348,7 +348,7 @@
           "minLength": 1
         },
         "expected": {
-          "description": "What docs/ARM-ALTRA.md predicts. `absent` for ECV / SVE / nested-virt; `present` for LSE, BR_RETIRED-in-PMCEID0, /dev/kvm, KVM_CAP_SET_GUEST_DEBUG and a creatable vGICv3; a free string for graded facts (PMUVer, VHE-vs-nVHE).",
+          "description": "What docs/ARM-ALTRA.md predicts. `absent` for ECV / SVE / nested-virt; `present` for LSE, BR_RETIRED-in-PMCEID1 (event 0x21 is bit 1 of PMCEID1_EL0, which covers events 0x20..0x3f; PMCEID0_EL0 covers only 0x00..0x1f), /dev/kvm, KVM_CAP_SET_GUEST_DEBUG and a creatable vGICv3; a free string for graded facts (PMUVer, VHE-vs-nVHE).",
           "type": "string",
           "minLength": 1
         },
@@ -358,7 +358,7 @@
           "minLength": 1
         },
         "raw": {
-          "description": "The raw evidence behind `found` \u2014 the register field value, the `PMCEID0_EL0` bit, the ioctl return. Free-form, but never empty: a row with no raw evidence is an assertion, not a reading.",
+          "description": "The raw evidence behind `found` \u2014 the register field value, the `PMCEID1_EL0` bit (BR_RETIRED = bit 1), the ioctl return. Free-form, but never empty: a row with no raw evidence is an assertion, not a reading.",
           "type": "string",
           "minLength": 1
         },
@@ -490,7 +490,7 @@
           "if": {
             "properties": {
               "id": {
-                "const": "br-retired-pmceid0"
+                "const": "br-retired-pmceid1"
               }
             },
             "required": [
@@ -509,7 +509,7 @@
           "if": {
             "properties": {
               "id": {
-                "const": "br-retired-pmceid0"
+                "const": "br-retired-pmceid1"
               },
               "confirmed": {
                 "const": true
@@ -532,7 +532,7 @@
           "if": {
             "properties": {
               "id": {
-                "const": "br-retired-pmceid0"
+                "const": "br-retired-pmceid1"
               },
               "confirmed": {
                 "const": false

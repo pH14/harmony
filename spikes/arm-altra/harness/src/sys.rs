@@ -346,6 +346,29 @@ pub mod kvm {
     /// literal, since a wrong id would `SET` a *different* register and read green.
     pub const REG_ID_AA64PFR0_EL1: u64 =
         0x6000_0000_0000_0000 | 0x0030_0000_0000_0000 | (0x0013 << 16) | (3 << 14) | (4 << 3);
+
+    /// The common prefix of a 64-bit `KVM_GET_ONE_REG` id for an AArch64 sysreg:
+    /// `KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG`.
+    const SYSREG_U64: u64 = 0x6000_0000_0000_0000 | 0x0030_0000_0000_0000 | (0x0013 << 16);
+    /// Encode an AArch64 system register id from its `(op0,op1,crn,crm,op2)`.
+    #[must_use]
+    pub const fn arm64_sysreg(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64 {
+        SYSREG_U64 | (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2
+    }
+
+    /// The feature ID registers AA-0's truth table reads (and `MIDR_EL1` for identity), by
+    /// their architected `(op0,op1,crn,crm,op2)`.
+    pub const REG_MIDR_EL1: u64 = arm64_sysreg(3, 0, 0, 0, 0);
+    /// `ID_AA64DFR0_EL1` — PMUVer lives here.
+    pub const REG_ID_AA64DFR0_EL1: u64 = arm64_sysreg(3, 0, 0, 5, 0);
+    /// `ID_AA64ISAR0_EL1` — Atomic (LSE) lives here.
+    pub const REG_ID_AA64ISAR0_EL1: u64 = arm64_sysreg(3, 0, 0, 6, 0);
+    /// `ID_AA64MMFR0_EL1` — ECV lives here.
+    pub const REG_ID_AA64MMFR0_EL1: u64 = arm64_sysreg(3, 0, 0, 7, 0);
+    /// `ID_AA64MMFR1_EL1` — VH (VHE) lives here (bits[11:8]).
+    pub const REG_ID_AA64MMFR1_EL1: u64 = arm64_sysreg(3, 0, 0, 7, 1);
+    /// `ID_AA64MMFR2_EL1` — NV (FEAT_NV, nested virt) lives here (bits[35:32]).
+    pub const REG_ID_AA64MMFR2_EL1: u64 = arm64_sysreg(3, 0, 0, 7, 2);
 }
 
 /// `struct kvm_run`, through the MMIO arm of its exit union.
@@ -570,6 +593,73 @@ fn parse_hex_or_dec(s: &str) -> Option<u64> {
     }
 }
 
+/// Parse the GNU build-id (hex) out of an ELF notes blob (`/sys/kernel/notes`).
+///
+/// The kernel exposes its own `.notes` section here; the `NT_GNU_BUILD_ID` note (type 3,
+/// name `"GNU"`) is a per-build fingerprint of the RUNNING image — the boot measurement that
+/// identifies which kernel is actually executing, independent of any file on disk. Notes are
+/// `namesz|descsz|type|name(4-padded)|desc(4-padded)` in native endianness (the harness runs
+/// on the box, so native == the kernel's). Factored out here so it is testable off the box.
+#[must_use]
+pub fn parse_gnu_build_id(notes: &[u8]) -> Option<String> {
+    let mut off = 0usize;
+    while off + 12 <= notes.len() {
+        let namesz = u32::from_ne_bytes(notes[off..off + 4].try_into().ok()?) as usize;
+        let descsz = u32::from_ne_bytes(notes[off + 4..off + 8].try_into().ok()?) as usize;
+        let ntype = u32::from_ne_bytes(notes[off + 8..off + 12].try_into().ok()?);
+        let name_start = off + 12;
+        let name_end = name_start.checked_add(namesz)?;
+        let name = notes.get(name_start..name_end)?;
+        // 4-byte alignment padding after the name.
+        let desc_start = name_end.checked_add(namesz.wrapping_neg() & 3)?;
+        let desc_end = desc_start.checked_add(descsz)?;
+        let desc = notes.get(desc_start..desc_end)?;
+        if ntype == 3 && name.starts_with(b"GNU") && !desc.is_empty() {
+            let mut hex = String::with_capacity(desc.len() * 2);
+            for b in desc {
+                use core::fmt::Write;
+                let _ = write!(hex, "{b:02x}");
+            }
+            return Some(hex);
+        }
+        off = desc_end.checked_add(descsz.wrapping_neg() & 3)?;
+    }
+    None
+}
+
+/// The GNU build-id of the RUNNING kernel, from `/sys/kernel/notes`. `Ok(None)` when the
+/// file is absent (not a Linux box, or a kernel built without a build-id).
+///
+/// # Errors
+/// [`SysError`] if the file exists but cannot be read.
+pub fn running_kernel_build_id() -> Result<Option<String>, SysError> {
+    match std::fs::read("/sys/kernel/notes") {
+        Ok(notes) => Ok(parse_gnu_build_id(&notes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(SysError::Protocol(
+            "cannot read /sys/kernel/notes to identify the running kernel".to_string(),
+        )),
+    }
+}
+
+/// The running kernel's `uname -r` release string.
+///
+/// # Errors
+/// [`SysError`] if `uname` failed.
+#[cfg(target_os = "linux")]
+pub fn running_kernel_release() -> Result<String, SysError> {
+    // SAFETY: a zeroed utsname is valid; uname fills it, and we read only the NUL-terminated
+    // `release` field.
+    unsafe {
+        let mut u: libc::utsname = core::mem::zeroed();
+        if libc::uname(&raw mut u) != 0 {
+            return Err(SysError::Protocol("uname() failed".to_string()));
+        }
+        let release = core::ffi::CStr::from_ptr(u.release.as_ptr());
+        Ok(release.to_string_lossy().into_owned())
+    }
+}
+
 /// A capability the running kernel either has or does not.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Capability {
@@ -583,7 +673,7 @@ pub enum Capability {
     /// `BR_RETIRED` (event 0x21) is a **PMCEID-implemented** PMU event — the PMU exposes
     /// an `events/br_retired` (= `event=0x21`) file, which the PMUv3 driver gates on the
     /// PMCEID bitmap. NOT merely a clean `perf_event_open` (ARM perf accepts arbitrary raw
-    /// encodings that then never count). The truth table's `br-retired-pmceid0` row: the
+    /// encodings that then never count). The truth table's `br-retired-pmceid1` row: the
     /// whole work-clock bet rests on this event existing on N1's PMU.
     Pmceid,
     /// A **host-side overflow actually delivers**: arm a small `BR_RETIRED` sample period,
@@ -611,7 +701,7 @@ impl Capability {
             Capability::DevKvm => "dev-kvm",
             Capability::PerfBrRetired => "perf-raw-0x21-pinned",
             Capability::GuestDebug => "kvm-cap-set-guest-debug",
-            Capability::Pmceid => "br-retired-pmceid0",
+            Capability::Pmceid => "br-retired-pmceid1",
             Capability::HostOverflowDelivers => "host-overflow-delivers",
             Capability::Vgicv3Creatable => "vgicv3-creatable",
             Capability::WritableIdRegisters => "writable-id-registers",
@@ -829,7 +919,7 @@ mod imp {
         Ok(scheduled)
     }
 
-    /// The truth-table `br-retired-pmceid0` row: is raw `BR_RETIRED` (0x21) an
+    /// The truth-table `br-retired-pmceid1` row: is raw `BR_RETIRED` (0x21) an
     /// **implemented** PMU event, PMCEID-backed?
     ///
     /// A clean `perf_event_open` of the raw event is NOT proof: the ARM PMUv3 driver accepts
@@ -1043,8 +1133,8 @@ pub mod machine;
 
 #[cfg(target_os = "linux")]
 pub use machine::{
-    Machine, Mechanism, MigrationChurner, ParamsPage, PerfCounter, allowed_cores, current_tid,
-    pin_to_core,
+    HostIdRegisters, Machine, Mechanism, MigrationChurner, ParamsPage, PerfCounter, allowed_cores,
+    current_tid, pin_to_core, read_host_id_registers,
 };
 
 #[cfg(test)]
@@ -1476,6 +1566,38 @@ mod tests {
         assert!(!sysfs_event_encodes("event=0x22", 0x21)); // a different event
         assert!(!sysfs_event_encodes("config=0x21", 0x21)); // no `event=` term
         assert!(!sysfs_event_encodes("", 0x21));
+    }
+
+    #[test]
+    fn parse_gnu_build_id_extracts_the_running_kernel_fingerprint() {
+        // One NT_GNU_BUILD_ID note (type 3, name "GNU"), desc = the build-id bytes.
+        let note = |ntype: u32, name: &[u8], desc: &[u8]| {
+            let mut n = Vec::new();
+            n.extend_from_slice(&(name.len() as u32).to_ne_bytes());
+            n.extend_from_slice(&(desc.len() as u32).to_ne_bytes());
+            n.extend_from_slice(&ntype.to_ne_bytes());
+            n.extend_from_slice(name);
+            while n.len() % 4 != 0 {
+                n.push(0);
+            }
+            n.extend_from_slice(desc);
+            while n.len() % 4 != 0 {
+                n.push(0);
+            }
+            n
+        };
+        assert_eq!(
+            parse_gnu_build_id(&note(3, b"GNU\0", &[0xde, 0xad, 0xbe, 0xef])).as_deref(),
+            Some("deadbeef")
+        );
+        // A build-id note found after an unrelated note.
+        let mut two = note(1, b"GNU\0", &[0, 0, 0, 0]);
+        two.extend_from_slice(&note(3, b"GNU\0", &[0x01, 0x23]));
+        assert_eq!(parse_gnu_build_id(&two).as_deref(), Some("0123"));
+        // No build-id note; and malformed/empty input never panics.
+        assert_eq!(parse_gnu_build_id(&note(1, b"GNU\0", &[0xaa])), None);
+        assert_eq!(parse_gnu_build_id(&[]), None);
+        assert_eq!(parse_gnu_build_id(&[1, 2, 3]), None);
     }
 
     #[test]

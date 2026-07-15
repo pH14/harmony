@@ -510,10 +510,16 @@ pub fn run_sample(
                 };
 
                 let work = counter.read()?;
-                if work < target {
-                    // Advisory: something other than the deadline kicked us out. The
-                    // kernel cleared its one-shot on the way out, so re-arm it or the
-                    // real overflow will pass straight through.
+                // The advisory path is PREEMPT-ONLY. The patch's armed vCPU exits on ANY host
+                // IRQ, so a `KVM_EXIT_PREEMPT` below the target is an unrelated IRQ (a timer
+                // tick), not the overflow — re-read, re-arm, continue. A stock `SignalKick`
+                // reaching here is SOURCE-VERIFIED (the run loop discarded foreign signals and
+                // only surfaces a kick sourced by the armed perf fd), so it is raised ONLY by
+                // the perf overflow: a kick below the target is the overflow landing EARLY —
+                // the negative-skid case AA-1 exists to measure, not advisory. And `rearm` is a
+                // no-op for the stock mechanism, so treating it as advisory would hang the
+                // sample waiting for a second signal that never comes.
+                if work < target && exit == VcpuExit::Preempt {
                     advisory_exits += 1;
                     if advisory_exits > MAX_ADVISORY_EXITS {
                         return Err(RunError::AdvisoryExitStorm {
@@ -928,6 +934,39 @@ mod tests {
         assert_eq!(o.landed, 1_500, "landed at the target, not the early tick");
         assert_eq!(counter.rearms, 1, "the cleared one-shot was re-armed");
         assert_eq!(counter.resumes, 1);
+    }
+
+    #[test]
+    fn an_early_source_verified_signal_kick_is_a_negative_skid_landing_not_advisory() {
+        // The STOCK path: the run loop only surfaces a SignalKick sourced by the armed perf
+        // fd, so a kick below the target is the overflow landing EARLY — the negative-skid
+        // case AA-1 exists to measure, not an unrelated IRQ. Treating it as advisory would
+        // re-arm (a no-op for stock) and hang the sample. It must record a delivery.
+        let bytes = transcript();
+        let mark_at = bytes
+            .iter()
+            .position(|&b| b == MARK_BEGIN)
+            .expect("mark present");
+        let mut vcpu = ScriptedVcpu::printing(&bytes, &[(mark_at, VcpuExit::SignalKick)]);
+        // begin=1000, target=1500; the kick reads 1400 (< target ⇒ an EARLY landing), end 2001.
+        let mut counter = ScriptedCounter::new(&[1_000, 1_400, 2_001]);
+        let record = run_sample(&mut vcpu, &mut counter, &spec(Some(500))).expect("measured");
+        let o = record.overflow.expect("armed");
+        assert_eq!(
+            o.deliveries, 1,
+            "the early kick is a delivery, not advisory"
+        );
+        assert_eq!(o.advisory_exits, 0);
+        assert_eq!(o.landed, 1_400, "landed early, below the target");
+        assert_eq!(
+            o.skid, -100,
+            "negative skid = landed (1400) - target (1500)"
+        );
+        assert_eq!(record.exit_reason, ExitReason::SignalKick);
+        assert_eq!(
+            counter.rearms, 0,
+            "no re-arm on the stock landing (rearm is a no-op)"
+        );
     }
 
     // Ignored under Miri: it drives MAX_ADVISORY_EXITS+1 (100_001) scripted exits

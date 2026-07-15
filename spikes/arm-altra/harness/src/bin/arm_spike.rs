@@ -30,7 +30,10 @@ use std::process::ExitCode;
 
 use arm_harness::evidence::{Environment, Stage};
 use arm_harness::plan::{PlanSpec, plan};
+#[cfg(target_os = "linux")]
 use arm_harness::sys::{self, Capability};
+#[cfg(target_os = "linux")]
+use arm_harness::truth_table::{self, Found, Identity, RowInput, Topology};
 use clap::{Parser, Subcommand, ValueEnum};
 use oracle_model::{ALL_PAYLOADS, Scale, Weights};
 
@@ -64,7 +67,13 @@ enum Command {
         /// Master seed.
         #[arg(long, default_value_t = 0x5EED_5EED_5EED_5EED)]
         seed: u64,
-        /// Repetitions of the whole matrix.
+        /// Distinct target/seed CASES per matrix cell — the dimension that gives the armed
+        /// floor a distribution of distinct seeded-random targets. Each case is repeated
+        /// `--reps` times for replay identity.
+        #[arg(long, default_value_t = 1)]
+        cases: u64,
+        /// Repetitions of EACH case (same seed + target), for replay identity / the rep
+        /// floor. Distinct targets come from `--cases`, not from reps.
         #[arg(long, default_value_t = 1)]
         reps: u64,
         /// Draw seeded-random target deltas over 1..=100000 (AA-3), instead of a
@@ -72,8 +81,16 @@ enum Command {
         #[arg(long)]
         with_targets: bool,
     },
-    /// Probe the AA-0 capabilities on the running host (Linux/box only).
-    Probe,
+    /// Probe AA-0 and write the complete `truth-table.json` artifact (Linux/box only).
+    Probe {
+        /// The box config JSON: SoC, firmware, core-assignment topology, and the pinned
+        /// expected values for the graded rows (PMUVer, KVM mode).
+        #[arg(long)]
+        box_config: PathBuf,
+        /// Where to write `truth-table.json` (e.g. `results/aa-0/<capture>/truth-table.json`).
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Run the planned samples and write a run-set (Linux/box only).
     Run(Box<RunOpts>),
 }
@@ -106,6 +123,14 @@ struct RunOpts {
     /// operator asserts identity by pinning, and the harness verifies the bytes match.)
     #[arg(long)]
     host_kernel_sha256: String,
+    /// The **GNU build-id of the running kernel** the operator built and booted. The harness
+    /// reads the LIVE kernel's build-id from `/sys/kernel/notes` and requires a match before
+    /// attesting `verified_before_boot` — a file hash alone proves only that a FILE matches a
+    /// pin, not that it is the image actually running (a stale or newly-installed
+    /// `/boot/Image` hashes fine while another kernel is booted). The build-id is the boot
+    /// measurement that identifies the running image.
+    #[arg(long)]
+    host_kernel_build_id: String,
     /// The core to hard-pin the vCPU thread to. Pinning is a correctness condition on
     /// this lineage (rr #3607), not hygiene.
     #[arg(long)]
@@ -161,7 +186,11 @@ struct RunOpts {
     /// Master seed for the plan.
     #[arg(long, default_value_t = 0x5EED_5EED_5EED_5EED)]
     seed: u64,
-    /// Repetitions of the whole matrix.
+    /// Distinct target/seed CASES per matrix cell — the distribution of seeded-random
+    /// targets the armed floor is over. Each case is repeated `--reps` times.
+    #[arg(long, default_value_t = 1)]
+    cases: u64,
+    /// Repetitions of EACH case (same seed + target), for replay identity / the rep floor.
     #[arg(long, default_value_t = 1)]
     reps: u64,
     /// Draw seeded-random target deltas over 1..=100000 (AA-3).
@@ -235,6 +264,7 @@ impl From<StageArg> for Stage {
 
 fn plan_spec(
     seed: u64,
+    cases: u64,
     reps: u64,
     with_targets: bool,
     scales: Vec<Scale>,
@@ -248,15 +278,17 @@ fn plan_spec(
             .collect(),
         scales,
         conditions: vec![condition.to_string()],
+        cases,
         reps,
         seed,
         target_delta_range: with_targets.then_some((1, 100_000)),
     }
 }
 
-fn emit_plan(seed: u64, reps: u64, with_targets: bool) -> Result<(), String> {
+fn emit_plan(seed: u64, cases: u64, reps: u64, with_targets: bool) -> Result<(), String> {
     let samples = plan(&plan_spec(
         seed,
+        cases,
         reps,
         with_targets,
         vec![Scale::Smoke],
@@ -269,90 +301,230 @@ fn emit_plan(seed: u64, reps: u64, with_targets: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// What a capability probe returned. The three-way split is the whole point: a stage
-/// disposition may never rest on a probe that **could not run**, so "unprobed" is
-/// not allowed to collapse into "absent".
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Row {
-    Present,
-    Absent,
-    Unprobed,
+/// The box-specific configuration the harness cannot read from a register: the SoC name,
+/// firmware versions, the standing core-assignment topology, and the operator's pinned
+/// expectations for the two GRADED rows (PMUVer, KVM mode). Supplied as JSON, like the run
+/// environment — the harness measures everything it can and the operator vouches for the rest.
+#[cfg(target_os = "linux")]
+#[derive(serde::Deserialize)]
+struct BoxConfig {
+    /// The SoC part string (not in any register).
+    soc: String,
+    /// Firmware versions, key/value.
+    firmware: std::collections::BTreeMap<String, String>,
+    /// The standing core-assignment table.
+    topology: Topology,
+    /// The pinned expected `ID_AA64DFR0_EL1.PMUVer` (e.g. `"0x6"`) — a graded row.
+    pmuver_expected: String,
+    /// The pinned expected KVM mode (`"vhe"`/`"nvhe"`) — a graded row.
+    kvm_mode_expected: String,
 }
 
-fn report(cap: Capability) -> Row {
+/// Probe one capability into `(found, raw)`. `Unprobed` is never collapsed into `Absent`: a
+/// row that could not be read is a deviation the truth table records, not a clean "no".
+#[cfg(target_os = "linux")]
+fn probe_cap(cap: Capability) -> (Found, String) {
     match sys::probe(cap) {
-        Ok(true) => {
-            println!("ok       {}: present", cap.name());
-            Row::Present
-        }
-        Ok(false) => {
-            println!("absent   {}: not present", cap.name());
-            Row::Absent
-        }
-        Err(e) => {
-            eprintln!("unprobed {}: {e}", cap.name());
-            Row::Unprobed
-        }
+        Ok(true) => (
+            Found::Present,
+            format!("{}: probe returned present", cap.name()),
+        ),
+        Ok(false) => (
+            Found::Absent,
+            format!("{}: probe returned absent", cap.name()),
+        ),
+        Err(e) => (
+            Found::Unprobed,
+            format!("{}: probe could not run: {e}", cap.name()),
+        ),
     }
 }
 
-/// AA-0's capability rows, and the exit status that must follow from them.
-///
-/// The rule the RC enforces — and it is the RC, not the printout, that scripts
-/// consume:
-///
-/// - **any row unprobed ⇒ nonzero.** An unprobed mandatory row is a stage that
-///   cannot be dispositioned, not a stage that passed.
-/// - **an expect-present row absent ⇒ nonzero** (`/dev/kvm`, raw 0x21 pinned,
-///   `KVM_CAP_SET_GUEST_DEBUG` — AA-2's load-bearing capability).
-/// - **the determinism cap absent ⇒ OK.** It is the one expect-*absent* row: a stock
-///   kernel does not have it, and that is a finding, not a failure. Only the patched
-///   kernel advertises it, which is what makes it AA-3's mechanism attestation.
-fn probe() -> Result<(), String> {
-    let mut unprobed: Vec<&str> = Vec::new();
-    let mut missing: Vec<&str> = Vec::new();
+/// Emit AA-0's complete, machine-readable, reboot-diffable `truth-table.json` (finding r16):
+/// all thirteen mandatory rows (host caps + ID-register facts), the machine identity, and the
+/// standing core-assignment topology. The RC is nonzero if ANY row is a deviation (found !=
+/// expected) — including a favourable one — because AA-0's acceptance is that every row is
+/// confirmed or has an explicit recorded ruling, which a machine cannot invent.
+#[cfg(target_os = "linux")]
+fn probe(box_config: PathBuf, out: PathBuf) -> Result<(), String> {
+    let cfg: BoxConfig = read_json(&box_config)?;
+    let regs = sys::read_host_id_registers().map_err(|e| format!("read host ID registers: {e}"))?;
+    let host_kernel = sys::running_kernel_release().map_err(|e| format!("read uname: {e}"))?;
+    let core_count = std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(0);
 
-    // Every mandatory host-side row (`Capability::mandatory_aa0`): `/dev/kvm`, raw 0x21
-    // pinned, guest-debug, BR_RETIRED implemented, host-overflow-delivers,
-    // vGICv3-creatable, writable-ID-registers. A row absent OR unprobed is disqualifying —
-    // dispatch may not proceed on a host missing an existential mechanism, nor on one we
-    // could not ask.
-    for cap in Capability::mandatory_aa0() {
-        match report(*cap) {
-            Row::Present => {}
-            Row::Absent if cap.expect_present() => missing.push(cap.name()),
-            Row::Absent => {}
-            Row::Unprobed => unprobed.push(cap.name()),
-        }
-    }
-    // The patch marker is reported separately: it is expect-*absent* on a stock kernel, so
-    // its absence is a finding (not a failure) and its presence attests the patched kernel.
-    // Only an *unprobed* result here is disqualifying.
-    if let Row::Unprobed = report(Capability::DeterministicIntercepts) {
-        unprobed.push(Capability::DeterministicIntercepts.name());
-    }
+    let f4 = |v: u64, shift: u32| (v >> shift) & 0xf;
+    let present = |b: bool| if b { Found::Present } else { Found::Absent };
+    let mut rows: Vec<RowInput> = Vec::new();
 
-    let mut problems = Vec::new();
-    if !unprobed.is_empty() {
-        problems.push(format!(
-            "{} mandatory row(s) could not be probed ({}): a disposition may not rest on a probe \
-             that did not run",
-            unprobed.len(),
-            unprobed.join(", ")
-        ));
+    // The host capability rows (the KVM/perf probes).
+    let cap_rows = [
+        (
+            Capability::DevKvm,
+            "dev-kvm",
+            "kvm",
+            "/dev/kvm present and openable?",
+        ),
+        (
+            Capability::PerfBrRetired,
+            "perf-raw-0x21-pinned",
+            "perf",
+            "raw event 0x21 opens pinned + non-multiplexed and counts?",
+        ),
+        (
+            Capability::GuestDebug,
+            "kvm-cap-set-guest-debug",
+            "kvm",
+            "KVM_CAP_SET_GUEST_DEBUG (single-step) advertised?",
+        ),
+        (
+            Capability::Pmceid,
+            "br-retired-pmceid1",
+            "perf",
+            "BR_RETIRED (0x21) is PMCEID1-implemented (events/br_retired = event=0x21)?",
+        ),
+        (
+            Capability::HostOverflowDelivers,
+            "host-overflow-delivers",
+            "perf",
+            "a host BR_RETIRED overflow actually delivers a sample?",
+        ),
+        (
+            Capability::Vgicv3Creatable,
+            "vgicv3-creatable",
+            "kvm",
+            "an in-kernel GICv3 is creatable?",
+        ),
+        (
+            Capability::WritableIdRegisters,
+            "writable-id-registers",
+            "kvm",
+            "a below-host ID-register feature installs and reads back?",
+        ),
+    ];
+    for (cap, id, kind, q) in cap_rows {
+        let (found, raw) = probe_cap(cap);
+        rows.push(RowInput::cap(id, kind, q, Found::Present, found, raw));
     }
-    if !missing.is_empty() {
-        problems.push(format!(
-            "{} expect-present capability/ies absent ({})",
-            missing.len(),
-            missing.join(", ")
-        ));
+    // The patch marker: expect ABSENT on a stock kernel (present attests the patched one).
+    let (di_found, di_raw) = probe_cap(Capability::DeterministicIntercepts);
+    rows.push(RowInput::cap(
+        "kvm-cap-arm-deterministic-intercepts",
+        "kvm",
+        "the 0004-analogue determinism cap advertised? Expect absent on a stock kernel.",
+        Found::Absent,
+        di_found,
+        di_raw,
+    ));
+
+    // The ID-register rows (read from a disposable VM's vCPU).
+    let ecv = f4(regs.id_aa64mmfr0, 60);
+    rows.push(RowInput::cap(
+        "ecv",
+        "id-register",
+        "ID_AA64MMFR0_EL1.ECV — FEAT_ECV present? Expect absent (the paravirt-clock premise).",
+        Found::Absent,
+        present(ecv != 0),
+        format!("ID_AA64MMFR0_EL1.ECV = {ecv:#x}"),
+    ));
+    let lse = f4(regs.id_aa64isar0, 20);
+    rows.push(RowInput::cap(
+        "lse",
+        "id-register",
+        "ID_AA64ISAR0_EL1.Atomic — FEAT_LSE present? Expect present (AA-4's premise).",
+        Found::Present,
+        present(lse != 0),
+        format!("ID_AA64ISAR0_EL1.Atomic = {lse:#x}"),
+    ));
+    let sve = f4(regs.id_aa64pfr0, 32);
+    rows.push(RowInput::cap(
+        "sve",
+        "id-register",
+        "ID_AA64PFR0_EL1.SVE — FEAT_SVE present? Expect absent on N1.",
+        Found::Absent,
+        present(sve != 0),
+        format!("ID_AA64PFR0_EL1.SVE = {sve:#x}"),
+    ));
+    let nv = f4(regs.id_aa64mmfr2, 32);
+    rows.push(RowInput::cap(
+        "nested-virt",
+        "id-register",
+        "ID_AA64MMFR2_EL1.NV — FEAT_NV present? Expect absent.",
+        Found::Absent,
+        present(nv != 0),
+        format!("ID_AA64MMFR2_EL1.NV = {nv:#x}"),
+    ));
+    // Graded rows: PMUVer and the KVM mode (VHE vs nVHE), against the operator's pinned values.
+    let pmuver = f4(regs.id_aa64dfr0, 8);
+    rows.push(RowInput {
+        id: "pmuver",
+        kind: "pmu",
+        question: "ID_AA64DFR0_EL1.PMUVer — the PMU version behind the BR_RETIRED work-clock bet.",
+        expected: cfg.pmuver_expected.trim().to_string(),
+        found: format!("{pmuver:#x}"),
+        raw: format!("ID_AA64DFR0_EL1.PMUVer = {pmuver:#x}"),
+    });
+    let vh = f4(regs.id_aa64mmfr1, 8);
+    let kvm_mode = if vh != 0 { "vhe" } else { "nvhe" };
+    rows.push(RowInput {
+        id: "kvm-mode",
+        kind: "kvm",
+        question: "VHE vs nVHE — derived from ID_AA64MMFR1_EL1.VH (the host's VHE capability).",
+        expected: cfg.kvm_mode_expected.trim().to_string(),
+        found: kvm_mode.to_string(),
+        raw: format!("ID_AA64MMFR1_EL1.VH = {vh:#x}"),
+    });
+
+    let identity = Identity {
+        midr: regs.midr,
+        implementer: ((regs.midr >> 24) & 0xff) as u8,
+        part_num: ((regs.midr >> 4) & 0xfff) as u16,
+        variant: ((regs.midr >> 20) & 0xf) as u8,
+        revision: (regs.midr & 0xf) as u8,
+        soc: cfg.soc,
+        core_count,
+        host_kernel,
+        firmware: cfg.firmware,
+    };
+
+    let table = truth_table::assemble(identity, cfg.topology, rows);
+    let json =
+        serde_json::to_string_pretty(&table).map_err(|e| format!("serialize truth table: {e}"))?;
+    std::fs::write(&out, format!("{json}\n"))
+        .map_err(|e| format!("write {}: {e}", out.display()))?;
+
+    for r in &table.rows {
+        let tag = if r.confirmed { "ok      " } else { "DEVIATE " };
+        println!("{tag} {}: expected {}, found {}", r.id, r.expected, r.found);
     }
-    if problems.is_empty() {
+    if table.all_confirmed() {
+        println!(
+            "truth-table.json written to {}: all {} rows confirmed",
+            out.display(),
+            table.rows.len()
+        );
         Ok(())
     } else {
-        Err(problems.join("; "))
+        // The artifact is still written (a deviation is a finding to record and diff), but the
+        // RC is nonzero until every deviation carries a ruling.
+        Err(format!(
+            "{} row(s) deviate from AA-0's prediction and need an explicit ruling before any \
+             stage relies on them: {} (truth-table.json written to {})",
+            table.deviations().len(),
+            table.deviations().join(", "),
+            out.display()
+        ))
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn probe(_box_config: PathBuf, _out: PathBuf) -> Result<(), String> {
+    Err(
+        "`arm-spike probe` issues KVM/perf syscalls and reads /sys to build truth-table.json: \
+         it is Linux-only, and this host is not Linux."
+            .into(),
+    )
 }
 
 /// Read a JSON file into a deserializable shape.
@@ -381,6 +553,7 @@ struct RunArgs {
     payload_pins: std::collections::BTreeMap<String, String>,
     host_kernel_image: PathBuf,
     host_kernel_sha256: String,
+    host_kernel_build_id: String,
     core: u32,
     migration_probe: bool,
     stage: Stage,
@@ -393,6 +566,7 @@ struct RunArgs {
     run_set_id: String,
     out: PathBuf,
     seed: u64,
+    cases: u64,
     reps: u64,
     with_targets: bool,
     watchdog_secs: u64,
@@ -533,6 +707,38 @@ fn execute(args: RunArgs) -> Result<(), String> {
         ));
     }
 
+    // Bind the file pin to the RUNNING kernel. The hash above proves only that a FILE matches
+    // a pin; it does not prove that file is the image actually executing — a stale or
+    // newly-installed /boot/Image hashes fine while another kernel is booted. So read the live
+    // kernel's boot measurement (its GNU build-id from /sys/kernel/notes) and require it to
+    // match the operator's expected build-id, and cross-check the live `uname -r` against the
+    // environment block's `host_kernel`. Only then may `verified_before_boot` be set.
+    let running_build_id = sys::running_kernel_build_id()
+        .map_err(|e| format!("read the running kernel build-id: {e}"))?
+        .ok_or_else(|| {
+            "the running kernel exposes no GNU build-id (/sys/kernel/notes absent or \
+             build-id-less): cannot identify the running image, so refusing to attest it — \
+             build the kernel with CONFIG_BUILD_SALT/a build-id"
+                .to_string()
+        })?;
+    let expected_build_id = args.host_kernel_build_id.trim().to_ascii_lowercase();
+    if running_build_id != expected_build_id {
+        return Err(format!(
+            "the running kernel's build-id is {running_build_id}, but the expected build-id is \
+             {expected_build_id}: the image on disk hashes correctly, but a DIFFERENT kernel is \
+             running — refusing to attest the wrong host kernel"
+        ));
+    }
+    let running_release = sys::running_kernel_release()
+        .map_err(|e| format!("read the running kernel release: {e}"))?;
+    if running_release != args.environment.host_kernel {
+        return Err(format!(
+            "the running kernel is {running_release}, but the environment block declares \
+             host_kernel = {}: the recorded identity does not match the live kernel",
+            args.environment.host_kernel
+        ));
+    }
+
     // Load every payload class the plan will run, up front — one ELF per class, each
     // verified against its trusted pin.
     let mut payloads: BTreeMap<String, LoadedPayload> = BTreeMap::new();
@@ -550,6 +756,7 @@ fn execute(args: RunArgs) -> Result<(), String> {
     };
     let samples = plan(&plan_spec(
         args.seed,
+        args.cases,
         args.reps,
         args.with_targets,
         scales,
@@ -798,10 +1005,11 @@ fn run() -> Result<(), String> {
     match Cli::parse().command {
         Command::Plan {
             seed,
+            cases,
             reps,
             with_targets,
-        } => emit_plan(seed, reps, with_targets),
-        Command::Probe => probe(),
+        } => emit_plan(seed, cases, reps, with_targets),
+        Command::Probe { box_config, out } => probe(box_config, out),
         Command::Run(opts) => {
             let environment: Environment = read_json(&opts.environment)?;
             let weights: Option<Weights> = match &opts.weights {
@@ -815,6 +1023,7 @@ fn run() -> Result<(), String> {
                 payload_pins,
                 host_kernel_image: opts.host_kernel_image,
                 host_kernel_sha256: opts.host_kernel_sha256,
+                host_kernel_build_id: opts.host_kernel_build_id,
                 core: opts.core,
                 migration_probe: opts.migration_probe,
                 stage: opts.stage.into(),
@@ -827,6 +1036,7 @@ fn run() -> Result<(), String> {
                 run_set_id: opts.run_set_id,
                 out: opts.out,
                 seed: opts.seed,
+                cases: opts.cases,
                 reps: opts.reps,
                 with_targets: opts.with_targets,
                 watchdog_secs: opts.watchdog_secs,

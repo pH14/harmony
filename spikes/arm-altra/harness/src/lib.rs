@@ -38,6 +38,7 @@ pub mod evidence;
 pub mod plan;
 pub mod run;
 pub mod scan;
+pub mod truth_table;
 pub mod verify;
 
 // The syscall seam is the crate's only `unsafe`; its own module-level

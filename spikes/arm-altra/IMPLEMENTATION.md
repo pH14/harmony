@@ -1033,6 +1033,56 @@ oracle-model 22 + 2 (the model's `required_window_ops` became the exact sequence
 `-D warnings` native + aarch64-linux, three `cargo deny`, the opcode-checked window scan,
 TCG smoke, kernel-patch format/parse, and Miri (arm-harness + oracle-model).
 
+## Round-16 review fixes (PR #108, cross-model pass r16)
+
+Six P1 + one P2 — all in the harness/probe surface (the floor checker was untouched this
+round).
+
+- **Distinct target draws per repetition (the armed floor).** The plan drew one target per
+  matrix cell and cloned it across every rep, so `--with-targets --reps 125000` on one
+  cell/scale reached a million records with only eight target deltas — no seeded-random
+  target/skid *distribution*. Added a `--cases` dimension: each case draws its own seed and
+  target, and `--reps` repeats each case for replay identity. The floor is now over distinct
+  cases (`cells × cases × reps`), not one delta repeated.
+- **Accept early source-verified perf kicks (negative skid).** The advisory branch (work <
+  target) caught a stock `SignalKick`, but a source-verified `SignalKick` is raised only by
+  the perf overflow — a kick below the target is the overflow landing EARLY, the negative-skid
+  case AA-1 exists to measure. And `rearm` is a no-op for the stock mechanism, so treating it
+  as advisory hung the sample. The advisory path is now `Preempt`-only; a `SignalKick` is
+  always the delivery.
+- **Bind the kernel pin to the running kernel.** Hashing `/boot/Image` proved a FILE matched
+  a pin, not that it was the image executing (a stale or newly-installed image hashes fine
+  while another kernel is booted). The harness now reads the RUNNING kernel's GNU build-id from
+  `/sys/kernel/notes` and requires a match with the operator's expected build-id
+  (`--host-kernel-build-id`), and cross-checks the live `uname -r` against the environment
+  block, before setting `verified_before_boot`.
+- **Truth-table schema names PMCEID1 bit 1.** Event 0x21 is bit 1 of `PMCEID1_EL0`
+  (`PMCEID0_EL0` covers only 0x00..0x1f); the `ident` payload already reads PMCEID1. The schema
+  row id (`br-retired-pmceid0` → `br-retired-pmceid1`) and the two PMCEID0 descriptions were a
+  regression, now corrected, and the harness `Capability::Pmceid` name matches.
+- **Probe emits the complete `truth-table.json` artifact.** `probe` printed eight transient
+  host-cap rows and wrote nothing. It now builds and writes the full AA-0 deliverable: all
+  thirteen mandatory rows (host caps + the ID-register facts `ecv`/`lse`/`pmuver`/`sve`/
+  `nested-virt`/`kvm-mode`, read from a disposable VM's vCPU), the machine identity (MIDR
+  decoded + operator-supplied SoC/firmware + online cores + `uname`), and the core-assignment
+  topology, to `--out`. A new `truth_table` module holds the schema-mirroring structs and the
+  pure assembler; the RC is nonzero if any row deviates (a deviation, even a favourable one,
+  needs an explicit ruling).
+- **Hash all implemented vGIC routing state.** The digest hashed `GICD_IROUTER` only for SPIs
+  32..47 and omitted IDs ≥96. It now derives the implemented range from `GICD_TYPER` and hashes
+  every SPI's group/config/priority/routing/enable/pending/active, so two states differing in a
+  higher SPI's injection cannot share a replay digest.
+- **Realistic plan-memory ceiling (P2).** `MAX_PLANNED_SAMPLES` was 10⁹, which passed the bound
+  then reserved ~64 GB in `Vec::with_capacity` and OOM-killed the process; it is now 10⁷ (~10×
+  the AA-1 floor, well under a gigabyte), so a hostile `--reps`/`--cases` is a normal error.
+
+No run-record/run-set schema change (the plan is not evidence); `truth-table.schema.json`'s
+row-id/descriptions corrected. Gates re-run green: harness 97 tests, floor-check 47 + 27 + 3
+(unchanged), oracle-model 22 + 2 (unchanged since r15), clippy `-D warnings` native +
+aarch64-linux (the build-id, uname, ID-register and truth-table code compiles for the box),
+three `cargo deny`, the opcode-checked window scan, TCG smoke, kernel-patch format/parse, and
+Miri arm-harness.
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

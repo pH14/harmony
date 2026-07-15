@@ -10,24 +10,31 @@ use oracle_model::{Payload, Scale, XorShift64Star};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// A ceiling on the total sample count a plan may produce. Far above any real run (the
-/// AA-1 cumulative floor is ~10⁶ overflows), it exists only so untrusted input — a CLI
-/// `--reps 18446744073709551615` — is refused with a normal error instead of overflowing
-/// `Vec::with_capacity` (a `capacity overflow` panic) or OOM-looping.
-pub const MAX_PLANNED_SAMPLES: u64 = 1_000_000_000;
+/// A ceiling on the total sample count a plan may produce.
+///
+/// A **realistic** bound, not merely an anti-overflow one: at ~64 bytes per
+/// [`PlannedSample`] (a `String` condition included), the old 10⁹ ceiling reserved ~64 GB
+/// in `Vec::with_capacity` and OOM-killed the process before returning `PlanError` — so a
+/// hostile `--reps`/`--cases` could terminate the harness. Ten million samples reserves
+/// well under a gigabyte and is ~10× the AA-1 cumulative floor (~10⁶ overflows), so no real
+/// campaign approaches it while an absurd request is refused with a normal error.
+pub const MAX_PLANNED_SAMPLES: u64 = 10_000_000;
 
 /// Why a plan could not be built.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PlanError {
-    /// The matrix size times `reps` exceeds [`MAX_PLANNED_SAMPLES`] (or overflows).
+    /// `cells × cases × reps` exceeds [`MAX_PLANNED_SAMPLES`] (or overflows).
     #[error(
-        "the plan would produce {total} samples ({cells} matrix cells × {reps} reps), over the \
-         {MAX_PLANNED_SAMPLES} ceiling — refuse rather than overflow the allocation"
+        "the plan would produce {total} samples ({cells} matrix cells × {cases} cases × {reps} \
+         reps), over the {MAX_PLANNED_SAMPLES} ceiling — refuse rather than reserve a hostile \
+         allocation"
     )]
     TooManySamples {
         /// Matrix cells (conditions × scales × payloads).
         cells: u64,
-        /// Requested repetitions.
+        /// Distinct target/seed cases per cell.
+        cases: u64,
+        /// Requested repetitions per case.
         reps: u64,
         /// The product (saturated), for the message.
         total: u64,
@@ -67,7 +74,14 @@ pub struct PlanSpec {
     pub scales: Vec<Scale>,
     /// The conditions to sweep.
     pub conditions: Vec<String>,
-    /// Repetitions of the whole matrix.
+    /// Distinct **cases** per matrix cell — each draws its own seed and (for armed stages)
+    /// its own seeded-random target. This is the dimension that gives the armed floor a
+    /// *distribution* of distinct targets; without it, a million-overflow run drew a single
+    /// target per cell and cloned it, so eight cells met the floor with eight deltas.
+    pub cases: u64,
+    /// Repetitions of each case, for replay identity. A repetition repeats the *input*
+    /// (same seed + target), so reps of one case form the same-input group the
+    /// replay-identity and rep-floor checks compare; distinct cases vary the target.
     pub reps: u64,
     /// The plan's master seed. Everything else is derived from it.
     pub seed: u64,
@@ -103,64 +117,70 @@ pub struct PlanSpec {
 pub fn plan(spec: &PlanSpec) -> Result<Vec<PlannedSample>, PlanError> {
     let mut rng = XorShift64Star::new(spec.seed);
 
-    // The matrix: one draw per (condition, scale, payload) cell, before any rep.
-    let mut matrix: Vec<(Payload, Scale, String, u64, Option<u64>)> = Vec::new();
+    // The matrix cells — (condition, scale, payload) only; the per-case seed and target are
+    // drawn below, inside the case loop, so each case is a distinct input.
+    let mut cells: Vec<(Payload, Scale, String)> = Vec::new();
     for condition in &spec.conditions {
         for &scale in &spec.scales {
             for &payload in &spec.payloads {
-                // Draw for every cell whether or not the stage uses a target, so
-                // that adding a target range does not shift the seed stream and
-                // silently change which samples got which seeds.
-                let draw = rng.next_u64();
-                let target_delta = spec.target_delta_range.map(|(lo, hi)| {
-                    if hi <= lo {
-                        lo
-                    } else {
-                        // The inclusive range [lo, hi] has `hi - lo + 1` values. `hi - lo`
-                        // is safe (hi > lo), but `+ 1` overflows when the span is the whole
-                        // of u64 (lo == 0, hi == u64::MAX) — a debug build panics on the
-                        // add, a release build wraps the divisor to 0 and panics on the
-                        // modulo. When the width would overflow, every u64 is in range, so
-                        // the draw itself is the value. (`lo + draw % width` cannot
-                        // overflow: `draw % width <= hi - lo`, so the sum is at most `hi`.)
-                        match (hi - lo).checked_add(1) {
-                            Some(width) => lo + draw % width,
-                            None => draw,
-                        }
-                    }
-                });
-                let seed = rng.next_u64();
-                matrix.push((payload, scale, condition.clone(), seed, target_delta));
+                cells.push((payload, scale, condition.clone()));
             }
         }
     }
 
-    // Bound the total BEFORE reserving or iterating: `matrix.len() * reps` can overflow
-    // usize (`Vec::with_capacity` panics) or be merely absurd (OOM loop). Both are refused
-    // with a normal error — the plan never allocates a hostile capacity.
-    let cells = matrix.len() as u64;
-    let total = cells.saturating_mul(spec.reps);
-    if total > MAX_PLANNED_SAMPLES || cells.checked_mul(spec.reps).is_none() {
+    // Bound the total BEFORE reserving or iterating: `cells × cases × reps` can overflow
+    // usize (`Vec::with_capacity` panics) or be merely absurd (OOM). Both are refused with a
+    // normal error — the plan never reserves a hostile capacity.
+    let n_cells = cells.len() as u64;
+    let total = spec
+        .cases
+        .checked_mul(spec.reps)
+        .and_then(|per_cell| n_cells.checked_mul(per_cell))
+        .filter(|&t| t <= MAX_PLANNED_SAMPLES);
+    let Some(total) = total else {
         return Err(PlanError::TooManySamples {
-            cells,
+            cells: n_cells,
+            cases: spec.cases,
             reps: spec.reps,
-            total,
+            total: n_cells.saturating_mul(spec.cases).saturating_mul(spec.reps),
         });
-    }
+    };
 
     let mut out = Vec::with_capacity(total as usize);
     let mut sample_id = 0u64;
-    for _ in 0..spec.reps {
-        for (payload, scale, condition, seed, target_delta) in &matrix {
-            out.push(PlannedSample {
-                sample_id,
-                payload: *payload,
-                scale: *scale,
-                seed: *seed,
-                target_delta: *target_delta,
-                condition: condition.clone(),
+    for (payload, scale, condition) in &cells {
+        for _case in 0..spec.cases {
+            // A DISTINCT case: its own seed and (for armed stages) its own seeded-random
+            // target, drawn once here — above the rep loop, so a repetition repeats the
+            // INPUT (same seed + target) and forms the same-input replay group, while the
+            // NEXT case draws a fresh target. The draw happens whether or not the stage uses
+            // a target, so adding a range does not shift the seed stream.
+            let draw = rng.next_u64();
+            let target_delta = spec.target_delta_range.map(|(lo, hi)| {
+                if hi <= lo {
+                    lo
+                } else {
+                    // The inclusive range [lo, hi] has `hi - lo + 1` values. `+ 1` overflows
+                    // only when the span is the whole of u64; then every u64 is in range, so
+                    // the draw itself is the value. `lo + draw % width` cannot overflow.
+                    match (hi - lo).checked_add(1) {
+                        Some(width) => lo + draw % width,
+                        None => draw,
+                    }
+                }
             });
-            sample_id += 1;
+            let seed = rng.next_u64();
+            for _rep in 0..spec.reps {
+                out.push(PlannedSample {
+                    sample_id,
+                    payload: *payload,
+                    scale: *scale,
+                    seed,
+                    target_delta,
+                    condition: condition.clone(),
+                });
+                sample_id += 1;
+            }
         }
     }
     Ok(out)
@@ -175,6 +195,7 @@ mod tests {
             payloads: vec![Payload::StraightLine, Payload::Svc],
             scales: vec![Scale::Smoke, Scale::S1e6],
             conditions: vec!["pinned-solo".into(), "co-tenant-load".into()],
+            cases: 1,
             reps: 2,
             seed: 0xABCD,
             target_delta_range: Some((1, 100_000)),
@@ -206,34 +227,68 @@ mod tests {
         // "≥1,000 same-seed repetitions bit-identical" gate could go green without a
         // single pair of identical executions being compared.
         let mut s = spec();
+        s.cases = 1;
         s.reps = 3;
         let p = plan(&s).unwrap();
         let cells = s.payloads.len() * s.scales.len() * s.conditions.len();
         assert_eq!(p.len(), cells * 3);
 
-        for (i, sample) in p.iter().enumerate() {
-            let first = &p[i % cells];
-            assert_eq!(sample.payload, first.payload);
-            assert_eq!(sample.scale, first.scale);
-            assert_eq!(sample.condition, first.condition);
-            assert_eq!(
-                sample.seed,
-                first.seed,
-                "repetition {} of cell {} must carry the SAME seed",
-                i / cells,
-                i % cells
-            );
-            assert_eq!(
-                sample.target_delta, first.target_delta,
-                "and the same target: a re-drawn deadline is a different experiment"
-            );
+        // Each case's `reps` samples are consecutive and must repeat the SAME input.
+        for chunk in p.chunks(3) {
+            let first = &chunk[0];
+            for sample in chunk {
+                assert_eq!(sample.payload, first.payload);
+                assert_eq!(sample.scale, first.scale);
+                assert_eq!(sample.condition, first.condition);
+                assert_eq!(
+                    sample.seed, first.seed,
+                    "a repetition of a case must carry the SAME seed"
+                );
+                assert_eq!(
+                    sample.target_delta, first.target_delta,
+                    "and the same target: a re-drawn deadline is a different experiment"
+                );
+            }
         }
 
-        // And the matrix itself is still varied — the fix must not collapse every
-        // cell onto one seed.
+        // And the cells themselves are still varied — the fix must not collapse every
+        // cell onto one seed. (One case per cell here, so the first sample of each cell.)
         let distinct: std::collections::BTreeSet<u64> =
-            p.iter().take(cells).map(|s| s.seed).collect();
+            p.iter().step_by(3).take(cells).map(|s| s.seed).collect();
         assert_eq!(distinct.len(), cells, "each cell draws its own seed");
+    }
+
+    #[test]
+    fn distinct_cases_draw_distinct_targets_but_reps_repeat_them() {
+        // The armed floor's whole point: a distribution of distinct seeded-random targets,
+        // not one delta cloned to the floor. `cases` distinct draws per cell, each repeated
+        // `reps` times for replay identity.
+        let mut s = spec();
+        s.cases = 4;
+        s.reps = 2;
+        let p = plan(&s).unwrap();
+        // The first cell owns the first cases × reps = 8 samples.
+        let first_cell = &p[0..8];
+        // The 4 cases → 4 distinct (seed, target) pairs; each appears exactly `reps` times.
+        let cases: std::collections::BTreeSet<(u64, Option<u64>)> = first_cell
+            .iter()
+            .map(|s| (s.seed, s.target_delta))
+            .collect();
+        assert_eq!(
+            cases.len(),
+            4,
+            "4 cases draw 4 distinct (seed, target) pairs"
+        );
+        for chunk in first_cell.chunks(2) {
+            assert_eq!(
+                chunk[0].seed, chunk[1].seed,
+                "each case's reps share the seed"
+            );
+            assert_eq!(
+                chunk[0].target_delta, chunk[1].target_delta,
+                "each case's reps share the target"
+            );
+        }
     }
 
     #[test]

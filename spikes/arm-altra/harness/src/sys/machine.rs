@@ -1084,28 +1084,39 @@ impl Machine {
             redist.push(SGI_BASE + 0x0400 + 4 * w);
         }
 
-        // SPI (IDs 32+) state, in the distributor. Word `n` (n≥1) of a bitmap register
-        // covers IDs `32*n .. 32*n+31`; words 1..2 span IDs 32..95. Beyond enable/pending/
-        // active, group/config/priority AND the routing register (which PE a pending SPI
-        // targets) are injection-relevant.
+        // SPI (IDs 32+) state, in the distributor, over the FULL IMPLEMENTED range. A fixed
+        // 32..95 window (or IROUTER only for 32..47) let two states differing in a higher
+        // SPI's routing/enable/pending produce the same digest — AA-6 replay identity passing
+        // for non-equivalent machines. The implemented count comes from GICD_TYPER
+        // (`32*(ITLinesNumber+1)` lines, max 1020); TYPER is hashed too, since the range is
+        // itself part of the state.
+        let typer = self.vgic_reg(kvm::DEV_ARM_VGIC_GRP_DIST_REGS, 0x0004)?;
+        let num_lines = (32 * ((u64::from(typer) & 0x1f) + 1)).min(1020);
+
         let mut dist: Vec<u64> = vec![
             0x0000, // GICD_CTLR
-            0x0084, 0x0088, // GICD_IGROUPR1..2   — group
-            0x0D04, 0x0D08, // GICD_IGRPMODR1..2  — group modifier
-            0x0104, 0x0108, // GICD_ISENABLER1..2 — enable
-            0x0204, 0x0208, // GICD_ISPENDR1..2   — pending
-            0x0304, 0x0308, // GICD_ISACTIVER1..2 — active
-            0x0C08, 0x0C0C, 0x0C10, 0x0C14, // GICD_ICFGR2..5 — config (IDs 32..95)
+            0x0004, // GICD_TYPER — the implemented range (state in its own right)
         ];
-        // GICD_IPRIORITYR for IDs 32..95 — one byte per interrupt → words 0x0420..=0x045C.
-        for id in (32u64..96).step_by(4) {
-            dist.push(0x0400 + id);
+        // Bitmap registers: one word per 32 IDs; word n (n≥1) covers SPIs 32n..32n+31.
+        for n in 1..(num_lines / 32) {
+            let w = 4 * n;
+            dist.push(0x0080 + w); // GICD_IGROUPR<n>   — group
+            dist.push(0x0D00 + w); // GICD_IGRPMODR<n>  — group modifier
+            dist.push(0x0100 + w); // GICD_ISENABLER<n> — enable
+            dist.push(0x0200 + w); // GICD_ISPENDR<n>   — pending
+            dist.push(0x0300 + w); // GICD_ISACTIVER<n> — active
         }
-        // GICD_IROUTER for IDs 32..47 — 64-bit per SPI, read as two 32-bit halves. Routing
-        // decides which PE a pending SPI is delivered to, so it is injection-relevant state.
-        for id in 32u64..48 {
-            dist.push(0x6000 + 8 * id); // IROUTER<id> low half
-            dist.push(0x6000 + 8 * id + 4); // IROUTER<id> high half
+        // GICD_ICFGR: 2 bits per ID, 16 IDs per word; words 0..1 are private, 2.. are SPIs.
+        for n in 2..(num_lines / 16) {
+            dist.push(0x0C00 + 4 * n); // GICD_ICFGR<n> — config
+        }
+        // GICD_IPRIORITYR (1 byte/ID, per-word) and GICD_IROUTER (64-bit/ID), every SPI.
+        for id in 32..num_lines {
+            if id % 4 == 0 {
+                dist.push(0x0400 + id); // GICD_IPRIORITYR word covering IDs id..id+3
+            }
+            dist.push(0x6000 + 8 * id); // GICD_IROUTER<id> low half
+            dist.push(0x6000 + 8 * id + 4); // GICD_IROUTER<id> high half
         }
 
         let mut out = Vec::with_capacity((redist.len() + dist.len()) * 4);
@@ -1712,4 +1723,113 @@ fn probe_writable_id_registers_on_vcpu(
     // No feature field could be reduced and read back: this kernel does not accept a
     // below-host ID-register model, so AA-6's synthetic feature install is impossible here.
     Ok(false)
+}
+
+/// The host feature ID registers a guest would see, read from a disposable VM's vCPU — the
+/// values AA-0's `ecv`/`lse`/`pmuver`/`sve`/`nested-virt` rows and the `identity` block are
+/// derived from. **Untested on silicon.**
+#[derive(Clone, Copy, Debug)]
+pub struct HostIdRegisters {
+    /// `MIDR_EL1`.
+    pub midr: u64,
+    /// `ID_AA64ISAR0_EL1` (Atomic/LSE in bits[23:20]).
+    pub id_aa64isar0: u64,
+    /// `ID_AA64MMFR0_EL1` (ECV in bits[63:60]).
+    pub id_aa64mmfr0: u64,
+    /// `ID_AA64MMFR1_EL1` (VH/VHE in bits[11:8]).
+    pub id_aa64mmfr1: u64,
+    /// `ID_AA64MMFR2_EL1` (NV / nested virt in bits[35:32]).
+    pub id_aa64mmfr2: u64,
+    /// `ID_AA64DFR0_EL1` (PMUVer in bits[11:8]).
+    pub id_aa64dfr0: u64,
+    /// `ID_AA64PFR0_EL1` (SVE in bits[35:32]).
+    pub id_aa64pfr0: u64,
+}
+
+/// Read [`HostIdRegisters`] from a fresh, disposable VM + vCPU.
+///
+/// # Errors
+/// [`SysError`] if the VM/vCPU could not be created/initialised or a register could not be
+/// read.
+pub fn read_host_id_registers() -> Result<HostIdRegisters, SysError> {
+    let kvm_fd = open_kvm()?;
+    // SAFETY: `kvm_fd` is a valid /dev/kvm descriptor; KVM_CREATE_VM returns a VM fd.
+    let vm_fd = unsafe { libc::ioctl(kvm_fd, kvm::CREATE_VM as libc::c_ulong, 0_u64) };
+    if vm_fd < 0 {
+        let e = err("ioctl(KVM_CREATE_VM)");
+        // SAFETY: `kvm_fd` is valid and owned here.
+        unsafe { libc::close(kvm_fd) };
+        return Err(e);
+    }
+    let out = read_host_id_registers_on_vm(vm_fd);
+    // SAFETY: both descriptors are valid and owned here.
+    unsafe {
+        libc::close(vm_fd);
+        libc::close(kvm_fd);
+    }
+    out
+}
+
+fn read_host_id_registers_on_vm(vm_fd: libc::c_int) -> Result<HostIdRegisters, SysError> {
+    // SAFETY: `vm_fd` is valid; KVM_CREATE_VCPU takes a vcpu index and returns a fd.
+    let vcpu_fd = unsafe { libc::ioctl(vm_fd, kvm::CREATE_VCPU as libc::c_ulong, 0_u64) };
+    if vcpu_fd < 0 {
+        return Err(err("ioctl(KVM_CREATE_VCPU)"));
+    }
+    let out = read_host_id_registers_on_vcpu(vm_fd, vcpu_fd);
+    // SAFETY: `vcpu_fd` is valid and owned here.
+    unsafe { libc::close(vcpu_fd) };
+    out
+}
+
+fn read_host_id_registers_on_vcpu(
+    vm_fd: libc::c_int,
+    vcpu_fd: libc::c_int,
+) -> Result<HostIdRegisters, SysError> {
+    let mut init = KvmVcpuInit::default();
+    // SAFETY: `vm_fd` is valid; KVM_ARM_PREFERRED_TARGET fills `init`.
+    if unsafe {
+        libc::ioctl(
+            vm_fd,
+            kvm::ARM_PREFERRED_TARGET as libc::c_ulong,
+            &raw mut init,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET)"));
+    }
+    // SAFETY: `vcpu_fd` is valid; `init` is fully initialised by the call above.
+    if unsafe {
+        libc::ioctl(
+            vcpu_fd,
+            kvm::ARM_VCPU_INIT as libc::c_ulong,
+            &raw const init,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
+    }
+
+    let read = |id: u64, call: &'static str| -> Result<u64, SysError> {
+        let mut value: u64 = 0;
+        let get = KvmOneReg {
+            id,
+            addr: (&raw mut value) as u64,
+        };
+        // SAFETY: `vcpu_fd` is valid; `get.addr` points at a live u64 the kernel writes.
+        if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get) } < 0 {
+            return Err(err(call));
+        }
+        Ok(value)
+    };
+
+    Ok(HostIdRegisters {
+        midr: read(kvm::REG_MIDR_EL1, "GET_ONE_REG(MIDR_EL1)")?,
+        id_aa64isar0: read(kvm::REG_ID_AA64ISAR0_EL1, "GET_ONE_REG(ID_AA64ISAR0_EL1)")?,
+        id_aa64mmfr0: read(kvm::REG_ID_AA64MMFR0_EL1, "GET_ONE_REG(ID_AA64MMFR0_EL1)")?,
+        id_aa64mmfr1: read(kvm::REG_ID_AA64MMFR1_EL1, "GET_ONE_REG(ID_AA64MMFR1_EL1)")?,
+        id_aa64mmfr2: read(kvm::REG_ID_AA64MMFR2_EL1, "GET_ONE_REG(ID_AA64MMFR2_EL1)")?,
+        id_aa64dfr0: read(kvm::REG_ID_AA64DFR0_EL1, "GET_ONE_REG(ID_AA64DFR0_EL1)")?,
+        id_aa64pfr0: read(kvm::REG_ID_AA64PFR0_EL1, "GET_ONE_REG(ID_AA64PFR0_EL1)")?,
+    })
 }
