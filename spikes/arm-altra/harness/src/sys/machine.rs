@@ -1119,7 +1119,29 @@ impl Machine {
             dist.push(0x6000 + 8 * id + 4); // GICD_IROUTER<id> high half
         }
 
-        let mut out = Vec::with_capacity((redist.len() + dist.len()) * 4);
+        // The CPU-INTERFACE state (ICC_* system registers): the priority mask, group
+        // enables, and active-priority registers that decide HOW a pending interrupt is
+        // delivered. These live in KVM's CPU_SYSREGS save group — not the redistributor or
+        // distributor groups, and not the generic vCPU register list — so two runs differing
+        // only in CPU-interface interrupt state would otherwise share an AA-6 digest. The
+        // attr low bits are the register's `(op0,op1,crn,crm,op2)` encoding (mpidr 0). Only
+        // the always-present registers are read (AP0R1.. depend on the priority-bit count).
+        const fn icc(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64 {
+            (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2
+        }
+        let cpu_sysregs: &[u64] = &[
+            icc(3, 0, 4, 6, 0),   // ICC_PMR_EL1     — priority mask
+            icc(3, 0, 12, 8, 3),  // ICC_BPR0_EL1
+            icc(3, 0, 12, 8, 4),  // ICC_AP0R0_EL1   — active priorities (group 0)
+            icc(3, 0, 12, 9, 0),  // ICC_AP1R0_EL1   — active priorities (group 1)
+            icc(3, 0, 12, 12, 3), // ICC_BPR1_EL1
+            icc(3, 0, 12, 12, 4), // ICC_CTLR_EL1
+            icc(3, 0, 12, 12, 5), // ICC_SRE_EL1
+            icc(3, 0, 12, 12, 6), // ICC_IGRPEN0_EL1 — group 0 enable
+            icc(3, 0, 12, 12, 7), // ICC_IGRPEN1_EL1 — group 1 enable
+        ];
+
+        let mut out = Vec::with_capacity((redist.len() + dist.len()) * 4 + cpu_sysregs.len() * 8);
         for &offset in &redist {
             out.extend_from_slice(
                 &self
@@ -1134,7 +1156,40 @@ impl Machine {
                     .to_le_bytes(),
             );
         }
+        for &attr in cpu_sysregs {
+            out.extend_from_slice(
+                &self
+                    .vgic_reg64(kvm::DEV_ARM_VGIC_GRP_CPU_SYSREGS, attr)?
+                    .to_le_bytes(),
+            );
+        }
         Ok(out)
+    }
+
+    /// Read one 64-bit vGIC CPU-interface register through `KVM_GET_DEVICE_ATTR`. The
+    /// CPU_SYSREGS group's registers are 64-bit EL1 system registers (unlike the 32-bit
+    /// DIST/REDIST offsets [`Machine::vgic_reg`] reads).
+    fn vgic_reg64(&self, group: u32, attr: u64) -> Result<u64, SysError> {
+        let mut value: u64 = 0;
+        let da = KvmDeviceAttr {
+            flags: 0,
+            group,
+            attr,
+            addr: (&raw mut value) as u64,
+        };
+        // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u64 on this frame, which is
+        // what KVM_GET_DEVICE_ATTR's CPU_SYSREGS accessor writes.
+        if unsafe {
+            libc::ioctl(
+                self.vgic_fd,
+                kvm::GET_DEVICE_ATTR as libc::c_ulong,
+                &raw const da,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_GET_DEVICE_ATTR, vGIC CPU sysregs)"));
+        }
+        Ok(value)
     }
 
     /// Read one 32-bit vGIC save-register through `KVM_GET_DEVICE_ATTR`.

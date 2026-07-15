@@ -342,7 +342,7 @@ fn run_stage_checks(
     check_skid(run_set, records, out);
     check_mechanism(run_set, records, out);
     check_perf(run_set, records, out);
-    check_image_pins(run_set, out);
+    check_image_pins(run_set, records, out);
     check_pinning(run_set, out);
     check_params_mode(records, out);
     check_clockpage_mode(run_set, records, out);
@@ -1564,36 +1564,88 @@ fn check_perf(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
     );
 }
 
-fn check_image_pins(run_set: &RunSet, out: &mut Vec<Outcome>) {
+/// The final path component of an image pin's `path` — the artifact's file name, which the
+/// harness sets to the payload class name (`<payload_dir>/<name>`).
+fn image_file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path).trim()
+}
+
+fn check_image_pins(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    let mut problems: Vec<String> = Vec::new();
+
+    if run_set.images.is_empty() {
+        problems.push("the manifest pins no boot artifacts: nothing was attested".to_string());
+    }
+    // §Evidence integrity #3: a hash recorded but not verified before boot is the anti-pattern.
     let unverified: Vec<&str> = run_set
         .images
         .iter()
         .filter(|i| !i.verified_before_boot)
         .map(|i| i.path.as_str())
         .collect();
-    if run_set.images.is_empty() {
-        out.push(fail(
-            CheckId::ImagePins,
-            "the manifest pins no boot artifacts: nothing was attested",
-        ));
-    } else if unverified.is_empty() {
-        out.push(pass(
-            CheckId::ImagePins,
-            format!(
-                "all {} boot artifacts verified before boot",
-                run_set.images.len()
-            ),
-        ));
-    } else {
-        out.push(fail(
-            CheckId::ImagePins,
-            format!(
-                "{} boot artifact(s) recorded a hash but were not verified before boot: {}",
-                unverified.len(),
-                unverified.join(", ")
-            ),
+    if !unverified.is_empty() {
+        problems.push(format!(
+            "{} boot artifact(s) recorded a hash but were not verified before boot: {}",
+            unverified.len(),
+            unverified.join(", ")
         ));
     }
+
+    // The host kernel is an exercised boot artifact: a VERIFIED image pin's hash must equal
+    // mechanism.host_kernel_sha256, binding the kernel identity in the mechanism block to a
+    // pin rather than letting it be a free-floating string.
+    let kernel_hash = normalise_hash(&run_set.mechanism.host_kernel_sha256);
+    if !kernel_hash.is_empty()
+        && !run_set
+            .images
+            .iter()
+            .any(|i| i.verified_before_boot && normalise_hash(&i.sha256) == kernel_hash)
+    {
+        problems.push(format!(
+            "no verified image pin matches mechanism.host_kernel_sha256 ({}…): the host kernel \
+             is an exercised boot artifact and must be pinned and verified, not merely named",
+            kernel_hash.chars().take(16).collect::<String>()
+        ));
+    }
+
+    // Every EXERCISED payload class must have its own verified image pin — the check used to
+    // pass on a single verified image, so a run of every class (including LinuxGuest) could
+    // retain only the host-kernel pin. The harness pins one image per loaded payload with the
+    // class name as the file name.
+    let mut exercised: Vec<&str> = records.iter().map(|r| r.payload.name()).collect();
+    exercised.sort_unstable();
+    exercised.dedup();
+    let mut unpinned: Vec<&str> = exercised
+        .iter()
+        .copied()
+        .filter(|name| {
+            !run_set
+                .images
+                .iter()
+                .any(|i| i.verified_before_boot && image_file_name(&i.path) == *name)
+        })
+        .collect();
+    unpinned.sort_unstable();
+    if !unpinned.is_empty() {
+        problems.push(format!(
+            "{} exercised payload class(es) have no verified image pin identifying them: {} — \
+             every exercised boot/payload artifact must be pinned by content, not inferred from \
+             one image standing in for all",
+            unpinned.len(),
+            unpinned.join(", ")
+        ));
+    }
+
+    verdict(
+        CheckId::ImagePins,
+        &problems,
+        format!(
+            "all {} boot artifacts verified, the host kernel pinned, every exercised artifact \
+             bound",
+            run_set.images.len()
+        ),
+        out,
+    );
 }
 
 /// Pinning — and the one stage allowed to be without it.
@@ -1842,22 +1894,29 @@ fn rep_key(r: &RunRecord) -> RepKey {
 /// step states can run on to the same final state, so it cannot establish step identity.
 /// For an armed AA-3 landing it is the **landed** digest, for the same reason; for an
 /// unarmed counting run there is no landing and the final state is the thing to compare.
-fn comparison_digest(r: &RunRecord) -> &str {
+///
+/// It is STAGE-AWARE: an armed AA-3 landing compares the state AT THE LANDING (the injection
+/// Moment), but AA-6 compares the FINAL `state_digest` — its acceptance is that the whole
+/// event, INCLUDING processing the injected interrupt, is replay-identical, and two reps can
+/// land identically at the injection Moment then diverge handling the event. Comparing
+/// `landed_digest` for AA-6 would pass that divergence.
+fn comparison_digest(stage: Stage, r: &RunRecord) -> &str {
     if let Some(s) = &r.step {
         return s.step_digest.trim();
     }
     match &r.overflow {
-        Some(o) if o.armed && o.deliveries >= 1 => o.landed_digest.trim(),
+        Some(o) if o.armed && o.deliveries >= 1 && stage != Stage::Aa6 => o.landed_digest.trim(),
         _ => r.state_digest.trim(),
     }
 }
 
 /// Whether a record is **acceptance-bearing** for a replay-identity stage: the record
 /// whose replay identity IS the stage's acceptance. At AA-2 that is a stepped record (the
-/// step-moment state); at AA-3 an armed, delivered landing (the landed state). A record
-/// that is neither — a counting run, an unarmed sample — is not what the stage certifies,
-/// so its being a singleton is not a gap. AA-6 rests on replay identity too but over the
-/// ordinary state digest of every record, so it is covered by the existing per-group
+/// step-moment state); at AA-3 an armed, delivered landing (the landed state); at AA-5 the
+/// `clock-page` and Linux-guest records whose same-seed runs must be bit-identical. A record
+/// that is none of these — a counting run at AA-3, an unarmed sample — is not what the stage
+/// certifies, so its being a singleton is not a gap. AA-6 rests on replay identity too but
+/// over the ordinary state digest of every record, so it is covered by the existing per-group
 /// divergence check, not by this per-class repetition requirement.
 fn is_acceptance_bearing(stage: Stage, r: &RunRecord) -> bool {
     match stage {
@@ -1866,6 +1925,9 @@ fn is_acceptance_bearing(stage: Stage, r: &RunRecord) -> bool {
             .overflow
             .as_ref()
             .is_some_and(|o| o.armed && o.deliveries >= 1),
+        // AA-5's binding acceptance is bit-identical same-seed clock-page runs and two
+        // identical Linux-guest runs — both must actually be REPEATED to establish it.
+        Stage::Aa5 => matches!(r.payload, Payload::ClockPage | Payload::LinuxGuest),
         _ => false,
     }
 }
@@ -1907,7 +1969,7 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
 
     let mut blank: Vec<u64> = records
         .iter()
-        .filter(|r| comparison_digest(r).is_empty())
+        .filter(|r| comparison_digest(stage, r).is_empty())
         .map(|r| r.sample_id)
         .collect();
     blank.sort_unstable();
@@ -1928,7 +1990,7 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
         groups
             .entry(rep_key(r))
             .or_default()
-            .entry(comparison_digest(r).to_string())
+            .entry(comparison_digest(stage, r).to_string())
             .or_default()
             .push(r.sample_id);
     }
@@ -1972,17 +2034,18 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
         return;
     }
 
-    // AA-2/AA-3 rest on the ACCEPTANCE-BEARING groups alone (stepped states / armed
-    // landings), because the existential `compared > 0` above is not enough: one stepped
-    // record per transition (each a singleton group) beside two duplicate UNSTEPPED records
-    // makes `compared == 1` and would pass, though not one stepped state was ever replayed;
-    // likewise a unique armed AA-3 landing can ride beside a repeated unarmed group. So a
-    // repeated unrelated group cannot stand in for the ones the stage certifies.
-    if matches!(stage, Stage::Aa2 | Stage::Aa3) {
-        let what = if stage == Stage::Aa2 {
-            "stepped"
-        } else {
-            "armed-landing"
+    // AA-2/AA-3/AA-5 rest on the ACCEPTANCE-BEARING groups alone (stepped states / armed
+    // landings / clock-page + Linux-guest runs), because the existential `compared > 0` above
+    // is not enough: one stepped record per transition (each a singleton group) beside two
+    // duplicate UNSTEPPED records makes `compared == 1` and would pass, though not one stepped
+    // state was ever replayed; likewise a unique armed AA-3 landing or a single work-derived
+    // clock-page record. So a repeated unrelated group cannot stand in for the ones the stage
+    // certifies.
+    if matches!(stage, Stage::Aa2 | Stage::Aa3 | Stage::Aa5) {
+        let what = match stage {
+            Stage::Aa2 => "stepped",
+            Stage::Aa3 => "armed-landing",
+            _ => "clock-page/linux-guest",
         };
         let mut bearing_groups: BTreeMap<RepKey, Vec<u64>> = BTreeMap::new();
         for r in records.iter().filter(|r| is_acceptance_bearing(stage, r)) {
@@ -2066,12 +2129,12 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
 }
 
 /// Whether a stage's acceptance **is** replay identity: AA-2 (replay-identical *stepped*
-/// state — the step-moment digest, [`comparison_digest`]), AA-3 (replay-identical landed
-/// state) and AA-6 (≥1,000 same-input bit-identical). At those, comparing zero digests is
-/// not a pass, so a run with no repeated group reads NOT-REQUESTED. AA-1/AA-4/AA-5 do not
-/// rest on it.
+/// state), AA-3 (replay-identical landed state), AA-5 (bit-identical same-seed clock-page and
+/// Linux-guest runs) and AA-6 (≥1,000 same-input bit-identical). At those, comparing zero
+/// digests is not a pass, so a run with no repeated group reads NOT-REQUESTED. AA-1/AA-4 do
+/// not rest on it.
 const fn requires_replay_identity(stage: Stage) -> bool {
-    matches!(stage, Stage::Aa2 | Stage::Aa3 | Stage::Aa6)
+    matches!(stage, Stage::Aa2 | Stage::Aa3 | Stage::Aa5 | Stage::Aa6)
 }
 
 /// AA-2 exists to *characterize single-stepping* — does one step retire exactly one
@@ -2268,19 +2331,33 @@ fn check_aa6_matrix(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>)
     if stage != Stage::Aa6 {
         return;
     }
-    let present: BTreeSet<Payload> = records.iter().map(|r| r.payload).collect();
+    // Coverage is from ARMED, DELIVERED records — the ones that actually INJECTED an event.
+    // AA-6 certifies determinism UNDER injection; a class present only as UNARMED records
+    // injected nothing, so counting payload labels alone let a run supply repeated unarmed
+    // records for the required classes, one armed class, `--min-reps`/`--min-armed-overflows
+    // 1`, and pass without injecting across the matrix. Arming across the matrix is AA-6's
+    // invariant, enforced here rather than by an (undefined) numeric armed floor.
+    let injected: BTreeSet<Payload> = records
+        .iter()
+        .filter(|r| {
+            r.overflow
+                .as_ref()
+                .is_some_and(|o| o.armed && o.deliveries >= 1)
+        })
+        .map(|r| r.payload)
+        .collect();
     let required = required_aa6_classes();
     let missing: Vec<Payload> = required
         .iter()
         .copied()
-        .filter(|p| !present.contains(p))
+        .filter(|p| !injected.contains(p))
         .collect();
     if missing.is_empty() {
         out.push(pass(
             CheckId::Aa6Matrix,
             format!(
-                "all {} required classes present in the AA-6 determinism matrix (payloads + \
-                 the AA-5 Linux guest)",
+                "all {} required classes have an injected (armed, delivered) record in the AA-6 \
+                 determinism matrix (payloads + the AA-5 Linux guest)",
                 required.len()
             ),
         ));
@@ -2289,10 +2366,11 @@ fn check_aa6_matrix(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>)
         out.push(fail(
             CheckId::Aa6Matrix,
             format!(
-                "AA-6's determinism matrix is incomplete: missing {}. The rep floor only \
-                 grades inputs that are present, so a run of only the payloads it happens to \
-                 contain (e.g. 1000 copies of one) would satisfy --min-reps while the mandated \
-                 matrix is absent — the matrix must be verified, not inferred from what showed up.",
+                "AA-6's determinism matrix is incomplete: {} class(es) have no injected (armed, \
+                 delivered) record — {}. AA-6 certifies determinism UNDER injection, so a class \
+                 present only as unarmed records injected nothing; the matrix must be verified \
+                 from what was actually injected, not from payload labels.",
+                missing.len(),
                 names.join(", ")
             ),
         ));
@@ -2382,14 +2460,15 @@ fn check_armed_floor(stage: Stage, floors: &Floors, armed: u64, out: &mut Vec<Ou
     // emit no floor outcome at all, and the mechanism and skid checks have nothing to
     // inspect — so AA-3 would pass without testing a single deadline. The requirement
     // is enforced on the STAGE, independent of what the records happened to contain.
-    // AA-1 is certified BY its armed floor too (≥1000000 armed overflows for the skid/count
-    // distribution), not only the patched landing stages. A counting-only AA-1(b) run is a
-    // legitimate SUB-EXPERIMENT, but it must never read as an AA-1 STAGE PASS: emitting no
-    // floor outcome at all let `accept-counting` exit RESULT: PASS while reporting zero armed
-    // overflows. So any stage with a normative armed floor requires one, distinguishing the
-    // counting sub-experiment (NOT-REQUESTED) from a stage acceptance.
-    let requires_armed =
-        requires_patched_mechanism(stage) || normative_armed_floor(stage).is_some();
+    // A stage requires an armed-overflow FLOOR only if it DEFINES one: AA-1 (skid/count
+    // distribution) and AA-3 (exact landings) both land ≥1000000 armed overflows. AA-4 and
+    // AA-6 ride the patched mechanism but define NO armed-overflow floor — AA-6's floor is
+    // ≥1000 repetitions and its arming is a MATRIX invariant (every class must have an
+    // injected record, `check_aa6_matrix`), NOT a numeric floor. Requiring `--min-armed-
+    // overflows` there made valid AA-6 evidence read INCOMPLETE unless the operator invented
+    // an undocumented number. (A counting-only AA-1(b) run still reads NOT-REQUESTED here — a
+    // distinguished sub-experiment verdict, never a silent stage PASS.)
+    let requires_armed = normative_armed_floor(stage).is_some();
     match floors.min_armed_overflows {
         // A floor of zero is not a floor: `armed >= 0` holds for a run that armed no
         // deadline at all, so `--min-armed-overflows 0` is exactly the vacuous pass the
@@ -2442,15 +2521,12 @@ fn check_armed_floor(stage: Stage, floors: &Floors, armed: u64, out: &mut Vec<Ou
                  stage-level acceptance — pass the floor explicitly to certify the stage."
             ),
         )),
-        None if armed > 0 => out.push(not_requested(
-            CheckId::ArmedOverflowFloor,
-            format!(
-                "the records carry {armed} armed overflow(s) but no --min-armed-overflows floor \
-                 was requested: this verdict cannot be read as accepting one. The AA-1/AA-3 \
-                 acceptance floor is 1000000 cumulative — pass it explicitly, so the number the \
-                 disposition rests on is visible in the command that produced it"
-            ),
-        )),
+        // No floor requested for a stage that does not DEFINE an armed-overflow floor (AA-2,
+        // AA-4, AA-5, AA-6). Armed records here are legitimate and their determinism is
+        // enforced by the stage's own invariant — AA-6's matrix (`check_aa6_matrix` requires
+        // an injected record per class), AA-4's LSE contract, AA-5's replay identity — not by
+        // a numeric armed floor. Emit no floor outcome: requiring one made valid AA-6 evidence
+        // read INCOMPLETE against an undefined number.
         None => {}
     }
 }
@@ -4070,6 +4146,172 @@ mod tests {
         let mut out = Vec::new();
         check_replay_identity(Stage::Aa3, &all_paired, &mut out);
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Pass));
+    }
+
+    #[test]
+    fn aa6_replay_compares_the_final_state_not_the_landed_digest() {
+        // Two AA-6 injections of one input land IDENTICALLY at the injection Moment (same
+        // landed_digest) but diverge PROCESSING the event (different state_digest). AA-6's
+        // acceptance is the final state, so it must FAIL; AA-3 (which compares the landing)
+        // would pass the same records — the whole point of selecting the digest by stage.
+        let mk = |id: u64, state: &str| {
+            let mut r = a_record_seeded(id, 7);
+            if let Some(o) = r.overflow.as_mut() {
+                o.landed_digest = "sha256:landed".into();
+            }
+            r.state_digest = state.to_string();
+            r
+        };
+        let mut out = Vec::new();
+        check_replay_identity(
+            Stage::Aa6,
+            &[mk(0, "sha256:final-a"), mk(1, "sha256:final-b")],
+            &mut out,
+        );
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::Fail),
+            "identical landings that diverge processing the event are not AA-6 replay-identical"
+        );
+        let mut out = Vec::new();
+        check_replay_identity(
+            Stage::Aa3,
+            &[mk(0, "sha256:final-a"), mk(1, "sha256:final-b")],
+            &mut out,
+        );
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::Pass),
+            "AA-3 compares the landed digest, which is identical here"
+        );
+    }
+
+    #[test]
+    fn aa5_requires_repeated_clock_page_groups() {
+        let clock = |id: u64, seed: u64, state: &str| {
+            let mut r = a_record_seeded(id, seed);
+            r.payload = Payload::ClockPage;
+            r.overflow = None; // AA-5 clock-page is counting-mode
+            r.state_digest = state.to_string();
+            r
+        };
+        // A single work-derived clock-page record: nothing to replay → NOT-REQUESTED, not PASS.
+        let mut out = Vec::new();
+        check_replay_identity(Stage::Aa5, &[clock(0, 1, "sha256:cp")], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::NotRequested),
+            "a single clock-page record has no repeated group — AA-5 cannot certify on it"
+        );
+        // Two bit-identical reps of the same input → PASS.
+        let mut out = Vec::new();
+        check_replay_identity(
+            Stage::Aa5,
+            &[clock(0, 7, "sha256:same"), clock(1, 7, "sha256:same")],
+            &mut out,
+        );
+        assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Pass));
+        // Two divergent reps → FAIL.
+        let mut out = Vec::new();
+        check_replay_identity(
+            Stage::Aa5,
+            &[clock(0, 7, "sha256:a"), clock(1, 7, "sha256:b")],
+            &mut out,
+        );
+        assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
+    }
+
+    #[test]
+    fn aa6_matrix_counts_injected_records_not_payload_labels() {
+        let required = required_aa6_classes();
+        let full_armed = || -> Vec<RunRecord> {
+            required
+                .iter()
+                .enumerate()
+                .map(|(i, &p)| {
+                    let mut r = a_record(i as u64); // armed + delivered
+                    r.payload = p;
+                    r
+                })
+                .collect()
+        };
+        // Every required class has an injected (armed, delivered) record → PASS.
+        let mut out = Vec::new();
+        check_aa6_matrix(Stage::Aa6, &full_armed(), &mut out);
+        assert_eq!(status(&out, CheckId::Aa6Matrix), Some(Status::Pass));
+        // Make one required class present only as an UNARMED record — it injected nothing.
+        let mut records = full_armed();
+        for r in &mut records {
+            if r.payload == Payload::BranchDense {
+                r.overflow = None;
+            }
+        }
+        let mut out = Vec::new();
+        check_aa6_matrix(Stage::Aa6, &records, &mut out);
+        assert_eq!(
+            status(&out, CheckId::Aa6Matrix),
+            Some(Status::Fail),
+            "a class present only as unarmed records injected nothing across the matrix"
+        );
+    }
+
+    #[test]
+    fn aa6_armed_run_needs_no_armed_overflow_floor() {
+        // AA-6's floor is ≥1000 reps and its arming is a matrix invariant, NOT a numeric armed
+        // floor. An armed AA-6 run with no --min-armed-overflows must emit NO floor outcome.
+        let floors = Floors {
+            min_armed_overflows: None,
+            min_reps: Some(4),
+            sub_normative: true,
+        };
+        let mut out = Vec::new();
+        check_armed_floor(Stage::Aa6, &floors, 40, &mut out);
+        assert_eq!(
+            status(&out, CheckId::ArmedOverflowFloor),
+            None,
+            "AA-6 defines no armed floor — armed records without one are not INCOMPLETE"
+        );
+        // AA-1, which DOES define one, still reads NOT-REQUESTED without a floor.
+        let mut out = Vec::new();
+        check_armed_floor(Stage::Aa1, &floors, 40, &mut out);
+        assert_eq!(
+            status(&out, CheckId::ArmedOverflowFloor),
+            Some(Status::NotRequested)
+        );
+    }
+
+    #[test]
+    fn image_pins_bind_every_exercised_class_and_the_kernel() {
+        // a_run_set: one image ("img", hash 0…0) matching host_kernel_sha256; a_record is
+        // StraightLine, which has no image pin → FAIL.
+        let mut out = Vec::new();
+        check_image_pins(&a_run_set(), &[a_record(0)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ImagePins),
+            Some(Status::Fail),
+            "the exercised straight-line class has no image pin"
+        );
+        // Add a verified straight-line image → PASS (kernel matches, class pinned).
+        let mut rs = a_run_set();
+        rs.images.push(ImagePin {
+            path: "payloads/straight-line".into(),
+            sha256: "a".repeat(64),
+            md5: None,
+            verified_before_boot: true,
+        });
+        let mut out = Vec::new();
+        check_image_pins(&rs, &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::ImagePins), Some(Status::Pass));
+        // A kernel hash matching NO verified image → FAIL.
+        let mut rs2 = rs.clone();
+        rs2.mechanism.host_kernel_sha256 = "f".repeat(64);
+        let mut out = Vec::new();
+        check_image_pins(&rs2, &[a_record(0)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ImagePins),
+            Some(Status::Fail),
+            "the mechanism kernel identity matches no verified image pin"
+        );
     }
 
     #[test]

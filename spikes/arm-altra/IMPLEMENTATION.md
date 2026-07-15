@@ -1126,6 +1126,48 @@ oracle-model 22 + 2, clippy `-D warnings` native + aarch64-linux, three `cargo d
 opcode-checked window scan, TCG smoke, kernel-patch format/parse, and Miri (arm-harness +
 oracle-model).
 
+## Round-18 review fixes (PR #108, cross-model pass r18)
+
+Five P1 + two P2, concentrated in AA-5/AA-6 evidence completeness.
+
+- **vGIC CPU-interface state in the digest.** `vgic_state` read only the redistributor and
+  distributor save groups; two runs differing only in CPU-interface interrupt state (priority
+  mask, group enables, active priorities) shared an AA-6 digest. It now also reads the
+  `KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS` group — the `ICC_*` registers (`ICC_PMR_EL1`,
+  `ICC_IGRPEN0/1_EL1`, `ICC_AP0R0/AP1R0_EL1`, the BPRs, CTLR, SRE), read 64-bit.
+- **AA-6 compares the FINAL state digest.** `comparison_digest` selected `landed_digest` for
+  every armed record, including AA-6, though AA-6's contract is the ordinary final
+  `state_digest`: two reps can land identically at the injection Moment then diverge PROCESSING
+  the event. The digest is now selected by stage — AA-3 compares the landing, AA-6 the final
+  state.
+- **AA-6 matrix coverage from injected records.** The matrix counted a class present even when
+  all its records were unarmed, so a run could supply repeated unarmed records for the required
+  classes, one armed class, and pass. Coverage is now built from ARMED, DELIVERED records — a
+  class that injected nothing does not count.
+- **Image pins bound to every exercised artifact.** The check passed on a single verified image
+  and never bound the kernel identity. It now requires a verified image pin for every exercised
+  payload class (file name = class name, including the AA-5/AA-6 Linux guest) AND a verified
+  pin whose hash equals `mechanism.host_kernel_sha256`. Fixtures regenerated with per-payload
+  pins; `build_run_set` binds the kernel image hash to the mechanism.
+- **AA-5 requires replay identity.** AA-5 was omitted from `requires_replay_identity`, so a
+  single work-derived clock-page record read PASS. AA-5 is now included, and its
+  acceptance-bearing classes (`clock-page`, `linux-guest`) must be in repeated groups — a
+  singleton reads NOT-REQUESTED.
+- **Reject empty AA-0 rulings (P2).** `{"ecv": ""}` marked a deviation resolved because
+  `unresolved` only recognised the placeholder. A ruling is now trimmed and rejected if empty,
+  so an empty/whitespace ruling stays UNRULED and gates.
+- **Drop the undefined AA-6 armed-overflow floor (P2).** AA-6 rode the patched mechanism, so it
+  required an explicit `--min-armed-overflows` — but AA-6 defines only the ≥1000-rep floor and
+  its arming is a matrix invariant, so valid armed AA-6 evidence read INCOMPLETE. The armed
+  FLOOR is now required only by stages that DEFINE one (AA-1, AA-3); AA-6's arming is enforced
+  by `check_aa6_matrix`, not a numeric floor.
+
+`truth-table.schema.json` and the run-record/run-set schemas unchanged. Gates re-run green:
+harness 100 tests, floor-check 53 + 27 + 3 (fixtures regenerated), oracle-model 22 + 2
+(unchanged), clippy `-D warnings` native + aarch64-linux, three `cargo deny`, the
+opcode-checked window scan, TCG smoke, kernel-patch format/parse, and Miri (arm-harness;
+oracle-model unchanged this round, its r17 run stands).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

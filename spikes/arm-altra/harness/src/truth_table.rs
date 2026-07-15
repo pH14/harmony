@@ -173,10 +173,17 @@ pub fn assemble(
         .into_iter()
         .map(|r| {
             let confirmed = r.found == r.expected;
+            // A ruling must be non-empty after trimming: `{"ecv": ""}` (or whitespace) is not
+            // a disposition — it would violate the schema's `disposition` minLength and record
+            // no actual ruling — so it is treated as UNRULED and gates acceptance.
+            let ruling = rulings
+                .get(r.id)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
             let disposition = if confirmed {
                 None
-            } else if let Some(ruling) = rulings.get(r.id) {
-                Some(ruling.clone())
+            } else if let Some(ruling) = ruling {
+                Some(ruling.to_string())
             } else {
                 Some(UNRULED_DEVIATION.to_string())
             };
@@ -331,6 +338,30 @@ mod tests {
         assert_eq!(tt.rows[1].disposition.as_deref(), Some(UNRULED_DEVIATION));
         assert_eq!(tt.unresolved(), vec!["sve"]);
         assert!(!tt.all_resolved(), "one unruled deviation remains");
+    }
+
+    #[test]
+    fn an_empty_or_whitespace_ruling_does_not_resolve_a_deviation() {
+        // `{"ecv": ""}` (or whitespace) is not a disposition — it violates the schema's
+        // disposition minLength and records no ruling, so it must stay UNRULED and gate.
+        for empty in ["", "   ", "\t\n"] {
+            let rows = vec![RowInput::cap(
+                "ecv",
+                "id-register",
+                "q",
+                Found::Absent,
+                Found::Present,
+                "0x1".into(),
+            )];
+            let rulings = BTreeMap::from([("ecv".to_string(), empty.to_string())]);
+            let tt = assemble(identity(), topology(), rows, &rulings);
+            assert_eq!(
+                tt.rows[0].disposition.as_deref(),
+                Some(UNRULED_DEVIATION),
+                "an empty ruling {empty:?} is not a disposition"
+            );
+            assert!(!tt.all_resolved());
+        }
     }
 
     #[test]

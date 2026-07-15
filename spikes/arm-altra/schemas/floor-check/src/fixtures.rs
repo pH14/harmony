@@ -103,22 +103,26 @@ fn synthetic_environment() -> Environment {
     }
 }
 
-/// The boot artifacts every fixture pins. All verified, in the accept case.
+/// The boot artifacts every fixture pins. All verified, in the accept case: the host kernel
+/// (its hash matching `mechanism.host_kernel_sha256`) plus one image per exercised payload
+/// class (the file name is the class name, which the checker binds each exercised artifact
+/// to), including the AA-5/AA-6 Linux guest.
 fn synthetic_images() -> Vec<ImagePin> {
-    vec![
-        ImagePin {
-            path: "/boot/Image.det".to_string(),
-            sha256: synth_sha256("host-kernel-image"),
-            md5: Some(synth_md5("host-kernel-image")),
+    let mut images = vec![ImagePin {
+        path: "/boot/Image.det".to_string(),
+        sha256: synth_sha256("host-kernel-image"),
+        md5: Some(synth_md5("host-kernel-image")),
+        verified_before_boot: true,
+    }];
+    for p in WINDOWED.iter().chain(std::iter::once(&Payload::LinuxGuest)) {
+        images.push(ImagePin {
+            path: format!("payloads/{}", p.name()),
+            sha256: synth_sha256(&format!("payload-{}", p.name())),
+            md5: Some(synth_md5(p.name())),
             verified_before_boot: true,
-        },
-        ImagePin {
-            path: "payloads/target/oracle.elf".to_string(),
-            sha256: synth_sha256("payload-elf"),
-            md5: Some(synth_md5("payload-elf")),
-            verified_before_boot: true,
-        },
-    ]
+        });
+    }
+    images
 }
 
 fn synthetic_perf() -> PerfConfig {
@@ -251,13 +255,18 @@ fn records_jsonl(records: &[RunRecord]) -> String {
 fn build_run_set(stage: Stage, mechanism: Mechanism, records: &[RunRecord]) -> RunSet {
     let jsonl = records_jsonl(records);
     let sha = synth_sha256_of_bytes(jsonl.as_bytes());
+    // The host-kernel IMAGE pin's hash must equal the mechanism block's host_kernel_sha256
+    // (the checker cross-checks the kernel identity against a verified pin), so bind the
+    // first image (the kernel) to whatever kernel this mechanism claims.
+    let mut images = synthetic_images();
+    images[0].sha256 = mechanism.host_kernel_sha256.clone();
     RunSet {
         schema_version: SCHEMA_VERSION,
         stage,
         run_set_id: format!("fixture-{}", stage_slug(stage)),
         environment: synthetic_environment(),
         mechanism,
-        images: synthetic_images(),
+        images,
         perf: synthetic_perf(),
         pinning: synthetic_pinning(),
         condition: "pinned-solo".to_string(),
@@ -680,7 +689,9 @@ pub fn all_fixtures() -> Vec<Fixture> {
     {
         let records = base_records(ExitReason::Preempt);
         let mut run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
-        if let Some(img) = run_set.images.get_mut(0) {
+        // Corrupt a PAYLOAD image's hash (not the kernel's, which the image-pin cross-check
+        // would also flag): the well-formed gate must catch a schema-invalid hash on its own.
+        if let Some(img) = run_set.images.get_mut(1) {
             img.sha256 = String::new(); // empty: not 64 hex
         }
         fixtures.push(fixture("reject-malformed-hash", &run_set, &records));

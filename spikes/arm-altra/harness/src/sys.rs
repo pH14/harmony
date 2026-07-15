@@ -269,6 +269,14 @@ pub mod kvm {
     /// not the distributor. The `attr` low bits are the offset from `RD_base`; the high
     /// 32 bits are the target vCPU's `mpidr` (0 for the single-affinity spike guest).
     pub const DEV_ARM_VGIC_GRP_REDIST_REGS: u32 = 5;
+    /// `KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS` = **6** — the CPU-interface (ICC_* system
+    /// register) save group: the priority mask, group enables, and active-priority
+    /// registers that decide how a pending interrupt is DELIVERED, and which are not in the
+    /// redistributor/distributor groups nor the generic vCPU register list. The `attr` low
+    /// 16 bits are the register's `(op0<<14 | op1<<11 | crn<<7 | crm<<3 | op2)` instruction
+    /// encoding; the high 32 bits are the target vCPU's `mpidr` (0 for the spike guest).
+    /// These registers are 64-bit (unlike the DIST/REDIST offsets, read 32-bit).
+    pub const DEV_ARM_VGIC_GRP_CPU_SYSREGS: u32 = 6;
     /// `KVM_DEV_ARM_VGIC_CTRL_INIT`.
     pub const DEV_ARM_VGIC_CTRL_INIT: u64 = 0;
     /// `KVM_GET_DEVICE_ATTR` — `_IOW(KVMIO, 0xe2, struct kvm_device_attr)`, the same
