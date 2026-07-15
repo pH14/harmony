@@ -93,6 +93,101 @@ fn pvclock_cmdline(base: &str, page_on: bool) -> String {
     }
 }
 
+/// The kernel clocksource-SWITCH marker: Linux prints this once it SELECTS the
+/// harmony page as the active timekeeping source — not merely registers it.
+const CLOCKSOURCE_SWITCH_MARKER: &[u8] = b"Switched to clocksource harmony-pvclock";
+
+/// Validate that a `--page-on` box run actually reached the page-on composition
+/// before its result is reported (r15 P1): the host must have registered the
+/// guest's clock page AND Linux must have SELECTED `harmony-pvclock` as the
+/// active clocksource. A stale (non-pvclock) image, a failed registration, or a
+/// TSC-still-active guest (page registered-but-unused) must NOT pass as page-on —
+/// else a determinism/throughput result would be an effectively page-OFF run
+/// mislabeled page-on. Portable + unit-tested; `boxrun.rs` is the non-test caller.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn require_page_on_active(registered: bool, serial: &[u8]) -> Result<(), String> {
+    if !registered {
+        return Err(
+            "the guest never registered the clock page (doorbell/ABI mismatch, or a \
+                    stale non-pvclock image) — a --page-on run must not report a page-OFF result"
+                .to_string(),
+        );
+    }
+    let switched = serial
+        .windows(CLOCKSOURCE_SWITCH_MARKER.len())
+        .any(|w| w == CLOCKSOURCE_SWITCH_MARKER);
+    if !switched {
+        return Err(
+            "the page registered but Linux never SELECTED harmony-pvclock as the active \
+                    clocksource (still on the TSC) — the page is registered-but-unused, so a \
+                    --page-on result would be effectively page-OFF"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Branch throughput (branches/second) for one campaign sweep arm — the
+/// denominator of deliverable 7's page-off-vs-page-on campaign-throughput ppm
+/// comparison. A zero-duration sweep reports `0.0` rather than dividing by zero.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn branch_throughput_per_sec(branches: u64, sweep_us: u64) -> f64 {
+    if sweep_us == 0 {
+        return 0.0;
+    }
+    branches as f64 / (sweep_us as f64 / 1e6)
+}
+
+/// The page-on / page-off throughput A/B ratio (> 1 ⇒ page-on completes more
+/// branches per second). An unmeasurable baseline (`off_bps <= 0`) reports
+/// `0.0`, never a divide-by-zero or infinity.
+// Produces the A/B report from two arms' recorded throughputs (the box harness
+// emits one arm per invocation via `render_sweep_throughput`); exercised by the
+// unit tests and the box runbook, so `dead_code` is allowed on every target.
+#[allow(dead_code)]
+fn throughput_ab_ratio(off_bps: f64, on_bps: f64) -> f64 {
+    if off_bps <= 0.0 {
+        return 0.0;
+    }
+    on_bps / off_bps
+}
+
+/// The `[REPORT]` throughput line ONE campaign sweep arm emits — comparable
+/// across a page-off and a page-on invocation, so the A/B ratio is producible
+/// ([`render_throughput_ab`]).
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+fn render_sweep_throughput(page_on: bool, branches: u64, sweep_us: u64) -> String {
+    format!(
+        "[REPORT] campaign sweep page-{}: {branches} branches in {:.2}s = {:.1} branches/s",
+        if page_on { "ON" } else { "OFF" },
+        sweep_us as f64 / 1e6,
+        branch_throughput_per_sec(branches, sweep_us),
+    )
+}
+
+/// The A/B ratio REPORT (deliverable 7's campaign-throughput ppm comparison):
+/// given the two arms' `(branches, sweep_us)`, render the page-on speedup over
+/// page-off. Fed the two `render_sweep_throughput` arms an operator recorded.
+#[allow(dead_code)]
+fn render_throughput_ab(off_branches: u64, off_us: u64, on_branches: u64, on_us: u64) -> String {
+    let off = branch_throughput_per_sec(off_branches, off_us);
+    let on = branch_throughput_per_sec(on_branches, on_us);
+    format!(
+        "[REPORT] campaign throughput A/B: page-OFF {off:.1} branches/s vs page-ON {on:.1} \
+         branches/s = {:.2}x (page-on / page-off)",
+        throughput_ab_ratio(off, on),
+    )
+}
+
 #[derive(Parser)]
 #[command(
     name = "campaign-runner",
@@ -1189,6 +1284,46 @@ mod tests {
             on.matches("harmony_pvclock").count(),
             1,
             "the clocksource is advertised exactly once"
+        );
+    }
+
+    /// r15 P1: a `--page-on` run is only reported as page-on if the page is
+    /// ACTIVE — registered AND selected as the clocksource. A stale image (no
+    /// registration) or a registered-but-unused page (TSC still active) is
+    /// rejected, so a page-off result can never be mislabeled page-on.
+    #[test]
+    fn require_page_on_active_rejects_stale_or_unused_pages() {
+        let switched = b"boot... clocksource: Switched to clocksource harmony-pvclock\nready";
+        // Registered AND switched → accepted.
+        assert!(require_page_on_active(true, switched).is_ok());
+        // Never registered → rejected even if (impossibly) the marker is present.
+        assert!(require_page_on_active(false, switched).is_err());
+        // Registered but never switched (still on the TSC) → rejected.
+        assert!(require_page_on_active(true, b"registered but stayed on tsc").is_err());
+        // Both missing → rejected.
+        assert!(require_page_on_active(false, b"").is_err());
+    }
+
+    /// r15 P1: the campaign-throughput ppm comparison (deliverable 7) is
+    /// producible — per-arm throughput is well-defined and the A/B ratio renders
+    /// the page-on speedup, with the degenerate denominators defined out.
+    #[test]
+    fn campaign_throughput_and_ab_ratio_are_producible() {
+        // 100 branches in 2 s = 50 branches/s.
+        assert!((branch_throughput_per_sec(100, 2_000_000) - 50.0).abs() < 1e-9);
+        // Zero-duration and zero-baseline are defined, never NaN/inf.
+        assert_eq!(branch_throughput_per_sec(100, 0), 0.0);
+        assert_eq!(throughput_ab_ratio(0.0, 50.0), 0.0);
+        // Page-on twice as fast as page-off → 2.0x.
+        assert!((throughput_ab_ratio(25.0, 50.0) - 2.0).abs() < 1e-9);
+        // The per-arm line is labelled and carries the rate; the A/B line carries
+        // the ratio — both producible from recorded numbers.
+        assert!(render_sweep_throughput(true, 100, 2_000_000).contains("page-ON"));
+        assert!(render_sweep_throughput(false, 100, 2_000_000).contains("page-OFF"));
+        let ab = render_throughput_ab(100, 4_000_000, 100, 2_000_000); // off 25/s, on 50/s
+        assert!(
+            ab.contains("2.00x"),
+            "A/B report must carry the ratio: {ab}"
         );
     }
 

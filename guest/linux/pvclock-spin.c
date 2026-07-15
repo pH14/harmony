@@ -97,6 +97,17 @@ int main(int argc, char **argv) {
     while (vns1 - vns0 < span_ns) {
         vns1 = read_vns(page);
         iters++;
+        // The page clock must be MONOTONE. If it moved backward, unsigned
+        // `vns1 - vns0` would wrap to a near-`UINT64_MAX` value, the loop
+        // condition would read false, and the spin would exit as a false
+        // PVSPIN_DONE — a determinism/ABA bug masquerading as liveness. Detect
+        // the backward step explicitly and fail (r15 P2); the host G3 gate keys
+        // on PVSPIN_DONE, so this failure is surfaced, never mistaken for a pass.
+        if (vns1 < vns0) {
+            printf("PVSPIN_FAIL backward %llu %llu\n", (unsigned long long)vns0,
+                   (unsigned long long)vns1);
+            return 6;
+        }
     }
     // ---- end of the measured window -----------------------------------------
 

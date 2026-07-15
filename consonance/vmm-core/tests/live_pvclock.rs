@@ -307,6 +307,30 @@ fn find(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// A wide backstop on the bounded drive to the next synchronized boundary in
+/// [`sample_at_sync`]: a live guest reaches a V-time intercept within a tick
+/// (≈10 ms) or Δ, so this only bounds a wedged guest.
+const SYNC_SAMPLE_CAP: u64 = 10_000_000;
+
+/// Sample the perf denominators — the exit counters AND V-time — at a
+/// SYNCHRONIZED boundary (cross-model r15 P2). At a marker stop the guest has
+/// usually just taken a serial PIO exit, where `effective_vns()` is only a
+/// last-intercept LOWER BOUND; and the two arms exit on different intercept
+/// mixes (page-off takes far more RDTSC intercepts than page-on), so that
+/// lower-bound gap is NOT common between them and biases the reported
+/// rate/reduction. Advancing to the next synchronized intercept — where
+/// `effective_vns` is exact and the counters and the clock agree — removes the
+/// bias. Samples in place if already synchronized (never steps past a boundary
+/// that already holds).
+fn sample_at_sync(vmm: &mut DynVmm) -> (vmm_backend::ExitCounts, u64) {
+    if !vmm.is_synchronized() {
+        let _ = run_bounded(vmm, SYNC_SAMPLE_CAP, Duration::from_secs(120), |vmm, _| {
+            !vmm.is_synchronized()
+        });
+    }
+    (vmm.exit_counts(), vmm.effective_vns().unwrap_or(0))
+}
+
 // ---------------------------------------------------------------------------
 // G0 — the smoke-fire-once probe (run FIRST, alone, before any long gate).
 // ---------------------------------------------------------------------------
@@ -772,6 +796,15 @@ fn g3_busy_wait_on_page_time_terminates_within_delta() {
         "the refresh log saturated during the spin window — gaps beyond the cap are unobserved, \
          so the ≤Δ bound cannot be asserted; raise the cap or shorten the window"
     );
+    // The published vns must be MONOTONE across the spin window (r15 P2). The
+    // guest spinner now fails on a backward step, and asserting it host-side too
+    // means a backward page cannot slip past even here — the `max_gap`
+    // `saturating_sub` on the work anchor would otherwise clamp it to 0 and hide it.
+    assert!(
+        window.windows(2).all(|p| p[0].1 <= p[1].1),
+        "the pvclock page published a BACKWARD vns during the G3 spin window — a determinism/ABA \
+         bug the max-gap saturating_sub would mask"
+    );
     let max_gap = window
         .windows(2)
         .map(|p| p[1].0.saturating_sub(p[0].0))
@@ -823,7 +856,19 @@ struct PerfArm {
 
 fn perf_arm(kernel: &[u8], initramfs: &[u8], page_on: bool) -> PerfArm {
     let mut vmm = boot(kernel, initramfs, SEED, page_on);
-    let obs = run_bounded(&mut vmm, 100_000_000, Duration::from_secs(900), |_, _| true);
+    // Sample the counters AND V-time at the LAST SYNCHRONIZED boundary of the
+    // run, not at the (unsynchronized) post-poweroff terminal (r15 P2): a
+    // whole-boot run ends at a terminal we cannot step past, so capture the last
+    // synchronized sample as it goes. Both denominators come from the same
+    // synchronized moment, so `effective_vns` is exact and the two arms compare
+    // like-for-like (page-off's extra RDTSC intercepts don't skew its V-time).
+    let mut last_sync: Option<(vmm_backend::ExitCounts, u64)> = None;
+    let obs = run_bounded(&mut vmm, 100_000_000, Duration::from_secs(900), |vmm, _| {
+        if vmm.is_synchronized() {
+            last_sync = Some((vmm.exit_counts(), vmm.effective_vns().unwrap_or(0)));
+        }
+        true
+    });
     assert!(obs.step_error.is_none(), "step error: {:?}", obs.step_error);
     // Clean poweroff = a terminal with no step error (the minimal image ends on
     // the post-poweroff `Idle` halt, not `Shutdown` — see g0_smoke).
@@ -841,12 +886,13 @@ fn perf_arm(kernel: &[u8], initramfs: &[u8], page_on: bool) -> PerfArm {
             "page-on arm never registered — the measurement would be page-off vs page-off"
         );
     }
-    let counts = vmm.exit_counts();
+    let (counts, vns) =
+        last_sync.unwrap_or_else(|| (vmm.exit_counts(), vmm.effective_vns().unwrap_or(0)));
     PerfArm {
         rdtsc_exits: counts.rdtsc + counts.rdtscp,
         total_exits: counts.total(),
         deadline_exits: counts.deadline,
-        vns: vmm.effective_vns().unwrap_or(0),
+        vns,
         wall: obs.wall,
         reached_ready: find(vmm.serial(), b"GUEST_READY"),
     }
@@ -953,9 +999,11 @@ fn n4_perf_postgres_window_page_off_vs_page_on() {
              as a steady-state Postgres measurement.",
             boot_obs.reason
         );
-        // 2. BASELINE the counters and V-time at readiness — deltas from here.
-        let base = vmm.exit_counts();
-        let base_vns = vmm.effective_vns().unwrap_or(0);
+        // 2. BASELINE the counters and V-time at a SYNCHRONIZED boundary at/after
+        //    readiness (r15 P2). `PG37: workload begin` is seen on a serial PIO
+        //    exit, where `effective_vns` is a last-intercept lower bound; the arms
+        //    take different intercept mixes, so that bound biases the ratio.
+        let (base, base_vns) = sample_at_sync(&mut vmm);
         // 3. Measure to `PG37: workload end` (or the optional V-time cap).
         let win_obs = run_bounded(&mut vmm, u64::MAX, Duration::from_secs(900), |vmm, _| {
             !(find(vmm.serial(), b"PG37: workload end")
@@ -966,7 +1014,9 @@ fn n4_perf_postgres_window_page_off_vs_page_on() {
             "page-{side} arm step error mid-workload: {:?}",
             win_obs.step_error
         );
-        let end_vns = vmm.effective_vns().unwrap_or(0);
+        // Sample the END counters and V-time at a synchronized boundary too
+        // (r15 P2), so both endpoints are exact and the span/deltas are unbiased.
+        let (now, end_vns) = sample_at_sync(&mut vmm);
         let span = end_vns.saturating_sub(base_vns);
         // 4. The window must CLOSE on the end marker or the cap, with a non-trivial
         //    span — not on a mid-workload guest terminal (a truncated window is not
@@ -985,7 +1035,6 @@ fn n4_perf_postgres_window_page_off_vs_page_on() {
                 "page-on arm never registered the clock page"
             );
         }
-        let now = vmm.exit_counts();
         (
             (now.rdtsc + now.rdtscp) - (base.rdtsc + base.rdtscp),
             now.total() - base.total(),

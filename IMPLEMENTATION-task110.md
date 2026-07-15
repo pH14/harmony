@@ -433,6 +433,39 @@ classification uses the deterministic point. The mock rewrites `reached :=
 deadline`, so the overdue path is driven by a direct `on_deadline(reached >
 target)` call. Test: `overdue_landing_classifies_against_the_target_not_the_skidded_count`.
 
+**Review round 15 folded in** (cross-model r15: 2 P1 + 2 P2, all on the r14
+campaign knob; portable-only — no kernel rebuild). (a) **`--page-on` must reach
+the page-on composition before reporting (P1).** A stale/non-pvclock image, a
+failed registration, or a TSC-still-active guest could sail to the readiness
+marker, so `campaign-runner box --page-on` could report a determinism/throughput
+result for an effectively page-OFF run. `boot_server` now fails closed unless BOTH
+`pvclock_registration().is_some()` AND the guest console shows `Switched to
+clocksource harmony-pvclock` (the same registration+selection bar G0 asserts).
+Portable helper `require_page_on_active` (tested). (b) **Campaign-throughput A/B is
+producible (P1).** The sweep discarded its timing and `SweepReport` carried no
+throughput, so deliverable 7's page-off-vs-page-on campaign-throughput ppm
+comparison wasn't producible. The sweep is now wall-timed (the task-96 print-only
+stopwatch — never touches state/hash), each arm prints a page-{on,off}-labelled
+`[REPORT] … branches/s` line from the report's actual branch count, and the A/B
+ratio is a tested render (`render_throughput_ab` / `throughput_ab_ratio`, degenerate
+denominators defined out). Tests: `campaign_throughput_and_ab_ratio_are_producible`.
+(c) **Perf denominators sampled at synchronized boundaries (P2).** The N-4 perf
+arms sampled the exit counters and V-time at a workload marker — a serial PIO exit
+where `effective_vns()` is only a last-intercept lower bound — and the arms take
+different intercept mixes (page-off takes far more RDTSC intercepts), so the bound
+biased the reported rate/reduction unequally. `perf_arm` now captures the last
+SYNCHRONIZED sample of its whole-boot run, and the Postgres workload window
+baselines/ends via a new `sample_at_sync` (advance to the next synchronized
+intercept, where `effective_vns` is exact and the counters agree). (d) **G3 rejects
+a backward clock (P2).** `pvclock-spin.c` computed `vns1 - vns0` unsigned, so a
+backward page wrapped to a huge value and the spinner emitted a false
+`PVSPIN_DONE`; it now detects `vns1 < vns0` explicitly and emits `PVSPIN_FAIL
+backward` (which the host G3 gate, keyed on `PVSPIN_DONE`, surfaces as a failure).
+The host G3 also now asserts published-vns monotonicity across the spin window, so
+the work-anchor `saturating_sub` can't mask a backward step. (c)/(d) are box/guest
+code, compile-checked on the x86_64-linux cross target and `cc -fsyntax-only`; box
+re-confirmation of the perf/G3 gates rides the next foreman-granted window.
+
 ## What landed (by deliverable)
 
 1. **Rename ride-along** — already fully landed by tasks/108 (`guest_hz`/

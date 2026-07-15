@@ -44,7 +44,7 @@ use campaign_runner::gamecampaign::{GameCampaignConfig, run_game_campaign};
 use super::{
     BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, X86_64_BOOT, finish, finish_campaign,
     finish_game, finish_recording, parse_game_config, parse_retain, print_game_artifacts,
-    pvclock_cmdline, seeds,
+    pvclock_cmdline, render_sweep_throughput, require_page_on_active, seeds,
 };
 
 /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
@@ -225,6 +225,23 @@ fn boot_server(
             return Err(ExitCode::FAILURE);
         }
     };
+    // r15 P1: a `--page-on` run must have ACTUALLY reached the page-on
+    // composition before it reports anything — the host registered the guest's
+    // page AND Linux selected `harmony-pvclock` as the active clocksource.
+    // Otherwise a stale/non-pvclock image, a failed registration, or a
+    // TSC-still-active guest would sail to the readiness marker and get reported
+    // as a page-on determinism/throughput result that is effectively page-OFF.
+    if page_on
+        && let Err(why) =
+            require_page_on_active(live.pvclock_registration().is_some(), live.serial())
+    {
+        eprintln!(
+            "[campaign-runner] --page-on requested but the page is not active: {why}. Check the \
+             guest 'harmony_pvclock:' / 'clocksource' console lines above; rebuild the pvclock \
+             guest image if it is stale."
+        );
+        return Err(ExitCode::FAILURE);
+    }
 
     // The fork factory: fresh, equivalently-composed patched VMs whose
     // boot-loaded image the restore immediately overwrites. `live` is
@@ -352,9 +369,25 @@ pub fn run(args: BoxArgs) -> ExitCode {
         cfg.runs_per_seed,
         args.deadline_delta
     );
+    // Time the sweep so deliverable 7's campaign-throughput ppm comparison is
+    // producible (r15 P1): record wall duration + branch count, print a
+    // page-{on,off}-labelled throughput REPORT line comparable across arms. The
+    // stopwatch is print-only (task 96 — nothing in the search loop branches on
+    // a duration), so this never touches state or a hash.
+    let sweep_t0 = mark();
     let (served, client) = run_session(&mut server, move |stream| {
         sweep_client(stream, initial, cfg)
     });
+    let sweep_us = sweep_t0.elapsed_us();
+    // Actual completed branches from the report (a partial sweep reports what it
+    // finished); skip the line if the sweep errored — `finish` tells that story.
+    if let Ok(report) = client.as_ref() {
+        let branches: u64 = report.rows.iter().map(|s| s.runs.len() as u64).sum();
+        println!(
+            "{}",
+            render_sweep_throughput(args.page_on, branches, sweep_us)
+        );
+    }
     finish("box", served, client)
 }
 
