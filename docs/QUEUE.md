@@ -110,9 +110,10 @@ Reach-matrix lane (foreman-owned or spawnable next):
 
 General ready (foreman spawns as slots free):
 
-- **Box image drift on main** — task-78 draw-probe gate broken by the 2026-07-09 image
-  rebuild; pin-by-hash ruling recorded, harness retrofit + image-content fix remain
-  (`hm-xdp`, image fix `hm-2nt`)
+- **Box image drift on main** — **SPAWNED 2026-07-15 ~23:10** (tasks/115,
+  agent-postgres-image-drift-gate, Opus 4.8): apply the recorded pin-by-hash ruling to
+  restore live_materialization's draw-probe gate, fail-closed on drift (`hm-xdp` +
+  `hm-2nt`, close-or-split disposition required)
 
 Dissonance lane (held — Paul: background reprioritization in progress, foreman does not
 spawn these until that lane re-opens):
