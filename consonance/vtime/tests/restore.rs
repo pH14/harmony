@@ -273,6 +273,7 @@ fn make_rig(p: &RestoreParams) -> Rig {
         queue,
         planner: InjectionPlanner::new(PlannerConfig {
             skid_margin: p.skid_margin,
+            max_stall_steps: u64::MAX,
         }),
         work_offset: 0,
     }

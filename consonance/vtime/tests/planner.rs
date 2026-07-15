@@ -77,7 +77,10 @@ proptest! {
     #[test]
     fn planner_always_stops_exactly(case in planner_case()) {
         let mut cpu = sim(case.seed, case.density, case.max_skid, case.initial_work);
-        let planner = InjectionPlanner::new(PlannerConfig { skid_margin: case.skid_margin });
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: case.skid_margin,
+            max_stall_steps: u64::MAX,
+        });
         let target = case.initial_work + case.distance;
 
         let outcome = planner.stop_at(&mut cpu, target);
@@ -153,7 +156,10 @@ fn skid_draws_cover_zero_and_max() {
     let max_skid = 3;
     let skid_margin = 8;
     let mut cpu = sim(42, (1, 2), max_skid, 0);
-    let planner = InjectionPlanner::new(PlannerConfig { skid_margin });
+    let planner = InjectionPlanner::new(PlannerConfig {
+        skid_margin,
+        max_stall_steps: u64::MAX,
+    });
     let mut seen = BTreeSet::new();
     for _ in 0..64 {
         let target = cpu.work() + skid_margin + 10;
@@ -184,7 +190,10 @@ fn skid_draws_cover_zero_and_max() {
 fn sparse_stream_steps_many_instructions_per_event() {
     let skid_margin = 4;
     let mut cpu = sim(0xFEED, (1, 1000), 0, 0); // skid always 0
-    let planner = InjectionPlanner::new(PlannerConfig { skid_margin });
+    let planner = InjectionPlanner::new(PlannerConfig {
+        skid_margin,
+        max_stall_steps: u64::MAX,
+    });
     let target = 100;
     let outcome = planner.stop_at(&mut cpu, target).expect("skid 0 < margin");
     let PlanOutcome::ReadyToInject {
@@ -218,7 +227,10 @@ fn sparse_stream_steps_many_instructions_per_event() {
 #[test]
 fn boundary_distances_are_exact() {
     let skid_margin = 8u64;
-    let planner = InjectionPlanner::new(PlannerConfig { skid_margin });
+    let planner = InjectionPlanner::new(PlannerConfig {
+        skid_margin,
+        max_stall_steps: u64::MAX,
+    });
     for density in [(1u64, 1u64), (1, 2), (1, 16), (1, 1000)] {
         for distance in [1u64, skid_margin, skid_margin + 1] {
             for seed in 0..8u64 {
@@ -253,7 +265,10 @@ fn skid_exceeding_margin_is_loud() {
     let skid_margin = 4;
     let max_skid = 12; // > margin: overshoot is possible
     let mut cpu = sim(7, (1, 2), max_skid, 0);
-    let planner = InjectionPlanner::new(PlannerConfig { skid_margin });
+    let planner = InjectionPlanner::new(PlannerConfig {
+        skid_margin,
+        max_stall_steps: u64::MAX,
+    });
 
     for attempt in 0..500 {
         let target = cpu.work() + skid_margin + 20;

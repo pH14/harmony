@@ -66,6 +66,7 @@ fn run_scenario(seed: u64) -> ScenarioLog {
     .expect("valid sim config");
     let planner = InjectionPlanner::new(PlannerConfig {
         skid_margin: SKID_MARGIN,
+        max_stall_steps: u64::MAX,
     });
     let mut queue = TimerQueue::new();
     queue

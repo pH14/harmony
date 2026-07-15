@@ -46,8 +46,8 @@ use crate::kvm::*;
 use crate::pmu_sys::PmuBranchCounter;
 use crate::region::{MemRegions, split_around_hole};
 use crate::run_until::{
-    ExitPoison, FirstEntryReset, PreemptCpu, RunUntilStart, SKID_MARGIN, classify_run_until,
-    drive_run_until, free_run_decision,
+    ExitPoison, FirstEntryReset, PreemptCpu, RunUntilStart, SKID_MARGIN, STALL_STEP_BUDGET,
+    classify_run_until, drive_run_until, free_run_decision,
 };
 use crate::types::{Gpa, Moment};
 
@@ -1390,6 +1390,11 @@ impl Backend for KvmBackend {
                     self.ensure_first_run()?;
                     let planner = InjectionPlanner::new(PlannerConfig {
                         skid_margin: SKID_MARGIN,
+                        // Fail closed rather than single-step forever if the guest
+                        // retires no further counted event (hm-440: a work-clock
+                        // completion lost across a host suspend/resume). See
+                        // `run_until::STALL_STEP_BUDGET`.
+                        max_stall_steps: STALL_STEP_BUDGET,
                     });
                     let mut cpu = LiveCpu {
                         backend: self,

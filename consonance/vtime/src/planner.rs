@@ -44,6 +44,22 @@ pub struct PlannerConfig {
     ///
     /// [`stop_at`]: InjectionPlanner::stop_at
     pub skid_margin: u64,
+    /// **Liveness backstop.** The maximum number of *consecutive* single-steps
+    /// the [`stop_at`](InjectionPlanner::stop_at) walk may take with **no work
+    /// progress** (no counted event retired) before it fails closed with
+    /// [`VtimeError::StepBudgetExceeded`] instead of stepping forever.
+    ///
+    /// Phase 2 single-steps to the exact target; a guest that retires no
+    /// further counted event never reaches it, so the loop is otherwise
+    /// unbounded (a silent hang — exactly the nested-x86 SIGSTOP-cycling wedge,
+    /// bead `hm-440`, where a work-clock completion is lost across a host
+    /// suspend/resume). The counter resets on every step that DOES advance
+    /// work, so this bounds only a genuine stall, never a merely sparse stream;
+    /// set it well above the longest branch-free run any real guest exhibits
+    /// between two counted events. `u64::MAX` disables the backstop (the legacy
+    /// step-forever behaviour) and is intended only for tests over backends
+    /// that always make progress.
+    pub max_stall_steps: u64,
 }
 
 /// Result of a successful [`InjectionPlanner::stop_at`] call.
@@ -100,14 +116,24 @@ impl InjectionPlanner {
     ///   steps);
     /// - if `target < now`: [`PlanOutcome::TargetInPast`].
     ///
-    /// Termination relies on the backend's contract: work is monotonic,
-    /// `single_step` advances it by 0 or 1, and counted events keep
-    /// occurring. A guest that never retires another counted event would
-    /// step forever — exactly as on real hardware, where such a deadline
-    /// work count is simply never reached.
+    /// Termination is **guaranteed**: work is monotonic and `single_step`
+    /// advances it by 0 or 1, so at most `skid_margin` steps make progress;
+    /// the no-progress steps are bounded by
+    /// [`max_stall_steps`](PlannerConfig::max_stall_steps). A guest that
+    /// retires no further counted event (so the target work count can never be
+    /// reached — a busy-spin with no conditional branch, or a work-clock
+    /// completion lost across a host suspend/resume: the nested-x86
+    /// SIGSTOP-cycling wedge, bead `hm-440`) would otherwise single-step
+    /// forever; instead the backstop trips and this **fails closed** with
+    /// [`VtimeError::StepBudgetExceeded`] — a loud, typed refusal, never a
+    /// silent hang.
     ///
     /// # Errors
     ///
+    /// - [`VtimeError::StepBudgetExceeded`] if the single-step walk takes more
+    ///   than `max_stall_steps` consecutive steps without advancing work — the
+    ///   guest is retiring no counted event, the target is unreachable, and the
+    ///   loop is stopped loudly rather than hung.
     /// - [`VtimeError::SkidExceeded`] if the overflow stops AT or PAST the
     ///   target (`stopped >= target`) — the skid consumed the whole margin, so
     ///   no room is left for the precise single-step and the overflow's
@@ -160,11 +186,35 @@ impl InjectionPlanner {
         // Phase 2: single-step to the exact target, checking the work count
         // at every instruction boundary. The counted-event distance covered
         // here is at most skid_margin; the instruction count is unbounded by
-        // it (sparse streams step many instructions per counted event).
+        // it (sparse streams step many instructions per counted event) — so a
+        // guest that retires NO further counted event would step forever. The
+        // `stall` counter bounds exactly that: it counts consecutive steps that
+        // made no work progress and resets on any step that does, so it never
+        // trips on a merely sparse (but progressing) stream, only on a genuine
+        // stall — the SIGSTOP-cycling wedge (hm-440), where a lost work-clock
+        // completion leaves the guest making no counted-event progress. On the
+        // bound we fail closed (a loud typed error) rather than hang.
         let mut single_steps_used: u64 = 0;
+        let mut stall: u64 = 0;
         while current < target {
-            current = backend.single_step()?;
+            let stepped = backend.single_step()?;
             single_steps_used += 1;
+            if stepped > current {
+                // Progress toward the target — reset the stall watchdog.
+                current = stepped;
+                stall = 0;
+            } else {
+                // No work progress this instruction (delta 0, or — defensively
+                // — a contract-violating non-advance): `current` is unchanged.
+                stall += 1;
+                if stall > self.cfg.max_stall_steps {
+                    return Err(VtimeError::StepBudgetExceeded {
+                        target,
+                        last_work: current,
+                        stall_steps: stall,
+                    });
+                }
+            }
         }
         if current > target {
             return Err(VtimeError::SkidExceeded {
@@ -231,7 +281,10 @@ mod tests {
 
     #[test]
     fn target_equals_now_is_immediate() {
-        let planner = InjectionPlanner::new(PlannerConfig { skid_margin: 8 });
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: 8,
+            max_stall_steps: u64::MAX,
+        });
         let mut backend = cpu(42);
         let outcome = planner.stop_at(&mut backend, 42).unwrap();
         assert_eq!(
@@ -247,7 +300,10 @@ mod tests {
 
     #[test]
     fn target_in_past_is_reported() {
-        let planner = InjectionPlanner::new(PlannerConfig { skid_margin: 8 });
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: 8,
+            max_stall_steps: u64::MAX,
+        });
         let mut backend = cpu(100);
         let outcome = planner.stop_at(&mut backend, 99).unwrap();
         assert_eq!(
@@ -261,7 +317,10 @@ mod tests {
 
     #[test]
     fn short_distance_steps_only() {
-        let planner = InjectionPlanner::new(PlannerConfig { skid_margin: 8 });
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: 8,
+            max_stall_steps: u64::MAX,
+        });
         // 0-advance steps interleaved: loop must continue until WORK reaches
         // the target, not for a fixed number of steps.
         let mut backend = ScriptedCpu {
@@ -284,7 +343,10 @@ mod tests {
 
     #[test]
     fn long_distance_arms_then_steps() {
-        let planner = InjectionPlanner::new(PlannerConfig { skid_margin: 4 });
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: 4,
+            max_stall_steps: u64::MAX,
+        });
         let mut backend = cpu(0);
         backend.overflow_stops_at = Some(98); // armed at 96, skid 2
         let outcome = planner.stop_at(&mut backend, 100).unwrap();
@@ -300,7 +362,10 @@ mod tests {
 
     #[test]
     fn overshoot_after_arm_is_skid_exceeded() {
-        let planner = InjectionPlanner::new(PlannerConfig { skid_margin: 4 });
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: 4,
+            max_stall_steps: u64::MAX,
+        });
         let mut backend = cpu(0);
         backend.overflow_stops_at = Some(103); // skid 7 > margin 4
         let err = planner.stop_at(&mut backend, 100).unwrap_err();
@@ -320,7 +385,10 @@ mod tests {
     /// finish the walk. `stopped == target` leaves it no room → loud error.
     #[test]
     fn overflow_exactly_on_target_is_skid_exceeded() {
-        let planner = InjectionPlanner::new(PlannerConfig { skid_margin: 4 });
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: 4,
+            max_stall_steps: u64::MAX,
+        });
         let mut backend = cpu(0);
         backend.overflow_stops_at = Some(100); // skid == margin 4 → stops AT the target
         let err = planner.stop_at(&mut backend, 100).unwrap_err();
@@ -338,7 +406,10 @@ mod tests {
     /// IS single-stepped precisely to the exact boundary (`single_steps_used > 0`).
     #[test]
     fn overflow_one_before_target_single_steps_to_exact() {
-        let planner = InjectionPlanner::new(PlannerConfig { skid_margin: 4 });
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: 4,
+            max_stall_steps: u64::MAX,
+        });
         let mut backend = cpu(0);
         backend.overflow_stops_at = Some(99); // skid 3 < margin 4 → one short
         let outcome = planner.stop_at(&mut backend, 100).unwrap();
@@ -354,7 +425,10 @@ mod tests {
 
     #[test]
     fn contract_violating_step_is_loud() {
-        let planner = InjectionPlanner::new(PlannerConfig { skid_margin: 8 });
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: 8,
+            max_stall_steps: u64::MAX,
+        });
         let mut backend = cpu(10);
         backend.step_deltas = vec![5]; // violates the 0-or-1 contract
         let err = planner.stop_at(&mut backend, 13).unwrap_err();
@@ -370,13 +444,138 @@ mod tests {
 
     #[test]
     fn backend_errors_propagate() {
-        let planner = InjectionPlanner::new(PlannerConfig { skid_margin: 4 });
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: 4,
+            max_stall_steps: u64::MAX,
+        });
         let mut backend = cpu(0);
         backend.fail = true;
         let err = planner.stop_at(&mut backend, 100).unwrap_err();
         assert_eq!(
             err,
             VtimeError::Backend(BackendError::new("scripted failure"))
+        );
+    }
+
+    // ---- fail-closed step budget (hm-440, the SIGSTOP-cycling wedge) --------
+
+    /// A backend that single-steps forever without ever advancing work — the
+    /// wedge shape: a guest retiring no further counted event (a work-clock
+    /// completion lost across a host suspend/resume). `overflow_to`, when set,
+    /// models Phase 1 carrying execution partway before the stall begins.
+    struct StallingCpu {
+        work: u64,
+        steps: u64,
+        overflow_to: Option<u64>,
+    }
+
+    impl CpuBackend for StallingCpu {
+        fn work(&self) -> u64 {
+            self.work
+        }
+        fn run_until_overflow(&mut self, _armed_at: u64) -> Result<u64, BackendError> {
+            if let Some(w) = self.overflow_to {
+                assert!(w >= self.work, "overflow never runs execution backwards");
+                self.work = w;
+            }
+            Ok(self.work)
+        }
+        fn single_step(&mut self) -> Result<u64, BackendError> {
+            // The instruction retires, but it is NOT a counted event: work is
+            // stuck, so the target work count can never be reached.
+            self.steps += 1;
+            Ok(self.work)
+        }
+    }
+
+    /// The wedge: a guest that retires no further counted event would step
+    /// forever (the old documented behaviour). The budget converts that silent
+    /// hang into a loud, typed `StepBudgetExceeded` — and the walk is bounded
+    /// (it returns after exactly `budget + 1` steps, it does not hang).
+    #[test]
+    fn permanent_stall_fails_closed_instead_of_hanging() {
+        let budget = 32;
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: 8,
+            max_stall_steps: budget,
+        });
+        // Short distance (<= skid_margin): the single-step-only Phase 2 path.
+        let mut backend = StallingCpu {
+            work: 100,
+            steps: 0,
+            overflow_to: None,
+        };
+        let err = planner.stop_at(&mut backend, 105).unwrap_err();
+        assert_eq!(
+            err,
+            VtimeError::StepBudgetExceeded {
+                target: 105,
+                last_work: 100,
+                stall_steps: budget + 1,
+            }
+        );
+        // Bounded: exactly budget + 1 single-steps, never an unbounded loop.
+        assert_eq!(backend.steps, budget + 1);
+    }
+
+    /// The same wedge reached through Phase 1: the overflow carries execution
+    /// to just short of the target, then the single-step walk stalls (the MTF
+    /// completion is lost across the freeze). Still fails closed, still bounded.
+    #[test]
+    fn stall_after_overflow_fails_closed() {
+        let budget = 16;
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: 4,
+            max_stall_steps: budget,
+        });
+        let mut backend = StallingCpu {
+            work: 0,
+            steps: 0,
+            overflow_to: Some(98), // armed at 96, stops short of target 100
+        };
+        let err = planner.stop_at(&mut backend, 100).unwrap_err();
+        assert_eq!(
+            err,
+            VtimeError::StepBudgetExceeded {
+                target: 100,
+                last_work: 98,
+                stall_steps: budget + 1,
+            }
+        );
+        assert_eq!(backend.steps, budget + 1);
+    }
+
+    /// No false positives: a sparse-but-PROGRESSING stream whose branch-free
+    /// runs come right up to the budget must still reach the target — the stall
+    /// counter resets on every counted event, so it never trips on a stream
+    /// that keeps making progress. (This is the property that lets the backstop
+    /// sit far below a real guest's inter-event gap without risking a spurious,
+    /// determinism-affecting refusal.)
+    #[test]
+    fn sparse_but_progressing_stream_does_not_trip() {
+        let budget = 3;
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: 8,
+            max_stall_steps: budget,
+        });
+        // budget zero-progress steps, then a counted event — repeated. Each
+        // run of stalls is exactly at the budget (never over), so the walk
+        // completes to the target instead of failing closed.
+        let mut backend = ScriptedCpu {
+            work: 0,
+            step_deltas: vec![0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+            steps_taken: 0,
+            overflow_stops_at: None,
+            fail: false,
+        };
+        let outcome = planner.stop_at(&mut backend, 3).unwrap();
+        assert_eq!(
+            outcome,
+            PlanOutcome::ReadyToInject {
+                target: 3,
+                stopped_at: 3,
+                single_steps_used: 12,
+            }
         );
     }
 }
