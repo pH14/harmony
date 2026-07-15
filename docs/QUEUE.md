@@ -53,10 +53,12 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   after the r8 workload-relative correction) and **rounds 1–17 fixed-and-verified**
   (the accumulated rulings: seal-verbatim, GPA one-shot, deterministic-anchor stamping,
   two-step registration handshake — r17 sharpened it to the RDTSC/RDTSCP read
-  specifically). **r18 dispatched 2026-07-15 ~15:05** (1 P1: G2's oracle check sampled
-  only step%1000 boundaries — strengthen to every synchronized registered boundary;
-  G2-only box re-validation window granted). On a clean r19 the PR is at APPROVE, then
-  **parks merge-ready for Paul's veto window** over the rulings.
+  specifically). r18 fixed + box-re-validated same hour (G2 at EVERY synchronized
+  boundary, 4,843 oracle checks green). **r19 dispatched 2026-07-15 ~16:20** (1 P1:
+  page-on perf arms must assert clocksource SELECTION before emitting ratios; perf-arm
+  re-run window granted — the recorded ~25x stands, G0 proved selection). Stream is
+  converging (2 P2 → 1 → 1, all harness gate-strength). On a clean r20 the PR is at
+  APPROVE, then **parks merge-ready for Paul's veto window** over the rulings.
 - **ARM pre-build apparatus** (tasks/109, `hm-2kj`, PR #108) — the r13 hold was released
   same night (held set dispatched + fixed as round 13; loop-to-zero de facto, Paul's
   cadence ruling moot if the loop reaches zero): **rounds 1–23 fixed** through head
