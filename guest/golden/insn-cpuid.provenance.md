@@ -21,15 +21,49 @@ the provenance.
 | Patched KVM | `kvm.ko` size **1400832** (stock is 1396736); Part-2 6.12.90 loadable build, `consonance/vmm-backend/kvm-patches/BUILD.md`, built 2026-06-30 |
 | Capture tool | `DETCORPUS_BLESS=1 taskset -c 2 cargo test -p vmm-core --test box_corpus c1_corpus_o1_o2_on_the_patched_backend -- --ignored --nocapture` |
 | Seed / RAM | `CORPUS_SEED = 0x0028_C0FF_EE5E_EDC0`, 256 MiB guest |
-| Repo | main HEAD `9d6778d` (fresh clone) |
+| Repo | main HEAD `9d6778d` (fresh clone `/root/harmony-t113`) |
 | Pinned core / gov | core 2 (SMT sibling cpu10 idle); governor `powersave` — CPUID content is frequency-independent, recorded for completeness |
+
+### Capture inputs (content hashes)
+
+The digest is a function of the executed payload bytes + backend, so the capture
+is pinned by these (all under the `/root/harmony-t113` clone at commit `9d6778d`):
+
+| Input | SHA-256 |
+|---|---|
+| Payload ELF `insn-cpuid` (the one that emits the CPUID sweep) | `e57784e483d3add5c67ee2b06803b0ba96ebc54691179de71df842aecdf471a9` |
+| Payload source `guest/payloads/insn-cpuid/src/main.rs` | `485222d05668e526ac702d657ffbddd6400307ac2ddd8e0c00f3ba366957de93` |
+| Frozen model `docs/cpu-msr-contract.toml` (contract v4) | `c116b4487137c3e3481c45a5944349fa00223a0d815889ffaf07341b0ebac25a` |
+
+The other five conformance payload ELFs in the same sweep (unchanged goldens):
+`insn-rdtsc 50ca9d66…`, `insn-rng be594df1…`, `insn-rdpmc 9f73388f…`,
+`msr-allowed 9ab4e2de…`, `msr-denied 7330e178…`. (There is no separate guest OS
+image — the C1 micro-payloads are the executed image, loaded into 256 MiB of
+guest RAM.)
 
 ## Why it drifted (root cause: legitimate contract correction, not a regression)
 
-The guest-visible CPUID is a **frozen table harmony installs via `KVM_SET_CPUID2`
-from `docs/cpu-msr-contract.toml`** — it is host-independent (not inherited from
-the host's live CPUID). The digest therefore moves only when that frozen model
-changes, not with microcode/image/KVM.
+`observable_digest` is **not** a pure function of the TOML. It is
+`SHA256("OBSV" ‖ report-stream dwords ‖ serial banner)`
+(`consonance/vmm-core/src/corpus.rs::observable_digest_of`), where the report
+stream folds in, for every swept leaf, the **live** guest `eax/ebx/ecx/edx`. Its
+inputs are therefore:
+
+1. the **frozen base model** harmony installs via `KVM_SET_CPUID2` from
+   `docs/cpu-msr-contract.toml` (host-independent) — **this is where the drift
+   was**;
+2. the **three KVM-runtime dynamic cells** the base table does *not* carry —
+   OSXSAVE mirror (`1:ECX[27]`), the `0xB/0x1F` level echo, and the `0xD.0`
+   XSAVE-area size — which KVM recomputes from the guest's live `CR4`/`XCR0`
+   (`kvm_update_cpuid_runtime`), i.e. a function of the guest state **and the host
+   KVM**, not the TOML;
+3. the fixed **serial banner** (`PAYLOAD insn-cpuid START` / `OK cpuid-stable` /
+   `PAYLOAD insn-cpuid PASS`).
+
+Inputs (2) and (3) were **stable across every capture** (same guest `CR4`/`XCR0`,
+same patched-KVM recompute, same banner) — the cross-reboot match below is exactly
+what confirms the host-KVM-dependent part (2) did not move. The digest changed
+only because of input (1): a single frozen-base cell.
 
 The model was legitimately corrected in commit `9d60c75` (task 49/56 MADT+ARAT
 SMP bring-up, PR #36), which bumped the contract v3 → v4. The **sole** CPUID
@@ -54,11 +88,19 @@ box-image rebuild (`hm-xdp`/`hm-2nt`; CPUID is harmony-injected, image-independe
 ## Determinism / stability
 
 - **O1 deterministic** run-to-run: `box_corpus` reports insn-cpuid `O1=PASS …
-  identical; both halted at 1`, and the two-sweep verify aggregate matches.
-- **Reboot-invariant by construction**: the one differing register is a
-  compile-time constant in the injected `KVM_SET_CPUID2` table (host-independent),
-  so it cannot vary across reboots.
-- **Cross-corroborated**: the same value `cd321ad6…` was captured independently in
-  three prior box sessions on different days — the nested-x86 spike (2026-07-10,
-  `spikes/nested-x86/results/n2/`), the task-108 box differential (2026-07-14), and
-  the PR-110 box window (2026-07-15).
+  identical; both halted at 1`, and the two-sweep verify aggregate matches
+  (`e5c7432a…` both sweeps).
+- **Cross-reboot**: the box last rebooted **2026-07-10 22:02:15 CEST =
+  20:02:15 UTC** (`uptime -s`, box-local). The nested-x86 spike captured
+  `cd321ad6…` on the **pre-reboot**
+  boot — its metal-corpus run `env.json` records
+  `"started": "2026-07-10T04:11:46Z"` (BARE METAL patched modules),
+  ~16 h before the reboot — and this task re-captured the identical `cd321ad6…`
+  on the **post-reboot** boot (2026-07-15). Those two legs straddle the reboot, so
+  the digest (including the host-KVM-dependent dynamic cells) is stable across a
+  fresh KVM/host init, not just run-to-run. The drifted cell itself (leaf-6 EAX)
+  is additionally a compile-time constant in the injected table, so it cannot vary
+  across boots.
+- **Cross-corroborated**: `cd321ad6…` also matches the task-108 box differential
+  (2026-07-14) and the PR-110 box window (2026-07-15) — four independent captures
+  agree.

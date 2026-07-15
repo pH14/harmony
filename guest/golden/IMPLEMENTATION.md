@@ -19,9 +19,13 @@ only).
 Root cause = **stale golden after a legitimate contract correction**, not a
 regression, not microcode, not the box-image rebuild:
 
-- Guest CPUID is a **frozen table harmony installs via `KVM_SET_CPUID2`** from
-  `docs/cpu-msr-contract.toml` (host-independent), so the digest moves only when
-  that model changes.
+- The O2 digest is `SHA256("OBSV" ‖ report-stream ‖ serial banner)`, and the
+  report stream folds in the **live** guest CPUID for every leaf. Its inputs are
+  (1) the **frozen base table** harmony installs via `KVM_SET_CPUID2` from
+  `docs/cpu-msr-contract.toml` (host-independent), (2) the three KVM-runtime
+  dynamic cells (OSXSAVE / `0xB`-`0x1F` level echo / `0xD.0` XSAVE size, recomputed
+  from guest `CR4`/`XCR0`), and (3) the fixed serial banner. (2)+(3) were stable
+  across all captures; the drift was purely in (1).
 - The model was corrected in commit `9d60c75` (task 49/56 MADT+ARAT, PR #36),
   contract v3 → v4. The **sole** CPUID delta: `CPUID.06H:EAX 0x00000000 →
   0x00000004` (bit 2 = ARAT). The `det-cfl-v1` host genuinely reports ARAT
@@ -40,7 +44,8 @@ regression, not microcode, not the box-image rebuild:
 
 Determinism box (i9-9900K, kernel 6.12.90, microcode 0xf8), patched KVM
 (`kvm.ko` 1400832) loaded via `scripts/box-window.sh` on core 2, reverted to
-stock after. Fresh clone at main HEAD `9d6778d`.
+stock after. Fresh clone at main HEAD `9d6778d`; executed payload
+`insn-cpuid` ELF `e57784e4…` (full content-hash table in the provenance doc).
 
 - **Reproduce** (gate, no bless): `insn-cpuid O1=PASS O2=FAIL digest=cd321ad6…
   identical` — deterministic run-to-run, ≠ committed `746d8bbb…`; rdtsc/rng pass.
@@ -60,10 +65,14 @@ The blessed value `cd321ad6…` independently matches three prior box captures
   committed O2 gate (`box_corpus`) hard-requires the patched module; a stock
   proxy would not be "the box det-corpus O2 gate green." Raised the tension; Paul
   ruled to load patched and run the real gate. Done.
-- **Physical reboot to prove stability**: unnecessary and disruptive — the one
-  differing register is a compile-time constant in the injected CPUID table
-  (reboot-invariant by construction), and it is corroborated by
-  `box_corpus`'s deterministic-twice plus three independent prior captures.
+- **A fresh physical reboot to prove stability**: unnecessary — the cross-reboot
+  legs already exist. The box last rebooted 2026-07-10 20:02:15 UTC; the
+  nested-x86 spike captured `cd321ad6…` pre-reboot (`env.json`
+  `"started":"2026-07-10T04:11:46Z"`), this task re-captured it post-reboot. Those
+  straddle the reboot, so the digest — including the host-KVM-dependent dynamic
+  cells — is shown stable across a fresh KVM/host init. (The drifted cell is also
+  a compile-time constant.) A reboot window was offered and declined for that
+  reason; box left free + stock.
 - **Running the full `box_corpus` test file**: its two localizer diagnostics
   (`c1_corpus_o1_repeat_diagnostic`, 40 VM-boot iterations) are slow and add no
   signal here; targeted the single gate test instead.
