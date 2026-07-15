@@ -529,6 +529,16 @@ fn check_aggregation(
     // per-set difference (a different count offset in each `weights` pack, say) and the
     // aggregate still "passes" count invariance. So require those four to match the first
     // set. `condition` and `pinning` are deliberately NOT compared — they are the sweep.
+    // The workload identity is the set of image content hashes (paths are never trusted).
+    let image_ids = |rs: &RunSet| -> Vec<String> {
+        let mut v: Vec<String> = rs
+            .images
+            .iter()
+            .map(|i| normalise_hash(&i.sha256))
+            .collect();
+        v.sort();
+        v
+    };
     if let [(first, _, _), rest @ ..] = loaded {
         for (rs, _, _) in rest {
             let mut diffs: Vec<&str> = Vec::new();
@@ -544,12 +554,19 @@ fn check_aggregation(
             if rs.mechanism != first.mechanism {
                 diffs.push("mechanism");
             }
+            // The PINNED PAYLOAD IMAGES must match too: if the binaries changed between
+            // conditions, an apparent condition-dependent count difference (or invariance)
+            // could be an artefact of a different measured workload, not the contamination.
+            if image_ids(rs) != image_ids(first) {
+                diffs.push("images");
+            }
             if !diffs.is_empty() {
                 problems.push(format!(
                     "run-set {} differs from {} in [{}] — aggregated conditions must share one \
-                     constants pack (weights) and measurement environment (perf, environment, \
-                     mechanism); only `condition` (and AA-1's pinning posture) may vary, or a \
-                     condition-dependent count change hides behind a per-set difference",
+                     constants pack (weights), measurement environment (perf, environment, \
+                     mechanism), and payload images; only `condition` (and AA-1's pinning \
+                     posture) may vary, or a condition-dependent count change hides behind a \
+                     per-set difference",
                     rs.run_set_id,
                     first.run_set_id,
                     diffs.join(", ")
@@ -637,6 +654,23 @@ fn check_aa1_condition_matrix(
                 missing.join(", "),
                 present.join(", ")
             ));
+        }
+
+        // The bounded migration probe is a REQUIRED AA-1 certification input, not an
+        // optional extra: the four pinned contamination conditions never leave their core,
+        // so they cannot supply the cross-core-migration evidence (the rr #3607 missed-PMI
+        // failure mode) the stage contract calls for. A report of only pinned conditions
+        // must not certify. At least one run-set must carry the probe (`migration_probe`);
+        // `check_pinning` separately proves that probe is genuinely unpinned.
+        let has_migration_probe = loaded.iter().any(|(rs, _, _)| rs.pinning.migration_probe);
+        if !has_migration_probe {
+            problems.push(
+                "no run-set carries the AA-1 bounded migration probe (pinning.migration_probe): \
+                 the cross-core-migration evidence (rr #3607) is a required AA-1 certification \
+                 input, and four pinned contamination conditions cannot supply it (pass \
+                 --sub-normative for a reduced-scope run)"
+                    .to_string(),
+            );
         }
     }
 
@@ -835,11 +869,22 @@ fn check_well_formed(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outc
         problems.push("perf.sample_period is 0 (schema minimum is 1)".to_string());
     }
 
-    // Every record's condition is non-empty, and its state_digest is a well-formed
-    // sha256 (records carry no md5).
+    // Every record's condition is non-empty, and its state_digest is present (schema
+    // `minLength: 1`). The digest matters even for armed/stepped records that also carry a
+    // landed/step digest: replay identity compares the mode-specific `comparison_digest`,
+    // so an EMPTY `state_digest` would slip past that check while still violating the
+    // schema and lacking the advertised complete-state evidence. Enforce it here, on every
+    // record, not just the counting ones.
     for r in records {
         if r.condition.trim().is_empty() {
             problems.push(format!("record {}: condition is empty", r.sample_id));
+        }
+        if r.state_digest.trim().is_empty() {
+            problems.push(format!(
+                "record {}: state_digest is empty (schema minLength 1) — every record must carry \
+                 its complete-state digest, even one that also carries a landed or step digest",
+                r.sample_id
+            ));
         }
     }
 
@@ -2015,19 +2060,45 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
         // *measures* the weight (e.g. ERET's is unknown by construction), bounded only by
         // "a single step retires at most one taken branch".
         match s.transition {
-            StepTransition::Sequential if s.br_retired_delta != 0 => bad.push(format!(
-                "sample {}: a sequential step must not move BR_RETIRED, but delta is {}",
-                r.sample_id, s.br_retired_delta
-            )),
+            StepTransition::Sequential => {
+                if s.br_retired_delta != 0 {
+                    bad.push(format!(
+                        "sample {}: a sequential step must not move BR_RETIRED, but delta is {}",
+                        r.sample_id, s.br_retired_delta
+                    ));
+                }
+                // AArch64 instructions are a fixed 4 bytes, so a sequential (fall-through)
+                // step lands at EXACTLY PC+4. A larger advance means an instruction was
+                // skipped, and an equal-or-smaller one that it doubled or stalled — both are
+                // exactly the miss-count AA-2 exists to detect, so require the exact next
+                // address, not merely a different PC.
+                if s.pc_after != s.pc_before.wrapping_add(4) {
+                    bad.push(format!(
+                        "sample {}: a sequential step must land at PC+4 ({:#x}), but landed at \
+                         {:#x} — a skipped or doubled instruction, which AA-2 must catch",
+                        r.sample_id,
+                        s.pc_before.wrapping_add(4),
+                        s.pc_after
+                    ));
+                }
+            }
             StepTransition::TakenBranch if s.br_retired_delta != 1 => bad.push(format!(
                 "sample {}: a taken branch must increment BR_RETIRED by exactly 1, but delta is {}",
+                r.sample_id, s.br_retired_delta
+            )),
+            // A single-stepped LL/SC exclusive (`LDXR`/`STXR`) is a load or a store, not a
+            // taken branch, so BR_RETIRED must NOT move. (The retry is a separate `CBNZ`,
+            // stepped and classified as a TakenBranch in its own right.) Grouping it with
+            // the exception/WFI/injection classes wrongly admitted a delta of 1.
+            StepTransition::LlscExclusive if s.br_retired_delta != 0 => bad.push(format!(
+                "sample {}: a single-stepped LL/SC exclusive (LDXR/STXR) is not a taken branch, \
+                 so BR_RETIRED must not move, but delta is {}",
                 r.sample_id, s.br_retired_delta
             )),
             StepTransition::ExceptionEntry
             | StepTransition::ExceptionReturn
             | StepTransition::Wfi
             | StepTransition::Injection
-            | StepTransition::LlscExclusive
                 if s.br_retired_delta > 1 =>
             {
                 bad.push(format!(
@@ -3154,6 +3225,15 @@ mod tests {
             status(&aggregate(&p, &floors).outcomes, CheckId::Aggregation),
             Some(Status::Fail)
         );
+
+        // A different payload image (binary content hash) → refused: the workload changed
+        // between conditions, so any count difference or invariance is an artefact.
+        let mut im = pair();
+        im[1].0.images[0].sha256 = format!("sha256:{}", "f".repeat(64));
+        assert_eq!(
+            status(&aggregate(&im, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Fail)
+        );
     }
 
     #[test]
@@ -3166,11 +3246,28 @@ mod tests {
             set.1[2].scale = Scale::S1e8;
             set
         };
+        // The AA-1 migration probe: unpinned, no core, its records span the sweep too.
+        let migration = || {
+            let mut set = swept("mig", "pinned-solo", &"e".repeat(64));
+            set.0.pinning.pinned = false;
+            set.0.pinning.core = None;
+            set.0.pinning.migration_probe = true;
+            set
+        };
+        // Four pinned conditions, full sweep, but NO migration probe.
+        let contamination_only = [
+            swept("c0", "pinned-solo", &"a".repeat(64)),
+            swept("c1", "co-tenant-other-core", &"b".repeat(64)),
+            swept("c2", "co-tenant-same-core", &"c".repeat(64)),
+            swept("c3", "memory-pressure", &"d".repeat(64)),
+        ];
+        // The same, plus the migration probe → a complete AA-1 certification input set.
         let full_sweep = [
             swept("c0", "pinned-solo", &"a".repeat(64)),
             swept("c1", "co-tenant-other-core", &"b".repeat(64)),
             swept("c2", "co-tenant-same-core", &"c".repeat(64)),
             swept("c3", "memory-pressure", &"d".repeat(64)),
+            migration(),
         ];
         let smoke_only = [
             a_loaded_set(Stage::Aa1, "c0", "pinned-solo", &"a".repeat(64), 3),
@@ -3193,14 +3290,24 @@ mod tests {
             Some(Status::Fail),
             "a smoke-only AA-1 run has not run the 1e6/1e7/1e8 differential sweep"
         );
-        // The full sweep passes the matrix.
+        // Full sweep but no migration probe: still not a certification (rr #3607 evidence
+        // is missing).
+        assert_eq!(
+            status(
+                &aggregate(&contamination_only, &normative).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Fail),
+            "four pinned conditions without the migration probe cannot certify AA-1"
+        );
+        // The full sweep plus the migration probe passes the matrix.
         assert_eq!(
             status(
                 &aggregate(&full_sweep, &normative).outcomes,
                 CheckId::ConditionMatrix
             ),
             Some(Status::Pass),
-            "the full 1e6/1e7/1e8 sweep across every condition certifies"
+            "the full sweep across every condition plus the migration probe certifies"
         );
         // A --sub-normative reduced-scope run relaxes the sweep as it relaxes the floor.
         let sub = Floors {
@@ -3374,6 +3481,19 @@ mod tests {
         let mut out = Vec::new();
         check_well_formed(&rs, &[a_record(0)], &mut out);
         assert_eq!(status(&out, CheckId::WellFormed), Some(Status::Fail));
+
+        // An empty state_digest on a record fails — even an ARMED record that carries a
+        // populated landed_digest (which the replay check would compare instead), because
+        // the state_digest is a required, complete-state field in its own right.
+        let mut armed = a_record(0); // a_record is armed with a landed_digest
+        armed.state_digest = String::new();
+        let mut out = Vec::new();
+        check_well_formed(&a_run_set(), &[armed], &mut out);
+        assert_eq!(
+            status(&out, CheckId::WellFormed),
+            Some(Status::Fail),
+            "an empty state_digest is not rescued by a populated landed_digest"
+        );
 
         // The baseline is well-formed.
         let mut out = Vec::new();
@@ -3570,6 +3690,30 @@ mod tests {
             status(&out, CheckId::DebugEvidence),
             Some(Status::Fail),
             "an AA-2 run that never stepped an LL/SC exclusive is incomplete"
+        );
+
+        // (e) a sequential step must land at EXACTLY PC+4 — a jump of 8 skipped an
+        // instruction, which is the miss AA-2 exists to catch, even with delta 0.
+        let mut m = full_step_matrix();
+        m[0] = a_step(0, 0x8008, 0, StepTransition::Sequential); // pc_before 0x8000 → +8
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &m, &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::Fail),
+            "a sequential step that advances by 8, not 4, skipped an instruction"
+        );
+
+        // (f) an LL/SC exclusive step is a load/store, not a taken branch: BR_RETIRED must
+        // not move, so a delta of 1 (the exception/WFI class's allowance) is rejected here.
+        let mut m = full_step_matrix();
+        m[6] = a_step(6, 0xE000, 1, StepTransition::LlscExclusive);
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &m, &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::Fail),
+            "a single-stepped LDXR/STXR is not a taken branch; delta 1 is invalid"
         );
 
         // The check does not fire outside AA-2.

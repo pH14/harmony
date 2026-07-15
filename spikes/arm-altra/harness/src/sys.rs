@@ -996,7 +996,7 @@ mod imp {
 pub mod machine;
 
 #[cfg(target_os = "linux")]
-pub use machine::{Machine, Mechanism, ParamsPage, PerfCounter, pin_to_core};
+pub use machine::{Machine, Mechanism, ParamsPage, PerfCounter, allowed_cores, pin_to_core};
 
 #[cfg(test)]
 mod tests {

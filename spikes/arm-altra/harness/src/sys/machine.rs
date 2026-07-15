@@ -220,6 +220,33 @@ pub fn pin_to_core(core: u32) -> Result<(), SysError> {
     Ok(())
 }
 
+/// The CPUs this thread is permitted to run on (`sched_getaffinity`), ascending.
+///
+/// This is the cpuset **lease** the operator granted, not an invented core list. AA-1's
+/// migration probe rotates the vCPU thread across these to FORCE cross-core movement,
+/// rather than merely leaving it unpinned and trusting a quiet scheduler to move it (the
+/// r13 review's point: on an idle host the thread can sit on one CPU for the whole run,
+/// so an unpinned probe may exercise no migration at all).
+///
+/// # Errors
+/// [`SysError`] if `sched_getaffinity` failed.
+pub fn allowed_cores() -> Result<Vec<u32>, SysError> {
+    // SAFETY: a zeroed cpu_set_t is a valid empty set; sched_getaffinity fills it, and
+    // CPU_ISSET only reads it.
+    let cores = unsafe {
+        let mut set: libc::cpu_set_t = core::mem::zeroed();
+        if libc::sched_getaffinity(0, core::mem::size_of::<libc::cpu_set_t>(), &raw mut set) != 0 {
+            return Err(err("sched_getaffinity"));
+        }
+        let cpu_setsize = core::mem::size_of::<libc::cpu_set_t>() * 8;
+        (0..cpu_setsize)
+            .filter(|&c| libc::CPU_ISSET(c, &set))
+            .map(|c| c as u32)
+            .collect()
+    };
+    Ok(cores)
+}
+
 /// Install the no-op handler for the stock overflow kick.
 ///
 /// Deliberately **without** `SA_RESTART`: the whole point is that the signal makes
@@ -904,34 +931,61 @@ impl Machine {
 
         // The redistributor SGI frame sits one 64 KiB frame past RD_base on GICv3.
         const SGI_BASE: u64 = 0x1_0000;
-        // Private-interrupt (SGI/PPI, IDs 0–31) state, in the redistributor SGI frame:
-        // GICR_CTLR at RD_base+0, then ISENABLER0/ISPENDR0/ISACTIVER0 in the SGI frame.
-        let redist: &[u64] = &[
+        // Private-interrupt (SGI/PPI, IDs 0–31) state, in the redistributor. Enable,
+        // pending and active alone do not determine how a pending interrupt is DELIVERED:
+        // its group (secure/non-secure), priority, configuration (edge/level), and the
+        // redistributor's wake state all change the injection. Two runs equal on the first
+        // three but differing here would inject differently while carrying an identical
+        // digest, so AA-6 replay identity must see all of it.
+        let mut redist: Vec<u64> = vec![
             0x0000,            // GICR_CTLR (RD_base)
-            SGI_BASE + 0x0100, // GICR_ISENABLER0
-            SGI_BASE + 0x0200, // GICR_ISPENDR0
-            SGI_BASE + 0x0300, // GICR_ISACTIVER0
+            0x0014,            // GICR_WAKER (RD_base) — wake/sleep gates delivery
+            SGI_BASE + 0x0080, // GICR_IGROUPR0   — group
+            SGI_BASE + 0x0D00, // GICR_IGRPMODR0  — group modifier
+            SGI_BASE + 0x0100, // GICR_ISENABLER0 — enable
+            SGI_BASE + 0x0200, // GICR_ISPENDR0   — pending
+            SGI_BASE + 0x0300, // GICR_ISACTIVER0 — active
+            SGI_BASE + 0x0C00, // GICR_ICFGR0     — config
+            SGI_BASE + 0x0C04, // GICR_ICFGR1     — config
         ];
-        // SPI (IDs 32+) state, in the distributor. Word `n` (n≥1) covers IDs
-        // `32*n .. 32*n+31`; words 1..2 span IDs 32..95. GICD_CTLR carries the
-        // group-enable. (ISENABLERn = 0x0100+4n, ISPENDRn = 0x0200+4n, ISACTIVERn =
-        // 0x0300+4n.)
-        let dist: &[u64] = &[
+        // GICR_IPRIORITYR0..7 — one byte per private interrupt, 32 interrupts → 8 words.
+        for w in 0..8u64 {
+            redist.push(SGI_BASE + 0x0400 + 4 * w);
+        }
+
+        // SPI (IDs 32+) state, in the distributor. Word `n` (n≥1) of a bitmap register
+        // covers IDs `32*n .. 32*n+31`; words 1..2 span IDs 32..95. Beyond enable/pending/
+        // active, group/config/priority AND the routing register (which PE a pending SPI
+        // targets) are injection-relevant.
+        let mut dist: Vec<u64> = vec![
             0x0000, // GICD_CTLR
-            0x0104, 0x0108, // ISENABLER1..2
-            0x0204, 0x0208, // ISPENDR1..2
-            0x0304, 0x0308, // ISACTIVER1..2
+            0x0084, 0x0088, // GICD_IGROUPR1..2   — group
+            0x0D04, 0x0D08, // GICD_IGRPMODR1..2  — group modifier
+            0x0104, 0x0108, // GICD_ISENABLER1..2 — enable
+            0x0204, 0x0208, // GICD_ISPENDR1..2   — pending
+            0x0304, 0x0308, // GICD_ISACTIVER1..2 — active
+            0x0C08, 0x0C0C, 0x0C10, 0x0C14, // GICD_ICFGR2..5 — config (IDs 32..95)
         ];
+        // GICD_IPRIORITYR for IDs 32..95 — one byte per interrupt → words 0x0420..=0x045C.
+        for id in (32u64..96).step_by(4) {
+            dist.push(0x0400 + id);
+        }
+        // GICD_IROUTER for IDs 32..47 — 64-bit per SPI, read as two 32-bit halves. Routing
+        // decides which PE a pending SPI is delivered to, so it is injection-relevant state.
+        for id in 32u64..48 {
+            dist.push(0x6000 + 8 * id); // IROUTER<id> low half
+            dist.push(0x6000 + 8 * id + 4); // IROUTER<id> high half
+        }
 
         let mut out = Vec::with_capacity((redist.len() + dist.len()) * 4);
-        for &offset in redist {
+        for &offset in &redist {
             out.extend_from_slice(
                 &self
                     .vgic_reg(kvm::DEV_ARM_VGIC_GRP_REDIST_REGS, offset)?
                     .to_le_bytes(),
             );
         }
-        for &offset in dist {
+        for &offset in &dist {
             out.extend_from_slice(
                 &self
                     .vgic_reg(kvm::DEV_ARM_VGIC_GRP_DIST_REGS, offset)?

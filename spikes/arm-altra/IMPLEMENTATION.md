@@ -872,6 +872,60 @@ green: harness 87 tests, floor-check 44 + 27 + 3, oracle-model 22 + 2, both clip
 and all three `cargo deny` clean, the window-vs-oracle scan and TCG smoke pass, the
 kernel-patch format/parse gate, and Miri runs arm-harness plus oracle-model.
 
+## Round-13 review fixes (PR #108, cross-model pass r13)
+
+Seven findings, all fixed — same species as the prior rounds (close a path by which
+arrival-day evidence could pass a floor without measuring what the floor is about, or a
+digest could equate non-equivalent machine states). Paul's cadence ruling on how long to
+keep fortifying the checker ahead of the box is still pending; the loop continued meanwhile.
+
+- **The migration probe must force and attest movement, and AA-1 must require it.** Two
+  coupled fixes. (a) In migration-probe mode the harness merely skipped pinning, so on a
+  quiet host the scheduler could leave the vCPU thread on one core for the whole run,
+  exercising no migration at all. It now DELIBERATELY rotates the thread across the allowed
+  cpuset (`sched_getaffinity`), one core per sample, forcing cross-core movement; it refuses
+  to run in a single-core lease (nothing to migrate between). The evidence still records
+  `pinned: false` / no single core — the truth. (b) The checker's AA-1 aggregation now
+  REQUIRES a run-set carrying `pinning.migration_probe`: four pinned contamination
+  conditions never leave their core and cannot supply the rr #3607 cross-core evidence the
+  stage contract calls for, so a probe-less report no longer certifies (normative only).
+- **Compare payload images before aggregating.** The aggregation comparability check
+  (weights/perf/environment/mechanism) now also compares the pinned payload image content
+  hashes. Records from different binaries could otherwise be summed into one condition
+  matrix, so an apparent condition-dependent difference (or invariance) could be an artefact
+  of a changed workload rather than the contamination.
+- **Sequential steps must land at exactly PC+4.** A `Sequential` transition was accepted
+  whenever the PC merely changed, so a single-step advancing by 8 (a skipped instruction)
+  passed. AArch64 instructions are a fixed 4 bytes; a sequential step now must land at
+  `pc_before + 4`, which is exactly the skip/double AA-2 exists to detect.
+- **LL/SC single-steps must reject a BR_RETIRED delta of 1.** The `LlscExclusive` class was
+  grouped with the exception/WFI/injection classes and admitted a delta of 1. A
+  single-stepped `LDXR`/`STXR` is a load or store, not a taken branch, so BR_RETIRED must
+  not move (the retry is a separate `CBNZ`, stepped and classed as a TakenBranch). It now
+  requires delta 0, like Sequential.
+- **Extend the vGIC digest to all injection-relevant state.** The redistributor/distributor
+  digest read only control/enable/pending/active, so two runs differing only in group,
+  priority, configuration, routing, or the redistributor wake state produced the same digest
+  though a pending interrupt would inject differently — letting AA-6 replay identity pass for
+  non-equivalent machine states. The digest now also covers `IGROUPR`/`IGRPMODR` (group),
+  `IPRIORITYR` (priority), `ICFGR` (config), `GICD_IROUTER` (SPI routing), and `GICR_WAKER`
+  (wake), for the private interrupts and the low SPI range.
+- **Enforce state_digest well-formedness on every record.** The well-formedness loop
+  validated only `condition`, despite its comment. An armed or stepped record with an empty
+  `state_digest` (which replay identity does not read — it compares the landed/step digest)
+  passed while violating the schema's `minLength: 1` and lacking the advertised complete-state
+  evidence. Every record's `state_digest` is now required non-empty.
+- **Reject undersized ELF program/section-header entries.** The parser advanced by an
+  untrusted `e_phentsize` while reading fields that need the 56-byte ELF64 program header;
+  with `e_phentsize = 0` every declared header re-read the first entry, so a later executable
+  segment carrying a forbidden opcode was never scanned. `e_phentsize < 56` (and the identical
+  `e_shentsize < 64` hazard) are now rejected.
+
+No schema change. Gates re-run green: harness 88 tests, floor-check 44 + 27 + 3,
+oracle-model 22 + 2, clippy `-D warnings` native + aarch64-linux (the affinity, vGIC and
+migration-probe code compiles for the box), three `cargo deny`, the window-vs-oracle scan,
+TCG smoke, kernel-patch format/parse, and Miri (arm-harness + oracle-model).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

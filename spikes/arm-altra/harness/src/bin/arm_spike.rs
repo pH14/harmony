@@ -110,13 +110,15 @@ struct RunOpts {
     /// this lineage (rr #3607), not hygiene.
     #[arg(long)]
     core: u32,
-    /// Run AA-1's **bounded migration probe**: deliberately do NOT pin the thread, so it
-    /// is free to migrate across cores under armed overflow, to observe the rr #3607
-    /// failure mode (lost PMI → hang vs delayed) on this exact kernel/silicon. The
-    /// evidence records `pinned: false, migration_probe: true` — the honest posture — so
-    /// the checker accepts the missing pin only for this sanctioned probe, never as a
-    /// normal run. Re-pin permanently after; this turns the standing pinning condition
-    /// into evidence (`docs/ARM-ALTRA.md` §AA-1 migration probe).
+    /// Run AA-1's **bounded migration probe**: deliberately ROTATE the vCPU thread across
+    /// the allowed cpuset (one core per sample) so it genuinely moves under armed overflow,
+    /// to observe the rr #3607 failure mode (lost PMI → hang vs delayed) on this exact
+    /// kernel/silicon. Merely leaving the thread unpinned is not enough — on a quiet host
+    /// the scheduler may leave it on one CPU for the whole run, exercising no migration.
+    /// Needs ≥2 allowed cores (a single-core lease is refused). The evidence records
+    /// `pinned: false, migration_probe: true` — the honest posture (not pinned to one core)
+    /// — so the checker accepts the missing single-core pin only for this sanctioned probe,
+    /// never as a normal run. Re-pin permanently after (`docs/ARM-ALTRA.md` §AA-1).
     #[arg(long)]
     migration_probe: bool,
     /// The stage this run-set belongs to.
@@ -484,15 +486,29 @@ fn execute(args: RunArgs) -> Result<(), String> {
     use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
 
-    // Pin first, and pin the thread that will call KVM_RUN: the perf context follows
-    // the thread, and on this lineage an unpinned sample is not a slower sample, it is an
-    // untrusted one (rr #3607). The ONE sanctioned exception is AA-1's bounded migration
-    // probe: it deliberately leaves the thread unpinned to observe the #3607 failure mode,
-    // and records that honestly (`pinned: false, migration_probe: true`) so the evidence
-    // says what it did rather than claiming a pin it never took.
-    if !args.migration_probe {
+    // Pin the thread that will call KVM_RUN: the perf context follows the thread, and on
+    // this lineage an unpinned sample is not a slower sample, it is an untrusted one (rr
+    // #3607). The ONE sanctioned exception is AA-1's bounded migration probe — and it may
+    // not merely leave the thread unpinned, because on a quiet host the scheduler can leave
+    // it on one CPU for the entire run, exercising no migration at all (r13). So the probe
+    // DELIBERATELY rotates the thread across the allowed cpuset, one core per sample, to
+    // force cross-core movement; the evidence still records `pinned: false` / no single
+    // core, which is the truth (the run was not pinned to one core). A single-core lease
+    // cannot move, so the probe refuses to run in one rather than certify a no-op.
+    let migration_cores: Vec<u32> = if args.migration_probe {
+        let cores = sys::allowed_cores().map_err(|e| format!("read the allowed cpuset: {e}"))?;
+        if cores.len() < 2 {
+            return Err(format!(
+                "the migration probe needs at least two allowed cores to move between, but the \
+                 process cpuset is {cores:?}: a single-core lease cannot exercise the rr #3607 \
+                 cross-core-migration failure mode"
+            ));
+        }
+        cores
+    } else {
         pin_to_core(args.core).map_err(|e| format!("pin to core {}: {e}", args.core))?;
-    }
+        Vec::new()
+    };
 
     // Content-verify the host kernel against its TRUSTED expected pin: hash the image
     // and compare to the sha256 the operator vouched is the running kernel. A mismatch
@@ -566,6 +582,18 @@ fn execute(args: RunArgs) -> Result<(), String> {
     let mut failure: Option<String> = None;
 
     for (i, s) in samples.iter().enumerate() {
+        // The migration probe forces the vCPU thread onto a DIFFERENT allowed core before
+        // each sample, so the run genuinely moves across cores rather than resting on one
+        // (rr #3607). Non-probe runs stay pinned to the single core set above.
+        if args.migration_probe {
+            let core = migration_cores[i % migration_cores.len()];
+            if let Err(e) = pin_to_core(core) {
+                failure = Some(format!(
+                    "sample {i}: move to migration-probe core {core}: {e}"
+                ));
+                break;
+            }
+        }
         let loaded = match payloads.get(s.payload.name()) {
             Some(l) => l,
             None => {

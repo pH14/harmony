@@ -442,11 +442,23 @@ fn parse_segments(data: &[u8]) -> Result<Vec<Segment>, ElfError> {
     const PT_LOAD: u32 = 1;
     const PF_X: u32 = 1;
 
+    // An ELF64 program header is 56 bytes; this parser reads fields out to p_memsz at
+    // offset 0x28..0x30. A `e_phentsize` smaller than that advances the cursor by less
+    // than one header, so every declared header re-reads the FIRST entry's bytes — a
+    // later executable segment carrying a forbidden opcode is then never scanned. Reject
+    // an undersized entry rather than reinterpret the same bytes N times.
+    const ELF64_PHDR_SIZE: usize = 56;
+
     let phoff = u64_at(data, 0x20).ok_or(ElfError::Truncated("e_phoff"))?;
     let phentsize = u16_at(data, 0x36).ok_or(ElfError::Truncated("e_phentsize"))? as usize;
     let phnum = u16_at(data, 0x38).ok_or(ElfError::Truncated("e_phnum"))? as usize;
     if phoff == 0 || phnum == 0 {
         return Ok(Vec::new());
+    }
+    if phentsize < ELF64_PHDR_SIZE {
+        return Err(ElfError::Truncated(
+            "e_phentsize is smaller than a 56-byte ELF64 program header",
+        ));
     }
     let phoff = offset(phoff, "e_phoff")?;
 
@@ -488,6 +500,10 @@ fn parse_sections(data: &[u8]) -> Result<Sections, ElfError> {
     const SHT_NOBITS: u32 = 8;
     const SHF_EXECINSTR: u64 = 0x4;
 
+    // An ELF64 section header is 64 bytes; the same undersized-entry hazard as
+    // `e_phentsize` (a stride below one header re-reads the first entry N times).
+    const ELF64_SHDR_SIZE: usize = 64;
+
     let shoff = u64_at(data, 0x28).ok_or(ElfError::Truncated("e_shoff"))?;
     let shentsize = u16_at(data, 0x3A).ok_or(ElfError::Truncated("e_shentsize"))? as usize;
     let shnum = u16_at(data, 0x3C).ok_or(ElfError::Truncated("e_shnum"))? as usize;
@@ -495,6 +511,11 @@ fn parse_sections(data: &[u8]) -> Result<Sections, ElfError> {
         // A stripped image. Not an error here — `executable_ranges` is what decides
         // whether the image is scannable, and it reads the program headers.
         return Ok((Vec::new(), BTreeMap::new()));
+    }
+    if shentsize < ELF64_SHDR_SIZE {
+        return Err(ElfError::Truncated(
+            "e_shentsize is smaller than a 64-byte ELF64 section header",
+        ));
     }
     let shoff = offset(shoff, "e_shoff")?;
 
@@ -719,6 +740,26 @@ mod tests {
             elf.executable_ranges(),
             Err(ElfError::Truncated(_))
         ));
+    }
+
+    #[test]
+    fn rejects_an_undersized_program_header_entry() {
+        // With e_phentsize below the 56-byte ELF64 phdr, `i * phentsize` re-reads the first
+        // entry's bytes for every declared header, so a later executable segment carrying a
+        // forbidden opcode is never scanned. The parser must reject, not reinterpret.
+        let code = [0xC0, 0x03, 0x5F, 0xD6]; // RET
+        // The well-formed image (e_phentsize = 56) parses.
+        assert!(Elf::parse(stripped_image(&code, true)).is_ok());
+
+        // e_phentsize = 0, then 40 (both below 56) → rejected.
+        for bad in [0u16, 40] {
+            let mut img = stripped_image(&code, true);
+            img[0x36..0x38].copy_from_slice(&bad.to_le_bytes());
+            assert!(
+                matches!(Elf::parse(img), Err(ElfError::Truncated(_))),
+                "e_phentsize {bad} (< 56) must be rejected"
+            );
+        }
     }
 
     #[test]
