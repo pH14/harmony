@@ -609,9 +609,10 @@ fn g1_same_seed_state_hash_bit_identical_page_on() {
 // G2 — page-stamp vs the RDTSC-trap oracle at refresh Moments (x86 only).
 // ---------------------------------------------------------------------------
 
-/// **G2.** Function equality between the page and the trap: at every checked
-/// synchronized boundary the page's stable frame publishes exactly the values
-/// the RDTSC-trap completion would return at the current skid-free anchor
+/// **G2.** Function equality between the page and the trap: at **every**
+/// synchronized registered boundary (r18 — not a `step % N` sample) the page's
+/// stable frame publishes exactly the values the RDTSC-trap completion would
+/// return at the current skid-free anchor
 /// (`Vmm::pvclock_check_oracle`, backed by the per-stamp read-back inside the
 /// refresh itself — a wrong-offset/wrong-endian/torn stamp fails the run, not
 /// just this gate). NOT whole-hash equality across page-on/page-off — §6
@@ -634,8 +635,15 @@ fn g2_page_matches_trap_oracle_at_refresh_moments() {
         Duration::from_secs(600),
         |vmm, step| {
             // Every synchronized boundary is a refresh Moment (the step-tail
-            // stamp just ran); check a sample of them end-to-end.
-            if step % 1_000 == 0 && vmm.is_synchronized() && vmm.pvclock_registration().is_some() {
+            // stamp just ran), so check EVERY one — not a `step % N` sample (r18
+            // P1). A sampled check passes a regression that leaves the page STALE
+            // at an unsampled synchronized boundary (a refresh that should have
+            // fired and didn't) and repairs it before the next sampled step; the
+            // gate's claim is stamp==oracle at every refresh Moment, so it must
+            // read back at every one. `pvclock_check_oracle` is O(1) and
+            // synchronized boundaries are the intercept steps (not every step), so
+            // this stays cheap over a full boot.
+            if vmm.is_synchronized() && vmm.pvclock_registration().is_some() {
                 vmm.pvclock_check_oracle()
                     .unwrap_or_else(|e| panic!("G2 diverged at step {step}: {e}"));
                 checked += 1;
@@ -670,8 +678,8 @@ fn g2_page_matches_trap_oracle_at_refresh_moments() {
         "a corrupted page passed the oracle check — the gate cannot fail (vacuity)"
     );
     eprintln!(
-        "[REPORT] G2: {} sampled boundary checks + terminal check, {} logged refreshes, \
-         deliberate-fault detected. RESULT: PASS",
+        "[REPORT] G2: {} oracle checks (EVERY synchronized registered boundary) + terminal check, \
+         {} logged refreshes, deliberate-fault detected. RESULT: PASS",
         checked,
         refreshes.len()
     );
