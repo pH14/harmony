@@ -62,11 +62,14 @@ deterministic clock on ARM (AA-5, out of scope). (Boot-ratio arm, minimal image:
 still ≈1× — boot is calibration-bound by construction and is not the
 kill-condition workload.)
 
-**Box-run gotchas (for reproduction):** the kernel has been re-pinned twice — the
-STRICT_DEVMEM config fix (r7, → `051de137`) and the r8 handshake RDTSC reorder
-(→ **`e4591ea8`**, the current MANIFEST pin). Both times the two initramfs images
-reproduced bit-identically (they are kernel-independent), confirming the build
-levers isolate the deliberate kernel change. The Postgres image (`initramfs-postgres.cpio.gz`,
+**Box-run gotchas (for reproduction):** the kernel has been re-pinned three times
+— the STRICT_DEVMEM config fix (r7, → `051de137`), the r8 handshake RDTSC reorder
+(→ `e4591ea8`), and the r11 exact-flags ABI check (→ **`e1c83dc3`**, the current
+MANIFEST pin). Each time the two initramfs images reproduced bit-identically
+(they are kernel-independent), confirming the build levers isolate the deliberate
+kernel change; the r11 build additionally reproduced **bit-identically across the
+box and the docs/BUILDING.md linux/amd64 container**, so the pin is toolchain-
+stable. The Postgres image (`initramfs-postgres.cpio.gz`,
 pin `3c4a7f2f…`) is short-lived (~0.46 virtual s: boots, runs its scripted
 workload, powers off). Since **r8** the G1 and perf defaults are sized to fit it
 (G1 seals at 0.1 s / 0.05 s / ×3; the perf measures the actual workload,
@@ -298,6 +301,33 @@ and does not stamp the page; the guest's required post-response RDTSC is the
 stamping intercept). No kernel change; confirming box G1 on the r9 head is
 bit-identical to the handshake-kernel run (the overdue-not-synchronized edge
 never fires for a conforming guest).
+
+**Review round 10 folded in** (cross-model r10: 2 P1). (a) **Page-off probe
+path** — the doorbell port was serviced only when a channel was wired, so a
+clock-aware guest probing service 7 on a channel-less VM hit a fatal
+`ContractViolation` instead of the protocol's `UnknownService`. The doorbell port
+is a *modeled* device, so it now always reaches the default-deny dispatcher,
+which answers `UnknownService` for an unoffered service (byte-identical for
+M1/M2/corpus/stock — they never write the port). (b) **Site-identified
+allowlist** — the opcode-scan allowlist recorded per-function *counts*, which
+miss a removed+added pair; each entry is now a per-site `symbol+0xOFFSET`, so a
+new/removed/moved read is caught. Verified on the box: armed scan passes and
+fails on a dropped or moved site.
+
+**Review round 11 folded in — APPROVE round** (cross-model r11: 1 P1 + 2 P2).
+(a) **Exact flags word** — the guest kernel's ABI check tested only bit 0
+(`MATERIALIZED`); it now requires the exact `HARMONY_FLAGS_V1 = MATERIALIZED |
+WORK_DERIVED` word with reserved bits zero, so a placeholder page (the ARM
+spike's static page leaves `WORK_DERIVED` clear) fails closed. A real kernel
+change — bzImage re-pinned `e4591ea8` → **`e1c83dc3`**; the **box and container
+builds produced the identical binary** (reproducible), both passed the per-site
+scan (the flags-check change is after the rdtsc sites, so no offset shifted), and
+box G0+G1 re-confirmed (clocksource still selects `harmony-pvclock`, 3/3 seals
+bit-identical). (b) **PVCK folds `armed`** — the handshake bit is in state
+identity now (pending vs armed have different futures). (c) **§3.3 per-vendor
+split** — clarified that a reviewed reachable `rdtsc` is contract-safe on x86 via
+the retained trap backstop (the gate is an allowlist), while the strict
+zero-reachable (empty allowlist) bar is the ARM no-trap story.
 
 ## What landed (by deliverable)
 
