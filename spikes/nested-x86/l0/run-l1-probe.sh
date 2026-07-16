@@ -12,6 +12,25 @@ mkdir -p "$RS"
 QEMU=/usr/bin/qemu-system-x86_64
 CPUSET=3   # pinned per box core discipline (leased core set)
 
+# hash-verify the probe image + kernel against the build manifest BEFORE boot
+# (PR #98 round-5 P2: recording hashes at launch is not pinning — a post-build
+# image swap would otherwise produce valid-looking evidence), and retain the
+# manifest with the runset.
+MANIFEST="$BASE/build-manifest.json"
+[ -f "$MANIFEST" ] || { echo "PIN MANIFEST MISSING: $MANIFEST (run build-l1-probe.sh first)"; exit 1; }
+pin_get() { grep -o "\"$1\": \"[0-9a-f]*\"" "$MANIFEST" | head -1 | cut -d'"' -f4; }
+pin_verify() { # pin_verify <file> <want> <label>
+  local got; got=$(sha256sum "$1" | cut -d' ' -f1)
+  [ "$got" = "$2" ] || { echo "PIN MISMATCH $3 ($1): got $got want $2"; exit 1; }
+}
+WANT_INITRD=$(pin_get "sha256_l1-probe.cpio.gz")
+WANT_KERN=$(pin_get "sha256_vmlinuz-$KVER")
+[ -n "$WANT_INITRD" ] && [ -n "$WANT_KERN" ] || { echo "PIN MANIFEST INCOMPLETE: $MANIFEST"; exit 1; }
+pin_verify "$BASE/l1-probe.cpio.gz" "$WANT_INITRD" probe-initrd
+pin_verify "/boot/vmlinuz-$KVER" "$WANT_KERN" l1-kernel
+cp "$MANIFEST" "$RS/build-manifest.json"
+echo "PIN_VERIFIED initrd=$WANT_INITRD kernel=$WANT_KERN"
+
 {
   echo "{"
   echo "  \"qemu_sha256\": \"$(sha256sum $QEMU | cut -d' ' -f1)\","
@@ -38,4 +57,22 @@ timeout 180 taskset -c $CPUSET $QEMU \
     </dev/null >"$RS/qemu-stdout.log" 2>&1 || rc=$?
 
 echo "qemu_rc=$rc" >> "$RS/env.json.rc"
-grep -q "NESTED_X86_L1_DONE" "$RS/console.log" && echo "RUN_OK $RS" || { echo "RUN_INCOMPLETE $RS"; exit 1; }
+
+# fail-closed verdict (PR #98 round-5 P1): l1-init.sh prints the done marker
+# even after module/probe failures (the retained runset-001 demonstrates it:
+# 'kvm: FAILED' followed by L1_DONE). Green requires qemu rc=0 AND the run
+# completing AND zero FAILED module markers AND /dev/kvm present at L1 AND a
+# complete probe sentinel pair.
+C="$RS/console.log"
+fails=$(grep -c ": FAILED" "$C" || true)
+kvm_present=$(grep -c "L1_DEV_KVM_PRESENT" "$C" || true)
+pb=$(grep -c "NESTED_X86_PROBE_BEGIN" "$C" || true)
+pe=$(grep -c "NESTED_X86_PROBE_END" "$C" || true)
+grep -q "NESTED_X86_L1_DONE" "$C" || { echo "RUN_INCOMPLETE $RS (no L1_DONE)"; exit 1; }
+if [ "$rc" -ne 0 ] || [ "$fails" -ne 0 ] || [ "$kvm_present" -lt 1 ] \
+   || [ "$pb" -lt 1 ] || [ "$pe" -lt 1 ]; then
+  echo "RUN_PROBE_FAILED $RS (qemu_rc=$rc failed_markers=$fails kvm_present=$kvm_present probe=$pb/$pe)"
+  grep ": FAILED\|L1_DEV_KVM" "$C" || true
+  exit 1
+fi
+echo "RUN_OK $RS (modules clean, /dev/kvm present, probe complete)"

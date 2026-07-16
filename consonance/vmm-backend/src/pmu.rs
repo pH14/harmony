@@ -167,7 +167,14 @@ pub(crate) unsafe fn drain_ring_counting_at(
             // perf_event_header: u32 type @ +0, u16 misc @ +4, u16 size @ +6.
             let ty = std::ptr::read_unaligned(data.add(pos).cast::<u32>());
             let size = u64::from(std::ptr::read_unaligned(data.add(pos + 6).cast::<u16>()));
-            if size < 8 || size % 8 != 0 {
+            // Round-5 P1: `size` must also fit the bytes the kernel actually
+            // published (`head - tail`) — an aligned-but-corrupt header claiming
+            // more would be counted and `tail += size` would advance PAST head
+            // (an unchecked add that can overflow near the u64 cursor limit in
+            // debug, or a wrapped arbitrarily long walk in release). With
+            // `size <= head - tail`, `tail + size <= head` always — no overflow,
+            // no walk past the published head.
+            if size < 8 || size % 8 != 0 || size > head - tail {
                 // Corrupt/unparseable header: never spin; count it and stop the
                 // walk (the tail still advances to head below, so the ring drains).
                 stats.other += 1;
@@ -364,6 +371,38 @@ mod tests {
         let stats = unsafe { drain_ring_counting_at(ring.base(), PAGE, DATA) };
         assert_eq!(stats.samples, 2, "both sides of the wrap counted");
         assert_eq!(ring.tail(), off);
+    }
+
+    /// An aligned header claiming MORE bytes than the kernel published
+    /// (`size > head - tail`, round-5 P1) is refused before counting: `other`
+    /// incremented, walk stopped (so `tail += size` can never pass the
+    /// published head or overflow), ring still drains.
+    #[test]
+    fn drain_refuses_a_record_claiming_more_than_published() {
+        // Case A: valid record, then an oversized one — the first counts, the
+        // oversized one is refused.
+        let mut ring = FakeRing::new();
+        let mut off = 0u64;
+        off = ring.push(off, PERF_RECORD_SAMPLE, 8);
+        ring.push(off, PERF_RECORD_SAMPLE, 64); // claims 64, only 8 published
+        let head = off + 8;
+        ring.set(head, 0);
+        // SAFETY: as above.
+        let stats = unsafe { drain_ring_counting_at(ring.base(), PAGE, DATA) };
+        assert_eq!(
+            (stats.samples, stats.other),
+            (1, 1),
+            "the oversized header is refused, not counted as its claimed type"
+        );
+        assert_eq!(ring.tail(), head, "the ring still drains fully");
+        // Case B: oversized at the very start — nothing counted but the refusal.
+        let mut ring = FakeRing::new();
+        ring.push(0, PERF_RECORD_LOST, 32); // claims 32, only 8 published
+        ring.set(8, 0);
+        // SAFETY: as above.
+        let stats = unsafe { drain_ring_counting_at(ring.base(), PAGE, DATA) };
+        assert_eq!((stats.lost, stats.other), (0, 1));
+        assert_eq!(ring.tail(), 8);
     }
 
     /// A corrupt header (size < 8) can never spin the walk: it is counted under

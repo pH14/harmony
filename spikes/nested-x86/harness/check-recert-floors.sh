@@ -164,6 +164,10 @@ for d in $R/n2/cond-*-recert-001 $R/n2/cond-*-topup-001 $R/n2/smoke-recert-001 $
       [ "${qrc:-1}" = 0 ] || { cond_ok=0; cond_note="qemu_rc=$qrc"; }
       [ -n "$cond_note" ] || cond_note="smoke (qemu_rc=0)" ;;
   esac
+  # round-5 P1: records.samples must be PRESENT and numeric — a summary missing
+  # it would otherwise contribute a silent zero to the floor accumulation while
+  # the runset is accepted (no verified PMI accounting at all).
+  case "$samples" in ''|*[!0-9]*) bad "$rs: records.samples missing/non-numeric in summary"; continue ;; esac
   if [ "$cond_ok" = 1 ] && [ "$exact" = "$dl" ] && [ "$ok" = "$dl" ] && [ "$rv" = 0 ] \
      && [ "$lost" = 0 ] && [ "$thr" = 0 ] && [ "$backend" = PatchedKvmBackend ]; then
     say "OK  n2/$rs: $exact/$dl deadlines exact, oracle==exact, armed PMIs (from records)=$samples, records clean, $backend; $cond_note"

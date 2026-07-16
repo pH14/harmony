@@ -36,8 +36,14 @@ Every run-set directory (`results/<stage>/<run-set>/`) contains:
     A rep counts identical only on a CLEAN run (halted, `run_error()` empty,
     clean debug-exit-0 terminal — round-3 #2).
 - `qemu-stdout.log` — QEMU's own stdout/stderr (empty on a clean run).
-- `probe.json` (N-0 only) — the probe JSON extracted from the console, printk
-  lines stripped, revalidated as JSON.
+- `probe.json` (N-0 only) — the probe output **sentinel-wrapped as captured**
+  (`NESTED_X86_PROBE_BEGIN` … `END`, possibly with interleaved kernel printk
+  lines): NOT itself valid JSON (round-5 P2 — the earlier claim here was
+  wrong; the retained files are immutable and stay as captured). The consumer
+  seam is `../harness/extract-probe-json.sh`, which strips the sentinels and
+  printk lines and validates the remainder (`python3 -m json.tool`); it
+  validates all retained N-0 artifacts (runsets 002–004 `probe.json`, and the
+  probe block of any console.log).
 - `condition.json` / `condition-end.json` (N-2/N-3 stress run-sets) — the L0
   condition: name, stress-ng pid, cpuset, deadline count, seed, start/finish
   timestamps, and the harness rc. Round-2+ harnesses also record
