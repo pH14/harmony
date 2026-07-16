@@ -22,6 +22,29 @@ use crate::arm64_kvm::{Arm64Kvm, KVM_EXIT_MMIO, KVM_EXIT_SYSTEM_EVENT, KvmRunVie
 use crate::error::{BackendError, Result};
 use crate::types::MpState;
 
+// --- compile-time UAPI pin ---------------------------------------------------
+// `docs/ARM-ALTRA.md` §Evidence-integrity: verify knowable UAPI surfaces against
+// the pinned kernel, never take a constant on faith. The portable `arm64_kvm`
+// exit-reason and register-class constants MUST equal the pinned kernel's
+// `uapi/linux/kvm.h` (reached here through `kvm-bindings`, generated from those
+// headers). This block is **compile-checked** on the aarch64-linux cross-check,
+// so a drift — the r3 class-shift (`<< 48` vs `<< 16`) and hypercall-reason
+// (`13` = `S390_SIEIC` vs `3`) errors, or any future one — fails the build here
+// rather than EINVAL-ing on the box. (The register-class bindings are `u32`;
+// widen for the `u64` ID space.)
+const _UAPI_PIN: () = {
+    assert!(crate::arm64_kvm::KVM_EXIT_MMIO == kvm_bindings::KVM_EXIT_MMIO);
+    assert!(crate::arm64_kvm::KVM_EXIT_SYSTEM_EVENT == kvm_bindings::KVM_EXIT_SYSTEM_EVENT);
+    assert!(crate::arm64_kvm::KVM_EXIT_INTR == kvm_bindings::KVM_EXIT_INTR);
+    assert!(crate::arm64_kvm::KVM_EXIT_FAIL_ENTRY == kvm_bindings::KVM_EXIT_FAIL_ENTRY);
+    assert!(crate::arm64_kvm::KVM_EXIT_INTERNAL_ERROR == kvm_bindings::KVM_EXIT_INTERNAL_ERROR);
+    assert!(crate::arm64_kvm::KVM_EXIT_HYPERCALL == kvm_bindings::KVM_EXIT_HYPERCALL);
+    assert!(crate::arm64_kvm::KVM_REG_ARM64 == kvm_bindings::KVM_REG_ARM64);
+    assert!(crate::arm64_kvm::KVM_REG_SIZE_U64 == kvm_bindings::KVM_REG_SIZE_U64);
+    assert!(crate::arm64_kvm::KVM_REG_ARM_CORE == kvm_bindings::KVM_REG_ARM_CORE as u64);
+    assert!(crate::arm64_kvm::KVM_REG_ARM64_SYSREG == kvm_bindings::KVM_REG_ARM64_SYSREG as u64);
+};
+
 /// Map a `kvm-ioctls` error to the crate's portable [`BackendError`].
 fn kvm_err(e: kvm_ioctls::Error) -> BackendError {
     BackendError::Io(std::io::Error::from_raw_os_error(e.errno()))

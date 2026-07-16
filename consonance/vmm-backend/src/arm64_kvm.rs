@@ -45,9 +45,10 @@ pub(crate) const KVM_EXIT_INTR: u32 = 10;
 pub(crate) const KVM_EXIT_FAIL_ENTRY: u32 = 9;
 /// `KVM_EXIT_INTERNAL_ERROR` — KVM-internal failure (fail closed).
 pub(crate) const KVM_EXIT_INTERNAL_ERROR: u32 = 17;
-/// `KVM_EXIT_HYPERCALL` — a guest `HVC` surfaced to userspace. **Patched-only**:
+/// `KVM_EXIT_HYPERCALL` — a guest `HVC` surfaced to userspace (uapi/linux
+/// `kvm.h`: `3`; **not** `13`, which is `KVM_EXIT_S390_SIEIC`). **Patched-only**:
 /// stock KVM/arm64 services guest `HVC`/PSCI in-kernel and never surfaces this.
-pub(crate) const KVM_EXIT_HYPERCALL: u32 = 13;
+pub(crate) const KVM_EXIT_HYPERCALL: u32 = 3;
 
 /// A **patched-ABI** exit reason for a work-counter WFx / deterministic idle
 /// (the arm64 mirror of the x86 `KVM_EXIT_HLT`→`Idle` path). Stock KVM/arm64
@@ -235,10 +236,19 @@ fn le_data(value: u64, len: u32) -> [u8; 8] {
 // arm64 KVM register IDs are documented encodings (Documentation/virt/kvm/
 // api.rst, `arch/arm64/include/uapi/asm/kvm.h`). These are ABI facts.
 
-const KVM_REG_ARM64: u64 = 0x6000_0000_0000_0000;
-const KVM_REG_SIZE_U64: u64 = 0x0030_0000_0000_0000;
-const KVM_REG_ARM_CORE: u64 = 0x0010_0000_0000_0000;
-const KVM_REG_ARM64_SYSREG: u64 = 0x0013_0000_0000_0000;
+/// The register-class shift (`KVM_REG_ARM_COPROC_SHIFT`): the class selector
+/// (`ARM_CORE`, `ARM64_SYSREG`) lives at bits 16..28, **not** the high bits.
+const KVM_REG_ARM_COPROC_SHIFT: u64 = 16;
+pub(crate) const KVM_REG_ARM64: u64 = 0x6000_0000_0000_0000;
+pub(crate) const KVM_REG_SIZE_U64: u64 = 0x0030_0000_0000_0000;
+/// `KVM_REG_ARM_CORE = 0x0010 << KVM_REG_ARM_COPROC_SHIFT` (= `0x10_0000`), the
+/// class of `struct kvm_regs` fields (uapi/linux `.../asm/kvm.h`). At bits 16+,
+/// so it never collides with the field index in bits 0..15.
+pub(crate) const KVM_REG_ARM_CORE: u64 = 0x0010 << KVM_REG_ARM_COPROC_SHIFT;
+/// `KVM_REG_ARM64_SYSREG = 0x0013 << KVM_REG_ARM_COPROC_SHIFT` (= `0x13_0000`),
+/// the class of EL1 system registers; the `op0:op1:CRn:CRm:op2` encoding fills
+/// bits 0..15 below it.
+pub(crate) const KVM_REG_ARM64_SYSREG: u64 = 0x0013 << KVM_REG_ARM_COPROC_SHIFT;
 
 /// A **core** register ID: `struct kvm_regs` field offset ÷ 4.
 const fn core_reg(index: u64) -> u64 {
@@ -789,6 +799,44 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    /// Findings 1+2 (review r3): pin the KVM UAPI constants to the canonical
+    /// `uapi/linux/kvm.h` values, portably. The compile-time pin in
+    /// `arm64_kvm_sys` checks them against `kvm-bindings` on the aarch64-linux
+    /// leg; this test additionally verifies — off the box, on any host — that
+    /// the **full register IDs** the encoders emit equal the well-known KVM
+    /// register IDs (so the class-shift lives at bits 16+, not 48+, and never
+    /// collides with the field), and that the hypercall reason is 3, not 13.
+    #[test]
+    fn kvm_uapi_constants_match_the_headers() {
+        // Exit reasons (uapi/linux/kvm.h).
+        assert_eq!(
+            KVM_EXIT_HYPERCALL, 3,
+            "3, not 13 (13 = KVM_EXIT_S390_SIEIC)"
+        );
+        assert_eq!(KVM_EXIT_MMIO, 6);
+        assert_eq!(KVM_EXIT_SYSTEM_EVENT, 24);
+        assert_eq!(KVM_EXIT_INTR, 10);
+        assert_eq!(KVM_EXIT_FAIL_ENTRY, 9);
+        assert_eq!(KVM_EXIT_INTERNAL_ERROR, 17);
+
+        // The register-class selectors live at bits 16..28, not 48+.
+        assert_eq!(KVM_REG_ARM_CORE, 0x10_0000, "0x0010 << 16");
+        assert_eq!(KVM_REG_ARM64_SYSREG, 0x13_0000, "0x0013 << 16");
+
+        // Full IDs vs the canonical KVM values (the strongest, non-circular
+        // pin — verifies the whole encoding: class shift + field layout):
+        //   x0    = ARM64 | SIZE_U64 | ARM_CORE | (offsetof(kvm_regs,regs[0])/4)
+        //   pc    = ... | (offsetof(kvm_regs,regs.pc)/4 = 256/4 = 64)
+        //   SCTLR_EL1 = ARM64 | SIZE_U64 | ARM64_SYSREG | (op0=3<<14 | crn=1<<7)
+        assert_eq!(core_reg(0), 0x6030_0000_0010_0000, "x0");
+        assert_eq!(core_reg(CORE_PC), 0x6030_0000_0010_0040, "pc");
+        assert_eq!(
+            sysreg_id(3, 0, 1, 0, 0),
+            0x6030_0000_0013_c080,
+            "SCTLR_EL1 (S3_0_C1_C0_0)"
+        );
     }
 
     /// Finding 1 (review r1): a non-architectural MMIO access width is a
