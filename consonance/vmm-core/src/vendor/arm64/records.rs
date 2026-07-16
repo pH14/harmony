@@ -115,10 +115,16 @@ pub(crate) fn fill_vcpu_state(out: &mut Arm64VmState, s: &Arm64VcpuState) {
 /// `"DEV1"`, so a cross-wired blob fails on magic even before the container's
 /// arch tag would have caught it).
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4441;
-/// Device-blob layout version. v1: the guest clock-offset register, the
-/// ordered conformance report stream, and the PL011 residual state. The GICv3
-/// fabric record joins under a bumped version when the fabric wires (M2).
-const DEVICE_BLOB_VERSION: u16 = 1;
+/// Device-blob layout version for a VM with **no GICv3 wired**: the guest
+/// clock-offset register, the ordered conformance report stream, and the
+/// PL011 residual state.
+const DEVICE_BLOB_VERSION_BASE: u16 = 1;
+/// Device-blob layout version for a VM with the userspace GICv3 wired: v1
+/// plus a trailing [`gicv3::GicState`] record. **The version IS the wiring
+/// flag** (the x86 pvclock-blob pattern): an unwired VM encodes
+/// [`DEVICE_BLOB_VERSION_BASE`] with no trailing record at all, and the
+/// decoder accepts exactly these two versions.
+const DEVICE_BLOB_VERSION_GIC: u16 = 2;
 
 /// Everything the vmm-core arm64 device blob carries.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -136,17 +142,88 @@ pub(crate) struct Arm64DeviceState {
     /// The PL011 configuration-register shadows (`IBRD`, `FBRD`, `LCR_H`,
     /// `CR`, `IMSC`).
     pub uart_regs: [u32; 5],
+    /// The GICv3 fabric state (register files + PMR + the virtual timer),
+    /// present exactly when the sealing VM had the fabric wired.
+    pub gic: Option<gicv3::GicState>,
 }
 
 fn put_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 
+/// Encode a [`gicv3::GicState`] in fixed declaration order (all POD, LE; the
+/// same bytes the `GICV` hash chunk carries, so the two never disagree).
+pub(crate) fn encode_gic_state(out: &mut Vec<u8>, s: &gicv3::GicState) {
+    put_u32(out, s.version);
+    put_u32(out, s.impl_spis);
+    out.extend_from_slice(&s.timer_hz.to_le_bytes());
+    put_u32(out, s.timer_intid);
+    put_u32(out, s.gicd_ctlr);
+    for file in [&s.group, &s.enable, &s.pending, &s.active] {
+        for w in file {
+            put_u32(out, *w);
+        }
+    }
+    out.extend_from_slice(&s.priority);
+    out.push(s.pmr);
+    out.extend_from_slice(&s.cntv_ctl.to_le_bytes());
+    out.extend_from_slice(&s.cntv_cval.to_le_bytes());
+    out.push(u8::from(s.timer_fired));
+}
+
+/// Decode a [`gicv3::GicState`] (the reverse of [`encode_gic_state`]; the
+/// coherence validation itself is [`gicv3::Gicv3::restore`]'s).
+fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError> {
+    let version = c.u32()?;
+    let impl_spis = c.u32()?;
+    let timer_hz = c.u64()?;
+    let timer_intid = c.u32()?;
+    let gicd_ctlr = c.u32()?;
+    let mut files = [[0u32; 32]; 4];
+    for file in &mut files {
+        for w in file.iter_mut() {
+            *w = c.u32()?;
+        }
+    }
+    let [group, enable, pending, active] = files;
+    let mut priority = [0u8; 1020];
+    priority.copy_from_slice(c.take(1020)?);
+    let pmr_byte = c.take(1)?[0];
+    let cntv_ctl = c.u64()?;
+    let cntv_cval = c.u64()?;
+    let timer_fired = match c.take(1)?[0] {
+        0 => false,
+        1 => true,
+        _ => return Err(SnapshotError::DeviceBlob("bad timer_fired flag")),
+    };
+    Ok(gicv3::GicState {
+        version,
+        impl_spis,
+        timer_hz,
+        timer_intid,
+        gicd_ctlr,
+        group,
+        enable,
+        pending,
+        active,
+        priority,
+        pmr: pmr_byte,
+        cntv_ctl,
+        cntv_cval,
+        timer_fired,
+    })
+}
+
 /// Encode the device blob (deterministic; fixed field order).
 pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
     let mut v = Vec::new();
     put_u32(&mut v, DEVICE_BLOB_MAGIC);
-    v.extend_from_slice(&DEVICE_BLOB_VERSION.to_le_bytes());
+    let version = if d.gic.is_some() {
+        DEVICE_BLOB_VERSION_GIC
+    } else {
+        DEVICE_BLOB_VERSION_BASE
+    };
+    v.extend_from_slice(&version.to_le_bytes());
     v.extend_from_slice(&d.clock_offset.to_le_bytes());
     put_u32(&mut v, d.report_stream.len() as u32);
     for w in &d.report_stream {
@@ -156,6 +233,9 @@ pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
     v.extend_from_slice(&d.uart_capture);
     for r in d.uart_regs {
         put_u32(&mut v, r);
+    }
+    if let Some(gic) = &d.gic {
+        encode_gic_state(&mut v, gic);
     }
     vm_state::DeviceBlob(v)
 }
@@ -205,7 +285,8 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
     if c.u32()? != DEVICE_BLOB_MAGIC {
         return Err(SnapshotError::DeviceBlob("bad arm64 device-blob magic"));
     }
-    if c.u16()? != DEVICE_BLOB_VERSION {
+    let version = c.u16()?;
+    if version != DEVICE_BLOB_VERSION_BASE && version != DEVICE_BLOB_VERSION_GIC {
         return Err(SnapshotError::DeviceBlob(
             "unsupported arm64 device-blob version",
         ));
@@ -222,6 +303,11 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
     for r in &mut uart_regs {
         *r = c.u32()?;
     }
+    let gic = if version == DEVICE_BLOB_VERSION_GIC {
+        Some(decode_gic_state(&mut c)?)
+    } else {
+        None
+    };
     if c.pos != bytes.len() {
         return Err(SnapshotError::DeviceBlob("trailing bytes"));
     }
@@ -230,6 +316,7 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         report_stream,
         uart_capture,
         uart_regs,
+        gic,
     })
 }
 
@@ -243,14 +330,34 @@ mod tests {
             report_stream: vec![1, 2, 3],
             uart_capture: b"hello".to_vec(),
             uart_regs: [13, 1, 0x70, 0x301, 0x10],
+            gic: None,
+        }
+    }
+
+    /// A wired-fabric sample: the version-is-the-wiring-flag (v2) shape.
+    fn sample_with_gic() -> Arm64DeviceState {
+        let mut gic = gicv3::Gicv3::new(gicv3::GicConfig {
+            impl_spis: 32,
+            timer_hz: 62_500_000,
+            timer_intid: 27,
+        })
+        .unwrap();
+        gic.raise(40).unwrap();
+        gic.set_pmr(0x80);
+        gic.write_cntv_cval(125);
+        gic.write_cntv_ctl(gicv3::CNTV_CTL_ENABLE);
+        Arm64DeviceState {
+            gic: Some(gic.snapshot()),
+            ..sample()
         }
     }
 
     #[test]
     fn device_blob_round_trips() {
-        let d = sample();
-        let blob = encode_device_blob(&d);
-        assert_eq!(decode_device_blob(&blob.0).unwrap(), d);
+        for d in [sample(), sample_with_gic()] {
+            let blob = encode_device_blob(&d);
+            assert_eq!(decode_device_blob(&blob.0).unwrap(), d);
+        }
     }
 
     #[test]

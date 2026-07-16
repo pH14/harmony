@@ -616,6 +616,9 @@ pub vmm_core::vmm::RunResult::sdk_stop: core::option::Option<vmm_core::vmm::SdkS
 pub vmm_core::vmm::RunResult::serial: alloc::vec::Vec<u8>
 pub struct vmm_core::vmm::SdkSnapshot
 pub struct vmm_core::vmm::Vmm<B: vmm_backend::backend::Backend> where <B as vmm_backend::backend::Backend>::A: vmm_core::vendor::Vendor
+impl<B: vmm_backend::backend::Backend<A = vmm_backend::arch::arm64::Arm64>> vmm_core::vmm::Vmm<B>
+pub fn vmm_core::vmm::Vmm<B>::gic_wired(&self) -> bool
+pub fn vmm_core::vmm::Vmm<B>::wire_gic(&mut self, gicv3::device::Gicv3) -> &mut Self
 impl<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>> vmm_core::vmm::Vmm<B>
 pub fn vmm_core::vmm::Vmm<B>::lapic_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::wire_lapic(&mut self, lapic::device::Lapic) -> &mut Self

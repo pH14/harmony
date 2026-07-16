@@ -130,18 +130,27 @@ impl Vendor for Arm64 {
     }
 
     fn encode_device_state(devices: &Self::Devices) -> Vec<u8> {
-        // The PL011 stub carries no residual register state yet (the register
-        // model lands with the M3 boot path); the DEV chunk is the engine's
-        // terminal-reason bytes alone. Grows with the device models.
-        let _ = devices;
-        Vec::new()
+        // The PL011 configuration-register shadows — the device's residual
+        // state, so two runs that program the UART differently hash
+        // differently even with byte-identical serial output. (The engine
+        // appends its terminal-reason bytes after this.)
+        let mut v = Vec::new();
+        for r in devices.uart.shadow_regs() {
+            v.extend_from_slice(&r.to_le_bytes());
+        }
+        v
     }
 
     fn hash_device_chunks(devices: &Self::Devices, out: &mut Vec<u8>) {
-        // No fabric wired in the skeleton ⇒ no vendor device chunks (mirrors
-        // the x86 unwired/M1/M2 paths, whose hashes carry none either). The
-        // GICv3 chunk joins here when the fabric wires (M2).
-        let _ = (devices, out);
+        // The GICv3 chunk is present **only** when the fabric is wired;
+        // unwired compositions emit none, so their hash is byte-for-byte
+        // unchanged (the x86 LAPC discipline). It captures the register files
+        // + timer bookkeeping that govern future interrupt delivery.
+        if let Some(gic) = &devices.gic {
+            let mut bytes = Vec::new();
+            records::encode_gic_state(&mut bytes, &gic.snapshot());
+            crate::vmm::put_chunk(out, b"GICV", &bytes);
+        }
     }
 
     fn regs_view(vcpu: &Arm64VcpuState) -> RegsView {

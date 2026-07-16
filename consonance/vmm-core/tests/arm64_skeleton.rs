@@ -226,3 +226,143 @@ fn mock_arm64_backend_enforces_the_run_loop_contract() {
     assert_eq!(b.exit_counts().sysreg, 1);
     assert_eq!(b.exit_counts().idle, 1);
 }
+
+/// M2 — the wired GICv3 fabric: host injection lands in the pending file,
+/// the per-entry service hands the backend the arbitrated INTID, acceptance
+/// moves it pending→active, and the whole fabric rides the snapshot.
+#[test]
+fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
+    use gicv3::{GicConfig, GicFrame, Gicv3};
+
+    // A fabric with INTID 40 fully deliverable (Group 1, enabled, priority
+    // 0x40, forwarding on, PMR open).
+    let mut gic = Gicv3::new(GicConfig {
+        impl_spis: 32,
+        timer_hz: 62_500_000,
+        timer_intid: 27,
+    })
+    .unwrap();
+    gic.mmio_write(GicFrame::Dist, 0x0000, 0b10, 0).unwrap(); // CTLR.EnableGrp1
+    gic.mmio_write(GicFrame::Dist, 0x0080 + 4, 1 << 8, 0)
+        .unwrap(); // IGROUPR1
+    gic.mmio_write(GicFrame::Dist, 0x0100 + 4, 1 << 8, 0)
+        .unwrap(); // ISENABLER1
+    gic.mmio_write(GicFrame::Dist, 0x0400 + 40, 0x40, 0)
+        .unwrap(); // IPRIORITYR
+    gic.set_pmr(0xFF);
+
+    let mut v = vmm(vec![Exit::Common(CommonExit::Idle)]);
+    v.wire_gic(gic);
+    assert!(v.gic_wired());
+
+    // Stage-time validation now answers from the implemented identity space:
+    // SGI 0 is legal (never x86's `< 16` reserved rule), 64 is past the
+    // 32+32 limit.
+    v.apply_host_fault(&environment::HostFault::InjectInterrupt { vector: 40 })
+        .unwrap();
+    assert!(
+        v.apply_host_fault(&environment::HostFault::InjectInterrupt { vector: 64 })
+            .is_err(),
+        "past the distributor-bounded identity space"
+    );
+    assert!(v.has_pending_guest_interrupt().unwrap());
+
+    // Seal at the pending point (before any terminal latches): the pending
+    // INTID must ride the blob, not be prematurely in-service.
+    let s = v.save_vm_state().unwrap();
+
+    // One step: the service seam hands the mock the arbitrated INTID, the
+    // mock accepts it at entry, and completion moves it pending→active — so
+    // afterwards nothing is pending and the idle exit latches the terminal.
+    assert_eq!(v.step().unwrap(), Step::Terminal(TerminalReason::Idle));
+    assert!(!v.has_pending_guest_interrupt().unwrap());
+
+    // The fabric rides the snapshot: restore into two gic-wired twins — both
+    // resume with the INTID still pending (re-derived, not lost, not
+    // in-service) and hash identically to each other.
+    let twin_gic = || {
+        Gicv3::new(GicConfig {
+            impl_spis: 32,
+            timer_hz: 62_500_000,
+            timer_intid: 27,
+        })
+        .unwrap()
+    };
+    let mut twin_a = vmm(vec![]);
+    twin_a.wire_gic(twin_gic());
+    twin_a.restore_vm_state(&s).unwrap();
+    let mut twin_b = vmm(vec![]);
+    twin_b.wire_gic(twin_gic());
+    twin_b.restore_vm_state(&s).unwrap();
+    assert!(twin_a.has_pending_guest_interrupt().unwrap());
+    assert_eq!(twin_a.state_hash(), twin_b.state_hash());
+
+    // Restore into an UNWIRED VM is a loud wiring mismatch, never a silently
+    // dropped fabric.
+    let mut unwired = vmm(vec![]);
+    let err = unwired.restore_vm_state(&s).unwrap_err();
+    assert!(format!("{err}").contains("wiring mismatch"), "{err}");
+}
+
+/// M2 — the generic timer is a pure deadlines-out seam: an armed CVAL is a
+/// V-time deadline, and once the fabric's V-time passes it, the PPI latches
+/// pending and arbitration delivers it.
+#[test]
+fn arm64_generic_timer_feeds_the_deadline_seam() {
+    use gicv3::{CNTV_CTL_ENABLE, GicConfig, GicFrame, Gicv3};
+    use vmm_core::vmm::VtimeWiring;
+    use vmm_core::work::ScriptedWork;
+    use vtime::VClockConfig;
+
+    let mut gic = Gicv3::new(GicConfig {
+        impl_spis: 32,
+        timer_hz: 62_500_000,
+        timer_intid: 27,
+    })
+    .unwrap();
+    // Make the timer PPI deliverable, then arm CVAL = 125 ticks ⇒ 2000 vns.
+    gic.mmio_write(GicFrame::Dist, 0x0000, 0b10, 0).unwrap();
+    let sgi = 0x1_0000;
+    gic.mmio_write(GicFrame::Redist, sgi + 0x0080, 1 << 27, 0)
+        .unwrap();
+    gic.mmio_write(GicFrame::Redist, sgi + 0x0100, 1 << 27, 0)
+        .unwrap();
+    gic.set_pmr(0xFF);
+    gic.write_cntv_cval(125);
+    gic.write_cntv_ctl(CNTV_CTL_ENABLE);
+    assert_eq!(gic.next_timer_deadline(), Some(2000));
+    assert!(gic.armed_timer_deliverable());
+
+    // A V-time-wired arm64 VM whose work counter sits past the deadline. The
+    // mock must NOT claim a deterministic clock here: `now_vns` then reads
+    // the live (scripted) counter, exactly like a stock backend.
+    let mut b = MockArm64Backend::with_capabilities(vmm_backend::Capabilities {
+        name: "mock-arm64-stockish",
+        deterministic_rng: true,
+        arch: vmm_backend::Arm64Caps {
+            deterministic_cntvct: false,
+            enforces_cntv_cval: false,
+        },
+    });
+    b.set_policy(&Arm64Policy::default()).unwrap();
+    let mut v = Vmm::new(b, GuestRam::new(RAM).unwrap());
+    v.wire_vtime(
+        VtimeWiring::new(
+            VClockConfig {
+                ratio_num: 1,
+                ratio_den: 1,
+                guest_hz: 62_500_000,
+                guest_base: 0,
+                vns_base: 0,
+            },
+            Box::new(ScriptedWork::at(2500)), // now_vns = 2500 ≥ 2000
+            7,
+        )
+        .unwrap(),
+    );
+    v.wire_gic(gic);
+
+    // The out-of-run-loop query advances the fabric to now_vns: the deadline
+    // has passed, the PPI latches pending, and arbitration delivers it.
+    assert!(v.has_pending_guest_interrupt().unwrap());
+}

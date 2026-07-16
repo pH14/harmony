@@ -7,13 +7,13 @@
 //! and the arm64 `vm_state` record set. The engine ([`crate::vmm`]) reaches
 //! all of it **only** through the [`Vendor`](crate::vendor::Vendor) trait.
 //!
-//! **Skeleton posture, stated once:** no interrupt fabric is wired (the
-//! `gicv3` model arrives with M2 and real *delivery* is `TODO(AA-6)` — the
-//! vGICv3 round-trip verdict), no MMIO address is modeled (the machine memory
-//! map arrives with the M3 boot path), and a trapped sysreg has no ruled
-//! disposition (`TODO(AA-6)`). Every one of those absences **fails closed**,
-//! never silently succeeds — default-deny is the posture the contract will
-//! fill in, not a stub to be papered over.
+//! **Skeleton posture, stated once:** the GICv3 fabric computes arbitration
+//! and deadlines only — real *delivery* into a guest is `TODO(AA-6)` (the
+//! vGICv3 round-trip verdict) and the boot roots leave it unwired; no MMIO
+//! address is modeled (the machine memory map arrives with the M3 boot path);
+//! and a trapped sysreg has no ruled disposition (`TODO(AA-6)`). Every one of
+//! those absences **fails closed**, never silently succeeds — default-deny is
+//! the posture the contract will fill in, not a stub to be papered over.
 
 use hypercall_proto::Service;
 use vm_state::Arm64VmState;
@@ -32,18 +32,26 @@ pub(crate) const PSTATE_I: u64 = 1 << 7;
 
 /// The arm64 per-VM device state
 /// ([`Vendor::Devices`](crate::vendor::Vendor::Devices)): the PL011 UART
-/// (always present — the serial console). The GICv3 + generic-timer fabric
-/// joins as an optional wiring when the `gicv3` model lands (M2), mirroring
-/// x86's `lapic: Option<_>`.
+/// (always present — the serial console) and the optional GICv3 +
+/// generic-timer fabric, mirroring x86's `lapic: Option<_>` wiring pattern.
 pub struct Arm64Devices {
     /// The PL011 UART (serial console + the task-81 `exec` input queue).
     pub(crate) uart: Pl011,
+    /// The userspace GICv3 + generic-timer model — the pure arbitration/
+    /// deadline half of the fabric. **Its output is not delivered into a real
+    /// guest**: the stock backend has no delivery path (M2 §Delivery;
+    /// `TODO(AA-6)`, the vGICv3 round-trip verdict), so wiring it is a
+    /// test/mock composition today, never a silicon claim.
+    pub(crate) gic: Option<gicv3::Gicv3>,
 }
 
 impl Arm64Devices {
     /// Fresh (reset) arm64 device state: a reset PL011, no fabric.
     pub(crate) fn new() -> Self {
-        Self { uart: Pl011::new() }
+        Self {
+            uart: Pl011::new(),
+            gic: None,
+        }
     }
 }
 
@@ -87,65 +95,128 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         )))
     }
 
-    /// Advance the fabric and hand the backend the arbitrated deliverable
-    /// INTID. **A no-op:** no fabric is wired in the skeleton (the `gicv3`
-    /// arbitration model is M2's; delivery into a real guest is AA-6-gated),
-    /// so the backend's inject seam is never touched — exactly the x86
-    /// unwired-LAPIC path, whose state and `state_hash` this mirrors.
+    /// Wire the userspace GICv3 + generic-timer fabric. **Arbitration and
+    /// deadlines only** (`tasks/112` M2): the model's output feeds the
+    /// backend's one-slot inject seam, which the **stock** `Arm64KvmBackend`
+    /// answers `Unsupported` (no delivery path into a real guest exists for a
+    /// userspace GIC — `TODO(AA-6)`, the vGICv3 round-trip verdict). Wiring is
+    /// therefore a mock/test composition; the arm64 boot roots leave it
+    /// unwired.
+    pub fn wire_gic(&mut self, gic: gicv3::Gicv3) -> &mut Self {
+        self.devices.gic = Some(gic);
+        self
+    }
+
+    /// `true` once the userspace GICv3 is wired.
+    pub fn gic_wired(&self) -> bool {
+        self.devices.gic.is_some()
+    }
+
+    /// Advance the fabric to the current V-time and hand the backend the one
+    /// arbitrated deliverable INTID (or `None`) for the next entry. Peeking
+    /// (not taking) leaves it pending; the pending→active transition happens
+    /// in [`Self::complete_irq_delivery_arm64`] only once the backend confirms
+    /// acceptance — the same discipline as x86's LAPIC path, so a snapshot
+    /// taken while an INTID awaits injection shows it pending. A no-op when
+    /// the fabric is unwired (the x86 unwired-LAPIC posture: the backend's
+    /// inject seam is never touched and `state_hash` carries no fabric chunk).
     pub(crate) fn service_pending_irqs_arm64(&mut self) -> Result<(), VmmError> {
+        if self.devices.gic.is_none() {
+            return Ok(());
+        }
+        let now_vns = self.now_vns()?;
+        let intid = {
+            let gic = self.devices.gic.as_mut().expect("is_some checked above");
+            gic.advance_to(now_vns);
+            gic.peek_interrupt() // re-arbitrate; do NOT move pending→active
+        };
+        self.backend
+            .set_pending_irq(intid.map(vmm_backend::GicIntId))?;
         Ok(())
     }
 
-    /// Complete delivery of every identity the backend accepted during the
-    /// last entry. With no fabric wired there is no pending→in-service
-    /// transition to model; the accepted queue is still drained so a
-    /// mock-injected identity can never sit stale across entries.
+    /// Complete delivery of every INTID the backend accepted during the last
+    /// entry: the fabric's pending→active transition. With no fabric wired
+    /// the accepted queue is still drained so a mock-injected identity can
+    /// never sit stale across entries.
     pub(crate) fn complete_irq_delivery_arm64(&mut self) {
-        while self.backend.take_accepted_interrupt().is_some() {}
+        while self.backend.take_accepted_interrupt().is_some() {
+            if let Some(gic) = self.devices.gic.as_mut() {
+                gic.take_interrupt();
+            }
+        }
     }
 
-    /// Whether a deliverable interrupt is already pending in the fabric.
-    /// No fabric ⇒ never.
+    /// Whether a deliverable interrupt is **already pending** in the fabric.
+    /// Peeks without advancing (the run loop advances before every entry, so
+    /// at an idle exit the fabric is already current). No fabric ⇒ never.
     pub(crate) fn pending_deliverable_interrupt_arm64(&mut self) -> Result<bool, VmmError> {
-        Ok(false)
+        Ok(self
+            .devices
+            .gic
+            .as_ref()
+            .is_some_and(|g| g.peek_interrupt().is_some()))
     }
 
-    /// The next armed fabric-timer deadline. No fabric ⇒ none (the generic
-    /// timer's deadline seam wires through the `gicv3` model, M2).
+    /// The next armed generic-timer deadline in V-time ns (the pure
+    /// deadlines-out half of the fabric). No fabric ⇒ none.
     pub(crate) fn next_timer_deadline_vns_arm64(&self) -> Option<u64> {
-        None
+        self.devices.gic.as_ref()?.next_timer_deadline()
     }
 
-    /// [`Self::next_timer_deadline_vns_arm64`], filtered to deliverable fires.
+    /// [`Self::next_timer_deadline_vns_arm64`], filtered to timers whose fire
+    /// would actually deliver — an armed-but-undeliverable timer is no wake.
     pub(crate) fn deliverable_timer_deadline_vns_arm64(&self) -> Option<u64> {
-        None
+        let gic = self.devices.gic.as_ref()?;
+        gic.next_timer_deadline()
+            .filter(|_| gic.armed_timer_deliverable())
     }
 
-    /// Stage-time validation of a wire-format interrupt identity. With no
-    /// fabric wired every identity is [`InterruptReject::NoFabric`]; once the
-    /// GICv3 wires (M2) the identity space is the **implemented,
-    /// distributor-bounded** GICv3 space — SGIs `0..16` deliverable (never
-    /// x86's reserved rule), PPIs, SPIs to the configured limit.
+    /// Stage-time validation of a wire-format interrupt identity against the
+    /// **implemented, distributor-bounded** GICv3 identity space: SGIs `0..16`
+    /// are deliverable (never x86's reserved-vector rule), PPIs `16..32`, SPIs
+    /// to the configured limit; anything past the implemented range is
+    /// [`InterruptReject::OutOfRange`]. No fabric ⇒
+    /// [`InterruptReject::NoFabric`].
     pub(crate) fn check_wire_interrupt_arm64(&self, vector: u32) -> Result<(), InterruptReject> {
-        let _ = vector;
-        Err(InterruptReject::NoFabric)
+        let Some(gic) = self.devices.gic.as_ref() else {
+            return Err(InterruptReject::NoFabric);
+        };
+        if !gic.implemented(vector) {
+            return Err(InterruptReject::OutOfRange);
+        }
+        Ok(())
     }
 
-    /// Raise the wire-format interrupt into the fabric. **Fails loud:** no
-    /// delivery fabric is wired in the skeleton (M2 wires the pure arbitration
-    /// model; delivery into a real guest is AA-6's vGICv3-round-trip verdict).
+    /// Raise the wire-format INTID pending in the fabric so normal arbitration
+    /// delivers it. Fails loud on an unimplemented identity or with no fabric
+    /// wired (guest delivery itself stays AA-6-gated — see
+    /// [`Self::wire_gic`]).
     pub(crate) fn inject_host_interrupt_arm64(&mut self, vector: u32) -> Result<(), VmmError> {
-        Err(VmmError::ContractViolation(format!(
-            "InjectInterrupt INTID {vector:#x} but no arm64 delivery fabric is wired — the \
-             GICv3 arbitration model is unwired in the skeleton and guest delivery is \
-             AA-6-gated (the in-kernel vGICv3 round-trip verdict)"
-        )))
+        let Some(gic) = self.devices.gic.as_mut() else {
+            return Err(VmmError::ContractViolation(format!(
+                "InjectInterrupt INTID {vector:#x} but no arm64 delivery fabric is wired — the \
+                 GICv3 arbitration model is unwired in this composition and guest delivery is \
+                 AA-6-gated (the in-kernel vGICv3 round-trip verdict)"
+            )));
+        };
+        gic.raise(vector).map_err(|e| {
+            VmmError::ContractViolation(format!("InjectInterrupt INTID {vector:#x} rejected: {e}"))
+        })
     }
 
     /// Whether a genuine guest interrupt is pending delivery but not yet
-    /// accepted. No fabric ⇒ never.
+    /// accepted. Advances the fabric first (this is called from outside the
+    /// run loop, where the fabric may be stale; the advance is idempotent with
+    /// the per-entry service). No fabric ⇒ never.
     pub(crate) fn has_pending_guest_interrupt_arm64(&mut self) -> Result<bool, VmmError> {
-        Ok(false)
+        if self.devices.gic.is_none() {
+            return Ok(false);
+        }
+        let now_vns = self.now_vns()?;
+        let gic = self.devices.gic.as_mut().expect("is_some checked above");
+        gic.advance_to(now_vns);
+        Ok(gic.peek_interrupt().is_some())
     }
 
     /// Build the canonical [`Arm64VmState`] from `vcpu` + the current live
@@ -184,6 +255,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             report_stream: self.report_stream.clone(),
             uart_capture: self.devices.uart.capture().to_vec(),
             uart_regs: *self.devices.uart.shadow_regs(),
+            gic: self.devices.gic.as_ref().map(|g| g.snapshot()),
         };
         s.devices = records::encode_device_blob(&dev);
         s.contract_hash = contract::contract_hash();
@@ -206,6 +278,24 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
         // Decode the vmm-core device blob (total, never panics).
         let dev = records::decode_device_blob(&s.devices.0)?;
+        // The blob's GICv3 record must be coherent AND match this VM's wiring
+        // (the x86 LAPIC wiring-mismatch discipline): one side having a fabric
+        // the other lacks would silently change which interrupts can ever
+        // deliver — rejected, never skipped.
+        let new_gic =
+            match (&dev.gic, self.devices.gic.is_some()) {
+                (Some(gs), true) => Some(gicv3::Gicv3::restore(gs).map_err(|_| {
+                    SnapshotError::DeviceRestore("incoherent GicState in device blob")
+                })?),
+                (Some(_), false) | (None, true) => {
+                    return Err(VmmError::ContractViolation(
+                        "restore_vm_state: snapshot/VM GICv3 wiring mismatch (one has the fabric, \
+                     the other does not) — restore into a VM composed like the snapshot source."
+                            .to_string(),
+                    ));
+                }
+                (None, false) => None,
+            };
         // The arm64 skeleton blob carries **no pvclock channel record** (the
         // arm64 clock-page protocol is `hm-rk5`'s; this skeleton only reserves
         // the seam). Validate that symmetrically against this VM's
@@ -214,13 +304,17 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         self.pvclock_validate_restore(None)?;
         let vcpu = records::vcpu_state_from(s);
         let clock_offset = dev.clock_offset;
-        Ok((vcpu, clock_offset, Arm64RestorePrep { dev }))
+        Ok((vcpu, clock_offset, Arm64RestorePrep { gic: new_gic, dev }))
     }
 
     /// The arm64 half of the restore **commit** (all infallible): install the
-    /// PL011 residual state and the restored guest-observable report stream.
+    /// coherence-checked GICv3, the PL011 residual state, and the restored
+    /// guest-observable report stream.
     pub(crate) fn commit_restore_arm64(&mut self, prep: Arm64RestorePrep) {
-        let Arm64RestorePrep { dev } = prep;
+        let Arm64RestorePrep { gic, dev } = prep;
+        if let Some(g) = gic {
+            self.devices.gic = Some(g);
+        }
         self.devices.uart.restore(dev.uart_capture, dev.uart_regs);
         self.pvclock_commit_restore(None);
         self.report_stream = dev.report_stream;
@@ -230,8 +324,9 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
 /// The arm64 half of a validated-but-uncommitted restore
 /// ([`Vendor::validate_restore`](crate::vendor::Vendor::validate_restore) →
 /// [`Vendor::commit_restore`](crate::vendor::Vendor::commit_restore)): the
-/// decoded device blob.
+/// coherence-checked GICv3 and the decoded device blob.
 pub struct Arm64RestorePrep {
+    gic: Option<gicv3::Gicv3>,
     dev: Arm64DeviceState,
 }
 
