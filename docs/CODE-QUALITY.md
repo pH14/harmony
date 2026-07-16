@@ -227,6 +227,18 @@ below, not the measured number itself (leaves room for ordinary cross-run noise 
 inviting the floor to silently drift back down). Reproduce on the box (a Mac-local run
 understates anything `cfg(target_os = "linux")`, since it doesn't even compile there).
 
+### Adjustment: 94.5% → 93.5% (2026-07-16, `hm-42y`, ruled by Paul)
+
+The first *honest* run after the `hm-ph7` CI-toolchain repair measured the workspace at
+**93.66%** — under the 94.5 floor. Cause: real under-tested code merged while CI was
+fail-before-measuring (film replay bin 9.5%, `core_replay` 55.6%, telemetry bin 23.5%,
+`benchcampaign` 82.6%, `bringup` 70.2%; the stale `work_perf.rs` exclusion was separately
+repaired in beb14c6). Escalated as `hm-42y` (test-up the drivers vs exclude bins vs floor
+change); **Paul ruled 2026-07-16: accept the dip** ("coverage floor — don't care, if it
+dips slightly that's fine"). Floor set to **93.5** — a hair below the measured 93.66,
+same no-round-number discipline as above. Testing up the drivers stays organic follow-up
+work, not gated. The ratchet doctrine is unchanged: floor moves up as coverage improves.
+
 ---
 
 ## Public-API snapshots (2026-06-17)
