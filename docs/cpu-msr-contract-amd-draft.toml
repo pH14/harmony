@@ -42,7 +42,7 @@ cpuid-baseline = "det-zenN-v1"
 # §6 anti-drift anchor: sha256 of this column's canonical serialized form (computed
 # by vmm-core's serializer, never hand-written). Re-derive on any body change + a
 # version bump — including the AE-0 det-zenN-v1 pinning.
-contract_hash = "b54a6c62666b48363038cafb5357176e5673fc51d22c8b19feb60d585ec30a37"
+contract_hash = "0e4e8daaa7bafe197396ebac8b42b0671453a7e1ab12f73136ee5e44533b5849"
 # mxcsr-mask: the architectural FXSAVE-area MXCSR_MASK (ISA-level; the same on any
 # SSE-capable x86-64 part), carried unchanged.
 mxcsr-mask = "0x0000ffff"
@@ -173,20 +173,20 @@ edx = "0x00000000"
 verified = "on-silicon-pending-AE4"
 
 [msr]
-# The AMD MSR set (docs/AMD-EPYC.md §4). OWNERSHIP IS PARTITIONED BY INDEX, with no
-# overlap between the materialized rows and the transfer marker:
+# The AMD MSR set (docs/AMD-EPYC.md §4). OWNERSHIP IS EXPLICIT, with no overlap
+# between the materialized rows here and the shared allowlist below:
 #   * This file MATERIALIZES the ENTIRE AMD-native MSR space, indices >= 0xc000_0000
 #     (0xc000_00xx / 0xc001_00xx) — the space the Intel column default-denies as
 #     out-of-scope — flipped to explicit AuthenticAMD-baseline dispositions. That
 #     space INCLUDES the syscall/segment MSRs 0xc000_0080–0xc000_0103: though
 #     architecturally shared, AMD invented them and they are AMD-native, so they are
-#     owned here, NOT by the marker below.
-#   * The [transfers] msr-shared marker covers ONLY the shared Intel-standard MSR
-#     space, indices < 0xc000_0000 (TSC 0x10 / APICBASE 0x1b / PAT 0x277 / the x2apic
-#     0x800–0x8ff block / …) — same ISA, carried by marker, never re-materialized here.
-# So no index is both materialized and marker-covered (machine-checked by the
-# `amd_msr_shared_marker_owns_only_below_0xc0000000` test). Every materialized row
-# carries `verified = "on-silicon-pending-AE4"`.
+#     owned here, NOT by the shared allowlist.
+#   * The shared architectural MSRs that transfer are the EXPLICIT [[msr-shared.entry]]
+#     ALLOWLIST below (IA32_TSC, IA32_APIC_BASE, SYSENTER_*, IA32_PAT) — an enumerated
+#     list, never a numeric range, so no Intel-specific MSR is claimed as shared.
+# The two sets are disjoint (machine-checked by
+# `amd_msr_shared_allowlist_is_disjoint_and_portable`). Every materialized row carries
+# `verified = "on-silicon-pending-AE4"`.
 
 # --- Architectural syscall/segment MSRs (AMD-native; guest-stateful). ------------
 [[msr.entry]]
@@ -335,22 +335,54 @@ write = "deny-gp"
 verified = "on-silicon-pending-AE4"
 applies-when = "zen4+"
 
+# --- Explicit shared architectural MSR allowlist (Deliverable 2). The genuinely
+# cross-vendor MSRs — present with IDENTICAL guest semantics on both Intel and AMD —
+# that transfer unchanged pending AE-4. This is an EXPLICIT ALLOWLIST, never a numeric
+# range: the MSR index space has vendor-specific addresses, so a bare `< 0xc000_0000`
+# cutoff would wrongly claim Intel-specific MSRs (e.g. IA32_ARCH_CAPABILITIES 0x10a,
+# IA32_TSX_CTRL 0x122) as shared, and a future AE-4 consumer resolving this would
+# inherit non-portable rows. Only the MSRs named here transfer; everything else
+# default-denies pending AE-4. AE-4 finalizes membership. Disjoint from the
+# materialized [msr] rows above. Canonical form: `msr-shared <idx> unchanged-pending-AE4`.
+[[msr-shared.entry]]
+name = "IA32_TIME_STAMP_COUNTER"
+index = "0x10"
+
+[[msr-shared.entry]]
+name = "IA32_APIC_BASE"
+index = "0x1b"
+
+[[msr-shared.entry]]
+name = "IA32_SYSENTER_CS"
+index = "0x174"
+
+[[msr-shared.entry]]
+name = "IA32_SYSENTER_ESP"
+index = "0x175"
+
+[[msr-shared.entry]]
+name = "IA32_SYSENTER_EIP"
+index = "0x176"
+
+[[msr-shared.entry]]
+name = "IA32_PAT"
+index = "0x277"
+
 [transfers]
 # Section-level `transfers-unchanged-pending-AE4` markers for the shared-ISA surface
 # (never fork the one reproducer). The canonicalizer records each marker in place of
 # the section's rows; AE-4 decides whether any of these rows actually diverge on AMD.
 #   * cpuid-standard: the standard leaves within the advertised max-basic-leaf, 0x1
 #     through 0x10 (feature/topology/xsave) — shared ISA (leaves above 0x10 are out of
-#     range, redirected to zeroed by cpuid-default, not transferred).
-#   * msr-shared: the shared Intel-standard MSR space, indices < 0xc000_0000
-#     (TSC/APIC/PAT/x2apic/…). The AMD-native space >= 0xc000_0000 is materialized
-#     above, NOT covered by this marker — the two partition the index space, no overlap.
+#     range, redirected to zeroed by cpuid-default, not transferred). This stays a
+#     bounded marker (not an allowlist) because standard CPUID leaves are a SHARED
+#     ENUMERATION — leaf N is parallel on both vendors — not vendor-specific numeric
+#     addresses like the MSR space, which uses the explicit [[msr-shared.entry]] allowlist above.
 #   * insn / timer / cmos / mmio: the §4/§5 instruction, timer, CMOS, and xAPIC-MMIO
 #     surfaces — shared ISA, carried by marker not by 3000 hand-copied near-duplicate rows.
 # host-assert is per-silicon (the Zen host baseline is discovered at AE-0), so it is
 # `on-silicon-pending-AE4`, not `unchanged`.
 cpuid-standard = "unchanged-pending-AE4"
-msr-shared = "unchanged-pending-AE4"
 insn = "unchanged-pending-AE4"
 timer = "unchanged-pending-AE4"
 cmos = "unchanged-pending-AE4"

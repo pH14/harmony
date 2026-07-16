@@ -849,9 +849,15 @@ host-absent = [\"RDPID\", \"SHA\"]\n";
             "\nmsr c0010200 deny-gp deny-gp verified:on-silicon-pending-AE4 \
              applies-when:legacy-perfmon\n"
         ));
+        // The shared MSR surface is an explicit allowlist, not a numeric marker.
+        assert!(form.contains("\nmsr-shared 00000010 unchanged-pending-AE4\n"));
+        assert!(form.contains("\nmsr-shared 00000277 unchanged-pending-AE4\n"));
+        // Intel-specific MSRs are NOT in the allowlist (0x10a ARCH_CAPABILITIES,
+        // 0x122 TSX_CTRL live below the old numeric cutoff but must not be claimed).
+        assert!(!form.contains("msr-shared 0000010a"));
+        assert!(!form.contains("msr-shared 00000122"));
         // Section-level transfer markers replace the shared-ISA rows.
         assert!(form.contains("\ntransfer cpuid-standard unchanged-pending-AE4\n"));
-        assert!(form.contains("\ntransfer msr-shared unchanged-pending-AE4\n"));
         assert!(form.contains("\ntransfer insn unchanged-pending-AE4\n"));
         assert!(form.contains("\ntransfer timer unchanged-pending-AE4\n"));
         assert!(form.contains("\ntransfer cmos unchanged-pending-AE4\n"));
@@ -885,32 +891,49 @@ host-absent = [\"RDPID\", \"SHA\"]\n";
         );
     }
 
-    /// Ownership is partitioned by index with **no overlap** between the materialized
-    /// rows and the `msr-shared` transfer marker (round-3 finding 2): the marker owns
-    /// only the shared Intel-standard space `< 0xc000_0000`, and every materialized
-    /// AMD MSR is `≥ 0xc000_0000` — so the syscall/segment MSRs 0xc000_0080–0xc000_0103,
-    /// though architecturally shared, are unambiguously owned by the materialized rows,
-    /// not the marker.
+    /// The shared MSR surface is an **explicit allowlist**, not a numeric range
+    /// (round-4 finding 2). The allowlist is disjoint from the materialized rows, and
+    /// it is *portable* — it contains no Intel-specific MSR (e.g. `IA32_ARCH_CAPABILITIES`
+    /// `0x10a`, `IA32_TSX_CTRL` `0x122`, which a bare `< 0xc000_0000` cutoff would have
+    /// wrongly claimed), so a future AE-4 consumer cannot inherit non-portable rows.
     #[test]
-    fn amd_msr_shared_marker_owns_only_below_0xc0000000() {
+    fn amd_msr_shared_allowlist_is_disjoint_and_portable() {
         let amd = contract_amd_draft();
-        // The marker is present and defers the shared surface.
-        assert_eq!(
-            amd.transfers.get("msr-shared").map(String::as_str),
-            Some("unchanged-pending-AE4"),
-            "msr-shared transfer marker present"
+        let shared: std::collections::BTreeSet<u32> =
+            amd.msr_shared.iter().flat_map(|s| s.indices()).collect();
+        assert!(!shared.is_empty(), "the shared-MSR allowlist is non-empty");
+
+        // The known cross-vendor architectural MSRs are present; the Intel-specific
+        // ones a numeric cutoff would over-claim are NOT.
+        assert!(
+            shared.contains(&0x10),
+            "IA32_TSC is a shared architectural MSR"
         );
-        // No materialized index falls in the marker's < 0xc000_0000 scope.
-        const AMD_NATIVE_FLOOR: u32 = 0xc000_0000;
-        for row in &amd.msr {
-            for idx in row.index.indices() {
-                assert!(
-                    idx >= AMD_NATIVE_FLOOR,
-                    "materialized AMD MSR {idx:#010x} is below 0xc000_0000 — it would \
-                     collide with the msr-shared marker's scope"
-                );
-            }
-        }
+        assert!(
+            shared.contains(&0x277),
+            "IA32_PAT is a shared architectural MSR"
+        );
+        assert!(
+            !shared.contains(&0x10a),
+            "IA32_ARCH_CAPABILITIES (0x10a) is Intel-specific — not portable to AMD"
+        );
+        assert!(
+            !shared.contains(&0x122),
+            "IA32_TSX_CTRL (0x122) is Intel-specific — not portable to AMD"
+        );
+
+        // Disjoint from the materialized rows — no index is both.
+        let materialized: std::collections::BTreeSet<u32> =
+            amd.msr.iter().flat_map(|r| r.index.indices()).collect();
+        assert!(
+            shared.is_disjoint(&materialized),
+            "the shared-MSR allowlist and the materialized rows must not overlap"
+        );
+        // The materialized rows own the AMD-native space; the allowlist is architectural.
+        assert!(
+            materialized.iter().all(|&i| i >= 0xc000_0000),
+            "materialized AMD MSRs are the AMD-native >= 0xc000_0000 space"
+        );
     }
 
     /// The advertised max-basic-leaf bound is internally consistent (round-3
@@ -1118,15 +1141,18 @@ verified = \"on-silicon-pending-AE4\"\n";
         assert!(Contract::load(NO_LEAF0, VendorId::AuthenticAMD).is_ok());
     }
 
-    /// Fail-closed against a **range-form** leaf-0 smuggle: the inclusive
-    /// `leaf-lo = 0, leaf-hi > 0` form covers leaf 0, so it must not slip a foreign
-    /// vendor past the guard (the round-2 residue — the old `lo == hi == 0` check
-    /// missed range rows). Every row covering leaf 0 subleaf 0 is validated.
+    /// Positive validation of the leaf-0 shape (round-4 REDESIGN): the guard no longer
+    /// enumerates malformed shapes (which lost three rounds) — it accepts **only** the
+    /// one canonical shape (exactly one all-constant single `(0,0)` row spelling the
+    /// declared vendor) and refuses everything else. A range-form covering row is now
+    /// `MalformedLeaf0` **regardless of the vendor bytes** — a range is not the
+    /// canonical single-leaf shape, so it can neither smuggle a foreign vendor nor
+    /// slip through by spelling the right one.
     #[test]
-    fn loader_refuses_range_form_leaf0_smuggling() {
-        // A range row `0x0..=0x5` freezing the Intel vendor string, declared
-        // AuthenticAMD — covers leaf 0 subleaf 0, so it is caught as MixedVendor.
-        const RANGE_SMUGGLE: &str = "\
+    fn loader_refuses_noncanonical_leaf0_shapes() {
+        // A range row `0x0..=0x5` covering leaf 0 — refused as MalformedLeaf0 whether
+        // it spells the Intel string...
+        const RANGE_INTEL: &str = "\
 [contract]\n\
 version = 1\n\
 vendor = \"AuthenticAMD\"\n\
@@ -1140,38 +1166,15 @@ ecx = \"0x6c65746e\"\n\
 edx = \"0x49656e69\"\n\
 verified = \"on-silicon-pending-AE4\"\n";
         assert_eq!(
-            Contract::load(RANGE_SMUGGLE, VendorId::AuthenticAMD).unwrap_err(),
-            ContractError::MixedVendor {
-                declared: "AuthenticAMD",
-                leaf0: "GenuineIntel".to_string(),
-            }
-        );
-
-        // A range row covering leaf 0 with malformed (dynamic) registers is likewise
-        // refused, not skipped.
-        const RANGE_MALFORMED: &str = "\
-[contract]\n\
-version = 1\n\
-vendor = \"AuthenticAMD\"\n\
-[[cpuid.entry]]\n\
-leaf-lo = \"0x00000000\"\n\
-leaf-hi = \"0x00000005\"\n\
-subleaf = \"0x00000000\"\n\
-eax = \"0x00000010\"\n\
-ebx = \"dyn:osxsave:0x0\"\n\
-ecx = \"0x444d4163\"\n\
-edx = \"0x69746e65\"\n\
-verified = \"on-silicon-pending-AE4\"\n";
-        assert_eq!(
-            Contract::load(RANGE_MALFORMED, VendorId::AuthenticAMD).unwrap_err(),
+            Contract::load(RANGE_INTEL, VendorId::AuthenticAMD).unwrap_err(),
             ContractError::MalformedLeaf0 {
                 declared: "AuthenticAMD",
             }
         );
 
-        // A range row covering leaf 0 that spells the CORRECT vendor loads cleanly —
-        // the guard rejects only disagreement, not the range form itself.
-        const RANGE_OK: &str = "\
+        // ...or the CORRECT AMD string: the range form itself is not the canonical
+        // shape, so it is refused even when the vendor bytes agree.
+        const RANGE_AMD: &str = "\
 [contract]\n\
 version = 1\n\
 vendor = \"AuthenticAMD\"\n\
@@ -1184,10 +1187,100 @@ ebx = \"0x68747541\"\n\
 ecx = \"0x444d4163\"\n\
 edx = \"0x69746e65\"\n\
 verified = \"on-silicon-pending-AE4\"\n";
-        assert!(Contract::load(RANGE_OK, VendorId::AuthenticAMD).is_ok());
+        assert_eq!(
+            Contract::load(RANGE_AMD, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MalformedLeaf0 {
+                declared: "AuthenticAMD",
+            }
+        );
+
+        // A dynamic EAX at leaf 0 (EBX/EDX/ECX correct) — the third historical bypass:
+        // positive validation requires ALL FOUR registers constant, so it is refused.
+        const DYN_EAX: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"dyn:osxsave:0x10\"\n\
+ebx = \"0x68747541\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(DYN_EAX, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MalformedLeaf0 {
+                declared: "AuthenticAMD",
+            }
+        );
+
+        // Two rows both covering leaf 0 subleaf 0 (ambiguous) — refused.
+        const TWO_COVERING: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x68747541\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"*\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x68747541\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(TWO_COVERING, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MalformedLeaf0 {
+                declared: "AuthenticAMD",
+            }
+        );
+
+        // The one good shape (single (0,0), all constants, correct vendor) loads.
+        const GOOD: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x68747541\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert!(Contract::load(GOOD, VendorId::AuthenticAMD).is_ok());
+
+        // The good shape but the wrong vendor string → MixedVendor (not MalformedLeaf0).
+        const GOOD_WRONG_VENDOR: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x756e6547\"\n\
+ecx = \"0x6c65746e\"\n\
+edx = \"0x49656e69\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(GOOD_WRONG_VENDOR, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MixedVendor {
+                declared: "AuthenticAMD",
+                leaf0: "GenuineIntel".to_string(),
+            }
+        );
 
         // A row covering leaf 0 only at a non-zero subleaf does NOT freeze the vendor
-        // string, so it is not a leaf-0 row and is left to the general grammar.
+        // string, so it is not a leaf-0 row and is exempt (no covering row).
         const NONZERO_SUBLEAF: &str = "\
 [contract]\n\
 version = 1\n\
@@ -1241,9 +1334,12 @@ read = \"deny-gp\"\n\
 write = \"deny-gp\"\n\
 verified = \"on-silicon-pending-AE4\"\n\
 applies-when = \"zen4+\"\n\
+[[msr-shared.entry]]\n\
+index = \"0x10\"\n\
+[[msr-shared.entry]]\n\
+index = \"0x277\"\n\
 [transfers]\n\
 cpuid-standard = \"unchanged-pending-AE4\"\n\
-msr-shared = \"unchanged-pending-AE4\"\n\
 insn = \"unchanged-pending-AE4\"\n\
 timer = \"unchanged-pending-AE4\"\n\
 cmos = \"unchanged-pending-AE4\"\n\

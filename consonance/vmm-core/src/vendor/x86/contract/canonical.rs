@@ -115,10 +115,16 @@ pub(crate) fn serialize(c: &Contract) -> String {
     line("cpuid-default zeroed".to_string());
 
     // 3. MSR records: one per index, sorted ascending, pairwise-disjoint. The AMD
-    // draft carries the shared architectural MSR surface by marker and materializes
-    // only its own `0xc000_00xx`/`0xc001_00xx` rows; Intel materializes every row.
-    if let Some(v) = c.transfers.get("msr-shared") {
-        line(format!("transfer msr-shared {v}"));
+    // draft materializes only its own AMD-native `0xc000_00xx`/`0xc001_00xx` rows and
+    // carries the shared architectural MSRs as an **explicit allowlist** (emitted
+    // first, sorted); Intel materializes every row and has no allowlist. Encoding the
+    // shared surface as an allowlist — never a numeric range — keeps vendor-specific
+    // MSRs (e.g. Intel's `0x10a`/`0x122`) out of what a future consumer resolves.
+    let mut shared: Vec<u32> = c.msr_shared.iter().flat_map(|s| s.indices()).collect();
+    shared.sort_unstable();
+    shared.dedup();
+    for idx in &shared {
+        line(format!("msr-shared {idx:08x} unchanged-pending-AE4"));
     }
     let mut msr: BTreeMap<u32, (String, String, String)> = BTreeMap::new();
     for row in &c.msr {

@@ -25,13 +25,23 @@ machinery, with every AMD enforcement cell marked `verify-on-silicon`.
   loader parses both PMU models and resolves neither; AE-0 pins which is live.
 - **`[transfers]`** singleton (`Contract.transfers: BTreeMap<String,String>`) — section-
   level `transfers-unchanged-pending-AE4` markers for the shared-ISA surface
-  (`cpuid-standard`, `msr-shared`, `insn`, `timer`, `cmos`, `mmio`) and the per-silicon
-  `host-assert` block (`on-silicon-pending-AE4`). The canonicalizer emits `transfer
-  <section> <disposition>` in place of the section's rows (Deliverable 2, Paul veto point 5
-  — section-level, not 3000 hand-copied rows).
+  (`cpuid-standard`, `insn`, `timer`, `cmos`, `mmio`) and the per-silicon `host-assert`
+  block (`on-silicon-pending-AE4`). The canonicalizer emits `transfer <section>
+  <disposition>` in place of the section's rows (Deliverable 2, Paul veto point 5 —
+  section-level, not 3000 hand-copied rows).
+- **`[[msr-shared.entry]]`** array (`Contract.msr_shared: Vec<IndexSpec>`) — the shared
+  architectural MSR surface is an **explicit allowlist**, not a numeric range (round-4
+  finding 2). Each entry is index-only (the disposition transfers, pending AE-4);
+  canonicalized as `msr-shared <idx> unchanged-pending-AE4` records. Why an allowlist and
+  not a `< 0xc000_0000` cutoff: the MSR index space has vendor-specific addresses
+  (`IA32_ARCH_CAPABILITIES` `0x10a`, `IA32_TSX_CTRL` `0x122` are Intel-specific), so a bare
+  numeric range would over-claim non-portable rows for a future AE-4 consumer. CPUID
+  standard leaves stay a bounded `cpuid-standard` marker because the standard-leaf space is
+  a *shared enumeration* (leaf N is parallel on both vendors), not vendor-specific numeric
+  addresses — the asymmetry is deliberate.
 
-The `[transfers]` key/value forms feed the same tiny total TOML-subset reader — no `toml`
-crate, no new dependency (`thiserror` was already present).
+The `[transfers]` / `[[msr-shared.entry]]` forms feed the same tiny total TOML-subset
+reader — no `toml` crate, no new dependency (`thiserror` was already present).
 
 ## Loader shape (Deliverable 7 — under `vendor/x86/contract/`)
 
@@ -47,21 +57,25 @@ crate, no new dependency (`thiserror` was already present).
   - vendor **present but not a known token** → `UnknownVendor` (never defaulted to
     GenuineIntel — this was the round-1 fail-open hole);
   - vendor present, valid, disagreeing with the load axis → `VendorMismatch`;
-  - CPUID leaf 0 **absent** → mixed-vendor guard skipped (fixtures);
-  - CPUID leaf 0 **present but malformed** (dynamic registers / non-UTF-8 constant bytes)
-    → `MalformedLeaf0` — a malformed leaf 0 cannot masquerade as an absent one and bypass
-    the guard (the other round-1 fail-open hole);
-  - CPUID leaf 0 present, readable, spelling another vendor → `MixedVendor`.
+  - **no** CPUID row covers leaf 0 subleaf 0 → mixed-vendor guard skipped (fixtures);
+  - a covering row exists but is not the one canonical shape → `MalformedLeaf0`;
+  - the canonical `(0,0)` row is well-formed but spells another vendor → `MixedVendor`.
 
-  The guard validates **every row that covers leaf 0 subleaf 0**, not just a single
-  `leaf = 0, subleaf = 0` row — the grammar's inclusive range form (`leaf-lo = 0,
-  leaf-hi > 0`) and the `*` / `N+` / `a-b` subleaf tokens all install a value at
-  CPUID(0,0), so a range row cannot smuggle a foreign vendor past a `lo == hi == 0`
-  check (`covers_leaf0_subleaf0`; the round-2 residue). The underlying `Contract::parse`
+  **Leaf-0 guard = positive validation of the one good shape** (round-4 REDESIGN). The
+  guard was bypassed three ways across rounds (exact-match → range-form → dyn-EAX) while it
+  enumerated *malformed* shapes; the fix inverts it. `covers_leaf0_subleaf0` collects every
+  row whose (leaf, subleaf) range touches CPUID(0,0) — the inclusive range form
+  (`leaf-lo = 0, leaf-hi > 0`) and the `*` / `N+` / `a-b` tokens included. If that set is
+  non-empty, `canonical_leaf0_vendor_string` accepts it **only if** it is *exactly one*
+  single `leaf = 0, subleaf = 0` row whose **all four** registers (EAX/EBX/ECX/EDX) are
+  frozen constants with a UTF-8 EBX‖EDX‖ECX string; the string must then equal the declared
+  vendor. Everything else — a range/`*`/`N+` form, a dynamic register *anywhere* (incl. EAX,
+  the third bypass), non-UTF-8 bytes, or more than one covering row — is `MalformedLeaf0`;
+  a well-formed row spelling the wrong vendor is `MixedVendor`. Validating the single good
+  shape (rather than chasing malformed ones) closes the whole bypass class. `Contract::parse`
   stays infallible for the direct-token unit tests. Refusal tests cover `UnknownVendor`,
-  `MalformedLeaf0` (dyn + non-UTF-8), `VendorMismatch`, `MixedVendor`, and the range-form
-  smuggle (`MixedVendor` + `MalformedLeaf0` via a `leaf-lo/leaf-hi` row, plus the
-  correct-vendor and non-zero-subleaf pass-through cases).
+  `MalformedLeaf0` (dyn-EBX, dyn-EAX, non-UTF-8, range form ×2, two covering rows),
+  `VendorMismatch`, `MixedVendor`, and the good-shape / non-zero-subleaf pass-through cases.
 - Public API is unchanged: `contract()` (Intel, the live policy path) now routes through
   `load(.., GenuineIntel)`; the AMD constructor `contract_amd_draft()` is **`#[cfg(test)]`
   only**, and the AMD TOML is `include_str!`-embedded only under `cfg(test)`. `VendorId` /
@@ -94,7 +108,7 @@ tokens), not by a `vendor=` line. Consequences:
   byte-identity. The only Intel-file diff is the single additive `vendor` header line
   (plus its comment).
 - **AMD hash committed:** `docs/cpu-msr-contract-amd-draft.toml` `[contract]
-  contract_hash = b54a6c62666b48363038cafb5357176e5673fc51d22c8b19feb60d585ec30a37`, with
+  contract_hash = 0e4e8daaa7bafe197396ebac8b42b0671453a7e1ab12f73136ee5e44533b5849`, with
   golden `testdata/canonical-amd-draft.txt` (regen: `contract::tests::regen_amd_golden`,
   ignored). The computed-==committed gate is green. The zen4+ PerfMonV2 section carries the
   full global control/status set `0xc000_0300`–`0xc000_0303` (GLOBAL_STATUS / CTL /
@@ -119,14 +133,17 @@ Two internal-consistency invariants make the draft's own claims agree with its d
   the `cpuid-standard` transfer covers standard leaves `0x1..=0x10`; leaves above `0x10` are
   out of range and redirect to zeroed (`cpuid-default`), never "transferred". The prose and
   the frozen `0x10` bound name one truth (test `amd_leaf0_max_basic_leaf_is_the_transfer_bound`).
-- **MSR ownership partitioned by index, no overlap.** The file materializes the **entire
-  AMD-native MSR space, `≥ 0xc000_0000`** (including the syscall/segment MSRs
-  `0xc000_0080`–`0xc000_0103` — AMD-native though architecturally shared, so owned by the
-  materialized rows). The `msr-shared` marker covers **only** the shared Intel-standard
-  space `< 0xc000_0000` (TSC/APIC/PAT/x2apic/…). No index is both materialized and
-  marker-covered (test `amd_msr_shared_marker_owns_only_below_0xc0000000`) — no ambiguous
-  ownership, no drift risk. These are documentation/test changes; the canonical form and
-  the AMD `contract_hash` (`b54a6c62…`) are unchanged.
+- **MSR ownership is explicit — a shared allowlist, not a numeric range** (round-4
+  finding 2 sharpened the round-3 partition). The file materializes the **entire AMD-native
+  MSR space, `≥ 0xc000_0000`** (including the syscall/segment MSRs `0xc000_0080`–`0xc000_0103`
+  — AMD-native though architecturally shared, so owned by the materialized rows). The shared
+  architectural MSRs that transfer are the **explicit `[[msr-shared.entry]]` allowlist**
+  (`IA32_TSC`, `IA32_APIC_BASE`, `IA32_SYSENTER_{CS,ESP,EIP}`, `IA32_PAT`) — an enumerated
+  list, never a `< 0xc000_0000` cutoff, so Intel-specific MSRs (`0x10a`, `0x122`) that live
+  below the old cutoff are not claimed as shared. The allowlist is disjoint from the
+  materialized rows and contains no Intel-specific MSR (test
+  `amd_msr_shared_allowlist_is_disjoint_and_portable`) — no ambiguous ownership, no
+  non-portable inheritance for a future AE-4 consumer.
 
 ## Known AE-4 ratification dependency
 

@@ -19,7 +19,12 @@ cpuid 80000007.00000000 00000000 00000000 00000000 00000000 verified:on-silicon-
 cpuid 80000008.00000000 00000000 00000000 00000000 00000000 verified:on-silicon-pending-AE4
 transfer cpuid-standard unchanged-pending-AE4
 cpuid-default zeroed
-transfer msr-shared unchanged-pending-AE4
+msr-shared 00000010 unchanged-pending-AE4
+msr-shared 0000001b unchanged-pending-AE4
+msr-shared 00000174 unchanged-pending-AE4
+msr-shared 00000175 unchanged-pending-AE4
+msr-shared 00000176 unchanged-pending-AE4
+msr-shared 00000277 unchanged-pending-AE4
 msr c0000080 allow-stateful allow-stateful verified:on-silicon-pending-AE4
 msr c0000081 allow-stateful allow-stateful verified:on-silicon-pending-AE4
 msr c0000082 allow-stateful allow-stateful verified:on-silicon-pending-AE4
