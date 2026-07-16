@@ -1550,12 +1550,25 @@ where
                 Some((cfg, clock, entropy))
             }
             None => {
-                // Unwired VM: the snapshot must not carry a live V-time block (a
-                // non-zero clock rate means it was taken on a V-time-wired VM).
-                if svt.guest_hz != 0 || svt.snapshot_vns != 0 {
+                // Unwired VM: the snapshot must carry the COMPLETE unwired V-time
+                // sentinel that the save path stamps for a V-time-less VM — every
+                // field at its unwired value AND no entropy/hypercall bytes.
+                // Checking only guest_hz/snapshot_vns let a blob with a nonzero
+                // ratio_num/guest_base (or entropy bytes) through, and this arm then
+                // silently DISCARDS that live clock/entropy state — a fail-closed
+                // snapshot-contract violation. The sentinel (both vendors'
+                // `build_vm_state` None arm): ratio_num=0, ratio_den=1, guest_hz=0,
+                // guest_base=0, snapshot_vns=0, and no entropy bytes.
+                let is_unwired_sentinel = svt.ratio_num == 0
+                    && svt.ratio_den == 1
+                    && svt.guest_hz == 0
+                    && svt.guest_base == 0
+                    && svt.snapshot_vns == 0
+                    && s.entropy_bytes().is_empty();
+                if !is_unwired_sentinel {
                     return Err(VmmError::ContractViolation(
-                        "restore_vm_state: snapshot carries a V-time block but this VM has no V-time \
-                         wired — restore into a VM composed like the snapshot source."
+                        "restore_vm_state: snapshot carries live V-time/entropy state but this VM \
+                         has no V-time wired — restore into a VM composed like the snapshot source."
                             .to_string(),
                     ));
                 }

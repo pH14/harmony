@@ -163,6 +163,54 @@ fn arm64_restore_rejects_a_contract_mismatch() {
     assert!(fresh.terminal_reason().is_none());
 }
 
+/// Review r9 (P1): restoring into an UNWIRED VM must require the **complete**
+/// unwired V-time sentinel — every `VtimeState` field at its unwired value AND
+/// no entropy/hypercall bytes. The prior check tested only `guest_hz`/
+/// `snapshot_vns`, so a blob with those zero but a nonzero
+/// `ratio_num`/`ratio_den`/`guest_base` or entropy bytes was accepted and its
+/// live V-time/entropy state **silently discarded** — a fail-closed
+/// snapshot-contract violation.
+#[test]
+fn arm64_unwired_restore_requires_the_full_vtime_sentinel() {
+    // The genuine unwired sentinel the save path stamps restores cleanly.
+    let base = vmm(vec![]).save_vm_state().unwrap();
+    vmm(vec![]).restore_vm_state(&base).unwrap();
+    assert_eq!(
+        (
+            base.vtime.ratio_num,
+            base.vtime.ratio_den,
+            base.vtime.guest_hz,
+            base.vtime.guest_base,
+            base.vtime.snapshot_vns,
+            base.hypercall.is_empty(),
+        ),
+        (0, 1, 0, 0, 0, true),
+        "the unwired save sentinel"
+    );
+
+    // Populate ONE field at a time — each must fail closed with the wiring
+    // message (the old check let every field but guest_hz/snapshot_vns through).
+    type Mutator = fn(&mut Arm64VmState);
+    let mutators: [(&str, Mutator); 6] = [
+        ("ratio_num", |s| s.vtime.ratio_num = 7),
+        ("ratio_den", |s| s.vtime.ratio_den = 2),
+        ("guest_hz", |s| s.vtime.guest_hz = 1_000),
+        ("guest_base", |s| s.vtime.guest_base = 42),
+        ("snapshot_vns", |s| s.vtime.snapshot_vns = 99),
+        ("entropy", |s| s.hypercall = vec![1, 2, 3]),
+    ];
+    for (field, mutate) in mutators {
+        let mut s = vmm(vec![]).save_vm_state().unwrap();
+        mutate(&mut s);
+        let err = vmm(vec![]).restore_vm_state(&s).unwrap_err();
+        assert!(
+            matches!(err, VmmError::ContractViolation(_))
+                && format!("{err}").contains("no V-time wired"),
+            "unwired restore must reject a populated {field}: {err}"
+        );
+    }
+}
+
 /// The serial path flows through the vendor: PL011 capture feeds the run
 /// result and survives a snapshot/restore; injected input never does.
 #[test]
