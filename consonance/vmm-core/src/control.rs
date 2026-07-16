@@ -110,6 +110,7 @@ use control_proto::{
 };
 use environment::{EnvError, EnvSpec, FaultPolicy};
 use snapshot_store::SnapshotId;
+use vm_state::SnapshotRecords;
 use vmm_backend::Backend;
 
 use crate::vendor::{InterruptReject, Vendor};
@@ -636,22 +637,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if len > READ_CAP {
             return Ok(Err(ControlError::ReadTooLarge { len, cap: READ_CAP }));
         }
-        // Fetch the guest image; a `None` VM is a torn session, session-fatal like
-        // every sibling verb — never an empty-RAM fallback that fakes a range error.
-        let ram = self
-            .vmm
-            .as_ref()
-            .ok_or(ServeError::Poisoned)?
-            .guest_memory();
-        let ram_len = ram.len() as u64;
-        // `gpa + len` in u128 so a near-u64::MAX gpa cannot wrap into a "valid" range.
-        let end = u128::from(gpa) + u128::from(len);
-        if end > u128::from(ram_len) {
-            return Ok(Err(ControlError::ReadOutOfRange { gpa, len, ram_len }));
+        // A `None` VM is a torn session, session-fatal like every sibling verb —
+        // never an empty-RAM fallback that fakes a range error.
+        let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+        // Resolve the ABSOLUTE guest-physical `gpa` through the engine's region
+        // resolver, so an arm64 address (over `RAM_BASE`) reads the right bytes
+        // and a low unmapped GPA is out-of-range rather than a wrong main-RAM
+        // offset (review r11). x86 (RAM at base 0) is unchanged: a low GPA is its
+        // own offset, and the same range fails closed.
+        match vmm.guest_slice(gpa, len as usize) {
+            Some(bytes) => Ok(Ok(Reply::Bytes(bytes.to_vec()))),
+            None => Ok(Err(ControlError::ReadOutOfRange {
+                gpa,
+                len,
+                ram_len: vmm.guest_memory().len() as u64,
+            })),
         }
-        // In range: gpa and end both fit usize (end <= ram_len <= isize::MAX).
-        let start = gpa as usize;
-        Ok(Ok(Reply::Bytes(ram[start..start + len as usize].to_vec())))
     }
 
     /// The session's **V-time synchronization** predicate (PR #51 round-7): `true`
@@ -793,9 +794,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
         match fault {
             environment::HostFault::CorruptMemory { gpa, .. } => {
-                let ram_len = vmm.guest_memory().len() as u64;
-                if gpa.checked_add(8).is_none_or(|end| end > ram_len) {
-                    return Err(ControlError::PerturbOutOfRange { gpa: *gpa, ram_len });
+                // Stage-time validation must use the SAME region resolver
+                // `corrupt_memory` applies at arrival (review r13 — the last of the
+                // r11 GPA family). Otherwise, on arm64 (RAM over `RAM_BASE`) a valid
+                // high GPA would be rejected here while a low unmapped GPA would
+                // stage cleanly and then explode session-fatally at `apply_host_fault`.
+                // x86 (RAM at base 0) resolves a low GPA to its own offset, so the
+                // range decision is byte-identical.
+                if vmm.guest_slice(*gpa, 8).is_none() {
+                    return Err(ControlError::PerturbOutOfRange {
+                        gpa: *gpa,
+                        ram_len: vmm.guest_memory().len() as u64,
+                    });
                 }
             }
             environment::HostFault::SkewTime(_) | environment::HostFault::SetClockRate(_) => {
@@ -1066,7 +1076,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let Ok(mapping) = self.engine.materialize(store_id) else {
             return Ok(Err(ControlError::RestoreFailed));
         };
-        let Ok(vm_state) = self.engine.vm_state(store_id) else {
+        let Ok(vm_state) = self.engine.vm_state::<<B::A as Vendor>::Snapshot>(store_id) else {
             return Ok(Err(ControlError::RestoreFailed));
         };
         // 1b. **Validate the branch env's host schedule BEFORE any swap (PR #51
@@ -1079,7 +1089,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         //     `Moment` — ruling B), reply the recoverable `ControlError` with the old
         //     VM untouched. (The `RestoreFailed` path below still mutates — a genuine
         //     restore failure cannot be pre-validated — and is documented there.)
-        let restored_floor = vm_state.vtime.snapshot_vns;
+        // (`vtime()` is the arch-neutral `SnapshotRecords` accessor — the one
+        // engine read of the decoded snapshot; the record set stays opaque.)
+        let restored_floor = vm_state.vtime().snapshot_vns;
         let mut seen: std::collections::BTreeSet<environment::Moment> =
             std::collections::BTreeSet::new();
         for (m, fault) in &host {
@@ -3043,6 +3055,60 @@ mod tests {
             })
             .unwrap(),
             Err(ControlError::MalformedEnvironment)
+        );
+    }
+
+    /// Review r13 (the last of the r11 GPA family): `CorruptMemory` **stage-time**
+    /// admissibility must use the same region resolver `corrupt_memory` applies at
+    /// arrival. On a high-RAM-base (arm64) machine a valid absolute GPA is
+    /// admissible, and a low unmapped GPA is rejected **at stage time**
+    /// (recoverable) rather than staged to explode session-fatally at arrival.
+    /// (x86, `ram_base_gpa == 0`, is covered byte-identically by
+    /// `perturb_stages_faults_and_rejects_the_unenforceable`.)
+    #[test]
+    fn perturb_corrupt_memory_stage_time_resolves_high_arm_gpas() {
+        let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut s);
+        let perturb = |fault: environment::HostFault, at: u64| Request::Perturb {
+            fault: HostFault(fault.encode()),
+            at: Moment(at),
+        };
+        // Simulate arm64: RAM based high, so absolute GPAs are over RAM_BASE.
+        s.vmm.as_mut().unwrap().ram_base_gpa = 0x4000_0000;
+
+        // A valid HIGH arm64 GPA (inside `[RAM_BASE, RAM_BASE + RAM)`) is
+        // admissible at stage time — the pre-r13 raw-GPA check would have rejected
+        // it (`gpa + 8 > ram_len`).
+        assert_eq!(
+            s.handle(&perturb(
+                environment::HostFault::CorruptMemory {
+                    gpa: 0x4000_0000,
+                    mask: environment::BitMask(0xFF),
+                },
+                1000,
+            ))
+            .unwrap(),
+            Ok(Reply::Unit),
+            "a valid high arm64 GPA must be admissible at stage time"
+        );
+
+        // A low unmapped GPA (below RAM_BASE) is rejected at STAGE time — the
+        // pre-r13 check would have admitted it (`0 + 8 <= ram_len`) and let it
+        // explode fatally at arrival.
+        assert_eq!(
+            s.handle(&perturb(
+                environment::HostFault::CorruptMemory {
+                    gpa: 0,
+                    mask: environment::BitMask(0xFF),
+                },
+                2000,
+            ))
+            .unwrap(),
+            Err(ControlError::PerturbOutOfRange {
+                gpa: 0,
+                ram_len: RAM as u64,
+            }),
+            "a low unmapped GPA must be rejected at stage time, not at arrival"
         );
     }
 

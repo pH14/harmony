@@ -186,6 +186,11 @@ pub enum ExitReason {
     Shutdown,
     /// `run_until` deadline reached.
     Deadline,
+    /// A trapped arm64 system-register access (`Arm64Exit::Sysreg`;
+    /// patched-ABI-only — stock KVM/arm64 never surfaces one). Appended, not
+    /// inserted: the pre-arm64 roster prefix (and every existing report line)
+    /// is unchanged.
+    Sysreg,
 }
 
 /// Per-exit-reason trap counts since the last reset (R-Backend observability).
@@ -220,6 +225,8 @@ pub struct ExitCounts {
     pub shutdown: u64,
     /// `run_until` deadline exits.
     pub deadline: u64,
+    /// Trapped arm64 sysreg exits (patched-ABI-only).
+    pub sysreg: u64,
 }
 
 impl ExitCounts {
@@ -235,7 +242,7 @@ impl ExitCounts {
 
     /// `(reason, count)` pairs in a fixed, deterministic order (the field order
     /// above), for the report. Exactly one entry per [`ExitReason`].
-    pub fn entries(&self) -> [(ExitReason, u64); 13] {
+    pub fn entries(&self) -> [(ExitReason, u64); 14] {
         [
             (ExitReason::Io, self.io),
             (ExitReason::Mmio, self.mmio),
@@ -250,6 +257,7 @@ impl ExitCounts {
             (ExitReason::Idle, self.idle),
             (ExitReason::Shutdown, self.shutdown),
             (ExitReason::Deadline, self.deadline),
+            (ExitReason::Sysreg, self.sysreg),
         ]
     }
 
@@ -279,6 +287,7 @@ impl ExitCounts {
             ExitReason::Idle => &mut self.idle,
             ExitReason::Shutdown => &mut self.shutdown,
             ExitReason::Deadline => &mut self.deadline,
+            ExitReason::Sysreg => &mut self.sysreg,
         };
         *slot = slot.saturating_add(1);
     }

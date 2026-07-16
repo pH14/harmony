@@ -50,12 +50,16 @@
 //! the manual TLV byte-parsing and the `zerocopy` record reads on the decode path
 //! (`cargo +nightly miri test -p vm-state`, run in CI).
 
+mod arm64;
 mod codec;
 mod error;
+mod records;
 mod types;
 mod wire;
 
+pub use arm64::{Arm64Regs, Arm64Sysregs, Arm64VmState};
 pub use error::VmStateError;
+pub use records::SnapshotRecords;
 pub use types::{
     DebugRegs, DeviceBlob, MpState, MsrBlock, Segment, TimerEntry, TimerQueueState, VcpuEvents,
     VcpuRegs, VcpuSregs, VtimeState, Xcrs, XsaveImage,
@@ -76,12 +80,19 @@ pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 /// parsed with the v2 reader.
 pub const VM_STATE_VERSION: u16 = 2;
 
-/// The **arch tag** of the record set this build writes: x86-64
+/// The **arch tag** of the x86-64 record set ([`VmState`])
 /// (`docs/ARCH-BOUNDARY.md` §B — "arm64 record set; same TLV container;
 /// `VM_STATE_VERSION` bump + arch tag in the header"). A vendor's records are
 /// only ever decoded under its own tag; an unknown tag is
 /// [`VmStateError::UnsupportedArch`], never a reinterpretation of foreign bytes.
 pub const ARCH_X86_64: u16 = 1;
+
+/// The **arch tag** reserved for the arm64 record set (the `hm-cbt` ARM
+/// skeleton's `Arm64VmState`). Reserved here with the [`SnapshotRecords`] seam
+/// so no other record set can ever claim the value; a blob carrying it is
+/// rejected by [`VmState::decode`] as [`VmStateError::UnsupportedArch`], never
+/// reinterpreted as x86 records.
+pub const ARCH_AARCH64: u16 = 2;
 
 /// The complete non-memory machine snapshot.
 ///

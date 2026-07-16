@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "gicv3"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Deterministic userspace GICv3 distributor/redistributor + generic-timer model (pure logic, no_std)"
+
+[features]
+default = []
+
+[dependencies]
+# Kept no_std-compatible (thiserror 2 targets core::error::Error).
+thiserror = { version = "2", default-features = false }
+
+[dev-dependencies]
+proptest = "1"
+
+# Mirrors `lapic`'s Cargo.toml: deny clippy::all at the crate level (the
+# workspace does not use [lints] workspace inheritance).
+[lints.clippy]
+all = { level = "deny", priority = -1 }
