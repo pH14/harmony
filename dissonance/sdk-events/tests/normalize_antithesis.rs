@@ -379,6 +379,58 @@ fn an_oversized_site_coordinate_is_preserved_not_truncated() {
 }
 
 #[test]
+fn a_malformed_location_coordinate_keeps_the_record_raw_not_a_fabricated_zero() {
+    let assertion = |loc: &str| {
+        format!(
+            r#"{{"antithesis_assert":{{"assert_type":"always","condition":true,"message":"m","location":{loc}}}}}"#
+        )
+    };
+
+    // A genuine zero (or missing) coordinate is a valid site — it decodes.
+    let n = decode_antithesis(&[rec(
+        1,
+        &assertion(r#"{"file":"a.rs","function":"f","begin_line":0,"begin_column":0}"#),
+    )])
+    .expect("decodes");
+    let zero_site = n.events[0]
+        .site
+        .clone()
+        .expect("real-zero location is a site");
+    assert_eq!(zero_site.begin_line, 0);
+    assert_eq!(zero_site.begin_column, 0);
+    assert!(matches!(n.events[0].payload, Payload::Assertion { .. }));
+
+    // Each malformed coordinate keeps the whole record RAW (never a fabricated 0
+    // that would collide with the genuine-zero site above).
+    for bad in [
+        r#"{"begin_line":18446744073709551616}"#, // beyond u64::MAX
+        r#"{"begin_line":-5}"#,                   // negative
+        r#"{"begin_line":1.5}"#,                  // non-integer
+        r#"{"begin_line":"x"}"#,                  // non-number
+        r#"{"begin_column":18446744073709551616}"#, // column, too
+        r#"{"file":42}"#,                         // non-string file
+        r#"7"#,                                   // non-object location
+    ] {
+        let n = decode_antithesis(&[rec(1, &assertion(bad))]).expect("decodes");
+        assert_eq!(
+            n.events[0].payload,
+            Payload::Unknown,
+            "malformed location `{bad}` must stay raw, not a fabricated site"
+        );
+        assert!(
+            n.schema.is_empty(),
+            "a raw record contributes no schema entry for `{bad}`"
+        );
+    }
+
+    // The same guard applies to guidance records.
+    let guidance = r#"{"antithesis_guidance":{"guidance_type":"numeric","maximize":true,"id":"g","guidance_data":1,"location":{"begin_line":-1}}}"#;
+    let n = decode_antithesis(&[rec(1, guidance)]).expect("decodes");
+    assert_eq!(n.events[0].payload, Payload::Unknown);
+    assert!(n.schema.is_empty());
+}
+
+#[test]
 fn a_malformed_setup_wrapper_does_not_fabricate_lifecycle_evidence() {
     // A scalar/null setup wrapper must not normalize to a setup_complete occurrence
     // via field defaults.

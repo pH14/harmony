@@ -243,10 +243,15 @@ fn decode_assert(
     let Some(property) = property_identity(assert) else {
         return Ok(unknown);
     };
+    // A malformed location (a coordinate that is not a non-negative integer, etc.)
+    // cannot be represented without fabricating a colliding site — keep the whole
+    // record raw rather than corrupt its site identity.
+    let Ok(site) = site_of(assert) else {
+        return Ok(unknown);
+    };
 
     let assert_type = assert_type(assert);
     let condition = assert.get("condition").and_then(Value::as_bool);
-    let site = site_of(assert);
     let expectation = assert_expectation(assert, assert_type);
 
     let id = ObservationId::Property(property);
@@ -307,6 +312,10 @@ fn decode_guidance(
     } else {
         UpdateOp::Min
     };
+    // A malformed location keeps the whole record raw (as for assertions).
+    let Ok(site) = site_of(guidance) else {
+        return Ok(unknown);
+    };
     // The extremum metric is preserved as its original token when the record
     // carries a scalar; an operand-pair `guidance_data` stays report-only (operands
     // survive in `raw`) until a later derivation reduces it.
@@ -314,7 +323,6 @@ fn decode_guidance(
         .get("guidance_data")
         .and_then(number_token)
         .map(NumericToken::new);
-    let site = site_of(guidance);
 
     let id = ObservationId::Property(property);
     schema.merge_entry(SchemaEntry {
@@ -423,34 +431,60 @@ fn assert_expectation(v: &Value, assert_type: Option<AssertType>) -> Option<Expe
 /// Build a [`SiteId`] carrying the per-site provenance — the source's `id` field
 /// and the `location`. Returns `None` only when neither is present. The `id` is
 /// site metadata here, kept out of the property identity ([`property_identity`]).
-fn site_of(v: &Value) -> Option<SiteId> {
+/// `Err(())` means the `location` is present but **malformed** — a field with the
+/// wrong shape (a `begin_line`/`begin_column` that is not a non-negative integer
+/// fitting `u64`, a non-string `file`/`function`, or a non-object `location`). A
+/// malformed location cannot be represented as a `SiteId` without fabricating a
+/// coordinate that would collide distinct sites, so the caller preserves the whole
+/// record raw. An *absent* field defaults (`0` / `""`) — that is a location that
+/// simply does not specify it, not a malformed one.
+fn site_of(v: &Value) -> Result<Option<SiteId>, ()> {
     let id = v.get("id").and_then(Value::as_str).map(str::to_string);
     let location = v.get("location");
     if id.is_none() && location.is_none() {
-        return None;
+        return Ok(None);
     }
-    let field = |key: &str| {
-        location
-            .and_then(|loc| loc.get(key))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
+    let (file, function, begin_line, begin_column) = match location {
+        None => (String::new(), String::new(), 0, 0),
+        Some(loc) => {
+            // A present but non-object `location` is malformed.
+            if !loc.is_object() {
+                return Err(());
+            }
+            (
+                opt_str(loc, "file")?,
+                opt_str(loc, "function")?,
+                opt_u64(loc, "begin_line")?,
+                opt_u64(loc, "begin_column")?,
+            )
+        }
     };
-    // `u64` — the coordinate is preserved exactly, never truncated into a
-    // colliding site (a `begin_line` of `4294967296` must not become `0`).
-    let num = |key: &str| {
-        location
-            .and_then(|loc| loc.get(key))
-            .and_then(Value::as_u64)
-            .unwrap_or_default()
-    };
-    Some(SiteId {
+    Ok(Some(SiteId {
         id,
-        file: field("file"),
-        function: field("function"),
-        begin_line: num("begin_line"),
-        begin_column: num("begin_column"),
-    })
+        file,
+        function,
+        begin_line,
+        begin_column,
+    }))
+}
+
+/// A `location` string field: absent → `""`; present and a string → its value;
+/// present but not a string → `Err(())` (malformed).
+fn opt_str(loc: &Value, key: &str) -> Result<String, ()> {
+    match loc.get(key) {
+        None => Ok(String::new()),
+        Some(v) => v.as_str().map(str::to_string).ok_or(()),
+    }
+}
+
+/// A `location` coordinate field: absent → `0`; present and a `u64` → its value
+/// (preserved exactly, never truncated); present but not a non-negative integer
+/// fitting `u64` (out of range, negative, or non-integer) → `Err(())` (malformed).
+fn opt_u64(loc: &Value, key: &str) -> Result<u64, ()> {
+    match loc.get(key) {
+        None => Ok(0),
+        Some(v) => v.as_u64().ok_or(()),
+    }
 }
 
 /// The original token of a JSON number value, or `None` if it is not a scalar
