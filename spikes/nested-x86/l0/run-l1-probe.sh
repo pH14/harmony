@@ -80,6 +80,38 @@ bash /root/nested-x86-spike/extract-probe-json.sh "$C" > "$RS/probe-validated.js
   echo "RUN_PROBE_FAILED $RS (probe output does not validate as JSON)"
   exit 1
 }
+# round-8 P1: semantically validate the fields the certification BASIS
+# requires (docs/NESTED-X86.md §N-0 acceptance) — scoped honestly: N-0 is a
+# truth TABLE, so only the required-for-basis capabilities gate the run;
+# optional/absent capabilities are data. Required: the trap-closure and MTF
+# controls, both PERF_GLOBAL_CTRL load controls, EPT, a usable vPMU
+# (arch-perfmon >= 2, >= 1 GP counter), the measured 0x1c4 sniff present,
+# and the probe having completed its full sequence. The PMI sniff is
+# validated when present (later probe versions emit it).
+python3 - "$RS/probe-validated.json" <<'PYEOF' || { echo "RUN_PROBE_FAILED $RS (required-for-basis fields)"; exit 1; }
+import json, sys
+d = json.load(open(sys.argv[1]))
+bad = []
+for k in ("ctl_rdtsc_exiting", "ctl_mtf", "ctl_secondary_controls", "ctl2_ept",
+          "ctl2_rdrand_exiting", "ctl2_rdseed_exiting",
+          "exit_load_perf_global_ctrl", "entry_load_perf_global_ctrl"):
+    if d.get(k) is not True:
+        bad.append(f"{k}={d.get(k)!r} (required true)")
+if not isinstance(d.get("perfmon_version"), int) or d["perfmon_version"] < 2:
+    bad.append(f"perfmon_version={d.get('perfmon_version')!r} (required >= 2)")
+if not isinstance(d.get("gp_counters"), int) or d["gp_counters"] < 1:
+    bad.append(f"gp_counters={d.get('gp_counters')!r} (required >= 1)")
+if not d.get("sniff_raw_0x1c4_br_cond"):
+    bad.append("sniff_raw_0x1c4_br_cond missing/empty (the measured 0x1c4 attestation)")
+if d.get("probe") != "done":
+    bad.append(f"probe={d.get('probe')!r} (sequence incomplete)")
+if "pmi_sniff_raw_0x1c4" in d and not d["pmi_sniff_raw_0x1c4"]:
+    bad.append("pmi_sniff_raw_0x1c4 present but empty")
+if bad:
+    print("PROBE_BASIS_FIELDS_FAILED:", "; ".join(bad))
+    sys.exit(1)
+print("PROBE_BASIS_FIELDS_OK")
+PYEOF
 if [ "$rc" -ne 0 ] || [ "$fails" -ne 0 ] || [ "$kvm_present" -lt 1 ] \
    || [ "$pb" -lt 1 ] || [ "$pe" -lt 1 ]; then
   echo "RUN_PROBE_FAILED $RS (qemu_rc=$rc failed_markers=$fails kvm_present=$kvm_present probe=$pb/$pe)"

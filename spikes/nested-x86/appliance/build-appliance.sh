@@ -48,7 +48,11 @@ pin() { # pin <file> <sha256>
 BB=/usr/bin/busybox
 file $BB | grep -q "statically linked"
 cp $BB "$IR/bin/busybox"
-for app in sh mount insmod rmmod dmesg poweroff ls cat grep sleep mknod uname date sha256sum mkdir cp df free; do
+# sed/head/tail: the init's cmdline parsing + log trimming resolve these via
+# busybox sh's standalone applet resolution (verified against this exact
+# binary — round-8 refutation), but explicit symlinks remove the dependency
+# on that busybox build option ever changing.
+for app in sh mount insmod rmmod dmesg poweroff ls cat grep sleep mknod uname date sha256sum mkdir cp df free sed head tail; do
     ln -sf busybox "$IR/bin/$app"
 done
 

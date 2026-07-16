@@ -26,8 +26,25 @@ cd /root/nested-x86-recert
 echo '$SUM  harmony-$HEAD.tar.gz' | sha256sum -c -
 rm -rf src-$HEAD && mkdir src-$HEAD && tar -xzf harmony-$HEAD.tar.gz -C src-$HEAD
 mkdir -p /root/harmony-nested /root/nested-x86-spike/n1/src
-rsync -a src-$HEAD/ /root/harmony-nested/
+# --delete so re-staging can never leave stale source files from an earlier
+# head in the tree (round-8 P1); build outputs and the commit stamp are
+# excluded from deletion — they are box-produced state, not source, and the
+# appliance manifest pins every artifact it bundles by sha256 regardless.
+rsync -a --delete \
+  --exclude /target/ --exclude /guest/payloads/target/ --exclude /guest/build/ \
+  --exclude /guest/dl/ --exclude /.spike-source-commit \
+  src-$HEAD/ /root/harmony-nested/
 echo $HEAD > /root/harmony-nested/.spike-source-commit
+# assert: every staged source file matches the recorded source commit
+# (tar listing == staged tree, excluding the box-produced paths above)
+tar -tzf harmony-$HEAD.tar.gz | grep -v '/$' | sort > /tmp/stage-manifest-$HEAD
+( cd /root/harmony-nested && find . -type f \
+    ! -path './target/*' ! -path './guest/payloads/target/*' \
+    ! -path './guest/build/*' ! -path './guest/dl/*' ! -name .spike-source-commit \
+    | sed 's|^\./||' | sort ) > /tmp/stage-actual-$HEAD
+diff /tmp/stage-manifest-$HEAD /tmp/stage-actual-$HEAD > /dev/null \
+  || { echo 'STAGE_MISMATCH: staged tree != source commit listing'; diff /tmp/stage-manifest-$HEAD /tmp/stage-actual-$HEAD | head -20; exit 1; }
+echo 'STAGE_VERIFIED: staged tree == source commit listing'
 SP=/root/harmony-nested/spikes/nested-x86
 cp \$SP/appliance/build-appliance.sh \$SP/appliance/run-appliance.sh \$SP/appliance/l1-appliance-init.sh /root/nested-x86-spike/n1/src/
 cp \$SP/harness/run-n2-condition.sh \$SP/harness/run-n3-stress.sh \$SP/harness/run-n3-pause.sh \$SP/harness/run-n3-migrate-live.sh \$SP/harness/run-metal-reference-recert.sh \$SP/harness/extract-probe-json.sh /root/nested-x86-spike/
