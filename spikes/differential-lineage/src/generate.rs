@@ -444,8 +444,13 @@ pub fn random_tree(name: &str, seed: u64, p: TreeParams) -> (Fixture, Replay) {
             .map(|l| l.cut.count)
             .unwrap_or(0);
         let len = b.vector(r).len() as u64;
+        // Obs-cut counts are a record identity per rollout (validated
+        // unique): dedup the random draws.
+        let mut cut_counts = std::collections::BTreeSet::new();
         for _ in 0..p.cuts_per_rollout {
-            let count = start + rng.below(len - start + 1);
+            cut_counts.insert(start + rng.below(len - start + 1));
+        }
+        for count in cut_counts {
             let moment = cut_moment(b.vector(r), count);
             b.obs_cut(rev, r, Cut { moment, count });
         }

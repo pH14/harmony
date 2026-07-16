@@ -45,9 +45,11 @@ species; this spike is the complementary one-dataflow observation plane).
 - `tests/parity.rs` — the adjudicator: DD (both formulations) == referee on
   hand fixtures and random trees, at every revision, across reruns, under
   permuted feed order.
-- `tests/validate.rs` — malformed-fixture rejection as typed errors (lineage
-  cycles, cut bounds with checked arithmetic, the physical branch-point
-  contract, Moment monotonicity, unique declarations, revision sanity).
+- `tests/validate.rs` — malformed-fixture rejection as typed errors, one test
+  per invariant on the systematic checklist in `IMPLEMENTATION.md` (identity
+  uniqueness, revision coherence incl. lineage-before-dependents, checked
+  position arithmetic, the physical branch-point contract, Moment
+  monotonicity, cross-record references).
 - `examples/bench.rs` — the cost measurement (`REPORT.md`).
 - `examples/gen_fixtures.rs` — regenerates the committed fixtures
   bit-identically.
@@ -69,7 +71,7 @@ species; this spike is the complementary one-dataflow observation plane).
 ## Run
 
 ```sh
-cargo test --locked                            # 34 tests: exact + parity + validate (~3 s)
+cargo test --locked                            # 48 tests: exact + parity + validate (~3 s)
 cargo run --release --locked --example bench   # the cost measurement (REPORT.md)
 cargo run --locked --example gen_fixtures      # regenerate committed fixtures
 ```

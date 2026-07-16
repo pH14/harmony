@@ -340,3 +340,362 @@ fn referee_refuses_short_replay_with_typed_error() {
         }
     );
 }
+
+// ---------------------------------------------------------------------------
+// r3: record-identity uniqueness, lineage-before-dependents, cross-record
+// references, and the referee's parent-side replay coverage.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn duplicate_seal_id_rejected() {
+    // A duplicate (config, seal) would emit multiplicity-2 seal-prefix rows
+    // and break the canonical unit-multiplicity read.
+    let (mut fx, _) = fixtures::two_pass();
+    fx.seals.push(fx.seals[0].clone());
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::DuplicateRecord {
+            what: "seal",
+            config: 0,
+            detail: "seal 0".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn duplicate_obs_cut_rejected() {
+    let (mut fx, _) = fixtures::two_pass();
+    let mut c = fx.obs_cuts[0].clone();
+    c.cut.moment = 21; // same count, different moment: same identity
+    fx.obs_cuts.push(c);
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::DuplicateRecord {
+            what: "obs cut",
+            config: 0,
+            detail: "rollout 0 count 2".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn duplicate_scrape_ordinal_rejected() {
+    let (mut fx, _) = fixtures::retention_properties();
+    fx.scrape.push(fx.scrape[0].clone());
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::DuplicateRecord {
+            what: "scrape line",
+            config: 0,
+            detail: "rollout 0 ordinal 0".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn duplicate_seq_query_rejected() {
+    let (mut fx, _) = fixtures::retention_properties();
+    fx.seq_queries.push(fx.seq_queries[0].clone());
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::DuplicateRecord {
+            what: "sequence query",
+            config: 0,
+            detail: "query 0".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn duplicate_entry_commit_rejected() {
+    let (mut fx, _) = fixtures::two_pass();
+    fx.entry_commits.push(fx.entry_commits[0].clone());
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::DuplicateRecord {
+            what: "entry commit",
+            config: 0,
+            detail: "entry 100".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn duplicate_event_position_rejected_via_contiguity() {
+    // Event identity (config, rollout, pos) is enforced by the contiguity
+    // rule: a duplicated position cannot form the strict range.
+    let (mut fx, _) = fixtures::two_pass();
+    fx.events.push(fx.events[0].clone());
+    assert!(matches!(
+        fx.validate(),
+        Err(ValidationError::NonContiguousPositions { .. })
+    ));
+}
+
+#[test]
+fn point_before_lineage_rejected() {
+    // r3: a child's obs cut or seal committing before its lineage record
+    // would let the referee compose an inherited prefix the dataflow cannot
+    // see yet (the edge is not committed) — every-revision parity would be
+    // false there, so the ordering is refused by contract.
+    let (mut fx, _) = fixtures::tree_lineage();
+    // Rollout 1 (B) has its lineage at revision 3; back-date one of its cuts.
+    let idx = fx
+        .obs_cuts
+        .iter()
+        .position(|c| c.rollout == 1)
+        .expect("B has cuts");
+    fx.obs_cuts[idx].rev = 2;
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::RecordBeforeLineage {
+            what: "obs cut",
+            config: 0,
+            child: 1,
+            rev: 2,
+            lineage_rev: 3,
+        })
+    );
+
+    let (mut fx, _) = fixtures::tree_lineage();
+    let idx = fx
+        .seals
+        .iter()
+        .position(|s| s.rollout == 1)
+        .expect("B has a seal");
+    fx.seals[idx].rev = 2;
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::RecordBeforeLineage {
+            what: "seal",
+            config: 0,
+            child: 1,
+            rev: 2,
+            lineage_rev: 3,
+        })
+    );
+}
+
+#[test]
+fn child_event_before_lineage_rejected() {
+    let (mut fx, _) = fixtures::tree_lineage();
+    let idx = fx
+        .events
+        .iter()
+        .position(|e| e.rollout == 1)
+        .expect("B has events");
+    fx.events[idx].rev = 1;
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::RecordBeforeLineage {
+            what: "event",
+            config: 0,
+            child: 1,
+            rev: 1,
+            lineage_rev: 3,
+        })
+    );
+}
+
+#[test]
+fn descendant_fork_before_lineage_rejected() {
+    // D forks off B at revision 5; B's own lineage commits at revision 3.
+    // Back-dating D's fork below 3 breaks chain-revision monotonicity.
+    let (mut fx, _) = fixtures::tree_lineage();
+    let idx = fx
+        .lineage
+        .iter()
+        .position(|l| l.child == 3)
+        .expect("D's lineage");
+    fx.lineage[idx].rev = 2;
+    // D's own records also violate their (now earlier) lineage revision, but
+    // the descendant-fork rule must hold regardless; relax D's records too so
+    // the fork rule itself is what fires.
+    for e in &mut fx.events {
+        if e.rollout == 3 {
+            e.rev = 2;
+        }
+    }
+    for c in &mut fx.obs_cuts {
+        if c.rollout == 3 {
+            c.rev = 2;
+        }
+    }
+    for s in &mut fx.seals {
+        if s.rollout == 3 {
+            s.rev = 2;
+        }
+    }
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::RecordBeforeLineage {
+            what: "descendant lineage",
+            config: 0,
+            child: 1,
+            rev: 2,
+            lineage_rev: 3,
+        })
+    );
+}
+
+#[test]
+fn dangling_entry_commit_rejected() {
+    let (mut fx, _) = fixtures::two_pass();
+    fx.entry_commits
+        .push(differential_lineage::data::EntryCommitRec {
+            rev: 5,
+            config: 0,
+            entry: 999,
+            rollout: 0,
+            seal: 77, // no such seal at any revision
+            quality: 1,
+        });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::DanglingEntryCommit {
+            config: 0,
+            entry: 999,
+            rollout: 0,
+            seal: 77,
+        })
+    );
+}
+
+#[test]
+fn query_before_source_declaration_rejected() {
+    // A committed query must not wait on its sources' scope declarations:
+    // the dataflow's join sits silent until the declaration commits while a
+    // revision-filtered reader already judges the query.
+    let (mut fx, _) = fixtures::retention_properties();
+    let idx = fx
+        .sources
+        .iter()
+        .position(|s| s.source == 1)
+        .expect("source 1 declared");
+    fx.sources[idx].rev = 3; // query 0 uses source 1 at revision 1
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::DeclarationAfterUse {
+            what: "sequence query",
+            config: 0,
+            id: 1,
+            decl_rev: 3,
+            use_rev: 1,
+        })
+    );
+}
+
+#[test]
+fn dangling_working_ref_rejected() {
+    let (mut fx, _) = fixtures::retention_properties();
+    fx.working.push(differential_lineage::data::WorkingRec {
+        rev: 3,
+        config: 0,
+        rollout: 0,
+        pos: 99, // no such evidence coordinate
+        delta: 1,
+    });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::DanglingWorkingRef {
+            config: 0,
+            rollout: 0,
+            pos: 99,
+        })
+    );
+}
+
+#[test]
+fn working_net_out_of_range_rejected() {
+    // Double admission.
+    let (mut fx, _) = fixtures::retention_properties();
+    fx.working.push(differential_lineage::data::WorkingRec {
+        rev: 3,
+        config: 0,
+        rollout: 0,
+        pos: 0,
+        delta: 1, // pos 0 already admitted at revision 3
+    });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::WorkingNetOutOfRange {
+            config: 0,
+            rollout: 0,
+            pos: 0,
+            rev: 3,
+            net: 2,
+        })
+    );
+
+    // Expiration of something never admitted.
+    let (mut fx, _) = fixtures::retention_properties();
+    fx.working.push(differential_lineage::data::WorkingRec {
+        rev: 2,
+        config: 0,
+        rollout: 0,
+        pos: 2,
+        delta: -1,
+    });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::WorkingNetOutOfRange {
+            config: 0,
+            rollout: 0,
+            pos: 2,
+            rev: 2,
+            net: -1,
+        })
+    );
+}
+
+#[test]
+fn referee_refuses_short_parent_replay() {
+    // r3: the referee evaluates Fork points by slicing the PARENT's replay
+    // vector at the fork count; that side must be coverage-checked too.
+    use differential_lineage::data::{Cut, OrderScope, Payload, ReduceOp};
+    use differential_lineage::generate::Builder;
+    use differential_lineage::referee::Referee;
+
+    let mut b = Builder::new("short-parent", 0);
+    b.reg(1, 10, ReduceOp::Set)
+        .source(1, 0, OrderScope::RolloutGlobal);
+    let a = b.genesis();
+    b.push(2, a, 0, 10, Payload::Register { reg: 10, value: 1 });
+    b.push(2, a, 0, 20, Payload::Register { reg: 10, value: 2 });
+    let c = b.fork(
+        3,
+        a,
+        Cut {
+            moment: 20,
+            count: 2,
+        },
+    );
+    b.push(3, c, 0, 30, Payload::Register { reg: 10, value: 3 });
+    b.seal(
+        4,
+        c,
+        0,
+        Cut {
+            moment: 30,
+            count: 3,
+        },
+    );
+    let (fx, mut replay) = b.finish();
+    assert_eq!(fx.validate(), Ok(()));
+    // Truncate the PARENT's vector below the fork count; the child's own
+    // vector (with its inherited copy) stays intact, so only the parent-side
+    // check can catch this.
+    let a_idx = replay
+        .full
+        .iter()
+        .position(|(r, _)| *r == a)
+        .expect("parent vector");
+    replay.full[a_idx].1.truncate(1);
+    assert_eq!(
+        Referee::new(&fx, &replay).err(),
+        Some(ValidationError::ReplayTooShort {
+            rollout: a,
+            count: 2,
+        })
+    );
+}

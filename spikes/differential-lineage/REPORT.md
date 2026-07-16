@@ -69,7 +69,7 @@ updates across the formulation's stages **plus the lineage stages**.
 
 ## Results (honest metering)
 
-### deep-chain — 16,000 events, 40 branches, 41 candidate seals, 161 evaluation points
+### deep-chain — 16,000 events, 40 branches, 41 candidate seals, 160 evaluation points
 
 | formulation | total updates | wall | first branch | median branch | deepest branch | seal wave | late seal |
 |---|---|---|---|---|---|---|---|

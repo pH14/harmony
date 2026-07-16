@@ -45,7 +45,12 @@ impl<'a> Referee<'a> {
             covered(c.rollout, c.cut.count)?;
         }
         for l in &fixture.lineage {
+            // Both sides of the branch point are sliced: the child's vector
+            // (its inherited prefix) and the PARENT's vector (the referee
+            // evaluates Fork points on the parent at the fork count — r3:
+            // this side was sliced before being validated).
             covered(l.child, l.cut.count)?;
+            covered(l.parent, l.cut.count)?;
         }
         Ok(Referee { fixture, replay })
     }

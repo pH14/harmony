@@ -31,39 +31,61 @@ Doctrine compliance (per the spec's blocking rules):
 - **No custom lattice**: outer timestamp `u64`; the only nested timestamp is
   the standard `Product<u64, u64>` inside `iterate` (lineage closure).
 
-## Structural validation (r1 + r2 reviews)
+## Structural validation — the complete invariant checklist (r1–r3)
 
 `Fixture::validate` (data.rs) returns a typed `ValidationError` (thiserror);
 `dataflow::run` and `Referee::new` return `Result` and refuse fixtures that
 fail it — **decoded input can never panic, hang, or overflow the public
-APIs**. `tests/validate.rs` covers each rejection:
+APIs**. Per the r3 mandate, this is the systematic enumeration: every
+documented fixture invariant, its rule, and its test.
 
-- lineage is a forest per config (no self-parent, one parent per child, no
-  cycles — a cycle would keep the ancestry iteration from converging);
-- no record commits at `Revision::MAX` (the driver advances to `rev + 1`);
-  the driver walks the sorted **occupied** revisions, not every integer, so
-  sparse revision numbers cost nothing;
-- persisted positions are the contiguous suffix range from the branch-point
-  count, computed with **checked arithmetic** (a hostile cut near `u64::MAX`
-  fails the bound check instead of overflowing before it);
-- moments are nondecreasing along each rollout's own positions **and across
-  every lineage boundary** (canonical `(Moment, pos)` order rests on it);
-- no cut of any kind precedes its rollout's branch point or exceeds its
-  persisted extent — the **physical cut contract** lineage composition is
-  sound under (a machine exists only from its branch moment onward; the
-  parity harness caught the random generator violating this in development);
-- register/source/property declarations are unique per identity (duplicates
-  would make the dataflow's declaration joins fan out and disagree with the
-  referee's last-wins maps);
-- sequence queries name declared sources.
+**Identity uniqueness**
 
-The referee's replay-backed views (`seal_prefix`, `obs`, `cells`,
-`transitions`, and occupancy through them) filter replay evidence **by the
-requested revision** (r2): a covered event whose record commits after the
-cut's revision is not evidence at earlier revisions — exactly what the
-dataflow sees. Production's durable-append-before-submit rule forbids that
-ordering, but a fixture may express it, and staged parity holds either way
-(`parity::late_covered_evidence_staged_parity`).
+| invariant | error | test (`tests/validate.rs`) |
+|---|---|---|
+| `RegisterDecl` unique per `(config, reg)` | `DuplicateDeclaration` | `duplicate_declarations_rejected` |
+| `SourceDecl` unique per `(config, source)` | `DuplicateDeclaration` | `duplicate_declarations_rejected` |
+| `PropertyDecl` unique per `(config, property)` | `DuplicateDeclaration` | `duplicate_declarations_rejected` |
+| `LineageRec` unique per `(config, child)` | `TwoParents` | `two_parents_rejected` |
+| `SdkEventRec` unique per `(config, rollout, pos)` | via `NonContiguousPositions` (a duplicated position cannot form the strict range) | `duplicate_event_position_rejected_via_contiguity` |
+| `SealRec` unique per `(config, seal)` | `DuplicateRecord` | `duplicate_seal_id_rejected` |
+| `ObsCutRec` unique per `(config, rollout, count)` | `DuplicateRecord` | `duplicate_obs_cut_rejected` |
+| `ScrapeLineRec` unique per `(config, rollout, local_ord)` | `DuplicateRecord` | `duplicate_scrape_ordinal_rejected` |
+| `SeqQueryRec` unique per `(config, query)` | `DuplicateRecord` | `duplicate_seq_query_rejected` |
+| `EntryCommitRec` unique per `(config, entry)` | `DuplicateRecord` | `duplicate_entry_commit_rejected` |
+| `WorkingRec` — deltas by design, no record identity; bounded by the net rule below | — | — |
+
+**Ordering / revision coherence**
+
+| invariant | error | test |
+|---|---|---|
+| no record commits at `Revision::MAX` (driver advances to `rev + 1`; walks sorted occupied revisions, sparse-safe) | `RevisionMax` | `revision_max_rejected` |
+| lineage precedes its dependents: a forked rollout's events, obs cuts, seals, and any fork off it commit at/after its lineage record (chain revisions nondecreasing ⇒ the dataflow can always compose what the referee composes) | `RecordBeforeLineage` | `point_before_lineage_rejected`, `child_event_before_lineage_rejected`, `descendant_fork_before_lineage_rejected` |
+| source declarations precede the sequence queries that use them (the dataflow's join waits for the declaration; a revision-filtered reader must not judge earlier) | `DeclarationAfterUse` | `query_before_source_declaration_rejected` |
+| covered evidence MAY commit after its cut — deliberately legal; the referee's replay-backed views are revision-filtered to match the dataflow | — (r2 referee filter) | `parity::late_covered_evidence_staged_parity` |
+| entry commits MAY precede their seal — deliberately legal; the dataflow join and the revision-filtered referee agree (nothing surfaces until both are committed) | — | exercised by `exact::family2_two_pass_occupancy_and_domination` staging |
+| register/property declarations MAY commit after events — deliberately legal; both sides filter declarations by revision coherently (mirrors the v1 never-fired rule) | — | covered by every-revision parity |
+| Moments nondecreasing along each rollout's own positions and across every lineage boundary (canonical `(Moment, pos)` order) | `DecreasingMoments` | `decreasing_moments_within_a_rollout_rejected`, `decreasing_moments_across_lineage_rejected` |
+
+**Structure / positions**
+
+| invariant | error | test |
+|---|---|---|
+| positions are the contiguous suffix range from the branch point (the restored prefix is inherited, never re-persisted) | `NonContiguousPositions` | `non_contiguous_positions_rejected` |
+| position arithmetic is checked (`u64::MAX` cuts fail the bound, never wrap) | `PositionOverflow` | `position_overflow_is_checked_not_wrapped` |
+| every cut (fork/obs/seal) within `[branch point, persisted extent]` — the physical cut contract | `CutOutOfBounds` | `seal_beyond_evidence_rejected`, `cut_before_branch_point_rejected` |
+| lineage is a forest (no self-parent, no cycles — a cycle would keep the ancestry iteration from converging) | `SelfParent`, `LineageCycle` | `self_parent_rejected`, `lineage_cycle_rejected`, `run_refuses_malformed_fixture_with_typed_error` |
+
+**Cross-record references**
+
+| invariant | error | test |
+|---|---|---|
+| sequence queries name declared sources | `UndeclaredQuerySource` | `undeclared_query_source_rejected` |
+| entry commits reference a seal that exists (at some revision) | `DanglingEntryCommit` | `dangling_entry_commit_rejected` |
+| working updates reference a persisted evidence coordinate | `DanglingWorkingRef` | `dangling_working_ref_rejected` |
+| working membership nets 0 or 1 per coordinate after every revision (admit at most once; never expire the unadmitted) | `WorkingNetOutOfRange` | `working_net_out_of_range_rejected` |
+| event source ids need NOT be declared — deliberately not validated: no view consumes an event's source except through an eligible (already-validated) query, and undeclared registers stay evidence-not-state by design | — | documented here |
+| referee replay coverage: every seal/obs cut on its rollout's vector, and every fork on BOTH the child's (inherited prefix) and the PARENT's vector (Fork points slice the parent — r3) | `ReplayTooShort` | `referee_refuses_short_replay_with_typed_error`, `referee_refuses_short_parent_replay` |
 
 ## Metering (r1 review — corrected)
 
@@ -123,7 +145,7 @@ reduction, mirroring the v1 never-fired rule).
 
 ```
 cargo build            # + --release
-cargo test --locked    # 34 tests: exact (11) + parity (8) + validate (15)
+cargo test --locked    # 48 tests: exact (11) + parity (8) + validate (29)
 cargo clippy --locked --all-features --all-targets -- -D warnings
 cargo fmt -- --check
 cargo deny check --config <root>/deny.toml licenses

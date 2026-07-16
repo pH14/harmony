@@ -423,6 +423,109 @@ pub enum ValidationError {
         /// Undeclared source (named `src`: thiserror reserves `source`).
         src: SourceId,
     },
+    /// Two records share one documented record identity (seal ids per
+    /// config; obs-cut counts per rollout; scrape ordinals per rollout;
+    /// query ids per config; entry ids per config). Duplicates would emit
+    /// multiplicity-2 view rows and break the canonical unit-multiplicity
+    /// read.
+    #[error("duplicate {what} record ({detail}) in config {config}")]
+    DuplicateRecord {
+        /// Record class.
+        what: &'static str,
+        /// Campaign configuration.
+        config: CfgId,
+        /// The colliding identity, rendered.
+        detail: String,
+    },
+    /// A record that depends on a rollout's lineage commits before the
+    /// lineage record itself — the dataflow could not compose the inherited
+    /// prefix the referee already knows about. Production writes lineage at
+    /// branch creation, before any dependent record.
+    #[error(
+        "{what} on rollout {child} (config {config}) commits at revision {rev}, \
+         before its lineage record at revision {lineage_rev}"
+    )]
+    RecordBeforeLineage {
+        /// Dependent record class ("event", "obs cut", "seal",
+        /// "descendant lineage").
+        what: &'static str,
+        /// Campaign configuration.
+        config: CfgId,
+        /// The forked rollout whose lineage is depended upon.
+        child: RolloutId,
+        /// The dependent record's revision.
+        rev: Revision,
+        /// The lineage record's revision.
+        lineage_rev: Revision,
+    },
+    /// An entry commit references a seal that exists at no revision.
+    #[error(
+        "entry commit {entry} (config {config}) references missing seal {seal} \
+         on rollout {rollout}"
+    )]
+    DanglingEntryCommit {
+        /// Campaign configuration.
+        config: CfgId,
+        /// Committing entry.
+        entry: EntryId,
+        /// Referenced rollout.
+        rollout: RolloutId,
+        /// Referenced (missing) seal.
+        seal: SealId,
+    },
+    /// A record uses a declaration that commits only later — the dataflow
+    /// evaluates the use once the declaration arrives, while a
+    /// revision-filtered reader would already judge it, so the orders must
+    /// agree by contract (declarations precede uses).
+    #[error(
+        "{what} (config {config}) uses declaration {id} at revision {use_rev}, \
+         but it commits at revision {decl_rev}"
+    )]
+    DeclarationAfterUse {
+        /// Using record class ("sequence query").
+        what: &'static str,
+        /// Campaign configuration.
+        config: CfgId,
+        /// Declared identity.
+        id: u32,
+        /// Declaration revision.
+        decl_rev: Revision,
+        /// Use revision.
+        use_rev: Revision,
+    },
+    /// A working-set update references an evidence coordinate that exists at
+    /// no revision.
+    #[error(
+        "working update for rollout {rollout} pos {pos} (config {config}) \
+         references no persisted event"
+    )]
+    DanglingWorkingRef {
+        /// Campaign configuration.
+        config: CfgId,
+        /// Referenced rollout.
+        rollout: RolloutId,
+        /// Referenced position.
+        pos: Pos,
+    },
+    /// Working membership leaves {0, 1} for one coordinate after some
+    /// revision's updates — bounded membership admits at most once and never
+    /// expires what was not admitted.
+    #[error(
+        "working membership for rollout {rollout} pos {pos} (config {config}) \
+         nets {net} after revision {rev}"
+    )]
+    WorkingNetOutOfRange {
+        /// Campaign configuration.
+        config: CfgId,
+        /// Coordinate rollout.
+        rollout: RolloutId,
+        /// Coordinate position.
+        pos: Pos,
+        /// Revision after whose updates the net leaves {0, 1}.
+        rev: Revision,
+        /// The offending net.
+        net: i64,
+    },
     /// The genesis replay vectors do not cover the fixture's cuts (referee
     /// construction only).
     #[error("replay vector for rollout {rollout} shorter than cut {count}")]
@@ -548,6 +651,150 @@ impl Fixture {
                 }
             }
         }
+        // Declarations precede uses: a committed query must not wait on its
+        // sources' scope declarations (the dataflow's join would sit silent
+        // while a revision-filtered reader already judges the query).
+        let src_decl_rev: BTreeMap<(CfgId, SourceId), Revision> = self
+            .sources
+            .iter()
+            .map(|d| ((d.config, d.source), d.rev))
+            .collect();
+        for q in &self.seq_queries {
+            for source in [q.src_a, q.src_b] {
+                if let Some(&decl_rev) = src_decl_rev.get(&(q.config, source))
+                    && decl_rev > q.rev
+                {
+                    return Err(ValidationError::DeclarationAfterUse {
+                        what: "sequence query",
+                        config: q.config,
+                        id: source,
+                        decl_rev,
+                        use_rev: q.rev,
+                    });
+                }
+            }
+        }
+
+        // Record identities are unique: duplicates would emit
+        // multiplicity-2 view rows and break canonical unit-multiplicity
+        // reads.
+        let mut seal_ids: BTreeSet<(CfgId, SealId)> = BTreeSet::new();
+        for sl in &self.seals {
+            if !seal_ids.insert((sl.config, sl.seal)) {
+                return Err(ValidationError::DuplicateRecord {
+                    what: "seal",
+                    config: sl.config,
+                    detail: format!("seal {}", sl.seal),
+                });
+            }
+        }
+        let mut cut_ids: BTreeSet<(CfgId, RolloutId, Pos)> = BTreeSet::new();
+        for c in &self.obs_cuts {
+            if !cut_ids.insert((c.config, c.rollout, c.cut.count)) {
+                return Err(ValidationError::DuplicateRecord {
+                    what: "obs cut",
+                    config: c.config,
+                    detail: format!("rollout {} count {}", c.rollout, c.cut.count),
+                });
+            }
+        }
+        let mut scrape_ids: BTreeSet<(CfgId, RolloutId, u64)> = BTreeSet::new();
+        for sc in &self.scrape {
+            if !scrape_ids.insert((sc.config, sc.rollout, sc.local_ord)) {
+                return Err(ValidationError::DuplicateRecord {
+                    what: "scrape line",
+                    config: sc.config,
+                    detail: format!("rollout {} ordinal {}", sc.rollout, sc.local_ord),
+                });
+            }
+        }
+        let mut query_ids: BTreeSet<(CfgId, QueryId)> = BTreeSet::new();
+        for q in &self.seq_queries {
+            if !query_ids.insert((q.config, q.query)) {
+                return Err(ValidationError::DuplicateRecord {
+                    what: "sequence query",
+                    config: q.config,
+                    detail: format!("query {}", q.query),
+                });
+            }
+        }
+        let mut entry_ids: BTreeSet<(CfgId, EntryId)> = BTreeSet::new();
+        for ec in &self.entry_commits {
+            if !entry_ids.insert((ec.config, ec.entry)) {
+                return Err(ValidationError::DuplicateRecord {
+                    what: "entry commit",
+                    config: ec.config,
+                    detail: format!("entry {}", ec.entry),
+                });
+            }
+        }
+
+        // Cross-record references resolve: entry commits name a seal that
+        // exists (at some revision — committing before the seal is a legal
+        // ordering both the dataflow join and the revision-filtered referee
+        // treat identically), and working updates name a persisted evidence
+        // coordinate.
+        let seal_refs: BTreeSet<(CfgId, RolloutId, SealId)> = self
+            .seals
+            .iter()
+            .map(|sl| (sl.config, sl.rollout, sl.seal))
+            .collect();
+        for ec in &self.entry_commits {
+            if !seal_refs.contains(&(ec.config, ec.rollout, ec.seal)) {
+                return Err(ValidationError::DanglingEntryCommit {
+                    config: ec.config,
+                    entry: ec.entry,
+                    rollout: ec.rollout,
+                    seal: ec.seal,
+                });
+            }
+        }
+        let event_coords: BTreeSet<(CfgId, RolloutId, Pos)> = self
+            .events
+            .iter()
+            .map(|e| (e.config, e.rollout, e.pos))
+            .collect();
+        for w in &self.working {
+            if !event_coords.contains(&(w.config, w.rollout, w.pos)) {
+                return Err(ValidationError::DanglingWorkingRef {
+                    config: w.config,
+                    rollout: w.rollout,
+                    pos: w.pos,
+                });
+            }
+        }
+        // Bounded membership: per coordinate, the net stays in {0, 1} after
+        // every revision's updates (admit at most once; never expire what
+        // was not admitted).
+        let mut per_coord: BTreeMap<(CfgId, RolloutId, Pos), Vec<(Revision, i64)>> =
+            BTreeMap::new();
+        for w in &self.working {
+            per_coord
+                .entry((w.config, w.rollout, w.pos))
+                .or_default()
+                .push((w.rev, w.delta));
+        }
+        for ((config, rollout, pos), mut updates) in per_coord {
+            updates.sort_unstable();
+            let mut net = 0i64;
+            let mut idx = 0;
+            while idx < updates.len() {
+                let rev = updates[idx].0;
+                while idx < updates.len() && updates[idx].0 == rev {
+                    net += updates[idx].1;
+                    idx += 1;
+                }
+                if !(0..=1).contains(&net) {
+                    return Err(ValidationError::WorkingNetOutOfRange {
+                        config,
+                        rollout,
+                        pos,
+                        rev,
+                        net,
+                    });
+                }
+            }
+        }
 
         // Lineage: forest per config.
         let mut parent: BTreeMap<(CfgId, RolloutId), (RolloutId, Pos)> = BTreeMap::new();
@@ -573,6 +820,70 @@ impl Fixture {
                     });
                 }
                 cur = p;
+            }
+        }
+
+        // Lineage precedes its dependents: everything recorded against a
+        // forked rollout — its events, cuts, seals, and any fork off it —
+        // commits at or after its lineage record, or the dataflow could not
+        // yet compose the inherited prefix the referee already knows about.
+        // (Production writes lineage at branch creation, before any child
+        // record exists.)
+        let lineage_rev: BTreeMap<(CfgId, RolloutId), Revision> = self
+            .lineage
+            .iter()
+            .map(|l| ((l.config, l.child), l.rev))
+            .collect();
+        let before = |config: CfgId, rollout: RolloutId, rev: Revision| -> Option<Revision> {
+            lineage_rev
+                .get(&(config, rollout))
+                .copied()
+                .filter(|&lr| rev < lr)
+        };
+        for e in &self.events {
+            if let Some(lineage_rev) = before(e.config, e.rollout, e.rev) {
+                return Err(ValidationError::RecordBeforeLineage {
+                    what: "event",
+                    config: e.config,
+                    child: e.rollout,
+                    rev: e.rev,
+                    lineage_rev,
+                });
+            }
+        }
+        for c in &self.obs_cuts {
+            if let Some(lineage_rev) = before(c.config, c.rollout, c.rev) {
+                return Err(ValidationError::RecordBeforeLineage {
+                    what: "obs cut",
+                    config: c.config,
+                    child: c.rollout,
+                    rev: c.rev,
+                    lineage_rev,
+                });
+            }
+        }
+        for sl in &self.seals {
+            if let Some(lineage_rev) = before(sl.config, sl.rollout, sl.rev) {
+                return Err(ValidationError::RecordBeforeLineage {
+                    what: "seal",
+                    config: sl.config,
+                    child: sl.rollout,
+                    rev: sl.rev,
+                    lineage_rev,
+                });
+            }
+        }
+        for l in &self.lineage {
+            // A fork OFF a forked rollout depends on that rollout's own
+            // lineage (revisions are then nondecreasing along every chain).
+            if let Some(lineage_rev) = before(l.config, l.parent, l.rev) {
+                return Err(ValidationError::RecordBeforeLineage {
+                    what: "descendant lineage",
+                    config: l.config,
+                    child: l.parent,
+                    rev: l.rev,
+                    lineage_rev,
+                });
             }
         }
 

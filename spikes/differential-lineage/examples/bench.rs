@@ -118,8 +118,12 @@ fn build(shape: &Shape) -> BenchFixture {
         }
         let start = b.start_of(r);
         let len = b.vector(r).len() as u64;
+        // Obs-cut counts are a record identity per rollout: dedup the draws.
+        let mut cut_counts = std::collections::BTreeSet::new();
         for _ in 0..shape.cuts_per_rollout {
-            let count = start + rng.below(len - start + 1);
+            cut_counts.insert(start + rng.below(len - start + 1));
+        }
+        for count in cut_counts {
             b.obs_cut(
                 rev,
                 r,
