@@ -177,6 +177,13 @@ fn validate_v2_point(
         }
         Some(_) => {}
     }
+    // Lifecycle firings decode only at the `setup_complete` local id; any other
+    // lifecycle local would decode to `Unknown`, so it is not reportable.
+    if namespace == wire::NS_LIFECYCLE && local != wire::LIFECYCLE_SETUP_COMPLETE {
+        return Err(unsupported(
+            "only the setup_complete lifecycle point (local 0) is reportable",
+        ));
+    }
     match classification {
         Classification::State => {
             if base_op.is_none() {
@@ -346,6 +353,7 @@ fn need_name(r: &mut Reader<'_>, context: &'static str) -> Result<String, SdkErr
 fn parse_v1(r: &mut Reader<'_>) -> Result<DeclContext, SdkError> {
     let count = need_u32(r, "v1 catalog count")?;
     let mut ctx = DeclContext::empty();
+    let mut seen: BTreeSet<(u8, u32)> = BTreeSet::new();
     for _ in 0..count {
         let kind = need_u8(r, "v1 point kind")?;
         let local = need_u32(r, "v1 point local id")?;
@@ -361,6 +369,13 @@ fn parse_v1(r: &mut Reader<'_>) -> Result<DeclContext, SdkError> {
         // firing — refuse it rather than mint a permanently never-fired identity.
         if local > wire::LOCAL_MASK {
             return Err(SdkError::LocalIdOutOfRange { namespace, local });
+        }
+        // One coordinate, one entry: a firing cannot distinguish two kinds at one
+        // `(namespace, local)`, and collapsing them (last verb wins, first name and
+        // expectation kept) would normalize contradictory evidence. The guest SDK
+        // rejects such coordinates; so does the host decoder.
+        if !seen.insert((namespace, local)) {
+            return Err(SdkError::DuplicateCoordinate { namespace, local });
         }
         let id = ObservationId::Point { namespace, local };
         if let Some(at) = assert_type {

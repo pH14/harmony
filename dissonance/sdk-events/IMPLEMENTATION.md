@@ -34,8 +34,10 @@ Differential epic (`hm-bbx`).
   report it: its classification matches the one the namespace's firings decode to
   (`NS_STATE`⇒state, `NS_ASSERT`/`NS_BUGGIFY`/`NS_LIFECYCLE`⇒occurrence); a state
   point declares a base op + a `u64` shape and an occurrence declares neither;
-  every local id fits the 24-bit runtime field; no coordinate is declared twice;
-  and no name overflows its `u16` length prefix — each otherwise a typed error.
+  every local id fits the 24-bit runtime field; a lifecycle declaration sits at the
+  only decodable local (`setup_complete`, local 0); no coordinate is declared twice
+  (in **v1 or v2** — a firing cannot distinguish two kinds at one coordinate); and
+  no name overflows its `u16` length prefix — each otherwise a typed error.
   **v1** declares neither value shape nor base op (both `None` — unresolved, never
   invented), and a v1 `always` point carries **no** expectation (this wire emits
   only violations, so a passing `always` produces no event and must not read as an
@@ -83,9 +85,13 @@ Differential epic (`hm-bbx`).
   codec). `encode_v2_declaration` is fallible and validates each point with the
   same `validate_v2_point` the decoder uses, so an un-fireable id or a shape the
   binary wire cannot carry fails at construction, not silently downstream.
-- **A recognized JSON record carries exactly one wrapper.** A frame with more than
-  one Antithesis wrapper is ambiguous and preserved raw, never resolved to one
-  branch with the rest dropped.
+- **A recognized JSON record carries exactly one wrapper, and structural
+  ambiguity is preserved raw.** The frame is parsed preserving duplicate keys (via
+  a `FrameMembers` visitor, since `serde_json::Value` would silently keep the last
+  of a repeated key): a repeated top-level key, zero or more-than-one recognized
+  wrapper, or a wrapper whose value is not a JSON object all become
+  `Payload::Unknown` with raw bytes intact — malformed input can neither drop a
+  member silently nor fabricate a `setup_complete` occurrence from field defaults.
 - **Deserialization re-verifies invariants.** `SdkSchema` deserializes through a
   `try_from` guard that rejects unsorted or duplicate entries, so `entry`'s binary
   search can never be silently defeated by a corrupted persisted schema.

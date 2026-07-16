@@ -23,7 +23,11 @@
 //! used as both occurrence and state, or numeric guidance flipping its extremum).
 //! Judgment stays out: this produces evidence, it does not decide pass/fail.
 
+use std::collections::BTreeSet;
+use std::fmt;
+
 use explorer::Moment;
+use serde::de::{Deserializer, MapAccess, Visitor};
 use serde_json::Value;
 
 use crate::error::SdkError;
@@ -36,6 +40,38 @@ use crate::schema::{
 
 /// The identity given to an `antithesis_setup` lifecycle record.
 const SETUP_IDENTITY: &str = "antithesis.setup";
+
+/// The top-level members of one JSON frame, **preserving duplicate keys**.
+/// `serde_json::Value` collapses a repeated key to the last member (silently
+/// dropping the earlier one), which would let a `{"antithesis_assert":…,
+/// "antithesis_assert":…}` frame decode as one confident assertion. Collecting
+/// every member instead lets the decoder spot the ambiguity and preserve the
+/// frame raw.
+struct FrameMembers(Vec<(String, Value)>);
+
+impl<'de> serde::Deserialize<'de> for FrameMembers {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct MembersVisitor;
+        impl<'de> Visitor<'de> for MembersVisitor {
+            type Value = Vec<(String, Value)>;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a JSON object")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                // `next_entry` yields each member in order, including duplicate keys
+                // (dedup happens only when building a `Map`, which we avoid here).
+                let mut out = Vec::new();
+                while let Some((k, v)) = map.next_entry::<String, Value>()? {
+                    out.push((k, v));
+                }
+                Ok(out)
+            }
+        }
+        deserializer
+            .deserialize_map(MembersVisitor)
+            .map(FrameMembers)
+    }
+}
 
 /// Decode a batch of Antithesis JSON records (each `(Moment, object bytes)`) into
 /// normalized schema + ordered events. `ordinal` is the record's persisted vector
@@ -79,36 +115,50 @@ fn decode_record(
         raw,
     };
 
-    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+    // Parse preserving duplicate keys; a non-object frame (array/scalar/invalid)
+    // fails here and is preserved raw.
+    let Ok(FrameMembers(members)) = serde_json::from_slice::<FrameMembers>(bytes) else {
         return Ok(unknown(raw));
     };
-    let Some(object) = value.as_object() else {
+    // A repeated top-level key means a member was silently overwritten on the
+    // normalized path — the frame is ambiguous, so preserve it raw.
+    let mut seen = BTreeSet::new();
+    if members.iter().any(|(k, _)| !seen.insert(k.as_str())) {
         return Ok(unknown(raw));
-    };
+    }
+    let member = |name: &str| members.iter().find(|(k, _)| k == name).map(|(_, v)| v);
 
     // A recognized record carries *exactly one* Antithesis wrapper key. Zero
     // recognized wrappers is unknown data; more than one is an ambiguous record
     // whose intent is undefined — preserve it raw rather than silently pick a
     // branch and drop the rest.
-    let assert = object.get("antithesis_assert");
-    let guidance = object.get("antithesis_guidance");
-    let setup = object.get("antithesis_setup");
+    let assert = member("antithesis_assert");
+    let guidance = member("antithesis_guidance");
+    let setup = member("antithesis_setup");
     let recognized = assert.is_some() as u8 + guidance.is_some() as u8 + setup.is_some() as u8;
     if recognized != 1 {
         return Ok(unknown(raw));
     }
+    // The wrapper value must be a JSON object; a scalar/null wrapper (e.g.
+    // `{"antithesis_setup":7}`) is malformed and must not fabricate normalized
+    // evidence from field defaults.
     if let Some(assert) = assert {
+        if !assert.is_object() {
+            return Ok(unknown(raw));
+        }
         decode_assert(moment, ordinal, assert, raw, schema)
     } else if let Some(guidance) = guidance {
+        if !guidance.is_object() {
+            return Ok(unknown(raw));
+        }
         decode_guidance(moment, ordinal, guidance, raw, schema)
     } else {
         // `recognized == 1` and the other two are `None`, so this is the setup case.
-        Ok(decode_setup(
-            moment,
-            ordinal,
-            setup.expect("setup wrapper"),
-            raw,
-        ))
+        let setup = setup.expect("setup wrapper");
+        if !setup.is_object() {
+            return Ok(unknown(raw));
+        }
+        Ok(decode_setup(moment, ordinal, setup, raw))
     }
 }
 

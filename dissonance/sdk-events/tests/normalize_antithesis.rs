@@ -250,6 +250,74 @@ fn a_record_with_two_wrappers_is_ambiguous_and_preserved_raw() {
     );
 }
 
+#[test]
+fn a_frame_repeating_a_wrapper_key_is_ambiguous_and_preserved_raw() {
+    // `serde_json::Value` would keep only the last member; the decoder must instead
+    // see the duplicate and preserve the frame raw rather than confidently emit one
+    // assertion and drop the other.
+    let json = r#"{"antithesis_assert":{"assert_type":"always","condition":true,"message":"first"},
+                   "antithesis_assert":{"assert_type":"always","condition":false,"message":"second"}}"#;
+    let n = decode_antithesis(&[rec(1, json)]).expect("decodes");
+    assert_eq!(n.events[0].payload, Payload::Unknown);
+    assert_eq!(n.events[0].raw.bytes, json.as_bytes());
+    assert!(n.schema.is_empty());
+}
+
+#[test]
+fn a_frame_with_any_duplicate_top_level_key_is_preserved_raw() {
+    // Even a non-wrapper duplicate means a member was silently dropped on the
+    // normalized path — the frame can't be faithfully normalized.
+    let json = r#"{"antithesis_assert":{"assert_type":"always","condition":true,"message":"m"},"x":1,"x":2}"#;
+    let n = decode_antithesis(&[rec(1, json)]).expect("decodes");
+    assert_eq!(n.events[0].payload, Payload::Unknown);
+    assert!(n.schema.is_empty());
+}
+
+#[test]
+fn a_malformed_setup_wrapper_does_not_fabricate_lifecycle_evidence() {
+    // A scalar/null setup wrapper must not normalize to a setup_complete occurrence
+    // via field defaults.
+    for json in [
+        r#"{"antithesis_setup":null}"#,
+        r#"{"antithesis_setup":7}"#,
+        r#"{"antithesis_setup":"complete"}"#,
+        r#"{"antithesis_setup":[]}"#,
+    ] {
+        let n = decode_antithesis(&[rec(1, json)]).expect("decodes");
+        assert_eq!(
+            n.events[0].payload,
+            Payload::Unknown,
+            "`{json}` must stay raw, not become a lifecycle occurrence"
+        );
+    }
+    // A well-formed setup wrapper still decodes.
+    let n = decode_antithesis(&[rec(1, r#"{"antithesis_setup":{"status":"complete"}}"#)])
+        .expect("decodes");
+    assert_eq!(
+        n.events[0].payload,
+        Payload::Lifecycle {
+            name: "setup_complete".into()
+        }
+    );
+}
+
+#[test]
+fn a_malformed_assert_or_guidance_wrapper_is_preserved_raw() {
+    for json in [
+        r#"{"antithesis_assert":7}"#,
+        r#"{"antithesis_assert":null}"#,
+        r#"{"antithesis_guidance":"numeric"}"#,
+    ] {
+        let n = decode_antithesis(&[rec(1, json)]).expect("decodes");
+        assert_eq!(
+            n.events[0].payload,
+            Payload::Unknown,
+            "`{json}` must stay raw"
+        );
+        assert!(n.schema.is_empty());
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 

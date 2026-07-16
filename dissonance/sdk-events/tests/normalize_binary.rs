@@ -389,6 +389,46 @@ fn v2_duplicate_coordinate_is_rejected_on_encode_and_decode() {
 }
 
 #[test]
+fn v2_lifecycle_declaration_is_restricted_to_the_decodable_local() {
+    // Only the setup_complete point (local 0) has a decodable lifecycle firing; a
+    // lifecycle declaration at any other local would decode to Unknown, so it is
+    // refused (declaration/emission agreement).
+    let occ = |local: u32| DeclaredPoint {
+        namespace: NS_LIFECYCLE,
+        local,
+        name: "life".into(),
+        classification: Classification::Occurrence,
+        value_shape: None,
+        base_op: None,
+        expectation: None,
+    };
+    assert!(
+        encode_v2_declaration(&[occ(0)]).is_ok(),
+        "local 0 is reportable"
+    );
+    assert!(matches!(
+        encode_v2_declaration(&[occ(1)]),
+        Err(SdkError::UnsupportedDeclaration { .. })
+    ));
+}
+
+#[test]
+fn v1_duplicate_coordinate_is_rejected() {
+    // Two assertion kinds at one local id: the guest SDK rejects such a catalog,
+    // and so does the host decoder — collapsing them would normalize a verb from
+    // one kind under an expectation from another.
+    const KIND_SOMETIMES: u8 = 1;
+    const KIND_UNREACHABLE: u8 = 3;
+    let raw = vec![at(
+        0,
+        0,
+        v1_catalog(&[(KIND_SOMETIMES, 5, "a"), (KIND_UNREACHABLE, 5, "b")]),
+    )];
+    let err = decode_binary(&raw).expect_err("duplicate v1 coordinate must fail");
+    assert!(matches!(err, SdkError::DuplicateCoordinate { .. }));
+}
+
+#[test]
 fn v2_oversized_name_is_rejected_not_truncated() {
     let mut p = v2_state(1, "x", UpdateOp::Set);
     p.name = "n".repeat(u16::MAX as usize + 1);
@@ -605,7 +645,10 @@ proptest! {
         };
         let p = DeclaredPoint {
             namespace,
-            local: 1,
+            // Local 0 is decodable in every reportable namespace (including the
+            // sole lifecycle point), so it isolates the namespace/classification
+            // check from the lifecycle local-id restriction.
+            local: 0,
             name: "p".into(),
             classification,
             value_shape,
