@@ -5,8 +5,8 @@
 //! definitions (independently of the referee).
 
 use differential_lineage::data::{
-    CellKey, CfgId, Dim, Fixture, ObsOut, Payload, PointId, Pos, PrefixEv, ReduceOp, Revision,
-    RolloutId, SealId, Transition,
+    CellKey, Dim, Fixture, ObsOut, Payload, PointId, Pos, PrefixEv, ReduceOp, Revision, RolloutId,
+    SealId, Transition,
 };
 use differential_lineage::dataflow::{BuildOpts, Captured, run};
 use differential_lineage::fixtures;
@@ -640,7 +640,3 @@ fn committed_fixtures_regenerate_identically() {
         assert_eq!(committed, rebuilt, "fixture {} drifted", fx.name);
     }
 }
-
-// Silence the unused-`CfgId` import lint if the alias is only used in types.
-#[allow(dead_code)]
-fn _type_uses(_: CfgId) {}
