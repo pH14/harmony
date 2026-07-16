@@ -414,14 +414,19 @@ Reproducer (`docs/GLOSSARY.md`). Shape (`docs/AMD-EPYC.md` §4):
   bitmap) ratifies it.
 - **CPUID.** The AuthenticAMD vendor string (leaf 0) and the AMD extended-leaf space
   `0x8000_0000`–`0x8000_0008` are materialized (values unpinned/`0` where per-silicon,
-  pending AE-4); the shared-ISA standard leaves `0x1`–`0x1f` are the
-  `transfer cpuid-standard unchanged-pending-AE4` carry; everything unlisted default-denies
-  (`cpuid-default zeroed`), exactly as `det-cfl-v1`.
-- **MSR.** The AMD `0xc000_00xx`/`0xc001_00xx` space this (Intel) column default-denies as
-  out-of-scope is flipped to explicit AuthenticAMD-baseline dispositions (EFER + the
-  syscall/segment MSRs `allow-stateful`; HWCR, `VM_HSAVE_PA`, the `LS_CFG` SpecLockMap knob
-  `0xc0011020`, DE_CFG `deny-gp`). The shared architectural MSR surface is the
-  `transfer msr-shared unchanged-pending-AE4` carry.
+  pending AE-4); the standard leaves within the advertised max-basic-leaf — `0x1` through
+  `0x10` (leaf-0 EAX = `0x10`) — are the `transfer cpuid-standard unchanged-pending-AE4`
+  carry, while leaves above `0x10` are out of range and redirect to zeroed; everything
+  unlisted default-denies (`cpuid-default zeroed`), exactly as `det-cfl-v1`.
+- **MSR — ownership partitioned by index, no overlap.** The AMD file materializes the
+  **entire AMD-native MSR space (indices `≥ 0xc000_0000`)** this (Intel) column
+  default-denies as out-of-scope, flipped to explicit AuthenticAMD-baseline dispositions
+  (EFER + the syscall/segment MSRs — AMD-native though architecturally shared, so owned
+  here — `allow-stateful`; HWCR, `VM_HSAVE_PA`, the `LS_CFG` SpecLockMap knob `0xc0011020`,
+  DE_CFG `deny-gp`). The `transfer msr-shared unchanged-pending-AE4` marker covers **only
+  the shared Intel-standard MSR space, indices `< 0xc000_0000`** (TSC/APIC/PAT/x2apic/…).
+  The two partition the index space, so no MSR is both materialized and marker-covered
+  (machine-checked).
 - **PerfMonV2-vs-legacy is a per-generation fact.** Both PMU models are carried as
   separate, `applies-when`-marked sections — the legacy `PERF_CTL`/`PERF_CTR` core pairs
   (`applies-when = legacy-perfmon`, the `0xc001_00xx`/`0xc001_020x` MSRs) and the PerfMonV2

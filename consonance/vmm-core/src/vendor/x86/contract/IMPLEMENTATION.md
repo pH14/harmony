@@ -112,6 +112,22 @@ enumeration bounds, the MSR index set + dispositions, and the ISA-level `mxcsr-m
 materialized row is `verify-on-silicon`. This keeps the draft honest — a placeholder is a
 placeholder, never a guess — and matches the "`det-zenN-v1` generation guess" non-goal.
 
+Two internal-consistency invariants make the draft's own claims agree with its data
+(round-3 review), both machine-checked:
+
+- **CPUID enumeration bound = transfer range.** Leaf-0 EAX (`max-basic-leaf`) is `0x10`, so
+  the `cpuid-standard` transfer covers standard leaves `0x1..=0x10`; leaves above `0x10` are
+  out of range and redirect to zeroed (`cpuid-default`), never "transferred". The prose and
+  the frozen `0x10` bound name one truth (test `amd_leaf0_max_basic_leaf_is_the_transfer_bound`).
+- **MSR ownership partitioned by index, no overlap.** The file materializes the **entire
+  AMD-native MSR space, `≥ 0xc000_0000`** (including the syscall/segment MSRs
+  `0xc000_0080`–`0xc000_0103` — AMD-native though architecturally shared, so owned by the
+  materialized rows). The `msr-shared` marker covers **only** the shared Intel-standard
+  space `< 0xc000_0000` (TSC/APIC/PAT/x2apic/…). No index is both materialized and
+  marker-covered (test `amd_msr_shared_marker_owns_only_below_0xc0000000`) — no ambiguous
+  ownership, no drift risk. These are documentation/test changes; the canonical form and
+  the AMD `contract_hash` (`b54a6c62…`) are unchanged.
+
 ## Known AE-4 ratification dependency
 
 The AMD column is a draft: no disposition below it is trusted. AE-4 delivers the on-silicon

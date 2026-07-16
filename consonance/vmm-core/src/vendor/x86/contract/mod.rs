@@ -885,6 +885,53 @@ host-absent = [\"RDPID\", \"SHA\"]\n";
         );
     }
 
+    /// Ownership is partitioned by index with **no overlap** between the materialized
+    /// rows and the `msr-shared` transfer marker (round-3 finding 2): the marker owns
+    /// only the shared Intel-standard space `< 0xc000_0000`, and every materialized
+    /// AMD MSR is `≥ 0xc000_0000` — so the syscall/segment MSRs 0xc000_0080–0xc000_0103,
+    /// though architecturally shared, are unambiguously owned by the materialized rows,
+    /// not the marker.
+    #[test]
+    fn amd_msr_shared_marker_owns_only_below_0xc0000000() {
+        let amd = contract_amd_draft();
+        // The marker is present and defers the shared surface.
+        assert_eq!(
+            amd.transfers.get("msr-shared").map(String::as_str),
+            Some("unchanged-pending-AE4"),
+            "msr-shared transfer marker present"
+        );
+        // No materialized index falls in the marker's < 0xc000_0000 scope.
+        const AMD_NATIVE_FLOOR: u32 = 0xc000_0000;
+        for row in &amd.msr {
+            for idx in row.index.indices() {
+                assert!(
+                    idx >= AMD_NATIVE_FLOOR,
+                    "materialized AMD MSR {idx:#010x} is below 0xc000_0000 — it would \
+                     collide with the msr-shared marker's scope"
+                );
+            }
+        }
+    }
+
+    /// The advertised max-basic-leaf bound is internally consistent (round-3
+    /// finding 1): CPUID(0).EAX equals `0x10`, so the `cpuid-standard` transfer covers
+    /// standard leaves `0x1..=0x10` and leaves above `0x10` are out of range — the
+    /// enumeration bound and the transfer range name the same truth (`0x10`).
+    #[test]
+    fn amd_leaf0_max_basic_leaf_is_the_transfer_bound() {
+        let amd = contract_amd_draft();
+        let leaf0 = amd
+            .cpuid
+            .iter()
+            .find(|r| r.leaf.lo == 0 && r.leaf.hi == 0)
+            .expect("AMD leaf 0 present");
+        // EAX (the max-basic-leaf) is a frozen constant equal to 0x10.
+        assert!(
+            matches!(leaf0.eax, super::parse::RegField::Const(0x10)),
+            "AMD leaf-0 EAX (max-basic-leaf) is the frozen bound 0x10"
+        );
+    }
+
     /// `verify-on-silicon` coverage (Deliverable 8): every AMD **enforcement** row
     /// (every materialized CPUID/MSR row — the transfer sections are markers, not
     /// rows) carries the qualifier. A silently-trusted AMD row fails here.

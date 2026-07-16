@@ -58,12 +58,16 @@ max-basic-leaf = "0x00000010"
 max-extended-leaf = "0x80000008"
 
 # --- Materialized AMD-distinct leaves. The vendor-identity leaf 0 and the AMD
-# extended-leaf space 0x8000_0000–0x8000_0008 (docs/AMD-EPYC.md §4). Standard leaves
-# 0x1–0x1f are the shared-ISA transfer (see [transfers] cpuid-standard); everything
-# unlisted default-denies (cpuid-default zeroed), exactly as det-cfl-v1 does. Draft
-# values below are UNPINNED (0) where they are per-generation/per-silicon facts
-# (family/model/stepping, feature masks, brand string, cache geometry, MAXPHYADDR);
-# only the vendor string and the enumeration bounds are frozen. AE-4 ratifies the rest.
+# extended-leaf space 0x8000_0000–0x8000_0008 (docs/AMD-EPYC.md §4). The standard
+# leaves the guest can enumerate — 0x1 through the advertised max-basic-leaf (leaf-0
+# EAX = 0x10, matching `max-basic-leaf` above) — are the shared-ISA transfer (see
+# [transfers] cpuid-standard); leaves ABOVE 0x10 are out of range and redirect to
+# zeroed (cpuid-default), exactly as det-cfl-v1's max-basic-leaf bounds its own range.
+# Everything unlisted default-denies. Draft values below are UNPINNED (0) where they
+# are per-generation/per-silicon facts (family/model/stepping, feature masks, brand
+# string, cache geometry, MAXPHYADDR); only the vendor string and the enumeration
+# bounds (max-basic-leaf 0x10, max-extended-leaf 0x8000_0008) are frozen. AE-4
+# ratifies the rest — including whether the pinned Zen part raises max-basic-leaf.
 
 [[cpuid.entry]]
 # Leaf 0: max-basic-leaf + AuthenticAMD vendor string (EBX‖EDX‖ECX).
@@ -169,11 +173,20 @@ edx = "0x00000000"
 verified = "on-silicon-pending-AE4"
 
 [msr]
-# The AMD MSR set (docs/AMD-EPYC.md §4). Materialized: the AMD-distinct 0xc000_00xx /
-# 0xc001_00xx space that the Intel column default-denies as out-of-scope, flipped to
-# explicit AuthenticAMD-baseline dispositions. The shared architectural MSR surface
-# (TSC/APIC/PAT/x2apic/… — same ISA) is the [transfers] msr-shared marker, not
-# re-materialized here. Every row `verified = "on-silicon-pending-AE4"`.
+# The AMD MSR set (docs/AMD-EPYC.md §4). OWNERSHIP IS PARTITIONED BY INDEX, with no
+# overlap between the materialized rows and the transfer marker:
+#   * This file MATERIALIZES the ENTIRE AMD-native MSR space, indices >= 0xc000_0000
+#     (0xc000_00xx / 0xc001_00xx) — the space the Intel column default-denies as
+#     out-of-scope — flipped to explicit AuthenticAMD-baseline dispositions. That
+#     space INCLUDES the syscall/segment MSRs 0xc000_0080–0xc000_0103: though
+#     architecturally shared, AMD invented them and they are AMD-native, so they are
+#     owned here, NOT by the marker below.
+#   * The [transfers] msr-shared marker covers ONLY the shared Intel-standard MSR
+#     space, indices < 0xc000_0000 (TSC 0x10 / APICBASE 0x1b / PAT 0x277 / the x2apic
+#     0x800–0x8ff block / …) — same ISA, carried by marker, never re-materialized here.
+# So no index is both materialized and marker-covered (machine-checked by the
+# `amd_msr_shared_marker_owns_only_below_0xc0000000` test). Every materialized row
+# carries `verified = "on-silicon-pending-AE4"`.
 
 # --- Architectural syscall/segment MSRs (AMD-native; guest-stateful). ------------
 [[msr.entry]]
@@ -326,8 +339,12 @@ applies-when = "zen4+"
 # Section-level `transfers-unchanged-pending-AE4` markers for the shared-ISA surface
 # (never fork the one reproducer). The canonicalizer records each marker in place of
 # the section's rows; AE-4 decides whether any of these rows actually diverge on AMD.
-#   * cpuid-standard: standard leaves 0x1–0x1f (feature/topology/xsave) — shared ISA.
-#   * msr-shared: the shared architectural MSR space (TSC/APIC/PAT/x2apic/…).
+#   * cpuid-standard: the standard leaves within the advertised max-basic-leaf, 0x1
+#     through 0x10 (feature/topology/xsave) — shared ISA (leaves above 0x10 are out of
+#     range, redirected to zeroed by cpuid-default, not transferred).
+#   * msr-shared: the shared Intel-standard MSR space, indices < 0xc000_0000
+#     (TSC/APIC/PAT/x2apic/…). The AMD-native space >= 0xc000_0000 is materialized
+#     above, NOT covered by this marker — the two partition the index space, no overlap.
 #   * insn / timer / cmos / mmio: the §4/§5 instruction, timer, CMOS, and xAPIC-MMIO
 #     surfaces — shared ISA, carried by marker not by 3000 hand-copied near-duplicate rows.
 # host-assert is per-silicon (the Zen host baseline is discovered at AE-0), so it is
