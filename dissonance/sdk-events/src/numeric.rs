@@ -255,22 +255,26 @@ impl BoundedNumeric {
             return Err(not_finite());
         }
 
-        // Assemble the raw significand digits (integer then fraction) and the scale
-        // of the least-significant digit. `value = digits × 10^(exp - frac_len)`.
+        // Assemble the raw significand digits (integer then fraction). The scale is
+        // computed exactly in `canonicalize` from `exp` and the fraction length,
+        // with checked arithmetic — an `exp` near `i64::MIN`/`i64::MAX` (a
+        // syntactically valid but astronomically out-of-range token) must not
+        // overflow. `value = digits × 10^(exp - frac_len)`.
         let mut raw_digits = String::with_capacity(int_part.len() + frac_part.len());
         raw_digits.push_str(int_part);
         raw_digits.push_str(frac_part);
-        let least_scale = exp - frac_part.len() as i64;
 
-        BoundedNumeric::canonicalize(negative, &raw_digits, least_scale, token, limits)
+        BoundedNumeric::canonicalize(negative, &raw_digits, exp, frac_part.len(), token, limits)
     }
 
-    /// Canonicalize raw significand `digits` (int++frac, unsigned) at `least_scale`
-    /// into the no-leading/trailing-zero form, then enforce `limits`.
+    /// Canonicalize raw significand `digits` (int++frac, unsigned) written at
+    /// exponent `exp` with `frac_len` fractional digits into the
+    /// no-leading/trailing-zero form, then enforce `limits`.
     fn canonicalize(
         negative: bool,
         raw_digits: &str,
-        least_scale: i64,
+        exp: i64,
+        frac_len: usize,
         token: &str,
         limits: &NumericLimits,
     ) -> Result<BoundedNumeric, NumericError> {
@@ -285,7 +289,6 @@ impl BoundedNumeric {
         // Strip trailing zeros, each one raising the scale by one.
         let trailing_zeros = trimmed_leading.len() - trimmed_leading.trim_end_matches('0').len();
         let significand = &trimmed_leading[..trimmed_leading.len() - trailing_zeros];
-        let scale = least_scale + trailing_zeros as i64;
 
         let digit_count = significand.len() as u32;
         if digit_count > limits.max_significant_digits {
@@ -296,8 +299,36 @@ impl BoundedNumeric {
             });
         }
 
-        // Adjusted exponent = power of ten of the most-significant digit.
-        let adjusted = scale + significand.len() as i64 - 1;
+        // An overflow here means the exponent is astronomically out of range — map
+        // it to `ExponentOutOfRange` (never a panic on untrusted input). `frac_len`,
+        // `trailing_zeros`, and the significand length are bounded by the token, so
+        // the `as i64` casts are exact; only `exp` can be near the `i64` extremes.
+        let out_of_range = || NumericError::ExponentOutOfRange {
+            token: token.to_string(),
+            // The overflow is reported as the extreme in the value's direction: a
+            // huge positive exponent → `i32::MAX`, a huge negative one → `i32::MIN`.
+            // (`is_negative` rather than `exp < 0`: this closure only runs on the
+            // overflow paths, where `exp` is never `0`, so the `<`/`<=` distinction
+            // would be an unkillable equivalent — `is_negative` avoids it.)
+            exponent: if exp.is_negative() {
+                i32::MIN
+            } else {
+                i32::MAX
+            },
+            min: limits.min_adjusted_exponent,
+            max: limits.max_adjusted_exponent,
+        };
+        // scale = exp − frac_len + trailing_zeros (power of ten of the LSB digit).
+        let scale = exp
+            .checked_sub(frac_len as i64)
+            .and_then(|s| s.checked_add(trailing_zeros as i64))
+            .ok_or_else(out_of_range)?;
+        // adjusted = scale + significand_len − 1 (power of ten of the MSB digit).
+        let adjusted = scale
+            .checked_add(significand.len() as i64)
+            .and_then(|a| a.checked_sub(1))
+            .ok_or_else(out_of_range)?;
+
         if adjusted < limits.min_adjusted_exponent as i64
             || adjusted > limits.max_adjusted_exponent as i64
         {
@@ -309,6 +340,8 @@ impl BoundedNumeric {
             });
         }
 
+        // `adjusted` is in `[-64, 64]` and the significand ≤ 38 digits, so
+        // `scale = adjusted − (len − 1)` fits `i32` without truncation.
         Ok(BoundedNumeric {
             negative,
             digits: significand.to_string(),

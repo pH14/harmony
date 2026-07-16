@@ -150,6 +150,43 @@ fn digit_and_exponent_limits_are_exact_at_the_boundary() {
     assert_decomp("1e-64", false, "1", -64, -64);
 }
 
+#[test]
+fn extreme_exponents_are_out_of_range_not_a_panic() {
+    let limits = NumericLimits::DEFAULT;
+    // Each is a *syntactically valid* number whose exponent sits at or beyond the
+    // `i64` extremes; the scale arithmetic must not overflow/panic on this
+    // untrusted input, only report the value out of range.
+    for token in [
+        "1e9223372036854775807",     // exp = i64::MAX → scale + len overflows
+        "1e-9223372036854775807",    // exp = i64::MIN+1 → far below the window
+        "1.55e-9223372036854775807", // exp near i64::MIN with a fraction → scale underflow
+        "1e9223372036854775808",     // exp = i64::MAX + 1 → i64 parse overflow
+        "1e-9223372036854775809",    // beyond i64::MIN → i64 parse overflow
+        "1e99999999999999999999999", // vastly beyond either extreme
+    ] {
+        assert!(
+            matches!(
+                NumericToken::new(token).to_bounded(&limits),
+                Err(NumericError::ExponentOutOfRange { .. })
+            ),
+            "`{token}` must be reported out-of-range, never panic"
+        );
+    }
+    // Values just inside the window still reduce cleanly.
+    assert!(NumericToken::new("1e64").to_bounded(&limits).is_ok());
+    assert!(NumericToken::new("1e-64").to_bounded(&limits).is_ok());
+
+    // On the overflow path the reported diagnostic exponent points in the value's
+    // direction: a huge positive exponent saturates to i32::MAX, a huge negative
+    // one to i32::MIN.
+    let exp_of = |token: &str| match NumericToken::new(token).to_bounded(&limits) {
+        Err(NumericError::ExponentOutOfRange { exponent, .. }) => exponent,
+        other => panic!("expected ExponentOutOfRange for `{token}`, got {other:?}"),
+    };
+    assert_eq!(exp_of("1e9223372036854775807"), i32::MAX);
+    assert_eq!(exp_of("1.55e-9223372036854775807"), i32::MIN);
+}
+
 /// A generator of finite decimal tokens across sign, fraction, and exponent forms,
 /// tuned to stay within the default limits.
 fn token_strategy() -> impl Strategy<Value = String> {
