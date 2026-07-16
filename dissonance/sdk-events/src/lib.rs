@@ -1,61 +1,76 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! # sdk-events — the link-tier plugin (task 73)
+//! # sdk-events — the SDK ingress boundary
 //!
-//! `sdk-events` is the **host-side reader of the guest SDK**: it turns the events a
-//! cooperating in-guest workload emits (via `harmony-sdk`, over the hypercall
-//! Event service) into the search-plane's replay-plane vocabulary. It is Tier 2
-//! of `docs/DISSONANCE.md`'s cooperation gradient — a channel for *code you own*,
-//! sitting beside the scrape tier (task 65's `runtrace`), not displacing it.
+//! `sdk-events` is the host-side **data boundary** between a cooperating workload's
+//! SDK output and Dissonance's observation plane. It **decodes and normalizes**;
+//! it does **not** judge, reduce temporal state, assign cells, or run archive
+//! policy — those live above this boundary (Differential / `CampaignConfig` / the
+//! Explorer oracles). See `docs/DISSONANCE-STRATEGY.md` and `docs/LAYERS.md`
+//! §R-L3.
 //!
-//! Four pieces, all pure replay-plane logic:
+//! ## The two ingress formats, one normalized contract
 //!
-//! - **Event decode** ([`decode_events`]): raw `(Moment, event_id, bytes)` →
-//!   typed `(Moment, GuestEvent)` for [`RunTrace::events`](explorer::RunTrace).
-//!   Total and panic-free on arbitrary bytes.
-//! - **The catalog + never-fired report** ([`Catalog`]/[`CatalogReport`]): the
-//!   declared-at-init point set folded against the fired set, in a format
-//!   unified with task 66's config-declared catalog (one report across link and
-//!   scrape).
-//! - **The link [`Sensor`](explorer::Sensor)** ([`LinkSensor`]): a `sometimes`
-//!   hit or a state-register change → a `(Moment, Feature)` in the feature
-//!   stream.
-//! - **The [`AlwaysViolation`] [`Oracle`](explorer::Oracle)**: a
-//!   [`StopReason::Assertion`](explorer::StopReason) terminal → a
-//!   [`Bug`](explorer::Bug) with a genesis-complete `env` and a stable
-//!   fingerprint.
+//! Both LAYERS R-L3 ingress formats decode into the same persisted model —
+//! [`SdkSchema`] (declarations) plus ordered [`SdkEvent`]s ([`Normalized`]):
 //!
-//! ## Its place in the plane
+//! - [`decode_antithesis`] — the app-facing **Antithesis SDK JSON** over
+//!   `/dev/harmony`. Assertions become occurrence/property evidence; numeric
+//!   guidance normalizes to its declared monotone extremum only (never arbitrary
+//!   `set` state), preserving the original number token report-only.
+//! - [`decode_binary`] — the internal **binary Event wire**. v1 identities and
+//!   fired operations are preserved without guessing a never-fired reducer; the
+//!   new **wire-v2** declaration ([`encode_v2_declaration`]/[`DeclaredPoint`])
+//!   carries occurrence/state classification, value shape, and base update
+//!   operation for the cooperative production path.
 //!
-//! `sdk-events` depends on `explorer` and consumes the task-64 spine vocabulary
-//! ([`GuestEvent`](explorer::GuestEvent), [`Feature`](explorer::Feature),
-//! [`Sensor`](explorer::Sensor), [`Oracle`](explorer::Oracle),
-//! [`RunTrace`](explorer::RunTrace), [`Bug`](explorer::Bug)); it is a **pure
-//! plugin** — nothing here reads back into the live plane, and no search policy
-//! learns it exists (search-loop blindness). It sits beside `runtrace` (task 65)
-//! as the second replay-plane channel.
-//!
-//! ## The wire convention
-//!
-//! The SDK event byte format is owned by the guest SDK crate
-//! (`guest/sdk/src/wire.rs`, the canonical source). `sdk-events` mirrors those constants
-//! privately (`wire.rs`, conventions rule 2 — the guest/host protocol pattern)
-//! and the decode goldens in `tests/decode.rs` pin byte-for-byte agreement.
+//! Both preserve the original declaration and raw unknown bytes recoverably, carry
+//! an explicit [`OrderingScope`], and surface [typed errors](SdkError) for
+//! structural contradictions (mixed operations/shapes, malformed declaration
+//! lengths) — never a panic on untrusted input.
 //!
 //! ## Determinism discipline
 //!
-//! Canonical encodings only (`BTreeMap`/`BTreeSet` walked sorted, no floats, no
-//! wall-clock); the `Bug` fingerprint is a `sha2` digest of the stop reason;
-//! decode is a pure function of its bytes. Library code never panics on untrusted
-//! input — a malformed event stream decodes to `unknown` events and an empty/
-//! partial catalog, never a crash.
+//! Canonical encodings only: schema entries are sorted and unique, no `HashMap`
+//! iteration reaches an output, and **no `f64` ever touches a value** — numeric
+//! guidance is preserved as its original token and normalized into a bounded exact
+//! decimal ([`NumericToken`]/[`BoundedNumeric`]) with a deterministic total order
+//! only on demand. Normalized output is byte-identical across macOS and Linux.
+//!
+//! ## Legacy compatibility surface (deleted during the Differential integration)
+//!
+//! The pre-normalization link-tier surface — [`decode_events`]/[`Catalog`], the
+//! [`LinkSensor`], and the [`AlwaysViolation`] oracle — remains for the
+//! `campaign-runner` game path. Per `docs/DISSONANCE-STRATEGY.md` these are
+//! compatibility machinery to **delete during the Differential integration**
+//! (`hm-bbx.4`), not to rename or extend here; the normalized boundary above adds
+//! no judgment of its own.
 
+mod antithesis;
+mod binary;
 mod catalog;
 mod decode;
+mod error;
+mod event;
+mod numeric;
 mod oracle;
 mod read;
+mod schema;
 mod sensor;
 mod wire;
 
+// The normalized SDK ingress boundary (hm-bbx.1).
+pub use antithesis::decode_antithesis;
+pub use binary::{DeclaredPoint, decode_binary, encode_v2_declaration};
+pub use error::SdkError;
+pub use event::{AssertType, Normalized, Payload, SdkEvent, SiteId};
+pub use numeric::{BoundedNumeric, NumericError, NumericLimits, NumericToken};
+pub use schema::{
+    Classification, Expectation, ObservationId, OrderingScope, Raw, SchemaEntry, SdkSchema,
+    SourceFormat, UpdateOp, ValueShape,
+};
+pub use wire::{NS_ASSERT, NS_BUGGIFY, NS_CONTROL, NS_LIFECYCLE, NS_STATE};
+
+// The legacy link-tier compatibility surface (see the crate doc).
 pub use catalog::{Catalog, CatalogReport, PointKind};
 pub use decode::{
     KIND_ASSERT_HIT, KIND_ASSERT_VIOLATION, KIND_BUGGIFY, KIND_CATALOG, KIND_SETUP_COMPLETE,

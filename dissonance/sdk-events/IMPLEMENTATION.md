@@ -1,74 +1,109 @@
-# `link` (task 73) — implementation notes
+# `sdk-events` — implementation notes (`hm-bbx.1`)
 
-The host-side link-tier plugin: it turns the events a cooperating in-guest
-workload emits (via `harmony-sdk`) into the search-plane's replay-plane
-vocabulary. Depends only on `explorer` (task-64 rule-2 layout), beside
-`runtrace` (task 65).
+The host-side **SDK ingress boundary**: it decodes both LAYERS R-L3 ingress
+formats into one normalized, persisted observation contract — `SdkSchema` (the
+declarations) plus ordered `SdkEvent`s (`Normalized`). It **decodes and
+normalizes; it does not judge**, reduce temporal state, assign cells, or run
+archive policy. Implements `docs/DISSONANCE-STRATEGY.md` §"Cooperative
+observation" and `docs/LAYERS.md` §R-L3. First implementation child of the
+Differential epic (`hm-bbx`).
 
-## What it is
+## What it adds (the normalized boundary)
 
-- **`decode_events`** (`src/decode.rs`): raw `(Moment, event_id, bytes)` →
-  typed `(Moment, GuestEvent)` for `RunTrace::events`. **Total and panic-free**
-  on arbitrary bytes — an unrecognized namespace or a malformed payload for a
-  known one falls back to a `kind = "unknown"` event carrying the raw id + bytes,
-  never a panic (≥512-case proptest).
-- **`Catalog` / `CatalogReport`** (`src/catalog.rs`): the declared-at-init point
-  set (parsed from the SDK catalog blob) folded against the fired set into
-  `fired ⊎ never_fired`. Tier-blind, keyed by name. `Catalog::fold(decl, events)`
-  is the one call a campaign makes per run.
-- **`LinkSensor`** (`src/sensor.rs`): an `assert_sometimes`/`reachable` hit or a
-  state-register change → a `(Moment, Feature)` on the link channels (assert =
-  `ChannelId(16)`, state = `ChannelId(17)`).
-- **`AlwaysViolation`** (`src/oracle.rs`): a `StopReason::Assertion` terminal → a
-  `Bug` with the run's genesis-complete `env` and a stable fingerprint.
+- **`decode_antithesis`** (`src/antithesis.rs`) — the app-facing **Antithesis SDK
+  JSON** over `/dev/harmony`. `antithesis_assert` → occurrence/property evidence
+  with the aggregated property as the identity and the `location` preserved as a
+  separate `SiteId` (provenance/coverage, never a property verdict).
+  `antithesis_guidance` (numeric) → a **monotone extremum only** (`maximize` →
+  `Max`/`Min`, never `set`), the metric kept as its original token, report-only.
+  `antithesis_setup` → a lifecycle occurrence.
+- **`decode_binary`** (`src/binary.rs`) — the internal binary Event wire. **v1**
+  preserves point identity and each fired operation but declares no reducer: a
+  declared-but-never-fired state point is reportable coverage with `base_op =
+  None` (unresolved), and the decoder never promotes a v1 firing into a declared
+  reducer. **wire-v2** (`encode_v2_declaration` / `DeclaredPoint`, format in
+  `src/wire.rs`) carries occurrence/state classification, value shape, and base
+  update operation, so a v2 state point is reducible before it ever fires.
+- **`SdkSchema` / `SchemaEntry` / `SdkEvent`** (`src/schema.rs`, `src/event.rs`) —
+  the normalized model: source provenance, observation identity, value, and
+  classification are kept as separate roles (cell projection is *not* owned here).
+  Canonical serde (sorted, unique entries; no `HashMap` order; no float), so
+  output is byte-identical on macOS/Linux. `original_declaration` and per-event
+  `raw` keep the source bytes recoverable for audit/migration.
+- **`NumericToken` / `BoundedNumeric`** (`src/numeric.rs`) — a guidance number
+  enters as its exact original token and stays report-only until it validates into
+  a bounded exact sign/coefficient/base-10-scale decimal with a deterministic
+  total order. **No `f64` touches a value anywhere**; non-finite / over-precise /
+  out-of-range input fails validation and remains report-only evidence.
+- **`SdkError`** (`src/error.rs`) — typed, panic-free. Structural contradictions
+  are errors (mixed operations, incompatible shapes, classification conflict,
+  malformed declaration lengths, unknown declaration bytes); unrecognized data is
+  never an error — it is preserved raw.
 
 ## Key decisions
 
-- **Report format unified with task 66.** `CatalogReport` mirrors
-  `matcher::Catalog`/`CatalogReport` (two disjoint `BTreeSet<String>` keyed by
-  name). Because `link` may not depend on `matcher` (surface-list rule), this is
-  the **minimal shared type** — *noted for task 66*: the integrator can unify by
-  feeding `Catalog::declared()` names into `matcher::Catalog::declare(name, role)`.
-  The report round-trips through serde (gate 2).
-- **Fingerprint parity with the explorer.** `AlwaysViolation`'s `Bug`
-  fingerprint restates the explorer's `dissonance.explorer.bug.v1` `Assertion`
-  digest byte-for-byte, so a link-minted `Bug` dedups against an explorer-minted
-  one. The parity is *tested* (`tests/sensor_oracle.rs` cross-checks against
-  `explorer::TerminalOracle`), not just asserted. *Noted for the integrator:* a
-  shared `fingerprint` helper (making the explorer's private one `pub`) would be
-  cleaner; the scheme is restated here with a cross-reference.
-- **State feature packing.** A state feature id packs `(reg & 0xFFFF) << 48 |
-  (value & 0x0000_FFFF_FFFF_FFFF)`. The truncation only ever *collapses* two
-  features into one cell — it never invents novelty, so it is a coverage
-  trade-off, never a correctness bug, and both bounds are far beyond any
-  realistic register count or state magnitude.
-- **Sensor scope.** Only hits and state changes become features (per the spec).
-  Buggify results are decoded and catalogued but are **not** features by default;
-  a directed-search follow-on (task 70) is the never-fired report's consumer.
-- **Wire mirror.** `src/wire.rs` privately mirrors `guest/sdk/src/wire.rs` (the
-  canonical source). `tests/decode.rs` restates the byte format as goldens; if
-  the two ever drift, a golden breaks on one side.
+- **The declaration is strict; the event stream is total.** A malformed *length*
+  in a declaration (a record that overruns) is a typed `MalformedLength`; a
+  garbled or unrecognized *event* (unknown namespace, unparseable JSON frame,
+  unknown wrapper) becomes a `Payload::Unknown` carrying its raw bytes — nothing
+  panics and nothing is dropped. This is the clean split behind "malformed lengths
+  return typed errors" *and* "unknown bytes survive round-trip".
+- **Coherence, not inference.** A second sighting of an identity must agree with
+  the first (`merge_entry`): a differing op/shape/classification is a typed error.
+  An unresolved slot is *refined* (`None` → `Some`) by a later resolved sighting,
+  but a resolved value is never silently overwritten. v1 firings are checked for
+  self-consistency but never resolve the schema's `base_op`.
+- **`accumulate` is declaration-only.** Only a versioned source (wire v2) may
+  declare `Accumulate`; v1 cannot claim an operation it cannot encode.
+- **The declaration is schema, not an event.** Its stream slot is skipped from the
+  event vector, but ordinals stay equal to persisted vector position (the
+  rollout-local source ordinal — the contractual `OrderingScope`), so a boundary
+  event is neither duplicated nor renumbered.
+- **`arbitrary_precision` serde_json** is the mechanism that keeps every JSON
+  number as its exact token without ever constructing an `f64`.
 
-## Admission (gate 2)
+## Deviations considered and rejected
 
-A `sometimes` hit is admitted as a checkpoint candidate by the spine `Archive`
-on the toy: `tests/sensor_oracle.rs` runs `CoverageArchive::admit` with the
-`LinkSensor` and a `Fork` at the hit's `Moment`, and the link feature claims a
-fresh cell. Per-hit checkpoint candidacy in a real campaign requires the
-campaign's `CellFn` config to include the link channels — the sensor only
-*produces* the features; the archive decides novelty (task 64 semantics).
+- **Removing the legacy link-tier surface** (`decode_events`/`Catalog`,
+  `LinkSensor`, `AlwaysViolation`, `LINK_*_CHANNEL`, packed `FeatureId`).
+  `docs/DISSONANCE-STRATEGY.md` explicitly rules these "compatibility machinery to
+  **delete during the Differential integration**" (`hm-bbx.4`), not to rename or
+  remove here; `campaign-runner`'s game path still consumes `LinkSensor` /
+  `decode_events` / `KIND_STATE` / `LINK_STATE_CHANNEL`. Rejected: kept the
+  compat surface unchanged and made this task purely **additive**. "Keep assertion
+  judgment out of the decoder crate" is honored by the *new* boundary carrying no
+  Oracle/Sensor/policy — assertion events are available for Explorer judgment as
+  plain evidence.
+- **Computing the never-fired / never-satisfied absence claim.** Rejected: the
+  boundary only *preserves* property `Expectation`s (`must_hit`, `unreachable`);
+  the derived absence claim is a separate finalized view (reporting owns it), per
+  the strategy. Likewise `must_hit`/site data is persisted, not evaluated.
+- **Deriving a numeric guidance margin from an operand-pair `guidance_data`.**
+  Rejected for now: operand pairs stay report-only with operands preserved in
+  `raw`; only a scalar metric is normalized into a token. Exact decimal
+  subtraction can promote it later without changing the persisted form.
 
-## Gates
+## Known limitations / integrator notes
 
-- `cargo test -p link` — 22 tests across decode / catalog / sensor+oracle, plus
-  the ≥256/≥512-case proptests — green.
-- `cargo clippy -p link --all-features --all-targets -- -D warnings`,
-  `cargo fmt -p link -- --check` — clean.
+- **Open issue `hm-ynt`** (SDK event `Moment`s are V-time-anchor lower bounds, not
+  emission `Moment`s) is neither fixed nor worsened: `SdkEvent::moment` carries the
+  anchor through verbatim, documented as a lower bound.
+- **Cross-source sequencing** is out of scope: `OrderingScope` is
+  `RolloutLocalSourceOrdinal` (same-source order only). A shared machine-event
+  ordinal — needed for cross-source predicates — is a downstream concern.
+- **The wire-v2 encoder is host-side.** The canonical guest-side v2 encoder is a
+  future `guest/sdk` deliverable (out of this task's surface); `wire.rs` and the
+  `tests/*` goldens pin the host format so a later guest encoder must agree.
+- **Downstream (`hm-bbx.4`)** consumes `Normalized` to build Differential
+  relations, reducers, cells, and archive occupancy. Temporal reduction of `set` /
+  `max` / `min` / `accumulate`, historical derivations, and `CellFn` all live
+  there, not here.
 
-## For the integrator
+## Gates (all green, Mac-local)
 
-The end-to-end box path (SDK guest → doorbell → `Moment`-stamped EventSink →
-wire → `RunTrace.events` → these four pieces) is in the repo-root
-`docs/history/IMPLEMENTATION-task73.md`. The `RunTrace.events` population is in
-`dissonance/conductor` (out of task 73's surface) — named there as the wire hop
-the foreman sequences.
+- `cargo build/nextest/clippy -D warnings/fmt/deny -p sdk-events` — 70 tests
+  (goldens for Antithesis assertions, max/min guidance, binary v1, wire v2; typed
+  errors; totality; numeric total-order laws; serde + wire-v2 round-trips) plus
+  the ≥256/512-case proptests.
+- `tests/public-api.txt` refreshed deliberately (additive; the compat surface is
+  unchanged).
