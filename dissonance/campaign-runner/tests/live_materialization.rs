@@ -27,9 +27,31 @@
 //!     -- --ignored --nocapture --test-threads=1 2>&1 | tee /tmp/live_materialization.log
 //! ```
 //!
-//! Knobs: `HOPS` (default 3), `HOP_DELTA_VNS` (default 2 000 000),
+//! **Images are pinned by content hash** (hm-xdp / hm-2nt): the harness refuses
+//! to run on a bzImage/initramfs whose sha256 differs from the pinned
+//! task-78-proven pair. The box's canonical `initramfs-postgres.cpio.gz` was
+//! silently rebuilt 2026-07-09 (t81 checkout, md5 `9860a065…`) — a mutation
+//! under main's gates that no path caught, exactly the silent-drift hazard this
+//! pin closes: a mismatched image is now a loud, expected-vs-found refusal, not
+//! a quiet mis-probe. (The drift was not itself what broke the task-78
+//! `REQUIRE_DRAWS` precondition — the pinned PR-44 image fails it identically at
+//! the old default `HOPS=3`, hops all false / tail draws; that was a stale
+//! default, corrected to `HOPS=4` below. Every substantive assertion — depth,
+//! round-trip, reproducer — passes on the pinned image either way.) The ruling
+//! (bead `hm-xdp`; the new-image path is `hm-2nt`) pins the gate to the PR-44
+//! pair by content hash and FAILS CLOSED on any future drift, quoting the
+//! expected-vs-found sha256, rather than silently mis-probing. Stage the pinned
+//! build (e.g. from the box's `/root/harmony-pr44/guest/build`) and verify with
+//! `sha256sum guest/build/{bzImage,initramfs-postgres.cpio.gz}` against the
+//! `PINNED_*` constants below, or run a DIFFERENT build deliberately via
+//! `INITRAMFS=<name> INITRAMFS_SHA256=<hex>` (+ `BZIMAGE_SHA256=<hex>` /
+//! `KERNEL=<name>` for the kernel).
+//!
+//! Knobs: `HOPS` (default 4 — the PR-44-proven count; `HOPS=3` measures no hop
+//! draw on the pinned image, see the `cfg_hops` note), `HOP_DELTA_VNS` (default 2 000 000),
 //! `TAIL_DELTA_VNS` (default 1 000 000), `CHAIN_SEED`, `READY_MARKER`,
-//! `KERNEL`/`INITRAMFS` (filenames under `guest/build` or `guest/linux`).
+//! `KERNEL`/`INITRAMFS` (filenames under `guest/build` or `guest/linux`) with
+//! the `BZIMAGE_SHA256`/`INITRAMFS_SHA256` pins above.
 //!
 //! **Box-safety (CRITICAL).** Stock KVM = 1396736; ALWAYS leave the box on
 //! stock + verified after the run: `pkill -9 -f live_materialization` FIRST
@@ -79,6 +101,24 @@ const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_tim
 /// real bound; this stops a wedged guest from looping forever).
 const MAX_BOOT_STEPS: u64 = 50_000_000_000;
 
+/// **Pin-by-content-hash discipline (foreman ruling, beads `hm-xdp` / `hm-2nt`).**
+/// This gate references the guest images by CONTENT HASH, never a mutable
+/// canonical path: the 2026-07-09 rebuild of the box's canonical
+/// `initramfs-postgres.cpio.gz` silently changed what default-knob gate runs
+/// were testing — a mutation under main's gates that no path caught. These pins are
+/// the task-78-proven pair (the `/root/harmony-pr44` build, Jul 2; initramfs
+/// md5 `46b1461962b5b0f8aea98654f52a9ce5` for cross-reference) — the same pins
+/// `vmm-core`'s task-95 `live_dirty_remap` gate enforces, so the two gates
+/// cannot drift apart on which image "the Postgres guest" means. Running a
+/// *different* build deliberately requires supplying its hash:
+/// `INITRAMFS=<name> INITRAMFS_SHA256=<hex>` (and `BZIMAGE_SHA256=<hex>` /
+/// `KERNEL=<name>` if the kernel changes too) — the check never silently
+/// accepts a drifted file.
+const PINNED_BZIMAGE_SHA256: &str =
+    "f06a34a79010a8f2cc8226dc629cc8fb049740016f035f53e3f2e53d9a30dd41";
+const PINNED_INITRAMFS_SHA256: &str =
+    "3c4a7f2f0db4b59aaf4dee55d43a42c57fc0d10ac25441de88128c61be0778c2";
+
 fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
@@ -102,6 +142,72 @@ fn artifact(name: &str) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+/// Load a guest artifact or fail loudly — a missing image is never a vacuous
+/// (silently skipped) gate.
+fn require_artifact(name: &str) -> Vec<u8> {
+    artifact(name).unwrap_or_else(|| {
+        panic!(
+            "guest artifact `{name}` not found in guest/build or guest/linux — build it on the \
+             box (`make -C guest fetch && make -C guest/linux postgres-image`) or point \
+             KERNEL/INITRAMFS at staged files"
+        )
+    })
+}
+
+/// Verify a loaded guest artifact against its pinned content hash (hm-xdp): a
+/// mismatch is a loud refusal with both hashes quoted, never a silent run on a
+/// drifted build.
+fn verify_pin(name: &str, bytes: &[u8], expected_sha256: &str) {
+    use sha2::{Digest, Sha256};
+    let observed = format!("{:x}", Sha256::digest(bytes));
+    assert_eq!(
+        observed, expected_sha256,
+        "guest artifact `{name}` does not match its pinned content hash (hm-xdp: this gate \
+         references images BY HASH, never a mutable path — the canonical box image drifted on \
+         2026-07-09 and broke the draw-probe precondition on main). Stage the pinned PR-44 \
+         build, or run a different build DELIBERATELY via INITRAMFS=<name> INITRAMFS_SHA256=<hex> \
+         / BZIMAGE_SHA256=<hex> / KERNEL=<name>."
+    );
+}
+
+/// Resolve one pinned image: default to the PR-44 pin, or accept a deliberate
+/// override that MUST carry its own content hash (overriding the name without a
+/// hash is a loud panic — never trust a mutable path). Mirrors the task-95
+/// `live_dirty_remap` discipline exactly.
+fn resolve_pinned(
+    name_var: &str,
+    default_name: &str,
+    hash_var: &str,
+    default_hash: &str,
+) -> Vec<u8> {
+    let (name, pin) = match (std::env::var(name_var).ok(), std::env::var(hash_var).ok()) {
+        (None, None) => (default_name.to_string(), default_hash.to_string()),
+        (Some(n), Some(h)) => (n, h),
+        (None, Some(h)) => (default_name.to_string(), h),
+        (Some(n), None) => panic!(
+            "{name_var}={n} without {hash_var} — overriding the image requires supplying its \
+             content hash (hm-xdp: never trust a mutable path)"
+        ),
+    };
+    let bytes = require_artifact(&name);
+    verify_pin(&name, &bytes, &pin);
+    bytes
+}
+
+/// The pinned (kernel, initramfs) pair, each verified against its content hash
+/// before a byte of it reaches the guest — the drift gate (hm-xdp) that makes
+/// `REQUIRE_DRAWS` meaningful again.
+fn guest_images() -> (Vec<u8>, Vec<u8>) {
+    let kernel = resolve_pinned("KERNEL", "bzImage", "BZIMAGE_SHA256", PINNED_BZIMAGE_SHA256);
+    let initramfs = resolve_pinned(
+        "INITRAMFS",
+        "initramfs-postgres.cpio.gz",
+        "INITRAMFS_SHA256",
+        PINNED_INITRAMFS_SHA256,
+    );
+    (kernel, initramfs)
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -166,16 +272,9 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
             bad.key, bad.expected, bad.actual
         );
     }
-    let kernel_name = std::env::var("KERNEL").unwrap_or_else(|_| "bzImage".into());
-    let initramfs_name =
-        std::env::var("INITRAMFS").unwrap_or_else(|_| "initramfs-postgres.cpio.gz".into());
-    let (kernel, initramfs) = match (artifact(&kernel_name), artifact(&initramfs_name)) {
-        (Some(k), Some(i)) => (k, i),
-        _ => panic!(
-            "guest image missing ({kernel_name} / {initramfs_name}) — `make -C guest fetch && \
-             make -C guest/linux postgres-image`, or point KERNEL/INITRAMFS at staged files"
-        ),
-    };
+    // Pinned by content hash (hm-xdp): a drifted image is a loud refusal here,
+    // not a silent mis-probe of the draw windows.
+    let (kernel, initramfs) = guest_images();
     let marker = std::env::var("READY_MARKER")
         .unwrap_or_else(|_| "database system is ready to accept connections".into());
 
@@ -206,7 +305,16 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
     });
     let mut server = ControlServer::new(live, factory);
 
-    let cfg_hops = env_u64("HOPS", 3) as usize;
+    // Default HOPS=4, not 3 (hm-xdp): on the pinned PR-44 image the Postgres
+    // uuid workload's first entropy draw lands ~6 M v-ns past the base, just
+    // beyond three 2 M-v-ns hop windows — so `HOPS=3` measures no hop draw (only
+    // the tail draws) and the task-78 `REQUIRE_DRAWS` precondition fails even on
+    // the correct image. HOPS=4 extends the chain one hop so a compose-collapsed
+    // hop window covers that drawing span (the same span the tail already proves
+    // draws) — the count the task-78 box gate was PROVEN green with. This raises
+    // the chain LENGTH, not the window WIDTH (`HOP_DELTA_VNS`): the draw is still
+    // a measured two-seed probe, and image drift still fails closed by hash.
+    let cfg_hops = env_u64("HOPS", 4) as usize;
     let cfg = MaterializeConfig {
         // The same non-boot chain seed shape the task-58 box sweep branches.
         seed: env_u64("CHAIN_SEED", 0x0028_C0FF_EE5E_EDC0 ^ 0x9E37_79B9_7F4A_7C15),
