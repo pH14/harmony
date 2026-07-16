@@ -5,7 +5,7 @@
 
 use crate::data::{
     CfgId, Cut, EntryCommitRec, EntryId, Fixture, LineageRec, Moment, ObsCutRec, OrderScope,
-    Payload, Pos, PropId, PropertyDecl, QueryId, RegId, RegisterDecl, Replay, ReduceOp, Revision,
+    Payload, Pos, PropId, PropertyDecl, QueryId, ReduceOp, RegId, RegisterDecl, Replay, Revision,
     RolloutId, ScrapeLineRec, SdkEventRec, SealId, SealRec, SeqQueryRec, SourceDecl, SourceId,
     WorkingRec,
 };
@@ -50,7 +50,10 @@ impl Builder {
     pub fn new(name: &str, config: CfgId) -> Builder {
         Builder {
             config,
-            fixture: Fixture { name: name.to_owned(), ..Fixture::default() },
+            fixture: Fixture {
+                name: name.to_owned(),
+                ..Fixture::default()
+            },
             replay: Vec::new(),
             last_moment: Vec::new(),
             starts: Vec::new(),
@@ -60,19 +63,34 @@ impl Builder {
 
     /// Declare a register.
     pub fn reg(&mut self, rev: Revision, reg: RegId, op: ReduceOp) -> &mut Self {
-        self.fixture.registers.push(RegisterDecl { rev, config: self.config, reg, op });
+        self.fixture.registers.push(RegisterDecl {
+            rev,
+            config: self.config,
+            reg,
+            op,
+        });
         self
     }
 
     /// Declare a source.
     pub fn source(&mut self, rev: Revision, source: SourceId, scope: OrderScope) -> &mut Self {
-        self.fixture.sources.push(SourceDecl { rev, config: self.config, source, scope });
+        self.fixture.sources.push(SourceDecl {
+            rev,
+            config: self.config,
+            source,
+            scope,
+        });
         self
     }
 
     /// Declare a property.
     pub fn property(&mut self, rev: Revision, property: PropId, must_hit: bool) -> &mut Self {
-        self.fixture.properties.push(PropertyDecl { rev, config: self.config, property, must_hit });
+        self.fixture.properties.push(PropertyDecl {
+            rev,
+            config: self.config,
+            property,
+            must_hit,
+        });
         self
     }
 
@@ -138,7 +156,10 @@ impl Builder {
             .iter_mut()
             .find(|(r, _)| *r == rollout)
             .expect("push to unknown rollout");
-        assert!(moment >= last.1, "moments must be nondecreasing within a rollout");
+        assert!(
+            moment >= last.1,
+            "moments must be nondecreasing within a rollout"
+        );
         last.1 = moment;
         let vec = self
             .replay
@@ -181,20 +202,40 @@ impl Builder {
 
     /// Record a configured unsealed evidence cut.
     pub fn obs_cut(&mut self, rev: Revision, rollout: RolloutId, cut: Cut) -> &mut Self {
-        assert!(cut.count >= self.start_of(rollout), "cut before the rollout's branch point");
-        assert!(cut.count as usize <= self.vector(rollout).len(), "cut beyond rollout evidence");
-        self.fixture.obs_cuts.push(ObsCutRec { rev, config: self.config, rollout, cut });
+        assert!(
+            cut.count >= self.start_of(rollout),
+            "cut before the rollout's branch point"
+        );
+        assert!(
+            cut.count as usize <= self.vector(rollout).len(),
+            "cut beyond rollout evidence"
+        );
+        self.fixture.obs_cuts.push(ObsCutRec {
+            rev,
+            config: self.config,
+            rollout,
+            cut,
+        });
         self
     }
 
     /// Record a candidate seal.
     pub fn seal(&mut self, rev: Revision, rollout: RolloutId, seal: SealId, cut: Cut) -> &mut Self {
-        assert!(cut.count >= self.start_of(rollout), "seal before the rollout's branch point");
+        assert!(
+            cut.count >= self.start_of(rollout),
+            "seal before the rollout's branch point"
+        );
         assert!(
             cut.count as usize <= self.vector(rollout).len(),
             "seal cut beyond rollout evidence"
         );
-        self.fixture.seals.push(SealRec { rev, config: self.config, rollout, seal, cut });
+        self.fixture.seals.push(SealRec {
+            rev,
+            config: self.config,
+            rollout,
+            seal,
+            cut,
+        });
         self
     }
 
@@ -219,8 +260,20 @@ impl Builder {
     }
 
     /// Record a working-set membership update.
-    pub fn working(&mut self, rev: Revision, rollout: RolloutId, pos: Pos, delta: i64) -> &mut Self {
-        self.fixture.working.push(WorkingRec { rev, config: self.config, rollout, pos, delta });
+    pub fn working(
+        &mut self,
+        rev: Revision,
+        rollout: RolloutId,
+        pos: Pos,
+        delta: i64,
+    ) -> &mut Self {
+        self.fixture.working.push(WorkingRec {
+            rev,
+            config: self.config,
+            rollout,
+            pos,
+            delta,
+        });
         self
     }
 
@@ -340,7 +393,11 @@ pub fn random_tree(name: &str, seed: u64, p: TreeParams) -> (Fixture, Replay) {
             // The cut moment: the moment of the last included event (or the
             // parent's fork moment when nothing is included).
             let moment = if count == 0 {
-                b.vector(parent).first().map(|e| e.moment).unwrap_or(0).saturating_sub(1)
+                b.vector(parent)
+                    .first()
+                    .map(|e| e.moment)
+                    .unwrap_or(0)
+                    .saturating_sub(1)
             } else {
                 b.vector(parent)[count as usize - 1].moment
             };
@@ -359,7 +416,9 @@ pub fn random_tree(name: &str, seed: u64, p: TreeParams) -> (Fixture, Replay) {
                     reg: 100 + rng.below(u64::from(p.registers)) as u32,
                     value: rng.below(100) as i64 - 50,
                 },
-                6..=7 => Payload::Note { tag: rng.below(u64::from(p.tags.max(1))) as u32 },
+                6..=7 => Payload::Note {
+                    tag: rng.below(u64::from(p.tags.max(1))) as u32,
+                },
                 _ => Payload::Assertion {
                     site: 900 + rng.below(3) as u32,
                     property: 500,
@@ -392,7 +451,12 @@ pub fn random_tree(name: &str, seed: u64, p: TreeParams) -> (Fixture, Replay) {
             next_seal += 1;
             seal_targets.push((r, seal));
             // Seal revision assigned below (after all evidence revisions).
-            b.seal(2 + Revision::from(p.rollouts), r, seal, Cut { moment, count });
+            b.seal(
+                2 + Revision::from(p.rollouts),
+                r,
+                seal,
+                Cut { moment, count },
+            );
         }
     }
 

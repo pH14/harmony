@@ -27,10 +27,30 @@ fn compare_all(fx: &Fixture, replay: &Replay, cap: &Captured, rev: Revision) {
         "{}",
         ctx("obs (shared)")
     );
-    assert_eq!(Captured::flat(&cap.seal_prefix, rev), referee.seal_prefix(rev), "{}", ctx("seal_prefix"));
-    assert_eq!(Captured::flat(&cap.cells, rev), referee.cells(rev), "{}", ctx("cells"));
-    assert_eq!(Captured::flat(&cap.transitions, rev), referee.transitions(rev), "{}", ctx("transitions"));
-    assert_eq!(Captured::flat(&cap.occupancy, rev), referee.occupancy(rev), "{}", ctx("occupancy"));
+    assert_eq!(
+        Captured::flat(&cap.seal_prefix, rev),
+        referee.seal_prefix(rev),
+        "{}",
+        ctx("seal_prefix")
+    );
+    assert_eq!(
+        Captured::flat(&cap.cells, rev),
+        referee.cells(rev),
+        "{}",
+        ctx("cells")
+    );
+    assert_eq!(
+        Captured::flat(&cap.transitions, rev),
+        referee.transitions(rev),
+        "{}",
+        ctx("transitions")
+    );
+    assert_eq!(
+        Captured::flat(&cap.occupancy, rev),
+        referee.occupancy(rev),
+        "{}",
+        ctx("occupancy")
+    );
     assert_eq!(
         Captured::flat(&cap.property_results, rev),
         referee.property_results(rev),
@@ -43,14 +63,24 @@ fn compare_all(fx: &Fixture, replay: &Replay, cap: &Captured, rev: Revision) {
         "{}",
         ctx("site_coverage")
     );
-    assert_eq!(Captured::flat(&cap.absence, rev), referee.absence(rev), "{}", ctx("absence"));
+    assert_eq!(
+        Captured::flat(&cap.absence, rev),
+        referee.absence(rev),
+        "{}",
+        ctx("absence")
+    );
     assert_eq!(
         Captured::flat(&cap.working_species, rev),
         referee.working_species(rev),
         "{}",
         ctx("working_species")
     );
-    assert_eq!(Captured::flat(&cap.seq_pairs, rev), referee.seq_pairs(rev), "{}", ctx("seq_pairs"));
+    assert_eq!(
+        Captured::flat(&cap.seq_pairs, rev),
+        referee.seq_pairs(rev),
+        "{}",
+        ctx("seq_pairs")
+    );
     assert_eq!(
         Captured::flat(&cap.seq_rejections, rev),
         referee.seq_rejections(rev),
@@ -66,7 +96,11 @@ fn compare_all(fx: &Fixture, replay: &Replay, cap: &Captured, rev: Revision) {
 }
 
 fn hand_fixtures() -> Vec<(Fixture, Replay)> {
-    vec![fixtures::tree_lineage(), fixtures::two_pass(), fixtures::retention_properties()]
+    vec![
+        fixtures::tree_lineage(),
+        fixtures::two_pass(),
+        fixtures::retention_properties(),
+    ]
 }
 
 #[test]
@@ -148,8 +182,10 @@ fn input_permutation_invariance() {
     // Different within-revision feed orders must produce identical net views
     // at every revision (the multiset is the contract, not arrival order).
     let (fx, replay) = fixtures::tree_lineage();
-    let caps: Vec<Captured> =
-        [1u64, 2, 3].iter().map(|s| run(&fx, BuildOpts::default(), *s)).collect();
+    let caps: Vec<Captured> = [1u64, 2, 3]
+        .iter()
+        .map(|s| run(&fx, BuildOpts::default(), *s))
+        .collect();
     for rev in 0..=fx.max_rev() {
         for cap in &caps {
             compare_all(&fx, &replay, cap, rev);
@@ -172,12 +208,31 @@ fn single_formulation_builds_agree() {
     let referee = Referee::new(&fx, &replay);
     let rev = fx.max_rev();
 
-    let naive_only = run(&fx, BuildOpts { naive: true, shared: false, prefix: false }, 1);
+    let naive_only = run(
+        &fx,
+        BuildOpts {
+            naive: true,
+            shared: false,
+            prefix: false,
+        },
+        1,
+    );
     assert_eq!(Captured::flat(&naive_only.obs_naive, rev), referee.obs(rev));
     assert!(naive_only.obs_shared.is_empty());
 
-    let shared_only = run(&fx, BuildOpts { naive: false, shared: true, prefix: false }, 1);
-    assert_eq!(Captured::flat(&shared_only.obs_shared, rev), referee.obs(rev));
+    let shared_only = run(
+        &fx,
+        BuildOpts {
+            naive: false,
+            shared: true,
+            prefix: false,
+        },
+        1,
+    );
+    assert_eq!(
+        Captured::flat(&shared_only.obs_shared, rev),
+        referee.obs(rev)
+    );
     assert!(shared_only.obs_naive.is_empty());
     // Cells ride whichever formulation is built; both must match the referee.
     assert_eq!(Captured::flat(&naive_only.cells, rev), referee.cells(rev));

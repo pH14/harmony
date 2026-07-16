@@ -11,9 +11,10 @@
 use std::collections::BTreeMap;
 
 use crate::data::{
-    AbsRow, Agg, CellKey, CellRow, CfgId, Dim, Fixture, ObsOut, ObsRow, OccRow, Payload, PointId,
-    Pos, PrefixEv, PrefixRow, PropRow, ReduceOp, RegId, Replay, Revision, RolloutId, ScrapeRow,
-    SeqPairRow, SeqRejRow, SiteRow, Species, Transition, TransRow, WorkRow, OrderScope, cell_fn,
+    AbsRow, Agg, CellKey, CellRow, CfgId, Dim, Fixture, ObsOut, ObsRow, OccRow, OrderScope,
+    Payload, PointId, Pos, PrefixEv, PrefixRow, PropRow, ReduceOp, RegId, Replay, Revision,
+    RolloutId, ScrapeRow, SeqPairRow, SeqRejRow, SiteRow, Species, TransRow, Transition, WorkRow,
+    cell_fn,
 };
 
 /// The referee over one fixture and its replay authority.
@@ -100,9 +101,13 @@ impl<'a> Referee<'a> {
                 }
                 Payload::Assertion { .. } => continue,
             };
-            aggs.entry(dim).and_modify(|a| *a = a.combine(&unit)).or_insert(unit);
+            aggs.entry(dim)
+                .and_modify(|a| *a = a.combine(&unit))
+                .or_insert(unit);
         }
-        aggs.iter().map(|(d, a)| (*d, ObsOut::from_agg(a))).collect()
+        aggs.iter()
+            .map(|(d, a)| (*d, ObsOut::from_agg(a)))
+            .collect()
     }
 
     /// Family 6: reduced and derived observations at every evaluation point.
@@ -138,7 +143,10 @@ impl<'a> Referee<'a> {
         let ops = self.reg_ops(rev);
         let mut per_rollout: BTreeMap<(CfgId, RolloutId), Vec<Pos>> = BTreeMap::new();
         for c in self.fixture.obs_cuts.iter().filter(|c| c.rev <= rev) {
-            per_rollout.entry((c.config, c.rollout)).or_default().push(c.cut.count);
+            per_rollout
+                .entry((c.config, c.rollout))
+                .or_default()
+                .push(c.cut.count);
         }
         let mut rows = Vec::new();
         for ((config, rollout), mut counts) in per_rollout {
@@ -161,7 +169,11 @@ impl<'a> Referee<'a> {
                 if prev.as_ref() != Some(&cell) {
                     rows.push((
                         (config, rollout),
-                        Transition { at_count: count, from: prev.clone(), to: cell.clone() },
+                        Transition {
+                            at_count: count,
+                            from: prev.clone(),
+                            to: cell.clone(),
+                        },
                     ));
                 }
                 prev = Some(cell);
@@ -193,14 +205,19 @@ impl<'a> Referee<'a> {
                 })
                 .or_insert(cand);
         }
-        best.into_iter().map(|((config, cell), (_, e))| ((config, cell), e.0)).collect()
+        best.into_iter()
+            .map(|((config, cell), (_, e))| ((config, cell), e.0))
+            .collect()
     }
 
     /// Family 7: property-level aggregation over the immutable ledger.
     pub fn property_results(&self, rev: Revision) -> Vec<PropRow> {
         let mut counts: BTreeMap<(CfgId, u32), (i64, i64)> = BTreeMap::new();
         for e in self.fixture.events.iter().filter(|e| e.rev <= rev) {
-            if let Payload::Assertion { property, passed, .. } = &e.payload {
+            if let Payload::Assertion {
+                property, passed, ..
+            } = &e.payload
+            {
                 let c = counts.entry((e.config, *property)).or_default();
                 if *passed {
                     c.0 += 1;
@@ -232,7 +249,11 @@ impl<'a> Referee<'a> {
             .iter()
             .filter(|e| e.rev <= rev)
             .filter_map(|e| match &e.payload {
-                Payload::Assertion { property, passed: true, .. } => Some((e.config, *property)),
+                Payload::Assertion {
+                    property,
+                    passed: true,
+                    ..
+                } => Some((e.config, *property)),
                 _ => None,
             })
             .collect();
@@ -259,7 +280,9 @@ impl<'a> Referee<'a> {
         for e in self.fixture.events.iter().filter(|e| e.rev <= rev) {
             let n = net.get(&(e.config, e.rollout, e.pos)).copied().unwrap_or(0);
             if n != 0 {
-                *counts.entry((e.config, Species::of(&e.payload))).or_default() += n;
+                *counts
+                    .entry((e.config, Species::of(&e.payload)))
+                    .or_default() += n;
             }
         }
         counts.into_iter().filter(|(_, n)| *n != 0).collect()
@@ -277,9 +300,7 @@ impl<'a> Referee<'a> {
             .collect();
         let mut rows = Vec::new();
         for q in self.fixture.seq_queries.iter().filter(|q| q.rev <= rev) {
-            let ok = |src: u32| {
-                scopes.get(&(q.config, src)) == Some(&OrderScope::RolloutGlobal)
-            };
+            let ok = |src: u32| scopes.get(&(q.config, src)) == Some(&OrderScope::RolloutGlobal);
             if !ok(q.src_a) || !ok(q.src_b) {
                 continue;
             }

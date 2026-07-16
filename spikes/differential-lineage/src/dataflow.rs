@@ -36,7 +36,7 @@ use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use crate::data::{
     AbsRow, Agg, CellKey, CellRow, CfgId, Dim, Fixture, ObsOut, ObsRow, OccRow, OrderScope,
     Payload, PointId, Pos, PrefixEv, PrefixRow, PropRow, Revision, RolloutId, ScrapeRow,
-    SeqPairRow, SeqRejRow, SiteRow, Species, Transition, TransRow, WorkRow, cell_fn,
+    SeqPairRow, SeqRejRow, SiteRow, Species, TransRow, Transition, WorkRow, cell_fn,
 };
 use crate::generate::SplitMix64;
 
@@ -53,7 +53,11 @@ pub struct BuildOpts {
 
 impl Default for BuildOpts {
     fn default() -> Self {
-        BuildOpts { naive: true, shared: true, prefix: true }
+        BuildOpts {
+            naive: true,
+            shared: true,
+            prefix: true,
+        }
     }
 }
 
@@ -165,7 +169,10 @@ fn fold_units(input: &[(&Agg, isize)]) -> Option<Agg> {
 /// dataflow, time = revision. Input batches within a revision are fed in an
 /// `order_seed`-shuffled order (net views must be invariant to it).
 pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
-    assert!(opts.naive || opts.shared, "at least one formulation must be built");
+    assert!(
+        opts.naive || opts.shared,
+        "at least one formulation must be built"
+    );
     let acc = Arc::new(Mutex::new(Captured::default()));
     let acc_in = Arc::clone(&acc);
     let fx = fixture.clone();
@@ -216,14 +223,18 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
             let (seals_in, seals) = scope.new_collection::<crate::data::SealRec, isize>();
             let (entry_commits_in, entry_commits) =
                 scope.new_collection::<crate::data::EntryCommitRec, isize>();
-            let (working_in, working) =
-                scope.new_collection::<(CfgId, RolloutId, Pos), isize>();
+            let (working_in, working) = scope.new_collection::<(CfgId, RolloutId, Pos), isize>();
             let (seq_queries_in, seq_queries) =
                 scope.new_collection::<crate::data::SeqQueryRec, isize>();
 
             // -- Shared base arrangements (the in-process shared-arrangement
             // story: one arranged evidence index, many consumers). ----------
-            let ev = events.clone().map(|e| ((e.config, e.rollout), (e.source, e.pos, e.moment, e.payload)));
+            let ev = events.clone().map(|e| {
+                (
+                    (e.config, e.rollout),
+                    (e.source, e.pos, e.moment, e.payload),
+                )
+            });
             let ev_arr = ev.arrange_by_key_named("evidence-by-rollout");
 
             let reg_ev = events.clone().flat_map(|e| match e.payload {
@@ -233,15 +244,18 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
                 _ => None,
             });
             let reg_ops = registers.map(|d| ((d.config, d.reg), d.op));
-            let reg_measures =
-                reg_ev.join_map(reg_ops, |&(cfg, reg), &(rollout, pos, moment, value), &op| {
+            let reg_measures = reg_ev.join_map(
+                reg_ops,
+                |&(cfg, reg), &(rollout, pos, moment, value), &op| {
                     let dim = Dim::Reg(reg, op);
                     ((cfg, rollout), (dim, pos, moment, value))
-                });
+                },
+            );
             let note_measures = events.clone().flat_map(|e| match e.payload {
-                Payload::Note { tag } => {
-                    Some(((e.config, e.rollout), (Dim::Tag(tag), e.pos, e.moment, 0i64)))
-                }
+                Payload::Note { tag } => Some((
+                    (e.config, e.rollout),
+                    (Dim::Tag(tag), e.pos, e.moment, 0i64),
+                )),
                 _ => None,
             });
             let measures = meter!(reg_measures.concat(note_measures), "base.measures");
@@ -249,20 +263,37 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
 
             // Evaluation points: configured cuts, branch points, seals.
             let cut_points = obs_cuts
-                .map(|c| ((c.config, c.rollout), (PointId::Cut(c.cut.count), c.cut.count)))
+                .map(|c| {
+                    (
+                        (c.config, c.rollout),
+                        (PointId::Cut(c.cut.count), c.cut.count),
+                    )
+                })
                 .distinct();
-            let fork_points = lineage.clone()
-                .map(|l| ((l.config, l.parent), (PointId::Fork(l.cut.count), l.cut.count)))
+            let fork_points = lineage
+                .clone()
+                .map(|l| {
+                    (
+                        (l.config, l.parent),
+                        (PointId::Fork(l.cut.count), l.cut.count),
+                    )
+                })
                 .distinct();
-            let seal_points =
-                seals.clone().map(|s| ((s.config, s.rollout), (PointId::Seal(s.seal), s.cut.count)));
-            let points = cut_points.clone().concat(fork_points.clone()).concat(seal_points.clone());
+            let seal_points = seals
+                .clone()
+                .map(|s| ((s.config, s.rollout), (PointId::Seal(s.seal), s.cut.count)));
+            let points = cut_points
+                .clone()
+                .concat(fork_points.clone())
+                .concat(seal_points.clone());
             let points_arr = points.clone().arrange_by_key_named("points-by-rollout");
 
             // Ancestors: ((cfg, rollout), (ancestor, upper cut count, depth)),
             // by iteration over the lineage relation. The inner timestamp is
             // the standard Product<u64, u64> — no custom lattice.
-            let edges = lineage.clone().map(|l| ((l.config, l.child), (l.parent, l.cut.count)));
+            let edges = lineage
+                .clone()
+                .map(|l| ((l.config, l.child), (l.parent, l.cut.count)));
             let anc = {
                 let edges_c = edges.clone();
                 let base = edges.map(|((cfg, r), (p, u))| ((cfg, r), (p, u, 1u32)));
@@ -336,6 +367,7 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
                         Some(((cfg, r, dim, b_lo), Agg::unit(&dim, pos, moment, value)))
                     },
                 );
+                let units = meter!(units, "shared.units");
                 let partials = meter!(
                     units.reduce(|_k, input, output| {
                         if let Some(agg) = fold_units(input) {
@@ -349,9 +381,7 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
                     .reduce(|_k, input, output| {
                         let mut acc: Option<Agg> = None;
                         let mut vec: Vec<(Pos, Agg)> = Vec::with_capacity(input.len());
-                        for ((b_lo, agg), w) in
-                            input.iter().map(|(v, w)| ((v.0, &v.1), *w))
-                        {
+                        for ((b_lo, agg), w) in input.iter().map(|(v, w)| ((v.0, &v.1), *w)) {
                             let scaled = agg.scaled(w as i64);
                             let next = match acc {
                                 Some(a) => a.combine(&scaled),
@@ -416,7 +446,9 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
 
             // -- Family 1: lineage-composed seal prefixes --------------------
             if opts.prefix {
-                let seal_pts = seals.clone().map(|s| ((s.config, s.rollout), (s.seal, s.cut.count)));
+                let seal_pts = seals
+                    .clone()
+                    .map(|s| ((s.config, s.rollout), (s.seal, s.cut.count)));
                 let own_pref = seal_pts.clone().join_core(
                     ev_arr.clone(),
                     |&(cfg, r), &(seal, count), ev: &(u32, Pos, u64, Payload)| {
@@ -475,14 +507,24 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
             let cells = cap!(cells, "cells", cells);
 
             let baseline = lineage
-                .map(|l| ((l.config, l.parent, PointId::Fork(l.cut.count)), (l.child, l.cut.count)))
-                .join_map(cells.clone(), |&(cfg, _parent, _point), &(child, count), cell| {
-                    ((cfg, child), (0u8, count, cell.clone()))
+                .map(|l| {
+                    (
+                        (l.config, l.parent, PointId::Fork(l.cut.count)),
+                        (l.child, l.cut.count),
+                    )
+                })
+                .join_map(
+                    cells.clone(),
+                    |&(cfg, _parent, _point), &(child, count), cell| {
+                        ((cfg, child), (0u8, count, cell.clone()))
+                    },
+                );
+            let own_cut_cells = cells
+                .clone()
+                .flat_map(|((cfg, r, point), cell)| match point {
+                    PointId::Cut(count) => Some(((cfg, r), (1u8, count, cell))),
+                    _ => None,
                 });
-            let own_cut_cells = cells.clone().flat_map(|((cfg, r, point), cell)| match point {
-                PointId::Cut(count) => Some(((cfg, r), (1u8, count, cell))),
-                _ => None,
-            });
             let transitions = baseline.concat(own_cut_cells).reduce(|_k, input, output| {
                 // Sorted input: the (unique) baseline first, then cuts by
                 // ascending count.
@@ -495,7 +537,11 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
                     }
                     if prev.as_ref() != Some(cell) {
                         output.push((
-                            Transition { at_count: count, from: prev.clone(), to: cell.clone() },
+                            Transition {
+                                at_count: count,
+                                from: prev.clone(),
+                                to: cell.clone(),
+                            },
                             1isize,
                         ));
                     }
@@ -538,9 +584,9 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
 
             // -- Property-level aggregation (immutable ledger only) ----------
             let prop_ev = events.clone().flat_map(|e| match e.payload {
-                Payload::Assertion { property, passed, .. } => {
-                    Some(((e.config, property), passed))
-                }
+                Payload::Assertion {
+                    property, passed, ..
+                } => Some(((e.config, property), passed)),
                 _ => None,
             });
             let property_results = prop_ev.clone().reduce(|_k, input, output| {
@@ -557,24 +603,28 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
             });
             cap!(property_results, "property_results", property_results);
 
-            let site_coverage = events.clone()
+            let site_coverage = events
+                .clone()
                 .flat_map(|e| match e.payload {
-                    Payload::Assertion { site, property, .. } => {
-                        Some((e.config, property, site))
-                    }
+                    Payload::Assertion { site, property, .. } => Some((e.config, property, site)),
                     _ => None,
                 })
                 .count()
                 .map(|(k, n)| (k, n as i64));
             cap!(site_coverage, "site_coverage", site_coverage);
 
-            let satisfied = prop_ev.flat_map(|(k, passed)| passed.then_some(k)).distinct();
-            let declared = properties.flat_map(|p| p.must_hit.then_some(((p.config, p.property), ())));
+            let satisfied = prop_ev
+                .flat_map(|(k, passed)| passed.then_some(k))
+                .distinct();
+            let declared =
+                properties.flat_map(|p| p.must_hit.then_some(((p.config, p.property), ())));
             let absence = declared.antijoin(satisfied).map(|(k, ())| k);
             cap!(absence, "absence", absence);
 
             // -- Bounded working membership -----------------------------------
-            let ev_coord = events.clone().map(|e| ((e.config, e.rollout, e.pos), Species::of(&e.payload)));
+            let ev_coord = events
+                .clone()
+                .map(|e| ((e.config, e.rollout, e.pos), Species::of(&e.payload)));
             let working_species = working
                 .map(|k| (k, ()))
                 .join_map(ev_coord, |&(cfg, _r, _p), &(), &species| (cfg, species))
@@ -586,12 +636,18 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
             let scopes = sources.map(|s| ((s.config, s.source), s.scope));
             let q_scoped = seq_queries
                 .map(|q| ((q.config, q.src_a), (q.query, q.src_b)))
-                .join_map(scopes.clone(), |&(cfg, src_a), &(query, src_b), &scope_a| {
-                    ((cfg, src_b), (query, src_a, scope_a))
-                })
-                .join_map(scopes, |&(cfg, src_b), &(query, src_a, scope_a), &scope_b| {
-                    ((cfg, query), (src_a, scope_a, src_b, scope_b))
-                });
+                .join_map(
+                    scopes.clone(),
+                    |&(cfg, src_a), &(query, src_b), &scope_a| {
+                        ((cfg, src_b), (query, src_a, scope_a))
+                    },
+                )
+                .join_map(
+                    scopes,
+                    |&(cfg, src_b), &(query, src_a, scope_a), &scope_b| {
+                        ((cfg, query), (src_a, scope_a, src_b, scope_b))
+                    },
+                );
             let eligible = q_scoped.clone().filter(|&(_, (_, sa, _, sb))| {
                 sa == OrderScope::RolloutGlobal && sb == OrderScope::RolloutGlobal
             });
@@ -624,10 +680,12 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
                     },
                 )
                 .join(notes_by_src)
-                .flat_map(|((cfg, _sb), ((query, ra, pa, ma, ta), (rb, pb, mb, tb)))| {
-                    (ra == rb && pa < pb)
-                        .then_some(((cfg, query, ra), ((pa, ma, ta), (pb, mb, tb))))
-                });
+                .flat_map(
+                    |((cfg, _sb), ((query, ra, pa, ma, ta), (rb, pb, mb, tb)))| {
+                        (ra == rb && pa < pb)
+                            .then_some(((cfg, query, ra), ((pa, ma, ta), (pb, mb, tb))))
+                    },
+                );
             cap!(seq_pairs, "seq_pairs", seq_pairs);
 
             // -- Terminal scrape evidence -------------------------------------
@@ -661,8 +719,13 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
     });
 
     match Arc::try_unwrap(acc) {
-        Ok(m) => m.into_inner().expect("no poisoned lock: single-threaded run"),
-        Err(arc) => arc.lock().expect("no poisoned lock: single-threaded run").clone(),
+        Ok(m) => m
+            .into_inner()
+            .expect("no poisoned lock: single-threaded run"),
+        Err(arc) => arc
+            .lock()
+            .expect("no poisoned lock: single-threaded run")
+            .clone(),
     }
 }
 
@@ -742,11 +805,16 @@ fn feed_rev(inputs: &mut Inputs, fx: &Fixture, rev: Revision, rng: &mut SplitMix
     for r in shuffled(fx.seals.iter().filter(|r| r.rev == rev).cloned(), rng) {
         inputs.seals.update_at(r, rev, 1);
     }
-    for r in shuffled(fx.entry_commits.iter().filter(|r| r.rev == rev).cloned(), rng) {
+    for r in shuffled(
+        fx.entry_commits.iter().filter(|r| r.rev == rev).cloned(),
+        rng,
+    ) {
         inputs.entry_commits.update_at(r, rev, 1);
     }
     for r in shuffled(fx.working.iter().filter(|r| r.rev == rev).cloned(), rng) {
-        inputs.working.update_at((r.config, r.rollout, r.pos), rev, r.delta as isize);
+        inputs
+            .working
+            .update_at((r.config, r.rollout, r.pos), rev, r.delta as isize);
     }
     for r in shuffled(fx.seq_queries.iter().filter(|r| r.rev == rev).cloned(), rng) {
         inputs.seq_queries.update_at(r, rev, 1);

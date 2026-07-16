@@ -473,7 +473,11 @@ impl ObsOut {
         match agg {
             Agg::Last(_, v) | Agg::Max(v) | Agg::Min(v) => ObsOut::Scalar(*v),
             Agg::Distinct(vs) => ObsOut::Values(vs.clone()),
-            Agg::Hist(c, l) => ObsOut::Hist { count: *c, ever: *c > 0, latest: *l },
+            Agg::Hist(c, l) => ObsOut::Hist {
+                count: *c,
+                ever: *c > 0,
+                latest: *l,
+            },
         }
     }
 }

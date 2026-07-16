@@ -13,7 +13,10 @@ use differential_lineage::fixtures;
 
 fn load(name: &str, committed: &str, built: &Fixture) -> Fixture {
     let loaded: Fixture = serde_json::from_str(committed).expect("parse committed fixture");
-    assert_eq!(&loaded, built, "committed fixture {name} != generator output");
+    assert_eq!(
+        &loaded, built,
+        "committed fixture {name} != generator output"
+    );
     let mut rebuilt = serde_json::to_string_pretty(built).expect("serialize");
     rebuilt.push('\n');
     assert_eq!(committed, rebuilt, "committed fixture {name} bytes drifted");
@@ -22,18 +25,17 @@ fn load(name: &str, committed: &str, built: &Fixture) -> Fixture {
 
 fn tree() -> (Fixture, Captured) {
     let (built, _replay) = fixtures::tree_lineage();
-    let fx = load("tree_lineage", include_str!("../fixtures/tree_lineage.json"), &built);
+    let fx = load(
+        "tree_lineage",
+        include_str!("../fixtures/tree_lineage.json"),
+        &built,
+    );
     let cap = run(&fx, BuildOpts::default(), 1);
     (fx, cap)
 }
 
 /// Observations at one evaluation point, canonically ordered by dimension.
-fn obs_at(
-    cap: &Captured,
-    rev: Revision,
-    rollout: RolloutId,
-    point: PointId,
-) -> Vec<(Dim, ObsOut)> {
+fn obs_at(cap: &Captured, rev: Revision, rollout: RolloutId, point: PointId) -> Vec<(Dim, ObsOut)> {
     Captured::flat(&cap.obs_shared, rev)
         .into_iter()
         .filter(|((_c, r, p, _d), _)| *r == rollout && *p == point)
@@ -54,7 +56,13 @@ fn prefix_of(cap: &Captured, rev: Revision, seal: SealId) -> Vec<PrefixEv> {
 }
 
 fn ev(owner: RolloutId, source: u32, pos: Pos, moment: u64, payload: Payload) -> PrefixEv {
-    PrefixEv { owner, source, pos, moment, payload }
+    PrefixEv {
+        owner,
+        source,
+        pos,
+        moment,
+        payload,
+    }
 }
 
 fn reg(reg: u32, value: i64) -> Payload {
@@ -168,7 +176,14 @@ fn family4_same_moment_half_open_cuts() {
             (Dim::Reg(10, ReduceOp::Set), ObsOut::Scalar(3)),
             (Dim::Reg(11, ReduceOp::Max), ObsOut::Scalar(5)),
             (Dim::Reg(12, ReduceOp::Min), ObsOut::Scalar(1)),
-            (Dim::Tag(7), ObsOut::Hist { count: 2, ever: true, latest: (35, 5) }),
+            (
+                Dim::Tag(7),
+                ObsOut::Hist {
+                    count: 2,
+                    ever: true,
+                    latest: (35, 5)
+                }
+            ),
         ]
     );
 
@@ -216,8 +231,10 @@ fn family3_sibling_safe_identity() {
 fn family5_canonical_order_reconstruction() {
     let (fx, cap) = tree();
     let rev = fx.max_rev();
-    let coords: Vec<(u64, Pos)> =
-        prefix_of(&cap, rev, 1).iter().map(|e| (e.moment, e.pos)).collect();
+    let coords: Vec<(u64, Pos)> = prefix_of(&cap, rev, 1)
+        .iter()
+        .map(|e| (e.moment, e.pos))
+        .collect();
     assert_eq!(
         coords,
         vec![
@@ -260,7 +277,14 @@ fn family6_reductions_and_history() {
             (Dim::Reg(11, ReduceOp::Max), ObsOut::Scalar(5)),
             (Dim::Reg(12, ReduceOp::Min), ObsOut::Scalar(9)),
             (Dim::Reg(13, ReduceOp::Accumulate), ObsOut::Values(vec![3])),
-            (Dim::Tag(7), ObsOut::Hist { count: 1, ever: true, latest: (30, 2) }),
+            (
+                Dim::Tag(7),
+                ObsOut::Hist {
+                    count: 1,
+                    ever: true,
+                    latest: (30, 2)
+                }
+            ),
         ]
     );
     // D Cut(10) composes three segments: set overridden twice down the
@@ -273,11 +297,21 @@ fn family6_reductions_and_history() {
             (Dim::Reg(11, ReduceOp::Max), ObsOut::Scalar(5)),
             (Dim::Reg(12, ReduceOp::Min), ObsOut::Scalar(1)),
             (Dim::Reg(13, ReduceOp::Accumulate), ObsOut::Values(vec![5])),
-            (Dim::Tag(7), ObsOut::Hist { count: 2, ever: true, latest: (35, 5) }),
+            (
+                Dim::Tag(7),
+                ObsOut::Hist {
+                    count: 2,
+                    ever: true,
+                    latest: (35, 5)
+                }
+            ),
         ]
     );
     // The naive and shared formulations agree exactly, everywhere.
-    assert_eq!(Captured::flat(&cap.obs_naive, rev), Captured::flat(&cap.obs_shared, rev));
+    assert_eq!(
+        Captured::flat(&cap.obs_naive, rev),
+        Captured::flat(&cap.obs_shared, rev)
+    );
 
     // Every cell, exactly.
     assert_eq!(
@@ -309,12 +343,54 @@ fn family2_provisional_transitions() {
     assert_eq!(
         Captured::flat(&cap.transitions, rev),
         vec![
-            ((0, 0), Transition { at_count: 2, from: None, to: cell_a_cut2() }),
-            ((0, 0), Transition { at_count: 7, from: Some(cell_a_cut2()), to: cell_a_cut7() }),
-            ((0, 1), Transition { at_count: 5, from: Some(cell_a_fork4()), to: cell_b_cut5() }),
-            ((0, 1), Transition { at_count: 8, from: Some(cell_b_cut5()), to: cell_b_cut8() }),
-            ((0, 2), Transition { at_count: 5, from: Some(cell_a_fork4()), to: cell_c_cut5() }),
-            ((0, 3), Transition { at_count: 10, from: Some(cell_b_cut8()), to: cell_d_cut10() }),
+            (
+                (0, 0),
+                Transition {
+                    at_count: 2,
+                    from: None,
+                    to: cell_a_cut2()
+                }
+            ),
+            (
+                (0, 0),
+                Transition {
+                    at_count: 7,
+                    from: Some(cell_a_cut2()),
+                    to: cell_a_cut7()
+                }
+            ),
+            (
+                (0, 1),
+                Transition {
+                    at_count: 5,
+                    from: Some(cell_a_fork4()),
+                    to: cell_b_cut5()
+                }
+            ),
+            (
+                (0, 1),
+                Transition {
+                    at_count: 8,
+                    from: Some(cell_b_cut5()),
+                    to: cell_b_cut8()
+                }
+            ),
+            (
+                (0, 2),
+                Transition {
+                    at_count: 5,
+                    from: Some(cell_a_fork4()),
+                    to: cell_c_cut5()
+                }
+            ),
+            (
+                (0, 3),
+                Transition {
+                    at_count: 10,
+                    from: Some(cell_b_cut8()),
+                    to: cell_d_cut10()
+                }
+            ),
         ]
     );
     // No entries were committed in this fixture: occupancy is empty at every
@@ -332,7 +408,11 @@ fn family2_provisional_transitions() {
 #[test]
 fn family2_two_pass_occupancy_and_domination() {
     let (built, _replay) = fixtures::two_pass();
-    let fx = load("two_pass", include_str!("../fixtures/two_pass.json"), &built);
+    let fx = load(
+        "two_pass",
+        include_str!("../fixtures/two_pass.json"),
+        &built,
+    );
     let cap = run(&fx, BuildOpts::default(), 1);
 
     let provisional: CellKey = vec![(0, 10, 5)];
@@ -342,7 +422,14 @@ fn family2_two_pass_occupancy_and_domination() {
     // Rev 2 (first pass): the transition nominates; nothing is sealed.
     assert_eq!(
         Captured::flat(&cap.transitions, 2),
-        vec![((0, 0), Transition { at_count: 2, from: None, to: provisional.clone() })]
+        vec![(
+            (0, 0),
+            Transition {
+                at_count: 2,
+                from: None,
+                to: provisional.clone()
+            }
+        )]
     );
     assert_eq!(
         Captured::flat(&cap.cells, 2),
@@ -361,7 +448,10 @@ fn family2_two_pass_occupancy_and_domination() {
             ((0, 0, PointId::Seal(1)), early.clone()),
         ]
     );
-    assert!(Captured::net(&cap.occupancy, 3).is_empty(), "no commits yet");
+    assert!(
+        Captured::net(&cap.occupancy, 3).is_empty(),
+        "no commits yet"
+    );
 
     // Rev 4: commits land. Entries 100 and 101 tie on quality 5 for the
     // sealed cell; the stable tie-break picks the lower id. Entry 102 owns
@@ -404,7 +494,10 @@ fn family7_property_aggregation() {
     let rev = fx.max_rev();
 
     // One property row (2 passes + 1 fail), even though two sites contributed.
-    assert_eq!(Captured::flat(&cap.property_results, rev), vec![((0, 500), (2, 1))]);
+    assert_eq!(
+        Captured::flat(&cap.property_results, rev),
+        vec![((0, 500), (2, 1))]
+    );
     // Coverage stays per site.
     assert_eq!(
         Captured::flat(&cap.site_coverage, rev),
@@ -446,7 +539,10 @@ fn family8_retention_separation_and_ordering_scope() {
     );
     assert_eq!(
         Captured::flat(&cap.working_species, 4),
-        vec![((0, Species::Assertion(500)), 1), ((0, Species::Note(88)), 1)]
+        vec![
+            ((0, Species::Assertion(500)), 1),
+            ((0, Species::Note(88)), 1)
+        ]
     );
 
     // Committed and finalized views are identical across the retraction.
@@ -458,7 +554,10 @@ fn family8_retention_separation_and_ordering_scope() {
         Captured::flat(&cap.property_results, 3),
         Captured::flat(&cap.property_results, 4)
     );
-    assert_eq!(Captured::flat(&cap.absence, 3), Captured::flat(&cap.absence, 4));
+    assert_eq!(
+        Captured::flat(&cap.absence, 3),
+        Captured::flat(&cap.absence, 4)
+    );
     assert_eq!(Captured::flat(&cap.cells, 3), Captured::flat(&cap.cells, 4));
 
     // Cross-source sequences: the rollout-global pair answers exactly; the
@@ -496,7 +595,11 @@ fn probe_consolidate_canonical_sort_discipline() {
     // removes the tag-77 row entirely (net zero) rather than leaving a
     // zero-count row.
     use differential_lineage::data::Species;
-    let raw_rev4: Vec<_> = cap.working_species.iter().filter(|(_, t, _)| *t == 4).collect();
+    let raw_rev4: Vec<_> = cap
+        .working_species
+        .iter()
+        .filter(|(_, t, _)| *t == 4)
+        .collect();
     assert!(
         raw_rev4.iter().any(|(_, _, r)| *r < 0),
         "expected a retraction diff at rev 4, got {raw_rev4:?}"
@@ -504,7 +607,8 @@ fn probe_consolidate_canonical_sort_discipline() {
     let net4 = Captured::net(&cap.working_species, 4);
     assert!(net4.iter().all(|(_, m)| *m == 1), "canonical multiplicity");
     assert!(
-        net4.iter().all(|(((_c, s), _n), _m)| *s != Species::Note(77)),
+        net4.iter()
+            .all(|(((_c, s), _n), _m)| *s != Species::Note(77)),
         "net-zero row must vanish under consolidation"
     );
 
