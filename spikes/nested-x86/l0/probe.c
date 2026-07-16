@@ -83,28 +83,50 @@ static long perf_open(uint64_t type, uint64_t config) {
     return syscall(SYS_perf_event_open, &a, 0, -1, -1, 0);
 }
 
-static void count_sniff(const char *label, uint64_t type, uint64_t config) {
+/* Round-10: any encoded failure sets g_fail so main's exit code (surfaced as
+ * NESTED_X86_PROBE_RC by l1-init.sh) is fail-closed alongside the JSON. */
+static int g_fail = 0;
+
+static void count_sniff(const char *label, uint64_t type, uint64_t config,
+                        int require_exact_diff) {
     long fd = perf_open(type, config);
     if (fd < 0) {
         printf("  \"%s\": \"perf_event_open failed errno=%d\",\n", label, errno);
+        g_fail = 1;
         return;
     }
     static const uint64_t ns[] = {1000000ULL, 10000000ULL, 100000000ULL};
+    uint64_t rep0[3] = {0, 0, 0};
     printf("  \"%s\": {\n", label);
     for (unsigned i = 0; i < 3; i++) {
         printf("    \"n_%llu\": [", (unsigned long long)ns[i]);
         for (int rep = 0; rep < 5; rep++) {
             uint64_t count = 0;
-            ioctl((int)fd, PERF_EVENT_IOC_RESET, 0);
-            ioctl((int)fd, PERF_EVENT_IOC_ENABLE, 0);
-            asm_loop(ns[i]);
-            ioctl((int)fd, PERF_EVENT_IOC_DISABLE, 0);
-            if (read((int)fd, &count, 8) != 8) count = (uint64_t)-1;
+            /* round-10: enable/reset/disable ioctl failures must never yield a
+             * plausible zero array — encode the read-failure sentinel + g_fail */
+            int io_ok = ioctl((int)fd, PERF_EVENT_IOC_RESET, 0) == 0
+                     && ioctl((int)fd, PERF_EVENT_IOC_ENABLE, 0) == 0;
+            if (io_ok) asm_loop(ns[i]);
+            if (ioctl((int)fd, PERF_EVENT_IOC_DISABLE, 0) != 0) io_ok = 0;
+            if (!io_ok || read((int)fd, &count, 8) != 8) { count = (uint64_t)-1; g_fail = 1; }
+            if (rep == 0) rep0[i] = count;
             printf("%s%llu", rep ? ", " : "", (unsigned long long)count);
         }
         printf("]%s\n", i < 2 ? "," : "");
     }
     printf("  },\n");
+    if (require_exact_diff) {
+        /* count(N) = N + c for a constant overhead c  =>  count(10N) - count(N)
+         * == 9N EXACTLY. Asserted only for the deterministic conditional-branch
+         * event (the retained evidence held it 60/60); the instructions control
+         * event carries documented +-1 jitter and is report-only. */
+        int ok = rep0[0] != (uint64_t)-1 && rep0[1] != (uint64_t)-1
+              && rep0[2] != (uint64_t)-1
+              && rep0[1] - rep0[0] == ns[1] - ns[0]
+              && rep0[2] - rep0[1] == ns[2] - ns[1];
+        printf("  \"%s_differential\": \"%s\",\n", label, ok ? "exact" : "FAILED");
+        if (!ok) g_fail = 1;
+    }
     close((int)fd);
 }
 
@@ -293,12 +315,12 @@ int main(void) {
     emit_bit("entry_load_perf_global_ctrl", allowed1(0x490, 13));
 
     /* count-exactness sniff at one virtualization layer */
-    count_sniff("sniff_raw_0x1c4_br_cond", PERF_TYPE_RAW, 0x1c4);
-    count_sniff("sniff_hw_instructions", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS);
+    count_sniff("sniff_raw_0x1c4_br_cond", PERF_TYPE_RAW, 0x1c4, 1);
+    count_sniff("sniff_hw_instructions", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, 0);
 
     /* PMI overflow-delivery sniff (N-0 method: overflow fires an interrupt in L1) */
     pmi_sniff();
 
     printf("  \"probe\": \"done\"\n}\n");
-    return 0;
+    return g_fail;
 }

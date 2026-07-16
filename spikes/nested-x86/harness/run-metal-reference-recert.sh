@@ -46,9 +46,40 @@ det=$(echo "$BINS" | grep live_determinism)
 # env.json records a patched posture), and the loaded-module identity is
 # verified before any gate runs.
 STOCK_SIZE=1396736
+
+# round-10 P1 (ops hygiene): if the run is interrupted ANY time after the
+# patched swap, restore + verify stock before exiting — the box must never be
+# left in the patched posture by a killed session. Idempotent: the normal
+# restore path sets RESTORED=1 first. (The retained metal runs completed
+# normally with verified restores — see the audit note's round-7/round-9
+# metal annotations and the window-close RESTORE_VERIFIED_IDENTICAL.)
+SWAPPED=0
+RESTORED=0
+restore_on_interrupt() {
+  local sig=$1
+  if [ "$SWAPPED" = 1 ] && [ "$RESTORED" = 0 ]; then
+    echo "METAL_INTERRUPTED ($sig): restoring stock KVM before exit" >&2
+    for _ in 1 2 3 4 5 6 7 8; do rmmod kvm_intel kvm 2>/dev/null && break; sleep 2; done
+    modprobe kvm 2>/dev/null; modprobe kvm_intel 2>/dev/null
+    RESTORED=1
+    sz=$(lsmod | awk '$1=="kvm"{print $2}')
+    if [ "$sz" = "$STOCK_SIZE" ] && grep -q Y /sys/module/kvm_intel/parameters/nested; then
+      echo "METAL_INTERRUPT_RESTORE_OK (stock $sz, nested=Y)" >&2
+    else
+      echo "METAL_INTERRUPT_RESTORE_FAILED (size=$sz) — MANUAL ATTENTION REQUIRED" >&2
+    fi
+  fi
+  [ "$sig" = EXIT ] || exit 130
+}
+trap 'restore_on_interrupt INT'  INT
+trap 'restore_on_interrupt TERM' TERM
+trap 'restore_on_interrupt HUP'  HUP
+trap 'restore_on_interrupt EXIT' EXIT
+
 rmmod kvm_intel kvm || { echo "METAL_SWAP_FAILED rmmod (stock still loaded?)"; exit 1; }
 insmod "$PATCHED/kvm.ko" || { echo "METAL_SWAP_FAILED insmod kvm.ko"; modprobe kvm_intel; exit 1; }
 insmod "$PATCHED/kvm-intel.ko" || { echo "METAL_SWAP_FAILED insmod kvm-intel.ko"; rmmod kvm; modprobe kvm_intel; exit 1; }
+SWAPPED=1   # from here, any interrupt/exit path must restore stock (trap above)
 LOADED_SIZE=$(lsmod | awk '$1=="kvm"{print $2}')
 if [ -z "$LOADED_SIZE" ] || [ "$LOADED_SIZE" = "$STOCK_SIZE" ]; then
   echo "METAL_SWAP_FAILED loaded kvm size=$LOADED_SIZE (== stock $STOCK_SIZE — patched not loaded)"
@@ -85,6 +116,7 @@ run() { # run <name> <cmd...>
 # enforces enable_pmu=Y (the nested runs depend on it).
 rmmod kvm_intel kvm
 modprobe kvm_intel
+RESTORED=1   # normal restore path reached; the interrupt trap goes idle
 {
   lsmod | grep -E "^kvm"
   echo "nested=$(cat /sys/module/kvm_intel/parameters/nested)"

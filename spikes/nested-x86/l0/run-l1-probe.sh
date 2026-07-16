@@ -117,18 +117,34 @@ else:
             bad.append(f"sniff_raw_0x1c4_br_cond[{k}]={v!r} (non-int/read-failure entry)")
 if d.get("probe") != "done":
     bad.append(f"probe={d.get('probe')!r} (sequence incomplete)")
+# round-10: the differential assertion is emitted by the current probe —
+# required-if-present (retained probes predate it; their 60/60 zero-variance
+# arrays already prove the relation, per the audit note).
+if "sniff_raw_0x1c4_br_cond_differential" in d \
+        and d["sniff_raw_0x1c4_br_cond_differential"] != "exact":
+    bad.append(f"sniff differential={d['sniff_raw_0x1c4_br_cond_differential']!r}")
 if "pmi_sniff_raw_0x1c4" in d:
     pmi = d["pmi_sniff_raw_0x1c4"]
     if not isinstance(pmi, dict) or not pmi:
         bad.append(f"pmi_sniff_raw_0x1c4={pmi!r} (must be a non-empty object)")
     else:
+        # round-10 P1: every rep of every combination must MATCH the armed
+        # expectation — ring_samples == signals == expect, zero throttles and
+        # other records, and a valid count — not merely be error-free.
         for k, combo in pmi.items():
             reps = combo.get("reps") if isinstance(combo, dict) else None
-            if not isinstance(reps, list) or not reps:
-                bad.append(f"pmi_sniff_raw_0x1c4[{k}] has no reps")
-            elif any(isinstance(r, dict) and "error" in r for r in reps):
-                errs = [r for r in reps if isinstance(r, dict) and "error" in r]
-                bad.append(f"pmi_sniff_raw_0x1c4[{k}] carries error reps: {errs[:2]!r}")
+            expect = combo.get("expect") if isinstance(combo, dict) else None
+            if not isinstance(reps, list) or not reps or not isinstance(expect, int):
+                bad.append(f"pmi_sniff_raw_0x1c4[{k}] malformed (reps/expect)")
+                continue
+            for i, r in enumerate(reps):
+                if not isinstance(r, dict) or "error" in r:
+                    bad.append(f"pmi[{k}] rep {i}: {r!r}")
+                elif (r.get("ring_samples") != expect or r.get("signals") != expect
+                      or r.get("throttles") != 0 or r.get("other_records") != 0
+                      or not isinstance(r.get("count"), int)
+                      or not 0 <= r["count"] < READ_FAIL):
+                    bad.append(f"pmi[{k}] rep {i} != expect {expect}: {r!r}")
 if bad:
     print("PROBE_BASIS_FIELDS_FAILED:", "; ".join(bad))
     sys.exit(1)
