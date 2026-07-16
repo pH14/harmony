@@ -18,6 +18,11 @@
 
 [contract]
 version = 4
+# vendor axis (the Intel column on the one frozen contract; docs/CPU-MSR-CONTRACT.md
+# §1, docs/cpu-msr-contract-amd-draft.toml is the AMD draft column). Header metadata
+# only — the zero-drift grammar keeps this file's canonical bytes and contract_hash
+# byte-identical: the serializer never emits `vendor`.
+vendor = "GenuineIntel"
 kernel-tag = "v6.18.35"
 kernel-sha256 = "f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236"
 cpuid-baseline = "det-cfl-v1"

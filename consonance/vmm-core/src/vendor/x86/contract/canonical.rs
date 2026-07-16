@@ -33,6 +33,22 @@ fn cell(token: &str, param: Option<&str>) -> String {
     }
 }
 
+/// Render the trailing AMD row qualifiers (Deliverables 3 & 4): a
+/// ` verified:<v>` token when the row carries the `verify-on-silicon` marker, then
+/// an ` applies-when:<gen>` token for the per-generation PMU rows. Fixed order,
+/// space-prefixed so it appends cleanly after the read/write cells. Empty for
+/// every Intel row (both `None`), so the Intel canonical form is byte-identical.
+fn qualifiers(verified: Option<&str>, applies_when: Option<&str>) -> String {
+    let mut s = String::new();
+    if let Some(v) = verified {
+        s.push_str(&format!(" verified:{v}"));
+    }
+    if let Some(a) = applies_when {
+        s.push_str(&format!(" applies-when:{a}"));
+    }
+    s
+}
+
 /// Render a CPUID register field as its canonical token.
 fn reg(field: RegField) -> String {
     match field {
@@ -82,122 +98,163 @@ pub(crate) fn serialize(c: &Contract) -> String {
             format!("{:08x}-{:08x}", r.leaf.lo, r.leaf.hi)
         };
         line(format!(
-            "cpuid {leaf}.{} {} {} {} {}",
+            "cpuid {leaf}.{} {} {} {} {}{}",
             subleaf_tok(r.subleaf),
             reg(r.eax),
             reg(r.ebx),
             reg(r.ecx),
             reg(r.edx),
+            qualifiers(r.verified.as_deref(), None),
         ));
+    }
+    // The shared-ISA standard-leaf surface the AMD draft carries by marker rather
+    // than by forking Intel's table (Deliverable 2); absent for Intel.
+    if let Some(v) = c.transfers.get("cpuid-standard") {
+        line(format!("transfer cpuid-standard {v}"));
     }
     line("cpuid-default zeroed".to_string());
 
-    // 3. MSR records: one per index, sorted ascending, pairwise-disjoint.
-    let mut msr: BTreeMap<u32, (String, String)> = BTreeMap::new();
+    // 3. MSR records: one per index, sorted ascending, pairwise-disjoint. The AMD
+    // draft materializes only its own AMD-native `0xc000_00xx`/`0xc001_00xx` rows and
+    // carries the shared architectural MSRs as an **explicit allowlist** (emitted
+    // first, sorted); Intel materializes every row and has no allowlist. Encoding the
+    // shared surface as an allowlist — never a numeric range — keeps vendor-specific
+    // MSRs (e.g. Intel's `0x10a`/`0x122`) out of what a future consumer resolves.
+    let mut shared: Vec<u32> = c.msr_shared.iter().flat_map(|s| s.indices()).collect();
+    shared.sort_unstable();
+    shared.dedup();
+    for idx in &shared {
+        line(format!("msr-shared {idx:08x} unchanged-pending-AE4"));
+    }
+    let mut msr: BTreeMap<u32, (String, String, String)> = BTreeMap::new();
     for row in &c.msr {
         let read = cell(&row.read, row.read_param.as_deref());
         let write = cell(&row.write, row.write_param.as_deref());
+        let quals = qualifiers(row.verified.as_deref(), row.applies_when.as_deref());
         for idx in row.index.indices() {
-            msr.insert(idx, (read.clone(), write.clone()));
+            msr.insert(idx, (read.clone(), write.clone(), quals.clone()));
         }
     }
-    for (idx, (read, write)) in &msr {
-        line(format!("msr {idx:08x} {read} {write}"));
+    for (idx, (read, write, quals)) in &msr {
+        line(format!("msr {idx:08x} {read} {write}{quals}"));
     }
 
-    // 4. Instruction records, sorted lexicographically by mnemonic.
-    let mut insn: Vec<_> = c.insn.clone();
-    insn.sort_by(|a, b| a.mnemonic.cmp(&b.mnemonic));
-    for r in &insn {
-        line(format!(
-            "insn {} {} {} {}",
-            r.mnemonic, r.mechanism, r.result, r.determinism
-        ));
+    // 4. Instruction records, sorted lexicographically by mnemonic (or the AMD
+    // `transfers-unchanged-pending-AE4` marker in place of the whole shared table).
+    if let Some(v) = c.transfers.get("insn") {
+        line(format!("transfer insn {v}"));
+    } else {
+        let mut insn: Vec<_> = c.insn.clone();
+        insn.sort_by(|a, b| a.mnemonic.cmp(&b.mnemonic));
+        for r in &insn {
+            line(format!(
+                "insn {} {} {} {}",
+                r.mnemonic, r.mechanism, r.result, r.determinism
+            ));
+        }
     }
 
     // 5. Timer-device records, fixed device order (as committed in the TOML).
-    for r in &c.timer {
-        line(format!(
-            "timer {} {} {}",
-            r.device,
-            cell(&r.read, r.read_param.as_deref()),
-            cell(&r.write, r.write_param.as_deref()),
-        ));
+    if let Some(v) = c.transfers.get("timer") {
+        line(format!("transfer timer {v}"));
+    } else {
+        for r in &c.timer {
+            line(format!(
+                "timer {} {} {}",
+                r.device,
+                cell(&r.read, r.read_param.as_deref()),
+                cell(&r.write, r.write_param.as_deref()),
+            ));
+        }
     }
 
     // 6. xAPIC MMIO records, sorted ascending by offset, then mmio-default.
-    let mut mmio: Vec<_> = c.mmio.clone();
-    mmio.sort_by_key(|r| u32::from_str_radix(&r.offset, 16).unwrap_or(0));
-    for r in &mmio {
+    if let Some(v) = c.transfers.get("mmio") {
+        line(format!("transfer mmio {v}"));
+    } else {
+        let mut mmio: Vec<_> = c.mmio.clone();
+        mmio.sort_by_key(|r| u32::from_str_radix(&r.offset, 16).unwrap_or(0));
+        for r in &mmio {
+            line(format!(
+                "mmio xapic.{} {} {}",
+                r.offset,
+                cell(&r.read, r.read_param.as_deref()),
+                cell(&r.write, r.write_param.as_deref()),
+            ));
+        }
         line(format!(
-            "mmio xapic.{} {} {}",
-            r.offset,
-            cell(&r.read, r.read_param.as_deref()),
-            cell(&r.write, r.write_param.as_deref()),
+            "mmio-default {} {}",
+            cell(&c.mmio_default_read, c.mmio_default_read_param.as_deref()),
+            cell(&c.mmio_default_write, c.mmio_default_write_param.as_deref()),
         ));
     }
-    line(format!(
-        "mmio-default {} {}",
-        cell(&c.mmio_default_read, c.mmio_default_read_param.as_deref()),
-        cell(&c.mmio_default_write, c.mmio_default_write_param.as_deref()),
-    ));
 
     // 7. CMOS/RTC records: ports before indices, each ascending, ranges expanded.
-    let mut cmos: Vec<(u8, u32, String, String, String)> = Vec::new();
-    for r in &c.cmos {
-        let read = cell(&r.read, r.read_param.as_deref());
-        let write = cell(&r.write, r.write_param.as_deref());
-        if let Some(p) = r.where_.strip_prefix("port:0x") {
-            let v = u32::from_str_radix(p, 16).unwrap_or(0);
-            cmos.push((0, v, r.where_.clone(), read, write));
-        } else if let Some(p) = r.where_.strip_prefix("idx:0x") {
-            if let Some((lo, hi)) = p.split_once("-0x") {
-                let (lo, hi) = (
-                    u32::from_str_radix(lo, 16).unwrap_or(0),
-                    u32::from_str_radix(hi, 16).unwrap_or(0),
-                );
-                for i in lo..=hi {
-                    cmos.push((1, i, format!("idx:0x{i:02x}"), read.clone(), write.clone()));
-                }
-            } else {
+    if let Some(v) = c.transfers.get("cmos") {
+        line(format!("transfer cmos {v}"));
+    } else {
+        let mut cmos: Vec<(u8, u32, String, String, String)> = Vec::new();
+        for r in &c.cmos {
+            let read = cell(&r.read, r.read_param.as_deref());
+            let write = cell(&r.write, r.write_param.as_deref());
+            if let Some(p) = r.where_.strip_prefix("port:0x") {
                 let v = u32::from_str_radix(p, 16).unwrap_or(0);
-                cmos.push((1, v, r.where_.clone(), read, write));
+                cmos.push((0, v, r.where_.clone(), read, write));
+            } else if let Some(p) = r.where_.strip_prefix("idx:0x") {
+                if let Some((lo, hi)) = p.split_once("-0x") {
+                    let (lo, hi) = (
+                        u32::from_str_radix(lo, 16).unwrap_or(0),
+                        u32::from_str_radix(hi, 16).unwrap_or(0),
+                    );
+                    for i in lo..=hi {
+                        cmos.push((1, i, format!("idx:0x{i:02x}"), read.clone(), write.clone()));
+                    }
+                } else {
+                    let v = u32::from_str_radix(p, 16).unwrap_or(0);
+                    cmos.push((1, v, r.where_.clone(), read, write));
+                }
             }
         }
-    }
-    cmos.sort_by_key(|(g, v, _, _, _)| (*g, *v));
-    for (_, _, where_, read, write) in &cmos {
-        line(format!("cmos {where_} {read} {write}"));
+        cmos.sort_by_key(|(g, v, _, _, _)| (*g, *v));
+        for (_, _, where_, read, write) in &cmos {
+            line(format!("cmos {where_} {read} {write}"));
+        }
     }
 
-    // 8. Host-baseline assertion records, fixed key order.
-    let ha = &c.host_assert;
-    line(format!(
-        "host-assert family-model-stepping {}",
-        ha.family_model_stepping
-    ));
-    line(format!(
-        "host-assert host-microcode-rev {}",
-        ha.host_microcode_rev
-    ));
-    line(format!(
-        "host-assert guest-ucode-rev {}",
-        ha.guest_ucode_rev
-    ));
-    line(format!("host-assert mxcsr-mask {}", ha.mxcsr_mask));
-    line(format!("host-assert maxphyaddr-min {}", ha.maxphyaddr_min));
-    line(format!("host-assert rtm-disabled {}", ha.rtm_disabled));
-    // §6 spells this as a bracketed array with `, ` (comma-space) separators —
-    // `cr4-force-reserved [PKE, PKS]` — verbatim; an unbracketed `PKE,PKS` join
-    // would hash a non-normative form.
-    line(format!(
-        "host-assert cr4-force-reserved [{}]",
-        ha.cr4_force_reserved.join(", ")
-    ));
-    let mut absent = ha.host_absent.clone();
-    absent.sort();
-    for m in &absent {
-        line(format!("host-assert host-absent {m}"));
+    // 8. Host-baseline assertion records, fixed key order. The AMD draft defers the
+    // whole per-silicon block to AE-4 with an `on-silicon-pending-AE4` marker (the
+    // Zen host baseline is discovered at AE-0, not drafted here).
+    if let Some(v) = c.transfers.get("host-assert") {
+        line(format!("transfer host-assert {v}"));
+    } else {
+        let ha = &c.host_assert;
+        line(format!(
+            "host-assert family-model-stepping {}",
+            ha.family_model_stepping
+        ));
+        line(format!(
+            "host-assert host-microcode-rev {}",
+            ha.host_microcode_rev
+        ));
+        line(format!(
+            "host-assert guest-ucode-rev {}",
+            ha.guest_ucode_rev
+        ));
+        line(format!("host-assert mxcsr-mask {}", ha.mxcsr_mask));
+        line(format!("host-assert maxphyaddr-min {}", ha.maxphyaddr_min));
+        line(format!("host-assert rtm-disabled {}", ha.rtm_disabled));
+        // §6 spells this as a bracketed array with `, ` (comma-space) separators —
+        // `cr4-force-reserved [PKE, PKS]` — verbatim; an unbracketed `PKE,PKS` join
+        // would hash a non-normative form.
+        line(format!(
+            "host-assert cr4-force-reserved [{}]",
+            ha.cr4_force_reserved.join(", ")
+        ));
+        let mut absent = ha.host_absent.clone();
+        absent.sort();
+        for m in &absent {
+            line(format!("host-assert host-absent {m}"));
+        }
     }
 
     out

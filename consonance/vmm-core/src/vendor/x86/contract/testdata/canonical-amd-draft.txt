@@ -1,0 +1,71 @@
+contract-version=1
+kernel-tag=v6.18.35
+cpuid-baseline=det-zenN-v1
+tsc-hz=0
+crystal-hz=0
+bus-hz=0
+mxcsr-mask=0x0000ffff
+rtc-epoch=0
+pit-refresh-ns=0
+cpuid 00000000.00000000 00000010 68747541 444d4163 69746e65 verified:on-silicon-pending-AE4
+cpuid 80000000.00000000 80000008 00000000 00000000 00000000 verified:on-silicon-pending-AE4
+cpuid 80000001.00000000 00000000 00000000 00000000 00000000 verified:on-silicon-pending-AE4
+cpuid 80000002.00000000 00000000 00000000 00000000 00000000 verified:on-silicon-pending-AE4
+cpuid 80000003.00000000 00000000 00000000 00000000 00000000 verified:on-silicon-pending-AE4
+cpuid 80000004.00000000 00000000 00000000 00000000 00000000 verified:on-silicon-pending-AE4
+cpuid 80000005.00000000 00000000 00000000 00000000 00000000 verified:on-silicon-pending-AE4
+cpuid 80000006.00000000 00000000 00000000 00000000 00000000 verified:on-silicon-pending-AE4
+cpuid 80000007.00000000 00000000 00000000 00000000 00000000 verified:on-silicon-pending-AE4
+cpuid 80000008.00000000 00000000 00000000 00000000 00000000 verified:on-silicon-pending-AE4
+transfer cpuid-standard unchanged-pending-AE4
+cpuid-default zeroed
+msr-shared 00000010 unchanged-pending-AE4
+msr-shared 0000001b unchanged-pending-AE4
+msr-shared 00000174 unchanged-pending-AE4
+msr-shared 00000175 unchanged-pending-AE4
+msr-shared 00000176 unchanged-pending-AE4
+msr-shared 00000277 unchanged-pending-AE4
+msr c0000080 allow-stateful allow-stateful verified:on-silicon-pending-AE4
+msr c0000081 allow-stateful allow-stateful verified:on-silicon-pending-AE4
+msr c0000082 allow-stateful allow-stateful verified:on-silicon-pending-AE4
+msr c0000083 allow-stateful allow-stateful verified:on-silicon-pending-AE4
+msr c0000084 allow-stateful allow-stateful verified:on-silicon-pending-AE4
+msr c0000100 allow-stateful allow-stateful verified:on-silicon-pending-AE4
+msr c0000101 allow-stateful allow-stateful verified:on-silicon-pending-AE4
+msr c0000102 allow-stateful allow-stateful verified:on-silicon-pending-AE4
+msr c0000103 allow-stateful allow-stateful verified:on-silicon-pending-AE4
+msr c0000104 deny-gp deny-gp verified:on-silicon-pending-AE4
+msr c0000300 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:zen4+
+msr c0000301 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:zen4+
+msr c0000302 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:zen4+
+msr c0000303 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:zen4+
+msr c0010000 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010001 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010002 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010003 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010004 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010005 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010006 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010007 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010015 deny-gp deny-gp verified:on-silicon-pending-AE4
+msr c0010117 deny-gp deny-gp verified:on-silicon-pending-AE4
+msr c001011f deny-gp deny-gp verified:on-silicon-pending-AE4
+msr c0010200 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010201 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010202 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010203 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010204 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010205 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010206 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010207 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010208 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0010209 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c001020a deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c001020b deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
+msr c0011020 deny-gp deny-gp verified:on-silicon-pending-AE4
+msr c0011029 deny-gp deny-gp verified:on-silicon-pending-AE4
+transfer insn unchanged-pending-AE4
+transfer timer unchanged-pending-AE4
+transfer mmio unchanged-pending-AE4
+transfer cmos unchanged-pending-AE4
+transfer host-assert on-silicon-pending-AE4

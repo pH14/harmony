@@ -26,17 +26,46 @@ use vmm_backend::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
 mod canonical;
 mod parse;
 
-use parse::{Contract, Subleaf};
+use parse::{Contract, Subleaf, VendorId};
 
-/// The ratified contract artifact (`docs/cpu-msr-contract.toml`), embedded at
-/// compile time. The path is relative to this source file; a docs/ move breaks
-/// the build loudly (intended — the contract is a hard input, not optional).
+/// The ratified **Intel** contract artifact (`docs/cpu-msr-contract.toml`, the
+/// `det-cfl-v1`/`GenuineIntel` column), embedded at compile time. The path is
+/// relative to this source file; a docs/ move breaks the build loudly (intended —
+/// the contract is a hard input, not optional).
 const CONTRACT_TOML: &str = include_str!("../../../../../../docs/cpu-msr-contract.toml");
 
-/// The parsed contract, built once on first use.
+/// The **AMD draft** column (`docs/cpu-msr-contract-amd-draft.toml`, the
+/// `det-zenN-v1`/`AuthenticAMD` column), embedded **only under `cfg(test)`**. This
+/// is the structural draft-only guard (Deliverable 7/8): no live VM construction
+/// path can name this constant, so the draft is unreachable from `boot`/`bringup`.
+/// It is loadable + canonicalizable (its own `contract_hash`) but wired into no
+/// enforcement path — every enforcement cell is `verify-on-silicon` pending AE-4.
+#[cfg(test)]
+const CONTRACT_AMD_DRAFT_TOML: &str =
+    include_str!("../../../../../../docs/cpu-msr-contract-amd-draft.toml");
+
+/// The parsed **Intel** contract (the live policy path), built once on first use.
+/// Loaded under the `GenuineIntel` vendor axis: a vendor-mismatched or mixed-vendor
+/// Intel file is a build bug, caught loudly here (trusted compile-time data — the
+/// `expect` matches `parse`'s embedded-contract discipline).
 fn contract() -> &'static Contract {
     static CACHE: OnceLock<Contract> = OnceLock::new();
-    CACHE.get_or_init(|| Contract::parse(CONTRACT_TOML))
+    CACHE.get_or_init(|| {
+        Contract::load(CONTRACT_TOML, VendorId::GenuineIntel)
+            .expect("embedded Intel contract must declare vendor = \"GenuineIntel\"")
+    })
+}
+
+/// The parsed **AMD draft** column, built once on first use — `cfg(test)` only, so
+/// it never reaches a live policy path (Deliverable 7). Loaded under the
+/// `AuthenticAMD` axis, with the mixed-vendor guard active.
+#[cfg(test)]
+fn contract_amd_draft() -> &'static Contract {
+    static CACHE: OnceLock<Contract> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        Contract::load(CONTRACT_AMD_DRAFT_TOML, VendorId::AuthenticAMD)
+            .expect("embedded AMD draft contract must declare vendor = \"AuthenticAMD\"")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -694,6 +723,650 @@ host-absent = [\"RDPID\", \"SHA\"]\n";
         assert_eq!(total, 1043, "total MSR indices match the contract header");
     }
 
+    // =======================================================================
+    // AMD draft column (Deliverables 2–8) — the vendor axis on the one contract.
+    // =======================================================================
+
+    use super::parse::{ContractError, VendorId};
+
+    /// SHA-256 of a contract's canonical form, as lowercase hex.
+    fn hash_hex(c: &Contract) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(canonical::serialize(c).as_bytes());
+        let out: [u8; 32] = hasher.finalize().into();
+        out.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Intel byte-identity through the restructure (Deliverable 6): the live
+    /// `contract()` is still the GenuineIntel column. Its canonical form and hash
+    /// are pinned unchanged by `canonical_form_matches_golden` / the registry gate
+    /// above (v4, `30839ae6…`); adding the `vendor` header key is zero-drift (the
+    /// serializer never emits it), so those Intel gates stay green untouched.
+    #[test]
+    fn live_contract_is_the_intel_column() {
+        assert_eq!(contract().vendor, VendorId::GenuineIntel);
+        assert_eq!(contract().cpuid_baseline, "det-cfl-v1");
+    }
+
+    /// Draft-only guard (Deliverable 8) — **structural**: the AMD constructor is
+    /// `#[cfg(test)]`, so no non-test build can name it; the live `contract()` path
+    /// returns the Intel column, and the AMD draft carries the placeholder baseline.
+    /// A live VM construction path cannot reach the AMD contract because the only
+    /// symbol that returns it does not exist outside `cfg(test)`.
+    #[test]
+    fn amd_draft_is_unreachable_from_the_live_path() {
+        // The live policy path is Intel.
+        assert_eq!(contract().vendor, VendorId::GenuineIntel);
+        // The AMD constructor (test-only) yields the AuthenticAMD draft column. The
+        // two are distinct artifacts (distinct vendor + baseline); their hashes
+        // differ too, pinned separately by the committed-hash gates below. Kept
+        // parse-only here so the structural guard also runs under Miri.
+        let amd = contract_amd_draft();
+        assert_eq!(amd.vendor, VendorId::AuthenticAMD);
+        assert_eq!(amd.cpuid_baseline, "det-zenN-v1");
+        assert_ne!(contract().cpuid_baseline, amd.cpuid_baseline);
+    }
+
+    /// AMD round-trip + hash stability (Deliverable 8): the draft loads,
+    /// canonicalizes, and produces a stable, non-trivial hash (two calls agree).
+    #[test]
+    #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
+    fn amd_draft_loads_and_canonicalizes() {
+        let amd = contract_amd_draft();
+        let a = hash_hex(amd);
+        let b = hash_hex(amd);
+        assert_eq!(a, b, "hash is a pure function of the parsed tables");
+        assert_ne!(a, "0".repeat(64), "hash is non-trivial");
+    }
+
+    /// AMD computed hash == committed AMD `[contract] contract_hash` (Deliverable 8).
+    #[test]
+    #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
+    fn amd_contract_hash_matches_committed() {
+        let amd = contract_amd_draft();
+        let computed = hash_hex(amd);
+        assert_eq!(
+            amd.contract_hash.as_deref(),
+            Some(computed.as_str()),
+            "AMD draft contract_hash() must equal the committed hash in \
+             docs/cpu-msr-contract-amd-draft.toml [contract]. Regenerate with \
+             contract::tests::regen_amd_golden then commit `contract_hash = \"{computed}\"`."
+        );
+    }
+
+    /// **GOLDEN** AMD canonical form — the exact bytes the serializer emits for the
+    /// draft column, committed at `testdata/canonical-amd-draft.txt`. Locks every
+    /// AMD spelling: the AuthenticAMD leaves, the `verified:on-silicon-pending-AE4`
+    /// row qualifiers, the `applies-when:{legacy-perfmon,zen4+}` PMU markers, and the
+    /// `transfer <section> …` markers. `contract_hash` is sha256 of exactly these bytes.
+    #[test]
+    #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
+    fn amd_canonical_form_matches_golden() {
+        let golden = include_str!("testdata/canonical-amd-draft.txt");
+        let form = canonical::serialize(contract_amd_draft());
+        assert_eq!(
+            form, golden,
+            "AMD canonical form drifted from testdata/canonical-amd-draft.txt. If this is \
+             an intended, reviewed change, bump [contract] version and regenerate the golden \
+             (contract::tests::regen_amd_golden), then re-pin the committed hash."
+        );
+        // No trailing whitespace on any AMD record line (the transfer/qualifier
+        // tokens append cleanly).
+        for l in form.lines() {
+            assert_eq!(l, l.trim_end(), "no trailing whitespace");
+        }
+    }
+
+    /// AMD grammar anchors: the vendor axis is honest in the canonical form.
+    #[test]
+    #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
+    fn amd_canonical_form_well_formed() {
+        let form = canonical::serialize(contract_amd_draft());
+        // Header: the placeholder baseline, the deferred silicon scalars as 0.
+        assert!(form.starts_with("contract-version=1\n"));
+        assert!(form.contains("\ncpuid-baseline=det-zenN-v1\n"));
+        assert!(
+            form.contains("\ntsc-hz=0\n"),
+            "silicon TSC freq deferred to AE-0"
+        );
+        // Leaf 0 AuthenticAMD vendor string, carrying the verify qualifier.
+        assert!(form.contains(
+            "\ncpuid 00000000.00000000 00000010 68747541 444d4163 69746e65 \
+             verified:on-silicon-pending-AE4\n"
+        ));
+        // An allow-stateful AMD MSR + a deny-gp PMU MSR with its generation marker.
+        assert!(form.contains(
+            "\nmsr c0000080 allow-stateful allow-stateful verified:on-silicon-pending-AE4\n"
+        ));
+        assert!(form.contains(
+            "\nmsr c0000300 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:zen4+\n"
+        ));
+        // The PerfMonV2 global control/status set runs through GLOBAL_STATUS_SET.
+        assert!(form.contains(
+            "\nmsr c0000303 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:zen4+\n"
+        ));
+        assert!(form.contains(
+            "\nmsr c0010200 deny-gp deny-gp verified:on-silicon-pending-AE4 \
+             applies-when:legacy-perfmon\n"
+        ));
+        // The shared MSR surface is an explicit allowlist, not a numeric marker.
+        assert!(form.contains("\nmsr-shared 00000010 unchanged-pending-AE4\n"));
+        assert!(form.contains("\nmsr-shared 00000277 unchanged-pending-AE4\n"));
+        // Intel-specific MSRs are NOT in the allowlist (0x10a ARCH_CAPABILITIES,
+        // 0x122 TSX_CTRL live below the old numeric cutoff but must not be claimed).
+        assert!(!form.contains("msr-shared 0000010a"));
+        assert!(!form.contains("msr-shared 00000122"));
+        // Section-level transfer markers replace the shared-ISA rows.
+        assert!(form.contains("\ntransfer cpuid-standard unchanged-pending-AE4\n"));
+        assert!(form.contains("\ntransfer insn unchanged-pending-AE4\n"));
+        assert!(form.contains("\ntransfer timer unchanged-pending-AE4\n"));
+        assert!(form.contains("\ntransfer cmos unchanged-pending-AE4\n"));
+        assert!(form.contains("\ntransfer mmio unchanged-pending-AE4\n"));
+        assert!(form.contains("\ntransfer host-assert on-silicon-pending-AE4\n"));
+    }
+
+    /// Grammar validation: MSR index sets are pairwise disjoint **within** the AMD
+    /// file (Deliverable 8 — the disjointness check generalized to the loaded vendor).
+    #[test]
+    fn amd_msr_index_set_is_disjoint() {
+        let amd = contract_amd_draft();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut total = 0usize;
+        for row in &amd.msr {
+            for idx in row.index.indices() {
+                assert!(seen.insert(idx), "AMD MSR index {idx:#x} appears twice");
+                total += 1;
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            total,
+            "AMD MSR index sets are pairwise disjoint"
+        );
+        // Every materialized AMD MSR is in the AMD-distinct 0xc000/0xc001 space.
+        assert!(
+            seen.iter()
+                .all(|&i| (0xc000_0000..=0xc001_ffff).contains(&i)),
+            "materialized AMD MSRs live in the 0xc000_00xx / 0xc001_00xx space"
+        );
+    }
+
+    /// The shared MSR surface is an **explicit allowlist**, not a numeric range
+    /// (round-4 finding 2). The allowlist is disjoint from the materialized rows, and
+    /// it is *portable* — it contains no Intel-specific MSR (e.g. `IA32_ARCH_CAPABILITIES`
+    /// `0x10a`, `IA32_TSX_CTRL` `0x122`, which a bare `< 0xc000_0000` cutoff would have
+    /// wrongly claimed), so a future AE-4 consumer cannot inherit non-portable rows.
+    #[test]
+    fn amd_msr_shared_allowlist_is_disjoint_and_portable() {
+        let amd = contract_amd_draft();
+        let shared: std::collections::BTreeSet<u32> =
+            amd.msr_shared.iter().flat_map(|s| s.indices()).collect();
+        assert!(!shared.is_empty(), "the shared-MSR allowlist is non-empty");
+
+        // The known cross-vendor architectural MSRs are present; the Intel-specific
+        // ones a numeric cutoff would over-claim are NOT.
+        assert!(
+            shared.contains(&0x10),
+            "IA32_TSC is a shared architectural MSR"
+        );
+        assert!(
+            shared.contains(&0x277),
+            "IA32_PAT is a shared architectural MSR"
+        );
+        assert!(
+            !shared.contains(&0x10a),
+            "IA32_ARCH_CAPABILITIES (0x10a) is Intel-specific — not portable to AMD"
+        );
+        assert!(
+            !shared.contains(&0x122),
+            "IA32_TSX_CTRL (0x122) is Intel-specific — not portable to AMD"
+        );
+
+        // Disjoint from the materialized rows — no index is both.
+        let materialized: std::collections::BTreeSet<u32> =
+            amd.msr.iter().flat_map(|r| r.index.indices()).collect();
+        assert!(
+            shared.is_disjoint(&materialized),
+            "the shared-MSR allowlist and the materialized rows must not overlap"
+        );
+        // The materialized rows own the AMD-native space; the allowlist is architectural.
+        assert!(
+            materialized.iter().all(|&i| i >= 0xc000_0000),
+            "materialized AMD MSRs are the AMD-native >= 0xc000_0000 space"
+        );
+    }
+
+    /// The advertised max-basic-leaf bound is internally consistent (round-3
+    /// finding 1): CPUID(0).EAX equals `0x10`, so the `cpuid-standard` transfer covers
+    /// standard leaves `0x1..=0x10` and leaves above `0x10` are out of range — the
+    /// enumeration bound and the transfer range name the same truth (`0x10`).
+    #[test]
+    fn amd_leaf0_max_basic_leaf_is_the_transfer_bound() {
+        let amd = contract_amd_draft();
+        let leaf0 = amd
+            .cpuid
+            .iter()
+            .find(|r| r.leaf.lo == 0 && r.leaf.hi == 0)
+            .expect("AMD leaf 0 present");
+        // EAX (the max-basic-leaf) is a frozen constant equal to 0x10.
+        assert!(
+            matches!(leaf0.eax, super::parse::RegField::Const(0x10)),
+            "AMD leaf-0 EAX (max-basic-leaf) is the frozen bound 0x10"
+        );
+    }
+
+    /// `verify-on-silicon` coverage (Deliverable 8): every AMD **enforcement** row
+    /// (every materialized CPUID/MSR row — the transfer sections are markers, not
+    /// rows) carries the qualifier. A silently-trusted AMD row fails here.
+    #[test]
+    fn amd_every_enforcement_row_is_verify_on_silicon() {
+        let amd = contract_amd_draft();
+        for row in &amd.cpuid {
+            assert_eq!(
+                row.verified.as_deref(),
+                Some("on-silicon-pending-AE4"),
+                "AMD CPUID leaf {:#010x} lacks the verify-on-silicon marker",
+                row.leaf.lo
+            );
+        }
+        for row in &amd.msr {
+            assert_eq!(
+                row.verified.as_deref(),
+                Some("on-silicon-pending-AE4"),
+                "AMD MSR row {:?} lacks the verify-on-silicon marker",
+                row.index.indices()
+            );
+        }
+    }
+
+    /// PerfMonV2-vs-legacy as a per-generation fact (Deliverable 4): the draft
+    /// carries **both** PMU models as separate `applies-when`-marked sections, and
+    /// the loader resolves **neither** — no single live PMU model is asserted.
+    #[test]
+    fn amd_carries_both_pmu_models_unresolved() {
+        let amd = contract_amd_draft();
+        let markers: std::collections::BTreeSet<&str> = amd
+            .msr
+            .iter()
+            .filter_map(|r| r.applies_when.as_deref())
+            .collect();
+        assert!(
+            markers.contains("legacy-perfmon"),
+            "legacy PMU section present"
+        );
+        assert!(markers.contains("zen4+"), "PerfMonV2 section present");
+        // Both live in the hashed draft data; the gate does NOT collapse them to one.
+        assert_eq!(
+            markers.len(),
+            2,
+            "exactly the two per-generation PMU models"
+        );
+    }
+
+    /// Mixed-vendor refusal (Deliverable 8): the loader rejects a file whose `vendor`
+    /// field disagrees with the axis it was loaded under, and an artifact whose
+    /// declared vendor disagrees with its own CPUID leaf-0 vendor string.
+    #[test]
+    fn loader_refuses_vendor_axis_disagreement() {
+        // AMD draft loaded under the Intel axis → VendorMismatch.
+        assert_eq!(
+            Contract::load(CONTRACT_AMD_DRAFT_TOML, VendorId::GenuineIntel).unwrap_err(),
+            ContractError::VendorMismatch {
+                expected: "GenuineIntel",
+                found: "AuthenticAMD".to_string(),
+            }
+        );
+        // Intel file loaded under the AMD axis → VendorMismatch.
+        assert_eq!(
+            Contract::load(CONTRACT_TOML, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::VendorMismatch {
+                expected: "AuthenticAMD",
+                found: "GenuineIntel".to_string(),
+            }
+        );
+        // Correct axes load cleanly.
+        assert!(Contract::load(CONTRACT_TOML, VendorId::GenuineIntel).is_ok());
+        assert!(Contract::load(CONTRACT_AMD_DRAFT_TOML, VendorId::AuthenticAMD).is_ok());
+    }
+
+    /// A mixed-vendor artifact: the `[contract] vendor` header claims AuthenticAMD,
+    /// but CPUID leaf 0 spells the Intel vendor string — the structural guard fires.
+    #[test]
+    fn loader_refuses_mixed_vendor_artifact() {
+        const MIXED: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+cpuid-baseline = \"det-zenN-v1\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x756e6547\"\n\
+ecx = \"0x6c65746e\"\n\
+edx = \"0x49656e69\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        let err = Contract::load(MIXED, VendorId::AuthenticAMD).unwrap_err();
+        assert_eq!(
+            err,
+            ContractError::MixedVendor {
+                declared: "AuthenticAMD",
+                leaf0: "GenuineIntel".to_string(),
+            }
+        );
+    }
+
+    /// Fail-closed on a **present-but-invalid** vendor token: an unrecognized
+    /// `[contract] vendor` string is refused (`UnknownVendor`), never silently
+    /// defaulted to GenuineIntel. Only a genuinely *absent* key defaults.
+    #[test]
+    fn loader_refuses_present_but_invalid_vendor_token() {
+        const BOGUS: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"NotARealVendor\"\n\
+cpuid-baseline = \"whatever\"\n";
+        // Refused under either axis — the token is invalid regardless of `expected`.
+        for axis in [VendorId::GenuineIntel, VendorId::AuthenticAMD] {
+            assert_eq!(
+                Contract::load(BOGUS, axis).unwrap_err(),
+                ContractError::UnknownVendor {
+                    token: "NotARealVendor".to_string(),
+                }
+            );
+        }
+        // A genuinely absent vendor key still loads (legacy Intel fixtures).
+        const NO_VENDOR: &str = "[contract]\nversion = 1\ncpuid-baseline = \"x\"\n";
+        assert!(Contract::load(NO_VENDOR, VendorId::GenuineIntel).is_ok());
+    }
+
+    /// Fail-closed on a **present-but-malformed** leaf 0: a leaf-0 row using dynamic
+    /// register rules, or non-UTF-8 constant bytes, cannot bypass the mixed-vendor
+    /// guard by masquerading as an absent leaf 0 — it is refused (`MalformedLeaf0`).
+    #[test]
+    fn loader_refuses_malformed_leaf0() {
+        // (a) leaf 0 with a dynamic register — not three frozen constants.
+        const DYN_LEAF0: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"dyn:osxsave:0x0\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(DYN_LEAF0, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MalformedLeaf0 {
+                declared: "AuthenticAMD",
+            }
+        );
+
+        // (b) leaf 0 whose constant bytes are not UTF-8 (0xffffffff registers).
+        const NON_UTF8_LEAF0: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0xffffffff\"\n\
+ecx = \"0xffffffff\"\n\
+edx = \"0xffffffff\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(NON_UTF8_LEAF0, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MalformedLeaf0 {
+                declared: "AuthenticAMD",
+            }
+        );
+
+        // A contract with NO leaf-0 row is still exempt (the guard is skipped).
+        const NO_LEAF0: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x80000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x80000008\"\n\
+ebx = \"0x00000000\"\n\
+ecx = \"0x00000000\"\n\
+edx = \"0x00000000\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert!(Contract::load(NO_LEAF0, VendorId::AuthenticAMD).is_ok());
+    }
+
+    /// Positive validation of the leaf-0 shape (round-4 REDESIGN): the guard no longer
+    /// enumerates malformed shapes (which lost three rounds) — it accepts **only** the
+    /// one canonical shape (exactly one all-constant single `(0,0)` row spelling the
+    /// declared vendor) and refuses everything else. A range-form covering row is now
+    /// `MalformedLeaf0` **regardless of the vendor bytes** — a range is not the
+    /// canonical single-leaf shape, so it can neither smuggle a foreign vendor nor
+    /// slip through by spelling the right one.
+    #[test]
+    fn loader_refuses_noncanonical_leaf0_shapes() {
+        // A range row `0x0..=0x5` covering leaf 0 — refused as MalformedLeaf0 whether
+        // it spells the Intel string...
+        const RANGE_INTEL: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf-lo = \"0x00000000\"\n\
+leaf-hi = \"0x00000005\"\n\
+subleaf = \"*\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x756e6547\"\n\
+ecx = \"0x6c65746e\"\n\
+edx = \"0x49656e69\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(RANGE_INTEL, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MalformedLeaf0 {
+                declared: "AuthenticAMD",
+            }
+        );
+
+        // ...or the CORRECT AMD string: the range form itself is not the canonical
+        // shape, so it is refused even when the vendor bytes agree.
+        const RANGE_AMD: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf-lo = \"0x00000000\"\n\
+leaf-hi = \"0x00000005\"\n\
+subleaf = \"*\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x68747541\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(RANGE_AMD, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MalformedLeaf0 {
+                declared: "AuthenticAMD",
+            }
+        );
+
+        // A dynamic EAX at leaf 0 (EBX/EDX/ECX correct) — the third historical bypass:
+        // positive validation requires ALL FOUR registers constant, so it is refused.
+        const DYN_EAX: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"dyn:osxsave:0x10\"\n\
+ebx = \"0x68747541\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(DYN_EAX, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MalformedLeaf0 {
+                declared: "AuthenticAMD",
+            }
+        );
+
+        // Two rows both covering leaf 0 subleaf 0 (ambiguous) — refused.
+        const TWO_COVERING: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x68747541\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"*\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x68747541\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(TWO_COVERING, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MalformedLeaf0 {
+                declared: "AuthenticAMD",
+            }
+        );
+
+        // The one good shape (single (0,0), all constants, correct vendor) loads.
+        const GOOD: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x68747541\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert!(Contract::load(GOOD, VendorId::AuthenticAMD).is_ok());
+
+        // The good shape but the wrong vendor string → MixedVendor (not MalformedLeaf0).
+        const GOOD_WRONG_VENDOR: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x756e6547\"\n\
+ecx = \"0x6c65746e\"\n\
+edx = \"0x49656e69\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(GOOD_WRONG_VENDOR, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MixedVendor {
+                declared: "AuthenticAMD",
+                leaf0: "GenuineIntel".to_string(),
+            }
+        );
+
+        // A row covering leaf 0 only at a non-zero subleaf does NOT freeze the vendor
+        // string, so it is not a leaf-0 row and is exempt (no covering row).
+        const NONZERO_SUBLEAF: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000001\"\n\
+eax = \"0x00000000\"\n\
+ebx = \"0x756e6547\"\n\
+ecx = \"0x6c65746e\"\n\
+edx = \"0x49656e69\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert!(Contract::load(NONZERO_SUBLEAF, VendorId::AuthenticAMD).is_ok());
+    }
+
+    /// A compact AMD-flavoured contract for the format-invariance property below —
+    /// exercises the vendor axis, the `verified` / `applies-when` row qualifiers, and
+    /// every `[transfers]` marker.
+    const AMD_STABILITY_TOML: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+kernel-tag = \"v6.18.35\"\n\
+cpuid-baseline = \"det-zenN-v1\"\n\
+mxcsr-mask = \"0x0000ffff\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x68747541\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x80000001\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000000\"\n\
+ebx = \"0x00000000\"\n\
+ecx = \"0x00000000\"\n\
+edx = \"0x00000000\"\n\
+verified = \"on-silicon-pending-AE4\"\n\
+[[msr.entry]]\n\
+index = \"0xc0000080\"\n\
+read = \"allow-stateful\"\n\
+write = \"allow-stateful\"\n\
+verified = \"on-silicon-pending-AE4\"\n\
+[[msr.entry]]\n\
+index-lo = \"0xc0000300\"\n\
+index-hi = \"0xc0000302\"\n\
+read = \"deny-gp\"\n\
+write = \"deny-gp\"\n\
+verified = \"on-silicon-pending-AE4\"\n\
+applies-when = \"zen4+\"\n\
+[[msr-shared.entry]]\n\
+index = \"0x10\"\n\
+[[msr-shared.entry]]\n\
+index = \"0x277\"\n\
+[transfers]\n\
+cpuid-standard = \"unchanged-pending-AE4\"\n\
+insn = \"unchanged-pending-AE4\"\n\
+timer = \"unchanged-pending-AE4\"\n\
+cmos = \"unchanged-pending-AE4\"\n\
+mmio = \"unchanged-pending-AE4\"\n\
+host-assert = \"on-silicon-pending-AE4\"\n";
+
+    proptest! {
+        // ≥256 native cases per the AMD-draft format-invariance gate (the small
+        // ~4 KiB AMD form keeps this well under the test-runtime budget).
+        #![proptest_config(pcfg(256))]
+
+        /// Format-invariance for the AMD column (Deliverable 8): incidental input
+        /// formatting — leading whitespace, trailing comments, blank lines — never
+        /// changes the canonical form / hash, exactly as for the Intel column.
+        #[test]
+        #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
+        fn prop_amd_canonical_form_invariant_to_formatting(
+            comment_each in proptest::collection::vec(any::<bool>(), 0..48),
+            leading_blanks in 0usize..4,
+        ) {
+            let baseline = canonical::serialize(&Contract::parse(AMD_STABILITY_TOML));
+            let noisy = inject_formatting_noise(AMD_STABILITY_TOML, &comment_each, leading_blanks);
+            let got = canonical::serialize(&Contract::parse(&noisy));
+            prop_assert_eq!(got, baseline);
+        }
+    }
+
     /// Prints the computed §6 canonical form size + the current `contract_hash` so the
     /// foreman can commit it to `docs/cpu-msr-contract.toml`. Run with:
     /// `cargo test -p vmm-core contract::tests::report_contract_hash -- --nocapture`.
@@ -715,13 +1388,34 @@ host-absent = [\"RDPID\", \"SHA\"]\n";
     /// `cargo test -p vmm-core contract::tests::regen_golden -- --ignored`.
     /// Then update `canonical_form_matches_golden`'s expected hash to the new value.
     #[test]
-    #[ignore = "writes src/contract/testdata/canonical-v4.txt; run manually on a reviewed §6 bump"]
+    #[ignore = "writes src/vendor/x86/contract/testdata/canonical-v4.txt; run manually on a reviewed §6 bump"]
     fn regen_golden() {
         let form = canonical::serialize(contract());
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/src/contract/testdata/canonical-v4.txt"
+            "/src/vendor/x86/contract/testdata/canonical-v4.txt"
         );
         std::fs::write(path, &form).expect("write golden");
+    }
+
+    /// Regenerate the committed **AMD** golden + report its hash. **Ignored** so it
+    /// never runs in the normal suite. Run deliberately on a reviewed AMD-column
+    /// change (e.g. AE-0 pinning `det-zenN-v1`) after bumping the AMD `[contract]
+    /// version`, then commit the new `contract_hash` to
+    /// `docs/cpu-msr-contract-amd-draft.toml`:
+    /// `cargo test -p vmm-core contract::tests::regen_amd_golden -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "writes testdata/canonical-amd-draft.txt; run manually on a reviewed AMD-column change"]
+    fn regen_amd_golden() {
+        let amd = contract_amd_draft();
+        let form = canonical::serialize(amd);
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/vendor/x86/contract/testdata/canonical-amd-draft.txt"
+        );
+        std::fs::write(path, &form).expect("write AMD golden");
+        eprintln!("=== AMD draft contract_hash ===");
+        eprintln!("canonical-form bytes: {}", form.len());
+        eprintln!("contract_hash = {}", hash_hex(amd));
     }
 }
