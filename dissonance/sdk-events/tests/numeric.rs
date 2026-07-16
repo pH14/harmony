@@ -89,7 +89,7 @@ fn non_finite_and_out_of_range_tokens_stay_report_only() {
 /// The exact canonical decomposition of a token — pins every field the accessors
 /// and the parse/canonicalize arithmetic produce, so an off-by-one or dropped sign
 /// is caught directly (not just through the total order, which shifts uniformly).
-fn assert_decomp(token: &str, negative: bool, digits: &str, scale: i32, adjusted: i32) {
+fn assert_decomp(token: &str, negative: bool, digits: &str, scale: i64, adjusted: i32) {
     let b = bounded(token);
     assert_eq!(b.is_negative(), negative, "is_negative for `{token}`");
     assert_eq!(b.digits(), digits, "digits for `{token}`");
@@ -185,6 +185,47 @@ fn extreme_exponents_are_out_of_range_not_a_panic() {
     };
     assert_eq!(exp_of("1e9223372036854775807"), i32::MAX);
     assert_eq!(exp_of("1.55e-9223372036854775807"), i32::MIN);
+}
+
+#[test]
+fn full_i32_exponent_window_with_fractions_does_not_wrap_the_scale() {
+    // With limits spanning the full i32 adjusted-exponent range, a value whose
+    // adjusted exponent is exactly i32::MIN but which has fractional digits has an
+    // LSB scale just below i32::MIN. Storing scale as i32 would wrap (and then
+    // `adjusted_exponent` would overflow); as i64 it is exact and panic-free.
+    let full = NumericLimits {
+        max_significant_digits: 38,
+        min_adjusted_exponent: i32::MIN,
+        max_adjusted_exponent: i32::MAX,
+    };
+    let reduce = |t: &str| {
+        NumericToken::new(t)
+            .to_bounded(&full)
+            .unwrap_or_else(|e| panic!("`{t}` should reduce under full-range limits: {e}"))
+    };
+
+    // adjusted = i32::MIN, one fractional digit → scale = i32::MIN - 1.
+    let lo = reduce("1.5e-2147483648");
+    assert_eq!(lo.digits(), "15");
+    assert_eq!(lo.adjusted_exponent(), i32::MIN);
+    assert_eq!(lo.scale(), i32::MIN as i64 - 1);
+
+    // adjusted = i32::MAX with a fraction still fits (scale stays below the MSB).
+    let hi = reduce("1.5e2147483647");
+    assert_eq!(hi.digits(), "15");
+    assert_eq!(hi.adjusted_exponent(), i32::MAX);
+    assert_eq!(hi.scale(), i32::MAX as i64 - 1);
+
+    // Ordering across the extremes is exact and does not panic.
+    assert!(lo < hi);
+    assert!(reduce("2e-2147483648") > lo, "same MSB, larger significand");
+
+    // Just past the window on each side is still rejected.
+    assert!(
+        NumericToken::new("1e-2147483649")
+            .to_bounded(&full)
+            .is_err()
+    );
 }
 
 /// A generator of finite decimal tokens across sign, fraction, and exponent forms,

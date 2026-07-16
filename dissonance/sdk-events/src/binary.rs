@@ -635,6 +635,20 @@ fn decode_assert(local: u32, bytes: &[u8], ctx: &DeclContext) -> Option<Payload>
         _ => return None,
     };
     let assert_type = ctx.assert_types.get(&(wire::NS_ASSERT, local)).copied();
+    // A declared verb constrains which disposition the guest SDK can emit: hits
+    // come only from `sometimes`/`reachable`, violations only from
+    // `always`/`unreachable`. A kind-inconsistent disposition (e.g. a hit on an
+    // `always` point) is a forged/malformed record the guest would never emit —
+    // keep it raw rather than mint credible normalized evidence.
+    if let Some(at) = assert_type {
+        let consistent = match at {
+            AssertType::Sometimes | AssertType::Reachable => disp == wire::DISP_HIT,
+            AssertType::Always | AssertType::Unreachable => disp == wire::DISP_VIOLATION,
+        };
+        if !consistent {
+            return None;
+        }
+    }
     Some(Payload::Assertion {
         assert_type,
         condition,

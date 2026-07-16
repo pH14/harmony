@@ -122,7 +122,7 @@ pub fn sdk_events::BoundedNumeric::adjusted_exponent(&self) -> i32
 pub fn sdk_events::BoundedNumeric::digits(&self) -> &str
 pub fn sdk_events::BoundedNumeric::is_negative(&self) -> bool
 pub fn sdk_events::BoundedNumeric::is_zero(&self) -> bool
-pub fn sdk_events::BoundedNumeric::scale(&self) -> i32
+pub fn sdk_events::BoundedNumeric::scale(&self) -> i64
 impl core::cmp::Ord for sdk_events::BoundedNumeric
 pub fn sdk_events::BoundedNumeric::cmp(&self, &sdk_events::BoundedNumeric) -> core::cmp::Ordering
 impl core::cmp::PartialOrd for sdk_events::BoundedNumeric

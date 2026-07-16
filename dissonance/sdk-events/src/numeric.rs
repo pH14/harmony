@@ -133,7 +133,11 @@ pub struct BoundedNumeric {
     /// trailing zeros; empty iff the value is zero).
     digits: String,
     /// Base-10 scale: the power of ten of the least-significant stored digit.
-    scale: i32,
+    /// `i64`, not `i32`: the *adjusted* exponent (MSB) is bounded to `i32` by the
+    /// limits, but the LSB scale sits `len - 1` digits below it, so with limits
+    /// spanning the full `i32` range it can fall just past `i32::MIN` — storing it
+    /// as `i32` would wrap.
+    scale: i64,
 }
 
 impl BoundedNumeric {
@@ -153,18 +157,20 @@ impl BoundedNumeric {
     }
 
     /// The base-10 scale of the least-significant significand digit.
-    pub fn scale(&self) -> i32 {
+    pub fn scale(&self) -> i64 {
         self.scale
     }
 
     /// The adjusted exponent: the power of ten of the most-significant digit
     /// (`scale + len(digits) - 1`), or `0` for zero. This is the magnitude order
-    /// used by the total order.
+    /// used by the total order. Computed in `i64` (the intermediate `scale + len`
+    /// can pass `i32::MAX`), but the result is the limit-validated adjusted
+    /// exponent, always within `i32`.
     pub fn adjusted_exponent(&self) -> i32 {
         if self.digits.is_empty() {
             0
         } else {
-            self.scale + self.digits.len() as i32 - 1
+            (self.scale + self.digits.len() as i64 - 1) as i32
         }
     }
 
@@ -340,12 +346,13 @@ impl BoundedNumeric {
             });
         }
 
-        // `adjusted` is in `[-64, 64]` and the significand ≤ 38 digits, so
-        // `scale = adjusted − (len − 1)` fits `i32` without truncation.
+        // `scale` is kept as `i64` — the adjusted exponent is limit-bounded to
+        // `i32`, but the scale can sit `len - 1` digits below it (past `i32::MIN`
+        // for full-range limits), so casting to `i32` would wrap.
         Ok(BoundedNumeric {
             negative,
             digits: significand.to_string(),
-            scale: scale as i32,
+            scale,
         })
     }
 

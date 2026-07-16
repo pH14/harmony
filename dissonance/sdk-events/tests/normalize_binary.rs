@@ -58,7 +58,9 @@ const STATE_ACCUMULATE: u8 = 3;
 const DISP_HIT: u8 = 0;
 const DISP_VIOLATION: u8 = 1;
 // v1 catalog point-kind bytes.
+const KIND_SOMETIMES: u8 = 1;
 const KIND_REACHABLE: u8 = 2;
+const KIND_UNREACHABLE: u8 = 3;
 const KIND_BUGGIFY: u8 = 5;
 // The 24-bit local-id ceiling.
 const LOCAL_MAX: u32 = 0x00FF_FFFF;
@@ -145,8 +147,9 @@ fn v1_mixed_operations_for_one_identity_are_malformed_evidence() {
 
 #[test]
 fn v1_assert_firing_carries_the_declared_verb_and_condition() {
+    // A `sometimes` point validly emits a HIT when satisfied.
     let raw = vec![
-        at(0, 0, v1_catalog(&[(KIND_ALWAYS, 3, "inv")])),
+        at(0, 0, v1_catalog(&[(KIND_SOMETIMES, 3, "progress")])),
         at(5, event_id(NS_ASSERT, 3), assert_firing(DISP_HIT, b"ok")),
     ];
     let n = decode_binary(&raw).expect("decodes");
@@ -163,26 +166,17 @@ fn v1_assert_firing_carries_the_declared_verb_and_condition() {
             assert_type,
             condition,
         } => {
-            assert_eq!(*assert_type, Some(sdk_events::AssertType::Always));
+            assert_eq!(*assert_type, Some(sdk_events::AssertType::Sometimes));
             assert_eq!(*condition, Some(true));
         }
         other => panic!("expected assertion, got {other:?}"),
     }
-    // An `always` point carries NO expectation on this wire: `guest/sdk` emits
-    // only violations, so a passing always produces no event and must not read as
-    // an unsatisfied must-hit.
-    let id = ObservationId::Point {
-        namespace: NS_ASSERT,
-        local: 3,
-    };
-    assert_eq!(n.schema.entry(&id).unwrap().expectation, None);
 }
 
 #[test]
 fn v1_sometimes_point_keeps_its_must_hit_expectation() {
     // Unlike `always`, a `sometimes` emits a hit when satisfied, so never-firing is
     // a genuine coverage gap — the must-hit expectation is correct here.
-    const KIND_SOMETIMES: u8 = 1;
     let raw = vec![at(0, 0, v1_catalog(&[(KIND_SOMETIMES, 4, "reached")]))];
     let n = decode_binary(&raw).expect("decodes");
     let id = ObservationId::Point {
@@ -193,6 +187,63 @@ fn v1_sometimes_point_keeps_its_must_hit_expectation() {
         n.schema.entry(&id).unwrap().expectation,
         Some(Expectation::MustHit)
     );
+}
+
+#[test]
+fn v1_assertion_dispositions_must_match_the_declared_kind() {
+    // The guest SDK emits HITs only for sometimes/reachable and VIOLATIONs only for
+    // always/unreachable. A kind-inconsistent disposition is a forged/malformed
+    // record — kept raw, never normalized as a credible assertion. Each VALID pair
+    // decodes; each WRONG pair is preserved raw.
+    use sdk_events::AssertType;
+    let cases = [
+        (
+            KIND_SOMETIMES,
+            DISP_HIT,
+            Some((AssertType::Sometimes, true)),
+        ),
+        (KIND_SOMETIMES, DISP_VIOLATION, None),
+        (
+            KIND_REACHABLE,
+            DISP_HIT,
+            Some((AssertType::Reachable, true)),
+        ),
+        (KIND_REACHABLE, DISP_VIOLATION, None),
+        (
+            KIND_ALWAYS,
+            DISP_VIOLATION,
+            Some((AssertType::Always, false)),
+        ),
+        (KIND_ALWAYS, DISP_HIT, None),
+        (
+            KIND_UNREACHABLE,
+            DISP_VIOLATION,
+            Some((AssertType::Unreachable, false)),
+        ),
+        (KIND_UNREACHABLE, DISP_HIT, None),
+    ];
+    for (kind, disp, expected) in cases {
+        let raw = vec![
+            at(0, 0, v1_catalog(&[(kind, 7, "p")])),
+            at(1, event_id(NS_ASSERT, 7), assert_firing(disp, b"")),
+        ];
+        let n = decode_binary(&raw).expect("decodes");
+        match expected {
+            Some((at, cond)) => assert_eq!(
+                n.events[0].payload,
+                Payload::Assertion {
+                    assert_type: Some(at),
+                    condition: Some(cond)
+                },
+                "kind {kind} + disp {disp} should decode"
+            ),
+            None => assert_eq!(
+                n.events[0].payload,
+                Payload::Unknown,
+                "kind {kind} + disp {disp} is inconsistent → raw"
+            ),
+        }
+    }
 }
 
 #[test]
@@ -640,6 +691,14 @@ fn v1_assert_violation_firing_reports_a_false_condition() {
             condition: Some(false)
         }
     );
+    // An `always` point carries NO expectation on this wire: `guest/sdk` emits only
+    // violations, so a passing always produces no event and must not read as an
+    // unsatisfied must-hit.
+    let id = ObservationId::Point {
+        namespace: NS_ASSERT,
+        local: 3,
+    };
+    assert_eq!(n.schema.entry(&id).unwrap().expectation, None);
 }
 
 #[test]
