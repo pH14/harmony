@@ -1,0 +1,231 @@
+{
+  "name": "retention_properties",
+  "registers": [
+    {
+      "rev": 1,
+      "config": 0,
+      "reg": 10,
+      "op": "Set"
+    }
+  ],
+  "sources": [
+    {
+      "rev": 1,
+      "config": 0,
+      "source": 0,
+      "scope": "RolloutGlobal"
+    },
+    {
+      "rev": 1,
+      "config": 0,
+      "source": 1,
+      "scope": "RolloutGlobal"
+    },
+    {
+      "rev": 1,
+      "config": 0,
+      "source": 2,
+      "scope": "SourceLocal"
+    }
+  ],
+  "properties": [
+    {
+      "rev": 1,
+      "config": 0,
+      "property": 500,
+      "must_hit": true
+    },
+    {
+      "rev": 1,
+      "config": 0,
+      "property": 501,
+      "must_hit": true
+    }
+  ],
+  "events": [
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 0,
+      "moment": 10,
+      "payload": {
+        "Assertion": {
+          "site": 900,
+          "property": 500,
+          "passed": true
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 1,
+      "pos": 1,
+      "moment": 20,
+      "payload": {
+        "Note": {
+          "tag": 77
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 2,
+      "moment": 20,
+      "payload": {
+        "Assertion": {
+          "site": 901,
+          "property": 500,
+          "passed": true
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 3,
+      "moment": 30,
+      "payload": {
+        "Assertion": {
+          "site": 900,
+          "property": 500,
+          "passed": false
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 4,
+      "moment": 40,
+      "payload": {
+        "Note": {
+          "tag": 88
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 5,
+      "moment": 50,
+      "payload": {
+        "Register": {
+          "reg": 10,
+          "value": 42
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 1,
+      "pos": 6,
+      "moment": 60,
+      "payload": {
+        "Note": {
+          "tag": 99
+        }
+      }
+    }
+  ],
+  "scrape": [
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "local_ord": 0,
+      "tag": 40
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "local_ord": 1,
+      "tag": 41
+    }
+  ],
+  "lineage": [],
+  "obs_cuts": [],
+  "seals": [
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 0,
+      "seal": 0,
+      "cut": {
+        "moment": 50,
+        "count": 6
+      }
+    }
+  ],
+  "entry_commits": [
+    {
+      "rev": 3,
+      "config": 0,
+      "entry": 200,
+      "rollout": 0,
+      "seal": 0,
+      "quality": 1
+    }
+  ],
+  "working": [
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 0,
+      "pos": 0,
+      "delta": 1
+    },
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 0,
+      "pos": 1,
+      "delta": 1
+    },
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 0,
+      "pos": 4,
+      "delta": 1
+    },
+    {
+      "rev": 4,
+      "config": 0,
+      "rollout": 0,
+      "pos": 1,
+      "delta": -1
+    }
+  ],
+  "seq_queries": [
+    {
+      "rev": 1,
+      "config": 0,
+      "query": 0,
+      "src_a": 0,
+      "src_b": 1
+    },
+    {
+      "rev": 1,
+      "config": 0,
+      "query": 1,
+      "src_a": 0,
+      "src_b": 2
+    }
+  ]
+}

@@ -1,0 +1,436 @@
+{
+  "name": "tree_lineage",
+  "registers": [
+    {
+      "rev": 1,
+      "config": 0,
+      "reg": 10,
+      "op": "Set"
+    },
+    {
+      "rev": 1,
+      "config": 0,
+      "reg": 11,
+      "op": "Max"
+    },
+    {
+      "rev": 1,
+      "config": 0,
+      "reg": 12,
+      "op": "Min"
+    },
+    {
+      "rev": 1,
+      "config": 0,
+      "reg": 13,
+      "op": "Accumulate"
+    }
+  ],
+  "sources": [
+    {
+      "rev": 1,
+      "config": 0,
+      "source": 0,
+      "scope": "RolloutGlobal"
+    },
+    {
+      "rev": 1,
+      "config": 0,
+      "source": 1,
+      "scope": "RolloutGlobal"
+    },
+    {
+      "rev": 1,
+      "config": 0,
+      "source": 2,
+      "scope": "SourceLocal"
+    }
+  ],
+  "properties": [],
+  "events": [
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 0,
+      "moment": 10,
+      "payload": {
+        "Register": {
+          "reg": 10,
+          "value": 1
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 1,
+      "moment": 20,
+      "payload": {
+        "Register": {
+          "reg": 11,
+          "value": 5
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 1,
+      "pos": 2,
+      "moment": 30,
+      "payload": {
+        "Note": {
+          "tag": 7
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 3,
+      "moment": 30,
+      "payload": {
+        "Register": {
+          "reg": 10,
+          "value": 2
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 4,
+      "moment": 30,
+      "payload": {
+        "Register": {
+          "reg": 12,
+          "value": 9
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 5,
+      "moment": 40,
+      "payload": {
+        "Register": {
+          "reg": 13,
+          "value": 3
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 6,
+      "moment": 50,
+      "payload": {
+        "Register": {
+          "reg": 13,
+          "value": 3
+        }
+      }
+    },
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 1,
+      "source": 0,
+      "pos": 4,
+      "moment": 35,
+      "payload": {
+        "Register": {
+          "reg": 10,
+          "value": 7
+        }
+      }
+    },
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 1,
+      "source": 1,
+      "pos": 5,
+      "moment": 35,
+      "payload": {
+        "Note": {
+          "tag": 7
+        }
+      }
+    },
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 1,
+      "source": 0,
+      "pos": 6,
+      "moment": 44,
+      "payload": {
+        "Register": {
+          "reg": 11,
+          "value": 2
+        }
+      }
+    },
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 1,
+      "source": 0,
+      "pos": 7,
+      "moment": 44,
+      "payload": {
+        "Register": {
+          "reg": 12,
+          "value": 1
+        }
+      }
+    },
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 1,
+      "source": 0,
+      "pos": 8,
+      "moment": 60,
+      "payload": {
+        "Register": {
+          "reg": 13,
+          "value": 8
+        }
+      }
+    },
+    {
+      "rev": 4,
+      "config": 0,
+      "rollout": 2,
+      "source": 0,
+      "pos": 4,
+      "moment": 35,
+      "payload": {
+        "Register": {
+          "reg": 10,
+          "value": 100
+        }
+      }
+    },
+    {
+      "rev": 4,
+      "config": 0,
+      "rollout": 2,
+      "source": 0,
+      "pos": 5,
+      "moment": 36,
+      "payload": {
+        "Register": {
+          "reg": 13,
+          "value": 4
+        }
+      }
+    },
+    {
+      "rev": 4,
+      "config": 0,
+      "rollout": 2,
+      "source": 0,
+      "pos": 6,
+      "moment": 70,
+      "payload": {
+        "Register": {
+          "reg": 11,
+          "value": 50
+        }
+      }
+    },
+    {
+      "rev": 5,
+      "config": 0,
+      "rollout": 3,
+      "source": 0,
+      "pos": 8,
+      "moment": 61,
+      "payload": {
+        "Register": {
+          "reg": 10,
+          "value": 3
+        }
+      }
+    },
+    {
+      "rev": 5,
+      "config": 0,
+      "rollout": 3,
+      "source": 0,
+      "pos": 9,
+      "moment": 61,
+      "payload": {
+        "Register": {
+          "reg": 13,
+          "value": 5
+        }
+      }
+    },
+    {
+      "rev": 5,
+      "config": 0,
+      "rollout": 3,
+      "source": 0,
+      "pos": 10,
+      "moment": 80,
+      "payload": {
+        "Register": {
+          "reg": 12,
+          "value": 0
+        }
+      }
+    }
+  ],
+  "scrape": [],
+  "lineage": [
+    {
+      "rev": 3,
+      "config": 0,
+      "child": 1,
+      "parent": 0,
+      "cut": {
+        "moment": 30,
+        "count": 4
+      }
+    },
+    {
+      "rev": 4,
+      "config": 0,
+      "child": 2,
+      "parent": 0,
+      "cut": {
+        "moment": 30,
+        "count": 4
+      }
+    },
+    {
+      "rev": 5,
+      "config": 0,
+      "child": 3,
+      "parent": 1,
+      "cut": {
+        "moment": 44,
+        "count": 8
+      }
+    }
+  ],
+  "obs_cuts": [
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "cut": {
+        "moment": 20,
+        "count": 2
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "cut": {
+        "moment": 50,
+        "count": 7
+      }
+    },
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 1,
+      "cut": {
+        "moment": 35,
+        "count": 5
+      }
+    },
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 1,
+      "cut": {
+        "moment": 44,
+        "count": 8
+      }
+    },
+    {
+      "rev": 4,
+      "config": 0,
+      "rollout": 2,
+      "cut": {
+        "moment": 35,
+        "count": 5
+      }
+    },
+    {
+      "rev": 5,
+      "config": 0,
+      "rollout": 3,
+      "cut": {
+        "moment": 61,
+        "count": 10
+      }
+    }
+  ],
+  "seals": [
+    {
+      "rev": 6,
+      "config": 0,
+      "rollout": 0,
+      "seal": 0,
+      "cut": {
+        "moment": 30,
+        "count": 4
+      }
+    },
+    {
+      "rev": 6,
+      "config": 0,
+      "rollout": 1,
+      "seal": 1,
+      "cut": {
+        "moment": 60,
+        "count": 9
+      }
+    },
+    {
+      "rev": 6,
+      "config": 0,
+      "rollout": 2,
+      "seal": 2,
+      "cut": {
+        "moment": 36,
+        "count": 6
+      }
+    },
+    {
+      "rev": 6,
+      "config": 0,
+      "rollout": 3,
+      "seal": 3,
+      "cut": {
+        "moment": 61,
+        "count": 9
+      }
+    }
+  ],
+  "entry_commits": [],
+  "working": [],
+  "seq_queries": []
+}
