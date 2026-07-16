@@ -139,12 +139,26 @@ if "pmi_sniff_raw_0x1c4" in d:
         # round-10 P1: every rep of every combination must MATCH the armed
         # expectation — ring_samples == signals == expect, zero throttles and
         # other records, and a valid count — not merely be error-free.
+        # round-12 P1: the expectation is DERIVED INDEPENDENTLY from the combo
+        # key (n_<N>_p_<P>) and the analytical loop count — the dec/jnz probe
+        # loop retires N+2 conditional branches, so expected PMIs at period P
+        # is (N+2)//P — never trusted from the probe's self-reported field
+        # (which is cross-checked against the derivation instead).
+        import re
         for k, combo in pmi.items():
-            reps = combo.get("reps") if isinstance(combo, dict) else None
-            expect = combo.get("expect") if isinstance(combo, dict) else None
-            if not isinstance(reps, list) or not reps or not isinstance(expect, int):
-                bad.append(f"pmi_sniff_raw_0x1c4[{k}] malformed (reps/expect)")
+            m = re.fullmatch(r"n_(\d+)_p_(\d+)", k)
+            if not m:
+                bad.append(f"pmi_sniff_raw_0x1c4[{k}]: unparseable combo key")
                 continue
+            n, p = int(m.group(1)), int(m.group(2))
+            expect = (n + 2) // p
+            reps = combo.get("reps") if isinstance(combo, dict) else None
+            if not isinstance(reps, list) or not reps:
+                bad.append(f"pmi_sniff_raw_0x1c4[{k}] malformed (reps)")
+                continue
+            if isinstance(combo, dict) and combo.get("expect") != expect:
+                bad.append(f"pmi[{k}] self-reported expect={combo.get('expect')!r} "
+                           f"!= derived {expect}")
             for i, r in enumerate(reps):
                 if not isinstance(r, dict) or "error" in r:
                     bad.append(f"pmi[{k}] rep {i}: {r!r}")

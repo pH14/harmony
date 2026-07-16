@@ -236,11 +236,21 @@ static void pmi_sniff(void) {
             fcntl((int)fd, F_SETFL, fcntl((int)fd, F_GETFL) | O_ASYNC);
             sigio_hits = 0;
             uint64_t count = 0;
-            ioctl((int)fd, PERF_EVENT_IOC_RESET, 0);
-            ioctl((int)fd, PERF_EVENT_IOC_ENABLE, 0);
-            asm_loop(n);
-            ioctl((int)fd, PERF_EVENT_IOC_DISABLE, 0);
-            if (read((int)fd, &count, 8) != 8) count = (uint64_t)-1;
+            /* round-12: RESET/ENABLE/DISABLE failures are fail-closed (error
+             * rep + g_fail -> nonzero PROBE_RC), never a plausible rep */
+            int io_ok = ioctl((int)fd, PERF_EVENT_IOC_RESET, 0) == 0
+                     && ioctl((int)fd, PERF_EVENT_IOC_ENABLE, 0) == 0;
+            if (io_ok) asm_loop(n);
+            if (ioctl((int)fd, PERF_EVENT_IOC_DISABLE, 0) != 0) io_ok = 0;
+            if (!io_ok) {
+                printf("      {\"error\": \"ioctl errno=%d\"}%s\n",
+                       errno, rep < 4 ? "," : "");
+                g_fail = 1;
+                munmap(r.mp, r.map_len);
+                close((int)fd);
+                continue;
+            }
+            if (read((int)fd, &count, 8) != 8) { count = (uint64_t)-1; g_fail = 1; }
             unsigned samples, throttles, others;
             ring_scan(&r, &samples, &throttles, &others);
             printf("      {\"ring_samples\": %u, \"signals\": %d, \"throttles\": %u, "

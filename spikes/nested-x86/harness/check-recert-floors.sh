@@ -144,10 +144,23 @@ grep -q '"migration_status": "completed"' "$ce" && grep -q '"finished_on": "dest
 # --- Per-deadline exactness/oracle/record-cleanliness checks still use the
 # --- summary's per-run tallies (each is cross-guaranteed by the gate's rc=0
 # --- assert), but the FLOOR line uses samples only.
+# round-12 P1: the floor must span the FULL condition matrix — a glob that
+# silently skips a missing condition runset would let the remaining ones make
+# the cumulative floor pass while a condition went unmeasured. Enumerate and
+# REQUIRE every runset the certification basis names (per-runset dose evidence
+# is then checked inside the loop).
+for req in cond-idle-recert-001 cond-othercore-recert-001 cond-samecore-recert-001 \
+           cond-mempress-recert-001 cond-timerstorm-recert-001 cond-migrate-recert-001 \
+           cond-idle-control10k-recert-001 smoke-recert-001 \
+           cond-idle-topup-001 cond-othercore-topup-001 cond-samecore-topup-001 \
+           cond-mempress-topup-001 cond-timerstorm-topup-001 cond-migrate-topup-001 \
+           smoke-topup-001; do
+  [ -d "$R/n2/$req" ] || bad "n2/$req: REQUIRED runset missing (floor must span the full matrix)"
+done
 total_deadlines=0
 total_armed_pmi=0
 for d in $R/n2/cond-*-recert-001 $R/n2/cond-*-topup-001 $R/n2/smoke-recert-001 $R/n2/smoke-topup-001; do
-  [ -d "$d" ] || continue   # top-up runsets appear as the ruling executes
+  [ -d "$d" ] || continue   # unmatched glob literal (presence enforced above)
   rs=$(basename "$d")
   s=$(grep -o 'N2JSON {"event":"summary".*' "$d/console.log" | tail -1)
   [ -n "$s" ] || { bad "$rs: no N2 summary"; continue; }
