@@ -1,5 +1,22 @@
 # Resolution — the epoch loop of dissonance
 
+> **Status: CURRENT, reconciled 2026-07-16.** `docs/DISSONANCE-STRATEGY.md` (the ruled strategy,
+> PR #103) **affirms** this design: Resolution stays *inside* dissonance (the search loop plus
+> resolution, not a third peer beside consonance and dissonance), reads frozen campaign artifacts,
+> drives `MomentRef` counterfactuals, and never reaches into a live Explorer — see the strategy's
+> "Resolution's two interfaces" and "Causal testing is an investigation workflow". Two reconcile
+> notes apply throughout:
+> - **Loop names.** `docs/GLOSSARY.md` (2026-07-06) retired this doc's loop names:
+>   **Modulation → rollout**, **Progression → the search loop / `step`**. They are kept below as
+>   historical vocabulary.
+> - **Instrument surface.** Where this doc names the observation/scoring seam — the retained
+>   `RunTrace` store, `Sensor`/`CellFn`, the matcher-DSL, `VirtualExemplar` donation — the target
+>   shapes are governed by the strategy, not this doc: normalized `SdkSchema`/`SdkEvent`,
+>   Differential-materialized cells at actual seals, `Entry`/`EntryRef` (the `docs/GLOSSARY.md`
+>   rename of `VirtualExemplar`/`ExemplarRef`), and archive occupancy as a Differential reduction.
+>   The `hm-bbx` migration owns those; Resolution's artifact-shaped boundary is unchanged, and the
+>   between-campaign advisor loop remains future work (strategy staged direction 6).
+
 This is the design ruling for **resolution**: the judgment layer of dissonance — the loop that
 investigates what the search finds and re-instruments the search between campaigns.
 `docs/DISSONANCE.md` rules the *permutation surface* (two control planes, one `Moment`-keyed
@@ -9,8 +26,9 @@ behind the Progression's seams (Sensor → Cell → Archive → Selector). This 
 campaign artifacts, interrogates moments of a deterministic execution, and restructures the
 instruments before the next campaign.
 
-> **Naming.** This doc uses the ruled loop names: **Modulation** (the inner loop) and
-> **Progression** (the outer loop).
+> **Naming.** The loop names below — **Modulation** (inner) and **Progression** (outer) — are this
+> doc's historical vocabulary, retired by `docs/GLOSSARY.md` to **rollout** and **the search loop /
+> `step`** respectively (see the status banner above).
 
 > **Design provenance.** The external evidence behind this ruling — Antithesis's multiverse
 > debugging and Findings report, Pernosco, WinDbg TTD, the human-in-the-loop fuzzing literature —
