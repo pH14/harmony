@@ -133,6 +133,20 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             } else {
                 (gicv3::GicFrame::Redist, GICR.0)
             };
+            // The modeled GICv3 register files are strictly 32-bit-accessed; a
+            // wider or narrower access would truncate a store / under-fill a
+            // load against the `u32`-only model. Reject unsupported widths
+            // **before** touching GIC state — never a silent `v as u32`
+            // truncation. (64-bit GIC registers — IROUTERn, GICR_TYPER — are
+            // unmodeled; a guest that needs them is out of the skeleton's
+            // contract, `TODO(AA-6)`.)
+            if size != 4 {
+                return Err(VmmError::ContractViolation(format!(
+                    "GICv3 MMIO at {addr:#x} with size {size} != 4 — the modeled GICv3 register \
+                     files are 32-bit-accessed; a different width is unmodeled (fail closed, not \
+                     a truncation)"
+                )));
+            }
             if self.devices.gic.is_none() {
                 return Err(VmmError::ContractViolation(format!(
                     "GICv3 MMIO at {addr:#x} but the userspace GICv3 is unwired — guest \

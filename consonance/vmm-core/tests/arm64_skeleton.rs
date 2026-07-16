@@ -401,6 +401,24 @@ fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
     })]);
     let err = v.step().unwrap_err();
     assert!(format!("{err}").contains("GICv3 MMIO"), "{err}");
+
+    // Finding 2 (review r1): a GIC-frame access with a non-32-bit width fails
+    // closed on the WIDTH — before touching GIC state — never a silent
+    // truncation to the u32-only model. (The width guard precedes the
+    // unwired-fabric check, so an unwired VM still surfaces the width error.)
+    for bad in [1u8, 2, 8] {
+        let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(0x0800_0000),
+            size: bad,
+            write: Some(0),
+        })]);
+        let err = v.step().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains(&format!("size {bad} != 4")),
+            "GIC size {bad} must fail closed on width: {msg}"
+        );
+    }
 }
 
 /// M3 — the full boot composition: `boot` runs the host-baseline gate then

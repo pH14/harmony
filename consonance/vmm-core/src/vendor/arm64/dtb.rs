@@ -202,6 +202,10 @@ pub fn build(ram_len: u64, pvclock_gpa: u64, bootargs: &str) -> Vec<u8> {
     f.begin_node("reserved-memory");
     f.prop_u32("#address-cells", 2);
     f.prop_u32("#size-cells", 2);
+    // An **empty `ranges`** is required by the /reserved-memory binding: it
+    // signals a 1:1 child↔parent address mapping, without which OF consumers
+    // (Linux `of_reserved_mem`) do not honor a child's `reg`/`no-map`.
+    f.prop_empty("ranges");
     f.begin_node("pvclock@0"); // unit-address filled by reg below
     f.prop_str("compatible", "harmony,pvclock-page");
     {
@@ -487,6 +491,16 @@ mod tests {
             p.prop("pvclock@0", "compatible").unwrap(),
             b"harmony,pvclock-page\0"
         );
+        // Finding 4 (review r1): the /reserved-memory node MUST carry an empty
+        // `ranges` (plus #address-cells/#size-cells) or OF consumers
+        // (`of_reserved_mem`) ignore the child's `reg`/`no-map`. Assert the
+        // full trio, `ranges` empty.
+        assert_eq!(p.prop("reserved-memory", "ranges").unwrap(), b"");
+        assert_eq!(
+            p.prop("reserved-memory", "#address-cells").unwrap().len(),
+            4
+        );
+        assert_eq!(p.prop("reserved-memory", "#size-cells").unwrap().len(), 4);
     }
 
     #[test]

@@ -131,8 +131,14 @@ pub(crate) fn decode_exit(view: &KvmRunView) -> Result<Option<(Exit<Arm64>, Pend
         // --- reachable on the STOCK backend ---------------------------------
         KVM_EXIT_MMIO => {
             let m = &view.mmio;
-            if m.len > 8 {
-                return Err(BackendError::Internal("KVM_EXIT_MMIO len > 8"));
+            // The access width MUST be one of the architectural byte-access
+            // sizes {1,2,4,8}. Fail closed on anything else (a `len == 0` would
+            // otherwise stage a zero-byte load; a non-power-of-two width is a
+            // malformed exit) — never a truncated/extended completion.
+            if !matches!(m.len, 1 | 2 | 4 | 8) {
+                return Err(BackendError::Internal(
+                    "KVM_EXIT_MMIO with a non-architectural access width (not 1/2/4/8)",
+                ));
             }
             let gpa = Gpa(m.phys_addr);
             if m.is_write {
@@ -415,6 +421,11 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     pending: Pending,
     /// The staged MMIO-load completion value, applied before the next `run`.
     staged_read: Option<[u8; 8]>,
+    /// The registered `(gpa, len)` memslots, in insertion order — so a second
+    /// `map_memory` that overlaps an existing region fails closed (the
+    /// [`Backend::map_memory`] contract), rather than silently registering a
+    /// duplicate `slot 0` that replaces the first.
+    regions: Vec<(u64, u64)>,
     counts: ExitCounts,
 }
 
@@ -429,6 +440,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             configured: false,
             pending: Pending::None,
             staged_read: None,
+            regions: Vec::new(),
             counts: ExitCounts::default(),
         }
     }
@@ -500,15 +512,32 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         if !host.len().is_multiple_of(4096) {
             return Err(BackendError::Memory("region length is not 4 KiB-aligned"));
         }
+        let len = host.len() as u64;
+        // The region must not wrap the address space, and must not overlap any
+        // already-mapped region — a duplicate/overlapping map is a caller error
+        // (the `Backend::map_memory` contract), NOT a silent replace of an
+        // existing memslot.
+        let end = gpa
+            .0
+            .checked_add(len)
+            .ok_or(BackendError::Memory("region wraps the address space"))?;
+        for &(g, l) in &self.regions {
+            let g_end = g + l; // no wrap: validated when each region was inserted
+            if gpa.0 < g_end && g < end {
+                return Err(BackendError::Memory("region overlaps an existing map"));
+            }
+        }
+        // A fresh, unique slot per region (never a reused `slot 0`).
+        let slot = self.regions.len() as u32;
         // SAFETY: the caller upholds `map_memory`'s contract (pinned,
         // page-aligned, unaliased backing live for the backend's lifetime); we
-        // forward the same guarantee to the seam. One memslot — arm64 device
-        // frames sit below RAM, so there is no hole to split (unlike x86's
-        // xAPIC page).
+        // forward the same guarantee to the seam. arm64 device frames sit below
+        // RAM, so a RAM region needs no hole-split (unlike x86's xAPIC page).
         unsafe {
             self.kvm
-                .set_user_memory_region(0, gpa.0, host.as_mut_ptr(), host.len() as u64)?;
+                .set_user_memory_region(slot, gpa.0, host.as_mut_ptr(), len)?;
         }
+        self.regions.push((gpa.0, len));
         Ok(())
     }
 
@@ -762,6 +791,33 @@ mod tests {
         }
     }
 
+    /// Finding 1 (review r1): a non-architectural MMIO access width is a
+    /// malformed exit — fail closed on any `len ∉ {1,2,4,8}`, never a
+    /// zero-byte load or a truncated completion.
+    #[test]
+    fn mmio_rejects_non_architectural_widths() {
+        for bad in [0u32, 3, 5, 6, 7, 9, 16] {
+            assert!(
+                matches!(
+                    decode_exit(&mmio_load(0x0900_0000, bad)),
+                    Err(BackendError::Internal(_))
+                ),
+                "MMIO len {bad} must fail closed"
+            );
+            assert!(
+                matches!(
+                    decode_exit(&mmio_store(0x0900_0000, 0, bad)),
+                    Err(BackendError::Internal(_))
+                ),
+                "MMIO store len {bad} must fail closed"
+            );
+        }
+        // The architectural widths are all accepted.
+        for ok in [1u32, 2, 4, 8] {
+            assert!(decode_exit(&mmio_load(0x0900_0000, ok)).is_ok());
+        }
+    }
+
     #[test]
     fn stock_surface_decodes_mmio_and_shutdown_only() {
         // MMIO store → Mmio{write:Some}, no pending.
@@ -968,6 +1024,29 @@ mod tests {
             unsafe { b.map_memory(Gpa(0x1), &mut ram) },
             Err(BackendError::Memory(_))
         ));
+
+        // Finding 3 (review r1): a second map that overlaps the first must fail
+        // closed — never a silent `slot 0` replace. An exact duplicate, a
+        // straddling overlap, and a same-base map are all rejected.
+        let mut ram2 = vec![0u8; 4096];
+        assert!(matches!(
+            unsafe { b.map_memory(Gpa(0x4000_0000), &mut ram2) }, // duplicate base
+            Err(BackendError::Memory(_))
+        ));
+        assert!(
+            matches!(
+                unsafe { b.map_memory(Gpa(0x4000_1000), &mut ram2) }, // straddles the 2nd page of ram
+                Err(BackendError::Memory(_))
+            ),
+            "an overlapping region must fail closed, not replace slot 0"
+        );
+        // A disjoint region above the first is accepted, with a FRESH slot id.
+        unsafe { b.map_memory(Gpa(0x4000_2000), &mut ram2).unwrap() };
+        assert_eq!(
+            b.kvm().memslots,
+            vec![(0, 0x4000_0000, 8192), (1, 0x4000_2000, 4096)],
+            "each region gets a unique slot; nothing was replaced"
+        );
     }
 
     #[test]
