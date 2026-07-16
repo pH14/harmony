@@ -60,6 +60,33 @@ fn assertion_normalizes_to_occurrence_property_evidence() {
     assert_eq!(entry.classification, Classification::Occurrence);
     assert_eq!(entry.base_op, None);
     assert_eq!(entry.expectation, Some(Expectation::MustHit));
+    // The entry's human name is the message, verbatim.
+    assert_eq!(entry.name.as_deref(), Some("balance stays non-negative"));
+    // The schema is non-empty and its `entries()` view carries the one entry.
+    assert!(!n.schema.is_empty());
+    assert_eq!(n.schema.entries().len(), 1);
+    assert_eq!(&n.schema.entries()[0], entry);
+}
+
+#[test]
+fn every_assertion_verb_maps_to_its_type() {
+    for (verb, expected) in [
+        ("always", AssertType::Always),
+        ("sometimes", AssertType::Sometimes),
+        ("reachable", AssertType::Reachable),
+        ("unreachable", AssertType::Unreachable),
+    ] {
+        let json = format!(
+            r#"{{"antithesis_assert":{{"assert_type":"{verb}","condition":true,"message":"m-{verb}"}}}}"#
+        );
+        let n = decode_antithesis(&[rec(1, &json)]).expect("decodes");
+        match n.events[0].payload {
+            Payload::Assertion { assert_type, .. } => {
+                assert_eq!(assert_type, Some(expected), "verb `{verb}`");
+            }
+            ref other => panic!("{other:?}"),
+        }
+    }
 }
 
 #[test]
@@ -298,6 +325,24 @@ fn a_nested_duplicate_key_is_preserved_raw_not_last_write_wins() {
     let deep = r#"{"antithesis_assert":{"assert_type":"always","condition":true,"message":"m","location":{"file":"a","file":"b"}}}"#;
     let n = decode_antithesis(&[rec(1, deep)]).expect("decodes");
     assert_eq!(n.events[0].payload, Payload::Unknown);
+
+    // A duplicate nested inside a JSON *array* is caught: the recursive walk must
+    // OR the duplicate flag across array elements, not AND it away.
+    let in_array = r#"{"antithesis_assert":{"assert_type":"always","condition":true,"message":"m","details":[{"k":1,"k":2}]}}"#;
+    let n = decode_antithesis(&[rec(1, in_array)]).expect("decodes");
+    assert_eq!(n.events[0].payload, Payload::Unknown);
+}
+
+/// A well-formed array (no duplicate keys) inside a wrapper does not falsely trip
+/// the detector — the array element decodes normally.
+#[test]
+fn a_clean_nested_array_does_not_trip_the_duplicate_detector() {
+    let json = r#"{"antithesis_assert":{"assert_type":"always","condition":true,"message":"m","details":[{"a":1},{"b":2}]}}"#;
+    let n = decode_antithesis(&[rec(1, json)]).expect("decodes");
+    match n.events[0].payload {
+        Payload::Assertion { .. } => {}
+        ref other => panic!("clean array should decode as an assertion, got {other:?}"),
+    }
 }
 
 #[test]

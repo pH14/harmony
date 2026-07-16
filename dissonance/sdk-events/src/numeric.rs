@@ -236,18 +236,17 @@ impl BoundedNumeric {
             if i == exp_start {
                 return Err(not_finite()); // `e` with no digits
             }
-            // Bound the exponent field width so a pathological token cannot force a
-            // huge parse; anything this long is out of range regardless.
-            let exp_digits = &token[exp_start..i];
-            if exp_digits.len() > 9 {
-                return Err(NumericError::ExponentOutOfRange {
-                    token: token.to_string(),
-                    exponent: if exp_neg { i32::MIN } else { i32::MAX },
-                    min: limits.min_adjusted_exponent,
-                    max: limits.max_adjusted_exponent,
-                });
-            }
-            let magnitude: i64 = exp_digits.parse().map_err(|_| not_finite())?;
+            // Parse the exponent magnitude. An `i64` overflow (a pathologically long
+            // exponent) just means the value is far out of range — folded into the
+            // same error the adjusted-exponent range check produces below, so a huge
+            // exponent never forces unbounded work or a different error class.
+            let out_of_range = || NumericError::ExponentOutOfRange {
+                token: token.to_string(),
+                exponent: if exp_neg { i32::MIN } else { i32::MAX },
+                min: limits.min_adjusted_exponent,
+                max: limits.max_adjusted_exponent,
+            };
+            let magnitude: i64 = token[exp_start..i].parse().map_err(|_| out_of_range())?;
             exp = if exp_neg { -magnitude } else { magnitude };
         }
 

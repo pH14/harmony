@@ -384,3 +384,80 @@ fn reconcile_option<T: PartialEq + Copy>(
         _ => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The wire-byte codecs are exercised here directly: `to_byte` is only ever
+    // *encoded* with `U64` on the valid v2 path (other state shapes are rejected
+    // upstream), so its non-`U64` arms are unreachable from the integration
+    // decoders and are pinned here instead.
+    #[test]
+    fn value_shape_byte_round_trips_every_variant() {
+        for (shape, byte) in [
+            (ValueShape::U64, 0u8),
+            (ValueShape::Bool, 1),
+            (ValueShape::Bytes, 2),
+            (ValueShape::Numeric, 3),
+        ] {
+            assert_eq!(shape.to_byte(), byte, "{shape:?} encodes to {byte}");
+            assert_eq!(ValueShape::from_byte(byte), Some(shape));
+        }
+        assert_eq!(ValueShape::from_byte(4), None);
+    }
+
+    #[test]
+    fn update_op_byte_round_trips_every_variant() {
+        for (op, byte) in [
+            (UpdateOp::Set, 0u8),
+            (UpdateOp::Max, 1),
+            (UpdateOp::Min, 2),
+            (UpdateOp::Accumulate, 3),
+        ] {
+            assert_eq!(op.to_byte(), byte);
+            assert_eq!(UpdateOp::from_byte(byte), Some(op));
+        }
+        assert_eq!(UpdateOp::from_byte(4), None);
+    }
+
+    fn conflict(a: u8, b: u8) -> SdkError {
+        SdkError::MixedOperations {
+            id: ObservationId::Property(String::new()),
+            first: UpdateOp::from_byte(a).unwrap_or(UpdateOp::Set),
+            second: UpdateOp::from_byte(b).unwrap_or(UpdateOp::Set),
+        }
+    }
+
+    // `reconcile_option`'s fill and conflict arms are not reachable through the
+    // decoders (binary coordinates are unique, and same-identity Antithesis records
+    // share a classification hence op/shape), so they are pinned directly.
+    #[test]
+    fn reconcile_fills_an_unresolved_slot() {
+        let mut slot = None;
+        assert!(reconcile_option(&mut slot, Some(1u8), conflict).is_ok());
+        assert_eq!(
+            slot,
+            Some(1),
+            "an unresolved slot is filled by a later value"
+        );
+    }
+
+    #[test]
+    fn reconcile_accepts_an_agreeing_value_and_rejects_a_conflicting_one() {
+        let mut slot = Some(1u8);
+        assert!(reconcile_option(&mut slot, Some(1), conflict).is_ok());
+        assert_eq!(slot, Some(1));
+        assert!(
+            reconcile_option(&mut slot, Some(2), conflict).is_err(),
+            "a conflicting value is a typed error"
+        );
+    }
+
+    #[test]
+    fn reconcile_keeps_an_existing_value_when_nothing_new_arrives() {
+        let mut slot = Some(7u8);
+        assert!(reconcile_option(&mut slot, None, conflict).is_ok());
+        assert_eq!(slot, Some(7));
+    }
+}

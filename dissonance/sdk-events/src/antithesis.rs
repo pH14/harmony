@@ -462,3 +462,32 @@ fn number_token(v: &Value) -> Option<String> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `DupVisitor::expecting` is only invoked by serde when formatting a type
+    // error, which `deserialize_any` never produces for well-formed JSON — so it is
+    // unreachable through the decode path. Drive it directly through a `Display`
+    // wrapper so its message (and hence its body) is pinned.
+    #[test]
+    fn dup_visitor_expecting_describes_a_json_value() {
+        struct Expecting;
+        impl fmt::Display for Expecting {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                Visitor::expecting(&DupVisitor, f)
+            }
+        }
+        assert_eq!(Expecting.to_string(), "any JSON value");
+    }
+
+    #[test]
+    fn has_duplicate_key_detects_and_clears() {
+        assert_eq!(has_duplicate_key(br#"{"a":1,"b":2}"#), Ok(false));
+        assert_eq!(has_duplicate_key(br#"{"a":1,"a":2}"#), Ok(true));
+        assert_eq!(has_duplicate_key(br#"{"a":{"b":1,"b":2}}"#), Ok(true));
+        assert_eq!(has_duplicate_key(br#"[1,2,3]"#), Ok(false));
+        assert_eq!(has_duplicate_key(b"not json"), Err(()));
+    }
+}

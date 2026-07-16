@@ -74,12 +74,80 @@ fn non_finite_and_out_of_range_tokens_stay_report_only() {
         NumericToken::new("1e-100").to_bounded(&limits),
         Err(NumericError::ExponentOutOfRange { .. })
     ));
-    // A pathologically long exponent field does not hang or panic.
-    assert!(
-        NumericToken::new("1e100000000000000000000")
-            .to_bounded(&limits)
-            .is_err()
+    // A pathologically long exponent overflows `i64` and is reported as
+    // out-of-range (not non-finite, and without hanging).
+    assert!(matches!(
+        NumericToken::new("1e100000000000000000000").to_bounded(&limits),
+        Err(NumericError::ExponentOutOfRange { .. })
+    ));
+    assert!(matches!(
+        NumericToken::new("1e-100000000000000000000").to_bounded(&limits),
+        Err(NumericError::ExponentOutOfRange { .. })
+    ));
+}
+
+/// The exact canonical decomposition of a token — pins every field the accessors
+/// and the parse/canonicalize arithmetic produce, so an off-by-one or dropped sign
+/// is caught directly (not just through the total order, which shifts uniformly).
+fn assert_decomp(token: &str, negative: bool, digits: &str, scale: i32, adjusted: i32) {
+    let b = bounded(token);
+    assert_eq!(b.is_negative(), negative, "is_negative for `{token}`");
+    assert_eq!(b.digits(), digits, "digits for `{token}`");
+    assert_eq!(b.scale(), scale, "scale for `{token}`");
+    assert_eq!(
+        b.adjusted_exponent(),
+        adjusted,
+        "adjusted_exponent for `{token}`"
     );
+    assert_eq!(b.is_zero(), digits.is_empty(), "is_zero for `{token}`");
+}
+
+#[test]
+fn canonical_decomposition_is_exact() {
+    assert_decomp("0", false, "", 0, 0);
+    assert_decomp("-5", true, "5", 0, 0);
+    assert_decomp("5", false, "5", 0, 0);
+    assert_decomp("1.5", false, "15", -1, 0);
+    assert_decomp("1.50", false, "15", -1, 0); // trailing zero stripped
+    assert_decomp("150", false, "15", 1, 2);
+    assert_decomp("12000", false, "12", 3, 4); // trailing zeros raise the scale
+    assert_decomp("0.05", false, "5", -2, -2);
+    assert_decomp("+42", false, "42", 0, 1); // leading '+' accepted
+    assert_decomp("1e3", false, "1", 3, 3);
+    assert_decomp("1e+3", false, "1", 3, 3); // exponent '+' sign
+    assert_decomp("1e-3", false, "1", -3, -3); // negated exponent
+}
+
+#[test]
+fn digit_and_exponent_limits_are_exact_at_the_boundary() {
+    let limits = NumericLimits::DEFAULT;
+    // Exactly the digit limit is accepted; one more is rejected.
+    let at = "9".repeat(limits.max_significant_digits as usize);
+    let over = "9".repeat(limits.max_significant_digits as usize + 1);
+    assert!(NumericToken::new(&at).to_bounded(&limits).is_ok());
+    assert!(matches!(
+        NumericToken::new(&over).to_bounded(&limits),
+        Err(NumericError::TooManyDigits { .. })
+    ));
+
+    // Exactly the adjusted-exponent window is accepted; one past it is rejected,
+    // on both the max and min sides.
+    for (inside, outside) in [("1e64", "1e65"), ("1e-64", "1e-65")] {
+        assert!(
+            NumericToken::new(inside).to_bounded(&limits).is_ok(),
+            "`{inside}` is at the boundary and must be accepted"
+        );
+        assert!(
+            matches!(
+                NumericToken::new(outside).to_bounded(&limits),
+                Err(NumericError::ExponentOutOfRange { .. })
+            ),
+            "`{outside}` is past the boundary and must be rejected"
+        );
+    }
+    // The boundary values decompose exactly.
+    assert_decomp("1e64", false, "1", 64, 64);
+    assert_decomp("1e-64", false, "1", -64, -64);
 }
 
 /// A generator of finite decimal tokens across sign, fraction, and exponent forms,
