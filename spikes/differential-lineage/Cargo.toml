@@ -1,0 +1,26 @@
+# SPIKE (tasks/120, hm-bbx.2) — tracked by design (see root .gitignore exception).
+# Standalone: detached from the root workspace on purpose; depends on nothing in
+# consonance/ or dissonance/.
+[package]
+name = "differential-lineage"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+# Detach from the harmony root workspace.
+[workspace]
+
+[dependencies]
+differential-dataflow = "0.24.0"
+timely = "0.30.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# DD in an unoptimized profile is 10-50x slower (prior spike finding); optimize
+# dependencies so the debug-profile test suite stays fast while spike code keeps
+# debug assertions.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+debug = true
