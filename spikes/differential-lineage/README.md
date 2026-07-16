@@ -28,7 +28,9 @@ species; this spike is the complementary one-dataflow observation plane).
 - `src/data.rs` — persisted record model (the evidence-identity contract:
   campaign/config, rollout, source, `Moment`, explicit vector-position
   ordinal; revision is only the commit schedule), structural validation
-  (`Fixture::validate`), and derived-value types.
+  (`Fixture::validate`, returning typed `ValidationError`s through the
+  public `run`/`Referee::new` Results — decoded input cannot panic or hang
+  the APIs), and derived-value types.
 - `src/dataflow.rs` — the DD program: one dataflow, `u64` revision time,
   13 captured views, two point-observation formulations (naive prefix-join
   vs shared segment aggregates), explicit shared arrangements, the
@@ -43,8 +45,9 @@ species; this spike is the complementary one-dataflow observation plane).
 - `tests/parity.rs` — the adjudicator: DD (both formulations) == referee on
   hand fixtures and random trees, at every revision, across reruns, under
   permuted feed order.
-- `tests/validate.rs` — malformed-fixture rejection (lineage cycles, cut
-  bounds, the physical branch-point contract, revision sanity).
+- `tests/validate.rs` — malformed-fixture rejection as typed errors (lineage
+  cycles, cut bounds with checked arithmetic, the physical branch-point
+  contract, Moment monotonicity, unique declarations, revision sanity).
 - `examples/bench.rs` — the cost measurement (`REPORT.md`).
 - `examples/gen_fixtures.rs` — regenerates the committed fixtures
   bit-identically.
@@ -66,7 +69,7 @@ species; this spike is the complementary one-dataflow observation plane).
 ## Run
 
 ```sh
-cargo test --locked                            # exact + parity + validate (~3 s)
+cargo test --locked                            # 34 tests: exact + parity + validate (~3 s)
 cargo run --release --locked --example bench   # the cost measurement (REPORT.md)
 cargo run --locked --example gen_fixtures      # regenerate committed fixtures
 ```

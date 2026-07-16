@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 use crate::data::{
     AbsRow, Agg, CellKey, CellRow, CfgId, Dim, Fixture, ObsOut, ObsRow, OccRow, OrderScope,
     Payload, PointId, Pos, PrefixEv, PrefixRow, PropRow, ReduceOp, RegId, Replay, Revision,
-    RolloutId, ScrapeRow, SeqPairRow, SeqRejRow, SiteRow, Species, TransRow, Transition, WorkRow,
-    cell_fn,
+    RolloutId, ScrapeRow, SdkEventRec, SeqPairRow, SeqRejRow, SiteRow, Species, TransRow,
+    Transition, ValidationError, WorkRow, cell_fn,
 };
 
 /// The referee over one fixture and its replay authority.
@@ -25,40 +25,41 @@ pub struct Referee<'a> {
 }
 
 impl<'a> Referee<'a> {
-    /// New referee. Refuses a fixture that fails [`Fixture::validate`] or a
-    /// replay whose vectors do not cover the fixture's cuts — every slicing
-    /// operation below is guarded by these checks, so a malformed input
-    /// fails here with a message instead of panicking mid-view.
-    pub fn new(fixture: &'a Fixture, replay: &'a Replay) -> Referee<'a> {
-        if let Err(why) = fixture.validate() {
-            panic!("malformed fixture {:?}: {why}", fixture.name);
-        }
+    /// New referee. Refuses (with a typed error, never a panic) a fixture
+    /// that fails [`Fixture::validate`] or a replay whose vectors do not
+    /// cover the fixture's cuts — every slicing operation below is guarded
+    /// by these checks.
+    pub fn new(fixture: &'a Fixture, replay: &'a Replay) -> Result<Referee<'a>, ValidationError> {
+        fixture.validate()?;
+        let covered = |rollout: RolloutId, count: Pos| -> Result<(), ValidationError> {
+            if count as usize <= replay.vector(rollout).len() {
+                Ok(())
+            } else {
+                Err(ValidationError::ReplayTooShort { rollout, count })
+            }
+        };
         for s in &fixture.seals {
-            assert!(
-                s.cut.count as usize <= replay.vector(s.rollout).len(),
-                "seal {} cut {} exceeds rollout {}'s replay vector",
-                s.seal,
-                s.cut.count,
-                s.rollout
-            );
+            covered(s.rollout, s.cut.count)?;
         }
         for c in &fixture.obs_cuts {
-            assert!(
-                c.cut.count as usize <= replay.vector(c.rollout).len(),
-                "obs cut {} exceeds rollout {}'s replay vector",
-                c.cut.count,
-                c.rollout
-            );
+            covered(c.rollout, c.cut.count)?;
         }
         for l in &fixture.lineage {
-            assert!(
-                l.cut.count as usize <= replay.vector(l.child).len(),
-                "fork cut {} exceeds rollout {}'s inherited replay prefix",
-                l.cut.count,
-                l.child
-            );
+            covered(l.child, l.cut.count)?;
         }
-        Referee { fixture, replay }
+        Ok(Referee { fixture, replay })
+    }
+
+    /// The replay evidence covered by a cut at `count`, as of `rev`: the
+    /// half-open position prefix, filtered to records already committed. A
+    /// covered event whose record commits later (legal in a fixture, though
+    /// the production durable-append-before-submit rule forbids it) is not
+    /// yet evidence at earlier revisions — exactly what the dataflow sees.
+    fn covered_prefix(&self, rollout: RolloutId, count: Pos, rev: Revision) -> Vec<&SdkEventRec> {
+        self.replay.vector(rollout)[..count as usize]
+            .iter()
+            .filter(|e| e.rev <= rev)
+            .collect()
     }
 
     fn reg_ops(&self, rev: Revision) -> BTreeMap<(CfgId, RegId), ReduceOp> {
@@ -93,7 +94,7 @@ impl<'a> Referee<'a> {
     pub fn seal_prefix(&self, rev: Revision) -> Vec<PrefixRow> {
         let mut rows = Vec::new();
         for s in self.fixture.seals.iter().filter(|s| s.rev <= rev) {
-            for e in &self.replay.vector(s.rollout)[..s.cut.count as usize] {
+            for e in self.covered_prefix(s.rollout, s.cut.count, rev) {
                 rows.push((
                     (s.config, s.rollout, s.seal),
                     PrefixEv {
@@ -114,7 +115,7 @@ impl<'a> Referee<'a> {
         &self,
         ops: &BTreeMap<(CfgId, RegId), ReduceOp>,
         config: CfgId,
-        prefix: &[crate::data::SdkEventRec],
+        prefix: &[&SdkEventRec],
     ) -> Vec<(Dim, ObsOut)> {
         let mut aggs: BTreeMap<Dim, Agg> = BTreeMap::new();
         for e in prefix {
@@ -147,8 +148,8 @@ impl<'a> Referee<'a> {
         let ops = self.reg_ops(rev);
         let mut rows = Vec::new();
         for (config, rollout, point, count) in self.points(rev) {
-            let prefix = &self.replay.vector(rollout)[..count as usize];
-            for (dim, out) in self.fold_obs(&ops, config, prefix) {
+            let prefix = self.covered_prefix(rollout, count, rev);
+            for (dim, out) in self.fold_obs(&ops, config, &prefix) {
                 rows.push(((config, rollout, point, dim), out));
             }
         }
@@ -161,8 +162,8 @@ impl<'a> Referee<'a> {
         let ops = self.reg_ops(rev);
         let mut rows = Vec::new();
         for (config, rollout, point, count) in self.points(rev) {
-            let prefix = &self.replay.vector(rollout)[..count as usize];
-            let obs = self.fold_obs(&ops, config, prefix);
+            let prefix = self.covered_prefix(rollout, count, rev);
+            let obs = self.fold_obs(&ops, config, &prefix);
             rows.push(((config, rollout, point), cell_fn(&obs)));
         }
         rows.sort_unstable();
@@ -191,13 +192,13 @@ impl<'a> Referee<'a> {
                 .filter(|l| l.rev <= rev)
                 .find(|l| l.config == config && l.child == rollout)
                 .map(|l| {
-                    let prefix = &self.replay.vector(rollout)[..l.cut.count as usize];
-                    cell_fn(&self.fold_obs(&ops, config, prefix))
+                    let prefix = self.covered_prefix(rollout, l.cut.count, rev);
+                    cell_fn(&self.fold_obs(&ops, config, &prefix))
                 });
             let mut prev = baseline;
             for count in counts {
-                let prefix = &self.replay.vector(rollout)[..count as usize];
-                let cell = cell_fn(&self.fold_obs(&ops, config, prefix));
+                let prefix = self.covered_prefix(rollout, count, rev);
+                let cell = cell_fn(&self.fold_obs(&ops, config, &prefix));
                 if prev.as_ref() != Some(&cell) {
                     rows.push((
                         (config, rollout),

@@ -245,7 +245,7 @@ fn main() {
 
         for f in &formulations {
             let t0 = now();
-            let cap = run(fx, f.opts, shape.seed);
+            let cap = run(fx, f.opts, shape.seed).expect("valid fixture");
             let wall = t0.elapsed();
             let per_branch = per_branch_deltas(&cap, f.prefix, &bf.evidence_revs);
             let mut sorted = per_branch.clone();
@@ -267,7 +267,7 @@ fn main() {
 
         // Direct-recompute baseline: re-derive every view from the genesis
         // replay at each revision (the non-incremental backend's cost).
-        let referee = Referee::new(fx, &bf.replay);
+        let referee = Referee::new(fx, &bf.replay).expect("valid fixture");
         let t0 = now();
         let mut rows_final = 0usize;
         for rev in 0..=fx.max_rev() {
@@ -297,8 +297,8 @@ fn main() {
 
         // Determinism spot check: the shared run's update stream is identical
         // across reruns.
-        let a = run(fx, formulations[1].opts, shape.seed);
-        let b = run(fx, formulations[1].opts, shape.seed);
+        let a = run(fx, formulations[1].opts, shape.seed).expect("valid fixture");
+        let b = run(fx, formulations[1].opts, shape.seed).expect("valid fixture");
         assert_eq!(a.deltas, b.deltas, "nondeterministic update counts");
         println!(
             "shared-formulation rerun determinism: OK (identical per-revision update counts)\n"

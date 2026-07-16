@@ -37,7 +37,8 @@ use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use crate::data::{
     AbsRow, Agg, CellKey, CellRow, CfgId, Dim, Fixture, ObsOut, ObsRow, OccRow, OrderScope,
     Payload, PointId, Pos, PrefixEv, PrefixRow, PropRow, Revision, RolloutId, ScrapeRow,
-    SeqPairRow, SeqRejRow, SiteRow, Species, TransRow, Transition, WorkRow, cell_fn,
+    SeqPairRow, SeqRejRow, SiteRow, Species, TransRow, Transition, ValidationError, WorkRow,
+    cell_fn,
 };
 use crate::generate::SplitMix64;
 
@@ -170,18 +171,20 @@ fn fold_units(input: &[(&Agg, isize)]) -> Option<Agg> {
 /// dataflow, time = revision. Input batches within a revision are fed in an
 /// `order_seed`-shuffled order (net views must be invariant to it).
 ///
-/// Refuses a fixture that fails [`Fixture::validate`] — a lineage cycle
-/// would keep the ancestry iteration from ever reaching a fixed point, and
-/// a `Revision::MAX` record would overflow the frontier advancement — so
-/// the driver fails loudly up front instead of hanging.
-pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
+/// Refuses a fixture that fails [`Fixture::validate`] with a typed error —
+/// a lineage cycle would keep the ancestry iteration from ever reaching a
+/// fixed point, and a `Revision::MAX` record would overflow the frontier
+/// advancement — so decoded input can never hang or crash the driver.
+pub fn run(
+    fixture: &Fixture,
+    opts: BuildOpts,
+    order_seed: u64,
+) -> Result<Captured, ValidationError> {
     assert!(
         opts.naive || opts.shared,
         "at least one formulation must be built"
     );
-    if let Err(why) = fixture.validate() {
-        panic!("malformed fixture {:?}: {why}", fixture.name);
-    }
+    fixture.validate()?;
     let acc = Arc::new(Mutex::new(Captured::default()));
     let acc_in = Arc::clone(&acc);
     let fx = fixture.clone();
@@ -749,7 +752,7 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
         }
     });
 
-    match Arc::try_unwrap(acc) {
+    Ok(match Arc::try_unwrap(acc) {
         Ok(m) => m
             .into_inner()
             .expect("no poisoned lock: single-threaded run"),
@@ -757,7 +760,7 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
             .lock()
             .expect("no poisoned lock: single-threaded run")
             .clone(),
-    }
+    })
 }
 
 struct Inputs {

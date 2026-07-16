@@ -315,11 +315,130 @@ pub struct Fixture {
     pub seq_queries: Vec<SeqQueryRec>,
 }
 
+/// A structural-contract violation in a decoded fixture. Returned (never
+/// panicked) through the public APIs: `dataflow::run` and `Referee::new`
+/// refuse the fixture instead of hanging, overflowing, or slicing out of
+/// bounds on it.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ValidationError {
+    /// A record commits at `Revision::MAX`, which the driver cannot advance
+    /// past.
+    #[error("{what} commits at Revision::MAX")]
+    RevisionMax {
+        /// Record class.
+        what: &'static str,
+    },
+    /// A rollout is declared as its own parent.
+    #[error("rollout {rollout} is its own parent")]
+    SelfParent {
+        /// Offending rollout.
+        rollout: RolloutId,
+    },
+    /// A rollout has more than one lineage parent.
+    #[error("rollout {rollout} has two parents")]
+    TwoParents {
+        /// Offending rollout.
+        rollout: RolloutId,
+    },
+    /// The lineage relation contains a cycle — the ancestry iteration would
+    /// never reach a fixed point.
+    #[error("lineage cycle through rollout {rollout} (config {config})")]
+    LineageCycle {
+        /// Campaign configuration.
+        config: CfgId,
+        /// A rollout on the cycle.
+        rollout: RolloutId,
+    },
+    /// A rollout's persisted positions are not the contiguous range from its
+    /// branch-point count.
+    #[error("rollout {rollout} (config {config}) persists non-contiguous positions")]
+    NonContiguousPositions {
+        /// Campaign configuration.
+        config: CfgId,
+        /// Offending rollout.
+        rollout: RolloutId,
+    },
+    /// Position arithmetic overflows `u64` (start + own event count).
+    #[error("rollout {rollout} (config {config}) position range overflows")]
+    PositionOverflow {
+        /// Campaign configuration.
+        config: CfgId,
+        /// Offending rollout.
+        rollout: RolloutId,
+    },
+    /// Moments decrease along a rollout's own persisted positions, or a
+    /// child's first own event precedes the last moment it inherits — either
+    /// breaks canonical `(Moment, pos)` order reconstruction.
+    #[error(
+        "moment {moment} at position {pos} of rollout {rollout} (config {config}) \
+         precedes moment {prev}"
+    )]
+    DecreasingMoments {
+        /// Campaign configuration.
+        config: CfgId,
+        /// Offending rollout.
+        rollout: RolloutId,
+        /// Offending position.
+        pos: Pos,
+        /// Offending moment.
+        moment: Moment,
+        /// The moment it must not precede.
+        prev: Moment,
+    },
+    /// A cut (fork, configured, or seal) precedes its rollout's branch point
+    /// or exceeds its persisted evidence — the physical cut contract.
+    #[error("{kind} cut {count} on rollout {rollout} outside [{lo}, {hi}]")]
+    CutOutOfBounds {
+        /// Which cut kind ("fork", "obs", "seal").
+        kind: &'static str,
+        /// Offending rollout (the parent, for fork cuts).
+        rollout: RolloutId,
+        /// Offending count.
+        count: Pos,
+        /// Branch-point lower bound.
+        lo: Pos,
+        /// Persisted-extent upper bound.
+        hi: Pos,
+    },
+    /// More than one declaration for the same identity (register, source, or
+    /// property). Duplicate declarations make the dataflow's declaration
+    /// joins fan out and disagree with the referee's last-wins map.
+    #[error("duplicate {what} declaration for id {id} (config {config})")]
+    DuplicateDeclaration {
+        /// Declaration class ("register", "source", "property").
+        what: &'static str,
+        /// Campaign configuration.
+        config: CfgId,
+        /// Declared identity.
+        id: u32,
+    },
+    /// A sequence query names an undeclared source — the dataflow would
+    /// silently drop it while the referee rejects it.
+    #[error("sequence query {query} (config {config}) names undeclared source {src}")]
+    UndeclaredQuerySource {
+        /// Campaign configuration.
+        config: CfgId,
+        /// Offending query.
+        query: QueryId,
+        /// Undeclared source (named `src`: thiserror reserves `source`).
+        src: SourceId,
+    },
+    /// The genesis replay vectors do not cover the fixture's cuts (referee
+    /// construction only).
+    #[error("replay vector for rollout {rollout} shorter than cut {count}")]
+    ReplayTooShort {
+        /// Offending rollout.
+        rollout: RolloutId,
+        /// Uncovered cut count.
+        count: Pos,
+    },
+}
+
 impl Fixture {
-    /// Validate the structural contracts every consumer relies on. Returns a
-    /// description of the first violation found. Checked by `dataflow::run`
-    /// (which refuses malformed fixtures instead of hanging or panicking mid-
-    /// dataflow) and by `Referee::new`.
+    /// Validate the structural contracts every consumer relies on. Returns
+    /// the first violation found as a typed error. Checked by
+    /// `dataflow::run` (which refuses malformed fixtures instead of hanging
+    /// or overflowing) and by `Referee::new`.
     ///
     /// Contracts:
     /// - no record commits at `Revision::MAX` (the driver advances to
@@ -328,17 +447,27 @@ impl Fixture {
     ///   per child, no cycles (a cycle would prevent the ancestry iteration
     ///   from ever reaching a fixed point);
     /// - each rollout's persisted positions are exactly the contiguous range
-    ///   `[start, start + n)` where `start` is its branch-point count (the
-    ///   restored prefix is inherited, never re-persisted);
+    ///   `[start, start + n)` (checked arithmetic) where `start` is its
+    ///   branch-point count (the restored prefix is inherited, never
+    ///   re-persisted);
+    /// - moments are nondecreasing along each rollout's own positions AND
+    ///   across every lineage boundary (a child's first own event does not
+    ///   precede the last moment it inherits) — canonical `(Moment, pos)`
+    ///   order rests on it;
     /// - no cut (fork, configured, or seal) precedes its rollout's branch
     ///   point or exceeds its persisted evidence (the physical cut contract:
     ///   a machine exists only from its branch moment onward, so cuts are
     ///   nondecreasing along every lineage path — lineage composition is
-    ///   sound only under it).
-    pub fn validate(&self) -> Result<(), String> {
-        let max_rev_ok = |rev: Revision, what: &str| -> Result<(), String> {
+    ///   sound only under it);
+    /// - at most one register/source/property declaration per identity
+    ///   (duplicates make declaration joins fan out);
+    /// - sequence queries name declared sources.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let max_rev_ok = |rev: Revision, what: &'static str| -> Result<(), ValidationError> {
             if rev == Revision::MAX {
-                Err(format!("{what} commits at Revision::MAX"))
+                Err(ValidationError::RevisionMax { what })
             } else {
                 Ok(())
             }
@@ -377,55 +506,120 @@ impl Fixture {
             max_rev_ok(r.rev, "sequence query")?;
         }
 
+        // Declarations are unique per identity.
+        let mut reg_decls: BTreeMap<(CfgId, RegId), ()> = BTreeMap::new();
+        for d in &self.registers {
+            if reg_decls.insert((d.config, d.reg), ()).is_some() {
+                return Err(ValidationError::DuplicateDeclaration {
+                    what: "register",
+                    config: d.config,
+                    id: d.reg,
+                });
+            }
+        }
+        let mut src_decls: BTreeMap<(CfgId, SourceId), ()> = BTreeMap::new();
+        for d in &self.sources {
+            if src_decls.insert((d.config, d.source), ()).is_some() {
+                return Err(ValidationError::DuplicateDeclaration {
+                    what: "source",
+                    config: d.config,
+                    id: d.source,
+                });
+            }
+        }
+        let mut prop_decls: BTreeMap<(CfgId, PropId), ()> = BTreeMap::new();
+        for d in &self.properties {
+            if prop_decls.insert((d.config, d.property), ()).is_some() {
+                return Err(ValidationError::DuplicateDeclaration {
+                    what: "property",
+                    config: d.config,
+                    id: d.property,
+                });
+            }
+        }
+        for q in &self.seq_queries {
+            for source in [q.src_a, q.src_b] {
+                if !src_decls.contains_key(&(q.config, source)) {
+                    return Err(ValidationError::UndeclaredQuerySource {
+                        config: q.config,
+                        query: q.query,
+                        src: source,
+                    });
+                }
+            }
+        }
+
         // Lineage: forest per config.
-        let mut parent: std::collections::BTreeMap<(CfgId, RolloutId), (RolloutId, Pos)> =
-            std::collections::BTreeMap::new();
+        let mut parent: BTreeMap<(CfgId, RolloutId), (RolloutId, Pos)> = BTreeMap::new();
         for l in &self.lineage {
             if l.child == l.parent {
-                return Err(format!("rollout {} is its own parent", l.child));
+                return Err(ValidationError::SelfParent { rollout: l.child });
             }
             if parent
                 .insert((l.config, l.child), (l.parent, l.cut.count))
                 .is_some()
             {
-                return Err(format!("rollout {} has two parents", l.child));
+                return Err(ValidationError::TwoParents { rollout: l.child });
             }
         }
         for &(config, child) in parent.keys() {
-            let mut seen = std::collections::BTreeSet::new();
+            let mut seen = BTreeSet::new();
             let mut cur = child;
             while let Some(&(p, _)) = parent.get(&(config, cur)) {
                 if !seen.insert(cur) {
-                    return Err(format!(
-                        "lineage cycle through rollout {cur} (config {config})"
-                    ));
+                    return Err(ValidationError::LineageCycle {
+                        config,
+                        rollout: cur,
+                    });
                 }
                 cur = p;
             }
         }
 
         // Per-rollout persisted extent: positions are contiguous from the
-        // branch-point count.
-        let mut own: std::collections::BTreeMap<(CfgId, RolloutId), Vec<Pos>> =
-            std::collections::BTreeMap::new();
+        // branch-point count (checked arithmetic — a hostile cut count near
+        // u64::MAX must fail the bound check, not overflow before it), and
+        // moments are nondecreasing along them.
+        let mut own: BTreeMap<(CfgId, RolloutId), Vec<(Pos, Moment)>> = BTreeMap::new();
         for e in &self.events {
-            own.entry((e.config, e.rollout)).or_default().push(e.pos);
+            own.entry((e.config, e.rollout))
+                .or_default()
+                .push((e.pos, e.moment));
         }
         let start_of = |config: CfgId, rollout: RolloutId| -> Pos {
             parent.get(&(config, rollout)).map(|&(_, c)| c).unwrap_or(0)
         };
-        let mut extent: std::collections::BTreeMap<(CfgId, RolloutId), Pos> =
-            std::collections::BTreeMap::new();
-        for ((config, rollout), mut positions) in own {
-            positions.sort_unstable();
+        let mut extent: BTreeMap<(CfgId, RolloutId), Pos> = BTreeMap::new();
+        // (config, rollout) -> (first own moment, last own moment).
+        let mut own_moments: BTreeMap<(CfgId, RolloutId), (Moment, Moment)> = BTreeMap::new();
+        for ((config, rollout), mut evs) in own {
+            evs.sort_unstable();
             let start = start_of(config, rollout);
-            let expect: Vec<Pos> = (start..start + positions.len() as Pos).collect();
-            if positions != expect {
-                return Err(format!(
-                    "rollout {rollout} (config {config}) persists non-contiguous                      positions {positions:?}; expected {expect:?}"
-                ));
+            let end = start
+                .checked_add(evs.len() as Pos)
+                .ok_or(ValidationError::PositionOverflow { config, rollout })?;
+            let contiguous = evs
+                .iter()
+                .zip(start..end)
+                .all(|(&(pos, _), expect)| pos == expect);
+            if !contiguous {
+                return Err(ValidationError::NonContiguousPositions { config, rollout });
             }
-            extent.insert((config, rollout), start + positions.len() as Pos);
+            let mut prev = evs[0].1;
+            for &(pos, moment) in &evs {
+                if moment < prev {
+                    return Err(ValidationError::DecreasingMoments {
+                        config,
+                        rollout,
+                        pos,
+                        moment,
+                        prev,
+                    });
+                }
+                prev = moment;
+            }
+            own_moments.insert((config, rollout), (evs[0].1, prev));
+            extent.insert((config, rollout), end);
         }
         let extent_of = |config: CfgId, rollout: RolloutId| -> Pos {
             extent
@@ -434,14 +628,61 @@ impl Fixture {
                 .unwrap_or(start_of(config, rollout))
         };
 
+        // Cross-boundary moment monotonicity: a child's first own event must
+        // not precede the last moment covered by its fork cut. The covered
+        // last event at position `count - 1` is found by walking up the
+        // (already cycle-checked) chain to whichever ancestor owns it; by
+        // induction with the per-rollout check above, the full replay vector
+        // is nondecreasing.
+        let last_covered_moment =
+            |config: CfgId, rollout: RolloutId, count: Pos| -> Option<Moment> {
+                if count == 0 {
+                    return None;
+                }
+                let target = count - 1;
+                let mut cur = rollout;
+                loop {
+                    let start = start_of(config, cur);
+                    if target >= start {
+                        // Owned by `cur` iff persisted; positions are contiguous.
+                        return own_moments.get(&(config, cur)).and_then(|_| {
+                            self.events
+                                .iter()
+                                .find(|e| e.config == config && e.rollout == cur && e.pos == target)
+                                .map(|e| e.moment)
+                        });
+                    }
+                    let &(p, _) = parent.get(&(config, cur))?;
+                    cur = p;
+                }
+            };
+        for l in &self.lineage {
+            if let (Some(&(first, _)), Some(covered)) = (
+                own_moments.get(&(l.config, l.child)),
+                last_covered_moment(l.config, l.parent, l.cut.count),
+            ) && first < covered
+            {
+                return Err(ValidationError::DecreasingMoments {
+                    config: l.config,
+                    rollout: l.child,
+                    pos: start_of(l.config, l.child),
+                    moment: first,
+                    prev: covered,
+                });
+            }
+        }
+
         // Cut bounds: start <= count <= extent, for every cut kind.
         for l in &self.lineage {
             let (lo, hi) = (start_of(l.config, l.parent), extent_of(l.config, l.parent));
             if l.cut.count < lo || l.cut.count > hi {
-                return Err(format!(
-                    "fork cut {} on rollout {} outside [{lo}, {hi}]",
-                    l.cut.count, l.parent
-                ));
+                return Err(ValidationError::CutOutOfBounds {
+                    kind: "fork",
+                    rollout: l.parent,
+                    count: l.cut.count,
+                    lo,
+                    hi,
+                });
             }
         }
         for c in &self.obs_cuts {
@@ -450,10 +691,13 @@ impl Fixture {
                 extent_of(c.config, c.rollout),
             );
             if c.cut.count < lo || c.cut.count > hi {
-                return Err(format!(
-                    "obs cut {} on rollout {} outside [{lo}, {hi}]",
-                    c.cut.count, c.rollout
-                ));
+                return Err(ValidationError::CutOutOfBounds {
+                    kind: "obs",
+                    rollout: c.rollout,
+                    count: c.cut.count,
+                    lo,
+                    hi,
+                });
             }
         }
         for sl in &self.seals {
@@ -462,10 +706,13 @@ impl Fixture {
                 extent_of(sl.config, sl.rollout),
             );
             if sl.cut.count < lo || sl.cut.count > hi {
-                return Err(format!(
-                    "seal cut {} on rollout {} outside [{lo}, {hi}]",
-                    sl.cut.count, sl.rollout
-                ));
+                return Err(ValidationError::CutOutOfBounds {
+                    kind: "seal",
+                    rollout: sl.rollout,
+                    count: sl.cut.count,
+                    lo,
+                    hi,
+                });
             }
         }
         Ok(())

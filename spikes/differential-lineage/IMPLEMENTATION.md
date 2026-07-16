@@ -13,9 +13,10 @@ Differential queries of the Dissonance observation/materialization plane over
 persisted fixture records, with the cost story measured. Dependencies
 (ask-by-comment declaration): `differential-dataflow` 0.24.0, `timely`
 0.30.0 (same resolved versions as the proven `ivm-fork-oracle` spike, pinned
-by the committed `Cargo.lock`), `serde`, `serde_json`. No `rand` (splitmix64
-inline, caller-seeded), no floats, no `unsafe` (memory reporting uses `ps`
-plus a documented `/usr/bin/time -l` wrapper).
+by the committed `Cargo.lock`), `serde`, `serde_json`, `thiserror` (typed
+validation errors, r2). No `rand` (splitmix64 inline, caller-seeded), no
+floats, no `unsafe` (memory reporting uses `ps` plus a documented
+`/usr/bin/time -l` wrapper).
 
 Doctrine compliance (per the spec's blocking rules):
 
@@ -30,11 +31,12 @@ Doctrine compliance (per the spec's blocking rules):
 - **No custom lattice**: outer timestamp `u64`; the only nested timestamp is
   the standard `Product<u64, u64>` inside `iterate` (lineage closure).
 
-## Structural validation (r1 review)
+## Structural validation (r1 + r2 reviews)
 
-`Fixture::validate` (data.rs) enforces the contracts every consumer relies
-on; `dataflow::run` and `Referee::new` refuse fixtures that fail it, and
-`tests/validate.rs` covers each rejection:
+`Fixture::validate` (data.rs) returns a typed `ValidationError` (thiserror);
+`dataflow::run` and `Referee::new` return `Result` and refuse fixtures that
+fail it — **decoded input can never panic, hang, or overflow the public
+APIs**. `tests/validate.rs` covers each rejection:
 
 - lineage is a forest per config (no self-parent, one parent per child, no
   cycles — a cycle would keep the ancestry iteration from converging);
@@ -42,11 +44,26 @@ on; `dataflow::run` and `Referee::new` refuse fixtures that fail it, and
   the driver walks the sorted **occupied** revisions, not every integer, so
   sparse revision numbers cost nothing;
 - persisted positions are the contiguous suffix range from the branch-point
-  count (the restored prefix is inherited, never re-persisted);
+  count, computed with **checked arithmetic** (a hostile cut near `u64::MAX`
+  fails the bound check instead of overflowing before it);
+- moments are nondecreasing along each rollout's own positions **and across
+  every lineage boundary** (canonical `(Moment, pos)` order rests on it);
 - no cut of any kind precedes its rollout's branch point or exceeds its
   persisted extent — the **physical cut contract** lineage composition is
   sound under (a machine exists only from its branch moment onward; the
-  parity harness caught the random generator violating this in development).
+  parity harness caught the random generator violating this in development);
+- register/source/property declarations are unique per identity (duplicates
+  would make the dataflow's declaration joins fan out and disagree with the
+  referee's last-wins maps);
+- sequence queries name declared sources.
+
+The referee's replay-backed views (`seal_prefix`, `obs`, `cells`,
+`transitions`, and occupancy through them) filter replay evidence **by the
+requested revision** (r2): a covered event whose record commits after the
+cut's revision is not evidence at earlier revisions — exactly what the
+dataflow sees. Production's durable-append-before-submit rule forbids that
+ordering, but a fixture may express it, and staged parity holds either way
+(`parity::late_covered_evidence_staged_parity`).
 
 ## Metering (r1 review — corrected)
 
@@ -96,9 +113,6 @@ reduction, mirroring the v1 never-fired rule).
 - Cross-source sequencing is per owning-rollout segment, not across the
   composed lineage prefix (adequate to prove the ordering-scope rejection
   contract; lineage-composed sequences would reuse the family-1 machinery).
-- A query naming an *undeclared* source is dropped by the DD join and
-  rejected by the referee; fixtures always declare sources. Production
-  should make undeclared-source queries a typed validation error.
 - Single worker, single process throughout (matches the epic's initial
   design note).
 - `Agg::combine` panics on a dimension-kind mismatch, which is unreachable
@@ -109,7 +123,7 @@ reduction, mirroring the v1 never-fired rule).
 
 ```
 cargo build            # + --release
-cargo test --locked    # 27 tests: exact (11) + parity (7) + validate (9)
+cargo test --locked    # 34 tests: exact (11) + parity (8) + validate (15)
 cargo clippy --locked --all-features --all-targets -- -D warnings
 cargo fmt -- --check
 cargo deny check --config <root>/deny.toml licenses

@@ -31,7 +31,7 @@ fn tree() -> (Fixture, Captured) {
         include_str!("../fixtures/tree_lineage.json"),
         &built,
     );
-    let cap = run(&fx, BuildOpts::default(), 1);
+    let cap = run(&fx, BuildOpts::default(), 1).expect("valid fixture");
     (fx, cap)
 }
 
@@ -414,7 +414,7 @@ fn family2_two_pass_occupancy_and_domination() {
         include_str!("../fixtures/two_pass.json"),
         &built,
     );
-    let cap = run(&fx, BuildOpts::default(), 1);
+    let cap = run(&fx, BuildOpts::default(), 1).expect("valid fixture");
 
     let provisional: CellKey = vec![(0, 10, 5)];
     let sealed: CellKey = vec![(0, 10, 9)];
@@ -491,7 +491,7 @@ fn family7_property_aggregation() {
         include_str!("../fixtures/retention_properties.json"),
         &built,
     );
-    let cap = run(&fx, BuildOpts::default(), 1);
+    let cap = run(&fx, BuildOpts::default(), 1).expect("valid fixture");
     let rev = fx.max_rev();
 
     // One property row (2 passes + 1 fail), even though two sites contributed.
@@ -525,7 +525,7 @@ fn family8_retention_separation_and_ordering_scope() {
         include_str!("../fixtures/retention_properties.json"),
         &built,
     );
-    let cap = run(&fx, BuildOpts::default(), 1);
+    let cap = run(&fx, BuildOpts::default(), 1).expect("valid fixture");
     use differential_lineage::data::Species;
 
     // Working view: three admitted coordinates at rev 3; the tag-77 note
@@ -589,7 +589,7 @@ fn probe_consolidate_canonical_sort_discipline() {
         include_str!("../fixtures/retention_properties.json"),
         &built,
     );
-    let cap = run(&fx, BuildOpts::default(), 1);
+    let cap = run(&fx, BuildOpts::default(), 1).expect("valid fixture");
 
     // The captured update stream for the working view nets a retraction: raw
     // updates at rev 4 contain a negative diff, and consolidation at rev 4
