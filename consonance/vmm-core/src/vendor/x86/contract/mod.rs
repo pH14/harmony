@@ -841,6 +841,10 @@ host-absent = [\"RDPID\", \"SHA\"]\n";
         assert!(form.contains(
             "\nmsr c0000300 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:zen4+\n"
         ));
+        // The PerfMonV2 global control/status set runs through GLOBAL_STATUS_SET.
+        assert!(form.contains(
+            "\nmsr c0000303 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:zen4+\n"
+        ));
         assert!(form.contains(
             "\nmsr c0010200 deny-gp deny-gp verified:on-silicon-pending-AE4 \
              applies-when:legacy-perfmon\n"
@@ -980,6 +984,91 @@ verified = \"on-silicon-pending-AE4\"\n";
                 leaf0: "GenuineIntel".to_string(),
             }
         );
+    }
+
+    /// Fail-closed on a **present-but-invalid** vendor token: an unrecognized
+    /// `[contract] vendor` string is refused (`UnknownVendor`), never silently
+    /// defaulted to GenuineIntel. Only a genuinely *absent* key defaults.
+    #[test]
+    fn loader_refuses_present_but_invalid_vendor_token() {
+        const BOGUS: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"NotARealVendor\"\n\
+cpuid-baseline = \"whatever\"\n";
+        // Refused under either axis — the token is invalid regardless of `expected`.
+        for axis in [VendorId::GenuineIntel, VendorId::AuthenticAMD] {
+            assert_eq!(
+                Contract::load(BOGUS, axis).unwrap_err(),
+                ContractError::UnknownVendor {
+                    token: "NotARealVendor".to_string(),
+                }
+            );
+        }
+        // A genuinely absent vendor key still loads (legacy Intel fixtures).
+        const NO_VENDOR: &str = "[contract]\nversion = 1\ncpuid-baseline = \"x\"\n";
+        assert!(Contract::load(NO_VENDOR, VendorId::GenuineIntel).is_ok());
+    }
+
+    /// Fail-closed on a **present-but-malformed** leaf 0: a leaf-0 row using dynamic
+    /// register rules, or non-UTF-8 constant bytes, cannot bypass the mixed-vendor
+    /// guard by masquerading as an absent leaf 0 — it is refused (`MalformedLeaf0`).
+    #[test]
+    fn loader_refuses_malformed_leaf0() {
+        // (a) leaf 0 with a dynamic register — not three frozen constants.
+        const DYN_LEAF0: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"dyn:osxsave:0x0\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(DYN_LEAF0, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MalformedLeaf0 {
+                declared: "AuthenticAMD",
+            }
+        );
+
+        // (b) leaf 0 whose constant bytes are not UTF-8 (0xffffffff registers).
+        const NON_UTF8_LEAF0: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0xffffffff\"\n\
+ecx = \"0xffffffff\"\n\
+edx = \"0xffffffff\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(NON_UTF8_LEAF0, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MalformedLeaf0 {
+                declared: "AuthenticAMD",
+            }
+        );
+
+        // A contract with NO leaf-0 row is still exempt (the guard is skipped).
+        const NO_LEAF0: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x80000000\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x80000008\"\n\
+ebx = \"0x00000000\"\n\
+ecx = \"0x00000000\"\n\
+edx = \"0x00000000\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert!(Contract::load(NO_LEAF0, VendorId::AuthenticAMD).is_ok());
     }
 
     /// A compact AMD-flavoured contract for the format-invariance property below —

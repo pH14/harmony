@@ -42,7 +42,7 @@ cpuid-baseline = "det-zenN-v1"
 # §6 anti-drift anchor: sha256 of this column's canonical serialized form (computed
 # by vmm-core's serializer, never hand-written). Re-derive on any body change + a
 # version bump — including the AE-0 det-zenN-v1 pinning.
-contract_hash = "1dd9610699b76a5be5da70334bfac6c8ec5b58f1c2ca79b531551fe6ac6a0d31"
+contract_hash = "b54a6c62666b48363038cafb5357176e5673fc51d22c8b19feb60d585ec30a37"
 # mxcsr-mask: the architectural FXSAVE-area MXCSR_MASK (ISA-level; the same on any
 # SSE-capable x86-64 part), carried unchanged.
 mxcsr-mask = "0x0000ffff"
@@ -310,11 +310,13 @@ write = "deny-gp"
 verified = "on-silicon-pending-AE4"
 applies-when = "legacy-perfmon"
 
-# PerfMonV2 (Zen 4+): the Intel-like global control/status MSRs this model adds.
+# PerfMonV2 (Zen 4+): the Intel-like global control/status MSRs this model adds — the
+# full 0xc000_0300–0xc000_0303 set (GLOBAL_STATUS / GLOBAL_CTL / GLOBAL_STATUS_CLR /
+# GLOBAL_STATUS_SET), matching the Intel mirror's AMD64_PERF_CNTR_GLOBAL_* rows.
 [[msr.entry]]
 name = "MSR_AMD64_PERF_CNTR_GLOBAL"
 index-lo = "0xc0000300"
-index-hi = "0xc0000302"
+index-hi = "0xc0000303"
 read = "deny-gp"
 write = "deny-gp"
 verified = "on-silicon-pending-AE4"

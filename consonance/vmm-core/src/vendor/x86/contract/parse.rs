@@ -84,6 +84,19 @@ pub(crate) enum ContractError {
         declared: &'static str,
         leaf0: String,
     },
+    /// The `[contract] vendor` header is present but not a recognized vendor token.
+    /// Fail-closed: a present-but-invalid axis is **refused**, never silently
+    /// defaulted to GenuineIntel (only a genuinely *absent* key defaults).
+    #[error("unknown contract vendor token {token:?} (expected GenuineIntel or AuthenticAMD)")]
+    UnknownVendor { token: String },
+    /// CPUID leaf 0 is **present** but is not a readable frozen vendor string — its
+    /// registers use a dynamic rule, or its constant bytes are not UTF-8. The
+    /// mixed-vendor guard cannot be bypassed by a malformed leaf 0; only a genuinely
+    /// *absent* leaf 0 is exempt.
+    #[error(
+        "malformed CPUID leaf 0 under vendor {declared}: not three frozen UTF-8 vendor-string constants"
+    )]
+    MalformedLeaf0 { declared: &'static str },
 }
 
 /// A parsed TOML scalar/array value (the only shapes this contract uses).
@@ -363,6 +376,11 @@ pub(crate) struct Contract {
     /// byte-identical. The axis is enforced at load time by [`Contract::load`], not
     /// carried in the hash.
     pub vendor: VendorId,
+    /// The literal `[contract] vendor` token exactly as written (`None` if the key
+    /// is absent). `load` reads this to distinguish an **absent** vendor (legacy
+    /// Intel fixtures — allowed) from a **present-but-invalid** one (refused), so a
+    /// bad token can never silently default to GenuineIntel.
+    pub vendor_declared: Option<String>,
     pub version: i64,
     pub kernel_tag: String,
     pub cpuid_baseline: String,
@@ -469,6 +487,22 @@ fn dispositions(
     )
 }
 
+/// The 12-char vendor string frozen at a CPUID leaf-0 `row` (EBX‖EDX‖ECX
+/// little-endian), or `None` if the row uses dynamic register rules or its constant
+/// bytes are not UTF-8 — a **malformed** frozen vendor string, which [`Contract::load`]
+/// refuses rather than silently treating as an absent leaf 0.
+fn leaf0_vendor_string(row: &CpuidRow) -> Option<String> {
+    let (ebx, edx, ecx) = match (row.ebx, row.edx, row.ecx) {
+        (RegField::Const(b), RegField::Const(d), RegField::Const(c)) => (b, d, c),
+        _ => return None,
+    };
+    let mut bytes = Vec::with_capacity(12);
+    for reg in [ebx, edx, ecx] {
+        bytes.extend_from_slice(&reg.to_le_bytes());
+    }
+    String::from_utf8(bytes).ok()
+}
+
 impl Contract {
     /// Parse the embedded contract TOML into typed tables.
     pub(crate) fn parse(toml: &str) -> Contract {
@@ -557,11 +591,14 @@ impl Contract {
             })
             .unwrap_or_default();
 
-        // The vendor axis (Deliverable 1). Absent → GenuineIntel (the current-truth
-        // column and the flavour of the Intel-style synthetic test fixtures).
-        let vendor = c
-            .get("vendor")
-            .and_then(|v| VendorId::from_token(v.as_str()))
+        // The vendor axis (Deliverable 1). Keep the raw declared token so `load` can
+        // distinguish absent (legacy fixtures — allowed) from present-but-invalid
+        // (fail-closed refusal). The resolved `vendor` defaults to GenuineIntel for an
+        // absent OR invalid token; `load` refuses an invalid token before it is trusted.
+        let vendor_declared = c.get("vendor").map(|v| v.as_str().to_string());
+        let vendor = vendor_declared
+            .as_deref()
+            .and_then(VendorId::from_token)
             .unwrap_or(VendorId::GenuineIntel);
 
         // Section-level transfer markers (Deliverable 2). The `[transfers]` singleton
@@ -578,6 +615,7 @@ impl Contract {
 
         Contract {
             vendor,
+            vendor_declared,
             transfers,
             version: c.get("version").map(TomlValue::as_int).unwrap_or_default(),
             kernel_tag: c
@@ -705,51 +743,57 @@ impl Contract {
         }
     }
 
-    /// Parse + validate the vendor axis (Deliverable 1). Returns the typed contract
-    /// only if the file's `[contract] vendor` header agrees with `expected` **and**
-    /// the file is not a mixed-vendor artifact (its CPUID leaf-0 vendor string, if
-    /// present, matches the declared vendor). This is the single entry point the
-    /// vendor-parameterized constructors go through; the underlying [`Contract::parse`]
-    /// stays infallible for the direct-token unit tests.
+    /// Parse + validate the vendor axis (Deliverable 1), **fail-closed**. Returns the
+    /// typed contract only if the file's `[contract] vendor` header agrees with
+    /// `expected` **and** the file is not a mixed-vendor artifact. Every ambiguity is
+    /// a refusal, never a silent default:
+    /// - vendor header **absent** → allowed (legacy Intel fixtures);
+    /// - vendor header **present but not a known token** → [`ContractError::UnknownVendor`];
+    /// - vendor header present, valid, but disagreeing with `expected` →
+    ///   [`ContractError::VendorMismatch`];
+    /// - CPUID leaf 0 **absent** → the mixed-vendor guard is skipped (fixtures);
+    /// - CPUID leaf 0 **present but malformed** (dynamic registers / non-UTF-8 bytes)
+    ///   → [`ContractError::MalformedLeaf0`] (the guard cannot be bypassed);
+    /// - CPUID leaf 0 present, readable, but spelling another vendor →
+    ///   [`ContractError::MixedVendor`].
+    ///
+    /// The single entry point the vendor-parameterized constructors go through; the
+    /// underlying [`Contract::parse`] stays infallible for the direct-token unit tests.
     pub(crate) fn load(toml: &str, expected: VendorId) -> Result<Contract, ContractError> {
         let c = Self::parse(toml);
+        // A **present-but-invalid** vendor token is refused, never defaulted
+        // (fail-closed); a genuinely absent header resolves `c.vendor` to GenuineIntel.
+        if let Some(tok) = c.vendor_declared.as_deref()
+            && VendorId::from_token(tok).is_none()
+        {
+            return Err(ContractError::UnknownVendor {
+                token: tok.to_string(),
+            });
+        }
+        // Axis check on the **resolved** vendor (a valid declared token, or the
+        // absent-default GenuineIntel — so an absent header loads only under Intel).
         if c.vendor != expected {
             return Err(ContractError::VendorMismatch {
                 expected: expected.as_token(),
                 found: c.vendor.as_token().to_string(),
             });
         }
-        // Mixed-vendor guard: the CPUID leaf-0 vendor string must spell the declared
-        // vendor. Only checked when a leaf-0 row is present (the synthetic fixtures
-        // omit it); a frozen leaf 0 is present in both real columns.
-        if let Some(leaf0) = c.cpuid_leaf0_string()
-            && leaf0 != expected.cpuid_string()
-        {
-            return Err(ContractError::MixedVendor {
+        // Mixed-vendor guard: a **present** leaf 0 must be a readable frozen vendor
+        // string that spells the declared vendor. A present-but-malformed leaf 0 is
+        // refused (it may not masquerade as an absent one); only a genuinely absent
+        // leaf 0 is exempt (the synthetic fixtures omit it).
+        if let Some(row) = c.cpuid.iter().find(|r| r.leaf.lo == 0 && r.leaf.hi == 0) {
+            let leaf0 = leaf0_vendor_string(row).ok_or(ContractError::MalformedLeaf0 {
                 declared: expected.as_token(),
-                leaf0,
-            });
+            })?;
+            if leaf0 != expected.cpuid_string() {
+                return Err(ContractError::MixedVendor {
+                    declared: expected.as_token(),
+                    leaf0,
+                });
+            }
         }
         Ok(c)
-    }
-
-    /// The 12-char vendor string frozen at CPUID leaf 0 (EBX‖EDX‖ECX little-endian),
-    /// or `None` if the file has no leaf-0 row or that row uses dynamic register
-    /// rules (the vendor string is always three frozen constants).
-    fn cpuid_leaf0_string(&self) -> Option<String> {
-        let row = self
-            .cpuid
-            .iter()
-            .find(|r| r.leaf.lo == 0 && r.leaf.hi == 0)?;
-        let (ebx, edx, ecx) = match (row.ebx, row.edx, row.ecx) {
-            (RegField::Const(b), RegField::Const(d), RegField::Const(c)) => (b, d, c),
-            _ => return None,
-        };
-        let mut bytes = Vec::with_capacity(12);
-        for reg in [ebx, edx, ecx] {
-            bytes.extend_from_slice(&reg.to_le_bytes());
-        }
-        String::from_utf8(bytes).ok()
     }
 
     /// Per-leaf entry count (used to decide `SIGNIFICANT_INDEX` when building the

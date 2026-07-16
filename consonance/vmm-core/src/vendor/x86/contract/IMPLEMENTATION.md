@@ -39,10 +39,23 @@ crate, no new dependency (`thiserror` was already present).
   `vendor/x86/contract/` (Paul veto point 3), consistent with the tasks/108 engine/vendor
   split: both Intel and AMD are x86 vendors. The engine names no vendor specifics.
 - `Contract::load(toml, expected: VendorId) -> Result<Contract, ContractError>` is the
-  single validating entry point. It refuses a file whose `[contract] vendor` disagrees
-  with the axis it was loaded under (`VendorMismatch`) and a mixed-vendor artifact whose
-  CPUID leaf-0 vendor string disagrees with the declared vendor (`MixedVendor`). The
-  underlying `Contract::parse` stays infallible for the direct-token unit tests.
+  single validating entry point, and it is **fail-closed** — every ambiguity is a refusal,
+  never a silent default:
+  - `[contract] vendor` **absent** → allowed (legacy Intel fixtures, resolved to
+    GenuineIntel; `parse` keeps the raw `vendor_declared` token so absent is distinguishable
+    from present);
+  - vendor **present but not a known token** → `UnknownVendor` (never defaulted to
+    GenuineIntel — this was the round-1 fail-open hole);
+  - vendor present, valid, disagreeing with the load axis → `VendorMismatch`;
+  - CPUID leaf 0 **absent** → mixed-vendor guard skipped (fixtures);
+  - CPUID leaf 0 **present but malformed** (dynamic registers / non-UTF-8 constant bytes)
+    → `MalformedLeaf0` — a malformed leaf 0 cannot masquerade as an absent one and bypass
+    the guard (the other round-1 fail-open hole);
+  - CPUID leaf 0 present, readable, spelling another vendor → `MixedVendor`.
+
+  The underlying `Contract::parse` stays infallible for the direct-token unit tests.
+  Refusal tests cover the `UnknownVendor`, `MalformedLeaf0` (dyn + non-UTF-8), `VendorMismatch`,
+  and `MixedVendor` paths.
 - Public API is unchanged: `contract()` (Intel, the live policy path) now routes through
   `load(.., GenuineIntel)`; the AMD constructor `contract_amd_draft()` is **`#[cfg(test)]`
   only**, and the AMD TOML is `include_str!`-embedded only under `cfg(test)`. `VendorId` /
@@ -75,9 +88,11 @@ tokens), not by a `vendor=` line. Consequences:
   byte-identity. The only Intel-file diff is the single additive `vendor` header line
   (plus its comment).
 - **AMD hash committed:** `docs/cpu-msr-contract-amd-draft.toml` `[contract]
-  contract_hash = 1dd9610699b76a5be5da70334bfac6c8ec5b58f1c2ca79b531551fe6ac6a0d31`, with
+  contract_hash = b54a6c62666b48363038cafb5357176e5673fc51d22c8b19feb60d585ec30a37`, with
   golden `testdata/canonical-amd-draft.txt` (regen: `contract::tests::regen_amd_golden`,
-  ignored). The computed-==committed gate is green.
+  ignored). The computed-==committed gate is green. The zen4+ PerfMonV2 section carries the
+  full global control/status set `0xc000_0300`–`0xc000_0303` (GLOBAL_STATUS / CTL /
+  STATUS_CLR / STATUS_SET), matching the Intel mirror's `AMD64_PERF_CNTR_GLOBAL_*` rows.
 
 ## AMD draft content — honesty about what is and is not pinned
 

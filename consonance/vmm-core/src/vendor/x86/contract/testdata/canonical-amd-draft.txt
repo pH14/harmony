@@ -33,6 +33,7 @@ msr c0000104 deny-gp deny-gp verified:on-silicon-pending-AE4
 msr c0000300 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:zen4+
 msr c0000301 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:zen4+
 msr c0000302 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:zen4+
+msr c0000303 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:zen4+
 msr c0010000 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
 msr c0010001 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
 msr c0010002 deny-gp deny-gp verified:on-silicon-pending-AE4 applies-when:legacy-perfmon
