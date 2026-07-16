@@ -40,6 +40,8 @@ pub struct Builder {
     replay: Vec<(RolloutId, Vec<SdkEventRec>)>,
     /// Last moment per rollout (for the nondecreasing-moment contract).
     last_moment: Vec<(RolloutId, Moment)>,
+    /// Start position per rollout (its branch-point count; 0 for genesis).
+    starts: Vec<(RolloutId, Pos)>,
     next_rollout: RolloutId,
 }
 
@@ -51,6 +53,7 @@ impl Builder {
             fixture: Fixture { name: name.to_owned(), ..Fixture::default() },
             replay: Vec::new(),
             last_moment: Vec::new(),
+            starts: Vec::new(),
             next_rollout: 0,
         }
     }
@@ -79,6 +82,7 @@ impl Builder {
         self.next_rollout += 1;
         self.replay.push((id, Vec::new()));
         self.last_moment.push((id, 0));
+        self.starts.push((id, 0));
         id
     }
 
@@ -93,11 +97,22 @@ impl Builder {
             cut.count,
             pvec.len()
         );
+        // A cut is a physical seal coordinate: the parent machine exists only
+        // from its own branch point onward, so no cut on it can precede its
+        // start. Lineage composition relies on this (cuts are nondecreasing
+        // along every lineage path).
+        assert!(
+            cut.count >= self.start_of(parent),
+            "cut before the parent's own branch point: {} < {}",
+            cut.count,
+            self.start_of(parent)
+        );
         let prefix: Vec<SdkEventRec> = pvec[..cut.count as usize].to_vec();
         let id = self.next_rollout;
         self.next_rollout += 1;
         self.replay.push((id, prefix));
         self.last_moment.push((id, cut.moment));
+        self.starts.push((id, cut.count));
         self.fixture.lineage.push(LineageRec {
             rev,
             config: self.config,
@@ -166,12 +181,15 @@ impl Builder {
 
     /// Record a configured unsealed evidence cut.
     pub fn obs_cut(&mut self, rev: Revision, rollout: RolloutId, cut: Cut) -> &mut Self {
+        assert!(cut.count >= self.start_of(rollout), "cut before the rollout's branch point");
+        assert!(cut.count as usize <= self.vector(rollout).len(), "cut beyond rollout evidence");
         self.fixture.obs_cuts.push(ObsCutRec { rev, config: self.config, rollout, cut });
         self
     }
 
     /// Record a candidate seal.
     pub fn seal(&mut self, rev: Revision, rollout: RolloutId, seal: SealId, cut: Cut) -> &mut Self {
+        assert!(cut.count >= self.start_of(rollout), "seal before the rollout's branch point");
         assert!(
             cut.count as usize <= self.vector(rollout).len(),
             "seal cut beyond rollout evidence"
@@ -230,6 +248,15 @@ impl Builder {
             .iter()
             .find(|(r, _)| *r == rollout)
             .map(|(_, v)| v.as_slice())
+            .expect("unknown rollout")
+    }
+
+    /// Start position of a rollout (its branch-point count; 0 for genesis).
+    pub fn start_of(&self, rollout: RolloutId) -> Pos {
+        self.starts
+            .iter()
+            .find(|(r, _)| *r == rollout)
+            .map(|(_, p)| *p)
             .expect("unknown rollout")
     }
 
@@ -308,7 +335,8 @@ pub fn random_tree(name: &str, seed: u64, p: TreeParams) -> (Fixture, Replay) {
             // current vector (same-cut siblings arise naturally from reuse).
             let parent = rollouts[rng.below(rollouts.len() as u64) as usize];
             let plen = b.vector(parent).len() as u64;
-            let count = rng.below(plen + 1);
+            let pstart = b.start_of(parent);
+            let count = pstart + rng.below(plen - pstart + 1);
             // The cut moment: the moment of the last included event (or the
             // parent's fork moment when nothing is included).
             let moment = if count == 0 {

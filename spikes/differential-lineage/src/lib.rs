@@ -14,5 +14,6 @@
 
 pub mod data;
 pub mod dataflow;
+pub mod fixtures;
 pub mod generate;
 pub mod referee;
