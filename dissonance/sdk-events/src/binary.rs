@@ -58,11 +58,25 @@ pub struct DeclaredPoint {
 }
 
 /// Encode a wire-v2 catalog declaration from a set of declared points. The inverse
-/// of the v2 branch of [`decode_binary`]: `decode_binary(encode_v2_declaration(p))`
-/// recovers a schema whose entries equal `p` (modulo canonical id sorting). The
-/// canonical guest-side encoder is a future `guest/sdk` deliverable; this host-side
-/// encoder exists so declarations round-trip and so fixtures/tools can build them.
-pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Vec<u8> {
+/// of the v2 branch of [`decode_binary`]: `decode_binary(encode_v2_declaration(p)?)`
+/// recovers a schema whose entries equal `p` (modulo canonical id sorting).
+///
+/// Each point is validated first ([`validate_v2_point`]) — the same checks
+/// [`decode_binary`] applies — so an un-fireable local id or a declaration the
+/// binary emission path cannot honor fails here rather than minting evidence that
+/// contradicts its firings. The canonical guest-side encoder is a future
+/// `guest/sdk` deliverable; this host-side encoder exists so declarations
+/// round-trip and so fixtures/tools can build them.
+pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkError> {
+    for p in points {
+        validate_v2_point(
+            p.namespace,
+            p.local,
+            p.classification,
+            p.value_shape,
+            p.base_op,
+        )?;
+    }
     let mut out = Vec::new();
     out.extend_from_slice(&wire::CATALOG_MAGIC.to_le_bytes());
     out.push(wire::SDK_WIRE_VERSION_V2);
@@ -88,7 +102,57 @@ pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Vec<u8> {
         out.extend_from_slice(&(len as u16).to_le_bytes());
         out.extend_from_slice(&name[..len]);
     }
-    out
+    Ok(out)
+}
+
+/// Validate a v2 declared point against what the binary emission path can encode
+/// and what a runtime `event_id` can address. Enforced identically on encode and
+/// on decode so the two never disagree.
+///
+/// - the local id must fit the 24-bit runtime field ([`SdkError::LocalIdOutOfRange`]);
+/// - a **state** point must declare a base operation and a `u64` value shape — the
+///   only state value the binary firing wire carries ([`SdkError::UnsupportedDeclaration`]);
+/// - an **occurrence** point carries no base operation and no reducible value shape.
+fn validate_v2_point(
+    namespace: u8,
+    local: u32,
+    classification: Classification,
+    value_shape: Option<ValueShape>,
+    base_op: Option<UpdateOp>,
+) -> Result<(), SdkError> {
+    if local > wire::LOCAL_MASK {
+        return Err(SdkError::LocalIdOutOfRange { namespace, local });
+    }
+    let unsupported = |reason| SdkError::UnsupportedDeclaration {
+        namespace,
+        local,
+        reason,
+    };
+    match classification {
+        Classification::State => {
+            if base_op.is_none() {
+                return Err(unsupported(
+                    "a v2 state point must declare a base operation",
+                ));
+            }
+            if value_shape != Some(ValueShape::U64) {
+                return Err(unsupported(
+                    "the binary emission path encodes only u64 state values",
+                ));
+            }
+        }
+        Classification::Occurrence => {
+            if base_op.is_some() {
+                return Err(unsupported("an occurrence point has no base operation"));
+            }
+            if value_shape.is_some() {
+                return Err(unsupported(
+                    "an occurrence point has no reducible value shape",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Decode a captured binary Event stream into normalized schema + ordered events.
@@ -167,9 +231,14 @@ fn parse_declaration(bytes: &[u8]) -> Result<DeclContext, SdkError> {
     match version {
         Some(wire::SDK_WIRE_VERSION) => parse_v1(&mut r),
         Some(wire::SDK_WIRE_VERSION_V2) => parse_v2(&mut r),
-        // An unknown or absent version says nothing trustworthy about the layout;
-        // decode the events under their namespaces and leave the schema empty.
-        _ => Ok(DeclContext::empty()),
+        // A *present* but unrecognized version is a deliberate future-format claim:
+        // its event payloads may be laid out differently, so refuse rather than
+        // decode them under this decoder's layout (mirrors `decode_events`'s taint,
+        // but as a typed error since this decoder returns `Result`).
+        Some(other) => Err(SdkError::UnsupportedVersion { version: other }),
+        // A truncated header (version byte missing after good magic) claims no
+        // version; treat it as no usable declaration and decode events leniently.
+        None => Ok(DeclContext::empty()),
     }
 }
 
@@ -226,6 +295,11 @@ fn parse_v1(r: &mut Reader<'_>) -> Result<DeclContext, SdkError> {
             // report against a coordinate). It is simply skipped.
             continue;
         };
+        // A local id that does not fit the 24-bit runtime field could never match a
+        // firing — refuse it rather than mint a permanently never-fired identity.
+        if local > wire::LOCAL_MASK {
+            return Err(SdkError::LocalIdOutOfRange { namespace, local });
+        }
         let id = ObservationId::Point { namespace, local };
         if let Some(at) = assert_type {
             ctx.assert_types.insert((namespace, local), at);
@@ -285,6 +359,10 @@ fn parse_v2(r: &mut Reader<'_>) -> Result<DeclContext, SdkError> {
             }
         };
         let name = need_name(r, "v2 point name")?;
+        // Accept the declaration only if the binary emission path can actually
+        // report it (and the id can be addressed) — identical to the encode check,
+        // so a decoded declaration is never richer than a valid encodable one.
+        validate_v2_point(namespace, local, classification, value_shape, base_op)?;
         ctx.schema.merge_entry(SchemaEntry {
             id: ObservationId::Point { namespace, local },
             classification,
@@ -461,6 +539,8 @@ fn decode_state(
     let op = match op_byte {
         wire::STATE_SET => UpdateOp::Set,
         wire::STATE_MAX => UpdateOp::Max,
+        wire::STATE_MIN => UpdateOp::Min,
+        wire::STATE_ACCUMULATE => UpdateOp::Accumulate,
         _ => return Ok(None),
     };
     let id = ObservationId::Point { namespace, local };

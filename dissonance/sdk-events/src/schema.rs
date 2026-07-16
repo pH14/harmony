@@ -216,7 +216,14 @@ impl SchemaEntry {
 /// declaration. Entries are kept sorted by [`ObservationId`] and unique, so the
 /// serde form is **canonical** and identical across platforms (no `HashMap`
 /// iteration order, no float).
+///
+/// Deserialization is guarded: [`SdkSchema::entry`] binary-searches `entries`, so
+/// a persisted schema with unsorted or duplicate entries would make declared
+/// identities unfindable. `#[serde(try_from)]` re-verifies the sorted-and-unique
+/// invariant on the way in and rejects a non-canonical schema rather than
+/// accepting silently corrupt evidence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "SdkSchemaRepr")]
 pub struct SdkSchema {
     /// The ingress format this schema was decoded from.
     pub source: SourceFormat,
@@ -228,6 +235,41 @@ pub struct SdkSchema {
     /// `None` when the source carries no separate declaration blob (Antithesis
     /// JSON declares implicitly through its records).
     pub original_declaration: Option<Raw>,
+}
+
+/// The on-the-wire shape of an [`SdkSchema`], deserialized before the
+/// sorted-and-unique invariant is re-checked (see [`SdkSchema`]'s `try_from`).
+#[derive(Deserialize)]
+struct SdkSchemaRepr {
+    source: SourceFormat,
+    ordering: OrderingScope,
+    entries: Vec<SchemaEntry>,
+    original_declaration: Option<Raw>,
+}
+
+impl TryFrom<SdkSchemaRepr> for SdkSchema {
+    type Error = String;
+
+    fn try_from(repr: SdkSchemaRepr) -> Result<SdkSchema, String> {
+        // The invariant `entry()` depends on: strictly ascending, no duplicates.
+        for pair in repr.entries.windows(2) {
+            match pair[0].id.cmp(&pair[1].id) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Equal => {
+                    return Err(format!("duplicate schema entry id {:?}", pair[0].id));
+                }
+                std::cmp::Ordering::Greater => {
+                    return Err("schema entries are not sorted by id".to_string());
+                }
+            }
+        }
+        Ok(SdkSchema {
+            source: repr.source,
+            ordering: repr.ordering,
+            entries: repr.entries,
+            original_declaration: repr.original_declaration,
+        })
+    }
 }
 
 impl SdkSchema {

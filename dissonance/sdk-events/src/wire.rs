@@ -74,10 +74,17 @@ pub(crate) const DISP_HIT: u8 = 0;
 /// Assertion disposition: a **violation**.
 pub(crate) const DISP_VIOLATION: u8 = 1;
 
-/// State-register op: assign.
+/// State-register firing op: assign.
 pub(crate) const STATE_SET: u8 = 0;
-/// State-register op: keep-the-maximum.
+/// State-register firing op: keep-the-maximum.
 pub(crate) const STATE_MAX: u8 = 1;
+/// State-register firing op: keep-the-minimum. A wire-v2 extension (the canonical
+/// v1 guest encoder emits only set/max); a `min`-declared point fires under this
+/// byte. Kept numerically equal to [`crate::UpdateOp`]'s `Min` byte.
+pub(crate) const STATE_MIN: u8 = 2;
+/// State-register firing op: accumulate the observed value into the retained set.
+/// A wire-v2 extension, aligned with [`crate::UpdateOp`]'s `Accumulate` byte.
+pub(crate) const STATE_ACCUMULATE: u8 = 3;
 
 /// Catalog point-kind bytes.
 pub(crate) const KIND_ALWAYS: u8 = 0;

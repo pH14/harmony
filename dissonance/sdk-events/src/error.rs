@@ -76,4 +76,40 @@ pub enum SdkError {
         /// The unrecognized byte.
         value: u8,
     },
+
+    /// The catalog declaration names a wire version this decoder does not
+    /// understand. A future version may lay out event payloads differently, so the
+    /// stream is refused rather than decoded under a guessed layout.
+    #[error("unsupported catalog wire version {version}")]
+    UnsupportedVersion {
+        /// The version byte the declaration carried.
+        version: u8,
+    },
+
+    /// A declared point's local id does not fit the 24-bit local-id field a runtime
+    /// `event_id` splits into, so no firing could ever match it (it would mint a
+    /// permanently never-fired identity). Rejected on both encode and decode.
+    #[error("declared local id {local} in namespace {namespace} exceeds the 24-bit limit")]
+    LocalIdOutOfRange {
+        /// The declared point's namespace.
+        namespace: u8,
+        /// The out-of-range local id.
+        local: u32,
+    },
+
+    /// A v2 declaration describes semantics the binary emission path cannot
+    /// actually report (e.g. a non-`u64` state value, a state point with no base
+    /// operation, or an occurrence carrying a reducible value/operation). Accepting
+    /// it would let schema and event evidence disagree, so it is refused — the
+    /// "accept a declaration only for an emission path that reports every required
+    /// update" rule, enforced in the codec.
+    #[error("unsupported v2 declaration for point {local} in namespace {namespace}: {reason}")]
+    UnsupportedDeclaration {
+        /// The declared point's namespace.
+        namespace: u8,
+        /// The declared point's local id.
+        local: u32,
+        /// Why the binary emission path cannot honor the declaration.
+        reason: &'static str,
+    },
 }

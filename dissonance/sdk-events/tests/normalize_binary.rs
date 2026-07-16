@@ -48,14 +48,22 @@ fn assert_firing(disp: u8, detail: &[u8]) -> Vec<u8> {
 // Kind bytes from the v1 catalog format.
 const KIND_ALWAYS: u8 = 0;
 const KIND_STATE: u8 = 4;
-// Op bytes.
+// State firing op bytes (aligned with `UpdateOp`'s wire bytes).
 const STATE_SET: u8 = 0;
 const STATE_MAX: u8 = 1;
+const STATE_MIN: u8 = 2;
+const STATE_ACCUMULATE: u8 = 3;
 // Assertion dispositions.
 const DISP_HIT: u8 = 0;
+// The 24-bit local-id ceiling.
+const LOCAL_MAX: u32 = 0x00FF_FFFF;
 
 fn at(m: u64, id: u32, bytes: Vec<u8>) -> (Moment, u32, Vec<u8>) {
     (Moment(m), id, bytes)
+}
+
+fn encode_ok(points: &[DeclaredPoint]) -> Vec<u8> {
+    encode_v2_declaration(points).expect("valid v2 declaration")
 }
 
 // --- v1: never-fired state is reportable but non-reducible -------------------
@@ -183,7 +191,7 @@ fn v2_set_max_min_declarations_round_trip_before_firing() {
         v2_state(2, "high_watermark", UpdateOp::Max),
         v2_state(3, "low_watermark", UpdateOp::Min),
     ];
-    let decl = encode_v2_declaration(&points);
+    let decl = encode_ok(&points);
     let n = decode_binary(&[at(0, 0, decl)]).expect("decodes");
 
     assert_eq!(n.schema.source, SourceFormat::BinaryV2);
@@ -204,10 +212,10 @@ fn v2_set_max_min_declarations_round_trip_before_firing() {
 
 #[test]
 fn v2_accumulate_is_declarable_by_a_versioned_source() {
-    // `accumulate` requires a source verb/version that declares it — v2 can.
-    let mut p = v2_state(5, "species", UpdateOp::Accumulate);
-    p.value_shape = Some(ValueShape::Bytes);
-    let n = decode_binary(&[at(0, 0, encode_v2_declaration(&[p]))]).expect("decodes");
+    // `accumulate` requires a source verb/version that declares it — v2 can (over
+    // the u64 the binary emission path encodes).
+    let p = v2_state(5, "species", UpdateOp::Accumulate);
+    let n = decode_binary(&[at(0, 0, encode_ok(&[p]))]).expect("decodes");
     let id = ObservationId::Point {
         namespace: NS_STATE,
         local: 5,
@@ -218,9 +226,33 @@ fn v2_accumulate_is_declarable_by_a_versioned_source() {
     );
 }
 
+/// The firing codec honors **every** declared operation, not just set/max, and a
+/// firing decodes to the same op it was declared with (finding-2 round-trip).
+#[test]
+fn every_declared_operation_fires_and_decodes_consistently() {
+    for (op, op_byte) in [
+        (UpdateOp::Set, STATE_SET),
+        (UpdateOp::Max, STATE_MAX),
+        (UpdateOp::Min, STATE_MIN),
+        (UpdateOp::Accumulate, STATE_ACCUMULATE),
+    ] {
+        let decl = encode_ok(&[v2_state(1, "reg", op)]);
+        let raw = vec![
+            at(0, 0, decl),
+            at(1, event_id(NS_STATE, 1), state_firing(op_byte, 42)),
+        ];
+        let n = decode_binary(&raw).unwrap_or_else(|e| panic!("{op:?} should decode: {e}"));
+        assert_eq!(
+            n.events[0].payload,
+            Payload::State { op, value: 42 },
+            "{op:?} firing must decode to its declared op"
+        );
+    }
+}
+
 #[test]
 fn v2_firing_conflicting_with_the_declared_operation_is_rejected() {
-    let decl = encode_v2_declaration(&[v2_state(2, "hw", UpdateOp::Max)]);
+    let decl = encode_ok(&[v2_state(2, "hw", UpdateOp::Max)]);
     let raw = vec![
         at(0, 0, decl),
         // The declaration says max; a set firing contradicts it.
@@ -231,13 +263,52 @@ fn v2_firing_conflicting_with_the_declared_operation_is_rejected() {
 }
 
 #[test]
-fn v2_incompatible_shapes_for_one_identity_are_a_typed_error() {
-    let a = v2_state(1, "x", UpdateOp::Set);
-    let mut b = v2_state(1, "x", UpdateOp::Set); // same coordinate…
-    b.value_shape = Some(ValueShape::Bool); // …different shape
-    let err = decode_binary(&[at(0, 0, encode_v2_declaration(&[a, b]))])
-        .expect_err("shape conflict must fail");
-    assert!(matches!(err, SdkError::IncompatibleShapes { .. }));
+fn v2_non_u64_state_shape_is_rejected_on_encode_and_decode() {
+    // The binary emission path encodes only u64 state values, so a state point
+    // declaring any other shape is refused rather than silently reported as u64.
+    let mut p = v2_state(1, "x", UpdateOp::Set);
+    p.value_shape = Some(ValueShape::Bytes);
+    let err = encode_v2_declaration(&[p]).expect_err("non-u64 state shape must fail on encode");
+    assert!(matches!(err, SdkError::UnsupportedDeclaration { .. }));
+
+    // …and a hand-built declaration carrying that shape is rejected on decode too.
+    let mut decl = Vec::new();
+    decl.extend_from_slice(&CATALOG_MAGIC.to_le_bytes());
+    decl.push(2); // version 2
+    decl.extend_from_slice(&1u32.to_le_bytes());
+    decl.push(NS_STATE);
+    decl.extend_from_slice(&1u32.to_le_bytes());
+    decl.push(1); // classification: state
+    decl.push(2); // value shape: bytes (byte 2) — unsupported for binary state
+    decl.push(0); // base op: set (byte 0)
+    decl.push(255); // expectation: none
+    decl.extend_from_slice(&1u16.to_le_bytes());
+    decl.extend_from_slice(b"x");
+    let err = decode_binary(&[at(0, 0, decl)]).expect_err("must fail on decode");
+    assert!(matches!(err, SdkError::UnsupportedDeclaration { .. }));
+}
+
+#[test]
+fn v2_occurrence_carrying_a_value_or_operation_is_rejected() {
+    let mut p = DeclaredPoint {
+        namespace: NS_ASSERT,
+        local: 1,
+        name: "a".into(),
+        classification: Classification::Occurrence,
+        value_shape: Some(ValueShape::U64), // an occurrence has no reducible value
+        base_op: None,
+        expectation: None,
+    };
+    assert!(matches!(
+        encode_v2_declaration(&[p.clone()]),
+        Err(SdkError::UnsupportedDeclaration { .. })
+    ));
+    p.value_shape = None;
+    p.base_op = Some(UpdateOp::Set); // …and no base operation
+    assert!(matches!(
+        encode_v2_declaration(&[p]),
+        Err(SdkError::UnsupportedDeclaration { .. })
+    ));
 }
 
 #[test]
@@ -252,16 +323,61 @@ fn v2_classification_conflict_is_a_typed_error() {
         base_op: None,
         expectation: None,
     };
-    let err = decode_binary(&[at(0, 0, encode_v2_declaration(&[state, occ]))])
+    // Each point is individually valid; the conflict is detected when the second
+    // declaration for the same coordinate is merged.
+    let err = decode_binary(&[at(0, 0, encode_ok(&[state, occ]))])
         .expect_err("classification conflict must fail");
     assert!(matches!(err, SdkError::ClassificationConflict { .. }));
+}
+
+// --- unsupported version + out-of-range ids are typed errors -----------------
+
+#[test]
+fn a_future_catalog_version_is_refused_not_decoded_under_a_guessed_layout() {
+    let mut decl = Vec::new();
+    decl.extend_from_slice(&CATALOG_MAGIC.to_le_bytes());
+    decl.push(99); // a future/unknown version
+    decl.extend_from_slice(&0u32.to_le_bytes());
+    // A following state firing must NOT be decoded under this decoder's layout.
+    let raw = vec![
+        at(0, 0, decl),
+        at(1, event_id(NS_STATE, 1), state_firing(STATE_SET, 7)),
+    ];
+    let err = decode_binary(&raw).expect_err("future version must be refused");
+    assert!(matches!(err, SdkError::UnsupportedVersion { version: 99 }));
+}
+
+#[test]
+fn out_of_range_local_ids_are_rejected_on_encode_and_decode() {
+    // The maximal 24-bit id is fine.
+    assert!(encode_v2_declaration(&[v2_state(LOCAL_MAX, "ok", UpdateOp::Set)]).is_ok());
+    // One past it can never match a masked firing coordinate — refused on encode…
+    let err = encode_v2_declaration(&[v2_state(LOCAL_MAX + 1, "bad", UpdateOp::Set)])
+        .expect_err("out-of-range local must fail on encode");
+    assert!(matches!(err, SdkError::LocalIdOutOfRange { .. }));
+
+    // …and on decode, from a hand-built declaration.
+    let mut decl = Vec::new();
+    decl.extend_from_slice(&CATALOG_MAGIC.to_le_bytes());
+    decl.push(2);
+    decl.extend_from_slice(&1u32.to_le_bytes());
+    decl.push(NS_STATE);
+    decl.extend_from_slice(&(LOCAL_MAX + 1).to_le_bytes());
+    decl.push(1); // classification: state
+    decl.push(0); // value shape: u64 (byte 0)
+    decl.push(0); // base op: set (byte 0)
+    decl.push(255); // expectation: none
+    decl.extend_from_slice(&3u16.to_le_bytes());
+    decl.extend_from_slice(b"bad");
+    let err = decode_binary(&[at(0, 0, decl)]).expect_err("out-of-range local must fail on decode");
+    assert!(matches!(err, SdkError::LocalIdOutOfRange { .. }));
 }
 
 // --- malformed lengths are typed errors, never panics ------------------------
 
 #[test]
 fn truncated_v2_record_is_a_malformed_length_error() {
-    let decl = encode_v2_declaration(&[v2_state(1, "commit_index", UpdateOp::Set)]);
+    let decl = encode_ok(&[v2_state(1, "commit_index", UpdateOp::Set)]);
     // Cut the declaration off inside the sole record (after the header).
     let truncated = decl[..decl.len() - 5].to_vec();
     let err = decode_binary(&[at(0, 0, truncated)]).expect_err("truncation must fail");
@@ -331,6 +447,65 @@ proptest! {
         if let Ok(n) = decode_binary(&raw) {
             for ev in &n.events {
                 prop_assert!(ev.raw.event_id.is_some());
+            }
+        }
+    }
+
+    /// Declared-vs-decoded round-trip for every operation and any in-range id: the
+    /// decoded schema resolves the declared op and a firing under it decodes to the
+    /// same op (finding-2 completeness).
+    #[test]
+    fn v2_state_declarations_round_trip_for_every_op(
+        op_idx in 0usize..4,
+        local in 0u32..=LOCAL_MAX,
+        value in any::<u64>(),
+    ) {
+        let ops = [UpdateOp::Set, UpdateOp::Max, UpdateOp::Min, UpdateOp::Accumulate];
+        let op_bytes = [STATE_SET, STATE_MAX, STATE_MIN, STATE_ACCUMULATE];
+        let op = ops[op_idx];
+        let decl = encode_v2_declaration(&[v2_state(local, "r", op)]).expect("valid");
+        let raw = vec![
+            at(0, 0, decl),
+            at(1, event_id(NS_STATE, local), state_firing(op_bytes[op_idx], value)),
+        ];
+        let n = decode_binary(&raw).expect("decodes");
+        let id = ObservationId::Point { namespace: NS_STATE, local };
+        let entry = n.schema.entry(&id).expect("declared");
+        prop_assert_eq!(entry.base_op, Some(op));
+        prop_assert!(entry.is_reducible_state());
+        prop_assert_eq!(&n.events[0].payload, &Payload::State { op, value });
+    }
+
+    /// The 24-bit local-id boundary is enforced on encode across the whole u32.
+    #[test]
+    fn local_id_boundary_is_enforced(local in any::<u32>()) {
+        let r = encode_v2_declaration(&[v2_state(local, "r", UpdateOp::Set)]);
+        if local <= LOCAL_MAX {
+            prop_assert!(r.is_ok());
+        } else {
+            let out_of_range = matches!(r, Err(SdkError::LocalIdOutOfRange { .. }));
+            prop_assert!(out_of_range);
+        }
+    }
+
+    /// A random unrecognized catalog version is refused, never decoded under a
+    /// guessed layout; only the two known versions decode.
+    #[test]
+    fn unknown_catalog_versions_are_refused(version in any::<u8>()) {
+        let mut decl = Vec::new();
+        decl.extend_from_slice(&CATALOG_MAGIC.to_le_bytes());
+        decl.push(version);
+        decl.extend_from_slice(&0u32.to_le_bytes()); // count 0
+        let raw = vec![
+            at(0, 0, decl),
+            at(1, event_id(NS_STATE, 1), state_firing(STATE_SET, 1)),
+        ];
+        let r = decode_binary(&raw);
+        match version {
+            1 | 2 => prop_assert!(r.is_ok()),
+            _ => {
+                let unsupported = matches!(r, Err(SdkError::UnsupportedVersion { .. }));
+                prop_assert!(unsupported);
             }
         }
     }

@@ -86,15 +86,29 @@ fn decode_record(
         return Ok(unknown(raw));
     };
 
-    // Recognized records carry exactly one Antithesis wrapper key.
-    if let Some(assert) = object.get("antithesis_assert") {
+    // A recognized record carries *exactly one* Antithesis wrapper key. Zero
+    // recognized wrappers is unknown data; more than one is an ambiguous record
+    // whose intent is undefined — preserve it raw rather than silently pick a
+    // branch and drop the rest.
+    let assert = object.get("antithesis_assert");
+    let guidance = object.get("antithesis_guidance");
+    let setup = object.get("antithesis_setup");
+    let recognized = assert.is_some() as u8 + guidance.is_some() as u8 + setup.is_some() as u8;
+    if recognized != 1 {
+        return Ok(unknown(raw));
+    }
+    if let Some(assert) = assert {
         decode_assert(moment, ordinal, assert, raw, schema)
-    } else if let Some(guidance) = object.get("antithesis_guidance") {
+    } else if let Some(guidance) = guidance {
         decode_guidance(moment, ordinal, guidance, raw, schema)
-    } else if let Some(setup) = object.get("antithesis_setup") {
-        Ok(decode_setup(moment, ordinal, setup, raw))
     } else {
-        Ok(unknown(raw))
+        // `recognized == 1` and the other two are `None`, so this is the setup case.
+        Ok(decode_setup(
+            moment,
+            ordinal,
+            setup.expect("setup wrapper"),
+            raw,
+        ))
     }
 }
 

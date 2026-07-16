@@ -23,7 +23,15 @@ Differential epic (`hm-bbx`).
   None` (unresolved), and the decoder never promotes a v1 firing into a declared
   reducer. **wire-v2** (`encode_v2_declaration` / `DeclaredPoint`, format in
   `src/wire.rs`) carries occurrence/state classification, value shape, and base
-  update operation, so a v2 state point is reducible before it ever fires.
+  update operation, so a v2 state point is reducible before it ever fires. The
+  firing codec honors **all four** operations (`set`/`max`/`min`/`accumulate`),
+  and the value the binary path carries is the cooperative vertical's bounded
+  integer (`u64`). A v2 declaration is accepted only if the emission path can
+  report it: a state point declares a base op + a `u64` shape, an occurrence
+  declares neither, and every local id fits the 24-bit runtime field — otherwise
+  it is a typed error, on both encode and decode, so schema and event evidence can
+  never disagree. A catalog naming an unsupported wire version is refused
+  (`UnsupportedVersion`), never decoded under a guessed layout.
 - **`SdkSchema` / `SchemaEntry` / `SdkEvent`** (`src/schema.rs`, `src/event.rs`) —
   the normalized model: source provenance, observation identity, value, and
   classification are kept as separate roles (cell projection is *not* owned here).
@@ -61,6 +69,16 @@ Differential epic (`hm-bbx`).
   event is neither duplicated nor renumbered.
 - **`arbitrary_precision` serde_json** is the mechanism that keeps every JSON
   number as its exact token without ever constructing an `f64`.
+- **Accept only what the emission path can report** (spec rule, applied in the
+  codec). `encode_v2_declaration` is fallible and validates each point with the
+  same `validate_v2_point` the decoder uses, so an un-fireable id or a shape the
+  binary wire cannot carry fails at construction, not silently downstream.
+- **A recognized JSON record carries exactly one wrapper.** A frame with more than
+  one Antithesis wrapper is ambiguous and preserved raw, never resolved to one
+  branch with the rest dropped.
+- **Deserialization re-verifies invariants.** `SdkSchema` deserializes through a
+  `try_from` guard that rejects unsorted or duplicate entries, so `entry`'s binary
+  search can never be silently defeated by a corrupted persisted schema.
 
 ## Deviations considered and rejected
 

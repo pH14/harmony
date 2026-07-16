@@ -62,6 +62,9 @@ pub sdk_events::SdkError::IncompatibleShapes
 pub sdk_events::SdkError::IncompatibleShapes::first: sdk_events::ValueShape
 pub sdk_events::SdkError::IncompatibleShapes::id: sdk_events::ObservationId
 pub sdk_events::SdkError::IncompatibleShapes::second: sdk_events::ValueShape
+pub sdk_events::SdkError::LocalIdOutOfRange
+pub sdk_events::SdkError::LocalIdOutOfRange::local: u32
+pub sdk_events::SdkError::LocalIdOutOfRange::namespace: u8
 pub sdk_events::SdkError::MalformedLength
 pub sdk_events::SdkError::MalformedLength::available: usize
 pub sdk_events::SdkError::MalformedLength::context: &'static str
@@ -73,6 +76,12 @@ pub sdk_events::SdkError::MixedOperations::second: sdk_events::UpdateOp
 pub sdk_events::SdkError::UnknownDeclarationByte
 pub sdk_events::SdkError::UnknownDeclarationByte::field: &'static str
 pub sdk_events::SdkError::UnknownDeclarationByte::value: u8
+pub sdk_events::SdkError::UnsupportedDeclaration
+pub sdk_events::SdkError::UnsupportedDeclaration::local: u32
+pub sdk_events::SdkError::UnsupportedDeclaration::namespace: u8
+pub sdk_events::SdkError::UnsupportedDeclaration::reason: &'static str
+pub sdk_events::SdkError::UnsupportedVersion
+pub sdk_events::SdkError::UnsupportedVersion::version: u8
 pub enum sdk_events::SourceFormat
 pub sdk_events::SourceFormat::AntithesisJson
 pub sdk_events::SourceFormat::BinaryV1
@@ -200,4 +209,4 @@ pub fn sdk_events::decode_antithesis(&[(explorer::spine::Moment, alloc::vec::Vec
 pub fn sdk_events::decode_binary(&[(explorer::spine::Moment, u32, alloc::vec::Vec<u8>)]) -> core::result::Result<sdk_events::Normalized, sdk_events::SdkError>
 pub fn sdk_events::decode_event(u32, &[u8]) -> explorer::spine::GuestEvent
 pub fn sdk_events::decode_events(&[(explorer::spine::Moment, u32, alloc::vec::Vec<u8>)]) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::GuestEvent)>
-pub fn sdk_events::encode_v2_declaration(&[sdk_events::DeclaredPoint]) -> alloc::vec::Vec<u8>
+pub fn sdk_events::encode_v2_declaration(&[sdk_events::DeclaredPoint]) -> core::result::Result<alloc::vec::Vec<u8>, sdk_events::SdkError>

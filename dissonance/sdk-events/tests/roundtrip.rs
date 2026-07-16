@@ -81,7 +81,7 @@ fn wire_v2_declaration_round_trips_through_the_byte_codec() {
             expectation: None,
         },
     ];
-    let decl = encode_v2_declaration(&points);
+    let decl = encode_v2_declaration(&points).expect("valid declaration");
     let schema = decode_binary(&[(Moment(0), 0, decl.clone())])
         .expect("decodes")
         .schema;
@@ -104,6 +104,51 @@ fn wire_v2_declaration_round_trips_through_the_byte_codec() {
     assert_eq!(
         serde_json::from_str::<sdk_events::SdkSchema>(&json).unwrap(),
         schema
+    );
+}
+
+#[test]
+fn deserializing_a_noncanonical_schema_is_rejected() {
+    // `SdkSchema::entry` binary-searches its entries, so a persisted schema whose
+    // entries are unsorted or duplicated would make declared identities unfindable.
+    // Deserialization must reject it rather than accept silently corrupt evidence.
+    let entry = |local: u32| {
+        serde_json::json!({
+            "id": {"Point": {"namespace": NS_STATE, "local": local}},
+            "classification": "State",
+            "value_shape": "U64",
+            "base_op": "Set",
+            "expectation": null,
+            "name": null,
+        })
+    };
+    let make = |entries: serde_json::Value| {
+        serde_json::json!({
+            "source": "BinaryV2",
+            "ordering": "RolloutLocalSourceOrdinal",
+            "entries": entries,
+            "original_declaration": null,
+        })
+        .to_string()
+    };
+
+    // Out-of-order entries (local 5 before local 1) are rejected.
+    let unsorted = make(serde_json::json!([entry(5), entry(1)]));
+    assert!(serde_json::from_str::<sdk_events::SdkSchema>(&unsorted).is_err());
+    // Duplicate ids are rejected.
+    let duplicate = make(serde_json::json!([entry(1), entry(1)]));
+    assert!(serde_json::from_str::<sdk_events::SdkSchema>(&duplicate).is_err());
+    // A well-ordered, unique schema still deserializes.
+    let ok = make(serde_json::json!([entry(1), entry(5)]));
+    let schema = serde_json::from_str::<sdk_events::SdkSchema>(&ok).expect("canonical");
+    assert!(
+        schema
+            .entry(&ObservationId::Point {
+                namespace: NS_STATE,
+                local: 5
+            })
+            .is_some(),
+        "binary search finds the entry after a canonical deserialize"
     );
 }
 

@@ -208,6 +208,24 @@ fn assertion_without_identity_is_preserved_raw_not_invented() {
     assert!(n.schema.is_empty());
 }
 
+#[test]
+fn a_record_with_two_wrappers_is_ambiguous_and_preserved_raw() {
+    // Exactly one wrapper is the contract; a record carrying both an assertion and
+    // guidance is ambiguous — preserved raw, never silently resolved to one branch
+    // with the other dropped.
+    let json = r#"{
+        "antithesis_assert":{"assert_type":"always","condition":true,"id":"a","message":"a"},
+        "antithesis_guidance":{"guidance_type":"numeric","maximize":true,"id":"g","guidance_data":1}
+    }"#;
+    let n = decode_antithesis(&[rec(1, json)]).expect("decodes");
+    assert_eq!(n.events[0].payload, Payload::Unknown);
+    assert_eq!(n.events[0].raw.bytes, json.as_bytes());
+    assert!(
+        n.schema.is_empty(),
+        "neither wrapper contributes a schema entry from an ambiguous record"
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
