@@ -32,32 +32,30 @@ throughput; the vendor spikes gate *trust* (measured constants, the trait freeze
 fill), not construction. The ruled 5-lane queue and its risk acceptance live in
 `docs/ARCH-BOUNDARY.md` §Pre-build ruling.
 
-## In flight (3 active workers)
+## In flight (2 active workers)
 
-- **ARM backend skeleton — IMPLEMENTATION** (tasks/112, `hm-cbt`, spec merged as PR #111)
-  — **SPAWNED 2026-07-15 ~23:40 on Fable 5** (agent-arm-backend-skeleton): M0 snapshot-seam
-  (x86-neutral, Intel-box gate BLOCKING) → M1 keystone Vendor skeleton → M2 gicv3 crate →
-  M3 Image+DTB boot → M4 stock KVM/arm64 backend; TCG-first gates, real-KVM gates edged
-  to the Altra (`hm-7pb`). TWO Fable safeguard refusals 2026-07-15 eve (nudge recovered
-  the first; the second re-tripped) — foreman switched the live session to **Opus 4.8
-  xhigh** via /model (classifier blocks session kills); continuing M1 skeleton tests.
-- **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — **⚖️ PAUL RULED
-  TOP-UP 2026-07-15 eve (floor stands as written)**: worker dispatched to reach ≥1.05M
-  cumulative true armed PMIs (sized by the measured ~55% rate, round-2 fixed
-  instruments, smoke-fire-once first, box window after the image-drift release);
-  `hm-60k` gated on met-floor + foreman re-review. Original halt context: N-3 is fully green (six
-  conditions 1000/1000 bit-identical, live-migration green on destination, metal reference
-  at floor strength, nested==metal equal at both seeds — foreman re-ran the machine
-  floor-check independently) and the box is restore-verified + FREE. But the fresh
-  cross-model pass caught, and the foreman confirmed **from the retained perf records**,
-  that N-2's `armed` summary counted MTF-only (no-PMI) deadlines: true armed PMIs =
-  **588,923 of the ≥1,000,000 floor** (55%; `hm-dbh` REOPENED — my earlier close cited the
-  inflated count). Mechanism evidence stands (all 588,923 exactly-once, exact,
-  oracle-agreed); the floor as written is unmet. Per the program's own stop rule this is
-  **Paul's ruling: top-up run (~750k more deadlines, hours of box time) vs criterion
-  revision** — see PR #98 comment 4970278590. Worker meanwhile fixing the instrument
-  (armed-PMI recompute from records, disposition walk-back, fmt/SPDX/stressor/migration/
-  n5-demo/pmu-cursor findings). `hm-60k` blocked on the ruling.
+- **ARM backend skeleton — IMPLEMENTATION** (tasks/112, `hm-cbt`, PR #117, spec merged as
+  PR #111; agent-arm-backend-skeleton, Opus 4.8 xhigh after the 2026-07-15 Fable
+  safeguard refusals): M0–M4 delivered, TCG-smoked; review rounds 1–4 done (r4's two
+  blocking residues — FDT reserved-memory unit-address, arm64 kvm_run Miri seam — fixed
+  on head `ad7e758`, foreman-verified). **Round 5 dispatched 2026-07-16 early**: the
+  cross-model P1 (LiveKvm never creates the in-kernel vGIC) **REFUTED against the spec**
+  (tasks/112 M2 rules delivery OFFLINE pending AA-6 — worker only audits the TODO(AA-6)
+  markers + no-overclaim wording); two real P2 fixes in flight (MMIO range/alignment
+  fail-closed validation in arm64 dispatch; GIC state exposed in `state_components()` for
+  divergence localization — ADD a label, never rename the O1-pinned ones).
+- **Nested-x86 re-certification — FLOOR MET, MERGE IMMINENT** (PR #98, agent-pr98,
+  `hm-60k`): Paul's Option-A top-up executed 2026-07-15/16 (922k additional deadlines,
+  fire-once smoke validated the 55.4% armed-rate sizing first) → **cumulative armed PMIs
+  from perf records = 1,101,006 ≥ 1,000,000; `check-recert-floors.sh` ALL PASS,
+  independently re-run by the foreman from a fresh checkout of `32746d5`**. `hm-dbh`
+  re-closed on the honest count; `hm-jpu` (N-3) closed. Dispositions re-recorded from
+  recert/top-up evidence only; invalid runsets stay marked. Foreman round 3 (comment
+  4990501969): 3 [blocking] + 2 [P2] checker/gate/provenance hardenings — none void the
+  evidence — **fixed together with the merge-resolve against main's tasks/108
+  restructure on head `f10a751` (now MERGEABLE)**. Remaining: clean cross-model pass on
+  `f10a751` (running) → foreman merges → `hm-tn9` (appliance) + `hm-69y` (preflight CLI)
+  unblock.
 
 Landed since the midday refresh: **conductor full-suite Miri restoration MERGED**
 (tasks/104, PR #105 — 12× cut to ~11.5 min, foreman-confirmed, triple vacuity guard;
@@ -90,11 +88,6 @@ Reach-matrix lane (foreman-owned or spawnable next):
 
 General ready (foreman spawns as slots free):
 
-- **Contract vendor axis (AE-4 shape)** (`hm-0nf`, P2, pre-build lane) — **SPAWNED
-  2026-07-15 late eve** (tasks/117 spec committed 901ab7e, GLM-drafted +
-  foreman-reviewed, 5 Paul veto points recorded in-spec; agent-contract-vendor-axis,
-  Opus 4.8 xhigh): Intel column byte-identical truth, AMD draft column from the APM,
-  every enforcement cell verify-on-silicon, draft-only guard.
 - **W^X + rescan-on-exec** (`hm-rfz`, P2): third rung of the PARAVIRT-CLOCK §3.3
   enforcement ladder; should land before any non-fully-owned ARM guest. Substantive
   contract work — hold for a free slot after the ARM skeleton.
@@ -161,6 +154,14 @@ spawn these until that lane re-opens):
 
 ## Recently done (this week)
 
+- **CPU/MSR contract vendor axis MERGED** (tasks/117, `hm-0nf`, PR #116 squash 187153dc,
+  2026-07-16 early): the AMD draft column on the one frozen contract — Intel canonical
+  form + hash byte-identical (zero-drift rule, golden-pinned), AMD column drafted from
+  the APM with every enforcement cell `verified:on-silicon-pending-AE4`, §6 markdown now
+  the complete normative grammar for the AMD hashed record forms (verified:/applies-when:
+  suffixes, transfer records, msr-shared explicit allowlist, committed hash + byte-exact
+  golden). Six review rounds; final cross-model pass CLEAN; contract suite 52/52 on the
+  merge head. AE-4 silicon verification lands with the Epyc box (`hm-9wt`).
 - **Postgres-image drift gate RESTORED AND MERGED** (tasks/115, `hm-xdp`, PR #115
   squash 058ece4, 2026-07-15 late eve): live_materialization now pins its guest images
   by content hash (fail-closed on drift, negative-proven on the box in 2.15 s pre-boot)
