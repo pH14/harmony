@@ -21,7 +21,7 @@
 //!   `RestoreMode::Memcpy` and `RestoreMode::Remap` (the mapping **is** the
 //!   memslot backing — `ram_backing_is_snapshot()` asserted) and run the same
 //!   suffix → identical stop + `state_hash`.
-//! - **(d)** — every `[GATE-D]` line is a number for `IMPLEMENTATION-task95.md`:
+//! - **(d)** — every `[GATE-D]` line is a number for `docs/history/IMPLEMENTATION-task95.md`:
 //!   base-seal vs derive-seal wall time, and memcpy vs remap branch wall time.
 //!
 //! Run (per `docs/BOX-PINNING.md` — lease a core via `box-window.sh`; serialize

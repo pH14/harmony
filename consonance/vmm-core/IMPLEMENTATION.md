@@ -4151,7 +4151,7 @@ EXEC_TAINT_ONLY=1 taskset -c <core> \
 
 ## Task 95 M2 — O(dirty) capture + remap restore (D5)
 
-Full report (design, safety rule, numbers, box gates): `IMPLEMENTATION-task95.md`
+Full report (design, safety rule, numbers, box gates): `docs/history/IMPLEMENTATION-task95.md`
 at repo root. Crate-side summary:
 
 - **Capture (M2.1).** `Vmm` tracks **host-side** guest-RAM writes (doorbell

@@ -69,6 +69,6 @@ campaign's `CellFn` config to include the link channels — the sensor only
 
 The end-to-end box path (SDK guest → doorbell → `Moment`-stamped EventSink →
 wire → `RunTrace.events` → these four pieces) is in the repo-root
-`IMPLEMENTATION-task73.md`. The `RunTrace.events` population is in
+`docs/history/IMPLEMENTATION-task73.md`. The `RunTrace.events` population is in
 `dissonance/conductor` (out of task 73's surface) — named there as the wire hop
 the foreman sequences.

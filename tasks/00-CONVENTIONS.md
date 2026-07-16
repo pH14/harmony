@@ -131,3 +131,10 @@ A branch named `task/<crate-name>` containing only your directory, all gates gre
 short `IMPLEMENTATION.md` in your directory noting: deviations considered and rejected, known
 limitations, and anything the integrator must know. Do not open follow-on work; stop when the
 gates pass.
+
+**Where the write-up lives.** For a single-crate task that is the crate's `IMPLEMENTATION.md`,
+nothing else. A frontier/multi-crate task has no single directory: its write-up goes in the
+**PR description** (runbooks, evidence, judgment calls — the review record). Only when a
+durable in-repo copy is genuinely needed (a runbook a later task must re-run, box evidence a
+spec cites) does it become a file — at `docs/history/IMPLEMENTATION-task<NN>.md`, **never the
+repo root** (cleanup ruling, 2026-07-15).

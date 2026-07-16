@@ -4,7 +4,7 @@ The in-guest SMB workload agent: a minimal headless libretro frontend run as
 the game image's single supervised process. The portable brain (`src/lib.rs`)
 is unsafe-free and fully tested against the mock core; the binary
 (`src/main.rs`) carries the named-`unsafe` Linux glue. See the root
-`IMPLEMENTATION-task86.md` for the whole-task record and the box handoff.
+`docs/history/IMPLEMENTATION-task86.md` for the whole-task record and the box handoff.
 
 ## Core choice: FCEUmm, GPL-2.0-or-later (pinned in `guest/linux/versions.lock`)
 
@@ -97,7 +97,7 @@ a non-issue there (cross-platform savestates stay best-effort, ungated).
   gameplay start. The script draws no entropy (a pure function of power-on;
   the portable test pins that two runs execute identical frames), and failing
   to reach gameplay is a loud error — never a silently-vacuous campaign. The
-  box smoke's mandatory vacuity check (root `IMPLEMENTATION-task86.md` step
+  box smoke's mandatory vacuity check (root `docs/history/IMPLEMENTATION-task86.md` step
   1) verifies the billboard shows in-gameplay state at the seal point.
 - **Depth/marker semantics**: `REG_DEPTH` is the instantaneous
   `world*4+level` ordinal via `state_max` (the host keeps the max);

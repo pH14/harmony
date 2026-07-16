@@ -310,7 +310,7 @@ struct BenchBoxArgs {
     /// Optional **box-calibrated** manifest JSON (a serialized `Benchmark` whose
     /// per-bug trigger params are the pinned real gpa / window-offset / prefix).
     /// Absent = the `wave5()` fixture, whose windows are toy stand-ins — calibrate
-    /// for the box (see IMPLEMENTATION-task69-m2.md's runbook).
+    /// for the box (see docs/history/IMPLEMENTATION-task69-m2.md's runbook).
     #[arg(long)]
     calibration: Option<PathBuf>,
     /// Kernel image filename under guest/build (or guest/linux).

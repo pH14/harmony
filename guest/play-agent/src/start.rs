@@ -16,7 +16,7 @@
 //! that). Failure to reach gameplay within the frame bound is a loud error —
 //! never a silently-vacuous campaign. The box smoke additionally verifies the
 //! billboard shows in-gameplay state at the seal point (the vacuity check,
-//! IMPLEMENTATION-task86.md).
+//! docs/history/IMPLEMENTATION-task86.md).
 
 use std::fmt;
 

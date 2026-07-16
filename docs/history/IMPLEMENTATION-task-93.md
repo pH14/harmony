@@ -4,7 +4,7 @@ Design re-validation task, not a crate. Outputs: a ruling section in
 `docs/DISSONANCE.md` ("Ruling (task 93): keep `EnvCodec::compose`"), the required
 property test in `dissonance/explorer/tests/replay.rs`
 (`compose_rebase_replays_from_genesis`, 256 proptest cases), and this note.
-Filed as `docs/IMPLEMENTATION-task-93.md` following the `IMPLEMENTATION-quality-d.md`
+Filed as `docs/history/IMPLEMENTATION-task-93.md` following the `IMPLEMENTATION-quality-d.md`
 precedent (a docs-level task has no crate directory of its own).
 
 ## The ruling

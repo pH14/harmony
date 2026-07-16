@@ -376,7 +376,7 @@ fn run_gate<S: Read + Write>(
     // intercept (~10⁷ v-ns apart on this substrate), so a stamp is a LOWER
     // BOUND on when its frame ran, not an exact address — landing exactly on
     // a stamp shows the pre-batch billboard (surfaced live; recorded in
-    // IMPLEMENTATION-task86.md as a spine finding, not patched here). The
+    // docs/history/IMPLEMENTATION-task86.md as a spine finding, not patched here). The
     // billboard itself is the address authority: advance ONE branch through
     // the distinct stamp moments and read each header's ACTUAL frame counter
     // — the observed (frame, moment) pairs are exact by determinism, so

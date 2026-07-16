@@ -55,7 +55,7 @@
 //!    region bookkeeping" around an `mmap`'d region and `cfg(not(miri))`-gates only the
 //!    raw syscall, because the bookkeeping is "ordinary Rust that Miri must cover." Here
 //!    the residual unsafe is `asm!`/`global_asm!` (the rule's explicit asm carve-out,
-//!    invoked as precedent by `IMPLEMENTATION-task61.md` and `dissonance/film`) and
+//!    invoked as precedent by `docs/history/IMPLEMENTATION-task61.md` and `dissonance/film`) and
 //!    `read_volatile`/`write_volatile` to **fixed physical addresses** — the GICv3
 //!    distributor at `0x0800_0000`, the PL011 at `UART_BASE`, the pages at
 //!    `PARAMS_GPA`/`PVCLOCK_GPA`. Those are integer-literal addresses with no Rust

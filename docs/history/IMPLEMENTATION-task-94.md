@@ -82,7 +82,7 @@ old→new to be meaningful): `docs/EXPLORATION.md:18,20` and `docs/RESOLUTION.md
 **(c) Historical / frozen records** (a record, not a lie to maintain):
 `dissonance/explorer/tests/reference/mod.rs` (`fn timeline`/`fn multiverse_step`, "pre-refactor
 Timeline" — the task-12 engine frozen verbatim, the behavior-equivalence golden; kept exactly as
-the pre-rename code, see *Exclusion-list compliance*); `docs/IMPLEMENTATION-task-93.md:19`
+the pre-rename code, see *Exclusion-list compliance*); `docs/history/IMPLEMENTATION-task-93.md:19`
 ("300 Multiverse steps" — task 93's run); `docs/history/IMPLEMENTATION-task06.md:124,127,144`
 ("structural themes", "Theme A/B" section labels); the `tasks/12` historical note.
 
@@ -99,7 +99,7 @@ the pre-rename code, see *Exclusion-list compliance*); `docs/IMPLEMENTATION-task
 - **UI "event timeline"** (`consonance/telemetry/{assets,src}`); **debugger timeline UI** and
   Antithesis **"multiverse debugging"** product term (`docs/RESOLUTION.md`).
 
-**This document itself** (`docs/IMPLEMENTATION-task-94.md`) is category (b)/(c): the task-94
+**This document itself** (`docs/history/IMPLEMENTATION-task-94.md`) is category (b)/(c): the task-94
 record and old→new decoder, so it necessarily names both vocabularies throughout — the same way
 `IMPLEMENTATION-task-93.md` and the DISSONANCE footnote do.
 
@@ -123,7 +123,7 @@ Three frozen/hashed surfaces were kept out of the rename:
   passes (`fifty_campaigns_are_byte_identical_across_the_refactor`): the reference's internal method
   names never enter the comparison, which is over run outputs.
 - **History docs — untouched.** `docs/history/IMPLEMENTATION-task06.md` and
-  `docs/IMPLEMENTATION-task-93.md` keep their original wording; their "Theme A/B" / "Multiverse
+  `docs/history/IMPLEMENTATION-task-93.md` keep their original wording; their "Theme A/B" / "Multiverse
   steps" are historical records (and, for task06, unrelated section labels).
 
 ## Deviations considered and rejected

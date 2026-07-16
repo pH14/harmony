@@ -16,7 +16,7 @@
 //!   bit-identical.
 //! - **(c) composed reproducer** — a run below the ≥ 2-deep chain replays
 //!   from the base via its compose-folded `bug_env` with identical stop +
-//!   `state_hash` (the `docs/IMPLEMENTATION-task-93.md` end-to-end gate, on
+//!   `state_hash` (the `docs/history/IMPLEMENTATION-task-93.md` end-to-end gate, on
 //!   the production codec and real `recorded_env`).
 //!
 //! Run (per `docs/BOX-PINNING.md` — use the standing frontier-gate core;

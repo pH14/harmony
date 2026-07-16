@@ -2,7 +2,7 @@
 
 Doc-only task (bead `hm-8h8`). Output: `docs/PARAVIRT-CLOCK.md`, the ratifiable design spec for
 routing guest time reads through a work-derived paravirtual clock page. No code; a separate bead
-implements after ratification. Filed as `docs/IMPLEMENTATION-task-101.md` per the
+implements after ratification. Filed as `docs/history/IMPLEMENTATION-task-101.md` per the
 `IMPLEMENTATION-task-93/94.md` precedent (a docs-level task has no crate directory).
 
 ## What the spec rules
@@ -72,7 +72,7 @@ Every mechanism claim is cited to a real seam. Spot-verified against the tree at
   already inside the memory image and its hash/dirty-log — a section would double-count it. Only
   the (renamed) `VtimeState` record stays a section.
 - **Put IMPLEMENTATION.md at repo root or in a crate dir.** N/A — no crate; follows the
-  `docs/IMPLEMENTATION-task-NN.md` precedent.
+  `docs/history/IMPLEMENTATION-task-NN.md` precedent.
 
 ## Known limitations / what the integrator (and the follow-on impl bead) must know
 

@@ -45,7 +45,7 @@
 #            "entropy" is itself work-derived and deterministic
 #   [time]   boot calibration / clocksource / sched_clock / delay paths —
 #            unselectable or backstopped once harmony_pvclock is active (the
-#            delay decision is recorded in IMPLEMENTATION-task110.md)
+#            delay decision is recorded in docs/history/IMPLEMENTATION-task110.md)
 #   [entry]  syscall/irqentry/fork kstack-offset randomization — trapped,
 #            deterministic offsets
 #   [perf]   the perf "msr" software event (tsc pseudo-event)

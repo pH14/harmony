@@ -20,7 +20,7 @@
   (6.12.90) tree the frontier validated on: `/root/kvm-spike/deb612/`. Read
   `docs/CPU-MSR-CONTRACT.md` (the patched-KVM patch series + versions.lock),
   `tasks/55-deterministic-force-exit-preemption.md`, and the branch's
-  `IMPLEMENTATION-task56.md` (HANDOFF section — exact patch locations).
+  `docs/history/IMPLEMENTATION-task56.md` (HANDOFF section — exact patch locations).
 
 ## Task
 1. **Port + build.** Apply patches 0001→0005 onto pinned `linux-6.18.35` (`git am` or the

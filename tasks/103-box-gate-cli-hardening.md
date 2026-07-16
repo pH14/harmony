@@ -9,7 +9,7 @@ a done-marker or an empty workload is never a success condition).
 
 Read first: the PR #93 round-9 comments (`gh pr view 93 --comments`, the "three real
 hardening gaps" in the foreman disposition), `bd show hm-9wa`,
-`docs/IMPLEMENTATION-task-93.md` context if present, and the merged M0 machinery in
+`docs/history/IMPLEMENTATION-task-93.md` context if present, and the merged M0 machinery in
 `dissonance/conductor` (`gamecampaign.rs`, `boxrun.rs`, `exploration.rs`, the
 `live_film.rs`/determinism gate callers).
 
