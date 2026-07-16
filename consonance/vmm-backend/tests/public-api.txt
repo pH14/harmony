@@ -324,6 +324,7 @@ pub vmm_backend::HypercallFrame::args: [u64; 4]
 pub struct vmm_backend::KvmBackend
 impl vmm_backend::KvmBackend
 pub fn vmm_backend::KvmBackend::new() -> vmm_backend::Result<vmm_backend::KvmBackend>
+pub fn vmm_backend::KvmBackend::pmu_overflow_stats(&self) -> core::option::Option<vmm_backend::PmuOverflowStats>
 pub fn vmm_backend::KvmBackend::read_guest(&self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::set_dirty_log_enabled(&mut self, bool)
 pub fn vmm_backend::KvmBackend::write_guest(&mut self, vmm_backend::Gpa, &[u8]) -> vmm_backend::Result<()>
@@ -401,6 +402,7 @@ pub vmm_backend::MsrRange::count: u32
 pub struct vmm_backend::PatchedKvmBackend
 impl vmm_backend::PatchedKvmBackend
 pub fn vmm_backend::PatchedKvmBackend::new() -> vmm_backend::Result<vmm_backend::PatchedKvmBackend>
+pub fn vmm_backend::PatchedKvmBackend::pmu_overflow_stats(&self) -> core::option::Option<vmm_backend::PmuOverflowStats>
 pub fn vmm_backend::PatchedKvmBackend::read_guest(&self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::set_dirty_log_enabled(&mut self, bool)
 pub fn vmm_backend::PatchedKvmBackend::write_guest(&mut self, vmm_backend::Gpa, &[u8]) -> vmm_backend::Result<()>
@@ -424,6 +426,11 @@ pub fn vmm_backend::PatchedKvmBackend::save(&self) -> vmm_backend::Result<vmm_ba
 pub fn vmm_backend::PatchedKvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
+pub struct vmm_backend::PmuOverflowStats
+pub vmm_backend::PmuOverflowStats::lost: u64
+pub vmm_backend::PmuOverflowStats::other: u64
+pub vmm_backend::PmuOverflowStats::samples: u64
+pub vmm_backend::PmuOverflowStats::throttle: u64
 pub struct vmm_backend::Segment
 pub vmm_backend::Segment::avl: u8
 pub vmm_backend::Segment::base: u64

@@ -43,6 +43,7 @@ use crate::backend::Backend;
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
 use crate::kvm::*;
+use crate::pmu::PmuOverflowStats;
 use crate::pmu_sys::PmuBranchCounter;
 use crate::region::{MemRegions, split_around_hole};
 use crate::run_until::{
@@ -312,6 +313,15 @@ impl KvmBackend {
     /// path). Errors if the range is unmapped.
     pub fn read_guest(&self, gpa: Gpa, buf: &mut [u8]) -> Result<()> {
         self.regions.read(gpa.0, buf)
+    }
+
+    /// Cumulative overflow-ring record counts for the `run_until` branch counter
+    /// (drains pending records first, so totals are current) — the per-record
+    /// PMI-multiplicity accounting instrument of the nested-x86 re-certification
+    /// (bead hm-b5b). `None` when the counter is unavailable (perf open failed
+    /// at build — the same condition under which `run_until` errors).
+    pub fn pmu_overflow_stats(&self) -> Option<PmuOverflowStats> {
+        self.pmu.as_ref().map(PmuBranchCounter::overflow_stats)
     }
 
     /// `true` once both config calls have landed.

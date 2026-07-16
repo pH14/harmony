@@ -1,0 +1,874 @@
+[    0.000000] Linux version 6.12.90+deb13.1-amd64 (debian-kernel@lists.debian.org) (x86_64-linux-gnu-gcc-14 (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP PREEMPT_DYNAMIC Debian 6.12.90-2 (2026-05-27)
+[    0.000000] Command line: console=ttyS0 rdinit=/init panic=-1
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000000f0000-0x00000000000fffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000007ffdefff] usable
+[    0.000000] BIOS-e820: [mem 0x000000007ffdf000-0x000000007fffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000b0000000-0x00000000bfffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000fed1c000-0x00000000fed1ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000feffc000-0x00000000feffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000fffc0000-0x00000000ffffffff] reserved
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] APIC: Static calls initialized
+[    0.000000] SMBIOS 2.8 present.
+[    0.000000] DMI: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-debian-1.16.3-2 04/01/2014
+[    0.000000] DMI: Memory slots populated: 1/1
+[    0.000000] Hypervisor detected: KVM
+[    0.000000] last_pfn = 0x7ffdf max_arch_pfn = 0x400000000
+[    0.000000] kvm-clock: Using msrs 4b564d01 and 4b564d00
+[    0.000000] kvm-clock: using sched offset of 144731412 cycles
+[    0.000001] clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns
+[    0.000003] tsc: Detected 3599.998 MHz processor
+[    0.000737] last_pfn = 0x7ffdf max_arch_pfn = 0x400000000
+[    0.000758] MTRR map: 4 entries (3 fixed + 1 variable; max 19), built from 8 variable MTRRs
+[    0.000760] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+[    0.005836] found SMP MP-table at [mem 0x000f5480-0x000f548f]
+[    0.005846] Using GB pages for direct mapping
+[    0.005910] RAMDISK: [mem 0x7fda6000-0x7ffcffff]
+[    0.005914] ACPI: Early table checksum verification disabled
+[    0.005916] ACPI: RSDP 0x00000000000F52C0 000014 (v00 BOCHS )
+[    0.005919] ACPI: RSDT 0x000000007FFE2351 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005923] ACPI: FACP 0x000000007FFE2149 0000F4 (v03 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005926] ACPI: DSDT 0x000000007FFE0040 002109 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005929] ACPI: FACS 0x000000007FFE0000 000040
+[    0.005931] ACPI: APIC 0x000000007FFE223D 000078 (v03 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005933] ACPI: HPET 0x000000007FFE22B5 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005935] ACPI: MCFG 0x000000007FFE22ED 00003C (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005937] ACPI: WAET 0x000000007FFE2329 000028 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005938] ACPI: Reserving FACP table memory at [mem 0x7ffe2149-0x7ffe223c]
+[    0.005939] ACPI: Reserving DSDT table memory at [mem 0x7ffe0040-0x7ffe2148]
+[    0.005940] ACPI: Reserving FACS table memory at [mem 0x7ffe0000-0x7ffe003f]
+[    0.005940] ACPI: Reserving APIC table memory at [mem 0x7ffe223d-0x7ffe22b4]
+[    0.005941] ACPI: Reserving HPET table memory at [mem 0x7ffe22b5-0x7ffe22ec]
+[    0.005941] ACPI: Reserving MCFG table memory at [mem 0x7ffe22ed-0x7ffe2328]
+[    0.005941] ACPI: Reserving WAET table memory at [mem 0x7ffe2329-0x7ffe2350]
+[    0.006256] No NUMA configuration found
+[    0.006257] Faking a node at [mem 0x0000000000000000-0x000000007ffdefff]
+[    0.006262] NODE_DATA(0) allocated [mem 0x7fd7b680-0x7fda5fff]
+[    0.006389] Zone ranges:
+[    0.006389]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+[    0.006390]   DMA32    [mem 0x0000000001000000-0x000000007ffdefff]
+[    0.006391]   Normal   empty
+[    0.006392]   Device   empty
+[    0.006392] Movable zone start for each node
+[    0.006394] Early memory node ranges
+[    0.006394]   node   0: [mem 0x0000000000001000-0x000000000009efff]
+[    0.006395]   node   0: [mem 0x0000000000100000-0x000000007ffdefff]
+[    0.006396] Initmem setup node 0 [mem 0x0000000000001000-0x000000007ffdefff]
+[    0.006534] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.006545] On node 0, zone DMA: 97 pages in unavailable ranges
+[    0.007001] On node 0, zone DMA32: 33 pages in unavailable ranges
+[    0.007390] ACPI: PM-Timer IO Port: 0x608
+[    0.007400] ACPI: LAPIC_NMI (acpi_id[0xff] dfl dfl lint[0x1])
+[    0.007418] IOAPIC[0]: apic_id 0, version 17, address 0xfec00000, GSI 0-23
+[    0.007421] ACPI: INT_SRC_OVR (bus 0 bus_irq 0 global_irq 2 dfl dfl)
+[    0.007422] ACPI: INT_SRC_OVR (bus 0 bus_irq 5 global_irq 5 high level)
+[    0.007423] ACPI: INT_SRC_OVR (bus 0 bus_irq 9 global_irq 9 high level)
+[    0.007423] ACPI: INT_SRC_OVR (bus 0 bus_irq 10 global_irq 10 high level)
+[    0.007424] ACPI: INT_SRC_OVR (bus 0 bus_irq 11 global_irq 11 high level)
+[    0.007427] ACPI: Using ACPI (MADT) for SMP configuration information
+[    0.007428] ACPI: HPET id: 0x8086a201 base: 0xfed00000
+[    0.007430] TSC deadline timer available
+[    0.007433] CPU topo: Max. logical packages:   1
+[    0.007433] CPU topo: Max. logical dies:       1
+[    0.007433] CPU topo: Max. dies per package:   1
+[    0.007436] CPU topo: Max. threads per core:   1
+[    0.007436] CPU topo: Num. cores per package:     1
+[    0.007437] CPU topo: Num. threads per package:   1
+[    0.007437] CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
+[    0.007447] kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()
+[    0.007459] PM: hibernation: Registered nosave memory: [mem 0x00000000-0x00000fff]
+[    0.007460] PM: hibernation: Registered nosave memory: [mem 0x0009f000-0x000fffff]
+[    0.007461] [mem 0xc0000000-0xfed1bfff] available for PCI devices
+[    0.007462] Booting paravirtualized kernel on KVM
+[    0.007463] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
+[    0.010832] setup_percpu: NR_CPUS:8192 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
+[    0.011048] percpu: Embedded 66 pages/cpu s233472 r8192 d28672 u2097152
+[    0.011071] kvm-guest: PV spinlocks disabled, single CPU
+[    0.011072] Kernel command line: console=ttyS0 rdinit=/init panic=-1
+[    0.011105] random: crng init done
+[    0.011298] Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    0.011362] Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.011386] Fallback order for Node 0: 0 
+[    0.011388] Built 1 zonelists, mobility grouping on.  Total pages: 524157
+[    0.011388] Policy zone: DMA32
+[    0.011393] mem auto-init: stack:all(zero), heap alloc:on, heap free:off
+[    0.012436] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.012454] ftrace: allocating 45769 entries in 179 pages
+[    0.017652] ftrace: allocated 179 pages with 5 groups
+[    0.018126] Dynamic Preempt: voluntary
+[    0.018270] rcu: Preemptible hierarchical RCU implementation.
+[    0.018271] rcu: 	RCU restricting CPUs from NR_CPUS=8192 to nr_cpu_ids=1.
+[    0.018272] 	Trampoline variant of Tasks RCU enabled.
+[    0.018272] 	Rude variant of Tasks RCU enabled.
+[    0.018272] 	Tracing variant of Tasks RCU enabled.
+[    0.018273] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[    0.018273] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.018277] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.018278] RCU Tasks Rude: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.018278] RCU Tasks Trace: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.021445] NR_IRQS: 524544, nr_irqs: 256, preallocated irqs: 16
+[    0.021609] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.033435] Console: colour VGA+ 80x25
+[    0.033477] printk: legacy console [ttyS0] enabled
+[    0.143530] ACPI: Core revision 20240827
+[    0.144308] clocksource: hpet: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604467 ns
+[    0.145822] APIC: Switch to symmetric I/O mode setup
+[    0.146717] x2apic enabled
+[    0.147309] APIC: Switched APIC routing to: physical x2apic
+[    0.148819] ..TIMER: vector=0x30 apic1=0 pin1=2 apic2=-1 pin2=-1
+[    0.149743] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x33e451ab1a6, max_idle_ns: 440795278720 ns
+[    0.151340] Calibrating delay loop (skipped) preset value.. 7199.99 BogoMIPS (lpj=14399992)
+[    0.152683] x86/cpu: User Mode Instruction Prevention (UMIP) activated
+[    0.153721] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+[    0.155340] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+[    0.156241] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+[    0.157531] Spectre V2 : Spectre BHI mitigation: SW BHB clearing on syscall and VM exit
+[    0.159340] Spectre V2 : Mitigation: IBRS
+[    0.159949] Spectre V2 : Spectre v2 / SpectreRSB: Filling RSB on context switch and VMEXIT
+[    0.161190] RETBleed: Mitigation: IBRS
+[    0.161761] Spectre V2 : mitigation: Enabling conditional Indirect Branch Prediction Barrier
+[    0.163021] Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl
+[    0.163343] MDS: Mitigation: Clear CPU buffers
+[    0.164018] MMIO Stale Data: Mitigation: Clear CPU buffers
+[    0.164851] SRBDS: Unknown: Dependent on hypervisor status
+[    0.165678] active return thunk: its_return_thunk
+[    0.167340] ITS: Mitigation: Aligned branch/return thunks
+[    0.168166] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.169319] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+[    0.170269] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+[    0.171340] x86/fpu: Supporting XSAVE feature 0x008: 'MPX bounds registers'
+[    0.172383] x86/fpu: Supporting XSAVE feature 0x010: 'MPX CSR'
+[    0.173263] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+[    0.174192] x86/fpu: xstate_offset[3]:  832, xstate_sizes[3]:   64
+[    0.175121] x86/fpu: xstate_offset[4]:  896, xstate_sizes[4]:   64
+[    0.175340] x86/fpu: Enabled xstate features 0x1f, context size is 960 bytes, using 'compacted' format.
+[    0.207445] Freeing SMP alternatives memory: 40K
+[    0.208150] pid_max: default: 32768 minimum: 301
+[    0.208872] LSM: initializing lsm=lockdown,capability,landlock,yama,apparmor,tomoyo,bpf,ipe,ima,evm
+[    0.210274] landlock: Up and running.
+[    0.210831] Yama: disabled by default; enable with sysctl kernel.yama.*
+[    0.211393] AppArmor: AppArmor initialized
+[    0.212027] TOMOYO Linux initialized
+[    0.212698] LSM support for eBPF active
+[    0.213445] Mount-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.214557] Mountpoint-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.215338] smpboot: CPU0: Intel(R) Core(TM) i9-9900K CPU @ 3.60GHz (family: 0x6, model: 0x9e, stepping: 0xc)
+[    0.215338] Performance Events: Skylake events, full-width counters, Intel PMU driver.
+[    0.215338] ... version:                2
+[    0.215338] ... bit width:              48
+[    0.215341] ... generic registers:      4
+[    0.215948] ... value mask:             0000ffffffffffff
+[    0.216751] ... max period:             00007fffffffffff
+[    0.217547] ... fixed-purpose events:   3
+[    0.218153] ... event mask:             000000070000000f
+[    0.219012] signal: max sigframe size: 2032
+[    0.219363] rcu: Hierarchical SRCU implementation.
+[    0.220094] rcu: 	Max phase no-delay instances is 1000.
+[    0.223515] smp: Bringing up secondary CPUs ...
+[    0.224214] smp: Brought up 1 node, 1 CPU
+[    0.224827] smpboot: Total of 1 processors activated (7199.99 BogoMIPS)
+[    0.229816] node 0 deferred pages initialised in 4ms
+[    0.230614] Memory: 2008656K/2096628K available (16384K kernel code, 2497K rwdata, 11808K rodata, 4164K init, 4916K bss, 84276K reserved, 0K cma-reserved)
+[    0.231473] devtmpfs: initialized
+[    0.232007] x86/mm: Memory block size: 128MB
+[    0.232928] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[    0.234395] futex hash table entries: 256 (order: 2, 16384 bytes, linear)
+[    0.235380] pinctrl core: initialized pinctrl subsystem
+[    0.236545] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.237507] DMA: preallocated 256 KiB GFP_KERNEL pool for atomic allocations
+[    0.238586] DMA: preallocated 256 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[    0.239356] DMA: preallocated 256 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations
+[    0.240551] audit: initializing netlink subsys (disabled)
+[    0.241391] audit: type=2000 audit(1783649967.617:1): state=initialized audit_enabled=0 res=1
+[    0.242743] thermal_sys: Registered thermal governor 'fair_share'
+[    0.242744] thermal_sys: Registered thermal governor 'bang_bang'
+[    0.243347] thermal_sys: Registered thermal governor 'step_wise'
+[    0.244254] thermal_sys: Registered thermal governor 'user_space'
+[    0.245155] thermal_sys: Registered thermal governor 'power_allocator'
+[    0.246084] cpuidle: using governor ladder
+[    0.247346] cpuidle: using governor menu
+[    0.247972] acpiphp: ACPI Hot Plug PCI Controller Driver version: 0.5
+[    0.249055] PCI: ECAM [mem 0xb0000000-0xbfffffff] (base 0xb0000000) for domain 0000 [bus 00-ff]
+[    0.250371] PCI: ECAM [mem 0xb0000000-0xbfffffff] reserved as E820 entry
+[    0.251348] PCI: Using configuration type 1 for base access
+[    0.252267] kprobes: kprobe jump-optimization is enabled. All kprobes are optimized if possible.
+[    0.279875] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.280902] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.281901] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.282920] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.283607] ACPI: Added _OSI(Module Device)
+[    0.284244] ACPI: Added _OSI(Processor Device)
+[    0.284921] ACPI: Added _OSI(Processor Aggregator Device)
+[    0.286417] ACPI: 1 ACPI AML tables successfully acquired and loaded
+[    0.288063] ACPI: Interpreter enabled
+[    0.288642] ACPI: PM: (supports S0 S3 S4 S5)
+[    0.289293] ACPI: Using IOAPIC for interrupt routing
+[    0.290060] PCI: Using host bridge windows from ACPI; if necessary, use "pci=nocrs" and report a bug
+[    0.291341] PCI: Using E820 reservations for host bridge windows
+[    0.292310] ACPI: Enabled 2 GPEs in block 00 to 3F
+[    0.294523] ACPI: PCI Root Bridge [PCI0] (domain 0000 [bus 00-ff])
+[    0.295343] acpi PNP0A08:00: _OSC: OS supports [ExtendedConfig ASPM ClockPM Segments MSI HPX-Type3]
+[    0.296735] acpi PNP0A08:00: _OSC: platform does not support [PCIeHotplug LTR]
+[    0.297871] acpi PNP0A08:00: _OSC: OS now controls [SHPCHotplug PME AER PCIeCapability]
+[    0.299193] PCI host bridge to bus 0000:00
+[    0.299343] pci_bus 0000:00: root bus resource [io  0x0000-0x0cf7 window]
+[    0.300374] pci_bus 0000:00: root bus resource [io  0x0d00-0xffff window]
+[    0.301399] pci_bus 0000:00: root bus resource [mem 0x000a0000-0x000bffff window]
+[    0.302523] pci_bus 0000:00: root bus resource [mem 0x80000000-0xafffffff window]
+[    0.303341] pci_bus 0000:00: root bus resource [mem 0xc0000000-0xfebfffff window]
+[    0.304475] pci_bus 0000:00: root bus resource [mem 0x100000000-0x8ffffffff window]
+[    0.305627] pci_bus 0000:00: root bus resource [bus 00-ff]
+[    0.306508] pci 0000:00:00.0: [8086:29c0] type 00 class 0x060000 conventional PCI endpoint
+[    0.307820] pci 0000:00:01.0: [1234:1111] type 00 class 0x030000 conventional PCI endpoint
+[    0.310349] pci 0000:00:01.0: BAR 0 [mem 0xfd000000-0xfdffffff pref]
+[    0.313045] pci 0000:00:01.0: BAR 2 [mem 0xfebd4000-0xfebd4fff]
+[    0.317542] pci 0000:00:01.0: ROM [mem 0xfebc0000-0xfebcffff pref]
+[    0.318592] pci 0000:00:01.0: Video device with shadowed ROM at [mem 0x000c0000-0x000dffff]
+[    0.319706] pci 0000:00:02.0: [8086:10d3] type 00 class 0x020000 PCIe Root Complex Integrated Endpoint
+[    0.321717] pci 0000:00:02.0: BAR 0 [mem 0xfeb80000-0xfeb9ffff]
+[    0.323160] pci 0000:00:02.0: BAR 1 [mem 0xfeba0000-0xfebbffff]
+[    0.323867] pci 0000:00:02.0: BAR 2 [io  0xc040-0xc05f]
+[    0.325646] pci 0000:00:02.0: BAR 3 [mem 0xfebd0000-0xfebd3fff]
+[    0.329340] pci 0000:00:02.0: ROM [mem 0xfeb40000-0xfeb7ffff pref]
+[    0.330843] pci 0000:00:02.0: enabling Extended Tags
+[    0.332393] pci 0000:00:1f.0: [8086:2918] type 00 class 0x060100 conventional PCI endpoint
+[    0.334157] pci 0000:00:1f.0: quirk: [io  0x0600-0x067f] claimed by ICH6 ACPI/GPIO/TCO
+[    0.335599] pci 0000:00:1f.2: [8086:2922] type 00 class 0x010601 conventional PCI endpoint
+[    0.338328] pci 0000:00:1f.2: BAR 4 [io  0xc060-0xc07f]
+[    0.339341] pci 0000:00:1f.2: BAR 5 [mem 0xfebd5000-0xfebd5fff]
+[    0.341406] pci 0000:00:1f.3: [8086:2930] type 00 class 0x0c0500 conventional PCI endpoint
+[    0.343509] pci 0000:00:1f.3: BAR 4 [io  0x0700-0x073f]
+[    0.346065] ACPI: PCI: Interrupt link LNKA configured for IRQ 10
+[    0.347045] ACPI: PCI: Interrupt link LNKB configured for IRQ 10
+[    0.347413] ACPI: PCI: Interrupt link LNKC configured for IRQ 11
+[    0.348392] ACPI: PCI: Interrupt link LNKD configured for IRQ 11
+[    0.349373] ACPI: PCI: Interrupt link LNKE configured for IRQ 10
+[    0.350520] ACPI: PCI: Interrupt link LNKF configured for IRQ 10
+[    0.351412] ACPI: PCI: Interrupt link LNKG configured for IRQ 11
+[    0.352393] ACPI: PCI: Interrupt link LNKH configured for IRQ 11
+[    0.353328] ACPI: PCI: Interrupt link GSIA configured for IRQ 16
+[    0.354241] ACPI: PCI: Interrupt link GSIB configured for IRQ 17
+[    0.355154] ACPI: PCI: Interrupt link GSIC configured for IRQ 18
+[    0.355347] ACPI: PCI: Interrupt link GSID configured for IRQ 19
+[    0.356266] ACPI: PCI: Interrupt link GSIE configured for IRQ 20
+[    0.357179] ACPI: PCI: Interrupt link GSIF configured for IRQ 21
+[    0.358091] ACPI: PCI: Interrupt link GSIG configured for IRQ 22
+[    0.359347] ACPI: PCI: Interrupt link GSIH configured for IRQ 23
+[    0.360606] iommu: Default domain type: Translated
+[    0.361334] iommu: DMA domain TLB invalidation policy: lazy mode
+[    0.362353] pps_core: LinuxPPS API ver. 1 registered
+[    0.363107] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.363344] PTP clock support registered
+[    0.363951] EDAC MC: Ver: 3.0.0
+[    0.364863] NetLabel: Initializing
+[    0.365388] NetLabel:  domain hash size = 128
+[    0.366048] NetLabel:  protocols = UNLABELED CIPSOv4 CALIPSO
+[    0.366925] NetLabel:  unlabeled traffic allowed by default
+[    0.367342] PCI: Using ACPI for IRQ routing
+[    0.436689] pci 0000:00:01.0: vgaarb: setting as boot VGA device
+[    0.437594] pci 0000:00:01.0: vgaarb: bridge control possible
+[    0.438464] pci 0000:00:01.0: vgaarb: VGA device added: decodes=io+mem,owns=io+mem,locks=none
+[    0.439341] vgaarb: loaded
+[    0.439781] hpet0: at MMIO 0xfed00000, IRQs 2, 8, 0
+[    0.440520] hpet0: 3 comparators, 64-bit 100.000000 MHz counter
+[    0.448384] clocksource: Switched to clocksource kvm-clock
+[    0.449907] VFS: Disk quotas dquot_6.6.0
+[    0.450515] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[    0.451338] AppArmor: AppArmor Filesystem Enabled
+[    0.451377] pnp: PnP ACPI init
+[    0.451971] system 00:05: [mem 0xb0000000-0xbfffffff window] has been reserved
+[    0.453260] pnp: PnP ACPI: found 6 devices
+[    0.459282] clocksource: acpi_pm: mask: 0xffffff max_cycles: 0xffffff, max_idle_ns: 2085701024 ns
+[    0.460670] NET: Registered PF_INET protocol family
+[    0.461442] IP idents hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.470560] tcp_listen_portaddr_hash hash table entries: 1024 (order: 2, 16384 bytes, linear)
+[    0.471850] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.473020] TCP established hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.474251] TCP bind hash table entries: 16384 (order: 7, 524288 bytes, linear)
+[    0.475383] TCP: Hash tables configured (established 16384 bind 16384)
+[    0.476402] MPTCP token hash table entries: 2048 (order: 4, 49152 bytes, linear)
+[    0.477527] UDP hash table entries: 1024 (order: 3, 32768 bytes, linear)
+[    0.478544] UDP-Lite hash table entries: 1024 (order: 3, 32768 bytes, linear)
+[    0.479650] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.480537] NET: Registered PF_XDP protocol family
+[    0.481276] pci_bus 0000:00: resource 4 [io  0x0000-0x0cf7 window]
+[    0.482217] pci_bus 0000:00: resource 5 [io  0x0d00-0xffff window]
+[    0.483152] pci_bus 0000:00: resource 6 [mem 0x000a0000-0x000bffff window]
+[    0.484194] pci_bus 0000:00: resource 7 [mem 0x80000000-0xafffffff window]
+[    0.485231] pci_bus 0000:00: resource 8 [mem 0xc0000000-0xfebfffff window]
+[    0.486275] pci_bus 0000:00: resource 9 [mem 0x100000000-0x8ffffffff window]
+[    0.487413] PCI: CLS 0 bytes, default 64
+[    0.488106] Trying to unpack rootfs image as initramfs...
+[    0.489832] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x33e451ab1a6, max_idle_ns: 440795278720 ns
+[    0.491523] Initialise system trusted keyrings
+[    0.492221] Key type blacklist registered
+[    0.497750] workingset: timestamp_bits=36 max_order=19 bucket_order=0
+[    0.498728] zbud: loaded
+[    0.499196] fuse: init (API version 7.41)
+[    0.499905] integrity: Platform Keyring initialized
+[    0.500662] integrity: Machine keyring initialized
+[    0.525348] Freeing initrd memory: 2216K
+[    0.525971] Key type asymmetric registered
+[    0.526599] Asymmetric key parser 'x509' registered
+[    0.527801] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 246)
+[    0.528949] io scheduler mq-deadline registered
+[    0.530438] ledtrig-cpu: registered to indicate activity on CPUs
+[    0.531375] shpchp: Standard Hot Plug PCI Controller Driver version: 0.4
+[    0.532541] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[    0.533886] 00:03: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16550A
+[    0.535362] Linux agpgart interface v0.103
+[    0.536182] i8042: PNP: PS/2 Controller [PNP0303:KBD,PNP0f13:MOU] at 0x60,0x64 irq 1,12
+[    0.538086] serio: i8042 KBD port at 0x60,0x64 irq 1
+[    0.538843] serio: i8042 AUX port at 0x60,0x64 irq 12
+[    0.539674] mousedev: PS/2 mouse device common for all mice
+[    0.540784] input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input0
+[    0.542310] rtc_cmos 00:04: RTC can wake from S4
+[    0.543477] rtc_cmos 00:04: registered as rtc0
+[    0.544228] rtc_cmos 00:04: setting system clock to 2026-07-10T02:19:27 UTC (1783649967)
+[    0.545511] rtc_cmos 00:04: alarms up to one day, y3k, 242 bytes nvram, hpet irqs
+[    0.546653] intel_pstate: CPU model not supported
+[    0.547479] NET: Registered PF_INET6 protocol family
+[    0.549061] Segment Routing with IPv6
+[    0.549631] In-situ OAM (IOAM) with IPv6
+[    0.550257] mip6: Mobile IPv6
+[    0.550722] NET: Registered PF_PACKET protocol family
+[    0.551504] mpls_gso: MPLS GSO support
+[    0.552161] IPI shorthand broadcast: enabled
+[    0.553976] sched_clock: Marking stable (432001936, 121724663)->(569313441, -15586842)
+[    0.555216] registered taskstats version 1
+[    0.555911] Loading compiled-in X.509 certificates
+[    0.567792] Loaded X.509 cert 'Build time autogenerated kernel key: e87b99600394fc77ba6018a2cc6a68db4bb86ee6'
+[    0.570485] Demotion targets for Node 0: null
+[    0.571181] Key type .fscrypt registered
+[    0.571780] Key type fscrypt-provisioning registered
+[    0.573013] Key type encrypted registered
+[    0.573630] AppArmor: AppArmor sha256 policy hashing enabled
+[    0.574526] ima: No TPM chip found, activating TPM-bypass!
+[    0.575358] ima: Allocated hash algorithm: sha256
+[    0.576096] ima: No architecture policies found
+[    0.576798] evm: Initialising EVM extended attributes:
+[    0.577577] evm: security.selinux
+[    0.578093] evm: security.SMACK64 (disabled)
+[    0.578752] evm: security.SMACK64EXEC (disabled)
+[    0.579454] evm: security.SMACK64TRANSMUTE (disabled)
+[    0.580225] evm: security.SMACK64MMAP (disabled)
+[    0.580927] evm: security.apparmor
+[    0.581448] evm: security.ima
+[    0.581910] evm: security.capability
+[    0.582457] evm: HMAC attrs: 0x1
+[    0.609749] RAS: Correctable Errors collector initialized.
+[    0.619475] clk: Disabling unused clocks
+[    0.620087] PM: genpd: Disabling unused power domains
+[    0.625911] Freeing unused decrypted memory: 2028K
+[    0.626708] Freeing unused kernel image (initmem) memory: 4164K
+[    0.627354] Write protecting the kernel read-only data: 28672k
+[    0.628165] Freeing unused kernel image (rodata/data gap) memory: 480K
+[    0.659993] x86/mm: Checked W+X mappings: passed, no W+X pages found.
+[    0.689733] Run /init as init process
+NESTED_X86_L1_BOOT_OK
+msr: loaded
+[    0.726018] kvm: Unknown symbol irq_bypass_unregister_consumer (err -2)
+[    0.726841] kvm: Unknown symbol irq_bypass_register_consumer (err -2)
+[    0.758619] kvm: Unknown symbol irq_bypass_unregister_consumer (err -2)
+[    0.759467] kvm: Unknown symbol irq_bypass_register_consumer (err -2)
+insmod: can't insert '/mod/kvm.ko': unknown symbol in module, or unknown parameter
+kvm: FAILED
+[    0.779774] kvm_intel: Unknown symbol __SCK__kvm_x86_cache_reg (err -2)
+[    0.780555] kvm_intel: Unknown symbol kvm_x86_vendor_init (err -2)
+[    0.781216] kvm_intel: Unknown symbol __tracepoint_kvm_ple_window_update (err -2)
+[    0.782022] kvm_intel: Unknown symbol vcpu_put (err -2)
+[    0.782581] kvm_intel: Unknown symbol kvm_arch_has_assigned_device (err -2)
+[    0.783313] kvm_intel: Unknown symbol kvm_vcpu_mark_page_dirty (err -2)
+[    0.784020] kvm_intel: Unknown symbol kvm_host (err -2)
+[    0.784629] kvm_intel: Unknown symbol kvm_find_user_return_msr (err -2)
+[    0.785329] kvm_intel: Unknown symbol enable_pmu (err -2)
+[    0.785912] kvm_intel: Unknown symbol kvm_requeue_exception (err -2)
+[    0.786593] kvm_intel: Unknown symbol __SCT__kvm_x86_get_cs_db_l_bits (err -2)
+[    0.787355] kvm_intel: Unknown symbol __SCK__tp_func_kvm_nested_vmenter_failed (err -2)
+[    0.788235] kvm_intel: Unknown symbol kvm_exit (err -2)
+[    0.788794] kvm_intel: Unknown symbol kvm_pmu_cap (err -2)
+[    0.789380] kvm_intel: Unknown symbol kvm_vcpu_gfn_to_hva (err -2)
+[    0.790047] kvm_intel: Unknown symbol kvm_init (err -2)
+[    0.790609] kvm_intel: Unknown symbol kvm_deliver_exception_payload (err -2)
+[    0.791355] kvm_intel: Unknown symbol kvm_set_msr (err -2)
+[    0.791939] kvm_intel: Unknown symbol __SCT__tp_func_kvm_entry (err -2)
+[    0.792683] kvm_intel: Unknown symbol __tracepoint_kvm_nested_vmexit (err -2)
+[    0.793439] kvm_intel: Unknown symbol enable_vmware_backdoor (err -2)
+[    0.794132] kvm_intel: Unknown symbol kvm_enable_efer_bits (err -2)
+[    0.794799] kvm_intel: Unknown symbol __tracepoint_kvm_nested_vmenter (err -2)
+[    0.795566] kvm_intel: Unknown symbol __SCT__tp_func_kvm_nested_vmexit (err -2)
+[    0.796379] kvm_intel: Unknown symbol kvm_mmu_set_me_spte_mask (err -2)
+[    0.797081] kvm_intel: Unknown symbol kvm_lapic_expired_hv_timer (err -2)
+[    0.797807] kvm_intel: Unknown symbol kvm_emulate_xsetbv (err -2)
+[    0.798460] kvm_intel: Unknown symbol kvm_fixup_and_inject_pf_error (err -2)
+[    0.799207] kvm_intel: Unknown symbol __SCK__tp_func_kvm_cr (err -2)
+[    0.799884] kvm_intel: Unknown symbol kvm_vcpu_write_guest_page (err -2)
+[    0.800635] kvm_intel: Unknown symbol enable_apicv (err -2)
+[    0.801229] kvm_intel: Unknown symbol kvm_read_guest_cached (err -2)
+[    0.801911] kvm_intel: Unknown symbol handle_ud (err -2)
+[    0.802480] kvm_intel: Unknown symbol kvm_mmu_new_pgd (err -2)
+[    0.803103] kvm_intel: Unknown symbol kvm_mmu_gva_to_gpa_read (err -2)
+[    0.803796] kvm_intel: Unknown symbol __tracepoint_kvm_nested_vmenter_failed (err -2)
+[    0.804624] kvm_intel: Unknown symbol kvm_get_msr_common (err -2)
+[    0.805276] kvm_intel: Unknown symbol __tracepoint_kvm_fast_mmio (err -2)
+[    0.806007] kvm_intel: Unknown symbol kvm_apic_update_hwapic_isr (err -2)
+[    0.806723] kvm_intel: Unknown symbol __SCK__tp_func_kvm_nested_vmenter (err -2)
+[    0.807502] kvm_intel: Unknown symbol kvm_arch_has_noncoherent_dma (err -2)
+[    0.808239] kvm_intel: Unknown symbol kvm_hv_get_assist_page (err -2)
+[    0.808923] kvm_intel: Unknown symbol kvm_emulate_halt (err -2)
+[    0.809553] kvm_intel: Unknown symbol kvm_pmu_eventsel (err -2)
+[    0.810189] kvm_intel: Unknown symbol handle_fastpath_hlt (err -2)
+[    0.810844] kvm_intel: Unknown symbol kvm_emulate_mwait (err -2)
+[    0.811480] kvm_intel: Unknown symbol kvm_vcpu_map (err -2)
+[    0.812077] kvm_intel: Unknown symbol kvm_lapic_readable_reg_mask (err -2)
+[    0.812803] kvm_intel: Unknown symbol kvm_msr_allowed (err -2)
+[    0.813426] kvm_intel: Unknown symbol kvm_service_local_tlb_flush_requests (err -2)
+[    0.814238] kvm_intel: Unknown symbol kvm_lapic_find_highest_irr (err -2)
+[    0.814955] kvm_intel: Unknown symbol kvm_mmu_gva_to_gpa_write (err -2)
+[    0.815654] kvm_intel: Unknown symbol kvm_x86_vendor_exit (err -2)
+[    0.816315] kvm_intel: Unknown symbol kvm_wait_lapic_expire (err -2)
+[    0.816989] kvm_intel: Unknown symbol hv_flush_remote_tlbs (err -2)
+[    0.817662] kvm_intel: Unknown symbol kvm_write_guest_virt_system (err -2)
+[    0.818406] kvm_intel: Unknown symbol kvm_find_cpuid_entry (err -2)
+[    0.819073] kvm_intel: Unknown symbol kvm_task_switch (err -2)
+[    0.819697] kvm_intel: Unknown symbol __SCT__tp_func_kvm_fast_mmio (err -2)
+[    0.820437] kvm_intel: Unknown symbol kvm_read_guest_virt (err -2)
+[    0.821099] kvm_intel: Unknown symbol __tracepoint_kvm_cr (err -2)
+[    0.821760] kvm_intel: Unknown symbol kvm_io_bus_write (err -2)
+[    0.822394] kvm_intel: Unknown symbol kvm_set_user_return_msr (err -2)
+[    0.823088] kvm_intel: Unknown symbol __SCT__tp_func_kvm_cr (err -2)
+[    0.823762] kvm_intel: Unknown symbol kvm_init_shadow_ept_mmu (err -2)
+[    0.824459] kvm_intel: Unknown symbol kvm_emulate_monitor (err -2)
+[    0.825116] kvm_intel: Unknown symbol __tracepoint_kvm_pml_full (err -2)
+[    0.825830] kvm_intel: Unknown symbol kvm_requeue_exception_e (err -2)
+[    0.826524] kvm_intel: Unknown symbol __SCT__tp_func_kvm_apicv_accept_irq (err -2)
+[    0.827322] kvm_intel: Unknown symbol kvm_gfn_to_hva_cache_init (err -2)
+[    0.828029] kvm_intel: Unknown symbol kvm_lmsw (err -2)
+[    0.828594] kvm_intel: Unknown symbol kvm_lapic_set_eoi (err -2)
+[    0.829236] kvm_intel: Unknown symbol report_ignored_msrs (err -2)
+[    0.829898] kvm_intel: Unknown symbol kvm_queue_exception (err -2)
+[    0.830555] kvm_intel: Unknown symbol kvm_emulate_halt_noskip (err -2)
+[    0.831242] kvm_intel: Unknown symbol kvm_emulate_rdmsr (err -2)
+[    0.831881] kvm_intel: Unknown symbol __tracepoint_kvm_apicv_accept_irq (err -2)
+[    0.832676] kvm_intel: Unknown symbol __tracepoint_kvm_pi_irte_update (err -2)
+[    0.833439] kvm_intel: Unknown symbol __SCT__tp_func_kvm_nested_vmexit_inject (err -2)
+[    0.834303] kvm_intel: Unknown symbol kvm_vcpu_unmap (err -2)
+[    0.834916] kvm_intel: Unknown symbol kvm_write_guest_page (err -2)
+[    0.835582] kvm_intel: Unknown symbol kvm_add_user_return_msr (err -2)
+[    0.836283] kvm_intel: Unknown symbol kvm_valid_efer (err -2)
+[    0.836900] kvm_intel: Unknown symbol __SCK__tp_func_kvm_pi_irte_update (err -2)
+[    0.837682] kvm_intel: Unknown symbol __SCK__tp_func_kvm_apicv_accept_irq (err -2)
+[    0.838489] kvm_intel: Unknown symbol __SCK__tp_func_kvm_entry (err -2)
+[    0.839188] kvm_intel: Unknown symbol kvm_apic_ack_interrupt (err -2)
+[    0.839869] kvm_intel: Unknown symbol kvm_read_guest_offset_cached (err -2)
+[    0.840609] kvm_intel: Unknown symbol kvm_handle_invpcid (err -2)
+[    0.841260] kvm_intel: Unknown symbol __tracepoint_kvm_entry (err -2)
+[    0.841951] kvm_intel: Unknown symbol kvm_load_host_xsave_state (err -2)
+[    0.842660] kvm_intel: Unknown symbol __tracepoint_kvm_page_fault (err -2)
+[    0.843383] kvm_intel: Unknown symbol kvm_mmu_free_roots (err -2)
+[    0.844040] kvm_intel: Unknown symbol kvm_queue_exception_p (err -2)
+[    0.844715] kvm_intel: Unknown symbol kvm_read_l1_tsc (err -2)
+[    0.845337] kvm_intel: Unknown symbol kvm_vcpu_deliver_sipi_vector (err -2)
+[    0.846079] kvm_intel: Unknown symbol __tracepoint_kvm_inj_virq (err -2)
+[    0.846789] kvm_intel: Unknown symbol kvm_cpu_has_interrupt (err -2)
+[    0.847463] kvm_intel: Unknown symbol __kvm_apic_update_irr (err -2)
+[    0.848142] kvm_intel: Unknown symbol handle_fastpath_set_msr_irqoff (err -2)
+[    0.848898] kvm_intel: Unknown symbol kvm_apic_update_ppr (err -2)
+[    0.849555] kvm_intel: Unknown symbol kvm_configure_mmu (err -2)
+[    0.850204] kvm_intel: Unknown symbol kvm_make_all_cpus_request (err -2)
+[    0.850915] kvm_intel: Unknown symbol pmc_write_counter (err -2)
+[    0.851555] kvm_intel: Unknown symbol kvm_apic_update_irr (err -2)
+[    0.852216] kvm_intel: Unknown symbol kvm_cpu_get_extint (err -2)
+[    0.852865] kvm_intel: Unknown symbol kvm_init_mmu (err -2)
+[    0.853458] kvm_intel: Unknown symbol kvm_emulate_wbinvd (err -2)
+[    0.854111] kvm_intel: Unknown symbol kvm_set_cr3 (err -2)
+[    0.854696] kvm_intel: Unknown symbol kvm_update_cpuid_runtime (err -2)
+[    0.855396] kvm_intel: Unknown symbol __SCK__kvm_x86_get_cs_db_l_bits (err -2)
+[    0.856169] kvm_intel: Unknown symbol __SCK__tp_func_kvm_page_fault (err -2)
+[    0.856916] kvm_intel: Unknown symbol kvm_alloc_apic_access_page (err -2)
+[    0.857634] kvm_intel: Unknown symbol kvm_get_cr8 (err -2)
+[    0.858228] kvm_intel: Unknown symbol __SCT__tp_func_kvm_pi_irte_update (err -2)
+[    0.859010] kvm_intel: Unknown symbol vcpu_load (err -2)
+[    0.859580] kvm_intel: Unknown symbol kvm_handle_memory_failure (err -2)
+[    0.860294] kvm_intel: Unknown symbol kvm_set_dr (err -2)
+[    0.860870] kvm_intel: Unknown symbol kvm_set_msi_irq (err -2)
+[    0.861493] kvm_intel: Unknown symbol kvm_emulate_hypercall (err -2)
+[    0.862181] kvm_intel: Unknown symbol kvm_spurious_fault (err -2)
+[    0.862830] kvm_intel: Unknown symbol kvm_inject_emulated_page_fault (err -2)
+[    0.863585] kvm_intel: Unknown symbol kvm_get_linear_rip (err -2)
+[    0.864483] kvm_intel: Unknown symbol kvm_prepare_emulation_failure_exit (err -2)
+[    0.865273] kvm_intel: Unknown symbol kvm_nr_uret_msrs (err -2)
+[    0.865910] kvm_intel: Unknown symbol __kvm_prepare_emulation_failure_exit (err -2)
+[    0.866720] kvm_intel: Unknown symbol load_pdptrs (err -2)
+[    0.867304] kvm_intel: Unknown symbol kvm_get_running_vcpu (err -2)
+[    0.867973] kvm_intel: Unknown symbol kvm_vcpu_read_guest_page (err -2)
+[    0.868678] kvm_intel: Unknown symbol kvm_set_cpu_caps (err -2)
+[    0.869310] kvm_intel: Unknown symbol hv_track_root_tdp (err -2)
+[    0.869959] kvm_intel: Unknown symbol __SCT__tp_func_kvm_pml_full (err -2)
+[    0.870686] kvm_intel: Unknown symbol kvm_set_cr4 (err -2)
+[    0.871269] kvm_intel: Unknown symbol kvm_get_msr_with_filter (err -2)
+[    0.871960] kvm_intel: Unknown symbol __SCK__tp_func_kvm_exit (err -2)
+[    0.872657] kvm_intel: Unknown symbol kvm_handle_page_fault (err -2)
+[    0.873331] kvm_intel: Unknown symbol kvm_calc_nested_tsc_offset (err -2)
+[    0.874054] kvm_intel: Unknown symbol kvm_cpu_caps (err -2)
+[    0.874647] kvm_intel: Unknown symbol kvm_spec_ctrl_test_value (err -2)
+[    0.875347] kvm_intel: Unknown symbol __SCT__tp_func_kvm_exit (err -2)
+[    0.876041] kvm_intel: Unknown symbol kvm_apic_clear_irr (err -2)
+[    0.876693] kvm_intel: Unknown symbol __x86_set_memory_region (err -2)
+[    0.877383] kvm_intel: Unknown symbol kvm_load_guest_xsave_state (err -2)
+[    0.878106] kvm_intel: Unknown symbol kvm_set_cr0 (err -2)
+[    0.878693] kvm_intel: Unknown symbol __kvm_is_valid_cr4 (err -2)
+[    0.879341] kvm_intel: Unknown symbol kvm_mmu_free_guest_mode_roots (err -2)
+[    0.880094] kvm_intel: Unknown symbol kvm_set_cr8 (err -2)
+[    0.880679] kvm_intel: Unknown symbol kvm_get_dr (err -2)
+[    0.881260] kvm_intel: Unknown symbol kvm_mmu_page_fault (err -2)
+[    0.881917] kvm_intel: Unknown symbol __SCK__tp_func_kvm_nested_vmexit (err -2)
+[    0.882701] kvm_intel: Unknown symbol kvm_emulate_instruction (err -2)
+[    0.883395] kvm_intel: Unknown symbol kvm_calc_nested_tsc_multiplier (err -2)
+[    0.884155] kvm_intel: Unknown symbol __SCK__tp_func_kvm_pml_full (err -2)
+[    0.884883] kvm_intel: Unknown symbol kvm_pmu_trigger_event (err -2)
+[    0.885559] kvm_intel: Unknown symbol kvm_mmu_reset_context (err -2)
+[    0.886246] kvm_intel: Unknown symbol kvm_vcpu_read_guest (err -2)
+[    0.886904] kvm_intel: Unknown symbol kvm_vcpu_on_spin (err -2)
+[    0.887627] kvm_intel: Unknown symbol __SCK__tp_func_kvm_fast_mmio (err -2)
+[    0.888368] kvm_intel: Unknown symbol kvm_read_guest (err -2)
+[    0.888986] kvm_intel: Unknown symbol kvm_write_guest_cached (err -2)
+[    0.889670] kvm_intel: Unknown symbol gfn_to_pfn_memslot (err -2)
+[    0.890327] kvm_intel: Unknown symbol kvm_vcpu_wake_up (err -2)
+[    0.890961] kvm_intel: Unknown symbol kvm_rebooting (err -2)
+[    0.891565] kvm_intel: Unknown symbol kvm_get_rflags (err -2)
+[    0.892185] kvm_intel: Unknown symbol kvm_queue_exception_e (err -2)
+[    0.892862] kvm_intel: Unknown symbol __SCT__tp_func_kvm_inj_virq (err -2)
+[    0.893591] kvm_intel: Unknown symbol __tracepoint_kvm_exit (err -2)
+[    0.894270] kvm_intel: Unknown symbol kvm_emulate_cpuid (err -2)
+[    0.894910] kvm_intel: Unknown symbol kvm_emulate_wrmsr (err -2)
+[    0.895551] kvm_intel: Unknown symbol __SCK__tp_func_kvm_inj_virq (err -2)
+[    0.896281] kvm_intel: Unknown symbol kvm_apic_set_eoi_accelerated (err -2)
+[    0.897014] kvm_intel: Unknown symbol kvm_find_cpuid_entry_index (err -2)
+[    0.897739] kvm_intel: Unknown symbol __SCT__tp_func_kvm_nested_vmenter (err -2)
+[    0.898521] kvm_intel: Unknown symbol __SCT__kvm_x86_cache_reg (err -2)
+[    0.899220] kvm_intel: Unknown symbol kvm_vcpu_kick (err -2)
+[    0.899825] kvm_intel: Unknown symbol kvm_inject_realmode_interrupt (err -2)
+[    0.900578] kvm_intel: Unknown symbol kvm_mmu_invlpg (err -2)
+[    0.901195] kvm_intel: Unknown symbol kvm_emulate_invd (err -2)
+[    0.901834] kvm_intel: Unknown symbol kvm_fast_pio (err -2)
+[    0.902428] kvm_intel: Unknown symbol __SCK__tp_func_kvm_ple_window_update (err -2)
+[    0.903232] kvm_intel: Unknown symbol kvm_set_msr_common (err -2)
+[    0.903878] kvm_intel: Unknown symbol kvm_mmu_invalidate_addr (err -2)
+[    0.904573] kvm_intel: Unknown symbol __SCT__tp_func_kvm_nested_vmenter_failed (err -2)
+[    0.905413] kvm_intel: Unknown symbol __SCK__tp_func_kvm_nested_vmexit_inject (err -2)
+[    0.906255] kvm_intel: Unknown symbol kvm_intr_is_single_vcpu (err -2)
+[    0.906948] kvm_intel: Unknown symbol kvm_apic_has_interrupt (err -2)
+[    0.907628] kvm_intel: Unknown symbol kvm_has_noapic_vcpu (err -2)
+[    0.908293] kvm_intel: Unknown symbol kvm_emulate_rdpmc (err -2)
+[    0.908934] kvm_intel: Unknown symbol __SCT__tp_func_kvm_ple_window_update (err -2)
+[    0.909780] kvm_intel: Unknown symbol __tracepoint_kvm_nested_vmexit_inject (err -2)
+[    0.910595] kvm_intel: Unknown symbol kvm_release_pfn_clean (err -2)
+[    0.911270] kvm_intel: Unknown symbol __SCT__tp_func_kvm_page_fault (err -2)
+[    0.912018] kvm_intel: Unknown symbol kvm_require_dr (err -2)
+[    0.912637] kvm_intel: Unknown symbol kvm_skip_emulated_instruction (err -2)
+[    0.913384] kvm_intel: Unknown symbol kvm_mmu_set_ept_masks (err -2)
+[    0.914067] kvm_intel: Unknown symbol kvm_handle_invalid_op (err -2)
+[    0.914741] kvm_intel: Unknown symbol kvm_set_msr_with_filter (err -2)
+[    0.915433] kvm_intel: Unknown symbol kvm_caps (err -2)
+[    0.915993] kvm_intel: Unknown symbol kvm_vcpu_write_guest (err -2)
+[    0.916666] kvm_intel: Unknown symbol hv_flush_remote_tlbs_range (err -2)
+[    0.917382] kvm_intel: Unknown symbol kvm_complete_insn_gp (err -2)
+[    0.918058] kvm_intel: Unknown symbol kvm_mmu_print_sptes (err -2)
+[    0.918717] kvm_intel: Unknown symbol kvm_apic_write_nodecode (err -2)
+[    0.919410] kvm_intel: Unknown symbol allow_smaller_maxphyaddr (err -2)
+[    0.938671] kvm_intel: Unknown symbol __SCK__kvm_x86_cache_reg (err -2)
+[    0.939411] kvm_intel: Unknown symbol kvm_x86_vendor_init (err -2)
+[    0.940075] kvm_intel: Unknown symbol __tracepoint_kvm_ple_window_update (err -2)
+[    0.940865] kvm_intel: Unknown symbol vcpu_put (err -2)
+[    0.941422] kvm_intel: Unknown symbol kvm_arch_has_assigned_device (err -2)
+[    0.942166] kvm_intel: Unknown symbol kvm_vcpu_mark_page_dirty (err -2)
+[    0.942872] kvm_intel: Unknown symbol kvm_host (err -2)
+[    0.943433] kvm_intel: Unknown symbol kvm_find_user_return_msr (err -2)
+[    0.944140] kvm_intel: Unknown symbol enable_pmu (err -2)
+[    0.944717] kvm_intel: Unknown symbol kvm_requeue_exception (err -2)
+[    0.945396] kvm_intel: Unknown symbol __SCT__kvm_x86_get_cs_db_l_bits (err -2)
+[    0.946168] kvm_intel: Unknown symbol __SCK__tp_func_kvm_nested_vmenter_failed (err -2)
+[    0.947008] kvm_intel: Unknown symbol kvm_exit (err -2)
+[    0.947565] kvm_intel: Unknown symbol kvm_pmu_cap (err -2)
+[    0.948152] kvm_intel: Unknown symbol kvm_vcpu_gfn_to_hva (err -2)
+[    0.948808] kvm_intel: Unknown symbol kvm_init (err -2)
+[    0.949365] kvm_intel: Unknown symbol kvm_deliver_exception_payload (err -2)
+[    0.950120] kvm_intel: Unknown symbol kvm_set_msr (err -2)
+[    0.950705] kvm_intel: Unknown symbol __SCT__tp_func_kvm_entry (err -2)
+[    0.951403] kvm_intel: Unknown symbol __tracepoint_kvm_nested_vmexit (err -2)
+[    0.952162] kvm_intel: Unknown symbol enable_vmware_backdoor (err -2)
+[    0.952845] kvm_intel: Unknown symbol kvm_enable_efer_bits (err -2)
+[    0.953511] kvm_intel: Unknown symbol __tracepoint_kvm_nested_vmenter (err -2)
+[    0.954282] kvm_intel: Unknown symbol __SCT__tp_func_kvm_nested_vmexit (err -2)
+[    0.955058] kvm_intel: Unknown symbol kvm_mmu_set_me_spte_mask (err -2)
+[    0.955762] kvm_intel: Unknown symbol kvm_lapic_expired_hv_timer (err -2)
+[    0.956484] kvm_intel: Unknown symbol kvm_emulate_xsetbv (err -2)
+[    0.957136] kvm_intel: Unknown symbol kvm_fixup_and_inject_pf_error (err -2)
+[    0.957891] kvm_intel: Unknown symbol __SCK__tp_func_kvm_cr (err -2)
+[    0.958567] kvm_intel: Unknown symbol kvm_vcpu_write_guest_page (err -2)
+[    0.959277] kvm_intel: Unknown symbol enable_apicv (err -2)
+[    0.959871] kvm_intel: Unknown symbol kvm_read_guest_cached (err -2)
+[    0.960552] kvm_intel: Unknown symbol handle_ud (err -2)
+[    0.961119] kvm_intel: Unknown symbol kvm_mmu_new_pgd (err -2)
+[    0.961748] kvm_intel: Unknown symbol kvm_mmu_gva_to_gpa_read (err -2)
+[    0.962439] kvm_intel: Unknown symbol __tracepoint_kvm_nested_vmenter_failed (err -2)
+[    0.963260] kvm_intel: Unknown symbol kvm_get_msr_common (err -2)
+[    0.963911] kvm_intel: Unknown symbol __tracepoint_kvm_fast_mmio (err -2)
+[    0.964632] kvm_intel: Unknown symbol kvm_apic_update_hwapic_isr (err -2)
+[    0.965348] kvm_intel: Unknown symbol __SCK__tp_func_kvm_nested_vmenter (err -2)
+[    0.966135] kvm_intel: Unknown symbol kvm_arch_has_noncoherent_dma (err -2)
+[    0.966869] kvm_intel: Unknown symbol kvm_hv_get_assist_page (err -2)
+[    0.967551] kvm_intel: Unknown symbol kvm_emulate_halt (err -2)
+[    0.968188] kvm_intel: Unknown symbol kvm_pmu_eventsel (err -2)
+[    0.968817] kvm_intel: Unknown symbol handle_fastpath_hlt (err -2)
+[    0.969473] kvm_intel: Unknown symbol kvm_emulate_mwait (err -2)
+[    0.970118] kvm_intel: Unknown symbol kvm_vcpu_map (err -2)
+[    0.970709] kvm_intel: Unknown symbol kvm_lapic_readable_reg_mask (err -2)
+[    0.971434] kvm_intel: Unknown symbol kvm_msr_allowed (err -2)
+[    0.972058] kvm_intel: Unknown symbol kvm_service_local_tlb_flush_requests (err -2)
+[    0.972865] kvm_intel: Unknown symbol kvm_lapic_find_highest_irr (err -2)
+[    0.973579] kvm_intel: Unknown symbol kvm_mmu_gva_to_gpa_write (err -2)
+[    0.974281] kvm_intel: Unknown symbol kvm_x86_vendor_exit (err -2)
+[    0.974937] kvm_intel: Unknown symbol kvm_wait_lapic_expire (err -2)
+[    0.975609] kvm_intel: Unknown symbol hv_flush_remote_tlbs (err -2)
+[    0.976287] kvm_intel: Unknown symbol kvm_write_guest_virt_system (err -2)
+[    0.977022] kvm_intel: Unknown symbol kvm_find_cpuid_entry (err -2)
+[    0.977689] kvm_intel: Unknown symbol kvm_task_switch (err -2)
+[    0.978319] kvm_intel: Unknown symbol __SCT__tp_func_kvm_fast_mmio (err -2)
+[    0.979053] kvm_intel: Unknown symbol kvm_read_guest_virt (err -2)
+[    0.979713] kvm_intel: Unknown symbol __tracepoint_kvm_cr (err -2)
+[    0.980374] kvm_intel: Unknown symbol kvm_io_bus_write (err -2)
+[    0.981006] kvm_intel: Unknown symbol kvm_set_user_return_msr (err -2)
+[    0.981702] kvm_intel: Unknown symbol __SCT__tp_func_kvm_cr (err -2)
+[    0.982380] kvm_intel: Unknown symbol kvm_init_shadow_ept_mmu (err -2)
+[    0.983069] kvm_intel: Unknown symbol kvm_emulate_monitor (err -2)
+[    0.983724] kvm_intel: Unknown symbol __tracepoint_kvm_pml_full (err -2)
+[    0.984435] kvm_intel: Unknown symbol kvm_requeue_exception_e (err -2)
+[    0.985128] kvm_intel: Unknown symbol __SCT__tp_func_kvm_apicv_accept_irq (err -2)
+[    0.985931] kvm_intel: Unknown symbol kvm_gfn_to_hva_cache_init (err -2)
+[    0.986639] kvm_intel: Unknown symbol kvm_lmsw (err -2)
+[    0.987194] kvm_intel: Unknown symbol kvm_lapic_set_eoi (err -2)
+[    0.987833] kvm_intel: Unknown symbol report_ignored_msrs (err -2)
+[    0.988496] kvm_intel: Unknown symbol kvm_queue_exception (err -2)
+[    0.989153] kvm_intel: Unknown symbol kvm_emulate_halt_noskip (err -2)
+[    0.989851] kvm_intel: Unknown symbol kvm_emulate_rdmsr (err -2)
+[    0.990491] kvm_intel: Unknown symbol __tracepoint_kvm_apicv_accept_irq (err -2)
+[    0.991271] kvm_intel: Unknown symbol __tracepoint_kvm_pi_irte_update (err -2)
+[    0.992035] kvm_intel: Unknown symbol __SCT__tp_func_kvm_nested_vmexit_inject (err -2)
+[    0.992962] kvm_intel: Unknown symbol kvm_vcpu_unmap (err -2)
+[    0.993575] kvm_intel: Unknown symbol kvm_write_guest_page (err -2)
+[    0.994249] kvm_intel: Unknown symbol kvm_add_user_return_msr (err -2)
+[    0.994944] kvm_intel: Unknown symbol kvm_valid_efer (err -2)
+[    0.995558] kvm_intel: Unknown symbol __SCK__tp_func_kvm_pi_irte_update (err -2)
+[    0.996343] kvm_intel: Unknown symbol __SCK__tp_func_kvm_apicv_accept_irq (err -2)
+[    0.997143] kvm_intel: Unknown symbol __SCK__tp_func_kvm_entry (err -2)
+[    0.997848] kvm_intel: Unknown symbol kvm_apic_ack_interrupt (err -2)
+[    0.998527] kvm_intel: Unknown symbol kvm_read_guest_offset_cached (err -2)
+[    0.999256] kvm_intel: Unknown symbol kvm_handle_invpcid (err -2)
+[    0.999902] kvm_intel: Unknown symbol __tracepoint_kvm_entry (err -2)
+[    1.000588] kvm_intel: Unknown symbol kvm_load_host_xsave_state (err -2)
+[    1.001296] kvm_intel: Unknown symbol __tracepoint_kvm_page_fault (err -2)
+[    1.002026] kvm_intel: Unknown symbol kvm_mmu_free_roots (err -2)
+[    1.002675] kvm_intel: Unknown symbol kvm_queue_exception_p (err -2)
+[    1.003350] kvm_intel: Unknown symbol kvm_read_l1_tsc (err -2)
+[    1.003974] kvm_intel: Unknown symbol kvm_vcpu_deliver_sipi_vector (err -2)
+[    1.004711] kvm_intel: Unknown symbol __tracepoint_kvm_inj_virq (err -2)
+[    1.005419] kvm_intel: Unknown symbol kvm_cpu_has_interrupt (err -2)
+[    1.006097] kvm_intel: Unknown symbol __kvm_apic_update_irr (err -2)
+[    1.006771] kvm_intel: Unknown symbol handle_fastpath_set_msr_irqoff (err -2)
+[    1.007527] kvm_intel: Unknown symbol kvm_apic_update_ppr (err -2)
+[    1.008188] kvm_intel: Unknown symbol kvm_configure_mmu (err -2)
+[    1.008829] kvm_intel: Unknown symbol kvm_make_all_cpus_request (err -2)
+[    1.009538] kvm_intel: Unknown symbol pmc_write_counter (err -2)
+[    1.010183] kvm_intel: Unknown symbol kvm_apic_update_irr (err -2)
+[    1.010840] kvm_intel: Unknown symbol kvm_cpu_get_extint (err -2)
+[    1.011488] kvm_intel: Unknown symbol kvm_init_mmu (err -2)
+[    1.012085] kvm_intel: Unknown symbol kvm_emulate_wbinvd (err -2)
+[    1.012732] kvm_intel: Unknown symbol kvm_set_cr3 (err -2)
+[    1.013316] kvm_intel: Unknown symbol kvm_update_cpuid_runtime (err -2)
+[    1.014024] kvm_intel: Unknown symbol __SCK__kvm_x86_get_cs_db_l_bits (err -2)
+[    1.014795] kvm_intel: Unknown symbol __SCK__tp_func_kvm_page_fault (err -2)
+[    1.015538] kvm_intel: Unknown symbol kvm_alloc_apic_access_page (err -2)
+[    1.016258] kvm_intel: Unknown symbol kvm_get_cr8 (err -2)
+[    1.016841] kvm_intel: Unknown symbol __SCT__tp_func_kvm_pi_irte_update (err -2)
+[    1.017623] kvm_intel: Unknown symbol vcpu_load (err -2)
+[    1.018197] kvm_intel: Unknown symbol kvm_handle_memory_failure (err -2)
+[    1.018906] kvm_intel: Unknown symbol kvm_set_dr (err -2)
+[    1.019480] kvm_intel: Unknown symbol kvm_set_msi_irq (err -2)
+[    1.020107] kvm_intel: Unknown symbol kvm_emulate_hypercall (err -2)
+[    1.020787] kvm_intel: Unknown symbol kvm_spurious_fault (err -2)
+[    1.021433] kvm_intel: Unknown symbol kvm_inject_emulated_page_fault (err -2)
+[    1.022189] kvm_intel: Unknown symbol kvm_get_linear_rip (err -2)
+[    1.022837] kvm_intel: Unknown symbol kvm_prepare_emulation_failure_exit (err -2)
+[    1.023626] kvm_intel: Unknown symbol kvm_nr_uret_msrs (err -2)
+[    1.024275] kvm_intel: Unknown symbol __kvm_prepare_emulation_failure_exit (err -2)
+[    1.025081] kvm_intel: Unknown symbol load_pdptrs (err -2)
+[    1.025664] kvm_intel: Unknown symbol kvm_get_running_vcpu (err -2)
+[    1.026337] kvm_intel: Unknown symbol kvm_vcpu_read_guest_page (err -2)
+[    1.027038] kvm_intel: Unknown symbol kvm_set_cpu_caps (err -2)
+[    1.027669] kvm_intel: Unknown symbol hv_track_root_tdp (err -2)
+[    1.028317] kvm_intel: Unknown symbol __SCT__tp_func_kvm_pml_full (err -2)
+[    1.029044] kvm_intel: Unknown symbol kvm_set_cr4 (err -2)
+[    1.029627] kvm_intel: Unknown symbol kvm_get_msr_with_filter (err -2)
+[    1.030323] kvm_intel: Unknown symbol __SCK__tp_func_kvm_exit (err -2)
+[    1.031011] kvm_intel: Unknown symbol kvm_handle_page_fault (err -2)
+[    1.031683] kvm_intel: Unknown symbol kvm_calc_nested_tsc_offset (err -2)
+[    1.032404] kvm_intel: Unknown symbol kvm_cpu_caps (err -2)
+[    1.032994] kvm_intel: Unknown symbol kvm_spec_ctrl_test_value (err -2)
+[    1.033692] kvm_intel: Unknown symbol __SCT__tp_func_kvm_exit (err -2)
+[    1.034386] kvm_intel: Unknown symbol kvm_apic_clear_irr (err -2)
+[    1.035035] kvm_intel: Unknown symbol __x86_set_memory_region (err -2)
+[    1.035724] kvm_intel: Unknown symbol kvm_load_guest_xsave_state (err -2)
+[    1.036445] kvm_intel: Unknown symbol kvm_set_cr0 (err -2)
+[    1.037030] kvm_intel: Unknown symbol __kvm_is_valid_cr4 (err -2)
+[    1.037677] kvm_intel: Unknown symbol kvm_mmu_free_guest_mode_roots (err -2)
+[    1.038432] kvm_intel: Unknown symbol kvm_set_cr8 (err -2)
+[    1.039016] kvm_intel: Unknown symbol kvm_get_dr (err -2)
+[    1.039594] kvm_intel: Unknown symbol kvm_mmu_page_fault (err -2)
+[    1.040251] kvm_intel: Unknown symbol __SCK__tp_func_kvm_nested_vmexit (err -2)
+[    1.041028] kvm_intel: Unknown symbol kvm_emulate_instruction (err -2)
+[    1.041720] kvm_intel: Unknown symbol kvm_calc_nested_tsc_multiplier (err -2)
+[    1.042481] kvm_intel: Unknown symbol __SCK__tp_func_kvm_pml_full (err -2)
+[    1.043206] kvm_intel: Unknown symbol kvm_pmu_trigger_event (err -2)
+[    1.043878] kvm_intel: Unknown symbol kvm_mmu_reset_context (err -2)
+[    1.044560] kvm_intel: Unknown symbol kvm_vcpu_read_guest (err -2)
+[    1.045217] kvm_intel: Unknown symbol kvm_vcpu_on_spin (err -2)
+[    1.045854] kvm_intel: Unknown symbol __SCK__tp_func_kvm_fast_mmio (err -2)
+[    1.046586] kvm_intel: Unknown symbol kvm_read_guest (err -2)
+[    1.047201] kvm_intel: Unknown symbol kvm_write_guest_cached (err -2)
+[    1.047882] kvm_intel: Unknown symbol gfn_to_pfn_memslot (err -2)
+[    1.048535] kvm_intel: Unknown symbol kvm_vcpu_wake_up (err -2)
+[    1.049166] kvm_intel: Unknown symbol kvm_rebooting (err -2)
+[    1.049778] kvm_intel: Unknown symbol kvm_get_rflags (err -2)
+[    1.050392] kvm_intel: Unknown symbol kvm_queue_exception_e (err -2)
+[    1.051066] kvm_intel: Unknown symbol __SCT__tp_func_kvm_inj_virq (err -2)
+[    1.051793] kvm_intel: Unknown symbol __tracepoint_kvm_exit (err -2)
+[    1.052471] kvm_intel: Unknown symbol kvm_emulate_cpuid (err -2)
+[    1.053114] kvm_intel: Unknown symbol kvm_emulate_wrmsr (err -2)
+[    1.053761] kvm_intel: Unknown symbol __SCK__tp_func_kvm_inj_virq (err -2)
+[    1.054485] kvm_intel: Unknown symbol kvm_apic_set_eoi_accelerated (err -2)
+[    1.055217] kvm_intel: Unknown symbol kvm_find_cpuid_entry_index (err -2)
+[    1.055931] kvm_intel: Unknown symbol __SCT__tp_func_kvm_nested_vmenter (err -2)
+[    1.056723] kvm_intel: Unknown symbol __SCT__kvm_x86_cache_reg (err -2)
+[    1.057419] kvm_intel: Unknown symbol kvm_vcpu_kick (err -2)
+[    1.058030] kvm_intel: Unknown symbol kvm_inject_realmode_interrupt (err -2)
+[    1.058773] kvm_intel: Unknown symbol kvm_mmu_invlpg (err -2)
+[    1.059386] kvm_intel: Unknown symbol kvm_emulate_invd (err -2)
+[    1.060013] kvm_intel: Unknown symbol kvm_fast_pio (err -2)
+[    1.060610] kvm_intel: Unknown symbol __SCK__tp_func_kvm_ple_window_update (err -2)
+[    1.061413] kvm_intel: Unknown symbol kvm_set_msr_common (err -2)
+[    1.062065] kvm_intel: Unknown symbol kvm_mmu_invalidate_addr (err -2)
+[    1.062751] kvm_intel: Unknown symbol __SCT__tp_func_kvm_nested_vmenter_failed (err -2)
+[    1.063589] kvm_intel: Unknown symbol __SCK__tp_func_kvm_nested_vmexit_inject (err -2)
+[    1.064430] kvm_intel: Unknown symbol kvm_intr_is_single_vcpu (err -2)
+[    1.065124] kvm_intel: Unknown symbol kvm_apic_has_interrupt (err -2)
+[    1.065813] kvm_intel: Unknown symbol kvm_has_noapic_vcpu (err -2)
+[    1.066473] kvm_intel: Unknown symbol kvm_emulate_rdpmc (err -2)
+[    1.067114] kvm_intel: Unknown symbol __SCT__tp_func_kvm_ple_window_update (err -2)
+[    1.067919] kvm_intel: Unknown symbol __tracepoint_kvm_nested_vmexit_inject (err -2)
+[    1.068739] kvm_intel: Unknown symbol kvm_release_pfn_clean (err -2)
+[    1.069415] kvm_intel: Unknown symbol __SCT__tp_func_kvm_page_fault (err -2)
+[    1.070165] kvm_intel: Unknown symbol kvm_require_dr (err -2)
+[    1.070778] kvm_intel: Unknown symbol kvm_skip_emulated_instruction (err -2)
+[    1.071521] kvm_intel: Unknown symbol kvm_mmu_set_ept_masks (err -2)
+[    1.072201] kvm_intel: Unknown symbol kvm_handle_invalid_op (err -2)
+[    1.072876] kvm_intel: Unknown symbol kvm_set_msr_with_filter (err -2)
+[    1.073567] kvm_intel: Unknown symbol kvm_caps (err -2)
+[    1.074132] kvm_intel: Unknown symbol kvm_vcpu_write_guest (err -2)
+[    1.074801] kvm_intel: Unknown symbol hv_flush_remote_tlbs_range (err -2)
+[    1.075518] kvm_intel: Unknown symbol kvm_complete_insn_gp (err -2)
+[    1.076193] kvm_intel: Unknown symbol kvm_mmu_print_sptes (err -2)
+[    1.076853] kvm_intel: Unknown symbol kvm_apic_write_nodecode (err -2)
+[    1.077546] kvm_intel: Unknown symbol allow_smaller_maxphyaddr (err -2)
+insmod: can't insert '/mod/kvm-intel.ko': unknown symbol in module, or unknown parameter
+kvm-intel: FAILED
+L1_DEV_KVM_ABSENT
+L1_NESTED_PARAM_NOT_Y
+NESTED_X86_PROBE_BEGIN
+{
+  "cpuid_vendor": "GenuineIntel",
+  "cpuid1_eax": "0x000906ec",
+  "vmx_bit": true,
+  "hypervisor_bit": true,
+  "hypervisor_leaf": "",
+  "perfmon_version": 2,
+  "gp_counters": 4,
+  "gp_counter_width": 48,
+  "event_unavail_mask": "0x00",
+  "branch_insn_retired_available": true,
+  "fixed_counters": 3,
+  "fixed_counter_width": 48,
+  "IA32_VMX_BASIC_0x480": "0x00d8100011e57ed0",
+  "IA32_VMX_PINBASED_0x481": "0x0000007f00000016",
+  "IA32_VMX_PROCBASED_0x482": "0xfff9fffe0401e172",
+  "IA32_VMX_EXIT_0x483": "0x00ffffff00036dff",
+  "IA32_VMX_ENTRY_0x484": "0x0001f3ff000011ff",
+  "IA32_VMX_MISC_0x485": "0x0000000020000165",
+  "IA32_VMX_PROCBASED2_0x48B": "0x001378ff00000000",
+  "IA32_VMX_EPT_VPID_CAP_0x48C": "0x00000f0106334041",
+  "IA32_VMX_TRUE_PINBASED_0x48D": "0x0000007f00000016",
+  "IA32_VMX_TRUE_PROCBASED_0x48E": "0xfff9fffe04006172",
+  "IA32_VMX_TRUE_EXIT_0x48F": "0x00ffffff00036dfb",
+  "IA32_VMX_TRUE_ENTRY_0x490": "0x0001f3ff000011fb",
+  "IA32_PERF_CAPABILITIES_0x345": "0x0000000000002000",
+  "ctl_rdtsc_exiting": true,
+  "ctl_mtf": true,
+  "ctl_secondary_controls": true,
+  "ctl2_ept": true,
+  "ctl2_unrestricted_guest": true,
+  "ctl2_rdrand_exiting": true,
+  "ctl2_rdseed_exiting": true,
+  "ctl2_pml": true,
+  "exit_load_perf_global_ctrl": true,
+  "entry_load_perf_global_ctrl": true,
+  "sniff_raw_0x1c4_br_cond": {
+    "n_1000000": [1000002, 1000002, 1000002, 1000002, 1000002],
+    "n_10000000": [10000002, 10000002, 10000002, 10000002, 10000002],
+    "n_100000000": [100000002, 100000002, 100000002, 100000002, 100000002]
+  },
+  "sniff_hw_instructions": {
+    "n_1000000": [2000029, 2000029, 2000029, 2000029, 2000029],
+    "n_10000000": [20000030, 20000029, 20000030, 20000029, 20000030],
+    "n_100000000": [200000034, 200000034, 200000034, 200000034, 200000034]
+  },
+  "probe": "done"
+}
+NESTED_X86_PROBE_END
+--- L1 dmesg (kvm/vmx/pmu) ---
+[    1.057419] kvm_intel: Unknown symbol kvm_vcpu_kick (err -2)
+[    1.058030] kvm_intel: Unknown symbol kvm_inject_realmode_interrupt (err -2)
+[    1.058773] kvm_intel: Unknown symbol kvm_mmu_invlpg (err -2)
+[    1.059386] kvm_intel: Unknown symbol kvm_emulate_invd (err -2)
+[    1.060013] kvm_intel: Unknown symbol kvm_fast_pio (err -2)
+[    1.060610] kvm_intel: Unknown symbol __SCK__tp_func_kvm_ple_window_update (err -2)
+[    1.061413] kvm_intel: Unknown symbol kvm_set_msr_common (err -2)
+[    1.062065] kvm_intel: Unknown symbol kvm_mmu_invalidate_addr (err -2)
+[    1.062751] kvm_intel: Unknown symbol __SCT__tp_func_kvm_nested_vmenter_failed (err -2)
+[    1.063589] kvm_intel: Unknown symbol __SCK__tp_func_kvm_nested_vmexit_inject (err -2)
+[    1.064430] kvm_intel: Unknown symbol kvm_intr_is_single_vcpu (err -2)
+[    1.065124] kvm_intel: Unknown symbol kvm_apic_has_interrupt (err -2)
+[    1.065813] kvm_intel: Unknown symbol kvm_has_noapic_vcpu (err -2)
+[    1.066473] kvm_intel: Unknown symbol kvm_emulate_rdpmc (err -2)
+[    1.067114] kvm_intel: Unknown symbol __SCT__tp_func_kvm_ple_window_update (err -2)
+[    1.067919] kvm_intel: Unknown symbol __tracepoint_kvm_nested_vmexit_inject (err -2)
+[    1.068739] kvm_intel: Unknown symbol kvm_release_pfn_clean (err -2)
+[    1.069415] kvm_intel: Unknown symbol __SCT__tp_func_kvm_page_fault (err -2)
+[    1.070165] kvm_intel: Unknown symbol kvm_require_dr (err -2)
+[    1.070778] kvm_intel: Unknown symbol kvm_skip_emulated_instruction (err -2)
+[    1.071521] kvm_intel: Unknown symbol kvm_mmu_set_ept_masks (err -2)
+[    1.072201] kvm_intel: Unknown symbol kvm_handle_invalid_op (err -2)
+[    1.072876] kvm_intel: Unknown symbol kvm_set_msr_with_filter (err -2)
+[    1.073567] kvm_intel: Unknown symbol kvm_caps (err -2)
+[    1.074132] kvm_intel: Unknown symbol kvm_vcpu_write_guest (err -2)
+[    1.074801] kvm_intel: Unknown symbol hv_flush_remote_tlbs_range (err -2)
+[    1.075518] kvm_intel: Unknown symbol kvm_complete_insn_gp (err -2)
+[    1.076193] kvm_intel: Unknown symbol kvm_mmu_print_sptes (err -2)
+[    1.076853] kvm_intel: Unknown symbol kvm_apic_write_nodecode (err -2)
+[    1.077546] kvm_intel: Unknown symbol allow_smaller_maxphyaddr (err -2)
+NESTED_X86_L1_DONE
+[    1.398764] ACPI: PM: Preparing to enter system sleep state S5
+[    1.399439] reboot: Power down

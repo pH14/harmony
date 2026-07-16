@@ -99,6 +99,9 @@ pub use arch::{Arch, ArchCaps, ArchExit};
 pub use backend::Backend;
 pub use error::{BackendError, Result};
 pub use exit::{Capabilities, CommonExit, Exit, ExitCounts, ExitReason, HypercallFrame};
+// The nested-x86 re-certification's per-record PMI accounting surface (PR #98):
+// kept across the tasks/108 arch restructure — `pmu` is portable/arch-neutral.
+pub use pmu::PmuOverflowStats;
 pub use types::{Gpa, Moment, MpState};
 
 #[cfg(feature = "mock")]

@@ -1,0 +1,615 @@
+[    0.000000] Linux version 6.12.90+deb13.1-amd64 (debian-kernel@lists.debian.org) (x86_64-linux-gnu-gcc-14 (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP PREEMPT_DYNAMIC Debian 6.12.90-2 (2026-05-27)
+[    0.000000] Command line: console=ttyS0 rdinit=/init panic=-1
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000000f0000-0x00000000000fffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000007ffdefff] usable
+[    0.000000] BIOS-e820: [mem 0x000000007ffdf000-0x000000007fffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000b0000000-0x00000000bfffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000fed1c000-0x00000000fed1ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000feffc000-0x00000000feffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000fffc0000-0x00000000ffffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000100000000-0x000000027fffffff] usable
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] APIC: Static calls initialized
+[    0.000000] SMBIOS 2.8 present.
+[    0.000000] DMI: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-debian-1.16.3-2 04/01/2014
+[    0.000000] DMI: Memory slots populated: 1/1
+[    0.000000] Hypervisor detected: KVM
+[    0.000000] last_pfn = 0x7ffdf max_arch_pfn = 0x400000000
+[    0.000000] kvm-clock: Using msrs 4b564d01 and 4b564d00
+[    0.000000] kvm-clock: using sched offset of 156505462 cycles
+[    0.000001] clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns
+[    0.000004] tsc: Detected 3599.998 MHz processor
+[    0.000738] last_pfn = 0x280000 max_arch_pfn = 0x400000000
+[    0.000760] MTRR map: 4 entries (3 fixed + 1 variable; max 19), built from 8 variable MTRRs
+[    0.000762] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+[    0.000791] last_pfn = 0x7ffdf max_arch_pfn = 0x400000000
+[    0.005842] found SMP MP-table at [mem 0x000f5480-0x000f548f]
+[    0.005853] Using GB pages for direct mapping
+[    0.005962] RAMDISK: [mem 0x7b084000-0x7ffcffff]
+[    0.005967] ACPI: Early table checksum verification disabled
+[    0.005969] ACPI: RSDP 0x00000000000F52A0 000014 (v00 BOCHS )
+[    0.005972] ACPI: RSDT 0x000000007FFE2351 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005976] ACPI: FACP 0x000000007FFE2149 0000F4 (v03 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005979] ACPI: DSDT 0x000000007FFE0040 002109 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005982] ACPI: FACS 0x000000007FFE0000 000040
+[    0.005984] ACPI: APIC 0x000000007FFE223D 000078 (v03 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005986] ACPI: HPET 0x000000007FFE22B5 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005988] ACPI: MCFG 0x000000007FFE22ED 00003C (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005990] ACPI: WAET 0x000000007FFE2329 000028 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005991] ACPI: Reserving FACP table memory at [mem 0x7ffe2149-0x7ffe223c]
+[    0.005992] ACPI: Reserving DSDT table memory at [mem 0x7ffe0040-0x7ffe2148]
+[    0.005993] ACPI: Reserving FACS table memory at [mem 0x7ffe0000-0x7ffe003f]
+[    0.005993] ACPI: Reserving APIC table memory at [mem 0x7ffe223d-0x7ffe22b4]
+[    0.005994] ACPI: Reserving HPET table memory at [mem 0x7ffe22b5-0x7ffe22ec]
+[    0.005994] ACPI: Reserving MCFG table memory at [mem 0x7ffe22ed-0x7ffe2328]
+[    0.005994] ACPI: Reserving WAET table memory at [mem 0x7ffe2329-0x7ffe2350]
+[    0.006308] No NUMA configuration found
+[    0.006309] Faking a node at [mem 0x0000000000000000-0x000000027fffffff]
+[    0.006314] NODE_DATA(0) allocated [mem 0x27ffd5680-0x27fffffff]
+[    0.006579] Zone ranges:
+[    0.006579]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+[    0.006581]   DMA32    [mem 0x0000000001000000-0x00000000ffffffff]
+[    0.006582]   Normal   [mem 0x0000000100000000-0x000000027fffffff]
+[    0.006582]   Device   empty
+[    0.006583] Movable zone start for each node
+[    0.006584] Early memory node ranges
+[    0.006585]   node   0: [mem 0x0000000000001000-0x000000000009efff]
+[    0.006586]   node   0: [mem 0x0000000000100000-0x000000007ffdefff]
+[    0.006586]   node   0: [mem 0x0000000100000000-0x000000027fffffff]
+[    0.006587] Initmem setup node 0 [mem 0x0000000000001000-0x000000027fffffff]
+[    0.006718] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.006729] On node 0, zone DMA: 97 pages in unavailable ranges
+[    0.010140] On node 0, zone Normal: 33 pages in unavailable ranges
+[    0.010548] ACPI: PM-Timer IO Port: 0x608
+[    0.010561] ACPI: LAPIC_NMI (acpi_id[0xff] dfl dfl lint[0x1])
+[    0.010586] IOAPIC[0]: apic_id 0, version 17, address 0xfec00000, GSI 0-23
+[    0.010589] ACPI: INT_SRC_OVR (bus 0 bus_irq 0 global_irq 2 dfl dfl)
+[    0.010590] ACPI: INT_SRC_OVR (bus 0 bus_irq 5 global_irq 5 high level)
+[    0.010591] ACPI: INT_SRC_OVR (bus 0 bus_irq 9 global_irq 9 high level)
+[    0.010591] ACPI: INT_SRC_OVR (bus 0 bus_irq 10 global_irq 10 high level)
+[    0.010592] ACPI: INT_SRC_OVR (bus 0 bus_irq 11 global_irq 11 high level)
+[    0.010595] ACPI: Using ACPI (MADT) for SMP configuration information
+[    0.010596] ACPI: HPET id: 0x8086a201 base: 0xfed00000
+[    0.010599] TSC deadline timer available
+[    0.010602] CPU topo: Max. logical packages:   1
+[    0.010602] CPU topo: Max. logical dies:       1
+[    0.010603] CPU topo: Max. dies per package:   1
+[    0.010605] CPU topo: Max. threads per core:   1
+[    0.010606] CPU topo: Num. cores per package:     1
+[    0.010606] CPU topo: Num. threads per package:   1
+[    0.010606] CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
+[    0.010621] kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()
+[    0.010636] PM: hibernation: Registered nosave memory: [mem 0x00000000-0x00000fff]
+[    0.010637] PM: hibernation: Registered nosave memory: [mem 0x0009f000-0x000fffff]
+[    0.010638] PM: hibernation: Registered nosave memory: [mem 0x7ffdf000-0xffffffff]
+[    0.010639] [mem 0xc0000000-0xfed1bfff] available for PCI devices
+[    0.010640] Booting paravirtualized kernel on KVM
+[    0.010642] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
+[    0.014000] setup_percpu: NR_CPUS:8192 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
+[    0.014212] percpu: Embedded 66 pages/cpu s233472 r8192 d28672 u2097152
+[    0.014237] kvm-guest: PV spinlocks disabled, single CPU
+[    0.014238] Kernel command line: console=ttyS0 rdinit=/init panic=-1
+[    0.014272] random: crng init done
+[    0.015021] Dentry cache hash table entries: 1048576 (order: 11, 8388608 bytes, linear)
+[    0.015400] Inode-cache hash table entries: 524288 (order: 10, 4194304 bytes, linear)
+[    0.015431] Fallback order for Node 0: 0 
+[    0.015433] Built 1 zonelists, mobility grouping on.  Total pages: 2097021
+[    0.015434] Policy zone: Normal
+[    0.015439] mem auto-init: stack:all(zero), heap alloc:on, heap free:off
+[    0.015443] software IO TLB: area num 1.
+[    0.030439] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.030460] ftrace: allocating 45769 entries in 179 pages
+[    0.035669] ftrace: allocated 179 pages with 5 groups
+[    0.036154] Dynamic Preempt: voluntary
+[    0.036299] rcu: Preemptible hierarchical RCU implementation.
+[    0.036300] rcu: 	RCU restricting CPUs from NR_CPUS=8192 to nr_cpu_ids=1.
+[    0.036301] 	Trampoline variant of Tasks RCU enabled.
+[    0.036301] 	Rude variant of Tasks RCU enabled.
+[    0.036301] 	Tracing variant of Tasks RCU enabled.
+[    0.036302] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[    0.036302] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.036306] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.036307] RCU Tasks Rude: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.036308] RCU Tasks Trace: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.039474] NR_IRQS: 524544, nr_irqs: 256, preallocated irqs: 16
+[    0.039645] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.051413] Console: colour VGA+ 80x25
+[    0.051456] printk: legacy console [ttyS0] enabled
+[    0.165960] ACPI: Core revision 20240827
+[    0.166734] clocksource: hpet: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604467 ns
+[    0.168240] APIC: Switch to symmetric I/O mode setup
+[    0.169131] x2apic enabled
+[    0.169761] APIC: Switched APIC routing to: physical x2apic
+[    0.171264] ..TIMER: vector=0x30 apic1=0 pin1=2 apic2=-1 pin2=-1
+[    0.172181] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x33e451ab1a6, max_idle_ns: 440795278720 ns
+[    0.173778] Calibrating delay loop (skipped) preset value.. 7199.99 BogoMIPS (lpj=14399992)
+[    0.175108] x86/cpu: User Mode Instruction Prevention (UMIP) activated
+[    0.176145] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+[    0.177778] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+[    0.178684] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+[    0.179959] Spectre V2 : Spectre BHI mitigation: SW BHB clearing on syscall and VM exit
+[    0.181778] Spectre V2 : Mitigation: IBRS
+[    0.182386] Spectre V2 : Spectre v2 / SpectreRSB: Filling RSB on context switch and VMEXIT
+[    0.183623] RETBleed: Mitigation: IBRS
+[    0.184191] Spectre V2 : mitigation: Enabling conditional Indirect Branch Prediction Barrier
+[    0.185447] Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl
+[    0.185782] MDS: Mitigation: Clear CPU buffers
+[    0.186451] MMIO Stale Data: Mitigation: Clear CPU buffers
+[    0.187273] SRBDS: Unknown: Dependent on hypervisor status
+[    0.188096] active return thunk: its_return_thunk
+[    0.189778] ITS: Mitigation: Aligned branch/return thunks
+[    0.190604] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.191748] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+[    0.192700] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+[    0.193778] x86/fpu: Supporting XSAVE feature 0x008: 'MPX bounds registers'
+[    0.194830] x86/fpu: Supporting XSAVE feature 0x010: 'MPX CSR'
+[    0.195704] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+[    0.196629] x86/fpu: xstate_offset[3]:  832, xstate_sizes[3]:   64
+[    0.197555] x86/fpu: xstate_offset[4]:  896, xstate_sizes[4]:   64
+[    0.197778] x86/fpu: Enabled xstate features 0x1f, context size is 960 bytes, using 'compacted' format.
+[    0.230098] Freeing SMP alternatives memory: 40K
+[    0.230808] pid_max: default: 32768 minimum: 301
+[    0.231528] LSM: initializing lsm=lockdown,capability,landlock,yama,apparmor,tomoyo,bpf,ipe,ima,evm
+[    0.232929] landlock: Up and running.
+[    0.233485] Yama: disabled by default; enable with sysctl kernel.yama.*
+[    0.233832] AppArmor: AppArmor initialized
+[    0.234474] TOMOYO Linux initialized
+[    0.235142] LSM support for eBPF active
+[    0.235767] Mount-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.236903] Mountpoint-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.237990] smpboot: CPU0: Intel(R) Core(TM) i9-9900K CPU @ 3.60GHz (family: 0x6, model: 0x9e, stepping: 0xc)
+[    0.239602] Performance Events: Skylake events, full-width counters, Intel PMU driver.
+[    0.240821] ... version:                2
+[    0.241425] ... bit width:              48
+[    0.241779] ... generic registers:      4
+[    0.242386] ... value mask:             0000ffffffffffff
+[    0.243179] ... max period:             00007fffffffffff
+[    0.243978] ... fixed-purpose events:   3
+[    0.244601] ... event mask:             000000070000000f
+[    0.245465] signal: max sigframe size: 2032
+[    0.245800] rcu: Hierarchical SRCU implementation.
+[    0.246524] rcu: 	Max phase no-delay instances is 1000.
+[    0.249963] smp: Bringing up secondary CPUs ...
+[    0.250660] smp: Brought up 1 node, 1 CPU
+[    0.251270] smpboot: Total of 1 processors activated (7199.99 BogoMIPS)
+[    0.265060] node 0 deferred pages initialised in 12ms
+[    0.265800] Memory: 8047192K/8388084K available (16384K kernel code, 2497K rwdata, 11808K rodata, 4164K init, 4916K bss, 337088K reserved, 0K cma-reserved)
+[    0.268164] devtmpfs: initialized
+[    0.268695] x86/mm: Memory block size: 128MB
+[    0.269913] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[    0.271374] futex hash table entries: 256 (order: 2, 16384 bytes, linear)
+[    0.272451] pinctrl core: initialized pinctrl subsystem
+[    0.273613] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.273878] DMA: preallocated 1024 KiB GFP_KERNEL pool for atomic allocations
+[    0.274997] DMA: preallocated 1024 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[    0.276342] DMA: preallocated 1024 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations
+[    0.277551] audit: initializing netlink subsys (disabled)
+[    0.277804] audit: type=2000 audit(1783654453.330:1): state=initialized audit_enabled=0 res=1
+[    0.279174] thermal_sys: Registered thermal governor 'fair_share'
+[    0.279175] thermal_sys: Registered thermal governor 'bang_bang'
+[    0.280106] thermal_sys: Registered thermal governor 'step_wise'
+[    0.281012] thermal_sys: Registered thermal governor 'user_space'
+[    0.281783] thermal_sys: Registered thermal governor 'power_allocator'
+[    0.282725] cpuidle: using governor ladder
+[    0.284339] cpuidle: using governor menu
+[    0.284967] acpiphp: ACPI Hot Plug PCI Controller Driver version: 0.5
+[    0.285898] PCI: ECAM [mem 0xb0000000-0xbfffffff] (base 0xb0000000) for domain 0000 [bus 00-ff]
+[    0.287223] PCI: ECAM [mem 0xb0000000-0xbfffffff] reserved as E820 entry
+[    0.288239] PCI: Using configuration type 1 for base access
+[    0.289156] kprobes: kprobe jump-optimization is enabled. All kprobes are optimized if possible.
+[    0.313794] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.314828] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.315825] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.316845] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.318051] ACPI: Added _OSI(Module Device)
+[    0.318695] ACPI: Added _OSI(Processor Device)
+[    0.319367] ACPI: Added _OSI(Processor Aggregator Device)
+[    0.320865] ACPI: 1 ACPI AML tables successfully acquired and loaded
+[    0.324959] ACPI: Interpreter enabled
+[    0.325550] ACPI: PM: (supports S0 S3 S4 S5)
+[    0.325779] ACPI: Using IOAPIC for interrupt routing
+[    0.326552] PCI: Using host bridge windows from ACPI; if necessary, use "pci=nocrs" and report a bug
+[    0.327922] PCI: Using E820 reservations for host bridge windows
+[    0.328889] ACPI: Enabled 2 GPEs in block 00 to 3F
+[    0.331129] ACPI: PCI Root Bridge [PCI0] (domain 0000 [bus 00-ff])
+[    0.332071] acpi PNP0A08:00: _OSC: OS supports [ExtendedConfig ASPM ClockPM Segments MSI HPX-Type3]
+[    0.333469] acpi PNP0A08:00: _OSC: platform does not support [PCIeHotplug LTR]
+[    0.333820] acpi PNP0A08:00: _OSC: OS now controls [SHPCHotplug PME AER PCIeCapability]
+[    0.335137] PCI host bridge to bus 0000:00
+[    0.335762] pci_bus 0000:00: root bus resource [io  0x0000-0x0cf7 window]
+[    0.336801] pci_bus 0000:00: root bus resource [io  0x0d00-0xffff window]
+[    0.337780] pci_bus 0000:00: root bus resource [mem 0x000a0000-0x000bffff window]
+[    0.338906] pci_bus 0000:00: root bus resource [mem 0x80000000-0xafffffff window]
+[    0.340028] pci_bus 0000:00: root bus resource [mem 0xc0000000-0xfebfffff window]
+[    0.341170] pci_bus 0000:00: root bus resource [mem 0x280000000-0xa7fffffff window]
+[    0.341780] pci_bus 0000:00: root bus resource [bus 00-ff]
+[    0.342658] pci 0000:00:00.0: [8086:29c0] type 00 class 0x060000 conventional PCI endpoint
+[    0.344393] pci 0000:00:01.0: [1234:1111] type 00 class 0x030000 conventional PCI endpoint
+[    0.346176] pci 0000:00:01.0: BAR 0 [mem 0xfd000000-0xfdffffff pref]
+[    0.348864] pci 0000:00:01.0: BAR 2 [mem 0xfebd4000-0xfebd4fff]
+[    0.352694] pci 0000:00:01.0: ROM [mem 0xfebc0000-0xfebcffff pref]
+[    0.353752] pci 0000:00:01.0: Video device with shadowed ROM at [mem 0x000c0000-0x000dffff]
+[    0.354177] pci 0000:00:02.0: [8086:10d3] type 00 class 0x020000 PCIe Root Complex Integrated Endpoint
+[    0.356237] pci 0000:00:02.0: BAR 0 [mem 0xfeb80000-0xfeb9ffff]
+[    0.357701] pci 0000:00:02.0: BAR 1 [mem 0xfeba0000-0xfebbffff]
+[    0.358605] pci 0000:00:02.0: BAR 2 [io  0xc040-0xc05f]
+[    0.360425] pci 0000:00:02.0: BAR 3 [mem 0xfebd0000-0xfebd3fff]
+[    0.362726] pci 0000:00:02.0: ROM [mem 0xfeb40000-0xfeb7ffff pref]
+[    0.363714] pci 0000:00:02.0: enabling Extended Tags
+[    0.365789] pci 0000:00:1f.0: [8086:2918] type 00 class 0x060100 conventional PCI endpoint
+[    0.367555] pci 0000:00:1f.0: quirk: [io  0x0600-0x067f] claimed by ICH6 ACPI/GPIO/TCO
+[    0.369021] pci 0000:00:1f.2: [8086:2922] type 00 class 0x010601 conventional PCI endpoint
+[    0.371246] pci 0000:00:1f.2: BAR 4 [io  0xc060-0xc07f]
+[    0.372319] pci 0000:00:1f.2: BAR 5 [mem 0xfebd5000-0xfebd5fff]
+[    0.373996] pci 0000:00:1f.3: [8086:2930] type 00 class 0x0c0500 conventional PCI endpoint
+[    0.376180] pci 0000:00:1f.3: BAR 4 [io  0x0700-0x073f]
+[    0.378704] ACPI: PCI: Interrupt link LNKA configured for IRQ 10
+[    0.379704] ACPI: PCI: Interrupt link LNKB configured for IRQ 10
+[    0.380699] ACPI: PCI: Interrupt link LNKC configured for IRQ 11
+[    0.381676] ACPI: PCI: Interrupt link LNKD configured for IRQ 11
+[    0.381851] ACPI: PCI: Interrupt link LNKE configured for IRQ 10
+[    0.382842] ACPI: PCI: Interrupt link LNKF configured for IRQ 10
+[    0.383964] ACPI: PCI: Interrupt link LNKG configured for IRQ 11
+[    0.384943] ACPI: PCI: Interrupt link LNKH configured for IRQ 11
+[    0.385810] ACPI: PCI: Interrupt link GSIA configured for IRQ 16
+[    0.386737] ACPI: PCI: Interrupt link GSIB configured for IRQ 17
+[    0.387657] ACPI: PCI: Interrupt link GSIC configured for IRQ 18
+[    0.388570] ACPI: PCI: Interrupt link GSID configured for IRQ 19
+[    0.389482] ACPI: PCI: Interrupt link GSIE configured for IRQ 20
+[    0.389785] ACPI: PCI: Interrupt link GSIF configured for IRQ 21
+[    0.390703] ACPI: PCI: Interrupt link GSIG configured for IRQ 22
+[    0.391615] ACPI: PCI: Interrupt link GSIH configured for IRQ 23
+[    0.393307] iommu: Default domain type: Translated
+[    0.393779] iommu: DMA domain TLB invalidation policy: lazy mode
+[    0.394806] pps_core: LinuxPPS API ver. 1 registered
+[    0.395561] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.396934] PTP clock support registered
+[    0.397558] EDAC MC: Ver: 3.0.0
+[    0.398208] NetLabel: Initializing
+[    0.398734] NetLabel:  domain hash size = 128
+[    0.399396] NetLabel:  protocols = UNLABELED CIPSOv4 CALIPSO
+[    0.400270] NetLabel:  unlabeled traffic allowed by default
+[    0.401114] PCI: Using ACPI for IRQ routing
+[    0.470312] pci 0000:00:01.0: vgaarb: setting as boot VGA device
+[    0.471219] pci 0000:00:01.0: vgaarb: bridge control possible
+[    0.472082] pci 0000:00:01.0: vgaarb: VGA device added: decodes=io+mem,owns=io+mem,locks=none
+[    0.473370] vgaarb: loaded
+[    0.473803] hpet0: at MMIO 0xfed00000, IRQs 2, 8, 0
+[    0.474551] hpet0: 3 comparators, 64-bit 100.000000 MHz counter
+[    0.480872] clocksource: Switched to clocksource kvm-clock
+[    0.481777] VFS: Disk quotas dquot_6.6.0
+[    0.481777] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[    0.481777] AppArmor: AppArmor Filesystem Enabled
+[    0.481777] pnp: PnP ACPI init
+[    0.482308] system 00:05: [mem 0xb0000000-0xbfffffff window] has been reserved
+[    0.483588] pnp: PnP ACPI: found 6 devices
+[    0.489617] clocksource: acpi_pm: mask: 0xffffff max_cycles: 0xffffff, max_idle_ns: 2085701024 ns
+[    0.491014] NET: Registered PF_INET protocol family
+[    0.491933] IP idents hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.501750] tcp_listen_portaddr_hash hash table entries: 4096 (order: 4, 65536 bytes, linear)
+[    0.503057] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.504235] TCP established hash table entries: 65536 (order: 7, 524288 bytes, linear)
+[    0.505634] TCP bind hash table entries: 65536 (order: 9, 2097152 bytes, linear)
+[    0.506891] TCP: Hash tables configured (established 65536 bind 65536)
+[    0.507912] MPTCP token hash table entries: 8192 (order: 6, 196608 bytes, linear)
+[    0.509058] UDP hash table entries: 4096 (order: 5, 131072 bytes, linear)
+[    0.510108] UDP-Lite hash table entries: 4096 (order: 5, 131072 bytes, linear)
+[    0.511241] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.512107] NET: Registered PF_XDP protocol family
+[    0.512850] pci_bus 0000:00: resource 4 [io  0x0000-0x0cf7 window]
+[    0.513800] pci_bus 0000:00: resource 5 [io  0x0d00-0xffff window]
+[    0.514745] pci_bus 0000:00: resource 6 [mem 0x000a0000-0x000bffff window]
+[    0.515779] pci_bus 0000:00: resource 7 [mem 0x80000000-0xafffffff window]
+[    0.516812] pci_bus 0000:00: resource 8 [mem 0xc0000000-0xfebfffff window]
+[    0.517862] pci_bus 0000:00: resource 9 [mem 0x280000000-0xa7fffffff window]
+[    0.519011] PCI: CLS 0 bytes, default 64
+[    0.519702] Trying to unpack rootfs image as initramfs...
+[    0.522199] PCI-DMA: Using software bounce buffering for IO (SWIOTLB)
+[    0.523175] software IO TLB: mapped [mem 0x0000000077084000-0x000000007b084000] (64MB)
+[    0.524394] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x33e451ab1a6, max_idle_ns: 440795278720 ns
+[    0.530294] Initialise system trusted keyrings
+[    0.530986] Key type blacklist registered
+[    0.531635] workingset: timestamp_bits=36 max_order=21 bucket_order=0
+[    0.532613] zbud: loaded
+[    0.538238] fuse: init (API version 7.41)
+[    0.538951] integrity: Platform Keyring initialized
+[    0.539697] integrity: Machine keyring initialized
+[    0.562156] Key type asymmetric registered
+[    0.562788] Asymmetric key parser 'x509' registered
+[    0.919434] Freeing initrd memory: 81200K
+[    0.920610] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 246)
+[    0.921792] io scheduler mq-deadline registered
+[    0.923299] ledtrig-cpu: registered to indicate activity on CPUs
+[    0.924238] shpchp: Standard Hot Plug PCI Controller Driver version: 0.4
+[    0.925422] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[    0.926769] 00:03: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16550A
+[    0.928256] Linux agpgart interface v0.103
+[    0.929071] i8042: PNP: PS/2 Controller [PNP0303:KBD,PNP0f13:MOU] at 0x60,0x64 irq 1,12
+[    0.930989] serio: i8042 KBD port at 0x60,0x64 irq 1
+[    0.931745] serio: i8042 AUX port at 0x60,0x64 irq 12
+[    0.932576] mousedev: PS/2 mouse device common for all mice
+[    0.933689] input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input0
+[    0.935212] rtc_cmos 00:04: RTC can wake from S4
+[    0.936378] rtc_cmos 00:04: registered as rtc0
+[    0.937121] rtc_cmos 00:04: setting system clock to 2026-07-10T03:34:14 UTC (1783654454)
+[    0.938440] rtc_cmos 00:04: alarms up to one day, y3k, 242 bytes nvram, hpet irqs
+[    0.939571] intel_pstate: CPU model not supported
+[    0.940837] NET: Registered PF_INET6 protocol family
+[    0.942162] Segment Routing with IPv6
+[    0.942731] In-situ OAM (IOAM) with IPv6
+[    0.943345] mip6: Mobile IPv6
+[    0.943807] NET: Registered PF_PACKET protocol family
+[    0.944589] mpls_gso: MPLS GSO support
+[    0.945254] IPI shorthand broadcast: enabled
+[    0.947203] sched_clock: Marking stable (820001845, 126125275)->(961190880, -15063760)
+[    0.948458] registered taskstats version 1
+[    0.949173] Loading compiled-in X.509 certificates
+[    0.960977] Loaded X.509 cert 'Build time autogenerated kernel key: e87b99600394fc77ba6018a2cc6a68db4bb86ee6'
+[    0.963692] Demotion targets for Node 0: null
+[    0.964385] Key type .fscrypt registered
+[    0.964982] Key type fscrypt-provisioning registered
+[    0.966226] Key type encrypted registered
+[    0.966843] AppArmor: AppArmor sha256 policy hashing enabled
+[    0.967719] ima: No TPM chip found, activating TPM-bypass!
+[    0.968548] ima: Allocated hash algorithm: sha256
+[    0.969290] ima: No architecture policies found
+[    0.969986] evm: Initialising EVM extended attributes:
+[    0.970776] evm: security.selinux
+[    0.971285] evm: security.SMACK64 (disabled)
+[    0.971932] evm: security.SMACK64EXEC (disabled)
+[    0.972630] evm: security.SMACK64TRANSMUTE (disabled)
+[    0.973407] evm: security.SMACK64MMAP (disabled)
+[    0.974109] evm: security.apparmor
+[    0.974637] evm: security.ima
+[    0.975093] evm: security.capability
+[    0.975698] evm: HMAC attrs: 0x1
+[    0.998156] RAS: Correctable Errors collector initialized.
+[    1.010920] clk: Disabling unused clocks
+[    1.011528] PM: genpd: Disabling unused power domains
+[    1.018320] Freeing unused decrypted memory: 2028K
+[    1.019117] Freeing unused kernel image (initmem) memory: 4164K
+[    1.019766] Write protecting the kernel read-only data: 28672k
+[    1.020575] Freeing unused kernel image (rodata/data gap) memory: 480K
+[    1.052451] x86/mm: Checked W+X mappings: passed, no W+X pages found.
+[    1.082131] Run /init as init process
+NESTED_X86_L1_BOOT_OK
+Linux (none) 6.12.90+deb13.1-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.90-2 (2026-05-27) x86_64 GNU/Linux
+              total        used        free      shared  buff/cache   available
+Mem:           7948          60        7735         153         154        7598
+msr: loaded
+irqbypass: loaded
+[    1.111157] kvm: loading out-of-tree module taints kernel.
+[    1.111771] kvm: module verification failed: signature and/or required key missing - tainting kernel
+kvm(PATCHED): loaded
+kvm-intel(PATCHED): loaded
+L1_DEV_KVM_PRESENT
+NESTED_X86_L2_PIN_CHECK_BEGIN
+f06a34a79010a8f2cc8226dc629cc8fb049740016f035f53e3f2e53d9a30dd41  guest/build/bzImage
+3c4a7f2f0db4b59aaf4dee55d43a42c57fc0d10ac25441de88128c61be0778c2  guest/build/initramfs-postgres.cpio.gz
+NESTED_X86_L2_PIN_CHECK_END
+NESTED_X86_GATE_BEGIN live_determinism
+
+running 2 tests
+test p6_rdtsc_rng_are_deterministic_and_vtime_backed ... [p6] tsc reads = [0, 2, 4, 6]  aux = 0x0
+[p6] rdrand = 0x9f72a62a  rdseed = 0x42b87398
+ok
+test p6_snapshot_restore_resumes_both_clocks_exactly ... [p6] snapshot/restore transparent: results = Results { tsc: [0, 2, 4, 6], aux: 0, rdrand: 2675090986, rdseed: 1119384472 }
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
+
+NESTED_X86_GATE_RC live_determinism rc=0
+NESTED_X86_GATE_END live_determinism
+NESTED_X86_GATE_BEGIN live_preemption
+
+running 2 tests
+test busy_spin_guest_is_preempted_and_timer_lands_deterministic_twice ... 
+thread 'busy_spin_guest_is_preempted_and_timer_lands_deterministic_twice' (147) panicked at consonance/vmm-core/tests/live_preemption.rs:85:9:
+irq-landing payload not built (No such file or directory (os error 2)) at /root/harmony-nested/consonance/vmm-core/../../guest/payloads/target/x86_64-unknown-none/release/irq-landing — build it on the box first: `cd guest/payloads && cargo build --release` (target x86_64-unknown-none).
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/panicking.rs:80:14
+   2: live_preemption::payload_elf::{{closure}}
+             at ./consonance/vmm-core/tests/live_preemption.rs:85:9
+   3: core::result::Result<T,E>::unwrap_or_else
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/result.rs:1622:23
+   4: live_preemption::payload_elf
+             at ./consonance/vmm-core/tests/live_preemption.rs:84:23
+   5: live_preemption::run_payload
+             at ./consonance/vmm-core/tests/live_preemption.rs:136:19
+   6: live_preemption::run_irq_landing
+             at ./consonance/vmm-core/tests/live_preemption.rs:97:5
+   7: live_preemption::busy_spin_guest_is_preempted_and_timer_lands_deterministic_twice
+             at ./consonance/vmm-core/tests/live_preemption.rs:176:14
+   8: live_preemption::busy_spin_guest_is_preempted_and_timer_lands_deterministic_twice::{{closure}}
+             at ./consonance/vmm-core/tests/live_preemption.rs:173:70
+   9: core::ops::function::FnOnce::call_once
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/ops/function.rs:250:5
+  10: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test preemption_instant_is_a_pure_function_of_the_seed ... 
+thread 'preemption_instant_is_a_pure_function_of_the_seed' (148) panicked at consonance/vmm-core/tests/live_preemption.rs:85:9:
+irq-landing-rng payload not built (No such file or directory (os error 2)) at /root/harmony-nested/consonance/vmm-core/../../guest/payloads/target/x86_64-unknown-none/release/irq-landing-rng — build it on the box first: `cd guest/payloads && cargo build --release` (target x86_64-unknown-none).
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/panicking.rs:80:14
+   2: live_preemption::payload_elf::{{closure}}
+             at ./consonance/vmm-core/tests/live_preemption.rs:85:9
+   3: core::result::Result<T,E>::unwrap_or_else
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/result.rs:1622:23
+   4: live_preemption::payload_elf
+             at ./consonance/vmm-core/tests/live_preemption.rs:84:23
+   5: live_preemption::run_payload
+             at ./consonance/vmm-core/tests/live_preemption.rs:136:19
+   6: live_preemption::run_irq_landing_rng
+             at ./consonance/vmm-core/tests/live_preemption.rs:103:5
+   7: live_preemption::preemption_instant_is_a_pure_function_of_the_seed
+             at ./consonance/vmm-core/tests/live_preemption.rs:296:14
+   8: live_preemption::preemption_instant_is_a_pure_function_of_the_seed::{{closure}}
+             at ./consonance/vmm-core/tests/live_preemption.rs:273:55
+   9: core::ops::function::FnOnce::call_once
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/ops/function.rs:250:5
+  10: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+
+failures:
+
+failures:
+    busy_spin_guest_is_preempted_and_timer_lands_deterministic_twice
+    preemption_instant_is_a_pure_function_of_the_seed
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+NESTED_X86_GATE_RC live_preemption rc=101
+NESTED_X86_GATE_END live_preemption
+NESTED_X86_GATE_BEGIN live_postgres
+
+running 3 tests
+test p1_postgres_runs_and_streams_patched ... [host-assert] CPU-MSR-CONTRACT §1.1 baseline:
+[host-assert]   PASS  family-model-stepping: expected 06_9e_0c, observed 06_9e_0c
+[host-assert]   PASS  host-microcode-rev: expected 0x00000000000000f8, observed 0x00000000000000f8
+[host-assert]   PASS  mxcsr-mask: expected 0xffff, observed 0xffff
+[host-assert]   PASS  maxphyaddr-min: expected >= 39, observed 39
+[host-assert]   PASS  rtm-disabled: expected rtm physically absent (the IA32_TSX_CTRL pin is not installed by this skeleton), observed rtm-absent (XBEGIN #UDs; already non-usable)
+[host-assert]   PASS  host-absent HRESET: expected absent, observed absent
+[host-assert]   PASS  host-absent PCONFIG: expected absent, observed absent
+[host-assert]   PASS  host-absent RDPID: expected absent, observed absent
+[host-assert]   PASS  host-absent SERIALIZE: expected absent, observed absent
+[host-assert]   PASS  host-absent SHA: expected absent, observed absent
+[host-assert]   PASS  host-absent TPAUSE: expected absent, observed absent
+[host-assert]   PASS  host-absent UMONITOR: expected absent, observed absent
+[host-assert]   PASS  host-absent UMWAIT: expected absent, observed absent
+[pg] cmdline: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable
+
+thread 'p1_postgres_runs_and_streams_patched' (150) panicked at consonance/vmm-core/tests/live_postgres.rs:148:5:
+guest artifact `bzImage` not found in guest/build or guest/linux — build it first on the box: `make -C guest fetch && make -C guest/linux postgres-image`.
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/panicking.rs:80:14
+   2: live_postgres::require_artifact
+             at ./consonance/vmm-core/tests/live_postgres.rs:148:5
+   3: live_postgres::boot_pg
+             at ./consonance/vmm-core/tests/live_postgres.rs:369:18
+   4: live_postgres::p1_postgres_runs_and_streams_patched
+             at ./consonance/vmm-core/tests/live_postgres.rs:451:33
+   5: live_postgres::p1_postgres_runs_and_streams_patched::{{closure}}
+             at ./consonance/vmm-core/tests/live_postgres.rs:447:42
+   6: core::ops::function::FnOnce::call_once
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test p2_postgres_deterministic_twice_patched ... [host-assert] CPU-MSR-CONTRACT §1.1 baseline:
+[host-assert]   PASS  family-model-stepping: expected 06_9e_0c, observed 06_9e_0c
+[host-assert]   PASS  host-microcode-rev: expected 0x00000000000000f8, observed 0x00000000000000f8
+[host-assert]   PASS  mxcsr-mask: expected 0xffff, observed 0xffff
+[host-assert]   PASS  maxphyaddr-min: expected >= 39, observed 39
+[host-assert]   PASS  rtm-disabled: expected rtm physically absent (the IA32_TSX_CTRL pin is not installed by this skeleton), observed rtm-absent (XBEGIN #UDs; already non-usable)
+[host-assert]   PASS  host-absent HRESET: expected absent, observed absent
+[host-assert]   PASS  host-absent PCONFIG: expected absent, observed absent
+[host-assert]   PASS  host-absent RDPID: expected absent, observed absent
+[host-assert]   PASS  host-absent SERIALIZE: expected absent, observed absent
+[host-assert]   PASS  host-absent SHA: expected absent, observed absent
+[host-assert]   PASS  host-absent TPAUSE: expected absent, observed absent
+[host-assert]   PASS  host-absent UMONITOR: expected absent, observed absent
+[host-assert]   PASS  host-absent UMWAIT: expected absent, observed absent
+
+thread 'p2_postgres_deterministic_twice_patched' (151) panicked at consonance/vmm-core/tests/live_postgres.rs:148:5:
+guest artifact `bzImage` not found in guest/build or guest/linux — build it first on the box: `make -C guest fetch && make -C guest/linux postgres-image`.
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/panicking.rs:80:14
+   2: live_postgres::require_artifact
+             at ./consonance/vmm-core/tests/live_postgres.rs:148:5
+   3: live_postgres::boot_pg
+             at ./consonance/vmm-core/tests/live_postgres.rs:369:18
+   4: live_postgres::p2_postgres_deterministic_twice_patched
+             at ./consonance/vmm-core/tests/live_postgres.rs:503:37
+   5: live_postgres::p2_postgres_deterministic_twice_patched::{{closure}}
+             at ./consonance/vmm-core/tests/live_postgres.rs:498:45
+   6: core::ops::function::FnOnce::call_once
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test p3_postgres_seed_sensitivity_patched ... [host-assert] CPU-MSR-CONTRACT §1.1 baseline:
+[host-assert]   PASS  family-model-stepping: expected 06_9e_0c, observed 06_9e_0c
+[host-assert]   PASS  host-microcode-rev: expected 0x00000000000000f8, observed 0x00000000000000f8
+[host-assert]   PASS  mxcsr-mask: expected 0xffff, observed 0xffff
+[host-assert]   PASS  maxphyaddr-min: expected >= 39, observed 39
+[host-assert]   PASS  rtm-disabled: expected rtm physically absent (the IA32_TSX_CTRL pin is not installed by this skeleton), observed rtm-absent (XBEGIN #UDs; already non-usable)
+[host-assert]   PASS  host-absent HRESET: expected absent, observed absent
+[host-assert]   PASS  host-absent PCONFIG: expected absent, observed absent
+[host-assert]   PASS  host-absent RDPID: expected absent, observed absent
+[host-assert]   PASS  host-absent SERIALIZE: expected absent, observed absent
+[host-assert]   PASS  host-absent SHA: expected absent, observed absent
+[host-assert]   PASS  host-absent TPAUSE: expected absent, observed absent
+[host-assert]   PASS  host-absent UMONITOR: expected absent, observed absent
+[host-assert]   PASS  host-absent UMWAIT: expected absent, observed absent
+
+thread 'p3_postgres_seed_sensitivity_patched' (152) panicked at consonance/vmm-core/tests/live_postgres.rs:148:5:
+guest artifact `bzImage` not found in guest/build or guest/linux — build it first on the box: `make -C guest fetch && make -C guest/linux postgres-image`.
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/panicking.rs:80:14
+   2: live_postgres::require_artifact
+             at ./consonance/vmm-core/tests/live_postgres.rs:148:5
+   3: live_postgres::boot_pg
+             at ./consonance/vmm-core/tests/live_postgres.rs:369:18
+   4: live_postgres::p3_postgres_seed_sensitivity_patched
+             at ./consonance/vmm-core/tests/live_postgres.rs:573:39
+   5: live_postgres::p3_postgres_seed_sensitivity_patched::{{closure}}
+             at ./consonance/vmm-core/tests/live_postgres.rs:568:42
+   6: core::ops::function::FnOnce::call_once
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+
+failures:
+
+failures:
+    p1_postgres_runs_and_streams_patched
+    p2_postgres_deterministic_twice_patched
+    p3_postgres_seed_sensitivity_patched
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+NESTED_X86_GATE_RC live_postgres rc=101
+NESTED_X86_GATE_END live_postgres
+--- L1 dmesg tail (kvm/vmx/pmu/perf) ---
+[    0.000000] Hypervisor detected: KVM
+[    0.000000] kvm-clock: Using msrs 4b564d01 and 4b564d00
+[    0.000000] kvm-clock: using sched offset of 156505462 cycles
+[    0.000001] clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns
+[    0.010621] kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()
+[    0.010640] Booting paravirtualized kernel on KVM
+[    0.014237] kvm-guest: PV spinlocks disabled, single CPU
+[    0.239602] Performance Events: Skylake events, full-width counters, Intel PMU driver.
+[    0.480872] clocksource: Switched to clocksource kvm-clock
+[    1.111157] kvm: loading out-of-tree module taints kernel.
+[    1.111771] kvm: module verification failed: signature and/or required key missing - tainting kernel
+NESTED_X86_L1_DONE
+[    2.293005] ACPI: PM: Preparing to enter system sleep state S5
+[    2.293695] kvm: exiting hardware virtualization
+[    2.294221] reboot: Power down

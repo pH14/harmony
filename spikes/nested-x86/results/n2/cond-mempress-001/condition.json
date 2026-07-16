@@ -1,0 +1,8 @@
+{
+  "condition": "mempress",
+  "deadlines": 100000,
+  "seed": 1600065577,
+  "stress_pid": "1731029",
+  "cpuset": "3",
+  "started": "2026-07-10T06:27:26Z"
+}

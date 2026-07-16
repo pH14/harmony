@@ -1,0 +1,19 @@
+
+running 1 test
+test c1_corpus_o1_o2_on_the_patched_backend ... [box-corpus] === sweep 1 ===
+[box-corpus] insn-rdtsc     O1=PASS O2=PASS digest=1065ab4cf566433b2eec2b756810c4c5e75775012d63f46aafefc273bdb78ae3 identical; both halted at 1
+[box-corpus] insn-rng       O1=PASS O2=PASS digest=0fe06bf4edf727fc1d200f810a307c30e65915b7c1ed230a5e513defbb2a3926 identical; both halted at 1
+[box-corpus] insn-cpuid     O1=PASS O2=FAIL digest=cd321ad6f98a9b33f1277a243b06ff5eb5390b652b31f74bb8c39a55f87282f5 identical; both halted at 1
+
+thread 'c1_corpus_o1_o2_on_the_patched_backend' (1716237) panicked at consonance/vmm-core/tests/box_corpus.rs:294:13:
+O2 (conformance) FAILED for `insn-cpuid` (digest != golden)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    c1_corpus_o1_o2_on_the_patched_backend
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 71.32s
+

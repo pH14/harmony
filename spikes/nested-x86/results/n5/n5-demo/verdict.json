@@ -1,0 +1,7 @@
+{
+  "n5_demo": "PASS",
+  "gate_summary": {"event":"summary","item":"insn-rng","attempted":100,"identical":100,"mismatches":0,"state_hash":"6163f1109b5677de0ff924f7932e7ade007434c99c24bc9a7e11beac27f5bbb4","observable_digest":"0fe06bf4edf727fc1d200f810a307c30e65915b7c1ed230a5e513defbb2a3926"},
+  "appliance_manifest": "/root/nested-x86-n5/build-manifest.json",
+  "console": "/root/nested-x86-n5/results/n5-demo/console.log",
+  "finished": "2026-07-10T19:57:09Z"
+}

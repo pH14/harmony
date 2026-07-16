@@ -1,0 +1,35 @@
+[   93.708047] clocksource: timekeeping watchdog on CPU0: Marking clocksource 'tsc' as unstable because the skew is too large:
+[   93.709265] clocksource:                       'kvm-clock' wd_nsec: 512002045 wd_now: 15dbfc4070 wd_last: 15bd77b873 mask: ffffffffffffffff
+[   93.710568] clocksource:                       'tsc' cs_nsec: 515236014 cs_now: 4eb4794524 cs_last: 4e45ea8624 mask: ffffffffffffffff
+[   93.711809] clocksource:                       Clocksource 'tsc' skewed 3233969 ns (3 ms) over watchdog 'kvm-clock' interval of 512002045 ns (512 ms)
+[   93.713217] clocksource:                       'kvm-clock' (not 'tsc') is current clocksource.
+[   93.714127] tsc: Marking TSC unstable due to clocksource watchdog
+N3JSON {"event":"progress","attempted":100,"identical":100,"mismatches":0}
+N3JSON {"event":"progress","attempted":200,"identical":200,"mismatches":0}
+N3JSON {"event":"summary","item":"insn-rng","attempted":250,"identical":250,"mismatches":0,"state_hash":"6163f1109b5677de0ff924f7932e7ade007434c99c24bc9a7e11beac27f5bbb4","observable_digest":"0fe06bf4edf727fc1d200f810a307c30e65915b7c1ed230a5e513defbb2a3926"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2903.57s
+
+NESTED_X86_GATE_RC n3_repeat_gate rc=0
+NESTED_X86_GATE_END n3_repeat_gate
+--- L1 dmesg tail (kvm/vmx/pmu/perf) ---
+[    0.000000] Hypervisor detected: KVM
+[    0.000000] kvm-clock: Using msrs 4b564d01 and 4b564d00
+[    0.000000] kvm-clock: using sched offset of 162317006 cycles
+[    0.000001] clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns
+[    0.010776] kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()
+[    0.010796] Booting paravirtualized kernel on KVM
+[    0.014429] kvm-guest: PV spinlocks disabled, single CPU
+[    0.243800] Performance Events: Skylake events, full-width counters, Intel PMU driver.
+[    0.482867] clocksource: Switched to clocksource kvm-clock
+[    1.081427] kvm: loading out-of-tree module taints kernel.
+[    1.082041] kvm: module verification failed: signature and/or required key missing - tainting kernel
+[   93.709265] clocksource:                       'kvm-clock' wd_nsec: 512002045 wd_now: 15dbfc4070 wd_last: 15bd77b873 mask: ffffffffffffffff
+[   93.711809] clocksource:                       Clocksource 'tsc' skewed 3233969 ns (3 ms) over watchdog 'kvm-clock' interval of 512002045 ns (512 ms)
+[   93.713217] clocksource:                       'kvm-clock' (not 'tsc') is current clocksource.
+NESTED_X86_GATES_FAILED 0
+NESTED_X86_L1_DONE
+[ 2904.913433] ACPI: PM: Preparing to enter system sleep state S5
+[ 2904.914206] kvm: exiting hardware virtualization
+[ 2904.914791] reboot: Power down

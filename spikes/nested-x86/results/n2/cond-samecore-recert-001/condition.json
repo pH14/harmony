@@ -1,0 +1,8 @@
+{
+  "condition": "samecore",
+  "deadlines": 150000,
+  "seed": 2600001006,
+  "stress_pid": "154180",
+  "cpuset": "3",
+  "started": "2026-07-13T05:21:01Z"
+}

@@ -1,0 +1,15 @@
+{
+  "kver": "6.12.90+deb13.1-amd64",
+  "source": "spike/nested-x86 rsync of n5-demo from /root/nested-x86-n5-src",
+  "gates": [
+    {"name": "live_determinism-738f21d807cbcac0", "sha256": "5155ef3d985843465dde39df5329891a1ea37a594d5288a0f2592761433a7844"},
+    {"name": "n3_repeat_gate-ee2d3fab6d015a04", "sha256": "10de703c36cddde04d7a17ed148c8bb646d20cd70bd753576695df1151603786"}
+  ],
+  "sha256_kvm_ko_patched": "ce998d6aeb1e9aa694368061e023d1db5e658333c117c405aed212462c543452",
+  "sha256_kvm_intel_ko_patched": "b6e6d3d2c4fd6f08a67ce00d39d9a735219625e5bca4e33a572ce943da13ed2e",
+  "sha256_l2_bzImage": "f06a34a79010a8f2cc8226dc629cc8fb049740016f035f53e3f2e53d9a30dd41",
+  "sha256_l2_initramfs_postgres": "3c4a7f2f0db4b59aaf4dee55d43a42c57fc0d10ac25441de88128c61be0778c2",
+  "sha256_appliance_cpio": "6932590dbf8a5309d75a4bf4a83cd1bc1ed427d868d58b21a2efd6020f0d985c",
+  "sha256_l1_kernel": "5af22ccdc339fe5c1fdfcd4cf6a3c503ff983648664a8d6660454368785e8fd5",
+  "built": "2026-07-10T19:37:46Z"
+}

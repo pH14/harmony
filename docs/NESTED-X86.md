@@ -1,5 +1,25 @@
 # x86 nested-virtualization backend — feasibility spike
 
+> **✅ RE-CERTIFIED (2026-07-16).** The PR #98 evidence-integrity review
+> (2026-07-12) voided the original ALL-GO record (stock backend in the N-2
+> hammer, green-on-fail harness, unmet N-3 floors, unpinned appliance
+> provenance — see `spikes/nested-x86/results/AUDIT-2026-07-12.md`). The
+> ratified re-run program (beads hm-b5b → hm-dbh ∥ hm-jpu → hm-60k) executed
+> 2026-07-13/14 with fixed instruments; a round-2 cross-model pass then found
+> the hammer's `armed` counter had conflated armed-PMI deadlines with
+> `d ≤ SKID_MARGIN` MTF-only deadlines, leaving the true armed-PMI count at
+> 588,923 — below the ≥1,000,000 floor. **Paul ruled (2026-07-15): top-up run,
+> floor stands as written.** The top-up executed 2026-07-15/16 — 922,000
+> additional deadlines across the same matrix on the round-2 instruments —
+> bringing the cumulative armed-PMI count, **computed from perf records
+> only**, to **1,101,006 ≥ 1,000,000** (and ≥ the 1.05M dispatch target),
+> with `armed_pmi == records.samples` bit-for-bit in every top-up runset.
+> All floors and thresholds are machine-checked against the retained evidence
+> by `spikes/nested-x86/harness/check-recert-floors.sh` (ALL PASS). N-2 and
+> N-3 dispositions below are re-recorded from `*-recert-*`/`*-topup-*`
+> evidence only; N-0/N-1/N-5 stand on audited-VALID original runsets; N-4's
+> characterization stands with one corrected figure.
+
 Status: **research spike (2026-07-09).** This document is a de-risking program, not a claim
 that the backend is feasible. It is the x86 sibling of `docs/APPLE-SILICON.md`: the same
 thesis — a deterministic hypervisor running *as a guest* of somebody else's hypervisor — on
@@ -199,6 +219,32 @@ machine-readable; restore script proven once (flip back, verify, flip forward).
 **Stop:** a missing required control or no usable vPMU → try one alternate pinned QEMU/L0
 kernel version; if still missing, NO-GO for this L0 class with the capability diff recorded.
 
+> **Disposition (2026-07-10): PROVISIONAL GO.** Evidence: `spikes/nested-x86/results/n0/`
+> (runsets 001–004). The box was found *already in the target L0 posture* (stock Debian
+> 6.12.90 KVM, `nested=Y`, `enable_pmu=Y`) — no module surgery performed; restore manifest
+> captured first (`results/box-restore-manifest.json`). All required controls present as
+> virtualized for L1: RDTSC/RDRAND/RDSEED exiting, MTF, secondary controls, EPT +
+> unrestricted guest, PML, and **both** PERF_GLOBAL_CTRL entry/exit load controls. vPMU:
+> arch-perfmon v2, 4 GP counters × 48-bit, full-width writes, no unavailable events. Stock
+> kvm/kvm_intel load *inside* L1; `/dev/kvm` present at L1 (runsets 002+; 001 had an insmod
+> ordering bug, fixed). Capability surface byte-identical across three fresh VM instances
+> (002/003/004). Count sniff: raw `0x1c4` against an exact `dec/jnz` loop = **n+2 on 60/60
+> samples across four runsets, zero variance, differentially exact across 1e6/1e7/1e8** —
+> while the instructions-retired control event showed ±1 jitter (validating the
+> conditional-branch event choice). PMI delivery (runset-004): sampling-mode `0x1c4` with
+> mmap ring + SIGIO — **120/120 armed overflows delivered exactly once inside L1** (ring
+> samples == floor(count/period) == signals on 15/15 reps across three n×period combos,
+> zero throttle records; counts stayed exactly n+2 in sampling mode). Caveat for N-2/N-4:
+> the L1 kernel logged `perf: interrupt took too long (2.5–5.0 µs)` and auto-lowered
+> `perf_event_max_sample_rate` — nested PMI service is µs-scale (irrelevant to patch-0004's
+> in-KVM arming, but budgets PMI cost). PROVISIONAL because the two-L0-reboot stability
+> check is deferred to the spike-end restore phase (a mid-spike box reboot risks the shared
+> determinism host for a formality); the flip/restore-script proof is vacuous — no flip was
+> needed, restore = verify-unchanged at spike end.
+> **Upgraded to GO (2026-07-10, spike end):** the deferred check ran — capability surface
+> **byte-identical across the recorded L0 reboot** (runset-005 vs 002/003/004), count sniff
+> still 15/15 exact n+2. Restore verification passed (see N-5 section note).
+
 ### N-1 — the consonance appliance boots and runs nested
 
 **Question:** Does the unmodified patched stack function as L1?
@@ -219,6 +265,26 @@ evidence.
 
 **Stop:** patched KVM cannot arm `0x1c4` guest-only at L1, or MTF arm fails architecturally,
 or L1 is unstable in ways that survive two independent rebuilds → classify REDESIGN vs NO-GO.
+
+> **Disposition (2026-07-10): GO.** Evidence: `spikes/nested-x86/results/n1/` (runset-002 is
+> the accepted run; runset-001 documents an initramfs `..`-traversal artifact-path bug, fixed
+> in `build-appliance.sh`). The appliance builds from one command
+> (`appliance/build-appliance.sh`) with a complete sha256 manifest
+> (`results/n1/build-manifest.json`: source = spike/nested-x86@bb6b292, patched
+> kvm/kvm-intel.ko, pinned pr44 L2 pair, gate binaries, L1 kernel). Patched 6.12.90 kvm
+> modules load *inside* L1; the pinned L2 pair hash-verifies from inside L1 before boot.
+> **All seven gate tests pass nested** (verdicts exceeded the stage bar — execution alone
+> gated): `live_determinism` 2/2 in 0.70s (patches 0001–0003: RDTSC/RDTSCP/RDRAND/RDSEED
+> `KVM_EXIT_DETERMINISM` round-trips, same-seed bit-identical `state_hash`, snapshot/restore
+> mid-run); `live_preemption` 2/2 in 70.3s (patch-0004 `KVM_ARM_PREEMPT_EXIT`→
+> `KVM_EXIT_PREEMPT` + patch-0005 MTF exact landing: fixed deadlines seed-invariant, RNG
+> deadlines seed-dependent, deterministic twice — nested landings recorded, e.g. irq-landing-rng
+> `[410851, 963853, 1410689, 1553858]`, `state_hash a838682179…`); `live_postgres` 3/3 in
+> 507.3s (pinned L2 postgres pair to userspace ×10 boots, workload streamed, **deterministic
+> twice nested** — `state_hash 73e38ded06…` A==B — and seed-sensitive). `hostassert` passed
+> *unchanged* inside L1 (QEMU `-cpu host` forwards the det-cfl-v1-relevant surface incl.
+> microcode rev and MXCSR mask) — **no spike-only nested acknowledgment was needed**; zero
+> production-crate edits so far.
 
 ### N-2 — count exactness, overflow delivery, exact landing (the existential trio)
 
@@ -248,6 +314,71 @@ bound below the declared margin. Report confidence and coverage; do not call it 
 
 **NO-GO:** one unexplained mismatch. "It only works if L0 never preempts" is a NO-GO unless a
 supported mechanism actually enforces that condition and is itself probeable at boot.
+
+> **Disposition (2026-07-10): PROVISIONAL GO** (the stage's own success label). Evidence:
+> `spikes/nested-x86/results/n2/`. **1,052,000 armed deadlines → 1,052,000 exact landings,
+> zero mismatches, zero missed/duplicate overflows** (a lost PMI hangs `run_until`, a
+> duplicate stops short — both would surface as mismatches; every attempted sample is in the
+> `N2JSON` summaries), via the SPIKE `n2_nested_hammer` driving the **production**
+> `run_until` path (patch-0004 arm + patch-0005 MTF landing) on seeded-random targets
+> (deltas 1..100k, MTF-edge/skid-bracket/pure-overflow classes interleaved). Condition
+> matrix: idle 400k; other-core stress 200k; **same-core stress 150k** (stress-ng sharing
+> the L1 vCPU's pinned core); memory pressure 100k; same-core timer storm 100k; **vCPU
+> migration 100k with 1,509 forced cross-pCPU migrations of the unpinned QEMU threads**.
+> Bonus cross-condition check: timerstorm and migrate shared one delta stream (harness
+> `seed|1` collapse, recorded) and produced **bit-identical `final_work` (1752162978)**
+> under entirely different L0 interference. Skid: the **bare-metal production
+> `skid_margin = 256` held on every landing** — the 8× candidate allowance was never
+> consumed; the measured result lowers the nested margin claim to 1× bare-metal.
+> Count exactness across payload classes: corpus sweep **6/6 items O1+O2 PASS nested,
+> digest-for-digest equal to the bare-metal control** (trapped insns, MSR allow/deny,
+> rdtsc, rng, rdpmc; `nested-corpus-001` vs `metal-corpus-002`); syscall/page-fault/
+> interrupt/HLT-heavy classes via the N-1 postgres + irq-landing gates. **Finding for
+> main:** the committed `insn-cpuid` O2 golden was stale (metal reproduces the nested
+> digest `cd321ad6f9…` exactly; only that golden changed on re-bless — spike commit
+> 46a6b5b); box_corpus O2 currently fails on main on the box. PROVISIONAL: the
+> after-L0-reboot count-stability check is bundled with N-0's deferred two-reboot check at
+> spike end (one recorded reboot, rerun exactness smoke, then restore-verify).
+> **Upgraded to GO (2026-07-10, spike end):** after the recorded L0 reboot the hammer ran
+> **10,000/10,000 exact** with `final_work` bit-equal to the same-config bare-metal run
+> (175286435), and the repeat gate reproduced the reference hash 100/100
+> (`results/n3/post-reboot-001/`).
+>
+> **Disposition VOIDED (2026-07-12); re-run 2026-07-13/14: FLOOR UNMET,
+> RULING PENDING (2026-07-14).** The first review found the original evidence
+> ran the *stock* backend; it was reclassified characterization-only. The
+> re-run (bead hm-dbh, `results/n2/*-recert-001`) used the fixed instruments —
+> `PatchedKvmBackend` enforced (every runset's start line records the backend;
+> the constructor fails loudly without patches 0004/0005), an **independent
+> guest-memory work oracle** (every landing must satisfy
+> `counter == target mod 2^32`), and **per-record PMI accounting** (perf-ring
+> records parsed and counted: `PmuOverflowStats`). What the evidence supports,
+> counted from the perf records: **588,923 armed overflow PMIs, every one
+> delivered and observed within its arithmetic bound, plus 473,077 MTF-only
+> deadlines (`d ≤ SKID_MARGIN`, no PMI armed) — 1,062,000/1,062,000 landings
+> exact, oracle-agreed on all, 0 LOST, 0 THROTTLE, 0 record-count violations**
+> across the matrix (idle 400k · other-core 200k · same-core 150k · mempress
+> 100k · timerstorm 100k · migrate 100k with 2,323 forced migrations · 10k
+> control · 2k smoke; distinct seeds). `skid_margin = 256` held on every
+> landing. Cross-substrate: nested `final_work` **bit-equal to bare metal** at
+> both shared seeds (34146909 smoke; 175379628 control) with identical record
+> counts. **What was initially NOT met: the stage's own floor** — ≥1,000,000
+> armed deadlines read as armed *PMIs* gave 588,923 < 1,000,000 (a round-2
+> finding: the hammer's old `armed` counter conflated the two classes and the
+> checker read it back; both instruments now count from records). Escalated to
+> Paul, who **ruled top-up (2026-07-15): the floor stands as written.**
+>
+> **Top-up executed and floor MET → RE-CERTIFIED: GO (2026-07-16).**
+> 922,000 additional deadlines (`results/n2/*-topup-001`: idle 350k ·
+> other-core 175k · same-core 130k · mempress 90k · timerstorm 90k · migrate
+> 85k · 2k smoke, fresh spaced seeds) on the round-2 instruments, after a
+> reported fire-once smoke validating the 55.4% armed-rate sizing. Every
+> top-up runset: exact == oracle_ok == deadlines, 0 LOST / 0 THROTTLE /
+> 0 violations, `armed_pmi == records.samples` **bit-for-bit**, stressor
+> liveness and migration success-counting recorded. **Cumulative armed PMIs,
+> from perf records only: 1,101,006 ≥ 1,000,000** (1,984,000 total deadlines,
+> all exact and oracle-agreed). Machine-checked GREEN by
+> `check-recert-floors.sh`.
 
 ### N-3 — full-stack determinism gates nested + adversarial L0 + the portability gate
 
@@ -279,6 +410,57 @@ the standard corpus. Every sample accounted for.
 
 **NO-GO:** any silent divergence under 1–4, or an undetectable divergence class under 5.
 
+> **Disposition (2026-07-10): GO** (with one bounded availability finding and an owner
+> rep-count ruling, both recorded). Evidence: `spikes/nested-x86/results/n3/`. One reference
+> pair — `state_hash 6163f1109b5677de…` / `observable_digest 0fe06bf4…` (insn-rng at the
+> pinned corpus seed) — was reproduced bit-identically by **every** repetition of **every**
+> condition, nested and metal:
+> **(1) solo** 1000/1000; **(2) co-tenant stress** other-core 1000/1000 + same-core 75 clean
+> (full-length runs trimmed by owner ruling 2026-07-10 — "reduce reps, prioritize reaching
+> N-4"; the same-core dose is separately evidenced by N-2's 150k exact landings under
+> identical stress); **(3) vCPU migration** 250/250 with 5,810 forced thread migrations;
+> **(4) pause/resume** SIGSTOP 2s/30s 250/250 (103 pauses) + QEMU QMP stop/cont 250/250
+> (104 cycles). **Finding (bounded):** aggressive SIGSTOP cycling (2s of every 7s) wedged
+> one run — vCPU spinning in KVM_RUN after an apparently lost work-clock event across the
+> freeze (`pause-sigstop-001/FINDING.json`, thread diagnostics retained). It is an
+> **observable hang (fails loud), not silent divergence**; gentle host-freeze and the
+> cloud-representative QMP path are clean. Follow-up for main: make `run_until` re-arm or
+> time-bound after freeze/thaw. **(5) live-migration rehearsal:** QEMU local live migration
+> mid-gate **completed** and the gate finished on the destination 250/250 bit-identical —
+> determinism held outright, exceeding the fail-closed bar. **(6) portability gate:**
+> nested == metal exact `state_hash` equality on three independent surfaces — repeat gate
+> `6163f110…` (nested, all conditions) == metal 100/100; postgres p2 `73e38ded…` nested ==
+> metal; preemption landings `[410851, 963853, 1410689, 1553858]` + `a8386821…` nested ==
+> metal; plus the 6/6 corpus digest equality (N-2). Postgres-workload reps beyond N-1's
+> gates were not mass-repeated (owner ruling); the corpus-item form carried the ≥1000-rep
+> load.
+>
+> **Disposition VOIDED in part (2026-07-12) and RE-CERTIFIED: GO (2026-07-14).**
+> The review found the floors unmet for several conditions and the same-core
+> condition without any valid runset (see the audit note). The re-run (bead
+> hm-jpu, `results/n3/*-recert-*`) met **every binding floor** on the
+> RC-checked, pin-verified harness, and every repetition of every condition
+> reproduced ONE reference pair — `state_hash 6163f1109b5677de…` /
+> `observable_digest 0fe06bf4…`, identical to the historical reference:
+> **(1) solo** 1000/1000; **(2) co-tenant stress** other-core 1000/1000 +
+> same-core 1000/1000 (6.9 h under shared-vCPU-core stress — the condition
+> previously without valid evidence); **(3) vCPU migration** 1000/1000 under
+> **23,218** forced cross-pCPU thread migrations; **(4) pause/resume** SIGSTOP
+> 1000/1000 + QMP 1000/1000, co-run on disjoint pinned cores (task-69 M2
+> co-tenancy principle), each with 417 **confirmed** pauses / 0 failed at the
+> **recorded** 2 s-per-30 s cadence (the historical wedge cadence stays a named
+> hazard; the committed default is the accepted cadence). **(5) live-migration
+> rehearsal**: migration `completed` and the gate finished green **on the
+> destination** 250/250 bit-identical — determinism held outright, exceeding
+> the fail-closed bar (runset `-recert-002`; `-recert-001` is a green guest run
+> retained as the split-console verdict-bug record). **(6) portability gate**:
+> metal reference re-collected with the now-committed
+> `run-metal-reference-recert.sh` at floor strength — metal repeat 1000/1000 at
+> the same reference hash, plus the N-2 cross-substrate `final_work` equalities.
+> Every floor machine-checked by `check-recert-floors.sh` (ALL PASS). L0
+> swap/restore for the metal session was Paul-authorized, recorded, and
+> restore-verified (`RESTORE_VERIFIED_IDENTICAL` against the window manifest).
+
 ### N-4 — performance envelope + exit-budget memo
 
 Characterization, after correctness — not part of the feasibility claim. Measure nested vs
@@ -290,11 +472,57 @@ sizing recommendation for the paravirtual vtime clock page (the guest kernel is 
 work-derived kvmclock-shaped page would remove RDTSC exits from the hot path) — decision
 input only, no implementation in this spike.
 
+> **Disposition (2026-07-10): GO (characterization delivered).** Evidence:
+> `results/n1/`, `results/n2/` (nested-corpus vs metal-corpus), `results/n3/metal-reference-001/`.
+> **Workload-level nested/metal wall-clock ratios (same box, same source, same pinned
+> images):** postgres 3-gate suite 507.3s / 470.0s = **1.08×**; live_preemption 70.3s /
+> 69.4s = **1.01×**; corpus O1+O2 sweep 287.1s / 285.3s = **1.006×**; live_determinism
+> sub-second on both. **Exact-landing hot path:** deadline hammer 2k/15.07s nested vs
+> 10k/14s metal = **~5.4× per armed deadline** — the nested tax concentrates in MTF
+> single-step reflection + PMI service (L1 PMI ≈ 2.5–5.0 µs, N-0 runset-004), not in bulk
+> execution. Harness artifact noted: per-rep VM setup in the repeat gate is memory-residency
+> bound and NOT a valid cross-substrate ratio (metal faults 256 MiB fresh per rep; L1 reuses
+> pre-faulted RAM). **Paravirt-clock memo:** RDTSC userspace exits remain the standing
+> deferred risk (R-BACKEND); nested multiplies each such exit's cost, and the 1.08×
+> postgres ratio shows current workloads tolerate it. A work-derived kvmclock-shaped page
+> in the guest kernel (we own it) would remove RDTSC exits from the hot path entirely and
+> is the right first lever **if** a future workload class shows RDTSC-exit dominance in the
+> per-exit-reason counts; sizing: one 4 KiB shared page + vDSO plumbing, no ABI change.
+> **Named gaps (not run, out of prioritization ruling):** task-95 snapshot/dirty-log benches
+> nested; a standalone RDTSC-exit-rate-per-virtual-second measurement; boot-to-userspace
+> ratio (nested L1 boot ≈ 7 s to init, no metal-equivalent single number captured).
+>
+> **Re-certification correction (2026-07-14):** the original "~5.4× per armed
+> deadline" figure compared stock-vs-stock hammers (audit note). On the
+> **patched** mechanism the re-run gives: metal 10k deadlines in 25 s vs the
+> nested 10k control runset in 117 s including ~15–20 s of L1 boot — an
+> exact-landing tax of **≈4× (≤4.7× upper bound)** per armed deadline nested.
+> The workload-level ratios (1.01–1.08×) are unaffected (they compare full gate
+> suites, not the hammer hot path).
+
 ### N-5 — appliance packaging rehearsal (only after N-3 GO)
 
 One documented command, fresh checkout, on the box: build the appliance image, boot it under
 L0, run the same-seed nested gate, emit the evidence bundle. This is the "download image, boot
 VM, deterministic machine" demonstration and the seed of any future distribution story.
+
+> **Disposition (2026-07-10): GO.** Evidence: `spikes/nested-x86/results/n5/`. The command,
+> from a fresh source tree on the box (shipped as a sha256-verified `git archive` tarball of
+> the spike branch because the branch is unpushed — a git checkout becomes equivalent the
+> moment it is pushed):
+>
+> ```sh
+> bash spikes/nested-x86/n5-demo.sh /root/nested-x86-n5
+> ```
+>
+> It cold-built the gate binaries + C1 payloads, assembled the content-pinned appliance
+> (manifest `results/n5/build-manifest.json`), booted it under stock-KVM L0, ran
+> `live_determinism` + the 100-rep same-seed repeat gate nested, and **PASSED** — the gate
+> reproduced the N-3 reference `state_hash 6163f1109b5677de…` 100/100
+> (`results/n5/n5-demo/verdict.json`). Attempt 1 caught a real packaging bug (the appliance
+> staged artifacts under a hardcoded prefix instead of mirroring the fresh tree's baked-in
+> source path) — fixed in `build-appliance.sh`/`l1-appliance-init.sh`; the rehearsal did its
+> job.
 
 ## Decision ladder
 
