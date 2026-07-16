@@ -32,15 +32,14 @@ throughput; the vendor spikes gate *trust* (measured constants, the trait freeze
 fill), not construction. The ruled 5-lane queue and its risk acceptance live in
 `docs/ARCH-BOUNDARY.md` §Pre-build ruling.
 
-## In flight (4 active workers)
+## In flight (2 active workers)
 
 - **ARM backend skeleton — IMPLEMENTATION** (tasks/112, `hm-cbt`, spec merged as PR #111)
   — **SPAWNED 2026-07-15 ~23:40 on Fable 5** (agent-arm-backend-skeleton): M0 snapshot-seam
   (x86-neutral, Intel-box gate BLOCKING) → M1 keystone Vendor skeleton → M2 gicv3 crate →
   M3 Image+DTB boot → M4 stock KVM/arm64 backend; TCG-first gates, real-KVM gates edged
-  to the Altra (`hm-7pb`).
-- **Postgres-image drift gate restoration** (tasks/115, `hm-xdp`+`hm-2nt`) — worker
-  mid-diagnosis (box window ahead).
+  to the Altra (`hm-7pb`). One transient Fable model refusal 2026-07-15 eve — nudged
+  once, recovered, now on the M1 skeleton tests.
 - **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — **⚖️ PAUL RULED
   TOP-UP 2026-07-15 eve (floor stands as written)**: worker dispatched to reach ≥1.05M
   cumulative true armed PMIs (sized by the measured ~55% rate, round-2 fixed
@@ -84,10 +83,14 @@ Reach-matrix lane (foreman-owned or spawnable next):
 
 General ready (foreman spawns as slots free):
 
-- **Box image drift on main** — **SPAWNED 2026-07-15 ~23:10** (tasks/115,
-  agent-postgres-image-drift-gate, Opus 4.8): apply the recorded pin-by-hash ruling to
-  restore live_materialization's draw-probe gate, fail-closed on drift (`hm-xdp` +
-  `hm-2nt`, close-or-split disposition required)
+- **Contract vendor axis (AE-4 shape)** (`hm-0nf`, P2, pre-build lane, unblocked by the
+  keystone merge): restructure CPU/MSR contract doc + TOML + vmm-core loader for a
+  vendor axis; Intel column stays byte-identical truth, AMD column drafted from the APM
+  with every enforcement cell marked verify-on-silicon. **Needs a tasks/NN spec drafted
+  before spawn** — foreman drafting via the GLM one-shot lane.
+- **W^X + rescan-on-exec** (`hm-rfz`, P2): third rung of the PARAVIRT-CLOCK §3.3
+  enforcement ladder; should land before any non-fully-owned ARM guest. Substantive
+  contract work — hold for a free slot after the ARM skeleton.
 
 Dissonance lane (held — Paul: background reprioritization in progress, foreman does not
 spawn these until that lane re-opens):
@@ -114,12 +117,10 @@ spawn these until that lane re-opens):
   checks (comment on the bead).
   **harmonyd `hm-9od` is DEFERRED** (Paul 2026-07-12: no resident daemon until a live
   consumer exists; appliance ships gate mode only — do not auto-spawn).
-- **Pre-build queue, gated lanes** (`docs/ARCH-BOUNDARY.md` §Pre-build ruling): the
-  ARM backend skeleton (D-list)
-  `hm-cbt` and the contract vendor column (AE-4's shape) `hm-0nf` (paravirt clock `hm-rk5`
-  now IN FLIGHT, tasks/110) — ←
-  **PR #109 merge gate `hm-54m`** (the keystone branch is done but unmerged; the
-  merge-window rule holds until it lands — **cleared 2026-07-14 midday**); AMD hammer variants + `svm.c` draft `hm-8v4`
+- **Pre-build queue** (`docs/ARCH-BOUNDARY.md` §Pre-build ruling): keystone gate
+  `hm-54m` cleared 2026-07-14; paravirt clock `hm-rk5` MERGED (PR #110); ARM skeleton
+  `hm-cbt` IN FLIGHT (tasks/112); contract vendor column `hm-0nf` now READY (see above).
+  Still gated: AMD hammer variants + `svm.c` draft `hm-8v4`
   ← spike-branch merge `hm-l2g` (the hammer source and the Intel box both free then).
 - **Differential migration epic** `hm-bbx`: SDK normalization `hm-bbx.1` and the lineage/evidence-
   cut/retention spike `hm-bbx.2` follow `hm-7zx`; explicit ratification `hm-bbx.5` follows the
@@ -153,6 +154,19 @@ spawn these until that lane re-opens):
 
 ## Recently done (this week)
 
+- **Postgres-image drift gate RESTORED AND MERGED** (tasks/115, `hm-xdp`, PR #115
+  squash 058ece4, 2026-07-15 late eve): live_materialization now pins its guest images
+  by content hash (fail-closed on drift, negative-proven on the box in 2.15 s pre-boot)
+  and defaults to the PR-44-proven `HOPS=4`. Worker finding accepted on the record: the
+  Jul-9 image drift was NOT what broke `REQUIRE_DRAWS` — the stale `HOPS=3` default was;
+  the drift was a separate silent hazard the pin closes. Full box gates green at default
+  knobs (depth 4524 ppm vs 15463; round-trip + reproducer bit-identical); clean blind
+  cross-model pass (incl. the 84-test Miri floor). `hm-2nt` (promote the Jul-9 image)
+  stays open/deferred — now cosmetic-only since defaults are green. Spawn→merge ~2.5 h.
+- **Stable-clippy lint sweep MERGED** (tasks/116, PR #114 squash db6549b, 2026-07-15):
+  the CI-green restoration for the newer stable clippy — the two sites the tasks/115
+  worker independently flagged from the box (`byte_char_slices` in control-proto codec,
+  `manual_checked_ops` in campaign-runner) were verified fixed on main by this sweep.
 - **THE PRE-BUILD TRIPLE MERGED 2026-07-15 eve (Paul)**: the paravirt work-derived clock
   (tasks/110, PR #110 — 21 rounds, box all-green, 24.93x workload RDTSC-exit reduction;
   `hm-rk5` closed, `hm-rfz` W^X follow-up unblocked); the ARM pre-build apparatus
