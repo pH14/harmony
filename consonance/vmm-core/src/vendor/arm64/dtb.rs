@@ -385,6 +385,25 @@ pub fn parse(fdt: &[u8]) -> Result<ParsedFdt, FdtError> {
     }
     let strings = &fdt[off_dt_strings..];
 
+    // Token decoding is bounded by the header's **declared** structure block
+    // `[off_dt_struct, struct_end)` — never the whole `fdt` slice (rule #4:
+    // total over untrusted bytes). Walking to `fdt.len()` would let a
+    // `size_dt_struct` *short of* the real terminator be accepted (the loop
+    // reads on until it stumbles onto an `FDT_END` past the boundary) and would
+    // let bytes **outside** the block — the gap, the strings block, trailing
+    // padding — decode as tokens and properties. `be32_s` fails closed at
+    // `struct_end`; node names and property values are bounded to it too.
+    let node_block = &fdt[..struct_end];
+    let be32_s = |off: usize| -> Result<u32, FdtError> {
+        let end = off.checked_add(4).ok_or(FdtError::Truncated)?;
+        if end > struct_end {
+            return Err(FdtError::Truncated);
+        }
+        // `end <= struct_end <= fdt.len()`, so the slice is in-bounds.
+        let b = fdt.get(off..end).ok_or(FdtError::Truncated)?;
+        Ok(u32::from_be_bytes(b.try_into().expect("4-byte slice")))
+    };
+
     let read_cstr = |buf: &[u8], start: usize| -> Result<(String, usize), FdtError> {
         let rel = buf
             .get(start..)
@@ -400,11 +419,20 @@ pub fn parse(fdt: &[u8]) -> Result<ParsedFdt, FdtError> {
     let mut pos = off_dt_struct;
     let mut stack: Vec<String> = Vec::new();
     loop {
-        let token = be32_at(fdt, pos)?;
+        // Reached the end of the declared structure block without an `FDT_END`
+        // terminator (a missing terminator, or a `size_dt_struct` short of the
+        // real one). Fail closed rather than decode the strings block / trailing
+        // bytes as more of the tree.
+        if pos >= struct_end {
+            return Err(FdtError::Malformed);
+        }
+        let token = be32_s(pos)?;
         pos += 4;
         match token {
             FDT_BEGIN_NODE => {
-                let (name, next) = read_cstr(fdt, pos)?;
+                // Node names live in the structure block: scan for the NUL only
+                // within `[.., struct_end)` so a name can't run past the block.
+                let (name, next) = read_cstr(node_block, pos)?;
                 pos = (next + 3) & !3; // pad to 4
                 out.nodes.push(name.clone());
                 stack.push(name);
@@ -413,10 +441,16 @@ pub fn parse(fdt: &[u8]) -> Result<ParsedFdt, FdtError> {
                 stack.pop().ok_or(FdtError::Malformed)?;
             }
             FDT_PROP => {
-                let len = be32_at(fdt, pos)? as usize;
-                let nameoff = be32_at(fdt, pos + 4)? as usize;
+                let len = be32_s(pos)? as usize;
+                let nameoff = be32_s(pos + 4)? as usize;
                 pos += 8;
                 let vend = pos.checked_add(len).ok_or(FdtError::Truncated)?;
+                // The value bytes must lie inside the structure block too, or a
+                // property could claim bytes past `struct_end` (the strings
+                // block, trailing data) as its value.
+                if vend > struct_end {
+                    return Err(FdtError::Truncated);
+                }
                 let value = fdt.get(pos..vend).ok_or(FdtError::Truncated)?.to_vec();
                 pos = (vend + 3) & !3;
                 let (pname, _) = read_cstr(strings, nameoff)?;
@@ -533,5 +567,97 @@ mod tests {
         let mut bad = dtb.clone();
         bad[0] ^= 0xFF;
         assert_eq!(parse(&bad).unwrap_err(), FdtError::BadMagic);
+    }
+
+    /// Review r6, case 1: a `size_dt_struct` that stops **short of** the real
+    /// `FDT_END` (here, exactly the trailing terminator token is dropped from
+    /// the declared block) must fail closed — the loop is bounded by
+    /// `struct_end`, so it never walks past the declared block to find a
+    /// terminator that the header says isn't there.
+    #[test]
+    fn parse_rejects_size_dt_struct_short_of_fdt_end() {
+        let mut dtb = sample();
+        let full = be32_at(&dtb, 36).unwrap(); // size_dt_struct
+        dtb[36..40].copy_from_slice(&(full - 4).to_be_bytes()); // drop the FDT_END
+        let err = parse(&dtb).unwrap_err();
+        assert!(
+            matches!(err, FdtError::Malformed | FdtError::Truncated),
+            "size_dt_struct short of FDT_END must fail closed, got {err:?}"
+        );
+    }
+
+    /// Review r6, case 2: tokens that live **past** the declared struct block
+    /// must not be decoded. The block below has no `FDT_END` inside it; the
+    /// `FDT_END_NODE`/`FDT_END` that would "complete" the tree sit in the gap
+    /// after `struct_end`. An unbounded loop would consume those out-of-block
+    /// bytes and accept the FDT; the bounded loop rejects it. The identical
+    /// bytes parse once the declaration is made honest — proving the rejection
+    /// is the boundary check, not malformed tokens.
+    #[test]
+    fn parse_rejects_tokens_outside_the_declared_struct_block() {
+        let tok = |v: u32| v.to_be_bytes();
+        let mut block = Vec::new();
+        block.extend_from_slice(&tok(FDT_BEGIN_NODE));
+        block.extend_from_slice(&[0, 0, 0, 0]); // "" (root) name, padded to 4
+        block.extend_from_slice(&tok(FDT_PROP));
+        block.extend_from_slice(&tok(4)); // value len
+        block.extend_from_slice(&tok(0)); // nameoff -> "p" in the strings block
+        block.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // value bytes
+        // The terminators are deliberately OUTSIDE the declared block.
+        let mut trailing = Vec::new();
+        trailing.extend_from_slice(&tok(FDT_END_NODE));
+        trailing.extend_from_slice(&tok(FDT_END));
+        let strings = b"p\0";
+
+        // size_dt_struct covers only `block` — the terminators are out of bounds.
+        let bounded = raw_fdt(&block, &trailing, strings, block.len() as u32);
+        assert!(
+            parse(&bounded).is_err(),
+            "tokens past the declared struct block must not complete the tree"
+        );
+
+        // Honest declaration (size_dt_struct includes the terminators): parses.
+        let honest = raw_fdt(
+            &block,
+            &trailing,
+            strings,
+            (block.len() + trailing.len()) as u32,
+        );
+        let p = parse(&honest).expect("an honest declaration of the same bytes parses");
+        assert_eq!(p.prop("", "p").unwrap(), &[0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    /// Assemble a raw FDT with the header written **verbatim**, so
+    /// `size_dt_struct` may deliberately disagree with where the structure's
+    /// terminator actually sits (which `build`/`assemble` never do). Layout:
+    /// header(40) · rsvmap(16) · `struct_block` · `trailing` · `strings`.
+    fn raw_fdt(
+        struct_block: &[u8],
+        trailing: &[u8],
+        strings: &[u8],
+        size_dt_struct: u32,
+    ) -> Vec<u8> {
+        const HEADER_LEN: u32 = 40;
+        let rsvmap = [0u8; 16];
+        let off_dt_struct = HEADER_LEN + rsvmap.len() as u32;
+        let off_dt_strings = off_dt_struct + struct_block.len() as u32 + trailing.len() as u32;
+        let totalsize = off_dt_strings + strings.len() as u32;
+        let mut out = Vec::new();
+        let be = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_be_bytes());
+        be(&mut out, FDT_MAGIC); // 0
+        be(&mut out, totalsize); // 4
+        be(&mut out, off_dt_struct); // 8
+        be(&mut out, off_dt_strings); // 12
+        be(&mut out, HEADER_LEN); // 16 off_mem_rsvmap
+        be(&mut out, FDT_VERSION); // 20
+        be(&mut out, FDT_LAST_COMP_VERSION); // 24
+        be(&mut out, 0); // 28 boot_cpuid_phys
+        be(&mut out, strings.len() as u32); // 32 size_dt_strings
+        be(&mut out, size_dt_struct); // 36 (may disagree with struct_block.len())
+        out.extend_from_slice(&rsvmap);
+        out.extend_from_slice(struct_block);
+        out.extend_from_slice(trailing);
+        out.extend_from_slice(strings);
+        out
     }
 }
