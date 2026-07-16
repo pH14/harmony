@@ -57,7 +57,7 @@ jobs:
       - name: Install CI cargo tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest,cargo-deny
+          tool: cargo-nextest,cargo-deny@0.19.9
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
@@ -217,7 +217,7 @@ jobs:
       - name: Install CI cargo tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny@0.19.9
       - name: harness + floor-check (fmt, clippy, tests, deny)
         run: |
           cargo fmt --manifest-path "$SPIKE/Cargo.toml" --all -- --check
