@@ -98,11 +98,12 @@ pub enum SdkError {
     },
 
     /// A v2 declaration describes semantics the binary emission path cannot
-    /// actually report (e.g. a non-`u64` state value, a state point with no base
-    /// operation, or an occurrence carrying a reducible value/operation). Accepting
-    /// it would let schema and event evidence disagree, so it is refused — the
-    /// "accept a declaration only for an emission path that reports every required
-    /// update" rule, enforced in the codec.
+    /// actually report (a non-`u64` state value, a state point with no base
+    /// operation, an occurrence carrying a reducible value/operation, or a
+    /// classification that disagrees with the namespace its firings arrive under).
+    /// Accepting it would let schema and event evidence disagree, so it is refused
+    /// — the "accept a declaration only for an emission path that reports every
+    /// required update" rule, enforced in the codec.
     #[error("unsupported v2 declaration for point {local} in namespace {namespace}: {reason}")]
     UnsupportedDeclaration {
         /// The declared point's namespace.
@@ -111,5 +112,41 @@ pub enum SdkError {
         local: u32,
         /// Why the binary emission path cannot honor the declaration.
         reason: &'static str,
+    },
+
+    /// A declaration lists the same runtime coordinate twice. A firing cannot
+    /// distinguish two entries at one `(namespace, local)`, so the second would
+    /// silently shadow the first; the declaration is refused instead.
+    #[error("duplicate declared coordinate: namespace {namespace}, local {local}")]
+    DuplicateCoordinate {
+        /// The duplicated namespace.
+        namespace: u8,
+        /// The duplicated local id.
+        local: u32,
+    },
+
+    /// A declared point name is longer than the `u16` length prefix can encode.
+    /// Truncating it would corrupt the identity label irreversibly and break the
+    /// round-trip contract, so the declaration is refused.
+    #[error("declared name for point {local} in namespace {namespace} is {len} bytes (max {max})")]
+    NameTooLong {
+        /// The point's namespace.
+        namespace: u8,
+        /// The point's local id.
+        local: u32,
+        /// The name's byte length.
+        len: usize,
+        /// The maximum encodable length.
+        max: usize,
+    },
+
+    /// A stream carries more than one catalog declaration (`event_id == 0`). One
+    /// rollout declares its schema once; multiple declarations are ambiguous
+    /// (which governs the layout of the events between them?), so the stream is
+    /// refused rather than silently decoded under the first.
+    #[error("stream carries {count} catalog declarations; exactly one is expected")]
+    MultipleDeclarations {
+        /// How many catalog declarations were found.
+        count: usize,
     },
 }

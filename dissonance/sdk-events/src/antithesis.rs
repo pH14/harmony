@@ -247,11 +247,16 @@ fn decode_setup(moment: Moment, ordinal: u64, setup: &Value, raw: Raw) -> SdkEve
     }
 }
 
-/// The aggregated property identity: the `id` field, falling back to `message`.
+/// The aggregated property identity. `docs/DISSONANCE-STRATEGY.md` rules that "the
+/// assertion message identifies the property and multiple sites may contribute to
+/// it," so the **message** is the identity — records from different sites (and
+/// with different per-site `id`s) that share a message aggregate into one property.
+/// The per-site `id` is preserved as site metadata (see [`site_of`]), not identity.
+/// `id` is a defensive fallback only when a record carries no message.
 fn property_identity(v: &Value) -> Option<String> {
-    v.get("id")
+    v.get("message")
         .and_then(Value::as_str)
-        .or_else(|| v.get("message").and_then(Value::as_str))
+        .or_else(|| v.get("id").and_then(Value::as_str))
         .map(str::to_string)
 }
 
@@ -289,28 +294,34 @@ fn assert_expectation(v: &Value, assert_type: Option<AssertType>) -> Option<Expe
     }
 }
 
-/// Build a [`SiteId`] from a `location` object, if present.
+/// Build a [`SiteId`] carrying the per-site provenance — the source's `id` field
+/// and the `location`. Returns `None` only when neither is present. The `id` is
+/// site metadata here, kept out of the property identity ([`property_identity`]).
 fn site_of(v: &Value) -> Option<SiteId> {
-    let loc = v.get("location")?;
+    let id = v.get("id").and_then(Value::as_str).map(str::to_string);
+    let location = v.get("location");
+    if id.is_none() && location.is_none() {
+        return None;
+    }
+    let field = |key: &str| {
+        location
+            .and_then(|loc| loc.get(key))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let num = |key: &str| {
+        location
+            .and_then(|loc| loc.get(key))
+            .and_then(Value::as_u64)
+            .unwrap_or_default() as u32
+    };
     Some(SiteId {
-        file: loc
-            .get("file")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        function: loc
-            .get("function")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        begin_line: loc
-            .get("begin_line")
-            .and_then(Value::as_u64)
-            .unwrap_or_default() as u32,
-        begin_column: loc
-            .get("begin_column")
-            .and_then(Value::as_u64)
-            .unwrap_or_default() as u32,
+        id,
+        file: field("file"),
+        function: field("function"),
+        begin_line: num("begin_line"),
+        begin_column: num("begin_column"),
     })
 }
 

@@ -58,6 +58,9 @@ pub sdk_events::SdkError::ClassificationConflict
 pub sdk_events::SdkError::ClassificationConflict::first: sdk_events::Classification
 pub sdk_events::SdkError::ClassificationConflict::id: sdk_events::ObservationId
 pub sdk_events::SdkError::ClassificationConflict::second: sdk_events::Classification
+pub sdk_events::SdkError::DuplicateCoordinate
+pub sdk_events::SdkError::DuplicateCoordinate::local: u32
+pub sdk_events::SdkError::DuplicateCoordinate::namespace: u8
 pub sdk_events::SdkError::IncompatibleShapes
 pub sdk_events::SdkError::IncompatibleShapes::first: sdk_events::ValueShape
 pub sdk_events::SdkError::IncompatibleShapes::id: sdk_events::ObservationId
@@ -73,6 +76,13 @@ pub sdk_events::SdkError::MixedOperations
 pub sdk_events::SdkError::MixedOperations::first: sdk_events::UpdateOp
 pub sdk_events::SdkError::MixedOperations::id: sdk_events::ObservationId
 pub sdk_events::SdkError::MixedOperations::second: sdk_events::UpdateOp
+pub sdk_events::SdkError::MultipleDeclarations
+pub sdk_events::SdkError::MultipleDeclarations::count: usize
+pub sdk_events::SdkError::NameTooLong
+pub sdk_events::SdkError::NameTooLong::len: usize
+pub sdk_events::SdkError::NameTooLong::local: u32
+pub sdk_events::SdkError::NameTooLong::max: usize
+pub sdk_events::SdkError::NameTooLong::namespace: u8
 pub sdk_events::SdkError::UnknownDeclarationByte
 pub sdk_events::SdkError::UnknownDeclarationByte::field: &'static str
 pub sdk_events::SdkError::UnknownDeclarationByte::value: u8
@@ -191,6 +201,7 @@ pub sdk_events::SiteId::begin_column: u32
 pub sdk_events::SiteId::begin_line: u32
 pub sdk_events::SiteId::file: alloc::string::String
 pub sdk_events::SiteId::function: alloc::string::String
+pub sdk_events::SiteId::id: core::option::Option<alloc::string::String>
 pub const sdk_events::KIND_ASSERT_HIT: &str
 pub const sdk_events::KIND_ASSERT_VIOLATION: &str
 pub const sdk_events::KIND_BUGGIFY: &str

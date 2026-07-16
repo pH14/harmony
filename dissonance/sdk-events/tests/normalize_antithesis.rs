@@ -28,10 +28,15 @@ fn assertion_normalizes_to_occurrence_property_evidence() {
 
     assert_eq!(n.schema.source, SourceFormat::AntithesisJson);
     let ev = &n.events[0];
-    // The aggregated property is the identity…
-    assert_eq!(ev.id, ObservationId::Property("prop-balance".into()));
+    // The aggregated property is the *message* (DISSONANCE-STRATEGY: "the assertion
+    // message identifies the property"); the per-site `id` is site metadata.
+    assert_eq!(
+        ev.id,
+        ObservationId::Property("balance stays non-negative".into())
+    );
     // …and the site is separate provenance, not a property verdict.
     let site = ev.site.as_ref().expect("site preserved");
+    assert_eq!(site.id.as_deref(), Some("prop-balance"));
     assert_eq!(site.file, "src/bank.rs");
     assert_eq!(site.function, "withdraw");
     assert_eq!(site.begin_line, 42);
@@ -48,7 +53,9 @@ fn assertion_normalizes_to_occurrence_property_evidence() {
     // `sdk-events` records it but never derives the absence claim.
     let entry = n
         .schema
-        .entry(&ObservationId::Property("prop-balance".into()))
+        .entry(&ObservationId::Property(
+            "balance stays non-negative".into(),
+        ))
         .unwrap();
     assert_eq!(entry.classification, Classification::Occurrence);
     assert_eq!(entry.base_op, None);
@@ -56,23 +63,35 @@ fn assertion_normalizes_to_occurrence_property_evidence() {
 }
 
 #[test]
-fn many_sites_aggregate_into_one_property() {
+fn sites_with_differing_ids_aggregate_by_message_into_one_property() {
+    // Two records at different sites, with different per-site `id`s, but the same
+    // message — the strategy's "multiple sites may contribute to one property".
     let a = r#"{"antithesis_assert":{"assert_type":"sometimes","condition":true,
-        "id":"prop-x","message":"x","must_hit":true,
+        "id":"site-a","message":"progress made","must_hit":true,
         "location":{"file":"a.rs","function":"f","begin_line":1,"begin_column":1}}}"#;
     let b = r#"{"antithesis_assert":{"assert_type":"sometimes","condition":false,
-        "id":"prop-x","message":"x","must_hit":true,
+        "id":"site-b","message":"progress made","must_hit":true,
         "location":{"file":"b.rs","function":"g","begin_line":2,"begin_column":2}}}"#;
     let n = decode_antithesis(&[rec(1, a), rec(2, b)]).expect("decodes");
 
-    // Two events, two distinct sites, one aggregated property in the schema.
+    // Two events with two distinct site ids, one aggregated property.
     assert_eq!(n.events.len(), 2);
-    assert_eq!(n.events[0].site.as_ref().unwrap().file, "a.rs");
-    assert_eq!(n.events[1].site.as_ref().unwrap().file, "b.rs");
+    assert_eq!(
+        n.events[0].site.as_ref().unwrap().id.as_deref(),
+        Some("site-a")
+    );
+    assert_eq!(
+        n.events[1].site.as_ref().unwrap().id.as_deref(),
+        Some("site-b")
+    );
+    assert_eq!(
+        n.events[0].id, n.events[1].id,
+        "same message → same property"
+    );
     assert_eq!(n.schema.len(), 1);
     assert!(
         n.schema
-            .entry(&ObservationId::Property("prop-x".into()))
+            .entry(&ObservationId::Property("progress made".into()))
             .is_some()
     );
 }
@@ -113,10 +132,15 @@ fn numeric_guidance_max_normalizes_to_the_declared_maximum() {
         other => panic!("{other:?}"),
     }
     // The guidance property is state-bearing with a resolved max op and numeric
-    // shape — a monotone extremum, not arbitrary `set` state.
+    // shape — a monotone extremum, not arbitrary `set` state. Its identity is the
+    // message ("maze depth"), with the per-site `id` ("depth") kept as site data.
+    assert_eq!(
+        n.events[0].site.as_ref().unwrap().id.as_deref(),
+        Some("depth")
+    );
     let entry = n
         .schema
-        .entry(&ObservationId::Property("depth".into()))
+        .entry(&ObservationId::Property("maze depth".into()))
         .unwrap();
     assert_eq!(entry.classification, Classification::State);
     assert_eq!(entry.base_op, Some(UpdateOp::Max));
@@ -245,5 +269,32 @@ proptest! {
                 prop_assert_eq!(&ev.raw.bytes, bytes);
             }
         }
+    }
+
+    /// Property identity is the message: assertions aggregate by message
+    /// regardless of their per-site ids. Each event's identity is its message, and
+    /// the schema holds exactly one entry per distinct message.
+    #[test]
+    fn assertions_aggregate_by_message_regardless_of_id(
+        // Small alphabets so messages and ids collide across records.
+        specs in prop::collection::vec(("[a-c]", "[x-z]"), 1..12),
+    ) {
+        let records: Vec<_> = specs
+            .iter()
+            .enumerate()
+            .map(|(i, (msg, id))| {
+                let json = format!(
+                    r#"{{"antithesis_assert":{{"assert_type":"sometimes","condition":true,"message":"{msg}","id":"{id}"}}}}"#
+                );
+                (Moment(i as u64), json.into_bytes())
+            })
+            .collect();
+        let n = decode_antithesis(&records).expect("decodes");
+
+        for ((msg, _), ev) in specs.iter().zip(&n.events) {
+            prop_assert_eq!(&ev.id, &ObservationId::Property(msg.clone()));
+        }
+        let distinct: std::collections::BTreeSet<&String> = specs.iter().map(|(m, _)| m).collect();
+        prop_assert_eq!(n.schema.len(), distinct.len());
     }
 }

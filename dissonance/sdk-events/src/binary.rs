@@ -22,7 +22,7 @@
 //! **totally** (a garbled or unrecognized event becomes a [`Payload::Unknown`]
 //! carrying its raw bytes, never a panic and never a dropped byte).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use explorer::Moment;
 
@@ -68,6 +68,7 @@ pub struct DeclaredPoint {
 /// `guest/sdk` deliverable; this host-side encoder exists so declarations
 /// round-trip and so fixtures/tools can build them.
 pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkError> {
+    let mut seen: BTreeSet<(u8, u32)> = BTreeSet::new();
     for p in points {
         validate_v2_point(
             p.namespace,
@@ -76,6 +77,24 @@ pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkErr
             p.value_shape,
             p.base_op,
         )?;
+        // A firing cannot distinguish two entries at one coordinate, so a
+        // declaration must not list one twice.
+        if !seen.insert((p.namespace, p.local)) {
+            return Err(SdkError::DuplicateCoordinate {
+                namespace: p.namespace,
+                local: p.local,
+            });
+        }
+        // A name longer than the u16 length prefix cannot be encoded without
+        // corrupting the identity label; refuse rather than truncate.
+        if p.name.len() > u16::MAX as usize {
+            return Err(SdkError::NameTooLong {
+                namespace: p.namespace,
+                local: p.local,
+                len: p.name.len(),
+                max: u16::MAX as usize,
+            });
+        }
     }
     let mut out = Vec::new();
     out.extend_from_slice(&wire::CATALOG_MAGIC.to_le_bytes());
@@ -95,14 +114,26 @@ pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkErr
             Some(Expectation::MustHit) => wire::V2_EXPECT_MUST_HIT,
             Some(Expectation::MustNotHit) => wire::V2_EXPECT_MUST_NOT_HIT,
         });
-        // Names are u16-length-prefixed; a name longer than that is truncated to
-        // the prefix's reach by construction here (callers keep names short).
+        // Length-checked above, so the cast is exact.
         let name = p.name.as_bytes();
-        let len = name.len().min(u16::MAX as usize);
-        out.extend_from_slice(&(len as u16).to_le_bytes());
-        out.extend_from_slice(&name[..len]);
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(name);
     }
     Ok(out)
+}
+
+/// The classification a namespace's firings actually decode to on the binary path
+/// ([`decode_event`]), or `None` for a namespace that produces no reportable
+/// firing. This is the ground truth a declaration must agree with.
+fn namespace_classification(namespace: u8) -> Option<Classification> {
+    match namespace {
+        // Assert / buggify / lifecycle firings decode to occurrence payloads…
+        wire::NS_ASSERT | wire::NS_BUGGIFY | wire::NS_LIFECYCLE => Some(Classification::Occurrence),
+        // …and state firings to state payloads.
+        wire::NS_STATE => Some(Classification::State),
+        // Any other namespace decodes only to `Unknown` — nothing to report.
+        _ => None,
+    }
 }
 
 /// Validate a v2 declared point against what the binary emission path can encode
@@ -110,6 +141,9 @@ pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkErr
 /// on decode so the two never disagree.
 ///
 /// - the local id must fit the 24-bit runtime field ([`SdkError::LocalIdOutOfRange`]);
+/// - the classification must match the one the namespace's firings actually decode
+///   to ([`namespace_classification`]) — an `NS_ASSERT` point cannot be declared
+///   state, an `NS_STATE` point cannot be declared occurrence;
 /// - a **state** point must declare a base operation and a `u64` value shape — the
 ///   only state value the binary firing wire carries ([`SdkError::UnsupportedDeclaration`]);
 /// - an **occurrence** point carries no base operation and no reducible value shape.
@@ -128,6 +162,21 @@ fn validate_v2_point(
         local,
         reason,
     };
+    // The classification must be exactly what this namespace's firings decode to,
+    // else schema and event evidence would disagree with no error surfaced.
+    match namespace_classification(namespace) {
+        None => {
+            return Err(unsupported(
+                "namespace has no reportable firing on the binary emission path",
+            ));
+        }
+        Some(expected) if expected != classification => {
+            return Err(unsupported(
+                "declared classification disagrees with the namespace's firing payload",
+            ));
+        }
+        Some(_) => {}
+    }
     match classification {
         Classification::State => {
             if base_op.is_none() {
@@ -164,7 +213,20 @@ fn validate_v2_point(
 /// declaration-structure or per-identity coherence failures only; the event stream
 /// itself never errors.
 pub fn decode_binary(raw: &[(Moment, u32, Vec<u8>)]) -> Result<Normalized, SdkError> {
-    // 1. Declaration → schema + per-coordinate assert verbs + declared source.
+    // 1. Declaration → schema + per-coordinate assert verbs + declared source. A
+    //    rollout declares its schema exactly once; more than one catalog record is
+    //    ambiguous about which governs the events between them (and a later record
+    //    could claim a different wire version), so refuse rather than silently
+    //    decode under the first.
+    let declaration_count = raw
+        .iter()
+        .filter(|(_, id, _)| *id == wire::CATALOG_EVENT_ID)
+        .count();
+    if declaration_count > 1 {
+        return Err(SdkError::MultipleDeclarations {
+            count: declaration_count,
+        });
+    }
     let declaration = raw.iter().find(|(_, id, _)| *id == wire::CATALOG_EVENT_ID);
     let mut ctx = match declaration {
         Some((_, _, bytes)) => parse_declaration(bytes)?,
@@ -307,8 +369,11 @@ fn parse_v1(r: &mut Reader<'_>) -> Result<DeclContext, SdkError> {
         ctx.schema.merge_entry(SchemaEntry {
             id,
             classification,
-            value_shape: state_shape(classification),
-            base_op: None, // v1 never declares a base op — unresolved on purpose
+            // v1 declares neither value shape nor base operation — both are left
+            // unresolved on purpose (the v1 catalog carries only kind, id, name);
+            // inventing `U64` would claim semantics the source never declared.
+            value_shape: None,
+            base_op: None,
             expectation,
             name: Some(name),
         })?;
@@ -327,6 +392,7 @@ fn parse_v2(r: &mut Reader<'_>) -> Result<DeclContext, SdkError> {
         assert_types: BTreeMap::new(),
         observed_ops: BTreeMap::new(),
     };
+    let mut seen: BTreeSet<(u8, u32)> = BTreeSet::new();
     for _ in 0..count {
         let namespace = need_u8(r, "v2 point namespace")?;
         let local = need_u32(r, "v2 point local id")?;
@@ -363,6 +429,11 @@ fn parse_v2(r: &mut Reader<'_>) -> Result<DeclContext, SdkError> {
         // report it (and the id can be addressed) — identical to the encode check,
         // so a decoded declaration is never richer than a valid encodable one.
         validate_v2_point(namespace, local, classification, value_shape, base_op)?;
+        // One coordinate, one entry: reject a duplicate rather than let
+        // `merge_entry` silently collapse it and drop the shadowed name.
+        if !seen.insert((namespace, local)) {
+            return Err(SdkError::DuplicateCoordinate { namespace, local });
+        }
         ctx.schema.merge_entry(SchemaEntry {
             id: ObservationId::Point { namespace, local },
             classification,
@@ -401,10 +472,14 @@ fn classify_v1_kind(
     Option<AssertType>,
 ) {
     match kind {
+        // `always` is special on this wire: `guest/sdk` emits only violations, so a
+        // *passing* always assertion produces no event at all. Marking it must-hit
+        // would make a correct run look like an unsatisfied absence expectation, so
+        // an always point carries no expectation — only its failure is observable.
         wire::KIND_ALWAYS => (
             Some(wire::NS_ASSERT),
             Classification::Occurrence,
-            Some(Expectation::MustHit),
+            None,
             Some(AssertType::Always),
         ),
         wire::KIND_SOMETIMES => (
@@ -433,15 +508,6 @@ fn classify_v1_kind(
             None,
         ),
         _ => (None, Classification::Occurrence, None, None),
-    }
-}
-
-/// The value shape a classification implies for a binary point: state points carry
-/// a `u64`; occurrences carry no reducible value.
-fn state_shape(classification: Classification) -> Option<ValueShape> {
-    match classification {
-        Classification::State => Some(ValueShape::U64),
-        Classification::Occurrence => None,
     }
 }
 

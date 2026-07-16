@@ -11,9 +11,12 @@ Differential epic (`hm-bbx`).
 ## What it adds (the normalized boundary)
 
 - **`decode_antithesis`** (`src/antithesis.rs`) — the app-facing **Antithesis SDK
-  JSON** over `/dev/harmony`. `antithesis_assert` → occurrence/property evidence
-  with the aggregated property as the identity and the `location` preserved as a
-  separate `SiteId` (provenance/coverage, never a property verdict).
+  JSON** over `/dev/harmony`. `antithesis_assert` → occurrence/property evidence.
+  The **message** is the property identity (`DISSONANCE-STRATEGY`: "the assertion
+  message identifies the property and multiple sites may contribute to it"), so
+  records from different sites — with different per-site `id`s — aggregate into one
+  property; the `id` and `location` are preserved as the assertion `SiteId`
+  (provenance/coverage, never a property verdict).
   `antithesis_guidance` (numeric) → a **monotone extremum only** (`maximize` →
   `Max`/`Min`, never `set`), the metric kept as its original token, report-only.
   `antithesis_setup` → a lifecycle occurrence.
@@ -26,12 +29,19 @@ Differential epic (`hm-bbx`).
   update operation, so a v2 state point is reducible before it ever fires. The
   firing codec honors **all four** operations (`set`/`max`/`min`/`accumulate`),
   and the value the binary path carries is the cooperative vertical's bounded
-  integer (`u64`). A v2 declaration is accepted only if the emission path can
-  report it: a state point declares a base op + a `u64` shape, an occurrence
-  declares neither, and every local id fits the 24-bit runtime field — otherwise
-  it is a typed error, on both encode and decode, so schema and event evidence can
-  never disagree. A catalog naming an unsupported wire version is refused
-  (`UnsupportedVersion`), never decoded under a guessed layout.
+  integer (`u64`). A v2 declaration is accepted (identically on encode and decode,
+  so schema and event evidence can never disagree) only if the emission path can
+  report it: its classification matches the one the namespace's firings decode to
+  (`NS_STATE`⇒state, `NS_ASSERT`/`NS_BUGGIFY`/`NS_LIFECYCLE`⇒occurrence); a state
+  point declares a base op + a `u64` shape and an occurrence declares neither;
+  every local id fits the 24-bit runtime field; no coordinate is declared twice;
+  and no name overflows its `u16` length prefix — each otherwise a typed error.
+  **v1** declares neither value shape nor base op (both `None` — unresolved, never
+  invented), and a v1 `always` point carries **no** expectation (this wire emits
+  only violations, so a passing `always` produces no event and must not read as an
+  unsatisfied must-hit). A catalog naming an unsupported wire version is refused
+  (`UnsupportedVersion`), and a stream carrying more than one catalog declaration
+  is refused (`MultipleDeclarations`) — neither is decoded under a guessed layout.
 - **`SdkSchema` / `SchemaEntry` / `SdkEvent`** (`src/schema.rs`, `src/event.rs`) —
   the normalized model: source provenance, observation identity, value, and
   classification are kept as separate roles (cell projection is *not* owned here).

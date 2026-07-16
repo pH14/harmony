@@ -6,8 +6,9 @@
 use explorer::Moment;
 use proptest::prelude::*;
 use sdk_events::{
-    Classification, DeclaredPoint, Expectation, NS_ASSERT, NS_BUGGIFY, NS_STATE, ObservationId,
-    Payload, SdkError, SourceFormat, UpdateOp, ValueShape, decode_binary, encode_v2_declaration,
+    Classification, DeclaredPoint, Expectation, NS_ASSERT, NS_BUGGIFY, NS_LIFECYCLE, NS_STATE,
+    ObservationId, Payload, SdkError, SourceFormat, UpdateOp, ValueShape, decode_binary,
+    encode_v2_declaration,
 };
 
 // --- wire-byte builders (mirror `guest/sdk/src/wire.rs`; the canonical v1 side) ---
@@ -81,6 +82,10 @@ fn v1_never_fired_state_is_reportable_but_not_reducible() {
     let entry = n.schema.entry(&id).expect("declared");
     assert_eq!(entry.classification, Classification::State);
     assert_eq!(entry.base_op, None, "v1 declares no base op — unresolved");
+    assert_eq!(
+        entry.value_shape, None,
+        "v1 declares no value shape either — not invented as U64"
+    );
     assert!(
         !entry.is_reducible_state(),
         "an unresolved v1 state point must not be reducible"
@@ -159,10 +164,26 @@ fn v1_assert_firing_carries_the_declared_verb_and_condition() {
         }
         other => panic!("expected assertion, got {other:?}"),
     }
-    // The always point declares a must-hit expectation, preserved for reporting.
+    // An `always` point carries NO expectation on this wire: `guest/sdk` emits
+    // only violations, so a passing always produces no event and must not read as
+    // an unsatisfied must-hit.
     let id = ObservationId::Point {
         namespace: NS_ASSERT,
         local: 3,
+    };
+    assert_eq!(n.schema.entry(&id).unwrap().expectation, None);
+}
+
+#[test]
+fn v1_sometimes_point_keeps_its_must_hit_expectation() {
+    // Unlike `always`, a `sometimes` emits a hit when satisfied, so never-firing is
+    // a genuine coverage gap — the must-hit expectation is correct here.
+    const KIND_SOMETIMES: u8 = 1;
+    let raw = vec![at(0, 0, v1_catalog(&[(KIND_SOMETIMES, 4, "reached")]))];
+    let n = decode_binary(&raw).expect("decodes");
+    let id = ObservationId::Point {
+        namespace: NS_ASSERT,
+        local: 4,
     };
     assert_eq!(
         n.schema.entry(&id).unwrap().expectation,
@@ -312,9 +333,18 @@ fn v2_occurrence_carrying_a_value_or_operation_is_rejected() {
 }
 
 #[test]
-fn v2_classification_conflict_is_a_typed_error() {
-    let state = v2_state(1, "x", UpdateOp::Set);
-    let occ = DeclaredPoint {
+fn v2_classification_must_agree_with_the_namespace() {
+    // A state point at an assert namespace would decode as an assertion, not state;
+    // an occurrence at the state namespace would decode as state — both refused so
+    // schema and event evidence cannot disagree.
+    let mut state_at_assert = v2_state(1, "x", UpdateOp::Set);
+    state_at_assert.namespace = NS_ASSERT;
+    assert!(matches!(
+        encode_v2_declaration(&[state_at_assert]),
+        Err(SdkError::UnsupportedDeclaration { .. })
+    ));
+
+    let occ_at_state = DeclaredPoint {
         namespace: NS_STATE,
         local: 1,
         name: "x".into(),
@@ -323,11 +353,61 @@ fn v2_classification_conflict_is_a_typed_error() {
         base_op: None,
         expectation: None,
     };
-    // Each point is individually valid; the conflict is detected when the second
-    // declaration for the same coordinate is merged.
-    let err = decode_binary(&[at(0, 0, encode_ok(&[state, occ]))])
-        .expect_err("classification conflict must fail");
-    assert!(matches!(err, SdkError::ClassificationConflict { .. }));
+    assert!(matches!(
+        encode_v2_declaration(&[occ_at_state]),
+        Err(SdkError::UnsupportedDeclaration { .. })
+    ));
+}
+
+#[test]
+fn v2_duplicate_coordinate_is_rejected_on_encode_and_decode() {
+    // Two points at one runtime coordinate — a firing cannot distinguish them, so
+    // the declaration is refused rather than silently collapsing one away.
+    let a = v2_state(1, "commit_index", UpdateOp::Set);
+    let b = v2_state(1, "other_name", UpdateOp::Set); // same (namespace, local)
+    let err = encode_v2_declaration(&[a, b]).expect_err("duplicate coord must fail on encode");
+    assert!(matches!(err, SdkError::DuplicateCoordinate { .. }));
+
+    // Hand-build a declaration with two records at the same coordinate to exercise
+    // the decode-side check (encode won't emit one).
+    let mut decl = Vec::new();
+    decl.extend_from_slice(&CATALOG_MAGIC.to_le_bytes());
+    decl.push(2);
+    decl.extend_from_slice(&2u32.to_le_bytes()); // 2 records…
+    for name in ["a", "b"] {
+        decl.push(NS_STATE);
+        decl.extend_from_slice(&7u32.to_le_bytes()); // …at the same local
+        decl.push(1); // state
+        decl.push(0); // u64
+        decl.push(0); // set
+        decl.push(255); // no expectation
+        decl.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        decl.extend_from_slice(name.as_bytes());
+    }
+    let err = decode_binary(&[at(0, 0, decl)]).expect_err("duplicate coord must fail on decode");
+    assert!(matches!(err, SdkError::DuplicateCoordinate { .. }));
+}
+
+#[test]
+fn v2_oversized_name_is_rejected_not_truncated() {
+    let mut p = v2_state(1, "x", UpdateOp::Set);
+    p.name = "n".repeat(u16::MAX as usize + 1);
+    let err = encode_v2_declaration(&[p]).expect_err("oversized name must fail");
+    assert!(matches!(err, SdkError::NameTooLong { .. }));
+}
+
+#[test]
+fn a_stream_with_two_catalog_declarations_is_rejected() {
+    // The second control-0 record (here a future-version claim) must not be
+    // silently ignored while events decode under the first.
+    let first = v1_catalog(&[(KIND_STATE, 1, "reg")]);
+    let mut second = Vec::new();
+    second.extend_from_slice(&CATALOG_MAGIC.to_le_bytes());
+    second.push(99); // a future version
+    second.extend_from_slice(&0u32.to_le_bytes());
+    let raw = vec![at(0, 0, first), at(1, 0, second)];
+    let err = decode_binary(&raw).expect_err("two declarations must fail");
+    assert!(matches!(err, SdkError::MultipleDeclarations { count: 2 }));
 }
 
 // --- unsupported version + out-of-range ids are typed errors -----------------
@@ -508,5 +588,40 @@ proptest! {
                 prop_assert!(unsupported);
             }
         }
+    }
+
+    /// A v2 declaration is accepted iff its classification matches the one the
+    /// namespace's firings actually decode to — the same mapping the decoder uses,
+    /// so schema and event evidence can never disagree.
+    #[test]
+    fn namespace_classification_agreement_is_enforced(
+        namespace in any::<u8>(),
+        is_state in any::<bool>(),
+    ) {
+        let (classification, value_shape, base_op) = if is_state {
+            (Classification::State, Some(ValueShape::U64), Some(UpdateOp::Set))
+        } else {
+            (Classification::Occurrence, None, None)
+        };
+        let p = DeclaredPoint {
+            namespace,
+            local: 1,
+            name: "p".into(),
+            classification,
+            value_shape,
+            base_op,
+            expectation: None,
+        };
+        let accepted = encode_v2_declaration(&[p]).is_ok();
+        // State firings arrive only under NS_STATE; occurrence firings under the
+        // assert/buggify/lifecycle namespaces. Every other namespace is refused.
+        let should_accept = if namespace == NS_STATE {
+            is_state
+        } else if namespace == NS_ASSERT || namespace == NS_BUGGIFY || namespace == NS_LIFECYCLE {
+            !is_state
+        } else {
+            false
+        };
+        prop_assert_eq!(accepted, should_accept);
     }
 }

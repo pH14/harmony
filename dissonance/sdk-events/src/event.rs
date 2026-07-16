@@ -40,9 +40,15 @@ pub enum AssertType {
 }
 
 /// An assertion **site** — provenance and coverage, kept separate from the
-/// aggregated property identity. Multiple sites may contribute to one property.
+/// aggregated property identity. Multiple sites may contribute to one property
+/// (`docs/DISSONANCE-STRATEGY.md`: "the assertion message identifies the property
+/// and multiple sites may contribute to it; site identity remains provenance and
+/// coverage").
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SiteId {
+    /// The source's per-site assertion `id`, if present — site metadata, not the
+    /// property identity (the message is the property; see [`SdkEvent::id`]).
+    pub id: Option<String>,
     /// The source file the assertion is in.
     pub file: String,
     /// The enclosing function/class path.
