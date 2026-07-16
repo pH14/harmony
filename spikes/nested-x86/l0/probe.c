@@ -97,6 +97,7 @@ static void count_sniff(const char *label, uint64_t type, uint64_t config,
     }
     static const uint64_t ns[] = {1000000ULL, 10000000ULL, 100000000ULL};
     uint64_t rep0[3] = {0, 0, 0};
+    int reps_agree = 1;
     printf("  \"%s\": {\n", label);
     for (unsigned i = 0; i < 3; i++) {
         printf("    \"n_%llu\": [", (unsigned long long)ns[i]);
@@ -110,11 +111,21 @@ static void count_sniff(const char *label, uint64_t type, uint64_t config,
             if (ioctl((int)fd, PERF_EVENT_IOC_DISABLE, 0) != 0) io_ok = 0;
             if (!io_ok || read((int)fd, &count, 8) != 8) { count = (uint64_t)-1; g_fail = 1; }
             if (rep == 0) rep0[i] = count;
+            else if (count != rep0[i]) reps_agree = 0;  /* round-11: all 5 must agree */
             printf("%s%llu", rep ? ", " : "", (unsigned long long)count);
         }
         printf("]%s\n", i < 2 ? "," : "");
     }
     printf("  },\n");
+    if (require_exact_diff) {
+        /* round-11: the deterministic event must be ZERO-VARIANCE across all
+         * five repetitions of every N — a correct first count with divergent
+         * later reps is nondeterminism, not noise. (Report-only for the
+         * jittery instructions control event.) */
+        printf("  \"%s_reps_agree\": \"%s\",\n", label,
+               reps_agree ? "true" : "FAILED");
+        if (!reps_agree) g_fail = 1;
+    }
     if (require_exact_diff) {
         /* count(N) = N + c for a constant overhead c  =>  count(10N) - count(N)
          * == 9N EXACTLY. Asserted only for the deterministic conditional-branch

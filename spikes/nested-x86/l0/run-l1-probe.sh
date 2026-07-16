@@ -112,9 +112,17 @@ if not isinstance(sniff, dict) or not sniff:
                "a string is probe.c's perf_event_open-failure encoding)")
 else:
     for k, v in sniff.items():
-        if (not isinstance(v, list) or not v
+        # round-11 P1: exactly five repetitions, all in AGREEMENT — the
+        # deterministic event is zero-variance; one correct first count with
+        # divergent later reps is nondeterminism, never accepted.
+        if (not isinstance(v, list) or len(v) != 5
                 or not all(isinstance(x, int) and 0 <= x < READ_FAIL for x in v)):
-            bad.append(f"sniff_raw_0x1c4_br_cond[{k}]={v!r} (non-int/read-failure entry)")
+            bad.append(f"sniff_raw_0x1c4_br_cond[{k}]={v!r} (need exactly 5 valid int reps)")
+        elif len(set(v)) != 1:
+            bad.append(f"sniff_raw_0x1c4_br_cond[{k}]={v!r} (reps disagree — nondeterministic)")
+if "sniff_raw_0x1c4_br_cond_reps_agree" in d \
+        and d["sniff_raw_0x1c4_br_cond_reps_agree"] != "true":
+    bad.append(f"sniff reps_agree={d['sniff_raw_0x1c4_br_cond_reps_agree']!r}")
 if d.get("probe") != "done":
     bad.append(f"probe={d.get('probe')!r} (sequence incomplete)")
 # round-10: the differential assertion is emitted by the current probe —

@@ -56,7 +56,16 @@ n3_check() { # n3_check <runset> <floor> [console-file]
     *)
       # appliance-boot runsets: the retained QEMU exit code must be 0
       local qrc; qrc=$(grep -o 'qemu_rc=[0-9]*' "$R/n3/$rs/env.json.rc" 2>/dev/null | cut -d= -f2)
-      [ "${qrc:-1}" = 0 ] || { bad "$rs: qemu_rc=${qrc:-missing}"; return; } ;;
+      [ "${qrc:-1}" = 0 ] || { bad "$rs: qemu_rc=${qrc:-missing}"; return; }
+      # round-11 P1: per-gate BEGIN/RC pairing, mirroring the metal branch — a
+      # clean QEMU exit can still wrap a gate that failed AFTER printing a
+      # valid summary; every gate that began must report rc, all zero.
+      local gb gr gf
+      gb=$(grep -c "NESTED_X86_GATE_BEGIN" "$f" 2>/dev/null || true)
+      gr=$(grep -c "NESTED_X86_GATE_RC " "$f" 2>/dev/null || true)
+      gf=$(grep -c "NESTED_X86_GATE_RC .* rc=[1-9]" "$f" 2>/dev/null || true)
+      { [ "$gb" -gt 0 ] && [ "$gr" -eq "$gb" ] && [ "$gf" -eq 0 ]; } \
+        || { bad "$rs: gate RCs (began=$gb rc_lines=$gr failing=$gf)"; return; } ;;
   esac
   # condition-dose evidence (round-4 P1): stress/migrate runsets must carry it.
   # Round-4+ harnesses record liveness + successful-migration counts and are
