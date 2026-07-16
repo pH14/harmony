@@ -5,18 +5,17 @@ Evidence formats: `schemas/README.md`. Box side lives under `/root/nested-x86-sp
 
 ## Dispositions
 
-> **Status 2026-07-14** (program: beads hm-b5b/hm-dbh/hm-jpu; audit:
+> **✅ RE-CERTIFIED 2026-07-16** (program: beads hm-b5b/hm-dbh/hm-jpu; audit:
 > `results/AUDIT-2026-07-12.md`; floors machine-checked by
-> `harness/check-recert-floors.sh`): **N-3 re-certified GO; N-2 floor UNMET
-> (588,923 armed PMIs from records < 1,000,000), ruling pending** — the
-> checker holds the N-2 line RED until Paul rules top-up vs criterion
-> revision.
+> `harness/check-recert-floors.sh`, ALL PASS). The N-2 armed-PMI floor was
+> met via Paul's Option-A top-up ruling (2026-07-15): cumulative armed PMIs
+> from perf records = **1,101,006 ≥ 1,000,000**.
 
 | Stage | Disposition | Evidence |
 |---|---|---|
 | N-0 capability truth table | **GO** (2026-07-10, audited VALID) | `results/n0/` runsets 002–005 |
 | N-1 appliance runs nested | **GO** (2026-07-10, audited VALID) | `results/n1/` runset-002 |
-| N-2 existential trio | **FLOOR UNMET — ruling pending** (2026-07-14) | `results/n2/*-recert-001` — 588,923 armed PMIs + 473,077 MTF-only, 1,062,000/1,062,000 exact on PatchedKvmBackend, oracle-agreed, records clean |
+| N-2 existential trio | **GO re-certified** (2026-07-16, top-up ruling) | `results/n2/*-recert-001` + `*-topup-001` — 1,101,006 armed PMIs (from records), 1,984,000/1,984,000 deadlines exact on PatchedKvmBackend, oracle-agreed, records clean |
 | N-3 full-stack + adversarial L0 | **GO re-certified** (2026-07-14) | `results/n3/*-recert-*` — six conditions ≥1000/1000, one hash; live-migration held on destination; metal 1000/1000 |
 | N-4 perf envelope | **GO** (figure corrected) | workloads 1.01–1.08×; exact-landing ≈4×/deadline on the patched mechanism |
 | N-5 packaging rehearsal | **GO** (2026-07-10, audited VALID) | `results/n5/` — one-command fresh-tree demo PASS |

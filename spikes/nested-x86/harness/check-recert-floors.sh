@@ -64,7 +64,8 @@ grep -q '"migration_status": "completed"' "$ce" && grep -q '"finished_on": "dest
 # --- assert), but the FLOOR line uses samples only.
 total_deadlines=0
 total_armed_pmi=0
-for d in $R/n2/cond-*-recert-001 $R/n2/smoke-recert-001; do
+for d in $R/n2/cond-*-recert-001 $R/n2/cond-*-topup-001 $R/n2/smoke-recert-001 $R/n2/smoke-topup-001; do
+  [ -d "$d" ] || continue   # top-up runsets appear as the ruling executes
   rs=$(basename "$d")
   s=$(grep -o 'N2JSON {"event":"summary".*' "$d/console.log" | tail -1)
   [ -n "$s" ] || { bad "$rs: no N2 summary"; continue; }

@@ -1,23 +1,24 @@
 # x86 nested-virtualization backend — feasibility spike
 
-> **RE-CERTIFICATION STATUS (2026-07-14): N-3 re-certified GO; N-2 floor
-> UNMET, ruling pending.** The PR #98 evidence-integrity review (2026-07-12)
-> voided the original ALL-GO record (stock backend in the N-2 hammer,
-> green-on-fail harness, unmet N-3 floors, unpinned appliance provenance — see
-> `spikes/nested-x86/results/AUDIT-2026-07-12.md`). The ratified re-run
-> program (beads hm-b5b → hm-dbh ∥ hm-jpu → hm-60k) executed 2026-07-13/14
-> with fixed instruments. **N-3 is re-certified GO** from `*-recert-*`
-> evidence (every floor machine-checked). **N-2 is NOT certified**: the
-> round-2 cross-model pass found the hammer's `armed` summary counter included
-> `d ≤ SKID_MARGIN` MTF-only deadlines that arm **no PMI**, and the floor
-> checker read that self-asserted field back. Recomputed from the perf-record
-> ground truth (`records.samples`), the recert evidence carries **588,923
-> armed PMIs — below the ≥1,000,000 floor** (plus 473,077 MTF-only deadlines;
-> all 1,062,000 landings exact, oracle-agreed, zero lost/throttle). Per the
-> program's own rule this is escalated to Paul (top-up run vs ruled criterion
-> revision), never silently relaxed; `check-recert-floors.sh` reports the
-> unmet floor RED until the ruling. N-0/N-1/N-5 stand on audited-VALID
-> original runsets; N-4's characterization stands with one corrected figure.
+> **✅ RE-CERTIFIED (2026-07-16).** The PR #98 evidence-integrity review
+> (2026-07-12) voided the original ALL-GO record (stock backend in the N-2
+> hammer, green-on-fail harness, unmet N-3 floors, unpinned appliance
+> provenance — see `spikes/nested-x86/results/AUDIT-2026-07-12.md`). The
+> ratified re-run program (beads hm-b5b → hm-dbh ∥ hm-jpu → hm-60k) executed
+> 2026-07-13/14 with fixed instruments; a round-2 cross-model pass then found
+> the hammer's `armed` counter had conflated armed-PMI deadlines with
+> `d ≤ SKID_MARGIN` MTF-only deadlines, leaving the true armed-PMI count at
+> 588,923 — below the ≥1,000,000 floor. **Paul ruled (2026-07-15): top-up run,
+> floor stands as written.** The top-up executed 2026-07-15/16 — 922,000
+> additional deadlines across the same matrix on the round-2 instruments —
+> bringing the cumulative armed-PMI count, **computed from perf records
+> only**, to **1,101,006 ≥ 1,000,000** (and ≥ the 1.05M dispatch target),
+> with `armed_pmi == records.samples` bit-for-bit in every top-up runset.
+> All floors and thresholds are machine-checked against the retained evidence
+> by `spikes/nested-x86/harness/check-recert-floors.sh` (ALL PASS). N-2 and
+> N-3 dispositions below are re-recorded from `*-recert-*`/`*-topup-*`
+> evidence only; N-0/N-1/N-5 stand on audited-VALID original runsets; N-4's
+> characterization stands with one corrected figure.
 
 Status: **research spike (2026-07-09).** This document is a de-risking program, not a claim
 that the backend is feasible. It is the x86 sibling of `docs/APPLE-SILICON.md`: the same
@@ -361,12 +362,23 @@ supported mechanism actually enforces that condition and is itself probeable at 
 > control · 2k smoke; distinct seeds). `skid_margin = 256` held on every
 > landing. Cross-substrate: nested `final_work` **bit-equal to bare metal** at
 > both shared seeds (34146909 smoke; 175379628 control) with identical record
-> counts. **What is NOT met: the stage's own floor** — ≥1,000,000 armed
-> deadlines read as armed *PMIs* gives 588,923 < 1,000,000 (a round-2 finding:
-> the hammer's old `armed` counter conflated the two classes and the checker
-> read it back; both instruments now count from records). Escalated to Paul
-> for a top-up run or a ruled criterion revision — the floor is not relaxed
-> here, and `check-recert-floors.sh` holds the line RED pending the ruling.
+> counts. **What was initially NOT met: the stage's own floor** — ≥1,000,000
+> armed deadlines read as armed *PMIs* gave 588,923 < 1,000,000 (a round-2
+> finding: the hammer's old `armed` counter conflated the two classes and the
+> checker read it back; both instruments now count from records). Escalated to
+> Paul, who **ruled top-up (2026-07-15): the floor stands as written.**
+>
+> **Top-up executed and floor MET → RE-CERTIFIED: GO (2026-07-16).**
+> 922,000 additional deadlines (`results/n2/*-topup-001`: idle 350k ·
+> other-core 175k · same-core 130k · mempress 90k · timerstorm 90k · migrate
+> 85k · 2k smoke, fresh spaced seeds) on the round-2 instruments, after a
+> reported fire-once smoke validating the 55.4% armed-rate sizing. Every
+> top-up runset: exact == oracle_ok == deadlines, 0 LOST / 0 THROTTLE /
+> 0 violations, `armed_pmi == records.samples` **bit-for-bit**, stressor
+> liveness and migration success-counting recorded. **Cumulative armed PMIs,
+> from perf records only: 1,101,006 ≥ 1,000,000** (1,984,000 total deadlines,
+> all exact and oracle-agreed). Machine-checked GREEN by
+> `check-recert-floors.sh`.
 
 ### N-3 — full-stack determinism gates nested + adversarial L0 + the portability gate
 
