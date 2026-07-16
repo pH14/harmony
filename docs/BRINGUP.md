@@ -1,6 +1,6 @@
 # Bring-up plan — Phase 0 → first deterministic guest
 
-Frontier work (per PLAN.md / ROADMAP "frontier" lane): the `vmm-core` KVM skeleton, designed
+Frontier work (per docs/PLAN.md / ROADMAP "frontier" lane): the `vmm-core` KVM skeleton, designed
 with the user and driven on the determinism box. **Box-only** — Linux bare-metal Intel, VMX,
 `/dev/kvm`, `perf_event` (`docs/BUILDING.md` capability matrix); macOS cannot run it. This doc
 sequences the work and pins the contracts it implements; it does not negotiate with R1 / R-Backend
@@ -117,7 +117,7 @@ nail the **Multiboot 32-bit-PM handoff** — nothing more.
 
 ## Determinism gate (the forcing function)
 
-Per PLAN.md, every phase gate is "same seed twice ⇒ identical state hash," run by the unison.
+Per docs/PLAN.md, every phase gate is "same seed twice ⇒ identical state hash," run by the unison.
 For M2 the hash covers **all observable state** — guest memory + `VcpuState` **+ the serial capture
 buffer + isa-debug-exit/device state** (per `unison::Subject::state_hash`: "registers, memory,
 output log"); an output-only or wrong-exit-code divergence with identical memory/VCPU must still

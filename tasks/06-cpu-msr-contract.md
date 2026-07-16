@@ -6,7 +6,7 @@ research-and-writing task: no crate, no cargo gates.
 
 ## Environment
 
-Runs on: macOS or Linux. Requires: the repo (PLAN.md, RESEARCH.md, docs/INTEGRATION.md,
+Runs on: macOS or Linux. Requires: the repo (docs/PLAN.md, docs/RESEARCH.md, docs/INTEGRATION.md,
 the merged crates) and web access for primary sources (Intel SDM, Linux KVM API docs, rr).
 **Depends on task 04 being merged**: the kernel pin (`guest/linux/versions.lock`) and the
 kernel config (`guest/linux/config-fragment`) are inputs to the reference set and the
@@ -42,7 +42,7 @@ with it.
    vector), the hypervisor bit (CPUID.1:ECX[31]) stance, invariant-TSC bit
    (CPUID.8000_0007:EDX[8]) stance, TSC/crystal leaves (0x15/0x16), RDRAND
    (CPUID.1:ECX[30]) and RDSEED (CPUID.7,0:EBX[18]) exposure policy (exposed-but-trapped
-   vs hidden — decide and justify against PLAN.md's trap table), x2APIC (CPUID.1:ECX[21]),
+   vs hidden — decide and justify against docs/PLAN.md's trap table), x2APIC (CPUID.1:ECX[21]),
    TSC_DEADLINE (CPUID.1:ECX[24]), PMU-related leaves (0xA — what a hidden vPMU reports),
    RDTSCP (CPUID.8000_0001:EDX[27], paired with the IA32_TSC_AUX disposition), RDPID
    (CPUID.7,0:ECX[22]), MONITOR/MWAIT (CPUID.1:ECX[3] and leaf 5), WAITPKG —
@@ -105,7 +105,7 @@ with it.
    backs it, or permitted-with-emulation — and what the VMM returns. **CPUID itself gets
    a row**: it VM-exits unconditionally, and the row states that every leaf is serviced
    from the frozen model in section 2 — never KVM's defaults, never host passthrough.
-   Must be consistent with PLAN.md's trap table (RDTSC → f(V-time), RDRAND/RDSEED →
+   Must be consistent with docs/PLAN.md's trap table (RDTSC → f(V-time), RDRAND/RDSEED →
    seeded stream, RDPMC → trap, HLT → idle-skip per INTEGRATION.md §3).
 5. **Timer/time-device surface.** Per §7's timer vector, the contract must dispose of the
    whole guest-visible time-source surface, not just timer MSRs: the PIT (ports
@@ -120,8 +120,8 @@ with it.
    serialized form, what exactly is hashed into the determinism gate, and when the version
    bumps (any value change = new version).
 7. **Citations.** Every non-obvious disposition cites a primary source (Intel SDM
-   volume/chapter, Linux `Documentation/virt/kvm/api.rst`, rr's techniques, RESEARCH.md
-   entries). Match RESEARCH.md's citation discipline.
+   volume/chapter, Linux `Documentation/virt/kvm/api.rst`, rr's techniques, docs/RESEARCH.md
+   entries). Match docs/RESEARCH.md's citation discipline.
 
 ## Acceptance gates
 
@@ -134,7 +134,7 @@ with it.
 3. **Machine-readable surface**: the CPUID and MSR tables are either strict Markdown
    tables with a documented column grammar, or an accompanying `cpu-msr-contract.toml` —
    something vmm-core can later parse and hash without re-reading prose.
-4. **Consistency**: nothing contradicts INTEGRATION.md §1–§7, PLAN.md's trap table, or the
+4. **Consistency**: nothing contradicts INTEGRATION.md §1–§7, docs/PLAN.md's trap table, or the
    merged task crates (e.g. timer MSRs must route to TimerQueue-style userspace emulation,
    never an in-kernel LAPIC timer; entropy instructions must route to the seeded stream).
    Contradictions you cannot resolve are `[question]`s, not silent choices.

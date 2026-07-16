@@ -20,7 +20,7 @@ was worked through:
      the XSAVE variants (XSAVEOPT/XSAVEC/XSAVES) + plain XSAVE/FXSAVE, SERIALIZE, SHA,
      PCONFIG — each with a normative mechanism token (`vmx-exit(...)`, `ud-by-control`,
      `gp-by-cpuid`, `permit-emulate`, `permit-native`, `host-pin`) and result. Consistent
-     with PLAN.md's trap table and gate 5.
+     with docs/PLAN.md's trap table and gate 5.
    - **§5** disposes of the whole time-source surface: PIT (0x40–0x43), RTC/CMOS
      (0x70/0x71), HPET MMIO, ACPI PM timer, LAPIC timer, plus an xAPIC-MMIO sub-table for
      the timer registers (LVT-timer 0x320, TMICT 0x380, **TMCCT 0x390 = emulate-vtime**,
@@ -320,9 +320,9 @@ validates every cmos `where` against the grammar.
 `RDTSC/RDTSCP → f(V-time)` and `RDRAND/RDSEED → seeded stream` traps require RDTSC-exiting and
 RDRAND/RDSEED-exiting — VMX controls **stock upstream KVM does not surface to a userspace VMM**
 (stock KVM virtualizes the TSC in-kernel on the *host* TSC, and lets RDRAND/RDSEED hit the
-hardware RNG). PLAN.md asserts these controls are available but names a stock `kvm-ioctls`
+hardware RNG). docs/PLAN.md asserts these controls are available but names a stock `kvm-ioctls`
 backend and never says how the exits are surfaced; INTEGRATION.md §6 defers the kernel-patch
-question — i.e. **PLAN.md is underspecified here**. Rather than resolve silently, I (1) added a
+question — i.e. **docs/PLAN.md is underspecified here**. Rather than resolve silently, I (1) added a
 normative **"Enforcement backend dependency"** note to §1 stating exactly which traps are
 backend-dependent (only RDTSC/RDTSCP + RDRAND/RDSEED; CPUID/HLT/RDPMC/MONITOR/MWAIT/XSETBV/
 VMCALL/VMX-opcodes are stock-serviceable), (2) tagged those §4 rows and the `vmx-exit` vocab +

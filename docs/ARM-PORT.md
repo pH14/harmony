@@ -10,7 +10,7 @@ exists", "`vmm-core` unwritten" — predate Wave 4/5 and are **superseded by
 `docs/ARCH-BOUNDARY.md`**, which rules the ISA seam design from a fresh file-level audit.
 Captures what's known about porting this hypervisor to AArch64 (the question keeps recurring),
 so the conclusions and the one load-bearing fact-correction aren't re-derived each time. Per
-PLAN.md Decision 0, ARM is **post-v1 future work**: x86-64/KVM/VMX is the only designed target.
+docs/PLAN.md Decision 0, ARM is **post-v1 future work**: x86-64/KVM/VMX is the only designed target.
 
 The bottom line up front: **nothing fundamental precludes ARM** — Neoverse/Cortex have
 EL2 and the Arm Virtualization Extensions are a fine substrate. What precludes it *for this
@@ -41,7 +41,7 @@ on the two axes this project cares about:
 | rr allowlist entry | **None** (X925/A725 not in rr's CPU switch) | Present, but config copied from N1, untested |
 | Bare-metal KVM + perf | **Confirmed working + vendor-documented** | Strong inference, no hands-on report |
 
-Consequence: the feature PLAN.md named as *the* ARM blocker — "ARM time virtualization needs
+Consequence: the feature docs/PLAN.md named as *the* ARM blocker — "ARM time virtualization needs
 ECV (trap CNTVCT reads)" — is **present on Spark and absent on the actual Neoverse V2.** When
 speccing any ARM work, never write "Neoverse V2" for Spark; the ECV difference is exactly the
 kind of thing that would silently break a time-virtualization assumption.
@@ -75,7 +75,7 @@ Also new on ARM, with no x86 analogue:
 ## Evidence base: what rr tells us (we use rr as proxy, we do not use rr)
 
 rr is the best external evidence that precise branch-counting is physically achievable on a
-given microarch (RESEARCH.md leans on it). Findings, all from primary rr sources (GitHub
+given microarch (docs/RESEARCH.md leans on it). Findings, all from primary rr sources (GitHub
 wiki/README, `src/PerfCounters.cc`, `src/PerfCounters_aarch64.h`, issues #3234/#3607/#3861,
 commit b3ffa764):
 
@@ -116,7 +116,7 @@ is entirely PMU determinism on uncharacterized, heterogeneous client cores.
 pre-build ruling re-scopes what the gate sequences — construction no longer waits; trust,
 constants, and the trait freeze do. The measurement and its kill conditions are unchanged.)*
 
-Before any line of ARM `vmm-core`, run PLAN.md's PMU precise-count spike on the actual box:
+Before any line of ARM `vmm-core`, run docs/PLAN.md's PMU precise-count spike on the actual box:
 measure whether `BR_RETIRED` (taken-branch) counting is **bit-deterministic** on one pinned
 X925 (Spark) or V2 (Grace), whether overflow interrupts fire reliably out of `KVM_RUN`, and
 the **skid bound** (→ a port-specific `PlannerConfig::skid_margin`). Pin to one core type

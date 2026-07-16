@@ -7,7 +7,7 @@
 > integrator — collect them in the PR description before merging, do not guess.
 >
 > Land when the docs-touching queue is clear (this conflicts with anything editing
-> `docs/ROADMAP.md`/`PLAN.md`). No code, no goldens, no hashed inputs (see D below — explicitly
+> `docs/ROADMAP.md`/`docs/PLAN.md`). No code, no goldens, no hashed inputs (see D below — explicitly
 > out of scope here).
 
 ## A — the strategy docs
@@ -16,12 +16,12 @@
    V-time/preemption/SMP arc (merged/box-verified), Wave 4 = tasks 58–62/93/94 per
    `docs/REVIEW-2026-07.md`, and the deferred register (D1, D5, SDK/coverage epoch, ARM, task
    92, task 43). Delete the stale "Sequenced backlog" table (history lives in git).
-2. **Split `PLAN.md`**: it is the citation anchor for the CPU/MSR contract
+2. **Split `docs/PLAN.md`**: it is the citation anchor for the CPU/MSR contract
    (`docs/CPU-MSR-CONTRACT.md:441,1481` cite it) so it cannot die — restructure into
    (a) "Frozen determinism axioms" (the trap table, V-time-from-retired-branches, the
    nondeterminism-source table — still true, still citable) and (b) "Original plan (historical;
    superseded — see ROADMAP)" containing the rest. Fix in place while splitting: bare `restore`
-   (`PLAN.md:31` — contradicts DISSONANCE.md's no-bare-restore rule), "VMCALL" (the mechanism is
+   (`docs/PLAN.md:31` — contradicts DISSONANCE.md's no-bare-restore rule), "VMCALL" (the mechanism is
    a port-I/O doorbell), `ext-net` + the fault-injecting bridge (retired pv-net model),
    "3-node etcd" (superseded by single-node Postgres/k3s).
 3. **`docs/DETERMINISM-CORPUS.md`**: tasks 22/23 are struck (`docs/ROADMAP.md` already says so)

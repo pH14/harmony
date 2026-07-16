@@ -24,7 +24,7 @@ vector must be closed by **decision**, recorded here, rather than by accident.
 mandates it be authored before any vmm-core code (§7): vmm-core implements it, it does
 not negotiate with it. Where implementation and contract disagree, the implementation is
 wrong. The contract changes only by editing this document and bumping the version per §4
-— never by implementation drift. It is subordinate to INTEGRATION.md §1–§7 and PLAN.md's
+— never by implementation drift. It is subordinate to INTEGRATION.md §1–§7 and docs/PLAN.md's
 trap table; any contradiction discovered later is raised as a `[question]`, not resolved
 by a silent local choice.
 
@@ -41,7 +41,7 @@ document:
   `Rationale` is one line naming the INTEGRATION.md §7 leak vector the row closes, or
   `architectural` for stateful allows; `Citation` lists primary sources (Intel SDM
   volume/chapter, Linux `Documentation/virt/kvm/api.rst`, kernel source at v6.18.35,
-  RESEARCH.md entries).
+  docs/RESEARCH.md entries).
 - **CPUID table** (§2): one row per (leaf, subleaf, register) with the frozen value or
   the masking rule that produces it, plus rationale and citation; a final default rule
   disposes of every leaf not explicitly listed.

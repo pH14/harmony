@@ -31,7 +31,7 @@ wants:
 
 - **Fast tier (this task):** in-process, runs anywhere, millions of cases.
 - **Real-KVM tier (outlined, box):** `Arbitrary` VM input → `compare_runs` on the real `Vmm`,
-  made viable by fast snapshot-reset (the one Nyx mechanic worth lifting — `RESEARCH.md:81`).
+  made viable by fast snapshot-reset (the one Nyx mechanic worth lifting — `docs/RESEARCH.md:81`).
 
 ## The targets
 

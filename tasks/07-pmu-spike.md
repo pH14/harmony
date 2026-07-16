@@ -9,7 +9,7 @@ own `Cargo.toml` and its own gates. Spike code is throwaway by design — the de
 
 - Runs on: **Linux bare-metal x86-64 Intel only** — the determinism box, reached as
   `ssh <det-box>` from your session. Nested virtualization does **not** satisfy this
-  (PLAN.md Decision 0: VMX doesn't nest well for PMU work). macOS is your terminal and
+  (docs/PLAN.md Decision 0: VMX doesn't nest well for PMU work). macOS is your terminal and
   editor only; build and run happen on the box (rsync the spike dir over, or build there
   from a git checkout — document whichever workflow you use in RESULTS.md).
 - Requires: `/dev/kvm`, perf_event (`kernel.perf_event_paranoid` ≤ 1 or root — check and
@@ -28,7 +28,7 @@ own `Cargo.toml` and its own gates. Spike code is throwaway by design — the de
 
 ## Context
 
-PLAN.md Phase 0.5, spike 1 — the experiment the whole vtime design is betting on. V-time
+docs/PLAN.md Phase 0.5, spike 1 — the experiment the whole vtime design is betting on. V-time
 is a pure function of a hardware count of retired conditional branches, and timer
 injection requires stopping the vCPU at an **exact** count (arm the PMU overflow early by
 a margin, then single-step to the target — the rr technique the merged `vtime` crate's

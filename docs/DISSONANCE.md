@@ -41,7 +41,7 @@ exactly.
 
 `Moment` throughout this document is defined as `InsnCount`, and the one-outstanding-decision
 model below ("exactly one decision is ever outstanding") both assume the lone-vCPU determinism
-model PLAN.md originally called "one vCPU, period." Task 56 shipped a `CONFIG_SMP=y` guest
+model docs/PLAN.md originally called "one vCPU, period." Task 56 shipped a `CONFIG_SMP=y` guest
 (`maxcpus=1`) without any doc acknowledging the axiom had been quietly cracked. **Integrator
 ruling:** the v1 contract is an **SMP-built kernel with exactly one *online* vCPU** — real
 multi-vCPU (more than one online at once) is out of scope until explicitly re-ruled, deferred

@@ -555,7 +555,7 @@ Objective: Complete APPLE-SILICON.md stage AS-N and produce its required evidenc
 GO/PROVISIONAL GO/REDESIGN/NO-GO disposition.
 
 Read first: AGENTS.md, docs/APPLE-SILICON.md, docs/ARM-PORT.md,
-docs/ARCH-BOUNDARY.md, RESEARCH.md, and the files explicitly named by AS-N.
+docs/ARCH-BOUNDARY.md, docs/RESEARCH.md, and the files explicitly named by AS-N.
 
 Scope: Only the AS-N question and deliverables. Do not begin AS-(N+1), refactor the
 production architecture seam, build a TCG backend, or weaken an acceptance criterion.

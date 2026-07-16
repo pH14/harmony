@@ -89,7 +89,7 @@ A tree-wide sweep. At minimum:
 - **Box runner**: nothing path-specific should live on the box (CI checks out fresh), but verify
   `setup-ci-runner.sh` and `docs/BOX-PINNING.md` carry no stale crate paths.
 - **Docs**: every reference to "hypervizor" → "harmony" and `detharness` → `unison` across
-  `docs/`, `tasks/`, `README*`, `AGENTS.md`, `PLAN.md`, `RESEARCH.md`, `INTEGRATION.md`, the
+  `docs/`, `tasks/`, `README*`, `AGENTS.md`, `docs/PLAN.md`, `docs/RESEARCH.md`, `INTEGRATION.md`, the
   contract docs; the conceptual "the deterministic VM" / "the fuzzer" prose where the new proper
   nouns (consonance/dissonance) read better.
 - **Skills**: `.claude/skills/*` (foreman/handoff/pr-review) reference `~/workspace/hypervizor`,

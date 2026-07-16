@@ -7,7 +7,7 @@
 > **Environment:** box-only for the determinism gate (patched KVM); image bake is Linux-only.
 
 Read `tasks/00-CONVENTIONS.md`, `tasks/36-guest-kernel-container-config.md`, `tasks/37-bare-postgres-deterministic.md`,
-and `RESEARCH.md` / `docs/ROADMAP.md` (Go-runtime entropy note) first.
+and `docs/RESEARCH.md` / `docs/ROADMAP.md` (Go-runtime entropy note) first.
 
 ## Build
 
