@@ -112,8 +112,16 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
     entry::apply_entry(&mut state, &entry_state);
     backend.restore(&state)?;
 
-    // 6. Hand the configured backend + owned RAM to the Vmm.
-    Ok(Vmm::new(backend, ram))
+    // 6. Hand the configured backend + owned RAM to the Vmm, record the high RAM
+    //    base, and map the hypercall-transport ABI pages as a dedicated low-GPA
+    //    memslot. arm64 RAM is high (RAM_BASE), so the absolute ABI GPAs
+    //    (REQ_GPA/RESP_GPA) fall below it and cannot be the main RAM's offset —
+    //    tasks/112 keeps the transport magic unchanged, which favors mapping the
+    //    absolute pages over per-arch GPA translation (see Vmm::map_doorbell_pages).
+    let mut vmm = Vmm::new(backend, ram);
+    vmm.ram_base_gpa = RAM_BASE;
+    vmm.map_doorbell_pages()?;
+    Ok(vmm)
 }
 
 /// **The composition root** (`tasks/112` M4): the one place the concrete
