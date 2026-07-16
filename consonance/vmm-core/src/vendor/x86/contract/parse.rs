@@ -18,6 +18,74 @@
 
 use std::collections::BTreeMap;
 
+// ---------------------------------------------------------------------------
+// Vendor axis (Deliverable 1 — a vendor column on the one frozen contract).
+// ---------------------------------------------------------------------------
+
+/// The x86 vendor a contract file is a column for. Both Intel and AMD are the
+/// **same `Arch`** (x86-64, `docs/ARCH-BOUNDARY.md`); the vendor is a first-class
+/// axis *inside* `vendor/x86/contract/`, not a second `Arch`. The `GenuineIntel`
+/// column (`docs/cpu-msr-contract.toml`, `det-cfl-v1`) is current truth; the
+/// `AuthenticAMD` column (`docs/cpu-msr-contract-amd-draft.toml`, `det-zenN-v1`)
+/// is a draft, `verify-on-silicon` pending AE-4.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VendorId {
+    /// Intel — the ratified, live-enforced column.
+    GenuineIntel,
+    /// AMD — the draft column, wired into no live enforcement path.
+    AuthenticAMD,
+}
+
+impl VendorId {
+    /// The 12-byte CPUID leaf-0 vendor string (EBX‖EDX‖ECX) this vendor freezes.
+    pub(crate) const fn cpuid_string(self) -> &'static str {
+        match self {
+            VendorId::GenuineIntel => "GenuineIntel",
+            VendorId::AuthenticAMD => "AuthenticAMD",
+        }
+    }
+
+    /// The `[contract] vendor` header token.
+    fn as_token(self) -> &'static str {
+        match self {
+            VendorId::GenuineIntel => "GenuineIntel",
+            VendorId::AuthenticAMD => "AuthenticAMD",
+        }
+    }
+
+    /// Parse a `[contract] vendor` token; `None` for any unrecognized string.
+    fn from_token(s: &str) -> Option<VendorId> {
+        match s {
+            "GenuineIntel" => Some(VendorId::GenuineIntel),
+            "AuthenticAMD" => Some(VendorId::AuthenticAMD),
+            _ => None,
+        }
+    }
+}
+
+/// A refusal from the vendor-axis loader ([`Contract::load`]). Trusted embedded
+/// contract data never trips these at runtime; they exist so a *mismatched* axis
+/// (loading the AMD draft under the Intel axis, or an artifact whose declared
+/// vendor disagrees with its own CPUID leaf-0 string) is a loud, testable refusal
+/// rather than a silently-wrong policy.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum ContractError {
+    /// The `[contract] vendor` header disagrees with the axis the file was loaded
+    /// under (e.g. the AuthenticAMD draft loaded under the GenuineIntel axis).
+    #[error("contract vendor mismatch: file declares {found}, loaded under {expected}")]
+    VendorMismatch {
+        expected: &'static str,
+        found: String,
+    },
+    /// The declared vendor disagrees with the file's own CPUID leaf-0 vendor
+    /// string — a mixed-vendor artifact (Deliverable 8's structural guard).
+    #[error("mixed-vendor artifact: declares vendor {declared}, but CPUID leaf 0 spells {leaf0}")]
+    MixedVendor {
+        declared: &'static str,
+        leaf0: String,
+    },
+}
+
 /// A parsed TOML scalar/array value (the only shapes this contract uses).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TomlValue {
@@ -181,7 +249,7 @@ impl RegField {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct CpuidRow {
     pub leaf: LeafSpec,
     pub subleaf: Subleaf,
@@ -189,6 +257,11 @@ pub(crate) struct CpuidRow {
     pub ebx: RegField,
     pub ecx: RegField,
     pub edx: RegField,
+    /// The `verify-on-silicon` qualifier (Deliverable 3). `None` for Intel rows
+    /// (implicitly `verified = det-cfl-v1`, the frozen baseline); `Some(
+    /// "on-silicon-pending-AE4")` for every AMD enforcement row. Part of the
+    /// hashed canonical form, so a row silently losing its marker is hash-breaking.
+    pub verified: Option<String>,
 }
 
 /// The set of MSR indices a row names.
@@ -221,6 +294,14 @@ pub(crate) struct MsrRow {
     pub read_param: Option<String>,
     pub write: String,
     pub write_param: Option<String>,
+    /// The `verify-on-silicon` qualifier (Deliverable 3) — see [`CpuidRow::verified`].
+    pub verified: Option<String>,
+    /// The per-generation PMU marker (Deliverable 4): `Some("legacy-perfmon")` for
+    /// the `PERF_CTL`/`PERF_CTR` core pairs, `Some("zen4+")` for the PerfMonV2
+    /// global control/status MSRs. The loader parses both and resolves neither —
+    /// which set is live for a given part is an AE-0 decision, not an AMD constant.
+    /// `None` for every non-PMU row. Part of the hashed canonical form.
+    pub applies_when: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -274,6 +355,14 @@ pub(crate) struct HostAssert {
 /// The fully-typed contract: every normative table the §6 canonical form covers.
 #[derive(Clone, Debug)]
 pub(crate) struct Contract {
+    /// The vendor axis this file is a column for (Deliverable 1). Parsed from the
+    /// `[contract] vendor` header (default [`VendorId::GenuineIntel`] when absent,
+    /// for the Intel-flavoured synthetic test fixtures). **Not** emitted into the
+    /// hashed canonical form — the zero-drift grammar (Deliverable 6): adding
+    /// `vendor` to the Intel header leaves its canonical bytes and `contract_hash`
+    /// byte-identical. The axis is enforced at load time by [`Contract::load`], not
+    /// carried in the hash.
+    pub vendor: VendorId,
     pub version: i64,
     pub kernel_tag: String,
     pub cpuid_baseline: String,
@@ -302,6 +391,15 @@ pub(crate) struct Contract {
     pub mmio_default_write_param: Option<String>,
     pub mmio: Vec<MmioRow>,
     pub host_assert: HostAssert,
+    /// Section-level `transfers-unchanged-pending-AE4` markers (Deliverable 2,
+    /// veto point 5): the shared-ISA surface the AMD draft carries **by marker**
+    /// rather than by hand-copying 3000 near-duplicate rows (never fork the one
+    /// reproducer). Keyed by section name (`cpuid-standard`, `msr-shared`, `insn`,
+    /// `timer`, `cmos`, `mmio`, `host-assert`) → the transfer disposition
+    /// (`unchanged-pending-AE4`, or `on-silicon-pending-AE4` for the per-silicon
+    /// host-assert block). The canonicalizer records each marker in place of the
+    /// section's rows; empty for the Intel column, which materializes every row.
+    pub transfers: BTreeMap<String, String>,
 }
 
 /// Parse `"0x...."`/decimal text into a `u32` (trusted contract token).
@@ -342,6 +440,15 @@ fn subleaf(s: &str) -> Subleaf {
     } else {
         Subleaf::Single(hex32(s))
     }
+}
+
+/// Read an optional string-valued key from a row's key map (`None` when absent or
+/// empty). Used for the AMD `verified` / `applies-when` qualifiers, which Intel
+/// rows omit.
+fn opt_str(e: &BTreeMap<String, TomlValue>, key: &str) -> Option<String> {
+    e.get(key)
+        .map(|v| v.as_str().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Pull the read/write disposition tokens + optional formula params from a row's
@@ -450,7 +557,28 @@ impl Contract {
             })
             .unwrap_or_default();
 
+        // The vendor axis (Deliverable 1). Absent → GenuineIntel (the current-truth
+        // column and the flavour of the Intel-style synthetic test fixtures).
+        let vendor = c
+            .get("vendor")
+            .and_then(|v| VendorId::from_token(v.as_str()))
+            .unwrap_or(VendorId::GenuineIntel);
+
+        // Section-level transfer markers (Deliverable 2). The `[transfers]` singleton
+        // maps a section name to its transfer disposition.
+        let transfers = raw
+            .singletons
+            .get("transfers")
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Contract {
+            vendor,
+            transfers,
             version: c.get("version").map(TomlValue::as_int).unwrap_or_default(),
             kernel_tag: c
                 .get("kernel-tag")
@@ -553,6 +681,7 @@ impl Contract {
             ebx: reg_field(e["ebx"].as_str()),
             ecx: reg_field(e["ecx"].as_str()),
             edx: reg_field(e["edx"].as_str()),
+            verified: opt_str(e, "verified"),
         }
     }
 
@@ -571,7 +700,56 @@ impl Contract {
             read_param,
             write,
             write_param,
+            verified: opt_str(e, "verified"),
+            applies_when: opt_str(e, "applies-when"),
         }
+    }
+
+    /// Parse + validate the vendor axis (Deliverable 1). Returns the typed contract
+    /// only if the file's `[contract] vendor` header agrees with `expected` **and**
+    /// the file is not a mixed-vendor artifact (its CPUID leaf-0 vendor string, if
+    /// present, matches the declared vendor). This is the single entry point the
+    /// vendor-parameterized constructors go through; the underlying [`Contract::parse`]
+    /// stays infallible for the direct-token unit tests.
+    pub(crate) fn load(toml: &str, expected: VendorId) -> Result<Contract, ContractError> {
+        let c = Self::parse(toml);
+        if c.vendor != expected {
+            return Err(ContractError::VendorMismatch {
+                expected: expected.as_token(),
+                found: c.vendor.as_token().to_string(),
+            });
+        }
+        // Mixed-vendor guard: the CPUID leaf-0 vendor string must spell the declared
+        // vendor. Only checked when a leaf-0 row is present (the synthetic fixtures
+        // omit it); a frozen leaf 0 is present in both real columns.
+        if let Some(leaf0) = c.cpuid_leaf0_string()
+            && leaf0 != expected.cpuid_string()
+        {
+            return Err(ContractError::MixedVendor {
+                declared: expected.as_token(),
+                leaf0,
+            });
+        }
+        Ok(c)
+    }
+
+    /// The 12-char vendor string frozen at CPUID leaf 0 (EBX‖EDX‖ECX little-endian),
+    /// or `None` if the file has no leaf-0 row or that row uses dynamic register
+    /// rules (the vendor string is always three frozen constants).
+    fn cpuid_leaf0_string(&self) -> Option<String> {
+        let row = self
+            .cpuid
+            .iter()
+            .find(|r| r.leaf.lo == 0 && r.leaf.hi == 0)?;
+        let (ebx, edx, ecx) = match (row.ebx, row.edx, row.ecx) {
+            (RegField::Const(b), RegField::Const(d), RegField::Const(c)) => (b, d, c),
+            _ => return None,
+        };
+        let mut bytes = Vec::with_capacity(12);
+        for reg in [ebx, edx, ecx] {
+            bytes.extend_from_slice(&reg.to_le_bytes());
+        }
+        String::from_utf8(bytes).ok()
     }
 
     /// Per-leaf entry count (used to decide `SIGNIFICANT_INDEX` when building the

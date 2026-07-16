@@ -1,0 +1,339 @@
+# cpu-msr-contract-amd-draft.toml — the AMD **draft** vendor column on the one
+# frozen CPU/MSR contract (docs/CPU-MSR-CONTRACT.md §1, docs/AMD-EPYC.md §4).
+#
+# This is a VENDOR COLUMN, not a second forked document. It shares the exact grammar,
+# loader, and canonical serializer of the Intel column (docs/cpu-msr-contract.toml,
+# det-cfl-v1 / GenuineIntel). The never-fork-the-one-reproducer rule (docs/GLOSSARY.md)
+# is binding: the shared-ISA surface is carried by `[transfers]` markers, never by
+# hand-copying Intel's rows. See consonance/vmm-core/src/vendor/x86/contract/.
+#
+# STATUS — DRAFT, wired into NO live enforcement path. Every enforcement cell
+# (every materialized CPUID/MSR row) carries `verified = "on-silicon-pending-AE4"`:
+# the disposition is drafted from the AMD64 APM + docs/AMD-EPYC.md, but is
+# UNVERIFIED until AE-4 ratifies it on real Epyc silicon (the on-silicon
+# enforcement-mechanism truth table — SVM VMCB CPUID intercept + MSR-permission
+# bitmap). The loader embeds this file only under `cfg(test)`; no VM construction
+# path can select it. A row silently losing its `verified` marker is a
+# hash-breaking change (the qualifier is part of the hashed canonical form).
+#
+# BASELINE PLACEHOLDER — `cpuid-baseline = "det-zenN-v1"`. The `N` is a PLACEHOLDER,
+# not a guessed Zen generation. AE-0 (the generation-discovery stage) pins the real
+# generation and replaces this literal with the pinned `det-zenN-v1` name; that
+# replacement is a `version` bump + `contract_hash` re-derivation, NEVER a silent
+# edit. No code branches on the `N`; the loader accepts it as an opaque string.
+#
+# STRICT GRAMMAR — identical to the Intel file's (§6 expansion rules): all hex
+# lowercase; one record per leaf/index; msr ranges/members expand to one record per
+# index and the union of msr index sets is PAIRWISE DISJOINT within this file
+# (validated). New grammar this column uses:
+#   * [contract] vendor = "AuthenticAMD"  — the vendor axis; header metadata, NOT
+#     hashed (the zero-drift grammar keeps the Intel canonical bytes byte-identical).
+#   * verified = "on-silicon-pending-AE4" — per-row, on every enforcement cell; hashed.
+#   * applies-when = "legacy-perfmon" | "zen4+" — per-row PMU-generation marker; hashed.
+#   * [transfers] — section-level `transfers-unchanged-pending-AE4` markers for the
+#     shared-ISA surface (cpuid standard leaves, the shared MSR space, insn/timer/
+#     cmos/xapic-mmio), plus the per-silicon host-assert block (`on-silicon-pending-AE4`).
+
+[contract]
+version = 1
+vendor = "AuthenticAMD"
+kernel-tag = "v6.18.35"
+cpuid-baseline = "det-zenN-v1"
+# §6 anti-drift anchor: sha256 of this column's canonical serialized form (computed
+# by vmm-core's serializer, never hand-written). Re-derive on any body change + a
+# version bump — including the AE-0 det-zenN-v1 pinning.
+contract_hash = "1dd9610699b76a5be5da70334bfac6c8ec5b58f1c2ca79b531551fe6ac6a0d31"
+# mxcsr-mask: the architectural FXSAVE-area MXCSR_MASK (ISA-level; the same on any
+# SSE-capable x86-64 part), carried unchanged.
+mxcsr-mask = "0x0000ffff"
+# Silicon-frequency + timer scalars (tsc-hz, crystal-hz, bus-hz, rtc-epoch,
+# pit-refresh-ns) are UNPINNED at AE-0 and deliberately omitted → they render as
+# `<key>=0` in the canonical form: an explicit "not yet pinned" placeholder, never a
+# guess. AE-0 pins the Zen TSC/crystal/bus frequencies; AE-4 ratifies the timer model.
+
+[cpuid]
+# Documentary only (not hashed): the serializer always emits `cpuid-default zeroed`.
+default = "zeroed"
+max-basic-leaf = "0x00000010"
+max-extended-leaf = "0x80000008"
+
+# --- Materialized AMD-distinct leaves. The vendor-identity leaf 0 and the AMD
+# extended-leaf space 0x8000_0000–0x8000_0008 (docs/AMD-EPYC.md §4). Standard leaves
+# 0x1–0x1f are the shared-ISA transfer (see [transfers] cpuid-standard); everything
+# unlisted default-denies (cpuid-default zeroed), exactly as det-cfl-v1 does. Draft
+# values below are UNPINNED (0) where they are per-generation/per-silicon facts
+# (family/model/stepping, feature masks, brand string, cache geometry, MAXPHYADDR);
+# only the vendor string and the enumeration bounds are frozen. AE-4 ratifies the rest.
+
+[[cpuid.entry]]
+# Leaf 0: max-basic-leaf + AuthenticAMD vendor string (EBX‖EDX‖ECX).
+leaf = "0x00000000"
+subleaf = "0x00000000"
+eax = "0x00000010"
+ebx = "0x68747541"
+ecx = "0x444d4163"
+edx = "0x69746e65"
+verified = "on-silicon-pending-AE4"
+
+[[cpuid.entry]]
+# Leaf 0x80000000: max extended leaf (EAX = 0x80000008, the enumeration bound).
+leaf = "0x80000000"
+subleaf = "0x00000000"
+eax = "0x80000008"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+verified = "on-silicon-pending-AE4"
+
+[[cpuid.entry]]
+# Leaf 0x80000001: extended family/model + extended feature flags (SVM masked off,
+# like the Intel column hides its hypervisor/vPMU surface). Values unpinned pending AE-4.
+leaf = "0x80000001"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+verified = "on-silicon-pending-AE4"
+
+[[cpuid.entry]]
+# Leaf 0x80000002: processor brand string [0:15]. Unpinned (AE-0 pins the frozen brand).
+leaf = "0x80000002"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+verified = "on-silicon-pending-AE4"
+
+[[cpuid.entry]]
+# Leaf 0x80000003: processor brand string [16:31]. Unpinned.
+leaf = "0x80000003"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+verified = "on-silicon-pending-AE4"
+
+[[cpuid.entry]]
+# Leaf 0x80000004: processor brand string [32:47]. Unpinned.
+leaf = "0x80000004"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+verified = "on-silicon-pending-AE4"
+
+[[cpuid.entry]]
+# Leaf 0x80000005: L1 cache / TLB geometry. Unpinned (per-generation).
+leaf = "0x80000005"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+verified = "on-silicon-pending-AE4"
+
+[[cpuid.entry]]
+# Leaf 0x80000006: L2/L3 cache / TLB geometry. Unpinned (per-generation).
+leaf = "0x80000006"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ecx = "0x00000000"
+ebx = "0x00000000"
+edx = "0x00000000"
+verified = "on-silicon-pending-AE4"
+
+[[cpuid.entry]]
+# Leaf 0x80000007: advanced power management (EDX bit 8 = invariant TSC — a
+# determinism-relevant capability AE-4 confirms). Unpinned.
+leaf = "0x80000007"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+verified = "on-silicon-pending-AE4"
+
+[[cpuid.entry]]
+# Leaf 0x80000008: address sizes (EAX[7:0] = MAXPHYADDR) + core count. Unpinned
+# (AE-0 pins MAXPHYADDR; the host-assert maxphyaddr-min is an AE-4 ratification).
+leaf = "0x80000008"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+verified = "on-silicon-pending-AE4"
+
+[msr]
+# The AMD MSR set (docs/AMD-EPYC.md §4). Materialized: the AMD-distinct 0xc000_00xx /
+# 0xc001_00xx space that the Intel column default-denies as out-of-scope, flipped to
+# explicit AuthenticAMD-baseline dispositions. The shared architectural MSR surface
+# (TSC/APIC/PAT/x2apic/… — same ISA) is the [transfers] msr-shared marker, not
+# re-materialized here. Every row `verified = "on-silicon-pending-AE4"`.
+
+# --- Architectural syscall/segment MSRs (AMD-native; guest-stateful). ------------
+[[msr.entry]]
+name = "MSR_EFER"
+index = "0xc0000080"
+read = "allow-stateful"
+write = "allow-stateful"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+name = "MSR_STAR"
+index = "0xc0000081"
+read = "allow-stateful"
+write = "allow-stateful"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+name = "MSR_LSTAR"
+index = "0xc0000082"
+read = "allow-stateful"
+write = "allow-stateful"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+name = "MSR_CSTAR"
+index = "0xc0000083"
+read = "allow-stateful"
+write = "allow-stateful"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+name = "MSR_SYSCALL_MASK"
+index = "0xc0000084"
+read = "allow-stateful"
+write = "allow-stateful"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+name = "MSR_FS_BASE"
+index = "0xc0000100"
+read = "allow-stateful"
+write = "allow-stateful"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+name = "MSR_GS_BASE"
+index = "0xc0000101"
+read = "allow-stateful"
+write = "allow-stateful"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+name = "MSR_KERNEL_GS_BASE"
+index = "0xc0000102"
+read = "allow-stateful"
+write = "allow-stateful"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+name = "MSR_TSC_AUX"
+index = "0xc0000103"
+read = "allow-stateful"
+write = "allow-stateful"
+verified = "on-silicon-pending-AE4"
+
+# --- Model-specific control MSRs (host-managed / SVM; guest default-denied). ------
+[[msr.entry]]
+name = "MSR_AMD64_TSC_RATIO"
+index = "0xc0000104"
+read = "deny-gp"
+write = "deny-gp"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+name = "MSR_K7_HWCR"
+index = "0xc0010015"
+read = "deny-gp"
+write = "deny-gp"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+name = "MSR_VM_HSAVE_PA"
+index = "0xc0010117"
+read = "deny-gp"
+write = "deny-gp"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+name = "MSR_AMD64_VIRT_SPEC_CTRL"
+index = "0xc001011f"
+read = "deny-gp"
+write = "deny-gp"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+# MSR_LS_CFG (0xc0011020): the SpecLockMap knob (docs/AMD-EPYC.md §2). A host-side
+# determinism condition (rr's overcount workaround), NEVER guest-facing — the guest
+# is default-denied. AE-4 ratifies that the guest cannot observe or disarm it.
+name = "MSR_LS_CFG"
+index = "0xc0011020"
+read = "deny-gp"
+write = "deny-gp"
+verified = "on-silicon-pending-AE4"
+
+[[msr.entry]]
+name = "MSR_AMD64_DE_CFG"
+index = "0xc0011029"
+read = "deny-gp"
+write = "deny-gp"
+verified = "on-silicon-pending-AE4"
+
+# --- PMU model, per-generation (Deliverable 4). BOTH sets carried; the loader
+# resolves NEITHER — which is live for a given part is an AE-0 decision on real
+# silicon, not an AMD constant. All PMU MSRs guest default-deny (the vPMU is hidden,
+# the RDPMC→#GP analogue). ---------------------------------------------------------
+
+# Legacy per-counter model (no global control): K7 select/counter pairs.
+[[msr.entry]]
+name = "MSR_K7_EVNTSEL_PERFCTR"
+index-lo = "0xc0010000"
+index-hi = "0xc0010007"
+read = "deny-gp"
+write = "deny-gp"
+verified = "on-silicon-pending-AE4"
+applies-when = "legacy-perfmon"
+
+# Legacy core-perf-counter pairs (the 0xc001_020x PERF_CTL/PERF_CTR set).
+[[msr.entry]]
+name = "MSR_F15H_PERF_CTL_CTR"
+index-lo = "0xc0010200"
+index-hi = "0xc001020b"
+read = "deny-gp"
+write = "deny-gp"
+verified = "on-silicon-pending-AE4"
+applies-when = "legacy-perfmon"
+
+# PerfMonV2 (Zen 4+): the Intel-like global control/status MSRs this model adds.
+[[msr.entry]]
+name = "MSR_AMD64_PERF_CNTR_GLOBAL"
+index-lo = "0xc0000300"
+index-hi = "0xc0000302"
+read = "deny-gp"
+write = "deny-gp"
+verified = "on-silicon-pending-AE4"
+applies-when = "zen4+"
+
+[transfers]
+# Section-level `transfers-unchanged-pending-AE4` markers for the shared-ISA surface
+# (never fork the one reproducer). The canonicalizer records each marker in place of
+# the section's rows; AE-4 decides whether any of these rows actually diverge on AMD.
+#   * cpuid-standard: standard leaves 0x1–0x1f (feature/topology/xsave) — shared ISA.
+#   * msr-shared: the shared architectural MSR space (TSC/APIC/PAT/x2apic/…).
+#   * insn / timer / cmos / mmio: the §4/§5 instruction, timer, CMOS, and xAPIC-MMIO
+#     surfaces — shared ISA, carried by marker not by 3000 hand-copied near-duplicate rows.
+# host-assert is per-silicon (the Zen host baseline is discovered at AE-0), so it is
+# `on-silicon-pending-AE4`, not `unchanged`.
+cpuid-standard = "unchanged-pending-AE4"
+msr-shared = "unchanged-pending-AE4"
+insn = "unchanged-pending-AE4"
+timer = "unchanged-pending-AE4"
+cmos = "unchanged-pending-AE4"
+mmio = "unchanged-pending-AE4"
+host-assert = "on-silicon-pending-AE4"

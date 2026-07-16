@@ -15,6 +15,20 @@ necessary but nowhere near sufficient — Linux/KVM exposes host time and other
 nondeterminism through many side doors (INTEGRATION.md §7) — and because every leak
 vector must be closed by **decision**, recorded here, rather than by accident.
 
+**Vendor axis — an Intel column and an AMD draft column, one contract.** The tables in
+this document are the **`det-cfl-v1` (GenuineIntel) column** — current truth, live-enforced
+(Coffee Lake i9-9900K). A second **AuthenticAMD draft column** lives in
+`docs/cpu-msr-contract-amd-draft.toml` (baseline placeholder `det-zenN-v1`); it is
+loadable and canonicalizable with its own `contract_hash`, but is wired into **no live
+enforcement path** — every AMD enforcement cell is explicitly `verify-on-silicon`,
+unverified until AE-4 ratifies it on real Epyc (`docs/AMD-EPYC.md` §4, the
+enforcement-mechanism truth table). This is a **vendor column on the one frozen contract,
+not a second forked document** (`docs/GLOSSARY.md` — never fork the one Reproducer): a
+single data-driven pipeline with a vendor axis (`VendorId`), one loader, one canonical
+serializer. The Intel tables below are **unchanged** by the AMD column's existence; adding
+the vendor axis is byte-identical for this column (§6). The AMD column's shape and the
+`transfers-unchanged-pending-AE4` carry are recorded in §1.3.
+
 **Authority.** This contract carries the same authority as `docs/INTEGRATION.md`, which
 mandates it be authored before any vmm-core code (§7): vmm-core implements it, it does
 not negotiate with it. Where implementation and contract disagree, the implementation is
@@ -65,8 +79,11 @@ device not named by a row — is denied by construction. Scope covers the whole
 guest-visible CPU surface of the single-vCPU Intel/VMX guest defined by task 04's pinned
 kernel: CPUID, all RDMSR/WRMSR accesses in all guest modes, the timing/entropy/perf
 instruction set (§4 instruction table), the x2APIC MSR range, and the full guest-visible
-time-source surface (§5: PIT, RTC/CMOS, HPET, ACPI PM timer, LAPIC timer). Out of scope: AMD, multi-vCPU, and anything host-side that the guest
-cannot observe.
+time-source surface (§5: PIT, RTC/CMOS, HPET, ACPI PM timer, LAPIC timer). Out of scope
+for **this (Intel) column**: multi-vCPU and anything host-side the guest cannot observe.
+AMD is not out of scope for the *contract* — it is the draft vendor column of
+`docs/cpu-msr-contract-amd-draft.toml` (§1.3), verify-on-silicon pending AE-4 — it is
+merely out of scope for *live enforcement*, which remains Intel-only until AE-4.
 
 **Mechanism (normative).** Default-deny is implemented with two KVM facilities together,
 configured before the first `KVM_RUN` and never changed while a vCPU runs:
@@ -375,6 +392,51 @@ XSAVEOPT/XSAVEC/XSAVES/XRSTORS** (uninterceptable, present on Coffee Lake-S, no 
 **not** in that set (it has a hard CR4 closure); the earlier prose that implied only "the
 XSAVE-optimization set" needed consideration is corrected here by naming PKRU and showing why
 it is hard-closed rather than residual.
+
+### 1.3 AMD draft vendor column (verify-on-silicon, pending AE-4)
+
+The AuthenticAMD column is a **draft**, not a fork: it shares this document's grammar,
+loader, and canonical serializer (`consonance/vmm-core/src/vendor/x86/contract/`, a
+`VendorId` axis), and lives in `docs/cpu-msr-contract-amd-draft.toml`. Intel and AMD are
+the **same `Arch`** (x86-64, `docs/ARCH-BOUNDARY.md`); the vendor difference is a
+substrate/contract concern, so the draft is a *column* on the one contract, never a second
+Reproducer (`docs/GLOSSARY.md`). Shape (`docs/AMD-EPYC.md` §4):
+
+- **Baseline placeholder `det-zenN-v1`.** The `N` is a placeholder pinned at AE-0 (the
+  generation-discovery stage), **not** a guessed Zen generation. AE-0 replaces it with the
+  pinned name; that replacement is a `version` bump + `contract_hash` re-derivation, never
+  a silent edit. No code branches on the `N`.
+- **`verify-on-silicon` on every enforcement cell.** Each materialized AMD CPUID/MSR row
+  carries `verified = "on-silicon-pending-AE4"` — part of the hashed canonical form, so a
+  row silently losing its marker is a hash-breaking change. Intel rows are implicitly
+  `verified = det-cfl-v1` (the frozen, gated baseline). No AMD row is trusted until AE-4's
+  on-silicon enforcement-mechanism truth table (SVM VMCB CPUID intercept + MSR-permission
+  bitmap) ratifies it.
+- **CPUID.** The AuthenticAMD vendor string (leaf 0) and the AMD extended-leaf space
+  `0x8000_0000`–`0x8000_0008` are materialized (values unpinned/`0` where per-silicon,
+  pending AE-4); the shared-ISA standard leaves `0x1`–`0x1f` are the
+  `transfer cpuid-standard unchanged-pending-AE4` carry; everything unlisted default-denies
+  (`cpuid-default zeroed`), exactly as `det-cfl-v1`.
+- **MSR.** The AMD `0xc000_00xx`/`0xc001_00xx` space this (Intel) column default-denies as
+  out-of-scope is flipped to explicit AuthenticAMD-baseline dispositions (EFER + the
+  syscall/segment MSRs `allow-stateful`; HWCR, `VM_HSAVE_PA`, the `LS_CFG` SpecLockMap knob
+  `0xc0011020`, DE_CFG `deny-gp`). The shared architectural MSR surface is the
+  `transfer msr-shared unchanged-pending-AE4` carry.
+- **PerfMonV2-vs-legacy is a per-generation fact.** Both PMU models are carried as
+  separate, `applies-when`-marked sections — the legacy `PERF_CTL`/`PERF_CTR` core pairs
+  (`applies-when = legacy-perfmon`, the `0xc001_00xx`/`0xc001_020x` MSRs) and the PerfMonV2
+  global control/status MSRs (`applies-when = zen4+`, `0xc000_030x`). The loader parses
+  **both** and resolves **neither**; which set is live for a given part is an AE-0 decision
+  on real silicon, not an AMD constant. Both live in the draft `contract_hash` as draft data.
+- **Instruction / timer / CMOS / xAPIC-MMIO (§4/§5 analogue).** Carried as section-level
+  `transfers-unchanged-pending-AE4` markers (`transfer insn|timer|cmos|mmio …`), **not**
+  hand-copied — the shared ISA surface is not forked into the AMD file; AE-4 decides whether
+  any of these rows actually diverge on AMD. The per-silicon host-baseline block is
+  deferred as `transfer host-assert on-silicon-pending-AE4` (the Zen host baseline is
+  discovered at AE-0).
+
+**No Intel table row below changes** for the AMD column's existence; the Intel canonical
+form and `contract_hash` are byte-identical through the vendor-axis restructure (§6).
 
 ## 2. Frozen CPUID model — baseline `det-cfl-v1`
 
