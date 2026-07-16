@@ -939,6 +939,37 @@ mod tests {
         assert_eq!(b.kvm().last_mmio_data, Some(le_data(0x90, 4)));
     }
 
+    /// `map_memory` forwards the (validated, page-aligned) region through the
+    /// `unsafe` seam. Driven against the fake so the `unsafe` block is
+    /// Miri-reachable (the fake records but never dereferences the pointer —
+    /// the real pointer work is `LiveKvm`'s, box-only); the alignment/overlap
+    /// validation is exercised too.
+    #[test]
+    fn map_memory_forwards_a_validated_region_through_the_seam() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+
+        // A page-aligned backing (an mmap-shaped allocation under Miri).
+        let mut ram = vec![0u8; 2 * 4096];
+        // SAFETY (test): `ram` outlives the `b`orrow here; the fake records the
+        // region (slot/gpa/len) and never dereferences the pointer.
+        unsafe { b.map_memory(Gpa(0x4000_0000), &mut ram).unwrap() };
+        assert_eq!(b.kvm().memslots, vec![(0, 0x4000_0000, 8192)]);
+
+        // Misaligned GPA and zero length fail closed (never reach the seam).
+        let mut empty: Vec<u8> = Vec::new();
+        assert!(matches!(
+            unsafe { b.map_memory(Gpa(0x4000_0000), &mut empty) },
+            Err(BackendError::Memory(_))
+        ));
+        assert!(matches!(
+            unsafe { b.map_memory(Gpa(0x1), &mut ram) },
+            Err(BackendError::Memory(_))
+        ));
+    }
+
     #[test]
     fn stock_is_unsupported_where_it_must_be_and_honestly_undeterministic() {
         let mut fake = FakeKvm::new();
