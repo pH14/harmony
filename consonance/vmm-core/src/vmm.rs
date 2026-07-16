@@ -3828,12 +3828,28 @@ where
             return None;
         }
         let mut gfns = self.backend.harvest_dirty_gfns().ok()?;
-        // The backend half is already sorted+deduped; fold in the host-side gfns.
+        // Fold in the host-side gfns.
         gfns.extend(self.host_dirty.iter().copied());
-        gfns.sort_unstable();
-        gfns.dedup();
         self.host_dirty.clear();
-        Some(gfns)
+        // Normalize ABSOLUTE guest GFNs to **main-RAM-relative** indices (review
+        // r15 — the last of the r11 GPA family, in GFN space). The backend dirty
+        // log and `mark_host_dirty` report absolute GFNs (`gpa / 4096`), but
+        // `SnapshotEngine::snapshot_derive` indexes the main RAM **0-based**. On
+        // arm64 (RAM based high) an absolute GFN is out of range (forcing a
+        // wasteful full-scan fallback), and the dedicated doorbell memslot's GFNs
+        // are NOT main-RAM pages — that page rides the device blob (r11), never
+        // the main-RAM snapshot. So keep only GFNs inside the main RAM's
+        // `[base, base + pages)` window and rebase them; x86 (base 0) is the
+        // identity, so its dirty set is byte-for-byte unchanged.
+        let base = self.ram_base_gpa / 4096;
+        let pages = (self.ram.len() / 4096) as u64;
+        let mut rel: Vec<u64> = gfns
+            .into_iter()
+            .filter_map(|g| g.checked_sub(base).filter(|&r| r < pages))
+            .collect();
+        rel.sort_unstable();
+        rel.dedup();
+        Some(rel)
     }
 
     /// Harvest-and-discard: reset the dirty tracking so the **current** state is
@@ -4339,6 +4355,36 @@ mod tests {
         assert_eq!(
             vmm.harvest_dirty_gfns(),
             Some(vec![(RESP_GPA as u64) / 4096])
+        );
+    }
+
+    /// Review r15: on a high-RAM-base (arm64) machine the backend dirty log
+    /// reports **absolute** GFNs, but `SnapshotEngine::snapshot_derive` indexes
+    /// the main RAM 0-based. The harvest must rebase them to main-RAM-relative
+    /// indices and exclude the dedicated doorbell memslot's GFNs (that page rides
+    /// the device blob, r11) — otherwise high GFNs are out-of-range (full-scan
+    /// fallback) and the doorbell slot mis-indexes the main RAM. x86 (base 0) is
+    /// byte-identical (the two tests above are the neutrality proof).
+    #[test]
+    fn harvest_rebases_high_base_gfns_and_excludes_the_doorbell_slot() {
+        let mut m = configured_mock(vec![]);
+        // Absolute GFNs as an arm64 backend logs them: two main-RAM pages (RAM at
+        // 0x4000_0000 → base GFN 0x40000) plus the doorbell RESP page (GFN 15, a
+        // separate low memslot).
+        m.push_dirty_gfns(vec![0x4_0001, 0x4_0003, 15]);
+        let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
+        vmm.ram_base_gpa = 0x4000_0000;
+
+        let dirty = vmm.harvest_dirty_gfns().unwrap();
+        assert_eq!(
+            dirty,
+            vec![1, 3],
+            "high GFNs rebased to main-RAM indices; the doorbell slot's GFN excluded"
+        );
+        let pages = (vmm.ram.len() / 4096) as u64;
+        assert!(
+            dirty.iter().all(|&g| g < pages),
+            "every harvested GFN indexes the main RAM — no snapshot_derive fallback"
         );
     }
 
