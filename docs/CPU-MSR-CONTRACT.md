@@ -2113,6 +2113,73 @@ do not bind). It consists of, in order:
    the §1.2 cooperative-guest threat model (documented residual risk), not a host/image
    assertion. This canonical order and these values match `[host-assert]` in the TOML exactly.
 
+**AMD draft vendor-column record forms (normative — the hashed grammar of the AuthenticAMD
+column).** The canonical form above is the **GenuineIntel** column (`det-cfl-v1`, this
+document's tables). The **AuthenticAMD draft column** (`docs/cpu-msr-contract-amd-draft.toml`,
+§1.3) is serialized by the **same** code into the **same** record types 1–8, with the
+additions below — all part of its hashed bytes — so its `contract_hash` is reproducible from
+this section alone (the markdown is normative; the TOML mirrors it). The Intel column emits
+**none** of these additions, so its canonical form and hash are byte-identical to the above
+(the zero-drift rule).
+
+- **(a) Vendor is header metadata, not hashed.** `[contract] vendor` (`GenuineIntel` /
+  `AuthenticAMD`) is **not** serialized into the canonical form — the vendor axis is enforced
+  at load time, not by the hash. Both columns emit the item-1 header record set. In the AMD
+  draft, the silicon-derived scalars unpinned until AE-0 (`tsc-hz`, `crystal-hz`, `bus-hz`,
+  `rtc-epoch`, `pit-refresh-ns`) render as `<key>=0` (an explicit placeholder, never a guess);
+  `kernel-tag` and `mxcsr-mask` carry the shared values; `cpuid-baseline` is the literal
+  placeholder `det-zenN-v1`.
+- **(b) Row `verified:` qualifier (`cpuid` and `msr` records).** Every AMD *enforcement*
+  record carries a trailing, space-separated ` verified:<token>` suffix appended after the last
+  register/disposition field, with `<token>` from the closed set **`{on-silicon-pending-AE4}`**
+  (the only value defined today). Intel records carry **no** suffix — they are implicitly
+  `verified:<cpuid-baseline>` (the frozen, gated baseline). Forms:
+  `cpuid <leaf>.<subleaf> <eax> <ebx> <ecx> <edx> verified:on-silicon-pending-AE4` and
+  `msr <index> <read> <write> verified:on-silicon-pending-AE4`.
+- **(c) Row `applies-when:` qualifier (`msr` records only).** A per-generation PMU MSR record
+  carries a trailing ` applies-when:<gen>` suffix, `<gen>` from the closed set
+  **`{legacy-perfmon, zen4+}`**. When both qualifiers are present the order is fixed —
+  **`verified:` first, then `applies-when:`**:
+  `msr <index> <read> <write> verified:on-silicon-pending-AE4 applies-when:zen4+`.
+- **(d) `transfer <section> <disposition>` records.** For each shared-ISA section the draft
+  carries by marker rather than by materialized rows, a single
+  `transfer <section> <disposition>` record is emitted **in place of** that section's record
+  block, at the block's normal position in the item ordering. `<section>` ∈
+  **`{cpuid-standard, insn, timer, cmos, mmio, host-assert}`**; `<disposition>` ∈
+  **`{unchanged-pending-AE4, on-silicon-pending-AE4}`** (`host-assert` is per-silicon, so it is
+  `on-silicon-pending-AE4`; the rest are `unchanged-pending-AE4`). `transfer cpuid-standard`
+  is emitted after the `cpuid` records and **before** `cpuid-default zeroed`; `transfer insn`,
+  `transfer timer`, `transfer mmio`, `transfer cmos`, `transfer host-assert` replace the item
+  4/5/6/7/8 blocks respectively (a `transfer mmio` record subsumes that block's `mmio-default`
+  line), emitted in that section order.
+- **(e) `msr-shared <index> unchanged-pending-AE4` records — the explicit shared-MSR allowlist.**
+  The genuinely cross-vendor architectural MSRs the draft carries as shared are an **explicit
+  allowlist**, never a numeric range (the MSR index space has vendor-specific addresses — e.g.
+  `IA32_ARCH_CAPABILITIES` `0x10a`, `IA32_TSX_CTRL` `0x122` are Intel-specific and must not be
+  claimed as shared). Each is one `msr-shared <index> unchanged-pending-AE4` record — `<index>`
+  8 lowercase hex, ranges/members expanded to one record per index, **sorted ascending by
+  index**, emitted **immediately before** the materialized item-3 `msr` records, and disjoint
+  from them. (CPUID standard leaves stay the `transfer cpuid-standard` bounded marker instead:
+  the standard-leaf space is a shared *enumeration* — leaf N is parallel on both vendors — not
+  vendor-specific numeric addresses.)
+- **(f) AMD column ordering (normative).** Header (1) → `cpuid` records with `verified:` (2,
+  sorted by leaf,subleaf) → `transfer cpuid-standard …` → `cpuid-default zeroed` →
+  `msr-shared …` records (sorted ascending) → `msr` records with `verified:`[` applies-when:`]
+  (3, sorted ascending) → `transfer insn …` → `transfer timer …` → `transfer mmio …` →
+  `transfer cmos …` → `transfer host-assert …`.
+- **(g) Immutability + committed hash.** The `verified:` / `applies-when:` / `transfer` /
+  `msr-shared` tokens and their allowed values are **immutable in meaning** (like the formula
+  ids and `dyn:*` rule ids): a semantic change — clearing a `verified:` marker (a row becoming
+  trusted), replacing the `det-zenN-v1` placeholder at AE-0, or resolving the live PMU model —
+  changes the body bytes and so requires a **new contract-version + `contract_hash`
+  re-derivation, never a silent edit**. The committed AMD-draft hash is
+  **`contract_hash` (AuthenticAMD draft, det-zenN-v1) =
+  `0e4e8daaa7bafe197396ebac8b42b0671453a7e1ab12f73136ee5e44533b5849`**, in
+  `docs/cpu-msr-contract-amd-draft.toml` `[contract] contract_hash`, with the byte-exact golden
+  `consonance/vmm-core/src/vendor/x86/contract/testdata/canonical-amd-draft.txt`, pinned by the
+  computed-==committed gate (`amd_contract_hash_matches_committed`). An independent auditor
+  reproduces it by serializing the AMD TOML per (a)–(f) and taking SHA-256 of the bytes.
+
 The serializer is deterministic by construction (sorted, fixed-width, no maps with
 iteration-order dependence — conventions rule 4) and lives with vmm-core's contract
 parser: the same code that loads the tables emits the canonical form, so what is hashed
@@ -2151,15 +2218,16 @@ in-place value edits under an existing version, ever — a wrong value is fixed 
 version whose changelog says so.
 
 **Registry status (live as of v4).** The enforcement is now mechanical and committed: the §6
-canonical serializer exists in vmm-core (`consonance/vmm-core/src/contract/{canonical,parse}.rs`),
+canonical serializer exists in vmm-core (`consonance/vmm-core/src/vendor/x86/contract/{canonical,parse}.rs`),
 emits the byte string specified above from the parsed `cpu-msr-contract.toml`, and
 `contract_hash` = SHA-256 of those bytes. The hash of the **v4 (det-cfl-v1)** contract is
 
 > **`contract_hash` (v4, det-cfl-v1) = `30839ae67142f265066be1051e93fcb4a1839c30bd3edd6d875ecdc1a37ddb67`**
 
 committed in `cpu-msr-contract.toml` `[contract] contract_hash` and pinned by the live gate
-`vmm_core::contract::tests::contract_hash_matches_committed_registry` (computed-from-parsed ==
-committed) plus the byte-exact golden `src/contract/testdata/canonical-v4.txt`. vmm-core startup
+`vmm_core::vendor::x86::contract::tests::contract_hash_matches_committed_registry`
+(computed-from-parsed == committed) plus the byte-exact golden
+`src/vendor/x86/contract/testdata/canonical-v4.txt`. vmm-core startup
 re-serializes, re-hashes, and refuses a mismatch. Off-contract MSR accesses observed at runtime
 (§1) feed back into the version rule: the triaged new row changes the body, so it arrives as a
 new version, and every run header names the version + hash it executed under. *(v1 and v2 were
