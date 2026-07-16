@@ -231,6 +231,20 @@ pub fn vmm_core::snapshot::SnapshotEngine::vm_state<S: vm_state::records::Snapsh
 pub const vmm_core::snapshot::DEFAULT_MAX_CHAIN_LEN: u32
 pub mod vmm_core::vendor
 pub mod vmm_core::vendor::arm64
+pub mod vmm_core::vendor::arm64::board
+pub const vmm_core::vendor::arm64::board::CNTFRQ_HZ: u64
+pub const vmm_core::vendor::arm64::board::DOORBELL: (u64, u64)
+pub const vmm_core::vendor::arm64::board::GICD: (u64, u64)
+pub const vmm_core::vendor::arm64::board::GICR: (u64, u64)
+pub const vmm_core::vendor::arm64::board::IMPL_SPIS: u32
+pub const vmm_core::vendor::arm64::board::PL011: (u64, u64)
+pub const vmm_core::vendor::arm64::board::PL011_SPI: u32
+pub const vmm_core::vendor::arm64::board::RAM_BASE: u64
+pub const vmm_core::vendor::arm64::board::VIRT_TIMER_INTID: u32
+pub fn vmm_core::vendor::arm64::board::gic_config() -> gicv3::device::GicConfig
+pub fn vmm_core::vendor::arm64::board::new_gic() -> gicv3::device::Gicv3
+pub mod vmm_core::vendor::arm64::bringup
+pub fn vmm_core::vendor::arm64::bringup::boot<B: vmm_backend::backend::Backend<A = vmm_backend::arch::arm64::Arm64>>(B, &[u8], &str, usize) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
 pub mod vmm_core::vendor::arm64::contract
 pub fn vmm_core::vendor::arm64::contract::contract_hash() -> [u8; 32]
 pub fn vmm_core::vendor::arm64::contract::policy() -> vmm_backend::arch::arm64::Arm64Policy
@@ -238,6 +252,54 @@ pub mod vmm_core::vendor::arm64::devices
 pub mod vmm_core::vendor::arm64::dispatch
 pub struct vmm_core::vendor::arm64::dispatch::Arm64Devices
 pub struct vmm_core::vendor::arm64::dispatch::Arm64RestorePrep
+pub mod vmm_core::vendor::arm64::dtb
+pub enum vmm_core::vendor::arm64::dtb::FdtError
+pub vmm_core::vendor::arm64::dtb::FdtError::BadMagic
+pub vmm_core::vendor::arm64::dtb::FdtError::Malformed
+pub vmm_core::vendor::arm64::dtb::FdtError::Truncated
+pub struct vmm_core::vendor::arm64::dtb::ParsedFdt
+pub vmm_core::vendor::arm64::dtb::ParsedFdt::nodes: alloc::vec::Vec<alloc::string::String>
+pub vmm_core::vendor::arm64::dtb::ParsedFdt::props: alloc::vec::Vec<(alloc::string::String, alloc::string::String, alloc::vec::Vec<u8>)>
+impl vmm_core::vendor::arm64::dtb::ParsedFdt
+pub fn vmm_core::vendor::arm64::dtb::ParsedFdt::prop(&self, &str, &str) -> core::option::Option<&[u8]>
+pub const vmm_core::vendor::arm64::dtb::FDT_MAGIC: u32
+pub fn vmm_core::vendor::arm64::dtb::build(u64, u64, &str) -> alloc::vec::Vec<u8>
+pub fn vmm_core::vendor::arm64::dtb::parse(&[u8]) -> core::result::Result<vmm_core::vendor::arm64::dtb::ParsedFdt, vmm_core::vendor::arm64::dtb::FdtError>
+pub mod vmm_core::vendor::arm64::entry
+pub const vmm_core::vendor::arm64::entry::PSTATE_EL1H_DAIF: u64
+pub fn vmm_core::vendor::arm64::entry::apply_entry(&mut vmm_backend::arch::arm64::state::Arm64VcpuState, &vmm_backend::arch::arm64::state::Arm64VcpuState)
+pub fn vmm_core::vendor::arm64::entry::boot_entry(u64, u64) -> vmm_backend::arch::arm64::state::Arm64VcpuState
+pub mod vmm_core::vendor::arm64::hostassert
+pub struct vmm_core::vendor::arm64::hostassert::Outcome
+pub vmm_core::vendor::arm64::hostassert::Outcome::actual: alloc::string::String
+pub vmm_core::vendor::arm64::hostassert::Outcome::expected: alloc::string::String
+pub vmm_core::vendor::arm64::hostassert::Outcome::key: alloc::string::String
+pub vmm_core::vendor::arm64::hostassert::Outcome::pass: bool
+pub fn vmm_core::vendor::arm64::hostassert::report() -> alloc::vec::Vec<vmm_core::vendor::arm64::hostassert::Outcome>
+pub mod vmm_core::vendor::arm64::image_loader
+pub enum vmm_core::vendor::arm64::image_loader::ImageLoadError
+pub vmm_core::vendor::arm64::image_loader::ImageLoadError::BadMagic
+pub vmm_core::vendor::arm64::image_loader::ImageLoadError::BadMagic::found: u32
+pub vmm_core::vendor::arm64::image_loader::ImageLoadError::BigEndian
+pub vmm_core::vendor::arm64::image_loader::ImageLoadError::DoesNotFit
+pub vmm_core::vendor::arm64::image_loader::ImageLoadError::DoesNotFit::end: u64
+pub vmm_core::vendor::arm64::image_loader::ImageLoadError::DoesNotFit::ram: u64
+pub vmm_core::vendor::arm64::image_loader::ImageLoadError::TooShort
+pub vmm_core::vendor::arm64::image_loader::ImageLoadError::UnalignedTextOffset
+pub vmm_core::vendor::arm64::image_loader::ImageLoadError::UnalignedTextOffset::text_offset: u64
+pub struct vmm_core::vendor::arm64::image_loader::ImageHeader
+pub vmm_core::vendor::arm64::image_loader::ImageHeader::flags: u64
+pub vmm_core::vendor::arm64::image_loader::ImageHeader::image_size: u64
+pub vmm_core::vendor::arm64::image_loader::ImageHeader::text_offset: u64
+pub struct vmm_core::vendor::arm64::image_loader::LoadedImage
+pub vmm_core::vendor::arm64::image_loader::LoadedImage::end_off: u64
+pub vmm_core::vendor::arm64::image_loader::LoadedImage::entry_gpa: u64
+pub vmm_core::vendor::arm64::image_loader::LoadedImage::load_gpa: u64
+pub const vmm_core::vendor::arm64::image_loader::IMAGE_MAGIC: u32
+pub const vmm_core::vendor::arm64::image_loader::MAGIC_OFFSET: usize
+pub fn vmm_core::vendor::arm64::image_loader::load(&[u8], &mut [u8]) -> core::result::Result<vmm_core::vendor::arm64::image_loader::LoadedImage, vmm_core::vendor::arm64::image_loader::ImageLoadError>
+pub fn vmm_core::vendor::arm64::image_loader::parse_header(&[u8]) -> core::result::Result<vmm_core::vendor::arm64::image_loader::ImageHeader, vmm_core::vendor::arm64::image_loader::ImageLoadError>
+pub fn vmm_core::vendor::arm64::image_loader::wrap_image(&[u8], u64, u64) -> alloc::vec::Vec<u8>
 pub mod vmm_core::vendor::arm64::records
 pub struct vmm_core::vendor::arm64::Arm64Devices
 pub mod vmm_core::vendor::x86

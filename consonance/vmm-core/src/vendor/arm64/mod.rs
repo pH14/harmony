@@ -17,9 +17,15 @@
 //! vGICv3 round-trip verdict); the boot path lands with M3; the KVM backend
 //! with M4. Nothing here claims silicon behavior.
 
+pub mod board;
+pub mod bringup;
 pub mod contract;
 pub mod devices;
 pub mod dispatch;
+pub mod dtb;
+pub mod entry;
+pub mod hostassert;
+pub mod image_loader;
 pub mod records;
 
 use control_proto::RegsView;

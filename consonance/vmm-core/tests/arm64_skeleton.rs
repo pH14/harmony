@@ -49,15 +49,16 @@ fn engine_drives_the_arm64_vendor_through_common_exits() {
 /// address and a trapped sysreg with no ruled disposition both fail closed.
 #[test]
 fn arm64_dispatch_fails_closed_on_unruled_surface() {
-    // MMIO: no address is modeled in the skeleton (the memory map is the boot
-    // path's).
+    // MMIO at an address that is neither RAM nor any modeled device frame
+    // (below the GIC/PL011/doorbell frames) fails closed — default-deny.
     let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
-        gpa: vmm_backend::Gpa(0x0900_0000),
+        gpa: vmm_backend::Gpa(0x0100_0000),
         size: 4,
         write: Some(0x41),
     })]);
     let err = v.step().unwrap_err();
     assert!(matches!(err, VmmError::ContractViolation(_)), "{err}");
+    assert!(format!("{err}").contains("unmodeled MMIO"), "{err}");
 
     // Sysreg: the dispositions are AA-6's; the skeleton rules none.
     let mut v = vmm(vec![Exit::Arch(Arm64Exit::Sysreg {
@@ -232,16 +233,12 @@ fn mock_arm64_backend_enforces_the_run_loop_contract() {
 /// moves it pending→active, and the whole fabric rides the snapshot.
 #[test]
 fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
-    use gicv3::{GicConfig, GicFrame, Gicv3};
+    use gicv3::GicFrame;
+    use vmm_core::vendor::arm64::board;
 
     // A fabric with INTID 40 fully deliverable (Group 1, enabled, priority
     // 0x40, forwarding on, PMR open).
-    let mut gic = Gicv3::new(GicConfig {
-        impl_spis: 32,
-        timer_hz: 62_500_000,
-        timer_intid: 27,
-    })
-    .unwrap();
+    let mut gic = board::new_gic();
     gic.mmio_write(GicFrame::Dist, 0x0000, 0b10, 0).unwrap(); // CTLR.EnableGrp1
     gic.mmio_write(GicFrame::Dist, 0x0080 + 4, 1 << 8, 0)
         .unwrap(); // IGROUPR1
@@ -255,13 +252,14 @@ fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
     v.wire_gic(gic);
     assert!(v.gic_wired());
 
-    // Stage-time validation now answers from the implemented identity space:
-    // SGI 0 is legal (never x86's `< 16` reserved rule), 64 is past the
-    // 32+32 limit.
+    // Stage-time validation now answers from the implemented identity space
+    // (the board's 64 SPIs ⇒ INTID limit 96): 40 is a legal SPI, 200 is past
+    // the distributor bound. (SGIs `0..16` would deliver too — never x86's
+    // reserved-vector rule.)
     v.apply_host_fault(&environment::HostFault::InjectInterrupt { vector: 40 })
         .unwrap();
     assert!(
-        v.apply_host_fault(&environment::HostFault::InjectInterrupt { vector: 64 })
+        v.apply_host_fault(&environment::HostFault::InjectInterrupt { vector: 200 })
             .is_err(),
         "past the distributor-bounded identity space"
     );
@@ -280,14 +278,7 @@ fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
     // The fabric rides the snapshot: restore into two gic-wired twins — both
     // resume with the INTID still pending (re-derived, not lost, not
     // in-service) and hash identically to each other.
-    let twin_gic = || {
-        Gicv3::new(GicConfig {
-            impl_spis: 32,
-            timer_hz: 62_500_000,
-            timer_intid: 27,
-        })
-        .unwrap()
-    };
+    let twin_gic = board::new_gic;
     let mut twin_a = vmm(vec![]);
     twin_a.wire_gic(twin_gic());
     twin_a.restore_vm_state(&s).unwrap();
@@ -309,17 +300,13 @@ fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
 /// pending and arbitration delivers it.
 #[test]
 fn arm64_generic_timer_feeds_the_deadline_seam() {
-    use gicv3::{CNTV_CTL_ENABLE, GicConfig, GicFrame, Gicv3};
+    use gicv3::{CNTV_CTL_ENABLE, GicFrame};
+    use vmm_core::vendor::arm64::board;
     use vmm_core::vmm::VtimeWiring;
     use vmm_core::work::ScriptedWork;
     use vtime::VClockConfig;
 
-    let mut gic = Gicv3::new(GicConfig {
-        impl_spis: 32,
-        timer_hz: 62_500_000,
-        timer_intid: 27,
-    })
-    .unwrap();
+    let mut gic = board::new_gic();
     // Make the timer PPI deliverable, then arm CVAL = 125 ticks ⇒ 2000 vns.
     gic.mmio_write(GicFrame::Dist, 0x0000, 0b10, 0).unwrap();
     let sgi = 0x1_0000;
@@ -365,4 +352,76 @@ fn arm64_generic_timer_feeds_the_deadline_seam() {
     // The out-of-run-loop query advances the fabric to now_vns: the deadline
     // has passed, the PPI latches pending, and arbitration delivers it.
     assert!(v.has_pending_guest_interrupt().unwrap());
+}
+
+/// M3 — the board memory map routes device MMIO: the PL011 console frame is a
+/// modeled device (a store lands in the capture, read-back works), the
+/// reserved doorbell GPA is recognized (default-denied without an SDK, like
+/// x86's port), and the GIC frames fail closed when the fabric is unwired.
+#[test]
+fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
+    use vmm_backend::Gpa;
+
+    // A PL011 UARTDR store (offset 0x000) captures a byte; a UARTFR read
+    // (offset 0x018) reads back the flag register.
+    let mut v = vmm(vec![
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(0x0900_0000),
+            size: 4,
+            write: Some(u64::from(b'Z')),
+        }),
+        Exit::Common(CommonExit::Idle),
+    ]);
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert_eq!(v.serial_output(), b"Z");
+    // The idle exit latches the terminal (nothing to wake it — unwired fabric).
+    assert_eq!(v.step().unwrap(), Step::Terminal(TerminalReason::Idle));
+
+    // The reserved doorbell GPA is recognized; without an SDK channel wired the
+    // dispatcher default-denies (a ContractViolation, never an unmodeled-MMIO
+    // error) — the arm64 mirror of x86's DOORBELL_PORT.
+    let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+        gpa: Gpa(0x0A00_0000),
+        size: 4,
+        write: Some(0x3150_4348),
+    })]);
+    let err = v.step().unwrap_err();
+    assert!(matches!(err, VmmError::ContractViolation(_)), "{err}");
+    assert!(
+        !format!("{err}").contains("unmodeled MMIO"),
+        "doorbell was recognized: {err}"
+    );
+
+    // A GIC-frame access with no fabric wired fails closed, naming the
+    // AA-6-gated delivery.
+    let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+        gpa: Gpa(0x0800_0000),
+        size: 4,
+        write: Some(0),
+    })]);
+    let err = v.step().unwrap_err();
+    assert!(format!("{err}").contains("GICv3 MMIO"), "{err}");
+}
+
+/// M3 — the full boot composition: `boot` runs the host-baseline gate then
+/// loads an Image + DTB and sets the entry state, all mock-backed.
+#[test]
+fn arm64_boot_composes_a_ready_vmm() {
+    use vmm_backend::MockArm64Backend;
+    use vmm_core::vendor::arm64::{bringup, dtb, image_loader};
+
+    // A tiny valid Image (header + 256 bytes), 16 MiB RAM.
+    let image = image_loader::wrap_image(&[0x42u8; 256], 0, 0xA);
+    let backend = MockArm64Backend::new();
+    let v = bringup::boot(backend, &image, "console=ttyAMA0", 16 * 1024 * 1024).unwrap();
+
+    let vcpu = v.inspect_vcpu();
+    assert_eq!(vcpu.core.pc, 0x4000_0000); // RAM_BASE
+    assert_eq!(vcpu.core.pstate, 0x3c5); // EL1h + DAIF masked
+    let dtb_gpa = vcpu.core.x[0];
+    // x0 points at a DTB in RAM that parses back to the board's devices.
+    let off = (dtb_gpa - 0x4000_0000) as usize;
+    let parsed = dtb::parse(&v.guest_memory()[off..]).unwrap();
+    assert!(parsed.nodes.iter().any(|n| n == "intc@8000000"));
+    assert!(parsed.nodes.iter().any(|n| n == "timer"));
 }

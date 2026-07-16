@@ -30,6 +30,11 @@ use crate::vmm::{Step, Vmm, VmmError};
 /// arm64 mirror of x86's `RFLAGS_IF` (inverted sense: masked vs enabled).
 pub(crate) const PSTATE_I: u64 = 1 << 7;
 
+/// `true` iff `addr` lies inside the `(base, len)` device frame.
+fn in_frame(addr: u64, frame: (u64, u64)) -> bool {
+    addr >= frame.0 && addr < frame.0 + frame.1
+}
+
 /// The arm64 per-VM device state
 /// ([`Vendor::Devices`](crate::vendor::Vendor::Devices)): the PL011 UART
 /// (always present — the serial console) and the optional GICv3 +
@@ -76,22 +81,89 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         )))
     }
 
-    /// Route an MMIO access. **Fails closed for every address:** the arm64
-    /// machine memory map (PL011 frame, GIC frames, the reserved hypercall
-    /// doorbell GPA) is composed by the M3 boot path; until a composition
-    /// wires it, no MMIO address is modeled — mirroring x86's posture when the
-    /// xAPIC is unwired.
+    /// Route an MMIO access over the [`board`](super::board) memory map: the
+    /// PL011 console frame → the UART device; the reserved doorbell GPA → the
+    /// hypercall doorbell (`docs/ARCH-BOUNDARY.md` §4: on arm64 a doorbell
+    /// surfaces as `KVM_EXIT_MMIO`, recognized here — default-deny without an
+    /// SDK channel, exactly as x86's `DOORBELL_PORT`); the GICv3 frames → the
+    /// wired fabric, or a loud "GIC unwired (delivery AA-6-gated)" when it is
+    /// not. Every other address fails closed (default-deny).
     pub(crate) fn dispatch_mmio_arm64(
         &mut self,
         gpa: Gpa,
         size: u8,
         write: Option<u64>,
     ) -> Result<Step, VmmError> {
-        let _ = write;
+        use super::board::{DOORBELL, GICD, GICR, PL011};
+
+        let addr = gpa.0;
+
+        // The PL011 console (4 KiB frame). 32-bit register accesses.
+        if in_frame(addr, PL011) {
+            let offset = addr - PL011.0;
+            return match write {
+                None => {
+                    let v = self.devices.uart.read(offset);
+                    self.backend.complete_read(u64::from(v))?;
+                    Ok(Step::Continued)
+                }
+                Some(v) => {
+                    self.devices.uart.write(offset, v as u32);
+                    Ok(Step::Continued)
+                }
+            };
+        }
+
+        // The hypercall doorbell (reserved MMIO GPA). A store rings it; the
+        // dispatcher default-denies a service this composition does not offer.
+        if in_frame(addr, DOORBELL) {
+            let Some(v) = write else {
+                return Err(VmmError::ContractViolation(format!(
+                    "load from the hypercall doorbell GPA {addr:#x}: the doorbell is a store-only \
+                     ring (a request-page GPA), never read"
+                )));
+            };
+            return self.service_doorbell(v as u32);
+        }
+
+        // The GICv3 distributor / redistributor frames.
+        if in_frame(addr, GICD) || in_frame(addr, GICR) {
+            let (frame, base) = if in_frame(addr, GICD) {
+                (gicv3::GicFrame::Dist, GICD.0)
+            } else {
+                (gicv3::GicFrame::Redist, GICR.0)
+            };
+            if self.devices.gic.is_none() {
+                return Err(VmmError::ContractViolation(format!(
+                    "GICv3 MMIO at {addr:#x} but the userspace GICv3 is unwired — guest \
+                     delivery is AA-6-gated (the in-kernel vGICv3 round-trip verdict); a \
+                     stock-backend boot never wires it"
+                )));
+            }
+            let now_vns = self.now_vns()?;
+            let offset = addr - base;
+            let gic = self.devices.gic.as_mut().expect("is_none checked above");
+            return match write {
+                None => {
+                    let v = gic.mmio_read(frame, offset, now_vns).map_err(|e| {
+                        VmmError::ContractViolation(format!("GICv3 read {offset:#x}: {e}"))
+                    })?;
+                    self.backend.complete_read(u64::from(v))?;
+                    Ok(Step::Continued)
+                }
+                Some(v) => {
+                    gic.mmio_write(frame, offset, v as u32, now_vns)
+                        .map_err(|e| {
+                            VmmError::ContractViolation(format!("GICv3 write {offset:#x}: {e}"))
+                        })?;
+                    Ok(Step::Continued)
+                }
+            };
+        }
+
         Err(VmmError::ContractViolation(format!(
-            "unmodeled MMIO at {:#x} (size {size}); the arm64 skeleton wires no MMIO device \
-             (the machine memory map lands with the boot path)",
-            gpa.0
+            "unmodeled MMIO at {addr:#x} (size {size}); only the PL011 console, the GICv3 \
+             frames, and the hypercall doorbell are modeled on the arm64 board"
         )))
     }
 

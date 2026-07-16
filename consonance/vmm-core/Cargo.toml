@@ -126,3 +126,7 @@ lapic = { path = "../lapic", version = "0.1.0" }
 # Pinned `version` alongside `path` (cargo-deny wildcard ban, as for the siblings).
 telemetry = { path = "../telemetry", version = "0.1.0", default-features = false }
 proptest = "1"
+# The `tasks/112` M3 TCG smoke (`tests/arm64_tcg_smoke.rs`, `#[ignore]`d) writes
+# the assembled Image payload + the DTB this vendor emits to a scratch dir and
+# boots them on qemu. Whitelist dev-dependency (rule #5).
+tempfile = "3"

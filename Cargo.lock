@@ -1013,6 +1013,7 @@ dependencies = [
  "sha2",
  "snapshot-store",
  "telemetry",
+ "tempfile",
  "thiserror",
  "unison",
  "vm-state",

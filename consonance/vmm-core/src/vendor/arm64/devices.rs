@@ -13,10 +13,6 @@ use std::collections::VecDeque;
 /// PL011 register offsets (Arm PrimeCell UART PL011 TRM). The subset the
 /// skeleton models; in-range offsets outside it read as absent (`0`) and drop
 /// writes (deny-ignore), mirroring the legacy-platform posture.
-// Reached by guest MMIO only once the boot path composes the machine memory
-// map (M3 wires `dispatch_mmio_arm64` → this model); until then only the
-// capture/inject/restore seams are live.
-#[allow(dead_code)]
 pub(crate) mod reg {
     /// `UARTDR` — data register (write: transmit; read: receive).
     pub(crate) const DR: u64 = 0x000;
@@ -45,10 +41,8 @@ pub(crate) mod reg {
 }
 
 /// `UARTFR.TXFE` — transmit FIFO empty (the model transmits instantly).
-#[allow(dead_code)] // M3 wires the MMIO dispatch that reads FR
 const FR_TXFE: u32 = 1 << 7;
 /// `UARTFR.RXFE` — receive FIFO empty.
-#[allow(dead_code)] // M3 wires the MMIO dispatch that reads FR
 const FR_RXFE: u32 = 1 << 4;
 
 /// The PL011 UART model: serial capture + `exec` input + register shadows.
@@ -74,16 +68,17 @@ impl Pl011 {
         Self::default()
     }
 
-    /// `true` iff `offset` lies inside the PL011's 4 KiB register page.
-    #[allow(dead_code)] // M3 wires the MMIO dispatch
+    /// `true` iff `offset` lies inside the PL011's 4 KiB register page. (The
+    /// board-level frame check is `dispatch`'s `in_frame`; this stays for
+    /// symmetry with the x86 `Uart8250::owns` and any direct caller.)
+    #[allow(dead_code)]
     pub(crate) fn owns(offset: u64) -> bool {
         offset < reg::SIZE
     }
 
     /// Service a register load at `offset` (page-relative). Total: an
     /// unmodeled in-range offset reads as absent (`0`); the caller has already
-    /// range-checked via [`Pl011::owns`].
-    #[allow(dead_code)] // M3 wires the MMIO dispatch
+    /// range-checked the frame.
     pub(crate) fn read(&mut self, offset: u64) -> u32 {
         match offset {
             // A DR read pops the next injected `exec` input byte, the way real
@@ -113,7 +108,6 @@ impl Pl011 {
     /// Service a register store at `offset` (page-relative). Total: a
     /// transmit lands in the capture, configuration writes land in shadows,
     /// everything else is accepted and dropped (deny-ignore).
-    #[allow(dead_code)] // M3 wires the MMIO dispatch
     pub(crate) fn write(&mut self, offset: u64, value: u32) {
         match offset {
             reg::DR => self.capture.push(value as u8),
