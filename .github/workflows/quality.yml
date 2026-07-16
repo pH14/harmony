@@ -347,7 +347,7 @@ jobs:
       - name: cargo llvm-cov (region floor 94.5%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/work_perf\.rs|dissonance/campaign-runner/src/boxrun\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/vendor/x86/work_perf\.rs|dissonance/campaign-runner/src/boxrun\.rs' \
             --fail-under-regions 94.5
       - uses: actions/upload-artifact@v4
         if: always()
