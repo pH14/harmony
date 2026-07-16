@@ -197,8 +197,8 @@ pub fn sdk_events::SdkSchema::is_empty(&self) -> bool
 pub fn sdk_events::SdkSchema::len(&self) -> usize
 pub fn sdk_events::SdkSchema::new(sdk_events::SourceFormat, sdk_events::OrderingScope) -> sdk_events::SdkSchema
 pub struct sdk_events::SiteId
-pub sdk_events::SiteId::begin_column: u32
-pub sdk_events::SiteId::begin_line: u32
+pub sdk_events::SiteId::begin_column: u64
+pub sdk_events::SiteId::begin_line: u64
 pub sdk_events::SiteId::file: alloc::string::String
 pub sdk_events::SiteId::function: alloc::string::String
 pub sdk_events::SiteId::id: core::option::Option<alloc::string::String>

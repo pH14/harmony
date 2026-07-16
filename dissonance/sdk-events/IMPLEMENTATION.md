@@ -29,7 +29,11 @@ Differential epic (`hm-bbx`).
   update operation, so a v2 state point is reducible before it ever fires. The
   firing codec honors **all four** operations (`set`/`max`/`min`/`accumulate`),
   and the value the binary path carries is the cooperative vertical's bounded
-  integer (`u64`). A v2 declaration is accepted (identically on encode and decode,
+  integer (`u64`). `min`/`accumulate` are wire-v2 firing extensions, so under a v1
+  (or declaration-less) stream those op bytes stay raw rather than fabricating a
+  state update. The v2 declaration encoder is **canonical** — points serialize
+  sorted by `(namespace, local)`, so a caller's incidental order (e.g. from a
+  `HashMap`) never reaches the persisted declaration bytes. A v2 declaration is accepted (identically on encode and decode,
   so schema and event evidence can never disagree) only if the emission path can
   report it: its classification matches the one the namespace's firings decode to
   (`NS_STATE`⇒state, `NS_ASSERT`/`NS_BUGGIFY`/`NS_LIFECYCLE`⇒occurrence); a state
@@ -86,12 +90,18 @@ Differential epic (`hm-bbx`).
   same `validate_v2_point` the decoder uses, so an un-fireable id or a shape the
   binary wire cannot carry fails at construction, not silently downstream.
 - **A recognized JSON record carries exactly one wrapper, and structural
-  ambiguity is preserved raw.** The frame is parsed preserving duplicate keys (via
-  a `FrameMembers` visitor, since `serde_json::Value` would silently keep the last
-  of a repeated key): a repeated top-level key, zero or more-than-one recognized
-  wrapper, or a wrapper whose value is not a JSON object all become
-  `Payload::Unknown` with raw bytes intact — malformed input can neither drop a
-  member silently nor fabricate a `setup_complete` occurrence from field defaults.
+  ambiguity is preserved raw.** A `DupCheck` visitor walks the whole frame and
+  rejects a duplicate key at **any** depth (`serde_json::Value` would silently keep
+  the last of a repeated key — e.g. two `maximize` fields choosing `Min` — and this
+  is robust under `arbitrary_precision`, where a number is a single-key map). A
+  duplicate key, zero or more-than-one recognized wrapper, or a wrapper whose value
+  is not a JSON object all become `Payload::Unknown` with raw bytes intact —
+  malformed input can neither drop a member silently nor fabricate a
+  `setup_complete` occurrence from field defaults. A valid `antithesis_setup`
+  registers its fixed occurrence identity in `SdkSchema` (like assertions and
+  guidance), so a setup event can be validated/materialized against the schema.
+  Site coordinates (`begin_line`/`begin_column`) are `u64`, preserved exactly
+  rather than truncated into a colliding site.
 - **Deserialization re-verifies invariants.** `SdkSchema` deserializes through a
   `try_from` guard that rejects unsorted or duplicate entries, so `entry`'s binary
   search can never be silently defeated by a corrupted persisted schema.

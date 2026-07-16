@@ -201,7 +201,7 @@ fn an_identity_used_as_both_assertion_and_guidance_conflicts() {
 // --- totality and raw preservation -------------------------------------------
 
 #[test]
-fn setup_record_is_a_lifecycle_occurrence() {
+fn setup_record_is_a_lifecycle_occurrence_registered_in_the_schema() {
     let json = r#"{"antithesis_setup":{"status":"complete","details":{}}}"#;
     let n = decode_antithesis(&[rec(0, json)]).expect("decodes");
     assert_eq!(
@@ -210,6 +210,14 @@ fn setup_record_is_a_lifecycle_occurrence() {
             name: "setup_complete".into()
         }
     );
+    // The setup event's identity is registered in the schema (occurrence), so the
+    // batch can validate/materialize it like an assertion or guidance event.
+    let entry = n
+        .schema
+        .entry(&n.events[0].id)
+        .expect("setup identity registered in schema");
+    assert_eq!(entry.classification, Classification::Occurrence);
+    assert_eq!(entry.base_op, None);
 }
 
 #[test]
@@ -271,6 +279,58 @@ fn a_frame_with_any_duplicate_top_level_key_is_preserved_raw() {
     let n = decode_antithesis(&[rec(1, json)]).expect("decodes");
     assert_eq!(n.events[0].payload, Payload::Unknown);
     assert!(n.schema.is_empty());
+}
+
+#[test]
+fn a_nested_duplicate_key_is_preserved_raw_not_last_write_wins() {
+    // Duplicate `maximize` inside guidance: last-write-wins would turn true-then-
+    // false into a Min update, letting malformed input choose state semantics. The
+    // recursive detector catches it and preserves the frame raw.
+    let json = r#"{"antithesis_guidance":{"guidance_type":"numeric","maximize":true,"maximize":false,"id":"g","guidance_data":1}}"#;
+    let n = decode_antithesis(&[rec(1, json)]).expect("decodes");
+    assert_eq!(n.events[0].payload, Payload::Unknown);
+    assert!(
+        n.schema.is_empty(),
+        "no state semantics chosen from an ambiguous frame"
+    );
+
+    // A duplicate key nested even deeper (inside location) is caught too.
+    let deep = r#"{"antithesis_assert":{"assert_type":"always","condition":true,"message":"m","location":{"file":"a","file":"b"}}}"#;
+    let n = decode_antithesis(&[rec(1, deep)]).expect("decodes");
+    assert_eq!(n.events[0].payload, Payload::Unknown);
+}
+
+#[test]
+fn a_large_numeric_token_does_not_trip_the_duplicate_detector() {
+    // A precise 40-digit number must scan cleanly (no false duplicate under
+    // serde_json's arbitrary_precision number representation).
+    let json = r#"{"antithesis_guidance":{"guidance_type":"numeric","maximize":true,"id":"g","guidance_data":1234567890123456789012345678901234567890}}"#;
+    let n = decode_antithesis(&[rec(1, json)]).expect("decodes");
+    match &n.events[0].payload {
+        Payload::Guidance { token, .. } => {
+            assert_eq!(
+                token.as_ref().unwrap().as_str(),
+                "1234567890123456789012345678901234567890"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn an_oversized_site_coordinate_is_preserved_not_truncated() {
+    // A `begin_line` above u32::MAX must not wrap to a colliding small value.
+    let big = u32::MAX as u64 + 1; // 4294967296
+    let json = format!(
+        r#"{{"antithesis_assert":{{"assert_type":"always","condition":true,"message":"m","location":{{"file":"a.rs","function":"f","begin_line":{big},"begin_column":7}}}}}}"#
+    );
+    let n = decode_antithesis(&[rec(1, &json)]).expect("decodes");
+    let site = n.events[0].site.as_ref().expect("site");
+    assert_eq!(
+        site.begin_line, big,
+        "coordinate preserved exactly, not truncated"
+    );
+    assert_eq!(site.begin_column, 7);
 }
 
 #[test]
@@ -364,5 +424,18 @@ proptest! {
         }
         let distinct: std::collections::BTreeSet<&String> = specs.iter().map(|(m, _)| m).collect();
         prop_assert_eq!(n.schema.len(), distinct.len());
+    }
+
+    /// A duplicate field injected anywhere in an otherwise-valid wrapper makes the
+    /// whole frame ambiguous → `Payload::Unknown` (never a confident normalization
+    /// built from a silently-dropped member).
+    #[test]
+    fn any_injected_duplicate_field_makes_the_frame_unknown(dupkey in "[a-z]{1,6}") {
+        // The `dupkey` appears twice inside the guidance wrapper by construction.
+        let json = format!(
+            r#"{{"antithesis_guidance":{{"guidance_type":"numeric","maximize":true,"id":"g","guidance_data":1,"{dupkey}":1,"{dupkey}":2}}}}"#
+        );
+        let n = decode_antithesis(&[(Moment(0), json.into_bytes())]).expect("decodes");
+        prop_assert_eq!(&n.events[0].payload, &Payload::Unknown);
     }
 }

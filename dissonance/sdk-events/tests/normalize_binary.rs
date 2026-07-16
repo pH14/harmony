@@ -191,6 +191,24 @@ fn v1_sometimes_point_keeps_its_must_hit_expectation() {
     );
 }
 
+#[test]
+fn a_v1_stream_does_not_normalize_v2_only_operations() {
+    // op bytes 2/3 (min/accumulate) are wire-v2 firing extensions; under a v1 (or
+    // declaration-less) stream they are unknown bytes and stay raw.
+    for op_byte in [STATE_MIN, STATE_ACCUMULATE] {
+        let raw = vec![
+            at(0, 0, v1_catalog(&[(KIND_STATE, 7, "reg")])),
+            at(1, event_id(NS_STATE, 7), state_firing(op_byte, 5)),
+        ];
+        let n = decode_binary(&raw).expect("decodes");
+        assert_eq!(
+            n.events[0].payload,
+            Payload::Unknown,
+            "op {op_byte} is not a v1 state op — preserve raw, don't fabricate a state update"
+        );
+    }
+}
+
 // --- wire v2: declarations resolve semantics and round-trip before firing ----
 
 fn v2_state(local: u32, name: &str, op: UpdateOp) -> DeclaredPoint {
@@ -666,5 +684,35 @@ proptest! {
             false
         };
         prop_assert_eq!(accepted, should_accept);
+    }
+
+    /// The emitted declaration is canonical: the same point set in any input order
+    /// (e.g. from a `HashMap`) yields byte-identical declaration bytes, so no
+    /// host-order nondeterminism reaches the persisted `original_declaration`.
+    #[test]
+    fn shuffled_declaration_points_encode_identically(
+        // A map keys the points by unique local id (values pick the op).
+        by_local in prop::collection::btree_map(0u32..=64, 0usize..4, 1..8),
+        order in prop::collection::vec(any::<u8>(), 8),
+    ) {
+        let ops = [UpdateOp::Set, UpdateOp::Max, UpdateOp::Min, UpdateOp::Accumulate];
+        let base: Vec<DeclaredPoint> = by_local
+            .iter()
+            .map(|(&local, &oi)| v2_state(local, "r", ops[oi]))
+            .collect();
+        // Reorder by an independent key so the input order differs from `base`.
+        let mut tagged: Vec<(u8, DeclaredPoint)> = base
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, p)| (order.get(i).copied().unwrap_or(0), p))
+            .collect();
+        tagged.sort_by_key(|(k, _)| *k);
+        let shuffled: Vec<DeclaredPoint> = tagged.into_iter().map(|(_, p)| p).collect();
+
+        prop_assert_eq!(
+            encode_v2_declaration(&base).unwrap(),
+            encode_v2_declaration(&shuffled).unwrap(),
+        );
     }
 }

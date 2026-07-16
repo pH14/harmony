@@ -27,7 +27,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use explorer::Moment;
-use serde::de::{Deserializer, MapAccess, Visitor};
+use serde::de::{Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 
 use crate::error::SdkError;
@@ -41,36 +41,92 @@ use crate::schema::{
 /// The identity given to an `antithesis_setup` lifecycle record.
 const SETUP_IDENTITY: &str = "antithesis.setup";
 
-/// The top-level members of one JSON frame, **preserving duplicate keys**.
-/// `serde_json::Value` collapses a repeated key to the last member (silently
-/// dropping the earlier one), which would let a `{"antithesis_assert":…,
-/// "antithesis_assert":…}` frame decode as one confident assertion. Collecting
-/// every member instead lets the decoder spot the ambiguity and preserve the
-/// frame raw.
-struct FrameMembers(Vec<(String, Value)>);
+/// A whole-frame **recursive duplicate-key** detector. `serde_json::Value`
+/// silently collapses a repeated key to the last member — at *any* depth — which
+/// would let malformed input choose semantics (two `maximize` fields making a
+/// `true`-then-`false` guidance normalize as `Min`). Deserializing into
+/// `DupCheck` walks the entire tree and reports whether any object carries a
+/// duplicate key, so such a frame can be preserved raw instead of normalized.
+///
+/// This is robust under serde_json's `arbitrary_precision` feature: a number is
+/// represented internally as a single-key map, and a single key can never be a
+/// duplicate, so numbers are scanned as `dup = false` with no special-casing.
+struct DupCheck(bool);
 
-impl<'de> serde::Deserialize<'de> for FrameMembers {
+impl<'de> serde::Deserialize<'de> for DupCheck {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct MembersVisitor;
-        impl<'de> Visitor<'de> for MembersVisitor {
-            type Value = Vec<(String, Value)>;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a JSON object")
-            }
-            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                // `next_entry` yields each member in order, including duplicate keys
-                // (dedup happens only when building a `Map`, which we avoid here).
-                let mut out = Vec::new();
-                while let Some((k, v)) = map.next_entry::<String, Value>()? {
-                    out.push((k, v));
-                }
-                Ok(out)
-            }
-        }
-        deserializer
-            .deserialize_map(MembersVisitor)
-            .map(FrameMembers)
+        deserializer.deserialize_any(DupVisitor)
     }
+}
+
+struct DupVisitor;
+
+impl<'de> Visitor<'de> for DupVisitor {
+    type Value = DupCheck;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("any JSON value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<DupCheck, E> {
+        Ok(DupCheck(false))
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<DupCheck, E> {
+        Ok(DupCheck(false))
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<DupCheck, E> {
+        Ok(DupCheck(false))
+    }
+    fn visit_i128<E>(self, _: i128) -> Result<DupCheck, E> {
+        Ok(DupCheck(false))
+    }
+    fn visit_u128<E>(self, _: u128) -> Result<DupCheck, E> {
+        Ok(DupCheck(false))
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<DupCheck, E> {
+        Ok(DupCheck(false))
+    }
+    fn visit_str<E>(self, _: &str) -> Result<DupCheck, E> {
+        Ok(DupCheck(false))
+    }
+    fn visit_none<E>(self) -> Result<DupCheck, E> {
+        Ok(DupCheck(false))
+    }
+    fn visit_unit<E>(self) -> Result<DupCheck, E> {
+        Ok(DupCheck(false))
+    }
+    fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<DupCheck, D::Error> {
+        d.deserialize_any(DupVisitor)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<DupCheck, A::Error> {
+        let mut dup = false;
+        while let Some(DupCheck(child)) = seq.next_element()? {
+            dup |= child;
+        }
+        Ok(DupCheck(dup))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<DupCheck, A::Error> {
+        let mut seen = BTreeSet::new();
+        let mut dup = false;
+        while let Some(key) = map.next_key::<String>()? {
+            if !seen.insert(key) {
+                dup = true;
+            }
+            let DupCheck(child) = map.next_value()?;
+            dup |= child;
+        }
+        Ok(DupCheck(dup))
+    }
+}
+
+/// Whether a JSON frame contains a duplicate key at any depth. `Err` means the
+/// frame is not parseable JSON at all (also treated as raw-unknown by the caller).
+fn has_duplicate_key(bytes: &[u8]) -> Result<bool, ()> {
+    serde_json::from_slice::<DupCheck>(bytes)
+        .map(|DupCheck(dup)| dup)
+        .map_err(|_| ())
 }
 
 /// Decode a batch of Antithesis JSON records (each `(Moment, object bytes)`) into
@@ -115,26 +171,29 @@ fn decode_record(
         raw,
     };
 
-    // Parse preserving duplicate keys; a non-object frame (array/scalar/invalid)
-    // fails here and is preserved raw.
-    let Ok(FrameMembers(members)) = serde_json::from_slice::<FrameMembers>(bytes) else {
+    // A duplicate key anywhere in the frame means `serde_json::Value` would
+    // silently drop a member (top level *or* nested), so a normalized reading
+    // could be built from data that isn't unambiguously present. Preserve raw.
+    // (An unparseable frame is likewise preserved raw.)
+    match has_duplicate_key(bytes) {
+        Ok(false) => {}
+        _ => return Ok(unknown(raw)),
+    }
+    // No duplicate keys, so `Value` now faithfully reflects the frame.
+    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
         return Ok(unknown(raw));
     };
-    // A repeated top-level key means a member was silently overwritten on the
-    // normalized path — the frame is ambiguous, so preserve it raw.
-    let mut seen = BTreeSet::new();
-    if members.iter().any(|(k, _)| !seen.insert(k.as_str())) {
+    let Some(object) = value.as_object() else {
         return Ok(unknown(raw));
-    }
-    let member = |name: &str| members.iter().find(|(k, _)| k == name).map(|(_, v)| v);
+    };
 
     // A recognized record carries *exactly one* Antithesis wrapper key. Zero
     // recognized wrappers is unknown data; more than one is an ambiguous record
     // whose intent is undefined — preserve it raw rather than silently pick a
     // branch and drop the rest.
-    let assert = member("antithesis_assert");
-    let guidance = member("antithesis_guidance");
-    let setup = member("antithesis_setup");
+    let assert = object.get("antithesis_assert");
+    let guidance = object.get("antithesis_guidance");
+    let setup = object.get("antithesis_setup");
     let recognized = assert.is_some() as u8 + guidance.is_some() as u8 + setup.is_some() as u8;
     if recognized != 1 {
         return Ok(unknown(raw));
@@ -158,7 +217,7 @@ fn decode_record(
         if !setup.is_object() {
             return Ok(unknown(raw));
         }
-        Ok(decode_setup(moment, ordinal, setup, raw))
+        decode_setup(moment, ordinal, setup, raw, schema)
     }
 }
 
@@ -278,23 +337,40 @@ fn decode_guidance(
     })
 }
 
-/// Decode an `antithesis_setup` wrapper into a lifecycle occurrence.
-fn decode_setup(moment: Moment, ordinal: u64, setup: &Value, raw: Raw) -> SdkEvent {
+/// Decode an `antithesis_setup` wrapper into a lifecycle occurrence, registering
+/// its fixed occurrence identity in the schema so a setup event can be validated
+/// and materialized against `SdkSchema` like an assertion or guidance event.
+fn decode_setup(
+    moment: Moment,
+    ordinal: u64,
+    setup: &Value,
+    raw: Raw,
+    schema: &mut SdkSchema,
+) -> Result<SdkEvent, SdkError> {
     let status = setup
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or("complete");
-    SdkEvent {
+    let id = ObservationId::Property(SETUP_IDENTITY.to_string());
+    schema.merge_entry(SchemaEntry {
+        id: id.clone(),
+        classification: Classification::Occurrence,
+        value_shape: None,
+        base_op: None,
+        expectation: None,
+        name: Some(SETUP_IDENTITY.to_string()),
+    })?;
+    Ok(SdkEvent {
         moment,
         ordinal,
         source: SourceFormat::AntithesisJson,
-        id: ObservationId::Property(SETUP_IDENTITY.to_string()),
+        id,
         site: None,
         payload: Payload::Lifecycle {
             name: format!("setup_{status}"),
         },
         raw,
-    }
+    })
 }
 
 /// The aggregated property identity. `docs/DISSONANCE-STRATEGY.md` rules that "the
@@ -360,11 +436,13 @@ fn site_of(v: &Value) -> Option<SiteId> {
             .unwrap_or_default()
             .to_string()
     };
+    // `u64` — the coordinate is preserved exactly, never truncated into a
+    // colliding site (a `begin_line` of `4294967296` must not become `0`).
     let num = |key: &str| {
         location
             .and_then(|loc| loc.get(key))
             .and_then(Value::as_u64)
-            .unwrap_or_default() as u32
+            .unwrap_or_default()
     };
     Some(SiteId {
         id,

@@ -64,9 +64,15 @@ pub struct DeclaredPoint {
 /// Each point is validated first ([`validate_v2_point`]) — the same checks
 /// [`decode_binary`] applies — so an un-fireable local id or a declaration the
 /// binary emission path cannot honor fails here rather than minting evidence that
-/// contradicts its firings. The canonical guest-side encoder is a future
-/// `guest/sdk` deliverable; this host-side encoder exists so declarations
-/// round-trip and so fixtures/tools can build them.
+/// contradicts its firings.
+///
+/// The emitted bytes are **canonical**: points are serialized sorted by
+/// `(namespace, local)`, never in the caller's incidental order. The caller may
+/// have collected them from a `HashMap` or any unordered source, and the persisted
+/// `original_declaration` bytes must not carry that host-order nondeterminism
+/// (conventions rule 4). The canonical guest-side encoder is a future `guest/sdk`
+/// deliverable; this host-side encoder exists so declarations round-trip and so
+/// fixtures/tools can build them.
 pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkError> {
     let mut seen: BTreeSet<(u8, u32)> = BTreeSet::new();
     for p in points {
@@ -96,11 +102,16 @@ pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkErr
             });
         }
     }
+    // Serialize in canonical coordinate order so shuffled input yields identical
+    // bytes. Coordinates are unique (checked above), so the order is total.
+    let mut ordered: Vec<&DeclaredPoint> = points.iter().collect();
+    ordered.sort_by_key(|p| (p.namespace, p.local));
+
     let mut out = Vec::new();
     out.extend_from_slice(&wire::CATALOG_MAGIC.to_le_bytes());
     out.push(wire::SDK_WIRE_VERSION_V2);
     out.extend_from_slice(&(points.len() as u32).to_le_bytes());
-    for p in points {
+    for p in ordered {
         out.push(p.namespace);
         out.extend_from_slice(&p.local.to_le_bytes());
         out.push(match p.classification {
@@ -617,11 +628,15 @@ fn decode_state(
     if !r.at_end() {
         return Ok(None);
     }
+    // `min`/`accumulate` are wire-v2 firing extensions; v1 defines only set/max.
+    // Under a v1 (or declaration-less) stream they are unknown bytes and stay raw,
+    // never a fabricated state update from future/malformed evidence.
+    let v2 = ctx.schema.source == SourceFormat::BinaryV2;
     let op = match op_byte {
         wire::STATE_SET => UpdateOp::Set,
         wire::STATE_MAX => UpdateOp::Max,
-        wire::STATE_MIN => UpdateOp::Min,
-        wire::STATE_ACCUMULATE => UpdateOp::Accumulate,
+        wire::STATE_MIN if v2 => UpdateOp::Min,
+        wire::STATE_ACCUMULATE if v2 => UpdateOp::Accumulate,
         _ => return Ok(None),
     };
     let id = ObservationId::Point { namespace, local };

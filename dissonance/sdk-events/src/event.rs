@@ -53,10 +53,11 @@ pub struct SiteId {
     pub file: String,
     /// The enclosing function/class path.
     pub function: String,
-    /// The 1-based line of the assertion.
-    pub begin_line: u32,
-    /// The 1-based column of the assertion.
-    pub begin_column: u32,
+    /// The 1-based line of the assertion. `u64` so an untrusted coordinate is
+    /// preserved exactly rather than truncated into a colliding site.
+    pub begin_line: u64,
+    /// The 1-based column of the assertion (`u64` for the same reason).
+    pub begin_column: u64,
 }
 
 /// The normalized value an event carries. Occurrence and state payloads are kept
