@@ -118,6 +118,34 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
     Ok(Vmm::new(backend, ram))
 }
 
+/// **The composition root** (`tasks/112` M4): the one place the concrete
+/// `(Arm64KvmBackend, Arm64)` pair is named — Linux+aarch64-gated, mirroring
+/// x86's `boot_selected`. Constructs the stock KVM/arm64 backend
+/// (`KVM_CREATE_VM` → `KVM_CREATE_VCPU` → `KVM_ARM_VCPU_INIT` in
+/// `LiveKvm::new`), boxes it as `Box<dyn Backend<A = Arm64>>`, and [`boot`]s the
+/// `Image`+DTB. No V-time is wired: the stock backend claims no determinism
+/// (its `capabilities()` are honestly false), so the determinism path is a
+/// later bead (the AA-3 patched backend + the paravirt clock, `hm-rk5`).
+///
+/// The real `KVM_RUN` boot to a console marker and the same-seed `state_hash`
+/// determinism gate over this pair are **arrival-day**, edged to `hm-7pb` (the
+/// Altra); there is no local KVM loop (`hm-8l3` REFUSE), so this root has no
+/// local oracle — only the aarch64-linux cross-check compiles it.
+///
+/// # Errors
+/// [`VmmError::Backend`] if `/dev/kvm` is unavailable or an init ioctl fails;
+/// any [`boot`] error thereafter.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub fn boot_selected(
+    image: &[u8],
+    bootargs: &str,
+    guest_ram_len: usize,
+) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
+    let live = vmm_backend::LiveKvm::new()?;
+    let backend: Box<dyn Backend<A = Arm64>> = Box::new(vmm_backend::Arm64KvmBackend::new(live));
+    boot(backend, image, bootargs, guest_ram_len)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
