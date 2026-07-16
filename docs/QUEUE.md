@@ -66,9 +66,15 @@ MERGED** (tasks/105, PR #106 — the GLOSSARY slate is code: campaign-runner, sd
 Reproducer, Moment/Span, Subject; wire bytes golden-proven; zero findings across both
 reviewers; Exemplar→Entry structural merge deferred as `hm-74w`).
 
-**CI runner toolchain REPAIRED 2026-07-15 eve** (`hm-ph7`, closing on the green rerun):
-Paul's root-side run + the foreman's runner-user stable-toolchain reinstall (uninstall →
-minimal install → clippy/rustfmt/llvm-tools + musl/none targets). Quality rerun in flight.
+**CI runner toolchain REPAIRED 2026-07-15 eve** (`hm-ph7`): reinstall done; the rerun now
+*measures* again — and the first honest run **fails the 94.5 coverage region floor**
+(all 1791 tests pass; line coverage 93.66%). NOT caused by the drift-gate merge (tests/
+files aren't counted — verified from the lcov artifact). Drivers: a stale `work_perf.rs`
+exclusion broken by the keystone move (**repaired**, beb14c6) + under-tested code that
+landed while CI was fail-before-measuring (film replay bin 9.5% / core_replay 55.6%,
+benchcampaign 82.6%, telemetry bin 23.5%, bringup 70.2%). **⚖️ PAUL DECISION → `hm-42y`**:
+test-up the drivers vs exclude bin targets by policy vs floor change (disfavored).
+Until ruled, quality on main stays red and `hm-ph7` stays open.
 
 ## Ready (unblocked, waiting for a worker slot or Paul)
 
