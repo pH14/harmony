@@ -10,7 +10,7 @@ one narrow, explicitly-directed exception — see "Deviations" below).
    merged/box-verified arc, Wave-4 table (58–62/93/94), the deferred register (D1/D5, SDK
    epoch, ARM, task 92, task 43), and both ruling sections. The old "Sequenced backlog" table is
    gone (history lives in `git log -- docs/ROADMAP.md`).
-2. `PLAN.md` split into **Part A** (frozen determinism axioms: platform, V-time-from-retired-
+2. `docs/PLAN.md` split into **Part A** (frozen determinism axioms: platform, V-time-from-retired-
    branches, the trap table, gate discipline — still citable, unchanged citation anchors for
    `docs/CPU-MSR-CONTRACT.md:441,1481`) and **Part B** (original plan, marked historical). Fixed
    in place while splitting: bare `restore` in the control-API sketch (now annotated — the real
@@ -116,7 +116,7 @@ completeness) are explicitly ruled rather than ambiguous.**
   full historical rewrite.
 - The "deliberately-historical inline note" bar (gate 2) was applied narrowly: files with
   already-accurate technical VMCALL content were left alone; only files making stale claims
-  (BLOCK-DEVICE.md, DETERMINISM-CORPUS.md, PLAN.md) were annotated. If a stricter reading of
+  (BLOCK-DEVICE.md, DETERMINISM-CORPUS.md, docs/PLAN.md) were annotated. If a stricter reading of
   gate 2 is wanted (every VMCALL mention gets an inline note regardless of accuracy), that's a
   larger follow-up sweep across `docs/CPU-MSR-CONTRACT.md`/`docs/INTEGRATION.md`.
 

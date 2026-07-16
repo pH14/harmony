@@ -66,7 +66,10 @@ run() { # run <name> <cmd...>
   run live_determinism "$det" --ignored --nocapture --test-threads=1
 } > "$RS/console.log" 2>&1 || true
 
-# restore stock L0 + verify (the box's kvm_intel defaults to nested=Y)
+# restore stock L0 + verify (the box's kvm_intel defaults to nested=Y).
+# PR #98 round-3 #5: the check compares the on-disk stock module hashes
+# against the window's restore manifest — not just the loaded size — and
+# enforces enable_pmu=Y (the nested runs depend on it).
 rmmod kvm_intel kvm
 modprobe kvm_intel
 {
@@ -76,8 +79,25 @@ modprobe kvm_intel
 } > "$RS/env.json.restore"
 STOCK_SIZE=$(lsmod | awk '$1=="kvm"{print $2}')
 NESTED=$(cat /sys/module/kvm_intel/parameters/nested)
-if [ "$STOCK_SIZE" != 1396736 ] || [ "$NESTED" != Y ]; then
-  echo "METAL_RESTORE_FAILED size=$STOCK_SIZE nested=$NESTED"; exit 1
+ENABLE_PMU=$(cat /sys/module/kvm/parameters/enable_pmu)
+if [ "$STOCK_SIZE" != 1396736 ] || [ "$NESTED" != Y ] || [ "$ENABLE_PMU" != Y ]; then
+  echo "METAL_RESTORE_FAILED size=$STOCK_SIZE nested=$NESTED enable_pmu=$ENABLE_PMU"; exit 1
+fi
+RESTORE_MANIFEST=/root/nested-x86-recert/box-restore-manifest-recert.json
+if [ -f "$RESTORE_MANIFEST" ]; then
+  KR=$(uname -r)
+  for pair in "kvm_intel_ko_md5:/lib/modules/$KR/kernel/arch/x86/kvm/kvm-intel.ko.xz" \
+              "kvm_ko_md5:/lib/modules/$KR/kernel/arch/x86/kvm/kvm.ko.xz"; do
+    key=${pair%%:*}; file=${pair#*:}
+    want=$(grep -o "\"$key\": \"[0-9a-f]*\"" "$RESTORE_MANIFEST" | cut -d'"' -f4)
+    got=$(md5sum "$file" | awk '{print $1}')
+    if [ -n "$want" ] && [ "$got" != "$want" ]; then
+      echo "METAL_RESTORE_FAILED $key: got $got want $want"; exit 1
+    fi
+  done
+  echo "restore module hashes match the window manifest" >> "$RS/env.json.restore"
+else
+  echo "METAL_RESTORE_FAILED restore manifest missing at $RESTORE_MANIFEST"; exit 1
 fi
 
 # RC-checked verdict: every gate that began must have reported rc=0

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Gate 4 — version negotiation. A `Hello` with an out-of-range
 //! `protocol_version` / `env_version` range is detectable from the decoded
-//! `Caps` alone; and an off-version `Environment.blob_version` decodes to a
+//! `Caps` alone; and an off-version `Reproducer.blob_version` decodes to a
 //! `Request` carrying it (so the backend can answer `BadEnvVersion`), never a
 //! decode error.
 
 use control_proto::{
-    APP_PROTOCOL_VERSION, CapFlags, Caps, CoverageGeometry, Environment, Request, SnapId,
+    APP_PROTOCOL_VERSION, CapFlags, Caps, CoverageGeometry, Reproducer, Request, SnapId,
     decode_request, encode_request,
 };
 
@@ -88,7 +88,7 @@ fn disjoint_env_range_is_detectable_from_caps() {
     assert!(!caps_acceptable(&decoded), "disjoint env range rejected");
 }
 
-/// The load-bearing gate-4 property: an off-version `Environment.blob_version`
+/// The load-bearing gate-4 property: an off-version `Reproducer.blob_version`
 /// is **carried**, not a decode error — so the backend (not the codec) gets to
 /// answer `BadEnvVersion`.
 #[test]
@@ -96,7 +96,7 @@ fn off_version_env_blob_decodes_and_carries_the_version() {
     for blob_version in [0u16, 4, 99, u16::MAX] {
         let req = Request::Branch {
             snap: SnapId(1),
-            env: Environment {
+            env: Reproducer {
                 blob_version,
                 bytes: vec![0xDE, 0xAD, 0xBE, 0xEF],
             },

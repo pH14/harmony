@@ -41,6 +41,24 @@ bash /root/nested-x86-spike/run-n2-condition.sh \
   {idle|othercore|samecore|mempress|timerstorm|migrate} <deadlines> <runset> [seed] [gates]
 ```
 
+## Repo→box staging map (re-certification drivers)
+
+`harness/stage-to-box.sh` executes this map from a committed checkout (PR #98
+round-3 #3). The committed scripts invoke each other at these box paths:
+
+| Repo path | Box path |
+|---|---|
+| source tree (git archive, sha256-verified) | `/root/harmony-nested/` (+ `.spike-source-commit`) |
+| `appliance/{build,run}-appliance.sh`, `l1-appliance-init.sh` | `/root/nested-x86-spike/n1/src/` |
+| `harness/run-n2-condition.sh`, `run-n3-{stress,pause,migrate-live}.sh`, `run-metal-reference-recert.sh` | `/root/nested-x86-spike/` |
+| `harness/run-n2-{matrix,topup}.sh`, `run-n3-matrix-recert.sh` | `/root/nested-x86-recert/` |
+
+`run-n3-stress.sh` in `harness/` is the authoritative as-run script (promoted
+verbatim from `harness/box-retrieved/`, which keeps the provenance copies of
+everything retrieved from the box). Gate binaries are listed by the box-side
+build into `/root/nested-x86-recert/gate-bins.txt`; `build-appliance.sh`
+consumes them and pins the appliance.
+
 ## Layout
 
 `l0/` box→L0 probe scripts · `appliance/` L1 image build + init + run ·

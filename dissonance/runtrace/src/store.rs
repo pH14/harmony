@@ -2,7 +2,7 @@
 //! The directory-backed [`TraceStore`] and the campaign retention knob.
 //!
 //! `docs/EXPLORATION.md` rules the store is **not a data lake**: it *always*
-//! persists the tiny [`Environment`] (the genesis-complete reproducer — same env
+//! persists the tiny [`Reproducer`] (the genesis-complete reproducer — same env
 //! ⇒ same run, the rest regenerates by replay) and serializes the full journal
 //! only for a retained subset. A trace's file names are its
 //! [`TraceId`](crate::TraceId) in hex: `<id>.env` (always) and `<id>.trace`
@@ -13,7 +13,7 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use explorer::{Environment, RunTrace, StopReason};
+use explorer::{Reproducer, RunTrace, StopReason};
 
 use crate::codec;
 use crate::error::{TraceError, TraceId};
@@ -28,7 +28,7 @@ pub enum Retain {
     EnvOnly,
 }
 
-/// The campaign-level retention policy — the conductor's `--retain` flag
+/// The campaign-level retention policy — the campaign runner's `--retain` flag
 /// (`all` | `interesting` | `env-only`, default `interesting`). It maps each run
 /// to a [`Retain`] via [`retain_for`]; it never changes which verbs the loop
 /// issues or the report it prints (the store is write-only to the loop).
@@ -170,10 +170,10 @@ impl TraceStore {
         }
     }
 
-    /// Load the always-persisted [`Environment`] behind `id` (the reproducer).
+    /// Load the always-persisted [`Reproducer`] behind `id` (the reproducer).
     /// [`TraceError::NotFound`] if the id is unknown; [`TraceError::IdMismatch`]
     /// if the decoded env does not hash back to `id` (renamed/tampered file).
-    pub fn env(&self, id: TraceId) -> Result<Environment, TraceError> {
+    pub fn env(&self, id: TraceId) -> Result<Reproducer, TraceError> {
         match std::fs::read(self.path(id, "env")) {
             Ok(bytes) => {
                 let env = codec::decode_env(&bytes)?;
@@ -215,7 +215,7 @@ impl TraceStore {
 /// back to the id it was filed under, else the file was renamed/swapped/tampered
 /// ([`TraceError::IdMismatch`]). The store is content-addressed, so a filename is
 /// never trusted on its own.
-fn verify_address(requested: TraceId, env: &Environment) -> Result<(), TraceError> {
+fn verify_address(requested: TraceId, env: &Reproducer) -> Result<(), TraceError> {
     let found = TraceId::of(env);
     if found == requested {
         Ok(())

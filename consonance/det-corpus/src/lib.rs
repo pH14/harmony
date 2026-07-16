@@ -2,13 +2,13 @@
 //! Determinism & conformance corpus — the domain layer over [`unison`].
 //!
 //! `unison` is a generic, domain-free divergence bisector over a
-//! [`unison::Machine`]. This crate turns that primitive into the three
+//! [`unison::Subject`]. This crate turns that primitive into the three
 //! determinism oracles of `docs/DETERMINISM-CORPUS.md` — O1 determinism
 //! ([`check_determinism`]), O2 conformance ([`check_conformance`]), and O3
 //! seed-sensitivity ([`check_seed_sensitivity`]) — plus a [corpus
 //! manifest](load_manifest) that records which oracles apply to which workload,
 //! and a JSON report ([`ItemReport`]). Everything is written generically over
-//! [`unison::MachineFactory`], so it is fully testable today against the toy
+//! [`unison::SubjectFactory`], so it is fully testable today against the toy
 //! machine and is pointed at the real `Vmm<B>` at integration with no API
 //! change.
 //!

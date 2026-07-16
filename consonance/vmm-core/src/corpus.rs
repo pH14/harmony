@@ -1,29 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The VMM-backed [`unison::Machine`] bridge — "the VMM running a payload" as a
+//! The VMM-backed [`unison::Subject`] bridge — "the VMM running a payload" as a
 //! logical guest the `det-corpus` oracles drive (corpus box-integration, task 28).
 //!
-//! `det-corpus` (#48) runs its O1/O2/O3 oracles over any [`unison::Machine`];
+//! `det-corpus` (#48) runs its O1/O2/O3 oracles over any [`unison::Subject`];
 //! `guest/payloads` (#49) ships the C1 instruction-sweep payloads. This module is
 //! the third piece: a [`CorpusMachine`] that wraps a [`Vmm`] running one payload,
 //! so the determinism/conformance corpus actually executes on the patched backend.
 //! It is the frontier glue the dissonance ruling places **in vmm-core** (above the
 //! `Backend` trait): the bridge is generic over the backend, so the stream-digest
-//! and `Machine`-contract logic is unit-tested on macOS against a scripted
-//! `MockBackend`, while the live `boot_patched_payload` path is box-only.
+//! and `Subject`-contract logic is unit-tested on macOS against a scripted
+//! `MockBackend`, while the live patched path (a vendor composition root —
+//! `vendor::x86::bringup::boot_patched_corpus`) is box-only.
 //!
 //! ## Two digests, two oracles
 //!
 //! The bridge keeps the O2/O3 distinction (`docs/DETERMINISM-CORPUS.md`): O1
-//! (determinism) compares [`Machine::state_hash`] — the full V-time/RAM/entropy
+//! (determinism) compares [`Subject::state_hash`] — the full V-time/RAM/entropy
 //! state (`Vmm::state_hash`, unchanged from #45) **folded with the report-stream
 //! `observable_digest`**, so O1 also catches a divergence confined to the report
-//! channel — while [`Machine::observable_digest`] hashes **only** the **report
+//! channel — while [`Subject::observable_digest`] hashes **only** the **report
 //! stream + the serial banner** ([`Vmm::observable_digest`]), the guest-observable
 //! conformance output O2 pins to a golden. A payload that is perfectly
 //! deterministic but reports a constant still has a meaningful (and, for an RNG
 //! payload, seed-sensitive) observable digest, exactly what O2/O3 need.
 //!
-//! Folding the report stream into `Machine::state_hash` (not into `Vmm::state_hash`)
+//! Folding the report stream into `Subject::state_hash` (not into `Vmm::state_hash`)
 //! is the key soundness fix: `Vmm::state_hash` stays byte-identical for M1/M2/P6,
 //! yet two same-seed runs that differ only in `REPORT_PORT` values hash differently
 //! here, so the O1 determinism oracle is not blind to the report channel.
@@ -43,22 +44,25 @@
 //! rather than mistake a deterministic *failure* for a deterministic *pass*.
 
 use sha2::Digest as _;
-use unison::{Machine, MachineError, RunOutcome};
+use unison::{RunOutcome, Subject, SubjectError};
 use vmm_backend::Backend;
+
+use crate::vendor::Vendor;
 
 use crate::vmm::Vmm;
 
-/// A [`unison::Machine`] over a [`Vmm`] running one corpus payload. Generic over
+/// A [`unison::Subject`] over a [`Vmm`] running one corpus payload. Generic over
 /// the backend so the bridge is exercised by both the macOS `MockBackend` unit
-/// tests and the box-only patched backend ([`boot_patched_payload`]).
+/// tests and the box-only patched backend (composed by
+/// `vendor::x86::bringup::boot_patched_corpus` — box-only, so not an intra-doc link).
 ///
 /// `run_to` runs the payload to terminal on first call (see the module docs on
 /// granularity); `work` is `0` before that run and `1` after (a fresh machine
-/// starts at work `0`, per the `MachineFactory` contract). `state_hash` is the O1
+/// starts at work `0`, per the `SubjectFactory` contract). `state_hash` is the O1
 /// hash — the full `Vmm::state_hash` folded with the report-stream digest, so O1
 /// sees the report channel; `observable_digest` is the report-stream + serial
 /// O2/O3 digest.
-pub struct CorpusMachine<B: Backend> {
+pub struct CorpusMachine<B: Backend<A: Vendor>> {
     vmm: Vmm<B>,
     ran: bool,
     /// The stringified [`crate::vmm::VmmError`] if the terminal run failed; `None`
@@ -67,10 +71,10 @@ pub struct CorpusMachine<B: Backend> {
     error: Option<String>,
 }
 
-impl<B: Backend> CorpusMachine<B> {
+impl<B: Backend<A: Vendor>> CorpusMachine<B> {
     /// Wrap a configured, ready-to-run [`Vmm`] (the payload already loaded and the
     /// backend composed). The machine has not run yet (`work() == 0`); the first
-    /// [`Machine::run_to`] drives it to terminal.
+    /// [`Subject::run_to`] drives it to terminal.
     pub fn new(vmm: Vmm<B>) -> Self {
         Self {
             vmm,
@@ -80,7 +84,7 @@ impl<B: Backend> CorpusMachine<B> {
     }
 
     /// The error from the terminal run, if it failed (`None` on a clean run, and
-    /// `None` until the first [`Machine::run_to`]). The box runner checks this so a
+    /// `None` until the first [`Subject::run_to`]). The box runner checks this so a
     /// run that errored deterministically is reported as a failure, not a pass.
     pub fn run_error(&self) -> Option<&str> {
         self.error.as_deref()
@@ -92,14 +96,14 @@ impl<B: Backend> CorpusMachine<B> {
     }
 }
 
-impl<B: Backend> Machine for CorpusMachine<B> {
-    fn run_to(&mut self, target: u64) -> Result<RunOutcome, MachineError> {
-        // Per the `Machine` contract, a rewind (`target < work()`) is an error checked
+impl<B: Backend<A: Vendor>> Subject for CorpusMachine<B> {
+    fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
+        // Per the `Subject` contract, a rewind (`target < work()`) is an error checked
         // **before anything else**, even on a halted machine — e.g. `run_to(0)` after a
         // terminal run set `work() == 1`. (Machines cannot run backwards.)
         let current = self.work();
         if target < current {
-            return Err(MachineError::TargetBehind { target, current });
+            return Err(SubjectError::TargetBehind { target, current });
         }
         if !self.ran {
             // Run to terminal regardless of `target` (no intra-run work-targeting
@@ -115,7 +119,7 @@ impl<B: Backend> Machine for CorpusMachine<B> {
 
     fn work(&self) -> u64 {
         // 0 before the run, 1 at terminal — a fresh machine starts at 0 (the
-        // `MachineFactory` contract) and the single terminal checkpoint is where
+        // `SubjectFactory` contract) and the single terminal checkpoint is where
         // O1 compares state.
         u64::from(self.ran)
     }
@@ -126,7 +130,7 @@ impl<B: Backend> Machine for CorpusMachine<B> {
         // same-seed run that diverges ONLY in `REPORT_PORT` values must fail O1,
         // not pass it (`Vmm::state_hash` deliberately excludes the report stream).
         // `Vmm::state_hash` itself is left UNCHANGED — this composition lives only
-        // in the corpus Machine adapter, so M1/M2/P6 stay byte-identical.
+        // in the corpus Subject adapter, so M1/M2/P6 stay byte-identical.
         let mut h = sha2::Sha256::new();
         h.update(self.vmm.state_hash());
         h.update(self.vmm.observable_digest());
@@ -136,32 +140,6 @@ impl<B: Backend> Machine for CorpusMachine<B> {
     fn observable_digest(&self) -> [u8; 32] {
         self.vmm.observable_digest()
     }
-}
-
-/// Boot the **patched** backend over a built payload ELF and wrap it as a
-/// [`CorpusMachine`], ready for the corpus oracles (box-only). The `seed` flows to
-/// the seeded entropy stream `RDRAND`/`RDSEED` and the `Entropy` hypercall draw
-/// from, so an RNG-consuming payload's observable output varies with it (O3) while
-/// its control flow — and thus its work count — does not.
-///
-/// Box-only (`#[cfg(target_os = "linux")]`): the patched backend + `perf_event`
-/// work counter need bare-metal KVM (`boot_selected`). Fallible — a missing
-/// patched `/dev/kvm`, a non-baseline host, or a malformed payload is a
-/// [`crate::vmm::VmmError`], never a panic; the box runner turns that into a loud
-/// test failure.
-#[cfg(target_os = "linux")]
-pub fn boot_patched_payload(
-    payload: &[u8],
-    guest_ram_len: usize,
-    seed: u64,
-) -> Result<CorpusMachine<Box<dyn Backend>>, crate::vmm::VmmError> {
-    let vmm = crate::bringup::boot_selected(
-        crate::bringup::BackendKind::Patched,
-        payload,
-        guest_ram_len,
-        seed,
-    )?;
-    Ok(CorpusMachine::new(vmm))
 }
 
 /// The domain-separated digest of an ordered report stream and a serial banner —
@@ -183,66 +161,63 @@ pub fn observable_digest_of(report_stream: &[u32], serial: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
-    //! The bridge's pure logic — the stream digest and the `Machine` contract —
+    //! The bridge's pure logic — the stream digest and the `Subject` contract —
     //! driven by a scripted `MockBackend` on every platform (no `/dev/kvm`). The
-    //! live patched path ([`boot_patched_payload`]) is box-only and covered by the
+    //! live patched path (`vendor::x86::bringup::boot_patched_corpus`) is box-only and covered by the
     //! `box_corpus` integration test.
 
     use super::*;
-    use crate::devices::{ISA_DEBUG_EXIT_PORT, REPORT_PORT, UART_PORT_BASE};
+    use crate::vendor::x86::devices::{ISA_DEBUG_EXIT_PORT, REPORT_PORT, UART_PORT_BASE};
     use crate::vmm::GuestRam;
-    use unison::{MachineFactory, Verdict, compare_runs};
-    use vmm_backend::{CpuidModel, Exit, MockBackend, MsrFilter};
+    use unison::{SubjectFactory, Verdict, compare_runs};
+    use vmm_backend::{CommonExit, Exit, MockBackend, X86, X86Exit, X86Policy};
 
     /// A scripted exit sequence: emit `name`'s serial banner over the UART, report
     /// `values` (each as two report-port dwords, low then high), then a clean
     /// isa-debug-exit PASS.
-    fn script(name: &str, values: &[u64]) -> Vec<Exit> {
+    fn script(name: &str, values: &[u64]) -> Vec<Exit<X86>> {
         let mut exits = Vec::new();
         for &b in format!("PAYLOAD {name} PASS\n").as_bytes() {
-            exits.push(Exit::Io {
+            exits.push(Exit::Arch(X86Exit::Io {
                 port: UART_PORT_BASE,
                 size: 1,
                 write: Some(u32::from(b)),
-            });
+            }));
         }
         for &v in values {
-            exits.push(Exit::Io {
+            exits.push(Exit::Arch(X86Exit::Io {
                 port: REPORT_PORT,
                 size: 4,
                 write: Some(v as u32),
-            });
-            exits.push(Exit::Io {
+            }));
+            exits.push(Exit::Arch(X86Exit::Io {
                 port: REPORT_PORT,
                 size: 4,
                 write: Some((v >> 32) as u32),
-            });
+            }));
         }
-        exits.push(Exit::Io {
+        exits.push(Exit::Arch(X86Exit::Io {
             port: ISA_DEBUG_EXIT_PORT,
             size: 1,
             write: Some(0),
-        });
+        }));
         exits
     }
 
-    /// A deterministic [`MachineFactory`] that replays a fixed scripted run — a
+    /// A deterministic [`SubjectFactory`] that replays a fixed scripted run — a
     /// stand-in for "the VMM running a payload" with no `/dev/kvm`.
     struct ScriptedFactory {
         name: String,
         values: Vec<u64>,
     }
 
-    impl MachineFactory for ScriptedFactory {
+    impl SubjectFactory for ScriptedFactory {
         type M = CorpusMachine<MockBackend>;
         fn spawn(&self, _seed: u64) -> Self::M {
             let mut backend = MockBackend::with_exits(script(&self.name, &self.values));
             backend
-                .set_cpuid(&CpuidModel::default())
-                .expect("set_cpuid");
-            backend
-                .set_msr_filter(&MsrFilter::default())
-                .expect("set_msr_filter");
+                .set_policy(&X86Policy::default())
+                .expect("set_policy");
             CorpusMachine::new(Vmm::new(backend, GuestRam::new(0x1000).unwrap()))
         }
     }
@@ -264,7 +239,7 @@ mod tests {
 
     #[test]
     fn run_to_rejects_a_rewind_below_current_work() {
-        // Per the `Machine` contract, `run_to(target)` with `target < work()` is a
+        // Per the `Subject` contract, `run_to(target)` with `target < work()` is a
         // `TargetBehind` error (machines cannot run backwards), checked before the
         // halted no-op. After a terminal run `work() == 1`, so `run_to(0)` must error;
         // `run_to(>= 1)` is the halted no-op.
@@ -277,7 +252,7 @@ mod tests {
         assert_eq!(m.work(), 1);
         assert_eq!(
             m.run_to(0),
-            Err(MachineError::TargetBehind {
+            Err(SubjectError::TargetBehind {
                 target: 0,
                 current: 1,
             }),
@@ -345,7 +320,7 @@ mod tests {
             b.vmm().state_hash(),
             "Vmm::state_hash must stay blind to the report channel"
         );
-        // ...but the Machine's folded O1 hash differs (it folds observable_digest).
+        // ...but the Subject's folded O1 hash differs (it folds observable_digest).
         assert_ne!(
             a.state_hash(),
             b.state_hash(),
@@ -389,7 +364,8 @@ mod tests {
     // mock with a shared-thread work source, driven through the real `compare_runs`.
     // -----------------------------------------------------------------------
 
-    use crate::vmm::{VtimeWiring, contract_vclock_config};
+    use crate::vendor::x86::contract_vclock_config;
+    use crate::vmm::VtimeWiring;
     use crate::work::{WorkError, WorkSource};
     use std::cell::Cell;
     use std::rc::Rc;
@@ -444,19 +420,16 @@ mod tests {
     /// entropy via `VtimeWiring::new`); only the work counter's thread tally is shared.
     struct SharedWorkFactory {
         thread: Rc<Cell<u64>>,
-        exits: Vec<Exit>,
+        exits: Vec<Exit<X86>>,
         reset_on_start: bool,
     }
-    impl MachineFactory for SharedWorkFactory {
+    impl SubjectFactory for SharedWorkFactory {
         type M = CorpusMachine<MockBackend>;
         fn spawn(&self, seed: u64) -> Self::M {
             let mut backend = MockBackend::with_exits(self.exits.clone());
             backend
-                .set_cpuid(&CpuidModel::default())
-                .expect("set_cpuid");
-            backend
-                .set_msr_filter(&MsrFilter::default())
-                .expect("set_msr_filter");
+                .set_policy(&X86Policy::default())
+                .expect("set_policy");
             let mut vmm = Vmm::new(backend, GuestRam::new(0x1000).unwrap());
             vmm.wire_vtime(
                 VtimeWiring::new(
@@ -475,13 +448,13 @@ mod tests {
 
     /// An entropy-/V-time-consuming script: RDRAND/RDSEED + RDTSC are V-time
     /// intercepts that read the work counter and set the hashed `last_intercept_work`.
-    fn vtime_consuming_script() -> Vec<Exit> {
+    fn vtime_consuming_script() -> Vec<Exit<X86>> {
         vec![
-            Exit::Rdrand { width: 8 },
-            Exit::Rdtsc,
-            Exit::Rdseed { width: 8 },
-            Exit::Rdtsc,
-            Exit::Hlt,
+            Exit::Arch(X86Exit::Rdrand { width: 8 }),
+            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Arch(X86Exit::Rdseed { width: 8 }),
+            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Common(CommonExit::Idle),
         ]
     }
 

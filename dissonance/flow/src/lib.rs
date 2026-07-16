@@ -26,7 +26,7 @@
 //! determinism is proven by re-running the event sequence, not by serializing
 //! state. Concretely: [`Loss`](FlowPolicy::Loss) rolls from a per-connection PRNG
 //! seeded by the recorded decision (same decision ⇒ same drops); multiplexed
-//! connections are serviced in a deterministic `(VTime, seq)` order, never by
+//! connections are serviced in a deterministic `(Moment, seq)` order, never by
 //! incidental map/iteration order; and every scheduled V-time saturates so a
 //! hostile delay can never wrap into the past. Nothing here reads a wall-clock,
 //! a hash-ordered map into an action, or a float (conventions rule 4).
@@ -45,7 +45,7 @@
 //! [`mod@vocab`] (the shared value types, [`FlowEvent`], [`FlowAction`],
 //! [`FlowPolicy`]) · [`mod@engine`] (the [`FlowDecider`] and [`FlowEngine`]
 //! seams) · `toxiproxy` ([`ToxiproxyEngine`]) · `passthrough`
-//! ([`PassthroughEngine`]) · `sched` (the `(VTime, seq)` action queue) · `prng`
+//! ([`PassthroughEngine`]) · `sched` (the `(Moment, seq)` action queue) · `prng`
 //! (the local xorshift64\* generator).
 
 mod engine;
@@ -58,4 +58,4 @@ mod vocab;
 pub use engine::{FlowDecider, FlowEngine};
 pub use passthrough::PassthroughEngine;
 pub use toxiproxy::ToxiproxyEngine;
-pub use vocab::{ConnId, Dir, FlowAction, FlowEvent, FlowPolicy, NodeId, VTime};
+pub use vocab::{ConnId, Dir, FlowAction, FlowEvent, FlowPolicy, Moment, NodeId, Span};

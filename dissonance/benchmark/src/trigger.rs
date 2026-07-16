@@ -4,7 +4,7 @@
 //!
 //! This is the portable stand-in for the guest payloads (spec gate 1: *trigger
 //! logic unit-tested against the mock/toy path — the trigger schedule fires
-//! 100%, a nominal scenario never*). It mirrors `dissonance/conductor`'s
+//! 100%, a nominal scenario never*). It mirrors `dissonance/campaign-runner`'s
 //! `ToyPlantedMachine` for bug 1, and models bugs 2 and 3 in the same shape, so
 //! the ground-truth predicate the correlation report is validated against is the
 //! exact contract the guest C payloads implement.
@@ -83,7 +83,7 @@ pub fn entropy_draw(seed: u64) -> u64 {
 /// Whether `scenario` fires `spec`'s planted bug. Pure, total, panic-free.
 ///
 /// * `FaultTiming` — a `CorruptMemory` of the exact `(gpa, mask)` at a Moment in
-///   the sensitive window (identical to `conductor::planted::Trigger::fires`).
+///   the sensitive window (identical to `campaign_runner::planted::Trigger::fires`).
 /// * `OrderingInterrupt` — an `InjectInterrupt` of the exact `vector` at a Moment
 ///   in the vulnerable window.
 /// * `RareEntropy` — the seed-derived draw matches `prefix` in its top
@@ -217,7 +217,7 @@ mod tests {
     }
 
     /// Near-misses on the fault-timing bug are inert: wrong gpa, wrong bit, and
-    /// outside the window all fail to fire (mirrors conductor::planted).
+    /// outside the window all fail to fire (mirrors campaign_runner::planted).
     #[test]
     fn fault_timing_near_misses_do_not_fire() {
         let bench = Benchmark::wave5();

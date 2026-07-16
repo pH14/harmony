@@ -1,7 +1,7 @@
 # LAYERS — the capability-layering ruling
 
-> **Status: RULED (Paul, 2026-07-06). R-L3 AMENDED same day** after a licensing/architecture
-> review of the Antithesis SDKs (see R-L3's amendment note). Companion to `docs/GLOSSARY.md`
+> **Status: RULED (Paul, 2026-07-06). R-L1/R-L2/R-L3 AMENDED 2026-07-12** after the Dissonance
+> observation-contract review (see the amendment notes). Companion to `docs/GLOSSARY.md`
 > (the naming authority) and `docs/ARCH-BOUNDARY.md` (the ISA seam); **amends
 > `tasks/43-harmony-linux-tier.md`** (the payload carve-out and the SDK rulings below postdate
 > its surface list). Like the glossary: binding on new code when ratified; physical moves ride
@@ -11,8 +11,9 @@
 
 Dissonance's capabilities layer as **exploration → perturbation → judgment**, and the current
 tree under-expresses the first seam: the searcher is useful — and must be validated — **with
-zero faults**, and the guest SDK is a **product-level contract** (harmony's, with per-guest-world
-backends), not an internal of consonance or dissonance.
+zero faults**, and the guest SDK is a **cross-cutting product contract** (the adopted external
+surface plus per-guest-world transport and normalized host schema), not an internal of consonance
+or dissonance.
 
 Industry data point (grounds the exploration claim):
 [Antithesis, "Testing Exploration via Metroid" (2025)](https://antithesis.com/blog/2025/metroid/)
@@ -26,90 +27,104 @@ interface**, and it works faults-off.
 
 ## The layers
 
-| Layer | What | Lives today | Fault-free useful? |
+| Layer | What | Current precursor / target owner | Fault-free useful? |
 |---|---|---|---|
 | **L0 machine** | deterministic substrate: branch/run/snapshot/hash, the `Moment` axis, the supply seams, `StopReason` as machine contract | `consonance/` | n/a |
-| **L1 exploration** | the searcher: spine six + engine + archive + sensors/cells, over the **supply** vocabulary (Entropy, Payload) | `dissonance/explorer` + sensor crates | **yes — by construction** (see R-L1 evidence) |
+| **L1 exploration** | the generic Explorer control loop plus Differential-materialized observations, cells, and archive view, over the **supply** vocabulary (Entropy, Payload) | current `dissonance/explorer`; target `explorer` + `sdk-events` + Differential plane (`hm-bbx`, not implemented) | **yes — by construction** (see R-L1 evidence) |
 | **L2 perturbation** | the fault vocabulary + enforcement: fault classes, `HostFault`, flow, tactic arms | `dissonance/environment` (fault tier), `flow`, `tactics-regime` | opt-in per campaign; `FaultPolicy::none()` is the opt-out |
-| **L3 judgment** | properties, oracles, triage, resolution | `link`/`matcher` plugins, `docs/RESOLUTION.md` | yes (crash/property oracles need no fault) |
-| **cross-cutting** | the app-facing SDK surface (the Antithesis SDK, adopted) over per-guest-world transports | external MIT SDKs + `guest/sdk` (demoted — see R-L3) | yes |
+| **L3 judgment** | properties, oracles, triage, resolution | current `sdk-events`/`matcher`; target Explorer oracles + Differential reporting + Resolution | yes (crash/property oracles need no fault) |
+| **cross-cutting** | the app-facing SDK surface (the Antithesis SDK, adopted) over per-guest-world transports | external MIT SDKs and current internal `guest/sdk`; `/dev/harmony` adapter remains target work | yes |
 
 ## Rulings
 
 ### R-L1 — Exploration is a first-class, independently-gated capability
 
-The spine is already fault-blind by construction — `Machine` is branch/run/snapshot/hash;
-the explorer never parses the reproducer (schema-blind, opaque bytes); `Archive`/`Selector`/
-`CellFn`/`Sensor` carry no fault vocabulary; the catalog's **supply classes** (Entropy, Payload)
-are exploration-tier, distinct from the fault classes. A campaign under `FaultPolicy::none()` is
-a coverage-guided, snapshot-branching fuzzer over the payload/entropy channels with perfect
-reproducibility — and it can find **real bugs** (payload-driven crashes need no fault). The
-tactic portfolio already names this configuration: the `quiet` arm (`docs/EXPLORATION.md`).
+> **Amendment (2026-07-12).** The independent fault-free gate, real workload, deterministic
+> controls, and signal-versus-random measurement survive. The legacy task-84 composition through
+> `LinkSensor`/feature channels and its role as a task-70 on-ramp do not. The production gate now
+> follows `docs/DISSONANCE-STRATEGY.md`: normalized SDK evidence, Differential-materialized cells at
+> actual seals, the generic `Explorer`, and a simple selector before any advanced selector work.
+> Task 84 is retained as experimental history and trial-discipline input; its implementation path
+> is blocked on the rewritten cooperative vertical (`hm-bbx` / `hm-cs5`).
 
-**Ruled:** exploration gets its own gate, decoupled from faults — the Metroid discipline.
-Shape: *cells discovered / depth reached vs. a random-seed baseline, zero faults
-(`FaultPolicy::none()`, buggify off), on a real guest, driving the real spine engine
-(`explorer::Explorer` + `SocketMachine`)*. This gate is deliberately also the **task-70
-on-ramp**: it exercises the composed engine against real hardware — which has never happened
-(the box-proven campaign ran conductor's hand-rolled loop) — while removing fault *enforcement*
-(the half-finished part: net 61b, block/process unenforced) from the equation entirely.
+The control loop is fault-blind by construction: `Machine` branches/runs/snapshots/hashes;
+`Selector` chooses Entries; `CellFn` projects completed observations; none needs fault vocabulary.
+Supply classes such as Entropy and Payload remain distinct from faults. A campaign under
+`FaultPolicy::none()` can find payload-driven bugs and must be independently useful.
 
-Spec as **task 84** (next free in the active band): a game-shaped benchmark workload — a small
-deterministic game or maze under the Linux guest, SDK state registers as position markers (the
-`sdk-demo` pattern grown up) — plus the gate above. Two sub-questions the spec must answer, not
-this doc: the workload choice, and the baseline definition (pure random seeds vs. frontier-off).
+**Ruled:** exploration gets its own gate, decoupled from faults. The live gate uses the generic
+`Explorer` + `SocketMachine`, normalized cooperative evidence, Differential-materialized cells at
+actual seals, a simple selector, and equal-budget pure-random/frontier-off controls. It reports
+cells and depth as diagnostics and held bug/progress behavior as product evidence. Advanced
+selection is downstream of this gate.
+
+Task 84 is the historical maze and trial-discipline specification. Bead `hm-cs5`, after `hm-bbx`,
+owns the rewritten implementation. Fault enforcement work remains out of scope.
 
 **Explicit non-move:** `explorer` stays under `dissonance/`. A fault-free searcher is still
 adversarial in mission (find the state that breaks; some states need no fault). This ruling
 corrects framing and gates, not the crate family.
 
-### R-L2 — The property catalog is spine vocabulary; channels are transports
+### R-L2 — Evidence declarations are data; campaign roles are projections (AMENDED 2026-07-12)
 
-The semantics of `always` / `sometimes` / `reachable` / `never` already exist **twice**, once
-per channel: SDK-declared (`link`'s `PointKind`, `AlwaysViolation`, `LinkSensor`) and
-config-declared over scraped records (`matcher`'s `Role` router — a declared `never` over log
-records *is* an always-assertion, no SDK involved). The catalog / never-fired report is already
-"unified across link and scrape" as a report format. `docs/GLOSSARY.md` merged the enums
-(`PointKind` + `Role` → one spine `Role`).
+The earlier ruling merged SDK `PointKind` with matcher `Role` and promoted a generic property
+catalog into the spine. That conflated source-declared evidence with campaign interpretation and is
+superseded by `docs/GLOSSARY.md` plus `docs/DISSONANCE-STRATEGY.md`.
 
-**Ruled — the promotion this implies:** the **property catalog** — the declared point set with
-roles, plus fired-set accounting — becomes spine vocabulary (owned by `explorer`, rule 2:
-interfaces live in the consumer). The SDK is **one transport** for declaring and firing points;
-scrape/config is another; a future instrument tier would be a third. The searcher understands
-`assert_sometimes` abstractly; no spine or engine code may reference the SDK, its wire format,
-or any channel specifically.
+**Ruled:** SDK declarations normalize into persisted `SdkSchema`; scrape and instrument sources
+retain their own versioned declarations. Matcher/campaign `Role` remains a query or projection over
+that evidence and cannot redefine its base temporal update semantics. The unified never-fired view
+is derived reporting—declared identities minus matching occurrences—not a reason to merge source
+enums or make a decoder own policy. The generic Explorer consumes materialized observations and
+cells; it does not depend on an SDK wire, JSON schema, or transport-specific kind.
+
+The current serial-console scrape declares source-local, stop-granular ordering. It is full-run
+evidence only—not an exact seal-relative cell source or a participant in cross-source sequence
+queries—until capture-time stamps and a snapshot cursor exist. The precise promotion contract lives
+in `docs/DISSONANCE-STRATEGY.md`.
 
 Corollary (validated against the Metroid workload): Antithesis's `SOMETIMES_EACH(x, y)` is an
 *app-declared cell function*. Under the thin-SDK ruling (hooks + transport only; the host owns
-every interpretation) harmony expresses the same thing host-side — the app emits
-`state_set(x)`/`state_set(y)`, the campaign's `CellFn` keys cells on those channels — retunable
-without recompiling the guest. **The thin-SDK ruling is reaffirmed**; app-declared cells are
-rejected. The genuine gap the Metroid post exposes is elsewhere: their "prefer more missiles,
-all things equal" is **multi-objective preference inside the archive** (value-weighted
-best-per-cell domination), which the spine's `Archive`/`Reward` does not have. Logged as a
-task-70 design input, not ruled here.
+campaign interpretation), Harmony normalizes the app's observations and lets the campaign's
+`CellFn` project `(x, y)` host-side—retunable without recompiling the guest. **The thin-SDK ruling
+is reaffirmed**; app-declared cells are rejected. The genuine gap the Metroid post exposes is
+elsewhere: "prefer more missiles, all things equal" is deterministic quality domination within a
+cell. It belongs to Differential archive occupancy, not to a source schema or advanced selector.
 
-### R-L3 — The app-facing SDK: adopt the Antithesis SDK surface (AMENDED 2026-07-06)
+### R-L3 — The app-facing SDK: adopt the Antithesis SDK surface (AMENDED 2026-07-12)
 
 > **Amendment note.** The original R-L3 (same day, earlier) ruled a custom top-level
 > `harmony-sdk` as the app-facing interface, over an interface-owned wire and per-guest-world
 > backends ("the SDK triplet"). A same-day review of the Antithesis SDKs' licensing and
-> internals (Paul, 2026-07-06) superseded the interface half: harmony has **no verb their
-> surface cannot express today**, their licensing permits direct adoption, and their internal
-> architecture practically invites a compatible backend. The wire and backend thirds of the
-> triplet survive in amended form below. Original text is in git history (PR #75).
+> internals (Paul, 2026-07-06) superseded the interface half: their licensing permits direct
+> adoption, and their internal architecture practically invites a compatible backend. The
+> 2026-07-12 observation-contract review narrows the earlier sufficiency claim: their surface is a
+> strong external base, but numeric properties are not automatically persistent state and
+> structured choice remains a possible extension. The wire and backend thirds of the triplet
+> survive in amended form below. Original text is in git history (PR #75).
 
 **Ruled:**
 
-1. **The app-facing interface is the Antithesis SDK surface, consumed unmodified.** Eight
+1. **The default app-facing interface is the Antithesis SDK surface, consumed unmodified.** Eight
    languages (Go, Java, C, C++, JavaScript, Python, Rust, .NET); **MIT-licensed** (verified on
-   the Rust and Go repos; AGPL-3-compatible for harmony and for guest workloads). A custom
-   `harmony-sdk` is **deferred** until harmony has a verb their surface cannot express. The
-   audit grounding the deferral: `Moment`-stamping is host-side (no interface delta); their
-   compile-time assertion catalog (`linkme` distributed slices) covers catalog-at-init and
-   never-fired; their numeric-guidance family (`assert_sometimes_greater_than` …) covers the
-   IJON state-register use. Parked candidate for a future native verb: identified decision
-   sites (the buggify / structured-choice family — see item 6).
+   the Rust and Go repos; AGPL-3-compatible for harmony and for guest workloads). `Moment` stamping
+   is host-side; their compile-time assertion declarations cover property identity and never-fired
+   expectations; the assertion message aggregates sites into one property (see the official
+   [assert module](https://antithesis.com/docs/generated/sdk/rust/antithesis_sdk/assert/)). Ordinary
+   evaluations are occurrence/property evidence and do not fail-stop (see
+   the official [assertion semantics](https://antithesis.com/docs/properties_assertions/assertions/)).
+   Numeric-guidance verbs explicitly optimize an extremum and may filter reports to new watermarks
+   (see the generated Rust
+   [guidance implementation](https://antithesis.com/docs/generated/sdk/rust/src/antithesis_sdk/assert/guidance.rs.html)),
+   so Harmony may normalize the declared maximum/minimum but cannot reinterpret that stream as
+   arbitrary current `set` state. A versioned workload instrumentation declaration may supply
+   another contract only for an emission path that actually reports every required update. A
+   Harmony extension is justified when that is inadequate. Persistent state registers and
+   identified decision sites (buggify / structured choice—see item 6) are the concrete triggers
+   now under evaluation.
+   Raw numeric JSON is preserved. It remains report-only until `sdk-events` can normalize it into a
+   bounded exact representation with a deterministic total order; host `f64` comparison is never
+   state-affecting.
 
 2. **The canonical guest transport is a char device (`/dev/harmony`) in the harmony-linux
    kernel.** A small driver rides the existing `0x0CA1` doorbell — **zero consonance change**.
@@ -136,7 +151,7 @@ task-70 design input, not ruled here.
 
 4. **Decode is owned once, and no JSONL file watcher is built.** `fuzz_json_data` carries the
    same JSON that Antithesis's documented fallback protocol writes to
-   `$ANTITHESIS_OUTPUT_DIR/sdk.jsonl`, so `dissonance/sdk-link` grows **one** Antithesis-JSON
+   `$ANTITHESIS_OUTPUT_DIR/sdk.jsonl`, so `dissonance/sdk-events` grows **one** Antithesis-JSON
    decoder serving all device traffic (shim or native writers). The fallback-file path is
    explicitly **not** built: it was never zero-touch (an app must deliberately implement the
    protocol; harmony's zero-touch channel is the scrape tier), and the device subsumes it — a
@@ -147,7 +162,13 @@ task-70 design input, not ruled here.
 5. **The existing `guest/sdk` `no_std` crate demotes to internal wire plumbing.** Its
    byte-deterministic Event wire stays for the bare-metal corpus payloads and guest-resident
    agents (merged, box-gated code); application traffic uses the Antithesis JSON over the
-   device. Consolidating the two wires is deferred to natural work.
+   device. `sdk-events` owns both decoders and normalizes both formats into persisted `SdkSchema`
+   and ordered `SdkEvent` data. Binary v1's catalog does not declare value shape or a fixed base
+   operation. Fired events may validate a candidate interpretation, but a never-fired state point
+   remains explicitly unresolved and cannot enter temporal reduction. Conflicting per-event
+   operations are malformed evidence. The first production state-register vertical therefore
+   requires a versioned binary declaration (wire v2) or an equally explicit workload
+   instrumentation declaration; it may not infer state semantics from silence.
 
 6. **The steering ladder** — how the search gets smarter without SDK changes: (i)
    **attribution**, now, via the driver stamp; (ii) **empirical probing** — fork a decision,
@@ -157,10 +178,11 @@ task-70 design input, not ruled here.
    index, giving one-replay semantic mutation instead of k-replay probing. (iii) is **parked
    with a named trigger**: the mutation axis extending to supply answers.
 
-R-L2 is untouched and is what makes this amendment cheap: channels are transports, and the
-spine understands properties abstractly. The thin-SDK ruling is reaffirmed a second time —
-adopting their surface adds no checkers or policy to the guest. Task 43's naming convention
-holds: the driver and shim are `harmony-linux` deliverables, per-guest-world by construction.
+R-L2's 2026-07-12 amendment supplies the boundary: source declarations are data, campaign roles
+are projections, and the generic Explorer consumes materialized observations and cells rather than
+transport-specific properties. The thin-SDK ruling is reaffirmed—adopting the Antithesis surface
+adds no cell policy to the guest. Task 43's naming convention holds: the driver and shim are
+`harmony-linux` deliverables, per-guest-world by construction.
 
 ### R-L4 — `guest/` → `harmony-linux/`, with the corpus carve-out (amends task 43)
 
@@ -192,19 +214,22 @@ rebaseline if one is scheduled, else document-as-deliberately-stale) applies unc
 2. **The stream-separation proofs.** Supply vs. fault PRNG domains live in one `SeededEnv` so
    the byte-identical gates (task 73: buggify on/off leaves the supply stream untouched) stay
    provable in one place.
-3. **`StopReason::Assertion` stays machine-contract.** Fail-stop surfacing is the engine's job
-   (L0); *meaning* — "a violation is a bug" — is assigned by an L3 oracle plugin. This is
-   correct layering today; do not "fix" it.
+3. **`StopReason::Assertion` stays a machine contract where the transport is fail-stop.** The
+   current binary path may surface that terminal; `TerminalOracle` assigns meaning. Antithesis JSON
+   assertions may instead be completed-trace evidence and are judged by an SDK-assertion Oracle.
+   Decoding evidence never gains live stop authority by accident.
 
 ## What this unblocks / changes
 
-- **Task 84 (new)**: the fault-free exploration gate + game-shaped benchmark — also the task-70
-  on-ramp (first real-hardware run of the composed spine engine).
-- **Task 70 design inputs**: multi-objective archive preference (R-L2 corollary); the loop merge
-  carries campaign vocabulary per the glossary.
+- **Task 84 (historical specification)**: its fault-free workload and trial discipline feed the
+  rewritten cooperative gate `hm-cs5`; its LinkSensor composition and task-70 on-ramp are
+  superseded.
+- **Future selector experiments**: follow the simple cooperative baseline and remain separate from
+  quality domination, Portfolio allocation, and STADS reporting/stopping.
 - **Task 43 (amended)**: corpus carve-out; surface extended to flow-agent, the SDK demotion,
   and the two new harmony-linux deliverables (the `/dev/harmony` driver + the voidstar shim).
-- **`sdk-link`**: one Antithesis-JSON decoder, shared by shim and native device traffic.
+- **`sdk-events`**: one Antithesis-JSON decoder shared by shim and native device traffic, plus the
+  retained internal binary decoder; both normalize into the same persisted observation contract.
 - **The instrument tier's cheap mechanism, if ever activated**: the shim's coverage pair over a
   guest-side buffer (bedrock's `libfeedback` pattern, which also fronts LLVM `trace-pc-guard`)
   — named as a future the seams permit, not a work item.

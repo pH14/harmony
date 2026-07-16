@@ -36,10 +36,12 @@ use kvm_bindings::{
 use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
 use vtime::{CpuBackend, InjectionPlanner, PlannerConfig};
 
+use crate::arch::x86::Injection;
+use crate::arch::x86::VcpuState;
+use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Policy};
 use crate::backend::Backend;
-use crate::config::{CpuidModel, MsrFilter};
 use crate::error::{BackendError, Result};
-use crate::exit::{Capabilities, Event, Exit, ExitCounts};
+use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
 use crate::kvm::*;
 use crate::pmu::PmuOverflowStats;
 use crate::pmu_sys::PmuBranchCounter;
@@ -48,8 +50,7 @@ use crate::run_until::{
     ExitPoison, FirstEntryReset, PreemptCpu, RunUntilStart, SKID_MARGIN, classify_run_until,
     drive_run_until, free_run_decision,
 };
-use crate::state::VcpuState;
-use crate::types::{Gpa, Vtime};
+use crate::types::{Gpa, Moment};
 
 /// `KVM_MSR_FILTER_READ | KVM_MSR_FILTER_WRITE` — apply the in-kernel allow to
 /// both directions (the `allow-stateful` rows are bidirectional).
@@ -340,7 +341,7 @@ impl KvmBackend {
     /// on `EINTR` and on the internally-consumed run-loop control exits — including
     /// `KVM_EXIT_IRQ_WINDOW_OPEN`, on which the pending IRQ becomes injectable and
     /// is queued on the next loop iteration.
-    fn enter_guest(&mut self) -> Result<Exit> {
+    fn enter_guest(&mut self) -> Result<Exit<X86>> {
         loop {
             // Userspace-irqchip injection handshake (KVM_IRQCHIP_NONE): if a
             // maskable IRQ is queued, deliver it now when the guest can take it,
@@ -1062,7 +1063,7 @@ enum LiveStop {
     /// exit (P1(a)). Its pending-completion was armed on the backend. The planner is
     /// told it reached the deadline (so it stops); `drive_run_until` then compares
     /// `work` to the deadline — only `work < deadline` is a true early exit.
-    Guest { exit: Exit, work: u64 },
+    Guest { exit: Exit<X86>, work: u64 },
 }
 
 /// The live [`vtime::CpuBackend`] (+ [`PreemptCpu`]): a thin adapter binding the
@@ -1076,7 +1077,7 @@ struct LiveCpu<'a> {
     deadline: u64,
     work_cache: u64,
     /// A stashed genuine guest exit + the real work count at it (P1(a)).
-    pending_exit: Option<(Exit, u64)>,
+    pending_exit: Option<(Exit<X86>, u64)>,
     err: Option<BackendError>,
 }
 
@@ -1138,7 +1139,9 @@ impl CpuBackend for LiveCpu<'_> {
 }
 
 impl PreemptCpu for LiveCpu<'_> {
-    fn take_guest_exit(&mut self) -> Option<(Exit, u64)> {
+    type A = X86;
+
+    fn take_guest_exit(&mut self) -> Option<(Exit<X86>, u64)> {
         self.pending_exit.take()
     }
     fn take_error(&mut self) -> Option<BackendError> {
@@ -1146,8 +1149,9 @@ impl PreemptCpu for LiveCpu<'_> {
     }
 }
 
-impl Backend for KvmBackend {
-    fn set_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
+impl KvmBackend {
+    /// Install the frozen guest-visible CPUID table (`KVM_SET_CPUID2`).
+    fn install_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
         let entries = cpuid_entries(model);
         let cpuid = CpuId::from_entries(&entries)
             .map_err(|_| BackendError::Internal("CPUID table too large for KVM"))?;
@@ -1156,7 +1160,9 @@ impl Backend for KvmBackend {
         Ok(())
     }
 
-    fn set_msr_filter(&mut self, filter: &MsrFilter) -> Result<()> {
+    /// Install the default-deny MSR policy: enable `KVM_CAP_X86_USER_SPACE_MSR`
+    /// with the full mask, then `KVM_X86_SET_MSR_FILTER`.
+    fn install_msr_filter(&mut self, filter: &MsrFilter) -> Result<()> {
         if filter.allow_inkernel.len() > KVM_MSR_FILTER_MAX_RANGES as usize {
             return Err(BackendError::Memory("too many MSR filter ranges"));
         }
@@ -1198,6 +1204,17 @@ impl Backend for KvmBackend {
         self.msr_filter = Some(filter.clone());
         self.msr_filter_installed = true;
         Ok(())
+    }
+}
+
+impl Backend for KvmBackend {
+    type A = X86;
+
+    fn set_policy(&mut self, policy: &X86Policy) -> Result<()> {
+        // CPUID first, then the MSR filter (the bringup order: both before the
+        // first run).
+        self.install_cpuid(&policy.cpuid)?;
+        self.install_msr_filter(&policy.msr_filter)
     }
 
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
@@ -1331,7 +1348,7 @@ impl Backend for KvmBackend {
         Ok(gfns)
     }
 
-    fn run(&mut self) -> Result<Exit> {
+    fn run(&mut self) -> Result<Exit<X86>> {
         if !self.configured() {
             return Err(BackendError::NotConfigured);
         }
@@ -1343,11 +1360,11 @@ impl Backend for KvmBackend {
         self.enter_guest()
     }
 
-    fn run_until(&mut self, deadline: Vtime) -> Result<Exit> {
+    fn run_until(&mut self, deadline: Moment) -> Result<Exit<X86>> {
         // The §2 inversion seam (task 47): drive the pure precise-injection planner
         // over the live PMU + KVM single-step. Arm the retired-branch overflow at
         // `deadline − skid_margin`, free-run until it kicks `KVM_RUN` out, then
-        // single-step to land at EXACTLY `deadline` retired branches → `Exit::Deadline`.
+        // single-step to land at EXACTLY `deadline` retired branches → `CommonExit::Deadline`.
         // A genuine guest exit before the deadline returns that exit instead, short
         // of `deadline`. Completion/observability discipline matches `run`.
         if !self.configured() {
@@ -1381,6 +1398,11 @@ impl Backend for KvmBackend {
                     // place run_until may, per the invariant). After the reset the
                     // counter reads 0, matching `start` on the pending path.
                     self.ensure_first_run()?;
+                    // `new` bakes in the default liveness backstop
+                    // (`vtime::DEFAULT_MAX_STALL_STEPS`), so the walk fails closed
+                    // rather than single-step forever if the guest retires no further
+                    // counted event (hm-440: a work-clock completion lost across a
+                    // host suspend/resume).
                     let planner = InjectionPlanner::new(PlannerConfig {
                         skid_margin: SKID_MARGIN,
                     });
@@ -1405,9 +1427,9 @@ impl Backend for KvmBackend {
                 // later real entry re-baselines, so a coexisting VM in between cannot
                 // contaminate this VM's counter. Any completion staged by the prior step
                 // stays in the run page and is committed by the NEXT entry's `KVM_RUN`.
-                RunUntilStart::AtOrPastDeadline => Ok(Exit::Deadline {
-                    reached: Vtime(start),
-                }),
+                RunUntilStart::AtOrPastDeadline => Ok(Exit::Common(CommonExit::Deadline {
+                    reached: Moment(start),
+                })),
             }
         };
         // Cleanup MUST run and MUST succeed (P2): a failed single-step disarm leaves
@@ -1433,24 +1455,25 @@ impl Backend for KvmBackend {
         // regression ever left a stale pending, the `PendingCompletion` guard at the
         // top of the next `run`/`run_until` fails closed loudly — never a silent drop.)
         debug_assert!(
-            !matches!(exit, Exit::Deadline { .. }) || self.pending == Pending::None,
+            !matches!(exit, Exit::Common(CommonExit::Deadline { .. }))
+                || self.pending == Pending::None,
             "a Deadline must not carry a pending completion (it is the no-exit land)"
         );
         self.counts.bump(exit.reason());
         Ok(exit)
     }
 
-    fn inject(&mut self, event: Event) -> Result<()> {
+    fn inject(&mut self, event: Injection) -> Result<()> {
         match event {
             // Set the pending maskable vector (overwrite); same as set_pending_irq.
-            Event::Interrupt { vector } => {
+            Injection::Interrupt { vector } => {
                 self.pending_irq = Some(vector);
                 Ok(())
             }
             // NMIs are non-maskable; queue immediately via the KVM_NMI ioctl. (Not
             // needed by the Linux boot — timer IRQ only — but honoured so the trait
             // method is complete.)
-            Event::Nmi => self.vcpu.nmi().map_err(kvm_err),
+            Injection::Nmi => self.vcpu.nmi().map_err(kvm_err),
         }
     }
 
@@ -1498,15 +1521,15 @@ impl Backend for KvmBackend {
         Ok(())
     }
 
-    fn complete_hypercall(&mut self, _rax: u64) -> Result<()> {
-        // Stock KVM services VMCALL in-kernel; it never surfaces Exit::Hypercall,
+    fn complete_hypercall(&mut self, _ret: u64) -> Result<()> {
+        // Stock KVM services VMCALL in-kernel; it never surfaces CommonExit::Hypercall,
         // so there is never a hypercall pending to complete.
         Err(BackendError::NoPendingRead)
     }
 
-    fn complete_cpuid(&mut self, _eax: u32, _ebx: u32, _ecx: u32, _edx: u32) -> Result<()> {
-        // Stock KVM answers CPUID in-kernel from the set_cpuid table; it never
-        // surfaces Exit::Cpuid.
+    fn complete_arch(&mut self, _completion: X86Completion) -> Result<()> {
+        // Stock KVM answers CPUID in-kernel from the installed table; it never
+        // surfaces X86Exit::Cpuid, so there is never an arch completion to apply.
         Err(BackendError::BadCompletion)
     }
 
@@ -1582,7 +1605,7 @@ impl Backend for KvmBackend {
         self.counts = ExitCounts::default();
     }
 
-    fn capabilities(&self) -> Capabilities {
+    fn capabilities(&self) -> Capabilities<X86Caps> {
         kvm_capabilities()
     }
 }

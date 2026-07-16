@@ -39,12 +39,18 @@ use thiserror::Error;
 
 /// A point on the deterministic V-time axis, in whole nanoseconds. The contract
 /// [`VClock`](vtime::VClock) advances V-time at **1 ns per retired conditional branch**
-/// (see [`crate::vmm::contract_vclock_config`]), so a `VTime` value is equivalently the
+/// (see [`crate::vmm::contract_vclock_config`]), so a `Moment` value is equivalently the
 /// retired-branch count — the same axis [`crate::vmm::Vmm::effective_vns`] reports and a
 /// `run` deadline consumes. (Task 63's prose says "retired-instruction count"; on this
 /// substrate the addressable V-time grid *is* retired branches — the report notes the
 /// axis explicitly.)
-pub type VTime = u64;
+pub type Moment = u64;
+
+/// A duration (distance) on the deterministic V-time axis, in whole nanoseconds — the
+/// GLOSSARY's `Span` to [`Moment`]'s point. Overshoots, jitter magnitudes, replay
+/// depths, and verification horizons are `Span`s; scheduled targets and landings are
+/// [`Moment`]s.
+pub type Span = u64;
 
 /// Parts-per-million denominator — every rate in this module is an **integer** ppm value
 /// (rule 4 forbids floating point in anything that reaches an output/hash), so `1_000_000`
@@ -117,9 +123,9 @@ impl BusyKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BusyWindow {
     /// Inclusive lower V-time bound.
-    pub start: VTime,
+    pub start: Moment,
     /// Exclusive upper V-time bound.
-    pub end: VTime,
+    pub end: Moment,
     /// What kind of busy path this window covers.
     pub kind: BusyKind,
 }
@@ -127,7 +133,7 @@ pub struct BusyWindow {
 impl BusyWindow {
     /// The window's center V-time (where the schedule aims a busy sample). Saturating.
     #[must_use]
-    pub fn center(&self) -> VTime {
+    pub fn center(&self) -> Moment {
         self.start + (self.end.saturating_sub(self.start)) / 2
     }
 }
@@ -136,7 +142,7 @@ impl BusyWindow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Target {
     /// The V-time point to `run` the guest to before attempting a seal.
-    pub vtime: VTime,
+    pub vtime: Moment,
     /// Why this point is in the schedule.
     pub kind: SampleKind,
 }
@@ -158,7 +164,7 @@ pub enum ScheduleError {
         /// How many targets were requested.
         requested: usize,
         /// The width of the span in V-time ns.
-        span: VTime,
+        span: Span,
     },
 }
 
@@ -172,8 +178,8 @@ pub enum ScheduleError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SamplingSchedule {
     targets: Vec<Target>,
-    span_start: VTime,
-    span_end: VTime,
+    span_start: Moment,
+    span_end: Moment,
 }
 
 impl SamplingSchedule {
@@ -191,8 +197,8 @@ impl SamplingSchedule {
     /// [`ScheduleError`] for an empty span, zero targets, or a span too narrow to hold
     /// `n` distinct uniform points.
     pub fn build(
-        span_start: VTime,
-        span_end: VTime,
+        span_start: Moment,
+        span_end: Moment,
         n: usize,
         busy: &[BusyWindow],
     ) -> Result<Self, ScheduleError> {
@@ -222,7 +228,7 @@ impl SamplingSchedule {
             // u128 so the multiply cannot overflow; +½-bucket to center.
             let lo = span_start as u128 + (i as u128 * span as u128) / n_uniform.max(1) as u128;
             let half = (span as u128) / (2 * n_uniform.max(1) as u128);
-            let vtime = (lo + half).min(span_end as u128 - 1) as VTime;
+            let vtime = (lo + half).min(span_end as u128 - 1) as Moment;
             targets.push(Target {
                 vtime,
                 kind: SampleKind::Uniform,
@@ -295,7 +301,7 @@ impl SamplingSchedule {
     /// index (no RNG crate, no wall clock) so the adversarial run is itself reproducible.
     /// Targets stay sorted; kinds are preserved.
     #[must_use]
-    pub fn jittered(&self, jitter: VTime) -> SamplingSchedule {
+    pub fn jittered(&self, jitter: Span) -> SamplingSchedule {
         let lo = self.span_start as i128;
         let hi = self.span_end as i128 - 1;
         let mut targets: Vec<Target> = self
@@ -311,7 +317,7 @@ impl SamplingSchedule {
                     // (`jittered` is pub and the harness feeds it `ADV_JITTER_VNS`).
                     let span = 2u128 * jitter as u128 + 1;
                     let delta = (r as u128 % span) as i128 - jitter as i128;
-                    (t.vtime as i128 + delta).clamp(lo, hi) as VTime
+                    (t.vtime as i128 + delta).clamp(lo, hi) as Moment
                 };
                 Target {
                     vtime,
@@ -465,7 +471,7 @@ pub struct SealAttempt {
     /// Where the `run` actually stopped — the first synchronized boundary at/after the
     /// target (`landed_vtime >= target.vtime`), or the interior point an adversarial probe
     /// stepped to.
-    pub landed_vtime: VTime,
+    pub landed_vtime: Moment,
     /// The landing's seal-relevant features.
     pub snapshot: CpuSnapshot,
     /// The seal outcome.
@@ -477,7 +483,7 @@ impl SealAttempt {
     /// **addressability** of that target. Small overshoot ⇒ the V-time grid is dense and
     /// sealing is effectively continuous; large overshoot ⇒ a coarse grid.
     #[must_use]
-    pub fn overshoot(&self) -> VTime {
+    pub fn overshoot(&self) -> Span {
         self.landed_vtime.saturating_sub(self.target.vtime)
     }
 }
@@ -540,15 +546,15 @@ impl SealStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Overshoot {
     /// Smallest overshoot observed.
-    pub min: VTime,
+    pub min: Span,
     /// Largest overshoot observed.
-    pub max: VTime,
+    pub max: Span,
     /// Floor of the mean overshoot.
-    pub mean: VTime,
+    pub mean: Span,
     /// Median (p50) overshoot.
-    pub p50: VTime,
+    pub p50: Span,
     /// 90th-percentile overshoot.
-    pub p90: VTime,
+    pub p90: Span,
     /// How many targets were sealed at exactly the requested V-time (overshoot `0`).
     pub exact_hits: usize,
     /// How many attempts contributed.
@@ -562,7 +568,7 @@ impl Overshoot {
         if attempts.is_empty() {
             return None;
         }
-        let mut deltas: Vec<VTime> = attempts.iter().map(SealAttempt::overshoot).collect();
+        let mut deltas: Vec<Span> = attempts.iter().map(SealAttempt::overshoot).collect();
         deltas.sort_unstable();
         let n = deltas.len();
         let sum: u128 = deltas.iter().map(|&d| d as u128).sum();
@@ -570,7 +576,7 @@ impl Overshoot {
         Some(Overshoot {
             min: deltas[0],
             max: deltas[n - 1],
-            mean: (sum / n as u128) as VTime,
+            mean: (sum / n as u128) as Span,
             p50: deltas[percentile_index(n, 50)],
             p90: deltas[percentile_index(n, 90)],
             exact_hits,
@@ -609,9 +615,9 @@ pub enum DepthError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaterializationDepth {
     /// Replay depth (V-time ns) from genesis (boot) to the deep seal.
-    pub from_genesis: VTime,
+    pub from_genesis: Span,
     /// Replay depth (V-time ns) from the parent seal to the deep seal (the suffix).
-    pub from_parent: VTime,
+    pub from_parent: Span,
 }
 
 impl MaterializationDepth {
@@ -619,7 +625,11 @@ impl MaterializationDepth {
     ///
     /// # Errors
     /// [`DepthError::NonMonotonic`] if the points are not strictly increasing.
-    pub fn new(genesis: VTime, parent_seal: VTime, deep_seal: VTime) -> Result<Self, DepthError> {
+    pub fn new(
+        genesis: Moment,
+        parent_seal: Moment,
+        deep_seal: Moment,
+    ) -> Result<Self, DepthError> {
         if !(genesis < parent_seal && parent_seal < deep_seal) {
             return Err(DepthError::NonMonotonic);
         }
@@ -761,7 +771,7 @@ pub struct RulingThresholds {
     pub min_adversarial_coverage_ppm: u32,
     /// Overshoot (V-time ns) at/below which the grid is "dense" — sealing is effectively
     /// continuous, so a high rate is an *unrestricted* GO rather than a grid-restricted one.
-    pub dense_grid_overshoot: VTime,
+    pub dense_grid_overshoot: Span,
 }
 
 impl Default for RulingThresholds {

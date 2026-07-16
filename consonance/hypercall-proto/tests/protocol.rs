@@ -645,3 +645,146 @@ proptest! {
         prop_assert_eq!(&out[..n], &answer[..]);
     }
 }
+
+/// The task-110 pvclock registration round-trip: the guest
+/// `pvclock_register(gpa)` reaches the [`PvclockRegistrar`] service (id 7,
+/// op 1), which validates the page-aligned in-RAM GPA, records it, and answers
+/// the ABI version; a bad GPA is a clean status, never a silent accept.
+#[test]
+fn pvclock_register_round_trips_the_abi_version() {
+    let fresh = || {
+        let mut dispatcher = Dispatcher::new();
+        dispatcher.register(
+            ServiceId::Pvclock,
+            Box::new(PvclockRegistrar::new(1 << 20, 1)),
+        );
+        Client::new(DispatcherLoopback(dispatcher))
+    };
+    // Misaligned and out-of-range GPAs are clean OutOfRange statuses (fresh
+    // registrar each — a rejection must not consume the one-shot).
+    let mut client = fresh();
+    assert_eq!(
+        client.pvclock_register(0x5001),
+        Err(ClientError::Status(Status::OutOfRange))
+    );
+    assert_eq!(
+        client.pvclock_register(1 << 20),
+        Err(ClientError::Status(Status::OutOfRange))
+    );
+    // A rejected attempt did not consume the one-shot: registering still works.
+    assert_eq!(client.pvclock_register(0x5000).unwrap(), 1);
+    // ONE-SHOT (the frozen ABI, mirroring the production host): any second
+    // register — same GPA or another valid one — is a guest fault.
+    assert_eq!(
+        client.pvclock_register(0x5000),
+        Err(ClientError::Status(Status::BadRequest))
+    );
+    assert_eq!(
+        client.pvclock_register(0x6000),
+        Err(ClientError::Status(Status::BadRequest))
+    );
+    // The last page of RAM is in range (fresh registrar).
+    assert_eq!(fresh().pvclock_register((1 << 20) - 4096).unwrap(), 1);
+}
+
+/// A host with no pvclock service answers `UnknownService`, so a guest probing
+/// for the clock page gets a clean "not offered", never a panic — the pure
+/// opt-in posture of `docs/PARAVIRT-CLOCK.md`.
+#[test]
+fn pvclock_register_without_service_is_a_clean_status() {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Event, Box::new(EventSink::new()));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+    assert_eq!(
+        client.pvclock_register(0x5000),
+        Err(ClientError::Status(Status::UnknownService))
+    );
+}
+
+/// `PvclockRegistrar` snapshots and restores its registration, like the other
+/// reference services.
+#[test]
+fn pvclock_registrar_state_round_trips() {
+    let mut svc = PvclockRegistrar::new(1 << 20, 1);
+    let mut out = [0_u8; 4];
+    let (status, n) = svc.handle(1, &0x7000u64.to_le_bytes(), &mut out);
+    assert_eq!((status, n), (Status::Ok, 4));
+    assert_eq!(svc.registered(), Some(0x7000));
+    // One-shot holds on the SAME instance: a second register is a guest fault
+    // and the pinned target does not move.
+    assert_eq!(
+        svc.handle(1, &0x8000u64.to_le_bytes(), &mut out).0,
+        Status::BadRequest
+    );
+    assert_eq!(svc.registered(), Some(0x7000));
+    let saved = svc.save_state();
+    let mut restored = PvclockRegistrar::new(0, 0);
+    restored.restore_state(&saved).unwrap();
+    assert_eq!(restored.registered(), Some(0x7000));
+    // ...and holds across the state round-trip too (restored state cannot be
+    // re-registered over — the supposedly pinned target stays pinned).
+    assert_eq!(
+        restored.handle(1, &0x9000u64.to_le_bytes(), &mut out).0,
+        Status::BadRequest
+    );
+    assert_eq!(restored.registered(), Some(0x7000));
+    // A truncated blob is rejected, never a partial restore.
+    assert_eq!(
+        restored.restore_state(&saved[..saved.len() - 1]),
+        Err(ProtoError::BadState)
+    );
+    assert_eq!(restored.registered(), Some(0x7000));
+}
+
+/// A hostile/corrupt state blob cannot restore a registration `handle` would
+/// have rejected: `restore_state` re-runs the SAME 4 KiB-alignment +
+/// RAM-containment check on the decoded GPA (cross-model r12 P2). Without the
+/// check a crafted blob could pin an unaligned or out-of-RAM GPA that the live
+/// registration path forbids, and the host would then stamp outside the page
+/// window.
+#[test]
+fn pvclock_registrar_restore_revalidates_the_gpa() {
+    // Blob shape mirrors PvclockRegistrar::save_state:
+    //   ram_len (8 LE) | abi_version (4 LE) | tag (1) | gpa (8 LE, iff tag==1)
+    let blob = |ram_len: u64, gpa: u64| {
+        let mut b = Vec::new();
+        b.extend_from_slice(&ram_len.to_le_bytes());
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.push(1);
+        b.extend_from_slice(&gpa.to_le_bytes());
+        b
+    };
+    let ram_len = 1u64 << 20;
+
+    // Misaligned GPA — `handle` answers OutOfRange, so restore must reject it.
+    let mut svc = PvclockRegistrar::new(0, 0);
+    assert_eq!(
+        svc.restore_state(&blob(ram_len, 0x7001)),
+        Err(ProtoError::BadState)
+    );
+    assert_eq!(svc.registered(), None, "no partial restore on rejection");
+
+    // Out-of-RAM GPA (page runs off the end) — likewise rejected.
+    let mut svc = PvclockRegistrar::new(0, 0);
+    assert_eq!(
+        svc.restore_state(&blob(ram_len, ram_len)),
+        Err(ProtoError::BadState)
+    );
+    assert_eq!(svc.registered(), None);
+
+    // A valid, page-aligned, in-RAM GPA still restores cleanly.
+    let mut svc = PvclockRegistrar::new(0, 0);
+    svc.restore_state(&blob(ram_len, ram_len - 4096)).unwrap();
+    assert_eq!(svc.registered(), Some(ram_len - 4096));
+}
+
+/// An unknown pvclock opcode and a malformed payload are clean statuses.
+#[test]
+fn pvclock_registrar_rejects_bad_frames() {
+    let mut svc = PvclockRegistrar::new(1 << 20, 1);
+    let mut out = [0_u8; 4];
+    assert_eq!(svc.handle(2, &[], &mut out).0, Status::UnknownOpcode);
+    assert_eq!(svc.handle(1, &[0; 7], &mut out).0, Status::BadRequest);
+    assert_eq!(svc.handle(1, &[0; 9], &mut out).0, Status::BadRequest);
+    assert_eq!(svc.registered(), None, "no registration on any rejection");
+}

@@ -2,7 +2,7 @@
 
 The in-guest flow agent: the host decides a per-flow net policy (`net_decide`),
 this agent enforces it on the intra-guest CNI. Full design + box-gate handoff live
-in the repo-root **`IMPLEMENTATION-task61.md`**; this file is the crate-local
+in the repo-root **`docs/history/IMPLEMENTATION-task61.md`**; this file is the crate-local
 summary conventions ask for.
 
 ## Layout

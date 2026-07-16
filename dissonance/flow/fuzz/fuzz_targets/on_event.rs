@@ -18,7 +18,7 @@
 use arbitrary::Arbitrary;
 use flow::{
     ConnId, Dir, FlowDecider, FlowEngine, FlowEvent, FlowPolicy, NodeId, PassthroughEngine,
-    ToxiproxyEngine, VTime,
+    Moment, Span, ToxiproxyEngine,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -36,7 +36,7 @@ impl From<Pol> for FlowPolicy {
     fn from(p: Pol) -> Self {
         match p {
             Pol::Nominal => FlowPolicy::Nominal,
-            Pol::Latency(d) => FlowPolicy::Latency(VTime(d)),
+            Pol::Latency(d) => FlowPolicy::Latency(Span(d)),
             Pol::Loss { seed, num, den } => FlowPolicy::Loss { seed, num, den },
             Pol::Throttle { bps } => FlowPolicy::Throttle { bps },
             Pol::Reset => FlowPolicy::Reset,
@@ -90,18 +90,18 @@ fn to_event(cmd: &Cmd) -> Option<FlowEvent> {
         Cmd::ChunkC2s { conn, at, bytes } => FlowEvent::Chunk {
             conn: ConnId(*conn),
             dir: Dir::ClientToServer,
-            at: VTime(*at),
+            at: Moment(*at),
             bytes: bytes.clone(),
         },
         Cmd::ChunkS2c { conn, at, bytes } => FlowEvent::Chunk {
             conn: ConnId(*conn),
             dir: Dir::ServerToClient,
-            at: VTime(*at),
+            at: Moment(*at),
             bytes: bytes.clone(),
         },
         Cmd::Close { conn, at } => FlowEvent::Close {
             conn: ConnId(*conn),
-            at: VTime(*at),
+            at: Moment(*at),
         },
         Cmd::Due { .. } => return None,
     })
@@ -116,7 +116,7 @@ fn drive<E: FlowEngine>(mut engine: E, script: &[FlowPolicy], cmds: &[Cmd]) -> V
     let mut out = Vec::new();
     for cmd in cmds {
         match cmd {
-            Cmd::Due { now } => out.extend(engine.due(VTime(*now))),
+            Cmd::Due { now } => out.extend(engine.due(Moment(*now))),
             other => {
                 if let Some(ev) = to_event(other) {
                     engine.on_event(ev, &mut decider);
@@ -125,7 +125,7 @@ fn drive<E: FlowEngine>(mut engine: E, script: &[FlowPolicy], cmds: &[Cmd]) -> V
         }
     }
     // Final full drain so nothing is left pending.
-    out.extend(engine.due(VTime(u64::MAX)));
+    out.extend(engine.due(Moment(u64::MAX)));
     out
 }
 

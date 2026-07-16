@@ -260,7 +260,7 @@ land 2.1 before 2.2 (2.1's A/B gate is cheaper to debug without a new restore pa
   (`live_materialization.rs`) pass unchanged on the new paths.
 - **(d) The numbers:** report seal wall time (full-scan vs dirty-set at the campaign's
   typical suffix), restore wall time (memcpy vs remap), and chain-depth distribution under
-  `max_chain_len = 32`, in an `IMPLEMENTATION-task95.md` at repo root (the task-56/61/69
+  `max_chain_len = 32`, in an `docs/history/IMPLEMENTATION-task95.md` at repo root (the task-56/61/69
   pattern), quoting M1's laptop numbers as the store-side baseline.
 
 ## Box-safety (CRITICAL — M2 only)

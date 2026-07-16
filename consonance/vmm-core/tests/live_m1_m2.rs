@@ -6,7 +6,7 @@
 //! - **M1 — boots & prints.** `boot(KvmBackend::new(), hello, ram)` then `run()`:
 //!   the serial capture equals `guest/golden/hello.txt` byte-for-byte **and** the
 //!   terminal reason is a clean isa-debug-exit `PASS` (`DebugExit { code: 0 }`).
-//! - **M2 — deterministic twice.** A `unison::MachineFactory` builds a fresh
+//! - **M2 — deterministic twice.** A `unison::SubjectFactory` builds a fresh
 //!   `Vmm<KvmBackend>` per payload; for both `hello` and `compute`, two runs
 //!   produce identical `state_hash` **and** identical serial; `compute`'s serial
 //!   also equals `guest/golden/compute.txt`.
@@ -33,13 +33,13 @@
 //!
 //! The whole file compiles only on Linux (`KvmBackend` is Linux-only); on macOS it
 //! is an empty test binary.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::path::PathBuf;
 
-use unison::{Machine, MachineFactory, RunOutcome};
+use unison::{RunOutcome, Subject, SubjectFactory};
 use vmm_backend::KvmBackend;
-use vmm_core::bringup::boot;
+use vmm_core::vendor::x86::bringup::boot;
 use vmm_core::vmm::{TerminalReason, Vmm};
 
 /// 256 MiB of guest RAM (matches the task-04 QEMU `-m 256` gate).
@@ -97,7 +97,7 @@ fn require_kvm() {
 /// Print the CPU-MSR-CONTRACT §1.1 host-baseline assertion report; return whether
 /// **every** assertion passes. Pure diagnostic — it does not decide pass/fail.
 fn print_host_baseline_report() -> bool {
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     let mut all_pass = true;
     eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 host-baseline report:");
     for o in &report {
@@ -168,7 +168,7 @@ fn m1_hello_boots_and_prints() {
 
 // --- M2 -------------------------------------------------------------------
 
-/// A `unison::Machine` over a live `Vmm<KvmBackend>`. Work-counting /
+/// A `unison::Subject` over a live `Vmm<KvmBackend>`. Work-counting /
 /// `run_to(target)` bisection is a later-phase concern (V-time): this milestone
 /// runs the payload to terminal on the first `run_to`, then reports `Halted`.
 struct VmmMachine {
@@ -178,8 +178,8 @@ struct VmmMachine {
     reason: Option<TerminalReason>,
 }
 
-impl Machine for VmmMachine {
-    fn run_to(&mut self, _target: u64) -> Result<RunOutcome, unison::MachineError> {
+impl Subject for VmmMachine {
+    fn run_to(&mut self, _target: u64) -> Result<RunOutcome, unison::SubjectError> {
         if !self.ran {
             let r = self.vmm.run().expect("live run to terminal");
             self.serial = r.serial;
@@ -205,7 +205,7 @@ struct PayloadFactory {
     payload: Vec<u8>,
 }
 
-impl MachineFactory for PayloadFactory {
+impl SubjectFactory for PayloadFactory {
     type M = VmmMachine;
 
     fn spawn(&self, _seed: u64) -> VmmMachine {

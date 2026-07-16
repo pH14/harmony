@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only corpus gate (`#[cfg(target_os = "linux")]` **and `#[ignore]`d**): run
 //! the C1 conformance corpus on the **patched** backend as a `det-corpus`
-//! `Machine` — the proof point the whole corpus box-integration (task 28) exists
+//! `Subject` — the proof point the whole corpus box-integration (task 28) exists
 //! for. For every **conformance** item in `docs/corpus-manifest.toml` it drives the
 //! VMM-backed [`vmm_core::corpus::CorpusMachine`] and asserts:
 //!
@@ -61,14 +61,15 @@
 //! payload, or an unblessed golden — is a **loud panic (test FAILURE)**, never an
 //! early-return `Ok`. macOS builds an empty test binary; the bridge logic is
 //! covered there by the `MockBackend` unit tests in `src/corpus.rs`.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::path::PathBuf;
 
 use det_corpus::{CorpusItem, Oracle, check_determinism, load_manifest};
 use sha2::{Digest, Sha256};
-use unison::{Machine, MachineFactory, RunOutcome};
-use vmm_core::corpus::{CorpusMachine, boot_patched_payload};
+use unison::{RunOutcome, Subject, SubjectFactory};
+use vmm_core::corpus::CorpusMachine;
+use vmm_core::vendor::x86::bringup::boot_patched_corpus;
 use vmm_core::vmm::TerminalReason;
 
 /// 256 MiB of guest RAM — the size the C1 payloads were validated under (the
@@ -78,7 +79,7 @@ const GUEST_RAM_LEN: usize = 256 << 20;
 /// captured at (the seeded entropy stream `insn-rng` draws from). Fixed so the
 /// goldens are reproducible.
 const CORPUS_SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
-/// O1 checkpoint cadence / work limit. The VMM `Machine` runs each payload to
+/// O1 checkpoint cadence / work limit. The VMM `Subject` runs each payload to
 /// terminal (no intra-run work-targeting yet — see `corpus.rs`), so any cadence
 /// ≥ 1 and limit ≥ 1 compares the terminal checkpoint; the defaults match the CLI.
 const CHECKPOINT_EVERY: u64 = 4096;
@@ -114,7 +115,7 @@ fn golden_path(item: &CorpusItem) -> PathBuf {
     repo_root().join(rel)
 }
 
-/// A `unison::MachineFactory` for one payload over the patched backend. `spawn`
+/// A `unison::SubjectFactory` for one payload over the patched backend. `spawn`
 /// boots a fresh patched VM at `seed`; a boot failure is a genuine box-setup
 /// failure (no patched `/dev/kvm`, non-baseline host) and panics loudly — the
 /// same posture as the live M1/M2 `PayloadFactory`.
@@ -123,12 +124,12 @@ struct PatchedPayloadFactory {
     payload: Vec<u8>,
 }
 
-impl MachineFactory for PatchedPayloadFactory {
-    type M = CorpusMachine<Box<dyn vmm_backend::Backend>>;
+impl SubjectFactory for PatchedPayloadFactory {
+    type M = CorpusMachine<Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>>;
     fn spawn(&self, seed: u64) -> Self::M {
-        boot_patched_payload(&self.payload, GUEST_RAM_LEN, seed).unwrap_or_else(|e| {
+        boot_patched_corpus(&self.payload, GUEST_RAM_LEN, seed).unwrap_or_else(|e| {
             panic!(
-                "boot_patched_payload({}) failed: {e}. Needs the LOADED patched KVM \
+                "boot_patched_corpus({}) failed: {e}. Needs the LOADED patched KVM \
                  (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS), perf_event, and the det-cfl-v1 host. \
                  Build + load per consonance/vmm-backend/kvm-patches/BUILD.md, then revert to stock after.",
                 self.name
@@ -207,7 +208,7 @@ struct ItemVerdict {
 /// interrupt injection + LAPIC MMIO + the idle-skip protocol, which vmm-core does
 /// not model yet (a later phase), so they cannot reach a clean PASS on this event
 /// loop. They are logged and skipped — never run through the gate (which would
-/// hit a `TerminalReason::Hlt` / MMIO `ContractViolation`).
+/// hit a `TerminalReason::Idle` / MMIO `ContractViolation`).
 fn sweep(items: &[CorpusItem], bless: bool) -> Vec<ItemVerdict> {
     let mut verdicts = Vec::new();
     for item in items {

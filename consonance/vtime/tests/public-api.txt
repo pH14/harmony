@@ -1,4 +1,30 @@
 pub mod vtime
+pub mod vtime::pvclock
+pub struct vtime::pvclock::PvclockFields
+pub vtime::pvclock::PvclockFields::abi_version: u32
+pub vtime::pvclock::PvclockFields::flags: u32
+pub vtime::pvclock::PvclockFields::guest_clock: u64
+pub vtime::pvclock::PvclockFields::guest_clock_hz: u64
+pub vtime::pvclock::PvclockFields::seq: u32
+pub vtime::pvclock::PvclockFields::vcpu_index: u32
+pub vtime::pvclock::PvclockFields::vns: u64
+pub const vtime::pvclock::ABI_VERSION_OFF: usize
+pub const vtime::pvclock::FLAGS_OFF: usize
+pub const vtime::pvclock::GUEST_CLOCK_HZ_OFF: usize
+pub const vtime::pvclock::GUEST_CLOCK_OFF: usize
+pub const vtime::pvclock::PVCLOCK_ABI_VERSION: u32
+pub const vtime::pvclock::PVCLOCK_FLAGS_V1: u32
+pub const vtime::pvclock::PVCLOCK_FLAG_MATERIALIZED: u32
+pub const vtime::pvclock::PVCLOCK_FLAG_WORK_DERIVED: u32
+pub const vtime::pvclock::PVCLOCK_PAGE_LEN: usize
+pub const vtime::pvclock::RESERVED_OFF: usize
+pub const vtime::pvclock::SEQ_OFF: usize
+pub const vtime::pvclock::VCPU_INDEX_OFF: usize
+pub const vtime::pvclock::VNS_OFF: usize
+pub fn vtime::pvclock::published(&[u8], u64, u64, u64) -> bool
+pub fn vtime::pvclock::read(&[u8]) -> core::option::Option<vtime::pvclock::PvclockFields>
+pub fn vtime::pvclock::stamp(&mut [u8], u64, u64, u64) -> bool
+pub fn vtime::pvclock::stamp_canonical(&mut [u8], u64, u64, u64) -> bool
 pub mod vtime::sim
 pub enum vtime::sim::SimEvent
 pub vtime::sim::SimEvent::Armed
@@ -44,6 +70,10 @@ pub vtime::VtimeError::SkidExceeded
 pub vtime::VtimeError::SkidExceeded::armed_at: u64
 pub vtime::VtimeError::SkidExceeded::stopped_at: u64
 pub vtime::VtimeError::SkidExceeded::target: u64
+pub vtime::VtimeError::StepBudgetExceeded
+pub vtime::VtimeError::StepBudgetExceeded::last_work: u64
+pub vtime::VtimeError::StepBudgetExceeded::stall_steps: u64
+pub vtime::VtimeError::StepBudgetExceeded::target: u64
 pub vtime::VtimeError::ZeroPeriod
 pub vtime::VtimeError::ZeroRatioDen
 pub vtime::VtimeError::ZeroRatioNum
@@ -62,6 +92,7 @@ pub struct vtime::InjectionPlanner
 impl vtime::InjectionPlanner
 pub fn vtime::InjectionPlanner::new(vtime::PlannerConfig) -> Self
 pub fn vtime::InjectionPlanner::stop_at(&self, &mut dyn vtime::CpuBackend, u64) -> core::result::Result<vtime::PlanOutcome, vtime::VtimeError>
+pub fn vtime::InjectionPlanner::with_max_stall_steps(self, u64) -> Self
 pub struct vtime::PlannerConfig
 pub vtime::PlannerConfig::skid_margin: u64
 pub struct vtime::TimerQueue
@@ -76,16 +107,16 @@ pub struct vtime::TimerToken(pub u64)
 pub struct vtime::VClock
 impl vtime::VClock
 pub fn vtime::VClock::advance_idle(&mut self, u64)
+pub fn vtime::VClock::guest_ticks(&self, u64) -> u64
 pub fn vtime::VClock::new(vtime::VClockConfig) -> core::result::Result<vtime::VClock, vtime::VtimeError>
 pub fn vtime::VClock::snapshot_vns(&self, u64) -> u64
-pub fn vtime::VClock::tsc(&self, u64) -> u64
 pub fn vtime::VClock::vns(&self, u64) -> u64
 pub fn vtime::VClock::work_for_vns(&self, u64) -> u64
 pub struct vtime::VClockConfig
+pub vtime::VClockConfig::guest_base: u64
+pub vtime::VClockConfig::guest_hz: u64
 pub vtime::VClockConfig::ratio_den: u64
 pub vtime::VClockConfig::ratio_num: u64
-pub vtime::VClockConfig::tsc_base: u64
-pub vtime::VClockConfig::tsc_hz: u64
 pub vtime::VClockConfig::vns_base: u64
 pub trait vtime::CpuBackend
 pub fn vtime::CpuBackend::run_until_overflow(&mut self, u64) -> core::result::Result<u64, vtime::BackendError>

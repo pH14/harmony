@@ -41,7 +41,7 @@ exactly.
 
 `Moment` throughout this document is defined as `InsnCount`, and the one-outstanding-decision
 model below ("exactly one decision is ever outstanding") both assume the lone-vCPU determinism
-model PLAN.md originally called "one vCPU, period." Task 56 shipped a `CONFIG_SMP=y` guest
+model docs/PLAN.md originally called "one vCPU, period." Task 56 shipped a `CONFIG_SMP=y` guest
 (`maxcpus=1`) without any doc acknowledging the axiom had been quietly cracked. **Integrator
 ruling:** the v1 contract is an **SMP-built kernel with exactly one *online* vCPU** — real
 multi-vCPU (more than one online at once) is out of scope until explicitly re-ruled, deferred
@@ -73,7 +73,7 @@ applies them from outside, between instructions, at a chosen `Moment`.
 
 ```rust
 enum HostFault {
-    SkewTime(VTime),                       // jitter virtual time
+    SkewTime(Span),                        // jitter virtual time by a duration
     SetClockRate(Ratio),                   // CPU modulation: retired-branches → V-time slope
     CorruptMemory { gpa: u64, mask: BitMask }, // single-event-upset
     InjectInterrupt { vector: u8 },        // delivery-timing perturbation
@@ -202,7 +202,7 @@ splice-invariant by re-keying; **seed-serviced decisions are not**, because `See
 *sequential* PRNG streams — a splice would desync the stream state. The production
 `EnvCodec::compose` therefore **fails closed** (`UnsupportedComposition`) on pure-`Seeded` inputs,
 seed/policy mismatches, and `StandingFault`s (whose window is on the *V-time* axis, needing a
-runtime `Moment → VTime` map to re-key). This scope is now **the contract**, not a stopgap, and it binds
+runtime branch↔instruction re-key map to re-key). This scope is now **the contract**, not a stopgap, and it binds
 the frontier adapter (the R2 `Machine` implementation) on four points:
 
 - **Tail-completeness.** `Machine::recorded_env` must emit a **tail-complete** delta — every
@@ -217,19 +217,31 @@ the frontier adapter (the R2 `Machine` implementation) on four points:
   keyed from — the production analogue of the toy blob's `base_offset` field), letting the adapter
   recover `at` from the delta alone. A corpus base additionally records the `Moment` its snapshot
   was taken at, so a mutation can be sliced at the right offset (the toy's `pos`).
-- **Fallibility.** The explorer seam's `compose` is infallible; the production one returns
-  `Result`. Under this contract a compose failure is unreachable in the campaign flow (corpus
-  bases and deltas are always post-run `Recorded` artifacts; seeds/policies match by construction;
-  standing faults are confined below) — and note the call path: the seam's `compose` is invoked by
-  the *explorer* (`Explorer::report` / snapshot admission), not by a `Machine` method, so the
-  adapter **cannot** route a failure out as a `MachineError`. Ruling: the adapter's `EnvCodec`
-  impl **panics** on `UnsupportedComposition`/`Overflow` — an invariant violation is a defect in
-  the adapter/contract, not a run outcome, and the campaign aborts loudly (the loud-failure
-  intent; never a silently-minted reproducer that does not replay). Making the seam fallible
-  (`compose → Result`) remains an **allowed task-58 API adjustment** if `Result` plumbing through
-  the explorer is preferred over the panic.
+- **Fallibility (task 99, bead `hm-5d9`; supersedes the original task-93 panic default).** The
+  explorer seam's `EnvCodec::mutate`/`compose` are **fallible** — they return
+  `Result<Environment, EnvCodecError>`. A serialized reproducer is the artifact users pass around,
+  load from disk, and feed back in, so it is untrusted by definition and the library rule (never
+  panic on untrusted input) governs the seam. `seeded` stays infallible (it mints from a
+  caller-supplied seed and decodes nothing). The failure stays a **loud control error**: the seam
+  is invoked by the *explorer* (`Explorer::report` / snapshot admission / the materialization fold)
+  and the campaign loops, and every one of those call sites propagates the typed error through
+  `MachineError::EnvCodec` (a `#[from]`), which aborts the step and is **never** recorded as a guest
+  `Bug` — a bad reproducer artifact fails the run/campaign, it does not mint a finding. (The
+  original ruling named a fallible seam as the allowed task-58 API adjustment; it is now taken, and
+  the panic default is retired.)
+
+  The `compose(base, branch_local)` acceptance contract is total and enumerated (the `EnvCodecError`
+  doc and a `compose_ok_exactly_on_the_valid_operand_pair` property test pin the biconditional):
+  it returns `Ok` **iff** (1) both operands decode (`Malformed` otherwise); (2) each satisfies
+  `pos >= base_offset` (`MisorderedChain`); (3) the pair is **adjacent** —
+  `branch_local.base_offset == base.pos`, since the delta is recorded off the base's snapshot, so a
+  gap or overlap is refused (`NonAdjacentChain`); (4) the specs are splice-compatible — both
+  `Recorded`, equal seed/policy, no standing faults (`UnsupportedComposition`, delegated to the
+  wire codec); and (5) no `Moment` re-key overflows (`Overflow`). Adjacency implies root ordering,
+  and base genesis-completeness is deliberately *not* required (the adapter generalizes `compose`
+  to parent-rooted bases for the task-68 lineage fold).
 - **Standing-fault confinement (v1).** Standing faults stay non-composable until a
-  `Moment → VTime` map exists, so until then they are **confined to genesis-based runs**: no
+  runtime branch↔instruction re-key map exists, so until then they are **confined to genesis-based runs**: no
   `StandingFault` in a branch-local delta, and a corpus entry whose env carries standing faults is
   never branched below. Under that rule every standing-fault bug is found in a genesis-rooted run,
   whose `recorded_env` is already genesis-complete and carries the standing set verbatim — no
@@ -243,7 +255,7 @@ the frontier adapter (the R2 `Machine` implementation) on four points:
   one. The fail-closed production `compose` is the backstop: any violation that slips through
   becomes the loud abort of the fallibility bullet above, never a mis-keyed reproducer.
   **Sequencing guard:** standing faults must not enter the frontier fault vocabulary *before*
-  either the `Moment → VTime` map exists (making them composable — the confinement rule
+  either the runtime branch↔instruction re-key map exists (making them composable — the confinement rule
   dissolves) or a schema-visible corpus-base eligibility hook is added to the Progression's selection
   path. On the codec seam alone, "never branched below" is enforceable only as the loud abort —
   by the time `mutate` sees the blob the strategy has already selected the `SnapId`, and `mutate`

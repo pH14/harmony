@@ -5,15 +5,18 @@
 //! `docs/RESOLUTION.md` rules that resolution "forks and reads *directly*
 //! against the control-transport server (task 58) … never by tunneling through
 //! explorer code": the same verb socket the explorer drives. This trait is that
-//! socket, abstracted so the crate gates fully against an **in-crate mock**
-//! ([`MockServer`](crate::MockServer)) while a real box connection is a second,
-//! wire-speaking implementor handed to the foreman.
+//! socket, abstracted over its two implementors: the **in-crate mock**
+//! ([`MockServer`](crate::MockServer)), a scripted guest the whole laptop gate
+//! runs against, and the **production socket adapter**
+//! ([`SocketServer`](crate::SocketServer)), which speaks real `control-proto`
+//! frames to the task-58 control server. Nothing a [`Session`](crate::Session)
+//! observes distinguishes them.
 //!
 //! ## Which verbs use which types
 //!
 //! The verbs `control-proto` already carries — `hello` / `snapshot` / `drop` /
 //! `branch` / `replay` / `run` / `hash` — take and return its **real wire
-//! types** ([`control_proto::Environment`], [`StopReason`], [`HashScope`], …),
+//! types** ([`control_proto::Reproducer`], [`StopReason`], [`HashScope`], …),
 //! so this client genuinely speaks that contract (`tests/wire.rs` pins the
 //! request/reply values against `control-proto`'s codec byte-for-byte). The
 //! three verbs tasks 80/81 add but that are unmerged on this branch — `read` /
@@ -21,7 +24,7 @@
 //! shaped exactly as those specs fix them (conventions rule 2). See
 //! [`SessionError`] for why their errors live here too.
 
-use control_proto::{Caps, Environment, HashScope, SnapId, StopConditions, StopReason, VTime};
+use control_proto::{Caps, HashScope, Reproducer, SnapId, StopConditions, StopReason};
 use environment::{EnvSpec, Moment};
 use serde::{Deserialize, Serialize};
 
@@ -45,8 +48,8 @@ pub struct Snapshot {
 /// a [`SessionError`].
 ///
 /// Implementors: [`MockServer`](crate::MockServer) (the in-crate scripted
-/// loopback, the whole laptop gate) and — post-80/81, foreman-side — a thin
-/// adapter over a real `control-proto` socket.
+/// loopback, the whole laptop gate) and [`SocketServer`](crate::SocketServer)
+/// (the production adapter over a real `control-proto` stream).
 pub trait Server {
     /// Negotiate the session. Must be the first call; returns the server's
     /// [`Caps`]. A mismatch is surfaced by [`Session::connect`](crate::Session::connect)
@@ -56,12 +59,12 @@ pub trait Server {
     /// Capture state at the current quiescent point → a [`Snapshot`] handle.
     fn snapshot(&mut self) -> Result<Snapshot, SessionError>;
 
-    /// Release a snapshot handle (corpus GC).
+    /// Release a snapshot handle (pool GC).
     fn drop_snap(&mut self, snap: SnapId) -> Result<(), SessionError>;
 
     /// Restore `snap` and reseed from `env` — the explore/materialize path. The
     /// new timeline runs under `env`.
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), SessionError>;
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), SessionError>;
 
     /// Restore `snap` verbatim — the reproduce/determinism-gate path.
     fn replay(&mut self, snap: SnapId) -> Result<(), SessionError>;
@@ -87,12 +90,74 @@ pub trait Server {
     /// timeline's taint bit. The server refuses nothing (a caller may
     /// deliberately sacrifice a timeline); the taint bit makes the consequence
     /// structural.
-    fn exec(&mut self, cmd: &str, deadline: VTime) -> Result<ExecResult, SessionError>;
+    fn exec(
+        &mut self,
+        cmd: &str,
+        deadline: control_proto::Moment,
+    ) -> Result<ExecResult, SessionError>;
 
     /// Mint the genesis-complete reproducer ([`EnvSpec`]) for the current point
     /// — the task-81 taint guard's fail-loud site: a tainted timeline returns
-    /// [`SessionError::Tainted`], never a lying `Environment`.
+    /// [`SessionError::Tainted`], never a lying `Reproducer`.
     fn recorded_env(&mut self) -> Result<EnvSpec, SessionError>;
+}
+
+/// Every `&mut Server` is itself a [`Server`], delegating verb for verb.
+///
+/// [`Session`](crate::Session) takes its server **by value** (it owns the
+/// timeline for as long as the session lives), so a caller that must keep the
+/// server afterwards — the film box gate scrapes the raw wire, hands the adapter
+/// to a `Session`, and then runs the same connection on to a terminal hash —
+/// hands it a `&mut` instead. Without this impl every such caller writes the
+/// same eleven-method delegation by hand.
+impl<S: Server + ?Sized> Server for &mut S {
+    fn hello(&mut self, caps: Caps) -> Result<Caps, SessionError> {
+        (**self).hello(caps)
+    }
+
+    fn snapshot(&mut self) -> Result<Snapshot, SessionError> {
+        (**self).snapshot()
+    }
+
+    fn drop_snap(&mut self, snap: SnapId) -> Result<(), SessionError> {
+        (**self).drop_snap(snap)
+    }
+
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), SessionError> {
+        (**self).branch(snap, env)
+    }
+
+    fn replay(&mut self, snap: SnapId) -> Result<(), SessionError> {
+        (**self).replay(snap)
+    }
+
+    fn run(&mut self, until: StopConditions) -> Result<StopReason, SessionError> {
+        (**self).run(until)
+    }
+
+    fn hash(&mut self, scope: HashScope) -> Result<[u8; 32], SessionError> {
+        (**self).hash(scope)
+    }
+
+    fn read(&mut self, gpa: u64, len: u32) -> Result<Vec<u8>, SessionError> {
+        (**self).read(gpa, len)
+    }
+
+    fn regs(&mut self) -> Result<RegsView, SessionError> {
+        (**self).regs()
+    }
+
+    fn exec(
+        &mut self,
+        cmd: &str,
+        deadline: control_proto::Moment,
+    ) -> Result<ExecResult, SessionError> {
+        (**self).exec(cmd, deadline)
+    }
+
+    fn recorded_env(&mut self) -> Result<EnvSpec, SessionError> {
+        (**self).recorded_env()
+    }
 }
 
 /// A **versioned** register view (task 80): general-purpose registers, `rip`,

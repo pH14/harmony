@@ -24,7 +24,7 @@
 //! well-defined and deterministic because work is a pure function of the
 //! deterministic instruction stream. V-time follows as
 //! `vns(work) = vns_base + floor(work · ratio_num / ratio_den)` and the
-//! virtual TSC as `tsc(work) = tsc_base + floor(vns(work) · tsc_hz / 10⁹)`,
+//! virtual TSC as `tsc(work) = guest_base + floor(vns(work) · guest_hz / 10⁹)`,
 //! all in integer/fixed-point math (`u128` intermediates, saturating to
 //! `u64::MAX` — this crate denies `clippy::float_arithmetic`). `vns_base`
 //! absorbs the two events where V-time moves without work: **idle-skip**
@@ -108,6 +108,7 @@ mod clock;
 mod error;
 mod idle;
 mod planner;
+pub mod pvclock;
 mod queue;
 pub mod sim;
 

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use environment::{
     Action, Answer, BitMask, BlockOp, ConnId, DecisionClass, DecisionPoint as P, EnvSpec,
-    Environment, Fault, FaultPolicy, HostFault, NodeId, Outcome, Ratio, SeededEnv, VTime,
+    Environment, Fault, FaultPolicy, HostFault, NodeId, Outcome, Ratio, SeededEnv, Span,
 };
 
 const SEED: u64 = 0x0123_4567_89AB_CDEF;
@@ -22,7 +22,7 @@ fn policy() -> FaultPolicy {
         3,
         4,
         &[
-            Fault::NetLatency(VTime(100)),
+            Fault::NetLatency(Span(100)),
             Fault::NetLoss { num: 1, den: 2 },
             Fault::NetThrottle { bps: 1_000_000 },
             Fault::NetReset,
@@ -35,7 +35,7 @@ fn policy() -> FaultPolicy {
         2,
         &[
             Fault::BlockEio,
-            Fault::BlockLatency(VTime(50)),
+            Fault::BlockLatency(Span(50)),
             Fault::BlockTorn(8),
             Fault::BlockNospc,
         ],
@@ -46,7 +46,7 @@ fn policy() -> FaultPolicy {
         2,
         3,
         &[
-            Fault::ProcPause(VTime(10)),
+            Fault::ProcPause(Span(10)),
             Fault::ProcKill,
             Fault::ProcRestart,
         ],
@@ -191,9 +191,9 @@ fn golden_covers_every_class_with_faults() {
 /// (and the `perturb` transport) depends on. Regenerate with `GOLDEN_CAPTURE=1`.
 fn host_faults() -> Vec<(HostFault, &'static str)> {
     vec![
-        // tag 00 + VTime u64 (0x0102030405060708, little-endian).
+        // tag 00 + Span u64 (0x0102030405060708, little-endian).
         (
-            HostFault::SkewTime(VTime(0x0102_0304_0506_0708)),
+            HostFault::SkewTime(Span(0x0102_0304_0506_0708)),
             "000807060504030201",
         ),
         // tag 01 + num u64 (3) + den u64 (2).
@@ -209,8 +209,8 @@ fn host_faults() -> Vec<(HostFault, &'static str)> {
             },
             "0200400000000000000800000000000000",
         ),
-        // tag 03 + vector u8 (0x80).
-        (HostFault::InjectInterrupt { vector: 0x80 }, "0380"),
+        // tag 03 + vector u32 LE (0x80).
+        (HostFault::InjectInterrupt { vector: 0x80 }, "0380000000"),
     ]
 }
 
@@ -239,7 +239,7 @@ fn golden_action_wire_format() {
     let host = Action::Host(HostFault::InjectInterrupt { vector: 0x80 });
     assert_eq!(
         to_hex(&host.encode()),
-        "000380",
+        "000380000000",
         "host plane tag 00 + payload"
     );
 
@@ -273,17 +273,19 @@ fn golden_recorded_blob_with_host_overrides() {
     } else {
         assert_eq!(
             hex,
-            // "DEV2"(44455632) + version(0500, task 73 over task 78's v4) +
+            // "DEV2"(44455632) + version(0600, the ARCH-BOUNDARY §C vector
+            // widening over task 73's v5) +
             // variant(01) + seed(00 x8) +
             // length-prefixed policy(FPL1 magic + version 0300, baseline, len 0x36=54:
             //   three empty classes 0x2a=42 + trailing buggify section
             //   [default_num 0, default_den 1, per_point count 0] = 12, task 73) +
             // overrides count(02000000) +
-            //   Moment 1 + len-prefixed Action::Host(InjectInterrupt 0x80) = [00 03 80] +
+            //   Moment 1 + len-prefixed Action::Host(InjectInterrupt 0x80)
+            //     = [00 03 80 00 00 00] (the vector is a u32 LE) +
             //   Moment 2 + len-prefixed Action::Guest(Nominal) = [01 00] +
             // standing count(00000000) +
             // reseed count(01000000) + Moment 3 + seed 0xD1CE (both u64 LE, task 78).
-            "4445563205000100000000000000003600000046504c31030000000000010000000000000000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000003000000000380020000000000000002000000010000000000010000000300000000000000ced1000000000000",
+            "4445563206000100000000000000003600000046504c31030000000000010000000000000000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000006000000000380000000020000000000000002000000010000000000010000000300000000000000ced1000000000000",
             "recorded blob wire format drifted; regenerate with GOLDEN_CAPTURE=1"
         );
         assert_eq!(EnvSpec::decode(&spec.encode()).unwrap(), spec);

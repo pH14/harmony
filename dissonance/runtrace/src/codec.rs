@@ -19,8 +19,7 @@
 //! format bump when it lights up.
 
 use explorer::{
-    CoverageView, Environment, GuestEvent, Moment, Record, RunTrace, StopReason, StreamId, VTime,
-    Value,
+    CoverageView, GuestEvent, Moment, Record, Reproducer, RunTrace, StopReason, StreamId, Value,
 };
 
 use crate::error::TraceError;
@@ -78,7 +77,7 @@ pub fn encode(t: &RunTrace) -> Result<Vec<u8>, TraceError> {
     w.extend_from_slice(&MAGIC.to_le_bytes());
     w.extend_from_slice(&crate::TRACE_FORMAT_VERSION.to_le_bytes());
     // The env blob version rides in the header (task 65 §1); the bytes ride in
-    // the payload, so the `Environment` is reconstructed from the two on decode.
+    // the payload, so the `Reproducer` is reconstructed from the two on decode.
     w.extend_from_slice(&t.env.blob_version.to_le_bytes());
 
     write_stop_reason(&mut w, &t.terminal);
@@ -160,7 +159,7 @@ pub fn decode(buf: &[u8]) -> Result<RunTrace, TraceError> {
 
     let mut r = Reader::new(&buf[HEADER_LEN..]);
     let terminal = read_stop_reason(&mut r)?;
-    let env = Environment {
+    let env = Reproducer {
         blob_version: env_blob_version,
         bytes: r.bytes()?.to_vec(),
     };
@@ -181,7 +180,7 @@ pub fn decode(buf: &[u8]) -> Result<RunTrace, TraceError> {
 /// stored in the store's env sidecar: `blob_version(2) · bytes`. Independent of
 /// the journal envelope, so an env-only trace addresses identically to the same
 /// run's full journal.
-pub fn encode_env(env: &Environment) -> Vec<u8> {
+pub fn encode_env(env: &Reproducer) -> Vec<u8> {
     let mut w = Vec::with_capacity(2 + env.bytes.len());
     w.extend_from_slice(&env.blob_version.to_le_bytes());
     w.extend_from_slice(&env.bytes);
@@ -189,11 +188,11 @@ pub fn encode_env(env: &Environment) -> Vec<u8> {
 }
 
 /// Decode an env sidecar written by [`encode_env`].
-pub fn decode_env(buf: &[u8]) -> Result<Environment, TraceError> {
+pub fn decode_env(buf: &[u8]) -> Result<Reproducer, TraceError> {
     if buf.len() < 2 {
         return Err(TraceError::Truncated);
     }
-    Ok(Environment {
+    Ok(Reproducer {
         blob_version: u16::from_le_bytes([buf[0], buf[1]]),
         bytes: buf[2..].to_vec(),
     })
@@ -238,27 +237,27 @@ fn write_stop_reason(w: &mut Vec<u8>, reason: &StopReason) {
 fn read_stop_reason(r: &mut Reader) -> Result<StopReason, TraceError> {
     Ok(match r.u8()? {
         SR_DEADLINE => StopReason::Deadline {
-            vtime: VTime(r.u64()?),
+            vtime: Moment(r.u64()?),
         },
         SR_QUIESCENT => StopReason::Quiescent {
-            vtime: VTime(r.u64()?),
+            vtime: Moment(r.u64()?),
         },
         SR_CRASH => StopReason::Crash {
-            vtime: VTime(r.u64()?),
+            vtime: Moment(r.u64()?),
             info: r.bytes()?.to_vec(),
         },
         SR_DECISION => StopReason::Decision {
-            vtime: VTime(r.u64()?),
+            vtime: Moment(r.u64()?),
             id: r.u64()?,
             ctx: r.bytes()?.to_vec(),
         },
         SR_ASSERTION => StopReason::Assertion {
-            vtime: VTime(r.u64()?),
+            vtime: Moment(r.u64()?),
             id: r.u32()?,
             data: r.bytes()?.to_vec(),
         },
         SR_SNAPSHOT_POINT => StopReason::SnapshotPoint {
-            vtime: VTime(r.u64()?),
+            vtime: Moment(r.u64()?),
         },
         _ => return Err(TraceError::Truncated),
     })
@@ -518,9 +517,9 @@ mod tests {
     fn sample() -> RunTrace {
         RunTrace {
             terminal: StopReason::Quiescent {
-                vtime: VTime(4_200),
+                vtime: Moment(4_200),
             },
-            env: Environment {
+            env: Reproducer {
                 blob_version: 3,
                 bytes: vec![7, 8, 9],
             },
@@ -552,7 +551,7 @@ mod tests {
 
     #[test]
     fn env_sidecar_round_trips() {
-        let env = Environment {
+        let env = Reproducer {
             blob_version: 42,
             bytes: vec![0, 1, 2, 3],
         };

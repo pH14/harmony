@@ -11,8 +11,8 @@ mod common;
 
 use common::{RecordingDecider, ScriptedDecider, run_all};
 use flow::{
-    ConnId, Dir, FlowAction, FlowEvent, FlowPolicy, NodeId, PassthroughEngine, ToxiproxyEngine,
-    VTime,
+    ConnId, Dir, FlowAction, FlowEvent, FlowPolicy, Moment, NodeId, PassthroughEngine, Span,
+    ToxiproxyEngine,
 };
 
 const C: ConnId = ConnId(1);
@@ -32,7 +32,7 @@ fn chunk(at: u64, dir: Dir, bytes: &[u8]) -> FlowEvent {
     FlowEvent::Chunk {
         conn: C,
         dir,
-        at: VTime(at),
+        at: Moment(at),
         bytes: bytes.to_vec(),
     }
 }
@@ -42,14 +42,14 @@ fn deliver(at: u64, dir: Dir, bytes: &[u8]) -> FlowAction {
         conn: C,
         dir,
         bytes: bytes.to_vec(),
-        at: VTime(at),
+        at: Moment(at),
     }
 }
 
 fn reset(at: u64) -> FlowAction {
     FlowAction::Reset {
         conn: C,
-        at: VTime(at),
+        at: Moment(at),
     }
 }
 
@@ -65,7 +65,7 @@ fn golden_nominal() {
     ev.push(chunk(8, S2C, &[8]));
     ev.push(FlowEvent::Close {
         conn: C,
-        at: VTime(8),
+        at: Moment(8),
     });
     let got = run_all(&mut e, &mut d, ev);
     assert_eq!(
@@ -83,12 +83,12 @@ fn golden_nominal() {
 /// after the latest delayed delivery (`max(close_at, last_deliver)`).
 #[test]
 fn golden_latency() {
-    let (mut e, mut d, mut ev) = open(FlowPolicy::Latency(VTime(5)));
+    let (mut e, mut d, mut ev) = open(FlowPolicy::Latency(Span(5)));
     ev.push(chunk(0, C2S, &[1]));
     ev.push(chunk(10, C2S, &[2]));
     ev.push(FlowEvent::Close {
         conn: C,
-        at: VTime(20),
+        at: Moment(20),
     });
     let got = run_all(&mut e, &mut d, ev);
     assert_eq!(
@@ -158,7 +158,7 @@ fn golden_loss_one_in_two() {
     }
     ev.push(FlowEvent::Close {
         conn: C,
-        at: VTime(8),
+        at: Moment(8),
     });
     let got = run_all(&mut e, &mut d, ev);
     // Kept: 0,1,3,6,7 ; dropped: 2,4,5. Reset after the last delivery (@7) -> 8.
@@ -189,7 +189,7 @@ fn golden_loss_full_drop() {
     }
     ev.push(FlowEvent::Close {
         conn: C,
-        at: VTime(9),
+        at: Moment(9),
     });
     let got = run_all(&mut e, &mut d, ev);
     // Nothing delivered (last_deliver stays 0), so the reset lands at the close.
@@ -219,7 +219,7 @@ fn golden_reset() {
     ev.push(chunk(9, C2S, &[2]));
     ev.push(FlowEvent::Close {
         conn: C,
-        at: VTime(12),
+        at: Moment(12),
     });
     let got = run_all(&mut e, &mut d, ev);
     assert_eq!(got, vec![reset(4)]); // first chunk tears down; rest dropped
@@ -232,7 +232,7 @@ fn golden_reset_close_only() {
     let (mut e, mut d, mut ev) = open(FlowPolicy::Reset);
     ev.push(FlowEvent::Close {
         conn: C,
-        at: VTime(3),
+        at: Moment(3),
     });
     let got = run_all(&mut e, &mut d, ev);
     assert_eq!(got, vec![reset(3)]);
@@ -252,7 +252,7 @@ fn golden_toxiproxy_close_reset_orders_after_late_delivery() {
     ev.push(chunk(5, C2S, &[1])); // delivered at 5 -> last_deliver = 5
     ev.push(FlowEvent::Close {
         conn: C,
-        at: VTime(3), // earlier than the delivery
+        at: Moment(3), // earlier than the delivery
     });
     let got = run_all(&mut e, &mut d, ev);
     assert_eq!(
@@ -275,7 +275,7 @@ fn golden_passthrough_close_reset_orders_after_late_delivery() {
         chunk(5, C2S, &[1]), // delivered at 5 -> last_deliver = 5
         FlowEvent::Close {
             conn: C,
-            at: VTime(3), // earlier than the delivery
+            at: Moment(3), // earlier than the delivery
         },
     ];
     let got = run_all(&mut e, &mut d, events);
@@ -301,7 +301,7 @@ fn passthrough_is_nominal_and_never_decides() {
         chunk(8, S2C, &[4, 5]),
         FlowEvent::Close {
             conn: C,
-            at: VTime(8),
+            at: Moment(8),
         },
     ];
     let got = run_all(&mut e, &mut d, events);
@@ -348,7 +348,7 @@ fn passthrough_ignores_chunk_after_close() {
         pt_open(),
         FlowEvent::Close {
             conn: C,
-            at: VTime(3),
+            at: Moment(3),
         },
         chunk(4, C2S, &[9]), // after close -> dropped
     ];
@@ -372,7 +372,7 @@ fn passthrough_ignores_close_for_unknown_conn() {
         &mut d,
         vec![FlowEvent::Close {
             conn: C,
-            at: VTime(9),
+            at: Moment(9),
         }],
     );
     assert!(got.is_empty(), "a close for an unopened flow is a stray");
@@ -388,11 +388,11 @@ fn passthrough_ignores_duplicate_close() {
         pt_open(),
         FlowEvent::Close {
             conn: C,
-            at: VTime(3),
+            at: Moment(3),
         },
         FlowEvent::Close {
             conn: C,
-            at: VTime(5),
+            at: Moment(5),
         },
     ];
     let got = run_all(&mut e, &mut d, events);
@@ -406,7 +406,7 @@ fn passthrough_ignores_duplicate_close() {
 /// into the past; the delivery is still drainable at `u64::MAX`.
 #[test]
 fn latency_saturates_at_u64_max() {
-    let (mut e, mut d, mut ev) = open(FlowPolicy::Latency(VTime(u64::MAX)));
+    let (mut e, mut d, mut ev) = open(FlowPolicy::Latency(Span(u64::MAX)));
     ev.push(chunk(5, C2S, &[1]));
     let got = run_all(&mut e, &mut d, ev);
     assert_eq!(got, vec![deliver(u64::MAX, C2S, &[1])]);
@@ -415,7 +415,7 @@ fn latency_saturates_at_u64_max() {
 /// An `at` near `u64::MAX` plus any delay also clamps, never wraps.
 #[test]
 fn latency_saturates_when_at_is_near_max() {
-    let (mut e, mut d, mut ev) = open(FlowPolicy::Latency(VTime(10)));
+    let (mut e, mut d, mut ev) = open(FlowPolicy::Latency(Span(10)));
     ev.push(chunk(u64::MAX - 3, C2S, &[1]));
     let got = run_all(&mut e, &mut d, ev);
     assert_eq!(got, vec![deliver(u64::MAX, C2S, &[1])]);

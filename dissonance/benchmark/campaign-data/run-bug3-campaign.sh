@@ -18,7 +18,7 @@
 # Results: ~/t69m2-results/bug3/*.json  (+ finds.log with per-find state_hash)
 set -uo pipefail
 cd ~/harmony-t69m2 && source ~/.cargo/env
-BIN=./target/release/conductor
+BIN=./target/release/campaign-runner
 CAL=dissonance/benchmark/campaign-data/bug1/calibration.json
 IMG=initramfs-uuid.cpio.gz
 RMARK=UUID_READY
@@ -38,7 +38,7 @@ run_campaign() {  # core name config seed
     --out "$OUT/$name.json" --record "$OUT/traces/$name.traces.json" \
     </dev/null >"$OUT/$name.log" 2>&1
   local rc=$?
-  grep '^\[conductor\] FIND' "$OUT/$name.log" | sed "s|^|$name |" >> "$OUT/finds.log"
+  grep '^\[campaign-runner\] FIND' "$OUT/$name.log" | sed "s|^|$name |" >> "$OUT/finds.log"
   echo "$(date +%T) DONE $name rc=$rc $(grep -o '[0-9]* certified find(s)' "$OUT/$name.log"|tail -1) $(grep -o '[0-9]* distinct signal cells' "$OUT/$name.log"|tail -1)" >> "$PROG"
   if [ "$rc" -ne 0 ]; then echo "$name rc=$rc" >> "$OUT/failures.log"; echo "$(date +%T) FAILED $name rc=$rc" >> "$PROG"; fi
   return $rc

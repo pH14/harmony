@@ -33,7 +33,7 @@ is **measured numbers and a chosen mechanism**; the rigor lives in the measureme
 
 ## Context
 
-PLAN.md Phase 0.5, spike 2 — the experiment the snapshot/branch architecture is betting on.
+docs/PLAN.md Phase 0.5, spike 2 — the experiment the snapshot/branch architecture is betting on.
 The hypervisor snapshots a running VM thousands of times per run and restores from
 interesting states; **restore must be cheap** (target: milliseconds), achieved by
 *remapping* memory rather than copying it — a large read-only base image shared across VMs,
@@ -111,7 +111,7 @@ Report median + p99 over ≥ 50 trials.
    mapping, each with its own overlay; confirm the base is physically shared (resident
    memory ≈ one base + N overlays, not N bases — measure via `/proc/self/smaps` or
    equivalent) and report per-restore latency under sharing. This is the "N VMs share one
-   boot image" claim from PLAN.md Phase 4.
+   boot image" claim from docs/PLAN.md Phase 4.
 
 ## Acceptance gates
 

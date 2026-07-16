@@ -20,7 +20,7 @@ use crate::error::EnvError;
 use crate::host::{Action, HostFault, Moment};
 use crate::policy::FaultPolicy;
 use crate::seeded::SeededEnv;
-use crate::{Environment, Outcome, VTime};
+use crate::{Environment, Outcome};
 
 /// Container magic, `"DEV2"` read little-endian. Bumped from `DEV1` (task 24)
 /// because the recorded value type widened from a guest `Answer` to an
@@ -46,8 +46,9 @@ pub struct StandingFault {
     pub class: DecisionClass,
     /// Opaque, service-interpreted target (e.g. an encoded link).
     pub target: Vec<u8>,
-    /// The half-open V-time window `[start, end)` it applies over.
-    pub window: (VTime, VTime),
+    /// The half-open V-time window `[start, end)` it applies over — two points
+    /// (`Moment`s) on the axis.
+    pub window: (Moment, Moment),
 }
 
 /// The serialized reproducer — the dissonance ruling's `Environment { seed,
@@ -124,7 +125,11 @@ impl EnvSpec {
     /// encodings of the same logical policy (v3 is longer), so they must NOT share
     /// an outer version. A `v4` blob is therefore rejected outright at the version
     /// gate in [`decode`](EnvSpec::decode), never parsed with the v5 policy reader.
-    pub const BLOB_VERSION: u16 = 5;
+    /// Bumped to `6` by the ARCH-BOUNDARY §C interrupt-identity widening:
+    /// [`HostFault::InjectInterrupt`](crate::HostFault::InjectInterrupt)'s
+    /// `vector` payload widened `u8 → u32` (GIC INTIDs exceed 8 bits), so a v5
+    /// action table carrying one no longer parses under the v6 reader.
+    pub const BLOB_VERSION: u16 = 6;
 
     /// The seed every backing draws from.
     pub fn seed(&self) -> u64 {
@@ -141,7 +146,7 @@ impl EnvSpec {
     }
 
     /// The `Moment`-keyed overrides (empty for [`Seeded`](EnvSpec::Seeded)). The
-    /// merged host+guest timeline the Progression manipulates uniformly.
+    /// merged host+guest timeline the search loop manipulates uniformly.
     pub fn overrides(&self) -> &BTreeMap<Moment, Action> {
         match self {
             Self::Recorded { overrides, .. } => overrides,
@@ -285,8 +290,8 @@ impl EnvSpec {
                 for s in st {
                     codec::put_u16(&mut w, s.class.as_u16());
                     codec::put_bytes(&mut w, &s.target);
-                    codec::put_u64(&mut w, s.window.0.0);
-                    codec::put_u64(&mut w, s.window.1.0);
+                    codec::put_u64(&mut w, s.window.0);
+                    codec::put_u64(&mut w, s.window.1);
                 }
 
                 // The reseed-marker table (task 78), ascending `Moment`s — the
@@ -368,8 +373,8 @@ fn standing_key(s: &StandingFault) -> (u16, &[u8], u64, u64) {
     (
         s.class.as_u16(),
         s.target.as_slice(),
-        s.window.0.0,
-        s.window.1.0,
+        s.window.0,
+        s.window.1,
     )
 }
 
@@ -411,7 +416,7 @@ fn read_standing(r: &mut Reader) -> Result<Vec<StandingFault>, EnvError> {
         standing.push(StandingFault {
             class,
             target,
-            window: (VTime(w0), VTime(w1)),
+            window: (w0, w1),
         });
     }
     Ok(standing)

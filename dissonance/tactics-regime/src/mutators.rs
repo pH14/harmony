@@ -250,7 +250,7 @@ fn v1_host_fault_from(rng: &mut Prng) -> HostFault {
         }
     } else {
         HostFault::InjectInterrupt {
-            vector: (rng.next_u64() & 0xFF) as u8,
+            vector: (rng.next_u64() & 0xFF) as u32,
         }
     }
 }
@@ -268,7 +268,7 @@ fn sanitize_v1(f: HostFault, rng: &mut Prng) -> HostFault {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use environment::{Answer, FaultPolicy, Ratio, VTime};
+    use environment::{Answer, FaultPolicy, Ratio, Span};
 
     /// A base spec with one guest and one host override at fixed moments.
     fn base() -> EnvSpec {
@@ -353,7 +353,7 @@ mod tests {
             seed: 1,
             policy: FaultPolicy::none(),
         };
-        spec.perturb(HostFault::SkewTime(VTime(9)), 50);
+        spec.perturb(HostFault::SkewTime(Span(9)), 50);
         spec.perturb(HostFault::SetClockRate(Ratio::new(3, 4).unwrap()), 60);
         let deferred_count = |s: &EnvSpec| s.host_faults().filter(|(_, f)| is_deferred(f)).count();
         assert_eq!(deferred_count(&spec), 2, "both host faults start deferred");
@@ -387,7 +387,7 @@ mod tests {
             seed: 1,
             policy: FaultPolicy::none(),
         };
-        spec.perturb(HostFault::SkewTime(VTime(9)), 50);
+        spec.perturb(HostFault::SkewTime(Span(9)), 50);
         // Salts where insert chooses the copy branch will sanitize the SkewTime.
         for salt in 0u64..64 {
             let out = SeqMutators::insert(&spec, salt);
@@ -446,7 +446,7 @@ mod tests {
         };
         for i in 0..8u64 {
             spec.perturb(
-                HostFault::InjectInterrupt { vector: i as u8 },
+                HostFault::InjectInterrupt { vector: i as u32 },
                 1_000_000_000 + i * 50,
             );
         }

@@ -9,7 +9,7 @@
 //! the same record — agent-first. The eight commands are exactly the spec's:
 //! `open` · `regs` · `read` · `hash` · `run` · `exec` · `vary` · `transcript`.
 
-use environment::{Action, Answer, BitMask, HostFault, Moment, Ratio, VTime};
+use environment::{Action, Answer, BitMask, HostFault, Moment, Ratio, Span};
 use thiserror::Error;
 
 use crate::server::Server;
@@ -414,12 +414,12 @@ fn parse_edit(tokens: &[&str]) -> Result<OverrideEdit, CommandParseError> {
         ["remove", at] => Ok(OverrideEdit::Remove { at: parse_num(at)? }),
         ["set", at, "skew", v] => Ok(set(
             parse_num(at)?,
-            Action::Host(HostFault::SkewTime(VTime(parse_num(v)?))),
+            Action::Host(HostFault::SkewTime(Span(parse_num(v)?))),
         )),
         ["set", at, "irq", vector] => Ok(set(
             parse_num(at)?,
             Action::Host(HostFault::InjectInterrupt {
-                vector: parse_u8(vector)?,
+                vector: parse_u32(vector)?,
             }),
         )),
         ["set", at, "corrupt", gpa, mask] => Ok(set(
@@ -493,11 +493,6 @@ fn parse_u64_opt(s: &str) -> Option<u64> {
 /// Parse a `u32` argument (range-checked).
 fn parse_u32(s: &str) -> Result<u32, CommandParseError> {
     u32::try_from(parse_num(s)?).map_err(|_| CommandParseError::BadNumber(s.to_string()))
-}
-
-/// Parse a `u8` argument (range-checked).
-fn parse_u8(s: &str) -> Result<u8, CommandParseError> {
-    u8::try_from(parse_num(s)?).map_err(|_| CommandParseError::BadNumber(s.to_string()))
 }
 
 #[cfg(test)]

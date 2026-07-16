@@ -16,7 +16,7 @@ output) and their determinism/conformance goldens are captured on the box and co
 ## Context
 
 C1 is the deterministic, exhaustive corpus: **one tiny bare-metal payload per trapped
-instruction / MSR class we've identified** (RESEARCH.md §3.5; `docs/cpu-msr-contract.toml`; R1).
+instruction / MSR class we've identified** (docs/RESEARCH.md §3.5; `docs/cpu-msr-contract.toml`; R1).
 Each exercises its instruction many times and at boundaries, emits only protocol-valid,
 timing-independent lines (`guest/README.md` Part-A rules), and registers as a `Micro` corpus
 item so `det-corpus` (task 17) can drive O1/O2/O3 over it. These are the cheapest, highest-signal

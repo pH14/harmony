@@ -14,7 +14,7 @@
 //!
 //! All per-flow state lives in plain maps in guest RAM, so consonance snapshots
 //! and branches it for free (there is no `save_state`). Determinism comes from
-//! the shared `(VTime, seq)` [`Scheduler`] and the seeded PRNG; nothing here reads
+//! the shared `(Moment, seq)` [`Scheduler`] and the seeded PRNG; nothing here reads
 //! a wall-clock, a hash-ordered map into an action, or a float.
 
 use std::collections::BTreeMap;
@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use crate::engine::{FlowDecider, FlowEngine};
 use crate::prng::Prng;
 use crate::sched::Scheduler;
-use crate::{ConnId, Dir, FlowAction, FlowEvent, FlowPolicy, VTime};
+use crate::{ConnId, Dir, FlowAction, FlowEvent, FlowPolicy, Moment};
 
 /// The live enforcement state of one flow: its decided policy, the latest
 /// delivery already scheduled for it (so a close tears down *after* pending
@@ -34,7 +34,7 @@ struct ConnState {
     policy: PolicyState,
     /// The latest V-time any delivery has been scheduled for on this flow; a
     /// close's teardown is ordered at or after it.
-    last_deliver: VTime,
+    last_deliver: Moment,
     /// Once `true`, the flow is torn down: a teardown reset is queued and every
     /// further event on the flow is ignored.
     torn: bool,
@@ -95,7 +95,7 @@ impl PolicyState {
 #[derive(Clone, Debug)]
 pub struct ToxiproxyEngine {
     /// Per-flow enforcement state, keyed by [`ConnId`]. A `BTreeMap` (not a
-    /// `HashMap`): the key order is deterministic, though only the `(VTime, seq)`
+    /// `HashMap`): the key order is deterministic, though only the `(Moment, seq)`
     /// scheduler order ever reaches an emitted action.
     conns: BTreeMap<u64, ConnState>,
     /// The V-time-ordered queue every action drains through.
@@ -113,7 +113,7 @@ impl ToxiproxyEngine {
 
     /// Handle a chunk under an already-decided flow. Splits out of `on_event` so
     /// the per-policy logic reads top-to-bottom.
-    fn on_chunk(&mut self, conn: ConnId, dir: Dir, at: VTime, bytes: Vec<u8>) {
+    fn on_chunk(&mut self, conn: ConnId, dir: Dir, at: Moment, bytes: Vec<u8>) {
         let Some(state) = self.conns.get_mut(&conn.0) else {
             // Stray chunk for an unknown flow: ignore deterministically.
             return;
@@ -134,7 +134,7 @@ impl ToxiproxyEngine {
                 );
             }
             PolicyState::Latency(d) => {
-                let when = VTime(at.0.saturating_add(*d));
+                let when = Moment(at.0.saturating_add(*d));
                 Self::deliver(
                     &mut self.sched,
                     &mut state.last_deliver,
@@ -165,7 +165,7 @@ impl ToxiproxyEngine {
                     conn,
                     dir,
                     bytes,
-                    VTime(when),
+                    Moment(when),
                 );
             }
             PolicyState::Reset => {
@@ -180,18 +180,18 @@ impl ToxiproxyEngine {
     /// Schedule a delivery and advance the flow's `last_deliver` watermark.
     fn deliver(
         sched: &mut Scheduler,
-        last_deliver: &mut VTime,
+        last_deliver: &mut Moment,
         conn: ConnId,
         dir: Dir,
         bytes: Vec<u8>,
-        at: VTime,
+        at: Moment,
     ) {
         // Unconditional max (not `if at > *last_deliver { … }`): the watermark is
         // the latest delivery time seen, and writing a no-op-equal value is
         // harmless — phrasing it as a comparison only invites an equivalent
         // `>`→`>=` mutant. `golden_*_close_reset_orders_after_late_delivery` pins
         // the ordering this protects.
-        *last_deliver = VTime(last_deliver.0.max(at.0));
+        *last_deliver = Moment(last_deliver.0.max(at.0));
         sched.schedule(FlowAction::Deliver {
             conn,
             dir,
@@ -221,7 +221,7 @@ impl FlowEngine for ToxiproxyEngine {
                     conn.0,
                     ConnState {
                         policy: PolicyState::from_policy(policy),
-                        last_deliver: VTime(0),
+                        last_deliver: Moment(0),
                         torn: false,
                     },
                 );
@@ -244,14 +244,14 @@ impl FlowEngine for ToxiproxyEngine {
                 }
                 // Tear down after any still-pending delivery so the reset never
                 // precedes delivered data for this flow.
-                let when = VTime(at.0.max(state.last_deliver.0));
+                let when = Moment(at.0.max(state.last_deliver.0));
                 self.sched.schedule(FlowAction::Reset { conn, at: when });
                 state.torn = true;
             }
         }
     }
 
-    fn due(&mut self, now: VTime) -> Vec<FlowAction> {
+    fn due(&mut self, now: Moment) -> Vec<FlowAction> {
         self.sched.due(now)
     }
 }

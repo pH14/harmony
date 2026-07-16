@@ -5,33 +5,36 @@
 //! purity/coverage. This is the `vmcall-transport` loopback pattern applied to the
 //! backend seam (tasks/15 §"Mock-backend testing").
 
-use vmm_backend::{Backend, Exit, Gpa, MockBackend, MpState, VcpuState, Vtime};
-use vmm_core::contract::{cpuid_model, msr_filter_allow};
+use vmm_backend::{
+    Backend, CommonExit, Exit, Gpa, MockBackend, Moment, MpState, VcpuState, X86, X86Exit,
+    X86Policy,
+};
+use vmm_core::vendor::x86::contract::{cpuid_model, msr_filter_allow};
 use vmm_core::vmm::{GuestRam, Step, TerminalReason, Vmm, VmmError};
 
 const HELLO: &[u8] = b"PAYLOAD hello START\nPAYLOAD hello PASS\n";
 
 /// A 1-byte port read exit.
-fn io_in(port: u16) -> Exit {
-    Exit::Io {
+fn io_in(port: u16) -> Exit<X86> {
+    Exit::Arch(X86Exit::Io {
         port,
         size: 1,
         write: None,
-    }
+    })
 }
 
 /// A 1-byte port write exit.
-fn io_out(port: u16, value: u8) -> Exit {
-    Exit::Io {
+fn io_out(port: u16, value: u8) -> Exit<X86> {
+    Exit::Arch(X86Exit::Io {
         port,
         size: 1,
         write: Some(u32::from(value)),
-    }
+    })
 }
 
 /// The task-04 UART init writes (none captured): IER, LCR DLAB=1, divisor low/high,
 /// LCR 8N1, FCR, MCR.
-fn uart_init() -> Vec<Exit> {
+fn uart_init() -> Vec<Exit<X86>> {
     vec![
         io_out(0x3F9, 0x00), // IER
         io_out(0x3FB, 0x80), // LCR DLAB=1
@@ -45,7 +48,7 @@ fn uart_init() -> Vec<Exit> {
 
 /// Build the full scripted `hello` sequence: init, then for each byte an LSR poll
 /// + a THR write, then the clean isa-debug-exit PASS.
-fn hello_script() -> Vec<Exit> {
+fn hello_script() -> Vec<Exit<X86>> {
     let mut s = uart_init();
     for &b in HELLO {
         s.push(io_in(0x3FD)); // poll LSR for THR-empty
@@ -56,10 +59,13 @@ fn hello_script() -> Vec<Exit> {
 }
 
 /// A configured mock + a small `GuestRam`, wrapped in a `Vmm`, ready to `run`.
-fn vmm_with(script: Vec<Exit>) -> Vmm<MockBackend> {
+fn vmm_with(script: Vec<Exit<X86>>) -> Vmm<MockBackend> {
     let mut mock = MockBackend::with_exits(script);
-    mock.set_cpuid(&cpuid_model()).unwrap();
-    mock.set_msr_filter(&msr_filter_allow()).unwrap();
+    mock.set_policy(&X86Policy {
+        cpuid: cpuid_model(),
+        msr_filter: msr_filter_allow(),
+    })
+    .unwrap();
     let ram = GuestRam::new(4096).unwrap();
     Vmm::new(mock, ram)
 }
@@ -91,9 +97,9 @@ fn isa_debug_exit_codes_distinguished() {
 
 #[test]
 fn hlt_and_shutdown_are_terminal() {
-    let mut hlt = vmm_with(vec![Exit::Hlt]);
-    assert_eq!(hlt.run().unwrap().reason, TerminalReason::Hlt);
-    let mut sd = vmm_with(vec![Exit::Shutdown]);
+    let mut hlt = vmm_with(vec![Exit::Common(CommonExit::Idle)]);
+    assert_eq!(hlt.run().unwrap().reason, TerminalReason::Idle);
+    let mut sd = vmm_with(vec![Exit::Common(CommonExit::Shutdown)]);
     assert_eq!(sd.run().unwrap().reason, TerminalReason::Shutdown);
 }
 
@@ -104,19 +110,21 @@ fn unmodeled_exits_fail_closed() {
     assert!(matches!(pic.run(), Err(VmmError::ContractViolation(_))));
 
     // Unmodeled MMIO.
-    let mut mmio = vmm_with(vec![Exit::Mmio {
+    let mut mmio = vmm_with(vec![Exit::Common(CommonExit::Mmio {
         gpa: Gpa(0xFEE0_0000),
         size: 4,
         write: None,
-    }]);
+    })]);
     assert!(matches!(mmio.run(), Err(VmmError::ContractViolation(_))));
 
     // A backend-dependent RDTSC (must never be laundered).
-    let mut tsc = vmm_with(vec![Exit::Rdtsc]);
+    let mut tsc = vmm_with(vec![Exit::Arch(X86Exit::Rdtsc)]);
     assert!(matches!(tsc.run(), Err(VmmError::ContractViolation(_))));
 
     // A hypercall (host handler deferred).
-    let mut hc = vmm_with(vec![Exit::Hypercall(Default::default())]);
+    let mut hc = vmm_with(vec![Exit::Common(
+        CommonExit::Hypercall(Default::default()),
+    )]);
     assert!(matches!(hc.run(), Err(VmmError::ContractViolation(_))));
 }
 
@@ -130,15 +138,19 @@ fn unmodeled_in_port_fails_closed() {
 fn non_byte_io_to_modeled_ports_fails_closed() {
     // A wide write/read to a modeled BYTE port is a ContractViolation, never a
     // `value as u8` truncation. `outl $0, $0xF4` must NOT become a fake PASS.
-    let wide_out = |port: u16, size: u8, value: u32| Exit::Io {
-        port,
-        size,
-        write: Some(value),
+    let wide_out = |port: u16, size: u8, value: u32| {
+        Exit::Arch(X86Exit::Io {
+            port,
+            size,
+            write: Some(value),
+        })
     };
-    let wide_in = |port: u16, size: u8| Exit::Io {
-        port,
-        size,
-        write: None,
+    let wide_in = |port: u16, size: u8| {
+        Exit::Arch(X86Exit::Io {
+            port,
+            size,
+            write: None,
+        })
     };
 
     // `outl 0x00000000, $0xF4` (size 4): must fail closed, NOT terminate PASS.
@@ -157,7 +169,10 @@ fn non_byte_io_to_modeled_ports_fails_closed() {
 #[test]
 fn deny_gp_msr_injects_fault() {
     // An unlisted MSR read defaults to deny-gp → complete_fault, then PASS.
-    let mut vmm = vmm_with(vec![Exit::Rdmsr { index: 0xDEAD_BEEF }, io_out(0xF4, 0)]);
+    let mut vmm = vmm_with(vec![
+        Exit::Arch(X86Exit::Rdmsr { index: 0xDEAD_BEEF }),
+        io_out(0xF4, 0),
+    ]);
     let r = vmm.run().unwrap();
     assert_eq!(r.reason, TerminalReason::DebugExit { code: 0 });
 }
@@ -165,9 +180,15 @@ fn deny_gp_msr_injects_fault() {
 #[test]
 fn allow_fixed_msr_returns_constant() {
     // IA32_APICBASE (0x1b) read is allow-fixed 0xFEE00900.
-    let mut mock = MockBackend::with_exits(vec![Exit::Rdmsr { index: 0x1B }, io_out(0xF4, 0)]);
-    mock.set_cpuid(&cpuid_model()).unwrap();
-    mock.set_msr_filter(&msr_filter_allow()).unwrap();
+    let mut mock = MockBackend::with_exits(vec![
+        Exit::Arch(X86Exit::Rdmsr { index: 0x1B }),
+        io_out(0xF4, 0),
+    ]);
+    mock.set_policy(&X86Policy {
+        cpuid: cpuid_model(),
+        msr_filter: msr_filter_allow(),
+    })
+    .unwrap();
     let mut vmm = Vmm::new(mock, GuestRam::new(4096).unwrap());
     assert_eq!(
         vmm.run().unwrap().reason,
@@ -235,8 +256,11 @@ fn state_hash_is_pure_and_covers_every_component() {
     // Flip a guest-RAM byte ⇒ different hash.
     let diff_mem = {
         let mut mock = MockBackend::with_exits(hello_script());
-        mock.set_cpuid(&cpuid_model()).unwrap();
-        mock.set_msr_filter(&msr_filter_allow()).unwrap();
+        mock.set_policy(&X86Policy {
+            cpuid: cpuid_model(),
+            msr_filter: msr_filter_allow(),
+        })
+        .unwrap();
         let mut ram = GuestRam::new(4096).unwrap();
         ram.as_mut_bytes()[1234] = 0xAB;
         let mut v = Vmm::new(mock, ram);
@@ -252,8 +276,11 @@ fn state_hash_is_pure_and_covers_every_component() {
     // Flip a VcpuState register ⇒ different hash.
     let diff_reg = {
         let mut mock = MockBackend::with_exits(hello_script());
-        mock.set_cpuid(&cpuid_model()).unwrap();
-        mock.set_msr_filter(&msr_filter_allow()).unwrap();
+        mock.set_policy(&X86Policy {
+            cpuid: cpuid_model(),
+            msr_filter: msr_filter_allow(),
+        })
+        .unwrap();
         let mut st = VcpuState::default();
         st.regs.rip = 0xDEAD_0000;
         mock.set_state(st);
@@ -274,10 +301,10 @@ fn state_hash_is_pure_and_covers_every_component() {
 fn wrmsr_dispositions_serviced() {
     // deny-ignore-write (0x1B IA32_APICBASE write) → complete_ok, run continues.
     let mut drop_write = vmm_with(vec![
-        Exit::Wrmsr {
+        Exit::Arch(X86Exit::Wrmsr {
             index: 0x1B,
             value: 0xFEE0_0900,
-        },
+        }),
         io_out(0xF4, 0),
     ]);
     assert_eq!(
@@ -287,10 +314,10 @@ fn wrmsr_dispositions_serviced() {
 
     // deny-gp (unlisted index) → complete_fault, run continues.
     let mut gp = vmm_with(vec![
-        Exit::Wrmsr {
+        Exit::Arch(X86Exit::Wrmsr {
             index: 0xDEAD_BEEF,
             value: 1,
-        },
+        }),
         io_out(0xF4, 0),
     ]);
     assert_eq!(
@@ -300,10 +327,10 @@ fn wrmsr_dispositions_serviced() {
 
     // A write to a read-only allow-fixed row (0x17 PLATFORM_ID) → #GP fault.
     let mut fixed = vmm_with(vec![
-        Exit::Wrmsr {
+        Exit::Arch(X86Exit::Wrmsr {
             index: 0x17,
             value: 0,
-        },
+        }),
         io_out(0xF4, 0),
     ]);
     assert_eq!(
@@ -317,12 +344,12 @@ fn emulate_vtime_msr_fails_closed_both_directions() {
     // 0x10 / 0x3b are emulate-vtime; with no V-time wired, an actual access is a
     // loud ContractViolation in BOTH directions (never a laundered host value).
     for idx in [0x10u32, 0x3b] {
-        let mut rd = vmm_with(vec![Exit::Rdmsr { index: idx }]);
+        let mut rd = vmm_with(vec![Exit::Arch(X86Exit::Rdmsr { index: idx })]);
         assert!(matches!(rd.run(), Err(VmmError::ContractViolation(_))));
-        let mut wr = vmm_with(vec![Exit::Wrmsr {
+        let mut wr = vmm_with(vec![Exit::Arch(X86Exit::Wrmsr {
             index: idx,
             value: 0,
-        }]);
+        })]);
         assert!(matches!(wr.run(), Err(VmmError::ContractViolation(_))));
     }
 }
@@ -331,12 +358,12 @@ fn emulate_vtime_msr_fails_closed_both_directions() {
 fn allow_stateful_msr_surfacing_fails_closed() {
     // EFER (0xC000_0080) is allow-stateful → serviced in-kernel; if it ever
     // surfaces to userspace it is a loud ContractViolation (both directions).
-    let mut rd = vmm_with(vec![Exit::Rdmsr { index: 0xC000_0080 }]);
+    let mut rd = vmm_with(vec![Exit::Arch(X86Exit::Rdmsr { index: 0xC000_0080 })]);
     assert!(matches!(rd.run(), Err(VmmError::ContractViolation(_))));
-    let mut wr = vmm_with(vec![Exit::Wrmsr {
+    let mut wr = vmm_with(vec![Exit::Arch(X86Exit::Wrmsr {
         index: 0xC000_0080,
         value: 0,
-    }]);
+    })]);
     assert!(matches!(wr.run(), Err(VmmError::ContractViolation(_))));
 }
 
@@ -348,14 +375,14 @@ fn cpuid_exit_serviced_from_frozen_model() {
     // model: leaf 1 exists (and `resolve_cpuid` overlays the dynamic cells from the
     // saved CR4/XCR0), while a bogus leaf falls through to the zeroed default rule.
     let mut vmm = vmm_with(vec![
-        Exit::Cpuid {
+        Exit::Arch(X86Exit::Cpuid {
             leaf: 1,
             subleaf: 0,
-        },
-        Exit::Cpuid {
+        }),
+        Exit::Arch(X86Exit::Cpuid {
             leaf: 0xDEAD,
             subleaf: 0,
-        },
+        }),
         io_out(0xF4, 0),
     ]);
     assert_eq!(
@@ -368,10 +395,10 @@ fn cpuid_exit_serviced_from_frozen_model() {
 
 #[test]
 fn step_after_terminal_is_idempotent() {
-    let mut vmm = vmm_with(vec![Exit::Hlt]);
-    assert_eq!(vmm.run().unwrap().reason, TerminalReason::Hlt);
+    let mut vmm = vmm_with(vec![Exit::Common(CommonExit::Idle)]);
+    assert_eq!(vmm.run().unwrap().reason, TerminalReason::Idle);
     // A further step() returns the latched terminal without re-running the backend.
-    assert_eq!(vmm.step().unwrap(), Step::Terminal(TerminalReason::Hlt));
+    assert_eq!(vmm.step().unwrap(), Step::Terminal(TerminalReason::Idle));
 }
 
 #[test]
@@ -379,7 +406,9 @@ fn deadline_exit_fails_closed() {
     // A `Deadline` only ever answers `run_until`, which the VMM issues solely on the
     // V-time-wired determinism path (task 47). One arriving with **no V-time wired**
     // (this bring-up VMM) is a backend contract violation → loud, never absorbed.
-    let mut vmm = vmm_with(vec![Exit::Deadline { reached: Vtime(0) }]);
+    let mut vmm = vmm_with(vec![Exit::Common(CommonExit::Deadline {
+        reached: Moment(0),
+    })]);
     assert!(matches!(vmm.run(), Err(VmmError::ContractViolation(_))));
 }
 
@@ -397,9 +426,12 @@ fn guest_ram_validation_and_accessors() {
 
 #[test]
 fn state_hash_covers_msrs_xsave_and_mp_state() {
-    let mut mock = MockBackend::with_exits(vec![Exit::Hlt]);
-    mock.set_cpuid(&cpuid_model()).unwrap();
-    mock.set_msr_filter(&msr_filter_allow()).unwrap();
+    let mut mock = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+    mock.set_policy(&X86Policy {
+        cpuid: cpuid_model(),
+        msr_filter: msr_filter_allow(),
+    })
+    .unwrap();
     // A rich terminal VcpuState — Halted, with MSRs and an XSAVE blob — so
     // `encode_vcpu_state`'s MSR key/value loop, the XSAVE bytes, and the `Halted`
     // mp_state arm all execute (and the hash stays a pure function of them).
@@ -412,7 +444,7 @@ fn state_hash_covers_msrs_xsave_and_mp_state() {
     st.msrs.insert(0x277, 0x0007_0406); // IA32_PAT
     mock.set_state(st);
     let mut vmm = Vmm::new(mock, GuestRam::new(4096).unwrap());
-    assert_eq!(vmm.run().unwrap().reason, TerminalReason::Hlt);
+    assert_eq!(vmm.run().unwrap().reason, TerminalReason::Idle);
     assert_eq!(vmm.state_hash(), vmm.state_hash());
     assert_ne!(vmm.state_hash(), [0u8; 32]);
 }
@@ -424,9 +456,12 @@ fn state_hash_distinguishes_segment_and_event_fields() {
     // or event field must hash differently — which kills `encode_segment with ()`
     // and `encode_events with ()` (those would drop the field from the blob).
     let hash_with = |mutate: &dyn Fn(&mut VcpuState)| {
-        let mut mock = MockBackend::with_exits(vec![Exit::Hlt]);
-        mock.set_cpuid(&cpuid_model()).unwrap();
-        mock.set_msr_filter(&msr_filter_allow()).unwrap();
+        let mut mock = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+        mock.set_policy(&X86Policy {
+            cpuid: cpuid_model(),
+            msr_filter: msr_filter_allow(),
+        })
+        .unwrap();
         let mut st = VcpuState::default();
         mutate(&mut st);
         mock.set_state(st);
@@ -459,9 +494,12 @@ fn state_hash_masks_only_an_unusable_segments_type() {
     //   * a **usable** segment's `type` MUST reach the hash (live architectural state);
     //   * an **unusable** segment's `type` must NOT (the masked don't-care field).
     let hash_with = |mutate: &dyn Fn(&mut VcpuState)| {
-        let mut mock = MockBackend::with_exits(vec![Exit::Hlt]);
-        mock.set_cpuid(&cpuid_model()).unwrap();
-        mock.set_msr_filter(&msr_filter_allow()).unwrap();
+        let mut mock = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+        mock.set_policy(&X86Policy {
+            cpuid: cpuid_model(),
+            msr_filter: msr_filter_allow(),
+        })
+        .unwrap();
         let mut st = VcpuState::default();
         mutate(&mut st);
         mock.set_state(st);

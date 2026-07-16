@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use explorer::{
-    ChannelId, CoverageView, Environment, Feature, FeatureId, GuestEvent, Moment, Record, RunTrace,
-    Sensor, StopReason, StreamId, VTime, Value,
+    ChannelId, CoverageView, Feature, FeatureId, GuestEvent, Moment, Record, Reproducer, RunTrace,
+    Sensor, StopReason, StreamId, Value,
 };
 use proptest::collection::{btree_map, vec};
 use proptest::prelude::*;
@@ -69,27 +69,27 @@ fn arb_value() -> impl Strategy<Value = Value> {
 
 fn arb_stop() -> impl Strategy<Value = StopReason> {
     prop_oneof![
-        any::<u64>().prop_map(|v| StopReason::Deadline { vtime: VTime(v) }),
-        any::<u64>().prop_map(|v| StopReason::Quiescent { vtime: VTime(v) }),
+        any::<u64>().prop_map(|v| StopReason::Deadline { vtime: Moment(v) }),
+        any::<u64>().prop_map(|v| StopReason::Quiescent { vtime: Moment(v) }),
         (any::<u64>(), vec(any::<u8>(), 0..12)).prop_map(|(v, info)| StopReason::Crash {
-            vtime: VTime(v),
+            vtime: Moment(v),
             info
         }),
         (any::<u64>(), any::<u64>(), vec(any::<u8>(), 0..12)).prop_map(|(v, id, ctx)| {
             StopReason::Decision {
-                vtime: VTime(v),
+                vtime: Moment(v),
                 id,
                 ctx,
             }
         }),
         (any::<u64>(), any::<u32>(), vec(any::<u8>(), 0..12)).prop_map(|(v, id, data)| {
             StopReason::Assertion {
-                vtime: VTime(v),
+                vtime: Moment(v),
                 id,
                 data,
             }
         }),
-        any::<u64>().prop_map(|v| StopReason::SnapshotPoint { vtime: VTime(v) }),
+        any::<u64>().prop_map(|v| StopReason::SnapshotPoint { vtime: Moment(v) }),
     ]
 }
 
@@ -112,7 +112,7 @@ pub fn arb_run_trace() -> impl Strategy<Value = RunTrace> {
         .prop_map(
             |(terminal, (blob_version, bytes), cov, events, records)| RunTrace {
                 terminal,
-                env: Environment {
+                env: Reproducer {
                     blob_version,
                     bytes,
                 },

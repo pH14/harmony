@@ -118,7 +118,7 @@ fn truncations_of_a_valid_blob_never_panic() {
         standing: vec![environment::StandingFault {
             class: environment::DecisionClass::NetFlow,
             target: vec![0, 1, 2, 3],
-            window: (environment::VTime(10), environment::VTime(20)),
+            window: (10, 20),
         }],
         reseeds: BTreeMap::from([(3, 0xFEED_5EED), (7, 42)]),
     };

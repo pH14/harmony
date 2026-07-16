@@ -6,13 +6,14 @@ mod common;
 
 use common::{config, fully_populated};
 use proptest::prelude::*;
-use vm_state::{VM_STATE_MAGIC, VM_STATE_VERSION, VmState, VmStateError};
+use vm_state::{ARCH_X86_64, VM_STATE_MAGIC, VM_STATE_VERSION, VmState, VmStateError};
 
-const HEADER_LEN: usize = 8;
+/// magic:u32 + version:u16 + arch:u16 + section_count:u16 (v2 — the arch tag).
+const HEADER_LEN: usize = 10;
 
 /// Split a valid blob into its `(section_count_field, [(tag, payload)])`.
 fn split(blob: &[u8]) -> (u16, Vec<(u16, Vec<u8>)>) {
-    let count = u16::from_le_bytes([blob[6], blob[7]]);
+    let count = u16::from_le_bytes([blob[8], blob[9]]);
     let mut secs = Vec::new();
     let mut pos = HEADER_LEN;
     while pos < blob.len() {
@@ -31,6 +32,7 @@ fn pack(count: u16, secs: &[(u16, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&VM_STATE_MAGIC.to_le_bytes());
     out.extend_from_slice(&VM_STATE_VERSION.to_le_bytes());
+    out.extend_from_slice(&ARCH_X86_64.to_le_bytes());
     out.extend_from_slice(&count.to_le_bytes());
     for (tag, payload) in secs {
         out.extend_from_slice(&tag.to_le_bytes());
@@ -60,6 +62,24 @@ fn wrong_version() {
     assert_eq!(
         VmState::decode(&blob),
         Err(VmStateError::UnsupportedVersion(bumped))
+    );
+}
+
+/// The v2 arch tag is a **hard gate on the record set**: a blob whose sections are
+/// byte-perfect but whose arch tag is another architecture's is REJECTED, never
+/// decoded into this build's x86 fields (`docs/ARCH-BOUNDARY.md` step 4 — versioned
+/// wire evolution, never silent reinterpretation).
+#[test]
+fn foreign_arch_tag_is_rejected_not_reinterpreted() {
+    let mut blob = valid();
+    // Sanity: it decodes under its own tag.
+    assert!(VmState::decode(&blob).is_ok());
+    let foreign = ARCH_X86_64 + 1;
+    blob[6..8].copy_from_slice(&foreign.to_le_bytes());
+    assert_eq!(
+        VmState::decode(&blob),
+        Err(VmStateError::UnsupportedArch(foreign)),
+        "a foreign arch tag must fail closed — the records are not ours to read"
     );
 }
 

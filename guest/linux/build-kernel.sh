@@ -16,6 +16,21 @@ require_linux_amd64
 require_tools cc make flex bison bc xz gzip
 extract_kernel
 
+# Task 110: apply the harmony guest-kernel patch (the CONFIG_HARMONY_PVCLOCK
+# clocksource — the guest half of the paravirt work-derived clock,
+# docs/PARAVIRT-CLOCK.md §3.1), shipped as a kernel DIFF under patches/ (the
+# repo's GPL-2.0 kernel-patch licensing exception; see patches/README.md).
+# Idempotent: an exactly-applied tree passes the reverse dry-run and is
+# skipped; a drifted or partially-patched tree fails loudly (remove the
+# extracted tree under $BUILD_ROOT and rebuild — never a silent divergence).
+PVCLOCK_PATCH=$LINUX_DIR/patches/0001-x86-harmony-pvclock-work-derived-clocksource.patch
+if (cd "$KSRC" && patch -p1 -R --dry-run --force <"$PVCLOCK_PATCH") >/dev/null 2>&1; then
+    echo "== kernel: harmony pvclock patch already applied"
+else
+    echo "== kernel: applying harmony pvclock patch"
+    (cd "$KSRC" && patch -p1 --force <"$PVCLOCK_PATCH")
+fi
+
 mkdir -p "$KOBJ" "$ART_DIR"
 
 # Base = Kata guest-kernel config. Kata builds from `allnoconfig` + its fragments
@@ -55,9 +70,13 @@ assert_off() {
     done
 }
 # Functional must-haves for the boot-to-/init image (provided by Kata and/or overlay).
+# HARMONY_PVCLOCK (task 110) is compiled in but runtime-inert without the
+# harmony_pvclock kernel parameter, so one image serves as both the page-on
+# and page-off measurement arm.
 assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
     BINFMT_SCRIPT BLK_DEV_INITRD RD_GZIP PROC_FS SYSFS DEVTMPFS ACPI PCI \
-    HZ_PERIODIC HZ_100 FUTEX POSIX_TIMERS KERNEL_GZIP
+    HZ_PERIODIC HZ_100 FUTEX POSIX_TIMERS KERNEL_GZIP X86_IOPL_IOPERM DEVMEM \
+    HARMONY_PVCLOCK
 # (HPET_TIMER is not in this list: it is def_bool y on x86-64 with no prompt;
 # the HPET is excluded at runtime instead — see config-fragment.)
 # Determinism overlay: every symbol below is set ON by the Kata base and must be
@@ -72,7 +91,12 @@ assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
 # choice it is inert (it selects nothing), so it harmlessly stays =y.
 assert_off NUMA CPU_FREQ MODULES TRANSPARENT_HUGEPAGE KSM SUSPEND \
     HIBERNATION X86_PM_TIMER HIGH_RES_TIMERS RANDOMIZE_BASE \
-    LOCALVERSION_AUTO HW_RANDOM NO_HZ_COMMON NO_HZ_FULL NO_HZ_IDLE TICK_ONESHOT
+    LOCALVERSION_AUTO HW_RANDOM NO_HZ_COMMON NO_HZ_FULL NO_HZ_IDLE TICK_ONESHOT \
+    STRICT_DEVMEM
+# STRICT_DEVMEM off is load-bearing for G3 (task 110): the pvclock-spin gate
+# mmaps the clock page (kernel .bss / System RAM) through /dev/mem, which strict
+# mode forbids. olddefconfig would otherwise re-enable it (x86 default y), so it
+# is set off in config-fragment AND asserted here (cross-model r7 P2).
 # Empty version suffix: git/build state must not leak into the bytes.
 if ! grep -qxF 'CONFIG_LOCALVERSION=""' "$KOBJ/.config"; then
     echo "FAIL: CONFIG_LOCALVERSION must be empty (reproducibility)" >&2
@@ -82,5 +106,24 @@ fi
 echo "== kernel: building bzImage"
 make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 
+# Task 110: the counter-opcode reachability gate (PARAVIRT-CLOCK.md §3.3, x86
+# half) — every rdtsc/rdtscp left in the image must match a reviewed,
+# trap-backstopped allowlist entry (function + exact instruction count). Scans
+# the uncompressed vmlinux (symbols); self-tests its own ability to fail
+# before scanning. The gate ships ARMED (baseline reviewed + committed); a
+# GATE-UNARMED marker in the allowlist (re-baselining only, e.g. a kernel
+# version bump) makes the scan print the new capture and FAIL the build until
+# the reviewed baseline lands. See scan-counter-opcodes.sh for the workflow.
+#
+# The scan runs on `$KOBJ/vmlinux` (built above) and MUST pass BEFORE the image
+# is published to the canonical `$ART_DIR/bzImage` (cross-model r21 P2): with
+# `set -e`, a failed scan aborts here, so a REJECTED kernel never reaches the
+# path campaign-runner consumes. (Publishing first, then scanning, would leave
+# the rejected artifact at the canonical path on failure.) Proven locally by
+# `test-publish-gate.sh` with a planted rejection.
+echo "== kernel: counter-opcode scan (rdtsc/rdtscp reachability gate)"
+bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" "$LINUX_DIR/rdtsc-allowlist.txt"
+
+# Publish ONLY after the scan passed.
 install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/bzImage"
 echo "ok: $ART_DIR/bzImage"

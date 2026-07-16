@@ -7,6 +7,19 @@ use super::mock::{MockConfig, MockOracle};
 use super::*;
 use proptest::prelude::*;
 
+/// Proptest config for these gates. Under Miri the case count is cut hard (the
+/// interpreter is 10–100× slower) and failure-persistence is disabled — proptest
+/// resolves the regression-file path via `getcwd`, which Miri's filesystem isolation
+/// blocks (the `loader_proptest.rs` precedent; this module runs under the vmm-core
+/// Miri job). Native runs keep the full `native` budget and normal persistence.
+fn pcfg(native: u32) -> ProptestConfig {
+    let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 8 } else { native });
+    if cfg!(miri) {
+        cfg.failure_persistence = None;
+    }
+    cfg
+}
+
 // ---------------------------------------------------------------------------
 // rate_ppm / formatting
 // ---------------------------------------------------------------------------
@@ -202,7 +215,7 @@ fn jitter_u64_max_does_not_overflow() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(512))]
+    #![proptest_config(pcfg(512))]
 
     /// The core schedule invariants hold for any span/n/windows.
     #[test]
@@ -287,6 +300,7 @@ fn sealable_truth_table() {
 }
 
 proptest! {
+    #![proptest_config(pcfg(256))]
     /// `sealable` is monotone in the disqualifiers: turning any of them "worse" never
     /// flips false → true.
     #[test]
@@ -341,7 +355,7 @@ fn arb_config() -> impl Strategy<Value = MockConfig> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(512))]
+    #![proptest_config(pcfg(512))]
 
     /// SealStats is internally consistent for any mock sweep.
     #[test]
@@ -464,6 +478,7 @@ fn depth_rejects_nonmonotonic() {
 }
 
 proptest! {
+    #![proptest_config(pcfg(256))]
     #[test]
     fn prop_depth_ratio(genesis in 0u64..1_000, gap1 in 1u64..1_000_000, gap2 in 1u64..1_000_000) {
         let parent = genesis + gap1;
@@ -494,7 +509,7 @@ fn stats(sealed: usize, n: usize) -> SealStats {
     }
 }
 
-fn overshoot_with_p90(p90: VTime) -> Overshoot {
+fn overshoot_with_p90(p90: Span) -> Overshoot {
     Overshoot {
         min: 0,
         max: p90,
@@ -633,7 +648,7 @@ fn determinism_summary_is_honest_about_the_subset() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(512))]
+    #![proptest_config(pcfg(512))]
 
     /// Raising the nominal seal rate never worsens the ruling (monotonic gate).
     #[test]

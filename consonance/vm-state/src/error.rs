@@ -20,6 +20,12 @@ pub enum VmStateError {
     /// misreading a future layout.
     #[error("unsupported version: {0}")]
     UnsupportedVersion(u16),
+    /// The container's **arch tag** names a record set this build does not carry
+    /// (`docs/ARCH-BOUNDARY.md` step 4). Fail closed: decoding another
+    /// architecture's registers into this one's fields would be a silent
+    /// reinterpretation, which is exactly what the tag exists to prevent.
+    #[error("unsupported arch tag: {0}")]
+    UnsupportedArch(u16),
     /// Input ended before a complete header, section header, or section payload
     /// was available (a `len` claimed bytes past end-of-buffer).
     #[error("truncated blob")]

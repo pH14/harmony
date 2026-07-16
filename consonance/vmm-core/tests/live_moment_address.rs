@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only **moment-address** gate (task 80): prove that a
-//! `(genesis-complete Environment, Moment)` pair materializes to a live session
+//! `(genesis-complete Reproducer, Moment)` pair materializes to a live session
 //! at exactly that instruction, twice, byte-identically — the substrate for
 //! everything in `docs/RESOLUTION.md`. Driven directly against the
 //! [`ControlServer`] verbs (`hello`/`snapshot`/`branch`/`run`/`read`/`regs`/`hash`)
@@ -43,18 +43,18 @@
 //! portably by the `src/control.rs` unit tests + the observation-invariance
 //! proptest (`observations_never_change_hash_or_stop_outcomes`) and the
 //! `moment_address_materializes_identically_twice` mock demonstration.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use control_proto::{
-    Environment, HashScope, HostFault as WireHostFault, Moment, RegsView, Reply, Request, SnapId,
-    StopConditions, StopMask, StopReason, VTime,
+    HashScope, HostFault as WireHostFault, Moment, RegsView, Reply, Reproducer, Request, SnapId,
+    StopConditions, StopMask, StopReason,
 };
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
-use vmm_backend::Backend;
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
+use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, VmmFactory, server_caps};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 
-type DynVmm = vmm_core::vmm::Vmm<Box<dyn Backend>>;
+type DynVmm = vmm_core::vmm::Vmm<Box<dyn Backend<A = X86>>>;
 
 const GUEST_RAM_LEN: usize = 2 << 30;
 const GENESIS_SEED: u64 = 0x0080_0080_C0FF_EE80;
@@ -94,7 +94,7 @@ fn require_kvm() {
 }
 
 fn require_host_baseline() {
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
     for o in &report {
         if !o.pass {
@@ -146,7 +146,7 @@ fn boot_pg(kernel: &[u8], initramfs: &[u8], seed: u64) -> DynVmm {
     .expect("boot_linux_selected (patched) — needs the LOADED patched KVM + perf + det-cfl-v1 host")
 }
 
-fn call<B: Backend>(
+fn call<B: Backend<A = X86>>(
     s: &mut ControlServer<B>,
     req: &Request,
 ) -> Result<Reply, control_proto::ControlError> {
@@ -154,19 +154,19 @@ fn call<B: Backend>(
         .expect("session-fatal ServeError from the control server")
 }
 
-fn expect_ok<B: Backend>(s: &mut ControlServer<B>, req: &Request) -> Reply {
+fn expect_ok<B: Backend<A = X86>>(s: &mut ControlServer<B>, req: &Request) -> Reply {
     match call(s, req) {
         Ok(reply) => reply,
         Err(e) => panic!("verb {req:?} answered a ControlError: {e:?}"),
     }
 }
 
-fn run_until<B: Backend>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+fn run_until<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
     match expect_ok(
         s,
         &Request::Run {
             until: StopConditions {
-                deadline: Some(VTime(deadline)),
+                deadline: Some(Moment(deadline)),
                 on: StopMask::NONE,
             },
             resolve: None,
@@ -177,7 +177,7 @@ fn run_until<B: Backend>(s: &mut ControlServer<B>, deadline: u64) -> StopReason 
     }
 }
 
-fn hash_whole<B: Backend>(s: &mut ControlServer<B>) -> [u8; 32] {
+fn hash_whole<B: Backend<A = X86>>(s: &mut ControlServer<B>) -> [u8; 32] {
     match expect_ok(
         s,
         &Request::Hash {
@@ -189,22 +189,22 @@ fn hash_whole<B: Backend>(s: &mut ControlServer<B>) -> [u8; 32] {
     }
 }
 
-fn regs<B: Backend>(s: &mut ControlServer<B>) -> RegsView {
+fn regs<B: Backend<A = X86>>(s: &mut ControlServer<B>) -> RegsView {
     match expect_ok(s, &Request::Regs) {
         Reply::Regs(v) => v,
         other => panic!("regs answered {other:?}"),
     }
 }
 
-fn read<B: Backend>(s: &mut ControlServer<B>, gpa: u64, len: u32) -> Vec<u8> {
+fn read<B: Backend<A = X86>>(s: &mut ControlServer<B>, gpa: u64, len: u32) -> Vec<u8> {
     match expect_ok(s, &Request::Read { gpa, len }) {
         Reply::Bytes(b) => b,
         other => panic!("read answered {other:?}"),
     }
 }
 
-fn seeded_env(seed: u64) -> Environment {
-    Environment {
+fn seeded_env(seed: u64) -> Reproducer {
+    Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: EnvSpec::Seeded {
             seed,
@@ -261,7 +261,7 @@ fn moment_address_materializes_identically_twice() {
 
     let live = boot_pg(&kernel, &initramfs, seed);
     let (fk, fi) = (kernel.clone(), initramfs.clone());
-    let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || {
+    let factory: VmmFactory<Box<dyn Backend<A = X86>>> = Box::new(move || {
         boot_linux_selected(
             BackendKind::Patched,
             &fk,
@@ -320,38 +320,39 @@ fn moment_address_materializes_identically_twice() {
     // The materialization procedure: branch(genesis, env) then run(until = moment).
     // `inspect` runs a full inspection pass immediately after landing (used by the
     // invariance check to prove observation does not perturb the continuation).
-    let materialize = |s: &mut ControlServer<Box<dyn Backend>>, moment: u64| -> Observation {
-        assert_eq!(
-            expect_ok(
-                s,
-                &Request::Branch {
-                    snap: genesis,
-                    env: env.clone(),
-                }
-            ),
-            Reply::Unit,
-            "branch(genesis, env)"
-        );
-        // Arm the exact-count arrival at `moment`, then advance to it.
-        expect_ok(s, &arrival_marker(moment));
-        match run_until(s, moment) {
-            StopReason::Deadline { vtime } => assert_eq!(
-                vtime.0, moment,
-                "run(until = moment) must land exactly at the addressed Moment"
-            ),
-            other => panic!("materialization to {moment} stopped non-Deadline: {other:?}"),
-        }
-        let regs = regs(s);
-        assert_eq!(
-            regs.moment.0, moment,
-            "regs reports the retired count == the addressed Moment"
-        );
-        Observation {
-            regs,
-            probes: probes.iter().map(|&g| read(s, g, PROBE_LEN)).collect(),
-            hash: hash_whole(s),
-        }
-    };
+    let materialize =
+        |s: &mut ControlServer<Box<dyn Backend<A = X86>>>, moment: u64| -> Observation {
+            assert_eq!(
+                expect_ok(
+                    s,
+                    &Request::Branch {
+                        snap: genesis,
+                        env: env.clone(),
+                    }
+                ),
+                Reply::Unit,
+                "branch(genesis, env)"
+            );
+            // Arm the exact-count arrival at `moment`, then advance to it.
+            expect_ok(s, &arrival_marker(moment));
+            match run_until(s, moment) {
+                StopReason::Deadline { vtime } => assert_eq!(
+                    vtime.0, moment,
+                    "run(until = moment) must land exactly at the addressed Moment"
+                ),
+                other => panic!("materialization to {moment} stopped non-Deadline: {other:?}"),
+            }
+            let regs = regs(s);
+            assert_eq!(
+                regs.moment.0, moment,
+                "regs reports the retired count == the addressed Moment"
+            );
+            Observation {
+                regs,
+                probes: probes.iter().map(|&g| read(s, g, PROBE_LEN)).collect(),
+                hash: hash_whole(s),
+            }
+        };
 
     println!("\n[REPORT] task80 moment-address box gate");
     println!("  genesis_vt={genesis_vt} attempts={attempts} seed={seed:#x}");
@@ -393,32 +394,33 @@ fn moment_address_materializes_identically_twice() {
     // at `late` must match.
     let mid = moments[0];
     let late = genesis_vt + env_u64("MA_LATE_OFF", 40_000_000);
-    let continue_to_late = |s: &mut ControlServer<Box<dyn Backend>>, inspect: bool| -> [u8; 32] {
-        assert_eq!(
-            expect_ok(
-                s,
-                &Request::Branch {
-                    snap: genesis,
-                    env: env.clone(),
+    let continue_to_late =
+        |s: &mut ControlServer<Box<dyn Backend<A = X86>>>, inspect: bool| -> [u8; 32] {
+            assert_eq!(
+                expect_ok(
+                    s,
+                    &Request::Branch {
+                        snap: genesis,
+                        env: env.clone(),
+                    }
+                ),
+                Reply::Unit
+            );
+            // Advance to `mid` via an exact-count arrival, inspect (or not), then
+            // continue to `late` the same way.
+            expect_ok(s, &arrival_marker(mid));
+            assert!(matches!(run_until(s, mid), StopReason::Deadline { .. }));
+            if inspect {
+                let _ = regs(s);
+                for &g in &probes {
+                    let _ = read(s, g, PROBE_LEN);
                 }
-            ),
-            Reply::Unit
-        );
-        // Advance to `mid` via an exact-count arrival, inspect (or not), then
-        // continue to `late` the same way.
-        expect_ok(s, &arrival_marker(mid));
-        assert!(matches!(run_until(s, mid), StopReason::Deadline { .. }));
-        if inspect {
-            let _ = regs(s);
-            for &g in &probes {
-                let _ = read(s, g, PROBE_LEN);
+                let _ = regs(s);
             }
-            let _ = regs(s);
-        }
-        expect_ok(s, &arrival_marker(late));
-        assert!(matches!(run_until(s, late), StopReason::Deadline { .. }));
-        hash_whole(s)
-    };
+            expect_ok(s, &arrival_marker(late));
+            assert!(matches!(run_until(s, late), StopReason::Deadline { .. }));
+            hash_whole(s)
+        };
     let inspected = continue_to_late(&mut s, true);
     let control = continue_to_late(&mut s, false);
     let invariance_ok = inspected == control;

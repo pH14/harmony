@@ -14,10 +14,9 @@ coverage vector + oracle events."
 > task here forces a change to Progression select/score/GC policy, the abstraction has leaked and the task
 > is wrong.
 
-> **Naming (task 94 rename).** This doc uses the post-rename loop names: **Progression** (the outer
-> loop, formerly *Theme*) and **Modulation** (the inner loop, formerly *Variation*).
-> `docs/DISSONANCE.md` still uses the old names until task 94 lands — the mapping is
-> Theme → Progression, Variation → Modulation.
+> **Naming.** This doc uses the ruled loop names: **Progression** (the outer loop) and
+> **Modulation** (the inner loop). `docs/DISSONANCE.md` predates the ruling and still says
+> *Theme*/*Variation* — read those as Progression/Modulation.
 
 ## Where this sits
 
@@ -97,18 +96,17 @@ lives entirely behind Scoring.
 
 The run stops being opaque and becomes a versioned, serializable bundle so the replay plane can work
 offline. (The sketches below are illustrative; **the task-64 spine is authoritative for exact
-field/method names and time units** — it keys these on `Moment`/`moment()`. The
-`Moment`-vs-`VTime` unit question, escalated per task 65, is RULED in `docs/GLOSSARY.md`:
-one axis, `Moment` for a point on it, `Span` for a duration; existing `VTime` uses are
-audited into one or the other as each crate is next touched.)
+field/method names and time units** — it keys these on `Moment`/`moment()`. The unit
+question, escalated per task 65, is RULED in `docs/GLOSSARY.md`: one axis, `Moment` for
+a point on it, `Span` for a duration.)
 
 ```rust
 struct RunTrace {
     terminal: StopReason,             // Crash / Quiescent / Deadline / Decision / Assertion / SnapshotPoint
     env:      Environment,            // the genesis-complete reproducer (DISSONANCE.md)
     coverage: Option<CoverageView>,   // instrument tier — the negotiated shmem geometry, snapshotted at run end
-    events:   Vec<(VTime, GuestEvent)>, // link tier — decoded SDK assertions / registers / buggify results
-    records:  Vec<(VTime, Record)>,   // scrape tier — decoded log lines, OTel spans, k8s events
+    events:   Vec<(Moment, GuestEvent)>, // link tier — decoded SDK assertions / registers / buggify results
+    records:  Vec<(Moment, Record)>,  // scrape tier — decoded log lines, OTel spans, k8s events
 }
 ```
 
@@ -138,7 +136,7 @@ Most signals should be declarative. A generic `MatchSensor`/`MatchOracle` operat
 implementing `Matchable`; each channel plugin adapts its record type:
 
 ```rust
-trait Matchable { fn kind(&self) -> &str; fn attr(&self, k: &str) -> Option<Value>; fn vtime(&self) -> VTime; }
+trait Matchable { fn kind(&self) -> &str; fn attr(&self, k: &str) -> Option<Value>; fn moment(&self) -> Moment; }
 ```
 
 ```yaml

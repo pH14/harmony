@@ -8,7 +8,7 @@
 //! 3. Transcript replay renders byte-identically to the live rendering for
 //!    arbitrary scripted sessions (the one-renderer principle).
 
-use environment::{Action, BitMask, EnvCodec, EnvSpec, FaultPolicy, HostFault, Ratio, VTime};
+use environment::{Action, BitMask, EnvCodec, EnvSpec, FaultPolicy, HostFault, Ratio, Span};
 use proptest::prelude::*;
 use resolution::{
     Command, MockServer, MomentRef, OverrideEdit, Session, Shell, from_jsonl, render_transcript,
@@ -22,8 +22,8 @@ use resolution::{
 /// An arbitrary host-plane [`Action`] — every `HostFault` shape.
 fn host_action() -> impl Strategy<Value = Action> {
     prop_oneof![
-        any::<u64>().prop_map(|v| Action::Host(HostFault::SkewTime(VTime(v)))),
-        any::<u8>().prop_map(|vector| Action::Host(HostFault::InjectInterrupt { vector })),
+        any::<u64>().prop_map(|v| Action::Host(HostFault::SkewTime(Span(v)))),
+        any::<u32>().prop_map(|vector| Action::Host(HostFault::InjectInterrupt { vector })),
         (any::<u64>(), any::<u64>()).prop_map(|(gpa, m)| Action::Host(HostFault::CorruptMemory {
             gpa,
             mask: BitMask(m)

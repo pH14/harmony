@@ -80,13 +80,45 @@ for d in $R/n2/cond-*-recert-001 $R/n2/cond-*-topup-001 $R/n2/smoke-recert-001 $
   lost=$(echo "$s" | grep -o '"lost":[0-9]*' | cut -d: -f2)
   thr=$(echo "$s" | grep -o '"throttle":[0-9]*' | cut -d: -f2)
   backend=$(grep -o '"backend":"[A-Za-z]*"' "$d/console.log" | head -1 | cut -d'"' -f4)
-  if [ "$exact" = "$dl" ] && [ "$ok" = "$dl" ] && [ "$rv" = 0 ] \
+  # PR #98 round-3 #1: a runset counts toward the floor ONLY after its own
+  # condition-applied evidence is machine-checked, not just its summary line.
+  # cond-* runsets must carry condition-end.json with rc 0; where the round-2
+  # fields exist they are enforced (a dead stressor or failed migration means
+  # the condition label is false); their absence in pre-round-2 runsets is
+  # ANNOTATED, never silently equated with passing them. Smoke runsets run
+  # bare run-appliance (no condition file) and must show qemu_rc=0.
+  cond_note=""
+  cond_ok=1
+  case "$rs" in
+    cond-*)
+      ce="$d/condition-end.json"
+      if [ ! -f "$ce" ]; then
+        cond_ok=0; cond_note="condition-end.json MISSING"
+      else
+        cerc=$(grep -o '"rc": *[0-9]*' "$ce" | grep -o '[0-9]*$' | tail -1)
+        [ "${cerc:-1}" = 0 ] || { cond_ok=0; cond_note="condition rc=$cerc"; }
+        if grep -q '"stressor_alive_at_end"' "$ce"; then
+          sal=$(grep -o '"stressor_alive_at_end": *"[a-z/]*"' "$ce" | cut -d'"' -f4)
+          mf=$(grep -o '"migrations_failed": *[0-9]*' "$ce" | grep -o '[0-9]*$')
+          [ "$sal" != "no" ] || { cond_ok=0; cond_note="stressor died mid-run"; }
+          [ "${mf:-0}" = 0 ] || { cond_ok=0; cond_note="migrations_failed=$mf"; }
+          [ -n "$cond_note" ] || cond_note="condition-end ok (liveness+migrations checked)"
+        else
+          cond_note="condition-end rc=0 (legacy: pre-round-2, no liveness fields recorded)"
+        fi
+      fi ;;
+    smoke-*)
+      qrc=$(grep -o 'qemu_rc=[0-9]*' "$d/env.json.rc" 2>/dev/null | cut -d= -f2)
+      [ "${qrc:-1}" = 0 ] || { cond_ok=0; cond_note="qemu_rc=$qrc"; }
+      [ -n "$cond_note" ] || cond_note="smoke (qemu_rc=0)" ;;
+  esac
+  if [ "$cond_ok" = 1 ] && [ "$exact" = "$dl" ] && [ "$ok" = "$dl" ] && [ "$rv" = 0 ] \
      && [ "$lost" = 0 ] && [ "$thr" = 0 ] && [ "$backend" = PatchedKvmBackend ]; then
-    say "OK  n2/$rs: $exact/$dl deadlines exact, oracle==exact, armed PMIs (from records)=$samples, records clean, $backend"
+    say "OK  n2/$rs: $exact/$dl deadlines exact, oracle==exact, armed PMIs (from records)=$samples, records clean, $backend; $cond_note"
     total_deadlines=$((total_deadlines + dl))
     total_armed_pmi=$((total_armed_pmi + samples))
   else
-    bad "$rs: deadlines=$dl exact=$exact oracle=$ok rv=$rv lost=$lost throttle=$thr backend=$backend"
+    bad "$rs: deadlines=$dl exact=$exact oracle=$ok rv=$rv lost=$lost throttle=$thr backend=$backend cond=[$cond_note]"
   fi
 done
 say "n2 cumulative deadlines driven: $total_deadlines (informational — NOT the floor axis)"

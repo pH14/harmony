@@ -13,7 +13,7 @@ use proptest::prelude::*;
 
 use environment::{
     Action, Answer, BlockOp, ConnId, DecisionClass, DecisionPoint, EnvSpec, Environment, Fault,
-    FaultPolicy, FlowEvent, HostFault, Moment, NodeId, Outcome, Ratio, StandingFault, VTime,
+    FaultPolicy, FlowEvent, HostFault, Moment, NodeId, Outcome, Ratio, Span, StandingFault,
 };
 
 /// Proptest config: spec case count, cut hard under Miri (kept for portability
@@ -30,7 +30,7 @@ pub fn config(cases: u32) -> ProptestConfig {
 
 pub fn arb_net_fault() -> impl Strategy<Value = Fault> {
     prop_oneof![
-        any::<u64>().prop_map(|d| Fault::NetLatency(VTime(d))),
+        any::<u64>().prop_map(|d| Fault::NetLatency(Span(d))),
         // `den >= 1` so the fault round-trips through `set_class` and the codec
         // and never asks the enforcer to divide by zero.
         (any::<u16>(), 1u16..=u16::MAX).prop_map(|(num, den)| Fault::NetLoss { num, den }),
@@ -42,7 +42,7 @@ pub fn arb_net_fault() -> impl Strategy<Value = Fault> {
 pub fn arb_block_fault() -> impl Strategy<Value = Fault> {
     prop_oneof![
         Just(Fault::BlockEio),
-        any::<u64>().prop_map(|d| Fault::BlockLatency(VTime(d))),
+        any::<u64>().prop_map(|d| Fault::BlockLatency(Span(d))),
         any::<u32>().prop_map(Fault::BlockTorn),
         Just(Fault::BlockNospc),
     ]
@@ -50,7 +50,7 @@ pub fn arb_block_fault() -> impl Strategy<Value = Fault> {
 
 pub fn arb_proc_fault() -> impl Strategy<Value = Fault> {
     prop_oneof![
-        any::<u64>().prop_map(|d| Fault::ProcPause(VTime(d))),
+        any::<u64>().prop_map(|d| Fault::ProcPause(Span(d))),
         Just(Fault::ProcKill),
         Just(Fault::ProcRestart),
     ]
@@ -77,13 +77,13 @@ pub fn arb_ratio() -> impl Strategy<Value = Ratio> {
 
 pub fn arb_host_fault() -> impl Strategy<Value = HostFault> {
     prop_oneof![
-        any::<u64>().prop_map(|d| HostFault::SkewTime(VTime(d))),
+        any::<u64>().prop_map(|d| HostFault::SkewTime(Span(d))),
         arb_ratio().prop_map(HostFault::SetClockRate),
         (any::<u64>(), any::<u64>()).prop_map(|(gpa, mask)| HostFault::CorruptMemory {
             gpa,
             mask: environment::BitMask(mask),
         }),
-        any::<u8>().prop_map(|vector| HostFault::InjectInterrupt { vector }),
+        any::<u32>().prop_map(|vector| HostFault::InjectInterrupt { vector }),
     ]
 }
 
@@ -203,7 +203,7 @@ pub fn arb_standing() -> impl Strategy<Value = StandingFault> {
         .prop_map(|(class, target, a, b)| StandingFault {
             class,
             target,
-            window: (VTime(a), VTime(b)),
+            window: (a, b),
         })
 }
 
@@ -269,12 +269,7 @@ pub fn canon(spec: EnvSpec) -> EnvSpec {
 }
 
 fn standing_key(s: &StandingFault) -> (u16, &[u8], u64, u64) {
-    (
-        s.class as u16,
-        s.target.as_slice(),
-        s.window.0.0,
-        s.window.1.0,
-    )
+    (s.class as u16, s.target.as_slice(), s.window.0, s.window.1)
 }
 
 // ---- a frontier-simulating runner -----------------------------------------

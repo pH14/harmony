@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Divergence injection: wrap a [`MachineFactory`] so spawned machines are
+//! Divergence injection: wrap a [`SubjectFactory`] so spawned machines are
 //! perturbed once, the first time their work counter reaches a chosen
 //! boundary. This simulates "run B has a nondeterminism bug at tick T" with T
 //! known, so the bisector can be tested against ground truth.
 
-use crate::{Machine, MachineError, MachineFactory, RunOutcome};
+use crate::{RunOutcome, Subject, SubjectError, SubjectFactory};
 use serde::{Deserialize, Serialize};
 
 /// A single one-shot state perturbation.
@@ -33,9 +33,9 @@ pub enum Perturbation {
 }
 
 /// Machines that know how to apply a [`Perturbation`] to their own
-/// architectural state. [`Machine`] itself deliberately exposes no mutation
+/// architectural state. [`Subject`] itself deliberately exposes no mutation
 /// hooks, so divergence injection needs this extra capability.
-pub trait Perturbable: Machine {
+pub trait Perturbable: Subject {
     /// Apply `p` to the current architectural state.
     fn apply_perturbation(&mut self, p: &Perturbation);
 }
@@ -50,7 +50,7 @@ pub trait Perturbable: Machine {
 /// perturbed (the boundary is unreachable), but one that halts exactly *at*
 /// `diverge_at` is.
 #[derive(Debug, Clone)]
-pub struct FlakyFactory<F: MachineFactory> {
+pub struct FlakyFactory<F: SubjectFactory> {
     /// Factory producing the machines to perturb.
     pub inner: F,
     /// Work count at which the perturbation fires.
@@ -59,7 +59,7 @@ pub struct FlakyFactory<F: MachineFactory> {
     pub perturb: Perturbation,
 }
 
-impl<F: MachineFactory> MachineFactory for FlakyFactory<F>
+impl<F: SubjectFactory> SubjectFactory for FlakyFactory<F>
 where
     F::M: Perturbable,
 {
@@ -93,8 +93,8 @@ pub struct FlakyMachine<M: Perturbable> {
     applied: bool,
 }
 
-impl<M: Perturbable> Machine for FlakyMachine<M> {
-    fn run_to(&mut self, target: u64) -> Result<RunOutcome, MachineError> {
+impl<M: Perturbable> Subject for FlakyMachine<M> {
+    fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
         if self.diverge_at == u64::MAX {
             // The "never" sentinel: behave identically to the inner machine,
             // even if its work counter legitimately reaches u64::MAX.
@@ -314,10 +314,10 @@ mod tests {
         perturbed: bool,
     }
 
-    impl Machine for JumpMachine {
-        fn run_to(&mut self, target: u64) -> Result<RunOutcome, MachineError> {
+    impl Subject for JumpMachine {
+        fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
             if target < self.work {
-                return Err(MachineError::TargetBehind {
+                return Err(SubjectError::TargetBehind {
                     target,
                     current: self.work,
                 });
@@ -346,7 +346,7 @@ mod tests {
         spawn_at: u64,
     }
 
-    impl MachineFactory for JumpFactory {
+    impl SubjectFactory for JumpFactory {
         type M = JumpMachine;
         fn spawn(&self, _seed: u64) -> JumpMachine {
             JumpMachine {

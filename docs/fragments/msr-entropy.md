@@ -6,7 +6,7 @@
 # MSR disposition fragment: class `entropy`
 
 Class `entropy` covers MSR-borne nondeterministic host-event counters — entropy side
-doors outside the RDRAND/RDSEED instructions, which PLAN.md's trap table already routes
+doors outside the RDRAND/RDSEED instructions, which docs/PLAN.md's trap table already routes
 to the seeded PRNG stream over the hypercall channel (the port-I/O doorbell, INTEGRATION.md
 §1). Its single member is `MSR_SMI_COUNT`
 (0x34): a model-specific (Nehalem+, no CPUID enumeration bit) read-only counter of System
@@ -30,4 +30,4 @@ index and guest RIP, then inject #GP — never a silent in-kernel fault.
 
 | MSR | Index | Read | Write | Rationale | Citation |
 |---|---|---|---|---|---|
-| MSR_SMI_COUNT | 0x34 | deny-gp | deny-gp | Closes §7's power/frequency host-event-counter vector (generalized to SMIs): the count of host firmware SMIs is asynchronous real-world nondeterminism usable as an entropy/timing channel; no SMM is ever delivered to the guest so the deterministic value is a constant with no enumerable consumer — default-deny; write-#GP also matches silicon (read-only counter) and KVM (guest writes rejected, x86.c:4134) | linux-6.18.35 arch/x86/kvm/x86.c:430 (emulated_msrs_all), 4502 (RDMSR returns vcpu->arch.smi_count), 4134 (guest WRMSR #GP unless host-initiated); arch/x86/include/asm/msr-index.h:913; Intel SDM Vol. 4 Table 2-2 (MSR_SMI_COUNT, 34H, Nehalem+); tools/power/x86/turbostat/turbostat.c:1789 (host SMI counting); INTEGRATION.md §7 (default-deny, power/frequency); PLAN.md trap table (entropy → seeded stream) |
+| MSR_SMI_COUNT | 0x34 | deny-gp | deny-gp | Closes §7's power/frequency host-event-counter vector (generalized to SMIs): the count of host firmware SMIs is asynchronous real-world nondeterminism usable as an entropy/timing channel; no SMM is ever delivered to the guest so the deterministic value is a constant with no enumerable consumer — default-deny; write-#GP also matches silicon (read-only counter) and KVM (guest writes rejected, x86.c:4134) | linux-6.18.35 arch/x86/kvm/x86.c:430 (emulated_msrs_all), 4502 (RDMSR returns vcpu->arch.smi_count), 4134 (guest WRMSR #GP unless host-initiated); arch/x86/include/asm/msr-index.h:913; Intel SDM Vol. 4 Table 2-2 (MSR_SMI_COUNT, 34H, Nehalem+); tools/power/x86/turbostat/turbostat.c:1789 (host SMI counting); INTEGRATION.md §7 (default-deny, power/frequency); docs/PLAN.md trap table (entropy → seeded stream) |

@@ -35,15 +35,15 @@ reads, so reads were built first.
 
 A write to a virtual disk whose backing is part of the COW-snapshotted VM state is a
 **deterministic state transition** — exactly like the EPT-COW guest-RAM writes Antithesis
-already does (`RESEARCH.md:49`). Determinism comes from controlling *external* inputs and async
+already does (`docs/RESEARCH.md:49`). Determinism comes from controlling *external* inputs and async
 event timing, **not** from forbidding writes. "Side-effect-free channel" means no effect that
 *escapes the deterministic boundary* (a real packet, real entropy, the wall-clock) — not "no
 writes."
 
 Antithesis confirms this directly in our own verified research:
 - its only read-only device is the **boot medium** (an AHCI CD-ROM serving the live-CD image,
-  `RESEARCH.md:42`), not all storage;
-- it lists **disk I/O** as a *controlled* nondeterminism source (`RESEARCH.md:60`) — you don't
+  `docs/RESEARCH.md:42`), not all storage;
+- it lists **disk I/O** as a *controlled* nondeterminism source (`docs/RESEARCH.md:60`) — you don't
   "control" something you forbid;
 - testing **durability / crash-consistency** for unmodified databases is its marquee capability,
   which is impossible without writable storage.
@@ -63,7 +63,7 @@ A block device that *works*. Scope:
   pure function of (image, prior writes).
 - **Recommended backing shape**: a copy-on-write overlay on the read-only base image — shared
   read-only base across VMs, per-VM writable delta — mirroring the EPT-COW snapshot model and the
-  "boot once, share the ~20 GB base everywhere" pattern (`RESEARCH.md:52`). A flat in-RAM buffer
+  "boot once, share the ~20 GB base everywhere" pattern (`docs/RESEARCH.md:52`). A flat in-RAM buffer
   is the simpler first cut.
 - **A real impedance the abstraction must handle** (and that proves it is real): SQLite's default
   4 KB page is 8 sectors, over the 7-sector read cap, so callers must chunk I/O — exactly the
@@ -83,7 +83,7 @@ untestable. It must be the real block path.
 ## 5. The broader surface (for context)
 
 - **Network — not a host device in this model, by design.** A distributed system runs *inside
-  one guest* as containers on a virtual bridge (`RESEARCH.md:37`); that intra-guest network is
+  one guest* as containers on a virtual bridge (`docs/RESEARCH.md:37`); that intra-guest network is
   the guest kernel's own stack on deterministic CPU+RAM, so it comes **free with a Linux guest**
   — there is no NIC to emulate. Absent and deferred: the *external-net* escape (guest ↔ real
   world) and the *fault-injecting* bridge (delay/drop/partition) — both are the **R3** ruling.

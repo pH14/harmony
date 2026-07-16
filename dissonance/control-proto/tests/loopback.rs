@@ -9,9 +9,9 @@
 //! `resolve`-without-`Decision` path real (`environment::Answer` is opaque here).
 
 use control_proto::{
-    Answer, CapFlags, Caps, ControlError, CoverageGeometry, DecisionId, Environment, HashScope,
-    HostFault, Moment, PROTO_VERSION, RegsView, Reply, Request, SnapId, StopConditions, StopMask,
-    StopReason, VTime, class_bit, decode_reply, decode_request, encode_reply, encode_request,
+    Answer, CapFlags, Caps, ControlError, CoverageGeometry, DecisionId, HashScope, HostFault,
+    Moment, PROTO_VERSION, RegsView, Reply, Reproducer, Request, SnapId, StopConditions, StopMask,
+    StopReason, class_bit, decode_reply, decode_request, encode_reply, encode_request,
 };
 
 fn caps() -> Caps {
@@ -29,7 +29,7 @@ fn caps() -> Caps {
 
 fn conds() -> StopConditions {
     StopConditions {
-        deadline: Some(VTime(10_000)),
+        deadline: Some(Moment(10_000)),
         on: StopMask::NONE
             .arm(class_bit::BLOCK_IO)
             .arm(class_bit::NET_SEND),
@@ -85,12 +85,12 @@ impl StubServer {
                         return Err(ControlError::ResolveWithoutDecision);
                     }
                     self.armed = false;
-                    Ok(Reply::Stop(StopReason::Quiescent { vtime: VTime(500) }))
+                    Ok(Reply::Stop(StopReason::Quiescent { vtime: Moment(500) }))
                 } else {
                     // First run surfaces and arms a decision.
                     self.armed = true;
                     Ok(Reply::Stop(StopReason::Decision {
-                        vtime: VTime(100),
+                        vtime: Moment(100),
                         id: DecisionId(1),
                         ctx: vec![0xAB],
                     }))
@@ -135,12 +135,12 @@ impl StubServer {
                 })
             }
             // The reproducer mint is the taint guard's fail-loud site: a tainted
-            // timeline is a loud `Tainted`, never a lying `Environment`.
+            // timeline is a loud `Tainted`, never a lying `Reproducer`.
             Request::RecordedEnv => {
                 if self.tainted {
                     Err(ControlError::Tainted)
                 } else {
-                    Ok(Reply::Recorded(Environment {
+                    Ok(Reply::Recorded(Reproducer {
                         blob_version: 1,
                         bytes: vec![0x07, 0x08, 0x09],
                     }))
@@ -215,7 +215,7 @@ fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
 
     replies.push(lb.exchange(Request::Branch {
         snap,
-        env: Environment {
+        env: Reproducer {
             blob_version: 1,
             bytes: vec![0x01, 0x02, 0x03],
         },
@@ -245,7 +245,7 @@ fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
     replies.push(lb.exchange(Request::RecordedEnv));
     replies.push(lb.exchange(Request::Exec {
         cmd: "ps aux".to_string(),
-        deadline: VTime(9_000),
+        deadline: Moment(9_000),
     }));
     replies.push(lb.exchange(Request::RecordedEnv));
     replies.push(lb.exchange(Request::Snapshot));
@@ -274,11 +274,11 @@ fn loopback_exercises_every_verb_with_expected_replies() {
             Ok(Reply::SnapId(SnapId(0))),
             Ok(Reply::Unit), // Branch
             Ok(Reply::Stop(StopReason::Decision {
-                vtime: VTime(100),
+                vtime: Moment(100),
                 id: DecisionId(1),
                 ctx: vec![0xAB],
             })),
-            Ok(Reply::Stop(StopReason::Quiescent { vtime: VTime(500) })),
+            Ok(Reply::Stop(StopReason::Quiescent { vtime: Moment(500) })),
             Ok(Reply::Unit), // Replay
             Ok(Reply::Hash([0x42; 32])),
             Ok(Reply::Bytes(vec![0xAB; 4])),
@@ -294,7 +294,7 @@ fn loopback_exercises_every_verb_with_expected_replies() {
                 moment: Moment(500),
                 vtime: 500,
             })),
-            Ok(Reply::Recorded(Environment {
+            Ok(Reply::Recorded(Reproducer {
                 blob_version: 1,
                 bytes: vec![0x07, 0x08, 0x09],
             })), // RecordedEnv (untainted) mints the reproducer

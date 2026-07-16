@@ -9,7 +9,7 @@
 //! creation, so the kernel traps `RDTSC`/`RDTSCP`/`RDRAND`/`RDSEED` to
 //! userspace as `KVM_EXIT_DETERMINISM`. Those surface through the **shared**
 //! pure [`crate::kvm`] decode/complete helpers as
-//! [`Exit::Rdtsc`]/[`Exit::Rdtscp`]/[`Exit::Rdrand`]/[`Exit::Rdseed`], which the
+//! [`X86Exit::Rdtsc`]/[`X86Exit::Rdtscp`]/[`X86Exit::Rdrand`]/[`X86Exit::Rdseed`], which the
 //! VMM resolves to a V-time TSC / a seeded RNG draw above the trait — so
 //! `capabilities()` honestly reports `deterministic_tsc`/`deterministic_rng`.
 //!
@@ -32,14 +32,13 @@
 //! exercised on macOS via a scripted [`crate::MockBackend`] determinism exit
 //! plus vmm-core's completion path.
 
+use crate::arch::x86::{Injection, VcpuState, X86, X86Caps, X86Completion, X86Policy};
 use crate::backend::Backend;
-use crate::config::{CpuidModel, MsrFilter};
 use crate::error::Result;
-use crate::exit::{Capabilities, Event, Exit, ExitCounts};
+use crate::exit::{Capabilities, Exit, ExitCounts};
 use crate::kvm::patched_capabilities;
 use crate::kvm_sys::KvmBackend;
-use crate::state::VcpuState;
-use crate::types::{Gpa, Vtime};
+use crate::types::{Gpa, Moment};
 
 /// The patched-KVM determinism backend (R-Backend baseline). Wraps an inner
 /// [`KvmBackend`] built with `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` enabled.
@@ -85,12 +84,10 @@ impl PatchedKvmBackend {
 }
 
 impl Backend for PatchedKvmBackend {
-    fn set_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
-        self.inner.set_cpuid(model)
-    }
+    type A = X86;
 
-    fn set_msr_filter(&mut self, filter: &MsrFilter) -> Result<()> {
-        self.inner.set_msr_filter(filter)
+    fn set_policy(&mut self, policy: &X86Policy) -> Result<()> {
+        self.inner.set_policy(policy)
     }
 
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
@@ -104,15 +101,15 @@ impl Backend for PatchedKvmBackend {
         self.inner.harvest_dirty_gfns()
     }
 
-    fn run(&mut self) -> Result<Exit> {
+    fn run(&mut self) -> Result<Exit<X86>> {
         self.inner.run()
     }
 
-    fn run_until(&mut self, deadline: Vtime) -> Result<Exit> {
+    fn run_until(&mut self, deadline: Moment) -> Result<Exit<X86>> {
         self.inner.run_until(deadline)
     }
 
-    fn inject(&mut self, event: Event) -> Result<()> {
+    fn inject(&mut self, event: Injection) -> Result<()> {
         self.inner.inject(event)
     }
 
@@ -136,12 +133,12 @@ impl Backend for PatchedKvmBackend {
         self.inner.complete_ok()
     }
 
-    fn complete_hypercall(&mut self, rax: u64) -> Result<()> {
-        self.inner.complete_hypercall(rax)
+    fn complete_hypercall(&mut self, ret: u64) -> Result<()> {
+        self.inner.complete_hypercall(ret)
     }
 
-    fn complete_cpuid(&mut self, eax: u32, ebx: u32, ecx: u32, edx: u32) -> Result<()> {
-        self.inner.complete_cpuid(eax, ebx, ecx, edx)
+    fn complete_arch(&mut self, completion: X86Completion) -> Result<()> {
+        self.inner.complete_arch(completion)
     }
 
     fn save(&self) -> Result<VcpuState> {
@@ -162,7 +159,7 @@ impl Backend for PatchedKvmBackend {
 
     /// The one method that differs from stock KVM: honestly report determinism
     /// completeness (the four intercepts are surfaced + V-time/seed-resolved).
-    fn capabilities(&self) -> Capabilities {
+    fn capabilities(&self) -> Capabilities<X86Caps> {
         patched_capabilities()
     }
 }

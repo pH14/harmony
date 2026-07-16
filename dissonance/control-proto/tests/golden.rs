@@ -11,9 +11,9 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
-    Environment, EventRef, HashScope, HostFault, Moment, PROTO_VERSION, ProtocolError, Reply,
-    Request, SnapId, StopConditions, StopMask, StopReason, VTime, class_bit, decode_reply,
-    decode_request, encode_reply, encode_request,
+    EventRef, HashScope, HostFault, Moment, PROTO_VERSION, ProtocolError, Reply, Reproducer,
+    Request, SnapId, StopConditions, StopMask, StopReason, class_bit, decode_reply, decode_request,
+    encode_reply, encode_request,
 };
 
 const MAGIC: [u8; 4] = *b"CTL1";
@@ -123,7 +123,7 @@ fn req_branch() {
         4,
         Request::Branch {
             snap: SnapId(7),
-            env: Environment {
+            env: Reproducer {
                 blob_version: 2,
                 bytes: vec![0xDE, 0xAD],
             },
@@ -153,7 +153,7 @@ fn req_run_with_deadline_and_resolve() {
         6,
         Request::Run {
             until: StopConditions {
-                deadline: Some(VTime(0x100)),
+                deadline: Some(Moment(0x100)),
                 on: StopMask::NONE.arm(class_bit::BLOCK_IO),
             },
             resolve: Some(Answer(vec![0x01, 0x02])),
@@ -360,7 +360,9 @@ fn reply_regs() {
 fn reply_stop_deadline() {
     check_reply(
         20,
-        Ok(Reply::Stop(StopReason::Deadline { vtime: VTime(0x2A) })),
+        Ok(Reply::Stop(StopReason::Deadline {
+            vtime: Moment(0x2A),
+        })),
         &[
             0x00, 0x04, // RESULT_OK, REPLY_STOP
             0x01, // SR_DEADLINE
@@ -373,7 +375,9 @@ fn reply_stop_deadline() {
 fn reply_stop_quiescent() {
     check_reply(
         21,
-        Ok(Reply::Stop(StopReason::Quiescent { vtime: VTime(0x2A) })),
+        Ok(Reply::Stop(StopReason::Quiescent {
+            vtime: Moment(0x2A),
+        })),
         &[
             0x00, 0x04, 0x02, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ],
@@ -385,9 +389,9 @@ fn reply_stop_crash() {
     check_reply(
         22,
         Ok(Reply::Stop(StopReason::Crash {
-            vtime: VTime(5),
+            vtime: Moment(5),
             info: CrashInfo {
-                kind: CrashKind::TripleFault,
+                kind: CrashKind::UnrecoverableFault,
                 detail: vec![0xEE],
             },
         })),
@@ -395,7 +399,7 @@ fn reply_stop_crash() {
             0x00, 0x04, // RESULT_OK, REPLY_STOP
             0x03, // SR_CRASH
             0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // vtime = 5
-            0x01, // CK_TRIPLE_FAULT
+            0x01, // CK_UNRECOVERABLE_FAULT
             0x01, 0x00, 0x00, 0x00, // detail len = 1
             0xEE, // detail
         ],
@@ -407,7 +411,7 @@ fn reply_stop_decision() {
     check_reply(
         23,
         Ok(Reply::Stop(StopReason::Decision {
-            vtime: VTime(0x10),
+            vtime: Moment(0x10),
             id: DecisionId(3),
             ctx: vec![0xAB, 0xCD],
         })),
@@ -427,7 +431,7 @@ fn reply_stop_snapshot_point() {
     check_reply(
         24,
         Ok(Reply::Stop(StopReason::SnapshotPoint {
-            vtime: VTime(0x10),
+            vtime: Moment(0x10),
         })),
         &[
             0x00, 0x04, 0x05, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -440,7 +444,7 @@ fn reply_stop_assertion() {
     check_reply(
         25,
         Ok(Reply::Stop(StopReason::Assertion {
-            vtime: VTime(0x10),
+            vtime: Moment(0x10),
             ev: EventRef {
                 id: 0x99,
                 data: vec![0x01],
@@ -631,7 +635,7 @@ fn req_exec() {
         13,
         Request::Exec {
             cmd: "ls /".to_string(),
-            deadline: VTime(0x64),
+            deadline: Moment(0x64),
         },
         &[
             0x0C, // REQ_EXEC
@@ -684,10 +688,10 @@ fn reply_snapshot_tainted() {
 
 #[test]
 fn reply_recorded() {
-    // RESULT_OK (0x00), REPLY_RECORDED (0x0B), Environment (blob_version u16, bytes).
+    // RESULT_OK (0x00), REPLY_RECORDED (0x0B), Reproducer (blob_version u16, bytes).
     check_reply(
         62,
-        Ok(Reply::Recorded(Environment {
+        Ok(Reply::Recorded(Reproducer {
             blob_version: 3,
             bytes: vec![0xCA, 0xFE],
         })),

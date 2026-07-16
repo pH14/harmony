@@ -14,10 +14,11 @@
 //!   N3_ITEM   payload name (default insn-rng — seed-consuming, most sensitive)
 //!   N3_SEED   run seed (default the pinned corpus seed 0x0028_C0FF_EE5E_EDC0)
 //!   N3_PROGRESS progress line cadence (default 100)
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use unison::{Machine, RunOutcome};
-use vmm_core::corpus::boot_patched_payload;
+use unison::{RunOutcome, Subject};
+use vmm_core::vendor::x86::bringup::boot_patched_corpus;
+use vmm_core::vmm::TerminalReason;
 
 const GUEST_RAM_LEN: usize = 256 << 20;
 const LIMIT: u64 = 1_000_000;
@@ -61,13 +62,24 @@ fn n3_repeat_gate() {
 
     for rep in 0..reps {
         attempted += 1;
-        let mut m = boot_patched_payload(&payload, GUEST_RAM_LEN, seed)
-            .unwrap_or_else(|e| panic!("boot_patched_payload({item}) failed at rep {rep}: {e}"));
-        let outcome = m.run_to(LIMIT).expect("run_to is infallible");
+        let mut m = boot_patched_corpus(&payload, GUEST_RAM_LEN, seed)
+            .unwrap_or_else(|e| panic!("boot_patched_corpus({item}) failed at rep {rep}: {e}"));
+        let outcome = m.run_to(LIMIT).expect("run_to never fails forward");
         let sh = hex32(&m.state_hash());
         let od = hex32(&m.observable_digest());
+        // A rep counts as identical ONLY if the run was CLEAN: halted, no captured
+        // VMM error (`corpus.rs` documents `run_error` exists precisely so runners
+        // fail loudly on it), and the corpus payload's clean terminal (debug-exit
+        // 0) — an error'd-but-halted rep must never count (PR #98 round-3 #2).
         if outcome != RunOutcome::Halted {
             mismatches.push(format!("rep={rep} outcome={outcome:?}"));
+        } else if let Some(err) = m.run_error() {
+            mismatches.push(format!("rep={rep} run_error={err}"));
+        } else if m.vmm().terminal_reason() != Some(TerminalReason::DebugExit { code: 0 }) {
+            mismatches.push(format!(
+                "rep={rep} unclean terminal: {:?}",
+                m.vmm().terminal_reason()
+            ));
         } else {
             match &reference {
                 None => {

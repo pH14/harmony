@@ -66,7 +66,7 @@ The reviewer (and `codex review` via `AGENTS.md`) needs to know what correct mea
 
 - **What this is** — one paragraph.
 - **Why / evidence** — for a decision, cite sources (KVM source at the pinned tag, SDM,
-  RESEARCH.md) rather than asserting; for a spike, the measured result and method.
+  docs/RESEARCH.md) rather than asserting; for a spike, the measured result and method.
 - **What it unblocks / changes** — which tasks or contract rows this enables or refutes.
 - **Cross-PR interactions** — if it conflicts with or depends on another open PR (e.g. a
   contract row that now needs redispositioning), say so explicitly. The foreman uses this

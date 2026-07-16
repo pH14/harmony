@@ -5,16 +5,16 @@
 //! V-time is a pure function of *work performed*: `work` = retired conditional
 //! branches, read at every VM exit ([`vtime`] crate docs). This module defines
 //! the [`WorkSource`] trait the run loop reads at each exit and feeds into
-//! [`vtime::VClock`] (so RDTSC = `VClock::tsc(work)`), plus the portable
+//! [`vtime::VClock`] (so RDTSC = `VClock::guest_ticks(work)`), plus the portable
 //! [`ScriptedWork`] used by the unit/property tests. The real, box-only
 //! `perf_event` counter (`BR_INST_RETIRED.CONDITIONAL`, guest-only, pinned) is
-//! [`crate::work_perf::PerfWorkCounter`].
+//! [`crate::vendor::x86::work_perf::PerfWorkCounter`].
 //!
 //! **Layering (R-Backend).** The work source lives **above** the `Backend`
 //! trait, in the run loop, and is the *same* regardless of which backend is in
 //! use — `perf_event` attaches to the vCPU thread, not to KVM-the-substrate. So
 //! nothing here branches on the backend, and the backend never reads a counter
-//! (a `VClock::tsc` call inside `vmm-backend` would be a layering bug). The
+//! (a `VClock::guest_ticks` call inside `vmm-backend` would be a layering bug). The
 //! boundary (work source in vmm-core's loop, not behind the trait) is the one
 //! task-21 P3 left to choose; see `IMPLEMENTATION.md`.
 
@@ -67,7 +67,7 @@ pub trait WorkSource {
     /// entry**, so [`work`](WorkSource::work) thereafter counts only **this** run's
     /// guest execution.
     ///
-    /// This matters for the box [`PerfWorkCounter`](crate::work_perf::PerfWorkCounter):
+    /// This matters for the box [`PerfWorkCounter`](crate::vendor::x86::work_perf::PerfWorkCounter):
     /// it is enabled at open and counts guest branches on the (CPU-pinned, but
     /// **shared**) vCPU thread, so a counter opened before a *coexisting* VM runs
     /// would otherwise accumulate that VM's branches. That breaks
@@ -92,7 +92,7 @@ pub trait WorkSource {
 
 /// A deterministic, in-process [`WorkSource`] for unit/property tests: the work
 /// count is whatever the test sets, advanced explicitly. Lets the V-time
-/// completion logic (RDTSC = `VClock::tsc(work)`, monotonicity, snapshot
+/// completion logic (RDTSC = `VClock::guest_ticks(work)`, monotonicity, snapshot
 /// continuity) be exercised on every platform with no `perf_event`.
 #[derive(Debug, Default, Clone)]
 pub struct ScriptedWork {

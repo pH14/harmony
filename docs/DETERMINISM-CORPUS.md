@@ -35,7 +35,7 @@ integration); `det-corpus` is where that knowledge lives.
 |----|----------|-----------|---------|
 | **O1** | **Determinism** (replay-equivalence) | `compare_runs(F, F, seed, …)` must be `Identical`; on `Diverged`, `bisect_divergence` localizes to the exact work count | the core bug: any nondeterminism that leaks into observable state |
 | **O2** | **Conformance** (matches spec, not just itself) | observed serial/state digest == committed golden; trapped-instruction results == frozen `docs/cpu-msr-contract.toml` (CPUID = frozen model, MSR default-deny + allowed set, RDTSC = f(V-time), RNG = contract PRNG stream) | "deterministic but **wrong**" — a constant is perfectly deterministic and perfectly useless |
-| **O3** | **Seed-sensitivity** (non-triviality / anti-cheat) | compares a guest-**observable output** digest (`out_*`), **not** `state_hash` (which includes the seed-derived latent entropy state — see task 17 note): RNG-consuming + control-flow-stable payload under two *different* seeds → assert `work_a == work_b` **and** `out_a != out_b`; pure payload → assert `out_a == out_b` | the two failure modes O1 alone can't see: **faked** determinism (RNG wired to a constant → passes O1 trivially) and **seed-leaked** nondeterminism (seed reaching state it shouldn't). Needs a `unison::Machine` observable-output accessor (additive; [question]) |
+| **O3** | **Seed-sensitivity** (non-triviality / anti-cheat) | compares a guest-**observable output** digest (`out_*`), **not** `state_hash` (which includes the seed-derived latent entropy state — see task 17 note): RNG-consuming + control-flow-stable payload under two *different* seeds → assert `work_a == work_b` **and** `out_a != out_b`; pure payload → assert `out_a == out_b` | the two failure modes O1 alone can't see: **faked** determinism (RNG wired to a constant → passes O1 trivially) and **seed-leaked** nondeterminism (seed reaching state it shouldn't). Needs a `unison::Subject` observable-output accessor (additive; [question]) |
 | **O4** | **Backend-equivalence** (later) | on a TSC/RNG-free payload, `compare_runs(F_kvm, F_patched, …)` must be `Identical` — different backends, same architectural result | the patched-KVM trap apparatus silently changing baseline semantics. `unison` already takes two distinct factories for exactly this |
 
 O1 is necessary but not sufficient — O2 and O3 are what stop "made it deterministic by making
@@ -48,7 +48,7 @@ its hash diverges. Both directions are bugs if violated.
 
 ### C1 — Instruction sweep (the deterministic, exhaustive one)
 One tiny bare-metal payload per **trapped instruction / MSR class** we've identified, each
-exercising it many times and *at boundaries*. The trap surface (RESEARCH.md §3.5, the
+exercising it many times and *at boundaries*. The trap surface (docs/RESEARCH.md §3.5, the
 contract, R1):
 
 - `RDTSC` / `RDTSCP` — monotonic, == f(V-time); never a raw host TSC
@@ -58,7 +58,7 @@ contract, R1):
 - `HLT` — idle-skip: work count freezes, V-time warps to next deadline (`VClock::advance_idle`)
 - `MONITOR`/`MWAIT`, `PAUSE` — exit behavior per contract
 - MSR read/write — the allowed set returns contract values; **everything else #GP** (default-deny)
-- **LAPIC timer interrupt landing** — the hard core (RESEARCH.md §3.4): a timer armed in
+- **LAPIC timer interrupt landing** — the hard core (docs/RESEARCH.md §3.4): a timer armed in
   V-time must be injected at the **exact same instruction** across runs. Payload reports
   "instructions retired before first IRQ" via hypercall; O1 compares it across runs, O2 vs
   golden. Sweep deadlines on/around `skid_margin=128` (task 07). This is where determinism is
@@ -79,7 +79,7 @@ Two tiers, because a KVM run is microseconds-of-ioctls, not the nanoseconds libf
 - **Slower, real-KVM, box-gated** — `Arbitrary` input = (seed, instruction-mix program,
   hypercall-response script, interrupt schedule) → `compare_runs` on the real `Vmm`. Lower
   iteration rate; made viable by fast snapshot-reset (the *one* Nyx mechanic worth lifting —
-  dirty-page reset at high rates, `RESEARCH.md:81`; **not** Nyx itself — hosting our patched
+  dirty-page reset at high rates, `docs/RESEARCH.md:81`; **not** Nyx itself — hosting our patched
   KVM inside Nyx means nested virt, which degrades the very PMU/TSC the engine rests on).
 
 The C1 payloads are the seed corpus for C2.
@@ -124,7 +124,7 @@ on queue space, not a new device-model ruling. Tasks 22/23 are struck (see above
 
 The plan for disk and external devices is *there are no devices* — everything is the one
 **synchronous** hypercall channel (the port-I/O doorbell on stock KVM, `docs/INTEGRATION.md`
-§1 — historically sketched as `VMCALL` before task 20; see `PLAN.md` Part B's notes), which
+§1 — historically sketched as `VMCALL` before task 20; see `docs/PLAN.md` Part B's notes), which
 removes both halves of the ReVirt reduction up front:
 
 - **No async timing.** `INTEGRATION.md §1`: single in-flight, vCPU blocked for the exchange —
@@ -137,12 +137,12 @@ removes both halves of the ReVirt reduction up front:
 
 **Writes are not a determinism problem — and read-only is MVP scope, not a principle.** A
 write to a virtual disk whose backing is part of the COW-snapshotted VM state is a deterministic
-state transition, exactly like the EPT-COW RAM writes Antithesis already does (`RESEARCH.md:49`).
+state transition, exactly like the EPT-COW RAM writes Antithesis already does (`docs/RESEARCH.md:49`).
 Determinism comes from controlling *external* inputs + async timing, not from forbidding writes;
 "side-effect-free channel" means no effect that **escapes the deterministic boundary** (real
 packet, real entropy, wall-clock), not "no writes." Antithesis lists **disk I/O** as a
-*controlled* nondeterminism source (`RESEARCH.md:60`) — its read-only device is only the **boot
-medium** (an AHCI CD-ROM, `RESEARCH.md:42`), not all storage. Our `Block` service is read-only
+*controlled* nondeterminism source (`docs/RESEARCH.md:60`) — its read-only device is only the **boot
+medium** (an AHCI CD-ROM, `docs/RESEARCH.md:42`), not all storage. Our `Block` service is read-only
 today purely because *booting only needs reads* (task 01 scoped writes out); it is not a design
 stance, and writable storage is **core to the mission** (crash-consistency/durability is the
 canonical bug class Antithesis sells to database companies), not a later escalation.
@@ -216,12 +216,12 @@ guest; external/fault-injected networking is deliberately deferred.
 | **SQLite** amalgamation + `speedtest1.c` + `sqllogictest` *(historical — struck)* | originally: a freestanding workload via a **custom VFS over a `Block` service** (`SQLITE_OS_OTHER`) | *(struck; C3a is now Postgres-on-RAM)* | superseded by tasks 22/23 being struck — see C3 above |
 | **Memcached** + `memtier_benchmark` / `mc-crusher` | canonical KV/net workload + load generator | C3b (gated) | needs net + Linux guest |
 | **rr** test suite; **Antithesis prior art** (`preestablished/determinism-hypervisor`, `oss-garage/bedrock`, see [[prior-art-det-hypervisors]]) | determinism test ideas & corpora to mine | C1/C2 | adapt to our hypercall protocol |
-| **Nyx / kAFL** | *snapshot-reset loop mechanics only* (`RESEARCH.md:81`) | C2 real-KVM tier speed | do **not** host the engine inside Nyx (nested virt breaks PMU/TSC determinism) |
+| **Nyx / kAFL** | *snapshot-reset loop mechanics only* (`docs/RESEARCH.md:81`) | C2 real-KVM tier speed | do **not** host the engine inside Nyx (nested virt breaks PMU/TSC determinism) |
 
 ## Deliverable structure
 
-- **`consonance/det-corpus/`** *(task 17)* — host-side oracle runner. Generic over `unison::Machine`/
-  `MachineFactory`; defines the corpus manifest, the O1–O3 oracle runners, the conformance
+- **`consonance/det-corpus/`** *(task 17)* — host-side oracle runner. Generic over `unison::Subject`/
+  `SubjectFactory`; defines the corpus manifest, the O1–O3 oracle runners, the conformance
   differ, and the JSON report. Pure-logic, Mac-testable with `ToyMachine`; pointed at
   `vmm-core::Vmm<B>` at integration. Composes `unison` (this is integration-class, so the
   "no sibling deps" rule of wave-1 parallel crates doesn't apply — it's the layer that *binds*).

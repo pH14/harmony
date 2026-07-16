@@ -9,7 +9,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::{RecordingDecider, arb_events};
-use flow::{ConnId, Dir, FlowEngine, FlowEvent, NodeId, ToxiproxyEngine, VTime};
+use flow::{ConnId, Dir, FlowEngine, FlowEvent, Moment, NodeId, ToxiproxyEngine};
 use proptest::prelude::*;
 
 fn open(conn: u64, src: u32, dst: u32) -> FlowEvent {
@@ -24,7 +24,7 @@ fn chunk(conn: u64, at: u64) -> FlowEvent {
     FlowEvent::Chunk {
         conn: ConnId(conn),
         dir: Dir::ClientToServer,
-        at: VTime(at),
+        at: Moment(at),
         bytes: vec![0xAB],
     }
 }
@@ -41,7 +41,7 @@ fn consulted_once_per_flow_in_open_order() {
     e.on_event(
         FlowEvent::Close {
             conn: ConnId(8),
-            at: VTime(1),
+            at: Moment(1),
         },
         &mut d,
     );

@@ -31,11 +31,11 @@
 //! FAILURE)**, never an early-return `Ok`. macOS builds an empty test binary; the
 //! snapshot/branch *logic* is covered there by the unit tests in `src/snapshot.rs` /
 //! `src/vmm.rs` and the portable `tests/snapshot_branch.rs` integration test.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use vmm_backend::Backend;
-use vmm_core::bringup::{BackendKind, boot_selected};
+use vmm_backend::{Backend, X86};
 use vmm_core::snapshot::SnapshotEngine;
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_selected};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
 /// Seed for the deterministic entropy stream RDRAND/RDSEED draw from.
@@ -105,7 +105,7 @@ fn payload_image() -> Vec<u8> {
     img
 }
 
-type DynVmm = Vmm<Box<dyn Backend>>;
+type DynVmm = Vmm<Box<dyn Backend<A = X86>>>;
 
 /// Boot the patched backend over the payload, **panicking loudly** with a precise
 /// reason if the box is not ready — never an early-return that nextest counts as a

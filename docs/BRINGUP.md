@@ -1,6 +1,6 @@
 # Bring-up plan — Phase 0 → first deterministic guest
 
-Frontier work (per PLAN.md / ROADMAP "frontier" lane): the `vmm-core` KVM skeleton, designed
+Frontier work (per docs/PLAN.md / ROADMAP "frontier" lane): the `vmm-core` KVM skeleton, designed
 with the user and driven on the determinism box. **Box-only** — Linux bare-metal Intel, VMX,
 `/dev/kvm`, `perf_event` (`docs/BUILDING.md` capability matrix); macOS cannot run it. This doc
 sequences the work and pins the contracts it implements; it does not negotiate with R1 / R-Backend
@@ -105,7 +105,7 @@ nail the **Multiboot 32-bit-PM handoff** — nothing more.
 5. **M1**: boot `hello`, assert the serial capture equals `guest/golden/hello.txt` **and** the
    terminal reason is a clean isa-debug-exit with code `PASS` (0) — not the fallback `HLT` and not a
    FAIL code (a payload can print `PASS` then exit non-clean; task 04's QEMU gate checks exit status too). **Boots & prints.**
-6. **M2**: drive `hello` + `compute` through the **unison** (`Machine`/`MachineFactory` adapter,
+6. **M2**: drive `hello` + `compute` through the **unison** (`Subject`/`SubjectFactory` adapter,
    INTEGRATION.md §5): `state_hash` = canonical hash of **all observable state** — materialized guest
    memory + `VcpuState` (`save()`) **+ the serial capture buffer + isa-debug-exit/device state**. The
    unison contract folds output logs into the hash, so checkpoint/bisect `compare_runs` stays
@@ -117,9 +117,9 @@ nail the **Multiboot 32-bit-PM handoff** — nothing more.
 
 ## Determinism gate (the forcing function)
 
-Per PLAN.md, every phase gate is "same seed twice ⇒ identical state hash," run by the unison.
+Per docs/PLAN.md, every phase gate is "same seed twice ⇒ identical state hash," run by the unison.
 For M2 the hash covers **all observable state** — guest memory + `VcpuState` **+ the serial capture
-buffer + isa-debug-exit/device state** (per `unison::Machine::state_hash`: "registers, memory,
+buffer + isa-debug-exit/device state** (per `unison::Subject::state_hash`: "registers, memory,
 output log"); an output-only or wrong-exit-code divergence with identical memory/VCPU must still
 break the hash, or `compare_runs`/bisect is incomplete. Once `tasks/09-vm-state` lands, the canonical
 `vm_state` encoding replaces the ad-hoc register hash (and folds device state into the blob). The gate

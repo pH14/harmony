@@ -88,11 +88,11 @@ pub fn environment::EnvSpec::reseeds(&self) -> &alloc::collections::btree::map::
 pub fn environment::EnvSpec::seed(&self) -> u64
 pub enum environment::Fault
 pub environment::Fault::BlockEio
-pub environment::Fault::BlockLatency(environment::VTime)
+pub environment::Fault::BlockLatency(environment::Span)
 pub environment::Fault::BlockNospc
 pub environment::Fault::BlockTorn(u32)
 pub environment::Fault::BuggifyFire
-pub environment::Fault::NetLatency(environment::VTime)
+pub environment::Fault::NetLatency(environment::Span)
 pub environment::Fault::NetLoss
 pub environment::Fault::NetLoss::den: u16
 pub environment::Fault::NetLoss::num: u16
@@ -100,7 +100,7 @@ pub environment::Fault::NetReset
 pub environment::Fault::NetThrottle
 pub environment::Fault::NetThrottle::bps: u32
 pub environment::Fault::ProcKill
-pub environment::Fault::ProcPause(environment::VTime)
+pub environment::Fault::ProcPause(environment::Span)
 pub environment::Fault::ProcRestart
 impl environment::Fault
 pub fn environment::Fault::class(&self) -> environment::DecisionClass
@@ -111,9 +111,9 @@ pub environment::HostFault::CorruptMemory
 pub environment::HostFault::CorruptMemory::gpa: u64
 pub environment::HostFault::CorruptMemory::mask: environment::BitMask
 pub environment::HostFault::InjectInterrupt
-pub environment::HostFault::InjectInterrupt::vector: u8
+pub environment::HostFault::InjectInterrupt::vector: u32
 pub environment::HostFault::SetClockRate(environment::Ratio)
-pub environment::HostFault::SkewTime(environment::VTime)
+pub environment::HostFault::SkewTime(environment::Span)
 impl environment::HostFault
 pub fn environment::HostFault::decode(&[u8]) -> core::result::Result<Self, environment::EnvError>
 pub fn environment::HostFault::encode(&self) -> alloc::vec::Vec<u8>
@@ -160,11 +160,11 @@ pub fn environment::SeededEnv::restore_stream_state(&mut self, &[u8; 16])
 pub fn environment::SeededEnv::stream_state(&self) -> [u8; 16]
 impl environment::Environment for environment::SeededEnv
 pub fn environment::SeededEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
+pub struct environment::Span(pub u64)
 pub struct environment::StandingFault
 pub environment::StandingFault::class: environment::DecisionClass
 pub environment::StandingFault::target: alloc::vec::Vec<u8>
-pub environment::StandingFault::window: (environment::VTime, environment::VTime)
-pub struct environment::VTime(pub u64)
+pub environment::StandingFault::window: (environment::Moment, environment::Moment)
 pub const environment::CATALOG_VERSION: u16
 pub const environment::MAX_SUPPLY_LEN: u32
 pub trait environment::Environment

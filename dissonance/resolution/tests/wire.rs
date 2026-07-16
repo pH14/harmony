@@ -12,17 +12,17 @@
 //! join this same codec.
 
 use control_proto::{
-    ControlError, Environment, HashScope, Reply, Request, SnapId, StopConditions, StopMask,
-    StopReason, VTime, decode_reply, decode_request, encode_reply, encode_request,
+    ControlError, HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask,
+    StopReason, decode_reply, decode_request, encode_reply, encode_request,
 };
 use environment::{EnvCodec, EnvSpec, FaultPolicy};
 use resolution::{MomentRef, client_caps};
 
 #[test]
 fn branch_env_the_client_ships_round_trips_and_decodes_to_the_spec() {
-    // The exact wire `Environment` `Session::materialize` builds for `branch`.
+    // The exact wire `Reproducer` `Session::materialize` builds for `branch`.
     let mref = MomentRef::new(EnvCodec::seeded(0xABCD, FaultPolicy::none()), 1234);
-    let wire = Environment {
+    let wire = Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: mref.env.encode(),
     };
@@ -53,7 +53,7 @@ fn classic_requests_round_trip_through_the_codec() {
         Request::Snapshot,
         Request::Run {
             until: StopConditions {
-                deadline: Some(VTime(9_999)),
+                deadline: Some(Moment(9_999)),
                 on: StopMask::NONE,
             },
             resolve: None,
@@ -79,7 +79,7 @@ fn classic_replies_round_trip_through_the_codec() {
         Ok(Reply::Hello(client_caps())),
         Ok(Reply::SnapId(SnapId(7))),
         Ok(Reply::Unit),
-        Ok(Reply::Stop(StopReason::Quiescent { vtime: VTime(500) })),
+        Ok(Reply::Stop(StopReason::Quiescent { vtime: Moment(500) })),
         Ok(Reply::Hash([0x42; 32])),
         // The error result category also round-trips.
         Err(ControlError::UnknownSnapshot(SnapId(9))),

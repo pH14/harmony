@@ -71,6 +71,28 @@ K3S_BIN_SHA256=65a55ec56c24eab44383086166ec620a491952b7e23941a49ddca6e8a4c4b4de
 K3S_AIRGAP_URL=https://github.com/k3s-io/k3s/releases/download/v1.36.2+k3s1/k3s-airgap-images-amd64.tar
 K3S_AIRGAP_SHA256=6f8acd19735479234692f17b51889f60aa32059ce818f1fa5621a9b6511d2cb6
 
+# --- task 86: the libretro NES core for the SMB game workload ---
+# FCEUmm (libretro/libretro-fceumm), fetched at image-build time from a
+# commit-pinned upstream tarball — never vendored (the kernel discipline; the
+# bedrock no-copy rule applies). LICENSE (audited per-file at this pin,
+# round-3 P1): **GPL-2.0-or-later** — 490 of 601 src files carry explicit
+# headers, every one "version 2 ... or (at your option) any later version"
+# (488 GPL-2.0-or-later + 2 LGPL-2.1-or-later, Blargg's nes_ntsc); zero
+# only-versioned files; the unheadered remainder falls under the repo Copying
+# serving those grants. AGPL-3-compatible via the or-later upgrade to GPL-3
+# (AGPL-3 §13). Chosen over QuickNES (whose pin mixed an LGPL core with an
+# unheadered libretro glue under a bare GPL-2 LICENSE — a GPL-2.0-only
+# reading, AGPL-3-incompatible) and over Mesen (GPL-3, clean, but the
+# heaviest core — throughput matters at box branch rates); see
+# guest/play-agent/IMPLEMENTATION.md. Determinism comes from the VM, not the
+# core. The SAME pin provisions task 87's host-side film renderer, which is
+# what makes savestate replay 1:1. Pinned 2026-07-09 (master head). Verify:
+# shasum -a 256 <tarball>.
+FCEUMM_COMMIT=0d610d9a6401697157f693a5407adf450a0e52fb
+FCEUMM_URL=https://github.com/libretro/libretro-fceumm/archive/0d610d9a6401697157f693a5407adf450a0e52fb.tar.gz
+FCEUMM_SHA256=fa4bd76278221ea5416da3085559ea4473c37f305bc96f804c79a3937207f0a1
+FCEUMM_LICENSE=GPL-2.0-or-later
+
 # --- task 57: the deterministic-KVM patch series (sha256 of each patch file) ---
 # The five-patch series in consonance/vmm-backend/kvm-patches/patches/ git-am's
 # clean onto the pinned linux-6.18.35 tag (KERNEL_SHA256 above) and reproduces a

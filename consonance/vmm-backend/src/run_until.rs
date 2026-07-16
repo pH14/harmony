@@ -24,16 +24,17 @@
 //! planner stop cleanly ([`PlanOutcome::ReadyToInject`]); [`drive_run_until`] then
 //! checks [`PreemptCpu::take_guest_exit`] and prefers the stashed exit.
 
+use crate::arch::Arch;
 use crate::error::{BackendError, Result};
-use crate::exit::Exit;
-use crate::types::Vtime;
+use crate::exit::{CommonExit, Exit};
+use crate::types::Moment;
 use vtime::{CpuBackend, InjectionPlanner, PlanOutcome, VtimeError};
 
 /// The arm-early margin (work units, in retired conditional branches). The overflow
 /// is armed at `deadline − SKID_MARGIN` so that `armed_at + skid` (the PMI/signal-
 /// delivery latency, all counted as skid) lands **STRICTLY BEFORE** the deadline,
 /// leaving the remaining branches to exact single-stepping — the precision invariant
-/// (P1 round-6): every `Exit::Deadline` is positioned by the precise single-step, and
+/// (P1 round-6): every `CommonExit::Deadline` is positioned by the precise single-step, and
 /// an overflow that stops at/past the deadline is a loud `SkidExceeded`, never injected
 /// raw (the overflow/SIGIO is not instruction-precise at the boundary).
 ///
@@ -54,6 +55,9 @@ pub(crate) const SKID_MARGIN: u64 = 256;
 /// The live impl is `KvmBackend`'s box-only adapter; the tests use a
 /// [`vtime::sim::SimCpu`] wrapper.
 pub(crate) trait PreemptCpu: CpuBackend {
+    /// The ISA whose exits this vCPU surfaces.
+    type A: Arch;
+
     /// Take the genuine guest exit captured during the most recent
     /// `run_until_overflow`/`single_step`, **with the real work count at that
     /// exit**, if one occurred. When `Some`, the work value those calls returned to
@@ -63,7 +67,7 @@ pub(crate) trait PreemptCpu: CpuBackend {
     /// `work >= deadline` **fails closed** (task 55) — the in-kernel force-exit stops
     /// the free-run strictly before the deadline, so a reported exit there means the
     /// bounded skid was exceeded, a determinism violation (P1(a)).
-    fn take_guest_exit(&mut self) -> Option<(Exit, u64)>;
+    fn take_guest_exit(&mut self) -> Option<(Exit<Self::A>, u64)>;
 
     /// Take the typed [`BackendError`] behind the most recent
     /// [`VtimeError::Backend`] (a failed syscall), so `run_until` returns the real
@@ -84,7 +88,7 @@ pub(crate) trait PreemptCpu: CpuBackend {
 /// the count alone:
 ///
 /// - **no** guest exit (the single-step stopped AT the deadline branch — nothing ran
-///   past it) → [`Exit::Deadline`]: the **timer wins**. The post-deadline instruction
+///   past it) → [`CommonExit::Deadline`]: the **timer wins**. The post-deadline instruction
 ///   runs on the *next* entry, AFTER the timer ISR — its side effect is not yet
 ///   committed, so nothing is lost and the boundary is host-timing-independent;
 /// - a guest exit **at `work < deadline`** → **deliver it** (`Ok(exit)`): a genuinely
@@ -111,7 +115,7 @@ pub(crate) trait PreemptCpu: CpuBackend {
 /// such an exit "late but deterministically" by relying on the *deterministic* shape
 /// of the instruction stream around an exit-free region. That held for Postgres
 /// (box-bit-identical) but carried a residual **boundary race**: a deadline whose next
-/// guest exit sits a knife-edge past it could resolve as single-step→`Exit::Deadline`
+/// guest exit sits a knife-edge past it could resolve as single-step→`CommonExit::Deadline`
 /// **or** outrun→natural-exit depending on the nondeterministic `SIGIO` latency — a
 /// workload-dependent hole. The force-exit closes it at the source (bounded skid), so
 /// the universal guarantee is restored and the fallback is removed.
@@ -122,7 +126,7 @@ pub(crate) trait PreemptCpu: CpuBackend {
 /// cannot possibly take effect before the next exit, so every same-seed run is outrun
 /// identically). It did NOT hold at the *boundary*: for a deadline whose next exit sat a
 /// knife-edge distance past it (comparable to the `SIGIO`-latency variance), whether the
-/// `SIGIO` fired within margin (→ single-step `Exit::Deadline`) or was outrun (→ the
+/// `SIGIO` fired within margin (→ single-step `CommonExit::Deadline`) or was outrun (→ the
 /// fallback's natural exit) could flip run-to-run → same-seed divergence. That made the
 /// old guarantee *workload-dependent*: solid for Postgres (r1/r2/r3 bit-identical across
 /// all its deadlines), but a knife-edge deadline in another workload could flake its
@@ -139,7 +143,7 @@ pub(crate) trait PreemptCpu: CpuBackend {
 /// returned `Deadline` is exact: nothing ran past the branch, no pending completion is
 /// held.)
 ///
-/// **The precision invariant (P1 round-6).** EVERY returned `Exit::Deadline` is
+/// **The precision invariant (P1 round-6).** EVERY returned `CommonExit::Deadline` is
 /// positioned by the precise single-step, NEVER by the instruction-imprecise overflow.
 /// The planner enforces it: an overflow that stops at `stopped >= target` consumed the
 /// whole margin → `SkidExceeded` (a loud error here), so a Phase-1 (overflow) landing
@@ -153,14 +157,17 @@ pub(crate) trait PreemptCpu: CpuBackend {
 ///
 /// Also: `TargetInPast` (deadline already past on entry) → an overdue `Deadline` at
 /// `now`; a backend syscall failure → its typed [`BackendError`];
-/// [`VtimeError::SkidExceeded`] → a loud [`BackendError::Internal`].
+/// [`VtimeError::SkidExceeded`] → a loud [`BackendError::Internal`];
+/// [`VtimeError::StepBudgetExceeded`] (the guest retired no counted event, so the
+/// single-step walk would hang — the hm-440 SIGSTOP-cycling wedge) → a loud
+/// [`BackendError::Internal`], failing closed rather than hanging.
 ///
 /// Issues no syscall; all I/O is inside `cpu`'s trait methods.
 pub(crate) fn drive_run_until<C: PreemptCpu>(
     planner: &InjectionPlanner,
     cpu: &mut C,
     deadline: u64,
-) -> Result<Exit> {
+) -> Result<Exit<C::A>> {
     match planner.stop_at(cpu, deadline) {
         Ok(PlanOutcome::ReadyToInject { stopped_at, .. }) => match cpu.take_guest_exit() {
             // P1(a): classify the guest exit by its real work count vs the deadline —
@@ -200,22 +207,34 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
             // No guest exit: the single-step stopped AT the deadline branch — nothing
             // ran past it, so the TIMER WINS. The post-deadline instruction runs on the
             // next entry, after the timer ISR (host-timing-independent; nothing lost).
-            None => Ok(Exit::Deadline {
-                reached: Vtime(stopped_at),
-            }),
+            None => Ok(Exit::Common(CommonExit::Deadline {
+                reached: Moment(stopped_at),
+            })),
         },
         // The deadline was already passed when we were called — the timer is
         // overdue. Deliver at once (reached ≥ deadline); never silently absorbed.
-        Ok(PlanOutcome::TargetInPast { now, .. }) => Ok(Exit::Deadline {
-            reached: Vtime(now),
-        }),
+        Ok(PlanOutcome::TargetInPast { now, .. }) => Ok(Exit::Common(CommonExit::Deadline {
+            reached: Moment(now),
+        })),
         // Skid past the target despite the margin: a determinism hazard. Loud.
         Err(VtimeError::SkidExceeded { .. }) => Err(BackendError::Internal(
             "run_until: PMU skid exceeded the configured margin (determinism hazard)",
         )),
-        // The only other error `stop_at` returns is `VtimeError::Backend` (a cpu
-        // syscall failure) — recover its typed error. (The remaining `VtimeError`s
-        // are VClock/sim-config faults that cannot arise here, since no clock is
+        // The single-step walk stalled: the guest retired no further counted
+        // event, so the deadline work count can never be reached and the loop
+        // would step forever (the nested-x86 SIGSTOP-cycling wedge, hm-440 —
+        // a work-clock completion lost across a host suspend/resume). Fail
+        // CLOSED with a loud, typed error rather than hang. The VMM propagates
+        // this out of the run loop (never a silent hang); a substrate that is
+        // suspended into this state refuses loudly instead of wedging.
+        Err(VtimeError::StepBudgetExceeded { .. }) => Err(BackendError::Internal(
+            "run_until: guest retired no counted event across the single-step budget — the \
+             V-time deadline is unreachable (a work-clock completion was lost, e.g. across a \
+             host process suspend/resume); failing closed rather than hanging",
+        )),
+        // The remaining `stop_at` error is `VtimeError::Backend` (a cpu syscall
+        // failure) — recover its typed error. (The other `VtimeError`s are
+        // VClock/sim-config faults that cannot arise here, since no clock is
         // built in this path; they fall through to the same fail-closed default.)
         // One arm, so it stays covered by the backend-failure test rather than
         // splitting off an unreachable catch-all.
@@ -240,7 +259,7 @@ pub(crate) enum GuestExitDisposition {
     /// coincident with the deadline. Fails closed (task 55): the force-exit stops the
     /// free-run strictly before the deadline, so a reported exit AT it means the skid
     /// reached the deadline branch — a determinism hazard. (The timer-wins
-    /// `Exit::Deadline` is the distinct *no-exit* `==` land — the single-step stopped
+    /// `CommonExit::Deadline` is the distinct *no-exit* `==` land — the single-step stopped
     /// AT the branch with nothing reported past it.)
     AtDeadline,
     /// `work_at_exit > deadline`: a guest exit PAST the deadline. Fails closed
@@ -271,7 +290,7 @@ pub(crate) fn classify_guest_exit(work_at_exit: u64, deadline: u64) -> GuestExit
 /// | `deadline` vs `current` | meaning | action |
 /// |---|---|---|
 /// | `>`  | the timer is ahead | drive the planner: arm overflow, single-step to EXACTLY the deadline (precision invariant) |
-/// | `<=` | at OR past the deadline | fire the timer NOW: return `Exit::Deadline` with **ZERO guest steps** — never step a guest instruction past it |
+/// | `<=` | at OR past the deadline | fire the timer NOW: return `CommonExit::Deadline` with **ZERO guest steps** — never step a guest instruction past it |
 ///
 /// **Round-12 fix (P1):** `deadline < current` is **NOT invalid** — it is an *overdue*
 /// timer that fires now. `preemption_deadline()` computes the LAPIC one-shot's absolute
@@ -280,7 +299,7 @@ pub(crate) fn classify_guest_exit(work_at_exit: u64, deadline: u64) -> GuestExit
 /// Linux arm LAPIC one-shots constantly). Round-8 wrongly turned this into an `Internal`
 /// error → the VM aborted. An at-or-past deadline now fires immediately (the same
 /// fire-now outcome as the planner's [`PlanOutcome::TargetInPast`] for the in-flight skid
-/// case), delivering `Exit::Deadline { reached: current }`. Only genuinely-impossible
+/// case), delivering `CommonExit::Deadline { reached: current }`. Only genuinely-impossible
 /// backend states fail closed — never a late timer.
 ///
 /// The `<=` case takes the no-entry path: it does NOT call `ensure_first_run`, so the
@@ -293,7 +312,7 @@ pub(crate) enum RunUntilStart {
     /// `deadline > current`: drive the planner to exactly the deadline.
     Drive,
     /// `deadline <= current`: at or past the deadline — fire the timer NOW with zero
-    /// guest steps (`Exit::Deadline { reached: current }`). Covers the round-8 "already
+    /// guest steps (`CommonExit::Deadline { reached: current }`). Covers the round-8 "already
     /// at the deadline" (`==`) AND the round-12 "overdue timer" (`<`) cases — both are
     /// legitimate and deliver immediately; neither errors.
     AtOrPastDeadline,
@@ -428,17 +447,18 @@ impl Default for FirstEntryReset {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::x86::{X86, X86Exit};
     use proptest::prelude::*;
     use vtime::PlannerConfig;
     use vtime::sim::{SimCpu, SimCpuConfig};
 
     /// The sentinel guest exit the test wrapper injects (any exit shape works; an
     /// `Io` IN is representative of a read-style exit that must survive `run_until`).
-    const GUEST_EXIT: Exit = Exit::Io {
+    const GUEST_EXIT: Exit<X86> = Exit::Arch(X86Exit::Io {
         port: 0x3F8,
         size: 1,
         write: None,
-    };
+    });
 
     /// A [`PreemptCpu`] over [`SimCpu`]: optionally injects a guest exit the first
     /// time work crosses `guest_exit_at`, modelling a natural VM-exit mid-preemption.
@@ -447,7 +467,7 @@ mod tests {
         guest_exit_at: Option<u64>,
         deadline: u64,
         /// The stashed (exit, real-work-at-exit) — see [`PreemptCpu::take_guest_exit`].
-        pending_exit: Option<(Exit, u64)>,
+        pending_exit: Option<(Exit<X86>, u64)>,
         fail: bool,
     }
 
@@ -523,7 +543,9 @@ mod tests {
     }
 
     impl PreemptCpu for SimPreempt {
-        fn take_guest_exit(&mut self) -> Option<(Exit, u64)> {
+        type A = X86;
+
+        fn take_guest_exit(&mut self) -> Option<(Exit<X86>, u64)> {
             self.pending_exit.take()
         }
         fn take_error(&mut self) -> Option<BackendError> {
@@ -540,7 +562,7 @@ mod tests {
     struct ExitAtCpu {
         work_at_exit: u64,
         deadline: u64,
-        stashed: Option<(Exit, u64)>,
+        stashed: Option<(Exit<X86>, u64)>,
     }
     impl ExitAtCpu {
         fn new(work_at_exit: u64, deadline: u64) -> Self {
@@ -580,7 +602,9 @@ mod tests {
         }
     }
     impl PreemptCpu for ExitAtCpu {
-        fn take_guest_exit(&mut self) -> Option<(Exit, u64)> {
+        type A = X86;
+
+        fn take_guest_exit(&mut self) -> Option<(Exit<X86>, u64)> {
             self.stashed.take()
         }
         fn take_error(&mut self) -> Option<BackendError> {
@@ -615,7 +639,9 @@ mod tests {
         }
     }
     impl PreemptCpu for OverflowStopAtCpu {
-        fn take_guest_exit(&mut self) -> Option<(Exit, u64)> {
+        type A = X86;
+
+        fn take_guest_exit(&mut self) -> Option<(Exit<X86>, u64)> {
             None
         }
         fn take_error(&mut self) -> Option<BackendError> {
@@ -639,7 +665,7 @@ mod tests {
         /// The nondeterministic SIGIO/PMI latency for THIS run; must NOT affect the
         /// delivered exit (that is the property under test).
         skid: u64,
-        stashed: Option<(Exit, u64)>,
+        stashed: Option<(Exit<X86>, u64)>,
     }
     impl CpuBackend for ExitFreeRegionCpu {
         fn work(&self) -> u64 {
@@ -668,7 +694,9 @@ mod tests {
         }
     }
     impl PreemptCpu for ExitFreeRegionCpu {
-        fn take_guest_exit(&mut self) -> Option<(Exit, u64)> {
+        type A = X86;
+
+        fn take_guest_exit(&mut self) -> Option<(Exit<X86>, u64)> {
             self.stashed.take()
         }
         fn take_error(&mut self) -> Option<BackendError> {
@@ -677,7 +705,7 @@ mod tests {
     }
 
     /// P1 round-6 precision invariant: an overflow that lands EXACTLY on the deadline
-    /// (skid == margin) must NOT yield a raw `Exit::Deadline` — the overflow is
+    /// (skid == margin) must NOT yield a raw `CommonExit::Deadline` — the overflow is
     /// instruction-imprecise at the boundary, so it is a loud `SkidExceeded`; an
     /// overflow strictly before is single-stepped to the exact deadline.
     #[test]
@@ -705,9 +733,9 @@ mod tests {
         };
         assert_eq!(
             drive_run_until(&planner(), &mut before, deadline).unwrap(),
-            Exit::Deadline {
-                reached: Vtime(deadline)
-            },
+            Exit::Common(CommonExit::Deadline {
+                reached: Moment(deadline)
+            }),
             "an overflow strictly before the deadline is single-stepped to the exact boundary"
         );
     }
@@ -774,7 +802,7 @@ mod tests {
         assert_eq!(
             classify_run_until(0, 0),
             RunUntilStart::AtOrPastDeadline,
-            "fresh run_until(Vtime(0)): at the deadline, NO guest step"
+            "fresh run_until(Moment(0)): at the deadline, NO guest step"
         );
         assert_eq!(
             classify_run_until(100, 100),
@@ -848,6 +876,10 @@ mod tests {
     }
 
     fn planner() -> InjectionPlanner {
+        // The default backstop (`vtime::DEFAULT_MAX_STALL_STEPS`) can never trip
+        // here: these tests drive a `SimCpu`, which always makes progress. The
+        // backstop itself is covered by `stalled_guest_fails_closed_not_hung`
+        // and by vtime's planner unit tests.
         InjectionPlanner::new(PlannerConfig {
             skid_margin: SKID_MARGIN,
         })
@@ -890,9 +922,9 @@ mod tests {
             let exit = drive_run_until(&planner(), &mut cpu, 10_000).expect("run_until");
             assert_eq!(
                 exit,
-                Exit::Deadline {
-                    reached: Vtime(10_000)
-                },
+                Exit::Common(CommonExit::Deadline {
+                    reached: Moment(10_000)
+                }),
                 "must land at EXACTLY the deadline (count-neutral), seed {seed}"
             );
             assert_eq!(
@@ -929,9 +961,9 @@ mod tests {
                 .expect("must land at the deadline, never reaching the post-deadline IO");
             assert_eq!(
                 exit,
-                Exit::Deadline {
-                    reached: Vtime(10_000)
-                },
+                Exit::Common(CommonExit::Deadline {
+                    reached: Moment(10_000)
+                }),
                 "timer wins at the branch; the post-deadline IO is not reached (skid {skid})"
             );
             assert!(
@@ -982,9 +1014,9 @@ mod tests {
         let exit = drive_run_until(&planner(), &mut p, 100).expect("run_until");
         assert_eq!(
             exit,
-            Exit::Deadline {
-                reached: Vtime(500)
-            },
+            Exit::Common(CommonExit::Deadline {
+                reached: Moment(500)
+            }),
             "an overdue deadline delivers at once (reached = now ≥ deadline)"
         );
     }
@@ -1039,6 +1071,74 @@ mod tests {
         assert!(matches!(err, BackendError::Internal(_)));
     }
 
+    /// A [`PreemptCpu`] modeling the SIGSTOP-cycling wedge (hm-440): the overflow
+    /// carries execution to just short of the deadline, then every single-step
+    /// retires an instruction that is NOT a counted event — the guest makes no
+    /// work progress (a work-clock completion lost across a host suspend/resume),
+    /// so the deadline work count can never be reached. `steps` counts the
+    /// single-steps taken so the test can assert the walk is BOUNDED, not hung.
+    struct StalledCpu {
+        work: u64,
+        overflow_stop: u64,
+        steps: u64,
+    }
+    impl CpuBackend for StalledCpu {
+        fn work(&self) -> u64 {
+            self.work
+        }
+        fn run_until_overflow(
+            &mut self,
+            _armed_at: u64,
+        ) -> std::result::Result<u64, vtime::BackendError> {
+            // The PMU never fires early; stop no earlier than the current work.
+            self.work = self.overflow_stop.max(self.work);
+            Ok(self.work)
+        }
+        fn single_step(&mut self) -> std::result::Result<u64, vtime::BackendError> {
+            // No counted event ever retires: work is stuck below the deadline.
+            self.steps += 1;
+            Ok(self.work)
+        }
+    }
+    impl PreemptCpu for StalledCpu {
+        type A = X86;
+        fn take_guest_exit(&mut self) -> Option<(Exit<X86>, u64)> {
+            None
+        }
+        fn take_error(&mut self) -> Option<BackendError> {
+            None
+        }
+    }
+
+    /// hm-440 (the nested-x86 SIGSTOP-cycling wedge). A guest that retires no
+    /// further counted event would make `run_until`'s single-step walk hang
+    /// forever. `drive_run_until` must instead FAIL CLOSED — a loud, self-
+    /// describing [`BackendError::Internal`] — and do so in **bounded** time
+    /// (the walk stops after `max_stall_steps + 1` steps; it does not hang).
+    #[test]
+    fn stalled_guest_fails_closed_not_hung() {
+        let budget = 64;
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: SKID_MARGIN,
+        })
+        .with_max_stall_steps(budget);
+        let deadline = 10_000;
+        let mut cpu = StalledCpu {
+            work: 0,
+            overflow_stop: deadline - 1, // overflow lands one short; the walk must finish it
+            steps: 0,
+        };
+        match drive_run_until(&planner, &mut cpu, deadline) {
+            Err(BackendError::Internal(msg)) => assert!(
+                msg.contains("no counted event") && msg.contains("failing closed"),
+                "the wedge surfaces as a loud, self-describing refusal: {msg}"
+            ),
+            other => panic!("a stalled guest must fail closed, never hang or succeed: {other:?}"),
+        }
+        // Bounded: the walk stopped after budget + 1 single-steps — not a hang.
+        assert_eq!(cpu.steps, budget + 1);
+    }
+
     proptest! {
         #![proptest_config(cases(256))]
 
@@ -1068,7 +1168,7 @@ mod tests {
             let mut cpu = SimPreempt::new(cfg, deadline);
             let exit = drive_run_until(&planner(), &mut cpu, deadline)
                 .expect("run_until on an in-margin skid");
-            prop_assert_eq!(exit, Exit::Deadline { reached: Vtime(deadline) });
+            prop_assert_eq!(exit, Exit::Common(CommonExit::Deadline { reached: Moment(deadline) }));
             prop_assert_eq!(cpu.work(), deadline);
         }
 

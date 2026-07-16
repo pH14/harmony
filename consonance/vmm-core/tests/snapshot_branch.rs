@@ -15,19 +15,24 @@
 //! `src/snapshot.rs` unit tests (device-blob byte parsing, the vCPU conversions).
 #![cfg(not(miri))]
 
-use vmm_backend::{Backend, Exit, MockBackend, VcpuEvents, VcpuState};
+use vmm_backend::{
+    Backend, CommonExit, Exit, MockBackend, VcpuEvents, VcpuState, X86, X86Exit, X86Policy,
+};
 use vmm_core::snapshot::SnapshotEngine;
-use vmm_core::vmm::{GuestRam, Step, Vmm, VtimeWiring, contract_vclock_config};
+use vmm_core::vendor::x86::contract_vclock_config;
+use vmm_core::vmm::{GuestRam, Step, Vmm, VtimeWiring};
 use vmm_core::work::ScriptedWork;
 
 const RAM: usize = 0x4000; // 16 KiB = 4 pages
 
 /// A configured, V-time-wired `Vmm<MockBackend>` over `RAM` bytes of guest memory.
-fn vmm(exits: Vec<Exit>, work_at: u64, seed: u64) -> Vmm<MockBackend> {
+fn vmm(exits: Vec<Exit<X86>>, work_at: u64, seed: u64) -> Vmm<MockBackend> {
     let mut m = MockBackend::with_exits(exits);
-    m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
-    m.set_msr_filter(&vmm_backend::MsrFilter::default())
-        .unwrap();
+    m.set_policy(&X86Policy {
+        cpuid: vmm_backend::CpuidModel::default(),
+        msr_filter: vmm_backend::MsrFilter::default(),
+    })
+    .unwrap();
     let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
     v.wire_vtime(
         VtimeWiring::new(
@@ -52,7 +57,7 @@ fn booted_image() -> Vec<u8> {
 fn snapshot_then_restore_round_trips_a_running_vm() {
     // A's "boot": install a memory image, advance V-time to a clean (post-RDTSC)
     // boundary, and snapshot memory + vm_state into the engine.
-    let mut a = vmm(vec![Exit::Rdtsc], 500, 0xABCD);
+    let mut a = vmm(vec![Exit::Arch(X86Exit::Rdtsc)], 500, 0xABCD);
     a.restore_guest_memory(&booted_image()).unwrap();
     assert_eq!(a.step().unwrap(), Step::Continued); // RDTSC → synchronized
 
@@ -76,7 +81,7 @@ fn snapshot_then_restore_round_trips_a_running_vm() {
     assert_eq!(b.save_vm_state().unwrap(), vm_state);
 
     // And B can run forward (terminal latch cleared by restore).
-    let mut b2 = vmm(vec![Exit::Hlt], 9999, 0x0000);
+    let mut b2 = vmm(vec![Exit::Common(CommonExit::Idle)], 9999, 0x0000);
     b2.restore_snapshot(eng.materialize(snap).unwrap().as_slice(), &decoded)
         .unwrap();
     assert!(matches!(b2.step().unwrap(), Step::Terminal(_)));
@@ -104,10 +109,12 @@ fn non_quiescent_in_flight_events_round_trip_through_the_engine() {
         ..Default::default()
     };
     // A's backend reports an in-flight vCPU; advance V-time to a synchronized boundary.
-    let mut m = MockBackend::with_exits(vec![Exit::Rdtsc]);
-    m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
-    m.set_msr_filter(&vmm_backend::MsrFilter::default())
-        .unwrap();
+    let mut m = MockBackend::with_exits(vec![Exit::Arch(X86Exit::Rdtsc)]);
+    m.set_policy(&X86Policy {
+        cpuid: vmm_backend::CpuidModel::default(),
+        msr_filter: vmm_backend::MsrFilter::default(),
+    })
+    .unwrap();
     m.set_state(VcpuState {
         events: in_flight,
         ..Default::default()
@@ -165,10 +172,12 @@ fn task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
     };
     // Source VM `a`: the in-flight events, V-time wired, canonical-blob hash wired.
     let mut a = {
-        let mut m = MockBackend::with_exits(vec![Exit::Rdtsc]);
-        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
-        m.set_msr_filter(&vmm_backend::MsrFilter::default())
-            .unwrap();
+        let mut m = MockBackend::with_exits(vec![Exit::Arch(X86Exit::Rdtsc)]);
+        m.set_policy(&X86Policy {
+            cpuid: vmm_backend::CpuidModel::default(),
+            msr_filter: vmm_backend::MsrFilter::default(),
+        })
+        .unwrap();
         m.set_state(VcpuState {
             events: in_flight,
             ..Default::default()
@@ -196,7 +205,7 @@ fn task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
     // The in-flight event REACHES the hash: a VM carrying it hashes differently from an
     // otherwise-identical quiescent one — so 'identical hash on restore' is a meaningful
     // claim, not a no-op on an all-zero events record.
-    let mut q = vmm(vec![Exit::Rdtsc], 500, 7);
+    let mut q = vmm(vec![Exit::Arch(X86Exit::Rdtsc)], 500, 7);
     q.wire_snapshot_hashing();
     q.restore_guest_memory(&booted_image()).unwrap();
     q.step().unwrap();
@@ -249,10 +258,12 @@ fn vmst_chunk_masks_an_unusable_segments_type() {
     // differing ONLY in an unusable segment's raw `type` must hash identically through BOTH
     // chunks. (The real-KVM `save → restore → save` round-trip is gate 2 on the box.)
     let hash_of = |unusable_type: u8| -> [u8; 32] {
-        let mut m = MockBackend::with_exits(vec![Exit::Rdtsc]);
-        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
-        m.set_msr_filter(&vmm_backend::MsrFilter::default())
-            .unwrap();
+        let mut m = MockBackend::with_exits(vec![Exit::Arch(X86Exit::Rdtsc)]);
+        m.set_policy(&X86Policy {
+            cpuid: vmm_backend::CpuidModel::default(),
+            msr_filter: vmm_backend::MsrFilter::default(),
+        })
+        .unwrap();
         let mut st = VcpuState::default();
         // An UNUSABLE data segment carrying a (raw) non-zero hidden type — exactly the field
         // KVM perturbs across a SET→GET round-trip.
@@ -279,10 +290,12 @@ fn vmst_chunk_masks_an_unusable_segments_type() {
     // Sanity: a *usable* segment's type DOES move the hash (so the assert above is a real
     // masking property, not a hash that ignores segment type wholesale).
     let usable_hash = |t: u8| -> [u8; 32] {
-        let mut m = MockBackend::with_exits(vec![Exit::Rdtsc]);
-        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
-        m.set_msr_filter(&vmm_backend::MsrFilter::default())
-            .unwrap();
+        let mut m = MockBackend::with_exits(vec![Exit::Arch(X86Exit::Rdtsc)]);
+        m.set_policy(&X86Policy {
+            cpuid: vmm_backend::CpuidModel::default(),
+            msr_filter: vmm_backend::MsrFilter::default(),
+        })
+        .unwrap();
         let mut st = VcpuState::default();
         st.sregs.ds = vmm_backend::Segment {
             type_: t,
@@ -312,7 +325,7 @@ fn snapshot_hashing_makes_restore_reproduce_the_state_hash() {
     // With the canonical-blob hash wired, a VM restored from a snapshot has the
     // SAME state_hash as the snapshot source at that point — *same state* observable
     // through the determinism hash (the Mac proxy for the box's *same future*).
-    let mut a = vmm(vec![Exit::Rdtsc], 321, 0x77);
+    let mut a = vmm(vec![Exit::Arch(X86Exit::Rdtsc)], 321, 0x77);
     a.wire_snapshot_hashing();
     a.restore_guest_memory(&booted_image()).unwrap();
     a.step().unwrap();
@@ -354,10 +367,12 @@ fn snapshot_hashing_round_trips_at_a_residual_events_point() {
         flags: 0x0D,
         ..Default::default() // injected / pending all 0 ⇒ inert
     };
-    let mut m = MockBackend::with_exits(vec![Exit::Rdtsc]);
-    m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
-    m.set_msr_filter(&vmm_backend::MsrFilter::default())
-        .unwrap();
+    let mut m = MockBackend::with_exits(vec![Exit::Arch(X86Exit::Rdtsc)]);
+    m.set_policy(&X86Policy {
+        cpuid: vmm_backend::CpuidModel::default(),
+        msr_filter: vmm_backend::MsrFilter::default(),
+    })
+    .unwrap();
     m.set_state(VcpuState {
         events: residual,
         ..Default::default()
@@ -372,12 +387,8 @@ fn snapshot_hashing_round_trips_at_a_residual_events_point() {
     let hash_a = a.state_hash();
 
     let mut eng = SnapshotEngine::new(RAM);
-    let snap = eng
-        .snapshot_base(
-            a.guest_memory(),
-            &a.save_vm_state().unwrap().encode().unwrap(),
-        )
-        .unwrap();
+    let blob = a.save_vm_state().unwrap().encode().unwrap();
+    let snap = eng.snapshot_base(a.guest_memory(), &blob).unwrap();
 
     let mut b = vmm(vec![], 9999, 0);
     b.wire_snapshot_hashing();
@@ -397,30 +408,26 @@ fn snapshot_hashing_round_trips_at_a_residual_events_point() {
 
 #[test]
 fn derive_captures_only_pages_dirtied_since_the_parent() {
-    let mut a = vmm(vec![Exit::Rdtsc, Exit::Rdtsc], 100, 1);
+    let mut a = vmm(
+        vec![Exit::Arch(X86Exit::Rdtsc), Exit::Arch(X86Exit::Rdtsc)],
+        100,
+        1,
+    );
     a.restore_guest_memory(&booted_image()).unwrap();
     a.step().unwrap();
 
     let mut eng = SnapshotEngine::new(RAM);
-    let base = eng
-        .snapshot_base(
-            a.guest_memory(),
-            &a.save_vm_state().unwrap().encode().unwrap(),
-        )
-        .unwrap();
+    let blob = a.save_vm_state().unwrap().encode().unwrap();
+    let base = eng.snapshot_base(a.guest_memory(), &blob).unwrap();
 
     // Dirty exactly one page (page 1, previously zero), advance V-time, snapshot.
     let mut dirtied = booted_image();
     dirtied[4096..2 * 4096].fill(0xCC);
     a.restore_guest_memory(&dirtied).unwrap();
     a.step().unwrap();
+    let blob2 = a.save_vm_state().unwrap().encode().unwrap();
     let child = eng
-        .snapshot_derive(
-            base,
-            a.guest_memory(),
-            Some(&[1]),
-            &a.save_vm_state().unwrap().encode().unwrap(),
-        )
+        .snapshot_derive(base, a.guest_memory(), Some(&[1]), &blob2)
         .unwrap();
     assert_eq!(
         eng.stats(child).unwrap().owned_pages,
@@ -437,17 +444,13 @@ fn derive_captures_only_pages_dirtied_since_the_parent() {
 fn n_branches_share_one_boot_image_and_fork_entropy() {
     // Gate 3 + Phase 4: one booted base, N branches that share it store-wide, each
     // reseeded to a divergent entropy stream.
-    let mut boot = vmm(vec![Exit::Rdtsc], 0, 0xBEEF);
+    let mut boot = vmm(vec![Exit::Arch(X86Exit::Rdtsc)], 0, 0xBEEF);
     boot.restore_guest_memory(&booted_image()).unwrap();
     boot.step().unwrap();
 
     let mut eng = SnapshotEngine::new(RAM);
-    let base = eng
-        .snapshot_base(
-            boot.guest_memory(),
-            &boot.save_vm_state().unwrap().encode().unwrap(),
-        )
-        .unwrap();
+    let boot_blob = boot.save_vm_state().unwrap().encode().unwrap();
+    let base = eng.snapshot_base(boot.guest_memory(), &boot_blob).unwrap();
     let unique_after_base = eng.store_stats().stored_unique_pages;
     assert_eq!(unique_after_base, 2, "base interned 2 non-zero pages");
 

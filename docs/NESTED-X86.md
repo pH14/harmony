@@ -181,7 +181,7 @@ Three parts, all under `spikes/nested-x86/`:
 2. **L1 appliance image** (`appliance/`) — content-pinned build recipe producing a bootable
    image containing: the box's determinism-host kernel lineage (6.12.90-proxy with patches
    0001–0005 in its KVM), the harmony binaries needed for the gates (vmm-core control server /
-   conductor and the live gate harnesses), the L2 guest images, and the evidence tooling. One
+   campaign-runner and the live gate harnesses), the L2 guest images, and the evidence tooling. One
    build command, deterministic where practical, every component sha256-pinned in a manifest.
 3. **Harness + evidence** (`harness/`, `schemas/`, `results/<stage>/<run-set>/`) — run
    orchestration from the workstation, canonical machine-readable results (stable JSON, sorted
@@ -562,65 +562,65 @@ spikes/nested-x86/
 Raw result volume too large for git is content-addressed with a checked-in manifest, summary,
 and reproduction command. Golden evidence is immutable; reruns create a new run-set.
 
-## Execution packet (hand this to the executing model)
+## Goal Mode execution packet
+
+Goal Mode fits this spike for the same reason it fits the Apple program: a durable objective
+with measurable stage gates and a terminal definition that is a working demonstration, not a
+report. Avoid the underspecified form ("investigate nested virtualization") — without the
+stage dispositions and the definition of done, it is easy to stop at a capability probe or a
+first successful boot. The master goal prompt is:
 
 ```text
 Objective: Execute the x86 nested-virtualization feasibility spike defined in
-docs/NESTED-X86.md: determine whether the consonance deterministic stack (patched kernel +
-patched KVM + vmm) runs with full hardware acceleration as an L1 guest under stock KVM
-(nested=1) on the hetzner box, with bit-identical determinism preserved.
+docs/NESTED-X86.md: does the consonance stack (patched kernel + patches-0001-0005 KVM +
+vmm) run fully hardware-accelerated as an L1 guest under stock-KVM L0 (nested=1) on the
+hetzner box while preserving bit-identical determinism?
 
-Read first: docs/NESTED-X86.md (this program — binding), docs/R-BACKEND.md (the patched-KVM
-determinism ABI), docs/BOX-PINNING.md, docs/BRINGUP.md, docs/APPLE-SILICON.md (the sibling
-program whose evidence standards this spike mirrors),
-consonance/vmm-backend/kvm-patches/patches/ (patches 0001-0005),
-consonance/vmm-backend/src/pmu.rs, consonance/vtime/src/planner.rs, and
-vmm-core/tests/live_dirty_remap.rs (the image content-pin pattern).
+Terminal success is the document's definition of done, not feasibility prose: recorded
+GO/PROVISIONAL GO/REDESIGN/NO-GO dispositions with retained machine-readable evidence for
+stages N-0..N-4, plus the N-5 one-command build-boot-gate demo if N-3 is GO. Continue past
+intermediate reports, probes, and first boots while safe in-scope progress remains.
 
-Work through stages N-0 to N-5 in order. Treat every stage's acceptance criteria and
-disposition as a mandatory internal gate; record GO / PROVISIONAL GO / REDESIGN / NO-GO in
-docs/NESTED-X86.md with evidence locations before starting the next stage. Continue past
-intermediate reports while safe in-scope progress remains; the terminal deliverable is the
-definition-of-done in the document, not feasibility prose.
+Setup: from /Users/phemberger/workspace/harmony run
+git worktree add ../harmony-spike-nested-x86 -b spike/nested-x86. docs/NESTED-X86.md may be
+untracked on main and absent from the worktree: copy it from the primary checkout and
+commit it as the first checkpoint. All artifacts live under spikes/nested-x86/ per its
+layout. Read the doc fully first — it is binding — then docs/R-BACKEND.md,
+docs/BOX-PINNING.md, docs/APPLE-SILICON.md, and the patch/code files the program names.
 
-Workspace: create a dedicated worktree — git worktree add ../harmony-spike-nested-x86
--b spike/nested-x86 — and keep all artifacts under spikes/nested-x86/. Commit locally on the
-spike branch as checkpoints. Never push, never merge, never commit on main. Production-crate
-edits are allowed on this branch only when strictly required to run nested, minimal and
-marked SPIKE(nested-x86):, and listed in the final report.
+Run stages N-0..N-5 strictly in order; each stage's acceptance criteria and disposition are
+mandatory gates. Record each disposition and evidence path by editing docs/NESTED-X86.md
+and committing on the spike branch before starting the next stage. Commit locally as
+checkpoints; never push, never merge, never commit on main. Production-crate edits only
+when strictly required to run nested: minimal, marked SPIKE(nested-x86):, listed in the
+final report.
 
-Do not use Beads or the bd CLI for planning, tracking, memory, status, or handoff during this
-spike, even though repository-level agent instructions recommend it. This explicit
-instruction overrides that default. Keep durable state in the stage evidence directories,
-machine-readable manifests, and the dispositions in docs/NESTED-X86.md.
+Do not use Beads or the bd CLI for planning, tracking, memory, status, or handoff, even
+though repository instructions recommend it — this goal's no-Beads instruction overrides
+that default. Durable state lives in Goal Mode, the evidence directories, and the
+dispositions in the doc.
 
-The hetzner box (ssh hetzner) is exclusively yours for this spike. Follow the Box discipline
-section of docs/NESTED-X86.md exactly: test reachability first and stop-and-report if
-unreachable; capture the restore manifest before the first change; content-hash-verify every
-bootable artifact before boot; separate write/launch ssh calls with detached long-running
-processes and state-based waits; never pgrep/pkill -f your own command lines; pin cores; a
-reboot is permitted but recorded. Restore the box to its manifest state at the end (or when
-yielding) and verify the restoration — the box is the project's determinism-validation host.
+The hetzner box (ssh hetzner) is exclusively yours; the doc's Box discipline section is
+binding: reachability test first and stop-and-report if unreachable (never simulate
+results); capture the restore manifest before the first change; content-hash-verify every
+boot artifact; reboots permitted but recorded. Restore the box to its manifest state at the
+end and verify it — it is the project's shared determinism-validation host.
 
-You are the sole hardware executor: serialize every box-backed run, record its environment
-first, account for every attempted sample, and validate raw evidence personally before
-accepting it. Subagents may do bounded offline research, script construction, trace analysis,
-and review with non-overlapping file ownership; they must not touch the box, declare
-dispositions, or write authoritative evidence manifests.
+You are the sole hardware executor and owner of dispositions: serialize every box run,
+record its environment first, account for every attempted sample, and validate raw
+evidence personally. Subagents: bounded offline research, scripts, analysis, and review
+with non-overlapping file ownership — never the box, dispositions, or evidence manifests.
 
-Do not relax bit-identical determinism, accept a wall-clock dependency, silently substitute a
-different event/counter/kernel/QEMU/software-count path, simulate results for unreachable
-hardware, or count missing samples as successes. Unsupported is a result. Smoke-fire each
-large run-set's exact configuration once before spending it.
+Never relax bit-identical determinism, accept a wall-clock dependency, silently substitute
+a different event/counter/kernel/QEMU/software-count path, or count missing samples as
+successes. Unsupported is a result. Smoke-fire each large run-set's config once before
+spending it. On failure, diagnose and redesign within the nested thesis before declaring a
+disposition; on NO-GO, record which fallback tier the evidence selects (software counter /
+ring-3 substrate / emulation replay) without building it.
 
-If a result fails, diagnose and attempt reasonable redesigns within the nested
-hardware-accelerated thesis. Stop only when the definition of done is met or a named hard
-mechanism is conclusively unavailable, and record which fallback tier (software counter /
-ring-3 substrate / emulation replay tier) the evidence selects.
-
-Report at the end: dispositions per stage with evidence paths, the exact end-to-end command
-(if N-5 was reached), perf ratios (if N-4 was reached), all production-crate diffs on the
-spike branch, box restoration status verified against the manifest, and residual risks.
+Final report: dispositions with evidence paths; the N-5 command if reached; N-4 perf
+ratios and the paravirt-clock memo if reached; production-crate diffs; verified box
+restoration; residual risks. No pushes unless separately authorized.
 ```
 
 ## Immediate focus

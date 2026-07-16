@@ -1,0 +1,220 @@
+# Reviewed raw-counter-read sites in the built guest kernel (task 110, the
+# PARAVIRT-CLOCK.md §3.3 reachability gate, x86 half — see
+# scan-counter-opcodes.sh). One `artifact:symbol+0xOFFSET` entry per line — the
+# artifact, containing function, and the rdtsc/rdtscp instruction's byte OFFSET
+# within it (cross-model r10 P1). Per-SITE, not per-function-count: a NEW read is
+# a new site, a removed one goes stale, AND a removed+added pair inside one
+# function is caught (the offsets change even though the count would not). The
+# `#` comments group the sites by function and record the review class.
+#
+# ARTIFACT QUALIFICATION (cross-model r4 P2): bzImage is three executable
+# artifacts and all three run — the real-mode `setup`, the `decompressor`, and
+# the kernel proper (`vmlinux`). All three are scanned; the tag namespaces the
+# entry, so the same symbol name in two artifacts (`startup_32` is in two) cannot
+# spend the other's budget. As of the baseline below, `setup` and `decompressor`
+# contain ZERO counter reads — confirmed both by symbol-attributed disassembly
+# (4,846 and 5,988 instructions scanned) and, because the real-mode setup's
+# 16-bit stream could in principle decode differently, by a raw byte search of
+# their executable images for `0F 31` / `0F 01 F9` (zero occurrences of each).
+# They therefore contribute no entries, and the scan's stale-entry check keeps
+# it that way: the first counter read to appear in either one fails the build.
+#
+# A site is
+# allowlistable ONLY because the retained RDTSC/RDTSCP trap completes it with
+# the same work-derived value the pvclock page carries (§4.1 — on x86 a raw
+# read is survivable-by-trap, never a determinism hole). The armed scan fails
+# the kernel build on any drift, in either direction.
+#
+# BASELINE: captured 2026-07-15 from the box build of linux-6.18.35 (the r8
+# registration-handshake kernel, bzImage e4591ea8), reviewed against the
+# extracted source. Offsets are relative to the containing function, so a
+# different compiler version (or a change to a function's earlier code) shifts
+# them — such a drift fails the armed scan loudly; re-review the drifted sites
+# against that build's capture and commit the delta. For a FULL re-baseline
+# (a kernel version bump), add a line starting with `# GATE-UNARMED` — the
+# scan then prints the new capture and FAILS the build until the reviewed
+# baseline is committed and the marker removed (fail-closed; it can never
+# ship a silently-green scan).
+#
+# Review classes (every entry below is one of these; all trap-backstopped):
+#   [alt]    runtime-patched alternatives section (rdtsc/rdtscp variants the
+#            kernel may splice in; each executes as a trap if reached)
+#   [iommu]  Intel DMAR/IOMMU busy-wait timeouts (IOMMU_WAIT_OP) — no IOMMU
+#            is exposed to the guest; unreachable in practice, trapped if not
+#   [rng]    random_get_entropy()/jitter-entropy timing — trapped, so timing
+#            "entropy" is itself work-derived and deterministic
+#   [time]   boot calibration / clocksource / sched_clock / delay paths —
+#            unselectable or backstopped once harmony_pvclock is active (the
+#            delay decision is recorded in docs/history/IMPLEMENTATION-task110.md)
+#   [entry]  syscall/irqentry/fork kstack-offset randomization — trapped,
+#            deterministic offsets
+#   [perf]   the perf "msr" software event (tsc pseudo-event)
+#   [guest]  other-hypervisor guest support compiled in by the Kata base
+#            (kvmclock/vmware/vmclock) — never activates under harmony
+#            (leaves/MSRs hidden or deny-gp'd), trapped if reached
+#   [harmony] our own deliberate pre-registration anchor-freshening rdtsc
+#   [fs]     ext4 mballoc criteria timing (mb_stats path) — trapped
+#
+# .altinstr_replacement # [alt]
+vmlinux:.altinstr_replacement+0x1c7b
+vmlinux:.altinstr_replacement+0x1c7d
+vmlinux:.altinstr_replacement+0x1c83
+vmlinux:.altinstr_replacement+0x1c85
+vmlinux:.altinstr_replacement+0x1c8b
+vmlinux:.altinstr_replacement+0x1c8d
+vmlinux:.altinstr_replacement+0x1c93
+vmlinux:.altinstr_replacement+0x1c95
+vmlinux:.altinstr_replacement+0x1c9b
+vmlinux:.altinstr_replacement+0x1c9d
+vmlinux:.altinstr_replacement+0x318
+vmlinux:.altinstr_replacement+0x31a
+vmlinux:.altinstr_replacement+0x320
+vmlinux:.altinstr_replacement+0x322
+vmlinux:.altinstr_replacement+0x328
+vmlinux:.altinstr_replacement+0x32a
+vmlinux:.altinstr_replacement+0x57c
+vmlinux:.altinstr_replacement+0x57e
+vmlinux:.altinstr_replacement+0x86c
+vmlinux:.altinstr_replacement+0x86e
+vmlinux:.altinstr_replacement+0x874
+vmlinux:.altinstr_replacement+0x876
+vmlinux:.altinstr_replacement+0x8f2
+vmlinux:.altinstr_replacement+0x8f4
+vmlinux:.altinstr_replacement+0x90f
+vmlinux:.altinstr_replacement+0x911
+vmlinux:.altinstr_replacement+0x917
+vmlinux:.altinstr_replacement+0x919
+# __dmar_enable_qi # [iommu]
+vmlinux:__dmar_enable_qi+0x84
+vmlinux:__dmar_enable_qi+0xa0
+# __iommu_flush_context # [iommu]
+vmlinux:__iommu_flush_context+0x78
+vmlinux:__iommu_flush_context+0x93
+# __iommu_flush_iotlb # [iommu]
+vmlinux:__iommu_flush_iotlb+0x9a
+vmlinux:__iommu_flush_iotlb+0xa8
+# add_device_randomness # [rng]
+vmlinux:add_device_randomness+0x1b
+# add_interrupt_randomness # [rng]
+vmlinux:add_interrupt_randomness+0x5
+# add_timer_randomness # [rng]
+vmlinux:add_timer_randomness+0x1e
+# check_tsc_warp # [time] tsc_sync
+vmlinux:check_tsc_warp+0x4c
+vmlinux:check_tsc_warp+0xe
+# delay_halt # [time] delay backstop
+vmlinux:delay_halt+0x36
+vmlinux:delay_halt+0xa
+# delay_tsc # [time] delay backstop
+vmlinux:delay_tsc+0x2d
+vmlinux:delay_tsc+0x52
+vmlinux:delay_tsc+0xb
+# dmar_disable_qi # [iommu]
+vmlinux:dmar_disable_qi+0x0
+vmlinux:dmar_disable_qi+0x79
+vmlinux:dmar_disable_qi+0xa8
+vmlinux:dmar_disable_qi+0xc4
+# do_syscall_64 # [entry] kstack offset
+vmlinux:do_syscall_64+0x129
+# ecmd_submit_sync # [iommu]
+vmlinux:ecmd_submit_sync+0x60
+vmlinux:ecmd_submit_sync+0x7b
+# entropy_timer # [rng]
+vmlinux:entropy_timer+0x15
+# ext4_mb_generate_buddy # [fs]
+vmlinux:ext4_mb_generate_buddy+0x1c1
+vmlinux:ext4_mb_generate_buddy+0x2d
+# extract_entropy.constprop.0 # [rng]
+vmlinux:extract_entropy.constprop.0+0xc1
+# harmony_pvclock_init # [harmony] the two deliberate reads (pre-ring anchor freshener + post-registration clock advance; see patches/README.md)
+vmlinux:harmony_pvclock_init+0x1b4
+vmlinux:harmony_pvclock_init+0xf6
+# hpet_enable # [time] calibration (hpet off at runtime)
+vmlinux:hpet_enable+0x232
+vmlinux:hpet_enable+0x251
+# iommu_disable_irq_remapping.part.0 # [iommu]
+vmlinux:iommu_disable_irq_remapping.part.0+0x3f
+vmlinux:iommu_disable_irq_remapping.part.0+0x5b
+# iommu_disable_protect_mem_regions.part.0 # [iommu]
+vmlinux:iommu_disable_protect_mem_regions.part.0+0x28
+vmlinux:iommu_disable_protect_mem_regions.part.0+0x41
+# iommu_disable_translation # [iommu]
+vmlinux:iommu_disable_translation+0x3c
+vmlinux:iommu_disable_translation+0x55
+# iommu_enable_irq_remapping # [iommu]
+vmlinux:iommu_enable_irq_remapping+0x25
+vmlinux:iommu_enable_irq_remapping+0x3f
+vmlinux:iommu_enable_irq_remapping+0x8a
+vmlinux:iommu_enable_irq_remapping+0xa6
+# iommu_enable_translation # [iommu]
+vmlinux:iommu_enable_translation+0x25
+vmlinux:iommu_enable_translation+0x3e
+# iommu_flush_write_buffer # [iommu]
+vmlinux:iommu_flush_write_buffer+0x35
+vmlinux:iommu_flush_write_buffer+0x51
+# iommu_set_irq_remapping # [iommu]
+vmlinux:iommu_set_irq_remapping+0x73
+vmlinux:iommu_set_irq_remapping+0x8f
+# iommu_set_root_entry # [iommu]
+vmlinux:iommu_set_root_entry+0x6a
+vmlinux:iommu_set_root_entry+0x86
+# irqentry_exit_to_user_mode # [entry] kstack offset
+vmlinux:irqentry_exit_to_user_mode+0x66
+# jent_get_nstime # [rng] jitter entropy
+vmlinux:jent_get_nstime+0x4
+# lapic_cal_handler # [time] APIC calibration
+vmlinux:lapic_cal_handler+0x1a
+# lapic_next_deadline # [time] TSC-deadline programming
+vmlinux:lapic_next_deadline+0x6
+# msr_event_add # [perf]
+vmlinux:msr_event_add+0x18
+# msr_event_start # [perf]
+vmlinux:msr_event_start+0xc
+# msr_event_update # [perf]
+vmlinux:msr_event_update+0x1d
+# native_sched_clock # [time] sched_clock until pvclock routes it
+vmlinux:native_sched_clock+0x2
+# pit_hpet_ptimer_calibrate_cpu # [time] calibration
+vmlinux:pit_hpet_ptimer_calibrate_cpu+0xa2
+vmlinux:pit_hpet_ptimer_calibrate_cpu+0xc3
+# pvclock_clocksource_read # [guest] kvmclock reader (inert)
+vmlinux:pvclock_clocksource_read+0x10
+# pvclock_clocksource_read_nowd # [guest] kvmclock reader (inert)
+vmlinux:pvclock_clocksource_read_nowd+0xa
+# quick_pit_calibrate # [time] calibration
+vmlinux:quick_pit_calibrate+0x38
+vmlinux:quick_pit_calibrate+0x5a
+vmlinux:quick_pit_calibrate+0x83
+vmlinux:quick_pit_calibrate+0xa6
+# random_init # [rng]
+vmlinux:random_init+0x13
+# read_current_timer # [time]
+vmlinux:read_current_timer+0xd
+# read_tsc # [time] the tsc clocksource (unselectable when active)
+vmlinux:read_tsc+0x0
+# ret_from_fork # [entry] kstack offset
+vmlinux:ret_from_fork+0x8b
+# setup_boot_APIC_clock # [time] APIC calibration
+vmlinux:setup_boot_APIC_clock+0x11f
+vmlinux:setup_boot_APIC_clock+0xf6
+# timer_irq_works # [time] boot check
+vmlinux:timer_irq_works+0x3a
+vmlinux:timer_irq_works+0x48
+# trace_clock_x86_tsc # [time] trace clock
+vmlinux:trace_clock_x86_tsc+0x0
+# try_to_generate_entropy # [rng]
+vmlinux:try_to_generate_entropy+0x1bb
+vmlinux:try_to_generate_entropy+0x39
+vmlinux:try_to_generate_entropy+0x59
+# tsc_enable_sched_clock # [time]
+vmlinux:tsc_enable_sched_clock+0x30
+# tsc_read_refs # [time] calibration
+vmlinux:tsc_read_refs+0x2b
+vmlinux:tsc_read_refs+0x42
+# vmclock_get_crosststamp # [guest] vmclock PTP (inert)
+vmlinux:vmclock_get_crosststamp+0x15f
+vmlinux:vmclock_get_crosststamp+0x170
+# vmware_platform_setup # [guest] vmware detect (inert)
+vmlinux:vmware_platform_setup+0x155
+# vmware_sched_clock # [guest] vmware (inert)
+vmlinux:vmware_sched_clock+0x0

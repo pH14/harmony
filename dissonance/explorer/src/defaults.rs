@@ -427,10 +427,10 @@ pub(crate) fn fingerprint(stop: &StopReason) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Environment, SnapId, VTime, VirtualExemplar};
+    use crate::{Moment, Reproducer, SnapId, VirtualExemplar};
 
-    fn env() -> Environment {
-        Environment {
+    fn env() -> Reproducer {
+        Reproducer {
             blob_version: 1,
             bytes: vec![],
         }
@@ -453,7 +453,7 @@ mod tests {
 
     fn trace() -> RunTrace {
         RunTrace {
-            terminal: StopReason::Quiescent { vtime: VTime(80) },
+            terminal: StopReason::Quiescent { vtime: Moment(80) },
             env: env(),
             coverage: None,
             events: vec![],
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn fingerprint_is_a_pinned_digest() {
         let crash = StopReason::Crash {
-            vtime: VTime(80),
+            vtime: Moment(80),
             info: vec![2, 4],
         };
         let golden: [u8; 32] = [
@@ -489,11 +489,11 @@ mod tests {
     #[test]
     fn fingerprint_distinguishes_stops() {
         let crash = StopReason::Crash {
-            vtime: VTime(80),
+            vtime: Moment(80),
             info: vec![2, 4],
         };
         let assertion = StopReason::Assertion {
-            vtime: VTime(80),
+            vtime: Moment(80),
             id: 5,
             data: vec![3],
         };
@@ -501,14 +501,14 @@ mod tests {
         assert_ne!(
             fingerprint(&crash),
             fingerprint(&StopReason::Crash {
-                vtime: VTime(81),
+                vtime: Moment(81),
                 info: vec![2, 4],
             })
         );
         assert_ne!(
             fingerprint(&crash),
             fingerprint(&StopReason::Crash {
-                vtime: VTime(80),
+                vtime: Moment(80),
                 info: vec![2, 5],
             })
         );
@@ -726,10 +726,10 @@ mod tests {
         let mut t = trace();
         assert!(TerminalOracle::new().judge(&t).is_none());
         t.terminal = StopReason::Crash {
-            vtime: VTime(80),
+            vtime: Moment(80),
             info: vec![2, 4],
         };
-        t.env = Environment {
+        t.env = Reproducer {
             blob_version: 1,
             bytes: vec![9, 9],
         };

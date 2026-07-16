@@ -12,13 +12,13 @@ mod common;
 
 use common::config;
 use explorer::{
-    Archive, CoverageArchive, CoverageView, Environment, Fork, IdentityCells, Moment, RunTrace,
-    SnapId, StopReason, VTime, VirtualExemplar,
+    Archive, CoverageArchive, CoverageView, Fork, IdentityCells, Moment, Reproducer, RunTrace,
+    SnapId, StopReason, VirtualExemplar,
 };
 use proptest::prelude::*;
 
-fn env() -> Environment {
-    Environment {
+fn env() -> Reproducer {
+    Reproducer {
         blob_version: 1,
         bytes: vec![],
     }
@@ -41,7 +41,7 @@ fn fork(at: u64, coverage: &[u8]) -> Fork {
 
 fn trace() -> RunTrace {
     RunTrace {
-        terminal: StopReason::Quiescent { vtime: VTime(80) },
+        terminal: StopReason::Quiescent { vtime: Moment(80) },
         env: env(),
         coverage: None,
         events: vec![],

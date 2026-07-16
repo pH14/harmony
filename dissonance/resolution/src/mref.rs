@@ -213,7 +213,7 @@ pub enum MRefParseError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use environment::{EnvCodec, FaultPolicy, HostFault, VTime};
+    use environment::{EnvCodec, FaultPolicy, HostFault, Span};
 
     fn seeded(seed: u64) -> EnvSpec {
         EnvCodec::seeded(seed, FaultPolicy::none())
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn round_trips_a_recorded_env_with_overrides() {
         let mut env = seeded(7);
-        env.perturb(HostFault::SkewTime(VTime(9)), 100);
+        env.perturb(HostFault::SkewTime(Span(9)), 100);
         env.perturb(HostFault::InjectInterrupt { vector: 200 }, 250);
         let m = MomentRef::new(env, u64::MAX);
         assert_eq!(MomentRef::parse(&m.to_string()).unwrap(), m);

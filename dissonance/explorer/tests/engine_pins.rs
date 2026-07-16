@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Mutation-pinning gates for `Explorer` internals that need the toy machine:
 //! the default `stop_conditions` and the genesis-rebase decision in
-//! `progression_step` (a fork below a non-genesis exemplar must be rebased to
+//! `step` (a fork below a non-genesis exemplar must be rebased to
 //! genesis-complete and admitted — not dropped, not admitted branch-local).
 
 mod common;
@@ -50,14 +50,14 @@ fn nested_fork_below_a_non_genesis_base_is_admitted_genesis_complete() {
     let mut ex = Explorer::new(ToyMachine::new(), Box::new(ToyCodec), parts, 42).unwrap();
 
     // Step 1: a genesis run admits the first-generation exemplars.
-    ex.progression_step().unwrap();
+    ex.step().unwrap();
     let after_seed = ex.frontier().len();
     assert!(after_seed >= 1, "the genesis run seeded the frontier");
 
     // Exploit the SNAP_AT exemplar until a mutation makes the nested prefix
     // novel; the nested fork must then be admitted, growing the frontier.
     for _ in 0..40 {
-        ex.progression_step().unwrap();
+        ex.step().unwrap();
         if ex.frontier().len() > after_seed {
             break;
         }

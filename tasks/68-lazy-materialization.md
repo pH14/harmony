@@ -18,7 +18,7 @@
 
 Read first: `tasks/00-CONVENTIONS.md`, `docs/EXPLORATION.md` (§"The Navigation seam: virtual
 exemplars and lazy materialization" — the ruling this implements), `docs/DISSONANCE.md` (§"Ruling
-(task 93)" — the compose contract), `docs/IMPLEMENTATION-task-93.md` (the end-to-end reproducer
+(task 93)" — the compose contract), `docs/history/IMPLEMENTATION-task-93.md` (the end-to-end reproducer
 gate this task owns), `tasks/63-validate-arbitrary-vtime-seal.md` + the committed
 `consonance/vmm-core/SEAL-RATE-REPORT.md` (the ruling + the step-4 depth baseline),
 `tasks/64-explorer-spine-refactor.md` (§"Semantics that must hold" 3–4), `tasks/58-close-the-loop.md`
@@ -87,7 +87,7 @@ genesis bound; it can never make an exemplar unmaterializable.
 Internal representation: parent-rooted suffix (the hot path). External artifact: `Bug.env` =
 `EnvCodec::compose` folded down the ancestor chain to genesis (task 93 contract: tail-complete
 deltas, `at`-provenance carried in the blob) — genesis-complete, portable, no `SnapId` in it ever.
-This task owns the end-to-end gate `docs/IMPLEMENTATION-task-93.md` assigned to the frontier: the
+This task owns the end-to-end gate `docs/history/IMPLEMENTATION-task-93.md` assigned to the frontier: the
 composed artifact must replay on the real machine, not just the toy.
 
 ## Invariants (restated; each is gated below)

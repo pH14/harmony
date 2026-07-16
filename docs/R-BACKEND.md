@@ -21,7 +21,7 @@ one-way doors**:
 **backend-dependent** rows — a small, *enumerated* set (RDTSC/RDTSCP, RDRAND/RDSEED, and
 `0x6e0` enforcement), not unknown gaps. `KvmBackend::run` cannot surface those exits, so it
 must **refuse to claim determinism** for them rather than return a host-derived value as if it
-were deterministic. The forcing function is the **determinism gate** (PLAN.md: same seed twice
+were deterministic. The forcing function is the **determinism gate** (docs/PLAN.md: same seed twice
 ⇒ identical state hash, run by the unison): the moment a guest reads RDTSC/RDRAND on stock
 KVM, the gate **fails loudly**. So you cannot accidentally ship "determinism with holes" — the
 real Linux payload (which reads the TSC constantly) simply will not pass the gate until it runs

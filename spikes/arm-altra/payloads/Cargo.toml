@@ -1,0 +1,31 @@
+# Independent cargo workspace for the arm64 bare-metal oracle payloads
+# (harmony task 109, the ARM pre-build apparatus). Deliberately NOT part of the
+# repo root workspace: these crates build for aarch64-unknown-none with a custom
+# linker script, and the spike tree is standalone by construction.
+#
+# UNTESTED ON SILICON. Every artifact here has been built and booted under
+# qemu-system-aarch64 (TCG) only. TCG proves liveness and protocol; it proves
+# nothing about BR_RETIRED counts, PMIs, or skid.
+[workspace]
+resolver = "2"
+members = ["runtime", "oracles"]
+# `oracle-model` (../oracle-model) is shared with the harness workspace and is a
+# member of neither: it carries its own empty [workspace] table so both
+# workspaces can path-depend on it without ambiguity.
+
+[workspace.package]
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+# codegen-units = 1 keeps each crate a single object file, which guarantees the
+# linker pulls in the runtime's global_asm! boot shim (_start + vectors) whenever
+# any runtime symbol is referenced. Same reasoning as guest/payloads.
+[profile.release]
+codegen-units = 1
+opt-level = 2
+panic = "abort"
+debug = true          # keep the symbol table: the branch scanner needs __win_* symbols
+
+[profile.dev]
+codegen-units = 1
+panic = "abort"

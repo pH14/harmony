@@ -22,8 +22,8 @@ fn reference_vns(cfg: &VClockConfig, work: u64) -> u64 {
 
 fn reference_tsc(cfg: &VClockConfig, work: u64) -> u64 {
     saturate(
-        u128::from(cfg.tsc_base)
-            + u128::from(reference_vns(cfg, work)) * u128::from(cfg.tsc_hz) / NS_PER_SEC,
+        u128::from(cfg.guest_base)
+            + u128::from(reference_vns(cfg, work)) * u128::from(cfg.guest_hz) / NS_PER_SEC,
     )
 }
 
@@ -49,12 +49,12 @@ fn any_accepted_config() -> impl Strategy<Value = (VClock, VClockConfig)> {
     ];
     (num, den, hz, base.clone(), base).prop_filter_map(
         "config rejected by VClock::new",
-        |(ratio_num, ratio_den, tsc_hz, tsc_base, vns_base)| {
+        |(ratio_num, ratio_den, guest_hz, guest_base, vns_base)| {
             let cfg = VClockConfig {
                 ratio_num,
                 ratio_den,
-                tsc_hz,
-                tsc_base,
+                guest_hz,
+                guest_base,
                 vns_base,
             };
             VClock::new(cfg).ok().map(|clk| (clk, cfg))
@@ -72,12 +72,12 @@ fn moderate_config() -> impl Strategy<Value = (VClock, VClockConfig)> {
         0u64..=1 << 40,
         0u64..=1 << 40,
     )
-        .prop_map(|(ratio_num, ratio_den, tsc_hz, tsc_base, vns_base)| {
+        .prop_map(|(ratio_num, ratio_den, guest_hz, guest_base, vns_base)| {
             let cfg = VClockConfig {
                 ratio_num,
                 ratio_den,
-                tsc_hz,
-                tsc_base,
+                guest_hz,
+                guest_base,
                 vns_base,
             };
             (
@@ -103,13 +103,13 @@ proptest! {
     ) {
         let mut work = 0u64;
         let mut prev_vns = clk.vns(0);
-        let mut prev_tsc = clk.tsc(0);
+        let mut prev_tsc = clk.guest_ticks(0);
         prop_assert_eq!(prev_vns, reference_vns(&cfg, 0));
         prop_assert_eq!(prev_tsc, reference_tsc(&cfg, 0));
         for d in deltas {
             work = work.saturating_add(d);
             let v = clk.vns(work);
-            let t = clk.tsc(work);
+            let t = clk.guest_ticks(work);
             prop_assert!(v >= prev_vns, "vns decreased: {} -> {} at work {}", prev_vns, v, work);
             prop_assert!(t >= prev_tsc, "tsc decreased: {} -> {} at work {}", prev_tsc, t, work);
             prop_assert_eq!(v, reference_vns(&cfg, work));
@@ -155,12 +155,12 @@ proptest! {
 // --- Saturation at extreme configs: saturates to u64::MAX, never panics,
 // stays monotonic. ---
 
-fn clock(ratio_num: u64, ratio_den: u64, tsc_hz: u64, tsc_base: u64, vns_base: u64) -> VClock {
+fn clock(ratio_num: u64, ratio_den: u64, guest_hz: u64, guest_base: u64, vns_base: u64) -> VClock {
     VClock::new(VClockConfig {
         ratio_num,
         ratio_den,
-        tsc_hz,
-        tsc_base,
+        guest_hz,
+        guest_base,
         vns_base,
     })
     .expect("config accepted")
@@ -176,7 +176,7 @@ fn saturation_ratio_one_to_one() {
     // Monotone across the saturation boundary.
     assert!(clk.vns(u64::MAX - 12) <= clk.vns(u64::MAX - 11));
     assert!(clk.vns(u64::MAX - 11) <= clk.vns(u64::MAX - 10));
-    assert_eq!(clk.tsc(u64::MAX), u64::MAX);
+    assert_eq!(clk.guest_ticks(u64::MAX), u64::MAX);
 }
 
 #[test]
@@ -200,12 +200,12 @@ fn saturation_tsc_huge_hz() {
     // tsc saturates while vns is still far from saturating.
     let clk = clock(1, 1, u64::MAX, 0, 0);
     assert_eq!(clk.vns(1 << 40), 1 << 40);
-    assert_eq!(clk.tsc(1 << 40), u64::MAX);
-    // tsc_base alone can saturate the sum.
+    assert_eq!(clk.guest_ticks(1 << 40), u64::MAX);
+    // guest_base alone can saturate the sum.
     let clk = clock(1, 1, 2_000_000_000, u64::MAX - 1, 0);
-    assert_eq!(clk.tsc(0), u64::MAX - 1);
-    assert_eq!(clk.tsc(1), u64::MAX);
-    assert_eq!(clk.tsc(u64::MAX), u64::MAX);
+    assert_eq!(clk.guest_ticks(0), u64::MAX - 1);
+    assert_eq!(clk.guest_ticks(1), u64::MAX);
+    assert_eq!(clk.guest_ticks(u64::MAX), u64::MAX);
 }
 
 #[test]
@@ -219,8 +219,8 @@ fn saturation_work_max_everywhere() {
     ] {
         let clk = clock(num, den, hz, tb, vb);
         let v = clk.vns(u64::MAX);
-        let t = clk.tsc(u64::MAX);
+        let t = clk.guest_ticks(u64::MAX);
         assert!(v >= clk.vns(u64::MAX - 1));
-        assert!(t >= clk.tsc(u64::MAX - 1));
+        assert!(t >= clk.guest_ticks(u64::MAX - 1));
     }
 }

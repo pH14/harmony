@@ -9,8 +9,8 @@ behind the Progression's seams (Sensor → Cell → Archive → Selector). This 
 campaign artifacts, interrogates moments of a deterministic execution, and restructures the
 instruments before the next campaign.
 
-> **Naming (task 94).** This doc uses the post-rename loop names: **Modulation** (inner, formerly
-> Variation/Timeline) and **Progression** (outer, formerly Theme/Multiverse).
+> **Naming.** This doc uses the ruled loop names: **Modulation** (the inner loop) and
+> **Progression** (the outer loop).
 
 > **Design provenance.** The external evidence behind this ruling — Antithesis's multiverse
 > debugging and Findings report, Pernosco, WinDbg TTD, the human-in-the-loop fuzzing literature —

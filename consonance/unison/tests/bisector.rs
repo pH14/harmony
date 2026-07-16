@@ -11,7 +11,7 @@
 use proptest::prelude::*;
 use unison::flaky::{FlakyFactory, Perturbation};
 use unison::toy::{ToyFactory, asm, generate_program};
-use unison::{MachineError, Verdict, bisect_divergence, compare_runs};
+use unison::{SubjectError, Verdict, bisect_divergence, compare_runs};
 
 const MIN_WORK: u64 = 1024; // > max limit below, so machines never halt in-window
 
@@ -167,7 +167,7 @@ fn bisector_exact_for_register_perturbation() {
 // correct counts.
 #[test]
 fn forced_early_halt_yields_halt_mismatch() {
-    // Machine B halts at 137; machine A is still running when that's
+    // Subject B halts at 137; machine A is still running when that's
     // established (a None count means "had not halted").
     let (toy, flaky) = pair(3, 137, Perturbation::ForceHalt);
     let report = compare_runs(&toy, &flaky, 9, 50, 1000).unwrap();
@@ -237,6 +237,6 @@ fn no_divergence_path() {
     // Bisecting the non-divergent pair: documented error.
     assert_eq!(
         bisect_divergence(&toy, &flaky, 13, 0, 800),
-        Err(MachineError::NoDivergence { hi: 800 })
+        Err(SubjectError::NoDivergence { hi: 800 })
     );
 }

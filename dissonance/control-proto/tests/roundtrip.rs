@@ -8,7 +8,7 @@ mod common;
 
 use common::{arb_caps, arb_environment, arb_reply_result, arb_request};
 use control_proto::{
-    Environment, MAX_FRAME_LEN, ProtocolError, Request, SnapId, decode_reply, decode_request,
+    MAX_FRAME_LEN, ProtocolError, Reproducer, Request, SnapId, decode_reply, decode_request,
     encode_reply, encode_request,
 };
 use proptest::prelude::*;
@@ -81,7 +81,7 @@ proptest! {
         prop_assert_eq!(consumed + consumed2, buf.len());
     }
 
-    /// Caps and Environment carry every field bit-exactly through a Hello /
+    /// Caps and Reproducer carry every field bit-exactly through a Hello /
     /// Branch (the negotiation- and schema-blind-carry surfaces).
     #[test]
     fn caps_and_env_carry_exactly(caps in arb_caps(), env in arb_environment()) {
@@ -106,7 +106,7 @@ fn oversize_request_body_is_bad_length_and_leaves_buf_untouched() {
     let req = Request::Branch {
         snap: SnapId(0),
         // One byte past the cap, before adding the tag/snap/version/len overhead.
-        env: Environment {
+        env: Reproducer {
             blob_version: 0,
             bytes: vec![0u8; MAX_FRAME_LEN + 1],
         },
@@ -121,9 +121,9 @@ fn oversize_request_body_is_bad_length_and_leaves_buf_untouched() {
 /// via a `Decision` stop with an over-cap `ctx`.
 #[test]
 fn oversize_reply_body_is_bad_length() {
-    use control_proto::{DecisionId, Reply, StopReason, VTime};
+    use control_proto::{DecisionId, Moment, Reply, StopReason};
     let reply = Ok(Reply::Stop(StopReason::Decision {
-        vtime: VTime(0),
+        vtime: Moment(0),
         id: DecisionId(0),
         ctx: vec![0u8; MAX_FRAME_LEN + 1],
     }));
@@ -138,13 +138,13 @@ fn oversize_reply_body_is_bad_length() {
 /// so the whole body is exactly `MAX_FRAME_LEN`.
 #[test]
 fn body_exactly_at_cap_is_accepted() {
-    use control_proto::{DecisionId, Reply, StopReason, VTime};
+    use control_proto::{DecisionId, Moment, Reply, StopReason};
     // body = RESULT_OK(1) + REPLY_STOP(1) + SR_DECISION(1) + vtime(8) + id(8)
     //        + ctx_len(4) + ctx => overhead 23 bytes before ctx.
     let overhead = 1 + 1 + 1 + 8 + 8 + 4;
     let ctx = vec![0u8; MAX_FRAME_LEN - overhead];
     let reply = Ok(Reply::Stop(StopReason::Decision {
-        vtime: VTime(1),
+        vtime: Moment(1),
         id: DecisionId(2),
         ctx,
     }));

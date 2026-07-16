@@ -19,14 +19,14 @@
 
 use crate::error::ProtocolError;
 use crate::types::{
-    Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, Environment,
-    EventRef, HashScope, HostFault, Moment, RegsView, Reply, Request, SnapId, StopConditions,
-    StopMask, StopReason, VTime,
+    Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, EventRef,
+    HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request, SnapId, StopConditions,
+    StopMask, StopReason,
 };
 use crate::{MAX_FRAME_LEN, PROTO_VERSION};
 
 /// Frame magic: `b"CTL1"` read little-endian. Pins the on-wire byte order.
-const MAGIC: u32 = u32::from_le_bytes([b'C', b'T', b'L', b'1']);
+const MAGIC: u32 = u32::from_le_bytes(*b"CTL1");
 /// The fixed frame header: magic(4) + version(2) + seq(4) + len(4).
 const HEADER_LEN: usize = 14;
 
@@ -78,7 +78,7 @@ const SR_ASSERTION: u8 = 6;
 
 // ---- CrashKind discriminants. ----
 const CK_PANIC: u8 = 0;
-const CK_TRIPLE_FAULT: u8 = 1;
+const CK_UNRECOVERABLE_FAULT: u8 = 1;
 const CK_SHUTDOWN: u8 = 2;
 
 // ---- HashScope discriminants. ----
@@ -318,7 +318,7 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
             // A non-UTF-8 command is a malformed frame body, not a panic
             // (conventions rule 4): the codec is a Tier-1 fuzz target.
             cmd: String::from_utf8(r.bytes()?.to_vec()).map_err(|_| ProtocolError::ShortFrame)?,
-            deadline: VTime(r.u64()?),
+            deadline: Moment(r.u64()?),
         },
         REQ_RECORDED_ENV => Request::RecordedEnv,
         _ => return Err(ProtocolError::ShortFrame),
@@ -521,15 +521,15 @@ fn read_caps(r: &mut Reader) -> Result<Caps, ProtocolError> {
     })
 }
 
-fn write_env(w: &mut Vec<u8>, env: &Environment) {
+fn write_env(w: &mut Vec<u8>, env: &Reproducer) {
     put_u16(w, env.blob_version);
     put_bytes(w, &env.bytes);
 }
 
 /// `blob_version` is carried verbatim and never validated here — an off-version
 /// blob still decodes, so the backend can answer `BadEnvVersion` (gate 4).
-fn read_env(r: &mut Reader) -> Result<Environment, ProtocolError> {
-    Ok(Environment {
+fn read_env(r: &mut Reader) -> Result<Reproducer, ProtocolError> {
+    Ok(Reproducer {
         blob_version: r.u16()?,
         bytes: r.bytes()?.to_vec(),
     })
@@ -607,25 +607,25 @@ fn write_stop_reason(w: &mut Vec<u8>, reason: &StopReason) {
 fn read_stop_reason(r: &mut Reader) -> Result<StopReason, ProtocolError> {
     Ok(match r.u8()? {
         SR_DEADLINE => StopReason::Deadline {
-            vtime: VTime(r.u64()?),
+            vtime: Moment(r.u64()?),
         },
         SR_QUIESCENT => StopReason::Quiescent {
-            vtime: VTime(r.u64()?),
+            vtime: Moment(r.u64()?),
         },
         SR_CRASH => StopReason::Crash {
-            vtime: VTime(r.u64()?),
+            vtime: Moment(r.u64()?),
             info: read_crash_info(r)?,
         },
         SR_DECISION => StopReason::Decision {
-            vtime: VTime(r.u64()?),
+            vtime: Moment(r.u64()?),
             id: DecisionId(r.u64()?),
             ctx: r.bytes()?.to_vec(),
         },
         SR_SNAPSHOT_POINT => StopReason::SnapshotPoint {
-            vtime: VTime(r.u64()?),
+            vtime: Moment(r.u64()?),
         },
         SR_ASSERTION => StopReason::Assertion {
-            vtime: VTime(r.u64()?),
+            vtime: Moment(r.u64()?),
             ev: read_event_ref(r)?,
         },
         _ => return Err(ProtocolError::ShortFrame),
@@ -635,7 +635,7 @@ fn read_stop_reason(r: &mut Reader) -> Result<StopReason, ProtocolError> {
 fn write_crash_info(w: &mut Vec<u8>, info: &CrashInfo) {
     w.push(match info.kind {
         CrashKind::Panic => CK_PANIC,
-        CrashKind::TripleFault => CK_TRIPLE_FAULT,
+        CrashKind::UnrecoverableFault => CK_UNRECOVERABLE_FAULT,
         CrashKind::Shutdown => CK_SHUTDOWN,
     });
     put_bytes(w, &info.detail);
@@ -644,7 +644,7 @@ fn write_crash_info(w: &mut Vec<u8>, info: &CrashInfo) {
 fn read_crash_info(r: &mut Reader) -> Result<CrashInfo, ProtocolError> {
     let kind = match r.u8()? {
         CK_PANIC => CrashKind::Panic,
-        CK_TRIPLE_FAULT => CrashKind::TripleFault,
+        CK_UNRECOVERABLE_FAULT => CrashKind::UnrecoverableFault,
         CK_SHUTDOWN => CrashKind::Shutdown,
         _ => return Err(ProtocolError::ShortFrame),
     };
@@ -782,9 +782,9 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
 
 // =============================== option helpers =============================
 
-fn write_opt_vtime(w: &mut Vec<u8>, v: &Option<VTime>) {
+fn write_opt_vtime(w: &mut Vec<u8>, v: &Option<Moment>) {
     match v {
-        Some(VTime(t)) => {
+        Some(Moment(t)) => {
             w.push(PRESENT);
             put_u64(w, *t);
         }
@@ -792,10 +792,10 @@ fn write_opt_vtime(w: &mut Vec<u8>, v: &Option<VTime>) {
     }
 }
 
-fn read_opt_vtime(r: &mut Reader) -> Result<Option<VTime>, ProtocolError> {
+fn read_opt_vtime(r: &mut Reader) -> Result<Option<Moment>, ProtocolError> {
     Ok(match r.u8()? {
         ABSENT => None,
-        PRESENT => Some(VTime(r.u64()?)),
+        PRESENT => Some(Moment(r.u64()?)),
         _ => return Err(ProtocolError::ShortFrame),
     })
 }

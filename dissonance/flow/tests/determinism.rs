@@ -11,8 +11,8 @@ mod common;
 
 use common::{ScriptedDecider, arb_events, run_all, run_incremental};
 use flow::{
-    ConnId, Dir, FlowAction, FlowEngine, FlowEvent, FlowPolicy, NodeId, PassthroughEngine,
-    ToxiproxyEngine, VTime,
+    ConnId, Dir, FlowAction, FlowEngine, FlowEvent, FlowPolicy, Moment, NodeId, PassthroughEngine,
+    Span, ToxiproxyEngine,
 };
 use proptest::prelude::*;
 
@@ -85,7 +85,7 @@ fn nominal() -> ScriptedDecider {
 #[test]
 fn due_never_returns_future_actions() {
     let mut e = ToxiproxyEngine::new();
-    let mut d = ScriptedDecider::new(vec![FlowPolicy::Latency(VTime(100))]);
+    let mut d = ScriptedDecider::new(vec![FlowPolicy::Latency(Span(100))]);
     e.on_event(
         FlowEvent::Open {
             conn: ConnId(1),
@@ -99,20 +99,20 @@ fn due_never_returns_future_actions() {
             FlowEvent::Chunk {
                 conn: ConnId(1),
                 dir: Dir::ClientToServer,
-                at: VTime(at),
+                at: Moment(at),
                 bytes: vec![at as u8],
             },
             &mut d,
         );
     }
     // Deliveries land at 100, 105, 150. Draining at 100 yields exactly the first.
-    let at_100 = e.due(VTime(100));
+    let at_100 = e.due(Moment(100));
     assert_eq!(at_100.len(), 1, "only the at=100 delivery is due");
-    assert_eq!(at_100[0].at(), VTime(100));
-    let rest = e.due(VTime(u64::MAX));
+    assert_eq!(at_100[0].at(), Moment(100));
+    let rest = e.due(Moment(u64::MAX));
     assert_eq!(rest.len(), 2);
-    assert_eq!(rest[0].at(), VTime(105));
-    assert_eq!(rest[1].at(), VTime(150));
+    assert_eq!(rest[0].at(), Moment(105));
+    assert_eq!(rest[1].at(), Moment(150));
 }
 
 /// Gate 6 — multiplexed deliveries that fall on the *same* V-time drain in the
@@ -141,13 +141,13 @@ fn same_vtime_ties_break_by_insertion_order() {
             FlowEvent::Chunk {
                 conn: c,
                 dir: Dir::ClientToServer,
-                at: VTime(7),
+                at: Moment(7),
                 bytes: vec![c.0 as u8],
             },
             &mut d,
         );
     }
-    let actions = e.due(VTime(7));
+    let actions = e.due(Moment(7));
     let conns: Vec<ConnId> = actions
         .iter()
         .map(|a| match a {

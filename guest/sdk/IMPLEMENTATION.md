@@ -72,4 +72,4 @@ is a complete guest client with zero new transport code.
 Standalone workspace (like `guest/payloads`), own lockfile, path deps into
 `consonance/`. The box-side SDK demo payload, image wiring, and the vmm-core
 doorbell/stop-surfacing seams are described in the repo-root
-`IMPLEMENTATION-task73.md`.
+`docs/history/IMPLEMENTATION-task73.md`.

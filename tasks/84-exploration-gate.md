@@ -1,5 +1,26 @@
 # Task 84 — the fault-free exploration gate + game-shaped benchmark
 
+> **SUPERSEDED IMPLEMENTATION PATH (2026-07-12).** Keep this task as the source of the fault-free
+> workload, deterministic controls, and multi-seed measurement discipline. Do **not** implement its
+> `LinkSensor` / `LINK_STATE_CHANNEL` / singleton-feature cell path, and do not restore the closed
+> `sdk_events()` drain merely to make that legacy composition run. The production exploration gate
+> now depends on the Differential observation plane (`hm-bbx`) and the rewritten cooperative
+> vertical (`hm-cs5`): normalized ordered SDK evidence, lineage-complete prefixes, cells recomputed
+> at actual `sealed_at`, Differential archive occupancy, generic `Explorer`, and a simple selector.
+> Advanced selector work follows that gate rather than receiving an on-ramp from this old spec.
+
+The live implementation contract is Bead `hm-cs5`, blocked by the complete `hm-bbx` epic and a
+direct `hm-5sv` retention edge. That bead explicitly includes building the currently nonexistent
+maze guest, init/image wiring, and wire-v2 X/Y instrumentation; current stop-granular console scrape
+is not a seal-relative cell source. This file supplies only the historical workload and evaluation
+rationale.
+
+## Historical specification — non-normative
+
+**Everything below this line, through end of file, is the superseded task-84 specification.** It is
+retained to explain the maze and trial design. Its imperative wording, dependencies, public surface,
+acceptance gates, and non-goals are not implementation authority.
+
 > **FRONTIER · the exploration seam's own gate (the Metroid discipline) — and the task-70
 > on-ramp.** `docs/LAYERS.md` R-L1 rules that exploration is a first-class, independently-gated
 > capability: the searcher is useful, and must be validated, **with zero faults**. This task

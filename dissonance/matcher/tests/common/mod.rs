@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use explorer::{Environment, Moment, RunTrace, StopReason, VTime, Value};
+use explorer::{Moment, Reproducer, RunTrace, StopReason, Value};
 use matcher::stub::RecordRec;
 use matcher::{During, MatchExpr, Role, SignalDecl, SignalId, SignalSet};
 use proptest::prelude::*;
@@ -28,8 +28,8 @@ pub const MAX_KEY: &str = "n";
 /// only `env`/`terminal` matter — they flow into `Bug`.
 pub fn trace() -> RunTrace {
     RunTrace {
-        terminal: StopReason::Quiescent { vtime: VTime(7) },
-        env: Environment {
+        terminal: StopReason::Quiescent { vtime: Moment(7) },
+        env: Reproducer {
             blob_version: 1,
             bytes: vec![1, 2, 3],
         },

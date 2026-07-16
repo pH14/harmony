@@ -8,8 +8,8 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
-    Environment, EventRef, HashScope, HostFault, Moment, ProtocolError, RegsView, Reply, Request,
-    SnapId, StopConditions, StopMask, StopReason, VTime,
+    EventRef, HashScope, HostFault, Moment, ProtocolError, RegsView, Reply, Reproducer, Request,
+    SnapId, StopConditions, StopMask, StopReason,
 };
 use proptest::prelude::*;
 
@@ -41,8 +41,8 @@ pub fn arb_caps() -> impl Strategy<Value = Caps> {
         })
 }
 
-pub fn arb_environment() -> impl Strategy<Value = Environment> {
-    (any::<u16>(), arb_bytes()).prop_map(|(blob_version, bytes)| Environment {
+pub fn arb_environment() -> impl Strategy<Value = Reproducer> {
+    (any::<u16>(), arb_bytes()).prop_map(|(blob_version, bytes)| Reproducer {
         blob_version,
         bytes,
     })
@@ -58,7 +58,7 @@ fn arb_hash_scope() -> impl Strategy<Value = HashScope> {
 
 fn arb_stop_conditions() -> impl Strategy<Value = StopConditions> {
     (proptest::option::of(any::<u64>()), any::<u32>()).prop_map(|(deadline, on)| StopConditions {
-        deadline: deadline.map(VTime),
+        deadline: deadline.map(Moment),
         on: StopMask(on),
     })
 }
@@ -90,7 +90,7 @@ pub fn arb_request() -> impl Strategy<Value = Request> {
         Just(Request::Regs),
         ("[ -~]{0,64}", any::<u64>()).prop_map(|(cmd, deadline)| Request::Exec {
             cmd,
-            deadline: VTime(deadline),
+            deadline: Moment(deadline),
         }),
         Just(Request::RecordedEnv),
     ]
@@ -125,29 +125,29 @@ pub fn arb_regs_view() -> impl Strategy<Value = RegsView> {
 fn arb_crash_kind() -> impl Strategy<Value = CrashKind> {
     prop_oneof![
         Just(CrashKind::Panic),
-        Just(CrashKind::TripleFault),
+        Just(CrashKind::UnrecoverableFault),
         Just(CrashKind::Shutdown),
     ]
 }
 
 fn arb_stop_reason() -> impl Strategy<Value = StopReason> {
     prop_oneof![
-        any::<u64>().prop_map(|v| StopReason::Deadline { vtime: VTime(v) }),
-        any::<u64>().prop_map(|v| StopReason::Quiescent { vtime: VTime(v) }),
+        any::<u64>().prop_map(|v| StopReason::Deadline { vtime: Moment(v) }),
+        any::<u64>().prop_map(|v| StopReason::Quiescent { vtime: Moment(v) }),
         (any::<u64>(), arb_crash_kind(), arb_bytes()).prop_map(|(v, kind, detail)| {
             StopReason::Crash {
-                vtime: VTime(v),
+                vtime: Moment(v),
                 info: CrashInfo { kind, detail },
             }
         }),
         (any::<u64>(), any::<u64>(), arb_bytes()).prop_map(|(v, id, ctx)| StopReason::Decision {
-            vtime: VTime(v),
+            vtime: Moment(v),
             id: DecisionId(id),
             ctx,
         }),
-        any::<u64>().prop_map(|v| StopReason::SnapshotPoint { vtime: VTime(v) }),
+        any::<u64>().prop_map(|v| StopReason::SnapshotPoint { vtime: Moment(v) }),
         (any::<u64>(), any::<u32>(), arb_bytes()).prop_map(|(v, id, data)| StopReason::Assertion {
-            vtime: VTime(v),
+            vtime: Moment(v),
             ev: EventRef { id, data },
         }),
     ]

@@ -1,0 +1,23 @@
+# Standalone package on purpose: it carries its own (empty) [workspace] table so
+# that BOTH the payloads workspace (aarch64-unknown-none, no_std) and the harness
+# workspace (host / aarch64-linux, std) can path-depend on it with no workspace
+# ambiguity. The single definition of every payload parameter and every expected
+# taken-branch count lives here, so the asm and the oracle cannot drift apart.
+[workspace]
+
+[package]
+name = "oracle-model"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[features]
+default = []
+std = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }

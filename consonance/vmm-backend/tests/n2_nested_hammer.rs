@@ -11,7 +11,7 @@
 //! original N-2 evidence, PR #98 review finding 1) over a long sequence of
 //! seeded-random work targets on ONE busy-spin VM, and requires, per deadline:
 //!
-//! 1. **exact landing** — `Exit::Deadline { reached } == target`, never
+//! 1. **exact landing** — `CommonExit::Deadline { reached } == target`, never
 //!    overshoot, never a different exit;
 //! 2. **independent guest work oracle** — the guest loop increments a counter
 //!    in guest RAM once per retired conditional branch, so after a landing the
@@ -53,10 +53,11 @@
 //!
 //! Run inside the L1 appliance (or on bare metal for the N-3 control):
 //!   N2_DEADLINES=250000 ./n2_nested_hammer --ignored --nocapture --test-threads=1
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use vmm_backend::{
-    Backend, CpuidModel, Exit, Gpa, MsrFilter, MsrRange, PatchedKvmBackend, PmuOverflowStats, Vtime,
+    Backend, CommonExit, CpuidModel, Exit, Gpa, Moment, MsrFilter, MsrRange, PatchedKvmBackend,
+    PmuOverflowStats, X86Policy,
 };
 
 /// Mirror of `vmm_backend::run_until::SKID_MARGIN` (crate-private): the planner
@@ -202,16 +203,16 @@ fn n2_deadline_hammer() {
     // it), page-aligned, not aliased during run.
     unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
     backend
-        .set_cpuid(&CpuidModel::default())
-        .expect("set_cpuid");
-    backend
-        .set_msr_filter(&MsrFilter {
-            allow_inkernel: vec![MsrRange {
-                base: 0x174,
-                count: 3,
-            }],
+        .set_policy(&X86Policy {
+            cpuid: CpuidModel::default(),
+            msr_filter: MsrFilter {
+                allow_inkernel: vec![MsrRange {
+                    base: 0x174,
+                    count: 3,
+                }],
+            },
         })
-        .expect("set_msr_filter");
+        .expect("set_policy");
     backend.write_guest(Gpa(ENTRY), SPIN_CODE).expect("load");
     let mut st = backend.save().expect("save for setup");
     st.sregs.cs.base = 0;
@@ -264,8 +265,8 @@ fn n2_deadline_hammer() {
         } else {
             mtf_only += 1;
         }
-        match backend.run_until(Vtime(target)) {
-            Ok(Exit::Deadline { reached }) if reached.0 == target => {
+        match backend.run_until(Moment(target)) {
+            Ok(Exit::Common(CommonExit::Deadline { reached })) if reached.0 == target => {
                 exact += 1;
                 // Independent guest oracle: memory-visible progress must agree
                 // with the PMU axis the landing was steered by.
@@ -279,7 +280,7 @@ fn n2_deadline_hammer() {
                     ));
                 }
             }
-            Ok(Exit::Deadline { reached }) => {
+            Ok(Exit::Common(CommonExit::Deadline { reached })) => {
                 mismatches.push(format!(
                     "i={i} target={target} reached={} (delta {})",
                     reached.0,

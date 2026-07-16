@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use environment::{
     Action, Answer, BitMask, DecisionClass, EnvSpec, Fault, FaultPolicy, HostFault, Moment,
-    StandingFault, VTime,
+    StandingFault,
 };
 use proptest::prelude::*;
 use tactics_regime::SeqMutators;
@@ -29,7 +29,7 @@ fn v1_host() -> impl Strategy<Value = HostFault> {
             gpa,
             mask: BitMask(m)
         }),
-        any::<u8>().prop_map(|vector| HostFault::InjectInterrupt { vector }),
+        any::<u32>().prop_map(|vector| HostFault::InjectInterrupt { vector }),
     ]
 }
 
@@ -61,7 +61,7 @@ fn standing() -> impl Strategy<Value = StandingFault> {
         .prop_map(|(a, b, target)| StandingFault {
             class: DecisionClass::NetFlow,
             target,
-            window: (VTime(a.min(b)), VTime(a.max(b))),
+            window: (a.min(b), a.max(b)),
         })
 }
 
@@ -97,7 +97,7 @@ fn standing_set(spec: &EnvSpec) -> Vec<StandingFault> {
         EnvSpec::Recorded { standing, .. } => standing.clone(),
         EnvSpec::Seeded { .. } => Vec::new(),
     };
-    v.sort_by_key(|s| (s.class as u16, s.target.clone(), s.window.0.0, s.window.1.0));
+    v.sort_by_key(|s| (s.class as u16, s.target.clone(), s.window.0, s.window.1));
     v.dedup();
     v
 }
