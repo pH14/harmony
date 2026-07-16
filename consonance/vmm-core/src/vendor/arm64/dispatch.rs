@@ -374,6 +374,14 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             uart_capture: self.devices.uart.capture().to_vec(),
             uart_regs: *self.devices.uart.shadow_regs(),
             gic: self.devices.gic.as_ref().map(|g| g.snapshot()),
+            // The dedicated hypercall-transport ABI pages ride the blob so
+            // save/restore/branch preserve them (they are a separate memslot, not
+            // in the main-RAM snapshot). Empty when the VM never mapped them.
+            doorbell: self
+                .doorbell_pages
+                .as_ref()
+                .map(|db| db.as_bytes().to_vec())
+                .unwrap_or_default(),
         };
         s.devices = records::encode_device_blob(&dev);
         s.contract_hash = contract::contract_hash();
@@ -444,6 +452,32 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             }
             (None, None) => None,
         };
+        // The dedicated hypercall-transport ABI pages must match this VM's wiring
+        // (the GIC wiring-mismatch discipline): a snapshot that carries them
+        // restored into a VM without the memslot — or vice versa — would silently
+        // drop or misplace guest-visible transport state. When both have them the
+        // lengths must agree (both `2 · HC_PAGE`).
+        match self.doorbell_pages.as_ref() {
+            Some(db) if !dev.doorbell.is_empty() => {
+                if dev.doorbell.len() != db.len() {
+                    return Err(VmmError::ContractViolation(format!(
+                        "restore_vm_state: doorbell-pages length mismatch (snapshot {} vs this \
+                         VM's {}) — restore into a VM composed like the snapshot source.",
+                        dev.doorbell.len(),
+                        db.len()
+                    )));
+                }
+            }
+            None if dev.doorbell.is_empty() => {}
+            _ => {
+                return Err(VmmError::ContractViolation(
+                    "restore_vm_state: hypercall-transport doorbell wiring mismatch (one side \
+                     mapped the dedicated ABI pages, the other did not) — restore into a VM \
+                     composed like the snapshot source."
+                        .to_string(),
+                ));
+            }
+        }
         // The arm64 skeleton blob carries **no pvclock channel record** (the
         // arm64 clock-page protocol is `hm-rk5`'s; this skeleton only reserves
         // the seam). Validate that symmetrically against this VM's
@@ -464,6 +498,15 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             self.devices.gic = Some(g);
         }
         self.devices.uart.restore(dev.uart_capture, dev.uart_regs);
+        // Restore the dedicated transport ABI pages (validate_restore already
+        // checked the wiring + length, so this is infallible).
+        if let Some(db) = self
+            .doorbell_pages
+            .as_mut()
+            .filter(|_| !dev.doorbell.is_empty())
+        {
+            db.as_mut_bytes().copy_from_slice(&dev.doorbell);
+        }
         self.pvclock_commit_restore(None);
         self.report_stream = dev.report_stream;
     }

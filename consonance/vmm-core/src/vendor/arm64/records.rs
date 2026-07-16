@@ -125,6 +125,12 @@ const DEVICE_BLOB_VERSION_BASE: u16 = 1;
 /// [`DEVICE_BLOB_VERSION_BASE`] with no trailing record at all, and the
 /// decoder accepts exactly these two versions.
 const DEVICE_BLOB_VERSION_GIC: u16 = 2;
+/// v1 + a trailing length-prefixed **doorbell-pages** record — the dedicated
+/// arm64 hypercall-transport ABI memslot (review r11), guest-visible memory that
+/// must survive save/restore/branch. No GIC.
+const DEVICE_BLOB_VERSION_DOORBELL: u16 = 3;
+/// v2 + the doorbell record: the GIC **and** the doorbell pages.
+const DEVICE_BLOB_VERSION_GIC_DOORBELL: u16 = 4;
 
 /// Everything the vmm-core arm64 device blob carries.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -145,6 +151,12 @@ pub(crate) struct Arm64DeviceState {
     /// The GICv3 fabric state (register files + PMR + the virtual timer),
     /// present exactly when the sealing VM had the fabric wired.
     pub gic: Option<gicv3::GicState>,
+    /// The dedicated hypercall-transport ABI pages (`REQ_GPA`/`RESP_GPA`) — a
+    /// separate arm64 memslot (RAM is high), so their bytes are **not** in the
+    /// main-RAM snapshot and must ride here to survive save/restore/branch
+    /// (review r11). Empty exactly when the VM never mapped them (x86-style /
+    /// unwired composition); non-empty ⇒ exactly `2 · HC_PAGE` bytes.
+    pub doorbell: Vec<u8>,
 }
 
 fn put_u32(out: &mut Vec<u8>, v: u32) {
@@ -218,10 +230,13 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
 pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
     let mut v = Vec::new();
     put_u32(&mut v, DEVICE_BLOB_MAGIC);
-    let version = if d.gic.is_some() {
-        DEVICE_BLOB_VERSION_GIC
-    } else {
-        DEVICE_BLOB_VERSION_BASE
+    // The version IS the wiring flag (the x86 pvclock-blob pattern), now over two
+    // independent optional records: the GIC and the doorbell pages.
+    let version = match (d.gic.is_some(), !d.doorbell.is_empty()) {
+        (false, false) => DEVICE_BLOB_VERSION_BASE,
+        (true, false) => DEVICE_BLOB_VERSION_GIC,
+        (false, true) => DEVICE_BLOB_VERSION_DOORBELL,
+        (true, true) => DEVICE_BLOB_VERSION_GIC_DOORBELL,
     };
     v.extend_from_slice(&version.to_le_bytes());
     v.extend_from_slice(&d.clock_offset.to_le_bytes());
@@ -236,6 +251,12 @@ pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
     }
     if let Some(gic) = &d.gic {
         encode_gic_state(&mut v, gic);
+    }
+    // The doorbell record trails the GIC (length-prefixed), present exactly on
+    // the doorbell-bearing versions.
+    if !d.doorbell.is_empty() {
+        put_u32(&mut v, d.doorbell.len() as u32);
+        v.extend_from_slice(&d.doorbell);
     }
     vm_state::DeviceBlob(v)
 }
@@ -286,11 +307,17 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         return Err(SnapshotError::DeviceBlob("bad arm64 device-blob magic"));
     }
     let version = c.u16()?;
-    if version != DEVICE_BLOB_VERSION_BASE && version != DEVICE_BLOB_VERSION_GIC {
-        return Err(SnapshotError::DeviceBlob(
-            "unsupported arm64 device-blob version",
-        ));
-    }
+    let (has_gic, has_doorbell) = match version {
+        DEVICE_BLOB_VERSION_BASE => (false, false),
+        DEVICE_BLOB_VERSION_GIC => (true, false),
+        DEVICE_BLOB_VERSION_DOORBELL => (false, true),
+        DEVICE_BLOB_VERSION_GIC_DOORBELL => (true, true),
+        _ => {
+            return Err(SnapshotError::DeviceBlob(
+                "unsupported arm64 device-blob version",
+            ));
+        }
+    };
     let clock_offset = c.u64()?;
     let report_len = c.u32()? as usize;
     let mut report_stream = Vec::with_capacity(report_len.min(4096));
@@ -303,10 +330,16 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
     for r in &mut uart_regs {
         *r = c.u32()?;
     }
-    let gic = if version == DEVICE_BLOB_VERSION_GIC {
+    let gic = if has_gic {
         Some(decode_gic_state(&mut c)?)
     } else {
         None
+    };
+    let doorbell = if has_doorbell {
+        let len = c.u32()? as usize;
+        c.take(len)?.to_vec()
+    } else {
+        Vec::new()
     };
     if c.pos != bytes.len() {
         return Err(SnapshotError::DeviceBlob("trailing bytes"));
@@ -317,6 +350,7 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         uart_capture,
         uart_regs,
         gic,
+        doorbell,
     })
 }
 
@@ -331,6 +365,7 @@ mod tests {
             uart_capture: b"hello".to_vec(),
             uart_regs: [13, 1, 0x70, 0x301, 0x10],
             gic: None,
+            doorbell: Vec::new(),
         }
     }
 
@@ -352,9 +387,28 @@ mod tests {
         }
     }
 
+    /// A doorbell-bearing sample: distinctive 2-page ABI-page bytes (review r11).
+    fn sample_with_doorbell() -> Arm64DeviceState {
+        Arm64DeviceState {
+            doorbell: (0..8192u32).map(|i| i as u8).collect(),
+            ..sample()
+        }
+    }
+
     #[test]
     fn device_blob_round_trips() {
-        for d in [sample(), sample_with_gic()] {
+        // All four version shapes: base (v1), gic (v2), doorbell (v3), gic +
+        // doorbell (v4) — the version is the two-flag wiring witness.
+        let gic_and_doorbell = Arm64DeviceState {
+            doorbell: sample_with_doorbell().doorbell,
+            ..sample_with_gic()
+        };
+        for d in [
+            sample(),
+            sample_with_gic(),
+            sample_with_doorbell(),
+            gic_and_doorbell,
+        ] {
             let blob = encode_device_blob(&d);
             assert_eq!(decode_device_blob(&blob.0).unwrap(), d);
         }

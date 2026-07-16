@@ -637,22 +637,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if len > READ_CAP {
             return Ok(Err(ControlError::ReadTooLarge { len, cap: READ_CAP }));
         }
-        // Fetch the guest image; a `None` VM is a torn session, session-fatal like
-        // every sibling verb — never an empty-RAM fallback that fakes a range error.
-        let ram = self
-            .vmm
-            .as_ref()
-            .ok_or(ServeError::Poisoned)?
-            .guest_memory();
-        let ram_len = ram.len() as u64;
-        // `gpa + len` in u128 so a near-u64::MAX gpa cannot wrap into a "valid" range.
-        let end = u128::from(gpa) + u128::from(len);
-        if end > u128::from(ram_len) {
-            return Ok(Err(ControlError::ReadOutOfRange { gpa, len, ram_len }));
+        // A `None` VM is a torn session, session-fatal like every sibling verb —
+        // never an empty-RAM fallback that fakes a range error.
+        let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+        // Resolve the ABSOLUTE guest-physical `gpa` through the engine's region
+        // resolver, so an arm64 address (over `RAM_BASE`) reads the right bytes
+        // and a low unmapped GPA is out-of-range rather than a wrong main-RAM
+        // offset (review r11). x86 (RAM at base 0) is unchanged: a low GPA is its
+        // own offset, and the same range fails closed.
+        match vmm.guest_slice(gpa, len as usize) {
+            Some(bytes) => Ok(Ok(Reply::Bytes(bytes.to_vec()))),
+            None => Ok(Err(ControlError::ReadOutOfRange {
+                gpa,
+                len,
+                ram_len: vmm.guest_memory().len() as u64,
+            })),
         }
-        // In range: gpa and end both fit usize (end <= ram_len <= isize::MAX).
-        let start = gpa as usize;
-        Ok(Ok(Reply::Bytes(ram[start..start + len as usize].to_vec())))
     }
 
     /// The session's **V-time synchronization** predicate (PR #51 round-7): `true`
