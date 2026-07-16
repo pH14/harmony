@@ -38,8 +38,9 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   — **SPAWNED 2026-07-15 ~23:40 on Fable 5** (agent-arm-backend-skeleton): M0 snapshot-seam
   (x86-neutral, Intel-box gate BLOCKING) → M1 keystone Vendor skeleton → M2 gicv3 crate →
   M3 Image+DTB boot → M4 stock KVM/arm64 backend; TCG-first gates, real-KVM gates edged
-  to the Altra (`hm-7pb`). One transient Fable model refusal 2026-07-15 eve — nudged
-  once, recovered, now on the M1 skeleton tests.
+  to the Altra (`hm-7pb`). TWO Fable safeguard refusals 2026-07-15 eve (nudge recovered
+  the first; the second re-tripped) — foreman switched the live session to **Opus 4.8
+  xhigh** via /model (classifier blocks session kills); continuing M1 skeleton tests.
 - **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — **⚖️ PAUL RULED
   TOP-UP 2026-07-15 eve (floor stands as written)**: worker dispatched to reach ≥1.05M
   cumulative true armed PMIs (sized by the measured ~55% rate, round-2 fixed
