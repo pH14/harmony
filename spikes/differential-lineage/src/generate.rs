@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Deterministic fixture construction: an explicit tree builder (used both by
 //! the committed hand fixtures and the random sweeps) and a seeded random tree
 //! generator. Determinism discipline: the only entropy is a caller-provided
@@ -357,6 +358,10 @@ pub const SRC_SCRAPE: SourceId = 2;
 /// revision after the last evidence revision; entry commits one after that
 /// (the two-revision materialization barrier holds by construction).
 pub fn random_tree(name: &str, seed: u64, p: TreeParams) -> (Fixture, Replay) {
+    assert!(
+        p.rollouts > 0 && p.max_events > 0 && p.registers > 0 && p.tags > 0,
+        "TreeParams counts must be positive (zero would divide the RNG range)"
+    );
     let mut rng = SplitMix64(seed);
     let mut b = Builder::new(name, 0);
     for i in 0..p.registers {
@@ -417,7 +422,7 @@ pub fn random_tree(name: &str, seed: u64, p: TreeParams) -> (Fixture, Replay) {
                     value: rng.below(100) as i64 - 50,
                 },
                 6..=7 => Payload::Note {
-                    tag: rng.below(u64::from(p.tags.max(1))) as u32,
+                    tag: rng.below(u64::from(p.tags)) as u32,
                 },
                 _ => Payload::Assertion {
                     site: 900 + rng.below(3) as u32,

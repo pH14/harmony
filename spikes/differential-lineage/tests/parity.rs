@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The parity adjudicator: every dataflow view must equal the plain-Rust
 //! genesis-replay referee — on the hand fixtures, on seeded random branch
 //! trees, at every intermediate revision (the probe/two-pass staging

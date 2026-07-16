@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Regenerate the committed fixture JSON files. Deterministic: rerunning
 //! must reproduce the committed bytes exactly (`tests/exact.rs` asserts it).
 //!

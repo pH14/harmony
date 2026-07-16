@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Fixture-backed tests with exact, hand-written expected outputs — one per
 //! query family (task gate). These load the *committed* JSON fixtures,
 //! assert the committed bytes still equal the generator's output, run the

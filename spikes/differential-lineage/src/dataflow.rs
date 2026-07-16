@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Differential Dataflow program under test, and its revision-stepped
 //! driver.
 //!
@@ -168,11 +169,19 @@ fn fold_units(input: &[(&Agg, isize)]) -> Option<Agg> {
 /// Run one fixture through the dataflow: one process, one worker, one
 /// dataflow, time = revision. Input batches within a revision are fed in an
 /// `order_seed`-shuffled order (net views must be invariant to it).
+///
+/// Refuses a fixture that fails [`Fixture::validate`] — a lineage cycle
+/// would keep the ancestry iteration from ever reaching a fixed point, and
+/// a `Revision::MAX` record would overflow the frontier advancement — so
+/// the driver fails loudly up front instead of hanging.
 pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
     assert!(
         opts.naive || opts.shared,
         "at least one formulation must be built"
     );
+    if let Err(why) = fixture.validate() {
+        panic!("malformed fixture {:?}: {why}", fixture.name);
+    }
     let acc = Arc::new(Mutex::new(Captured::default()));
     let acc_in = Arc::clone(&acc);
     let fx = fixture.clone();
@@ -206,6 +215,20 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
                         let mut g = a.lock().unwrap();
                         for (_d, t, _r) in batch {
                             *g.deltas.entry(($name.to_owned(), *t)).or_default() += 1;
+                        }
+                    })
+                }};
+            }
+            // As `meter!`, for collections inside an iterative scope: updates
+            // carry `Product<revision, iteration>` timestamps and are
+            // attributed to their outer revision.
+            macro_rules! meter_inner {
+                ($coll:expr, $name:expr, $acc:expr) => {{
+                    let a = Arc::clone(&$acc);
+                    $coll.inspect_batch(move |_t, batch| {
+                        let mut g = a.lock().unwrap();
+                        for (_d, t, _r) in batch {
+                            *g.deltas.entry(($name.to_owned(), t.outer)).or_default() += 1;
                         }
                     })
                 }};
@@ -295,6 +318,7 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
                 .clone()
                 .map(|l| ((l.config, l.child), (l.parent, l.cut.count)));
             let anc = {
+                let acc_iter = Arc::clone(&acc_in);
                 let edges_c = edges.clone();
                 let base = edges.map(|((cfg, r), (p, u))| ((cfg, r), (p, u, 1u32)));
                 let base_c = base.clone();
@@ -307,6 +331,7 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
                         .join_map(edges, |&(cfg, _a), &(r, d), &(b, u2)| {
                             ((cfg, r), (b, u2, d + 1))
                         });
+                    let step = meter_inner!(step, "lineage.step", acc_iter);
                     base.concat(step).distinct()
                 })
             };
@@ -326,6 +351,7 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
                     anc_arr.clone(),
                     |&(cfg, r), &(point, _count), &(a, u, _d)| Some(((cfg, a), (r, point, u))),
                 );
+                let point_anc = meter!(point_anc, "naive.point_anc");
                 let anc_side = point_anc.join_core(
                     measures_arr.clone(),
                     |&(cfg, _a), &(r, point, u), &(dim, pos, moment, value)| {
@@ -356,6 +382,7 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
                     let v: Vec<Pos> = input.iter().map(|(b, _)| **b).collect();
                     output.push((v, 1isize));
                 });
+                let bounds = meter!(bounds, "shared.bounds");
                 let bounds_arr = bounds.arrange_by_key_named("bounds-by-rollout");
 
                 // Assign each measure to its interval's lower boundary.
@@ -405,6 +432,7 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
                         lookup(&dv.1, u).map(|agg| ((cfg, r, dv.0), (d, agg.clone())))
                     },
                 );
+                let start_contrib = meter!(start_contrib, "shared.start_in");
                 let start = start_contrib.reduce(|_k, input, output| {
                     let mut acc: Option<Agg> = None;
                     for ((_d, agg), w) in input.iter().map(|(v, w)| ((v.0, &v.1), *w)) {
@@ -434,7 +462,8 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
                         lookup(&dv.1, count).map(|agg| ((cfg, r, point, dv.0), agg.clone()))
                     },
                 );
-                let obs = inherited.concat(own).reduce(|_k, input, output| {
+                let obs_in = meter!(inherited.concat(own), "shared.obs_in");
+                let obs = obs_in.reduce(|_k, input, output| {
                     if let Some(agg) = fold_units(input) {
                         output.push((ObsOut::from_agg(&agg), 1isize));
                     }
@@ -707,11 +736,13 @@ pub fn run(fixture: &Fixture, opts: BuildOpts, order_seed: u64) -> Captured {
             }
         });
 
-        // Feed revision by revision; within a revision, each record class is
-        // shuffled by the order seed (net views must not care).
+        // Feed the occupied revisions in order (walking every integer up to
+        // the maximum would stall on sparse revision numbers); within a
+        // revision, each record class is shuffled by the order seed (net
+        // views must not care). `rev + 1` cannot overflow: validate()
+        // rejected `Revision::MAX`.
         let mut rng = SplitMix64(order_seed ^ 0xC0FF_EE11_D00D_5EED);
-        let max_rev = fx.max_rev();
-        for rev in 0..=max_rev {
+        for rev in occupied_revisions(&fx) {
             feed_rev(&mut inputs, &fx, rev, &mut rng);
             inputs.advance_flush(rev + 1);
             worker.step_while(|| probe.less_than(&(rev + 1)));
@@ -778,6 +809,28 @@ fn shuffled<T: Clone>(items: impl Iterator<Item = T>, rng: &mut SplitMix64) -> V
         v.swap(i, j);
     }
     v
+}
+
+/// The sorted, deduplicated set of revisions any record commits at.
+fn occupied_revisions(fx: &Fixture) -> Vec<Revision> {
+    let mut revs: Vec<Revision> = fx
+        .registers
+        .iter()
+        .map(|r| r.rev)
+        .chain(fx.sources.iter().map(|r| r.rev))
+        .chain(fx.properties.iter().map(|r| r.rev))
+        .chain(fx.events.iter().map(|r| r.rev))
+        .chain(fx.scrape.iter().map(|r| r.rev))
+        .chain(fx.lineage.iter().map(|r| r.rev))
+        .chain(fx.obs_cuts.iter().map(|r| r.rev))
+        .chain(fx.seals.iter().map(|r| r.rev))
+        .chain(fx.entry_commits.iter().map(|r| r.rev))
+        .chain(fx.working.iter().map(|r| r.rev))
+        .chain(fx.seq_queries.iter().map(|r| r.rev))
+        .collect();
+    revs.sort_unstable();
+    revs.dedup();
+    revs
 }
 
 fn feed_rev(inputs: &mut Inputs, fx: &Fixture, rev: Revision, rng: &mut SplitMix64) {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The three committed hand fixtures. Each is built through the validating
 //! `Builder` so the genesis-complete replay authority comes along by
 //! construction; `examples/gen_fixtures.rs` writes their JSON under

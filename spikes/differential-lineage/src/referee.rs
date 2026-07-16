@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The direct-recompute referee: every view computed in plain Rust from the
 //! genesis-complete replay vectors (the semantic oracle the strategy names —
 //! "replaying the genesis-complete reproducer is the semantic oracle; cached
@@ -24,8 +25,39 @@ pub struct Referee<'a> {
 }
 
 impl<'a> Referee<'a> {
-    /// New referee.
+    /// New referee. Refuses a fixture that fails [`Fixture::validate`] or a
+    /// replay whose vectors do not cover the fixture's cuts — every slicing
+    /// operation below is guarded by these checks, so a malformed input
+    /// fails here with a message instead of panicking mid-view.
     pub fn new(fixture: &'a Fixture, replay: &'a Replay) -> Referee<'a> {
+        if let Err(why) = fixture.validate() {
+            panic!("malformed fixture {:?}: {why}", fixture.name);
+        }
+        for s in &fixture.seals {
+            assert!(
+                s.cut.count as usize <= replay.vector(s.rollout).len(),
+                "seal {} cut {} exceeds rollout {}'s replay vector",
+                s.seal,
+                s.cut.count,
+                s.rollout
+            );
+        }
+        for c in &fixture.obs_cuts {
+            assert!(
+                c.cut.count as usize <= replay.vector(c.rollout).len(),
+                "obs cut {} exceeds rollout {}'s replay vector",
+                c.cut.count,
+                c.rollout
+            );
+        }
+        for l in &fixture.lineage {
+            assert!(
+                l.cut.count as usize <= replay.vector(l.child).len(),
+                "fork cut {} exceeds rollout {}'s inherited replay prefix",
+                l.cut.count,
+                l.child
+            );
+        }
         Referee { fixture, replay }
     }
 

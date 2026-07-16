@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The arrangement-sharing / incremental-cost measurement (a first-class
 //! deliverable of tasks/120). Reproducible by one documented command:
 //!

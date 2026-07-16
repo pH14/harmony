@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! # differential-lineage — spike (tasks/120, `hm-bbx.2`)
 //!
 //! A bounded Differential Dataflow program over persisted fixture records,

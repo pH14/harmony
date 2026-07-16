@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Persisted record model and derived-value types.
 //!
 //! Every record an input collection carries is defined here, shaped after the
@@ -315,6 +316,161 @@ pub struct Fixture {
 }
 
 impl Fixture {
+    /// Validate the structural contracts every consumer relies on. Returns a
+    /// description of the first violation found. Checked by `dataflow::run`
+    /// (which refuses malformed fixtures instead of hanging or panicking mid-
+    /// dataflow) and by `Referee::new`.
+    ///
+    /// Contracts:
+    /// - no record commits at `Revision::MAX` (the driver advances to
+    ///   `rev + 1`);
+    /// - lineage is a forest per config: no self-parent, at most one parent
+    ///   per child, no cycles (a cycle would prevent the ancestry iteration
+    ///   from ever reaching a fixed point);
+    /// - each rollout's persisted positions are exactly the contiguous range
+    ///   `[start, start + n)` where `start` is its branch-point count (the
+    ///   restored prefix is inherited, never re-persisted);
+    /// - no cut (fork, configured, or seal) precedes its rollout's branch
+    ///   point or exceeds its persisted evidence (the physical cut contract:
+    ///   a machine exists only from its branch moment onward, so cuts are
+    ///   nondecreasing along every lineage path — lineage composition is
+    ///   sound only under it).
+    pub fn validate(&self) -> Result<(), String> {
+        let max_rev_ok = |rev: Revision, what: &str| -> Result<(), String> {
+            if rev == Revision::MAX {
+                Err(format!("{what} commits at Revision::MAX"))
+            } else {
+                Ok(())
+            }
+        };
+        for r in &self.registers {
+            max_rev_ok(r.rev, "register declaration")?;
+        }
+        for r in &self.sources {
+            max_rev_ok(r.rev, "source declaration")?;
+        }
+        for r in &self.properties {
+            max_rev_ok(r.rev, "property declaration")?;
+        }
+        for r in &self.events {
+            max_rev_ok(r.rev, "event")?;
+        }
+        for r in &self.scrape {
+            max_rev_ok(r.rev, "scrape line")?;
+        }
+        for r in &self.lineage {
+            max_rev_ok(r.rev, "lineage record")?;
+        }
+        for r in &self.obs_cuts {
+            max_rev_ok(r.rev, "obs cut")?;
+        }
+        for r in &self.seals {
+            max_rev_ok(r.rev, "seal")?;
+        }
+        for r in &self.entry_commits {
+            max_rev_ok(r.rev, "entry commit")?;
+        }
+        for r in &self.working {
+            max_rev_ok(r.rev, "working update")?;
+        }
+        for r in &self.seq_queries {
+            max_rev_ok(r.rev, "sequence query")?;
+        }
+
+        // Lineage: forest per config.
+        let mut parent: std::collections::BTreeMap<(CfgId, RolloutId), (RolloutId, Pos)> =
+            std::collections::BTreeMap::new();
+        for l in &self.lineage {
+            if l.child == l.parent {
+                return Err(format!("rollout {} is its own parent", l.child));
+            }
+            if parent
+                .insert((l.config, l.child), (l.parent, l.cut.count))
+                .is_some()
+            {
+                return Err(format!("rollout {} has two parents", l.child));
+            }
+        }
+        for &(config, child) in parent.keys() {
+            let mut seen = std::collections::BTreeSet::new();
+            let mut cur = child;
+            while let Some(&(p, _)) = parent.get(&(config, cur)) {
+                if !seen.insert(cur) {
+                    return Err(format!(
+                        "lineage cycle through rollout {cur} (config {config})"
+                    ));
+                }
+                cur = p;
+            }
+        }
+
+        // Per-rollout persisted extent: positions are contiguous from the
+        // branch-point count.
+        let mut own: std::collections::BTreeMap<(CfgId, RolloutId), Vec<Pos>> =
+            std::collections::BTreeMap::new();
+        for e in &self.events {
+            own.entry((e.config, e.rollout)).or_default().push(e.pos);
+        }
+        let start_of = |config: CfgId, rollout: RolloutId| -> Pos {
+            parent.get(&(config, rollout)).map(|&(_, c)| c).unwrap_or(0)
+        };
+        let mut extent: std::collections::BTreeMap<(CfgId, RolloutId), Pos> =
+            std::collections::BTreeMap::new();
+        for ((config, rollout), mut positions) in own {
+            positions.sort_unstable();
+            let start = start_of(config, rollout);
+            let expect: Vec<Pos> = (start..start + positions.len() as Pos).collect();
+            if positions != expect {
+                return Err(format!(
+                    "rollout {rollout} (config {config}) persists non-contiguous                      positions {positions:?}; expected {expect:?}"
+                ));
+            }
+            extent.insert((config, rollout), start + positions.len() as Pos);
+        }
+        let extent_of = |config: CfgId, rollout: RolloutId| -> Pos {
+            extent
+                .get(&(config, rollout))
+                .copied()
+                .unwrap_or(start_of(config, rollout))
+        };
+
+        // Cut bounds: start <= count <= extent, for every cut kind.
+        for l in &self.lineage {
+            let (lo, hi) = (start_of(l.config, l.parent), extent_of(l.config, l.parent));
+            if l.cut.count < lo || l.cut.count > hi {
+                return Err(format!(
+                    "fork cut {} on rollout {} outside [{lo}, {hi}]",
+                    l.cut.count, l.parent
+                ));
+            }
+        }
+        for c in &self.obs_cuts {
+            let (lo, hi) = (
+                start_of(c.config, c.rollout),
+                extent_of(c.config, c.rollout),
+            );
+            if c.cut.count < lo || c.cut.count > hi {
+                return Err(format!(
+                    "obs cut {} on rollout {} outside [{lo}, {hi}]",
+                    c.cut.count, c.rollout
+                ));
+            }
+        }
+        for sl in &self.seals {
+            let (lo, hi) = (
+                start_of(sl.config, sl.rollout),
+                extent_of(sl.config, sl.rollout),
+            );
+            if sl.cut.count < lo || sl.cut.count > hi {
+                return Err(format!(
+                    "seal cut {} on rollout {} outside [{lo}, {hi}]",
+                    sl.cut.count, sl.rollout
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Greatest revision any record commits at.
     pub fn max_rev(&self) -> Revision {
         let mut m = 0;

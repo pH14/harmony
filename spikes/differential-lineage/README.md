@@ -7,26 +7,28 @@ the ruled doctrine (**branch is a key, revision is the only timestamp,
 Moment/ordinal is data, no custom lattice**), at an acceptable incremental
 cost?
 
-**Answer: yes — GO.** All eight query families proven over committed fixtures
-with exact expected outputs; both a naive and a segment-shared formulation
-agree with a plain-Rust genesis-replay referee at every revision; per-branch
-incremental cost is **flat in prefix depth** under the shared formulation
-(81× fewer updates than naive on a 40-deep chain, 385× faster than
-per-revision recompute); a late materialization costs ∝ its own segment, not
-its prefix. See `REPORT.md` for numbers and `IMPLEMENTATION.md` for the full
-findings. Ratification is `hm-bbx.5`.
+**Findings and the GO/NO-GO recommendation live in PR #121's description**
+(single source of truth, per the tasks/120 rule); `REPORT.md` holds the raw
+measurements; ratification is `hm-bbx.5`. In brief, mechanically: all eight
+query families are proven over committed fixtures with exact expected
+outputs; a naive and a segment-shared formulation agree with a plain-Rust
+genesis-replay referee at every revision; per-branch incremental cost is
+own-segment work plus ≈ 9.5 updates per ancestor, against a ~170× steeper
+per-depth slope for the naive prefix-join and ~350× over per-revision direct
+recompute.
 
 Standalone: no dependency on `consonance/` or `dissonance/`. Tracked by
-design (root `.gitignore` exception): fixtures, generator, and report are the
-deliverable. Context: `docs/DISSONANCE-STRATEGY.md`, epic bead `hm-bbx`, and
-the prior `spikes/ivm-fork-oracle` (branch-per-dataflow oracle species; this
-spike is the complementary one-dataflow observation plane).
+design (root `.gitignore` exception): fixtures, generator, lockfile, and
+report are the deliverable. Context: `docs/DISSONANCE-STRATEGY.md`, epic bead
+`hm-bbx`, and the prior `spikes/ivm-fork-oracle` (branch-per-dataflow oracle
+species; this spike is the complementary one-dataflow observation plane).
 
 ## Layout
 
 - `src/data.rs` — persisted record model (the evidence-identity contract:
   campaign/config, rollout, source, `Moment`, explicit vector-position
-  ordinal; revision is only the commit schedule) and derived-value types.
+  ordinal; revision is only the commit schedule), structural validation
+  (`Fixture::validate`), and derived-value types.
 - `src/dataflow.rs` — the DD program: one dataflow, `u64` revision time,
   13 captured views, two point-observation formulations (naive prefix-join
   vs shared segment aggregates), explicit shared arrangements, the
@@ -41,6 +43,8 @@ spike is the complementary one-dataflow observation plane).
 - `tests/parity.rs` — the adjudicator: DD (both formulations) == referee on
   hand fixtures and random trees, at every revision, across reruns, under
   permuted feed order.
+- `tests/validate.rs` — malformed-fixture rejection (lineage cycles, cut
+  bounds, the physical branch-point contract, revision sanity).
 - `examples/bench.rs` — the cost measurement (`REPORT.md`).
 - `examples/gen_fixtures.rs` — regenerates the committed fixtures
   bit-identically.
@@ -62,10 +66,13 @@ spike is the complementary one-dataflow observation plane).
 ## Run
 
 ```sh
-cargo test                            # exact + parity suites (~3 s)
-cargo run --release --example bench   # the cost measurement (REPORT.md)
-cargo run --example gen_fixtures      # regenerate committed fixtures
+cargo test --locked                            # exact + parity + validate (~3 s)
+cargo run --release --locked --example bench   # the cost measurement (REPORT.md)
+cargo run --locked --example gen_fixtures      # regenerate committed fixtures
 ```
 
-Gates: `cargo build`, `cargo test`, `cargo clippy --all-features
---all-targets -- -D warnings`, `cargo fmt -- --check` — all on this manifest.
+Gates (mirrored in CI by the `spikes/differential-lineage gates` step of
+`.github/workflows/quality.yml`): `cargo build`, `cargo test --locked`,
+`cargo clippy --locked --all-features --all-targets -- -D warnings`,
+`cargo fmt -- --check`, `cargo deny check --config <root>/deny.toml licenses`
+— all on this manifest.
