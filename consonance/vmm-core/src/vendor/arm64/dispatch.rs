@@ -426,9 +426,14 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                         have.timer_intid
                     )));
                 }
-                Some(gicv3::Gicv3::restore(gs).map_err(|_| {
-                    SnapshotError::DeviceRestore("incoherent GicState in device blob")
-                })?)
+                // Validate the GIC's one-shot timer latch against the snapshot's
+                // sealed V-time (`VtimeState::snapshot_vns`) — a fired latch with
+                // a future deadline is a state the model never produces.
+                Some(
+                    gicv3::Gicv3::restore(gs, s.vtime.snapshot_vns).map_err(|_| {
+                        SnapshotError::DeviceRestore("incoherent GicState in device blob")
+                    })?,
+                )
             }
             (Some(_), None) | (None, Some(_)) => {
                 return Err(VmmError::ContractViolation(

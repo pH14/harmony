@@ -629,12 +629,18 @@ impl Gicv3 {
 
     /// Rebuild a model from a snapshot — a strict validation boundary
     /// (untrusted input): the version, the config invariants, the `CTLR` and
-    /// `CNTV_CTL` write masks, and every register-file bit/byte beyond the
-    /// implemented INTID range must be zero.
+    /// `CNTV_CTL` write masks, every register-file bit/byte beyond the
+    /// implemented INTID range being zero, and the one-shot **timer latch**
+    /// being consistent with `now_vns` (the snapshot's V-time).
+    ///
+    /// `now_vns` is the V-time the snapshot was sealed at (`VtimeState`'s
+    /// `snapshot_vns`); it is the reference the `timer_fired` latch is checked
+    /// against — a fired latch whose deadline is still in the future is a state
+    /// the save path can never produce.
     ///
     /// # Errors
     /// [`GicError::InvalidState`] on any violated invariant.
-    pub fn restore(state: &GicState) -> Result<Gicv3, GicError> {
+    pub fn restore(state: &GicState, now_vns: u64) -> Result<Gicv3, GicError> {
         if state.version != GIC_STATE_VERSION {
             return Err(GicError::InvalidState);
         }
@@ -671,6 +677,22 @@ impl Gicv3 {
         g.cntv_ctl = state.cntv_ctl;
         g.cntv_cval = state.cntv_cval;
         g.timer_fired = state.timer_fired;
+        // The one-shot timer latch, validated against the snapshot's V-time.
+        // `timer_fired` is set ONLY by `advance_to` when `now_vns >= deadline`,
+        // and EVERY `CNTV_CTL`/`CNTV_CVAL` write clears it — so a fired latch the
+        // save path produced necessarily has the timer enabled, unmasked, and its
+        // deadline representable AND already past (`<= now_vns`). A fired latch
+        // with a future or unrepresentable deadline (or a disabled/masked timer)
+        // is unreachable — and silently lossy: `next_timer_deadline` returns
+        // `None`, so the PPI never (re-)fires and the interrupt is dropped.
+        // Reject it (the restore-checklist rule; `g` is local, so this is atomic).
+        if g.timer_fired {
+            let armed = g.cntv_ctl & CNTV_CTL_ENABLE != 0 && g.cntv_ctl & CNTV_CTL_IMASK == 0;
+            let past = g.deadline_vns().is_some_and(|d| d <= now_vns);
+            if !(armed && past) {
+                return Err(GicError::InvalidState);
+            }
+        }
         Ok(g)
     }
 }
@@ -846,9 +868,63 @@ mod tests {
         g.write_cntv_ctl(CNTV_CTL_ENABLE);
         g.advance_to(5000);
         let s = g.snapshot();
-        let r = Gicv3::restore(&s).unwrap();
+        let r = Gicv3::restore(&s, 5000).unwrap(); // snapshot V-time = the fire time
         assert_eq!(r.snapshot(), s);
         assert_eq!(r.peek_interrupt(), g.peek_interrupt());
+    }
+
+    /// Review r8 (P2): restore must reject a `timer_fired` latch the save path
+    /// can never produce — its consequence is silent (`next_timer_deadline`
+    /// returns `None`, so the PPI never fires). `timer_fired` is set only by
+    /// `advance_to` when the deadline has passed, so a fired latch is legitimate
+    /// iff the timer is enabled, unmasked, and its deadline is `<=` the
+    /// snapshot's V-time.
+    #[test]
+    fn restore_rejects_an_unreachable_timer_latch() {
+        // A legitimately-fired latch: cval 125 → deadline 2000 ns, fired at 5000.
+        let mut g = gic();
+        g.write_cntv_cval(125);
+        g.write_cntv_ctl(CNTV_CTL_ENABLE);
+        g.advance_to(5000);
+        let good = g.snapshot();
+        assert!(good.timer_fired);
+        // Accepted when the snapshot V-time is at/after the deadline.
+        assert!(Gicv3::restore(&good, 5000).is_ok());
+        assert!(Gicv3::restore(&good, 2000).is_ok()); // exactly at the deadline
+        // Rejected when the snapshot V-time is BEFORE the deadline: a fired latch
+        // with a future CVAL is a state `advance_to` could never have produced.
+        assert_eq!(
+            Gicv3::restore(&good, 1999).unwrap_err(),
+            GicError::InvalidState
+        );
+
+        // The exact impossible latch: timer_fired=true, ENABLE set, IMASK clear,
+        // a FUTURE cval, and no pending bit for the timer PPI.
+        let mut forged = gic().snapshot();
+        forged.cntv_ctl = CNTV_CTL_ENABLE; // enabled, unmasked
+        forged.cntv_cval = 125; // deadline 2000 ns
+        forged.timer_fired = true; // "already fired"...
+        let (w, b) = ((forged.timer_intid / 32) as usize, forged.timer_intid % 32);
+        assert_eq!(forged.pending[w] & (1 << b), 0, "...with no pending PPI");
+        assert_eq!(
+            Gicv3::restore(&forged, 1000).unwrap_err(), // V-time before the deadline
+            GicError::InvalidState
+        );
+
+        // A fired latch on a DISABLED (or masked) timer is likewise unreachable —
+        // a CNTV_CTL write clears `timer_fired` — so it is rejected at any V-time.
+        let mut disabled = good.clone();
+        disabled.cntv_ctl = 0;
+        assert_eq!(
+            Gicv3::restore(&disabled, u64::MAX).unwrap_err(),
+            GicError::InvalidState
+        );
+        let mut masked = good;
+        masked.cntv_ctl = CNTV_CTL_ENABLE | CNTV_CTL_IMASK;
+        assert_eq!(
+            Gicv3::restore(&masked, u64::MAX).unwrap_err(),
+            GicError::InvalidState
+        );
     }
 
     #[test]
@@ -862,7 +938,7 @@ mod tests {
         assert_eq!(g.config(), cfg);
         // The config survives a snapshot round-trip (a restore consumer compares
         // it against the wired target's).
-        assert_eq!(Gicv3::restore(&g.snapshot()).unwrap().config(), cfg);
+        assert_eq!(Gicv3::restore(&g.snapshot(), 0).unwrap().config(), cfg);
     }
 
     #[test]
@@ -870,13 +946,13 @@ mod tests {
         let g = gic();
         let mut s = g.snapshot();
         s.pending[4] = 1; // INTID 128 ≥ limit 96
-        assert_eq!(Gicv3::restore(&s).unwrap_err(), GicError::InvalidState);
+        assert_eq!(Gicv3::restore(&s, 0).unwrap_err(), GicError::InvalidState);
         let mut s = g.snapshot();
         s.priority[96] = 1;
-        assert_eq!(Gicv3::restore(&s).unwrap_err(), GicError::InvalidState);
+        assert_eq!(Gicv3::restore(&s, 0).unwrap_err(), GicError::InvalidState);
         let mut s = g.snapshot();
         s.version = 99;
-        assert_eq!(Gicv3::restore(&s).unwrap_err(), GicError::InvalidState);
+        assert_eq!(Gicv3::restore(&s, 0).unwrap_err(), GicError::InvalidState);
     }
 
     #[test]

@@ -56,6 +56,7 @@ const _UAPI_PIN: () = {
     assert!(crate::arm64_kvm::KVM_REG_SIZE_U64 == kvm_bindings::KVM_REG_SIZE_U64);
     assert!(crate::arm64_kvm::KVM_REG_ARM_CORE == kvm_bindings::KVM_REG_ARM_CORE as u64);
     assert!(crate::arm64_kvm::KVM_REG_ARM64_SYSREG == kvm_bindings::KVM_REG_ARM64_SYSREG as u64);
+    assert!(crate::arm64_kvm::KVM_ARM_VCPU_PSCI_0_2 == kvm_bindings::KVM_ARM_VCPU_PSCI_0_2);
 };
 
 /// Map a `kvm-ioctls` error to the crate's portable [`BackendError`].
@@ -136,6 +137,19 @@ impl Arm64Kvm for LiveKvm {
     fn vcpu_init(&mut self) -> Result<()> {
         let mut kvi = kvm_vcpu_init::default();
         self._vm.get_preferred_target(&mut kvi).map_err(kvm_err)?;
+        // Advertise PSCI 0.2 so KVM's in-kernel PSCI services the guest's HVC
+        // PSCI calls (SYSTEM_OFF/RESET/CPU_ON) — the DTB advertises arm,psci-1.0
+        // over HVC, and without this bit KVM runs legacy PSCI and returns
+        // NOT_SUPPORTED (the guest could never cleanly power off). Set AFTER
+        // get_preferred_target, which fills `features` (typically zero).
+        kvi.features = crate::arm64_kvm::vcpu_init_features();
+        debug_assert!(
+            kvi.features[0] & (1 << crate::arm64_kvm::KVM_ARM_VCPU_PSCI_0_2) != 0,
+            "vcpu_init must request PSCI 0.2"
+        );
+        // KVM_ARM_VCPU_INIT returns EINVAL for an unsupported feature, so a
+        // successful init is the kernel's confirmation the bit took. (Live PSCI
+        // conformance is M4/Altra-verified; no /dev/kvm oracle on the Mac.)
         self.vcpu.vcpu_init(&kvi).map_err(kvm_err)?;
         Ok(())
     }

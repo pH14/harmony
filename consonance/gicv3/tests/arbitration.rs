@@ -181,7 +181,8 @@ proptest! {
         grp1 in any::<bool>(),
     ) {
         let g = program(&lines, pmr, grp1);
-        let restored = Gicv3::restore(&g.snapshot()).unwrap();
+        // The timer is not exercised here (no latch), so any V-time restores.
+        let restored = Gicv3::restore(&g.snapshot(), u64::MAX).unwrap();
         prop_assert_eq!(restored.peek_interrupt(), g.peek_interrupt());
         prop_assert_eq!(restored.snapshot(), g.snapshot());
     }

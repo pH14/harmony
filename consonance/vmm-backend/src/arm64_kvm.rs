@@ -69,6 +69,28 @@ pub(crate) const KVM_SYSTEM_EVENT_RESET: u32 = 2;
 /// `KVM_SYSTEM_EVENT_CRASH` — a guest crash event.
 pub(crate) const KVM_SYSTEM_EVENT_CRASH: u32 = 3;
 
+/// `KVM_ARM_VCPU_PSCI_0_2` — the `KVM_ARM_VCPU_INIT` feature **bit index** (`2`,
+/// `uapi/linux/kvm.h`) that selects KVM's in-kernel **PSCI 0.2+** implementation.
+/// The DTB this vendor emits advertises `arm,psci-1.0` over `HVC` (`vmm-core`'s
+/// `dtb`), so the guest issues PSCI `SYSTEM_OFF`/`SYSTEM_RESET`/`CPU_ON` as
+/// `HVC`s; **without** this bit KVM runs *legacy* PSCI (0.1) and answers those
+/// `NOT_SUPPORTED`, so a headless determinism guest can never cleanly power off.
+/// Unlike the vGIC **delivery** fabric there is no AA-6 deferral rationale for
+/// it — a guest that cannot `SYSTEM_OFF` cannot end a run.
+pub(crate) const KVM_ARM_VCPU_PSCI_0_2: u32 = 2;
+
+/// The `kvm_vcpu_init.features` bitmap the backend requests at
+/// `KVM_ARM_VCPU_INIT`: **PSCI 0.2 selected** (see [`KVM_ARM_VCPU_PSCI_0_2`]),
+/// every other feature left default-off (the skeleton opts into nothing else —
+/// `EL1_32BIT`, `PMU_V3`, `SVE`, `PTRAUTH*` are AA-6 / port decisions). A pure
+/// function so `LiveKvm` and the portable [`FakeKvm`] derive the **identical**
+/// bitmap — the live path's request is exactly what the fake pins.
+pub(crate) fn vcpu_init_features() -> [u32; 7] {
+    let mut features = [0u32; 7];
+    features[0] = 1 << KVM_ARM_VCPU_PSCI_0_2;
+    features
+}
+
 // --- the plain-data view of a `kvm_run` the decode operates on ---------------
 
 /// The MMIO payload of a `KVM_EXIT_MMIO` (`kvm_run.mmio`), as plain data.
@@ -808,6 +830,11 @@ pub struct FakeKvm {
     pub last_mmio_data: Option<[u8; 8]>,
     /// Recorded `(slot, gpa, len)` memslots.
     pub memslots: Vec<(u32, u64, u64)>,
+    /// The `kvm_vcpu_init.features` bitmap `vcpu_init` requested (via the shared
+    /// [`vcpu_init_features`], the same one `LiveKvm` sends) — so a test pins
+    /// that PSCI 0.2 is advertised. Test-only observability.
+    #[cfg_attr(not(test), allow(dead_code))]
+    init_features: [u32; 7],
     initialized: bool,
 }
 
@@ -834,6 +861,8 @@ impl FakeKvm {
 impl Arm64Kvm for FakeKvm {
     fn vcpu_init(&mut self) -> Result<()> {
         self.calls.push("vcpu_init");
+        // Record the same feature bitmap the live path sends to KVM_ARM_VCPU_INIT.
+        self.init_features = vcpu_init_features();
         self.initialized = true;
         Ok(())
     }
@@ -1145,6 +1174,37 @@ mod tests {
             Exit::Arch(crate::arch::arm64::Arm64Exit::Sysreg { .. })
         ));
         assert_eq!(pending, Pending::SysregWrite);
+    }
+
+    /// Review r8 (P1): the backend must advertise **PSCI 0.2** at
+    /// `KVM_ARM_VCPU_INIT`. The DTB advertises `arm,psci-1.0` over `HVC`, so the
+    /// guest issues PSCI as `HVC`s; without this feature bit KVM runs legacy PSCI
+    /// and answers `SYSTEM_OFF` (which the boot path relies on for a clean
+    /// poweroff) `NOT_SUPPORTED`. Pin the requested bitmap against the fake —
+    /// which records exactly what `LiveKvm` sends (the shared
+    /// [`vcpu_init_features`]). Live PSCI conformance is M4/Altra-verified (the
+    /// Mac has no `/dev/kvm` oracle; `hm-8l3` REFUSE).
+    #[test]
+    fn vcpu_init_advertises_psci_0_2() {
+        // The shared bitmap both paths derive.
+        let f = vcpu_init_features();
+        assert_eq!(
+            f[0] & (1 << KVM_ARM_VCPU_PSCI_0_2),
+            1 << KVM_ARM_VCPU_PSCI_0_2,
+            "PSCI 0.2 feature bit must be set"
+        );
+        assert_eq!(
+            f[1..],
+            [0u32; 6],
+            "the skeleton opts into no other vcpu feature"
+        );
+
+        // The fake records what vcpu_init requested — the live path's bitmap.
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        assert!(fake.calls.contains(&"vcpu_init"));
+        assert_eq!(fake.init_features, vcpu_init_features());
+        assert_ne!(fake.init_features[0] & (1 << KVM_ARM_VCPU_PSCI_0_2), 0);
     }
 
     /// The ioctl-ordering + policy discipline, asserted against the fake with no

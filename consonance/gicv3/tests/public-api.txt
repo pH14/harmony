@@ -43,7 +43,7 @@ pub fn gicv3::Gicv3::pmr(&self) -> u8
 pub fn gicv3::Gicv3::raise(&mut self, u32) -> core::result::Result<(), gicv3::GicError>
 pub fn gicv3::Gicv3::read_cntv_ctl(&self, u64) -> u64
 pub fn gicv3::Gicv3::read_cntv_cval(&self) -> u64
-pub fn gicv3::Gicv3::restore(&gicv3::GicState) -> core::result::Result<gicv3::Gicv3, gicv3::GicError>
+pub fn gicv3::Gicv3::restore(&gicv3::GicState, u64) -> core::result::Result<gicv3::Gicv3, gicv3::GicError>
 pub fn gicv3::Gicv3::set_pmr(&mut self, u8)
 pub fn gicv3::Gicv3::snapshot(&self) -> gicv3::GicState
 pub fn gicv3::Gicv3::take_interrupt(&mut self) -> core::option::Option<u32>
