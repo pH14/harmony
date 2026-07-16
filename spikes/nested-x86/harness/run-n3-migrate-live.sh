@@ -80,7 +80,12 @@ taskset -c 3 $QEMU \
 
 sleep "$MIG_AFTER"
 
-python3 - "$RS/qmp-src.sock" "$RS/mig.sock" > "$RS/migration.json" 2>&1 <<'PYEOF'
+# round-6 P2: the QMP driver can fail (connect refused, JSON error) — under
+# set -e that used to abort the script BEFORE teardown, leaving both QEMUs
+# alive and no fail-closed artifact. Capture its rc; teardown + the
+# condition-end artifact below always run.
+MIG_PY_RC=0
+python3 - "$RS/qmp-src.sock" "$RS/mig.sock" > "$RS/migration.json" 2>&1 <<'PYEOF' || MIG_PY_RC=$?
 import json, socket, sys, time
 
 def qmp(sock_path):
@@ -113,14 +118,18 @@ print(json.dumps({"final": status}))
 PYEOF
 
 MIG_STATUS=$(grep -o '"final": "[a-z]*"' "$RS/migration.json" | cut -d'"' -f4 || echo unknown)
+[ "$MIG_PY_RC" -eq 0 ] || { MIG_STATUS=qmp-driver-error; echo "MIGRATION_QMP_DRIVER_FAILED rc=$MIG_PY_RC (see migration.json)"; }
 echo "MIGRATION_STATUS=$MIG_STATUS"
 
-# wait (bounded) for the gate to finish wherever the guest now runs
-for _ in $(seq 1 480); do
-  grep -q "NESTED_X86_L1_DONE" "$RS/console-dst.log" 2>/dev/null && break
-  grep -q "NESTED_X86_L1_DONE" "$RS/console-src.log" 2>/dev/null && break
-  sleep 10
-done
+# wait (bounded) for the gate to finish wherever the guest now runs — skipped
+# on a driver error (nothing meaningful to wait for; go straight to teardown)
+if [ "$MIG_PY_RC" -eq 0 ]; then
+  for _ in $(seq 1 480); do
+    grep -q "NESTED_X86_L1_DONE" "$RS/console-dst.log" 2>/dev/null && break
+    grep -q "NESTED_X86_L1_DONE" "$RS/console-src.log" 2>/dev/null && break
+    sleep 10
+  done
+fi
 
 # teardown whichever QEMU is still alive (source sits paused in postmigrate)
 for P in "$RS/qemu-src.pid" "$RS/qemu-dst.pid"; do

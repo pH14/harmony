@@ -15,7 +15,8 @@
 //!    overshoot, never a different exit;
 //! 2. **independent guest work oracle** — the guest loop increments a counter
 //!    in guest RAM once per retired conditional branch, so after a landing the
-//!    memory word must equal `target mod 2^32`. This breaks the circularity of
+//!    64-bit memory counter must equal `target` exactly (round-6: widened from
+//!    mod-2^32). This breaks the circularity of
 //!    checking the PMU against itself: a systematically wrong work clock would
 //!    land "exactly" on its own axis but disagree with the memory-visible
 //!    progress (review finding: no independent oracle);
@@ -117,22 +118,34 @@ fn guest_mem_alloc_slice_drop_is_miri_clean() {
     drop(mem);
 }
 
-/// Busy-spin with a **memory-visible work oracle**: each iteration increments a
-/// dword counter in guest RAM and retires exactly ONE conditional branch
-/// (16-bit real mode; `inc` uses an operand-size prefix for a 32-bit counter):
+/// Busy-spin with a **64-bit memory-visible work oracle** (round-6 P2: the
+/// original dword counter compared `target mod 2^32`, and the retained idle
+/// runsets drove `final_work` past one wrap — the widened oracle removes the
+/// aliasing blind spot for long runs). Each iteration advances a 64-bit
+/// counter emulated branch-free in 16-bit real mode as two dwords with an
+/// `add`/`adc` carry chain (no conditional flow — `0x1c4` counts ONLY
+/// conditional branches, so work stays exactly one per iteration, the `jz`):
 ///
 /// ```text
-/// 1000:  66 FF 06 00 20   inc dword ptr [0x2000]   ; memory-visible progress
-/// 1005:  31 C0            xor ax, ax               ; ZF := 1 (branch always taken)
-/// 1007:  74 F7            jz  0x1000               ; the ONE counted branch
+/// 1000:  66 83 06 00 20 01   add dword ptr [0x2000], 1   ; low += 1 (sets CF on wrap)
+/// 1006:  66 83 16 04 20 00   adc dword ptr [0x2004], 0   ; high += CF (branch-free)
+/// 100c:  31 C0               xor ax, ax                  ; ZF := 1 (branch always taken)
+/// 100e:  74 F0               jz  0x1000                  ; the ONE counted branch
 /// ```
 ///
 /// `run_until(target)` lands exactly after the `target`-th `jz` retires, at
-/// which point the `inc` of every completed iteration — and no more — has
-/// executed, so `[0x2000] == target mod 2^32` independent of the PMU.
-const SPIN_CODE: &[u8] = &[0x66, 0xFF, 0x06, 0x00, 0x20, 0x31, 0xC0, 0x74, 0xF7];
+/// which point the full add/adc pair of every completed iteration — and no
+/// more — has executed, so the 64-bit little-endian value at `[0x2000]` equals
+/// `target` EXACTLY, independent of the PMU and unaliased at any run length.
+const SPIN_CODE: &[u8] = &[
+    0x66, 0x83, 0x06, 0x00, 0x20, 0x01, // add dword [0x2000], 1
+    0x66, 0x83, 0x16, 0x04, 0x20, 0x00, // adc dword [0x2004], 0
+    0x31, 0xC0, // xor ax, ax
+    0x74, 0xF0, // jz 0x1000
+];
 const ENTRY: u64 = 0x1000;
-/// The guest-RAM dword the oracle loop increments once per counted branch.
+/// The guest-RAM 64-bit counter (two carry-chained dwords, little-endian) the
+/// oracle loop advances once per counted branch.
 const COUNTER_GPA: u64 = 0x2000;
 const RAM: usize = 0x10000;
 
@@ -228,12 +241,12 @@ fn n2_deadline_hammer() {
     st.regs.rflags = 0x2;
     backend.restore(&st).expect("restore setup state");
 
-    let read_counter = |backend: &PatchedKvmBackend| -> u32 {
-        let mut buf = [0u8; 4];
+    let read_counter = |backend: &PatchedKvmBackend| -> u64 {
+        let mut buf = [0u8; 8];
         backend
             .read_guest(Gpa(COUNTER_GPA), &mut buf)
             .expect("read oracle counter");
-        u32::from_le_bytes(buf)
+        u64::from_le_bytes(buf)
     };
     let read_stats = |backend: &PatchedKvmBackend| -> PmuOverflowStats {
         backend
@@ -278,7 +291,7 @@ fn n2_deadline_hammer() {
                 // Independent guest oracle: memory-visible progress must agree
                 // with the PMU axis the landing was steered by.
                 let counter = read_counter(&backend);
-                let expect = (target & 0xFFFF_FFFF) as u32;
+                let expect = target;
                 if counter == expect {
                     oracle_ok += 1;
                 } else {

@@ -254,7 +254,13 @@ int main(void) {
     printf("  \"gp_counters\": %u,\n", (a >> 8) & 0xff);
     printf("  \"gp_counter_width\": %u,\n", (a >> 16) & 0xff);
     printf("  \"event_unavail_mask\": \"0x%02x\",\n", b & 0x7f);
-    printf("  \"branch_insn_retired_available\": %s,\n", (b >> 5) & 1 ? "false" : "true");
+    /* Round-6 P2: leaf-0xA EBX bit 5 attests only the ARCHITECTURAL
+     * BR_INST_RETIRED.ALL_BRANCHES event (0xC4/umask 0x00) - it says nothing
+     * about the 0x1c4 .CONDITIONAL umask variant this program's work clock
+     * uses. The old field name (branch_insn_retired_available) overstated
+     * that; 0x1c4 support is attested ONLY by the perf open + count sniff
+     * below (sniff_raw_0x1c4_br_cond), which measures it directly. */
+    printf("  \"arch_branch_retired_event_available\": %s,\n", (b >> 5) & 1 ? "false" : "true");
     printf("  \"fixed_counters\": %u,\n", d & 0x1f);
     printf("  \"fixed_counter_width\": %u,\n", (d >> 5) & 0xff);
 

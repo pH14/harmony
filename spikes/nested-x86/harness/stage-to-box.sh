@@ -30,6 +30,8 @@ rsync -a src-$HEAD/ /root/harmony-nested/
 echo $HEAD > /root/harmony-nested/.spike-source-commit
 SP=/root/harmony-nested/spikes/nested-x86
 cp \$SP/appliance/build-appliance.sh \$SP/appliance/run-appliance.sh \$SP/appliance/l1-appliance-init.sh /root/nested-x86-spike/n1/src/
-cp \$SP/harness/run-n2-condition.sh \$SP/harness/run-n3-stress.sh \$SP/harness/run-n3-pause.sh \$SP/harness/run-n3-migrate-live.sh \$SP/harness/run-metal-reference-recert.sh /root/nested-x86-spike/
+cp \$SP/harness/run-n2-condition.sh \$SP/harness/run-n3-stress.sh \$SP/harness/run-n3-pause.sh \$SP/harness/run-n3-migrate-live.sh \$SP/harness/run-metal-reference-recert.sh \$SP/harness/extract-probe-json.sh /root/nested-x86-spike/
 cp \$SP/harness/run-n2-matrix.sh \$SP/harness/run-n2-topup.sh \$SP/harness/run-n3-matrix-recert.sh /root/nested-x86-recert/
+mkdir -p /root/nested-x86-spike/n0/src
+cp \$SP/l0/build-l1-probe.sh \$SP/l0/run-l1-probe.sh \$SP/l0/l1-init.sh \$SP/l0/probe.c /root/nested-x86-spike/n0/src/
 echo STAGED $HEAD"

@@ -18,9 +18,14 @@ ls /dev/kvm >/dev/null 2>&1 && echo "L1_DEV_KVM_PRESENT" || echo "L1_DEV_KVM_ABS
 cat /sys/module/kvm_intel/parameters/nested 2>/dev/null | grep -q Y \
     && echo "L1_NESTED_PARAM_Y" || echo "L1_NESTED_PARAM_NOT_Y"
 
+# round-6 P1: the probe's own exit status is CAPTURED and emitted — the END
+# sentinel alone never implied the probe succeeded (fail-closed lives in
+# run-l1-probe.sh, which requires PROBE_RC rc=0 + validated JSON).
 echo "NESTED_X86_PROBE_BEGIN"
 /probe
+probe_rc=$?
 echo "NESTED_X86_PROBE_END"
+echo "NESTED_X86_PROBE_RC rc=$probe_rc"
 
 echo "--- L1 dmesg (kvm/vmx/pmu) ---"
 dmesg | grep -iE "kvm|vmx|pmu|perf" | tail -30

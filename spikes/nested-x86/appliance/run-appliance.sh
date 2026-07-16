@@ -73,6 +73,10 @@ echo "qemu_rc=$rc" > "$RS/env.json.rc"
 # --- one gate ran AND no gate was missing AND every gate that began reported
 # --- rc=0. Anything else is a distinct, loud failure.
 C="$RS/console.log"
+# round-6 P1: the QEMU/timeout exit code gates the verdict too — a QEMU that
+# failed or was timeout-killed AFTER the guest printed its markers is not a
+# clean run (rc was previously recorded to env.json.rc but never checked).
+[ "$rc" -eq 0 ] || { echo "RUN_QEMU_FAILED $RS (qemu_rc=$rc)"; exit 1; }
 grep -q "NESTED_X86_L1_DONE" "$C" || { echo "RUN_INCOMPLETE $RS (no L1_DONE)"; exit 1; }
 began=$(grep -c "NESTED_X86_GATE_BEGIN" "$C" || true)
 rcs=$(grep -c "NESTED_X86_GATE_RC " "$C" || true)

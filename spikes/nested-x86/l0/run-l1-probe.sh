@@ -69,10 +69,21 @@ kvm_present=$(grep -c "L1_DEV_KVM_PRESENT" "$C" || true)
 pb=$(grep -c "NESTED_X86_PROBE_BEGIN" "$C" || true)
 pe=$(grep -c "NESTED_X86_PROBE_END" "$C" || true)
 grep -q "NESTED_X86_L1_DONE" "$C" || { echo "RUN_INCOMPLETE $RS (no L1_DONE)"; exit 1; }
+# round-6 P1: the probe's own exit status (emitted by l1-init.sh as
+# NESTED_X86_PROBE_RC) must be 0, and its output must extract + validate as
+# JSON — the sentinels alone never implied the probe ran successfully.
+grep -q "NESTED_X86_PROBE_RC rc=0" "$C" || {
+  echo "RUN_PROBE_FAILED $RS (probe rc line: $(grep -o 'NESTED_X86_PROBE_RC.*' "$C" || echo absent))"
+  exit 1
+}
+bash /root/nested-x86-spike/extract-probe-json.sh "$C" > "$RS/probe-validated.json" || {
+  echo "RUN_PROBE_FAILED $RS (probe output does not validate as JSON)"
+  exit 1
+}
 if [ "$rc" -ne 0 ] || [ "$fails" -ne 0 ] || [ "$kvm_present" -lt 1 ] \
    || [ "$pb" -lt 1 ] || [ "$pe" -lt 1 ]; then
   echo "RUN_PROBE_FAILED $RS (qemu_rc=$rc failed_markers=$fails kvm_present=$kvm_present probe=$pb/$pe)"
   grep ": FAILED\|L1_DEV_KVM" "$C" || true
   exit 1
 fi
-echo "RUN_OK $RS (modules clean, /dev/kvm present, probe complete)"
+echo "RUN_OK $RS (modules clean, /dev/kvm present, probe rc=0, JSON validated)"
