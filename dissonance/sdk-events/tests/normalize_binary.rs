@@ -468,6 +468,93 @@ fn a_stream_with_two_catalog_declarations_is_rejected() {
     assert!(matches!(err, SdkError::MultipleDeclarations { count: 2 }));
 }
 
+#[test]
+fn a_declaration_after_a_firing_is_rejected() {
+    // A `min` firing precedes a v2 catalog. Applying the catalog would retroactively
+    // reinterpret that prior byte as a v2 `Min` update (it is unknown in a
+    // declaration-less stream). The declaration must come first.
+    let decl = encode_ok(&[v2_state(7, "reg", UpdateOp::Min)]);
+    let raw = vec![
+        at(0, event_id(NS_STATE, 7), state_firing(STATE_MIN, 5)), // firing first
+        at(1, 0, decl),                                           // declaration after
+    ];
+    let err = decode_binary(&raw).expect_err("declaration after firing must fail");
+    assert!(matches!(
+        err,
+        SdkError::DeclarationAfterFirings { firings_before: 1 }
+    ));
+
+    // The same holds for a v1 catalog arriving after a firing.
+    let raw = vec![
+        at(0, event_id(NS_STATE, 7), state_firing(STATE_SET, 1)),
+        at(1, 0, v1_catalog(&[(KIND_STATE, 7, "reg")])),
+    ];
+    assert!(matches!(
+        decode_binary(&raw),
+        Err(SdkError::DeclarationAfterFirings { .. })
+    ));
+}
+
+#[test]
+fn a_declaration_before_its_firings_decodes_normally() {
+    // The correct ordering: declaration first, then the min firing decodes as Min.
+    let decl = encode_ok(&[v2_state(7, "reg", UpdateOp::Min)]);
+    let raw = vec![
+        at(0, 0, decl),
+        at(1, event_id(NS_STATE, 7), state_firing(STATE_MIN, 5)),
+    ];
+    let n = decode_binary(&raw).expect("decodes");
+    assert_eq!(
+        n.events[0].payload,
+        Payload::State {
+            op: UpdateOp::Min,
+            value: 5
+        }
+    );
+}
+
+#[test]
+fn a_catalog_with_trailing_bytes_past_its_count_is_rejected() {
+    // v2: count 0 but a full record follows — the trailing bytes would be silently
+    // dropped, omitting a declared identity.
+    let mut v2 = Vec::new();
+    v2.extend_from_slice(&CATALOG_MAGIC.to_le_bytes());
+    v2.push(2);
+    v2.extend_from_slice(&0u32.to_le_bytes()); // count 0…
+    v2.push(NS_STATE); // …but a complete v2 record follows
+    v2.extend_from_slice(&1u32.to_le_bytes());
+    v2.push(1); // state
+    v2.push(0); // u64
+    v2.push(0); // set
+    v2.push(255); // no expectation
+    v2.extend_from_slice(&1u16.to_le_bytes());
+    v2.extend_from_slice(b"x");
+    assert!(matches!(
+        decode_binary(&[at(0, 0, v2)]),
+        Err(SdkError::TrailingDeclarationBytes {
+            context: "v2 catalog",
+            ..
+        })
+    ));
+
+    // v1: count 0 but a full record follows.
+    let mut v1 = Vec::new();
+    v1.extend_from_slice(&CATALOG_MAGIC.to_le_bytes());
+    v1.push(1);
+    v1.extend_from_slice(&0u32.to_le_bytes()); // count 0…
+    v1.push(KIND_STATE); // …but a complete v1 record follows
+    v1.extend_from_slice(&7u32.to_le_bytes());
+    v1.extend_from_slice(&3u16.to_le_bytes());
+    v1.extend_from_slice(b"reg");
+    assert!(matches!(
+        decode_binary(&[at(0, 0, v1)]),
+        Err(SdkError::TrailingDeclarationBytes {
+            context: "v1 catalog",
+            ..
+        })
+    ));
+}
+
 // --- unsupported version + out-of-range ids are typed errors -----------------
 
 #[test]

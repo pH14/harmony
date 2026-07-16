@@ -58,6 +58,8 @@ pub sdk_events::SdkError::ClassificationConflict
 pub sdk_events::SdkError::ClassificationConflict::first: sdk_events::Classification
 pub sdk_events::SdkError::ClassificationConflict::id: sdk_events::ObservationId
 pub sdk_events::SdkError::ClassificationConflict::second: sdk_events::Classification
+pub sdk_events::SdkError::DeclarationAfterFirings
+pub sdk_events::SdkError::DeclarationAfterFirings::firings_before: usize
 pub sdk_events::SdkError::DuplicateCoordinate
 pub sdk_events::SdkError::DuplicateCoordinate::local: u32
 pub sdk_events::SdkError::DuplicateCoordinate::namespace: u8
@@ -83,6 +85,9 @@ pub sdk_events::SdkError::NameTooLong::len: usize
 pub sdk_events::SdkError::NameTooLong::local: u32
 pub sdk_events::SdkError::NameTooLong::max: usize
 pub sdk_events::SdkError::NameTooLong::namespace: u8
+pub sdk_events::SdkError::TrailingDeclarationBytes
+pub sdk_events::SdkError::TrailingDeclarationBytes::context: &'static str
+pub sdk_events::SdkError::TrailingDeclarationBytes::extra: usize
 pub sdk_events::SdkError::UnknownDeclarationByte
 pub sdk_events::SdkError::UnknownDeclarationByte::field: &'static str
 pub sdk_events::SdkError::UnknownDeclarationByte::value: u8

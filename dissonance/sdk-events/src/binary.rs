@@ -245,6 +245,21 @@ pub fn decode_binary(raw: &[(Moment, u32, Vec<u8>)]) -> Result<Normalized, SdkEr
             count: declaration_count,
         });
     }
+    // The declaration governs the whole batch, so it must precede every firing:
+    // otherwise a later format claim (e.g. a v2 catalog) would retroactively
+    // reinterpret prior bytes (a `min` firing that is unknown in a v1/declaration-
+    // less stream). The first record before the declaration is the position of the
+    // (sole) declaration; if it is not first, firings preceded it.
+    let declaration_pos = raw
+        .iter()
+        .position(|(_, id, _)| *id == wire::CATALOG_EVENT_ID);
+    if let Some(pos) = declaration_pos
+        && pos > 0
+    {
+        return Err(SdkError::DeclarationAfterFirings {
+            firings_before: pos,
+        });
+    }
     let declaration = raw.iter().find(|(_, id, _)| *id == wire::CATALOG_EVENT_ID);
     let mut ctx = match declaration {
         Some((_, _, bytes)) => parse_declaration(bytes)?,
@@ -404,6 +419,14 @@ fn parse_v1(r: &mut Reader<'_>) -> Result<DeclContext, SdkError> {
             name: Some(name),
         })?;
     }
+    // The blob must end exactly at the last declared record; trailing bytes mean a
+    // miscounted/corrupted catalog whose declared identities the schema would omit.
+    if !r.at_end() {
+        return Err(SdkError::TrailingDeclarationBytes {
+            context: "v1 catalog",
+            extra: r.remaining(),
+        });
+    }
     Ok(ctx)
 }
 
@@ -468,6 +491,13 @@ fn parse_v2(r: &mut Reader<'_>) -> Result<DeclContext, SdkError> {
             expectation,
             name: Some(name),
         })?;
+    }
+    // Reject trailing bytes past the declared record count (see `parse_v1`).
+    if !r.at_end() {
+        return Err(SdkError::TrailingDeclarationBytes {
+            context: "v2 catalog",
+            extra: r.remaining(),
+        });
     }
     Ok(ctx)
 }

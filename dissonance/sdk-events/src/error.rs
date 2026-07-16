@@ -149,4 +149,29 @@ pub enum SdkError {
         /// How many catalog declarations were found.
         count: usize,
     },
+
+    /// The catalog declaration appears *after* one or more event firings. A
+    /// declaration governs the whole batch, so applying it to bytes that preceded
+    /// it would retroactively reassign semantics to prior untrusted input (a
+    /// `min`/`accumulate` firing would become a v2 state update). The declaration
+    /// must precede every firing.
+    #[error("catalog declaration follows {firings_before} firing(s); it must come first")]
+    DeclarationAfterFirings {
+        /// How many firings preceded the declaration.
+        firings_before: usize,
+    },
+
+    /// A catalog declaration carries bytes beyond its declared record `count`. The
+    /// trailing bytes are unaccounted for (a miscounted or corrupted catalog), so
+    /// the declaration is refused rather than silently discarding declared
+    /// identities the strict schema would then omit.
+    #[error(
+        "catalog declaration has {extra} trailing byte(s) after its declared records ({context})"
+    )]
+    TrailingDeclarationBytes {
+        /// Which catalog version was being parsed.
+        context: &'static str,
+        /// How many bytes remained after the declared record count.
+        extra: usize,
+    },
 }

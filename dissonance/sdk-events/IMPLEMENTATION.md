@@ -48,6 +48,10 @@ Differential epic (`hm-bbx`).
   unsatisfied must-hit). A catalog naming an unsupported wire version is refused
   (`UnsupportedVersion`), and a stream carrying more than one catalog declaration
   is refused (`MultipleDeclarations`) — neither is decoded under a guessed layout.
+  The declaration must **precede every firing** (`DeclarationAfterFirings`), so a
+  later format claim can never retroactively reassign semantics to prior bytes, and
+  a catalog blob must end exactly at its declared record count
+  (`TrailingDeclarationBytes`), so it cannot silently omit declared identities.
 - **`SdkSchema` / `SchemaEntry` / `SdkEvent`** (`src/schema.rs`, `src/event.rs`) —
   the normalized model: source provenance, observation identity, value, and
   classification are kept as separate roles (cell projection is *not* owned here).
