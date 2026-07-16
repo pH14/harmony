@@ -460,7 +460,109 @@ fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
                 "{name} size {bad} must fail closed on width: {msg}"
             );
         }
+
+        // Review r5 P2(a): a start-in-frame predicate is not enough — validate
+        // the full checked range + register alignment. A **misaligned** access
+        // (base+1, size 4) fails closed on alignment; a **straddling** access
+        // (last word of the frame with a width that runs past the boundary)
+        // fails closed on the range — neither is silently dispatched.
+        let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(gpa + 1),
+            size: 4,
+            write: Some(0),
+        })]);
+        let err = v.step().unwrap_err();
+        assert!(
+            format!("{err}").contains("not 4-byte aligned"),
+            "{name} base+1 must fail closed on alignment: {err}"
+        );
+        // The last 4-aligned word of the 4 KiB/64 KiB/... frame, size 8 →
+        // end = frame_end + 4, straddling the boundary (start still in-frame).
+        let frame_len = match name {
+            "GICD" => 0x1_0000u64,
+            "GICR" => 0x2_0000,
+            _ => 0x1000, // PL011 / doorbell
+        };
+        let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(gpa + frame_len - 4),
+            size: 8,
+            write: Some(0),
+        })]);
+        let err = v.step().unwrap_err();
+        assert!(
+            format!("{err}").contains("straddles the frame boundary"),
+            "{name} last-word size-8 must fail closed on straddle: {err}"
+        );
     }
+}
+
+/// Review r5 P2(b): the GICv3 state feeds `state_hash` (the `GICV` chunk), so
+/// `state_components()` must expose a labeled `gic` component — otherwise two
+/// runs differing **only** in GIC state hash differently while every diagnostic
+/// component matches, defeating divergence localization.
+#[test]
+fn arm64_state_components_localizes_a_gic_only_divergence() {
+    use gicv3::GicFrame;
+    use vmm_core::vendor::arm64::board;
+
+    let make = |raise: Option<u32>| {
+        let mut gic = board::new_gic();
+        // Program INTID 40 deliverable, then optionally raise it pending — a
+        // GIC-only difference (no vCPU / RAM / serial change).
+        gic.mmio_write(GicFrame::Dist, 0x0000, 0b10, 0).unwrap();
+        gic.mmio_write(GicFrame::Dist, 0x0080 + 4, 1 << 8, 0)
+            .unwrap();
+        gic.mmio_write(GicFrame::Dist, 0x0100 + 4, 1 << 8, 0)
+            .unwrap();
+        gic.mmio_write(GicFrame::Dist, 0x0400 + 40, 0x40, 0)
+            .unwrap();
+        gic.set_pmr(0xFF);
+        if let Some(intid) = raise {
+            gic.raise(intid).unwrap();
+        }
+        let mut v = vmm(vec![]);
+        v.wire_gic(gic);
+        v
+    };
+
+    let a = make(None);
+    let b = make(Some(40)); // differs only in the GIC pending file
+
+    // `state_hash` differs (the GICV chunk folds in the pending state)...
+    assert_ne!(a.state_hash(), b.state_hash());
+
+    // ...and the `gic` component is exactly what localizes it: it differs, and
+    // it is the ONLY differing component (every other label matches).
+    let ca = a.state_components();
+    let cb = b.state_components();
+    let gic_a = ca
+        .iter()
+        .find(|(l, _)| *l == "gic")
+        .expect("a gic component");
+    let gic_b = cb
+        .iter()
+        .find(|(l, _)| *l == "gic")
+        .expect("a gic component");
+    assert_ne!(
+        gic_a.1, gic_b.1,
+        "the gic component must localize the divergence"
+    );
+    for (la, da) in &ca {
+        if *la == "gic" {
+            continue;
+        }
+        let db = cb.iter().find(|(lb, _)| lb == la).map(|(_, d)| d);
+        assert_eq!(
+            Some(da),
+            db,
+            "component {la} must match (only the GIC differs)"
+        );
+    }
+
+    // An unwired VM exposes no `gic` component (additive-only; the label
+    // appears exactly when the GICV chunk does).
+    let unwired = vmm(vec![]);
+    assert!(!unwired.state_components().iter().any(|(l, _)| *l == "gic"));
 }
 
 /// M3 — the full boot composition: `boot` runs the host-baseline gate then

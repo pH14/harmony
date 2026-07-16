@@ -549,6 +549,7 @@ pub fn vmm_core::vendor::Vendor::check_wire_interrupt<B: vmm_backend::backend::B
 pub fn vmm_core::vendor::Vendor::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_core::vendor::Vendor::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_core::vendor::Vendor::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
+pub fn vmm_core::vendor::Vendor::device_components(&Self::Devices, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
 pub fn vmm_core::vendor::Vendor::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::Vendor::dispatch_mmio<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::types::Gpa, u8, core::option::Option<u64>) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::Vendor::encode_device_state(&Self::Devices) -> alloc::vec::Vec<u8>
@@ -579,6 +580,7 @@ pub fn vmm_backend::arch::arm64::Arm64::check_wire_interrupt<B: vmm_backend::bac
 pub fn vmm_backend::arch::arm64::Arm64::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_backend::arch::arm64::Arm64::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_backend::arch::arm64::Arm64::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
+pub fn vmm_backend::arch::arm64::Arm64::device_components(&Self::Devices, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
 pub fn vmm_backend::arch::arm64::Arm64::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::arch::arm64::Arm64Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::arm64::Arm64::dispatch_mmio<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::types::Gpa, u8, core::option::Option<u64>) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::arm64::Arm64::encode_device_state(&Self::Devices) -> alloc::vec::Vec<u8>
@@ -609,6 +611,7 @@ pub fn vmm_backend::arch::x86::X86::check_wire_interrupt<B: vmm_backend::backend
 pub fn vmm_backend::arch::x86::X86::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_backend::arch::x86::X86::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_backend::arch::x86::X86::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
+pub fn vmm_backend::arch::x86::X86::device_components(&Self::Devices, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
 pub fn vmm_backend::arch::x86::X86::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::arch::x86::X86Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::x86::X86::dispatch_mmio<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::types::Gpa, u8, core::option::Option<u64>) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::x86::X86::encode_device_state(&Self::Devices) -> alloc::vec::Vec<u8>

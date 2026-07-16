@@ -2049,6 +2049,13 @@ where
             dig(<B::A as Vendor>::serial_capture(&self.devices)),
         ));
         out.push(("dev", dig(&self.encode_device_terminal())));
+        // The vendor's per-device digests — the device hash chunks
+        // (`hash_device_chunks`) fold into `state_hash` but are otherwise
+        // invisible to this breakdown, so a divergence living only in a device
+        // (arm64: the `GICV` chunk's register files / pending-active / timer)
+        // would hash differently while every component above matched. Additive:
+        // the vendor appends new labels only (never renames a pinned one).
+        <B::A as Vendor>::device_components(&self.devices, &mut out);
         if let Some(vt) = &self.vtime {
             // V-time chunk broken out for the O1 localizer (PR #51 box-review). The
             // first three components are a **faithful cover** of the bytes

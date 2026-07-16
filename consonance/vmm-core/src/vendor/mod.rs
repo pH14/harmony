@@ -225,6 +225,17 @@ pub trait Vendor: Arch + Sized {
     /// determinism bisector can localize which register file diverged.
     fn vcpu_components(vcpu: &Self::VcpuState, out: &mut Vec<(&'static str, [u8; 32])>);
 
+    /// Append the vendor's per-**device** digests to the diagnostic
+    /// [`Vmm::state_components`] breakdown (never part of `state_hash`), so a
+    /// determinism bisector can localize a divergence that lives only in a
+    /// device hash chunk (arm64: the `GICV` chunk — the GICv3 register files /
+    /// pending-active / timer state; x86: LAPIC/legacy). Without this, two runs
+    /// differing only in device state hash differently while every other
+    /// diagnostic component matches, defeating localization. **Additive only**:
+    /// a vendor appends *new* labels; it never renames an existing one (the O1
+    /// box localizer pins `regs`/`desc-tables`). The default appends nothing.
+    fn device_components(_devices: &Self::Devices, _out: &mut Vec<(&'static str, [u8; 32])>) {}
+
     /// Whether the vCPU carries an event-injection record a quiescent-only codec
     /// would reject (the full task-39 set, inert residuals included).
     fn vcpu_has_inflight_injection(vcpu: &Self::VcpuState) -> bool;

@@ -98,24 +98,48 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
 
         let addr = gpa.0;
 
-        // Every modeled arm64 MMIO device (the PL011 register block, the
-        // GICv3 register files, the hypercall-doorbell magic word) is
-        // **32-bit-accessed** — the models are `u32`-register/word-ABI. A
-        // non-32-bit access would truncate a store (`v as u32`) or under-fill a
-        // load, so reject the width **before** touching any device state, at
-        // every arm (never a silent truncation; the r1 GIC-width fix, swept
-        // across the remaining arms per review r2).
-        if (in_frame(addr, PL011)
-            || in_frame(addr, DOORBELL)
-            || in_frame(addr, GICD)
-            || in_frame(addr, GICR))
-            && size != 4
+        // Validate any access whose START lands in a modeled device frame
+        // **fully**, before touching device state — a start-in-frame predicate
+        // alone is unsafe (`in_frame` checks the start only). Every modeled
+        // arm64 device (the PL011 register block, the GICv3 register files, the
+        // hypercall-doorbell magic word) is a 32-bit-register/word-ABI, so the
+        // access must be (1) 4-byte **aligned** (register-addressed), (2) fully
+        // **within** the frame — its end must not straddle the boundary — and
+        // (3) exactly 4 bytes **wide**. Anything else fails closed (never a
+        // silent `v as u32` truncation, an under-filled load, or a cross-frame
+        // access). Checked in that order so a straddling access is reported as a
+        // straddle even when its width is also wrong.
+        if let Some((frame_name, frame)) = [
+            ("PL011", PL011),
+            ("doorbell", DOORBELL),
+            ("GICD", GICD),
+            ("GICR", GICR),
+        ]
+        .into_iter()
+        .find(|(_, f)| in_frame(addr, *f))
         {
-            return Err(VmmError::ContractViolation(format!(
-                "arm64 device MMIO at {addr:#x} with size {size} != 4 — the modeled PL011, GICv3, \
-                 and hypercall-doorbell registers are 32-bit-accessed; a different width is \
-                 unmodeled (fail closed, not a truncation)"
-            )));
+            if !addr.is_multiple_of(4) {
+                return Err(VmmError::ContractViolation(format!(
+                    "arm64 {frame_name} MMIO at {addr:#x} is not 4-byte aligned — the modeled \
+                     registers are word-addressed; a misaligned access is unmodeled (fail closed)"
+                )));
+            }
+            let end = addr.checked_add(u64::from(size));
+            if end.is_none_or(|e| e > frame.0 + frame.1) {
+                return Err(VmmError::ContractViolation(format!(
+                    "arm64 {frame_name} MMIO at {addr:#x} size {size} straddles the frame boundary \
+                     ({:#x}..{:#x}) — a cross-frame access is unmodeled (fail closed)",
+                    frame.0,
+                    frame.0 + frame.1
+                )));
+            }
+            if size != 4 {
+                return Err(VmmError::ContractViolation(format!(
+                    "arm64 {frame_name} MMIO at {addr:#x} with size {size} != 4 — the modeled \
+                     registers are 32-bit-accessed; a different width is unmodeled (fail closed, \
+                     not a truncation)"
+                )));
+            }
         }
 
         // The PL011 console (4 KiB frame). 32-bit register accesses.
@@ -491,19 +515,33 @@ pub(crate) fn encode_vcpu_state(s: &Arm64VcpuState) -> Vec<u8> {
     v
 }
 
+/// SHA-256 of `bytes`, for the diagnostic component digests.
+fn dig(bytes: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.finalize().into()
+}
+
+/// The arm64 **device** breakdown for the diagnostic [`Vmm::state_components`]
+/// (never part of `state_hash`): the `gic` component digests exactly the bytes
+/// the `GICV` hash chunk hashes ([`Arm64::hash_device_chunks`](crate::vendor::Vendor::hash_device_chunks)),
+/// so a GIC-only `state_hash` divergence localizes here. Present only when the
+/// fabric is wired (an unwired VM has no `GICV` chunk either).
+pub(crate) fn device_components(devices: &Arm64Devices, out: &mut Vec<(&'static str, [u8; 32])>) {
+    if let Some(gic) = &devices.gic {
+        let mut bytes = Vec::new();
+        records::encode_gic_state(&mut bytes, &gic.snapshot());
+        out.push(("gic", dig(&bytes)));
+    }
+}
+
 /// The arm64 register-file breakdown for the **diagnostic**
 /// [`Vmm::state_components`] (never part of `state_hash`), so a determinism
 /// bisector can localize which register file diverged. Labels are stable and
 /// in a fixed order (the arm64 vendor's own label set — the x86 labels
 /// `regs`/`desc-tables`/… are that vendor's and stay untouched).
 pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [u8; 32])>) {
-    fn dig(bytes: &[u8]) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(bytes);
-        h.finalize().into()
-    }
-
     let mut core = Vec::new();
     for x in s.core.x {
         core.extend_from_slice(&x.to_le_bytes());

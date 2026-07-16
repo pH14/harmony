@@ -186,6 +186,16 @@ impl Vendor for Arm64 {
         dispatch::vcpu_components(vcpu, out);
     }
 
+    fn device_components(devices: &Self::Devices, out: &mut Vec<(&'static str, [u8; 32])>) {
+        // Expose the GICv3 to the diagnostic breakdown when the fabric is wired,
+        // digesting **exactly the bytes the `GICV` hash chunk hashes** (see
+        // [`hash_device_chunks`]) — so a `state_hash` divergence that lives only
+        // in the GIC (register files / pending-active / the virtual timer)
+        // localizes to the `gic` component instead of "diverged but every
+        // component matched". A new label (never a rename); unwired ⇒ nothing.
+        dispatch::device_components(devices, out);
+    }
+
     fn vcpu_has_inflight_injection(vcpu: &Arm64VcpuState) -> bool {
         // The skeleton record set carries no pending-event records (the arm64
         // `KVM_GET_VCPU_EVENTS` surface — pending SError — is part of the
