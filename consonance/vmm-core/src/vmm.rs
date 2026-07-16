@@ -2578,10 +2578,12 @@ where
     /// RAM), or `None` when nothing is registered. For gates and tests — reads
     /// the live RAM, so it sees exactly what the guest would.
     pub fn pvclock_page(&self) -> Option<&[u8]> {
-        let gpa = self.pvclock_registration()? as usize;
+        // Resolve the absolute registration GPA to a main-RAM offset (arm64 RAM
+        // is high; x86 base 0 → identical offset). Review r14.
+        let off = self.ram_offset_of(self.pvclock_registration()?)?;
         self.ram
             .as_bytes()
-            .get(gpa..gpa + vtime::pvclock::PVCLOCK_PAGE_LEN)
+            .get(off..off + vtime::pvclock::PVCLOCK_PAGE_LEN)
     }
 
     /// G2's function-equality check, callable at any point (the box gate calls
@@ -2658,7 +2660,13 @@ where
         if !gpa.is_multiple_of(page_len) {
             return Err("not page-aligned");
         }
-        let end = gpa.checked_add(page_len).ok_or("address overflow")?;
+        // Resolve the ABSOLUTE GPA to a main-RAM offset (review r14 — the last of
+        // the r11 GPA family). arm64 RAM is high, and the pvclock region is
+        // reserved at `RAM_BASE + off` (the `hm-rk5` seam), so a valid absolute
+        // GPA must be *routed*, not rejected as beyond RAM; a GPA below the base
+        // is not backed. x86 (base 0) resolves to the identical offset.
+        let off = self.ram_offset_of(gpa).ok_or("below the guest RAM base")? as u64;
+        let end = off.checked_add(page_len).ok_or("address overflow")?;
         if end > self.ram.as_bytes().len() as u64 {
             return Err("past the end of guest RAM");
         }
@@ -2758,9 +2766,12 @@ where
         let vns = vt.clock.snapshot_vns(anchor);
         let gc = vt.guest_clock(anchor);
         let hz = vt.cfg.guest_hz;
-        let start = gpa as usize;
+        // Resolve the absolute GPA to a main-RAM offset (arm64 RAM is high; x86
+        // base 0 → identical offset). Computed before the &mut borrow. Review r14.
+        let off = self.ram_offset_of(gpa);
         let ram = self.ram.as_mut_bytes();
-        let Some(page) = ram.get_mut(start..start + vtime::pvclock::PVCLOCK_PAGE_LEN) else {
+        let Some(page) = off.and_then(|o| ram.get_mut(o..o + vtime::pvclock::PVCLOCK_PAGE_LEN))
+        else {
             return Err(VmmError::ContractViolation(format!(
                 "pvclock page {gpa:#x} no longer inside guest RAM — registration validated it, so \
                  the RAM backing changed underneath the channel"
@@ -9718,6 +9729,46 @@ mod tests {
     /// A page GPA inside `TEST_RAM`, clear of the doorbell pages and the
     /// booted-image regions the other tests use.
     const PV_GPA: u64 = 0x4000;
+
+    /// Review r14 (the last of the r11 GPA family): the pvclock GPA helpers
+    /// (`pvclock_validate_gpa` / `pvclock_page` / `pvclock_stamp`) must resolve
+    /// absolute GPAs through the region resolver. On a high-RAM-base (arm64)
+    /// machine the pvclock region is reserved at `RAM_BASE + off` (the `hm-rk5`
+    /// seam), so a valid absolute GPA validates and its page resolves; a GPA below
+    /// the base is not backed. x86 (base 0) is byte-identical.
+    #[test]
+    fn pvclock_gpa_helpers_resolve_a_high_ram_base() {
+        let mut vmm = pvclock_vmm(vec![], Box::new(ScriptedWork::at(500)), 7);
+        vmm.ram_base_gpa = 0x4000_0000; // arm64: RAM is high
+
+        // A valid HIGH absolute GPA (page-aligned, inside `[RAM_BASE, +RAM)`)
+        // validates — the pre-r14 raw bound rejected it as "past the end of RAM".
+        let high = 0x4000_0000 + PV_GPA;
+        assert!(
+            vmm.pvclock_validate_gpa(high).is_ok(),
+            "a high arm64 pvclock GPA must validate: {:?}",
+            vmm.pvclock_validate_gpa(high)
+        );
+        // A GPA below the RAM base is not backed.
+        assert_eq!(
+            vmm.pvclock_validate_gpa(0x1000),
+            Err("below the guest RAM base")
+        );
+
+        // Register the high GPA (validate + record); `pvclock_page` then resolves
+        // it at the high absolute GPA, not a wrong host offset.
+        assert_eq!(vmm.pvclock_register(high).0 as u16, Status::Ok as u16);
+        assert_eq!(vmm.pvclock_registration(), Some(high));
+        assert!(
+            vmm.pvclock_page().is_some(),
+            "pvclock_page must resolve the high GPA"
+        );
+
+        // x86 (base 0): a valid low GPA validates unchanged (the full x86 pvclock
+        // suite is the rest of the neutrality proof).
+        let x86 = pvclock_vmm(vec![], Box::new(ScriptedWork::at(500)), 7);
+        assert!(x86.pvclock_validate_gpa(PV_GPA).is_ok());
+    }
 
     /// Registration records the GPA and answers the ABI version but leaves the
     /// page **pending** (r8 handshake ruling); the **handshake** — the guest's
