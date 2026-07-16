@@ -1030,7 +1030,9 @@ mmio = \"unchanged-pending-AE4\"\n\
 host-assert = \"on-silicon-pending-AE4\"\n";
 
     proptest! {
-        #![proptest_config(pcfg(48))]
+        // ≥256 native cases per the AMD-draft format-invariance gate (the small
+        // ~4 KiB AMD form keeps this well under the test-runtime budget).
+        #![proptest_config(pcfg(256))]
 
         /// Format-invariance for the AMD column (Deliverable 8): incidental input
         /// formatting — leading whitespace, trailing comments, blank lines — never
