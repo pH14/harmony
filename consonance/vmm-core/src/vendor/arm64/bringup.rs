@@ -66,18 +66,16 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
     let mut ram = GuestRam::new(guest_ram_len)?;
     let loaded = image_loader::load(image, ram.as_mut_bytes()).map_err(VmmError::vendor_boot)?;
 
-    // 3. Place the DTB in RAM immediately above the loaded image, page-aligned.
-    //    (The reserved pvclock page sits one page above the DTB — the hm-rk5
-    //    seam, reserved and named in the DTB, populated by that bead.)
-    let dtb_off = align_up(loaded.end_off, PAGE);
+    // 3. Lay out RAM above the loaded image, page-aligned: the **reserved
+    //    pvclock page first** (the hm-rk5 seam), then the DTB above it. Placing
+    //    pvclock before the DTB makes its GPA depend only on the kernel extent —
+    //    not the DTB length — so the DTB (whose `/reserved-memory` child's
+    //    node name is `pvclock@<hex(gpa)>`, a variable-length unit-address) is
+    //    built **once**, with no circular size↔name dependency.
+    let pvclock_off = align_up(loaded.end_off, PAGE);
+    let pvclock_gpa = RAM_BASE + pvclock_off;
+    let dtb_off = align_up(pvclock_off + PAGE, PAGE);
     let dtb_gpa = RAM_BASE + dtb_off;
-    // The pvclock page is reserved a fixed page above the DTB; the DTB names
-    // it. It is sized before the DTB is built (its GPA does not depend on the
-    // DTB length, only on a fixed reservation above it).
-    let dtb_bytes = dtb::build(guest_ram_len as u64, 0, bootargs);
-    let pvclock_gpa = RAM_BASE + align_up(dtb_off + dtb_bytes.len() as u64, PAGE);
-    // Rebuild with the now-known pvclock GPA so the reserved-memory node names
-    // the real page (the length is unchanged — the GPA is a fixed-width field).
     let dtb_bytes = dtb::build(guest_ram_len as u64, pvclock_gpa, bootargs);
 
     let dtb_end = dtb_off as usize + dtb_bytes.len();
@@ -177,11 +175,19 @@ mod tests {
         let mem = vmm.guest_memory();
         let parsed = dtb::parse(&mem[off..]).unwrap();
         assert!(parsed.nodes.iter().any(|n| n == "pl011@9000000"));
-        // The reserved pvclock page GPA the DTB names is real, page-aligned RAM.
-        let pv = parsed.prop("pvclock@0", "reg").unwrap();
+        // The reserved pvclock node's name is its `reg` address as unit-address
+        // (`pvclock@<hex>`); its GPA is real, page-aligned RAM, and — with the
+        // single-pass layout — sits below the DTB.
+        let pvclock_node = parsed
+            .nodes
+            .iter()
+            .find(|n| n.starts_with("pvclock@"))
+            .expect("a pvclock reserved-memory node");
+        let pv = parsed.prop(pvclock_node, "reg").unwrap();
         let pv_gpa = u64::from_be_bytes(pv[0..8].try_into().unwrap());
+        assert_eq!(*pvclock_node, format!("pvclock@{pv_gpa:x}"));
         assert!(pv_gpa.is_multiple_of(PAGE));
-        assert!(pv_gpa >= RAM_BASE && pv_gpa < RAM_BASE + ram_len as u64);
+        assert!(pv_gpa >= RAM_BASE && pv_gpa < dtb_gpa);
     }
 
     #[test]

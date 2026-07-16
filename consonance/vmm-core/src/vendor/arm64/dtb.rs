@@ -206,7 +206,10 @@ pub fn build(ram_len: u64, pvclock_gpa: u64, bootargs: &str) -> Vec<u8> {
     // signals a 1:1 child↔parent address mapping, without which OF consumers
     // (Linux `of_reserved_mem`) do not honor a child's `reg`/`no-map`.
     f.prop_empty("ranges");
-    f.begin_node("pvclock@0"); // unit-address filled by reg below
+    // The child's **unit-address MUST equal its first `reg` address** (FDT node
+    // naming rule) — `pvclock@<hex(pvclock_gpa)>`, not `@0`, or FDT validators
+    // and OF consumers reject it as structurally inconsistent.
+    f.begin_node(&format!("pvclock@{pvclock_gpa:x}"));
     f.prop_str("compatible", "harmony,pvclock-page");
     {
         let mut reg = Vec::new();
@@ -449,10 +452,16 @@ mod tests {
         assert_eq!(be32_at(&dtb, 24).unwrap(), FDT_LAST_COMP_VERSION);
     }
 
+    /// The pvclock GPA `sample()` builds with (RAM_BASE + 0x0101_0000).
+    const SAMPLE_PVCLOCK_GPA: u64 = RAM_BASE + 0x0101_0000;
+
     #[test]
     fn round_trips_structure_and_properties() {
         let dtb = sample();
         let p = parse(&dtb).unwrap();
+        // The reserved-memory child's node name is its first `reg` address as
+        // the unit-address (FDT naming rule; review r4): `pvclock@<hex(gpa)>`.
+        let pvclock_node = format!("pvclock@{SAMPLE_PVCLOCK_GPA:x}");
         // The expected node set is present, root first.
         assert_eq!(p.nodes.first().map(String::as_str), Some(""));
         for n in [
@@ -462,7 +471,7 @@ mod tests {
             "cpu@0",
             "memory@40000000",
             "reserved-memory",
-            "pvclock@0",
+            pvclock_node.as_str(),
             "intc@8000000",
             "timer",
             "pl011@9000000",
@@ -486,11 +495,17 @@ mod tests {
         // The GIC reg carries both frames (dist + redist), 4 cells each × 2.
         assert_eq!(p.prop("intc@8000000", "reg").unwrap().len(), 2 * 4 * 4);
         // The reserved pvclock page is present and no-map.
-        assert!(p.prop("pvclock@0", "no-map").is_some());
+        assert!(p.prop(&pvclock_node, "no-map").is_some());
         assert_eq!(
-            p.prop("pvclock@0", "compatible").unwrap(),
+            p.prop(&pvclock_node, "compatible").unwrap(),
             b"harmony,pvclock-page\0"
         );
+        // The unit-address in the node name equals the first `reg` address
+        // (the r4 FDT-consistency requirement).
+        let reg = p.prop(&pvclock_node, "reg").unwrap();
+        let reg_addr = u64::from_be_bytes(reg[0..8].try_into().unwrap());
+        assert_eq!(reg_addr, SAMPLE_PVCLOCK_GPA);
+        assert_eq!(pvclock_node, format!("pvclock@{reg_addr:x}"));
         // Finding 4 (review r1): the /reserved-memory node MUST carry an empty
         // `ranges` (plus #address-cells/#size-cells) or OF consumers
         // (`of_reserved_mem`) ignore the child's `reg`/`no-map`. Assert the

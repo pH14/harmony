@@ -18,9 +18,22 @@ use std::os::fd::AsRawFd;
 use kvm_bindings::{kvm_run, kvm_userspace_memory_region, kvm_vcpu_init};
 use kvm_ioctls::{Kvm, VcpuFd, VmFd};
 
-use crate::arm64_kvm::{Arm64Kvm, KVM_EXIT_MMIO, KVM_EXIT_SYSTEM_EVENT, KvmRunView, MmioView};
+use crate::arm64_kvm::{Arm64Kvm, KvmRunView, RunOffsets, RunPage};
 use crate::error::{BackendError, Result};
 use crate::types::MpState;
+
+/// The byte offsets of the `kvm_run` fields the decode reads, computed from the
+/// **arch-specific** `kvm_run` layout via `offset_of!` (so the portable
+/// `RunPage` seam never hard-codes the layout). The MMIO sub-fields and
+/// `system_event.type` live in the exit-info union `__bindgen_anon_1`.
+const RUN_OFFSETS: RunOffsets = RunOffsets {
+    exit_reason: core::mem::offset_of!(kvm_run, exit_reason),
+    mmio_phys_addr: core::mem::offset_of!(kvm_run, __bindgen_anon_1.mmio.phys_addr),
+    mmio_data: core::mem::offset_of!(kvm_run, __bindgen_anon_1.mmio.data),
+    mmio_len: core::mem::offset_of!(kvm_run, __bindgen_anon_1.mmio.len),
+    mmio_is_write: core::mem::offset_of!(kvm_run, __bindgen_anon_1.mmio.is_write),
+    system_event_type: core::mem::offset_of!(kvm_run, __bindgen_anon_1.system_event.type_),
+};
 
 // --- compile-time UAPI pin ---------------------------------------------------
 // `docs/ARM-ALTRA.md` §Evidence-integrity: verify knowable UAPI surfaces against
@@ -108,35 +121,14 @@ impl LiveKvm {
         Ok(this)
     }
 
-    /// Read the current `kvm_run` into the portable [`KvmRunView`] the pure
-    /// decode consumes.
-    fn read_run_view(&self) -> KvmRunView {
+    /// Read the current `kvm_run` into the portable [`KvmRunView`] through the
+    /// [`RunPage`] seam (whose unsafe pointer logic is Miri-tested in
+    /// `arm64_kvm`; this box wiring just supplies the real pointer + offsets).
+    fn read_run_view(&self) -> Result<KvmRunView> {
         // SAFETY: `self.run` came from a successful `mmap` of `mmap_size` bytes
-        // (≥ `size_of::<kvm_run>()`) and is live until `Drop`; we only read the
-        // fields the exit reason selects, matching the kernel's contract.
-        let exit_reason = unsafe { (*self.run).exit_reason };
-        let mut view = KvmRunView {
-            exit_reason,
-            ..Default::default()
-        };
-        // The union fields carry the same uapi names on every arch (the layout
-        // differs, but `mmio`/`system_event` are shared) — the x86 `kvm.rs`
-        // reads them the same way.
-        if exit_reason == KVM_EXIT_MMIO {
-            // SAFETY: the exit reason selects the `mmio` union member.
-            let m = unsafe { (*self.run).__bindgen_anon_1.mmio };
-            view.mmio = MmioView {
-                phys_addr: m.phys_addr,
-                data: m.data,
-                len: m.len,
-                is_write: m.is_write != 0,
-            };
-        } else if exit_reason == KVM_EXIT_SYSTEM_EVENT {
-            // SAFETY: the exit reason selects the `system_event` union member.
-            let se = unsafe { (*self.run).__bindgen_anon_1.system_event };
-            view.system_event_type = se.type_;
-        }
-        view
+        // (≥ `size_of::<kvm_run>()`), live until `Drop`, and `RUN_OFFSETS` names
+        // real `kvm_run` fields; every read inside is bounds-checked.
+        unsafe { RunPage::new(self.run.cast::<u8>(), self.mmap_size).view(&RUN_OFFSETS) }
     }
 }
 
@@ -206,23 +198,23 @@ impl Arm64Kvm for LiveKvm {
     }
 
     fn write_mmio_data(&mut self, data: [u8; 8]) -> Result<()> {
-        // SAFETY: `self.run` is a live mmap of the `kvm_run`; the pending exit
-        // is an MMIO load, so writing its `data` staging buffer is the kernel's
-        // documented completion path (read back on the next `KVM_RUN`).
+        // SAFETY: `self.run` is a live mmap of the `kvm_run`; the pending exit is
+        // an MMIO load, so writing its `data` staging buffer (through the
+        // bounds-checked `RunPage` seam) is the kernel's documented completion
+        // path, read back on the next `KVM_RUN`.
         unsafe {
-            (*self.run).__bindgen_anon_1.mmio.data = data;
+            RunPage::new(self.run.cast::<u8>(), self.mmap_size).write_mmio_data(&RUN_OFFSETS, data)
         }
-        Ok(())
     }
 
     fn run(&mut self) -> Result<KvmRunView> {
         // Issue `KVM_RUN` through kvm-ioctls' safe wrapper (it uses the mmap'd
-        // `kvm_run` we also hold a pointer to), then read the shared page.
-        // kvm-ioctls decodes into `VcpuExit`; we ignore that decode and read the
-        // raw fields ourselves so the completion write-back and the pure
-        // `decode_exit` stay the single source of truth.
+        // `kvm_run` we also hold a pointer to), then read the shared page through
+        // the `RunPage` seam. kvm-ioctls decodes into `VcpuExit`; we ignore that
+        // decode and read the raw fields ourselves so the completion write-back
+        // and the pure `decode_exit` stay the single source of truth.
         self.vcpu.run().map_err(kvm_err)?;
-        Ok(self.read_run_view())
+        self.read_run_view()
     }
 }
 

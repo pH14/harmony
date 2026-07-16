@@ -232,6 +232,127 @@ fn le_data(value: u64, len: u32) -> [u8; 8] {
     data
 }
 
+// --- the portable `kvm_run` pointer seam (the arm64 `RunPage`) ----------------
+// The raw mmap'd-`kvm_run` reads live HERE, in the portable module, so the
+// unsafe pointer logic is compiled + Miri-tested on the x86 host (the box-only
+// `arm64_kvm_sys`, where the real ioctls live, is `cfg`'d out of the x86 Miri
+// job — so its reads would otherwise sit outside the unsafe⇒Miri UB gate, the
+// x86 `RunPage` precedent). The box provides the field byte offsets (via
+// `offset_of!` on the arch-specific `kvm_run`), so this seam never depends on
+// the `kvm_bindings` layout and stays portable.
+
+/// The byte offsets of the `kvm_run` fields the decode reads, computed by the
+/// box layer from the arch-specific `kvm_run` (`offset_of!`). The MMIO
+/// sub-fields overlap `system_event` in the exit-info union, exactly as in the
+/// real `kvm_run`.
+// Constructed by the box `arm64_kvm_sys` (aarch64-linux only) and the tests;
+// dead on a non-test build off that leg, hence the conditional allow (the
+// `region`/`run_buf` seam precedent).
+#[cfg_attr(
+    not(any(test, all(target_os = "linux", target_arch = "aarch64"))),
+    allow(dead_code)
+)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RunOffsets {
+    /// `kvm_run.exit_reason` (`u32`).
+    pub(crate) exit_reason: usize,
+    /// `mmio.phys_addr` (`u64`).
+    pub(crate) mmio_phys_addr: usize,
+    /// `mmio.data` (`[u8; 8]`) — also the MMIO-load completion write-back slot.
+    pub(crate) mmio_data: usize,
+    /// `mmio.len` (`u32`).
+    pub(crate) mmio_len: usize,
+    /// `mmio.is_write` (`u8`).
+    pub(crate) mmio_is_write: usize,
+    /// `system_event.type` (`u32`).
+    pub(crate) system_event_type: usize,
+}
+
+/// A raw view over the mmap'd `kvm_run` shared page (the arm64 analogue of the
+/// x86 `RunPage`): bounds-checked reads of the plain fields the decode needs,
+/// and the MMIO-load completion write-back into `mmio.data`. All accesses are
+/// bounds-checked against `len` and fail closed — never an out-of-bounds read.
+#[cfg_attr(
+    not(any(test, all(target_os = "linux", target_arch = "aarch64"))),
+    allow(dead_code)
+)]
+pub(crate) struct RunPage {
+    ptr: *mut u8,
+    len: usize,
+}
+
+#[cfg_attr(
+    not(any(test, all(target_os = "linux", target_arch = "aarch64"))),
+    allow(dead_code)
+)]
+impl RunPage {
+    /// # Safety
+    /// `ptr` must point to at least `len` initialized bytes (the live `mmap`,
+    /// or a test buffer), exclusively owned for the duration of use.
+    pub(crate) unsafe fn new(ptr: *mut u8, len: usize) -> Self {
+        Self { ptr, len }
+    }
+
+    /// Fail closed unless `[off, off + n)` is within the page.
+    fn check(&self, off: usize, n: usize) -> Result<()> {
+        match off.checked_add(n) {
+            Some(end) if end <= self.len => Ok(()),
+            _ => Err(BackendError::Internal("kvm_run field access out of bounds")),
+        }
+    }
+
+    /// Read `N` bytes at `off`.
+    ///
+    /// # Safety
+    /// The constructor contract (a valid page of `len` bytes) must hold.
+    unsafe fn read_array<const N: usize>(&self, off: usize) -> Result<[u8; N]> {
+        self.check(off, N)?;
+        let mut b = [0u8; N];
+        // SAFETY: `off + N <= len` (checked); `ptr` is valid for `len` bytes and
+        // `b` is a distinct local, so the copy is in-bounds and non-overlapping.
+        unsafe { std::ptr::copy_nonoverlapping(self.ptr.add(off), b.as_mut_ptr(), N) };
+        Ok(b)
+    }
+
+    /// Read the plain `kvm_run` fields at `off` into a [`KvmRunView`].
+    ///
+    /// # Safety
+    /// The constructor contract must hold; `off` must name fields of the mapped
+    /// `kvm_run` (the box computes them via `offset_of!`).
+    pub(crate) unsafe fn view(&self, off: &RunOffsets) -> Result<KvmRunView> {
+        // SAFETY: forwarded to the constructor contract; every read is bounds-
+        // checked. `mmio`/`system_event` overlap in the exit-info union; the
+        // decode consults only the fields the exit reason selects.
+        unsafe {
+            Ok(KvmRunView {
+                exit_reason: u32::from_le_bytes(self.read_array(off.exit_reason)?),
+                mmio: MmioView {
+                    phys_addr: u64::from_le_bytes(self.read_array(off.mmio_phys_addr)?),
+                    data: self.read_array(off.mmio_data)?,
+                    len: u32::from_le_bytes(self.read_array(off.mmio_len)?),
+                    is_write: self.read_array::<1>(off.mmio_is_write)?[0] != 0,
+                },
+                system_event_type: u32::from_le_bytes(self.read_array(off.system_event_type)?),
+                ..Default::default()
+            })
+        }
+    }
+
+    /// Write an MMIO-load completion's 8 data bytes into `mmio.data` (read back
+    /// by the kernel on the next `KVM_RUN`).
+    ///
+    /// # Safety
+    /// The constructor contract must hold; `off.mmio_data` must name the mapped
+    /// `mmio.data`.
+    pub(crate) unsafe fn write_mmio_data(&self, off: &RunOffsets, data: [u8; 8]) -> Result<()> {
+        self.check(off.mmio_data, 8)?;
+        // SAFETY: `mmio_data + 8 <= len` (checked); exclusive access during the
+        // completion; `data` is a distinct local, so the copy is non-overlapping.
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(off.mmio_data), 8) };
+        Ok(())
+    }
+}
+
 // --- the register-ID table (`KVM_GET_ONE_REG`/`KVM_SET_ONE_REG`) -------------
 // arm64 KVM register IDs are documented encodings (Documentation/virt/kvm/
 // api.rst, `arch/arm64/include/uapi/asm/kvm.h`). These are ABI facts.
@@ -799,6 +920,78 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    /// Finding 2 (review r4): the raw mmap'd-`kvm_run` reads
+    /// ([`RunPage::view`]/[`RunPage::write_mmio_data`]) are exercised over a
+    /// synthetic heap buffer, so the unsafe pointer logic is **Miri-reachable**
+    /// on the x86 host (the box-only `arm64_kvm_sys`, where the reads run
+    /// against the real `kvm_run`, is `cfg`'d out of that Miri job — this is the
+    /// seam that keeps the unsafe under the UB gate, the x86 `RunPage`
+    /// precedent). Full loopback: build an MMIO exit in the buffer → `view` →
+    /// `decode_exit` → `write_mmio_data` → read it back.
+    #[test]
+    fn run_page_loopback_over_a_synthetic_buffer() {
+        // A compact `kvm_run`-shaped test layout (the box uses the real
+        // `offset_of!`-derived offsets; here they are chosen so the MMIO
+        // sub-fields overlap `system_event`, as they do in the union).
+        let off = RunOffsets {
+            exit_reason: 8,
+            mmio_phys_addr: 32,
+            mmio_data: 40,
+            mmio_len: 48,
+            mmio_is_write: 52,
+            system_event_type: 32, // overlaps mmio.phys_addr — the union
+        };
+        let len = 128usize;
+        let mut buf = vec![0u8; len];
+        // A KVM_EXIT_MMIO **load** at a UARTFR-ish GPA, 4 bytes.
+        buf[off.exit_reason..off.exit_reason + 4].copy_from_slice(&KVM_EXIT_MMIO.to_le_bytes());
+        buf[off.mmio_phys_addr..off.mmio_phys_addr + 8]
+            .copy_from_slice(&0x0900_0018u64.to_le_bytes());
+        buf[off.mmio_len..off.mmio_len + 4].copy_from_slice(&4u32.to_le_bytes());
+        buf[off.mmio_is_write] = 0;
+
+        // SAFETY (test): `buf` (128 bytes) outlives `page`; all access is through
+        // this one raw pointer, so nothing aliases it.
+        let page = unsafe { RunPage::new(buf.as_mut_ptr(), len) };
+        let view = unsafe { page.view(&off) }.unwrap();
+        assert_eq!(view.exit_reason, KVM_EXIT_MMIO);
+        assert_eq!(view.mmio.phys_addr, 0x0900_0018);
+        assert_eq!(view.mmio.len, 4);
+        assert!(!view.mmio.is_write);
+
+        // The pure decode consumes the view → an MMIO load pending a completion.
+        let (exit, pending) = decode_exit(&view).unwrap().unwrap();
+        assert!(matches!(
+            exit,
+            Exit::Common(CommonExit::Mmio { write: None, .. })
+        ));
+        assert_eq!(pending, Pending::MmioLoad { len: 4 });
+
+        // The completion write-back lands in mmio.data and reads back.
+        unsafe { page.write_mmio_data(&off, le_data(0x90, 4)) }.unwrap();
+        let view2 = unsafe { page.view(&off) }.unwrap();
+        assert_eq!(view2.mmio.data, le_data(0x90, 4));
+
+        // A SYSTEM_EVENT decodes from the same union bytes (system_event.type
+        // overlaps mmio.phys_addr) → Shutdown.
+        buf[off.exit_reason..off.exit_reason + 4]
+            .copy_from_slice(&KVM_EXIT_SYSTEM_EVENT.to_le_bytes());
+        buf[off.system_event_type..off.system_event_type + 4]
+            .copy_from_slice(&KVM_SYSTEM_EVENT_SHUTDOWN.to_le_bytes());
+        let sev = unsafe { page.view(&off) }.unwrap();
+        assert_eq!(
+            decode_exit(&sev).unwrap().unwrap().0,
+            CommonExit::Shutdown.into()
+        );
+
+        // Bounds: an offset past the buffer fails closed (no OOB read).
+        let bad = RunOffsets {
+            exit_reason: len,
+            ..off
+        };
+        assert!(unsafe { page.view(&bad) }.is_err());
     }
 
     /// Findings 1+2 (review r3): pin the KVM UAPI constants to the canonical
