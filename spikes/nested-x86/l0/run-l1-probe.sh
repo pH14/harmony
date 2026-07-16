@@ -101,12 +101,34 @@ if not isinstance(d.get("perfmon_version"), int) or d["perfmon_version"] < 2:
     bad.append(f"perfmon_version={d.get('perfmon_version')!r} (required >= 2)")
 if not isinstance(d.get("gp_counters"), int) or d["gp_counters"] < 1:
     bad.append(f"gp_counters={d.get('gp_counters')!r} (required >= 1)")
-if not d.get("sniff_raw_0x1c4_br_cond"):
-    bad.append("sniff_raw_0x1c4_br_cond missing/empty (the measured 0x1c4 attestation)")
+# round-9 P1: probe.c encodes perf failures as VALUES, not absent keys — a
+# failed perf_event_open turns the whole sniff into an error STRING, a failed
+# read leaves u64::MAX in the count arrays, and pmi reps carry {"error": ...}
+# entries. Parse the expected nested shapes and reject every error encoding.
+READ_FAIL = 2**64 - 1
+sniff = d.get("sniff_raw_0x1c4_br_cond")
+if not isinstance(sniff, dict) or not sniff:
+    bad.append(f"sniff_raw_0x1c4_br_cond={sniff!r} (must be a non-empty object; "
+               "a string is probe.c's perf_event_open-failure encoding)")
+else:
+    for k, v in sniff.items():
+        if (not isinstance(v, list) or not v
+                or not all(isinstance(x, int) and 0 <= x < READ_FAIL for x in v)):
+            bad.append(f"sniff_raw_0x1c4_br_cond[{k}]={v!r} (non-int/read-failure entry)")
 if d.get("probe") != "done":
     bad.append(f"probe={d.get('probe')!r} (sequence incomplete)")
-if "pmi_sniff_raw_0x1c4" in d and not d["pmi_sniff_raw_0x1c4"]:
-    bad.append("pmi_sniff_raw_0x1c4 present but empty")
+if "pmi_sniff_raw_0x1c4" in d:
+    pmi = d["pmi_sniff_raw_0x1c4"]
+    if not isinstance(pmi, dict) or not pmi:
+        bad.append(f"pmi_sniff_raw_0x1c4={pmi!r} (must be a non-empty object)")
+    else:
+        for k, combo in pmi.items():
+            reps = combo.get("reps") if isinstance(combo, dict) else None
+            if not isinstance(reps, list) or not reps:
+                bad.append(f"pmi_sniff_raw_0x1c4[{k}] has no reps")
+            elif any(isinstance(r, dict) and "error" in r for r in reps):
+                errs = [r for r in reps if isinstance(r, dict) and "error" in r]
+                bad.append(f"pmi_sniff_raw_0x1c4[{k}] carries error reps: {errs[:2]!r}")
 if bad:
     print("PROBE_BASIS_FIELDS_FAILED:", "; ".join(bad))
     sys.exit(1)

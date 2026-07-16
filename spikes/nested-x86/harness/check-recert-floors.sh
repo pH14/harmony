@@ -37,7 +37,18 @@ n3_check() { # n3_check <runset> <floor> [console-file]
       mr=$(grep -c "METAL_GATE_RC" "$f" 2>/dev/null || true)
       mf=$(grep -c "METAL_GATE_RC .* rc=[1-9]" "$f" 2>/dev/null || true)
       { [ "$mb" -gt 0 ] && [ "$mr" -eq "$mb" ] && [ "$mf" -eq 0 ]; } \
-        || { bad "$rs: metal gate RCs (began=$mb rc_lines=$mr failing=$mf)"; return; } ;;
+        || { bad "$rs: metal gate RCs (began=$mb rc_lines=$mr failing=$mf)"; return; }
+      # round-9 P1: the recorded RESTORE artifact is required too. Scope
+      # honestly: a restore failure is box hygiene AFTER evidence production
+      # (the gates above already ran and recorded), not retroactive taint on
+      # the measurements — but the L0 swap discipline demands the artifact
+      # exist and show stock+nested restored. The retained run's window-close
+      # check (RESTORE_VERIFIED_IDENTICAL vs box-restore-manifest-recert.json)
+      # is the module-hash-level confirmation on top of this per-runset file.
+      local rst=$R/n3/$rs/env.json.restore
+      [ -f "$rst" ] || { bad "$rs: env.json.restore missing (restore artifact required)"; return; }
+      grep -qE "^kvm +1396736 " "$rst" || { bad "$rs: restore artifact lacks stock kvm 1396736"; return; }
+      grep -q "nested=Y" "$rst" || { bad "$rs: restore artifact lacks nested=Y"; return; } ;;
     migrate-live-*)
       # boots its own QEMUs; the recorded rc is the wrapper's condition-end rc
       local mlrc; mlrc=$(grep -o '"rc": *[0-9]*' "$R/n3/$rs/condition-end.json" 2>/dev/null | grep -o '[0-9]*$' | tail -1)
