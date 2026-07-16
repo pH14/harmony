@@ -57,14 +57,14 @@ Reproducer, Moment/Span, Subject; wire bytes golden-proven; zero findings across
 reviewers; Exemplar→Entry structural merge deferred as `hm-74w`).
 
 **CI runner toolchain REPAIRED 2026-07-15 eve** (`hm-ph7`): reinstall done; the rerun now
-*measures* again — and the first honest run **fails the 94.5 coverage region floor**
-(all 1791 tests pass; line coverage 93.66%). NOT caused by the drift-gate merge (tests/
-files aren't counted — verified from the lcov artifact). Drivers: a stale `work_perf.rs`
-exclusion broken by the keystone move (**repaired**, beb14c6) + under-tested code that
-landed while CI was fail-before-measuring (film replay bin 9.5% / core_replay 55.6%,
-benchcampaign 82.6%, telemetry bin 23.5%, bringup 70.2%). **⚖️ PAUL DECISION → `hm-42y`**:
-test-up the drivers vs exclude bin targets by policy vs floor change (disfavored).
-Until ruled, quality on main stays red and `hm-ph7` stays open.
+*measures* again (all 1791 tests pass; line coverage 93.66%). NOT caused by the drift-gate
+merge (tests/files aren't counted — verified from the lcov artifact). Drivers: a stale
+`work_perf.rs` exclusion broken by the keystone move (**repaired**, beb14c6) + under-tested
+code that landed while CI was fail-before-measuring (film replay bin 9.5% / core_replay
+55.6%, benchcampaign 82.6%, telemetry bin 23.5%, bringup 70.2%). **⚖️ RULED — `hm-42y`
+(Paul, 2026-07-16, commit babb6be):** coverage region floor **94.5 → 93.5** (accept the
+dip); the measured 93.66 now passes, the ratchet doctrine is unchanged, and the driver
+test-up stays an organic follow-up. Quality on main is green again.
 
 ## Ready (unblocked, waiting for a worker slot or Paul)
 
@@ -100,8 +100,8 @@ spawn these until that lane re-opens):
 - **Dissonance document/naming convergence** — must finish before the Differential children;
   reserves counterpoint, rules `campaign-runner`, and reconciles ordering/retention/SDK contracts ·
   `hm-7zx`
-- **Campaign-runner remap-factory opt-in** (task 95 M2 follow-up; current crate still named
-  `conductor`) · `hm-lld`
+- **Campaign-runner remap-factory opt-in** (task 95 M2 follow-up; the crate is
+  `campaign-runner` — the `conductor` rename landed in tasks/105, PR #106) · `hm-lld`
 - **Deterministic-preemption soundness gap** — oldest open debt; needs a decision, not
   deferral · `hm-5ee`
 - Dormant tier (deliberately unscheduled, revisit at planning): live net-fault enforcement

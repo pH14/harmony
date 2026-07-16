@@ -1,5 +1,28 @@
 # Exploration — the dissonance search & scoring architecture
 
+> **Status: PARTIALLY SUPERSEDED (production path); design record otherwise.** Reconciled 2026-07-16
+> against `docs/DISSONANCE-STRATEGY.md` (the ruled strategy, PR #103) and `docs/GLOSSARY.md` (the
+> naming authority). What survives: the literature, the live-plane/replay-plane split, the
+> two-hard-problems discipline, parent-rooted materialization + lazy retention, the
+> `Tactic`/`Selector` decomposition of the old `Strategy` god-object, triage-by-determinism, and the
+> phased plan as a record of what was built. What no longer governs the **target**: the
+> `Sensor → CellFnV1 → Archive::admit` seam, the `link`-tier `(Moment, GuestEvent)` stream, and the
+> SDK "catalog" are compatibility framing. The strategy rules the production shapes instead —
+> normalized `SdkSchema` + ordered `SdkEvent` decoded by `dissonance/sdk-events`; temporal
+> reduction, historical derivation, and cells materialized on the Differential observation plane
+> (`differential-dataflow`); archive occupancy as a deterministic Differential reduction rather than
+> a mutable `Archive::admit`; and a simple selector before any advanced selector work. That
+> migration is the `hm-bbx` epic and is **not implemented yet**; the current `Sensor`/`FeatureSet`/
+> `Archive::admit` code is compatibility, not a partial build of the target. See
+> `docs/DISSONANCE-STRATEGY.md` for the boundaries (evidence cuts, lineage-complete prefixes,
+> retention/finalization, deterministic `Revision` assignment) and `docs/GLOSSARY.md` for the names
+> (`GuestEvent` → `SdkEvent`; the `link` crate → `sdk-events`; the SDK catalog → `SdkSchema`).
+>
+> **Loop names.** `docs/GLOSSARY.md` (2026-07-06) retired the loop names this doc uses:
+> **Modulation → rollout**, **Progression → the search loop / `step`**. They are kept below as the
+> historical design vocabulary; read *Progression* as the generic search loop and *Modulation* as
+> one rollout.
+
 This is the design ruling for **how dissonance searches**. `docs/DISSONANCE.md` rules the
 *permutation surface* (two control planes, one `Moment`-keyed `Environment`, the Modulation/Progression
 loops, the Progression's three agnostic seams). This doc rules what lives **behind those seams**: how a
@@ -14,9 +37,11 @@ coverage vector + oracle events."
 > task here forces a change to Progression select/score/GC policy, the abstraction has leaked and the task
 > is wrong.
 
-> **Naming.** This doc uses the ruled loop names: **Progression** (the outer loop) and
-> **Modulation** (the inner loop). `docs/DISSONANCE.md` predates the ruling and still says
-> *Theme*/*Variation* — read those as Progression/Modulation.
+> **Naming.** The loop names below — **Progression** (outer) and **Modulation** (inner) — are this
+> doc's historical vocabulary, retired again by `docs/GLOSSARY.md` to **the search loop / `step`**
+> and **rollout** respectively (see the status banner above). `docs/DISSONANCE.md` predates even the
+> Progression/Modulation rename and still says *Theme*/*Variation* — read those as
+> Progression/Modulation.
 
 ## Where this sits
 
