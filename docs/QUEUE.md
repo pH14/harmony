@@ -32,7 +32,7 @@ throughput; the vendor spikes gate *trust* (measured constants, the trait freeze
 fill), not construction. The ruled 5-lane queue and its risk acceptance live in
 `docs/ARCH-BOUNDARY.md` §Pre-build ruling.
 
-## In flight (2 active workers)
+## In flight (3 active workers)
 
 - **ARM backend skeleton — IMPLEMENTATION** (tasks/112, `hm-cbt`, spec merged as PR #111)
   — **SPAWNED 2026-07-15 ~23:40 on Fable 5** (agent-arm-backend-skeleton): M0 snapshot-seam
@@ -83,11 +83,11 @@ Reach-matrix lane (foreman-owned or spawnable next):
 
 General ready (foreman spawns as slots free):
 
-- **Contract vendor axis (AE-4 shape)** (`hm-0nf`, P2, pre-build lane, unblocked by the
-  keystone merge): restructure CPU/MSR contract doc + TOML + vmm-core loader for a
-  vendor axis; Intel column stays byte-identical truth, AMD column drafted from the APM
-  with every enforcement cell marked verify-on-silicon. **Needs a tasks/NN spec drafted
-  before spawn** — foreman drafting via the GLM one-shot lane.
+- **Contract vendor axis (AE-4 shape)** (`hm-0nf`, P2, pre-build lane) — **SPAWNED
+  2026-07-15 late eve** (tasks/117 spec committed 901ab7e, GLM-drafted +
+  foreman-reviewed, 5 Paul veto points recorded in-spec; agent-contract-vendor-axis,
+  Opus 4.8 xhigh): Intel column byte-identical truth, AMD draft column from the APM,
+  every enforcement cell verify-on-silicon, draft-only guard.
 - **W^X + rescan-on-exec** (`hm-rfz`, P2): third rung of the PARAVIRT-CLOCK §3.3
   enforcement ladder; should land before any non-fully-owned ARM guest. Substantive
   contract work — hold for a free slot after the ARM skeleton.
