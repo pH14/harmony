@@ -12,12 +12,14 @@
 //! wildcard arm (default-deny stays structural — the ruled two-level
 //! [`Exit`](crate::Exit)).
 //!
-//! x86-64 is the sole vendor today; an ARM vendor is additive here.
+//! Two vendors: x86-64 ([`x86`]) and arm64 ([`arm64`], the `hm-cbt` pre-build
+//! skeleton — additive exactly as this seam promised).
 
 use core::fmt;
 
 use crate::exit::ExitReason;
 
+pub mod arm64;
 pub mod x86;
 
 /// One CPU architecture's vocabulary, as associated types. Vendors are

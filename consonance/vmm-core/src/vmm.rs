@@ -15,6 +15,7 @@ use hypercall_proto::{
     encode_response,
 };
 use sha2::{Digest, Sha256};
+use vm_state::SnapshotRecords;
 use vmm_backend::{Arch, ArchCaps, Backend, CommonExit, Exit, Moment};
 use vtime::{IdlePlanner, VClock, VClockConfig};
 
@@ -697,6 +698,19 @@ where
 {
     pub(crate) backend: B,
     pub(crate) ram: RamBacking,
+    /// Guest-physical base of the main RAM memslot: `0` on x86; `RAM_BASE` on
+    /// arm64 (whose RAM sits high). The engine resolves absolute guest GPAs — the
+    /// hypercall-transport ABI pages (`REQ_GPA`/`RESP_GPA`) — to a RAM offset
+    /// through this, so the transport magic (the absolute ABI GPAs) stays
+    /// vendor-invariant (`tasks/112`: "the transport magic is unchanged").
+    pub(crate) ram_base_gpa: u64,
+    /// The hypercall-transport ABI pages when they are a **dedicated low-GPA
+    /// memslot** rather than part of the main RAM — the arm64 case, where RAM is
+    /// high so the absolute ABI GPAs fall below it. `None` on x86 (the pages live
+    /// inside the GPA-0 RAM) and on an arm64 boot that never mapped them (the
+    /// doorbell then fails closed, never reads the wrong RAM offset). Mapped by
+    /// [`Vmm::map_doorbell_pages`].
+    pub(crate) doorbell_pages: Option<GuestRam>,
     /// The vendor's device state ([`Vendor::Devices`]) — the interrupt fabric,
     /// the platform shims, and the serial device. The engine never names one; it
     /// reaches them only through [`Vendor`], which is what makes the engine
@@ -879,6 +893,8 @@ where
         Self {
             backend,
             ram,
+            ram_base_gpa: 0,
+            doorbell_pages: None,
             devices: <B::A as Vendor>::new_devices(),
             host_dirty: std::collections::BTreeSet::new(),
             host_dirty_wholesale: false,
@@ -917,6 +933,28 @@ where
     /// `true` once the determinism V-time path is wired.
     pub fn vtime_wired(&self) -> bool {
         self.vtime.is_some()
+    }
+
+    /// Map the two hypercall-transport ABI pages (`REQ_GPA`/`RESP_GPA`) as a
+    /// **dedicated low-GPA memslot**, backed by a buffer this `Vmm` owns. For a
+    /// machine whose main RAM does not start at GPA 0 (arm64, RAM at `RAM_BASE`)
+    /// the absolute ABI GPAs fall below the RAM and cannot be its offset
+    /// `REQ_GPA`; mapping them here keeps the transport magic unchanged
+    /// (`tasks/112`) with no per-arch GPA translation. The arm64 composition root
+    /// calls this; x86 keeps the pages inside its GPA-0 RAM and never does.
+    pub(crate) fn map_doorbell_pages(&mut self) -> Result<(), VmmError> {
+        let mut pages = GuestRam::new(2 * HC_PAGE)?;
+        // SAFETY: `pages` is moved into `self.doorbell_pages` below; its backing
+        // is pinned (an mmap/Vec that does not move when `self` moves) and lives
+        // for the backend's lifetime because `self` owns it, and the run loop
+        // holds `&mut self` so it is never aliased mid-run — the `map_memory`
+        // contract, exactly as the main RAM mapping upholds it.
+        unsafe {
+            self.backend
+                .map_memory(vmm_backend::Gpa(REQ_GPA as u64), pages.as_mut_bytes())?;
+        }
+        self.doorbell_pages = Some(pages);
+        Ok(())
     }
 
     /// Opt this VMM into folding the **canonical `vm_state` blob** into
@@ -1392,7 +1430,7 @@ where
     /// [`crate::snapshot::unrepresentable_state`]); [`VmmError::Backend`] if reading the
     /// live vCPU state fails (a snapshot **fails closed** rather than sealing a zeroed or
     /// lossy vCPU).
-    pub fn save_vm_state(&self) -> Result<vm_state::VmState, VmmError> {
+    pub fn save_vm_state(&self) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
         // The boundary gate is the shared `can_snapshot()` predicate (so the SDK
         // snapshot-point surface can never advertise a point this rejects); when
         // it fails, report WHICH precondition failed for a precise diagnostic.
@@ -1483,7 +1521,7 @@ where
     /// a V-time wiring/rate mismatch, or a rejected entropy blob;
     /// [`VmmError::Backend`]/[`VmmError::Vtime`]/[`VmmError::Work`] from the
     /// backend/clock/counter.
-    pub fn restore_vm_state(&mut self, s: &vm_state::VmState) -> Result<(), VmmError> {
+    pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
         // 0. Refuse if **any** backend completion is staged (not just RNG). A
         //    read-style / MSR / CPUID / determinism exit this VM serviced leaves a
         //    pending reg-write/RIP-advance in the backend's `kvm_run`; `Backend::restore`
@@ -1499,12 +1537,15 @@ where
                     .to_string(),
             ));
         }
-        // 1. Validate, committing nothing.
+        // 1. Validate, committing nothing. The engine reads only the arch-neutral
+        //    blocks of the snapshot — the V-time clock, the timer queue, and the
+        //    entropy bytes — through the `SnapshotRecords` accessors; the vendor
+        //    record set stays the vendor's own (`validate_restore` below).
         // 1a-bis. A non-empty timer queue cannot be applied: the engine has no
         //     `vtime::TimerQueue` (the only timer is the vendor fabric's, carried in
         //     the device blob), so a non-default `timers` section would be silently
         //     dropped. Fail closed (a well-formed vmm-core blob always seals it empty).
-        if s.timers != vm_state::TimerQueueState::default() {
+        if *s.timers() != vm_state::TimerQueueState::default() {
             return Err(VmmError::ContractViolation(
                 "restore_vm_state: snapshot carries a non-empty timer queue, but vmm-core has no \
                  TimerQueue to apply it — restoring would silently drop it. (A vmm-core snapshot \
@@ -1520,12 +1561,13 @@ where
         //     V-time commit, and the prepared devices.
         let (vcpu, clock_offset, prep) = <B::A as Vendor>::validate_restore(self, s)?;
         // 1c. V-time: validate the rate matches and pre-build the clock + entropy.
+        let svt = s.vtime();
         let vtime_commit = match self.vtime.as_ref() {
             Some(vt) => {
-                if s.vtime.ratio_num != vt.cfg.ratio_num
-                    || s.vtime.ratio_den != 1
-                    || s.vtime.guest_hz != vt.cfg.guest_hz
-                    || s.vtime.guest_base != vt.cfg.guest_base
+                if svt.ratio_num != vt.cfg.ratio_num
+                    || svt.ratio_den != 1
+                    || svt.guest_hz != vt.cfg.guest_hz
+                    || svt.guest_base != vt.cfg.guest_base
                 {
                     return Err(VmmError::ContractViolation(
                         "restore_vm_state: V-time clock-rate mismatch (the snapshot's ratio/guest_hz/\
@@ -1534,10 +1576,10 @@ where
                     ));
                 }
                 let mut cfg = vt.cfg;
-                cfg.vns_base = s.vtime.snapshot_vns;
+                cfg.vns_base = svt.snapshot_vns;
                 let clock = VClock::new(cfg)?;
                 let mut entropy = vt.entropy.clone();
-                entropy.restore_state(&s.hypercall).map_err(|e| {
+                entropy.restore_state(s.entropy_bytes()).map_err(|e| {
                     VmmError::ContractViolation(format!(
                         "entropy snapshot rejected on restore: {e:?}"
                     ))
@@ -1545,12 +1587,25 @@ where
                 Some((cfg, clock, entropy))
             }
             None => {
-                // Unwired VM: the snapshot must not carry a live V-time block (a
-                // non-zero clock rate means it was taken on a V-time-wired VM).
-                if s.vtime.guest_hz != 0 || s.vtime.snapshot_vns != 0 {
+                // Unwired VM: the snapshot must carry the COMPLETE unwired V-time
+                // sentinel that the save path stamps for a V-time-less VM — every
+                // field at its unwired value AND no entropy/hypercall bytes.
+                // Checking only guest_hz/snapshot_vns let a blob with a nonzero
+                // ratio_num/guest_base (or entropy bytes) through, and this arm then
+                // silently DISCARDS that live clock/entropy state — a fail-closed
+                // snapshot-contract violation. The sentinel (both vendors'
+                // `build_vm_state` None arm): ratio_num=0, ratio_den=1, guest_hz=0,
+                // guest_base=0, snapshot_vns=0, and no entropy bytes.
+                let is_unwired_sentinel = svt.ratio_num == 0
+                    && svt.ratio_den == 1
+                    && svt.guest_hz == 0
+                    && svt.guest_base == 0
+                    && svt.snapshot_vns == 0
+                    && s.entropy_bytes().is_empty();
+                if !is_unwired_sentinel {
                     return Err(VmmError::ContractViolation(
-                        "restore_vm_state: snapshot carries a V-time block but this VM has no V-time \
-                         wired — restore into a VM composed like the snapshot source."
+                        "restore_vm_state: snapshot carries live V-time/entropy state but this VM \
+                         has no V-time wired — restore into a VM composed like the snapshot source."
                             .to_string(),
                     ));
                 }
@@ -1626,7 +1681,7 @@ where
     pub fn restore_snapshot(
         &mut self,
         memory: &[u8],
-        vm_state: &vm_state::VmState,
+        vm_state: &<B::A as Vendor>::Snapshot,
     ) -> Result<(), VmmError> {
         // All-or-nothing: pre-check the image length so a wrong-sized image is
         // rejected before either half mutates. Then restore the vm_state (itself
@@ -1881,6 +1936,15 @@ where
     pub fn state_blob(&self) -> Vec<u8> {
         let mut out = Vec::new();
         put_chunk(&mut out, b"MEM\0", self.ram.as_bytes());
+        // The dedicated hypercall-transport ABI pages are guest-visible memory
+        // (arm64: a separate low-GPA memslot; x86 keeps them inside `MEM`). Fold
+        // them into the hash so two states differing only in the request/response
+        // pages hash **differently** (the determinism-completeness contract).
+        // Present ONLY when mapped, so an x86 / doorbell-less blob is byte-for-
+        // byte unchanged (the `VTIM`/`SDK`/device-chunk discipline).
+        if let Some(db) = &self.doorbell_pages {
+            put_chunk(&mut out, b"DOOR", db.as_bytes());
+        }
         put_chunk(
             &mut out,
             b"VCPU",
@@ -2032,6 +2096,18 @@ where
         out.push(("RAM:1M..2M", region(0x10_0000, 0x20_0000)));
         out.push(("RAM:2M..16M", region(0x20_0000, 0x100_0000)));
         out.push(("RAM:16M..", region(0x100_0000, ram.len())));
+        // The dedicated hypercall-transport ABI pages (arm64) fold into
+        // `state_hash` via the `DOOR` chunk but are their own memslot — invisible
+        // to the RAM regions above — so a divergence living only in the
+        // request/response pages would hash differently while every RAM component
+        // matched (the bisector-blind spot codex flagged, the exact analogue of
+        // the GICV case). A labeled component **when mapped** (present only then,
+        // mirroring the `DOOR` chunk; x86 / doorbell-less runs emit nothing, so
+        // their breakdown is byte-unchanged). Additive — never a rename of an
+        // O1-pinned label.
+        if let Some(db) = &self.doorbell_pages {
+            out.push(("doorbell", dig(db.as_bytes())));
+        }
 
         // The vendor's register-file breakdown (GPRs, segments, descriptor tables,
         // control regs, pending events, the FPU/extended-state image, …) — which
@@ -2044,6 +2120,13 @@ where
             dig(<B::A as Vendor>::serial_capture(&self.devices)),
         ));
         out.push(("dev", dig(&self.encode_device_terminal())));
+        // The vendor's per-device digests — the device hash chunks
+        // (`hash_device_chunks`) fold into `state_hash` but are otherwise
+        // invisible to this breakdown, so a divergence living only in a device
+        // (arm64: the `GICV` chunk's register files / pending-active / timer)
+        // would hash differently while every component above matched. Additive:
+        // the vendor appends new labels only (never renames a pinned one).
+        <B::A as Vendor>::device_components(&self.devices, &mut out);
         if let Some(vt) = &self.vtime {
             // V-time chunk broken out for the O1 localizer (PR #51 box-review). The
             // first three components are a **faithful cover** of the bytes
@@ -2495,10 +2578,12 @@ where
     /// RAM), or `None` when nothing is registered. For gates and tests — reads
     /// the live RAM, so it sees exactly what the guest would.
     pub fn pvclock_page(&self) -> Option<&[u8]> {
-        let gpa = self.pvclock_registration()? as usize;
+        // Resolve the absolute registration GPA to a main-RAM offset (arm64 RAM
+        // is high; x86 base 0 → identical offset). Review r14.
+        let off = self.ram_offset_of(self.pvclock_registration()?)?;
         self.ram
             .as_bytes()
-            .get(gpa..gpa + vtime::pvclock::PVCLOCK_PAGE_LEN)
+            .get(off..off + vtime::pvclock::PVCLOCK_PAGE_LEN)
     }
 
     /// G2's function-equality check, callable at any point (the box gate calls
@@ -2575,7 +2660,13 @@ where
         if !gpa.is_multiple_of(page_len) {
             return Err("not page-aligned");
         }
-        let end = gpa.checked_add(page_len).ok_or("address overflow")?;
+        // Resolve the ABSOLUTE GPA to a main-RAM offset (review r14 — the last of
+        // the r11 GPA family). arm64 RAM is high, and the pvclock region is
+        // reserved at `RAM_BASE + off` (the `hm-rk5` seam), so a valid absolute
+        // GPA must be *routed*, not rejected as beyond RAM; a GPA below the base
+        // is not backed. x86 (base 0) resolves to the identical offset.
+        let off = self.ram_offset_of(gpa).ok_or("below the guest RAM base")? as u64;
+        let end = off.checked_add(page_len).ok_or("address overflow")?;
         if end > self.ram.as_bytes().len() as u64 {
             return Err("past the end of guest RAM");
         }
@@ -2675,9 +2766,12 @@ where
         let vns = vt.clock.snapshot_vns(anchor);
         let gc = vt.guest_clock(anchor);
         let hz = vt.cfg.guest_hz;
-        let start = gpa as usize;
+        // Resolve the absolute GPA to a main-RAM offset (arm64 RAM is high; x86
+        // base 0 → identical offset). Computed before the &mut borrow. Review r14.
+        let off = self.ram_offset_of(gpa);
         let ram = self.ram.as_mut_bytes();
-        let Some(page) = ram.get_mut(start..start + vtime::pvclock::PVCLOCK_PAGE_LEN) else {
+        let Some(page) = off.and_then(|o| ram.get_mut(o..o + vtime::pvclock::PVCLOCK_PAGE_LEN))
+        else {
             return Err(VmmError::ContractViolation(format!(
                 "pvclock page {gpa:#x} no longer inside guest RAM — registration validated it, so \
                  the RAM backing changed underneath the channel"
@@ -2884,13 +2978,19 @@ where
             return Ok(Step::Continued);
         }
         let req_len = req_len as usize;
-        // Copy the request out of guest RAM so the immutable borrow ends before
-        // we compute the response and write the response page.
-        let ram = self.guest_memory();
-        let Some(req) = ram.get(REQ_GPA..REQ_GPA + req_len).map(<[u8]>::to_vec) else {
+        // Copy the request out of the transport request page (an owned `Vec`, so
+        // the borrow ends before we compute the response and write the response
+        // page). Fail closed if the page is not backed — on arm64 a boot that
+        // never mapped the ABI pages faults here rather than reading the wrong
+        // RAM offset (review r10).
+        let Some(req) = self
+            .guest_slice(REQ_GPA as u64, req_len)
+            .map(<[u8]>::to_vec)
+        else {
             return Err(VmmError::ContractViolation(format!(
-                "doorbell request page {REQ_GPA:#x}+{req_len} is out of guest RAM ({} bytes)",
-                ram.len()
+                "doorbell request page {REQ_GPA:#x}+{req_len} is not backed — x86 keeps the \
+                 transport ABI pages in the GPA-0 RAM; an arm64 boot must map them (a dedicated \
+                 low-GPA memslot; RAM is high)"
             )));
         };
         // A synchronized-or-lower-bound V-time — deterministic across same-seed
@@ -2910,20 +3010,60 @@ where
         }
     }
 
+    /// The offset into the main RAM memslot for absolute guest `gpa` — i.e.
+    /// `gpa - ram_base_gpa` — or `None` if `gpa` is **below** the base (e.g. the
+    /// arm64 transport ABI pages, which sit below `RAM_BASE`). The **upper** bound
+    /// is the caller's ([`Self::guest_slice`]'s `get(off..off+len)`), so a
+    /// zero-length access at the exact RAM end (`gpa == ram_len`, `len == 0`)
+    /// stays a valid empty read. x86's RAM base is `0`, so an absolute low GPA
+    /// maps to the identical offset (unchanged).
+    pub(crate) fn ram_offset_of(&self, gpa: u64) -> Option<usize> {
+        usize::try_from(gpa.checked_sub(self.ram_base_gpa)?).ok()
+    }
+
+    /// Resolve an absolute guest `[gpa, gpa+len)` to a read-only host slice across
+    /// **every** mapped RAM-class region — the main RAM (based at `ram_base_gpa`)
+    /// and the dedicated low-GPA doorbell memslot ([`Self::doorbell_pages`], at
+    /// `[REQ_GPA, REQ_GPA + 2·HC_PAGE)`). `None` if the range is not backed by a
+    /// single region. Every absolute-GPA path — the doorbell, the control-plane
+    /// `read`, `corrupt_memory` — routes through this, so a GPA resolves
+    /// identically on every arch (x86: RAM at base 0, so a low GPA *is* its own
+    /// offset — the pre-existing behavior, unchanged).
+    pub(crate) fn guest_slice(&self, gpa: u64, len: usize) -> Option<&[u8]> {
+        if let Some(off) = self.ram_offset_of(gpa) {
+            return self.ram.as_bytes().get(off..off.checked_add(len)?);
+        }
+        let db = self.doorbell_pages.as_ref()?;
+        let off = usize::try_from(gpa.checked_sub(REQ_GPA as u64)?).ok()?;
+        db.as_bytes().get(off..off.checked_add(len)?)
+    }
+
+    /// The `&mut` twin of [`Self::guest_slice`] (the host-write paths:
+    /// `write_doorbell_response`, `corrupt_memory`).
+    pub(crate) fn guest_slice_mut(&mut self, gpa: u64, len: usize) -> Option<&mut [u8]> {
+        if let Some(off) = self.ram_offset_of(gpa) {
+            let end = off.checked_add(len)?;
+            return self.ram.as_mut_bytes().get_mut(off..end);
+        }
+        let db = self.doorbell_pages.as_mut()?;
+        let off = usize::try_from(gpa.checked_sub(REQ_GPA as u64)?).ok()?;
+        let end = off.checked_add(len)?;
+        db.as_mut_bytes().get_mut(off..end)
+    }
+
     /// Write a doorbell response frame into the response page. The guest zeroed
     /// that page before ringing, so writing only the frame leaves a clean tail.
     fn write_doorbell_response(&mut self, resp: &[u8]) -> Result<(), VmmError> {
-        let ram = self.ram.as_mut_bytes();
-        let Some(dst) = ram.get_mut(RESP_GPA..RESP_GPA + resp.len()) else {
+        let Some(dst) = self.guest_slice_mut(RESP_GPA as u64, resp.len()) else {
             return Err(VmmError::ContractViolation(format!(
-                "doorbell response page {RESP_GPA:#x}+{} is out of guest RAM ({} bytes)",
-                resp.len(),
-                ram.len()
+                "doorbell response page {RESP_GPA:#x}+{} is not backed",
+                resp.len()
             )));
         };
         dst.copy_from_slice(resp);
         // A host-side RAM write the backend's dirty log cannot see — record it
-        // for the harvest union (task 95 M2.1 safety rule).
+        // for the harvest union (task 95 M2.1 safety rule). The ABI GPA is
+        // absolute (vendor-invariant), so the dirty gfn is correct on both arches.
         self.mark_host_dirty(RESP_GPA as u64, resp.len() as u64);
         Ok(())
     }
@@ -3637,23 +3777,18 @@ where
     ///
     /// [`CorruptMemory`]: environment::HostFault::CorruptMemory
     fn corrupt_memory(&mut self, gpa: u64, mask: u64) -> Result<(), VmmError> {
-        let ram = self.ram.as_mut_bytes();
-        let end = gpa.checked_add(8).filter(|&e| e <= ram.len() as u64);
-        let Some(end) = end else {
+        // Resolve the absolute GPA through the shared resolver (arm64 GPAs are
+        // absolute over RAM_BASE; x86's RAM is at base 0, so the offset is
+        // unchanged). A GPA outside every backed region fails closed — never a
+        // wrong-offset upset into the main RAM (review r11).
+        let Some(dst) = self.guest_slice_mut(gpa, 8) else {
             return Err(VmmError::ContractViolation(format!(
-                "CorruptMemory gpa {gpa:#x} + 8 is out of range (guest RAM is {} bytes) — refusing \
-                 to clip or wrap the upset",
-                ram.len()
+                "CorruptMemory gpa {gpa:#x} + 8 is not backed by guest RAM — refusing to clip, \
+                 wrap, or apply the upset at a wrong offset"
             )));
         };
-        let start = gpa as usize;
-        let end = end as usize;
-        let word = u64::from_le_bytes(
-            ram[start..end]
-                .try_into()
-                .expect("slice is exactly 8 bytes"),
-        );
-        ram[start..end].copy_from_slice(&(word ^ mask).to_le_bytes());
+        let word = u64::from_le_bytes(<[u8; 8]>::try_from(&dst[..]).expect("exactly 8 bytes"));
+        dst.copy_from_slice(&(word ^ mask).to_le_bytes());
         // A host-side RAM write the backend's dirty log cannot see — record it
         // (the 8-byte upset may straddle a page boundary; the helper covers both).
         self.mark_host_dirty(gpa, 8);
@@ -3693,12 +3828,28 @@ where
             return None;
         }
         let mut gfns = self.backend.harvest_dirty_gfns().ok()?;
-        // The backend half is already sorted+deduped; fold in the host-side gfns.
+        // Fold in the host-side gfns.
         gfns.extend(self.host_dirty.iter().copied());
-        gfns.sort_unstable();
-        gfns.dedup();
         self.host_dirty.clear();
-        Some(gfns)
+        // Normalize ABSOLUTE guest GFNs to **main-RAM-relative** indices (review
+        // r15 — the last of the r11 GPA family, in GFN space). The backend dirty
+        // log and `mark_host_dirty` report absolute GFNs (`gpa / 4096`), but
+        // `SnapshotEngine::snapshot_derive` indexes the main RAM **0-based**. On
+        // arm64 (RAM based high) an absolute GFN is out of range (forcing a
+        // wasteful full-scan fallback), and the dedicated doorbell memslot's GFNs
+        // are NOT main-RAM pages — that page rides the device blob (r11), never
+        // the main-RAM snapshot. So keep only GFNs inside the main RAM's
+        // `[base, base + pages)` window and rebase them; x86 (base 0) is the
+        // identity, so its dirty set is byte-for-byte unchanged.
+        let base = self.ram_base_gpa / 4096;
+        let pages = (self.ram.len() / 4096) as u64;
+        let mut rel: Vec<u64> = gfns
+            .into_iter()
+            .filter_map(|g| g.checked_sub(base).filter(|&r| r < pages))
+            .collect();
+        rel.sort_unstable();
+        rel.dedup();
+        Some(rel)
     }
 
     /// Harvest-and-discard: reset the dirty tracking so the **current** state is
@@ -4207,6 +4358,36 @@ mod tests {
         );
     }
 
+    /// Review r15: on a high-RAM-base (arm64) machine the backend dirty log
+    /// reports **absolute** GFNs, but `SnapshotEngine::snapshot_derive` indexes
+    /// the main RAM 0-based. The harvest must rebase them to main-RAM-relative
+    /// indices and exclude the dedicated doorbell memslot's GFNs (that page rides
+    /// the device blob, r11) — otherwise high GFNs are out-of-range (full-scan
+    /// fallback) and the doorbell slot mis-indexes the main RAM. x86 (base 0) is
+    /// byte-identical (the two tests above are the neutrality proof).
+    #[test]
+    fn harvest_rebases_high_base_gfns_and_excludes_the_doorbell_slot() {
+        let mut m = configured_mock(vec![]);
+        // Absolute GFNs as an arm64 backend logs them: two main-RAM pages (RAM at
+        // 0x4000_0000 → base GFN 0x40000) plus the doorbell RESP page (GFN 15, a
+        // separate low memslot).
+        m.push_dirty_gfns(vec![0x4_0001, 0x4_0003, 15]);
+        let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
+        vmm.ram_base_gpa = 0x4000_0000;
+
+        let dirty = vmm.harvest_dirty_gfns().unwrap();
+        assert_eq!(
+            dirty,
+            vec![1, 3],
+            "high GFNs rebased to main-RAM indices; the doorbell slot's GFN excluded"
+        );
+        let pages = (vmm.ram.len() / 4096) as u64;
+        assert!(
+            dirty.iter().all(|&g| g < pages),
+            "every harvested GFN indexes the main RAM — no snapshot_derive fallback"
+        );
+    }
+
     /// A full-image host write (`restore_guest_memory`) poisons the harvest —
     /// per-gfn tracking cannot vouch for it — until the explicit re-arm.
     #[test]
@@ -4331,6 +4512,227 @@ mod tests {
         let ids: Vec<u32> = vmm.sdk_events().iter().map(|(_, id, _)| *id).collect();
         assert_eq!(ids, vec![hit_id, viol_id, setup_id]);
         assert_eq!(vmm.sdk_buggify(), &[(0, Answer::Fault(Fault::BuggifyFire))]);
+    }
+
+    /// Review r10: the transport ABI pages (`REQ_GPA`/`RESP_GPA`) are **absolute**
+    /// GPAs. On a machine whose RAM is based high (arm64, `RAM_BASE`) they fall
+    /// below the RAM and must be a **dedicated low memslot**, never the main RAM's
+    /// offset `REQ_GPA`. Exercised through the engine's `ram_base_gpa` resolution
+    /// — the same path the arm64 vendor drives — with the existing mock: unmapped
+    /// pages fail closed; mapped pages carry the exchange in the dedicated slot,
+    /// leaving the wrong RAM offsets untouched; the host write marks the absolute
+    /// gfn. (x86 keeps `ram_base_gpa == 0`, so its doorbell path is unchanged.)
+    #[test]
+    fn doorbell_uses_a_dedicated_memslot_when_ram_is_based_high() {
+        use environment::{EnvSpec, FaultPolicy};
+
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        vmm.ram_base_gpa = 0x4000_0000; // arm64 RAM_BASE: the ABI GPAs sit below it
+        let spec = EnvSpec::Seeded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+        };
+        vmm.enable_sdk(spec.materialize(), spec.policy());
+
+        // Unmapped ABI pages → fail closed (the r10 bug was a silent wrong-offset
+        // read of the high RAM at offset REQ_GPA).
+        let err = vmm.service_doorbell(16).unwrap_err();
+        assert!(
+            format!("{err}").contains("not backed"),
+            "unmapped ABI pages must fault: {err}"
+        );
+
+        // Map the dedicated pages (a second memslot at REQ_GPA) and stage a
+        // request frame the Event service answers Ok.
+        vmm.map_doorbell_pages().unwrap();
+        let hit_id = (1u32 << 24) | 1;
+        let mut payload = hit_id.to_le_bytes().to_vec();
+        payload.extend_from_slice(&[0, 0, 0]); // DISP_HIT, detail_len = 0
+        let mut buf = [0u8; HC_PAGE];
+        let n =
+            hypercall_proto::encode_request(ServiceId::Event, 1, 1, &payload, &mut buf).unwrap();
+        vmm.doorbell_pages.as_mut().unwrap().as_mut_bytes()[..n].copy_from_slice(&buf[..n]);
+
+        let step = vmm.service_doorbell(n as u32).unwrap();
+        assert_eq!(step, Step::Continued);
+
+        // The response landed in the dedicated slot, one page past the request.
+        let resp = vmm.doorbell_pages.as_ref().unwrap().as_bytes()[HC_PAGE..2 * HC_PAGE].to_vec();
+        let (hdr, _) = decode(&resp).expect("a valid response frame in the dedicated page");
+        assert_eq!(hdr.status, Status::Ok as u16);
+
+        // The main RAM at the ABI offsets was NEVER touched — the bug read/wrote
+        // there (GPA 0x4000_E000/0x4000_F000), corrupting guest RAM.
+        assert!(
+            vmm.guest_memory()[REQ_GPA..RESP_GPA + HC_PAGE]
+                .iter()
+                .all(|&b| b == 0),
+            "the dedicated memslot is used, never the main RAM's offset REQ_GPA"
+        );
+
+        // Dirty-range: the host response write records the ABSOLUTE RESP gfn
+        // (0xF000 / 4096 = 15) for the harvest union — not a RAM_BASE-relative
+        // one (the bug would have marked 0x4000_F000's gfn, or none).
+        assert!(
+            vmm.host_dirty.contains(&(RESP_GPA as u64 / 4096)),
+            "the response's absolute gfn 15 must be host-dirty: {:?}",
+            vmm.host_dirty
+        );
+    }
+
+    /// Review r11: with the ABI pages a dedicated region, the engine's hash and
+    /// its absolute-GPA read/corrupt paths must cover / resolve across it.
+    /// Exercised via a high `ram_base_gpa` (the arm64 memory model) on the mock;
+    /// x86 (`ram_base_gpa == 0`) keeps every path unchanged (the existing x86
+    /// read/corrupt/hash tests are the neutrality proof).
+    #[test]
+    fn high_ram_base_resolves_absolute_gpas_and_hashes_the_doorbell() {
+        use environment::{BitMask, HostFault};
+
+        let make = || {
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            v.ram_base_gpa = 0x4000_0000; // arm64 RAM_BASE
+            v.map_doorbell_pages().unwrap();
+            v
+        };
+
+        // P1(1) hash: two states differing ONLY in doorbell bytes hash
+        // differently (the `DOOR` chunk); identical content hashes identically.
+        let a = make();
+        let mut b = make();
+        assert_eq!(a.state_hash(), b.state_hash());
+        b.doorbell_pages.as_mut().unwrap().as_mut_bytes()[7] ^= 0xFF;
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "doorbell bytes must fold into state_hash"
+        );
+
+        // P1(2) control-plane resolution: an ABSOLUTE arm64 address (over
+        // RAM_BASE) reads the right main-RAM bytes; a low unmapped GPA is
+        // out-of-range, never a wrong offset into the main RAM; the dedicated ABI
+        // page resolves at its absolute low GPA.
+        let mut v = make();
+        v.ram.as_mut_bytes()[0x100..0x104].copy_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(v.guest_slice(0x4000_0100, 4), Some(&[1u8, 2, 3, 4][..]));
+        assert_eq!(v.guest_slice(0x100, 4), None);
+        assert!(v.guest_slice(REQ_GPA as u64, HC_PAGE).is_some());
+
+        // P1(2) corrupt_memory: a valid absolute GPA upsets the right byte; a low
+        // unmapped GPA fails closed (never a wrong-offset upset).
+        v.apply_host_fault(&HostFault::CorruptMemory {
+            gpa: 0x4000_0100,
+            mask: BitMask(0xFF),
+        })
+        .unwrap();
+        assert_eq!(v.ram.as_bytes()[0x100], 1 ^ 0xFF);
+        assert!(
+            v.apply_host_fault(&HostFault::CorruptMemory {
+                gpa: 0x500,
+                mask: BitMask(0xFF),
+            })
+            .is_err(),
+            "a low unmapped GPA corrupt must fail closed"
+        );
+    }
+
+    /// Review r11 P1(1): the dedicated ABI pages must survive save/restore/branch
+    /// — they ride the arm64 device blob (a separate memslot, not in the main-RAM
+    /// snapshot). A full arm64 save→restore cycle, plus the wiring-mismatch guard.
+    #[test]
+    fn arm64_save_restore_preserves_the_doorbell_pages() {
+        use crate::vendor::arm64::board::RAM_BASE as ARM_RAM_BASE;
+        use vmm_backend::{Arm64Policy, MockArm64Backend};
+
+        let arm_vmm = || {
+            let mut b = MockArm64Backend::new();
+            b.set_policy(&Arm64Policy::default()).unwrap();
+            let mut v = Vmm::new(b, GuestRam::new(0x10_0000).unwrap());
+            v.ram_base_gpa = ARM_RAM_BASE;
+            v.map_doorbell_pages().unwrap();
+            v
+        };
+
+        let mut src = arm_vmm();
+        src.doorbell_pages.as_mut().unwrap().as_mut_bytes()[..4]
+            .copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+        let blob = src.save_vm_state().unwrap();
+
+        // Restore into a freshly-composed twin (doorbell mapped): the bytes survive.
+        let mut dst = arm_vmm();
+        dst.restore_vm_state(&blob).unwrap();
+        assert_eq!(
+            &dst.doorbell_pages.as_ref().unwrap().as_bytes()[..4],
+            &[0xAA, 0xBB, 0xCC, 0xDD]
+        );
+
+        // Restore into a VM WITHOUT the dedicated pages is a loud wiring mismatch.
+        let mut nodoor = {
+            let mut b = MockArm64Backend::new();
+            b.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(b, GuestRam::new(0x10_0000).unwrap())
+        };
+        let err = nodoor.restore_vm_state(&blob).unwrap_err();
+        assert!(
+            format!("{err}").contains("doorbell wiring mismatch"),
+            "{err}"
+        );
+    }
+
+    /// Review r12 (the GICV analogue): the `DOOR` hash chunk must have a matching
+    /// `state_components()` entry, or a doorbell-only divergence reports a
+    /// `state_hash` mismatch with **every** component matching — blinding the
+    /// bisector. A doorbell-only difference must localize to the `doorbell`
+    /// component; an unmapped VM exposes none.
+    #[test]
+    fn state_components_localizes_a_doorbell_only_divergence() {
+        let make = || {
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            v.ram_base_gpa = 0x4000_0000;
+            v.map_doorbell_pages().unwrap();
+            v
+        };
+        let a = make();
+        let mut b = make();
+        b.doorbell_pages.as_mut().unwrap().as_mut_bytes()[3] ^= 0xFF;
+
+        // state_hash differs (the DOOR chunk folds the pages in)...
+        assert_ne!(a.state_hash(), b.state_hash());
+
+        // ...and the `doorbell` component is exactly what localizes it: it
+        // differs, and it is the ONLY differing component.
+        let ca = a.state_components();
+        let cb = b.state_components();
+        let da = ca
+            .iter()
+            .find(|(l, _)| *l == "doorbell")
+            .expect("a doorbell component");
+        let db_ = cb
+            .iter()
+            .find(|(l, _)| *l == "doorbell")
+            .expect("a doorbell component");
+        assert_ne!(da.1, db_.1, "the doorbell component must localize it");
+        for (la, dga) in &ca {
+            if *la == "doorbell" {
+                continue;
+            }
+            let dgb = cb.iter().find(|(lb, _)| lb == la).map(|(_, d)| d);
+            assert_eq!(
+                Some(dga),
+                dgb,
+                "component {la} must match (only doorbell differs)"
+            );
+        }
+
+        // An unmapped VM (x86-style) exposes no `doorbell` component (additive;
+        // present exactly when the `DOOR` chunk is).
+        let plain = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        assert!(
+            !plain
+                .state_components()
+                .iter()
+                .any(|(l, _)| *l == "doorbell")
+        );
     }
 
     /// Task 61: the `Net` doorbell decodes a flow decision point, resolves it
@@ -9373,6 +9775,46 @@ mod tests {
     /// A page GPA inside `TEST_RAM`, clear of the doorbell pages and the
     /// booted-image regions the other tests use.
     const PV_GPA: u64 = 0x4000;
+
+    /// Review r14 (the last of the r11 GPA family): the pvclock GPA helpers
+    /// (`pvclock_validate_gpa` / `pvclock_page` / `pvclock_stamp`) must resolve
+    /// absolute GPAs through the region resolver. On a high-RAM-base (arm64)
+    /// machine the pvclock region is reserved at `RAM_BASE + off` (the `hm-rk5`
+    /// seam), so a valid absolute GPA validates and its page resolves; a GPA below
+    /// the base is not backed. x86 (base 0) is byte-identical.
+    #[test]
+    fn pvclock_gpa_helpers_resolve_a_high_ram_base() {
+        let mut vmm = pvclock_vmm(vec![], Box::new(ScriptedWork::at(500)), 7);
+        vmm.ram_base_gpa = 0x4000_0000; // arm64: RAM is high
+
+        // A valid HIGH absolute GPA (page-aligned, inside `[RAM_BASE, +RAM)`)
+        // validates — the pre-r14 raw bound rejected it as "past the end of RAM".
+        let high = 0x4000_0000 + PV_GPA;
+        assert!(
+            vmm.pvclock_validate_gpa(high).is_ok(),
+            "a high arm64 pvclock GPA must validate: {:?}",
+            vmm.pvclock_validate_gpa(high)
+        );
+        // A GPA below the RAM base is not backed.
+        assert_eq!(
+            vmm.pvclock_validate_gpa(0x1000),
+            Err("below the guest RAM base")
+        );
+
+        // Register the high GPA (validate + record); `pvclock_page` then resolves
+        // it at the high absolute GPA, not a wrong host offset.
+        assert_eq!(vmm.pvclock_register(high).0 as u16, Status::Ok as u16);
+        assert_eq!(vmm.pvclock_registration(), Some(high));
+        assert!(
+            vmm.pvclock_page().is_some(),
+            "pvclock_page must resolve the high GPA"
+        );
+
+        // x86 (base 0): a valid low GPA validates unchanged (the full x86 pvclock
+        // suite is the rest of the neutrality proof).
+        let x86 = pvclock_vmm(vec![], Box::new(ScriptedWork::at(500)), 7);
+        assert!(x86.pvclock_validate_gpa(PV_GPA).is_ok());
+    }
 
     /// Registration records the GPA and answers the ABI version but leaves the
     /// page **pending** (r8 handshake ruling); the **handshake** — the guest's

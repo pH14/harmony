@@ -25,11 +25,11 @@
 //! trait-freeze memo (the ARM spike) owns the freeze decision.
 
 use control_proto::RegsView;
-use vm_state::VmState;
 use vmm_backend::{Arch, Backend, Gpa};
 
 use crate::vmm::{Step, Vmm, VmmError};
 
+pub mod arm64;
 pub mod x86;
 
 /// Why a vendor refuses a wire-format interrupt identity at **stage time** — a
@@ -67,6 +67,19 @@ pub trait Vendor: Arch + Sized {
     /// ([`validate_restore`](Vendor::validate_restore) →
     /// [`commit_restore`](Vendor::commit_restore)).
     type RestorePrep;
+
+    /// The vendor's canonical snapshot record set (x86:
+    /// [`vm_state::VmState`]; arm64: `vm_state`'s arm64 record set under its
+    /// own arch tag). The engine holds and seals it only through the
+    /// arch-neutral [`vm_state::SnapshotRecords`] surface — encode on seal,
+    /// `decode` + arch-tag gate on restore, and the neutral V-time / timer /
+    /// entropy blocks — and never names a register record
+    /// (`docs/ARCH-BOUNDARY.md` §D, the one ruled spine exception, landed
+    /// with `hm-cbt`).
+    ///
+    /// designed-not-frozen (AA-6 owns the arm64 record set; this seam is the
+    /// extension point, and AA-3's trait-freeze memo owns the freeze).
+    type Snapshot: vm_state::SnapshotRecords;
 
     /// Fresh (reset) device state for a new VM. Which fabric pieces are wired is
     /// the vendor composition root's job (e.g. `wire_lapic` on x86).
@@ -212,6 +225,17 @@ pub trait Vendor: Arch + Sized {
     /// determinism bisector can localize which register file diverged.
     fn vcpu_components(vcpu: &Self::VcpuState, out: &mut Vec<(&'static str, [u8; 32])>);
 
+    /// Append the vendor's per-**device** digests to the diagnostic
+    /// [`Vmm::state_components`] breakdown (never part of `state_hash`), so a
+    /// determinism bisector can localize a divergence that lives only in a
+    /// device hash chunk (arm64: the `GICV` chunk — the GICv3 register files /
+    /// pending-active / timer state; x86: LAPIC/legacy). Without this, two runs
+    /// differing only in device state hash differently while every other
+    /// diagnostic component matches, defeating localization. **Additive only**:
+    /// a vendor appends *new* labels; it never renames an existing one (the O1
+    /// box localizer pins `regs`/`desc-tables`). The default appends nothing.
+    fn device_components(_devices: &Self::Devices, _out: &mut Vec<(&'static str, [u8; 32])>) {}
+
     /// Whether the vCPU carries an event-injection record a quiescent-only codec
     /// would reject (the full task-39 set, inert residuals included).
     fn vcpu_has_inflight_injection(vcpu: &Self::VcpuState) -> bool;
@@ -224,68 +248,24 @@ pub trait Vendor: Arch + Sized {
     /// represent (sealing a lossy blob is worse than refusing it).
     fn check_sealable_vcpu(vcpu: &Self::VcpuState) -> Result<(), VmmError>;
 
-    // -----------------------------------------------------------------------
-    // The snapshot-state seam — a KNOWN, RULED DEFERRAL. Read this before adding
-    // a vendor.
-    //
-    // The three hooks below are typed against the CONCRETE [`vm_state::VmState`],
-    // whose `regs`/`sregs`/`xsave` records are x86-64's. They are therefore the one
-    // place in this trait a second vendor CANNOT simply implement: an arm64 vendor
-    // has no way to represent its register set without changing this signature
-    // (an associated `type Snapshot`, or a vendor-parameterized `VmState`).
-    //
-    // This is **acknowledged and deferred to the ARM window** (`hm-cbt`), per the
-    // pre-build ruling — not an oversight:
-    //
-    // - **The trait is designed, NOT frozen.** AA-3's trait-freeze memo owns the
-    //   freeze decision, and the ruling explicitly accepts that pre-built code pays
-    //   rework against the unfrozen trait. Inventing a vendor-associated snapshot
-    //   abstraction *now* would mean designing it against zero real second
-    //   consumers — exactly the speculative-generality the "spikes gate trust"
-    //   posture exists to prevent.
-    // - **The ARM record set is AA-6's MEASURED decision**, not a guess. Which
-    //   sysregs a snapshot must carry (and which are latent) is precisely what the
-    //   spike settles; a shape chosen before it would be a coin-flip that later
-    //   constrains the real answer.
-    // - **The wire format is ALREADY extensible** — that is what step 4 bought.
-    //   `vm-state`'s TLV container, its version, and its **arch tag**
-    //   (`VM_STATE_VERSION` 2 / `ARCH_X86_64`) are arch-neutral, and a foreign
-    //   record set is rejected LOUDLY (`UnsupportedArch`) rather than
-    //   reinterpreted. The *format* is ready for a second vendor; only this Rust
-    //   type seam is pinned. The storage path is opaque already (the engine seals
-    //   encoded bytes and never reads a record).
-    //
-    // **The CI arch gate cannot catch this class**, and should not be trusted to:
-    // cross-checking for `aarch64-unknown-linux-gnu` proves the tree still compiles
-    // with the x86 vendor `cfg`'d OUT, but no vendor exists there to *instantiate*
-    // the trait, so a signature only a second vendor could refute stays invisible.
-    // The structural check is the ARM skeleton itself (`hm-cbt`) — the first real
-    // second implementor, which is the only thing that can prove the seam holds.
-    // (A stub "dummy vendor" purely to force the check was considered; it arrives
-    // for free with `hm-cbt`, which is a real one.)
-    // -----------------------------------------------------------------------
+    /// Build the canonical [`Snapshot`](Vendor::Snapshot) from `vcpu` + the
+    /// current machine (the memory-less half of a snapshot): the vendor record
+    /// set, the device blob, and the contract hash; the engine's V-time/entropy
+    /// block is read through the engine's `pub(crate)` surface. Infallible and
+    /// byte-deterministic.
+    fn build_vm_state<B: Backend<A = Self>>(vmm: &Vmm<B>, vcpu: &Self::VcpuState)
+    -> Self::Snapshot;
 
-    /// Build the canonical [`VmState`] from `vcpu` + the current machine (the
-    /// memory-less half of a snapshot): the vendor record set, the device blob,
-    /// and the contract hash; the engine's V-time/entropy block is read through
-    /// the engine's `pub(crate)` surface. Infallible and byte-deterministic.
-    ///
-    /// **Pinned to x86's record set — see the deferral note above.** Vendor
-    /// association of the snapshot state is reserved to the ARM window
-    /// (`hm-cbt` / AA-6); the `vm-state` v2 arch tag is the format's extension
-    /// point, and trait rework here is accepted by the pre-build ruling.
-    fn build_vm_state<B: Backend<A = Self>>(vmm: &Vmm<B>, vcpu: &Self::VcpuState) -> VmState;
-
-    /// Validate the vendor half of a [`VmState`] restore **without mutating
-    /// anything**: the contract hash, the device blob, the event records, and the
-    /// fabric/platform wiring coherence. (Pinned to x86's record set — see the
-    /// deferral note above [`build_vm_state`](Vendor::build_vm_state).) Returns the decoded vCPU record set (with
-    /// the restore-canonicalized events already applied), the guest clock-offset
-    /// register the engine re-applies with its V-time commit, and the prepared
-    /// device state for [`commit_restore`](Vendor::commit_restore).
+    /// Validate the vendor half of a [`Snapshot`](Vendor::Snapshot) restore
+    /// **without mutating anything**: the contract hash, the device blob, the
+    /// event records, and the fabric/platform wiring coherence. Returns the
+    /// decoded vCPU record set (with the restore-canonicalized events already
+    /// applied), the guest clock-offset register the engine re-applies with its
+    /// V-time commit, and the prepared device state for
+    /// [`commit_restore`](Vendor::commit_restore).
     fn validate_restore<B: Backend<A = Self>>(
         vmm: &Vmm<B>,
-        s: &VmState,
+        s: &Self::Snapshot,
     ) -> Result<(Self::VcpuState, u64, Self::RestorePrep), VmmError>;
 
     /// Commit the vendor half of a validated restore (all infallible): install the

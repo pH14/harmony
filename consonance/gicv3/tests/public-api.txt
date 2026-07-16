@@ -1,0 +1,58 @@
+pub mod gicv3
+pub enum gicv3::GicError
+pub gicv3::GicError::BadIntId(u32)
+pub gicv3::GicError::BadOffset(u64)
+pub gicv3::GicError::InvalidState
+pub enum gicv3::GicFrame
+pub gicv3::GicFrame::Dist
+pub gicv3::GicFrame::Redist
+pub struct gicv3::GicConfig
+pub gicv3::GicConfig::impl_spis: u32
+pub gicv3::GicConfig::timer_hz: u64
+pub gicv3::GicConfig::timer_intid: u32
+pub struct gicv3::GicState
+pub gicv3::GicState::active: [u32; 32]
+pub gicv3::GicState::cntv_ctl: u64
+pub gicv3::GicState::cntv_cval: u64
+pub gicv3::GicState::enable: [u32; 32]
+pub gicv3::GicState::gicd_ctlr: u32
+pub gicv3::GicState::group: [u32; 32]
+pub gicv3::GicState::impl_spis: u32
+pub gicv3::GicState::pending: [u32; 32]
+pub gicv3::GicState::pmr: u8
+pub gicv3::GicState::priority: [u8; 1020]
+pub gicv3::GicState::timer_fired: bool
+pub gicv3::GicState::timer_hz: u64
+pub gicv3::GicState::timer_intid: u32
+pub gicv3::GicState::version: u32
+pub struct gicv3::Gicv3
+impl gicv3::Gicv3
+pub fn gicv3::Gicv3::advance_to(&mut self, u64) -> bool
+pub fn gicv3::Gicv3::armed_timer_deliverable(&self) -> bool
+pub fn gicv3::Gicv3::config(&self) -> gicv3::GicConfig
+pub fn gicv3::Gicv3::eoi(&mut self, u32) -> core::result::Result<(), gicv3::GicError>
+pub fn gicv3::Gicv3::has_deliverable(&self) -> bool
+pub fn gicv3::Gicv3::implemented(&self, u32) -> bool
+pub fn gicv3::Gicv3::intid_limit(&self) -> u32
+pub fn gicv3::Gicv3::mmio_read(&self, gicv3::GicFrame, u64, u64) -> core::result::Result<u32, gicv3::GicError>
+pub fn gicv3::Gicv3::mmio_write(&mut self, gicv3::GicFrame, u64, u32, u64) -> core::result::Result<(), gicv3::GicError>
+pub fn gicv3::Gicv3::new(gicv3::GicConfig) -> core::result::Result<gicv3::Gicv3, gicv3::GicError>
+pub fn gicv3::Gicv3::next_timer_deadline(&self) -> core::option::Option<u64>
+pub fn gicv3::Gicv3::peek_interrupt(&self) -> core::option::Option<u32>
+pub fn gicv3::Gicv3::pmr(&self) -> u8
+pub fn gicv3::Gicv3::raise(&mut self, u32) -> core::result::Result<(), gicv3::GicError>
+pub fn gicv3::Gicv3::read_cntv_ctl(&self, u64) -> u64
+pub fn gicv3::Gicv3::read_cntv_cval(&self) -> u64
+pub fn gicv3::Gicv3::restore(&gicv3::GicState, u64) -> core::result::Result<gicv3::Gicv3, gicv3::GicError>
+pub fn gicv3::Gicv3::set_pmr(&mut self, u8)
+pub fn gicv3::Gicv3::snapshot(&self) -> gicv3::GicState
+pub fn gicv3::Gicv3::take_interrupt(&mut self) -> core::option::Option<u32>
+pub fn gicv3::Gicv3::write_cntv_ctl(&mut self, u64)
+pub fn gicv3::Gicv3::write_cntv_cval(&mut self, u64)
+pub const gicv3::CNTV_CTL_ENABLE: u64
+pub const gicv3::CNTV_CTL_IMASK: u64
+pub const gicv3::GICD_FRAME_SIZE: u64
+pub const gicv3::GICR_FRAME_SIZE: u64
+pub const gicv3::GIC_MAX_INTID: u32
+pub const gicv3::GIC_STATE_VERSION: u32
+pub const gicv3::SGI_PPI_COUNT: u32

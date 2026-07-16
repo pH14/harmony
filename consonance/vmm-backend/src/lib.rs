@@ -51,6 +51,22 @@ mod run_until;
 
 #[cfg(feature = "mock")]
 mod mock;
+#[cfg(feature = "mock")]
+mod mock_arm64;
+
+// The **stock KVM/arm64 backend**, split like the x86 backend. `arm64_kvm` is
+// the PURE half — the `KVM_RUN`⇄`Exit` decode, the register-ID save/restore
+// table, and the `Backend` orchestration over the `Arm64Kvm` syscall seam
+// (`docs/ARCH-BOUNDARY.md` §D; `tasks/112` M4). It carries no `kvm_bindings`
+// dependency, so it compiles + unit/Miri-tests on macOS against the recording
+// `FakeKvm` (portable mechanism attestation — no `/dev/kvm`).
+mod arm64_kvm;
+// The box-only syscall half (`LiveKvm`, real ioctls), gated on the arch it
+// traps as well as the OS — `kvm_bindings` exposes a different register ABI per
+// arch, so this is aarch64-linux-only, exactly as the x86 `kvm_sys` is
+// x86_64-linux-only (`arch-seam-aarch64-cross-gate`).
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+mod arm64_kvm_sys;
 
 // The **x86-64 KVM substrate**, gated on the architecture it traps as well as the
 // OS (`all(target_os = "linux", target_arch = "x86_64")` — the same seam
@@ -91,6 +107,10 @@ mod pmu_sys;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod patched_kvm;
 
+pub use arch::arm64::{
+    Arm64, Arm64Caps, Arm64Completion, Arm64CoreRegs, Arm64Exit, Arm64Injection, Arm64Policy,
+    Arm64SysregFile, Arm64VcpuState, GicIntId, IdRegModel, RAW_BR_RETIRED, SysregTrapPolicy,
+};
 pub use arch::x86::{
     CpuidEntry, CpuidModel, DebugRegs, DescriptorTable, Injection, MsrFilter, MsrRange, Segment,
     VcpuEvents, VcpuRegs, VcpuSregs, VcpuState, X86, X86Caps, X86Completion, X86Exit, X86Policy,
@@ -106,6 +126,17 @@ pub use types::{Gpa, Moment, MpState};
 
 #[cfg(feature = "mock")]
 pub use mock::{Completion, MockBackend, MockCaps};
+#[cfg(feature = "mock")]
+pub use mock_arm64::{Arm64MockCompletion, MockArm64Backend, MockArm64Caps};
+
+#[cfg(feature = "mock")]
+pub use arm64_kvm::FakeKvm;
+pub use arm64_kvm::{Arm64Kvm, Arm64KvmBackend, KvmRunView, MmioView};
+
+// The box-only stock KVM/arm64 constructor — the concrete `(Arm64KvmBackend,
+// Arm64)` pair's syscall seam, named only on the aarch64-linux leg.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub use arm64_kvm_sys::LiveKvm;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use kvm_sys::KvmBackend;
