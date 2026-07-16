@@ -51,6 +51,8 @@ mod run_until;
 
 #[cfg(feature = "mock")]
 mod mock;
+#[cfg(feature = "mock")]
+mod mock_arm64;
 
 // The **x86-64 KVM substrate**, gated on the architecture it traps as well as the
 // OS (`all(target_os = "linux", target_arch = "x86_64")` — the same seam
@@ -91,6 +93,10 @@ mod pmu_sys;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod patched_kvm;
 
+pub use arch::arm64::{
+    Arm64, Arm64Caps, Arm64Completion, Arm64CoreRegs, Arm64Exit, Arm64Injection, Arm64Policy,
+    Arm64SysregFile, Arm64VcpuState, GicIntId, IdRegModel, RAW_BR_RETIRED, SysregTrapPolicy,
+};
 pub use arch::x86::{
     CpuidEntry, CpuidModel, DebugRegs, DescriptorTable, Injection, MsrFilter, MsrRange, Segment,
     VcpuEvents, VcpuRegs, VcpuSregs, VcpuState, X86, X86Caps, X86Completion, X86Exit, X86Policy,
@@ -103,6 +109,8 @@ pub use types::{Gpa, Moment, MpState};
 
 #[cfg(feature = "mock")]
 pub use mock::{Completion, MockBackend, MockCaps};
+#[cfg(feature = "mock")]
+pub use mock_arm64::{Arm64MockCompletion, MockArm64Backend, MockArm64Caps};
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use kvm_sys::KvmBackend;

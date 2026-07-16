@@ -50,12 +50,14 @@
 //! the manual TLV byte-parsing and the `zerocopy` record reads on the decode path
 //! (`cargo +nightly miri test -p vm-state`, run in CI).
 
+mod arm64;
 mod codec;
 mod error;
 mod records;
 mod types;
 mod wire;
 
+pub use arm64::{Arm64Regs, Arm64Sysregs, Arm64VmState};
 pub use error::VmStateError;
 pub use records::SnapshotRecords;
 pub use types::{

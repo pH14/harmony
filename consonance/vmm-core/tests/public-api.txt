@@ -230,6 +230,16 @@ pub fn vmm_core::snapshot::SnapshotEngine::store_stats(&self) -> snapshot_store:
 pub fn vmm_core::snapshot::SnapshotEngine::vm_state<S: vm_state::records::SnapshotRecords>(&self, snapshot_store::SnapshotId) -> core::result::Result<S, vmm_core::snapshot::SnapshotError>
 pub const vmm_core::snapshot::DEFAULT_MAX_CHAIN_LEN: u32
 pub mod vmm_core::vendor
+pub mod vmm_core::vendor::arm64
+pub mod vmm_core::vendor::arm64::contract
+pub fn vmm_core::vendor::arm64::contract::contract_hash() -> [u8; 32]
+pub fn vmm_core::vendor::arm64::contract::policy() -> vmm_backend::arch::arm64::Arm64Policy
+pub mod vmm_core::vendor::arm64::devices
+pub mod vmm_core::vendor::arm64::dispatch
+pub struct vmm_core::vendor::arm64::dispatch::Arm64Devices
+pub struct vmm_core::vendor::arm64::dispatch::Arm64RestorePrep
+pub mod vmm_core::vendor::arm64::records
+pub struct vmm_core::vendor::arm64::Arm64Devices
 pub mod vmm_core::vendor::x86
 pub mod vmm_core::vendor::x86::bringup
 pub enum vmm_core::vendor::x86::bringup::BackendKind
@@ -497,6 +507,36 @@ pub fn vmm_core::vendor::Vendor::validate_restore<B: vmm_backend::backend::Backe
 pub fn vmm_core::vendor::Vendor::vcpu_components(&Self::VcpuState, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
 pub fn vmm_core::vendor::Vendor::vcpu_has_active_injection(&Self::VcpuState) -> bool
 pub fn vmm_core::vendor::Vendor::vcpu_has_inflight_injection(&Self::VcpuState) -> bool
+impl vmm_core::vendor::Vendor for vmm_backend::arch::arm64::Arm64
+pub type vmm_backend::arch::arm64::Arm64::Devices = vmm_core::vendor::arm64::dispatch::Arm64Devices
+pub type vmm_backend::arch::arm64::Arm64::RestorePrep = vmm_core::vendor::arm64::dispatch::Arm64RestorePrep
+pub type vmm_backend::arch::arm64::Arm64::Snapshot = vm_state::arm64::Arm64VmState
+pub fn vmm_backend::arch::arm64::Arm64::build_vm_state<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, &vmm_backend::arch::arm64::state::Arm64VcpuState) -> vm_state::arm64::Arm64VmState
+pub fn vmm_backend::arch::arm64::Arm64::check_sealable_vcpu(&vmm_backend::arch::arm64::state::Arm64VcpuState) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::arm64::Arm64::check_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vendor::InterruptReject>
+pub fn vmm_backend::arch::arm64::Arm64::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
+pub fn vmm_backend::arch::arm64::Arm64::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
+pub fn vmm_backend::arch::arm64::Arm64::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
+pub fn vmm_backend::arch::arm64::Arm64::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::arch::arm64::Arm64Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::arm64::Arm64::dispatch_mmio<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::types::Gpa, u8, core::option::Option<u64>) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::arm64::Arm64::encode_device_state(&Self::Devices) -> alloc::vec::Vec<u8>
+pub fn vmm_backend::arch::arm64::Arm64::encode_vcpu_chunk(&vmm_backend::arch::arm64::state::Arm64VcpuState) -> alloc::vec::Vec<u8>
+pub fn vmm_backend::arch::arm64::Arm64::guest_interruptible<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::arm64::Arm64::has_pending_guest_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::arm64::Arm64::hash_device_chunks(&Self::Devices, &mut alloc::vec::Vec<u8>)
+pub fn vmm_backend::arch::arm64::Arm64::inject_serial_input(&mut Self::Devices, &[u8])
+pub fn vmm_backend::arch::arm64::Arm64::inject_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::arm64::Arm64::mmio_holes() -> &'static [(u64, u64)]
+pub fn vmm_backend::arch::arm64::Arm64::new_devices() -> Self::Devices
+pub fn vmm_backend::arch::arm64::Arm64::next_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
+pub fn vmm_backend::arch::arm64::Arm64::pending_deliverable_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::arm64::Arm64::regs_view(&vmm_backend::arch::arm64::state::Arm64VcpuState) -> control_proto::types::RegsView
+pub fn vmm_backend::arch::arm64::Arm64::serial_capture(&Self::Devices) -> &[u8]
+pub fn vmm_backend::arch::arm64::Arm64::service_pending_irqs<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::arm64::Arm64::validate_restore<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, &vm_state::arm64::Arm64VmState) -> core::result::Result<(vmm_backend::arch::arm64::state::Arm64VcpuState, u64, Self::RestorePrep), vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::arm64::Arm64::vcpu_components(&vmm_backend::arch::arm64::state::Arm64VcpuState, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
+pub fn vmm_backend::arch::arm64::Arm64::vcpu_has_active_injection(&vmm_backend::arch::arm64::state::Arm64VcpuState) -> bool
+pub fn vmm_backend::arch::arm64::Arm64::vcpu_has_inflight_injection(&vmm_backend::arch::arm64::state::Arm64VcpuState) -> bool
 impl vmm_core::vendor::Vendor for vmm_backend::arch::x86::X86
 pub type vmm_backend::arch::x86::X86::Devices = vmm_core::vendor::x86::dispatch::X86Devices
 pub type vmm_backend::arch::x86::X86::RestorePrep = vmm_core::vendor::x86::dispatch::X86RestorePrep

@@ -14,6 +14,46 @@ pub vm_state::VmStateError::Truncated
 pub vm_state::VmStateError::UnknownTag(u16)
 pub vm_state::VmStateError::UnsupportedArch(u16)
 pub vm_state::VmStateError::UnsupportedVersion(u16)
+pub struct vm_state::Arm64Regs
+pub vm_state::Arm64Regs::elr_el1: u64
+pub vm_state::Arm64Regs::pc: u64
+pub vm_state::Arm64Regs::pstate: u64
+pub vm_state::Arm64Regs::sp: u64
+pub vm_state::Arm64Regs::sp_el1: u64
+pub vm_state::Arm64Regs::spsr_el1: u64
+pub vm_state::Arm64Regs::x: [u64; 31]
+pub struct vm_state::Arm64Sysregs
+pub vm_state::Arm64Sysregs::cntkctl_el1: u64
+pub vm_state::Arm64Sysregs::cpacr_el1: u64
+pub vm_state::Arm64Sysregs::esr_el1: u64
+pub vm_state::Arm64Sysregs::far_el1: u64
+pub vm_state::Arm64Sysregs::mair_el1: u64
+pub vm_state::Arm64Sysregs::sctlr_el1: u64
+pub vm_state::Arm64Sysregs::tcr_el1: u64
+pub vm_state::Arm64Sysregs::tpidr_el0: u64
+pub vm_state::Arm64Sysregs::tpidr_el1: u64
+pub vm_state::Arm64Sysregs::ttbr0_el1: u64
+pub vm_state::Arm64Sysregs::ttbr1_el1: u64
+pub vm_state::Arm64Sysregs::vbar_el1: u64
+pub struct vm_state::Arm64VmState
+pub vm_state::Arm64VmState::contract_hash: [u8; 32]
+pub vm_state::Arm64VmState::devices: vm_state::DeviceBlob
+pub vm_state::Arm64VmState::hypercall: alloc::vec::Vec<u8>
+pub vm_state::Arm64VmState::mp_state: vm_state::MpState
+pub vm_state::Arm64VmState::regs: vm_state::Arm64Regs
+pub vm_state::Arm64VmState::sysregs: vm_state::Arm64Sysregs
+pub vm_state::Arm64VmState::timers: vm_state::TimerQueueState
+pub vm_state::Arm64VmState::vtime: vm_state::VtimeState
+impl vm_state::Arm64VmState
+pub fn vm_state::Arm64VmState::decode(&[u8]) -> core::result::Result<vm_state::Arm64VmState, vm_state::VmStateError>
+pub fn vm_state::Arm64VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+impl vm_state::SnapshotRecords for vm_state::Arm64VmState
+pub const vm_state::Arm64VmState::ARCH_TAG: u16
+pub fn vm_state::Arm64VmState::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
+pub fn vm_state::Arm64VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+pub fn vm_state::Arm64VmState::entropy_bytes(&self) -> &[u8]
+pub fn vm_state::Arm64VmState::timers(&self) -> &vm_state::TimerQueueState
+pub fn vm_state::Arm64VmState::vtime(&self) -> &vm_state::VtimeState
 pub struct vm_state::DebugRegs
 pub vm_state::DebugRegs::db: [u64; 4]
 pub vm_state::DebugRegs::dr6: u64
@@ -126,6 +166,13 @@ pub fn vm_state::SnapshotRecords::encode(&self) -> core::result::Result<alloc::v
 pub fn vm_state::SnapshotRecords::entropy_bytes(&self) -> &[u8]
 pub fn vm_state::SnapshotRecords::timers(&self) -> &vm_state::TimerQueueState
 pub fn vm_state::SnapshotRecords::vtime(&self) -> &vm_state::VtimeState
+impl vm_state::SnapshotRecords for vm_state::Arm64VmState
+pub const vm_state::Arm64VmState::ARCH_TAG: u16
+pub fn vm_state::Arm64VmState::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
+pub fn vm_state::Arm64VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+pub fn vm_state::Arm64VmState::entropy_bytes(&self) -> &[u8]
+pub fn vm_state::Arm64VmState::timers(&self) -> &vm_state::TimerQueueState
+pub fn vm_state::Arm64VmState::vtime(&self) -> &vm_state::VtimeState
 impl vm_state::SnapshotRecords for vm_state::VmState
 pub const vm_state::VmState::ARCH_TAG: u16
 pub fn vm_state::VmState::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>

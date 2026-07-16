@@ -29,6 +29,7 @@ use vmm_backend::{Arch, Backend, Gpa};
 
 use crate::vmm::{Step, Vmm, VmmError};
 
+pub mod arm64;
 pub mod x86;
 
 /// Why a vendor refuses a wire-format interrupt identity at **stage time** — a
