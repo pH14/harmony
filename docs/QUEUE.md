@@ -19,9 +19,9 @@ decision. NO-GO repairs or supersedes downstream edges before `bd ready` is used
 
 **Consonance running in as many places as possible**: the reach matrix of vendors
 (Intel / AMD / ARM) × forms (bare metal / virtualized). Intel×metal ships today;
-Intel×virtualized: mechanism demonstrated by the nested-x86 spike (boots nested, ABI
-round-trips, hash-identical on executed runs) — the ALL-GO **certification was voided
-2026-07-12** (evidence-integrity review) and is being re-earned under tasks/102 (PR #98).
+Intel×virtualized: **RE-CERTIFIED 2026-07-16** (PR #98 merged, squash 4c4eb3fb) — the
+2026-07-12 voiding was re-earned under tasks/102: armed-PMI floor 1,101,006 ≥ 1M from
+perf records only, N-3 8/8 reference-pair pinned, floors machine-checked ALL PASS.
 A cell is filled when one documented command builds the pinned stack, boots on that host,
 and passes the same-seed determinism gate. "Vendor" replaces "personality" (GLOSSARY
 ratified via PR #103). ARM = Linux/KVM on an incoming Ampere
@@ -32,30 +32,22 @@ throughput; the vendor spikes gate *trust* (measured constants, the trait freeze
 fill), not construction. The ruled 5-lane queue and its risk acceptance live in
 `docs/ARCH-BOUNDARY.md` §Pre-build ruling.
 
-## In flight (2 active workers)
+## In flight (1 active worker)
 
-- **ARM backend skeleton — IMPLEMENTATION** (tasks/112, `hm-cbt`, PR #117, spec merged as
-  PR #111; agent-arm-backend-skeleton, Opus 4.8 xhigh after the 2026-07-15 Fable
-  safeguard refusals): M0–M4 delivered, TCG-smoked; review rounds 1–4 done (r4's two
-  blocking residues — FDT reserved-memory unit-address, arm64 kvm_run Miri seam — fixed
-  on head `ad7e758`, foreman-verified). **Round 5 dispatched 2026-07-16 early**: the
-  cross-model P1 (LiveKvm never creates the in-kernel vGIC) **REFUTED against the spec**
-  (tasks/112 M2 rules delivery OFFLINE pending AA-6 — worker only audits the TODO(AA-6)
-  markers + no-overclaim wording); two real P2 fixes in flight (MMIO range/alignment
-  fail-closed validation in arm64 dispatch; GIC state exposed in `state_components()` for
-  divergence localization — ADD a label, never rename the O1-pinned ones).
-- **Nested-x86 re-certification — FLOOR MET, MERGE IMMINENT** (PR #98, agent-pr98,
-  `hm-60k`): Paul's Option-A top-up executed 2026-07-15/16 (922k additional deadlines,
-  fire-once smoke validated the 55.4% armed-rate sizing first) → **cumulative armed PMIs
-  from perf records = 1,101,006 ≥ 1,000,000; `check-recert-floors.sh` ALL PASS,
-  independently re-run by the foreman from a fresh checkout of `32746d5`**. `hm-dbh`
-  re-closed on the honest count; `hm-jpu` (N-3) closed. Dispositions re-recorded from
-  recert/top-up evidence only; invalid runsets stay marked. Foreman round 3 (comment
-  4990501969): 3 [blocking] + 2 [P2] checker/gate/provenance hardenings — none void the
-  evidence — **fixed together with the merge-resolve against main's tasks/108
-  restructure on head `f10a751` (now MERGEABLE)**. Remaining: clean cross-model pass on
-  `f10a751` (running) → foreman merges → `hm-tn9` (appliance) + `hm-69y` (preflight CLI)
-  unblock.
+- **ARM backend skeleton — IMPLEMENTATION, converging** (tasks/112, `hm-cbt`, PR #117,
+  spec merged as PR #111; agent-arm-backend-skeleton, Opus 4.8 xhigh): M0–M4 delivered,
+  TCG-smoked; **13 review rounds done 2026-07-16**. The recurring vGIC P1 refuted twice
+  against tasks/112 M2's AA-6 deferral (on the PR record). Real fixes landed across
+  rounds 5–13: MMIO range/alignment fail-closed validation; GIC + doorbell components in
+  `state_components()`; FDT parser bounded by `size_dt_struct`; `wrap_image` code0
+  branch-over-header (+ TCG boot through the production helper); PSCI 0.2 vcpu feature;
+  GIC timer-latch restore validation; **the ARM transport GPA model** (dedicated ABI
+  pages at the absolute-GPA ABI addresses; `DOOR` state-hash chunk + component digest;
+  control-plane + stage-time fault validation routed through the GPA resolver — x86 held
+  byte-identical throughout). Latest pass (r14, head `8df9681`): zero P1s, one P2
+  (pvclock helpers are the last GPA-family member) — dispatched. **Merge = clean
+  re-pass + the M0 x86-neutrality box gate green on the final head** (worker holds the
+  box window; it correctly refused to fabricate a run pointer when the box was busy).
 
 Landed since the midday refresh: **conductor full-suite Miri restoration MERGED**
 (tasks/104, PR #105 — 12× cut to ~11.5 min, foreman-confirmed, triple vacuity guard;
@@ -65,14 +57,14 @@ Reproducer, Moment/Span, Subject; wire bytes golden-proven; zero findings across
 reviewers; Exemplar→Entry structural merge deferred as `hm-74w`).
 
 **CI runner toolchain REPAIRED 2026-07-15 eve** (`hm-ph7`): reinstall done; the rerun now
-*measures* again — and the first honest run **fails the 94.5 coverage region floor**
-(all 1791 tests pass; line coverage 93.66%). NOT caused by the drift-gate merge (tests/
-files aren't counted — verified from the lcov artifact). Drivers: a stale `work_perf.rs`
-exclusion broken by the keystone move (**repaired**, beb14c6) + under-tested code that
-landed while CI was fail-before-measuring (film replay bin 9.5% / core_replay 55.6%,
-benchcampaign 82.6%, telemetry bin 23.5%, bringup 70.2%). **⚖️ PAUL DECISION → `hm-42y`**:
-test-up the drivers vs exclude bin targets by policy vs floor change (disfavored).
-Until ruled, quality on main stays red and `hm-ph7` stays open.
+*measures* again (all 1791 tests pass; line coverage 93.66%). NOT caused by the drift-gate
+merge (tests/files aren't counted — verified from the lcov artifact). Drivers: a stale
+`work_perf.rs` exclusion broken by the keystone move (**repaired**, beb14c6) + under-tested
+code that landed while CI was fail-before-measuring (film replay bin 9.5% / core_replay
+55.6%, benchcampaign 82.6%, telemetry bin 23.5%, bringup 70.2%). **⚖️ RULED — `hm-42y`
+(Paul, 2026-07-16, commit babb6be):** coverage region floor **94.5 → 93.5** (accept the
+dip); the measured 93.66 now passes, the ratchet doctrine is unchanged, and the driver
+test-up stays an organic follow-up. Quality on main is green again.
 
 ## Ready (unblocked, waiting for a worker slot or Paul)
 
@@ -88,9 +80,19 @@ Reach-matrix lane (foreman-owned or spawnable next):
 
 General ready (foreman spawns as slots free):
 
+- **Appliance as first-class repo build** (`hm-tn9`, unblocked by the spike merge) and
+  **host-qualification preflight CLI** (`hm-69y`, same; carries the pre-build rider:
+  absorb the AA-0/AE-0 capability truth tables as machine-readable GO/refuse checks).
+  **harmonyd `hm-9od` stays DEFERRED** (Paul 2026-07-12: no resident daemon until a live
+  consumer exists — do not auto-spawn).
+- **AMD hammer variants + `svm.c` draft** (`hm-8v4`, unblocked by the spike merge — the
+  hammer source is on main and the Intel box frees after the ARM M0 window).
 - **W^X + rescan-on-exec** (`hm-rfz`, P2): third rung of the PARAVIRT-CLOCK §3.3
   enforcement ladder; should land before any non-fully-owned ARM guest. Substantive
   contract work — hold for a free slot after the ARM skeleton.
+- **Nested-x86 apparatus hardening residue** (`hm-w9s`, P3, filed under the scope
+  ruling): the 3 non-evidence-class r11 P1s (metal-restore failure corners, probe
+  mandatory-key presence); opportunistic — AE-*/AA-* rebuild this apparatus anyway.
 
 Dissonance lane (held — Paul: background reprioritization in progress, foreman does not
 spawn these until that lane re-opens):
@@ -98,8 +100,8 @@ spawn these until that lane re-opens):
 - **Dissonance document/naming convergence** — must finish before the Differential children;
   reserves counterpoint, rules `campaign-runner`, and reconciles ordering/retention/SDK contracts ·
   `hm-7zx`
-- **Campaign-runner remap-factory opt-in** (task 95 M2 follow-up; current crate still named
-  `conductor`) · `hm-lld`
+- **Campaign-runner remap-factory opt-in** (task 95 M2 follow-up; the crate is
+  `campaign-runner` — the `conductor` rename landed in tasks/105, PR #106) · `hm-lld`
 - **Deterministic-preemption soundness gap** — oldest open debt; needs a decision, not
   deferral · `hm-5ee`
 - Dormant tier (deliberately unscheduled, revisit at planning): live net-fault enforcement
@@ -111,17 +113,11 @@ spawn these until that lane re-opens):
 
 ## Blocked (dependency edges enforce these — they surface via `bd ready` when cleared)
 
-- **Appliance as first-class repo build** `hm-tn9` ← spike-branch merge `hm-l2g`;
-  **host-qualification preflight CLI** (`hm-69y`) ← same — now carrying the pre-build
-  rider: absorb the AA-0/AE-0 capability truth tables as machine-readable GO/refuse
-  checks (comment on the bead).
-  **harmonyd `hm-9od` is DEFERRED** (Paul 2026-07-12: no resident daemon until a live
-  consumer exists; appliance ships gate mode only — do not auto-spawn).
-- **Pre-build queue** (`docs/ARCH-BOUNDARY.md` §Pre-build ruling): keystone gate
-  `hm-54m` cleared 2026-07-14; paravirt clock `hm-rk5` MERGED (PR #110); ARM skeleton
-  `hm-cbt` IN FLIGHT (tasks/112); contract vendor column `hm-0nf` now READY (see above).
-  Still gated: AMD hammer variants + `svm.c` draft `hm-8v4`
-  ← spike-branch merge `hm-l2g` (the hammer source and the Intel box both free then).
+- **Pre-build queue** (`docs/ARCH-BOUNDARY.md` §Pre-build ruling) — largely CLEARED:
+  keystone `hm-54m` (2026-07-14), paravirt clock `hm-rk5` (PR #110), contract vendor
+  column `hm-0nf` (PR #116, 2026-07-16), spike-branch merge `hm-l2g` (PR #98,
+  2026-07-16) all done; ARM skeleton `hm-cbt` is the one still IN FLIGHT (see above).
+  Its unblocks (`hm-tn9`/`hm-69y`/`hm-8v4`) moved to Ready.
 - **Differential migration epic** `hm-bbx`: SDK normalization `hm-bbx.1` and the lineage/evidence-
   cut/retention spike `hm-bbx.2` follow `hm-7zx`; explicit ratification `hm-bbx.5` follows the
   spike and blocks deterministic Revision coordination `hm-bbx.3` plus atomic seal-cut capture
@@ -154,6 +150,18 @@ spawn these until that lane re-opens):
 
 ## Recently done (this week)
 
+- **Nested-x86 re-certification MERGED — Intel×virtualized re-earned** (tasks/102,
+  `hm-60k` + `hm-l2g`, PR #98 squash 4c4eb3fb, 2026-07-16 midday, ⚖️ Paul's scope
+  ruling: evidence-class findings gate the merge, apparatus residue → `hm-w9s`): the
+  voided ALL-GO fully re-earned — armed-PMI floor **1,101,006 ≥ 1,000,000 from perf
+  records only** (Option-A top-up, fire-once smoke first), N-3 8/8 runsets at floors
+  with the reference **pair** pinned, N-3 dose audit proven from retained artifacts
+  (2.11× fair-share signature), honest 2^32 oracle scope correction on the record,
+  dispositions from recert/top-up evidence only, invalid runsets stay marked. 12 fix
+  rounds / 11 blind cross-model passes; the certification core survived every pass;
+  floors machine-checked ALL PASS, re-run independently by the foreman at every head.
+  Unblocks the appliance build (`hm-tn9`), preflight CLI (`hm-69y`), AMD hammer lane
+  (`hm-8v4`).
 - **CPU/MSR contract vendor axis MERGED** (tasks/117, `hm-0nf`, PR #116 squash 187153dc,
   2026-07-16 early): the AMD draft column on the one frozen contract — Intel canonical
   form + hash byte-identical (zero-drift rule, golden-pinned), AMD column drafted from

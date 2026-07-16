@@ -179,6 +179,14 @@ campaign  — a seeded, budgeted sequence of steps against one workload
 
 ## Sequencing
 
+> **Landed (tasks/105, PR #106, 2026-07-13).** Items 2 and 3 below are **in code**, alongside the
+> `dissonance/link` → `sdk-events` crate rename, `VTime` → `Moment`/`Span`, and consonance's
+> `Machine` → `Subject`. Still riding their natural work per item 4: the remaining crate renames
+> (`runtrace` → `journal`, `logtmpl` → `log-templates`, `matcher` → `signals`, `tactics-regime` →
+> `tactics`) and the `sdk-events` internals — `LinkSensor`, `LINK_ASSERT_CHANNEL`/`LINK_STATE_CHANNEL`,
+> `GuestEvent` → `SdkEvent`, and the SDK "catalog" → `SdkSchema` — which the `hm-bbx` Differential
+> integration deletes/renames rather than churning ahead of it.
+
 1. **This document is binding on new code immediately** (it costs nothing).
 2. **Eager, standalone**: `explorer::Environment` → `Reproducer` — the collision every
    future cross-crate reader pays for.

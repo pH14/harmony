@@ -1,0 +1,64 @@
+{
+  "captured_utc": "2026-07-10T04:14:00Z",
+  "spike": "nested-x86",
+  "purpose": "as-found box state before any nested-x86 spike modification; restore target when yielding the exclusive lock",
+  "host": {
+    "hostname": "hypervizor",
+    "kernel": "6.12.90+deb13.1-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.90-2 (2026-05-27)",
+    "cmdline": "BOOT_IMAGE=/vmlinuz-6.12.90+deb13.1-amd64 root=UUID=93bab584-ea2d-4376-aaad-04e0b2b09563 ro consoleblank=0 systemd.show_status=true consoleblank=0",
+    "cpu": "Intel(R) Core(TM) i9-9900K CPU @ 3.60GHz (Coffee Lake, 8c/16t)",
+    "nproc": 16,
+    "uptime_at_capture": "27 days",
+    "cpufreq_governor": "performance",
+    "isolcpus": "none configured"
+  },
+  "kvm_as_found": {
+    "modules": "STOCK Debian modules loaded (kvm.ko 1396736 bytes matches the stock baseline from box run discipline)",
+    "kvm_filename": "/lib/modules/6.12.90+deb13.1-amd64/kernel/arch/x86/kvm/kvm.ko.xz",
+    "kvm_intel_filename": "/lib/modules/6.12.90+deb13.1-amd64/kernel/arch/x86/kvm/kvm-intel.ko.xz",
+    "kvm_intel_refcnt_at_capture": 0,
+    "params_nonstock_note": "all params at Debian defaults as captured; full dump in results/n0/l0-module-params.txt",
+    "key_params": {
+      "kvm_intel.nested": "Y",
+      "kvm.enable_pmu": "Y",
+      "kvm_intel.ept": "Y",
+      "kvm_intel.pml": "Y",
+      "kvm_intel.unrestricted_guest": "Y",
+      "kvm_intel.enable_apicv": "N",
+      "kvm_intel.enlightened_vmcs": "N",
+      "kvm_intel.preemption_timer": "Y"
+    }
+  },
+  "artifact_hashes": {
+    "vmlinuz-6.12.90+deb13.1-amd64_sha256": "5af22ccdc339fe5c1fdfcd4cf6a3c503ff983648664a8d6660454368785e8fd5",
+    "qemu-system-x86_64_sha256": "06ddf4fda239261764fdfde12cab6319dcd13094ca4e1bbaee272bed2efce84f",
+    "qemu_version": "QEMU 10.0.8 (Debian 1:10.0.8+ds-0+deb13u1+b2)"
+  },
+  "tenants_as_found": [
+    "GitHub Actions runner: /home/runner/harmony-runner-4/bin/Runner.Listener (pid 3379458, up 14+ days) - DO NOT TOUCH",
+    "/root/box-window.sh + /root/box-window-leases (box window infra, idle)",
+    "numerous /root/harmony-* task checkouts - read-only reference material for this spike"
+  ],
+  "planned_spike_footprint": {
+    "new_files_under": "/root/nested-x86-spike/",
+    "processes": "QEMU instances launched by the spike (taskset-pinned), each recorded per run-set",
+    "packages": "any apt installs will be appended to packages_installed below",
+    "module_changes": "NONE PLANNED - box is already stock KVM with nested=Y, which is the spike's L0 posture",
+    "kernel_changes": "none planned",
+    "reboots": [
+      "2026-07-10T20:05Z spike-end reboot (recorded, exclusive lock): closes N-0's two-reboot capability-identity check and N-2's after-L0-reboot count-stability check; all runner units verified enabled beforehand"
+    ]
+  },
+  "packages_installed": [
+    "busybox-static (2026-07-10, for L1 probe initramfs; displaces no existing busybox binary usage)",
+    "stress-ng 0.19.02 (2026-07-10, N-2 contamination-probe load generator)"
+  ],
+  "restore_procedure": [
+    "1. kill any spike-launched QEMU processes (pidfiles under /root/nested-x86-spike/run/)",
+    "2. verify lsmod kvm/kvm_intel identity + params match kvm_as_found (no module changes were planned)",
+    "3. verify sha256 of /boot/vmlinuz-6.12.90+deb13.1-amd64 and /usr/bin/qemu-system-x86_64 match artifact_hashes",
+    "4. /root/nested-x86-spike/ may remain (inert files) or be archived; record choice in final report",
+    "5. apt remove any packages_installed entries if Paul wants zero-residue; otherwise record as accepted residue",
+    "6. confirm GHA runner still running; confirm box-window infra untouched"
+  ]
+}

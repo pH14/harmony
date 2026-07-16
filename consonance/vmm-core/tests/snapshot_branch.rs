@@ -15,6 +15,7 @@
 //! `src/snapshot.rs` unit tests (device-blob byte parsing, the vCPU conversions).
 #![cfg(not(miri))]
 
+use vm_state::VmState;
 use vmm_backend::{
     Backend, CommonExit, Exit, MockBackend, VcpuEvents, VcpuState, X86, X86Exit, X86Policy,
 };
@@ -463,7 +464,7 @@ fn n_branches_share_one_boot_image_and_fork_entropy() {
                 base,
                 boot.guest_memory(),
                 Some(&[]),
-                &eng.vm_state(base).unwrap().encode().unwrap(),
+                &eng.vm_state::<VmState>(base).unwrap().encode().unwrap(),
             )
             .unwrap();
         let mut v = vmm(vec![], 0, 0);

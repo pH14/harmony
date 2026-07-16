@@ -258,7 +258,7 @@ impl VmState {
 }
 
 /// Append one `tag:u16 len:u32 payload` section.
-fn put_section(out: &mut Vec<u8>, tag: u16, payload: &[u8]) -> Result<(), VmStateError> {
+pub(crate) fn put_section(out: &mut Vec<u8>, tag: u16, payload: &[u8]) -> Result<(), VmStateError> {
     let len = u32::try_from(payload.len()).map_err(|_| VmStateError::InvalidField)?;
     out.extend_from_slice(&tag.to_le_bytes());
     out.extend_from_slice(&len.to_le_bytes());
@@ -268,18 +268,20 @@ fn put_section(out: &mut Vec<u8>, tag: u16, payload: &[u8]) -> Result<(), VmStat
 
 /// Read a fixed-layout wire record from an exact-length payload, mapping a size
 /// mismatch to [`VmStateError::InvalidField`].
-fn read_fixed<W: FromBytes + KnownLayout + Immutable>(payload: &[u8]) -> Result<W, VmStateError> {
+pub(crate) fn read_fixed<W: FromBytes + KnownLayout + Immutable>(
+    payload: &[u8],
+) -> Result<W, VmStateError> {
     W::read_from_bytes(payload).map_err(|_| VmStateError::InvalidField)
 }
 
-fn encode_mp_state(mp: MpState) -> u8 {
+pub(crate) fn encode_mp_state(mp: MpState) -> u8 {
     match mp {
         MpState::Runnable => MP_STATE_RUNNABLE,
         MpState::Halted => MP_STATE_HALTED,
     }
 }
 
-fn decode_mp_state(payload: &[u8]) -> Result<MpState, VmStateError> {
+pub(crate) fn decode_mp_state(payload: &[u8]) -> Result<MpState, VmStateError> {
     match payload {
         [MP_STATE_RUNNABLE] => Ok(MpState::Runnable),
         [MP_STATE_HALTED] => Ok(MpState::Halted),
@@ -363,7 +365,7 @@ fn validate_timers(entries: &[TimerEntry], next_seq: u64) -> Result<(), VmStateE
     Ok(())
 }
 
-fn encode_timers(timers: &TimerQueueState) -> Result<Vec<u8>, VmStateError> {
+pub(crate) fn encode_timers(timers: &TimerQueueState) -> Result<Vec<u8>, VmStateError> {
     let count = u32::try_from(timers.entries.len()).map_err(|_| VmStateError::InvalidField)?;
     // Entries must already satisfy the task-05 TimerQueue invariants (see
     // validate_timers): canonical (deadline_vns, seq) order, unique tokens, and
@@ -386,7 +388,7 @@ fn encode_timers(timers: &TimerQueueState) -> Result<Vec<u8>, VmStateError> {
     Ok(payload)
 }
 
-fn decode_timers(payload: &[u8]) -> Result<TimerQueueState, VmStateError> {
+pub(crate) fn decode_timers(payload: &[u8]) -> Result<TimerQueueState, VmStateError> {
     let next_seq = le_u64(payload, 0)?;
     let count = le_u32(payload, 8)? as usize;
     let body = payload.get(12..).ok_or(VmStateError::InvalidField)?;
@@ -411,13 +413,13 @@ fn decode_timers(payload: &[u8]) -> Result<TimerQueueState, VmStateError> {
     Ok(TimerQueueState { entries, next_seq })
 }
 
-fn decode_contract_hash(payload: &[u8]) -> Result<[u8; 32], VmStateError> {
+pub(crate) fn decode_contract_hash(payload: &[u8]) -> Result<[u8; 32], VmStateError> {
     <[u8; CONTRACT_HASH_LEN]>::try_from(payload).map_err(|_| VmStateError::InvalidField)
 }
 
 /// Read a little-endian `u32` at `offset`, or [`VmStateError::InvalidField`] if
 /// the slice is too short (a malformed section, not a truncated buffer).
-fn le_u32(buf: &[u8], offset: usize) -> Result<u32, VmStateError> {
+pub(crate) fn le_u32(buf: &[u8], offset: usize) -> Result<u32, VmStateError> {
     let bytes = buf
         .get(offset..offset + 4)
         .ok_or(VmStateError::InvalidField)?;
@@ -425,7 +427,7 @@ fn le_u32(buf: &[u8], offset: usize) -> Result<u32, VmStateError> {
 }
 
 /// Read a little-endian `u64` at `offset`, or [`VmStateError::InvalidField`].
-fn le_u64(buf: &[u8], offset: usize) -> Result<u64, VmStateError> {
+pub(crate) fn le_u64(buf: &[u8], offset: usize) -> Result<u64, VmStateError> {
     let bytes = buf
         .get(offset..offset + 8)
         .ok_or(VmStateError::InvalidField)?;
@@ -436,33 +438,33 @@ fn le_u64(buf: &[u8], offset: usize) -> Result<u64, VmStateError> {
 
 /// A forward-only cursor over the section stream. Every read that would pass the
 /// end of the buffer yields [`VmStateError::Truncated`].
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Reader<'a> {
-    fn new(buf: &'a [u8]) -> Self {
+    pub(crate) fn new(buf: &'a [u8]) -> Self {
         Self { buf, pos: 0 }
     }
 
-    fn at_end(&self) -> bool {
+    pub(crate) fn at_end(&self) -> bool {
         self.pos == self.buf.len()
     }
 
-    fn take(&mut self, n: usize) -> Result<&'a [u8], VmStateError> {
+    pub(crate) fn take(&mut self, n: usize) -> Result<&'a [u8], VmStateError> {
         let end = self.pos.checked_add(n).ok_or(VmStateError::Truncated)?;
         let slice = self.buf.get(self.pos..end).ok_or(VmStateError::Truncated)?;
         self.pos = end;
         Ok(slice)
     }
 
-    fn u16(&mut self) -> Result<u16, VmStateError> {
+    pub(crate) fn u16(&mut self) -> Result<u16, VmStateError> {
         let b = self.take(2)?;
         Ok(u16::from_le_bytes([b[0], b[1]]))
     }
 
-    fn u32(&mut self) -> Result<u32, VmStateError> {
+    pub(crate) fn u32(&mut self) -> Result<u32, VmStateError> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }

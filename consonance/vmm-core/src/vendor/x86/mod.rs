@@ -47,6 +47,7 @@ use crate::vmm::{Step, Vmm, VmmError};
 impl Vendor for X86 {
     type Devices = X86Devices;
     type RestorePrep = dispatch::X86RestorePrep;
+    type Snapshot = VmState;
 
     fn new_devices() -> Self::Devices {
         X86Devices::new()

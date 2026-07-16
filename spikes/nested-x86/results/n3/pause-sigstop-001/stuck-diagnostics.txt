@@ -1,0 +1,11 @@
+=== ps threads ===
+1807648  0.2 Sl   do_sys_poll                    qemu-system-x86
+1807649  0.0 Sl   futex_wait_queue               qemu-system-x86
+1807650 72.7 Rl   -                              qemu-system-x86
+1807653  0.0 Sl   kvm_nx_huge_page_recovery_work kvm-nx-lpage-re
+=== wchan per thread ===
+1807648 do_sys_poll S
+1807649 futex_wait_queue S
+1807650 0 R
+1807653 kvm_nx_huge_page_recovery_worker S
+no gdb

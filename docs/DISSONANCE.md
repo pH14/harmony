@@ -7,6 +7,21 @@ the guest requests, workload-defined and layerable). Every perturbation, from ei
 recorded into one reproducer keyed by a deterministic **`Moment`**, so every bug it finds replays
 exactly.
 
+> **Status: CURRENT (the permutation-surface ruling), reconciled 2026-07-16.** This doc rules the
+> **two-plane fault surface and the one `Moment`-keyed reproducer** — that model stands.
+> `docs/DISSONANCE-STRATEGY.md` (the ruled strategy, PR #103) governs the layer *above* the seams
+> this doc deliberately leaves opaque (search, observation, cells, archive); `docs/GLOSSARY.md` is
+> the naming authority. Two reconcile notes apply throughout:
+> - **Loop names.** The `Modulation`/`Progression` loop names below are the task-94 rename of
+>   Theme/Variation (see §"The two loops"). `docs/GLOSSARY.md` (2026-07-06) retired them again at the
+>   mechanism layer: **Modulation → rollout**, **Progression → the search loop / `step`**. They are
+>   kept here as the design vocabulary; read them as rollout and the generic search loop.
+> - **The reproducer type.** This doc calls the portable artifact an `Environment` struct. In code
+>   that struct is now **`Reproducer`** (renamed in the tasks/105 vocabulary sweep, PR #106); the
+>   `environment::Environment` **trait** — the `decide` seam — keeps its name, and
+>   `EnvSpec`/`SeededEnv`/`RecordedEnv` stay. The one-name-two-types overload this doc carries is
+>   exactly the collision `docs/GLOSSARY.md` resolves.
+
 > **Supersedes the single-seam framing.** An earlier version of this doc rested on *"a fault is
 > just the guest's environment answering a service non-nominally."* That is true for the guest
 > control planes but **cannot express** host-level perturbations (memory corruption, clock skew,
@@ -276,7 +291,11 @@ portable**; `SnapId`s are ephemeral pool handles and never part of the artifact.
 > historical task spec (12/24/25/45/93 keep their original words on purpose; history is a
 > record, not a lie to maintain). The lowercase term of art *timeline admission* (admitting
 > exemplars along a run's `Moment` axis) is a distinct concept and is **not** part of this
-> rename.
+> rename. **A later rename supersedes both:** `docs/GLOSSARY.md` (2026-07-06) retired *Modulation*
+> to **rollout** and *Progression* to **the search loop / `step`** at the mechanism layer; the
+> tasks/105 sweep (PR #106) put those names, plus `Reproducer` and `Moment`/`Span`, into the code.
+> The Modulation/Progression names here are one more layer of history to decode, not current
+> vocabulary.
 
 | | **Modulation** (inner) | **Progression** (outer) |
 |---|---|---|

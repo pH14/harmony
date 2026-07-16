@@ -30,7 +30,7 @@
 //! Mac/Miri-testable against plain memory, exactly as `snapshot-store` is.
 
 use snapshot_store::{Mapping, PAGE_SIZE, SnapStats, SnapshotId, Store, StoreConfig, StoreStats};
-use vm_state::VmState;
+use vm_state::SnapshotRecords;
 
 /// Errors from the snapshot/branch path: a store failure, a `vm_state` codec
 /// failure, a malformed vmm-core device blob, a guest-image size mismatch, a
@@ -216,9 +216,14 @@ impl SnapshotEngine {
         Ok(self.store.materialize(snap)?)
     }
 
-    /// Decode the sealed `vm_state` blob of `snap` back into a [`VmState`].
-    pub fn vm_state(&self, snap: SnapshotId) -> Result<VmState, SnapshotError> {
-        Ok(VmState::decode(self.store.vm_state(snap)?)?)
+    /// Decode the sealed `vm_state` blob of `snap` back into a vendor record
+    /// set `S` (x86: [`vm_state::VmState`]; arm64: the arm64 record set). The
+    /// engine never reads a record: `S::decode` is the vendor codec, and its
+    /// arch-tag gate rejects a foreign blob loudly
+    /// ([`vm_state::VmStateError::UnsupportedArch`]) rather than
+    /// reinterpreting it — the `docs/ARCH-BOUNDARY.md` §D snapshot seam.
+    pub fn vm_state<S: SnapshotRecords>(&self, snap: SnapshotId) -> Result<S, SnapshotError> {
+        Ok(S::decode(self.store.vm_state(snap)?)?)
     }
 
     /// Increment `snap`'s refcount (an explorer holding a fork alive). See
@@ -252,6 +257,8 @@ impl SnapshotEngine {
 
 #[cfg(test)]
 mod tests {
+    use vm_state::VmState;
+
     use super::*;
 
     // --- engine: base / derive / sharing ------------------------------------
@@ -376,7 +383,7 @@ mod tests {
         s.vtime.ratio_den = 1; // encodable
         let bytes = s.encode().unwrap();
         let snap = eng.snapshot_base(&vec![0u8; 4 * PG], &bytes).unwrap();
-        assert_eq!(eng.vm_state(snap).unwrap(), s);
+        assert_eq!(eng.vm_state::<VmState>(snap).unwrap(), s);
     }
 
     #[test]
