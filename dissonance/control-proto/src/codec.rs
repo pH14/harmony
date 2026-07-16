@@ -26,7 +26,7 @@ use crate::types::{
 use crate::{MAX_FRAME_LEN, PROTO_VERSION};
 
 /// Frame magic: `b"CTL1"` read little-endian. Pins the on-wire byte order.
-const MAGIC: u32 = u32::from_le_bytes([b'C', b'T', b'L', b'1']);
+const MAGIC: u32 = u32::from_le_bytes(*b"CTL1");
 /// The fixed frame header: magic(4) + version(2) + seq(4) + len(4).
 const HEADER_LEN: usize = 14;
 

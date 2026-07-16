@@ -239,7 +239,7 @@ fn model_save(registered: &BTreeMap<u16, SvcModel>) -> Vec<u8> {
 /// Mirror of `Dispatcher::restore_state` over a blob this set produced.
 fn model_restore(registered: &mut BTreeMap<u16, SvcModel>, blob: &[u8]) {
     let mut offset = 0;
-    for (_id, svc) in registered.iter_mut() {
+    for svc in registered.values_mut() {
         offset += 2; // id (already known to match)
         let len = rd_u32(blob, offset) as usize;
         offset += 4;
