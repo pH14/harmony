@@ -29,6 +29,7 @@ pub struct gicv3::Gicv3
 impl gicv3::Gicv3
 pub fn gicv3::Gicv3::advance_to(&mut self, u64) -> bool
 pub fn gicv3::Gicv3::armed_timer_deliverable(&self) -> bool
+pub fn gicv3::Gicv3::config(&self) -> gicv3::GicConfig
 pub fn gicv3::Gicv3::eoi(&mut self, u32) -> core::result::Result<(), gicv3::GicError>
 pub fn gicv3::Gicv3::has_deliverable(&self) -> bool
 pub fn gicv3::Gicv3::implemented(&self, u32) -> bool

@@ -293,6 +293,40 @@ fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
     let mut unwired = vmm(vec![]);
     let err = unwired.restore_vm_state(&s).unwrap_err();
     assert!(format!("{err}").contains("wiring mismatch"), "{err}");
+
+    // Finding 2 (review r2): restoring into a GIC wired with a DIFFERENT config
+    // (impl_spis / timer_hz / timer_intid) is rejected — the distributor bound
+    // (GICD_TYPER.ITLinesNumber) and the timer deadline conversion cannot
+    // silently change under an unchanged board/DTB. A restore never adopts the
+    // snapshot's config over the wired target's.
+    let mismatched = |cfg: gicv3::GicConfig| {
+        let mut v = vmm(vec![]);
+        v.wire_gic(gicv3::Gicv3::new(cfg).unwrap());
+        v.restore_vm_state(&s)
+    };
+    let base = board::gic_config();
+    for bad in [
+        gicv3::GicConfig {
+            impl_spis: 32,
+            ..base
+        }, // GICD_TYPER changes
+        gicv3::GicConfig {
+            timer_hz: base.timer_hz * 2,
+            ..base
+        }, // deadline conv changes
+        gicv3::GicConfig {
+            timer_intid: 26,
+            ..base
+        }, // a different PPI
+    ] {
+        let err = mismatched(bad).unwrap_err();
+        assert!(
+            format!("{err}").contains("GICv3 config mismatch"),
+            "config {bad:?} must be rejected: {err}"
+        );
+    }
+    // The matching board config restores cleanly (the round-trip still holds).
+    assert!(mismatched(base).is_ok());
 }
 
 /// M2 — the generic timer is a pure deadlines-out seam: an armed CVAL is a
@@ -402,22 +436,30 @@ fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
     let err = v.step().unwrap_err();
     assert!(format!("{err}").contains("GICv3 MMIO"), "{err}");
 
-    // Finding 2 (review r1): a GIC-frame access with a non-32-bit width fails
-    // closed on the WIDTH — before touching GIC state — never a silent
-    // truncation to the u32-only model. (The width guard precedes the
-    // unwired-fabric check, so an unwired VM still surfaces the width error.)
-    for bad in [1u8, 2, 8] {
-        let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
-            gpa: Gpa(0x0800_0000),
-            size: bad,
-            write: Some(0),
-        })]);
-        let err = v.step().unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains(&format!("size {bad} != 4")),
-            "GIC size {bad} must fail closed on width: {msg}"
-        );
+    // Every modeled device arm rejects a non-32-bit width **before** touching
+    // device state — never a silent `v as u32` truncation. (r1: the GICv3
+    // frames; r2: swept across the PL011 console AND the reserved doorbell,
+    // all 32-bit-register/word-ABI.) The width guard precedes the
+    // unwired-fabric / doorbell-dispatch, so it surfaces regardless.
+    for (name, gpa) in [
+        ("GICD", 0x0800_0000u64),
+        ("GICR", 0x080A_0000),
+        ("PL011", 0x0900_0000),
+        ("doorbell", 0x0A00_0000),
+    ] {
+        for bad in [1u8, 2, 8] {
+            let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(gpa),
+                size: bad,
+                write: Some(0),
+            })]);
+            let err = v.step().unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains(&format!("size {bad} != 4")),
+                "{name} size {bad} must fail closed on width: {msg}"
+            );
+        }
     }
 }
 

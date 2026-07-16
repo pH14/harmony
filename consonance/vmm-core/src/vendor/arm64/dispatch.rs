@@ -98,6 +98,26 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
 
         let addr = gpa.0;
 
+        // Every modeled arm64 MMIO device (the PL011 register block, the
+        // GICv3 register files, the hypercall-doorbell magic word) is
+        // **32-bit-accessed** — the models are `u32`-register/word-ABI. A
+        // non-32-bit access would truncate a store (`v as u32`) or under-fill a
+        // load, so reject the width **before** touching any device state, at
+        // every arm (never a silent truncation; the r1 GIC-width fix, swept
+        // across the remaining arms per review r2).
+        if (in_frame(addr, PL011)
+            || in_frame(addr, DOORBELL)
+            || in_frame(addr, GICD)
+            || in_frame(addr, GICR))
+            && size != 4
+        {
+            return Err(VmmError::ContractViolation(format!(
+                "arm64 device MMIO at {addr:#x} with size {size} != 4 — the modeled PL011, GICv3, \
+                 and hypercall-doorbell registers are 32-bit-accessed; a different width is \
+                 unmodeled (fail closed, not a truncation)"
+            )));
+        }
+
         // The PL011 console (4 KiB frame). 32-bit register accesses.
         if in_frame(addr, PL011) {
             let offset = addr - PL011.0;
@@ -126,27 +146,15 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             return self.service_doorbell(v as u32);
         }
 
-        // The GICv3 distributor / redistributor frames.
+        // The GICv3 distributor / redistributor frames (width already checked
+        // above — the modeled register files are 32-bit-accessed; 64-bit GIC
+        // registers like IROUTERn/GICR_TYPER are unmodeled, `TODO(AA-6)`).
         if in_frame(addr, GICD) || in_frame(addr, GICR) {
             let (frame, base) = if in_frame(addr, GICD) {
                 (gicv3::GicFrame::Dist, GICD.0)
             } else {
                 (gicv3::GicFrame::Redist, GICR.0)
             };
-            // The modeled GICv3 register files are strictly 32-bit-accessed; a
-            // wider or narrower access would truncate a store / under-fill a
-            // load against the `u32`-only model. Reject unsupported widths
-            // **before** touching GIC state — never a silent `v as u32`
-            // truncation. (64-bit GIC registers — IROUTERn, GICR_TYPER — are
-            // unmodeled; a guest that needs them is out of the skeleton's
-            // contract, `TODO(AA-6)`.)
-            if size != 4 {
-                return Err(VmmError::ContractViolation(format!(
-                    "GICv3 MMIO at {addr:#x} with size {size} != 4 — the modeled GICv3 register \
-                     files are 32-bit-accessed; a different width is unmodeled (fail closed, not \
-                     a truncation)"
-                )));
-            }
             if self.devices.gic.is_none() {
                 return Err(VmmError::ContractViolation(format!(
                     "GICv3 MMIO at {addr:#x} but the userspace GICv3 is unwired — guest \
@@ -368,20 +376,45 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         // (the x86 LAPIC wiring-mismatch discipline): one side having a fabric
         // the other lacks would silently change which interrupts can ever
         // deliver — rejected, never skipped.
-        let new_gic =
-            match (&dev.gic, self.devices.gic.is_some()) {
-                (Some(gs), true) => Some(gicv3::Gicv3::restore(gs).map_err(|_| {
-                    SnapshotError::DeviceRestore("incoherent GicState in device blob")
-                })?),
-                (Some(_), false) | (None, true) => {
-                    return Err(VmmError::ContractViolation(
-                        "restore_vm_state: snapshot/VM GICv3 wiring mismatch (one has the fabric, \
-                     the other does not) — restore into a VM composed like the snapshot source."
-                            .to_string(),
-                    ));
+        let new_gic = match (&dev.gic, self.devices.gic.as_ref()) {
+            (Some(gs), Some(target)) => {
+                // The snapshot's GIC **config** (impl_spis / timer_hz /
+                // timer_intid) must match the already-wired target's — these
+                // drive `GICD_TYPER.ITLinesNumber` and the tick→ns deadline
+                // conversion, so adopting the blob's config under an unchanged
+                // board/DTB contract would silently change the machine the
+                // guest sees. Reject a mismatch (the LAPIC wiring-mismatch
+                // posture), never a silent adoption.
+                let have = target.config();
+                if (gs.impl_spis, gs.timer_hz, gs.timer_intid)
+                    != (have.impl_spis, have.timer_hz, have.timer_intid)
+                {
+                    return Err(VmmError::ContractViolation(format!(
+                        "restore_vm_state: GICv3 config mismatch (snapshot impl_spis={} timer_hz={} \
+                         timer_intid={} vs this VM's {}/{}/{}) — the distributor bound and the \
+                         timer deadline conversion cannot change under an unchanged board/DTB; \
+                         restore into a VM composed like the snapshot source.",
+                        gs.impl_spis,
+                        gs.timer_hz,
+                        gs.timer_intid,
+                        have.impl_spis,
+                        have.timer_hz,
+                        have.timer_intid
+                    )));
                 }
-                (None, false) => None,
-            };
+                Some(gicv3::Gicv3::restore(gs).map_err(|_| {
+                    SnapshotError::DeviceRestore("incoherent GicState in device blob")
+                })?)
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(VmmError::ContractViolation(
+                    "restore_vm_state: snapshot/VM GICv3 wiring mismatch (one has the fabric, \
+                     the other does not) — restore into a VM composed like the snapshot source."
+                        .to_string(),
+                ));
+            }
+            (None, None) => None,
+        };
         // The arm64 skeleton blob carries **no pvclock channel record** (the
         // arm64 clock-page protocol is `hm-rk5`'s; this skeleton only reserves
         // the seam). Validate that symmetrically against this VM's

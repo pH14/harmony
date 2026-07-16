@@ -127,6 +127,19 @@ impl Gicv3 {
         })
     }
 
+    /// The immutable configuration this model was built with — the distributor
+    /// bound, the timer frequency, and the virtual-timer INTID. A restore must
+    /// compare a snapshot's config against the wired target's (these fields
+    /// drive `GICD_TYPER.ITLinesNumber` and the tick→ns deadline conversion, so
+    /// they cannot silently change under an unchanged board/DTB contract).
+    pub fn config(&self) -> GicConfig {
+        GicConfig {
+            impl_spis: self.impl_spis,
+            timer_hz: self.timer_hz,
+            timer_intid: self.timer_intid,
+        }
+    }
+
     /// One past the highest implemented INTID (`32 + impl_spis`).
     pub fn intid_limit(&self) -> u32 {
         SGI_PPI_COUNT + self.impl_spis
@@ -836,6 +849,20 @@ mod tests {
         let r = Gicv3::restore(&s).unwrap();
         assert_eq!(r.snapshot(), s);
         assert_eq!(r.peek_interrupt(), g.peek_interrupt());
+    }
+
+    #[test]
+    fn config_reports_the_construction_parameters() {
+        let cfg = GicConfig {
+            impl_spis: 64,
+            timer_hz: 62_500_000,
+            timer_intid: 27,
+        };
+        let g = Gicv3::new(cfg).unwrap();
+        assert_eq!(g.config(), cfg);
+        // The config survives a snapshot round-trip (a restore consumer compares
+        // it against the wired target's).
+        assert_eq!(Gicv3::restore(&g.snapshot()).unwrap().config(), cfg);
     }
 
     #[test]
