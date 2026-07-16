@@ -59,6 +59,16 @@ generic.
    `RDSEED`). An unimplementable enforcement assumption is blocking or a `[question]` for the
    integrator.
 
+**Settled rulings (cite, don't re-litigate).** Some findings have already been ruled by the
+integrator against the spec; a cross-model pass that re-raises one should cite the ruling rather
+than re-open it. Currently settled:
+
+- **arm64 interrupt delivery is AA-6-deferred** (`tasks/112` M2 §Delivery). The stock
+  `Arm64KvmBackend` wiring **no** delivery fabric — `set_pending_irq`/inject are `Unsupported`,
+  it never creates an in-kernel `KVM_DEV_TYPE_ARM_VGIC_V3`, delivery is `TODO(AA-6)`, and the DTB
+  advertises the GICv3 but the skeleton claims **no** interrupt-driven guest boot (the M4
+  `boot_selected` doc says so explicitly) — is the **ruled design**, not a defect.
+
 Report each finding as `file:line` + severity (blocking/suggestion/question/nit) + the
 concrete input or scenario that triggers it. If nothing is real, say so — don't pad.
 

@@ -138,6 +138,16 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
 /// Altra); there is no local KVM loop (`hm-8l3` REFUSE), so this root has no
 /// local oracle — only the aarch64-linux cross-check compiles it.
 ///
+/// **No interrupt-driven guest boot is claimed here** (`tasks/112` M2 §Delivery).
+/// The stock backend wires **no** delivery fabric — `set_pending_irq`/inject are
+/// `Unsupported`, and this root never creates an in-kernel
+/// `KVM_DEV_TYPE_ARM_VGIC_V3`: guest interrupt delivery is `TODO(AA-6)` (the
+/// vGICv3 round-trip verdict). So a guest that programs the GICv3 (the DTB
+/// advertises it) and blocks on a device interrupt does **not** boot to
+/// completion on this path — an interrupt-driven Linux is **deferred to AA-6**,
+/// not offered by the skeleton. What this boots is the polled / PSCI-`SYSTEM_OFF`
+/// console path (the M3 TCG smoke's shape).
+///
 /// # Errors
 /// [`VmmError::Backend`] if `/dev/kvm` is unavailable or an init ioctl fails;
 /// any [`boot`] error thereafter.
