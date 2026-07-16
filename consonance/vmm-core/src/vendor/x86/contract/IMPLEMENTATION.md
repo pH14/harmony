@@ -53,9 +53,15 @@ crate, no new dependency (`thiserror` was already present).
     the guard (the other round-1 fail-open hole);
   - CPUID leaf 0 present, readable, spelling another vendor → `MixedVendor`.
 
-  The underlying `Contract::parse` stays infallible for the direct-token unit tests.
-  Refusal tests cover the `UnknownVendor`, `MalformedLeaf0` (dyn + non-UTF-8), `VendorMismatch`,
-  and `MixedVendor` paths.
+  The guard validates **every row that covers leaf 0 subleaf 0**, not just a single
+  `leaf = 0, subleaf = 0` row — the grammar's inclusive range form (`leaf-lo = 0,
+  leaf-hi > 0`) and the `*` / `N+` / `a-b` subleaf tokens all install a value at
+  CPUID(0,0), so a range row cannot smuggle a foreign vendor past a `lo == hi == 0`
+  check (`covers_leaf0_subleaf0`; the round-2 residue). The underlying `Contract::parse`
+  stays infallible for the direct-token unit tests. Refusal tests cover `UnknownVendor`,
+  `MalformedLeaf0` (dyn + non-UTF-8), `VendorMismatch`, `MixedVendor`, and the range-form
+  smuggle (`MixedVendor` + `MalformedLeaf0` via a `leaf-lo/leaf-hi` row, plus the
+  correct-vendor and non-zero-subleaf pass-through cases).
 - Public API is unchanged: `contract()` (Intel, the live policy path) now routes through
   `load(.., GenuineIntel)`; the AMD constructor `contract_amd_draft()` is **`#[cfg(test)]`
   only**, and the AMD TOML is `include_str!`-embedded only under `cfg(test)`. `VendorId` /

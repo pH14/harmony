@@ -503,6 +503,24 @@ fn leaf0_vendor_string(row: &CpuidRow) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// Whether a CPUID `row`'s (leaf, subleaf) coverage includes **leaf 0, subleaf 0** —
+/// where the vendor string is frozen. This includes the grammar's inclusive
+/// **range** form (`leaf-lo = 0, leaf-hi > 0`) and the `*` / `N+` / `a-b` subleaf
+/// tokens, not just the single `leaf = 0, subleaf = 0` row: any such row installs a
+/// value at CPUID(0,0), so the mixed-vendor guard must inspect every one of them (a
+/// range row must not be able to smuggle a foreign vendor past the `lo == hi == 0`
+/// check). `leaf.lo` is `u32`, so `lo <= 0` ⟺ `lo == 0`, and then `0 <= hi` always.
+fn covers_leaf0_subleaf0(row: &CpuidRow) -> bool {
+    let leaf_covers = row.leaf.lo == 0;
+    let subleaf_covers = match row.subleaf {
+        Subleaf::Single(v) => v == 0,
+        Subleaf::All => true,
+        Subleaf::AndUp(lo) => lo == 0,
+        Subleaf::Range(lo, _) => lo == 0,
+    };
+    leaf_covers && subleaf_covers
+}
+
 impl Contract {
     /// Parse the embedded contract TOML into typed tables.
     pub(crate) fn parse(toml: &str) -> Contract {
@@ -778,11 +796,13 @@ impl Contract {
                 found: c.vendor.as_token().to_string(),
             });
         }
-        // Mixed-vendor guard: a **present** leaf 0 must be a readable frozen vendor
-        // string that spells the declared vendor. A present-but-malformed leaf 0 is
-        // refused (it may not masquerade as an absent one); only a genuinely absent
-        // leaf 0 is exempt (the synthetic fixtures omit it).
-        if let Some(row) = c.cpuid.iter().find(|r| r.leaf.lo == 0 && r.leaf.hi == 0) {
+        // Mixed-vendor guard: **every** CPUID row that covers leaf 0 subleaf 0 —
+        // including the inclusive range form (`leaf-lo = 0, leaf-hi > 0`), which the
+        // old `lo == hi == 0` check missed — must freeze a readable vendor string that
+        // spells the declared vendor. A present-but-malformed covering row is refused
+        // (it may not masquerade as an absent leaf 0); only a genuinely absent leaf 0
+        // (no covering row at all) is exempt (the synthetic fixtures omit it).
+        for row in c.cpuid.iter().filter(|r| covers_leaf0_subleaf0(r)) {
             let leaf0 = leaf0_vendor_string(row).ok_or(ContractError::MalformedLeaf0 {
                 declared: expected.as_token(),
             })?;

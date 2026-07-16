@@ -1071,6 +1071,91 @@ verified = \"on-silicon-pending-AE4\"\n";
         assert!(Contract::load(NO_LEAF0, VendorId::AuthenticAMD).is_ok());
     }
 
+    /// Fail-closed against a **range-form** leaf-0 smuggle: the inclusive
+    /// `leaf-lo = 0, leaf-hi > 0` form covers leaf 0, so it must not slip a foreign
+    /// vendor past the guard (the round-2 residue — the old `lo == hi == 0` check
+    /// missed range rows). Every row covering leaf 0 subleaf 0 is validated.
+    #[test]
+    fn loader_refuses_range_form_leaf0_smuggling() {
+        // A range row `0x0..=0x5` freezing the Intel vendor string, declared
+        // AuthenticAMD — covers leaf 0 subleaf 0, so it is caught as MixedVendor.
+        const RANGE_SMUGGLE: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf-lo = \"0x00000000\"\n\
+leaf-hi = \"0x00000005\"\n\
+subleaf = \"*\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x756e6547\"\n\
+ecx = \"0x6c65746e\"\n\
+edx = \"0x49656e69\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(RANGE_SMUGGLE, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MixedVendor {
+                declared: "AuthenticAMD",
+                leaf0: "GenuineIntel".to_string(),
+            }
+        );
+
+        // A range row covering leaf 0 with malformed (dynamic) registers is likewise
+        // refused, not skipped.
+        const RANGE_MALFORMED: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf-lo = \"0x00000000\"\n\
+leaf-hi = \"0x00000005\"\n\
+subleaf = \"0x00000000\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"dyn:osxsave:0x0\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert_eq!(
+            Contract::load(RANGE_MALFORMED, VendorId::AuthenticAMD).unwrap_err(),
+            ContractError::MalformedLeaf0 {
+                declared: "AuthenticAMD",
+            }
+        );
+
+        // A range row covering leaf 0 that spells the CORRECT vendor loads cleanly —
+        // the guard rejects only disagreement, not the range form itself.
+        const RANGE_OK: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf-lo = \"0x00000000\"\n\
+leaf-hi = \"0x00000005\"\n\
+subleaf = \"*\"\n\
+eax = \"0x00000010\"\n\
+ebx = \"0x68747541\"\n\
+ecx = \"0x444d4163\"\n\
+edx = \"0x69746e65\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert!(Contract::load(RANGE_OK, VendorId::AuthenticAMD).is_ok());
+
+        // A row covering leaf 0 only at a non-zero subleaf does NOT freeze the vendor
+        // string, so it is not a leaf-0 row and is left to the general grammar.
+        const NONZERO_SUBLEAF: &str = "\
+[contract]\n\
+version = 1\n\
+vendor = \"AuthenticAMD\"\n\
+[[cpuid.entry]]\n\
+leaf = \"0x00000000\"\n\
+subleaf = \"0x00000001\"\n\
+eax = \"0x00000000\"\n\
+ebx = \"0x756e6547\"\n\
+ecx = \"0x6c65746e\"\n\
+edx = \"0x49656e69\"\n\
+verified = \"on-silicon-pending-AE4\"\n";
+        assert!(Contract::load(NONZERO_SUBLEAF, VendorId::AuthenticAMD).is_ok());
+    }
+
     /// A compact AMD-flavoured contract for the format-invariance property below —
     /// exercises the vendor axis, the `verified` / `applies-when` row qualifiers, and
     /// every `[transfers]` marker.
