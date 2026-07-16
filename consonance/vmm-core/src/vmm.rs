@@ -2096,6 +2096,18 @@ where
         out.push(("RAM:1M..2M", region(0x10_0000, 0x20_0000)));
         out.push(("RAM:2M..16M", region(0x20_0000, 0x100_0000)));
         out.push(("RAM:16M..", region(0x100_0000, ram.len())));
+        // The dedicated hypercall-transport ABI pages (arm64) fold into
+        // `state_hash` via the `DOOR` chunk but are their own memslot — invisible
+        // to the RAM regions above — so a divergence living only in the
+        // request/response pages would hash differently while every RAM component
+        // matched (the bisector-blind spot codex flagged, the exact analogue of
+        // the GICV case). A labeled component **when mapped** (present only then,
+        // mirroring the `DOOR` chunk; x86 / doorbell-less runs emit nothing, so
+        // their breakdown is byte-unchanged). Additive — never a rename of an
+        // O1-pinned label.
+        if let Some(db) = &self.doorbell_pages {
+            out.push(("doorbell", dig(db.as_bytes())));
+        }
 
         // The vendor's register-file breakdown (GPRs, segments, descriptor tables,
         // control regs, pending events, the FPU/extended-state image, …) — which
@@ -4607,6 +4619,62 @@ mod tests {
         assert!(
             format!("{err}").contains("doorbell wiring mismatch"),
             "{err}"
+        );
+    }
+
+    /// Review r12 (the GICV analogue): the `DOOR` hash chunk must have a matching
+    /// `state_components()` entry, or a doorbell-only divergence reports a
+    /// `state_hash` mismatch with **every** component matching — blinding the
+    /// bisector. A doorbell-only difference must localize to the `doorbell`
+    /// component; an unmapped VM exposes none.
+    #[test]
+    fn state_components_localizes_a_doorbell_only_divergence() {
+        let make = || {
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            v.ram_base_gpa = 0x4000_0000;
+            v.map_doorbell_pages().unwrap();
+            v
+        };
+        let a = make();
+        let mut b = make();
+        b.doorbell_pages.as_mut().unwrap().as_mut_bytes()[3] ^= 0xFF;
+
+        // state_hash differs (the DOOR chunk folds the pages in)...
+        assert_ne!(a.state_hash(), b.state_hash());
+
+        // ...and the `doorbell` component is exactly what localizes it: it
+        // differs, and it is the ONLY differing component.
+        let ca = a.state_components();
+        let cb = b.state_components();
+        let da = ca
+            .iter()
+            .find(|(l, _)| *l == "doorbell")
+            .expect("a doorbell component");
+        let db_ = cb
+            .iter()
+            .find(|(l, _)| *l == "doorbell")
+            .expect("a doorbell component");
+        assert_ne!(da.1, db_.1, "the doorbell component must localize it");
+        for (la, dga) in &ca {
+            if *la == "doorbell" {
+                continue;
+            }
+            let dgb = cb.iter().find(|(lb, _)| lb == la).map(|(_, d)| d);
+            assert_eq!(
+                Some(dga),
+                dgb,
+                "component {la} must match (only doorbell differs)"
+            );
+        }
+
+        // An unmapped VM (x86-style) exposes no `doorbell` component (additive;
+        // present exactly when the `DOOR` chunk is).
+        let plain = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        assert!(
+            !plain
+                .state_components()
+                .iter()
+                .any(|(l, _)| *l == "doorbell")
         );
     }
 
