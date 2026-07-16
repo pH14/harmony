@@ -29,6 +29,19 @@ const FLAGS_OFF: usize = 24;
 /// The fixed header length.
 const HEADER_LEN: usize = 64;
 
+/// The AArch64 unconditional-branch (`B`) word a self-headed image's `code0`
+/// must hold: `b #HEADER_LEN`, branching over the 64-byte header onto the
+/// payload. Encoding (`Arm ARM` C6.2.26): opcode `0b000101` in bits `[31:26]`,
+/// `imm26` in `[25:0]` as the offset **in instruction words** — `HEADER_LEN / 4
+/// = 16` — so `(0b000101 << 26) | 16 = 0x1400_0010`.
+///
+/// This is load-bearing, not decoration: `load` reports the entry at the image's
+/// first byte (`code0`), which the CPU architecturally executes
+/// (`Documentation/arm64/booting.rst`), so `code0` must branch to the real entry
+/// — real kernels emit exactly this `b` over the header. Without it a booted
+/// image runs the zero/header word instead of the payload.
+const CODE0_BRANCH_OVER_HEADER: u32 = 0x1400_0000 | (HEADER_LEN as u32 / 4);
+
 /// The parsed, validated `Image` header (the fields [`load`] acts on).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ImageHeader {
@@ -172,12 +185,17 @@ pub fn load(image: &[u8], ram: &mut [u8]) -> Result<LoadedImage, ImageLoadError>
     })
 }
 
-/// Build a minimal valid `Image` header in front of `code` (a test/tooling
-/// helper — the M3 TCG smoke wraps a bare-metal payload with this). `code0` is
-/// left as the payload's own first instruction; `image_size` covers the whole
-/// blob. Not a guest-facing path.
+/// Build a minimal valid, **bootable** `Image` header in front of `code` (a
+/// test/tooling helper — the M3 TCG smoke wraps a bare-metal payload with this).
+/// `image_size` covers the whole blob. Not a guest-facing path.
+///
+/// `code0` is a [`CODE0_BRANCH_OVER_HEADER`] (`b #64`), **not** the payload: the
+/// CPU enters at the image's first byte (which `load` reports as the entry), so
+/// `code0` is executed and must branch over the 64-byte header to the payload
+/// appended at [`HEADER_LEN`] — otherwise a booted image runs the header word.
 pub fn wrap_image(code: &[u8], text_offset: u64, flags: u64) -> Vec<u8> {
     let mut out = vec![0u8; HEADER_LEN];
+    out[0..4].copy_from_slice(&CODE0_BRANCH_OVER_HEADER.to_le_bytes());
     out[TEXT_OFFSET_OFF..TEXT_OFFSET_OFF + 8].copy_from_slice(&text_offset.to_le_bytes());
     let image_size = (HEADER_LEN as u64) + code.len() as u64;
     out[IMAGE_SIZE_OFF..IMAGE_SIZE_OFF + 8].copy_from_slice(&image_size.to_le_bytes());
@@ -288,5 +306,54 @@ mod tests {
         let loaded = load(&wrapped, &mut ram).unwrap();
         assert_eq!(&ram[HEADER_LEN..HEADER_LEN + code.len()], &code[..]);
         assert_eq!(loaded.entry_gpa, RAM_BASE);
+    }
+
+    /// Decode an AArch64 `B` word into its **byte** branch distance, or `None`
+    /// if the word is not a `B`. Sign-extends `imm26` by shifting it to the top
+    /// and back (arithmetic), so no debug-overflow on a negative displacement.
+    fn decode_b_offset(word: u32) -> Option<i64> {
+        if word >> 26 != 0b000101 {
+            return None;
+        }
+        Some(i64::from(((word << 6) as i32) >> 6) * 4)
+    }
+
+    /// The bug this guards (review r7): `wrap_image` put the payload at offset 64
+    /// but `load` reports the entry at the image's first byte (`code0`). With a
+    /// zero `code0` a booted image executes the header word, never the payload.
+    /// `code0` must be a `B` that steps over the whole 64-byte header onto the
+    /// payload — the portable proof of a bootable wrapped image (the TCG smoke
+    /// boots the same artifact on real silicon/QEMU).
+    #[test]
+    fn wrap_image_entry_branches_over_the_header_onto_the_payload() {
+        // A distinctive payload so we can tell code from header/zero bytes.
+        let code: Vec<u8> = (0..48u8).map(|i| i.wrapping_add(0x40)).collect();
+        let wrapped = wrap_image(&code, 0, 0xA);
+
+        let mut ram = vec![0u8; 0x1000];
+        let loaded = load(&wrapped, &mut ram).unwrap();
+        // The entry is the image's first byte (code0) — what the CPU fetches.
+        assert_eq!(loaded.entry_gpa, RAM_BASE);
+        assert_eq!(loaded.entry_gpa, loaded.load_gpa);
+        let entry_off = (loaded.entry_gpa - RAM_BASE) as usize; // 0
+
+        // code0 must be an executable branch, not the zero/header word.
+        let code0 = u32::from_le_bytes(ram[entry_off..entry_off + 4].try_into().unwrap());
+        assert_ne!(code0, 0, "code0 must not be the zero word (the r7 bug)");
+        let dist = decode_b_offset(code0).expect("code0 must be an AArch64 `B`");
+
+        // Follow the fetch-then-branch: control must land exactly on the payload
+        // (offset HEADER_LEN) — over the entire header — and the landing byte is
+        // the payload's first byte, not a header byte.
+        let target = entry_off as i64 + dist;
+        assert_eq!(
+            target, HEADER_LEN as i64,
+            "code0 must branch over the 64-byte header to the payload"
+        );
+        assert_eq!(&ram[HEADER_LEN..HEADER_LEN + code.len()], &code[..]);
+        assert_eq!(
+            ram[target as usize], code[0],
+            "the branch lands on the payload"
+        );
     }
 }

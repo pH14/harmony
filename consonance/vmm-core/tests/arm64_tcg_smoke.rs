@@ -36,12 +36,15 @@ use vmm_core::vendor::arm64::{dtb, image_loader};
 /// is half of the success condition (the other half is a clean PSCI poweroff).
 const MARKER: &str = "HARMONY-ARM64-BOOT";
 
-/// A self-headed arm64 `Image`: offset 0 branches past the 64-byte header
-/// (magic at `0x38`), then the payload writes [`MARKER`] to the PL011 console
-/// at the board's UART address and powers off via PSCI `SYSTEM_OFF`. The board
-/// PL011 address is spliced in as a literal so the payload and
-/// [`board::PL011`] can never silently disagree.
-fn payload_source() -> String {
+/// The **body** of the boot payload — everything *after* the 64-byte `Image`
+/// header. It writes [`MARKER`] to the PL011 console at the board's UART address
+/// and powers off via PSCI `SYSTEM_OFF`. The header (magic, sizes, and the
+/// `code0` branch over itself) is prepended by the production
+/// [`image_loader::wrap_image`], so this smoke boots the **exact** header the
+/// vendor emits — one hand-rolled header fewer to drift from [`image_loader`]'s
+/// field layout. The board PL011 address is spliced in as a literal so the
+/// payload and [`board::PL011`] can never disagree.
+fn payload_body_source() -> String {
     let uart_hi = (board::PL011.0 >> 16) as u16; // 0x0900 for 0x0900_0000
     assert_eq!(
         u64::from(uart_hi) << 16,
@@ -53,17 +56,6 @@ fn payload_source() -> String {
     .section .text
     .global _start
 _start:
-    b       real_start
-    .long   0
-    .quad   0
-    .quad   image_end - _start
-    .quad   0xA
-    .quad   0
-    .quad   0
-    .quad   0
-    .long   0x644d5241
-    .long   0
-real_start:
     movz    x1, #{uart_hi:#06x}, lsl #16
     adr     x2, msg
 1:  ldrb    w0, [x2], #1
@@ -78,7 +70,6 @@ real_start:
 msg:
     .asciz  "{MARKER}\n"
     .balign 8
-image_end:
 "#
     )
 }
@@ -144,11 +135,12 @@ fn image_and_dtb_boot_on_qemu_tcg() {
     let dir = tempfile::tempdir().expect("tempdir");
     let s_path = dir.path().join("payload.s");
     let o_path = dir.path().join("payload.o");
-    let bin_path = dir.path().join("payload.bin");
+    let body_path = dir.path().join("payload-body.bin");
+    let image_path = dir.path().join("harmony.Image");
     let dtb_path = dir.path().join("harmony.dtb");
 
-    // --- assemble the self-headed Image payload ----------------------------
-    std::fs::write(&s_path, payload_source()).expect("write payload.s");
+    // --- assemble the payload BODY (no header) -----------------------------
+    std::fs::write(&s_path, payload_body_source()).expect("write payload.s");
     let asm = Command::new("clang")
         .args(["--target=aarch64-linux-gnu", "-c"])
         .arg(&s_path)
@@ -164,7 +156,7 @@ fn image_and_dtb_boot_on_qemu_tcg() {
     let oc = Command::new(&objcopy)
         .args(["-O", "binary", "--only-section=.text"])
         .arg(&o_path)
-        .arg(&bin_path)
+        .arg(&body_path)
         .output()
         .expect("run llvm-objcopy");
     assert!(
@@ -172,7 +164,15 @@ fn image_and_dtb_boot_on_qemu_tcg() {
         "llvm-objcopy failed:\n{}",
         String::from_utf8_lossy(&oc.stderr)
     );
-    let image = std::fs::read(&bin_path).expect("read payload.bin");
+    let body = std::fs::read(&body_path).expect("read payload body");
+
+    // --- prepend the PRODUCTION Image header with the vendor's own helper ---
+    // wrap_image builds the 64-byte header (magic, sizes) and the `code0` branch
+    // over the header onto the body — so QEMU boots the *exact* artifact the M4
+    // KVM path will produce, code0 branch included (review r7: the branch is the
+    // whole point — without it the entry executes the header word, not the body).
+    let image = image_loader::wrap_image(&body, 0, 0xA /* 4K page bits */);
+    std::fs::write(&image_path, &image).expect("write wrapped Image");
 
     // --- cross-check: OUR loader accepts the exact artifact QEMU will boot --
     let hdr = image_loader::parse_header(&image)
@@ -213,7 +213,7 @@ fn image_and_dtb_boot_on_qemu_tcg() {
         "-no-reboot",
         "-kernel",
     ])
-    .arg(&bin_path)
+    .arg(&image_path)
     .arg("-dtb")
     .arg(&dtb_path);
     let run = cmd.output().expect("run qemu-system-aarch64");
