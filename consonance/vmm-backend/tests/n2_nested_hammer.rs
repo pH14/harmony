@@ -182,6 +182,13 @@ fn n2_deadline_hammer() {
     let total = env_u64("N2_DEADLINES", 10_000);
     let seed = env_u64("N2_SEED", 0x5EED_2026);
     let progress_every = env_u64("N2_PROGRESS", 10_000);
+    // Vacuity guard (PR #98 round-4 P2): a zero-deadline invocation would pass
+    // the final assertion with all counters at zero — a green gate with no
+    // evidence. Refuse it before touching the backend.
+    assert!(
+        total > 0,
+        "N2_DEADLINES must be > 0 — a zero-deadline run is vacuously green, never evidence"
+    );
     let mut rng = Rng(seed | 1);
 
     // Declared BEFORE `backend` so it drops AFTER it: the KVM memslot installed

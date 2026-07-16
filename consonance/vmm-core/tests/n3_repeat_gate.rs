@@ -42,6 +42,12 @@ fn n3_repeat_gate() {
     let seed = env_u64("N3_SEED", CORPUS_SEED);
     let progress_every = env_u64("N3_PROGRESS", 100);
     let item = std::env::var("N3_ITEM").unwrap_or_else(|_| "insn-rng".to_string());
+    // Vacuity guard (PR #98 round-4 P2): zero repetitions would boot nothing and
+    // still satisfy `identical == attempted` (0 == 0). Refuse before loading.
+    assert!(
+        reps > 0,
+        "N3_REPS must be > 0 — a zero-rep run is vacuously green, never evidence"
+    );
 
     let payload_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../guest/payloads/target/x86_64-unknown-none/release")

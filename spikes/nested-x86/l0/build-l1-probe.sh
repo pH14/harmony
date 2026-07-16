@@ -9,6 +9,9 @@ KVER=6.12.90+deb13.1-amd64
 SRC=$BASE/src
 IR=$BASE/initramfs
 
+# fresh initramfs staging every build (round-4 P2: a reused $IR packs stale
+# probes/modules/scripts from prior builds into the supposedly pinned image)
+rm -rf "$IR"
 mkdir -p "$BASE" "$IR"/{bin,dev,proc,sys,mod}
 
 # 1. static probe binary

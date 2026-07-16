@@ -145,13 +145,18 @@ pub(crate) unsafe fn drain_ring_counting_at(
         let head = std::ptr::read_volatile(base.add(DATA_HEAD_OFF).cast::<u64>());
         let mut tail = std::ptr::read_volatile(base.add(DATA_TAIL_OFF).cast::<u64>());
         std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
-        // Validate the ring cursors BEFORE any record deref (PR #98 round-2):
-        // head/tail are monotonic byte counters with tail <= head and at most
-        // data_size bytes outstanding (the kernel stops writing when full).
-        // A violated invariant means a corrupt/foreign control page — never
-        // walk it; count one `other`, still publish tail := head so the ring
-        // drains rather than wedging full.
-        if tail > head || head - tail > data_size as u64 {
+        // Validate the ring cursors BEFORE any record deref (PR #98 rounds 2+4):
+        // head/tail are monotonic byte counters with tail <= head, at most
+        // data_size bytes outstanding (the kernel stops writing when full), and
+        // BOTH 8-aligned (every perf record size is a multiple of 8, and both
+        // counters start at 0). Alignment is load-bearing for memory safety, not
+        // just parsing: a misaligned tail (e.g. `data_size - 4`) passes the
+        // bounds checks yet puts the header's size field at `pos + 6 >=
+        // data_size`, so the u16 read would run past the mapped data area — UB
+        // (round-4 P1). A violated invariant means a corrupt/foreign control
+        // page — never walk it; count one `other`, still publish tail := head so
+        // the ring drains rather than wedging full.
+        if tail > head || head - tail > data_size as u64 || tail % 8 != 0 || head % 8 != 0 {
             stats.other += 1;
             std::ptr::write_volatile(base.add(DATA_TAIL_OFF).cast::<u64>(), head);
             return stats;
@@ -381,12 +386,20 @@ mod tests {
         assert_eq!(ring.tail(), head, "the ring still drains fully");
     }
 
-    /// Corrupt ring cursors (tail > head, or more than `data_size` bytes
-    /// outstanding) are refused BEFORE any record deref: one `other` counted,
+    /// Corrupt ring cursors — tail > head, more than `data_size` bytes
+    /// outstanding, or a MISALIGNED cursor (round-4 P1: `tail = data_size - 4`
+    /// passes the bounds checks but would put the header's size-field read past
+    /// the mapped data area — UB, which Miri would flag here if the guard ever
+    /// regressed) — are refused BEFORE any record deref: one `other` counted,
     /// no walk, and the ring still drains (tail := head).
     #[test]
     fn drain_refuses_corrupt_cursors_without_walking() {
-        for (head, tail) in [(8u64, 16u64), (DATA as u64 + 16, 0u64)] {
+        for (head, tail) in [
+            (8u64, 16u64),                       // tail > head
+            (DATA as u64 + 16, 0u64),            // > data_size outstanding
+            (DATA as u64, DATA as u64 - 4),      // misaligned tail at the wrap edge
+            (DATA as u64 - 4, DATA as u64 - 16), // misaligned head (tail aligned)
+        ] {
             let mut ring = FakeRing::new();
             ring.push(0, PERF_RECORD_SAMPLE, 8);
             ring.set(head, tail);

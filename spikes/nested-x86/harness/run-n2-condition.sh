@@ -85,15 +85,19 @@ if [ -n "$STRESS_PID" ]; then
   kill "$STRESS_PID" 2>/dev/null || true
 fi
 [ -n "$MIGRATOR_PID" ] && wait "$MIGRATOR_PID" 2>/dev/null || true
+MIGS=$(cat "$RS/migrations.count" 2>/dev/null || echo 0)
 MIG_FAILED=$(cat "$RS/migrations-failed.count" 2>/dev/null || echo 0)
-if [ "$COND" = migrate ] && [ "$MIG_FAILED" -ne 0 ]; then
-  echo "N2_CONDITION_MIGRATIONS_FAILED $MIG_FAILED"
-  [ $rc -ne 0 ] || rc=6
+if [ "$COND" = migrate ]; then
+  # round-4 P2: the dose itself is required — a migrate condition with zero
+  # successful affinity changes (missed pidfile, all-failed taskset) is false
+  [ "$MIG_FAILED" -eq 0 ] || { echo "N2_CONDITION_MIGRATIONS_FAILED $MIG_FAILED"; [ $rc -ne 0 ] || rc=6; }
+  [ "$MIGS" -gt 0 ] || { echo "N2_CONDITION_NO_MIGRATIONS"; [ $rc -ne 0 ] || rc=7; }
 fi
 {
   echo "{"
   echo "  \"finished\": \"$(date -u +%FT%TZ)\","
   echo "  \"stressor_alive_at_end\": \"$STRESS_ALIVE\","
+  echo "  \"migrations\": $MIGS,"
   echo "  \"migrations_failed\": $MIG_FAILED,"
   echo "  \"rc\": $rc"
   echo "}"

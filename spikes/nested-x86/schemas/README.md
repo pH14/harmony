@@ -41,9 +41,13 @@ Every run-set directory (`results/<stage>/<run-set>/`) contains:
 - `condition.json` / `condition-end.json` (N-2/N-3 stress run-sets) — the L0
   condition: name, stress-ng pid, cpuset, deadline count, seed, start/finish
   timestamps, and the harness rc. Round-2+ harnesses also record
-  `stressor_alive_at_end` (`yes`/`no`/`n/a`) and `migrations_failed`
-  (successful-affinity-change counting) — the floor checker enforces these
-  where present and annotates pre-round-2 runsets as legacy.
+  `stressor_alive_at_end` (`yes`/`no`/`n/a`), `migrations` (successful
+  affinity changes only — round-4), and `migrations_failed`; a migrate
+  condition additionally requires `migrations.count > 0` (the dose must have
+  happened). The floor checker enforces these where present; pre-round-2
+  runsets are annotated legacy, with the N-3 stress/migration dose proven
+  from recorded artifacts in `../results/AUDIT-2026-07-12.md` §"N-3 dose
+  audit (round-4)".
 - `build-manifest.json` (round-1+ run-sets) — the appliance build manifest
   copied into the runset at launch, after pre-boot sha256 pin verification
   (`PIN_VERIFIED` in the harness log).
