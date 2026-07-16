@@ -131,6 +131,12 @@ const DEVICE_BLOB_VERSION_GIC: u16 = 2;
 const DEVICE_BLOB_VERSION_DOORBELL: u16 = 3;
 /// v2 + the doorbell record: the GIC **and** the doorbell pages.
 const DEVICE_BLOB_VERSION_GIC_DOORBELL: u16 = 4;
+/// The exact byte length of the doorbell record on a doorbell-bearing version:
+/// the two ABI pages (`REQ`/`RESP`) `Vmm::map_doorbell_pages` allocates
+/// (`2 · HC_PAGE`, `HC_PAGE = 4096`). A v3/v4 blob whose doorbell length is
+/// anything else (notably `0`) contradicts the version's wiring flag and is
+/// rejected (review r16).
+const DOORBELL_BLOB_LEN: usize = 2 * 4096;
 
 /// Everything the vmm-core arm64 device blob carries.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -336,7 +342,17 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         None
     };
     let doorbell = if has_doorbell {
+        // The version flag asserts the doorbell pages are wired, so the record
+        // MUST carry the full 2-page ABI region. A crafted blob declaring v3/v4
+        // with a zero (or short/long) length would otherwise decode to an empty
+        // vector that restore validation reads back as *doorbell-less* — a
+        // contradiction with the version. Fail closed (review r16).
         let len = c.u32()? as usize;
+        if len != DOORBELL_BLOB_LEN {
+            return Err(SnapshotError::DeviceBlob(
+                "doorbell record length contradicts the version flag",
+            ));
+        }
         c.take(len)?.to_vec()
     } else {
         Vec::new()
@@ -429,6 +445,34 @@ mod tests {
         let mut foreign = blob;
         foreign[..4].copy_from_slice(&0x3156_4544u32.to_le_bytes());
         assert!(decode_device_blob(&foreign).is_err());
+    }
+
+    /// Review r16: a crafted blob declaring a doorbell-bearing version (v3/v4) but
+    /// a zero-length doorbell record must be rejected — otherwise it decodes to an
+    /// empty vector that restore validation reads back as *doorbell-less*,
+    /// contradicting the version's wiring flag.
+    #[test]
+    fn decode_rejects_a_doorbell_version_with_the_wrong_doorbell_length() {
+        // For both doorbell-bearing shapes (v3 = doorbell-only, v4 = gic+doorbell),
+        // rewrite the trailing doorbell record to a zero length with no bytes.
+        for base in [sample_with_doorbell(), {
+            let mut d = sample_with_gic();
+            d.doorbell = sample_with_doorbell().doorbell;
+            d
+        }] {
+            let good = encode_device_blob(&base).0;
+            // The doorbell record trails the blob: a 4-byte length + the pages.
+            let len_field = good.len() - DOORBELL_BLOB_LEN - 4;
+            let mut crafted = good[..len_field].to_vec();
+            crafted.extend_from_slice(&0u32.to_le_bytes()); // doorbell_len = 0, no bytes
+            assert!(
+                matches!(
+                    decode_device_blob(&crafted),
+                    Err(SnapshotError::DeviceBlob(_))
+                ),
+                "a doorbell version with a zero-length doorbell record must fail closed"
+            );
+        }
     }
 
     #[test]
