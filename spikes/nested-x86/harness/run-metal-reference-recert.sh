@@ -41,14 +41,27 @@ hammer=$(echo "$BINS" | grep n2_nested_hammer)
 repeat=$(echo "$BINS" | grep n3_repeat_gate)
 det=$(echo "$BINS" | grep live_determinism)
 
-rmmod kvm_intel kvm
-insmod "$PATCHED/kvm.ko" && insmod "$PATCHED/kvm-intel.ko"
+# round-7 P1: every swap step is fail-closed (the script runs WITHOUT set -e,
+# so an ignored rmmod/insmod failure would leave STOCK modules loaded while
+# env.json records a patched posture), and the loaded-module identity is
+# verified before any gate runs.
+STOCK_SIZE=1396736
+rmmod kvm_intel kvm || { echo "METAL_SWAP_FAILED rmmod (stock still loaded?)"; exit 1; }
+insmod "$PATCHED/kvm.ko" || { echo "METAL_SWAP_FAILED insmod kvm.ko"; modprobe kvm_intel; exit 1; }
+insmod "$PATCHED/kvm-intel.ko" || { echo "METAL_SWAP_FAILED insmod kvm-intel.ko"; rmmod kvm; modprobe kvm_intel; exit 1; }
+LOADED_SIZE=$(lsmod | awk '$1=="kvm"{print $2}')
+if [ -z "$LOADED_SIZE" ] || [ "$LOADED_SIZE" = "$STOCK_SIZE" ]; then
+  echo "METAL_SWAP_FAILED loaded kvm size=$LOADED_SIZE (== stock $STOCK_SIZE — patched not loaded)"
+  exit 1
+fi
+echo "METAL_PATCHED_LOADED kvm_size=$LOADED_SIZE (stock=$STOCK_SIZE; on-disk kos sha-pinned above)"
 {
   echo "{"
   echo "  \"posture\": \"BARE METAL patched modules (recorded L0 swap)\","
   echo "  \"source\": \"$(cat .spike-source-commit)\","
   echo "  \"kvm_ko_sha256\": \"$PIN_KVM_KO\","
   echo "  \"kvm_intel_ko_sha256\": \"$PIN_KVM_INTEL_KO\","
+  echo "  \"loaded_kvm_size\": $LOADED_SIZE,"
   echo "  \"reps\": $REPS, \"hammer_deadlines\": $N2N, \"hammer_seed\": $N2SEED,"
   echo "  \"started\": \"$(date -u +%FT%TZ)\""
   echo "}"

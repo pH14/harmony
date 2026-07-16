@@ -202,7 +202,12 @@ fn n2_deadline_hammer() {
         total > 0,
         "N2_DEADLINES must be > 0 — a zero-deadline run is vacuously green, never evidence"
     );
-    let mut rng = Rng(seed | 1);
+    // xorshift64* needs a nonzero state; `| 1` guarantees it. The EFFECTIVE
+    // seed (what the delta stream actually ran with) is logged alongside the
+    // raw env value (round-7 P2: retained metadata recorded only the raw seed,
+    // e.g. 2600001002 ran as 2600001003 — recoverable as recorded|1).
+    let effective_seed = seed | 1;
+    let mut rng = Rng(effective_seed);
 
     // Declared BEFORE `backend` so it drops AFTER it: the KVM memslot installed
     // by `map_memory` must never outlive the memory it references (the
@@ -272,7 +277,7 @@ fn n2_deadline_hammer() {
     let mut stats_before = read_stats(&backend);
 
     println!(
-        "N2JSON {{\"event\":\"start\",\"total\":{total},\"seed\":{seed},\"backend\":\"PatchedKvmBackend\",\"pid\":{}}}",
+        "N2JSON {{\"event\":\"start\",\"total\":{total},\"seed\":{seed},\"effective_seed\":{effective_seed},\"backend\":\"PatchedKvmBackend\",\"pid\":{}}}",
         std::process::id()
     );
 

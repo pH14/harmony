@@ -27,6 +27,26 @@ n3_check() { # n3_check <runset> <floor> [console-file]
   mis=$(echo "$s" | grep -o '"mismatches":[0-9]*' | cut -d: -f2)
   sh=$(echo "$s" | grep -o '"state_hash":"[0-9a-f]*"' | cut -d'"' -f4)
   od=$(echo "$s" | grep -o '"observable_digest":"[0-9a-f]*"' | cut -d'"' -f4)
+  # round-7 P1: the recorded RC EVIDENCE is required too — a summary line can
+  # precede a post-summary gate failure, so counts+hashes alone never suffice.
+  case "$rs" in
+    metal-*)
+      # metal session: every METAL_GATE that began must have an rc line, all 0
+      local mb mr mf
+      mb=$(grep -c "METAL_GATE_BEGIN" "$f" 2>/dev/null || true)
+      mr=$(grep -c "METAL_GATE_RC" "$f" 2>/dev/null || true)
+      mf=$(grep -c "METAL_GATE_RC .* rc=[1-9]" "$f" 2>/dev/null || true)
+      { [ "$mb" -gt 0 ] && [ "$mr" -eq "$mb" ] && [ "$mf" -eq 0 ]; } \
+        || { bad "$rs: metal gate RCs (began=$mb rc_lines=$mr failing=$mf)"; return; } ;;
+    migrate-live-*)
+      # boots its own QEMUs; the recorded rc is the wrapper's condition-end rc
+      local mlrc; mlrc=$(grep -o '"rc": *[0-9]*' "$R/n3/$rs/condition-end.json" 2>/dev/null | grep -o '[0-9]*$' | tail -1)
+      [ "${mlrc:-1}" = 0 ] || { bad "$rs: wrapper rc=$mlrc"; return; } ;;
+    *)
+      # appliance-boot runsets: the retained QEMU exit code must be 0
+      local qrc; qrc=$(grep -o 'qemu_rc=[0-9]*' "$R/n3/$rs/env.json.rc" 2>/dev/null | cut -d= -f2)
+      [ "${qrc:-1}" = 0 ] || { bad "$rs: qemu_rc=${qrc:-missing}"; return; } ;;
+  esac
   # condition-dose evidence (round-4 P1): stress/migrate runsets must carry it.
   # Round-4+ harnesses record liveness + successful-migration counts and are
   # enforced; the retained recert runsets predate the fields — their dose is
