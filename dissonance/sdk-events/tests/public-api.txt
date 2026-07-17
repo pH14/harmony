@@ -1,4 +1,51 @@
 pub mod sdk_events
+pub enum sdk_events::AssertType
+pub sdk_events::AssertType::Always
+pub sdk_events::AssertType::Reachable
+pub sdk_events::AssertType::Sometimes
+pub sdk_events::AssertType::Unreachable
+pub enum sdk_events::Classification
+pub sdk_events::Classification::Occurrence
+pub sdk_events::Classification::State
+pub enum sdk_events::Expectation
+pub sdk_events::Expectation::MustHit
+pub sdk_events::Expectation::MustNotHit
+pub enum sdk_events::NumericError
+pub sdk_events::NumericError::ExponentOutOfRange
+pub sdk_events::NumericError::ExponentOutOfRange::exponent: i32
+pub sdk_events::NumericError::ExponentOutOfRange::max: i32
+pub sdk_events::NumericError::ExponentOutOfRange::min: i32
+pub sdk_events::NumericError::ExponentOutOfRange::token: alloc::string::String
+pub sdk_events::NumericError::NotFinite
+pub sdk_events::NumericError::NotFinite::token: alloc::string::String
+pub sdk_events::NumericError::TooManyDigits
+pub sdk_events::NumericError::TooManyDigits::digits: u32
+pub sdk_events::NumericError::TooManyDigits::limit: u32
+pub sdk_events::NumericError::TooManyDigits::token: alloc::string::String
+pub enum sdk_events::ObservationId
+pub sdk_events::ObservationId::Lifecycle(alloc::string::String)
+pub sdk_events::ObservationId::Point
+pub sdk_events::ObservationId::Point::local: u32
+pub sdk_events::ObservationId::Point::namespace: u8
+pub sdk_events::ObservationId::Property(alloc::string::String)
+pub enum sdk_events::OrderingScope
+pub sdk_events::OrderingScope::RolloutLocalSourceOrdinal
+pub sdk_events::OrderingScope::SourceLocalBatched
+pub enum sdk_events::Payload
+pub sdk_events::Payload::Assertion
+pub sdk_events::Payload::Assertion::assert_type: core::option::Option<sdk_events::AssertType>
+pub sdk_events::Payload::Assertion::condition: core::option::Option<bool>
+pub sdk_events::Payload::Buggify
+pub sdk_events::Payload::Buggify::fired: bool
+pub sdk_events::Payload::Guidance
+pub sdk_events::Payload::Guidance::op: sdk_events::UpdateOp
+pub sdk_events::Payload::Guidance::token: core::option::Option<sdk_events::NumericToken>
+pub sdk_events::Payload::Lifecycle
+pub sdk_events::Payload::Lifecycle::name: alloc::string::String
+pub sdk_events::Payload::State
+pub sdk_events::Payload::State::op: sdk_events::UpdateOp
+pub sdk_events::Payload::State::value: u64
+pub sdk_events::Payload::Unknown
 pub enum sdk_events::PointKind
 pub sdk_events::PointKind::AssertAlways
 pub sdk_events::PointKind::AssertReachable
@@ -7,11 +54,86 @@ pub sdk_events::PointKind::AssertUnreachable
 pub sdk_events::PointKind::Buggify
 pub sdk_events::PointKind::StateReg
 pub sdk_events::PointKind::Unknown
+pub enum sdk_events::SdkError
+pub sdk_events::SdkError::ArtifactDivergedFromDecode
+pub sdk_events::SdkError::ArtifactDivergedFromDecode::detail: alloc::string::String
+pub sdk_events::SdkError::ClassificationConflict
+pub sdk_events::SdkError::ClassificationConflict::first: sdk_events::Classification
+pub sdk_events::SdkError::ClassificationConflict::id: sdk_events::ObservationId
+pub sdk_events::SdkError::ClassificationConflict::second: sdk_events::Classification
+pub sdk_events::SdkError::DeclarationAfterFirings
+pub sdk_events::SdkError::DeclarationAfterFirings::firings_before: usize
+pub sdk_events::SdkError::DuplicateCoordinate
+pub sdk_events::SdkError::DuplicateCoordinate::local: u32
+pub sdk_events::SdkError::DuplicateCoordinate::namespace: u8
+pub sdk_events::SdkError::IncompatibleShapes
+pub sdk_events::SdkError::IncompatibleShapes::first: sdk_events::ValueShape
+pub sdk_events::SdkError::IncompatibleShapes::id: sdk_events::ObservationId
+pub sdk_events::SdkError::IncompatibleShapes::second: sdk_events::ValueShape
+pub sdk_events::SdkError::LocalIdOutOfRange
+pub sdk_events::SdkError::LocalIdOutOfRange::local: u32
+pub sdk_events::SdkError::LocalIdOutOfRange::namespace: u8
+pub sdk_events::SdkError::MalformedLength
+pub sdk_events::SdkError::MalformedLength::available: usize
+pub sdk_events::SdkError::MalformedLength::context: &'static str
+pub sdk_events::SdkError::MalformedLength::needed: usize
+pub sdk_events::SdkError::MalformedSchemaEntry
+pub sdk_events::SdkError::MalformedSchemaEntry::detail: alloc::string::String
+pub sdk_events::SdkError::MixedOperations
+pub sdk_events::SdkError::MixedOperations::first: sdk_events::UpdateOp
+pub sdk_events::SdkError::MixedOperations::id: sdk_events::ObservationId
+pub sdk_events::SdkError::MixedOperations::second: sdk_events::UpdateOp
+pub sdk_events::SdkError::MultipleDeclarations
+pub sdk_events::SdkError::MultipleDeclarations::count: usize
+pub sdk_events::SdkError::NameTooLong
+pub sdk_events::SdkError::NameTooLong::len: usize
+pub sdk_events::SdkError::NameTooLong::local: u32
+pub sdk_events::SdkError::NameTooLong::max: usize
+pub sdk_events::SdkError::NameTooLong::namespace: u8
+pub sdk_events::SdkError::StreamCommitmentMismatch
+pub sdk_events::SdkError::StreamCommitmentMismatch::detail: alloc::string::String
+pub sdk_events::SdkError::TrailingDeclarationBytes
+pub sdk_events::SdkError::TrailingDeclarationBytes::context: &'static str
+pub sdk_events::SdkError::TrailingDeclarationBytes::extra: usize
+pub sdk_events::SdkError::UnknownDeclarationByte
+pub sdk_events::SdkError::UnknownDeclarationByte::field: &'static str
+pub sdk_events::SdkError::UnknownDeclarationByte::value: u8
+pub sdk_events::SdkError::UnsupportedDeclaration
+pub sdk_events::SdkError::UnsupportedDeclaration::local: u32
+pub sdk_events::SdkError::UnsupportedDeclaration::namespace: u8
+pub sdk_events::SdkError::UnsupportedDeclaration::reason: &'static str
+pub sdk_events::SdkError::UnsupportedVersion
+pub sdk_events::SdkError::UnsupportedVersion::version: u8
+pub enum sdk_events::SourceFormat
+pub sdk_events::SourceFormat::AntithesisJson
+pub sdk_events::SourceFormat::BinaryV1
+pub sdk_events::SourceFormat::BinaryV2
+pub enum sdk_events::UpdateOp
+pub sdk_events::UpdateOp::Accumulate
+pub sdk_events::UpdateOp::Max
+pub sdk_events::UpdateOp::Min
+pub sdk_events::UpdateOp::Set
+pub enum sdk_events::ValueShape
+pub sdk_events::ValueShape::Bool
+pub sdk_events::ValueShape::Bytes
+pub sdk_events::ValueShape::Numeric
+pub sdk_events::ValueShape::U64
 pub struct sdk_events::AlwaysViolation
 impl sdk_events::AlwaysViolation
 pub fn sdk_events::AlwaysViolation::new() -> sdk_events::AlwaysViolation
 impl explorer::spine::Oracle for sdk_events::AlwaysViolation
 pub fn sdk_events::AlwaysViolation::judge(&self, &explorer::spine::RunTrace) -> core::option::Option<explorer::spine::Bug>
+pub struct sdk_events::BoundedNumeric
+impl sdk_events::BoundedNumeric
+pub fn sdk_events::BoundedNumeric::adjusted_exponent(&self) -> i32
+pub fn sdk_events::BoundedNumeric::digits(&self) -> &str
+pub fn sdk_events::BoundedNumeric::is_negative(&self) -> bool
+pub fn sdk_events::BoundedNumeric::is_zero(&self) -> bool
+pub fn sdk_events::BoundedNumeric::scale(&self) -> i64
+impl core::cmp::Ord for sdk_events::BoundedNumeric
+pub fn sdk_events::BoundedNumeric::cmp(&self, &sdk_events::BoundedNumeric) -> core::cmp::Ordering
+impl core::cmp::PartialOrd for sdk_events::BoundedNumeric
+pub fn sdk_events::BoundedNumeric::partial_cmp(&self, &sdk_events::BoundedNumeric) -> core::option::Option<core::cmp::Ordering>
 pub struct sdk_events::Catalog
 impl sdk_events::Catalog
 pub fn sdk_events::Catalog::declared(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&alloc::string::String, &sdk_events::PointKind)>
@@ -26,11 +148,76 @@ pub fn sdk_events::Catalog::report(&self, &alloc::collections::btree::set::BTree
 pub struct sdk_events::CatalogReport
 pub sdk_events::CatalogReport::fired: alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub sdk_events::CatalogReport::never_fired: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub struct sdk_events::DeclaredPoint
+pub sdk_events::DeclaredPoint::base_op: core::option::Option<sdk_events::UpdateOp>
+pub sdk_events::DeclaredPoint::classification: sdk_events::Classification
+pub sdk_events::DeclaredPoint::expectation: core::option::Option<sdk_events::Expectation>
+pub sdk_events::DeclaredPoint::local: u32
+pub sdk_events::DeclaredPoint::name: alloc::string::String
+pub sdk_events::DeclaredPoint::namespace: u8
+pub sdk_events::DeclaredPoint::value_shape: core::option::Option<sdk_events::ValueShape>
 pub struct sdk_events::LinkSensor
 impl sdk_events::LinkSensor
 pub fn sdk_events::LinkSensor::new() -> sdk_events::LinkSensor
 impl explorer::spine::Sensor for sdk_events::LinkSensor
 pub fn sdk_events::LinkSensor::observe(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Feature)>
+pub struct sdk_events::Normalized
+pub sdk_events::Normalized::commitment: sdk_events::StreamCommitment
+pub sdk_events::Normalized::events: alloc::vec::Vec<sdk_events::SdkEvent>
+pub sdk_events::Normalized::schema: sdk_events::SdkSchema
+pub struct sdk_events::NumericLimits
+pub sdk_events::NumericLimits::max_adjusted_exponent: i32
+pub sdk_events::NumericLimits::max_significant_digits: u32
+pub sdk_events::NumericLimits::min_adjusted_exponent: i32
+impl sdk_events::NumericLimits
+pub const sdk_events::NumericLimits::DEFAULT: sdk_events::NumericLimits
+impl core::default::Default for sdk_events::NumericLimits
+pub fn sdk_events::NumericLimits::default() -> sdk_events::NumericLimits
+pub struct sdk_events::NumericToken(_)
+impl sdk_events::NumericToken
+pub fn sdk_events::NumericToken::as_str(&self) -> &str
+pub fn sdk_events::NumericToken::new(impl core::convert::Into<alloc::string::String>) -> sdk_events::NumericToken
+pub fn sdk_events::NumericToken::to_bounded(&self, &sdk_events::NumericLimits) -> core::result::Result<sdk_events::BoundedNumeric, sdk_events::NumericError>
+pub struct sdk_events::Raw
+pub sdk_events::Raw::bytes: alloc::vec::Vec<u8>
+pub sdk_events::Raw::event_id: core::option::Option<u32>
+pub sdk_events::Raw::source: sdk_events::SourceFormat
+pub struct sdk_events::SchemaEntry
+pub sdk_events::SchemaEntry::base_op: core::option::Option<sdk_events::UpdateOp>
+pub sdk_events::SchemaEntry::classification: sdk_events::Classification
+pub sdk_events::SchemaEntry::expectation: core::option::Option<sdk_events::Expectation>
+pub sdk_events::SchemaEntry::id: sdk_events::ObservationId
+pub sdk_events::SchemaEntry::name: core::option::Option<alloc::string::String>
+pub sdk_events::SchemaEntry::value_shape: core::option::Option<sdk_events::ValueShape>
+impl sdk_events::SchemaEntry
+pub fn sdk_events::SchemaEntry::is_reducible_state(&self) -> bool
+pub struct sdk_events::SdkEvent
+pub sdk_events::SdkEvent::id: sdk_events::ObservationId
+pub sdk_events::SdkEvent::moment: explorer::spine::Moment
+pub sdk_events::SdkEvent::ordinal: u64
+pub sdk_events::SdkEvent::payload: sdk_events::Payload
+pub sdk_events::SdkEvent::raw: sdk_events::Raw
+pub sdk_events::SdkEvent::site: core::option::Option<sdk_events::SiteId>
+pub sdk_events::SdkEvent::source: sdk_events::SourceFormat
+pub struct sdk_events::SdkSchema
+pub sdk_events::SdkSchema::ordering: sdk_events::OrderingScope
+pub sdk_events::SdkSchema::original_declaration: core::option::Option<sdk_events::Raw>
+pub sdk_events::SdkSchema::source: sdk_events::SourceFormat
+impl sdk_events::SdkSchema
+pub fn sdk_events::SdkSchema::entries(&self) -> &[sdk_events::SchemaEntry]
+pub fn sdk_events::SdkSchema::entry(&self, &sdk_events::ObservationId) -> core::option::Option<&sdk_events::SchemaEntry>
+pub fn sdk_events::SdkSchema::is_empty(&self) -> bool
+pub fn sdk_events::SdkSchema::len(&self) -> usize
+pub fn sdk_events::SdkSchema::new(sdk_events::SourceFormat, sdk_events::OrderingScope) -> sdk_events::SdkSchema
+pub struct sdk_events::SiteId
+pub sdk_events::SiteId::begin_column: u64
+pub sdk_events::SiteId::begin_line: u64
+pub sdk_events::SiteId::file: alloc::string::String
+pub sdk_events::SiteId::function: alloc::string::String
+pub sdk_events::SiteId::id: core::option::Option<alloc::string::String>
+pub struct sdk_events::StreamCommitment
+pub sdk_events::StreamCommitment::digest: [u8; 32]
+pub sdk_events::StreamCommitment::events: u64
 pub const sdk_events::KIND_ASSERT_HIT: &str
 pub const sdk_events::KIND_ASSERT_VIOLATION: &str
 pub const sdk_events::KIND_BUGGIFY: &str
@@ -40,5 +227,13 @@ pub const sdk_events::KIND_STATE: &str
 pub const sdk_events::KIND_UNKNOWN: &str
 pub const sdk_events::LINK_ASSERT_CHANNEL: explorer::spine::ChannelId
 pub const sdk_events::LINK_STATE_CHANNEL: explorer::spine::ChannelId
+pub const sdk_events::NS_ASSERT: u8
+pub const sdk_events::NS_BUGGIFY: u8
+pub const sdk_events::NS_CONTROL: u8
+pub const sdk_events::NS_LIFECYCLE: u8
+pub const sdk_events::NS_STATE: u8
+pub fn sdk_events::decode_antithesis(&[(explorer::spine::Moment, alloc::vec::Vec<u8>)]) -> core::result::Result<sdk_events::Normalized, sdk_events::SdkError>
+pub fn sdk_events::decode_binary(&[(explorer::spine::Moment, u32, alloc::vec::Vec<u8>)]) -> core::result::Result<sdk_events::Normalized, sdk_events::SdkError>
 pub fn sdk_events::decode_event(u32, &[u8]) -> explorer::spine::GuestEvent
 pub fn sdk_events::decode_events(&[(explorer::spine::Moment, u32, alloc::vec::Vec<u8>)]) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::GuestEvent)>
+pub fn sdk_events::encode_v2_declaration(&[sdk_events::DeclaredPoint]) -> core::result::Result<alloc::vec::Vec<u8>, sdk_events::SdkError>

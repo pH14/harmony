@@ -724,6 +724,7 @@ dependencies = [
 name = "sdk-events"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "explorer",
  "proptest",
  "serde",

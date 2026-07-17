@@ -14,11 +14,17 @@ impl<'a> Reader<'a> {
         Self { buf, pos: 0 }
     }
 
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+    pub(crate) fn take(&mut self, n: usize) -> Option<&'a [u8]> {
         let end = self.pos.checked_add(n)?;
         let s = self.buf.get(self.pos..end)?;
         self.pos = end;
         Some(s)
+    }
+
+    /// Bytes not yet consumed — used to report `needed`/`available` in a
+    /// [`MalformedLength`](crate::SdkError::MalformedLength) without panicking.
+    pub(crate) fn remaining(&self) -> usize {
+        self.buf.len().saturating_sub(self.pos)
     }
 
     pub(crate) fn u8(&mut self) -> Option<u8> {
