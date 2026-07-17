@@ -351,7 +351,10 @@ impl Core {
                     if state.revision != *revision {
                         return Err(corrupt(
                             index,
-                            format!("commit revision {revision:?} != assigned {:?}", state.revision),
+                            format!(
+                                "commit revision {revision:?} != assigned {:?}",
+                                state.revision
+                            ),
                         ));
                     }
                     core.commit_unchecked(
@@ -566,10 +569,7 @@ impl Coordinator {
     /// unrecoverable control failure — the campaign must abort or recover,
     /// never skip the slot).
     fn persist(&mut self, record: &LedgerRecord) -> Result<(), CoordError> {
-        let result = self
-            .ledger
-            .append(record)
-            .and_then(|()| self.ledger.sync());
+        let result = self.ledger.append(record).and_then(|()| self.ledger.sync());
         if let Err(e) = result {
             self.poisoned = true;
             return Err(CoordError::Ledger(e));

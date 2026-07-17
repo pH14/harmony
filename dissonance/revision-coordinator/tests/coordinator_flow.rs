@@ -142,10 +142,7 @@ fn typed_errors_for_misuse() {
     ));
     let cohort = c.open_cohort().unwrap();
     c.close_cohort(cohort).unwrap();
-    assert!(matches!(
-        c.assign(cohort),
-        Err(CoordError::CohortClosed(_))
-    ));
+    assert!(matches!(c.assign(cohort), Err(CoordError::CohortClosed(_))));
     assert!(matches!(
         c.close_cohort(cohort),
         Err(CoordError::CohortClosed(_))
@@ -199,10 +196,7 @@ fn abort_freezes_the_frontier_forever() {
     let r = Coordinator::recover(&ledger).unwrap();
     assert_eq!(r.aborted(), Some("injected unrecoverable control failure"));
     assert_eq!(r.pending(), vec![p2]);
-    assert_eq!(
-        r.state_projection().encode(),
-        c.state_projection().encode()
-    );
+    assert_eq!(r.state_projection().encode(), c.state_projection().encode());
 }
 
 #[test]
@@ -223,10 +217,7 @@ fn recovery_is_byte_identical_and_replays_committed_inputs() {
     // Simulated process death (all records were synced; nothing is lost).
     ledger.crash();
     let mut r = Coordinator::recover(&ledger).unwrap();
-    assert_eq!(
-        r.state_projection().encode(),
-        c.state_projection().encode()
-    );
+    assert_eq!(r.state_projection().encode(), c.state_projection().encode());
     assert_eq!(r.pending(), vec![p3]);
 
     // The retried worker completes the SAME pending slot on both timelines.
@@ -235,10 +226,7 @@ fn recovery_is_byte_identical_and_replays_committed_inputs() {
     let cv = c.probe_drive(Revision::new(3)).unwrap();
     let rv = r.probe_drive(Revision::new(3)).unwrap();
     assert_eq!(cv.encode(), rv.encode());
-    assert_eq!(
-        r.state_projection().encode(),
-        c.state_projection().encode()
-    );
+    assert_eq!(r.state_projection().encode(), c.state_projection().encode());
 }
 
 #[test]

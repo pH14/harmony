@@ -120,11 +120,11 @@ fn run(s: &Scenario, order: &[usize]) -> RunArtifacts {
         .map(|ci| (0..n).filter(|&i| s.mint[i] == ci).collect())
         .collect();
 
-    let mut step = |c: &mut Coordinator,
-                    completed: &BTreeSet<usize>,
-                    closed: &[bool],
-                    drained: &mut Vec<(Revision, EvidenceBatchId)>,
-                    next_slot: &mut u64| {
+    let step = |c: &mut Coordinator,
+                completed: &BTreeSet<usize>,
+                closed: &[bool],
+                drained: &mut Vec<(Revision, EvidenceBatchId)>,
+                next_slot: &mut u64| {
         // No-frontier-holes: drains are exactly contiguous slots.
         for (rev, b) in c.drain_ready() {
             assert_eq!(rev.get(), *next_slot, "drain_ready emitted past a hole");

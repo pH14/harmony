@@ -202,9 +202,9 @@ macro_rules! hex_serde {
         impl<'de> Deserialize<'de> for $ty {
             fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
                 let s = String::deserialize(deserializer)?;
-                hex_decode32(&s)
-                    .map($ty)
-                    .ok_or_else(|| D::Error::custom(concat!(stringify!($ty), ": not 64 hex digits")))
+                hex_decode32(&s).map($ty).ok_or_else(|| {
+                    D::Error::custom(concat!(stringify!($ty), ": not 64 hex digits"))
+                })
             }
         }
     };
