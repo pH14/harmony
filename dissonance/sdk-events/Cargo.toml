@@ -3,23 +3,12 @@ name = "sdk-events"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "The host-side SDK ingress boundary (hm-bbx.1): the Antithesis-JSON and internal binary decoders, normalization into persisted SdkSchema + ordered SdkEvent evidence, and the legacy link-tier compatibility surface"
+description = "The host-side SDK ingress boundary (hm-bbx.1): the Antithesis-JSON and internal binary decoders, normalization into persisted SdkSchema + ordered SdkEvent evidence"
 
 [lints]
 workspace = true
 
 [dependencies]
-# The search-plane spine vocabulary this plugin produces and consumes
-# (`GuestEvent`, `Feature`, `Sensor`, `Oracle`, `RunTrace`, `Bug`, `StopReason`,
-# `Moment`, `Value`, …). link is a replay-plane plugin built ON the explorer's
-# contract (task 64 rule-2 layout), exactly as `runtrace` (task 65) is; it
-# depends on `explorer` and nothing else in dissonance. Pinned `version`
-# alongside `path` for `cargo deny`'s wildcard ban.
-explorer = { path = "../explorer", version = "0.1.0" }
-# The stable `Bug` fingerprint digest — the same `sha2` scheme the explorer's
-# oracle uses, so a link-minted `Bug` dedups with an explorer-minted one
-# (rule-5 whitelist).
-sha2 = "0.10"
 # The persisted `Normalized`'s stream commitment — a blake3 digest over the
 # ingress event records (count + digest) that binds an artifact to the *complete*
 # stream it decoded from, so a truncated/extended/tampered persisted artifact fails
@@ -40,7 +29,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 
 [dev-dependencies]
-# Property tests (>=256 cases): decode totality on arbitrary bytes/JSON, the
-# codec/normalization laws (serde + wire-v2 round-trips, numeric total order), the
-# catalog fold, the sensor's feature stream, and the oracle.
+# Property tests (>=256 cases): decode totality on arbitrary bytes/JSON and the
+# codec/normalization laws (serde + wire-v2 round-trips, numeric total order).
 proptest = "1"

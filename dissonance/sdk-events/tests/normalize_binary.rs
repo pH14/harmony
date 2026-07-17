@@ -3,8 +3,8 @@
 //! never-fired reducers, the wire-v2 declaration round-trip, typed errors for
 //! malformed lengths and mixed operations/shapes, and decode totality.
 
-use explorer::Moment;
 use proptest::prelude::*;
+use sdk_events::Moment;
 use sdk_events::{
     Classification, DeclaredPoint, Expectation, NS_ASSERT, NS_BUGGIFY, NS_LIFECYCLE, NS_STATE,
     ObservationId, Payload, SdkError, SourceFormat, UpdateOp, ValueShape, decode_binary,

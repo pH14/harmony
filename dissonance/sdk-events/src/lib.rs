@@ -67,26 +67,29 @@
 //! decimal ([`NumericToken`]/[`BoundedNumeric`]) with a deterministic total order
 //! only on demand. Normalized output is byte-identical across macOS and Linux.
 //!
-//! ## Legacy compatibility surface (deleted during the Differential integration)
+//! ## No judgment, no cells, no dependency on the Explorer
 //!
-//! The pre-normalization link-tier surface — [`decode_events`]/[`Catalog`], the
-//! [`LinkSensor`], and the [`AlwaysViolation`] oracle — remains for the
-//! `campaign-runner` game path. Per `docs/DISSONANCE-STRATEGY.md` these are
-//! compatibility machinery to **delete during the Differential integration**
-//! (`hm-bbx.4`), not to rename or extend here; the normalized boundary above adds
-//! no judgment of its own.
+//! This boundary decodes and normalizes; it defines its own [`Moment`] (rather
+//! than importing the Explorer's) so it depends on **no** other dissonance crate
+//! — the Explorer consumes [`Normalized`] evidence, so a dependency the other way
+//! would be a cycle. The pre-normalization link-tier compatibility surface (the
+//! `LinkSensor`, the packed `(register, value) → FeatureId`, the `AlwaysViolation`
+//! oracle, and the `decode_events`/`Catalog` `GuestEvent` path) was **deleted
+//! during the Differential integration** (`hm-bbx.4`, per
+//! `docs/DISSONANCE-STRATEGY.md`): temporal reduction, cell projection, and oracle
+//! judgment live in the Explorer/Differential layer over this crate's ordered
+//! `SdkEvent`s, never in the decoder. A workload's own cell derivation (e.g. the
+//! game campaign's packed register state) is campaign policy that lives with the
+//! campaign, not a reusable sensor here.
 
 mod antithesis;
 mod binary;
-mod catalog;
-mod decode;
 mod error;
 mod event;
+mod moment;
 mod numeric;
-mod oracle;
 mod read;
 mod schema;
-mod sensor;
 mod wire;
 
 // The normalized SDK ingress boundary (hm-bbx.1).
@@ -94,18 +97,10 @@ pub use antithesis::decode_antithesis;
 pub use binary::{DeclaredPoint, decode_binary, encode_v2_declaration};
 pub use error::SdkError;
 pub use event::{AssertType, Normalized, Payload, SdkEvent, SiteId, StreamCommitment};
+pub use moment::Moment;
 pub use numeric::{BoundedNumeric, NumericError, NumericLimits, NumericToken};
 pub use schema::{
     Classification, Expectation, ObservationId, OrderingScope, Raw, SchemaEntry, SdkSchema,
     SourceFormat, UpdateOp, ValueShape,
 };
 pub use wire::{NS_ASSERT, NS_BUGGIFY, NS_CONTROL, NS_LIFECYCLE, NS_STATE};
-
-// The legacy link-tier compatibility surface (see the crate doc).
-pub use catalog::{Catalog, CatalogReport, PointKind};
-pub use decode::{
-    KIND_ASSERT_HIT, KIND_ASSERT_VIOLATION, KIND_BUGGIFY, KIND_CATALOG, KIND_SETUP_COMPLETE,
-    KIND_STATE, KIND_UNKNOWN, decode_event, decode_events,
-};
-pub use oracle::AlwaysViolation;
-pub use sensor::{LINK_ASSERT_CHANNEL, LINK_STATE_CHANNEL, LinkSensor};

@@ -26,7 +26,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use explorer::Moment;
+use crate::moment::Moment;
 use serde::de::{Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 

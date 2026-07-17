@@ -46,14 +46,6 @@ pub sdk_events::Payload::State
 pub sdk_events::Payload::State::op: sdk_events::UpdateOp
 pub sdk_events::Payload::State::value: u64
 pub sdk_events::Payload::Unknown
-pub enum sdk_events::PointKind
-pub sdk_events::PointKind::AssertAlways
-pub sdk_events::PointKind::AssertReachable
-pub sdk_events::PointKind::AssertSometimes
-pub sdk_events::PointKind::AssertUnreachable
-pub sdk_events::PointKind::Buggify
-pub sdk_events::PointKind::StateReg
-pub sdk_events::PointKind::Unknown
 pub enum sdk_events::SdkError
 pub sdk_events::SdkError::ArtifactDivergedFromDecode
 pub sdk_events::SdkError::ArtifactDivergedFromDecode::detail: alloc::string::String
@@ -118,11 +110,6 @@ pub sdk_events::ValueShape::Bool
 pub sdk_events::ValueShape::Bytes
 pub sdk_events::ValueShape::Numeric
 pub sdk_events::ValueShape::U64
-pub struct sdk_events::AlwaysViolation
-impl sdk_events::AlwaysViolation
-pub fn sdk_events::AlwaysViolation::new() -> sdk_events::AlwaysViolation
-impl explorer::spine::Oracle for sdk_events::AlwaysViolation
-pub fn sdk_events::AlwaysViolation::judge(&self, &explorer::spine::RunTrace) -> core::option::Option<explorer::spine::Bug>
 pub struct sdk_events::BoundedNumeric
 impl sdk_events::BoundedNumeric
 pub fn sdk_events::BoundedNumeric::adjusted_exponent(&self) -> i32
@@ -134,20 +121,6 @@ impl core::cmp::Ord for sdk_events::BoundedNumeric
 pub fn sdk_events::BoundedNumeric::cmp(&self, &sdk_events::BoundedNumeric) -> core::cmp::Ordering
 impl core::cmp::PartialOrd for sdk_events::BoundedNumeric
 pub fn sdk_events::BoundedNumeric::partial_cmp(&self, &sdk_events::BoundedNumeric) -> core::option::Option<core::cmp::Ordering>
-pub struct sdk_events::Catalog
-impl sdk_events::Catalog
-pub fn sdk_events::Catalog::declared(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&alloc::string::String, &sdk_events::PointKind)>
-pub fn sdk_events::Catalog::fired(&self, &[(explorer::spine::Moment, explorer::spine::GuestEvent)]) -> alloc::collections::btree::set::BTreeSet<alloc::string::String>
-pub fn sdk_events::Catalog::fold(&[u8], &[(explorer::spine::Moment, explorer::spine::GuestEvent)]) -> sdk_events::CatalogReport
-pub fn sdk_events::Catalog::from_declaration_bytes(&[u8]) -> sdk_events::Catalog
-pub fn sdk_events::Catalog::from_raw_stream(&[(explorer::spine::Moment, u32, alloc::vec::Vec<u8>)]) -> sdk_events::Catalog
-pub fn sdk_events::Catalog::is_empty(&self) -> bool
-pub fn sdk_events::Catalog::len(&self) -> usize
-pub fn sdk_events::Catalog::new() -> sdk_events::Catalog
-pub fn sdk_events::Catalog::report(&self, &alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> sdk_events::CatalogReport
-pub struct sdk_events::CatalogReport
-pub sdk_events::CatalogReport::fired: alloc::collections::btree::set::BTreeSet<alloc::string::String>
-pub sdk_events::CatalogReport::never_fired: alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub struct sdk_events::DeclaredPoint
 pub sdk_events::DeclaredPoint::base_op: core::option::Option<sdk_events::UpdateOp>
 pub sdk_events::DeclaredPoint::classification: sdk_events::Classification
@@ -156,11 +129,7 @@ pub sdk_events::DeclaredPoint::local: u32
 pub sdk_events::DeclaredPoint::name: alloc::string::String
 pub sdk_events::DeclaredPoint::namespace: u8
 pub sdk_events::DeclaredPoint::value_shape: core::option::Option<sdk_events::ValueShape>
-pub struct sdk_events::LinkSensor
-impl sdk_events::LinkSensor
-pub fn sdk_events::LinkSensor::new() -> sdk_events::LinkSensor
-impl explorer::spine::Sensor for sdk_events::LinkSensor
-pub fn sdk_events::LinkSensor::observe(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Feature)>
+pub struct sdk_events::Moment(pub u64)
 pub struct sdk_events::Normalized
 pub sdk_events::Normalized::commitment: sdk_events::StreamCommitment
 pub sdk_events::Normalized::events: alloc::vec::Vec<sdk_events::SdkEvent>
@@ -193,7 +162,7 @@ impl sdk_events::SchemaEntry
 pub fn sdk_events::SchemaEntry::is_reducible_state(&self) -> bool
 pub struct sdk_events::SdkEvent
 pub sdk_events::SdkEvent::id: sdk_events::ObservationId
-pub sdk_events::SdkEvent::moment: explorer::spine::Moment
+pub sdk_events::SdkEvent::moment: sdk_events::Moment
 pub sdk_events::SdkEvent::ordinal: u64
 pub sdk_events::SdkEvent::payload: sdk_events::Payload
 pub sdk_events::SdkEvent::raw: sdk_events::Raw
@@ -218,22 +187,11 @@ pub sdk_events::SiteId::id: core::option::Option<alloc::string::String>
 pub struct sdk_events::StreamCommitment
 pub sdk_events::StreamCommitment::digest: [u8; 32]
 pub sdk_events::StreamCommitment::events: u64
-pub const sdk_events::KIND_ASSERT_HIT: &str
-pub const sdk_events::KIND_ASSERT_VIOLATION: &str
-pub const sdk_events::KIND_BUGGIFY: &str
-pub const sdk_events::KIND_CATALOG: &str
-pub const sdk_events::KIND_SETUP_COMPLETE: &str
-pub const sdk_events::KIND_STATE: &str
-pub const sdk_events::KIND_UNKNOWN: &str
-pub const sdk_events::LINK_ASSERT_CHANNEL: explorer::spine::ChannelId
-pub const sdk_events::LINK_STATE_CHANNEL: explorer::spine::ChannelId
 pub const sdk_events::NS_ASSERT: u8
 pub const sdk_events::NS_BUGGIFY: u8
 pub const sdk_events::NS_CONTROL: u8
 pub const sdk_events::NS_LIFECYCLE: u8
 pub const sdk_events::NS_STATE: u8
-pub fn sdk_events::decode_antithesis(&[(explorer::spine::Moment, alloc::vec::Vec<u8>)]) -> core::result::Result<sdk_events::Normalized, sdk_events::SdkError>
-pub fn sdk_events::decode_binary(&[(explorer::spine::Moment, u32, alloc::vec::Vec<u8>)]) -> core::result::Result<sdk_events::Normalized, sdk_events::SdkError>
-pub fn sdk_events::decode_event(u32, &[u8]) -> explorer::spine::GuestEvent
-pub fn sdk_events::decode_events(&[(explorer::spine::Moment, u32, alloc::vec::Vec<u8>)]) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::GuestEvent)>
+pub fn sdk_events::decode_antithesis(&[(sdk_events::Moment, alloc::vec::Vec<u8>)]) -> core::result::Result<sdk_events::Normalized, sdk_events::SdkError>
+pub fn sdk_events::decode_binary(&[(sdk_events::Moment, u32, alloc::vec::Vec<u8>)]) -> core::result::Result<sdk_events::Normalized, sdk_events::SdkError>
 pub fn sdk_events::encode_v2_declaration(&[sdk_events::DeclaredPoint]) -> core::result::Result<alloc::vec::Vec<u8>, sdk_events::SdkError>

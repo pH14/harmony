@@ -24,7 +24,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use explorer::Moment;
+use crate::moment::Moment;
 
 use crate::error::SdkError;
 use crate::event::{AssertType, Normalized, Payload, SdkEvent};

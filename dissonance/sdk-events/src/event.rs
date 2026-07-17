@@ -8,8 +8,9 @@
 //! plus its ordering coordinates and the recoverable raw record. It does **not**
 //! carry a cell, a reduction, or a verdict; those are above this boundary.
 
-use explorer::Moment;
 use serde::{Deserialize, Serialize};
+
+use crate::moment::Moment;
 
 use crate::error::SdkError;
 use crate::numeric::NumericToken;

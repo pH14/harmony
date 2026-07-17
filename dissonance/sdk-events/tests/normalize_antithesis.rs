@@ -4,8 +4,8 @@
 //! extremum only (original token preserved, no `f64`), per-identity coherence
 //! errors, and decode totality with raw preservation.
 
-use explorer::Moment;
 use proptest::prelude::*;
+use sdk_events::Moment;
 use sdk_events::{
     AssertType, Classification, Expectation, ObservationId, Payload, SdkError, SourceFormat,
     UpdateOp, ValueShape, decode_antithesis,
