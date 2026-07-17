@@ -400,12 +400,16 @@ dependencies = [
 name = "explorer"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "control-proto",
  "environment",
  "proptest",
+ "revision-coordinator",
+ "sdk-events",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror",
 ]
 
@@ -851,11 +855,9 @@ name = "sdk-events"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "explorer",
  "proptest",
  "serde",
  "serde_json",
- "sha2",
  "thiserror",
 ]
 

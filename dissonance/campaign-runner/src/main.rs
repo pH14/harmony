@@ -829,7 +829,7 @@ fn finish_game(
 }
 
 /// The portable game campaign: the SMB-shaped toy machine through the real
-/// wire-decode → LinkSensor → cell-key path (no /dev/kvm, no ROM).
+/// wire-decode → SdkEvent → cell-key path (no /dev/kvm, no ROM).
 fn run_game_mock(args: GameArgs) -> ExitCode {
     let config = match parse_game_config(&args.config) {
         Ok(c) => c,

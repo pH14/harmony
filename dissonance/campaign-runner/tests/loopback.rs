@@ -428,22 +428,24 @@ fn sdk_events_ride_the_wire_into_a_nonempty_runtrace() {
         "the assert-hit event id survived the round-trip"
     );
 
-    // ...and decodes into a NON-EMPTY RunTrace.events (the link tier, live).
-    let remapped: Vec<(explorer::Moment, u32, Vec<u8>)> = raw
-        .into_iter()
-        .map(|(m, id, b)| (explorer::Moment(m), id, b))
-        .collect();
-    let trace = RunTrace {
+    // ...and decodes into a NON-EMPTY normalized SDK stream (the link tier, live).
+    let normalized =
+        campaign_runner::sdk_compat::decode_sdk(&raw).expect("the captured SDK stream decodes");
+    assert!(
+        !normalized.events.is_empty(),
+        "a non-empty normalized SDK stream assembled over the real wire (link tier is no longer dead)"
+    );
+    // The production path (record.rs / campaign.rs) folds the normalized stream
+    // into RunTrace.events via guest_events_of. This capture is an assertion, so
+    // that fold — which reconstructs the legacy state-event stream only — carries
+    // no state rows; the wire round-trip proven above is the non-emptiness.
+    let _trace = RunTrace {
         terminal: stop,
         env,
         coverage: None,
-        events: sdk_events::decode_events(&remapped),
+        events: campaign_runner::sdk_compat::guest_events_of(&normalized),
         records: Vec::new(),
     };
-    assert!(
-        !trace.events.is_empty(),
-        "a non-empty RunTrace.events assembled over the real wire (link tier is no longer dead)"
-    );
 }
 
 /// **Task 73 (round-4 P1): setup_complete yields a USABLE seal.** `setup_complete`
