@@ -169,6 +169,62 @@ fn malformed_complete_body_is_short_frame() {
     assert_eq!(decode_request(&buf), Err(ProtocolError::ShortFrame));
 }
 
+/// The retired bare-handle snapshot reply (wire tag 2, pre-127 `Reply::SnapId`)
+/// is rejected as a malformed body — a hostile or stale peer cannot smuggle a
+/// **cut-less** snapshot handle past the decoder. The tag is reserved, never
+/// reused.
+#[test]
+fn retired_snapid_tag_is_rejected() {
+    // RESULT_OK (0x00) · retired tag 0x02 · a plausible u64 handle.
+    let mut body = vec![0x00u8, 0x02];
+    body.extend_from_slice(&9u64.to_le_bytes());
+    let mut buf = header_only(PROTO_VERSION, 1, body.len() as u32);
+    buf.extend_from_slice(&body);
+    assert_eq!(decode_reply(&buf), Err(ProtocolError::ShortFrame));
+}
+
+/// Hostile decodes of the seal-bound `Snapshot` reply (task 127): a body
+/// truncated at **every** field boundary of `id · at · sdk_events · tainted` is
+/// `ShortFrame`; a non-canonical taint byte is rejected (the encoding stays
+/// one-to-one); trailing bytes inside the declared body are rejected. No
+/// partial cut can ever decode.
+#[test]
+fn snapshot_reply_hostile_bodies_are_rejected() {
+    // The full well-formed body: RESULT_OK · REPLY_SNAPSHOT (0x0A) · id ·
+    // at · sdk_events · tainted.
+    let mut body = vec![0x00u8, 0x0A];
+    body.extend_from_slice(&9u64.to_le_bytes()); // id
+    body.extend_from_slice(&0x1234u64.to_le_bytes()); // at
+    body.extend_from_slice(&3u64.to_le_bytes()); // sdk_events
+    body.push(0x00); // tainted = false
+    let frame = |body: &[u8]| {
+        let mut buf = header_only(PROTO_VERSION, 1, body.len() as u32);
+        buf.extend_from_slice(body);
+        buf
+    };
+    assert!(
+        decode_reply(&frame(&body)).unwrap().is_some(),
+        "the intact body decodes"
+    );
+    // Every proper truncation of the body (declared len shrunk with it) fails
+    // loudly — a handle can never arrive without its complete cut and taint.
+    for n in 2..body.len() {
+        assert_eq!(
+            decode_reply(&frame(&body[..n])),
+            Err(ProtocolError::ShortFrame),
+            "snapshot body truncated to {n} bytes must be rejected"
+        );
+    }
+    // A non-canonical taint byte (2) is rejected — no spurious `true`.
+    let mut bad_taint = body.clone();
+    *bad_taint.last_mut().unwrap() = 0x02;
+    assert_eq!(decode_reply(&frame(&bad_taint)), Err(ProtocolError::ShortFrame));
+    // Trailing bytes inside the declared body are rejected (canonical encoding).
+    let mut trailing = body.clone();
+    trailing.push(0x00);
+    assert_eq!(decode_reply(&frame(&trailing)), Err(ProtocolError::ShortFrame));
+}
+
 /// An inner length field that runs past the declared frame body is `ShortFrame`
 /// — and never causes an over-read or a multi-gigabyte allocation, because the
 /// inner blob is sliced against the (bounded) body, not the wire.
