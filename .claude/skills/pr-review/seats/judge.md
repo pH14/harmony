@@ -38,6 +38,13 @@ verifying goes through the same bar as a seat finding; do not go hunting beyond 
   negative.
 - **Family-collapse**: two or more same-mechanism findings become one family finding whose
   fix demand is the structural closure (one choke point), with every member site listed.
+- **Ride-along rule**: when a P1 fix batch is being dispatched anyway, you may attach
+  low-risk mechanical P2s to it — chiefly simplicity reductions (deletions, inlining
+  single-user abstractions), which are cheapest while the worker still holds context.
+  Ride-alongs must not grow the batch's risk: anything crate-crossing or contract-touching
+  parks as a bead instead. Never a batch for sub-P1 items alone. Simplicity's P1 class is
+  narrow and real: **unspecced irreversible surface** (public API, wire fields, knobs, new
+  crates) blocks like any contract finding — it is one.
 - At a **verify event**, only P1-bar findings may block; all else parks automatically.
 
 Write two files at the worktree root, then stop:

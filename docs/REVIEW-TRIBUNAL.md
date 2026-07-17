@@ -38,10 +38,11 @@ transcripts, and post-merge outcomes:
 
 ```
 Discovery tribunal            Judge                    Foreman
-4–6 parallel seats     →   pool → verify →     →   post one batched review
+5–7 parallel seats     →   pool → verify →     →   post one batched review
 (GPT-5.6 Sol, xhigh,       synthesize              + adjudication record
  blind, capped)            (Fable 5, xhigh)        + file P2 beads
                                                    + dispatch ONE P1 fix batch
+                                                     (+ ride-along reductions)
                                                             ↓
 Verify event: Closer + 1–2 sweep seats → judge → merge with parks
 Contingency: one Closer-only re-check → else ESCALATE (never loop)
@@ -57,6 +58,15 @@ determinism/replay leak, contract/wire violation, evidence-integrity hole (a gat
 pass while its property fails), data loss/corruption, unsound `unsafe`. Everything else is
 a P2 (filed as a bead at review time) or a note. Zero open P1s + green gates ⇒ merge; the
 parked P2 queue is the pressure-relief valve that makes the bound safe.
+
+**Simplicity is a standing seat at every panel size** (Paul, 2026-07-16): reduction
+pressure — fewer lines, abstractions, knobs, public items — applied structurally, never as
+idiom golf. Its teeth: **unspecced irreversible surface sits at the P1 bar** (public API,
+wire fields, config knobs, new crates ossify within days once other agents build against
+them — removing them later costs what contract drift costs), and interior reductions may
+**ride along** with a P1 fix batch at the judge's discretion, when reduction is cheapest
+because the worker still holds context. Parked reductions stay in the bead queue like any
+P2.
 
 ## 3. Design principles and their evidence
 
@@ -106,7 +116,7 @@ parked P2 queue is the pressure-relief valve that makes the bound safe.
    their own best member (arXiv:2602.01011) — so seats never deliberate, and each charter
    is a scope, a mandated search procedure, and hard rules. The procedures encode this
    repo's observed catch classes (gate vacuity, determinism leaks, contract drift, dead
-   production paths, hostile inputs, doomed premises).
+   production paths, hostile inputs, doomed premises, unearned complexity).
 
 ## 4. Deliberately rejected
 

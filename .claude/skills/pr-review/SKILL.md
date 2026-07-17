@@ -34,9 +34,12 @@ files are excluded (they get a provenance/manifest check, never line review):
 
 | Meaningful LOC | Seats |
 |---|---|
-| < ~1k | 4 — Gate Auditor, Consonance, Contract+Adversary (merged), Wiring |
-| ~1k–5k | 5 — Gate Auditor, Consonance, Contract, Adversary, Wiring |
-| > ~5k, or a new crate/artifact/approach | 6 — add Architect |
+| < ~1k | 5 — Gate Auditor, Consonance, Contract+Adversary (merged), Wiring, Simplicity |
+| ~1k–5k | 6 — Gate Auditor, Consonance, Contract, Adversary, Wiring, Simplicity |
+| > ~5k, or a new crate/artifact/approach | 7 — add Architect |
+
+Simplicity sits at **every** size — reduction pressure is a standing directive, not a
+big-PR luxury.
 
 A single review unit over ~5k meaningful LOC should usually not exist: ask first whether
 the PR splits along spec milestones (the Architect seat's question). Review per milestone
@@ -81,7 +84,8 @@ only the paths it drives — it never waives the tribunal.
 Seats (charters in `.claude/skills/pr-review/seats/`): **gate-auditor** (does green mean
 anything), **consonance** (record==replay bit-identity), **contract** (spec/ABI/wire
 conformance), **adversary** (hostile inputs + `unsafe`), **wiring** (deliverable alive
-end-to-end), **architect** (should this exist as designed — kill/split authority).
+end-to-end), **simplicity** (what is the least of this — structural reduction, unspecced
+surface), **architect** (should this exist as designed — kill/split authority).
 
 All seats run **GPT-5.6 Sol at xhigh** (model pinned in `~/.codex/config.toml`; xhigh is
 codex's default), concurrently, each in its own detached worktree. The worktree `AGENTS.md`
@@ -90,7 +94,7 @@ auto-reads `AGENTS.md`:
 
 ```sh
 PR=<N>; HEAD=origin/<head-branch>; cd ~/workspace/harmony
-for SEAT in gate-auditor consonance contract adversary wiring architect; do  # trim per §0
+for SEAT in gate-auditor consonance contract adversary wiring simplicity architect; do  # trim per §0
   WT=../harmony-review-pr$PR-$SEAT
   git worktree add --detach "$WT" "$HEAD"
   cat AGENTS.md .claude/skills/pr-review/seats/COMMON.md \
@@ -155,9 +159,11 @@ gh api repos/{owner}/{repo}/pulls/<N>/reviews --input /tmp/review-pr<N>.json
    with their quoted refutations. This record is what kills re-raises; it dies with the PR.
 3. **File every P2 as a bead now** (`bd create`, real dependency edges), and list the bead
    IDs in the review body.
-4. **Dispatch ONE fix batch scoped to P1s only** — existing mechanics: `agent-send.sh` to a
-   live worker session, `agent-spawn.sh <slug>` to revive one, or `agent-takeover.sh <N>`
-   for out-of-band crate code. Docs/spec fixes the foreman makes directly.
+4. **Dispatch ONE fix batch** — P1s plus any judge-designated ride-alongs (chiefly
+   simplicity reductions; see the judge charter). Never dispatch a batch for sub-P1 items
+   alone. Existing mechanics: `agent-send.sh` to a live worker session,
+   `agent-spawn.sh <slug>` to revive one, or `agent-takeover.sh <N>` for out-of-band crate
+   code. Docs/spec fixes the foreman makes directly.
 
 ## 6. The verify event (after the fix batch) — bounded
 
