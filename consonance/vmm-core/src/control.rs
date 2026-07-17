@@ -887,6 +887,19 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// when it safely can ([`Self::seal_into_store`]); the reply and semantics
     /// are identical either way.
     ///
+    /// **The reply binds the seal's evidence cut** (task 127, bead `hm-bbx.6`):
+    /// the one [`Reply::Snapshot`] carries the handle, the synchronized seal
+    /// `Moment` (the sealed `vm_state`'s own exact V-time — the same value a
+    /// later restore's floor validates against), the **included SDK-event
+    /// count** (the SDK capture vector's prefix length; positions below it are
+    /// included, at/after excluded — a prefix-length cut, never a `Moment`
+    /// comparison), and the timeline taint. All four are read from the same
+    /// stopped server state between two verbs — the server stamp is the sole
+    /// authority; a client never reconstructs the cut with a second read. The
+    /// serial-console capture is a separate source-local stream and is
+    /// structurally unable to enter the count. Every error path below returns
+    /// **neither a usable handle nor a cut** — no partial cut on failure.
+    ///
     /// **Rejects loudly while a host-fault schedule is pending** (PR #51 round-3):
     /// a snapshot seals only VM state, and every restore of it clears the schedule
     /// — so the sealed state's *future* (the staged fault) would be unreproducible
@@ -913,6 +926,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Err(e) => return Err(e.into()),
         };
         let blob = vm_state.encode().map_err(SnapshotError::from)?;
+        // Task 127: stamp the seal's evidence cut from the SAME stopped state
+        // the seal captures — the sealed record's own synchronized V-time (not
+        // a second `effective_vns` read) and the SDK capture vector's current
+        // prefix length. Nothing advances the VM between here and the reply,
+        // so handle, Moment, count, and taint are one atomic observation.
+        let at = vm_state.vtime().snapshot_vns;
+        let sdk_events = vmm.sdk_events().len() as u64;
         // Task 95 M2.1: capture O(dirty) when the tracked window allows it,
         // full-scan otherwise — then re-arm the window with the new snapshot as
         // the next seal's parent (the arm fails ⇒ the next seal full-scans too).
@@ -958,18 +978,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
         // Task 81: a snapshot inherits the live timeline's taint. If the timeline
         // was tainted by an `exec` improvisation, record the handle (so any
-        // `branch`/`replay` of it yields a tainted timeline) and surface the
-        // taint-carrying reply; otherwise the pre-81 taint-free `SnapId` reply,
-        // byte-identical to every existing capture (gate 4).
+        // `branch`/`replay` of it yields a tainted timeline). Either way the
+        // reply is the ONE seal-bound shape (task 127): handle + cut + taint —
+        // a tainted seal still binds its exact evidence cut.
         if self.timeline_tainted {
             self.tainted_snaps.insert(id);
-            Ok(Ok(Reply::Snapshot {
-                id: SnapId(id),
-                tainted: true,
-            }))
-        } else {
-            Ok(Ok(Reply::SnapId(SnapId(id))))
         }
+        Ok(Ok(Reply::Snapshot {
+            id: SnapId(id),
+            at: Moment(at),
+            sdk_events,
+            tainted: self.timeline_tainted,
+        }))
     }
 
     /// `drop`: release the store layer behind a wire handle and GC.
@@ -2068,7 +2088,21 @@ mod tests {
 
     fn snap(server: &mut ControlServer<MockBackend>) -> SnapId {
         match server.handle(&Request::Snapshot).unwrap() {
-            Ok(Reply::SnapId(id)) => id,
+            Ok(Reply::Snapshot { id, .. }) => id,
+            other => panic!("snapshot reply: {other:?}"),
+        }
+    }
+
+    /// [`snap`] returning the full seal-bound reply fields — `(id, at,
+    /// sdk_events, tainted)` — for the task-127 cut assertions.
+    fn snap_cut(server: &mut ControlServer<MockBackend>) -> (SnapId, u64, u64, bool) {
+        match server.handle(&Request::Snapshot).unwrap() {
+            Ok(Reply::Snapshot {
+                id,
+                at,
+                sdk_events,
+                tainted,
+            }) => (id, at.0, sdk_events, tainted),
             other => panic!("snapshot reply: {other:?}"),
         }
     }
@@ -2365,8 +2399,8 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 7,
-            "task 69 M2 bumped for the Console scrape verb (over task 81's 6)"
+            caps.protocol_version, 8,
+            "task 127 bumped for the seal-bound snapshot reply (over task 69 M2's 7)"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
         assert_eq!(caps.env_version_max, EnvSpec::BLOB_VERSION);
@@ -3318,6 +3352,12 @@ mod tests {
             s.handle(&Request::Snapshot).unwrap(),
             Err(ControlError::NotQuiescent)
         );
+        // Task 127: the refusal returned neither a usable handle nor a cut — no
+        // wire handle exists at all (handles are minted from 1).
+        assert!(
+            s.snapshot_chain_len(SnapId(1)).is_none(),
+            "a non-quiescent seal must mint nothing"
+        );
     }
 
     #[test]
@@ -3503,7 +3543,7 @@ mod tests {
         // MockBackend-only; this server is over RestoreFailBackend).
         assert!(s.handle(&Request::Hello(server_caps())).unwrap().is_ok());
         let base = match s.handle(&Request::Snapshot).unwrap() {
-            Ok(Reply::SnapId(id)) => id,
+            Ok(Reply::Snapshot { id, .. }) => id,
             other => panic!("snapshot: {other:?}"),
         };
         // branch restores into a fresh fork whose Backend::restore faults AFTER
@@ -3569,7 +3609,7 @@ mod tests {
                 Ok(Reply::Hello(server_caps()))
             );
             let reply = send(&mut client, &Request::Snapshot);
-            assert!(matches!(reply, Ok(Reply::SnapId(_))));
+            assert!(matches!(reply, Ok(Reply::Snapshot { .. })));
             assert!(matches!(
                 send(
                     &mut client,
@@ -3824,7 +3864,7 @@ mod tests {
 
         // The schedule was drained, so the eager seal SUCCEEDS (not SnapshotWhileArmed).
         match s.handle(&Request::Snapshot).unwrap() {
-            Ok(Reply::SnapId(_)) => {}
+            Ok(Reply::Snapshot { .. }) => {}
             other => {
                 panic!("seal at the deferred boundary failed (SnapshotWhileArmed?): {other:?}")
             }
@@ -3916,7 +3956,7 @@ mod tests {
         }
         // The schedule is empty, so the eager seal SUCCEEDS (not SnapshotWhileArmed).
         match s.handle(&Request::Snapshot).unwrap() {
-            Ok(Reply::SnapId(_)) => {}
+            Ok(Reply::Snapshot { .. }) => {}
             other => panic!("seal failed with a future fault mishandled: {other:?}"),
         }
     }
@@ -3993,7 +4033,7 @@ mod tests {
         }
         // The reseed drained, so the eager seal SUCCEEDS (not SnapshotWhileArmed).
         match s.handle(&Request::Snapshot).unwrap() {
-            Ok(Reply::SnapId(_)) => {}
+            Ok(Reply::Snapshot { .. }) => {}
             other => panic!("seal failed with a staged reseed mishandled: {other:?}"),
         }
     }
@@ -4059,7 +4099,7 @@ mod tests {
             "the deferred point surfaced at a sealable boundary"
         );
         match s.handle(&Request::Snapshot).unwrap() {
-            Ok(Reply::SnapId(_)) => {}
+            Ok(Reply::Snapshot { .. }) => {}
             other => panic!(
                 "seal failed — the point surfaced at an unsealable (RNG) boundary: {other:?}"
             ),
@@ -4556,12 +4596,18 @@ mod tests {
             s.handle(&Request::Snapshot).unwrap(),
             Err(ControlError::SnapshotWhileArmed)
         );
-        // A rewind clears the schedule; snapshot works again.
+        // A rewind clears the schedule; snapshot works again — and the refused
+        // seal minted NEITHER a handle nor a cut (task 127: no partial cut on
+        // failure): the next successful handle is contiguous with `base`.
         assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
-        assert!(matches!(
-            s.handle(&Request::Snapshot).unwrap(),
-            Ok(Reply::SnapId(_))
-        ));
+        match s.handle(&Request::Snapshot).unwrap() {
+            Ok(Reply::Snapshot { id, .. }) => assert_eq!(
+                id.0,
+                base.0 + 1,
+                "the refused seal must not have consumed a handle"
+            ),
+            other => panic!("post-rewind snapshot reply: {other:?}"),
+        }
     }
 
     #[test]
@@ -5078,7 +5124,7 @@ mod tests {
     }
     fn arr_snap<B: Backend<A: Vendor>>(s: &mut ControlServer<B>) -> SnapId {
         match s.handle(&Request::Snapshot).unwrap() {
-            Ok(Reply::SnapId(id)) => id,
+            Ok(Reply::Snapshot { id, .. }) => id,
             other => panic!("snapshot: {other:?}"),
         }
     }
@@ -6491,14 +6537,280 @@ mod tests {
         );
     }
 
+    // ============== task 127: the seal-bound evidence cut ==================
+    //
+    // The snapshot reply binds (handle, synchronized seal Moment, included
+    // SDK-event count, taint) atomically from one stopped server state (bead
+    // hm-bbx.6). The mock's scripted work counter is CONSTANT through a
+    // session, so every doorbell emission and every seal in these fixtures
+    // lands on the SAME stamped Moment — deliberately: the cut is the SDK
+    // capture vector's PREFIX LENGTH, and a Moment comparison could not
+    // reconstruct it (several events share one stamp; two different seals
+    // share one Moment and differ only in their counts).
+
+    /// The constant scripted work count → the one effective V-time every
+    /// event stamp and every seal Moment in the fixture lands on.
+    const CUT_WORK: u64 = 500;
+
+    /// The same-Moment fixture server: the live guest emits a serial byte,
+    /// rings the `setup_complete` doorbell, resynchronizes (RDTSC → the
+    /// deferred snapshot point surfaces a sealable stop), rings the doorbell
+    /// AGAIN (a second SDK event at the same stamped Moment), emits another
+    /// serial byte, resynchronizes again (a second sealable stop), then goes
+    /// idle. The factory mirrors the live composition so branch/replay
+    /// restores validate.
+    fn seal_cut_server() -> ControlServer<MockBackend> {
+        const REQ_GPA: usize = 0xE000;
+        // A `setup_complete` Event frame staged at REQ_GPA; every doorbell
+        // ring reads the same staged frame, so both captured events carry the
+        // identical id and payload — position is the only discriminator.
+        let setup_id: u32 = 4 << 24;
+        let mut frame = [0u8; 4096];
+        let n = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Event,
+            1,
+            1,
+            &setup_id.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+        let serial = |b: u8| {
+            Exit::Arch(X86Exit::Io {
+                port: 0x3F8,
+                size: 1,
+                write: Some(b as u32),
+            })
+        };
+        let ring = Exit::Arch(X86Exit::Io {
+            port: 0x0CA1,
+            size: 4,
+            write: Some(n as u32),
+        });
+        let mut mb = MockBackend::with_exits(vec![
+            Exit::Arch(X86Exit::Rdtsc), // pre-stepped sync prelude (anchor = CUT_WORK)
+            serial(b'a'),               // console bytes — never in the SDK count
+            ring.clone(),               // SDK event, position 0
+            Exit::Arch(X86Exit::Rdtsc), // sync boundary → sealable stop #1
+            ring,                       // SDK event, position 1 — same Moment
+            serial(b'b'),               // console bytes after the first seal
+            Exit::Arch(X86Exit::Rdtsc), // sync boundary → sealable stop #2
+            Exit::Common(CommonExit::Idle),
+        ]);
+        mb.set_policy(&X86Policy {
+            cpuid: vmm_backend::CpuidModel::default(),
+            msr_filter: vmm_backend::MsrFilter::default(),
+        })
+        .unwrap();
+        let mut live = Vmm::new(mb, GuestRam::new(BIG_RAM).unwrap());
+        live.wire_vtime(
+            VtimeWiring::new(
+                contract_vclock_config(),
+                Box::new(ScriptedWork::at(CUT_WORK)),
+                9,
+            )
+            .unwrap(),
+        );
+        live.wire_snapshot_hashing();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        live.restore_guest_memory(&ram).unwrap();
+        live.step().unwrap(); // the RDTSC prelude → synchronized at CUT_WORK
+        let factory = Box::new(move || {
+            let mut m = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+            m.set_policy(&X86Policy {
+                cpuid: vmm_backend::CpuidModel::default(),
+                msr_filter: vmm_backend::MsrFilter::default(),
+            })
+            .unwrap();
+            let mut v = Vmm::new(m, GuestRam::new(BIG_RAM).unwrap());
+            v.wire_vtime(
+                VtimeWiring::new(
+                    contract_vclock_config(),
+                    Box::new(ScriptedWork::at(CUT_WORK)),
+                    0,
+                )
+                .unwrap(),
+            );
+            v.wire_snapshot_hashing();
+            Ok(v)
+        });
+        ControlServer::new(live, factory)
+    }
+
+    /// Page the `SdkEvents` verb from offset 0 until drained (the remote
+    /// client's discipline), returning the full capture.
+    fn drain_sdk(server: &mut ControlServer<MockBackend>) -> Vec<(u64, u32, Vec<u8>)> {
+        let mut all = Vec::new();
+        loop {
+            let page = match server
+                .handle(&Request::SdkEvents {
+                    offset: all.len() as u32,
+                })
+                .unwrap()
+            {
+                Ok(Reply::SdkEvents(events)) => events,
+                other => panic!("SdkEvents reply: {other:?}"),
+            };
+            if page.is_empty() {
+                return all;
+            }
+            all.extend(page);
+        }
+    }
+
+    /// **The load-bearing determinism property (same-Moment fixture).** Two
+    /// SDK events are emitted at the SAME stamped `Moment`, one before and one
+    /// after the first seal; the seal Moments are that same value too. The two
+    /// seals' cuts differ **only** in prefix length — the event emitted before
+    /// the first seal is included in it (count 1) and the event emitted after
+    /// is excluded, even though every Moment involved is equal — proving the
+    /// cut is by SDK-vector prefix length, never by Moment comparison. Console
+    /// bytes flow through the whole fixture and never enter the count.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated snapshot-seal logic over the mock server VM (task 98 / hm-d8o); pure safe code, logic covered natively"
+    )]
+    fn same_moment_fixture_cuts_by_prefix_length_not_moment() {
+        let mut s = seal_cut_server();
+        hello(&mut s);
+
+        // Sealable stop #1: one SDK event emitted so far.
+        let stop = run_seeking_snapshot(&mut s);
+        assert!(
+            matches!(stop, StopReason::SnapshotPoint { .. }),
+            "expected the first deferred snapshot point, got {stop:?}"
+        );
+        let (snap1, at1, n1, t1) = snap_cut(&mut s);
+        assert_eq!(at1, CUT_WORK, "the seal Moment is the synchronized vns");
+        assert_eq!(n1, 1, "the event emitted before the seal is included");
+        assert!(!t1);
+
+        // Sealable stop #2: a second event — emitted AFTER the first seal but
+        // stamped at the SAME Moment (the scripted work never advances).
+        let stop = run_seeking_snapshot(&mut s);
+        assert!(
+            matches!(stop, StopReason::SnapshotPoint { .. }),
+            "expected the second deferred snapshot point, got {stop:?}"
+        );
+        let (snap2, at2, n2, _) = snap_cut(&mut s);
+        assert_ne!(snap1, snap2);
+        assert_eq!(
+            (at2, n2),
+            (at1, 2),
+            "same seal Moment, strictly larger prefix"
+        );
+
+        // The capture: two events with identical id, payload, AND stamped
+        // Moment — equal to both seals' Moments. Position is the only
+        // discriminator, so no Moment comparison could reproduce either cut;
+        // the stamped prefix lengths (1 vs 2) cut them exactly.
+        let events = drain_sdk(&mut s);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].0, at1, "event 0 is stamped at the seal Moment");
+        assert_eq!(events[1].0, at1, "event 1 shares the same stamped Moment");
+        assert_eq!(events[0].1, events[1].1, "identical event ids");
+        assert_eq!(events[0].2, events[1].2, "identical payloads");
+
+        // Console bytes crossed the fixture (before AND after the first seal)
+        // and are structurally outside the count: the serial capture is its
+        // own stream, and neither seal's count moved for it.
+        let console = drain_console(&mut s);
+        assert_eq!(console, b"ab", "the serial capture saw both bytes");
+        assert_eq!((n1, n2), (1, 2), "console bytes never entered the SDK count");
+    }
+
+    /// **Branch/replay preserves the captured SDK prefix length.** A verbatim
+    /// `replay` of either seal restores the capture to exactly that seal's
+    /// prefix, and a re-seal from the restored state stamps the identical cut;
+    /// a reseeding `branch` keeps the ancestor's event prefix (the declared
+    /// catalog) and stamps the same cut too.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+    )]
+    fn branch_and_replay_preserve_the_captured_sdk_prefix_length() {
+        let mut s = seal_cut_server();
+        hello(&mut s);
+        assert!(matches!(
+            run_seeking_snapshot(&mut s),
+            StopReason::SnapshotPoint { .. }
+        ));
+        let (snap1, at1, n1, _) = snap_cut(&mut s);
+        assert_eq!((at1, n1), (CUT_WORK, 1));
+        assert!(matches!(
+            run_seeking_snapshot(&mut s),
+            StopReason::SnapshotPoint { .. }
+        ));
+        let (snap2, at2, n2, _) = snap_cut(&mut s);
+        assert_eq!((at2, n2), (CUT_WORK, 2));
+
+        // Verbatim replay of seal 1: the capture returns to its cut, and a
+        // re-seal stamps the identical (Moment, prefix) pair.
+        assert_eq!(replay(&mut s, snap1), Ok(Reply::Unit));
+        assert_eq!(drain_sdk(&mut s).len(), 1, "replay restored the prefix");
+        let (_, at, n, _) = snap_cut(&mut s);
+        assert_eq!((at, n), (at1, n1), "the re-sealed cut is identical");
+
+        // Verbatim replay of seal 2: same, at the longer prefix.
+        assert_eq!(replay(&mut s, snap2), Ok(Reply::Unit));
+        assert_eq!(drain_sdk(&mut s).len(), 2);
+        let (_, at, n, _) = snap_cut(&mut s);
+        assert_eq!((at, n), (at2, n2));
+
+        // A reseeding branch off seal 1 carries the ancestor's event prefix
+        // (the declared catalog) — the captured prefix length is preserved
+        // through the fork too.
+        assert_eq!(branch(&mut s, snap1, 0xD1CE), Ok(Reply::Unit));
+        assert_eq!(drain_sdk(&mut s).len(), 1, "branch kept the event prefix");
+        let (_, at, n, _) = snap_cut(&mut s);
+        assert_eq!((at, n), (at1, n1), "the branched fork re-stamps the cut");
+    }
+
+    /// **The cut is identical across same-seed sessions** — two fresh servers
+    /// driven through the identical fixture stamp bit-identical cuts, captures,
+    /// and console pages (the determinism contract; this suite runs on macOS
+    /// and Linux, so platform identity rides the same assertion in CI).
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated snapshot-seal logic over the mock server VM (task 98 / hm-d8o); pure safe code, logic covered natively"
+    )]
+    fn the_cut_is_identical_across_same_seed_sessions() {
+        #[allow(clippy::type_complexity)]
+        let session = || -> (
+            (SnapId, u64, u64, bool),
+            (SnapId, u64, u64, bool),
+            Vec<(u64, u32, Vec<u8>)>,
+            Vec<u8>,
+        ) {
+            let mut s = seal_cut_server();
+            hello(&mut s);
+            assert!(matches!(
+                run_seeking_snapshot(&mut s),
+                StopReason::SnapshotPoint { .. }
+            ));
+            let c1 = snap_cut(&mut s);
+            assert!(matches!(
+                run_seeking_snapshot(&mut s),
+                StopReason::SnapshotPoint { .. }
+            ));
+            let c2 = snap_cut(&mut s);
+            let events = drain_sdk(&mut s);
+            let console = drain_console(&mut s);
+            (c1, c2, events, console)
+        };
+        assert_eq!(session(), session(), "same seed ⇒ bit-identical cuts");
+    }
+
     // ===================== task 81: the taint guard =======================
 
     /// Take a snapshot, returning its handle and the taint bit its reply carries
-    /// (`Reply::SnapId` ⇒ untainted; `Reply::Snapshot{tainted}` ⇒ the flag).
+    /// (task 127: the one seal-bound `Reply::Snapshot` carries the flag both ways).
     fn snap_tainted(server: &mut ControlServer<MockBackend>) -> (SnapId, bool) {
         match server.handle(&Request::Snapshot).unwrap() {
-            Ok(Reply::SnapId(id)) => (id, false),
-            Ok(Reply::Snapshot { id, tainted }) => (id, tainted),
+            Ok(Reply::Snapshot { id, tainted, .. }) => (id, tainted),
             other => panic!("snapshot reply: {other:?}"),
         }
     }
@@ -6561,7 +6873,10 @@ mod tests {
     }
 
     /// A snapshot taken from a tainted timeline reports `tainted: true`; one taken
-    /// before any `exec` reports untainted (and via the pre-81 `SnapId` reply).
+    /// before any `exec` reports untainted. Both ride the one seal-bound reply
+    /// (task 127), so the tainted seal binds the same evidence cut fields the
+    /// untainted one does — here the deadline-0 `exec` never advanced the guest,
+    /// so the two cuts are identical.
     #[test]
     #[cfg_attr(
         miri,
@@ -6570,11 +6885,18 @@ mod tests {
     fn snapshot_reply_carries_the_taint() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
-        let (_clean, clean_taint) = snap_tainted(&mut s);
+        let (_clean, clean_at, clean_sdk, clean_taint) = snap_cut(&mut s);
         assert!(!clean_taint, "a pre-exec snapshot is untainted");
         exec(&mut s, "ls /");
-        let (_dirty, dirty_taint) = snap_tainted(&mut s);
+        let (_dirty, dirty_at, dirty_sdk, dirty_taint) = snap_cut(&mut s);
         assert!(dirty_taint, "a post-exec snapshot is tainted");
+        // Task 127: taint changes only the taint bit — the tainted seal still
+        // binds its exact cut, identical here because the guest never advanced.
+        assert_eq!(
+            (dirty_at, dirty_sdk),
+            (clean_at, clean_sdk),
+            "the tainted reply carries the same server-stamped cut"
+        );
     }
 
     /// A `branch` **and** a `replay` from a tainted snapshot both yield a tainted

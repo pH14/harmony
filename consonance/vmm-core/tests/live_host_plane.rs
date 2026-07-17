@@ -218,7 +218,7 @@ fn host_plane_record_replay_closure() {
     let base: SnapId = loop {
         attempts += 1;
         match call(&mut s, &Request::Snapshot) {
-            Ok(Reply::SnapId(id)) => break id,
+            Ok(Reply::Snapshot { id, .. }) => break id,
             Ok(other) => panic!("snapshot answered {other:?}"),
             Err(control_proto::ControlError::NotQuiescent) => {
                 assert!(
