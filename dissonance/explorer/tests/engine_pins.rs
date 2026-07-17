@@ -76,7 +76,7 @@ fn nested_fork_below_a_non_genesis_base_is_admitted_genesis_complete() {
             0,
             "frontier entry {i} is genesis-complete"
         );
-        if entry.exemplar.at.0 == SNAP_AT2 * VTIME_STEP {
+        if entry.exemplar.cut.at.0 == SNAP_AT2 * VTIME_STEP {
             nested += 1;
             assert_eq!(
                 decode(&entry.env).unwrap().pos,
@@ -86,4 +86,40 @@ fn nested_fork_below_a_non_genesis_base_is_admitted_genesis_complete() {
         }
     }
     assert!(nested >= 1, "the growth came from a nested (SNAP_AT2) fork");
+}
+
+/// The machine-stamped evidence cut rides admission and lineage **verbatim**
+/// (task 127): every admitted entry carries the cut its fork's seal stamped —
+/// for the toy, `sdk_events` is the answer-log prefix length, locked to the
+/// seal moment by `at == sdk_events · VTIME_STEP` — and the engine's lineage
+/// record for the entry's live seal holds the identical cut. Nothing between
+/// the seal and the frontier re-derives either half.
+#[test]
+fn admitted_entries_and_lineage_carry_the_stamped_cut() {
+    let mut ex =
+        Explorer::new(ToyMachine::new(), Box::new(ToyCodec), pin_composition(), 7).unwrap();
+    for _ in 0..8 {
+        ex.step().unwrap();
+    }
+    assert!(!ex.frontier().is_empty(), "steps admitted entries");
+    let entries: Vec<_> = ex.frontier().iter().map(|(r, e)| (r, e.clone())).collect();
+    for (r, entry) in entries {
+        let cut = entry.exemplar.cut;
+        assert_eq!(
+            cut.at.0,
+            cut.sdk_events * VTIME_STEP,
+            "the toy's stamp binds the seal moment to its capture prefix — a \
+             re-derived or dropped half would break the lockstep"
+        );
+        // The eagerly-minted seal's lineage record carries the same stamp.
+        let seal = ex.seal_of(r).expect("eager seal is live");
+        assert_eq!(
+            ex.materializer()
+                .lineage_of(seal)
+                .expect("registered lineage")
+                .cut,
+            cut,
+            "persisted lineage carries the server-stamped cut verbatim"
+        );
+    }
 }

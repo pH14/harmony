@@ -10,6 +10,7 @@ pub fn explorer::adapter::AdapterEnv::encode(&self) -> explorer::Reproducer
 pub struct explorer::adapter::SocketMachine<S: std::io::Read + std::io::Write>
 impl<S: std::io::Read + std::io::Write> explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::connect(S, environment::recorded::EnvSpec) -> core::result::Result<Self, explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::snapshot_cut(&self, explorer::SnapId) -> core::option::Option<explorer::EvidenceCut>
 impl<S: std::io::Read + std::io::Write> explorer::Machine for explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::MachineError>
@@ -20,7 +21,7 @@ pub fn explorer::adapter::SocketMachine<S>::recorded_env(&self) -> core::result:
 pub fn explorer::adapter::SocketMachine<S>::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::EvidenceCut), explorer::MachineError>
 pub struct explorer::adapter::SpecEnvCodec
 impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
 pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Reproducer, &explorer::Reproducer) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
@@ -68,6 +69,12 @@ pub explorer::EnvCodecError::Overflow
 pub explorer::EnvCodecError::UnsupportedComposition
 pub enum explorer::MachineError
 pub explorer::MachineError::BadEnvironment(u16)
+pub explorer::MachineError::CutDivergence
+pub explorer::MachineError::CutDivergence::at: u64
+pub explorer::MachineError::CutDivergence::exemplar: u64
+pub explorer::MachineError::CutDivergence::got_at: u64
+pub explorer::MachineError::CutDivergence::got_sdk_events: u64
+pub explorer::MachineError::CutDivergence::sdk_events: u64
 pub explorer::MachineError::EnvCodec(explorer::EnvCodecError)
 pub explorer::MachineError::Inadmissible(alloc::string::String)
 pub explorer::MachineError::MaterializeDivergence
@@ -159,6 +166,9 @@ impl explorer::DeclineTactic
 pub fn explorer::DeclineTactic::new() -> Self
 impl explorer::Tactic for explorer::DeclineTactic
 pub fn explorer::DeclineTactic::decide(&mut self, &explorer::DecisionPoint, &mut explorer::Prng) -> explorer::Answer
+pub struct explorer::EvidenceCut
+pub explorer::EvidenceCut::at: explorer::Moment
+pub explorer::EvidenceCut::sdk_events: u64
 pub struct explorer::ExemplarRef(pub u64)
 pub struct explorer::ExploreExploitSelector
 impl explorer::ExploreExploitSelector
@@ -248,7 +258,7 @@ pub fn explorer::IdentityCells::new() -> Self
 impl explorer::CellFn for explorer::IdentityCells
 pub fn explorer::IdentityCells::key(&self, explorer::Moment, &explorer::FeatureSet) -> explorer::CellKey
 pub struct explorer::Lineage
-pub explorer::Lineage::at: explorer::Moment
+pub explorer::Lineage::cut: explorer::EvidenceCut
 pub explorer::Lineage::parent: explorer::SnapId
 pub explorer::Lineage::suffix: explorer::Reproducer
 pub struct explorer::Materialization
@@ -271,7 +281,7 @@ pub fn explorer::Materializer::lineage_of(&self, explorer::SnapId) -> core::opti
 pub fn explorer::Materializer::materialize<M: explorer::Machine>(&mut self, &mut M, &dyn explorer::EnvCodec, &explorer::Frontier, explorer::ExemplarRef) -> core::result::Result<(explorer::SnapId, core::option::Option<explorer::Materialization>), explorer::MachineError>
 pub fn explorer::Materializer::modeled_cost(&self, &explorer::Frontier, explorer::ExemplarRef) -> core::option::Option<u64>
 pub fn explorer::Materializer::new(explorer::SnapId, explorer::Moment) -> Self
-pub fn explorer::Materializer::register(&mut self, explorer::ExemplarRef, explorer::SnapId, explorer::SnapId, explorer::Reproducer, explorer::Moment) -> core::option::Option<explorer::SnapId>
+pub fn explorer::Materializer::register(&mut self, explorer::ExemplarRef, explorer::SnapId, explorer::SnapId, explorer::Reproducer, explorer::EvidenceCut) -> core::option::Option<explorer::SnapId>
 pub fn explorer::Materializer::seal_of(&self, explorer::ExemplarRef) -> core::option::Option<explorer::SnapId>
 pub fn explorer::Materializer::sealable_at(&self, explorer::Moment) -> bool
 pub fn explorer::Materializer::sealed_count(&self) -> usize
@@ -307,6 +317,7 @@ pub struct explorer::SnapId(pub u64)
 pub struct explorer::SocketMachine<S: std::io::Read + std::io::Write>
 impl<S: std::io::Read + std::io::Write> explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::connect(S, environment::recorded::EnvSpec) -> core::result::Result<Self, explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::snapshot_cut(&self, explorer::SnapId) -> core::option::Option<explorer::EvidenceCut>
 impl<S: std::io::Read + std::io::Write> explorer::Machine for explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::MachineError>
@@ -317,7 +328,7 @@ pub fn explorer::adapter::SocketMachine<S>::recorded_env(&self) -> core::result:
 pub fn explorer::adapter::SocketMachine<S>::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::EvidenceCut), explorer::MachineError>
 pub struct explorer::SpecEnvCodec
 impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
 pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Reproducer, &explorer::Reproducer) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
@@ -338,7 +349,7 @@ pub fn explorer::TerminalOracle::new() -> Self
 impl explorer::Oracle for explorer::TerminalOracle
 pub fn explorer::TerminalOracle::judge(&self, &explorer::RunTrace) -> core::option::Option<explorer::Bug>
 pub struct explorer::VirtualExemplar
-pub explorer::VirtualExemplar::at: explorer::Moment
+pub explorer::VirtualExemplar::cut: explorer::EvidenceCut
 pub explorer::VirtualExemplar::parent: explorer::SnapId
 pub explorer::VirtualExemplar::seed: u64
 pub explorer::VirtualExemplar::suffix: explorer::Reproducer
@@ -376,7 +387,7 @@ pub fn explorer::Machine::recorded_env(&self) -> core::result::Result<explorer::
 pub fn explorer::Machine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::Machine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
 pub fn explorer::Machine::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::MachineError>
-pub fn explorer::Machine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
+pub fn explorer::Machine::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::EvidenceCut), explorer::MachineError>
 impl<S: std::io::Read + std::io::Write> explorer::Machine for explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::MachineError>
@@ -387,7 +398,7 @@ pub fn explorer::adapter::SocketMachine<S>::recorded_env(&self) -> core::result:
 pub fn explorer::adapter::SocketMachine<S>::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::EvidenceCut), explorer::MachineError>
 pub trait explorer::MachineFactory
 pub type explorer::MachineFactory::M: explorer::Machine
 pub fn explorer::MachineFactory::spawn(&self) -> Self::M

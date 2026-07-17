@@ -340,7 +340,7 @@ pub struct Explorer<M: Machine, S: Strategy> {
 impl<M: Machine, S: Strategy> Explorer<M, S> {
     pub fn new(machine: M, strategy: S, env: Box<dyn EnvCodec>) -> Result<Self, MachineError> {
         let mut machine = machine;
-        let genesis = machine.snapshot()?;
+        let (genesis, _cut) = machine.snapshot()?;
         Ok(Self {
             machine,
             strategy,
@@ -405,7 +405,7 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
                     resolve = Some(answer);
                 }
                 StopReason::SnapshotPoint { .. } => {
-                    let snap = self.machine.snapshot()?;
+                    let (snap, _cut) = self.machine.snapshot()?;
                     let prefix_env = match self.machine.recorded_env() {
                         Ok(env) => env,
                         Err(e) => {

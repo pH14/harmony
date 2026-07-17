@@ -64,6 +64,36 @@ use crate::{Answer, Reproducer, SnapId, StopReason};
 )]
 pub struct Moment(pub u64);
 
+/// A seal's **evidence cut** (task 127, bead `hm-bbx.6`): the server-stamped
+/// binding of a successful seal to its exact evidence boundary — the
+/// synchronized seal [`Moment`] plus the **included SDK-event count**, the
+/// ordered SDK-capture vector's prefix length at the seal. Mirrors the
+/// `control-proto` snapshot reply's cut fields (conventions rule 2 — defined
+/// locally, not imported); a [`Machine`] test double stamps its own from the
+/// same state its seal captures.
+///
+/// **Half-open, by prefix length — never by `Moment` comparison**: persisted
+/// SDK-capture positions `< sdk_events` are included (including the exact
+/// subset emitted *at* the seal's `Moment`); positions `>= sdk_events` are
+/// excluded. Several events may share one stamped `Moment`, so the count is
+/// the only exact boundary. The stamp is captured **with** the seal by
+/// whatever produced it — the sole authority; nothing downstream reconstructs
+/// it with a second read. Console/scrape bytes are a separate source-local
+/// stream with no cursor here, so they are structurally unable to enter
+/// `sdk_events`; a later seal-relative source gets its own declared cursor,
+/// and independent cursors never imply cross-source order.
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
+)]
+pub struct EvidenceCut {
+    /// The synchronized seal `Moment` — where the seal was taken on the
+    /// deterministic axis.
+    pub at: Moment,
+    /// The included SDK-event count: the SDK capture vector's prefix length
+    /// at the seal (`0` for a machine with no SDK channel).
+    pub sdk_events: u64,
+}
+
 /// The shape-and-content view of a coverage map (instrument tier): AFL-style
 /// edge counts, snapshotted from the backend's map. Only a view — the explorer
 /// never interprets its layout beyond generic novelty (search-loop blindness);
@@ -264,11 +294,15 @@ pub struct VirtualExemplar {
     /// the schema-blind engine; the authoritative reproducer is `suffix`.
     pub seed: u64,
     /// The tail-complete delta since `parent` (the compose contract,
-    /// `docs/DISSONANCE.md` task 93): replaying it from `parent` reaches `at`.
+    /// `docs/DISSONANCE.md` task 93): replaying it from `parent` reaches
+    /// `cut.at`.
     pub suffix: Reproducer,
-    /// Where to seal within the branch (the sealable point this exemplar
-    /// addresses).
-    pub at: Moment,
+    /// The seal's server-stamped [`EvidenceCut`] (task 127): where to seal
+    /// within the branch (`cut.at` — the sealable point this exemplar
+    /// addresses) **and** the included SDK-event count at that seal. Stamped
+    /// by the machine at the fork's eager seal and carried through the
+    /// persisted frontier/lineage — never reconstructed by a second read.
+    pub cut: EvidenceCut,
 }
 
 /// A reportable bug: a genesis-complete reproducer, the stop that defines it,
@@ -669,7 +703,10 @@ mod tests {
             parent: SnapId(3),
             seed: 99,
             suffix: env(vec![9]),
-            at: Moment(40),
+            cut: EvidenceCut {
+                at: Moment(40),
+                sdk_events: 2,
+            },
         };
         let back: VirtualExemplar =
             serde_json::from_str(&serde_json::to_string(&ex).expect("ser")).expect("de");
@@ -716,7 +753,10 @@ mod tests {
                 parent: SnapId(1),
                 seed,
                 suffix: env(vec![]),
-                at: Moment(40),
+                cut: EvidenceCut {
+                    at: Moment(40),
+                    sdk_events: 0,
+                },
             },
             env: env(vec![]),
             reward: Reward { new_cells: 1 },
@@ -756,7 +796,10 @@ mod tests {
                 parent: SnapId(1),
                 seed,
                 suffix: env(vec![]),
-                at: Moment(40),
+                cut: EvidenceCut {
+                    at: Moment(40),
+                    sdk_events: 0,
+                },
             },
             env: env(vec![]),
             reward: Reward { new_cells: 1 },

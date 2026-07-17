@@ -52,23 +52,26 @@ use std::collections::BTreeMap;
 
 use crate::error::MachineError;
 use crate::seam::{EnvCodec, Machine};
-use crate::spine::{ExemplarRef, Frontier, Moment, VirtualExemplar};
+use crate::spine::{EvidenceCut, ExemplarRef, Frontier, Moment, VirtualExemplar};
 use crate::{Reproducer, SnapId, StopConditions, StopMask};
 
 /// One lineage record: how a sealed snapshot was produced — its parent seal
-/// (or genesis), the branch-local suffix that took the parent to `at`, and the
-/// moment it was sealed at. Records are **never removed**: the chain must
-/// outlive the eviction of any seal on it, or an evicted parent would strand
-/// its descendants on the genesis worst case forever.
+/// (or genesis), the branch-local suffix that took the parent to the seal,
+/// and the seal's server-stamped evidence cut (task 127). Records are
+/// **never removed**: the chain must outlive the eviction of any seal on it,
+/// or an evicted parent would strand its descendants on the genesis worst
+/// case forever.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Lineage {
     /// The snapshot this seal was branched from (a prior seal, or genesis).
     pub parent: SnapId,
-    /// The branch-local delta replayed from `parent` to reach `at`
+    /// The branch-local delta replayed from `parent` to reach `cut.at`
     /// (tail-complete, the task-93 compose contract).
     pub suffix: Reproducer,
-    /// The moment the seal was taken at.
-    pub at: Moment,
+    /// The seal's server-stamped [`EvidenceCut`]: the moment it was taken at
+    /// plus the included SDK-event count — carried through the persisted
+    /// lineage exactly as stamped, never re-derived.
+    pub cut: EvidenceCut,
 }
 
 /// The depth accounting of one materialization that actually ran (a seal-cache
@@ -246,22 +249,29 @@ impl Materializer {
         self.lineage.get(&snap.0)
     }
 
-    /// Record a freshly-minted seal for entry `r`: `seal` was taken at `at` on
-    /// a branch of `parent` replaying `suffix`. Returns the seal `r` previously
-    /// held, if any — the caller owns dropping that displaced handle (under
-    /// stable ids the engine never displaces; a driver re-registering an entry
-    /// must release it or leak).
+    /// Record a freshly-minted seal for entry `r`: `seal` was taken (with its
+    /// stamped `cut`) on a branch of `parent` replaying `suffix`. Returns the
+    /// seal `r` previously held, if any — the caller owns dropping that
+    /// displaced handle (under stable ids the engine never displaces; a driver
+    /// re-registering an entry must release it or leak).
     pub fn register(
         &mut self,
         r: ExemplarRef,
         seal: SnapId,
         parent: SnapId,
         suffix: Reproducer,
-        at: Moment,
+        cut: EvidenceCut,
     ) -> Option<SnapId> {
         let displaced = self.seals.insert(r.0, seal);
         self.owner.insert(seal.0, r);
-        self.lineage.insert(seal.0, Lineage { parent, suffix, at });
+        self.lineage.insert(
+            seal.0,
+            Lineage {
+                parent,
+                suffix,
+                cut,
+            },
+        );
         displaced
     }
 
@@ -298,7 +308,7 @@ impl Materializer {
                 let base_at = self
                     .lineage
                     .get(&cur.0)
-                    .map(|l| l.at)
+                    .map(|l| l.cut.at)
                     .unwrap_or(self.genesis_at);
                 fold_up.reverse();
                 return Walk {
@@ -345,7 +355,7 @@ impl Materializer {
             return 0;
         }
         let walk = self.nearest_retained(ex, excluding);
-        ex.at.0.saturating_sub(walk.base_at.0)
+        ex.cut.at.0.saturating_sub(walk.base_at.0)
     }
 
     /// The seal for entry `r`, materializing it if needed. Returns the live
@@ -381,7 +391,7 @@ impl Materializer {
         if let Some(&seal) = self.seals.get(&r.0) {
             return Ok((seal, None));
         }
-        let at = entry.exemplar.at;
+        let at = entry.exemplar.cut.at;
         if !(self.sealable)(at) {
             // The RESTRICTED-arm refusal: such an exemplar should never have
             // been admitted (the Archive keys on the predicate, task 64).
@@ -442,8 +452,25 @@ impl Materializer {
                 landed: landed.0,
             });
         }
-        let seal = machine.snapshot()?;
-        let displaced = self.register(r, seal, walk.base, env, at);
+        let (seal, cut) = machine.snapshot()?;
+        // Task 127: the re-materialized seal must re-stamp the IDENTICAL cut
+        // the entry was admitted under — determinism makes the replayed state
+        // (and its restored-plus-replayed SDK prefix) exactly the original, so
+        // any difference is a determinism/transport violation to escalate,
+        // never a stamp to overwrite. Release the fresh handle first (best
+        // effort, preserving the divergence error) so it cannot leak.
+        if cut != entry.exemplar.cut {
+            let want = entry.exemplar.cut;
+            let _ = machine.drop_snap(seal);
+            return Err(MachineError::CutDivergence {
+                exemplar: r.0,
+                at: want.at.0,
+                sdk_events: want.sdk_events,
+                got_at: cut.at.0,
+                got_sdk_events: cut.sdk_events,
+            });
+        }
+        let displaced = self.register(r, seal, walk.base, env, cut);
         debug_assert!(displaced.is_none(), "the seal cache was checked above");
         Ok((
             seal,
@@ -574,7 +601,18 @@ mod tests {
             parent,
             seed: 0,
             suffix: env(vec![]),
+            cut: EvidenceCut {
+                at: Moment(at),
+                sdk_events: 0,
+            },
+        }
+    }
+
+    /// A cut at `at` with no SDK events — the toy-tier stamp.
+    fn cut(at: u64) -> EvidenceCut {
+        EvidenceCut {
             at: Moment(at),
+            sdk_events: 0,
         }
     }
 
@@ -628,12 +666,12 @@ mod tests {
         // Chain: genesis(100) → E0 @ 200 (seal 10) → E1 @ 350 (seal 11).
         let r0 = f.insert(entry(genesis, 200));
         assert_eq!(
-            m.register(r0, SnapId(10), genesis, env(vec![]), Moment(200)),
+            m.register(r0, SnapId(10), genesis, env(vec![]), cut(200)),
             None
         );
         let r1 = f.insert(entry(SnapId(10), 350));
         assert_eq!(
-            m.register(r1, SnapId(11), SnapId(10), env(vec![]), Moment(350)),
+            m.register(r1, SnapId(11), SnapId(10), env(vec![]), cut(350)),
             None
         );
 
@@ -675,13 +713,13 @@ mod tests {
         let mut f = Frontier::new();
 
         let r0 = f.insert(entry(genesis, 10));
-        m.register(r0, SnapId(10), genesis, env(vec![0]), Moment(10));
+        m.register(r0, SnapId(10), genesis, env(vec![0]), cut(10));
         let r1 = f.insert(entry(SnapId(10), 30));
-        m.register(r1, SnapId(11), SnapId(10), env(vec![1]), Moment(30));
+        m.register(r1, SnapId(11), SnapId(10), env(vec![1]), cut(30));
 
         // Simulate: seal 10 evicted, then r0 re-materialized under seal 20.
         m.seals.remove(&r0.0);
-        m.register(r0, SnapId(20), genesis, env(vec![0]), Moment(10));
+        m.register(r0, SnapId(20), genesis, env(vec![0]), cut(10));
 
         // r1's exemplar names the ORIGINAL SnapId(10); the walk must resolve
         // it to the live re-minted handle via owner, at the same moment.

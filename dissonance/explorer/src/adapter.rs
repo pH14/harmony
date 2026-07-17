@@ -130,7 +130,7 @@ use std::io::{Read, Write};
 use environment::{Action, EnvSpec, FaultPolicy};
 
 use crate::error::{EnvCodecError, MachineError};
-use crate::{Answer, Machine, Moment, Reproducer, SnapId, StopConditions, StopReason};
+use crate::{Answer, EvidenceCut, Machine, Moment, Reproducer, SnapId, StopConditions, StopReason};
 
 /// The adapter blob format version, mirrored into [`Reproducer::blob_version`]
 /// for every explorer-side blob this adapter mints. Distinct from the inner
@@ -474,10 +474,18 @@ fn map_env_err(e: environment::EnvError) -> EnvCodecError {
 /// `replay`/`branch` restores the adapter's recording state along with the VM.
 #[derive(Clone, Debug)]
 struct SnapMeta {
-    /// The absolute `Moment` (effective V-time) the snapshot was captured at —
-    /// the `pos` of the timeline at capture, and the origin a **`branch`** off
-    /// this snapshot roots its new timeline at.
-    vtime: u64,
+    /// The **server-stamped** seal `Moment` (task 127): the absolute effective
+    /// V-time the seal was captured at, taken from the snapshot reply's
+    /// evidence cut — never from the client's own position bookkeeping (the
+    /// stamp is the sole authority; the server validates a later branch
+    /// against exactly this floor). The `pos` of the timeline at capture, and
+    /// the origin a **`branch`** off this snapshot roots its new timeline at.
+    at: u64,
+    /// The **server-stamped** included SDK-event count at the seal (task 127):
+    /// the SDK capture vector's prefix length, carried through this metadata
+    /// so a consumer ([`SocketMachine::snapshot_cut`]) reads the stamp — never
+    /// a second `SdkEvents` round-trip as authority.
+    sdk_events: u64,
     /// The **branch origin** that was active when the snapshot was taken (the
     /// `Moment` [`spec`](Self::spec)'s overrides are keyed relative to). For a
     /// snapshot taken mid-timeline this differs from [`vtime`](Self::vtime)
@@ -685,6 +693,18 @@ impl<S: Read + Write> SocketMachine<S> {
             ))),
         }
     }
+
+    /// The **server-stamped** [`EvidenceCut`] of a live snapshot handle (task
+    /// 127): the seal `Moment` and included SDK-event count exactly as the
+    /// snapshot reply bound them, read from this adapter's metadata — no wire
+    /// traffic and **no second read as authority**. `None` for a handle this
+    /// adapter did not mint (or has dropped).
+    pub fn snapshot_cut(&self, snap: SnapId) -> Option<EvidenceCut> {
+        self.snaps.get(&snap.0).map(|m| EvidenceCut {
+            at: Moment(m.at),
+            sdk_events: m.sdk_events,
+        })
+    }
 }
 
 /// The client half of the caps exchange: same pins as the server (the negotiated
@@ -785,7 +805,11 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         let Some(meta) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
-        let origin = meta.vtime;
+        // The restore origin is the snapshot's SERVER-STAMPED seal Moment
+        // (task 127) — exactly the floor the server validates the branch env
+        // against, so the single frame conversion re-anchors on the authority,
+        // not on client position bookkeeping.
+        let origin = meta.at;
         let restored_serial_len = meta.serial_len;
         // The single outbound frame conversion (module doc, "Coordinate
         // frames"): the blob's override keys are RELATIVE to its origin, the
@@ -847,7 +871,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         // no decisions ⇒ no keys). `pos` is the snapshot point (`vtime`).
         let (branch_offset, pos, spec, serial_len) = (
             meta.branch_offset,
-            meta.vtime,
+            meta.at,
             meta.spec.clone(),
             meta.serial_len,
         );
@@ -932,31 +956,61 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         Ok(stop)
     }
 
-    fn snapshot(&mut self) -> Result<SnapId, MachineError> {
-        let id = match self.call(&control_proto::Request::Snapshot)? {
-            control_proto::Reply::SnapId(id) => id,
+    fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
+        // The seal-bound reply (task 127): the server stamps handle + seal
+        // Moment + included SDK-event count + taint atomically from the same
+        // stopped state. The stamp is the sole authority for the cut — this
+        // adapter records it verbatim and never derives either half itself.
+        let (id, at, sdk_events, tainted) = match self.call(&control_proto::Request::Snapshot)? {
+            control_proto::Reply::Snapshot {
+                id,
+                at,
+                sdk_events,
+                tainted,
+            } => (id, at, sdk_events, tainted),
             other => {
                 return Err(MachineError::Transport(format!(
                     "snapshot answered with an unexpected reply: {other:?}"
                 )));
             }
         };
+        // The campaign machine never improvises (`exec` is resolution's verb),
+        // so a tainted seal means the session's timeline was improvised out
+        // from under this adapter — refuse it loudly rather than admit a
+        // reproducerless state into the campaign (`RecordedEnv` on it would be
+        // a loud `Tainted` anyway; fail at the seal, where the cause is clear).
+        if tainted {
+            return Err(MachineError::Transport(format!(
+                "snapshot {} is tainted: the session timeline was improvised (exec) outside                  this campaign machine",
+                id.0
+            )));
+        }
         // Baseline the console cursor for branches off this snapshot: probe the
         // server-side serial length now (the length a later `branch`/`replay` will
         // restore the console to), so `console()` reads only a run's NEW bytes.
         // A pure read — `snapshot` did not advance the VM, so this is the captured
-        // length. Probed once per snapshot (rare), never per branch (hot).
+        // length. Probed once per snapshot (rare), never per branch (hot). (The
+        // console cursor is client bookkeeping over a source-local stream — NOT
+        // part of the seal's evidence cut, which the server stamped above; the
+        // serial capture is structurally unable to enter `sdk_events`.)
         let serial_len = self.console_total()?;
         self.snaps.insert(
             id.0,
             SnapMeta {
-                vtime: self.pos,
+                at: at.0,
+                sdk_events,
                 branch_offset: self.branch_offset,
                 spec: self.current.clone(),
                 serial_len,
             },
         );
-        Ok(SnapId(id.0))
+        Ok((
+            SnapId(id.0),
+            EvidenceCut {
+                at: Moment(at.0),
+                sdk_events,
+            },
+        ))
     }
 
     fn drop_snap(&mut self, snap: SnapId) -> Result<(), MachineError> {
@@ -1097,8 +1151,8 @@ mod tests {
         ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, control_error_to_machine,
     };
     use crate::{
-        Answer, EnvCodec, EnvCodecError, Machine, MachineError, Moment, Reproducer, StopConditions,
-        StopMask,
+        Answer, EnvCodec, EnvCodecError, Machine, MachineError, Moment, Reproducer, SnapId,
+        StopConditions, StopMask,
     };
 
     fn spec_with_overrides(seed: u64, keys: &[u64]) -> EnvSpec {
@@ -1603,6 +1657,17 @@ mod tests {
         }
     }
 
+    /// The seal-bound snapshot reply a server stamps (task 127): handle + the
+    /// evidence cut (seal `Moment` + included SDK-event count), untainted.
+    fn snap_reply(id: u64, at: u64, sdk_events: u64) -> control_proto::Reply {
+        control_proto::Reply::Snapshot {
+            id: control_proto::SnapId(id),
+            at: control_proto::Moment(at),
+            sdk_events,
+            tainted: false,
+        }
+    }
+
     fn server_caps_reply() -> control_proto::Reply {
         server_caps_reply_geo(0, 0)
     }
@@ -1645,16 +1710,16 @@ mod tests {
     /// mis-keyed (undetectable by `compose`).
     #[test]
     fn snapshot_immediately_after_connect_records_the_true_origin_not_zero() {
-        use control_proto::{Reply, SnapId as WsSnapId};
+        use control_proto::Reply;
         let stream = scripted(&[
-            server_caps_reply(),        // hello
-            probe_reply(5000),          // connect's V-time probe: post-readiness
-            Reply::SnapId(WsSnapId(1)), // snapshot (taken immediately, no run)
-            console_reply(0),           // snapshot's console-length probe (cursor baseline)
-            Reply::Unit,                // branch
+            server_caps_reply(),    // hello
+            probe_reply(5000),      // connect's V-time probe: post-readiness
+            snap_reply(1, 5000, 0), // snapshot (taken immediately, no run)
+            console_reply(0),       // snapshot's console-length probe (cursor baseline)
+            Reply::Unit,            // branch
         ]);
         let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
-        let snap = m.snapshot().unwrap();
+        let (snap, _cut) = m.snapshot().unwrap();
         m.branch(snap, &SpecEnvCodec.seeded(7)).unwrap();
         let recorded = AdapterEnv::decode(&m.recorded_env().unwrap()).unwrap();
         assert_eq!(
@@ -1675,22 +1740,22 @@ mod tests {
     /// be mis-keyed once decisions exist (dormant in v1).
     #[test]
     fn replay_restores_the_branch_origin_at_capture_not_the_snapshot_vtime() {
-        use control_proto::{Moment as WsVTime, Reply, SnapId as WsSnapId, StopReason as Ws};
+        use control_proto::{Moment as WsVTime, Reply, StopReason as Ws};
         let stream = scripted(&[
-            server_caps_reply(),        // hello
-            probe_reply(50),            // connect probe → origin 50
-            Reply::SnapId(WsSnapId(1)), // snapshot S1 @ 50 (branch base)
-            console_reply(0),           // S1 console-length probe
-            Reply::Unit,                // branch(S1, seeded) → timeline rooted at 50
+            server_caps_reply(),  // hello
+            probe_reply(50),      // connect probe → origin 50
+            snap_reply(1, 50, 0), // snapshot S1 @ 50 (branch base)
+            console_reply(0),     // S1 console-length probe
+            Reply::Unit,          // branch(S1, seeded) → timeline rooted at 50
             Reply::Stop(Ws::Deadline {
                 vtime: WsVTime(200),
             }), // run → advance pos to 200 (branch_offset stays 50)
-            Reply::SnapId(WsSnapId(2)), // snapshot S2 @ vtime 200, branch_offset 50
-            console_reply(0),           // S2 console-length probe
-            Reply::Unit,                // replay(S2)
+            snap_reply(2, 200, 0), // snapshot S2 @ vtime 200, branch_offset 50
+            console_reply(0),     // S2 console-length probe
+            Reply::Unit,          // replay(S2)
         ]);
         let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
-        let s1 = m.snapshot().unwrap();
+        let (s1, _) = m.snapshot().unwrap();
         m.branch(s1, &SpecEnvCodec.seeded(7)).unwrap();
         let _ = m
             .run(
@@ -1701,7 +1766,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let s2 = m.snapshot().unwrap();
+        let (s2, _) = m.snapshot().unwrap();
         m.replay(s2).unwrap();
         let recorded = AdapterEnv::decode(&m.recorded_env().unwrap()).unwrap();
         assert_eq!(
@@ -1709,6 +1774,119 @@ mod tests {
             "replay restores the branch origin at capture (50), not the snapshot V-time (200)"
         );
         assert_eq!(recorded.pos, 200, "pos is the snapshot point");
+    }
+
+    /// The server stamp is the **sole authority** for a snapshot's cut (task
+    /// 127): `snapshot` returns the stamped `(Moment, sdk_events)` pair
+    /// verbatim, `snapshot_cut` re-reads it from metadata (no wire traffic),
+    /// and a later `branch` re-anchors its blob-frame keys at the **stamp** —
+    /// scripted here to *differ* from the client's own position bookkeeping
+    /// (`pos` = 200 from the probe, stamp = 210), so the test fails if any
+    /// path falls back to a client-derived second read.
+    #[test]
+    fn snapshot_records_the_server_stamped_cut_as_the_sole_authority() {
+        use control_proto::Reply;
+        let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut reply_bytes = Vec::new();
+        for (i, reply) in [
+            server_caps_reply(),   // hello
+            probe_reply(200),      // connect probe → client pos 200
+            snap_reply(1, 210, 3), // the STAMP disagrees with pos on purpose
+            console_reply(0),      // snapshot's console-length probe
+            Reply::Unit,           // branch
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            control_proto::encode_reply((i + 1) as u32, &Ok(reply), &mut reply_bytes).unwrap();
+        }
+        let stream = CapturingStream {
+            replies: Cursor::new(reply_bytes),
+            written: std::rc::Rc::clone(&written),
+        };
+        let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
+        let (snap, cut) = m.snapshot().unwrap();
+        assert_eq!(
+            (cut.at.0, cut.sdk_events),
+            (210, 3),
+            "the returned cut is the stamp, verbatim"
+        );
+        assert_eq!(
+            m.snapshot_cut(snap),
+            Some(cut),
+            "the metadata carries the stamp — no second read"
+        );
+        assert_eq!(m.snapshot_cut(SnapId(99)), None, "unknown handle: no cut");
+
+        // A branch off this snapshot re-anchors at the STAMPED Moment (210),
+        // not the client's pos (200): the relative key 5 crosses the wire at
+        // 215.
+        let fault = Action::Host(HostFault::CorruptMemory {
+            gpa: 64,
+            mask: environment::BitMask(0xFF),
+        });
+        let mut overrides = BTreeMap::new();
+        overrides.insert(5u64, fault);
+        let env = AdapterEnv {
+            base_offset: 210,
+            pos: 260,
+            spec: EnvSpec::Recorded {
+                seed: 7,
+                policy: FaultPolicy::none(),
+                overrides,
+                standing: Vec::new(),
+                reseeds: std::collections::BTreeMap::new(),
+            },
+        }
+        .encode();
+        m.branch(snap, &env).unwrap();
+        let reqs = captured_requests(&written.borrow());
+        let wire = reqs
+            .iter()
+            .find_map(|r| match r {
+                control_proto::Request::Branch { env, .. } => Some(env.clone()),
+                _ => None,
+            })
+            .expect("a Branch request went on the wire");
+        let spec = EnvSpec::decode(&wire.bytes).expect("wire spec decodes");
+        let keys: Vec<u64> = spec.overrides().keys().copied().collect();
+        assert_eq!(
+            keys,
+            vec![215],
+            "the branch origin is the server stamp (210 + 5), never client pos"
+        );
+    }
+
+    /// A tainted snapshot reply is refused loudly by the campaign machine
+    /// (task 127 × task 81): the explorer never improvises, so a tainted seal
+    /// means the session timeline was improvised out from under it — failing
+    /// at the seal (where the cause is clear) beats minting a reproducerless
+    /// frontier entry that `RecordedEnv` would reject later.
+    #[test]
+    fn snapshot_refuses_a_tainted_reply_loudly() {
+        use control_proto::{Moment as WsMoment, Reply, SnapId as WsSnapId};
+        let stream = scripted(&[
+            server_caps_reply(),
+            probe_reply(0),
+            Reply::Snapshot {
+                id: WsSnapId(1),
+                at: WsMoment(500),
+                sdk_events: 2,
+                tainted: true,
+            },
+        ]);
+        let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
+        match m.snapshot() {
+            Err(MachineError::Transport(msg)) => {
+                assert!(
+                    msg.contains("tainted"),
+                    "the refusal names the taint: {msg}"
+                )
+            }
+            other => panic!("a tainted seal must be refused, got {other:?}"),
+        }
+        // The refused handle left no metadata behind.
+        assert_eq!(m.snapshot_cut(SnapId(1)), None);
     }
 
     /// The coverage-geometry guard (blocking): a server advertising a non-zero
@@ -1780,15 +1958,15 @@ mod tests {
     /// 5 below a snapshot at 200 goes on the wire at Moment 205, never 5.
     #[test]
     fn branch_re_anchors_blob_frame_keys_to_absolute_wire_moments() {
-        use control_proto::{Reply, SnapId as WsSnapId};
+        use control_proto::Reply;
         let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut reply_bytes = Vec::new();
         for (i, reply) in [
-            server_caps_reply(),        // hello
-            probe_reply(200),           // connect's V-time probe → origin 200
-            Reply::SnapId(WsSnapId(1)), // snapshot @ 200
-            console_reply(0),           // snapshot's console-length probe
-            Reply::Unit,                // branch
+            server_caps_reply(),   // hello
+            probe_reply(200),      // connect's V-time probe → origin 200
+            snap_reply(1, 200, 0), // snapshot @ 200
+            console_reply(0),      // snapshot's console-length probe
+            Reply::Unit,           // branch
         ]
         .into_iter()
         .enumerate()
@@ -1800,7 +1978,7 @@ mod tests {
             written: std::rc::Rc::clone(&written),
         };
         let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
-        let snap = m.snapshot().unwrap();
+        let (snap, _) = m.snapshot().unwrap();
 
         let fault = Action::Host(HostFault::CorruptMemory {
             gpa: 64,
@@ -1852,13 +2030,12 @@ mod tests {
     /// loudly BEFORE any wire traffic (no Branch frame is ever written).
     #[test]
     fn branch_refuses_an_axis_overflowing_rebase_before_the_wire() {
-        use control_proto::{Reply, SnapId as WsSnapId};
         let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut reply_bytes = Vec::new();
         for (i, reply) in [
             server_caps_reply(),
             probe_reply(200),
-            Reply::SnapId(WsSnapId(1)),
+            snap_reply(1, 200, 0),
             console_reply(0), // snapshot's console-length probe
         ]
         .into_iter()
@@ -1871,7 +2048,7 @@ mod tests {
             written: std::rc::Rc::clone(&written),
         };
         let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
-        let snap = m.snapshot().unwrap();
+        let (snap, _) = m.snapshot().unwrap();
 
         let env = AdapterEnv {
             base_offset: 200,
@@ -1970,16 +2147,16 @@ mod tests {
     /// through verbatim and re-anchor on the wire like overrides.
     #[test]
     fn branch_records_the_branch_reseed_and_re_anchors_markers_on_the_wire() {
-        use control_proto::{Reply, SnapId as WsSnapId};
+        use control_proto::Reply;
         let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut reply_bytes = Vec::new();
         for (i, reply) in [
-            server_caps_reply(),        // hello
-            probe_reply(200),           // connect probe → origin 200
-            Reply::SnapId(WsSnapId(1)), // snapshot @ 200
-            console_reply(0),           // snapshot's console-length probe
-            Reply::Unit,                // branch (no-marker env)
-            Reply::Unit,                // branch (marker env)
+            server_caps_reply(),   // hello
+            probe_reply(200),      // connect probe → origin 200
+            snap_reply(1, 200, 0), // snapshot @ 200
+            console_reply(0),      // snapshot's console-length probe
+            Reply::Unit,           // branch (no-marker env)
+            Reply::Unit,           // branch (marker env)
         ]
         .into_iter()
         .enumerate()
@@ -1991,7 +2168,7 @@ mod tests {
             written: std::rc::Rc::clone(&written),
         };
         let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
-        let snap = m.snapshot().unwrap();
+        let (snap, _) = m.snapshot().unwrap();
 
         // (1) A no-marker env: the branch reseed is stamped at relative 0.
         m.branch(snap, &SpecEnvCodec.seeded(0xD1CE)).unwrap();
