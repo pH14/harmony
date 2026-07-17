@@ -9,6 +9,19 @@ description = "Control-side input coordinator for the Differential observation p
 [lints]
 workspace = true
 
+[features]
+# Test apparatus (hm-fb0): the golden-projection vehicle
+# (`StateProjection`), the simulated crash + fault injection on `MemLedger`
+# (`MemFault`, `crash`, `fail_next`, `durable_len`). These are the crate's
+# own test/golden surface, NOT part of the coordinator's production contract.
+# Gating them here keeps them OUT of the default public surface so that when
+# `hm-bbx.4` imports this crate without `test-support` it never freezes them
+# as compat surface. The crate's `tests/` use them; they self-enable the
+# feature through the dev-dependency below, and the `--all-features`
+# public-api snapshot still freezes the full surface so a gated public item
+# cannot drift unnoticed.
+test-support = []
+
 [dependencies]
 # The observation/materialization plane runtime ruled by
 # docs/DISSONANCE-STRATEGY.md ("Use production differential-dataflow initially
@@ -29,6 +42,11 @@ serde_json = "1"
 blake3 = "1"
 
 [dev-dependencies]
+# Self-dependency so the crate's own integration tests (`tests/`) build with
+# the `test-support` feature on (the standard Cargo idiom for a test-only
+# feature). `cargo test`/`cargo nextest` then compiles the apparatus even
+# without an explicit `--all-features`; a plain library build stays clean.
+revision-coordinator = { path = ".", version = "0.1.0", features = ["test-support"] }
 # Property tests (>=256 cases): completion-order permutation invariance,
 # no-frontier-holes, cohort freeze.
 proptest = "1"

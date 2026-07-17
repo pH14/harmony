@@ -402,10 +402,10 @@ fn never_crashed_twin(log: &[Op]) -> Coordinator {
 /// After a kill: rebuild from the durable ledger and assert byte-identical
 /// frontier, pending set, and probe artifacts against the never-crashed
 /// twin of the same durable op log.
-fn recover_and_compare(ledger: &MemLedger, ref_state: &RefState) -> Coordinator {
+fn recover_and_compare(ledger: &mut MemLedger, ref_state: &RefState) -> Coordinator {
     // Process death: staged-but-unsynced ledger records die with it.
     ledger.crash();
-    let mut recovered = Coordinator::recover(ledger).unwrap();
+    let mut recovered = Coordinator::recover(&*ledger).unwrap();
     let mut twin = never_crashed_twin(&ref_state.log);
     assert_eq!(
         recovered.state_projection().encode(),
@@ -482,7 +482,7 @@ impl StateMachineTest for Machine {
                 sut.coord.abort("model abort").unwrap();
             }
             Transition::Crash => {
-                sut.coord = recover_and_compare(&sut.ledger, ref_state);
+                sut.coord = recover_and_compare(&mut sut.ledger, ref_state);
             }
             Transition::Faulted(op, fault) => {
                 sut.ledger.fail_next(fault);
@@ -505,7 +505,7 @@ impl StateMachineTest for Machine {
                 assert!(matches!(sut.coord.open_cohort(), Err(CoordError::Poisoned)));
                 assert_eq!(sut.coord.drain_ready(), vec![]);
                 // Process death + recovery from the durable prefix.
-                sut.coord = recover_and_compare(&sut.ledger, ref_state);
+                sut.coord = recover_and_compare(&mut sut.ledger, ref_state);
             }
         }
         sut

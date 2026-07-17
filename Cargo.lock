@@ -800,6 +800,7 @@ dependencies = [
  "differential-lineage",
  "proptest",
  "proptest-state-machine",
+ "revision-coordinator",
  "serde",
  "serde_json",
  "tempfile",

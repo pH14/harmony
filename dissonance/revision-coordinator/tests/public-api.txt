@@ -113,10 +113,12 @@ pub fn revision_coordinator::FileLedger::replay(&self) -> core::result::Result<a
 pub fn revision_coordinator::FileLedger::sync(&mut self) -> core::result::Result<(), revision_coordinator::LedgerError>
 pub struct revision_coordinator::MemLedger
 impl revision_coordinator::MemLedger
-pub fn revision_coordinator::MemLedger::crash(&self)
+pub fn revision_coordinator::MemLedger::crash(&mut self)
 pub fn revision_coordinator::MemLedger::durable_len(&self) -> usize
 pub fn revision_coordinator::MemLedger::fail_next(&self, revision_coordinator::MemFault)
 pub fn revision_coordinator::MemLedger::new() -> Self
+impl core::clone::Clone for revision_coordinator::MemLedger
+pub fn revision_coordinator::MemLedger::clone(&self) -> Self
 impl core::default::Default for revision_coordinator::MemLedger
 pub fn revision_coordinator::MemLedger::default() -> Self
 impl revision_coordinator::Ledger for revision_coordinator::MemLedger

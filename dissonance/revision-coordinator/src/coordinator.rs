@@ -11,7 +11,7 @@ use crate::host::ProbeHost;
 use crate::ids::{
     CampaignConfigId, CohortId, EvidenceBatchId, ProposalId, Revision, TerminalRecord,
 };
-use crate::ledger::{Ledger, LedgerError, LedgerRecord};
+use crate::ledger::{Ledger, LedgerError, LedgerRecord, MAX_ABORT_REASON};
 
 /// A proposal whose `Revision` assignment is durable: the caller may
 /// dispatch it. A crashed worker retries the SAME `ProposalId` (re-read via
@@ -188,6 +188,15 @@ struct Core {
     /// that every revision `<= V` belongs to a closed, fully-committed
     /// cohort. Monotone.
     visible: u64,
+    /// Barrier watermark (hm-a98): the count of the contiguous prefix of
+    /// cohorts (ids `1..=done_through`) that are all closed AND fully
+    /// committed. Because the cohort barrier forces cohorts to run one at a
+    /// time — a new cohort opens only once every prior one is done — a cohort
+    /// becomes done in id order and stays done, so this only ever advances.
+    /// It makes [`Core::barrier_blocker`] O(1) instead of an O(cohorts) scan
+    /// (Θ(N²) over a campaign). `done_through == next_cohort - 1` means every
+    /// existing cohort is done and the barrier is clear.
+    done_through: u64,
     aborted: Option<String>,
 }
 
@@ -204,6 +213,7 @@ impl Core {
             committed: BTreeMap::new(),
             contiguous: 0,
             visible: 0,
+            done_through: 0,
             aborted: None,
         }
     }
@@ -214,12 +224,37 @@ impl Core {
     /// time, occupy contiguous revision ranges, and become visible
     /// atomically. A frozen view is constant by construction: at open,
     /// every minted revision is already visible.
+    ///
+    /// O(1) via the [`done_through`](Core::done_through) watermark (hm-a98):
+    /// cohorts `1..=done_through` are all done, so the earliest not-done
+    /// cohort — if one exists — is exactly `done_through + 1`.
     fn barrier_blocker(&self, before: Option<CohortId>) -> Option<CohortId> {
-        self.cohorts
-            .iter()
-            .take_while(|(id, _)| before.is_none_or(|b| **id < b))
-            .find(|(_, c)| !(c.closed && c.fully_committed()))
-            .map(|(id, _)| *id)
+        let first_incomplete = self.done_through + 1;
+        // Every existing cohort (`1..=next_cohort - 1`) is done.
+        if first_incomplete >= self.next_cohort {
+            return None;
+        }
+        // `find` under the old scan stopped at the first cohort `< before`;
+        // the earliest not-done cohort is the only candidate, so it blocks
+        // only when it is strictly before `before`.
+        if before.is_some_and(|b| first_incomplete >= b.get()) {
+            return None;
+        }
+        Some(CohortId::new(first_incomplete))
+    }
+
+    /// Advance the barrier watermark over every next cohort that is now both
+    /// closed and fully committed (hm-a98). Amortized O(1): a cohort crosses
+    /// the watermark at most once over the whole campaign. Call after any
+    /// mutation that can complete a cohort (commit, close).
+    fn advance_done_through(&mut self) {
+        while self.done_through + 1 < self.next_cohort {
+            let id = CohortId::new(self.done_through + 1);
+            match self.cohorts.get(&id) {
+                Some(c) if c.closed && c.fully_committed() => self.done_through += 1,
+                _ => break,
+            }
+        }
     }
 
     fn open_cohort_unchecked(&mut self, cohort: CohortId, view: Revision) {
@@ -269,6 +304,8 @@ impl Core {
         {
             self.contiguous += 1;
         }
+        // Committing a closed cohort's last member can complete it.
+        self.advance_done_through();
         self.advance_visible();
     }
 
@@ -276,6 +313,8 @@ impl Core {
         if let Some(c) = self.cohorts.get_mut(&cohort) {
             c.closed = true;
         }
+        // Closing an already-fully-committed cohort completes it.
+        self.advance_done_through();
         self.advance_visible();
     }
 
@@ -425,6 +464,10 @@ impl Core {
 /// must project byte-identically to a never-crashed run of the same seed
 /// and completion set. Deliberately excludes process-local state (what has
 /// been fed to the live dataflow) — the live arrangement is never authority.
+///
+/// Test/golden apparatus (hm-fb0): gated behind `test-support` so it is not
+/// part of the coordinator's production contract.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateProjection {
     /// The pinned campaign configuration identity.
@@ -449,6 +492,7 @@ pub struct StateProjection {
     pub pending: Vec<PendingProposal>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl StateProjection {
     /// Canonical byte encoding (deterministic serde_json).
     pub fn encode(&self) -> Vec<u8> {
@@ -560,6 +604,8 @@ impl Coordinator {
     }
 
     /// The byte-stable durable-state projection (see [`StateProjection`]).
+    /// Test/golden apparatus (hm-fb0), gated behind `test-support`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn state_projection(&self) -> StateProjection {
         StateProjection {
             config: self.core.config,
@@ -777,6 +823,13 @@ impl Coordinator {
     /// Durably abort the campaign (unrecoverable host/control failure): the
     /// frontier never advances again and no slot is ever skipped.
     /// Idempotent once aborted.
+    ///
+    /// The `reason` is bounded to `MAX_ABORT_REASON` (64 KiB) before it is
+    /// recorded (hm-20m): a post-mortem prefix is enough, and the bound
+    /// guarantees the Abort frame always fits under the ledger's frame bound,
+    /// so an over-long reason can never poison the coordinator *without*
+    /// durably recording the abort. The same bounded reason is stored in the
+    /// ledger and in the recovered state, so recovery reproduces it verbatim.
     pub fn abort(&mut self, reason: &str) -> Result<(), CoordError> {
         if self.poisoned {
             return Err(CoordError::Poisoned);
@@ -784,10 +837,194 @@ impl Coordinator {
         if self.core.aborted.is_some() {
             return Ok(());
         }
+        let reason = bound_reason(reason);
         self.persist(&LedgerRecord::Abort {
-            reason: reason.to_owned(),
+            reason: reason.clone(),
         })?;
-        self.core.aborted = Some(reason.to_owned());
+        self.core.aborted = Some(reason);
         Ok(())
+    }
+}
+
+/// Truncate an abort reason to [`MAX_ABORT_REASON`] bytes on a UTF-8
+/// boundary (hm-20m). The reason is post-mortem-only, so a bounded prefix is
+/// enough; the bound guarantees the encoded Abort frame stays under the
+/// ledger frame bound, so [`Coordinator::abort`] always persists rather than
+/// poisoning without recording. Truncation is deterministic (same input →
+/// same prefix), preserving the determinism contract.
+fn bound_reason(reason: &str) -> String {
+    if reason.len() <= MAX_ABORT_REASON {
+        return reason.to_owned();
+    }
+    // Largest char boundary <= MAX_ABORT_REASON — never split a UTF-8 scalar.
+    let mut end = MAX_ABORT_REASON;
+    while end > 0 && !reason.is_char_boundary(end) {
+        end -= 1;
+    }
+    reason[..end].to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // -- hm-a98: the O(1) barrier watermark agrees with the O(N) full scan --
+
+    /// The pre-hm-a98 full scan — the reference the watermark must match
+    /// exactly, for every `before`.
+    fn barrier_blocker_fullscan(core: &Core, before: Option<CohortId>) -> Option<CohortId> {
+        core.cohorts
+            .iter()
+            .take_while(|(id, _)| before.is_none_or(|b| **id < b))
+            .find(|(_, c)| !(c.closed && c.fully_committed()))
+            .map(|(id, _)| *id)
+    }
+
+    /// The watermark implementation must agree with the full scan for
+    /// `before = None` and every `before = Some(CohortId(1..=next_cohort))`.
+    fn assert_barrier_agrees(core: &Core) {
+        assert_eq!(
+            core.barrier_blocker(None),
+            barrier_blocker_fullscan(core, None),
+            "watermark != full scan at before=None, done_through={}",
+            core.done_through,
+        );
+        for b in 1..=core.next_cohort {
+            let before = Some(CohortId::new(b));
+            assert_eq!(
+                core.barrier_blocker(before),
+                barrier_blocker_fullscan(core, before),
+                "watermark != full scan at before={b}, done_through={}",
+                core.done_through,
+            );
+        }
+    }
+
+    fn commit_info(r: Revision) -> CommitInfo {
+        CommitInfo {
+            batch: EvidenceBatchId::digest(&r.get().to_le_bytes()),
+            terminal: TerminalRecord {
+                moment: r.get(),
+                work: r.get(),
+            },
+        }
+    }
+
+    /// A hand-built multi-cohort campaign (empty / partial / multi-member
+    /// cohorts, close both before and after the last commit) that checks
+    /// watermark == full-scan after every single mutation, and that the
+    /// watermark never regresses.
+    #[test]
+    fn watermark_matches_full_scan_over_a_campaign() {
+        let mut core = Core::new(CampaignConfigId::digest(b"watermark-test"));
+        let mut prev_done = 0u64;
+        macro_rules! check {
+            () => {{
+                assert_barrier_agrees(&core);
+                assert!(core.done_through >= prev_done, "watermark regressed");
+                prev_done = core.done_through;
+            }};
+        }
+        check!();
+
+        let sizes = [2usize, 1, 0, 3];
+        let mut next_rev = 1u64;
+        let mut next_prop = 1u64;
+        for (ci, &size) in sizes.iter().enumerate() {
+            let cohort = CohortId::new(ci as u64 + 1);
+            core.open_cohort_unchecked(cohort, Revision::new(core.visible));
+            check!();
+
+            let mut members = Vec::new();
+            for _ in 0..size {
+                let (p, r) = (ProposalId::new(next_prop), Revision::new(next_rev));
+                core.mint_unchecked(p, r, cohort);
+                members.push((p, r));
+                next_prop += 1;
+                next_rev += 1;
+                check!();
+            }
+
+            match members.split_last() {
+                Some((&(last_p, last_r), rest)) => {
+                    // Commit all but the last, close (still incomplete), then
+                    // commit the last — exercising the commit-completes path.
+                    for &(p, r) in rest {
+                        core.commit_unchecked(p, commit_info(r));
+                        check!();
+                    }
+                    core.close_unchecked(cohort);
+                    check!();
+                    core.commit_unchecked(last_p, commit_info(last_r));
+                    check!();
+                }
+                None => {
+                    // Empty cohort: closing it completes it immediately (the
+                    // close-completes path).
+                    core.close_unchecked(cohort);
+                    check!();
+                }
+            }
+        }
+        // Every cohort done: the barrier is clear.
+        assert_eq!(core.barrier_blocker(None), None);
+        assert_eq!(core.done_through, core.next_cohort - 1);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        /// Over random barrier-legal campaigns, the O(1) watermark agrees
+        /// with the O(N) full scan after every mutation, for every `before`.
+        #[test]
+        fn watermark_matches_full_scan_proptest(
+            sizes in prop::collection::vec(0usize..=3, 1..=5),
+            close_seed in any::<u64>(),
+        ) {
+            let mut core = Core::new(CampaignConfigId::digest(b"wm-proptest"));
+            assert_barrier_agrees(&core);
+            let (mut next_rev, mut next_prop, mut s) = (1u64, 1u64, close_seed);
+            for (ci, &size) in sizes.iter().enumerate() {
+                let cohort = CohortId::new(ci as u64 + 1);
+                core.open_cohort_unchecked(cohort, Revision::new(core.visible));
+                assert_barrier_agrees(&core);
+
+                let mut members = Vec::new();
+                for _ in 0..size {
+                    let (p, r) = (ProposalId::new(next_prop), Revision::new(next_rev));
+                    core.mint_unchecked(p, r, cohort);
+                    members.push((p, r));
+                    next_rev += 1;
+                    next_prop += 1;
+                    assert_barrier_agrees(&core);
+                }
+
+                // A random close point in 0..=size, interleaved with commits.
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let close_at = (s >> 33) as usize % (size + 1);
+                let mut closed = false;
+                if close_at == 0 {
+                    core.close_unchecked(cohort);
+                    closed = true;
+                    assert_barrier_agrees(&core);
+                }
+                for (t, &(p, r)) in members.iter().enumerate() {
+                    core.commit_unchecked(p, commit_info(r));
+                    assert_barrier_agrees(&core);
+                    if !closed && close_at == t + 1 {
+                        core.close_unchecked(cohort);
+                        closed = true;
+                        assert_barrier_agrees(&core);
+                    }
+                }
+                // Keep the campaign barrier-legal: each cohort is done before
+                // the next opens.
+                if !closed {
+                    core.close_unchecked(cohort);
+                    assert_barrier_agrees(&core);
+                }
+            }
+        }
     }
 }

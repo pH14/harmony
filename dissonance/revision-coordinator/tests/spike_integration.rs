@@ -213,7 +213,7 @@ fn coordinate(
     crash_at: Option<usize>,
 ) -> DrainedView {
     let k = batches.len();
-    let ledger = MemLedger::new();
+    let mut ledger = MemLedger::new();
     let mut c = Coordinator::genesis(Box::new(ledger.clone()), config()).unwrap();
 
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
