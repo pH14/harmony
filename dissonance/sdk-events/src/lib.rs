@@ -39,6 +39,14 @@
 //! there is no set of coherence rules to enumerate and no gap for a plausible-looking
 //! but decoder-unmintable artifact to slip through.
 //!
+//! Content equality alone leaves one gap — **completeness**: a truncated event vector
+//! re-decodes *to itself*, because the stream it reconstructs from is truncated with
+//! it. A [`StreamCommitment`] (event count + a blake3 digest over the ingress records)
+//! is minted once at decode over the whole stream and persisted, so the load recomputes
+//! it from the re-decoded stream and rejects any artifact whose extent or raw bytes
+//! disagree with the stored value. Content is pinned by re-decode; completeness by the
+//! commitment.
+//!
 //! The consequence is a **binding contract: a persisted artifact is pinned to the
 //! semantics of the decoders that produced it.** Any future change to decoder
 //! semantics (a new wire version, a changed normalization) must **version and
@@ -85,7 +93,7 @@ mod wire;
 pub use antithesis::decode_antithesis;
 pub use binary::{DeclaredPoint, decode_binary, encode_v2_declaration};
 pub use error::SdkError;
-pub use event::{AssertType, Normalized, Payload, SdkEvent, SiteId};
+pub use event::{AssertType, Normalized, Payload, SdkEvent, SiteId, StreamCommitment};
 pub use numeric::{BoundedNumeric, NumericError, NumericLimits, NumericToken};
 pub use schema::{
     Classification, Expectation, ObservationId, OrderingScope, Raw, SchemaEntry, SdkSchema,

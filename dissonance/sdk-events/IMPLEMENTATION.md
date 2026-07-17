@@ -71,9 +71,9 @@ Differential epic (`hm-bbx`).
 - **`SdkError`** (`src/error.rs`) — typed, panic-free. Structural contradictions
   are errors (mixed operations, incompatible shapes, classification conflict,
   malformed declaration lengths, unknown declaration bytes, a malformed schema entry,
-  and an `ArtifactDivergedFromDecode` when a persisted artifact is not what a live
-  decode of its own bytes produces); unrecognized data is never an error — it is
-  preserved raw.
+  an `ArtifactDivergedFromDecode` when a persisted artifact is not what a live decode
+  of its own bytes produces, and a `StreamCommitmentMismatch` when it is incomplete or
+  raw-tampered); unrecognized data is never an error — it is preserved raw.
 
 ## Key decisions
 
@@ -132,10 +132,17 @@ Differential epic (`hm-bbx`).
   nothing left to enumerate. A reconstructed stream the decoder itself rejects (e.g. a
   `set` at a `max`-declared coordinate) surfaces that decoder's own `MixedOperations`;
   everything else that differs is a typed `ArtifactDivergedFromDecode`, kept only for
-  diagnosability. This makes the load contract **decoder pinning** (see the crate
-  root): a persisted artifact is pinned to the semantics of the decoders that produced
-  it, so a future decoder change must version/migrate artifacts, never silently
-  reinterpret them. Component value types (`SchemaEntry`, `Payload`, `Raw`, …) keep
+  diagnosability. **Completeness** is the one thing content re-decode cannot check
+  itself — a truncated event vector re-decodes *to itself*, since its reconstructed
+  stream is truncated with it — so a persisted `StreamCommitment` (event count + a
+  blake3 digest over the ingress records, minted once at decode over the whole stream)
+  is recomputed on load and required to match: truncation, extension, and raw-byte
+  tampering fail with a typed `StreamCommitmentMismatch`. Content is pinned by
+  re-decode; completeness by the commitment. This makes the load contract **decoder
+  pinning** (see the crate root): a persisted artifact is pinned to the semantics of
+  the decoders that produced it, so a future decoder change must version/migrate
+  artifacts, never silently reinterpret them. Component value types (`SchemaEntry`,
+  `Payload`, `Raw`, …) keep
   `Deserialize` — they have no independent load path, so they are only ever read back
   *within* a validated `Normalized`. (The `cargo public-api` snapshot runs at `-sss`,
   which omits auto-derived impls, so this removal is enforced by a compile-time bound
@@ -189,21 +196,23 @@ Differential epic (`hm-bbx`).
 
 ## Gates (all green, Mac-local)
 
-- `cargo build/nextest/clippy -D warnings/fmt/deny -p sdk-events` — 140 tests
+- `cargo build/nextest/clippy -D warnings/fmt/deny -p sdk-events` — 145 tests
   (goldens for Antithesis assertions, max/min guidance, binary v1, wire v2; typed
   errors; totality; numeric total-order laws; serde + wire-v2 round-trips) plus
   the ≥256/512-case proptests. `tests/load_validation.rs` holds the load probes: the
   r14 adjudication probes **inverted** — a binary payload from the wrong source, an
   undeclared-coordinate `min` upgrade, a deleted setup entry, shifted ordinals,
-  contradictory `raw` provenance — each now asserting a typed rejection; the decoder's
-  own `MixedOperations` surfacing on load; the setup status-fabrication guard (F2,
-  `hm-jyj`); and a compile-time bound proving `Normalized` is the only
+  contradictory `raw` provenance — each now asserting a typed rejection; the
+  completeness probes (suffix-truncated, emptied, extended-by-one, bit-flipped-raw,
+  and a preserved-raw byte the payload ignores) each asserting `StreamCommitmentMismatch`;
+  the decoder's own `MixedOperations` surfacing on load; the setup status-fabrication
+  guard (F2, `hm-jyj`); and a compile-time bound proving `Normalized` is the only
   publicly-deserializable type. Entry-invariant rejection is tested where it is
   enforced (decode) in `tests/normalize_binary.rs`.
 - **Scoped mutation testing** (`cargo mutants --in-diff`) on `event.rs` / `schema.rs`
   / `binary.rs`: 0 missed.
-- `tests/public-api.txt` refreshed deliberately: the two enumerated-check error
-  variants gave way to one structural `ArtifactDivergedFromDecode` (net −1). The
+- `tests/public-api.txt` refreshed deliberately: the new `StreamCommitment` type, the
+  `Normalized::commitment` field, and the `StreamCommitmentMismatch` error variant. The
   `Deserialize` removal from `SdkEvent`/`SdkSchema` is not a snapshot line (the
   snapshot runs at `-sss`, which omits auto-derived impls) and is instead enforced by
   the compile-time bound above. The legacy compat surface is unchanged.

@@ -20,6 +20,12 @@ explorer = { path = "../explorer", version = "0.1.0" }
 # oracle uses, so a link-minted `Bug` dedups with an explorer-minted one
 # (rule-5 whitelist).
 sha2 = "0.10"
+# The persisted `Normalized`'s stream commitment — a blake3 digest over the
+# ingress event records (count + digest) that binds an artifact to the *complete*
+# stream it decoded from, so a truncated/extended/tampered persisted artifact fails
+# to load even though it re-decodes to itself. Matches the repo convention
+# (`runtrace`/`film`/`snapshot-store` all commit with blake3; rule-5 whitelist).
+blake3 = "1"
 # Typed, no-panic library errors (rule-5 whitelist).
 thiserror = "2"
 # Normalized `SdkSchema`/`SdkEvent` evidence and the never-fired report round-trip

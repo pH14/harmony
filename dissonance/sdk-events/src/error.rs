@@ -189,6 +189,19 @@ pub enum SdkError {
         detail: String,
     },
 
+    /// A persisted [`Normalized`](crate::Normalized)'s
+    /// [`StreamCommitment`](crate::StreamCommitment) does not match the stream it
+    /// re-decodes to. The commitment (event count + a digest over the ingress records)
+    /// is minted once at decode over the *whole* stream, so a **subset** artifact —
+    /// events truncated or all deleted — is caught here even though it re-decodes to
+    /// itself (its reconstructed stream was truncated with it); extension and raw-byte
+    /// tampering fail here too. This is the artifact's completeness invariant.
+    #[error("stream commitment mismatch: {detail}")]
+    StreamCommitmentMismatch {
+        /// The committed vs re-decoded count (and whether the digest differs).
+        detail: String,
+    },
+
     /// A catalog declaration carries bytes beyond its declared record `count`. The
     /// trailing bytes are unaccounted for (a miscounted or corrupted catalog), so
     /// the declaration is refused rather than silently discarding declared

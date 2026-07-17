@@ -149,7 +149,7 @@ pub fn decode_antithesis(records: &[(Moment, Vec<u8>)]) -> Result<Normalized, Sd
         events.push(event);
     }
 
-    Ok(Normalized { schema, events })
+    Ok(Normalized::seal(schema, events))
 }
 
 /// Decode one record. On any structural miss the record is preserved as an

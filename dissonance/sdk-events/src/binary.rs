@@ -299,10 +299,7 @@ pub fn decode_binary(raw: &[(Moment, u32, Vec<u8>)]) -> Result<Normalized, SdkEr
         events.push(event);
     }
 
-    Ok(Normalized {
-        schema: ctx.schema,
-        events,
-    })
+    Ok(Normalized::seal(ctx.schema, events))
 }
 
 /// Working state threaded through a binary decode: the schema under construction,

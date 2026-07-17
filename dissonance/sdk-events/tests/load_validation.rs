@@ -62,6 +62,16 @@ fn assert_diverges(v: serde_json::Value) {
     );
 }
 
+/// Assert an artifact fails to load because its stream commitment does not match the
+/// stream it re-decodes to (truncation, extension, or raw-byte tampering).
+fn assert_commitment_mismatch(v: serde_json::Value) {
+    let err = load(v).expect_err("must reject").to_string();
+    assert!(
+        err.contains("stream commitment mismatch"),
+        "expected a stream-commitment rejection, got: {err}"
+    );
+}
+
 // --- The r14 probes, inverted: each defect is now a typed rejection --------------
 
 /// Probe A — a binary state event's payload swapped to `Guidance`. The raw record is
@@ -152,15 +162,89 @@ fn probe_d_corrupted_raw_provenance_is_rejected() {
     assert_diverges(v);
 }
 
-/// A `raw` with an intact `event_id` but *unrelated bytes* also diverges: re-decoding
-/// those bytes yields a different payload (or `Unknown`) than the one persisted.
+/// A `raw` with an intact `event_id` but *unrelated bytes* is caught by the stream
+/// commitment: the persisted digest was minted over the original bytes, so replacing
+/// them changes the re-decoded digest. (The commitment is checked before content, so
+/// raw tampering is reported as the commitment violation it is.)
 #[test]
 fn probe_d2_raw_bytes_contradicting_the_payload_are_rejected() {
     let mut v = max_state_artifact();
-    // Keep a valid state event_id, but replace the firing bytes with garbage that
-    // decodes to `Unknown`, not the persisted `State{max, 7}`.
     v["events"][0]["raw"]["bytes"] = json!([0xFF, 0xFF]);
-    assert_diverges(v);
+    assert_commitment_mismatch(v);
+}
+
+// --- Completeness: the stream commitment binds the artifact's full extent ---------
+//
+// Content re-decode alone cannot catch a subset: a truncated event vector re-decodes
+// to itself, because the reconstructed stream is truncated with it. The persisted
+// `StreamCommitment` (count + digest over the whole original stream) closes this.
+
+#[test]
+fn a_suffix_truncated_artifact_is_rejected() {
+    let mut v = max_state_artifact();
+    // Two live events; drop the last. Its raw is dropped from the reconstructed stream
+    // too, so re-decode is self-consistent — but the committed count (2) is not.
+    let events = v["events"].as_array_mut().unwrap();
+    assert_eq!(events.len(), 2);
+    events.pop();
+    assert_commitment_mismatch(v);
+}
+
+#[test]
+fn an_emptied_artifact_is_rejected() {
+    let mut v = max_state_artifact();
+    v["events"] = json!([]);
+    assert_commitment_mismatch(v);
+}
+
+#[test]
+fn an_extended_artifact_is_rejected() {
+    let mut v = max_state_artifact();
+    // Append a copy of a real event (valid event_id + raw, so it re-decodes cleanly);
+    // the re-decoded count (3) exceeds the committed count (2).
+    let extra = v["events"][1].clone();
+    v["events"].as_array_mut().unwrap().push(extra);
+    assert_commitment_mismatch(v);
+}
+
+#[test]
+fn a_bit_flipped_raw_byte_is_rejected() {
+    let mut v = max_state_artifact();
+    // Flip the low bit of the firing's value byte; re-decoding yields a different
+    // digest than the committed one (and a different value, but the commitment fires
+    // first).
+    let byte = v["events"][0]["raw"]["bytes"][1].as_u64().unwrap();
+    v["events"][0]["raw"]["bytes"][1] = json!(byte ^ 1);
+    assert_commitment_mismatch(v);
+}
+
+#[test]
+fn a_flipped_preserved_raw_byte_the_payload_ignores_is_still_rejected() {
+    // The digest — not just the count — must be load-bearing. An assertion firing's
+    // *detail* bytes are preserved in `raw` but never enter the decoded payload, so
+    // flipping one leaves content (payload, count, everything) identical: only the
+    // commitment digest changes. This isolates the digest from content re-decode.
+    let decl = encode_v2_declaration(&[DeclaredPoint {
+        namespace: NS_ASSERT,
+        local: 1,
+        name: "a".into(),
+        classification: Classification::Occurrence,
+        value_shape: None,
+        base_op: None,
+        expectation: None,
+    }])
+    .expect("valid declaration");
+    // Assert firing: [disposition=HIT(0)][detail_len=2 u16 LE][detail bytes].
+    let firing = vec![0u8, 2, 0, 0xAA, 0xBB];
+    let assert_id = ((NS_ASSERT as u32) << 24) | 1;
+    let n =
+        decode_binary(&[(Moment(0), 0, decl), (Moment(5), assert_id, firing)]).expect("decodes");
+    assert!(matches!(n.events[0].payload, Payload::Assertion { .. }));
+
+    let mut v = serde_json::to_value(&n).unwrap();
+    // Flip a detail byte the payload never reads. Content still re-decodes to itself.
+    v["events"][0]["raw"]["bytes"][3] = json!(0xAB);
+    assert_commitment_mismatch(v);
 }
 
 // --- The decoder's own error still surfaces on load ------------------------------
@@ -287,4 +371,5 @@ fn only_normalized_is_publicly_deserializable() {
     // Component value types still deserialize — they have no independent load path.
     assert!(is_deserializable!(sdk_events::SchemaEntry));
     assert!(is_deserializable!(Payload));
+    assert!(is_deserializable!(sdk_events::StreamCommitment));
 }

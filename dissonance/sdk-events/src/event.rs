@@ -16,15 +16,51 @@ use crate::numeric::NumericToken;
 use crate::schema::{ObservationId, Raw, SdkSchema, SdkSchemaRepr, SourceFormat, UpdateOp};
 use crate::wire;
 
-/// The result of decoding one ingress stream: the normalized schema plus the
-/// ordered events. The schema's entries and the events' ordinals are canonical and
+/// An independent commitment over the ingress event stream: the event count and a
+/// blake3 digest over each event's record (V-time `Moment` + length-prefixed raw
+/// bytes) in ordinal order.
+///
+/// It closes the one completeness gap re-decode-and-compare cannot reach on its own:
+/// a **subset** artifact (events truncated, or all deleted) re-decodes *to itself*,
+/// because the raw stream it reconstructs from was truncated with it. The commitment
+/// is computed once at decode over the whole stream and persisted, so a later load
+/// recomputes it from the re-decoded stream and finds count/digest disagreeing with
+/// the stored value — truncation, extension, and raw tampering all fail load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamCommitment {
+    /// The number of events in the committed stream.
+    pub events: u64,
+    /// A blake3 digest over the events' ingress records, in ordinal order.
+    pub digest: [u8; 32],
+}
+
+impl StreamCommitment {
+    /// Commit to `events` in order: their count, and a blake3 digest folding each
+    /// event's `Moment` and length-prefixed raw bytes (the length prefix removes any
+    /// concatenation ambiguity between adjacent records).
+    pub(crate) fn of(events: &[SdkEvent]) -> StreamCommitment {
+        let mut hasher = blake3::Hasher::new();
+        for ev in events {
+            hasher.update(&ev.moment.0.to_le_bytes());
+            hasher.update(&(ev.raw.bytes.len() as u64).to_le_bytes());
+            hasher.update(&ev.raw.bytes);
+        }
+        StreamCommitment {
+            events: events.len() as u64,
+            digest: *hasher.finalize().as_bytes(),
+        }
+    }
+}
+
+/// The result of decoding one ingress stream: the normalized schema, the ordered
+/// events, and a [`StreamCommitment`] binding the artifact to the complete stream it
+/// decoded from. The schema's entries and the events' ordinals are canonical and
 /// identical across platforms.
 ///
 /// `Normalized` is the persisted artifact and the **only** publicly-deserializable
-/// entry point: its `#[serde(try_from)]` re-validates the whole contract on load
-/// (schema-entry invariants, declaration provenance, and event↔schema coherence),
-/// so component types like [`SdkEvent`]/[`SdkSchema`] carry no bare `Deserialize`
-/// that could bypass it.
+/// entry point: its `#[serde(try_from)]` re-decodes the artifact's own bytes and
+/// requires structural equality *and* stream-commitment agreement, so component types
+/// like [`SdkEvent`]/[`SdkSchema`] carry no bare `Deserialize` that could bypass it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "NormalizedRepr")]
 pub struct Normalized {
@@ -32,6 +68,24 @@ pub struct Normalized {
     pub schema: SdkSchema,
     /// The ordered events, in persisted (source-ordinal) order.
     pub events: Vec<SdkEvent>,
+    /// The commitment over the complete event stream (count + digest).
+    pub commitment: StreamCommitment,
+}
+
+impl Normalized {
+    /// Seal a freshly decoded stream: bind `events` with a [`StreamCommitment`] so a
+    /// later load can detect truncation/extension/tampering that content re-decode
+    /// alone cannot (a truncated stream re-decodes to itself). Every decoder path
+    /// mints a `Normalized` through here, so the commitment is always present and
+    /// correct by construction.
+    pub(crate) fn seal(schema: SdkSchema, events: Vec<SdkEvent>) -> Normalized {
+        let commitment = StreamCommitment::of(&events);
+        Normalized {
+            schema,
+            events,
+            commitment,
+        }
+    }
 }
 
 /// The kind of Antithesis assertion an [`Payload::Assertion`] evidences. These are
@@ -187,6 +241,7 @@ impl From<SdkEventRepr> for SdkEvent {
 struct NormalizedRepr {
     schema: SdkSchemaRepr,
     events: Vec<SdkEventRepr>,
+    commitment: StreamCommitment,
 }
 
 /// Reconstruct the ingress stream a candidate artifact was decoded from — its
@@ -254,14 +309,41 @@ impl TryFrom<NormalizedRepr> for Normalized {
     /// is a typed [`ArtifactDivergedFromDecode`](SdkError::ArtifactDivergedFromDecode),
     /// kept only for diagnosability.
     ///
+    /// **Completeness** is the one thing content re-decode cannot check on its own — a
+    /// truncated event vector re-decodes *to itself*, since the reconstructed stream is
+    /// truncated with it. The persisted [`StreamCommitment`] closes that: recomputed
+    /// from the re-decoded stream, its count and digest must match the stored value, so
+    /// a truncated, extended, or raw-tampered artifact fails with a typed
+    /// [`StreamCommitmentMismatch`](SdkError::StreamCommitmentMismatch). Checked first,
+    /// so raw-byte tampering is reported as the commitment violation it is.
+    ///
     /// The load contract this enforces is **decoder pinning** (see the crate root): a
     /// persisted artifact is pinned to the semantics of the decoders that produced it.
     fn try_from(repr: NormalizedRepr) -> Result<Normalized, SdkError> {
         let candidate = Normalized {
             schema: SdkSchema::from(repr.schema),
             events: repr.events.into_iter().map(SdkEvent::from).collect(),
+            commitment: repr.commitment,
         };
         let redecoded = redecode(&candidate)?;
+        // Completeness: the re-decoded stream must match the persisted commitment. The
+        // stored commitment was minted over the *whole* original stream, so a truncated
+        // (or extended, or raw-tampered) candidate re-decodes to a different count/digest
+        // than it carries — the subset a content re-decode would otherwise accept.
+        if redecoded.commitment != candidate.commitment {
+            return Err(SdkError::StreamCommitmentMismatch {
+                detail: format!(
+                    "committed {} event(s), re-decoded {}{}",
+                    candidate.commitment.events,
+                    redecoded.commitment.events,
+                    if redecoded.commitment.events == candidate.commitment.events {
+                        " (event digest differs)"
+                    } else {
+                        ""
+                    }
+                ),
+            });
+        }
         if redecoded != candidate {
             return Err(SdkError::ArtifactDivergedFromDecode {
                 detail: "re-decoding the artifact's own bytes yields a different artifact"

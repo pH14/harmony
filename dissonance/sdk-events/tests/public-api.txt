@@ -90,6 +90,8 @@ pub sdk_events::SdkError::NameTooLong::len: usize
 pub sdk_events::SdkError::NameTooLong::local: u32
 pub sdk_events::SdkError::NameTooLong::max: usize
 pub sdk_events::SdkError::NameTooLong::namespace: u8
+pub sdk_events::SdkError::StreamCommitmentMismatch
+pub sdk_events::SdkError::StreamCommitmentMismatch::detail: alloc::string::String
 pub sdk_events::SdkError::TrailingDeclarationBytes
 pub sdk_events::SdkError::TrailingDeclarationBytes::context: &'static str
 pub sdk_events::SdkError::TrailingDeclarationBytes::extra: usize
@@ -160,6 +162,7 @@ pub fn sdk_events::LinkSensor::new() -> sdk_events::LinkSensor
 impl explorer::spine::Sensor for sdk_events::LinkSensor
 pub fn sdk_events::LinkSensor::observe(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Feature)>
 pub struct sdk_events::Normalized
+pub sdk_events::Normalized::commitment: sdk_events::StreamCommitment
 pub sdk_events::Normalized::events: alloc::vec::Vec<sdk_events::SdkEvent>
 pub sdk_events::Normalized::schema: sdk_events::SdkSchema
 pub struct sdk_events::NumericLimits
@@ -212,6 +215,9 @@ pub sdk_events::SiteId::begin_line: u64
 pub sdk_events::SiteId::file: alloc::string::String
 pub sdk_events::SiteId::function: alloc::string::String
 pub sdk_events::SiteId::id: core::option::Option<alloc::string::String>
+pub struct sdk_events::StreamCommitment
+pub sdk_events::StreamCommitment::digest: [u8; 32]
+pub sdk_events::StreamCommitment::events: u64
 pub const sdk_events::KIND_ASSERT_HIT: &str
 pub const sdk_events::KIND_ASSERT_VIOLATION: &str
 pub const sdk_events::KIND_BUGGIFY: &str
