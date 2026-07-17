@@ -359,7 +359,9 @@ fn decode_setup(
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or("complete");
-    let id = ObservationId::Property(SETUP_IDENTITY.to_string());
+    // A disjoint `Lifecycle` identity — never `Property`, so a user-forgeable
+    // assertion/guidance message equal to the sentinel cannot alias it.
+    let id = ObservationId::Lifecycle(SETUP_IDENTITY.to_string());
     schema.merge_entry(SchemaEntry {
         id: id.clone(),
         classification: Classification::Occurrence,

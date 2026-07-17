@@ -357,6 +357,64 @@ fn v2_firing_conflicting_with_the_declared_operation_is_rejected() {
 }
 
 #[test]
+fn v2_min_accumulate_require_a_declaration_at_the_firing_coordinate() {
+    // A v2 catalog declaring only an ASSERTION — no state point at the firing
+    // coordinate. A min/accumulate firing there has no declaration blessing the op,
+    // so a v2 stream alone must not fabricate a state update: it stays raw.
+    let occ = DeclaredPoint {
+        namespace: NS_ASSERT,
+        local: 1,
+        name: "a".into(),
+        classification: Classification::Occurrence,
+        value_shape: None,
+        base_op: None,
+        expectation: None,
+    };
+    for op_byte in [STATE_MIN, STATE_ACCUMULATE] {
+        let raw = vec![
+            at(0, 0, encode_ok(std::slice::from_ref(&occ))),
+            at(1, event_id(NS_STATE, 5), state_firing(op_byte, 9)),
+        ];
+        let n = decode_binary(&raw).expect("decodes");
+        assert_eq!(
+            n.events[0].payload,
+            Payload::Unknown,
+            "op {op_byte} at an undeclared coordinate must stay raw"
+        );
+    }
+
+    // set/max ARE v1 wire ops → still recorded as evidence even undeclared (though
+    // the schema has no entry, so they are not reducible).
+    let raw = vec![
+        at(0, 0, encode_ok(std::slice::from_ref(&occ))),
+        at(1, event_id(NS_STATE, 5), state_firing(STATE_SET, 9)),
+    ];
+    let n = decode_binary(&raw).expect("decodes");
+    assert_eq!(
+        n.events[0].payload,
+        Payload::State {
+            op: UpdateOp::Set,
+            value: 9
+        }
+    );
+
+    // A min firing at a coordinate the catalog DOES declare as a min state point
+    // still decodes normally.
+    let raw = vec![
+        at(0, 0, encode_ok(&[v2_state(5, "s", UpdateOp::Min)])),
+        at(1, event_id(NS_STATE, 5), state_firing(STATE_MIN, 9)),
+    ];
+    let n = decode_binary(&raw).expect("decodes");
+    assert_eq!(
+        n.events[0].payload,
+        Payload::State {
+            op: UpdateOp::Min,
+            value: 9
+        }
+    );
+}
+
+#[test]
 fn v2_non_u64_state_shape_is_rejected_on_encode_and_decode() {
     // The binary emission path encodes only u64 state values, so a state point
     // declaring any other shape is refused rather than silently reported as u64.

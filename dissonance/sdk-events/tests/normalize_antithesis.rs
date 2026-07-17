@@ -245,6 +245,40 @@ fn setup_record_is_a_lifecycle_occurrence_registered_in_the_schema() {
         .expect("setup identity registered in schema");
     assert_eq!(entry.classification, Classification::Occurrence);
     assert_eq!(entry.base_op, None);
+    // The identity is the disjoint `Lifecycle` variant, never a `Property`.
+    assert_eq!(
+        n.events[0].id,
+        ObservationId::Lifecycle("antithesis.setup".into())
+    );
+}
+
+#[test]
+fn the_setup_identity_cannot_be_aliased_by_a_property_message() {
+    let setup = r#"{"antithesis_setup":{"status":"complete"}}"#;
+
+    // Direction 1: an assertion whose MESSAGE equals the setup sentinel gets a
+    // `Property` id, disjoint from the setup's `Lifecycle` id — no aliasing.
+    let assertion = r#"{"antithesis_assert":{"assert_type":"always","condition":true,"message":"antithesis.setup"}}"#;
+    let n = decode_antithesis(&[rec(1, assertion), rec(2, setup)]).expect("decodes");
+    assert_ne!(n.events[0].id, n.events[1].id);
+    assert_eq!(
+        n.events[0].id,
+        ObservationId::Property("antithesis.setup".into())
+    );
+    assert_eq!(
+        n.events[1].id,
+        ObservationId::Lifecycle("antithesis.setup".into())
+    );
+    assert_eq!(n.schema.len(), 2, "two disjoint identities → two entries");
+
+    // Direction 2: a guidance record whose id equals the sentinel. Under a shared
+    // property-string identity this would collide with the setup's occurrence entry
+    // and raise a spurious ClassificationConflict; disjoint variants decode both.
+    let guidance = r#"{"antithesis_guidance":{"guidance_type":"numeric","maximize":true,"id":"antithesis.setup","guidance_data":1}}"#;
+    let n =
+        decode_antithesis(&[rec(1, guidance), rec(2, setup)]).expect("disjoint ids → no conflict");
+    assert_ne!(n.events[0].id, n.events[1].id);
+    assert_eq!(n.schema.len(), 2);
 }
 
 #[test]

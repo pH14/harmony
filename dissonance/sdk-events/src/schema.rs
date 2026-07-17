@@ -66,6 +66,10 @@ pub enum ObservationId {
     /// An Antithesis **property** identity — the aggregated property the assertion
     /// message names. Multiple sites may contribute to one property.
     Property(String),
+    /// A **lifecycle** point (e.g. `setup`). A disjoint variant so a lifecycle
+    /// identity can never be forged by a user-controlled property message that
+    /// happens to equal the lifecycle's name.
+    Lifecycle(String),
 }
 
 /// Whether an identity reports one-shot **occurrences** or persistent **state**.

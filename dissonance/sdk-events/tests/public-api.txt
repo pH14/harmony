@@ -23,6 +23,7 @@ pub sdk_events::NumericError::TooManyDigits::digits: u32
 pub sdk_events::NumericError::TooManyDigits::limit: u32
 pub sdk_events::NumericError::TooManyDigits::token: alloc::string::String
 pub enum sdk_events::ObservationId
+pub sdk_events::ObservationId::Lifecycle(alloc::string::String)
 pub sdk_events::ObservationId::Point
 pub sdk_events::ObservationId::Point::local: u32
 pub sdk_events::ObservationId::Point::namespace: u8

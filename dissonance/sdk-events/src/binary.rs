@@ -672,18 +672,22 @@ fn decode_state(
     if !r.at_end() {
         return Ok(None);
     }
+    let id = ObservationId::Point { namespace, local };
     // `min`/`accumulate` are wire-v2 firing extensions; v1 defines only set/max.
-    // Under a v1 (or declaration-less) stream they are unknown bytes and stay raw,
-    // never a fabricated state update from future/malformed evidence.
-    let v2 = ctx.schema.source == SourceFormat::BinaryV2;
+    // They require a v2 state DECLARATION *at this coordinate* (a resolved base op)
+    // — a v2 stream alone is not enough. A min/accumulate firing at an undeclared
+    // coordinate has no declaration blessing that op, so it stays raw rather than
+    // fabricating a state update that bypasses the explicit-declaration
+    // requirement. (A set/max firing is a v1 wire op; it is recorded as evidence
+    // even without a declaration, but stays non-reducible without a schema entry.)
+    let declared = ctx.schema.entry(&id).and_then(|e| e.base_op);
     let op = match op_byte {
         wire::STATE_SET => UpdateOp::Set,
         wire::STATE_MAX => UpdateOp::Max,
-        wire::STATE_MIN if v2 => UpdateOp::Min,
-        wire::STATE_ACCUMULATE if v2 => UpdateOp::Accumulate,
+        wire::STATE_MIN if declared.is_some() => UpdateOp::Min,
+        wire::STATE_ACCUMULATE if declared.is_some() => UpdateOp::Accumulate,
         _ => return Ok(None),
     };
-    let id = ObservationId::Point { namespace, local };
 
     // Coherence: a firing must not contradict an earlier firing for this identity…
     if let Some(&first) = ctx.observed_ops.get(&id)
@@ -696,7 +700,7 @@ fn decode_state(
         });
     }
     // …nor a resolved v2 declaration for it.
-    if let Some(declared) = ctx.schema.entry(&id).and_then(|e| e.base_op)
+    if let Some(declared) = declared
         && declared != op
     {
         return Err(SdkError::MixedOperations {
