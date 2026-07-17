@@ -43,6 +43,8 @@ pub struct Builder {
     last_moment: Vec<(RolloutId, Moment)>,
     /// Start position per rollout (its branch-point count; 0 for genesis).
     starts: Vec<(RolloutId, Pos)>,
+    /// Birth (fork-cut) Moment per rollout; 0 for genesis.
+    births: Vec<(RolloutId, Moment)>,
     next_rollout: RolloutId,
 }
 
@@ -58,6 +60,7 @@ impl Builder {
             replay: Vec::new(),
             last_moment: Vec::new(),
             starts: Vec::new(),
+            births: Vec::new(),
             next_rollout: 0,
         }
     }
@@ -109,6 +112,7 @@ impl Builder {
         self.replay.push(((self.config, id), Vec::new()));
         self.last_moment.push((id, 0));
         self.starts.push((id, 0));
+        self.births.push((id, 0));
         id
     }
 
@@ -139,6 +143,7 @@ impl Builder {
         self.replay.push(((self.config, id), prefix));
         self.last_moment.push((id, cut.moment));
         self.starts.push((id, cut.count));
+        self.births.push((id, cut.moment));
         self.fixture.lineage.push(LineageRec {
             rev,
             config: self.config,
@@ -330,6 +335,15 @@ impl Builder {
             .expect("unknown rollout")
     }
 
+    /// Birth (fork-cut) Moment of a rollout; 0 for genesis.
+    pub fn birth_of(&self, rollout: RolloutId) -> Moment {
+        self.births
+            .iter()
+            .find(|(r, _)| *r == rollout)
+            .map(|(_, m)| *m)
+            .expect("unknown rollout")
+    }
+
     /// Current moment of a rollout's last event (or its fork moment).
     pub fn moment(&self, rollout: RolloutId) -> Moment {
         self.last_moment
@@ -413,15 +427,10 @@ pub fn random_tree(name: &str, seed: u64, p: TreeParams) -> (Fixture, Replay) {
             let count = pstart + rng.below(plen - pstart + 1);
             // The cut moment: the moment of the last included event (or the
             // parent's fork moment when nothing is included).
-            let moment = if count == 0 {
-                b.vector(parent)
-                    .first()
-                    .map(|e| e.moment)
-                    .unwrap_or(0)
-                    .saturating_sub(1)
-            } else {
-                b.vector(parent)[count as usize - 1].moment
-            };
+            // Clamp to the parent's own birth: a fork cut is a physical
+            // seal coordinate on the parent, which exists only from its own
+            // branch Moment onward (J1 coherence).
+            let moment = cut_moment(b.vector(parent), count).max(b.birth_of(parent));
             b.fork(rev, parent, Cut { moment, count })
         };
         rollouts.push(r);
@@ -467,12 +476,12 @@ pub fn random_tree(name: &str, seed: u64, p: TreeParams) -> (Fixture, Replay) {
             cut_counts.insert(start + rng.below(len - start + 1));
         }
         for count in cut_counts {
-            let moment = cut_moment(b.vector(r), count);
+            let moment = cut_moment(b.vector(r), count).max(b.birth_of(r));
             b.obs_cut(rev, r, Cut { moment, count });
         }
         for _ in 0..p.seals_per_rollout {
             let count = start + rng.below(len - start + 1);
-            let moment = cut_moment(b.vector(r), count);
+            let moment = cut_moment(b.vector(r), count).max(b.birth_of(r));
             let seal = next_seal;
             next_seal += 1;
             seal_targets.push((r, seal));

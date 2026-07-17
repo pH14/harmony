@@ -4,7 +4,7 @@
     "events": 16000,
     "branches": 40,
     "candidate_seals": 41,
-    "evaluation_points": 160,
+    "evaluation_points": 199,
     "evidence_revs": [
       2,
       3,
@@ -49,6 +49,10 @@
     ],
     "seal_rev": 42,
     "late_seal_rev": 43,
+    "deepest_rollout_index": 39,
+    "deepest_depth": 39,
+    "deepest_rev": 41,
+    "fork_points": 39,
     "runs": [
       {
         "formulation": "naive (per-point prefix join)",
@@ -1675,7 +1679,7 @@
             3
           ]
         ],
-        "wall_ms": 991,
+        "wall_ms": 704,
         "derived_attributable_total": 1600002,
         "derived_per_branch": [
           637,
@@ -4357,7 +4361,7 @@
             3
           ]
         ],
-        "wall_ms": 142,
+        "wall_ms": 76,
         "derived_attributable_total": 30690,
         "derived_per_branch": [
           489,
@@ -4405,8 +4409,8 @@
         "derived_late_seal": 368
       }
     ],
-    "recompute_wall_ms_all_revisions": 7435,
-    "recompute_wall_ms_final_revision": 957,
+    "recompute_wall_ms_all_revisions": 6848,
+    "recompute_wall_ms_final_revision": 624,
     "recompute_rows_final": 1908
   },
   {
@@ -4414,7 +4418,7 @@
     "events": 12000,
     "branches": 60,
     "candidate_seals": 61,
-    "evaluation_points": 241,
+    "evaluation_points": 300,
     "evidence_revs": [
       2,
       3,
@@ -4479,6 +4483,10 @@
     ],
     "seal_rev": 62,
     "late_seal_rev": 63,
+    "deepest_rollout_index": 36,
+    "deepest_depth": 10,
+    "deepest_rev": 38,
+    "fork_points": 59,
     "runs": [
       {
         "formulation": "naive (per-point prefix join)",
@@ -5982,7 +5990,7 @@
           [
             "naive.contrib",
             63,
-            499
+            1160
           ],
           [
             "naive.obs",
@@ -6597,7 +6605,7 @@
           [
             "naive.point_anc",
             63,
-            5
+            10
           ],
           [
             "transitions",
@@ -6900,8 +6908,8 @@
             3
           ]
         ],
-        "wall_ms": 110,
-        "derived_attributable_total": 161286,
+        "wall_ms": 113,
+        "derived_attributable_total": 161952,
         "derived_per_branch": [
           175,
           674,
@@ -6965,7 +6973,7 @@
           1969
         ],
         "derived_seal_wave": 38197,
-        "derived_late_seal": 512
+        "derived_late_seal": 1178
       },
       {
         "formulation": "shared (segment aggregates)",
@@ -9394,7 +9402,7 @@
           [
             "shared.obs_in",
             63,
-            26
+            28
           ],
           [
             "shared.partials",
@@ -9699,7 +9707,7 @@
           [
             "shared.partials",
             63,
-            18
+            23
           ],
           [
             "shared.start",
@@ -10594,7 +10602,7 @@
           [
             "shared.units",
             63,
-            38
+            200
           ],
           [
             "transitions",
@@ -10897,8 +10905,8 @@
             3
           ]
         ],
-        "wall_ms": 70,
-        "derived_attributable_total": 30351,
+        "wall_ms": 73,
+        "derived_attributable_total": 30520,
         "derived_per_branch": [
           286,
           576,
@@ -10962,10 +10970,10 @@
           435
         ],
         "derived_seal_wave": 1550,
-        "derived_late_seal": 108
+        "derived_late_seal": 277
       }
     ],
-    "recompute_wall_ms_all_revisions": 176,
+    "recompute_wall_ms_all_revisions": 173,
     "recompute_wall_ms_final_revision": 8,
     "recompute_rows_final": 2876
   }

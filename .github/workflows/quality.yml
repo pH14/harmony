@@ -154,6 +154,10 @@ jobs:
           cargo fmt --manifest-path spikes/differential-lineage/Cargo.toml --all -- --check
           cargo clippy --locked --manifest-path spikes/differential-lineage/Cargo.toml --all-features --all-targets -- -D warnings
           cargo test --locked --manifest-path spikes/differential-lineage/Cargo.toml --all-features
+          # Release build: the benchmark (REPORT.md) is release-only, and cargo
+          # test above builds only the dev profile — a release-only codegen or
+          # link regression would otherwise escape CI (J6).
+          cargo build --locked --release --manifest-path spikes/differential-lineage/Cargo.toml --all-targets
           cargo deny --manifest-path spikes/differential-lineage/Cargo.toml check --config deny.toml licenses
 
   # spikes/arm-altra (task 109) — the ARM pre-build apparatus: three out-of-workspace

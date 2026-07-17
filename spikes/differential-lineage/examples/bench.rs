@@ -61,6 +61,13 @@ struct BenchFixture {
     seal_rev: Revision,
     /// The late single-seal revision.
     late_seal_rev: Revision,
+    /// Index of the DEEPEST rollout by computed lineage depth (J3: insertion
+    /// order equals depth only on the chain shape; ties broken by lowest
+    /// index). The late seal lands here and the "deepest branch" column
+    /// reads this rollout's evidence revision.
+    deepest_idx: usize,
+    /// Lineage depth of that rollout.
+    deepest_depth: usize,
 }
 
 fn build(shape: &Shape) -> BenchFixture {
@@ -78,18 +85,22 @@ fn build(shape: &Shape) -> BenchFixture {
     b.source(1, 0, OrderScope::RolloutGlobal);
 
     let mut rollouts = Vec::new();
+    let mut parent_idx: Vec<Option<usize>> = Vec::new();
     let mut evidence_revs = Vec::new();
     for i in 0..shape.rollouts {
         let rev = 2 + Revision::from(i);
         evidence_revs.push(rev);
         let r = if rollouts.is_empty() {
+            parent_idx.push(None);
             b.genesis()
         } else {
-            let parent = if shape.chain {
-                *rollouts.last().expect("nonempty")
+            let pi = if shape.chain {
+                rollouts.len() - 1
             } else {
-                rollouts[rng.below(rollouts.len() as u64) as usize]
+                rng.below(rollouts.len() as u64) as usize
             };
+            parent_idx.push(Some(pi));
+            let parent = rollouts[pi];
             let plen = b.vector(parent).len() as u64;
             let count = if shape.chain {
                 plen
@@ -97,7 +108,7 @@ fn build(shape: &Shape) -> BenchFixture {
                 let pstart = b.start_of(parent);
                 pstart + rng.below(plen - pstart + 1)
             };
-            let moment = cut_moment(b.vector(parent), count);
+            let moment = cut_moment(b.vector(parent), count).max(b.birth_of(parent));
             b.fork(rev, parent, Cut { moment, count })
         };
         rollouts.push(r);
@@ -128,7 +139,7 @@ fn build(shape: &Shape) -> BenchFixture {
                 rev,
                 r,
                 Cut {
-                    moment: cut_moment(b.vector(r), count),
+                    moment: cut_moment(b.vector(r), count).max(b.birth_of(r)),
                     count,
                 },
             );
@@ -144,15 +155,30 @@ fn build(shape: &Shape) -> BenchFixture {
             *r,
             i as u32,
             Cut {
-                moment: cut_moment(b.vector(*r), len),
+                moment: cut_moment(b.vector(*r), len).max(b.birth_of(*r)),
                 count: len,
             },
         );
     }
 
-    // One late materialization on the deepest rollout, mid-segment.
+    // One late materialization on the DEEPEST rollout (by computed lineage
+    // depth — J3: rollouts.last() is the deepest only on the chain shape),
+    // mid-segment.
+    let depth: Vec<usize> = {
+        let mut d = vec![0usize; parent_idx.len()];
+        for i in 0..parent_idx.len() {
+            if let Some(p) = parent_idx[i] {
+                d[i] = d[p] + 1;
+            }
+        }
+        d
+    };
+    let deepest_idx = (0..depth.len())
+        .max_by_key(|&i| (depth[i], std::cmp::Reverse(i)))
+        .expect("nonempty");
+    let deepest_depth = depth[deepest_idx];
     let late_seal_rev = seal_rev + 1;
-    let deepest = *rollouts.last().expect("nonempty");
+    let deepest = rollouts[deepest_idx];
     let start = b.start_of(deepest);
     let len = b.vector(deepest).len() as u64;
     let count = start + (len - start) / 2;
@@ -161,7 +187,7 @@ fn build(shape: &Shape) -> BenchFixture {
         deepest,
         shape.rollouts,
         Cut {
-            moment: cut_moment(b.vector(deepest), count),
+            moment: cut_moment(b.vector(deepest), count).max(b.birth_of(deepest)),
             count,
         },
     );
@@ -173,6 +199,8 @@ fn build(shape: &Shape) -> BenchFixture {
         evidence_revs,
         seal_rev,
         late_seal_rev,
+        deepest_idx,
+        deepest_depth,
     }
 }
 
@@ -216,6 +244,13 @@ struct ShapeArtifact {
     evidence_revs: Vec<Revision>,
     seal_rev: Revision,
     late_seal_rev: Revision,
+    /// J3: the deepest rollout by computed lineage depth (its evidence
+    /// revision backs the "deepest branch" column), plus its depth.
+    deepest_rollout_index: usize,
+    deepest_depth: usize,
+    deepest_rev: Revision,
+    /// J5: distinct fork points included in the evaluation-point count.
+    fork_points: usize,
     runs: Vec<RunArtifact>,
     recompute_wall_ms_all_revisions: u128,
     recompute_wall_ms_final_revision: u128,
@@ -285,14 +320,23 @@ fn main() {
         let bf = build(shape);
         let fx = &bf.fixture;
         let seals = fx.seals.len();
-        let points = fx.obs_cuts.len() + seals;
+        // Evaluation points = configured cuts + candidate seals + DISTINCT
+        // fork points (J5: the dataflow evaluates all three kinds).
+        let fork_points: std::collections::BTreeSet<(u32, u64)> =
+            fx.lineage.iter().map(|l| (l.parent, l.cut.count)).collect();
+        let points = fx.obs_cuts.len() + seals + fork_points.len();
+        let deepest_rev = bf.evidence_revs[bf.deepest_idx];
         println!(
-            "## {} — {} events, {} branches, {} candidate seals, {} evaluation points\n",
+            "## {} — {} events, {} branches, {} candidate seals, {} evaluation points \
+             (incl. {} fork points); deepest rollout: index {} at depth {}\n",
             shape.name,
             fx.events.len(),
             shape.rollouts,
             seals,
             points,
+            fork_points.len(),
+            bf.deepest_idx,
+            bf.deepest_depth,
         );
         println!(
             "| formulation | total updates | wall | first branch | median branch | deepest branch | seal wave | late seal | rss after |"
@@ -329,7 +373,7 @@ fn main() {
                 wall,
                 per_branch.first().copied().unwrap_or(0),
                 median,
-                per_branch.last().copied().unwrap_or(0),
+                attributable_at(&cap, f.prefix, deepest_rev),
                 attributable_at(&cap, f.prefix, bf.seal_rev),
                 attributable_at(&cap, f.prefix, bf.late_seal_rev),
                 rss_kb() / 1024,
@@ -338,7 +382,7 @@ fn main() {
                 "|   of which lineage stages | {} | | {} | | {} | {} | {} | |",
                 cap.delta_total("lineage."),
                 cap.delta_at("lineage.", bf.evidence_revs[0]),
-                cap.delta_at("lineage.", *bf.evidence_revs.last().expect("nonempty")),
+                cap.delta_at("lineage.", deepest_rev),
                 cap.delta_at("lineage.", bf.seal_rev),
                 cap.delta_at("lineage.", bf.late_seal_rev),
             );
@@ -389,6 +433,10 @@ fn main() {
             evidence_revs: bf.evidence_revs.clone(),
             seal_rev: bf.seal_rev,
             late_seal_rev: bf.late_seal_rev,
+            deepest_rollout_index: bf.deepest_idx,
+            deepest_depth: bf.deepest_depth,
+            deepest_rev,
+            fork_points: fork_points.len(),
             runs: std::mem::take(&mut run_artifacts),
             recompute_wall_ms_all_revisions: wall_every.as_millis(),
             recompute_wall_ms_final_revision: wall_once.as_millis(),

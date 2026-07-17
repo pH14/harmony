@@ -589,6 +589,38 @@ pub enum ValidationError {
         /// The contradicting event's Moment.
         event_moment: Moment,
     },
+    /// A cut on a non-genesis rollout claims a `Moment` before the rollout's
+    /// branch (birth) `Moment` — the machine did not exist yet (J1).
+    #[error(
+        "{kind} cut (moment {cut_moment}, count {count}) on rollout {rollout} \
+         (config {config}) precedes the rollout's birth at moment {birth_moment}"
+    )]
+    CutBeforeBirth {
+        /// Cut kind ("fork", "obs", "seal").
+        kind: &'static str,
+        /// The cut's rollout.
+        rollout: RolloutId,
+        /// Campaign configuration.
+        config: CfgId,
+        /// The cut's count.
+        count: Pos,
+        /// The cut's claimed Moment.
+        cut_moment: Moment,
+        /// The rollout's fork-cut Moment.
+        birth_moment: Moment,
+    },
+    /// An assertion event or property declaration names a source-schema
+    /// instance that is never declared (J4) — property facts must not bind
+    /// to schemas that do not exist.
+    #[error("{what} (config {config}) names undeclared source {src}")]
+    UndeclaredSource {
+        /// Using record class ("assertion event", "property declaration").
+        what: &'static str,
+        /// Campaign configuration.
+        config: CfgId,
+        /// The undeclared source (named `src`: thiserror reserves `source`).
+        src: SourceId,
+    },
     /// Evidence (or a property declaration) commits after its campaign's
     /// finalization record — finalized facts would emit-and-retract.
     #[error(
@@ -744,6 +776,57 @@ impl Fixture {
             .iter()
             .map(|d| ((d.config, d.source), d.rev))
             .collect();
+        // Property facts bind to source schemas (J4): every assertion event
+        // and every property declaration must name a DECLARED source, whose
+        // declaration commits no later than the use — otherwise the
+        // source-scoped property/absence views would mint finalized facts
+        // for schemas that do not exist. Register/note event sources remain
+        // unconstrained: no view consumes them except through validated
+        // sequence queries.
+        for e in &self.events {
+            if matches!(e.payload, Payload::Assertion { .. }) {
+                match src_decl_rev.get(&(e.config, e.source)) {
+                    None => {
+                        return Err(ValidationError::UndeclaredSource {
+                            what: "assertion event",
+                            config: e.config,
+                            src: e.source,
+                        });
+                    }
+                    Some(&decl_rev) if decl_rev > e.rev => {
+                        return Err(ValidationError::DeclarationAfterUse {
+                            what: "assertion event",
+                            config: e.config,
+                            id: e.source,
+                            decl_rev,
+                            use_rev: e.rev,
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        for d in &self.properties {
+            match src_decl_rev.get(&(d.config, d.source)) {
+                None => {
+                    return Err(ValidationError::UndeclaredSource {
+                        what: "property declaration",
+                        config: d.config,
+                        src: d.source,
+                    });
+                }
+                Some(&decl_rev) if decl_rev > d.rev => {
+                    return Err(ValidationError::DeclarationAfterUse {
+                        what: "property declaration",
+                        config: d.config,
+                        id: d.source,
+                        decl_rev,
+                        use_rev: d.rev,
+                    });
+                }
+                Some(_) => {}
+            }
+        }
         for q in &self.seq_queries {
             for source in [q.src_a, q.src_b] {
                 if let Some(&decl_rev) = src_decl_rev.get(&(q.config, source))
@@ -1144,12 +1227,28 @@ impl Fixture {
             }
         }
 
-        // Cut Moment/count coherence (r6): a cut's claimed Moment must not
-        // precede the last event it covers (a seal at Moment 5 cannot
-        // include an event from Moment 10), and a child's first own event
-        // must not precede its fork cut's Moment (the machine exists only
-        // from the branch moment onward). Exclusion of same-Moment events at
-        // or past the count remains legal — that is the half-open contract.
+        // Cut Moment/count coherence (r6 + J1): a cut's claimed Moment must
+        // not precede the last event it covers (a seal at Moment 5 cannot
+        // include an event from Moment 10); the FIRST EXCLUDED persisted
+        // event of the cut's own rollout (position == count) must not
+        // precede the cut's Moment either — a seal claiming Moment 100 over
+        // a count-1 prefix, with excluded events from Moments 20 and 30,
+        // would assert a sealed state that was not true at Moment 100.
+        // Equality stays legal in both directions: excluding same-Moment
+        // events at or past the count IS the half-open contract. A cut also
+        // must not precede its rollout's birth (fork-cut) Moment, and a
+        // child's first own event must not precede its fork cut's Moment
+        // (the machine exists only from the branch moment onward).
+        let birth_moment: BTreeMap<(CfgId, RolloutId), Moment> = self
+            .lineage
+            .iter()
+            .map(|l| ((l.config, l.child), l.cut.moment))
+            .collect();
+        let event_moment_at: BTreeMap<(CfgId, RolloutId, Pos), Moment> = self
+            .events
+            .iter()
+            .map(|e| ((e.config, e.rollout, e.pos), e.moment))
+            .collect();
         let coherent = |kind: &'static str,
                         config: CfgId,
                         rollout: RolloutId,
@@ -1165,6 +1264,30 @@ impl Fixture {
                     count: cut.count,
                     cut_moment: cut.moment,
                     event_moment: covered,
+                });
+            }
+            if let Some(&excluded) = event_moment_at.get(&(config, rollout, cut.count))
+                && excluded < cut.moment
+            {
+                return Err(ValidationError::CutMomentIncoherent {
+                    kind,
+                    rollout,
+                    config,
+                    count: cut.count,
+                    cut_moment: cut.moment,
+                    event_moment: excluded,
+                });
+            }
+            if let Some(&birth) = birth_moment.get(&(config, rollout))
+                && cut.moment < birth
+            {
+                return Err(ValidationError::CutBeforeBirth {
+                    kind,
+                    rollout,
+                    config,
+                    count: cut.count,
+                    cut_moment: cut.moment,
+                    birth_moment: birth,
                 });
             }
             Ok(())

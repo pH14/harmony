@@ -127,12 +127,14 @@ fn cut_before_branch_point_rejected() {
     // point — the physical cut contract violation the parity harness
     // originally caught in the random generator.
     let (mut fx, _) = fixtures::tree_lineage();
+    // Moment 50 keeps every coherence rule satisfied (>= D's birth at 44) so
+    // the position-bounds rule is what fires.
     fx.obs_cuts.push(differential_lineage::data::ObsCutRec {
         rev: 5,
         config: 0,
         rollout: 3,
         cut: Cut {
-            moment: 30,
+            moment: 50,
             count: 2,
         },
     });
@@ -571,18 +573,20 @@ fn query_before_source_declaration_rejected() {
     // the dataflow's join sits silent until the declaration commits while a
     // revision-filtered reader already judges the query.
     let (mut fx, _) = fixtures::retention_properties();
+    // Source 2 (the scrape) is named by query 1 but by no assertion event or
+    // property declaration, so the QUERY ordering rule is what fires.
     let idx = fx
         .sources
         .iter()
-        .position(|s| s.source == 1)
-        .expect("source 1 declared");
-    fx.sources[idx].rev = 3; // query 0 uses source 1 at revision 1
+        .position(|s| s.source == 2)
+        .expect("source 2 declared");
+    fx.sources[idx].rev = 3; // query 1 uses source 2 at revision 1
     assert_eq!(
         fx.validate(),
         Err(ValidationError::DeclarationAfterUse {
             what: "sequence query",
             config: 0,
-            id: 1,
+            id: 2,
             decl_rev: 3,
             use_rev: 1,
         })

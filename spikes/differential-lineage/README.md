@@ -8,14 +8,16 @@ Moment/ordinal is data, no custom lattice**), at an acceptable incremental
 cost?
 
 **Findings and the GO/NO-GO recommendation live in PR #121's description**
-(single source of truth, per the tasks/120 rule); `REPORT.md` holds the raw
-measurements; ratification is `hm-bbx.5`. In brief, mechanically: all eight
+(single source of truth, per the tasks/120 rule); ratification is
+`hm-bbx.5`. **Numbers live only in the artifact-derived tables** —
+`REPORT.md` (every figure recomputable from the committed
+`bench-results.json`) and the PR description's cost section; this README
+deliberately carries pointers, not figures (J2). Mechanically: all eight
 query families are proven over committed fixtures with exact expected
 outputs; a naive and a segment-shared formulation agree with a plain-Rust
-genesis-replay referee at every revision; per-branch incremental cost is
-own-segment work plus ≈ 11.4 updates per ancestor (lineage stages included,
-r5 accounting), against a ≈ 140× steeper per-depth slope for the naive
-prefix-join and ~390× over per-revision direct recompute.
+genesis-replay referee at every revision; the cost story (per-branch
+marginals, depth slopes, the coherent-snapshot recompute baseline and where
+recompute wins) is in `REPORT.md`'s tables and reading notes.
 
 Standalone: no dependency on `consonance/` or `dissonance/`. Tracked by
 design (root `.gitignore` exception): fixtures, generator, lockfile, and
@@ -50,6 +52,9 @@ species; this spike is the complementary one-dataflow observation plane).
   uniqueness, revision coherence incl. lineage-before-dependents, checked
   position arithmetic, the physical branch-point contract, Moment
   monotonicity, cross-record references).
+- `tests/judge_regressions.rs` — the tribunal judge's verify-event repros
+  (J1/J4), folded in and inverted: each once-accepted incoherence must now
+  refuse with its typed error.
 - `examples/bench.rs` — the cost measurement (`REPORT.md`).
 - `examples/gen_fixtures.rs` — regenerates the committed fixtures
   bit-identically.
@@ -71,13 +76,14 @@ species; this spike is the complementary one-dataflow observation plane).
 ## Run
 
 ```sh
-cargo test --locked                            # 58 tests: exact + parity + validate (~3 s)
+cargo test --locked                            # 63 tests: exact + parity + validate + judge regressions (~3 s)
 cargo run --release --locked --example bench   # the cost measurement (REPORT.md)
 cargo run --locked --example gen_fixtures      # regenerate committed fixtures
 ```
 
 Gates (mirrored in CI by the `spikes/differential-lineage gates` step of
-`.github/workflows/quality.yml`): `cargo build`, `cargo test --locked`,
-`cargo clippy --locked --all-features --all-targets -- -D warnings`,
-`cargo fmt -- --check`, `cargo deny check --config <root>/deny.toml licenses`
-— all on this manifest.
+`.github/workflows/quality.yml`): `cargo build` (CI runs the release build
+too — `cargo build --locked --release --all-targets`, J6), `cargo test
+--locked`, `cargo clippy --locked --all-features --all-targets -- -D
+warnings`, `cargo fmt -- --check`, `cargo deny check --config
+<root>/deny.toml licenses` — all on this manifest.

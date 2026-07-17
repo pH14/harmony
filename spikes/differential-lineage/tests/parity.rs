@@ -183,17 +183,28 @@ fn random_trees_parity_staged() {
 
 #[test]
 fn reruns_are_deterministic() {
-    let (fx, _) = fixtures::tree_lineage();
-    let a = run(&fx, BuildOpts::default(), 42).expect("valid fixture");
-    let b = run(&fx, BuildOpts::default(), 42).expect("valid fixture");
-    // Identical raw update streams, not merely identical net views.
-    assert_eq!(a.seal_prefix, b.seal_prefix);
-    assert_eq!(a.obs_naive, b.obs_naive);
-    assert_eq!(a.obs_shared, b.obs_shared);
-    assert_eq!(a.cells, b.cells);
-    assert_eq!(a.transitions, b.transitions);
-    assert_eq!(a.occupancy, b.occupancy);
-    assert_eq!(a.deltas, b.deltas);
+    // Identical raw update streams for ALL captured views plus the stage
+    // meters (J7: the gate now matches the claim's width), on a fixture
+    // that populates the lineage/observation views AND one that populates
+    // the property/sequence/working/scrape views.
+    for (fx, _) in [fixtures::tree_lineage(), fixtures::retention_properties()] {
+        let a = run(&fx, BuildOpts::default(), 42).expect("valid fixture");
+        let b = run(&fx, BuildOpts::default(), 42).expect("valid fixture");
+        assert_eq!(a.seal_prefix, b.seal_prefix, "{}", fx.name);
+        assert_eq!(a.obs_naive, b.obs_naive, "{}", fx.name);
+        assert_eq!(a.obs_shared, b.obs_shared, "{}", fx.name);
+        assert_eq!(a.cells, b.cells, "{}", fx.name);
+        assert_eq!(a.transitions, b.transitions, "{}", fx.name);
+        assert_eq!(a.occupancy, b.occupancy, "{}", fx.name);
+        assert_eq!(a.property_results, b.property_results, "{}", fx.name);
+        assert_eq!(a.site_coverage, b.site_coverage, "{}", fx.name);
+        assert_eq!(a.absence, b.absence, "{}", fx.name);
+        assert_eq!(a.working_species, b.working_species, "{}", fx.name);
+        assert_eq!(a.seq_pairs, b.seq_pairs, "{}", fx.name);
+        assert_eq!(a.seq_rejections, b.seq_rejections, "{}", fx.name);
+        assert_eq!(a.scrape_terminal, b.scrape_terminal, "{}", fx.name);
+        assert_eq!(a.deltas, b.deltas, "{}", fx.name);
+    }
 }
 
 #[test]
