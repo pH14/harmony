@@ -1,0 +1,136 @@
+{
+  "name": "two_pass",
+  "registers": [
+    {
+      "rev": 1,
+      "config": 0,
+      "reg": 10,
+      "op": "Set"
+    }
+  ],
+  "sources": [
+    {
+      "rev": 1,
+      "config": 0,
+      "source": 0,
+      "scope": "RolloutGlobal"
+    }
+  ],
+  "properties": [],
+  "events": [
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 0,
+      "moment": 10,
+      "payload": {
+        "Register": {
+          "reg": 10,
+          "value": 1
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 1,
+      "moment": 20,
+      "payload": {
+        "Register": {
+          "reg": 10,
+          "value": 5
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 0,
+      "pos": 2,
+      "moment": 30,
+      "payload": {
+        "Register": {
+          "reg": 10,
+          "value": 9
+        }
+      }
+    }
+  ],
+  "scrape": [],
+  "lineage": [],
+  "obs_cuts": [
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "cut": {
+        "moment": 20,
+        "count": 2
+      }
+    }
+  ],
+  "seals": [
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 0,
+      "seal": 0,
+      "cut": {
+        "moment": 30,
+        "count": 3
+      }
+    },
+    {
+      "rev": 3,
+      "config": 0,
+      "rollout": 0,
+      "seal": 1,
+      "cut": {
+        "moment": 10,
+        "count": 1
+      }
+    }
+  ],
+  "entry_commits": [
+    {
+      "rev": 4,
+      "config": 0,
+      "entry": 100,
+      "rollout": 0,
+      "seal": 0,
+      "quality": 5
+    },
+    {
+      "rev": 4,
+      "config": 0,
+      "entry": 101,
+      "rollout": 0,
+      "seal": 0,
+      "quality": 5
+    },
+    {
+      "rev": 4,
+      "config": 0,
+      "entry": 102,
+      "rollout": 0,
+      "seal": 1,
+      "quality": 9
+    },
+    {
+      "rev": 5,
+      "config": 0,
+      "entry": 103,
+      "rollout": 0,
+      "seal": 0,
+      "quality": 7
+    }
+  ],
+  "working": [],
+  "seq_queries": [],
+  "finalizations": []
+}

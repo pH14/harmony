@@ -72,7 +72,17 @@ git -C ~/workspace/harmony pull -q
 gh pr list --json number,title,headRefName,isDraft,reviewDecision,updatedAt
 ~/workspace/harmony/scripts/agents-status.sh
 bd ready --json          # the unblocked frontier (beads, .beads/, adopted 2026-07-09)
+bd list --json | <sort by created_at desc, head ~10>   # ARRIVALS: new beads since the
+                         # last iteration, whatever their status — `bd ready` never shows
+                         # blocked/in_progress arrivals (a user-claimed integration bead, a
+                         # handoff's tracked-work beads), and un-surfaced arrivals are how
+                         # handoffs get missed (the 2026-07-17 secret-guardrails lesson)
 ```
+
+Run this block IN FULL every iteration — never narrow it to the PRs you already know about
+while babysitting long-running events; that is exactly how a ready handoff PR sat unnoticed
+for hours on 2026-07-17. Surface every new arrival (PR or bead) in the iteration report the
+first time it is seen.
 
 **Beads is the queue of record.** Task/PR *stage* is still derived fresh from GitHub + tmux
 (statelessness rule) — but *what work exists and what blocks it* lives in beads (`bd list`,
