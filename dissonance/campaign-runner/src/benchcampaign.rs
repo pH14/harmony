@@ -46,8 +46,8 @@ use benchmark::report::{BranchEvent, CampaignLog, Configuration, FindRecord};
 use benchmark::trigger::{self, FaultKind, Perturbation, Scenario};
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::{
-    AdapterEnv, CellFn, FeatureSet, Machine, MachineError, Moment, Prng, Record, Reproducer,
-    RunTrace, Sensor, SnapId, StopConditions, StopMask, StopReason, StreamId,
+    AdapterEnv, CellFn, EvidenceCut, FeatureSet, Machine, MachineError, Moment, Prng, Record,
+    Reproducer, RunTrace, Sensor, SnapId, StopConditions, StopMask, StopReason, StreamId,
 };
 use logtmpl::{CellFnV1, LogSensor};
 
@@ -557,11 +557,19 @@ impl Machine for BenchToyMachine {
         }
     }
 
-    fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+    fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
         let id = self.next_snap;
         self.next_snap += 1;
         self.snaps.insert(id, (self.vtime, self.current.clone()));
-        Ok(SnapId(id))
+        // The toy stamps its cut from the same state its seal records (task
+        // 127); it models no SDK capture, so the prefix is 0.
+        Ok((
+            SnapId(id),
+            EvidenceCut {
+                at: Moment(self.vtime),
+                sdk_events: 0,
+            },
+        ))
     }
 
     fn drop_snap(&mut self, snap: SnapId) -> Result<(), MachineError> {
@@ -774,14 +782,15 @@ fn seal_base<M: Machine>(
     cfg: &BenchConfig,
 ) -> Result<(SnapId, u64), MachineError> {
     if cfg.deadline_delta.is_none() {
-        return Ok((machine.snapshot()?, 0));
+        let (snap, _cut) = machine.snapshot()?;
+        return Ok((snap, 0));
     }
     let mut vt = crate::probe_vtime(machine)?;
     let mut attempts = 0usize;
     let base = loop {
         attempts += 1;
         match machine.snapshot() {
-            Ok(snap) => break snap,
+            Ok((snap, _cut)) => break snap,
             Err(MachineError::NotQuiescent) => {
                 if attempts >= cfg.snapshot_max_attempts {
                     return Err(MachineError::NotQuiescent);
@@ -1145,7 +1154,7 @@ mod tests {
     fn each_toy_crashes_on_trigger_halts_nominal() {
         for spec in Benchmark::wave5().bugs {
             let mut m = BenchToyMachine::new(spec.clone());
-            let base = m.snapshot().unwrap();
+            let base = m.snapshot().unwrap().0;
             let until = StopConditions {
                 deadline: None,
                 on: StopMask::NONE,
@@ -1337,11 +1346,11 @@ mod tests {
                     info: vec![0, 0],
                 })
             }
-            fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+            fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
                 let id = self.next;
                 self.next += 1;
                 self.snaps.insert(id, self.current.clone());
-                Ok(SnapId(id))
+                Ok((SnapId(id), EvidenceCut::default()))
             }
             fn drop_snap(&mut self, s: SnapId) -> Result<(), MachineError> {
                 self.snaps.remove(&s.0);
@@ -1414,11 +1423,11 @@ mod tests {
                     vtime: Moment(BASE_VTIME + 1),
                 })
             }
-            fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+            fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
                 let id = self.next;
                 self.next += 1;
                 self.snaps.insert(id, self.current.clone());
-                Ok(SnapId(id))
+                Ok((SnapId(id), EvidenceCut::default()))
             }
             fn drop_snap(&mut self, s: SnapId) -> Result<(), MachineError> {
                 self.snaps.remove(&s.0);
@@ -1513,11 +1522,11 @@ mod tests {
                     vtime: Moment(BASE_VTIME + 100),
                 })
             }
-            fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+            fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
                 let id = self.next;
                 self.next += 1;
                 self.snaps.insert(id, self.current.clone());
-                Ok(SnapId(id))
+                Ok((SnapId(id), EvidenceCut::default()))
             }
             fn drop_snap(&mut self, s: SnapId) -> Result<(), MachineError> {
                 self.snaps.remove(&s.0);
@@ -1598,11 +1607,11 @@ mod tests {
                     info: vec![0, 1],
                 })
             }
-            fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+            fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
                 let id = self.next;
                 self.next += 1;
                 self.snaps.insert(id, self.current.clone());
-                Ok(SnapId(id))
+                Ok((SnapId(id), EvidenceCut::default()))
             }
             fn drop_snap(&mut self, s: SnapId) -> Result<(), MachineError> {
                 self.snaps.remove(&s.0);

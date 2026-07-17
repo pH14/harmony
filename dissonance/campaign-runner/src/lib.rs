@@ -189,7 +189,7 @@ pub fn run_sweep<M: Machine>(
     let base = loop {
         attempts += 1;
         match machine.snapshot() {
-            Ok(snap) => break snap,
+            Ok((snap, _cut)) => break snap,
             Err(MachineError::NotQuiescent) => {
                 if attempts >= cfg.snapshot_max_attempts {
                     return Err(MachineError::NotQuiescent);
@@ -609,12 +609,14 @@ replay(base): state_hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
                 }
             }
         }
-        fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+        fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
             if self.refusals_left > 0 {
                 self.refusals_left -= 1;
                 Err(MachineError::NotQuiescent)
             } else {
-                Ok(explorer::SnapId(1))
+                // The cut is not load-bearing for this double (task 127): a
+                // zero stamp on its constant axis.
+                Ok((explorer::SnapId(1), explorer::EvidenceCut::default()))
             }
         }
         fn drop_snap(&mut self, _snap: explorer::SnapId) -> Result<(), MachineError> {

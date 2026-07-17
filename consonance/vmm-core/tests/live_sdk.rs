@@ -137,8 +137,8 @@ fn hello(s: &mut DynServer) {
 
 fn snapshot(s: &mut DynServer) -> SnapId {
     match drive(s, &Request::Snapshot) {
-        Reply::SnapId(id) => id,
-        other => panic!("expected SnapId reply, got {other:?}"),
+        Reply::Snapshot { id, .. } => id,
+        other => panic!("expected the seal-bound Snapshot reply, got {other:?}"),
     }
 }
 

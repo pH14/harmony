@@ -85,9 +85,10 @@ pub use materialize::{Lineage, Materialization, Materializer, SealBudget};
 pub use prng::Prng;
 pub use seam::{EnvCodec, Machine, MachineFactory};
 pub use spine::{
-    Archive, Bug, CellFn, CellKey, ChannelId, CoverageView, DecisionPoint, ExemplarRef, Feature,
-    FeatureId, FeatureSet, Fork, Frontier, FrontierEntry, GuestEvent, Matchable, Moment, Oracle,
-    Record, Reward, RunTrace, Selector, Sensor, StreamId, Tactic, Value, VirtualExemplar,
+    Archive, Bug, CellFn, CellKey, ChannelId, CoverageView, DecisionPoint, EvidenceCut,
+    ExemplarRef, Feature, FeatureId, FeatureSet, Fork, Frontier, FrontierEntry, GuestEvent,
+    Matchable, Moment, Oracle, Record, Reward, RunTrace, Selector, Sensor, StreamId, Tactic, Value,
+    VirtualExemplar,
 };
 
 use serde::{Deserialize, Serialize};

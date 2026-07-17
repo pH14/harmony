@@ -285,7 +285,7 @@ impl Archive for CoverageArchive {
 
         let mut total = 0u64;
         for fork in forks {
-            let at = fork.exemplar.at;
+            let at = fork.exemplar.cut.at;
             if !(self.sealable)(at) {
                 continue;
             }
@@ -427,7 +427,7 @@ pub(crate) fn fingerprint(stop: &StopReason) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Moment, Reproducer, SnapId, VirtualExemplar};
+    use crate::{EvidenceCut, Moment, Reproducer, SnapId, VirtualExemplar};
 
     fn env() -> Reproducer {
         Reproducer {
@@ -442,7 +442,10 @@ mod tests {
                 parent: SnapId(1),
                 seed: 0,
                 suffix: env(),
-                at: Moment(at),
+                cut: EvidenceCut {
+                    at: Moment(at),
+                    sdk_events: 0,
+                },
             },
             env: env(),
             coverage: Some(CoverageView {
@@ -590,8 +593,8 @@ mod tests {
         let e1 = a.frontier().get(ExemplarRef(1)).expect("entry 1");
         assert_eq!(e0.reward.new_cells, 2);
         assert_eq!(e1.reward.new_cells, 1);
-        assert_eq!(e0.exemplar.at, Moment(40));
-        assert_eq!(e1.exemplar.at, Moment(60));
+        assert_eq!(e0.exemplar.cut.at, Moment(40));
+        assert_eq!(e1.exemplar.cut.at, Moment(60));
     }
 
     /// The injected sealability predicate gates admission (task 63's RESTRICTED
@@ -610,6 +613,7 @@ mod tests {
                 .get(ExemplarRef(0))
                 .expect("the sealable fork's entry")
                 .exemplar
+                .cut
                 .at,
             Moment(60)
         );
@@ -682,7 +686,10 @@ mod tests {
                 parent: SnapId(1),
                 seed: 0,
                 suffix: env(),
-                at: Moment(40),
+                cut: EvidenceCut {
+                    at: Moment(40),
+                    sdk_events: 0,
+                },
             },
             env: env(),
             reward: Reward { new_cells: 1 },

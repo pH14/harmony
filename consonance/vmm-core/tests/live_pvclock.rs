@@ -503,7 +503,7 @@ fn seal_with_retry<B: Backend<A = X86>>(
             "no snapshottable boundary within budget"
         );
         match call(s, &Request::Snapshot) {
-            Ok(Reply::SnapId(id)) => return (id, vt),
+            Ok(Reply::Snapshot { id, .. }) => return (id, vt),
             Ok(other) => panic!("snapshot answered {other:?}"),
             Err(control_proto::ControlError::NotQuiescent) => {
                 match run_until(s, vt.saturating_add(step)) {

@@ -164,7 +164,9 @@ pub enum HashScope {
 pub enum Request {
     /// Negotiate protocol/blob versions and coverage geometry. Must be first.
     Hello(Caps),
-    /// Capture state at a quiescent point → [`SnapId`](Reply::SnapId).
+    /// Capture state at a quiescent point → [`Snapshot`](Reply::Snapshot), the
+    /// seal-bound reply carrying the handle **and** its evidence cut (task 127).
+    /// A failed or non-quiescent seal is an error reply carrying neither.
     Snapshot,
     /// Release a snapshot (pool GC) → [`Unit`](Reply::Unit).
     Drop(SnapId),
@@ -294,8 +296,6 @@ pub enum Request {
 pub enum Reply {
     /// The negotiated capabilities (reply to [`Hello`](Request::Hello)).
     Hello(Caps),
-    /// A new snapshot handle (reply to [`Snapshot`](Request::Snapshot)).
-    SnapId(SnapId),
     /// An acknowledgement with no value (reply to `Drop`/`Branch`/`Replay`).
     Unit,
     /// A guest-observable run outcome (reply to [`Run`](Request::Run)).
@@ -339,23 +339,44 @@ pub enum Reply {
         /// so far).
         ok: bool,
     },
-    /// A **taint-carrying** snapshot handle (task 81) — the reply to
-    /// [`Snapshot`](Request::Snapshot) **when the captured timeline is tainted**.
+    /// The **seal-bound** snapshot reply (task 127) — the ONE reply to
+    /// [`Snapshot`](Request::Snapshot), tainted or not. It binds, atomically
+    /// from the **same stopped server state**: the pool-wide handle, the
+    /// synchronized seal [`Moment`], the timeline taint (task 81), and the
+    /// seal's **evidence cut** over the ordered SDK capture — the included
+    /// SDK-event count. The stamp is the **sole authority** for the cut: a
+    /// client never reconstructs it from a second read
+    /// (`docs/DISSONANCE-STRATEGY.md`, "The cut is captured with the seal").
     ///
-    /// The pre-81 taint-free [`SnapId`](Reply::SnapId) reply is retained and is still
-    /// what the server sends for an **untainted** snapshot (so every pre-81 consumer
-    /// — the explorer, the conductor — and every existing golden/live capture is
-    /// byte-identical). A snapshot taken from a timeline an [`Exec`](Request::Exec)
-    /// improvisation has tainted instead comes back here with `tainted = true`, so a
-    /// future Archive/donation path (task 64+) can refuse admission **without asking**
-    /// — the taint rides the reply, not a side channel. See vmm-core's
-    /// `IMPLEMENTATION.md` for why this is additive rather than a reshape of
-    /// [`SnapId`](Reply::SnapId).
+    /// **The cut is half-open, by prefix length — never by `Moment`
+    /// comparison.** Persisted SDK-capture vector positions `< sdk_events` are
+    /// included (including the exact subset emitted *at* the seal's `Moment`);
+    /// positions `>= sdk_events` are excluded. Several events may share one
+    /// stamped `Moment` (a V-time-anchor stamp, bead `hm-ynt`); the prefix
+    /// length still cuts them exactly.
+    ///
+    /// **Console bytes are structurally outside this cut**: the serial capture
+    /// is a distinct source-local, stop-granular byte stream (paged by
+    /// [`Console`](Request::Console)) with no cursor here — it can never enter
+    /// `sdk_events`. A later seal-relative source gets its **own** declared
+    /// cursor field; independent cursors never imply cross-source order.
+    ///
+    /// (The pre-127 taint-free bare-handle reply — wire tag 2, `Reply::SnapId`
+    /// — is retired: it carried no cut, so it could not honor the seal-evidence
+    /// binding. `APP_PROTOCOL_VERSION` 8 gates the reshape at `hello`.)
     Snapshot {
         /// The pool-wide snapshot handle.
         id: SnapId,
-        /// Whether the captured timeline is tainted (always `true` on this
-        /// variant; carried for wire uniformity with the donation path's contract).
+        /// The synchronized seal `Moment` — the sealed state's own exact
+        /// V-time (the same value a later restore's floor validates against).
+        at: Moment,
+        /// The included SDK-event count: the ordered SDK-capture vector's
+        /// **prefix length** at the seal. Positions below it are included,
+        /// at/after excluded. `0` for a guest with no SDK.
+        sdk_events: u64,
+        /// Whether the captured timeline is tainted by an
+        /// [`Exec`](Request::Exec) improvisation (task 81), so an
+        /// Archive/donation path can refuse admission without asking.
         tainted: bool,
     },
     /// The recorded reproducer (reply to [`RecordedEnv`](Request::RecordedEnv)): the

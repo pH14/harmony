@@ -274,12 +274,28 @@ fn reply_hello() {
     check_reply(10, Ok(Reply::Hello(sample_caps())), &body);
 }
 
+/// The seal-bound snapshot reply (task 127), **untainted**: the one reply to
+/// `Request::Snapshot` carries the handle, the synchronized seal `Moment`, the
+/// included SDK-event count (the cut), and the taint byte — all from the same
+/// stopped server state. (The pre-127 bare-handle `SnapId` reply, wire tag 2,
+/// is retired; see `retired_snapid_tag_is_rejected` in `adversarial.rs`.)
 #[test]
-fn reply_snapid() {
+fn reply_snapshot_untainted_carries_the_cut() {
     check_reply(
         11,
-        Ok(Reply::SnapId(SnapId(9))),
-        &[0x00, 0x02, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        Ok(Reply::Snapshot {
+            id: SnapId(9),
+            at: Moment(0x1234),
+            sdk_events: 3,
+            tainted: false,
+        }),
+        &[
+            0x00, 0x0A, // RESULT_OK, REPLY_SNAPSHOT
+            0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // id = 9
+            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // at = 0x1234
+            0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // sdk_events = 3
+            0x00, // tainted = false
+        ],
     );
 }
 
@@ -669,18 +685,26 @@ fn reply_exec_result() {
     );
 }
 
+/// The seal-bound snapshot reply, **tainted** (task 81 × task 127): the taint
+/// byte rides the same cut-carrying shape — a tainted seal still binds its
+/// exact evidence cut.
 #[test]
-fn reply_snapshot_tainted() {
-    // RESULT_OK (0x00), REPLY_SNAPSHOT (0x0A), id (u64 LE), tainted (u8).
+fn reply_snapshot_tainted_carries_the_cut() {
+    // RESULT_OK (0x00), REPLY_SNAPSHOT (0x0A), id (u64 LE), at (u64 LE),
+    // sdk_events (u64 LE), tainted (u8).
     check_reply(
         61,
         Ok(Reply::Snapshot {
             id: SnapId(9),
+            at: Moment(0x64),
+            sdk_events: 2,
             tainted: true,
         }),
         &[
             0x00, 0x0A, // RESULT_OK, REPLY_SNAPSHOT
             0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // id = 9
+            0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // at = 0x64
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // sdk_events = 2
             0x01, // tainted = true
         ],
     );

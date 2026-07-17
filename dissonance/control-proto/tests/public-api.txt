@@ -70,9 +70,10 @@ pub control_proto::Reply::Hello(control_proto::Caps)
 pub control_proto::Reply::Recorded(control_proto::Reproducer)
 pub control_proto::Reply::Regs(control_proto::RegsView)
 pub control_proto::Reply::SdkEvents(alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>)
-pub control_proto::Reply::SnapId(control_proto::SnapId)
 pub control_proto::Reply::Snapshot
+pub control_proto::Reply::Snapshot::at: control_proto::Moment
 pub control_proto::Reply::Snapshot::id: control_proto::SnapId
+pub control_proto::Reply::Snapshot::sdk_events: u64
 pub control_proto::Reply::Snapshot::tainted: bool
 pub control_proto::Reply::Stop(control_proto::StopReason)
 pub control_proto::Reply::Unit

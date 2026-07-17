@@ -12,8 +12,8 @@ mod common;
 
 use common::config;
 use explorer::{
-    Archive, CoverageArchive, CoverageView, Fork, IdentityCells, Moment, Reproducer, RunTrace,
-    SnapId, StopReason, VirtualExemplar,
+    Archive, CoverageArchive, CoverageView, EvidenceCut, Fork, IdentityCells, Moment, Reproducer,
+    RunTrace, SnapId, StopReason, VirtualExemplar,
 };
 use proptest::prelude::*;
 
@@ -30,7 +30,10 @@ fn fork(at: u64, coverage: &[u8]) -> Fork {
             parent: SnapId(1),
             seed: 0,
             suffix: env(),
-            at: Moment(at),
+            cut: EvidenceCut {
+                at: Moment(at),
+                sdk_events: 0,
+            },
         },
         env: env(),
         coverage: Some(CoverageView {
@@ -58,7 +61,7 @@ fn kept_after(seq: &[(u64, Vec<u8>)]) -> Vec<(u64, u64)> {
     }
     a.frontier()
         .iter()
-        .map(|(_, e)| (e.exemplar.at.0, e.reward.new_cells))
+        .map(|(_, e)| (e.exemplar.cut.at.0, e.reward.new_cells))
         .collect()
 }
 

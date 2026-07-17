@@ -8,9 +8,9 @@
 //!   fingerprint (cross-checked against `TerminalOracle`), so the two dedup.
 
 use explorer::{
-    Archive, ChannelId, CoverageArchive, Feature, FeatureId, Fork, GuestEvent, IdentityCells,
-    Moment, Oracle, Reproducer, RunTrace, Sensor, SnapId, StopReason, TerminalOracle,
-    VirtualExemplar,
+    Archive, ChannelId, CoverageArchive, EvidenceCut, Feature, FeatureId, Fork, GuestEvent,
+    IdentityCells, Moment, Oracle, Reproducer, RunTrace, Sensor, SnapId, StopReason,
+    TerminalOracle, VirtualExemplar,
 };
 use sdk_events::{
     AlwaysViolation, LINK_ASSERT_CHANNEL, LINK_STATE_CHANNEL, LinkSensor, decode_event,
@@ -146,7 +146,10 @@ fn sometimes_hit_is_admitted_as_a_checkpoint_candidate() {
             parent: SnapId(1),
             seed: 0,
             suffix: env(vec![]),
-            at: Moment(40),
+            cut: EvidenceCut {
+                at: Moment(40),
+                sdk_events: 0,
+            },
         },
         env: env(vec![]),
         coverage: None,
@@ -167,7 +170,10 @@ fn sometimes_hit_is_admitted_as_a_checkpoint_candidate() {
             parent: SnapId(1),
             seed: 0,
             suffix: env(vec![]),
-            at: Moment(60),
+            cut: EvidenceCut {
+                at: Moment(60),
+                sdk_events: 0,
+            },
         },
         env: env(vec![]),
         coverage: None,

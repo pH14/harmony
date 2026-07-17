@@ -119,14 +119,14 @@ impl FrameServer {
         match req {
             Request::Hello(caps) => self.guest.hello(*caps).map(Reply::Hello),
             Request::Snapshot => self.guest.snapshot().map(|s| {
-                // The wire keeps the taint-free reply for an untainted capture.
-                if s.tainted {
-                    Reply::Snapshot {
-                        id: s.id,
-                        tainted: true,
-                    }
-                } else {
-                    Reply::SnapId(s.id)
+                // The one seal-bound reply (task 127): handle + cut + taint.
+                // This stub guest models no V-time or SDK capture, so it
+                // stamps a zero cut.
+                Reply::Snapshot {
+                    id: s.id,
+                    at: control_proto::Moment(0),
+                    sdk_events: 0,
+                    tainted: s.tainted,
                 }
             }),
             Request::Drop(snap) => self.guest.drop_snap(*snap).map(|()| Reply::Unit),

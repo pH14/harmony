@@ -221,8 +221,7 @@ fn seal<B: Backend<A = X86>>(
     loop {
         attempts += 1;
         match call(s, &Request::Snapshot) {
-            Ok(Reply::SnapId(id)) => return (id, false, vt),
-            Ok(Reply::Snapshot { id, tainted }) => return (id, tainted, vt),
+            Ok(Reply::Snapshot { id, tainted, .. }) => return (id, tainted, vt),
             Ok(other) => panic!("snapshot answered {other:?}"),
             Err(ControlError::NotQuiescent) => {
                 assert!(
@@ -411,8 +410,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
     let (dirty_snap, dirty_taint) = loop {
         tries += 1;
         match call(&mut s, &Request::Snapshot) {
-            Ok(Reply::SnapId(id)) => break (id, false),
-            Ok(Reply::Snapshot { id, tainted }) => break (id, tainted),
+            Ok(Reply::Snapshot { id, tainted, .. }) => break (id, tainted),
             Ok(other) => panic!("snapshot on the exec'd fork answered {other:?}"),
             Err(ControlError::NotQuiescent) => {
                 assert!(

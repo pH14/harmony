@@ -85,7 +85,7 @@ fn each_admitted_entry_keeps_its_own_fork_seal() {
         (explorer::ExemplarRef(0), s0),
         (explorer::ExemplarRef(1), s1),
     ] {
-        let at = ex.frontier().get(r).unwrap().exemplar.at.0;
+        let at = ex.frontier().get(r).unwrap().exemplar.cut.at.0;
         ex.machine_mut().replay(seal).unwrap();
         // The toy's answer-log length is its V-time / VTIME_STEP; hash equality
         // with a genesis re-drive is gated in replay.rs — here the cheap pin:

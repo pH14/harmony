@@ -227,7 +227,7 @@ fn bug_below_a_nested_snapshot_replays_from_genesis() {
     let e_outer = ex.frontier().get(r).unwrap().env.clone();
     let s_outer = ex.seal_of(r).expect("first-generation seal");
     assert_eq!(
-        ex.frontier().get(r).unwrap().exemplar.at.0,
+        ex.frontier().get(r).unwrap().exemplar.cut.at.0,
         SNAP_AT * VTIME_STEP,
         "first-generation exemplar sits at SNAP_AT"
     );
@@ -361,7 +361,7 @@ fn every_frontier_entry_replays_its_seal_from_genesis() {
     let entries: Vec<(ExemplarRef, explorer::Reproducer, u64)> = ex
         .frontier()
         .iter()
-        .map(|(r, e)| (r, e.env.clone(), e.exemplar.at.0))
+        .map(|(r, e)| (r, e.env.clone(), e.exemplar.cut.at.0))
         .collect();
     assert!(
         !entries.is_empty(),

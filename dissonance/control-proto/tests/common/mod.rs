@@ -193,7 +193,6 @@ fn arb_control_error() -> impl Strategy<Value = ControlError> {
 fn arb_reply() -> impl Strategy<Value = Reply> {
     prop_oneof![
         arb_caps().prop_map(Reply::Hello),
-        any::<u64>().prop_map(|s| Reply::SnapId(SnapId(s))),
         Just(Reply::Unit),
         arb_stop_reason().prop_map(Reply::Stop),
         proptest::array::uniform32(any::<u8>()).prop_map(Reply::Hash),
@@ -201,10 +200,16 @@ fn arb_reply() -> impl Strategy<Value = Reply> {
         arb_bytes().prop_map(Reply::Bytes),
         arb_regs_view().prop_map(Reply::Regs),
         (arb_bytes(), any::<bool>()).prop_map(|(output, ok)| Reply::ExecResult { output, ok }),
-        (any::<u64>(), any::<bool>()).prop_map(|(id, tainted)| Reply::Snapshot {
-            id: SnapId(id),
-            tainted
-        }),
+        // The seal-bound snapshot reply (task 127): handle + cut (Moment,
+        // included SDK-event count) + taint — one shape for both taint states.
+        (any::<u64>(), any::<u64>(), any::<u64>(), any::<bool>()).prop_map(
+            |(id, at, sdk_events, tainted)| Reply::Snapshot {
+                id: SnapId(id),
+                at: Moment(at),
+                sdk_events,
+                tainted
+            }
+        ),
         arb_environment().prop_map(Reply::Recorded),
     ]
 }

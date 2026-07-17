@@ -280,7 +280,7 @@ fn seal_with_retry<B: Backend<A = X86>>(
         #[allow(clippy::disallowed_methods)] // test-only timing; never reaches state/hash
         let t0 = std::time::Instant::now();
         match call(s, &Request::Snapshot) {
-            Ok(Reply::SnapId(id)) => return (id, vt, t0.elapsed()),
+            Ok(Reply::Snapshot { id, .. }) => return (id, vt, t0.elapsed()),
             Ok(other) => panic!("snapshot answered {other:?}"),
             Err(control_proto::ControlError::NotQuiescent) => {
                 match run_until(s, vt.saturating_add(step)) {

@@ -77,7 +77,12 @@ fn classic_requests_round_trip_through_the_codec() {
 fn classic_replies_round_trip_through_the_codec() {
     let replies: [Result<Reply, ControlError>; 6] = [
         Ok(Reply::Hello(client_caps())),
-        Ok(Reply::SnapId(SnapId(7))),
+        Ok(Reply::Snapshot {
+            id: SnapId(7),
+            at: Moment(500),
+            sdk_events: 1,
+            tainted: false,
+        }),
         Ok(Reply::Unit),
         Ok(Reply::Stop(StopReason::Quiescent { vtime: Moment(500) })),
         Ok(Reply::Hash([0x42; 32])),

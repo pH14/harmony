@@ -191,7 +191,11 @@ fn one_run_seeds_many_exemplars() {
         2,
         "one genesis run admitted an exemplar at each of its two fork moments"
     );
-    let ats: Vec<u64> = ex.frontier().iter().map(|(_, e)| e.exemplar.at.0).collect();
+    let ats: Vec<u64> = ex
+        .frontier()
+        .iter()
+        .map(|(_, e)| e.exemplar.cut.at.0)
+        .collect();
     assert_eq!(ats, vec![40, 60], "admitted along the timeline, in order");
 }
 
@@ -406,7 +410,7 @@ fn compacting_eviction_never_desyncs_the_seal_cache() {
     // would have returned the evicted id-0 seal and this hash check fails.)
     let (env, at) = {
         let e = ex.frontier().get(survivor).expect("survivor entry");
-        (e.env.clone(), e.exemplar.at.0)
+        (e.env.clone(), e.exemplar.cut.at.0)
     };
     let seal = ex.materialize(survivor).unwrap();
     ex.machine_mut().replay(seal).unwrap();
