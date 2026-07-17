@@ -813,3 +813,17 @@ graded AA-1(a) sets rerun each condition deliberately on a quiet box. (b)
 `el0-check`'s oracle-exactness check grades against the pre-correction model and
 correctly FAILED the probes; it is updated with the model, and the failed verdict
 is retained as the discovery record.
+
+Post-correction status: the model correction (`certain_branches`) is implemented
+across oracle-model / el0-check / the guest checker's `total()` base, fixtures
+and the expected-counts manifest regenerated, all offline gates green; the probe
+evidence re-grades **PASS 11/11** with per-class constant offsets (+12
+straight-line, +14 branch-dense over 36 records). The graded AA-1(a) condition
+matrix (pinned-solo / co-tenant-other-core / co-tenant-same-core /
+memory-pressure × 1e6/1e7/1e8 × 3 cases × 10 reps, `host/el0-conditions.sh`,
+smoke-fire-once per condition) runs on the quiet box. The EL0 kernel-mediated
+classes (syscall / signal / page-fault) are the follow-on block. Measurement-host
+staging: stock 6.18.35 deb built and installed; the GRUB one-shot staging
+(`host/stage-6.18-boot.sh`: saved-default pinned to 6.8.0-134, `panic=30`
+self-recovery, `grub-reboot` one-shot into 6.18.35) and all reboots are BLOCKED
+pending operator authorization — reported, not worked around.

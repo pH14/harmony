@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "stage": "aa1a",
+  "run_set_id": "aa1a-co-tenant-other-core-001-smoke",
+  "environment": {
+    "midr": 1094701249,
+    "soc": "Ampere(R) Altra(R) Processor (HPE ProLiant RL300 Gen11)",
+    "firmware": {
+      "bios_release_date": "01/16/2025",
+      "bios_version": "1.74"
+    },
+    "host_kernel": "6.8.0-134-generic",
+    "kvm_mode": "vhe"
+  },
+  "perf": {
+    "raw_event": 33,
+    "exclude_host": false,
+    "exclude_guest": false,
+    "exclude_hv": true,
+    "pinned": true,
+    "sample_period": null
+  },
+  "exclude_kernel": true,
+  "exclude_user": false,
+  "pinning": {
+    "pinned": true,
+    "core": 61,
+    "governor": "performance",
+    "migration_probe": false
+  },
+  "condition": "co-tenant-other-core",
+  "attempted": 2,
+  "records_sha256": "073cfdb0a443d489e2256d077a637039946c4bccb0406dc82816d21f951f8424"
+}
