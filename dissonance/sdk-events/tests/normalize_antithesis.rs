@@ -172,6 +172,14 @@ fn numeric_guidance_max_normalizes_to_the_declared_maximum() {
     assert_eq!(entry.classification, Classification::State);
     assert_eq!(entry.base_op, Some(UpdateOp::Max));
     assert_eq!(entry.value_shape, Some(ValueShape::Numeric));
+    // …but it is NOT reducible: the numeric value is an unvalidated token and its
+    // bounded representation / total order is not yet versioned in the schema, so
+    // it stays report-only (else a consumer could reduce under its own limits and
+    // replay differently).
+    assert!(
+        !entry.is_reducible_state(),
+        "numeric guidance is report-only until its bounded representation is versioned"
+    );
 }
 
 #[test]
@@ -462,6 +470,38 @@ fn a_malformed_location_coordinate_keeps_the_record_raw_not_a_fabricated_zero() 
     let n = decode_antithesis(&[rec(1, guidance)]).expect("decodes");
     assert_eq!(n.events[0].payload, Payload::Unknown);
     assert!(n.schema.is_empty());
+}
+
+#[test]
+fn a_present_non_string_site_id_keeps_the_record_raw() {
+    // A present but non-string `id` (with a valid message) is malformed — kept raw
+    // rather than collapsed to a `None`-id site that would merge distinct bad ids.
+    for bad_id in ["7", "true", "null", "[1]", "{}"] {
+        let json = format!(
+            r#"{{"antithesis_assert":{{"assert_type":"always","condition":true,"message":"m","id":{bad_id}}}}}"#
+        );
+        let n = decode_antithesis(&[rec(1, &json)]).expect("decodes");
+        assert_eq!(
+            n.events[0].payload,
+            Payload::Unknown,
+            "non-string id `{bad_id}` must stay raw"
+        );
+        assert!(n.schema.is_empty());
+    }
+
+    // A genuinely absent id still normalizes (no id, no location → no site)…
+    let absent = r#"{"antithesis_assert":{"assert_type":"always","condition":true,"message":"m"}}"#;
+    let n = decode_antithesis(&[rec(1, absent)]).expect("decodes");
+    assert!(matches!(n.events[0].payload, Payload::Assertion { .. }));
+    assert!(n.events[0].site.is_none());
+
+    // …and a present string id normalizes with that id — both distinct from raw.
+    let with_id = r#"{"antithesis_assert":{"assert_type":"always","condition":true,"message":"m","id":"site-x"}}"#;
+    let n = decode_antithesis(&[rec(1, with_id)]).expect("decodes");
+    assert_eq!(
+        n.events[0].site.as_ref().unwrap().id.as_deref(),
+        Some("site-x")
+    );
 }
 
 #[test]

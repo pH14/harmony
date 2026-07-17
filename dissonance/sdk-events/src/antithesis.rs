@@ -441,7 +441,12 @@ fn assert_expectation(v: &Value, assert_type: Option<AssertType>) -> Option<Expe
 /// record raw. An *absent* field defaults (`0` / `""`) — that is a location that
 /// simply does not specify it, not a malformed one.
 fn site_of(v: &Value) -> Result<Option<SiteId>, ()> {
-    let id = v.get("id").and_then(Value::as_str).map(str::to_string);
+    // An absent `id` is `None`; a present but non-string `id` (e.g. `7`) is
+    // malformed — reject rather than silently collapse distinct bad ids to `None`.
+    let id = match v.get("id") {
+        None => None,
+        Some(id) => Some(id.as_str().ok_or(())?.to_string()),
+    };
     let location = v.get("location");
     if id.is_none() && location.is_none() {
         return Ok(None);

@@ -208,10 +208,22 @@ pub struct SchemaEntry {
 
 impl SchemaEntry {
     /// Whether this entry is eligible for temporal **state reduction**: a state
-    /// identity with a resolved base operation. A never-fired / unresolved v1 state
-    /// point is reportable coverage but returns `false` here.
+    /// identity with a resolved base operation *and* a value whose bounded exact
+    /// representation and total order are fixed.
+    ///
+    /// A never-fired / unresolved v1 state point (no base op) is reportable
+    /// coverage but returns `false`. A **numeric-guidance** state point
+    /// ([`ValueShape::Numeric`]) also returns `false`: its value is an unvalidated
+    /// [`NumericToken`](crate::NumericToken), and the bounded exact representation +
+    /// total order needed to reduce it (the `NumericLimits` selection) is **not**
+    /// yet versioned in the persisted schema — reducing it under a consumer-chosen
+    /// bound could replay differently. Per the strategy it stays report-only until
+    /// that selection is versioned; the initial cooperative vertical reduces the
+    /// bounded-integer (`u64`) state shape, which is exact by construction.
     pub fn is_reducible_state(&self) -> bool {
-        self.classification == Classification::State && self.base_op.is_some()
+        self.classification == Classification::State
+            && self.base_op.is_some()
+            && self.value_shape != Some(ValueShape::Numeric)
     }
 }
 
