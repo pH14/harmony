@@ -255,15 +255,16 @@ impl<'a> Referee<'a> {
             .collect()
     }
 
-    /// Family 7: property-level aggregation over the immutable ledger.
+    /// Family 7: property-level aggregation over the immutable ledger,
+    /// scoped by source-schema instance.
     pub fn property_results(&self, rev: Revision) -> Vec<PropRow> {
-        let mut counts: BTreeMap<(CfgId, u32), (i64, i64)> = BTreeMap::new();
+        let mut counts: BTreeMap<(CfgId, u32, u32), (i64, i64)> = BTreeMap::new();
         for e in self.fixture.events.iter().filter(|e| e.rev <= rev) {
             if let Payload::Assertion {
                 property, passed, ..
             } = &e.payload
             {
-                let c = counts.entry((e.config, *property)).or_default();
+                let c = counts.entry((e.config, e.source, *property)).or_default();
                 if *passed {
                     c.0 += 1;
                 } else {
@@ -274,12 +275,15 @@ impl<'a> Referee<'a> {
         counts.into_iter().collect()
     }
 
-    /// Site coverage, separate from property verdicts.
+    /// Site coverage, separate from property verdicts, scoped by
+    /// source-schema instance.
     pub fn site_coverage(&self, rev: Revision) -> Vec<SiteRow> {
-        let mut counts: BTreeMap<(CfgId, u32, u32), i64> = BTreeMap::new();
+        let mut counts: BTreeMap<(CfgId, u32, u32, u32), i64> = BTreeMap::new();
         for e in self.fixture.events.iter().filter(|e| e.rev <= rev) {
             if let Payload::Assertion { site, property, .. } = &e.payload {
-                *counts.entry((e.config, *property, *site)).or_default() += 1;
+                *counts
+                    .entry((e.config, e.source, *property, *site))
+                    .or_default() += 1;
             }
         }
         counts.into_iter().collect()
@@ -296,7 +300,7 @@ impl<'a> Referee<'a> {
             .filter(|f| f.rev <= rev)
             .map(|f| f.config)
             .collect();
-        let satisfied: Vec<(CfgId, u32)> = self
+        let satisfied: Vec<(CfgId, u32, u32)> = self
             .fixture
             .events
             .iter()
@@ -306,7 +310,7 @@ impl<'a> Referee<'a> {
                     property,
                     passed: true,
                     ..
-                } => Some((e.config, *property)),
+                } => Some((e.config, e.source, *property)),
                 _ => None,
             })
             .collect();
@@ -316,8 +320,8 @@ impl<'a> Referee<'a> {
             .iter()
             .filter(|p| p.rev <= rev && p.must_hit)
             .filter(|p| finalized.contains(&p.config))
-            .filter(|p| !satisfied.contains(&(p.config, p.property)))
-            .map(|p| (p.config, p.property))
+            .filter(|p| !satisfied.contains(&(p.config, p.source, p.property)))
+            .map(|p| (p.config, p.source, p.property))
             .collect();
         rows.sort_unstable();
         rows.dedup();
@@ -403,6 +407,105 @@ impl<'a> Referee<'a> {
         rows
     }
 
+    /// One coherent per-revision recompute pass (r6): every replay-backed
+    /// view derived from a SINGLE prefix fold per evaluation point — the
+    /// honest non-incremental baseline. The old benchmark baseline called
+    /// `obs`/`cells`/`transitions`/`occupancy` independently, re-replaying
+    /// each prefix 3–4×, which overstated recompute cost against a dataflow
+    /// that shares intermediates. Must produce exactly the same rows as the
+    /// individual views (asserted across the parity suite).
+    pub fn snapshot(&self, rev: Revision) -> RecomputeSnapshot {
+        let ops = self.reg_ops(rev);
+        let mut obs_rows: Vec<ObsRow> = Vec::new();
+        let mut cell_rows: Vec<CellRow> = Vec::new();
+        let mut cells_map: BTreeMap<(CfgId, RolloutId, PointId), CellKey> = BTreeMap::new();
+        for (config, rollout, point, count) in self.points(rev) {
+            let prefix = self.covered_prefix(config, rollout, count, rev);
+            let obs = self.fold_obs(&ops, config, &prefix);
+            let cell = cell_fn(&obs);
+            for (dim, out) in obs {
+                obs_rows.push(((config, rollout, point, dim), out));
+            }
+            cell_rows.push(((config, rollout, point), cell.clone()));
+            cells_map.insert((config, rollout, point), cell);
+        }
+        obs_rows.sort_unstable();
+        cell_rows.sort_unstable();
+
+        // Transitions from the already-computed cells (no re-fold): per
+        // rollout, the inherited branch-point cell then the cut cells in
+        // count order.
+        let mut per_rollout: BTreeMap<(CfgId, RolloutId), Vec<Pos>> = BTreeMap::new();
+        for c in self.fixture.obs_cuts.iter().filter(|c| c.rev <= rev) {
+            per_rollout
+                .entry((c.config, c.rollout))
+                .or_default()
+                .push(c.cut.count);
+        }
+        let mut trans_rows: Vec<TransRow> = Vec::new();
+        for ((config, rollout), mut counts) in per_rollout {
+            counts.sort_unstable();
+            counts.dedup();
+            let baseline = self
+                .fixture
+                .lineage
+                .iter()
+                .filter(|l| l.rev <= rev)
+                .find(|l| l.config == config && l.child == rollout)
+                .and_then(|l| {
+                    cells_map
+                        .get(&(config, l.parent, PointId::Fork(l.cut.count)))
+                        .cloned()
+                });
+            let mut prev = baseline;
+            for count in counts {
+                let cell = cells_map
+                    .get(&(config, rollout, PointId::Cut(count)))
+                    .cloned()
+                    .unwrap_or_default();
+                if prev.as_ref() != Some(&cell) {
+                    trans_rows.push((
+                        (config, rollout),
+                        Transition {
+                            at_count: count,
+                            from: prev.clone(),
+                            to: cell.clone(),
+                        },
+                    ));
+                }
+                prev = Some(cell);
+            }
+        }
+        trans_rows.sort_unstable();
+
+        // Occupancy from the same cells map.
+        let mut best: BTreeMap<(CfgId, CellKey), (i64, EntryOrd)> = BTreeMap::new();
+        for c in self.fixture.entry_commits.iter().filter(|c| c.rev <= rev) {
+            let Some(cell) = cells_map.get(&(c.config, c.rollout, PointId::Seal(c.seal))) else {
+                continue;
+            };
+            let cand = (c.quality, EntryOrd(c.entry));
+            best.entry((c.config, cell.clone()))
+                .and_modify(|b| {
+                    if cand > *b {
+                        *b = cand;
+                    }
+                })
+                .or_insert(cand);
+        }
+        let occ_rows: Vec<OccRow> = best
+            .into_iter()
+            .map(|((config, cell), (_, e))| ((config, cell), e.0))
+            .collect();
+
+        RecomputeSnapshot {
+            obs: obs_rows,
+            cells: cell_rows,
+            transitions: trans_rows,
+            occupancy: occ_rows,
+        }
+    }
+
     /// Terminal scrape evidence (source-local, stop-granular).
     pub fn scrape_terminal(&self, rev: Revision) -> Vec<ScrapeRow> {
         let mut rows: Vec<ScrapeRow> = self
@@ -415,6 +518,20 @@ impl<'a> Referee<'a> {
         rows.sort_unstable();
         rows
     }
+}
+
+/// One coherent recompute of every replay-backed view at a single revision
+/// (see [`Referee::snapshot`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecomputeSnapshot {
+    /// Reduced observations at every evaluation point.
+    pub obs: Vec<ObsRow>,
+    /// Cells at every evaluation point.
+    pub cells: Vec<CellRow>,
+    /// Provisional transitions.
+    pub transitions: Vec<TransRow>,
+    /// Archive occupancy.
+    pub occupancy: Vec<OccRow>,
 }
 
 /// Entry ids tie-break ascending at equal quality: wrap so that the maximum

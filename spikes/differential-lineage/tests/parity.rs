@@ -95,6 +95,23 @@ fn compare_all(fx: &Fixture, replay: &Replay, cap: &Captured, rev: Revision) {
         "{}",
         ctx("scrape_terminal")
     );
+    // The single-pass recompute snapshot (the benchmark's baseline, r6) must
+    // equal the individually computed views exactly.
+    let snap = referee.snapshot(rev);
+    assert_eq!(snap.obs, referee.obs(rev), "{}", ctx("snapshot obs"));
+    assert_eq!(snap.cells, referee.cells(rev), "{}", ctx("snapshot cells"));
+    assert_eq!(
+        snap.transitions,
+        referee.transitions(rev),
+        "{}",
+        ctx("snapshot transitions")
+    );
+    assert_eq!(
+        snap.occupancy,
+        referee.occupancy(rev),
+        "{}",
+        ctx("snapshot occupancy")
+    );
 }
 
 fn hand_fixtures() -> Vec<(Fixture, Replay)> {
@@ -397,6 +414,11 @@ fn absence_pre_and_post_finalization() {
         assert!(Captured::net(&cap.absence, rev).is_empty());
     }
     for rev in 3..=fx.max_rev() {
-        assert_eq!(Captured::flat(&cap.absence, rev), vec![(0, 501)]);
+        // Source-scoped (r6): source 1's must_hit 500 is absent even though
+        // source 0's 500 passed, and source 1's 501 never fired.
+        assert_eq!(
+            Captured::flat(&cap.absence, rev),
+            vec![(0, 1, 500), (0, 1, 501)]
+        );
     }
 }

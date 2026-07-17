@@ -216,8 +216,10 @@ pub fn two_pass() -> (Fixture, Replay) {
 }
 
 /// Fixture 3 — retention and property semantics: property-level aggregation
-/// across sites, a never-satisfied `must_hit` property, working-set admission
-/// then expiration (which must move only the working view), terminal scrape
+/// across sites scoped by source schema (source 1 reuses PropId 500 —
+/// distinct property, separate counts, independent must_hit absence), a
+/// never-satisfied `must_hit` property, working-set admission then
+/// expiration (which must move only the working view), terminal scrape
 /// evidence, one eligible cross-source sequence query, and one rejected
 /// (scrape) sequence query.
 pub fn retention_properties() -> (Fixture, Replay) {
@@ -226,8 +228,9 @@ pub fn retention_properties() -> (Fixture, Replay) {
         .source(1, 0, OrderScope::RolloutGlobal)
         .source(1, 1, OrderScope::RolloutGlobal)
         .source(1, 2, OrderScope::SourceLocal)
-        .property(1, 500, true)
-        .property(1, 501, true)
+        .property(1, 0, 500, true)
+        .property(1, 1, 500, true)
+        .property(1, 1, 501, true)
         .seq_query(1, 0, 0, 1)
         .seq_query(1, 1, 0, 2);
 
@@ -269,6 +272,21 @@ pub fn retention_properties() -> (Fixture, Replay) {
     b.push(2, r, 0, 40, Payload::Note { tag: 88 });
     b.push(2, r, 0, 50, Payload::Register { reg: 10, value: 42 });
     b.push(2, r, 1, 60, Payload::Note { tag: 99 });
+    // Source 1 reuses the numeric PropId 500 (r6): a distinct property under
+    // its own schema — its lone failed evaluation must neither merge into
+    // source 0's counts nor have its must_hit absence suppressed by source
+    // 0's passes.
+    b.push(
+        2,
+        r,
+        1,
+        60,
+        Payload::Assertion {
+            site: 902,
+            property: 500,
+            passed: false,
+        },
+    );
     b.scrape(2, r, 40).scrape(2, r, 41);
 
     b.seal(

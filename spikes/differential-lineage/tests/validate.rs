@@ -272,9 +272,13 @@ fn duplicate_declarations_rejected() {
     );
 
     let (mut fx, _) = fixtures::retention_properties();
+    // Same (config, SOURCE, property) — the r6 identity. A second source
+    // declaring the same numeric PropId is legal (tested via the fixture
+    // itself); a duplicate within one source is not.
     fx.properties.push(PropertyDecl {
         rev: 1,
         config: 0,
+        source: 0,
         property: 500,
         must_hit: false,
     });
@@ -821,6 +825,7 @@ fn record_after_finalization_rejected() {
         .push(differential_lineage::data::PropertyDecl {
             rev: 4,
             config: 0,
+            source: 0,
             property: 502,
             must_hit: true,
         });
@@ -828,6 +833,143 @@ fn record_after_finalization_rejected() {
         fx.validate(),
         Err(ValidationError::RecordAfterFinalization {
             what: "property declaration",
+            config: 0,
+            rev: 4,
+            finalize_rev: 3,
+        })
+    );
+}
+
+// ---------------------------------------------------------------------------
+// r6: cut Moment/count coherence and the scrape finalization cutoff.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn seal_moment_before_covered_event_rejected() {
+    // The reviewer's exact case: a seal {moment: 5, count: 1} over an event
+    // at Moment 10 claims to have happened before evidence it includes.
+    let (mut fx, _) = fixtures::two_pass();
+    fx.seals.push(differential_lineage::data::SealRec {
+        rev: 3,
+        config: 0,
+        rollout: 0,
+        seal: 9,
+        cut: Cut {
+            moment: 5,
+            count: 1,
+        },
+    });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::CutMomentIncoherent {
+            kind: "seal",
+            rollout: 0,
+            config: 0,
+            count: 1,
+            cut_moment: 5,
+            event_moment: 10,
+        })
+    );
+}
+
+#[test]
+fn obs_cut_and_fork_moment_incoherence_rejected() {
+    let (mut fx, _) = fixtures::two_pass();
+    fx.obs_cuts.push(differential_lineage::data::ObsCutRec {
+        rev: 2,
+        config: 0,
+        rollout: 0,
+        cut: Cut {
+            moment: 5, // covers pos 0, whose Moment is 10
+            count: 1,
+        },
+    });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::CutMomentIncoherent {
+            kind: "obs",
+            rollout: 0,
+            config: 0,
+            count: 1,
+            cut_moment: 5,
+            event_moment: 10,
+        })
+    );
+
+    let (mut fx, _) = fixtures::tree_lineage();
+    // B's fork cut is (30, 4); claim Moment 25 while covering the Moment-30
+    // events.
+    let idx = fx
+        .lineage
+        .iter()
+        .position(|l| l.child == 1)
+        .expect("B lineage");
+    fx.lineage[idx].cut.moment = 25;
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::CutMomentIncoherent {
+            kind: "fork",
+            rollout: 0,
+            config: 0,
+            count: 4,
+            cut_moment: 25,
+            event_moment: 30,
+        })
+    );
+}
+
+#[test]
+fn child_event_before_fork_moment_rejected() {
+    // Extends the r3 lineage-ordering work into V-time: the child machine
+    // exists only from the branch Moment onward, so its first own event
+    // cannot precede the fork cut's Moment.
+    let (mut fx, _) = fixtures::two_pass();
+    // Fork at {moment: 25, count: 2}: coherent with the covered evidence
+    // (last covered Moment is 20 <= 25). The child's first own event at
+    // Moment 22 does not decrease against the covered evidence (22 >= 20 —
+    // the r2 rule passes), yet precedes the branch Moment 25: only the r6
+    // rule can reject it.
+    fx.lineage.push(lineage(1, 0, 2));
+    let idx = fx.lineage.len() - 1;
+    fx.lineage[idx].cut.moment = 25;
+    fx.events.push(SdkEventRec {
+        rev: 3,
+        config: 0,
+        rollout: 1,
+        source: 0,
+        pos: 2,
+        moment: 22,
+        payload: Payload::Note { tag: 1 },
+    });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::CutMomentIncoherent {
+            kind: "fork",
+            rollout: 1,
+            config: 0,
+            count: 2,
+            cut_moment: 25,
+            event_moment: 22,
+        })
+    );
+}
+
+#[test]
+fn scrape_after_finalization_rejected() {
+    // r6 ride-along: scrape lines are evidence; the closure cutoff covers
+    // them too.
+    let (mut fx, _) = fixtures::retention_properties();
+    fx.scrape.push(differential_lineage::data::ScrapeLineRec {
+        rev: 4, // finalization at revision 3
+        config: 0,
+        rollout: 0,
+        local_ord: 2,
+        tag: 44,
+    });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::RecordAfterFinalization {
+            what: "scrape line",
             config: 0,
             rev: 4,
             finalize_rev: 3,

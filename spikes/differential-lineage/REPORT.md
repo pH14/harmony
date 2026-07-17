@@ -22,6 +22,33 @@ reruns of the shared formulation, and `tests/parity.rs` asserts identical
 raw update streams for the full both-formulations build; wall times are
 single-run spike-grade numbers (±10% run to run on a quiet machine).
 
+## r6 baseline correction (review finding — the recompute comparison shrinks)
+
+The direct-recompute baseline used to call `obs`/`cells`/`transitions`/
+`occupancy` independently, re-folding each evaluation point's prefix 3–4×
+per revision while the dataflow shares intermediates — overstating recompute
+cost by ~4×. The baseline is now ONE coherent snapshot per revision
+(`Referee::snapshot`: one fold per point, every view derived from it;
+equality with the individual views asserted across the parity suite).
+**The GO-supporting recompute ratios move substantially and are restated:**
+per-revision recompute vs incremental is now **~52× (deep chain)** and
+**~2.5× (wide tree)** — previously claimed ~390× and ~10× — and a one-shot
+final-revision recompute is ~7× slower than the whole incremental run on
+the deep chain but **~8× FASTER on the shallow wide tree** (8.6 ms vs
+71 ms): for shallow campaigns whose views are read once at the end, a
+coherent recompute is competitive-to-better, exactly echoing the prior
+fork-oracle spike's "batch wins one-shot small-clean" finding. The
+formulation-level evidence (update-count marginals, deterministic and
+unchanged) and the per-revision-currency read pattern — the Explorer reads
+its views after every revision barrier — carry the GO; the recompute column
+no longer does the heavy lifting, and direct recomputation remains the
+semantic oracle per the strategy.
+
+Every table figure is recomputable from the committed raw artifact
+`bench-results.json` (per-stage per-revision update counts for every
+isolated run, plus marker revisions): attributable(rev) = Σ counts whose
+stage starts with the run's prefix or `lineage.`.
+
 ## r5 accounting correction (review finding — numbers restated again)
 
 r1 added the lineage meters but the benchmark's displayed totals and
@@ -95,9 +122,9 @@ table; nothing metered is silently excluded.
 
 | formulation | attributable updates (formulation + lineage) | wall | first branch | median branch | deepest branch | seal wave | late seal |
 |---|---|---|---|---|---|---|---|
-| naive (per-point prefix join) | 1,600,002 | 664 ms | 637 | 31,060 | 62,742 | 328,239 | 15,638 |
-| shared (segment aggregates) | 30,690 | 70 ms | 489 | 740 | 935 | 954 | 368 |
-| direct recompute (plain Rust, per revision) | 1,908 rows final | 27.5 s (final revision alone: 2.4 s) | — | — | — | — | — |
+| naive (per-point prefix join) | 1,600,002 | 992 ms | 637 | 31,060 | 62,742 | 328,239 | 15,638 |
+| shared (segment aggregates) | 30,690 | 142 ms | 489 | 740 | 935 | 954 | 368 |
+| direct recompute (one snapshot per revision) | 1,908 rows final | 7.4 s (final revision alone: 958 ms) | — | — | — | — | — |
 
 Of which, in both isolated runs: lineage stages 1,521 total (0 at the first
 branch, 77 at the deepest — the ancestry closure and its per-iteration join
@@ -108,15 +135,19 @@ downstream common views (cells/transitions/occupancy/properties/…) 316.
 
 | formulation | attributable updates (formulation + lineage) | wall | first branch | median branch | deepest branch | seal wave | late seal |
 |---|---|---|---|---|---|---|---|
-| naive | 161,286 | 103 ms | 175 | 1,922 | 1,969 | 38,197 | 512 |
+| naive | 161,286 | 110 ms | 175 | 1,922 | 1,969 | 38,197 | 512 |
 | shared | 30,351 | 71 ms | 286 | 477 | 435 | 1,550 | 108 |
-| direct recompute | 2,876 rows final | 676 ms (final alone: 31 ms) | — | — | — | — | — |
+| direct recompute (one snapshot per revision) | 2,876 rows final | 177 ms (final alone: 8.6 ms) | — | — | — | — | — |
 
 Of which: lineage stages 477 total (9 at the deepest branch); base ingestion
 12,000; downstream common views 476.
 
 Process peak footprint for the whole benchmark (both shapes, all stages,
-fixtures and referee included): **~198 MB** max RSS (`/usr/bin/time -l`).
+fixtures and referee included): **~200 MB** max RSS (`/usr/bin/time -l`).
+Wall times in this table are the committed `bench-results.json` run, taken
+under residual background load (a sibling worker's mutation testing);
+quieter reruns measured deep-chain shared as low as 70 ms and naive 664 ms —
+update counts are byte-identical across every run, walls are context.
 
 ## Reading the numbers
 
@@ -135,12 +166,17 @@ fixtures and referee included): **~198 MB** max RSS (`/usr/bin/time -l`).
    + point evaluation; no lineage work — a seal adds no ancestry) vs 15,638
    naive (∝ the full prefix): **42×**. This is the marginal that prices
    materialization replay.
-3. **Incremental maintenance vs recompute:** keeping every view current at
-   all 43 revisions costs 70 ms; direct recompute at each revision costs
-   27.5 s (**~390×**); even a *single* final-revision recompute (2.4 s)
-   costs ~34× the entire incremental run. On the shallow wide tree the gap
-   narrows (71 ms vs 676 ms, ~10×) — recompute is competitive only when
-   prefixes stay short and views are read rarely.
+3. **Incremental maintenance vs recompute (r6-corrected baseline):** on the
+   deep chain, keeping every view current at all 43 revisions costs 142 ms
+   incrementally vs 7.4 s of coherent per-revision recompute (**~52×**), and
+   a single final-revision recompute (958 ms) costs ~7× the whole
+   incremental run. On the shallow wide tree the per-revision gap is only
+   ~2.5× (177 ms vs 71 ms), and a one-shot final recompute WINS (8.6 ms):
+   incrementality pays when views must be current at every revision (the
+   Explorer's read pattern — it consumes provisional transitions and
+   occupancy after every revision barrier) or when prefixes are deep; a
+   shallow, read-once campaign is served fine by direct recomputation, which
+   the strategy keeps as the semantic oracle anyway.
 4. **Boundary insertion is visible and bounded.** The seal wave (41 new
    boundaries at once) costs the shared formulation 954 updates — the
    `shared.units` re-join re-keys only split intervals — vs 328,239 naive.

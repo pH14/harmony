@@ -52,7 +52,7 @@ documented fixture invariant, its rule, and its test.
 |---|---|---|
 | `RegisterDecl` unique per `(config, reg)` | `DuplicateDeclaration` | `duplicate_declarations_rejected` |
 | `SourceDecl` unique per `(config, source)` | `DuplicateDeclaration` | `duplicate_declarations_rejected` |
-| `PropertyDecl` unique per `(config, property)` | `DuplicateDeclaration` | `duplicate_declarations_rejected` |
+| `PropertyDecl` unique per `(config, source, property)` — property identity is scoped by its source-schema instance (r6); two sources sharing a `PropId` are distinct properties with separate counts and independent `must_hit` absences | `DuplicateDeclaration` | `duplicate_declarations_rejected`; scoping pinned by `exact::family7` and the fixture's shared-`PropId` case |
 | `LineageRec` unique per `(config, child)` | `TwoParents` | `two_parents_rejected` |
 | `SdkEventRec` unique per `(config, rollout, pos)` | via `NonContiguousPositions` (a duplicated position cannot form the strict range) | `duplicate_event_position_rejected_via_contiguity` |
 | `SealRec` unique per `(config, seal)` | `DuplicateRecord` | `duplicate_seal_id_rejected` |
@@ -74,7 +74,8 @@ documented fixture invariant, its rule, and its test.
 | entry commits MAY precede their seal — deliberately legal; the dataflow join and the revision-filtered referee agree (nothing surfaces until both are committed) | — | exercised by `exact::family2_two_pass_occupancy_and_domination` staging |
 | register/property declarations MAY commit after events — deliberately legal; both sides filter declarations by revision coherently (mirrors the v1 never-fired rule) | — | covered by every-revision parity |
 | Moments nondecreasing along each rollout's own positions and across every lineage boundary (canonical `(Moment, pos)` order) | `DecreasingMoments` | `decreasing_moments_within_a_rollout_rejected`, `decreasing_moments_across_lineage_rejected` |
-| evidence and property declarations precede their campaign's finalization (a finalized absence fact can never emit-and-retract); working-set retention deliberately continues after closure | `RecordAfterFinalization` | `record_after_finalization_rejected`; retention-after-closure pinned by `exact::family8` and `parity::absence_pre_and_post_finalization` |
+| cut `Moment`/count coherence (r6): a cut's claimed `Moment` is not before the last event it covers, and a child's first own event is not before its fork's `Moment`; half-open same-`Moment` exclusion stays legal | `CutMomentIncoherent` | `seal_moment_before_covered_event_rejected`, `obs_cut_and_fork_moment_incoherence_rejected`, `child_event_before_fork_moment_rejected` |
+| evidence (SDK events AND scrape lines, r6) and property declarations precede their campaign's finalization (a finalized absence fact can never emit-and-retract); working-set retention deliberately continues after closure | `RecordAfterFinalization` | `record_after_finalization_rejected`, `scrape_after_finalization_rejected`; retention-after-closure pinned by `exact::family8` and `parity::absence_pre_and_post_finalization` |
 
 **Structure / positions**
 
@@ -96,6 +97,14 @@ documented fixture invariant, its rule, and its test.
 | working membership nets 0 or 1 per coordinate after every revision (admit at most once; never expire the unadmitted) | `WorkingNetOutOfRange` | `working_net_out_of_range_rejected` |
 | event source ids need NOT be declared — deliberately not validated: no view consumes an event's source except through an eligible (already-validated) query, and undeclared registers stay evidence-not-state by design | — | documented here |
 | referee replay coverage: every seal/obs cut on its rollout's vector, and every fork on BOTH the child's (inherited prefix) and the PARENT's vector (Fork points slice the parent — r3); replay vectors are keyed by `(config, rollout)` so configs reusing rollout ids cannot mix (r5) | `ReplayTooShort` | `referee_refuses_short_replay_with_typed_error`, `referee_refuses_short_parent_replay`, `parity::two_configs_with_colliding_rollout_ids_parity` |
+
+## Canonical order lives in the readers (r6)
+
+`PrefixEv` declares `(moment, pos)` as its first fields, so the derived
+`Ord` used by every actual reader — `Captured::flat`'s consolidation map and
+`Referee::seal_prefix`'s sort — reconstructs the canonical `(Moment, pos)`
+sequence by construction. The exact tests read prefixes in reader order with
+no view-specific re-sort (the old test-only re-sort is deleted).
 
 ## Metering (r1 review — corrected)
 
@@ -155,7 +164,7 @@ reduction, mirroring the v1 never-fired rule).
 
 ```
 cargo build            # + --release
-cargo test --locked    # 54 tests: exact (11) + parity (10) + validate (33)
+cargo test --locked    # 58 tests: exact (11) + parity (10) + validate (37)
 cargo clippy --locked --all-features --all-targets -- -D warnings
 cargo fmt -- --check
 cargo deny check --config <root>/deny.toml licenses

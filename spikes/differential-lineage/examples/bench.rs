@@ -201,7 +201,44 @@ fn per_branch_deltas(cap: &Captured, prefix: &str, revs: &[Revision]) -> Vec<u64
         .collect()
 }
 
+/// Everything a judge needs to recompute the table figures: raw per-stage
+/// per-revision update counts for each isolated run, the marker revisions,
+/// and the derived figures as printed. Written to `bench-results.json`
+/// (committed from the canonical run). Update counts are deterministic;
+/// wall times are environment-dependent and included for context only.
+#[derive(serde::Serialize)]
+struct ShapeArtifact {
+    shape: String,
+    events: usize,
+    branches: u32,
+    candidate_seals: usize,
+    evaluation_points: usize,
+    evidence_revs: Vec<Revision>,
+    seal_rev: Revision,
+    late_seal_rev: Revision,
+    runs: Vec<RunArtifact>,
+    recompute_wall_ms_all_revisions: u128,
+    recompute_wall_ms_final_revision: u128,
+    recompute_rows_final: usize,
+}
+
+#[derive(serde::Serialize)]
+struct RunArtifact {
+    formulation: String,
+    stage_prefix: String,
+    /// Raw metered updates: (stage, revision, count). The attributable
+    /// figures are recomputed as
+    /// `sum(count where stage starts_with(stage_prefix) or "lineage.")`.
+    deltas: Vec<(String, Revision, u64)>,
+    wall_ms: u128,
+    derived_attributable_total: u64,
+    derived_per_branch: Vec<u64>,
+    derived_seal_wave: u64,
+    derived_late_seal: u64,
+}
+
 fn main() {
+    let mut artifacts: Vec<ShapeArtifact> = Vec::new();
     let shapes = [
         Shape {
             name: "deep-chain",
@@ -262,11 +299,26 @@ fn main() {
         );
         println!("|---|---|---|---|---|---|---|---|---|");
 
+        let mut run_artifacts: Vec<RunArtifact> = Vec::new();
         for f in &formulations {
             let t0 = now();
             let cap = run(fx, f.opts, shape.seed).expect("valid fixture");
             let wall = t0.elapsed();
             let per_branch = per_branch_deltas(&cap, f.prefix, &bf.evidence_revs);
+            run_artifacts.push(RunArtifact {
+                formulation: f.label.to_owned(),
+                stage_prefix: f.prefix.to_owned(),
+                deltas: cap
+                    .deltas
+                    .iter()
+                    .map(|((stage, rev), count)| (stage.clone(), *rev, *count))
+                    .collect(),
+                wall_ms: wall.as_millis(),
+                derived_attributable_total: attributable_total(&cap, f.prefix),
+                derived_per_branch: per_branch.clone(),
+                derived_seal_wave: attributable_at(&cap, f.prefix, bf.seal_rev),
+                derived_late_seal: attributable_at(&cap, f.prefix, bf.late_seal_rev),
+            });
             let mut sorted = per_branch.clone();
             sorted.sort_unstable();
             let median = sorted[sorted.len() / 2];
@@ -301,26 +353,23 @@ fn main() {
             );
         }
 
-        // Direct-recompute baseline: re-derive every view from the genesis
-        // replay at each revision (the non-incremental backend's cost).
+        // Direct-recompute baseline (r6): ONE coherent snapshot per revision —
+        // each evaluation point's prefix is folded exactly once and every
+        // view derives from that fold (Referee::snapshot; equality with the
+        // individual views is asserted across the parity suite). The old
+        // baseline called obs/cells/transitions/occupancy independently,
+        // re-replaying each prefix 3-4x, which overstated recompute cost.
         let referee = Referee::new(fx, &bf.replay).expect("valid fixture");
         let t0 = now();
         let mut rows_final = 0usize;
         for rev in 0..=fx.max_rev() {
-            let obs = referee.obs(rev);
-            let cells = referee.cells(rev);
-            let trans = referee.transitions(rev);
-            let occ = referee.occupancy(rev);
-            rows_final = obs.len() + cells.len() + trans.len() + occ.len();
+            let snap = referee.snapshot(rev);
+            rows_final =
+                snap.obs.len() + snap.cells.len() + snap.transitions.len() + snap.occupancy.len();
         }
         let wall_every = t0.elapsed();
         let t0 = now();
-        let _ = (
-            referee.obs(fx.max_rev()),
-            referee.cells(fx.max_rev()),
-            referee.transitions(fx.max_rev()),
-            referee.occupancy(fx.max_rev()),
-        );
+        let _ = referee.snapshot(fx.max_rev());
         let wall_once = t0.elapsed();
         println!(
             "| direct recompute (plain Rust, per revision) | {} rows final | {:.2?} (once: {:.2?}) | — | — | — | — | — | {} MB |",
@@ -331,6 +380,21 @@ fn main() {
         );
         println!();
 
+        artifacts.push(ShapeArtifact {
+            shape: shape.name.to_owned(),
+            events: fx.events.len(),
+            branches: shape.rollouts,
+            candidate_seals: seals,
+            evaluation_points: points,
+            evidence_revs: bf.evidence_revs.clone(),
+            seal_rev: bf.seal_rev,
+            late_seal_rev: bf.late_seal_rev,
+            runs: std::mem::take(&mut run_artifacts),
+            recompute_wall_ms_all_revisions: wall_every.as_millis(),
+            recompute_wall_ms_final_revision: wall_once.as_millis(),
+            recompute_rows_final: rows_final,
+        });
+
         // Determinism spot check: the shared run's update stream is identical
         // across reruns.
         let a = run(fx, formulations[1].opts, shape.seed).expect("valid fixture");
@@ -340,6 +404,15 @@ fn main() {
             "shared-formulation rerun determinism: OK (identical per-revision update counts)\n"
         );
     }
+
+    let artifact_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bench-results.json");
+    let mut json = serde_json::to_string_pretty(&artifacts).expect("serialize artifacts");
+    json.push('\n');
+    std::fs::write(&artifact_path, json).expect("write bench artifact");
+    println!(
+        "Raw measurement artifact (recompute any table figure from it): {}\n",
+        artifact_path.display()
+    );
 
     println!("## Arrangement sharing (static)\n");
     println!(

@@ -44,16 +44,16 @@ fn obs_at(cap: &Captured, rev: Revision, rollout: RolloutId, point: PointId) -> 
         .collect()
 }
 
-/// The lineage-complete prefix of one seal, canonically ordered by
-/// `(moment, pos)` — the canonical order reconstruction under test.
+/// The lineage-complete prefix of one seal, in READER order — no re-sort
+/// here (r6): `Captured::flat` orders rows by the row type's `Ord`, and
+/// `PrefixEv` declares `(moment, pos)` first, so the reader itself
+/// reconstructs the canonical sequence.
 fn prefix_of(cap: &Captured, rev: Revision, seal: SealId) -> Vec<PrefixEv> {
-    let mut rows: Vec<PrefixEv> = Captured::flat(&cap.seal_prefix, rev)
+    Captured::flat(&cap.seal_prefix, rev)
         .into_iter()
         .filter(|((_c, _r, s), _)| *s == seal)
         .map(|(_, ev)| ev)
-        .collect();
-    rows.sort_by_key(|e| (e.moment, e.pos));
-    rows
+        .collect()
 }
 
 fn ev(owner: RolloutId, source: u32, pos: Pos, moment: u64, payload: Payload) -> PrefixEv {
@@ -494,15 +494,21 @@ fn family7_property_aggregation() {
     let cap = run(&fx, BuildOpts::default(), 1).expect("valid fixture");
     let rev = fx.max_rev();
 
-    // One property row (2 passes + 1 fail), even though two sites contributed.
+    // Property counts are scoped by source schema (r6): source 0's 500
+    // aggregates its two sites into one row (2 passes + 1 fail); source 1's
+    // 500 is a DISTINCT property whose lone failed evaluation never merges.
     assert_eq!(
         Captured::flat(&cap.property_results, rev),
-        vec![((0, 500), (2, 1))]
+        vec![((0, 0, 500), (2, 1)), ((0, 1, 500), (0, 1))]
     );
-    // Coverage stays per site.
+    // Coverage stays per site, within its source scope.
     assert_eq!(
         Captured::flat(&cap.site_coverage, rev),
-        vec![((0, 500, 900), 2), ((0, 500, 901), 1)]
+        vec![
+            ((0, 0, 500, 900), 2),
+            ((0, 0, 500, 901), 1),
+            ((0, 1, 500, 902), 1)
+        ]
     );
     // Absence is a FINALIZED fact: before the campaign closes (revision 3)
     // there are no absence rows at all — an intermediate "not yet satisfied"
@@ -516,7 +522,13 @@ fn family7_property_aggregation() {
         );
     }
     for r in 3..=rev {
-        assert_eq!(Captured::flat(&cap.absence, r), vec![(0, 501)]);
+        // Source 1's must_hit 500 stays absent — source 0's passing 500 is a
+        // different property and must not suppress it — alongside the
+        // never-fired 501.
+        assert_eq!(
+            Captured::flat(&cap.absence, r),
+            vec![(0, 1, 500), (0, 1, 501)]
+        );
     }
 }
 

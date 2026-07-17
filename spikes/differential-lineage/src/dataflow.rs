@@ -620,10 +620,12 @@ pub fn run(
             cap!(occupancy, "occupancy", occupancy);
 
             // -- Property-level aggregation (immutable ledger only) ----------
+            // Property evidence is scoped by its source-schema instance
+            // (r6): two sources sharing a PropId never merge.
             let prop_ev = events.clone().flat_map(|e| match e.payload {
                 Payload::Assertion {
                     property, passed, ..
-                } => Some(((e.config, property), passed)),
+                } => Some(((e.config, e.source, property), passed)),
                 _ => None,
             });
             let property_results = prop_ev.clone().reduce(|_k, input, output| {
@@ -643,7 +645,9 @@ pub fn run(
             let site_coverage = events
                 .clone()
                 .flat_map(|e| match e.payload {
-                    Payload::Assertion { site, property, .. } => Some((e.config, property, site)),
+                    Payload::Assertion { site, property, .. } => {
+                        Some((e.config, e.source, property, site))
+                    }
                     _ => None,
                 })
                 .count()
@@ -653,8 +657,8 @@ pub fn run(
             let satisfied = prop_ev
                 .flat_map(|(k, passed)| passed.then_some(k))
                 .distinct();
-            let declared =
-                properties.flat_map(|p| p.must_hit.then_some(((p.config, p.property), ())));
+            let declared = properties
+                .flat_map(|p| p.must_hit.then_some(((p.config, p.source, p.property), ())));
             // Absence is a FINALIZED fact: it exists only once the campaign
             // has explicitly closed (evidence and property declarations are
             // validated to precede the finalization record, so an emitted
@@ -662,8 +666,9 @@ pub fn run(
             let finalized = finalizations.map(|f| f.config).distinct();
             let absence = declared
                 .antijoin(satisfied)
-                .map(|((config, prop), ())| (config, prop))
-                .semijoin(finalized);
+                .map(|((config, source, prop), ())| (config, (source, prop)))
+                .semijoin(finalized)
+                .map(|(config, (source, prop))| (config, source, prop));
             cap!(absence, "absence", absence);
 
             // -- Bounded working membership -----------------------------------

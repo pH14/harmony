@@ -32,12 +32,21 @@
     {
       "rev": 1,
       "config": 0,
+      "source": 0,
       "property": 500,
       "must_hit": true
     },
     {
       "rev": 1,
       "config": 0,
+      "source": 1,
+      "property": 500,
+      "must_hit": true
+    },
+    {
+      "rev": 1,
+      "config": 0,
+      "source": 1,
       "property": 501,
       "must_hit": true
     }
@@ -138,6 +147,21 @@
       "payload": {
         "Note": {
           "tag": 99
+        }
+      }
+    },
+    {
+      "rev": 2,
+      "config": 0,
+      "rollout": 0,
+      "source": 1,
+      "pos": 7,
+      "moment": 60,
+      "payload": {
+        "Assertion": {
+          "site": 902,
+          "property": 500,
+          "passed": false
         }
       }
     }

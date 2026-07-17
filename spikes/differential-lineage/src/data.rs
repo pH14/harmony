@@ -169,15 +169,21 @@ pub struct SourceDecl {
     pub scope: OrderScope,
 }
 
-/// Declares a property and whether absence of a satisfying evaluation is a
-/// finding (the source protocol's `must_hit` semantics).
+/// Declares a property under one source schema and whether absence of a
+/// satisfying evaluation is a finding (the source protocol's `must_hit`
+/// semantics). Property identity is scoped by the declaring source-schema
+/// instance (r6): two sources sharing a numeric `PropId` are distinct
+/// properties — their evaluation counts never merge and each source's
+/// `must_hit` expectation is judged against its own evidence only.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PropertyDecl {
     /// Commit revision.
     pub rev: Revision,
     /// Campaign configuration.
     pub config: CfgId,
-    /// Property identity.
+    /// Declaring source-schema instance.
+    pub source: SourceId,
+    /// Property identity within that source.
     pub property: PropId,
     /// Whether a never-satisfied property is a finalized absence finding.
     pub must_hit: bool,
@@ -560,6 +566,29 @@ pub enum ValidationError {
         /// The offending net.
         net: i64,
     },
+    /// A cut's `Moment` contradicts the evidence it covers or the evidence
+    /// that follows it: the last covered event's `Moment` exceeds the cut's,
+    /// or a child's first own event precedes its fork cut's `Moment` (a
+    /// machine exists only from its branch moment onward).
+    #[error(
+        "{kind} cut (moment {cut_moment}, count {count}) on rollout {rollout} \
+         (config {config}) is incoherent with the event at moment {event_moment}"
+    )]
+    CutMomentIncoherent {
+        /// Cut kind ("fork", "obs", "seal") — "fork" also covers a child's
+        /// first own event preceding the fork moment.
+        kind: &'static str,
+        /// The cut's rollout (the child, for the child-event direction).
+        rollout: RolloutId,
+        /// Campaign configuration.
+        config: CfgId,
+        /// The cut's count.
+        count: Pos,
+        /// The cut's claimed Moment.
+        cut_moment: Moment,
+        /// The contradicting event's Moment.
+        event_moment: Moment,
+    },
     /// Evidence (or a property declaration) commits after its campaign's
     /// finalization record — finalized facts would emit-and-retract.
     #[error(
@@ -683,9 +712,12 @@ impl Fixture {
                 });
             }
         }
-        let mut prop_decls: BTreeMap<(CfgId, PropId), ()> = BTreeMap::new();
+        let mut prop_decls: BTreeMap<(CfgId, SourceId, PropId), ()> = BTreeMap::new();
         for d in &self.properties {
-            if prop_decls.insert((d.config, d.property), ()).is_some() {
+            if prop_decls
+                .insert((d.config, d.source, d.property), ())
+                .is_some()
+            {
                 return Err(ValidationError::DuplicateDeclaration {
                     what: "property",
                     config: d.config,
@@ -815,6 +847,20 @@ impl Fixture {
                     what: "property declaration",
                     config: d.config,
                     rev: d.rev,
+                    finalize_rev,
+                });
+            }
+        }
+        for sc in &self.scrape {
+            // Scrape lines are evidence too (r6 ride-along): the closure
+            // cutoff covers every evidence class, not just SDK events.
+            if let Some(&finalize_rev) = finalize_rev_by_cfg.get(&sc.config)
+                && sc.rev > finalize_rev
+            {
+                return Err(ValidationError::RecordAfterFinalization {
+                    what: "scrape line",
+                    config: sc.config,
+                    rev: sc.rev,
                     finalize_rev,
                 });
             }
@@ -1098,6 +1144,53 @@ impl Fixture {
             }
         }
 
+        // Cut Moment/count coherence (r6): a cut's claimed Moment must not
+        // precede the last event it covers (a seal at Moment 5 cannot
+        // include an event from Moment 10), and a child's first own event
+        // must not precede its fork cut's Moment (the machine exists only
+        // from the branch moment onward). Exclusion of same-Moment events at
+        // or past the count remains legal — that is the half-open contract.
+        let coherent = |kind: &'static str,
+                        config: CfgId,
+                        rollout: RolloutId,
+                        cut: &Cut|
+         -> Result<(), ValidationError> {
+            if let Some(covered) = last_covered_moment(config, rollout, cut.count)
+                && covered > cut.moment
+            {
+                return Err(ValidationError::CutMomentIncoherent {
+                    kind,
+                    rollout,
+                    config,
+                    count: cut.count,
+                    cut_moment: cut.moment,
+                    event_moment: covered,
+                });
+            }
+            Ok(())
+        };
+        for l in &self.lineage {
+            coherent("fork", l.config, l.parent, &l.cut)?;
+            if let Some(&(first, _)) = own_moments.get(&(l.config, l.child))
+                && first < l.cut.moment
+            {
+                return Err(ValidationError::CutMomentIncoherent {
+                    kind: "fork",
+                    rollout: l.child,
+                    config: l.config,
+                    count: l.cut.count,
+                    cut_moment: l.cut.moment,
+                    event_moment: first,
+                });
+            }
+        }
+        for c in &self.obs_cuts {
+            coherent("obs", c.config, c.rollout, &c.cut)?;
+        }
+        for sl in &self.seals {
+            coherent("seal", sl.config, sl.rollout, &sl.cut)?;
+        }
+
         // Cut bounds: start <= count <= extent, for every cut kind.
         for l in &self.lineage {
             let (lo, hi) = (start_of(l.config, l.parent), extent_of(l.config, l.parent));
@@ -1378,16 +1471,21 @@ impl Species {
 
 /// One event inside a lineage-composed seal prefix, with its owning rollout
 /// identity preserved (ancestor evidence is inherited, never re-owned).
+///
+/// Field order is the contract (r6): the derived `Ord` sorts by the explicit
+/// evidence coordinates `(Moment, pos)` FIRST, so every reader that orders
+/// rows by `Ord` (`Captured::flat`, `Referee::seal_prefix`) reconstructs the
+/// canonical sequence without any view-specific re-sort.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PrefixEv {
+    /// V-time coordinate (first: canonical major sort key).
+    pub moment: Moment,
+    /// Vector position (second: the contractual same-`Moment` order).
+    pub pos: Pos,
     /// The rollout that persisted this event.
     pub owner: RolloutId,
     /// Source identity.
     pub source: SourceId,
-    /// Vector position.
-    pub pos: Pos,
-    /// V-time coordinate.
-    pub moment: Moment,
     /// Payload.
     pub payload: Payload,
 }
@@ -1402,13 +1500,15 @@ pub type CellRow = ((CfgId, RolloutId, PointId), CellKey);
 pub type TransRow = ((CfgId, RolloutId), Transition);
 /// Archive occupancy: best entry per cell.
 pub type OccRow = ((CfgId, CellKey), EntryId);
-/// Property-level assertion aggregation: `(pass, fail)` evaluation counts.
-pub type PropRow = ((CfgId, PropId), (i64, i64));
-/// Site coverage (provenance, separate from property verdicts).
-pub type SiteRow = ((CfgId, PropId, SiteId), i64);
-/// A finalized absence finding: a `must_hit` property with no satisfying
-/// evaluation.
-pub type AbsRow = (CfgId, PropId);
+/// Property-level assertion aggregation, scoped by source-schema instance:
+/// `(pass, fail)` evaluation counts.
+pub type PropRow = ((CfgId, SourceId, PropId), (i64, i64));
+/// Site coverage (provenance, separate from property verdicts), scoped by
+/// source-schema instance.
+pub type SiteRow = ((CfgId, SourceId, PropId, SiteId), i64);
+/// A finalized absence finding: a `must_hit` property of one source with no
+/// satisfying evaluation from that source.
+pub type AbsRow = (CfgId, SourceId, PropId);
 /// Bounded working-set species count.
 pub type WorkRow = ((CfgId, Species), i64);
 /// A note-event endpoint in a cross-source sequence pair.

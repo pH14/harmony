@@ -84,11 +84,18 @@ impl Builder {
         self
     }
 
-    /// Declare a property.
-    pub fn property(&mut self, rev: Revision, property: PropId, must_hit: bool) -> &mut Self {
+    /// Declare a property under one source schema.
+    pub fn property(
+        &mut self,
+        rev: Revision,
+        source: SourceId,
+        property: PropId,
+        must_hit: bool,
+    ) -> &mut Self {
         self.fixture.properties.push(PropertyDecl {
             rev,
             config: self.config,
+            source,
             property,
             must_hit,
         });
@@ -385,8 +392,8 @@ pub fn random_tree(name: &str, seed: u64, p: TreeParams) -> (Fixture, Replay) {
     b.source(1, SRC_MAIN, OrderScope::RolloutGlobal);
     b.source(1, SRC_AUX, OrderScope::RolloutGlobal);
     b.source(1, SRC_SCRAPE, OrderScope::SourceLocal);
-    b.property(1, 500, true);
-    b.property(1, 501, true);
+    b.property(1, SRC_MAIN, 500, true);
+    b.property(1, SRC_MAIN, 501, true);
 
     let mut rollouts: Vec<RolloutId> = Vec::new();
     let mut next_seal: SealId = 0;

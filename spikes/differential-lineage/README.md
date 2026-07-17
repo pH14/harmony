@@ -71,7 +71,7 @@ species; this spike is the complementary one-dataflow observation plane).
 ## Run
 
 ```sh
-cargo test --locked                            # 54 tests: exact + parity + validate (~3 s)
+cargo test --locked                            # 58 tests: exact + parity + validate (~3 s)
 cargo run --release --locked --example bench   # the cost measurement (REPORT.md)
 cargo run --locked --example gen_fixtures      # regenerate committed fixtures
 ```
