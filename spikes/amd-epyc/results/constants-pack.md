@@ -36,6 +36,15 @@ analytical oracle **exactly** (0 mismatches across all classes at 3000 reps each
 16 non-branch instructions contribute exactly 0 to the count. The `CpuBackend` contract
 (monotonic, 0-or-1-per-instruction `u64`) holds on Zen 2 for this event.
 
+**Guest-mode exactness (AE-1(b), `kvm-guest-hammer`):** the minimal single-vCPU SVM
+harness runs a real-mode loop of known taken-branch count under `KVM_RUN` and counts
+guest-only `ex_ret_brn_tkn` (`exclude_host=1`). Over 1000 runs (all attested to reach
+`KVM_EXIT_HLT`, so no silent fault passed), **355/355 interrupt-free windows are exact**
+(differential == oracle), matching the host-side result — guest-mode counting is
+bit-exact on Zen 2 SVM. (Contaminated windows carry the same ~1-count-per-interrupt host
+perturbation as host-side; the VM-entry/exit boundary adds no extra jitter on clean
+windows.)
+
 **Contamination model (accounted, not a defect):** each async interrupt leaks ~1 taken
 branch into the CPL3 count; the differential jitter scales with window length at constant
 branch structure. On interrupt-free windows the count is bit-exact — so at-scale exactness
