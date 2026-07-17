@@ -282,3 +282,121 @@ fn late_covered_evidence_staged_parity() {
     assert_eq!(referee.seal_prefix(4).len(), 3);
     assert_eq!(referee.seal_prefix(5).len(), 4);
 }
+
+/// r5: rollout identity is scoped by campaign configuration — two configs
+/// reusing the same rollout ids (and colliding positions) must never mix in
+/// the referee's replay lookups, exactly as they never mix in the dataflow's
+/// (config, rollout) keys.
+#[test]
+fn two_configs_with_colliding_rollout_ids_parity() {
+    fn campaign(config: u32, base_value: i64) -> (Fixture, Replay) {
+        let mut b = Builder::new("collide", config);
+        b.reg(1, 10, ReduceOp::Set)
+            .source(1, 0, OrderScope::RolloutGlobal);
+        let a = b.genesis(); // rollout 0 in BOTH configs
+        b.push(
+            2,
+            a,
+            0,
+            10,
+            Payload::Register {
+                reg: 10,
+                value: base_value,
+            },
+        );
+        b.push(
+            2,
+            a,
+            0,
+            20,
+            Payload::Register {
+                reg: 10,
+                value: base_value + 1,
+            },
+        );
+        let c = b.fork(
+            3,
+            a,
+            Cut {
+                moment: 20,
+                count: 2,
+            },
+        ); // rollout 1 in both configs
+        b.push(
+            3,
+            c,
+            0,
+            30,
+            Payload::Register {
+                reg: 10,
+                value: base_value + 2,
+            },
+        );
+        b.obs_cut(
+            3,
+            c,
+            Cut {
+                moment: 30,
+                count: 3,
+            },
+        );
+        b.seal(
+            4,
+            c,
+            config, // seal ids are config-scoped too; keep them distinct anyway
+            Cut {
+                moment: 30,
+                count: 3,
+            },
+        );
+        b.finish()
+    }
+
+    let (fx1, replay1) = campaign(1, 100);
+    let (fx2, replay2) = campaign(2, 900);
+    let mut fx = fx1;
+    let mut replay = replay1;
+    fx.registers.extend(fx2.registers);
+    fx.sources.extend(fx2.sources);
+    fx.events.extend(fx2.events);
+    fx.lineage.extend(fx2.lineage);
+    fx.obs_cuts.extend(fx2.obs_cuts);
+    fx.seals.extend(fx2.seals);
+    replay.full.extend(replay2.full);
+    assert_eq!(fx.validate(), Ok(()));
+
+    let cap = run(&fx, BuildOpts::default(), 5).expect("valid fixture");
+    for rev in 0..=fx.max_rev() {
+        compare_all(&fx, &replay, &cap, rev);
+    }
+    // And the values prove no cross-config bleed: each config's sealed
+    // observation is ITS register history, not the other's.
+    let referee = Referee::new(&fx, &replay).expect("valid fixture");
+    let obs = referee.obs(fx.max_rev());
+    use differential_lineage::data::{Dim, ObsOut, PointId, ReduceOp as Op};
+    assert!(obs.contains(&(
+        (1, 1, PointId::Seal(1), Dim::Reg(10, Op::Set)),
+        ObsOut::Scalar(102)
+    )));
+    assert!(obs.contains(&(
+        (2, 1, PointId::Seal(2), Dim::Reg(10, Op::Set)),
+        ObsOut::Scalar(902)
+    )));
+}
+
+/// r5: absence facts are gated on the explicit finalization record — nothing
+/// before closure, the exact finalized set after, across DD and referee.
+#[test]
+fn absence_pre_and_post_finalization() {
+    let (fx, replay) = fixtures::retention_properties();
+    let cap = run(&fx, BuildOpts::default(), 2).expect("valid fixture");
+    for rev in 0..=fx.max_rev() {
+        compare_all(&fx, &replay, &cap, rev);
+    }
+    for rev in 0..3 {
+        assert!(Captured::net(&cap.absence, rev).is_empty());
+    }
+    for rev in 3..=fx.max_rev() {
+        assert_eq!(Captured::flat(&cap.absence, rev), vec![(0, 501)]);
+    }
+}

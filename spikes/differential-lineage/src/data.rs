@@ -268,6 +268,19 @@ pub struct WorkingRec {
     pub delta: i64,
 }
 
+/// Campaign finalization for one configuration: the explicit closure record
+/// after which finalized facts (the absence view) are derivable. Evidence
+/// and property declarations must precede it; bounded working-set retention
+/// deliberately continues after it (the retention contract finalized facts
+/// must survive).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct FinalizeRec {
+    /// Commit revision (the campaign-closure revision).
+    pub rev: Revision,
+    /// Finalized campaign configuration.
+    pub config: CfgId,
+}
+
 /// A cross-source sequence query: asks for ordered pairs of `Note` events,
 /// the first from `src_a`, the second from `src_b`, within each rollout.
 /// Sources without rollout-global order are rejected, not answered.
@@ -313,6 +326,8 @@ pub struct Fixture {
     pub working: Vec<WorkingRec>,
     /// Cross-source sequence queries.
     pub seq_queries: Vec<SeqQueryRec>,
+    /// Campaign finalizations.
+    pub finalizations: Vec<FinalizeRec>,
 }
 
 /// A structural-contract violation in a decoded fixture. Returned (never
@@ -545,6 +560,22 @@ pub enum ValidationError {
         /// The offending net.
         net: i64,
     },
+    /// Evidence (or a property declaration) commits after its campaign's
+    /// finalization record — finalized facts would emit-and-retract.
+    #[error(
+        "{what} (config {config}) commits at revision {rev}, after the \
+         campaign finalization at revision {finalize_rev}"
+    )]
+    RecordAfterFinalization {
+        /// Offending record class.
+        what: &'static str,
+        /// Campaign configuration.
+        config: CfgId,
+        /// The record's revision.
+        rev: Revision,
+        /// The finalization revision.
+        finalize_rev: Revision,
+    },
     /// The genesis replay vectors do not cover the fixture's cuts (referee
     /// construction only).
     #[error("replay vector for rollout {rollout} shorter than cut {count}")]
@@ -626,6 +657,9 @@ impl Fixture {
         }
         for r in &self.seq_queries {
             max_rev_ok(r.rev, "sequence query")?;
+        }
+        for r in &self.finalizations {
+            max_rev_ok(r.rev, "finalization")?;
         }
 
         // Declarations are unique per identity.
@@ -744,6 +778,44 @@ impl Fixture {
                     what: "entry commit",
                     config: ec.config,
                     detail: format!("entry {}", ec.entry),
+                });
+            }
+        }
+        let mut finalize_rev_by_cfg: BTreeMap<CfgId, Revision> = BTreeMap::new();
+        for f in &self.finalizations {
+            if finalize_rev_by_cfg.insert(f.config, f.rev).is_some() {
+                return Err(ValidationError::DuplicateRecord {
+                    what: "finalization",
+                    config: f.config,
+                    detail: "campaign closure".to_owned(),
+                });
+            }
+        }
+        // Finalization is the last word for the facts derived from it:
+        // assertion evidence and property declarations must precede it (so a
+        // finalized absence fact can never emit-and-retract). Working-set
+        // retention deliberately continues afterwards.
+        for e in &self.events {
+            if let Some(&finalize_rev) = finalize_rev_by_cfg.get(&e.config)
+                && e.rev > finalize_rev
+            {
+                return Err(ValidationError::RecordAfterFinalization {
+                    what: "event",
+                    config: e.config,
+                    rev: e.rev,
+                    finalize_rev,
+                });
+            }
+        }
+        for d in &self.properties {
+            if let Some(&finalize_rev) = finalize_rev_by_cfg.get(&d.config)
+                && d.rev > finalize_rev
+            {
+                return Err(ValidationError::RecordAfterFinalization {
+                    what: "property declaration",
+                    config: d.config,
+                    rev: d.rev,
+                    finalize_rev,
                 });
             }
         }
@@ -1091,6 +1163,7 @@ impl Fixture {
         self.entry_commits.iter().for_each(|r| see(r.rev));
         self.working.iter().for_each(|r| see(r.rev));
         self.seq_queries.iter().for_each(|r| see(r.rev));
+        self.finalizations.iter().for_each(|r| see(r.rev));
         m
     }
 }
@@ -1101,17 +1174,19 @@ impl Fixture {
 /// Produced by the generator's simulation; the referee's semantic authority.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Replay {
-    /// `(rollout, full vector)` pairs, ascending by rollout. Each vector's
-    /// index equals its events' `pos`.
-    pub full: Vec<(RolloutId, Vec<SdkEventRec>)>,
+    /// `((config, rollout), full vector)` pairs. Rollout identity is scoped
+    /// by campaign configuration — two configs may reuse rollout ids without
+    /// their replay vectors colliding (r5). Each vector's index equals its
+    /// events' `pos`.
+    pub full: Vec<((CfgId, RolloutId), Vec<SdkEventRec>)>,
 }
 
 impl Replay {
-    /// The full vector for one rollout.
-    pub fn vector(&self, rollout: RolloutId) -> &[SdkEventRec] {
+    /// The full vector for one rollout of one config.
+    pub fn vector(&self, config: CfgId, rollout: RolloutId) -> &[SdkEventRec] {
         self.full
             .iter()
-            .find(|(r, _)| *r == rollout)
+            .find(|(k, _)| *k == (config, rollout))
             .map(|(_, v)| v.as_slice())
             .unwrap_or(&[])
     }

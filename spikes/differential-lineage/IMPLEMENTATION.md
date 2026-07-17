@@ -33,6 +33,13 @@ Doctrine compliance (per the spec's blocking rules):
 
 ## Structural validation — the complete invariant checklist (r1–r3)
 
+The absence view is gated on an explicit `FinalizeRec` campaign-closure
+record (r5): pre-closure reads are empty (an intermediate "not yet
+satisfied" is not a finalized fact), and validation guarantees evidence and
+property declarations precede closure, so an emitted absence row can never
+retract — while working-set retention explicitly continues after closure and
+must not disturb it.
+
 `Fixture::validate` (data.rs) returns a typed `ValidationError` (thiserror);
 `dataflow::run` and `Referee::new` return `Result` and refuse fixtures that
 fail it — **decoded input can never panic, hang, or overflow the public
@@ -53,6 +60,7 @@ documented fixture invariant, its rule, and its test.
 | `ScrapeLineRec` unique per `(config, rollout, local_ord)` | `DuplicateRecord` | `duplicate_scrape_ordinal_rejected` |
 | `SeqQueryRec` unique per `(config, query)` | `DuplicateRecord` | `duplicate_seq_query_rejected` |
 | `EntryCommitRec` unique per `(config, entry)` | `DuplicateRecord` | `duplicate_entry_commit_rejected` |
+| `FinalizeRec` unique per `config` | `DuplicateRecord` | `duplicate_finalization_rejected` |
 | `WorkingRec` — deltas by design, no record identity; bounded by the net rule below | — | — |
 
 **Ordering / revision coherence**
@@ -66,6 +74,7 @@ documented fixture invariant, its rule, and its test.
 | entry commits MAY precede their seal — deliberately legal; the dataflow join and the revision-filtered referee agree (nothing surfaces until both are committed) | — | exercised by `exact::family2_two_pass_occupancy_and_domination` staging |
 | register/property declarations MAY commit after events — deliberately legal; both sides filter declarations by revision coherently (mirrors the v1 never-fired rule) | — | covered by every-revision parity |
 | Moments nondecreasing along each rollout's own positions and across every lineage boundary (canonical `(Moment, pos)` order) | `DecreasingMoments` | `decreasing_moments_within_a_rollout_rejected`, `decreasing_moments_across_lineage_rejected` |
+| evidence and property declarations precede their campaign's finalization (a finalized absence fact can never emit-and-retract); working-set retention deliberately continues after closure | `RecordAfterFinalization` | `record_after_finalization_rejected`; retention-after-closure pinned by `exact::family8` and `parity::absence_pre_and_post_finalization` |
 
 **Structure / positions**
 
@@ -86,7 +95,7 @@ documented fixture invariant, its rule, and its test.
 | working deltas are exactly +1/-1 (anything else is not a membership update; also keeps net accumulation in range — which is checked regardless, r4) | `WorkingDeltaOutOfRange` | `working_delta_overflow_pair_rejected`, `working_delta_min_counterpart_rejected` |
 | working membership nets 0 or 1 per coordinate after every revision (admit at most once; never expire the unadmitted) | `WorkingNetOutOfRange` | `working_net_out_of_range_rejected` |
 | event source ids need NOT be declared — deliberately not validated: no view consumes an event's source except through an eligible (already-validated) query, and undeclared registers stay evidence-not-state by design | — | documented here |
-| referee replay coverage: every seal/obs cut on its rollout's vector, and every fork on BOTH the child's (inherited prefix) and the PARENT's vector (Fork points slice the parent — r3) | `ReplayTooShort` | `referee_refuses_short_replay_with_typed_error`, `referee_refuses_short_parent_replay` |
+| referee replay coverage: every seal/obs cut on its rollout's vector, and every fork on BOTH the child's (inherited prefix) and the PARENT's vector (Fork points slice the parent — r3); replay vectors are keyed by `(config, rollout)` so configs reusing rollout ids cannot mix (r5) | `ReplayTooShort` | `referee_refuses_short_replay_with_typed_error`, `referee_refuses_short_parent_replay`, `parity::two_configs_with_colliding_rollout_ids_parity` |
 
 ## Metering (r1 review — corrected)
 
@@ -146,7 +155,7 @@ reduction, mirroring the v1 never-fired rule).
 
 ```
 cargo build            # + --release
-cargo test --locked    # 50 tests: exact (11) + parity (8) + validate (31)
+cargo test --locked    # 54 tests: exact (11) + parity (10) + validate (33)
 cargo clippy --locked --all-features --all-targets -- -D warnings
 cargo fmt -- --check
 cargo deny check --config <root>/deny.toml licenses

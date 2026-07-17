@@ -5,10 +5,10 @@
 //! seed through splitmix64; no wall clock, no host randomness.
 
 use crate::data::{
-    CfgId, Cut, EntryCommitRec, EntryId, Fixture, LineageRec, Moment, ObsCutRec, OrderScope,
-    Payload, Pos, PropId, PropertyDecl, QueryId, ReduceOp, RegId, RegisterDecl, Replay, Revision,
-    RolloutId, ScrapeLineRec, SdkEventRec, SealId, SealRec, SeqQueryRec, SourceDecl, SourceId,
-    WorkingRec,
+    CfgId, Cut, EntryCommitRec, EntryId, FinalizeRec, Fixture, LineageRec, Moment, ObsCutRec,
+    OrderScope, Payload, Pos, PropId, PropertyDecl, QueryId, ReduceOp, RegId, RegisterDecl, Replay,
+    Revision, RolloutId, ScrapeLineRec, SdkEventRec, SealId, SealRec, SeqQueryRec, SourceDecl,
+    SourceId, WorkingRec,
 };
 
 /// splitmix64 — tiny, seeded, deterministic.
@@ -37,8 +37,8 @@ impl SplitMix64 {
 pub struct Builder {
     config: CfgId,
     fixture: Fixture,
-    /// Full replay vector per rollout, ascending rollout id.
-    replay: Vec<(RolloutId, Vec<SdkEventRec>)>,
+    /// Full replay vector per (config, rollout).
+    replay: Vec<((CfgId, RolloutId), Vec<SdkEventRec>)>,
     /// Last moment per rollout (for the nondecreasing-moment contract).
     last_moment: Vec<(RolloutId, Moment)>,
     /// Start position per rollout (its branch-point count; 0 for genesis).
@@ -99,7 +99,7 @@ impl Builder {
     pub fn genesis(&mut self) -> RolloutId {
         let id = self.next_rollout;
         self.next_rollout += 1;
-        self.replay.push((id, Vec::new()));
+        self.replay.push(((self.config, id), Vec::new()));
         self.last_moment.push((id, 0));
         self.starts.push((id, 0));
         id
@@ -129,7 +129,7 @@ impl Builder {
         let prefix: Vec<SdkEventRec> = pvec[..cut.count as usize].to_vec();
         let id = self.next_rollout;
         self.next_rollout += 1;
-        self.replay.push((id, prefix));
+        self.replay.push(((self.config, id), prefix));
         self.last_moment.push((id, cut.moment));
         self.starts.push((id, cut.count));
         self.fixture.lineage.push(LineageRec {
@@ -165,7 +165,7 @@ impl Builder {
         let vec = self
             .replay
             .iter_mut()
-            .find(|(r, _)| *r == rollout)
+            .find(|(k, _)| *k == (self.config, rollout))
             .map(|(_, v)| v)
             .expect("push to unknown rollout");
         let pos = vec.len() as Pos;
@@ -278,6 +278,15 @@ impl Builder {
         self
     }
 
+    /// Record the campaign finalization (closure) for this configuration.
+    pub fn finalize(&mut self, rev: Revision) -> &mut Self {
+        self.fixture.finalizations.push(FinalizeRec {
+            rev,
+            config: self.config,
+        });
+        self
+    }
+
     /// Record a cross-source sequence query.
     pub fn seq_query(
         &mut self,
@@ -300,7 +309,7 @@ impl Builder {
     pub fn vector(&self, rollout: RolloutId) -> &[SdkEventRec] {
         self.replay
             .iter()
-            .find(|(r, _)| *r == rollout)
+            .find(|(k, _)| *k == (self.config, rollout))
             .map(|(_, v)| v.as_slice())
             .expect("unknown rollout")
     }
@@ -508,6 +517,9 @@ pub fn random_tree(name: &str, seed: u64, p: TreeParams) -> (Fixture, Replay) {
 
     b.seq_query(1, 0, SRC_MAIN, SRC_AUX);
     b.seq_query(1, 1, SRC_MAIN, SRC_SCRAPE);
+    // Campaign closure: after all evidence (finalized absence facts become
+    // derivable); working-set retention continues at expire_rev.
+    b.finalize(commit_rev);
 
     b.finish()
 }

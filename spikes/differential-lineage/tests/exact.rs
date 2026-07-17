@@ -504,10 +504,18 @@ fn family7_property_aggregation() {
         Captured::flat(&cap.site_coverage, rev),
         vec![((0, 500, 900), 2), ((0, 500, 901), 1)]
     );
-    // Before any evidence, both must_hit properties are absent; once 500 is
-    // satisfied only 501 remains — and it stays a finalized finding.
-    assert_eq!(Captured::flat(&cap.absence, 1), vec![(0, 500), (0, 501)]);
-    for r in 2..=rev {
+    // Absence is a FINALIZED fact: before the campaign closes (revision 3)
+    // there are no absence rows at all — an intermediate "not yet satisfied"
+    // is not a finding. From the finalization onward, exactly the
+    // never-satisfied property is absent, and the row never retracts
+    // (evidence is validated to precede finalization).
+    for r in 0..3 {
+        assert!(
+            Captured::net(&cap.absence, r).is_empty(),
+            "no absence before closure"
+        );
+    }
+    for r in 3..=rev {
         assert_eq!(Captured::flat(&cap.absence, r), vec![(0, 501)]);
     }
 }

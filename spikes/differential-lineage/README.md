@@ -13,9 +13,9 @@ measurements; ratification is `hm-bbx.5`. In brief, mechanically: all eight
 query families are proven over committed fixtures with exact expected
 outputs; a naive and a segment-shared formulation agree with a plain-Rust
 genesis-replay referee at every revision; per-branch incremental cost is
-own-segment work plus ≈ 9.5 updates per ancestor, against a ~170× steeper
-per-depth slope for the naive prefix-join and ~350× over per-revision direct
-recompute.
+own-segment work plus ≈ 11.4 updates per ancestor (lineage stages included,
+r5 accounting), against a ≈ 140× steeper per-depth slope for the naive
+prefix-join and ~390× over per-revision direct recompute.
 
 Standalone: no dependency on `consonance/` or `dissonance/`. Tracked by
 design (root `.gitignore` exception): fixtures, generator, lockfile, and
@@ -71,7 +71,7 @@ species; this spike is the complementary one-dataflow observation plane).
 ## Run
 
 ```sh
-cargo test --locked                            # 50 tests: exact + parity + validate (~3 s)
+cargo test --locked                            # 54 tests: exact + parity + validate (~3 s)
 cargo run --release --locked --example bench   # the cost measurement (REPORT.md)
 cargo run --locked --example gen_fixtures      # regenerate committed fixtures
 ```

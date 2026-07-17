@@ -252,17 +252,11 @@ pub fn run(
             let (working_in, working) = scope.new_collection::<(CfgId, RolloutId, Pos), isize>();
             let (seq_queries_in, seq_queries) =
                 scope.new_collection::<crate::data::SeqQueryRec, isize>();
+            let (finalizations_in, finalizations) =
+                scope.new_collection::<crate::data::FinalizeRec, isize>();
 
             // -- Shared base arrangements (the in-process shared-arrangement
-            // story: one arranged evidence index, many consumers). ----------
-            let ev = events.clone().map(|e| {
-                (
-                    (e.config, e.rollout),
-                    (e.source, e.pos, e.moment, e.payload),
-                )
-            });
-            let ev_arr = ev.arrange_by_key_named("evidence-by-rollout");
-
+            // story: one arranged index, many consumers). -------------------
             let reg_ev = events.clone().flat_map(|e| match e.payload {
                 Payload::Register { reg, value } => {
                     Some(((e.config, reg), (e.rollout, e.pos, e.moment, value)))
@@ -478,6 +472,17 @@ pub fn run(
 
             // -- Family 1: lineage-composed seal prefixes --------------------
             if opts.prefix {
+                // The raw-evidence arrangement serves only this view; build
+                // it only when the view is on (isolated benchmark runs must
+                // not pay for an arrangement nothing consumes — r5 claim
+                // audit).
+                let ev = events.clone().map(|e| {
+                    (
+                        (e.config, e.rollout),
+                        (e.source, e.pos, e.moment, e.payload),
+                    )
+                });
+                let ev_arr = ev.arrange_by_key_named("evidence-by-rollout");
                 let seal_pts = seals
                     .clone()
                     .map(|s| ((s.config, s.rollout), (s.seal, s.cut.count)));
@@ -650,7 +655,15 @@ pub fn run(
                 .distinct();
             let declared =
                 properties.flat_map(|p| p.must_hit.then_some(((p.config, p.property), ())));
-            let absence = declared.antijoin(satisfied).map(|(k, ())| k);
+            // Absence is a FINALIZED fact: it exists only once the campaign
+            // has explicitly closed (evidence and property declarations are
+            // validated to precede the finalization record, so an emitted
+            // absence row can never retract).
+            let finalized = finalizations.map(|f| f.config).distinct();
+            let absence = declared
+                .antijoin(satisfied)
+                .map(|((config, prop), ())| (config, prop))
+                .semijoin(finalized);
             cap!(absence, "absence", absence);
 
             // -- Bounded working membership -----------------------------------
@@ -736,6 +749,7 @@ pub fn run(
                 entry_commits: entry_commits_in,
                 working: working_in,
                 seq_queries: seq_queries_in,
+                finalizations: finalizations_in,
             }
         });
 
@@ -775,6 +789,7 @@ struct Inputs {
     entry_commits: InputSession<u64, crate::data::EntryCommitRec, isize>,
     working: InputSession<u64, (CfgId, RolloutId, Pos), isize>,
     seq_queries: InputSession<u64, crate::data::SeqQueryRec, isize>,
+    finalizations: InputSession<u64, crate::data::FinalizeRec, isize>,
 }
 
 impl Inputs {
@@ -790,6 +805,7 @@ impl Inputs {
         self.entry_commits.advance_to(to);
         self.working.advance_to(to);
         self.seq_queries.advance_to(to);
+        self.finalizations.advance_to(to);
         self.events.flush();
         self.scrape.flush();
         self.registers.flush();
@@ -801,6 +817,7 @@ impl Inputs {
         self.entry_commits.flush();
         self.working.flush();
         self.seq_queries.flush();
+        self.finalizations.flush();
     }
 }
 
@@ -830,6 +847,7 @@ fn occupied_revisions(fx: &Fixture) -> Vec<Revision> {
         .chain(fx.entry_commits.iter().map(|r| r.rev))
         .chain(fx.working.iter().map(|r| r.rev))
         .chain(fx.seq_queries.iter().map(|r| r.rev))
+        .chain(fx.finalizations.iter().map(|r| r.rev))
         .collect();
     revs.sort_unstable();
     revs.dedup();
@@ -874,5 +892,11 @@ fn feed_rev(inputs: &mut Inputs, fx: &Fixture, rev: Revision, rng: &mut SplitMix
     }
     for r in shuffled(fx.seq_queries.iter().filter(|r| r.rev == rev).cloned(), rng) {
         inputs.seq_queries.update_at(r, rev, 1);
+    }
+    for r in shuffled(
+        fx.finalizations.iter().filter(|r| r.rev == rev).cloned(),
+        rng,
+    ) {
+        inputs.finalizations.update_at(r, rev, 1);
     }
 }

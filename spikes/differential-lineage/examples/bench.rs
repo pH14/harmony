@@ -182,8 +182,23 @@ struct Formulation {
     opts: BuildOpts,
 }
 
+/// A formulation's attributable updates at one revision: its own stages PLUS
+/// the lineage stages (`lineage.anc` + `lineage.step`) — the ancestry work is
+/// part of evaluating observations under either formulation, and excluding
+/// it understated depth-dependent cost (r1 metering correction; the summing
+/// itself fixed in r5).
+fn attributable_at(cap: &Captured, prefix: &str, rev: Revision) -> u64 {
+    cap.delta_at(prefix, rev) + cap.delta_at("lineage.", rev)
+}
+
+fn attributable_total(cap: &Captured, prefix: &str) -> u64 {
+    cap.delta_total(prefix) + cap.delta_total("lineage.")
+}
+
 fn per_branch_deltas(cap: &Captured, prefix: &str, revs: &[Revision]) -> Vec<u64> {
-    revs.iter().map(|r| cap.delta_at(prefix, *r)).collect()
+    revs.iter()
+        .map(|r| attributable_at(cap, prefix, *r))
+        .collect()
 }
 
 fn main() {
@@ -258,14 +273,31 @@ fn main() {
             println!(
                 "| {} | {} | {:.2?} | {} | {} | {} | {} | {} | {} MB |",
                 f.label,
-                cap.delta_total(f.prefix),
+                attributable_total(&cap, f.prefix),
                 wall,
                 per_branch.first().copied().unwrap_or(0),
                 median,
                 per_branch.last().copied().unwrap_or(0),
-                cap.delta_at(f.prefix, bf.seal_rev),
-                cap.delta_at(f.prefix, bf.late_seal_rev),
+                attributable_at(&cap, f.prefix, bf.seal_rev),
+                attributable_at(&cap, f.prefix, bf.late_seal_rev),
                 rss_kb() / 1024,
+            );
+            println!(
+                "|   of which lineage stages | {} | | {} | | {} | {} | {} | |",
+                cap.delta_total("lineage."),
+                cap.delta_at("lineage.", bf.evidence_revs[0]),
+                cap.delta_at("lineage.", *bf.evidence_revs.last().expect("nonempty")),
+                cap.delta_at("lineage.", bf.seal_rev),
+                cap.delta_at("lineage.", bf.late_seal_rev),
+            );
+            let downstream =
+                cap.delta_total("") - attributable_total(&cap, f.prefix) - cap.delta_total("base.");
+            println!(
+                "|   base ingestion (common, excluded above) | {} | | | | | | | |",
+                cap.delta_total("base."),
+            );
+            println!(
+                "|   downstream views (cells/transitions/…, common, excluded above) | {downstream} | | | | | | | |",
             );
         }
 
@@ -311,11 +343,13 @@ fn main() {
 
     println!("## Arrangement sharing (static)\n");
     println!(
-        "One `measures-by-rollout` arrangement feeds: naive own-segment join, naive \
-         ancestor join, and the shared formulation's interval assignment. One \
-         `evidence-by-rollout` arrangement feeds both seal-prefix joins. One \
-         `points-by-rollout` arrangement feeds four consumers (naive own/ancestor, \
-         shared inherited/own). Cloning an `Arranged` shares the trace — each of \
-         these is built once per run."
+        "In the full both-formulations graph: one `measures-by-rollout` arrangement \
+         feeds three consumers (naive own-segment join, naive ancestor join, shared \
+         interval assignment); one `points-by-rollout` arrangement feeds four (naive \
+         own/ancestor, shared inherited/own); one `evidence-by-rollout` arrangement \
+         feeds the two seal-prefix joins and is built only when that view is on. \
+         Isolated benchmark runs build the same arrangements with only their own \
+         consumers attached. Cloning an `Arranged` shares the trace — each index is \
+         built and maintained once per run."
     );
 }

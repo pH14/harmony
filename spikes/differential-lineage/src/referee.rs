@@ -31,26 +31,27 @@ impl<'a> Referee<'a> {
     /// by these checks.
     pub fn new(fixture: &'a Fixture, replay: &'a Replay) -> Result<Referee<'a>, ValidationError> {
         fixture.validate()?;
-        let covered = |rollout: RolloutId, count: Pos| -> Result<(), ValidationError> {
-            if count as usize <= replay.vector(rollout).len() {
-                Ok(())
-            } else {
-                Err(ValidationError::ReplayTooShort { rollout, count })
-            }
-        };
+        let covered =
+            |config: CfgId, rollout: RolloutId, count: Pos| -> Result<(), ValidationError> {
+                if count as usize <= replay.vector(config, rollout).len() {
+                    Ok(())
+                } else {
+                    Err(ValidationError::ReplayTooShort { rollout, count })
+                }
+            };
         for s in &fixture.seals {
-            covered(s.rollout, s.cut.count)?;
+            covered(s.config, s.rollout, s.cut.count)?;
         }
         for c in &fixture.obs_cuts {
-            covered(c.rollout, c.cut.count)?;
+            covered(c.config, c.rollout, c.cut.count)?;
         }
         for l in &fixture.lineage {
             // Both sides of the branch point are sliced: the child's vector
             // (its inherited prefix) and the PARENT's vector (the referee
             // evaluates Fork points on the parent at the fork count — r3:
             // this side was sliced before being validated).
-            covered(l.child, l.cut.count)?;
-            covered(l.parent, l.cut.count)?;
+            covered(l.config, l.child, l.cut.count)?;
+            covered(l.config, l.parent, l.cut.count)?;
         }
         Ok(Referee { fixture, replay })
     }
@@ -60,8 +61,14 @@ impl<'a> Referee<'a> {
     /// covered event whose record commits later (legal in a fixture, though
     /// the production durable-append-before-submit rule forbids it) is not
     /// yet evidence at earlier revisions — exactly what the dataflow sees.
-    fn covered_prefix(&self, rollout: RolloutId, count: Pos, rev: Revision) -> Vec<&SdkEventRec> {
-        self.replay.vector(rollout)[..count as usize]
+    fn covered_prefix(
+        &self,
+        config: CfgId,
+        rollout: RolloutId,
+        count: Pos,
+        rev: Revision,
+    ) -> Vec<&SdkEventRec> {
+        self.replay.vector(config, rollout)[..count as usize]
             .iter()
             .filter(|e| e.rev <= rev)
             .collect()
@@ -99,7 +106,7 @@ impl<'a> Referee<'a> {
     pub fn seal_prefix(&self, rev: Revision) -> Vec<PrefixRow> {
         let mut rows = Vec::new();
         for s in self.fixture.seals.iter().filter(|s| s.rev <= rev) {
-            for e in self.covered_prefix(s.rollout, s.cut.count, rev) {
+            for e in self.covered_prefix(s.config, s.rollout, s.cut.count, rev) {
                 rows.push((
                     (s.config, s.rollout, s.seal),
                     PrefixEv {
@@ -153,7 +160,7 @@ impl<'a> Referee<'a> {
         let ops = self.reg_ops(rev);
         let mut rows = Vec::new();
         for (config, rollout, point, count) in self.points(rev) {
-            let prefix = self.covered_prefix(rollout, count, rev);
+            let prefix = self.covered_prefix(config, rollout, count, rev);
             for (dim, out) in self.fold_obs(&ops, config, &prefix) {
                 rows.push(((config, rollout, point, dim), out));
             }
@@ -167,7 +174,7 @@ impl<'a> Referee<'a> {
         let ops = self.reg_ops(rev);
         let mut rows = Vec::new();
         for (config, rollout, point, count) in self.points(rev) {
-            let prefix = self.covered_prefix(rollout, count, rev);
+            let prefix = self.covered_prefix(config, rollout, count, rev);
             let obs = self.fold_obs(&ops, config, &prefix);
             rows.push(((config, rollout, point), cell_fn(&obs)));
         }
@@ -197,12 +204,12 @@ impl<'a> Referee<'a> {
                 .filter(|l| l.rev <= rev)
                 .find(|l| l.config == config && l.child == rollout)
                 .map(|l| {
-                    let prefix = self.covered_prefix(rollout, l.cut.count, rev);
+                    let prefix = self.covered_prefix(config, rollout, l.cut.count, rev);
                     cell_fn(&self.fold_obs(&ops, config, &prefix))
                 });
             let mut prev = baseline;
             for count in counts {
-                let prefix = self.covered_prefix(rollout, count, rev);
+                let prefix = self.covered_prefix(config, rollout, count, rev);
                 let cell = cell_fn(&self.fold_obs(&ops, config, &prefix));
                 if prev.as_ref() != Some(&cell) {
                     rows.push((
@@ -279,8 +286,16 @@ impl<'a> Referee<'a> {
     }
 
     /// Finalized absence expectations: declared `must_hit` properties with no
-    /// satisfying evaluation. Reads the immutable ledger only.
+    /// satisfying evaluation, derivable only once the campaign has explicitly
+    /// finalized. Reads the immutable ledger only.
     pub fn absence(&self, rev: Revision) -> Vec<AbsRow> {
+        let finalized: std::collections::BTreeSet<CfgId> = self
+            .fixture
+            .finalizations
+            .iter()
+            .filter(|f| f.rev <= rev)
+            .map(|f| f.config)
+            .collect();
         let satisfied: Vec<(CfgId, u32)> = self
             .fixture
             .events
@@ -300,6 +315,7 @@ impl<'a> Referee<'a> {
             .properties
             .iter()
             .filter(|p| p.rev <= rev && p.must_hit)
+            .filter(|p| finalized.contains(&p.config))
             .filter(|p| !satisfied.contains(&(p.config, p.property)))
             .map(|p| (p.config, p.property))
             .collect();

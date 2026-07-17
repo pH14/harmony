@@ -285,6 +285,12 @@ pub fn retention_properties() -> (Fixture, Replay) {
         .working(3, r, 1, 1)
         .working(3, r, 4, 1);
 
+    // Campaign closure at revision 3: absence facts become derivable here
+    // (all evidence committed at revision 2); the working-set expiration at
+    // revision 4 is retention operating after closure, which finalized
+    // facts must survive.
+    b.finalize(3);
+
     b.working(4, r, 1, -1);
 
     b.finish()

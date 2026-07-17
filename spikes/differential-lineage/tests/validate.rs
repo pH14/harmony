@@ -688,7 +688,7 @@ fn referee_refuses_short_parent_replay() {
     let a_idx = replay
         .full
         .iter()
-        .position(|(r, _)| *r == a)
+        .position(|(k, _)| *k == (0, a))
         .expect("parent vector");
     replay.full[a_idx].1.truncate(1);
     assert_eq!(
@@ -769,6 +769,68 @@ fn working_delta_min_counterpart_rejected() {
             pos: 2,
             rev: 3,
             delta: i64::MIN,
+        })
+    );
+}
+
+#[test]
+fn duplicate_finalization_rejected() {
+    let (mut fx, _) = fixtures::retention_properties();
+    fx.finalizations
+        .push(differential_lineage::data::FinalizeRec { rev: 4, config: 0 });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::DuplicateRecord {
+            what: "finalization",
+            config: 0,
+            detail: "campaign closure".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn record_after_finalization_rejected() {
+    // r5: evidence after campaign closure would make a finalized absence
+    // fact emit-and-retract; refused by contract.
+    let (mut fx, _) = fixtures::retention_properties();
+    fx.events.push(SdkEventRec {
+        rev: 4, // finalization is at revision 3
+        config: 0,
+        rollout: 0,
+        source: 0,
+        pos: 7,
+        moment: 70,
+        payload: Payload::Assertion {
+            site: 900,
+            property: 501,
+            passed: true,
+        },
+    });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::RecordAfterFinalization {
+            what: "event",
+            config: 0,
+            rev: 4,
+            finalize_rev: 3,
+        })
+    );
+
+    let (mut fx, _) = fixtures::retention_properties();
+    fx.properties
+        .push(differential_lineage::data::PropertyDecl {
+            rev: 4,
+            config: 0,
+            property: 502,
+            must_hit: true,
+        });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::RecordAfterFinalization {
+            what: "property declaration",
+            config: 0,
+            rev: 4,
+            finalize_rev: 3,
         })
     );
 }

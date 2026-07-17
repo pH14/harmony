@@ -227,5 +227,11 @@
       "src_a": 0,
       "src_b": 2
     }
+  ],
+  "finalizations": [
+    {
+      "rev": 3,
+      "config": 0
+    }
   ]
 }
