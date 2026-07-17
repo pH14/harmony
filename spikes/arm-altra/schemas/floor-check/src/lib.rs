@@ -44,6 +44,7 @@
 //! harness's own done-marker.
 
 pub mod check;
+pub mod el0;
 pub mod error;
 pub mod fixtures;
 

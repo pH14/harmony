@@ -69,7 +69,7 @@ def build_id(vmlinux):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--payload-dir", required=True)
-    ap.add_argument("--vmlinux", required=True)
+    ap.add_argument("--vmlinux")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -93,23 +93,23 @@ def main():
             continue
         pins[name] = sha256_file(path)
 
-    kernel = {
-        "path": os.path.abspath(args.vmlinux),
-        "sha256": sha256_file(args.vmlinux),
-        "build_id": build_id(args.vmlinux),
-    }
+    kernel = None
+    if args.vmlinux:
+        kernel = {
+            "path": os.path.abspath(args.vmlinux),
+            "sha256": sha256_file(args.vmlinux),
+            "build_id": build_id(args.vmlinux),
+        }
 
     os.makedirs(args.out, exist_ok=True)
-    for fname, obj in [
-        ("environment.json", env),
-        ("payload-pins.json", pins),
-        ("host-kernel.json", kernel),
-    ]:
+    files = [("environment.json", env), ("payload-pins.json", pins)]
+    if kernel is not None:
+        files.append(("host-kernel.json", kernel))
+    for fname, obj in files:
         with open(os.path.join(args.out, fname), "w") as f:
             json.dump(obj, f, indent=2, sort_keys=True)
             f.write("\n")
-    print(f"wrote environment.json, payload-pins.json ({len(pins)} pins), "
-          f"host-kernel.json to {args.out}")
+    print(f"wrote {', '.join(n for n, _ in files)} ({len(pins)} pins) to {args.out}")
 
 
 if __name__ == "__main__":

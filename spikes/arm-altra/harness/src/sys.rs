@@ -174,6 +174,31 @@ pub fn br_retired_attr(sample_period: Option<u64>) -> PerfEventAttr {
     }
 }
 
+/// The AA-1(a) host-side counting event: raw `BR_RETIRED`, **pinned**, counting
+/// **EL0 of this thread only** — `exclude_kernel` + `exclude_hv` so
+/// scheduler/IRQ/hypervisor branches never inflate the count, and NO
+/// `exclude_host` (there is no guest; a guest-only counter over a host loop reads
+/// exactly zero — the round-5 probe lesson). Opened disabled; the tool encloses
+/// the window call in an explicit enable/disable pair, whose EL0 tail is part of
+/// the per-class constant offset AA-1(a) measures.
+#[must_use]
+pub fn el0_count_attr() -> PerfEventAttr {
+    PerfEventAttr {
+        type_: PERF_TYPE_RAW,
+        size: PERF_ATTR_SIZE_VER6,
+        config: BR_RETIRED_RAW,
+        // PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING: read()
+        // returns [count, enabled, running], and the checker demands
+        // enabled == running (pinned events are never silently multiplexed).
+        read_format: 0b11,
+        flags: perf_flags::DISABLED
+            | perf_flags::PINNED
+            | perf_flags::EXCLUDE_KERNEL
+            | perf_flags::EXCLUDE_HV,
+        ..Default::default()
+    }
+}
+
 /// The evidence record of what was armed — **derived from the attr itself**, never
 /// hand-written beside it.
 ///
@@ -1431,6 +1456,120 @@ pub use machine::{
     HostIdRegisters, Machine, Mechanism, MigrationChurner, ParamsPage, PerfCounter, allowed_cores,
     current_tid, pin_to_core, read_host_id_registers,
 };
+
+/// AA-1(a)'s host-side EL0 counter: raw `BR_RETIRED` over THIS thread's userspace
+/// execution ([`el0_count_attr`]), read with the enabled/running times so the
+/// checker can prove the pinned event was never multiplexed off.
+#[cfg(target_os = "linux")]
+mod el0counter {
+    use super::{PerfEventAttr, SysError, el0_count_attr, imp};
+
+    fn errno() -> i32 {
+        // SAFETY: `__errno_location` returns a valid pointer to this thread's errno.
+        unsafe { *libc::__errno_location() }
+    }
+
+    /// A host-thread `BR_RETIRED` counter (AA-1(a)). Opened disabled; the caller
+    /// brackets each window call with [`HostCounter::reset_enable`] /
+    /// [`HostCounter::disable_read`].
+    pub struct HostCounter {
+        fd: i32,
+        attr: PerfEventAttr,
+    }
+
+    impl HostCounter {
+        /// Open on the current thread (pid 0), whatever CPU it is pinned to
+        /// (cpu −1), disabled.
+        ///
+        /// # Errors
+        /// [`SysError`] if `perf_event_open` refuses.
+        pub fn open() -> Result<Self, SysError> {
+            let attr = el0_count_attr();
+            // SAFETY: `attr` is fully initialized on this frame and valid for the call.
+            let fd = unsafe { imp::perf_event_open(&raw const attr, 0, -1, -1, 0) };
+            if fd < 0 {
+                return Err(SysError::Errno {
+                    call: "perf_event_open(EL0 BR_RETIRED)",
+                    errno: errno(),
+                });
+            }
+            Ok(Self {
+                fd: fd as i32,
+                attr,
+            })
+        }
+
+        /// The attr the fd was actually opened with — the manifest's `perf` block
+        /// derives from this, never from a hand-written description.
+        #[must_use]
+        pub fn attr(&self) -> &PerfEventAttr {
+            &self.attr
+        }
+
+        /// Zero the counter and enable it.
+        ///
+        /// # Errors
+        /// [`SysError`] if either ioctl refuses.
+        pub fn reset_enable(&mut self) -> Result<(), SysError> {
+            const PERF_IOC_ENABLE: libc::c_ulong = 0x2400;
+            const PERF_IOC_RESET: libc::c_ulong = 0x2403;
+            // SAFETY: `self.fd` is a valid perf descriptor; both ioctls take an int arg.
+            unsafe {
+                if libc::ioctl(self.fd, PERF_IOC_RESET, 0_u64) < 0 {
+                    return Err(SysError::Errno {
+                        call: "PERF_EVENT_IOC_RESET(EL0)",
+                        errno: errno(),
+                    });
+                }
+                if libc::ioctl(self.fd, PERF_IOC_ENABLE, 0_u64) < 0 {
+                    return Err(SysError::Errno {
+                        call: "PERF_EVENT_IOC_ENABLE(EL0)",
+                        errno: errno(),
+                    });
+                }
+            }
+            Ok(())
+        }
+
+        /// Disable, then read `(count, time_enabled, time_running)`.
+        ///
+        /// # Errors
+        /// [`SysError`] if the ioctl or the 24-byte read refuses.
+        pub fn disable_read(&mut self) -> Result<(u64, u64, u64), SysError> {
+            const PERF_IOC_DISABLE: libc::c_ulong = 0x2401;
+            // SAFETY: `self.fd` is valid; the read buffer is 24 bytes for
+            // [count, enabled, running] per the attr's read_format.
+            unsafe {
+                if libc::ioctl(self.fd, PERF_IOC_DISABLE, 0_u64) < 0 {
+                    return Err(SysError::Errno {
+                        call: "PERF_EVENT_IOC_DISABLE(EL0)",
+                        errno: errno(),
+                    });
+                }
+                let mut buf = [0u64; 3];
+                let n = libc::read(self.fd, buf.as_mut_ptr().cast::<libc::c_void>(), 24);
+                if n != 24 {
+                    return Err(SysError::Errno {
+                        call: "read(EL0 BR_RETIRED)",
+                        errno: errno(),
+                    });
+                }
+                Ok((buf[0], buf[1], buf[2]))
+            }
+        }
+    }
+
+    impl Drop for HostCounter {
+        fn drop(&mut self) {
+            // SAFETY: `self.fd` is owned and valid; close-on-drop only.
+            unsafe {
+                libc::close(self.fd);
+            }
+        }
+    }
+}
+#[cfg(target_os = "linux")]
+pub use el0counter::HostCounter;
 
 #[cfg(test)]
 mod tests {

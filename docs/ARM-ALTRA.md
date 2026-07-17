@@ -775,3 +775,41 @@ Environment decisions recorded:
   than worked around).
 
 Disposition: **not yet declared** — waits on byte-identical captures A/B/C.
+
+### AA-1 — preliminary (day-one EL0 probes; MAJOR event-semantics finding)
+
+Evidence: `spikes/arm-altra/results/aa-1a/` — `aa1a-smoke-001` (2 classes × 2 seeds
+× 3 reps, smoke scale) and `aa1a-scale-probe-001` (2 classes × 2 seeds × 2 reps ×
+1e6/1e7/1e8), produced by the new `arm-el0-count` tool (AA-1(a): the SAME window
+`.s` bodies the guest boots, linked into a pinned EL0 process, raw 0x21 counting
+this thread's EL0 execution) and graded by `el0-check`.
+
+**Finding AA1-F1 (doc-vs-hardware, needs a ruling): N1's `BR_RETIRED` (0x21)
+counts architecturally-executed branch INSTRUCTIONS — taken and not-taken — not
+"retired taken branches" as §2 and `docs/ARM-PORT.md` state.** The evidence
+signature is unambiguous: branch-dense counts are IDENTICAL across seeds
+(`8×trips + 14` exactly — the 7 data-dependent predicates plus the back-edge each
+retire once per trip regardless of direction), while the taken-branch model would
+differ per seed by the PRNG's taken-sum (and did, as a seed-varying "offset" in
+`aa1a-smoke-001`'s failed oracle-exactness check — retained). Straight-line is
+`trips + 12` exactly (its `b.ne` executes `trips` times: `trips−1` taken + 1
+final not-taken).
+
+**Determinism itself is STRONGER than the program assumed**: bit-exact counts
+across five orders of magnitude (up to 800,000,014 events per window, zero
+deviation), across seeds, reps, and two cores — measured incidentally under an
+80-core kernel-build co-tenant, which the counts did not notice. 0-or-1 per
+instruction, monotonic, data-independent for fixed control flow.
+
+Recommended ruling (not yet ruled): keep 0x21 as the work clock with the
+corrected semantics — the model's expected counts move from taken-branches to
+branch-instructions-executed (knowable by construction from the same windows);
+the accumulator machinery stays as the predicate witness. No event substitution
+occurs: the hardware event is unchanged, our description of it corrects.
+
+Caveats recorded: (a) both probe run-sets are labeled `pinned-solo` but ran
+beside the kernel build — they are pipeline probes, not disposition evidence; the
+graded AA-1(a) sets rerun each condition deliberately on a quiet box. (b)
+`el0-check`'s oracle-exactness check grades against the pre-correction model and
+correctly FAILED the probes; it is updated with the model, and the failed verdict
+is retained as the discovery record.

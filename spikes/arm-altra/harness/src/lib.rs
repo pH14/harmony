@@ -33,6 +33,7 @@
 #![deny(unsafe_code)]
 
 pub mod console;
+pub mod el0;
 pub mod elf;
 pub mod evidence;
 pub mod plan;
