@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The M1 file-backed [`Ledger`]: one append-only file of checksummed
-//! frames, fsynced at every `sync` barrier.
+//! The M1 file-backed [`Ledger`]: one append-only file — a versioned stream
+//! header plus checksummed frames — fsynced at every `sync` barrier.
 //!
 //! Portable by construction (Convention rule 6): plain `std::fs` only — no
 //! `memfd_create`, no `io_uring`, no `/proc`, no `#[cfg(target_os)]` forks.
@@ -10,19 +10,38 @@
 //! loses at most the unsynced suffix) holds by construction rather than by
 //! hoping about kernel writeback order.
 //!
-//! `open` repairs a torn tail: if the file ends in a partial or
-//! checksum-failing frame (a crash tore the final write), the damage is
-//! truncated away before any new append, so later appends can never be
-//! shadowed behind an undecodable frame.
+//! Damage handling (PR #124 FAM-WAL ruling): `open` repairs a genuine tear
+//! — an incomplete final frame or a truncated header from a crash mid-write
+//! — by truncating it away and fsyncing the repaired file BEFORE any replay
+//! is exposed (F4), so later appends can never hide behind an undecodable
+//! frame. *Interior* damage (a checksum failure on a complete frame, an
+//! over-bound length, a foreign or future-format header) is a typed refusal
+//! ([`LedgerError::Corrupt`] / [`LedgerError::UnsupportedVersion`]), never
+//! a silent truncation — truncating there would drop durable records and
+//! remint committed revisions on recovery (F3/F10).
 
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::ledger::{Ledger, LedgerError, LedgerRecord, decode_frames, encode_frame};
+use crate::ledger::{
+    Ledger, LedgerError, LedgerRecord, decode_stream, encode_frame, encode_stream_header,
+};
+
+/// The directory whose entry must be fsynced for `path`'s creation to be
+/// durable. An empty parent (a bare relative filename like `"wal"`) means
+/// the current directory (PR #124 F8 — `File::open("")` fails).
+fn creation_dir(path: &Path) -> &Path {
+    match path.parent() {
+        None => Path::new("."),
+        Some(p) if p.as_os_str().is_empty() => Path::new("."),
+        Some(p) => p,
+    }
+}
 
 /// File-backed append-only ledger. See the module docs for the layout and
 /// durability story.
+#[derive(Debug)]
 pub struct FileLedger {
     path: PathBuf,
     file: File,
@@ -31,8 +50,10 @@ pub struct FileLedger {
 }
 
 impl FileLedger {
-    /// Open (creating if absent) the ledger at `path`, repairing any torn
-    /// tail left by a crash mid-write.
+    /// Open (creating if absent) the ledger at `path`. A torn tail from a
+    /// crash mid-write is truncated away and the repair is fsynced before
+    /// this returns; interior damage or an unsupported format version is a
+    /// typed error, never a repair.
     pub fn open(path: &Path) -> Result<Self, LedgerError> {
         let created = !path.exists();
         let file = OpenOptions::new()
@@ -44,18 +65,32 @@ impl FileLedger {
             // Make the file's existence itself durable: fsync the parent
             // directory (macOS and Linux both allow a read-only open of a
             // directory for this purpose).
-            if let Some(parent) = path.parent()
-                && !parent.as_os_str().is_empty()
-            {
-                File::open(parent)?.sync_all()?;
-            }
+            File::open(creation_dir(path))?.sync_all()?;
         }
+
         let bytes = std::fs::read(path)?;
-        let (_, valid_len) = decode_frames(&bytes);
+        // Interior damage / bad magic / unknown version refuse here.
+        let (_, valid_len) = decode_stream(&bytes)?;
+
+        let mut mutated = false;
         if valid_len < bytes.len() {
-            // Torn tail from a crash mid-write: truncate the damage so new
-            // frames append after the last whole one.
+            // Genuine tear (incomplete final frame or truncated header):
+            // truncate the damage so new frames append after the last
+            // whole one.
             file.set_len(valid_len as u64)?;
+            mutated = true;
+        }
+        if valid_len == 0 {
+            // Brand-new (or torn-at-creation) stream: write the versioned
+            // header.
+            let mut header = Vec::new();
+            encode_stream_header(&mut header);
+            (&file).write_all(&header)?;
+            mutated = true;
+        }
+        if mutated {
+            // F4: the repaired/initialized stream is durable BEFORE any
+            // replay can observe it.
             file.sync_data()?;
         }
         Ok(FileLedger {
@@ -84,7 +119,7 @@ impl Ledger for FileLedger {
         // Read from disk, not from this handle's buffers: replay is defined
         // as the crash-durable prefix, and only synced frames are on disk.
         let bytes = std::fs::read(&self.path)?;
-        let (records, _) = decode_frames(&bytes);
+        let (records, _) = decode_stream(&bytes)?;
         Ok(records)
     }
 
@@ -97,7 +132,7 @@ impl Ledger for FileLedger {
 mod tests {
     use super::*;
     use crate::ids::{CampaignConfigId, CohortId, EvidenceBatchId, ProposalId, Revision};
-    use crate::ledger::LedgerRecord;
+    use crate::ledger::{LedgerRecord, STREAM_HEADER, STREAM_VERSION};
 
     fn sample() -> Vec<LedgerRecord> {
         vec![
@@ -134,6 +169,13 @@ mod tests {
         drop(l);
         let l2 = FileLedger::open(&path).unwrap();
         assert_eq!(l2.replay().unwrap(), sample());
+        // The stream carries the versioned header.
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..4], b"HWAL");
+        assert_eq!(
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            STREAM_VERSION
+        );
     }
 
     #[test]
@@ -175,5 +217,78 @@ mod tests {
             l3.sync().unwrap();
             assert_eq!(l3.replay().unwrap(), sample());
         }
+    }
+
+    #[test]
+    fn torn_creation_is_repaired_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wal");
+        // A crash between creation and the header sync leaves a strict
+        // prefix of the header (including the empty file).
+        for cut in 0..STREAM_HEADER {
+            let full: Vec<u8> = {
+                let mut v = Vec::new();
+                crate::ledger::encode_stream_header(&mut v);
+                v
+            };
+            std::fs::write(&path, &full[..cut]).unwrap();
+            let mut l = FileLedger::open(&path).unwrap();
+            assert_eq!(l.replay().unwrap(), vec![], "cut at {cut}");
+            l.append(&sample()[0]).unwrap();
+            l.sync().unwrap();
+            assert_eq!(l.replay().unwrap(), sample()[..1]);
+        }
+    }
+
+    /// PR #124 F3 regression at the file level: the judge's flipped-byte
+    /// probe. Interior damage refuses to open — it must never silently
+    /// truncate 4 of 5 durable records and let recovery remint a committed
+    /// revision.
+    #[test]
+    fn interior_damage_refuses_to_open_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wal");
+        let mut l = FileLedger::open(&path).unwrap();
+        for r in sample() {
+            l.append(&r).unwrap();
+        }
+        l.sync().unwrap();
+        // Keep a handle from BEFORE the damage to exercise replay() too.
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[STREAM_HEADER + 14] ^= 0xff; // inside the first frame's payload
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(matches!(
+            FileLedger::open(&path),
+            Err(LedgerError::Corrupt { .. })
+        ));
+        assert!(matches!(l.replay(), Err(LedgerError::Corrupt { .. })));
+    }
+
+    /// PR #124 F10: a future format version is a typed refusal, not a
+    /// misparse or a repair.
+    #[test]
+    fn future_version_refuses_to_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wal");
+        drop(FileLedger::open(&path).unwrap());
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[4] = 9; // version 9
+        std::fs::write(&path, &bytes).unwrap();
+        match FileLedger::open(&path) {
+            Err(LedgerError::UnsupportedVersion { found, supported }) => {
+                assert_eq!(found, 9);
+                assert_eq!(supported, STREAM_VERSION);
+            }
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
+    }
+
+    /// PR #124 F8: a bare relative filename has `parent() == Some("")`;
+    /// the creation dirsync must target `"."`, not `""`.
+    #[test]
+    fn creation_dir_maps_empty_parent_to_cwd() {
+        assert_eq!(creation_dir(Path::new("wal")), Path::new("."));
+        assert_eq!(creation_dir(Path::new("a/wal")), Path::new("a"));
+        assert_eq!(creation_dir(Path::new("/tmp/wal")), Path::new("/tmp"));
     }
 }

@@ -48,9 +48,18 @@ binding public-API item from the spec exists with the specified semantics.
   (what `drain_ready` submits to the dataflow); `visible_frontier` = the
   largest prefix in which every revision's cohort is closed AND fully
   committed. `probe_drive` reads only at the visible frontier, so no
-  partial-cohort result can reach another proposal; a later cohort's frozen
-  view (captured durably at `open_cohort`) can therefore never include a
-  partial cohort.
+  partial-cohort result can reach another proposal.
+- **The full cohort barrier** (PR #124 FAM-COHORT ruling, option (a)):
+  `open_cohort` and `assign` refuse (`CohortBarrier`) while any earlier
+  cohort is not both closed and fully committed. Cohorts therefore run one
+  at a time over contiguous revision ranges, visibility flips
+  cohort-ATOMICALLY (the frontier only ever sits on a cohort boundary), and
+  a frozen view is a constant of the schedule — never a function of
+  completion arrival order, and never able to split a cohort's results
+  across the frontier. Replay validation enforces the same barrier on the
+  durable record stream. (Option (b) — cohort-atomic visibility with
+  cross-cohort pipelining — is the documented future relaxation if ever
+  needed; nothing in M2 required it.)
 - **`probe_drive` stalls as a typed error** (`FrontierStalled`), not a
   block: the coordinator is single-threaded, so waiting would deadlock.
 - **`Completion` carries the deterministic V-time/work `TerminalRecord`**
@@ -108,11 +117,16 @@ binding public-API item from the spec exists with the specified semantics.
 
 ## Known limitations
 
-- **Torn-tail rule truncates at the first invalid frame.** Mid-file rot is
-  indistinguishable from a torn tail and would silently truncate replay;
-  our writer can only tear the tail (whole-frame sync batches), so this is
-  the standard WAL trade-off. `FileLedger::open` repairs the tail so later
-  appends can't hide behind damage.
+- **WAL damage rules** (hardened per PR #124 FAM-WAL): the stream opens
+  with `HWAL` + a u32 format version (unknown version = typed
+  `UnsupportedVersion` refusal, F10); only a genuine tear — an incomplete
+  final frame or truncated header — is repaired (truncated away and
+  fsynced before any replay is exposed, F4); interior damage (checksum
+  failure on a complete frame, undecodable checksummed payload, or a
+  length field over the 1 MiB frame bound, F5) is a typed `Corrupt` error,
+  never a silent truncation (F3). The residual limitation: rot that
+  happens to mimic a tear exactly (truncating the physical tail of the
+  file) is indistinguishable from one by construction.
 - **`sync` durability is `File::sync_data`** (fsync). On macOS that does not
   issue `F_FULLFSYNC`; good enough for the portable gates and the crash
   model, and the production backing is `hm-bbx.4`'s anyway.

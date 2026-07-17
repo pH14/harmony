@@ -3,6 +3,8 @@ pub enum revision_coordinator::CoordError
 pub revision_coordinator::CoordError::Aborted
 pub revision_coordinator::CoordError::Aborted::reason: alloc::string::String
 pub revision_coordinator::CoordError::AlreadyInitialized
+pub revision_coordinator::CoordError::CohortBarrier
+pub revision_coordinator::CoordError::CohortBarrier::blocking: revision_coordinator::CohortId
 pub revision_coordinator::CoordError::CohortClosed(revision_coordinator::CohortId)
 pub revision_coordinator::CoordError::CommitConflict
 pub revision_coordinator::CoordError::CommitConflict::proposal: revision_coordinator::ProposalId
@@ -23,6 +25,9 @@ pub revision_coordinator::LedgerError::Corrupt
 pub revision_coordinator::LedgerError::Corrupt::detail: alloc::string::String
 pub revision_coordinator::LedgerError::Corrupt::offset: usize
 pub revision_coordinator::LedgerError::Io(std::io::error::Error)
+pub revision_coordinator::LedgerError::UnsupportedVersion
+pub revision_coordinator::LedgerError::UnsupportedVersion::found: u32
+pub revision_coordinator::LedgerError::UnsupportedVersion::supported: u32
 pub enum revision_coordinator::LedgerRecord
 pub revision_coordinator::LedgerRecord::Abort
 pub revision_coordinator::LedgerRecord::Abort::reason: alloc::string::String

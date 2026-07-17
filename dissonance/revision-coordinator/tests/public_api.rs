@@ -22,8 +22,11 @@ use std::process::Command;
 const PINNED_NIGHTLY: &str = "nightly-2026-06-16";
 const CRATE: &str = "revision-coordinator";
 
+// NOT `#[ignore]`d (PR #124 F12 ruling): the gate runs in the plain
+// `cargo nextest` suite as well as in the public-api CI job (which invokes
+// this crate without the `--ignored` filter). On a stable-only box the
+// tooling-absent branch below skips loudly instead of failing.
 #[test]
-#[ignore = "needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`"]
 fn public_api_matches_snapshot() {
     let toolchain = format!("+{PINNED_NIGHTLY}");
     let output = match Command::new("cargo")

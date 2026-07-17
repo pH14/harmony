@@ -125,6 +125,16 @@ pub enum CoordError {
     /// never reused or wrapped).
     #[error("id space exhausted")]
     IdExhausted,
+    /// `open_cohort`/`assign` refused: an earlier cohort is not yet both
+    /// closed and fully committed. Cohort visibility is cohort-ATOMIC — one
+    /// cohort runs at a time, so a frozen view is constant by construction
+    /// and can never split a cohort's results across the frontier
+    /// (PR #124 FAM-COHORT ruling, option (a): the full cohort barrier).
+    #[error("cohort barrier: {blocking:?} is not closed and fully committed")]
+    CohortBarrier {
+        /// The earliest cohort still holding the barrier.
+        blocking: CohortId,
+    },
 }
 
 /// Per-cohort bookkeeping.
@@ -196,6 +206,20 @@ impl Core {
             visible: 0,
             aborted: None,
         }
+    }
+
+    /// The earliest cohort not yet both closed and fully committed — the
+    /// cohort barrier (PR #124 FAM-COHORT, option (a)): while it exists, no
+    /// new cohort opens and no proposal mints, so cohorts run one at a
+    /// time, occupy contiguous revision ranges, and become visible
+    /// atomically. A frozen view is constant by construction: at open,
+    /// every minted revision is already visible.
+    fn barrier_blocker(&self, before: Option<CohortId>) -> Option<CohortId> {
+        self.cohorts
+            .iter()
+            .take_while(|(id, _)| before.is_none_or(|b| **id < b))
+            .find(|(_, c)| !(c.closed && c.fully_committed()))
+            .map(|(id, _)| *id)
     }
 
     fn open_cohort_unchecked(&mut self, cohort: CohortId, view: Revision) {
@@ -303,6 +327,12 @@ impl Core {
                     if cohort.get() != core.next_cohort {
                         return Err(corrupt(index, format!("non-dense cohort id {cohort:?}")));
                     }
+                    if let Some(blocking) = core.barrier_blocker(None) {
+                        return Err(corrupt(
+                            index,
+                            format!("cohort {cohort:?} opened across the barrier ({blocking:?})"),
+                        ));
+                    }
                     if view.get() != core.visible {
                         return Err(corrupt(
                             index,
@@ -332,6 +362,12 @@ impl Core {
                             return Err(corrupt(index, format!("mint under closed {cohort:?}")));
                         }
                         Some(_) => {}
+                    }
+                    if let Some(blocking) = core.barrier_blocker(Some(*cohort)) {
+                        return Err(corrupt(
+                            index,
+                            format!("mint under {cohort:?} across the barrier ({blocking:?})"),
+                        ));
                     }
                     core.mint_unchecked(*proposal, *revision, *cohort);
                 }
@@ -578,11 +614,18 @@ impl Coordinator {
     }
 
     /// Open a cohort, freezing its selector/archive view at the current
-    /// search-visible frontier. The frozen view can never include a partial
-    /// cohort: visibility only advances over closed, fully-committed
-    /// cohorts.
+    /// search-visible frontier. Refused ([`CoordError::CohortBarrier`])
+    /// while any earlier cohort is not both closed and fully committed —
+    /// the full cohort barrier (PR #124 FAM-COHORT, option (a)): cohorts
+    /// run one at a time over contiguous revision ranges and become visible
+    /// atomically, so the frozen view is constant by construction (at open,
+    /// every minted revision is already visible) and can never depend on
+    /// completion arrival order or split a cohort across the frontier.
     pub fn open_cohort(&mut self) -> Result<CohortId, CoordError> {
         self.ensure_live()?;
+        if let Some(blocking) = self.core.barrier_blocker(None) {
+            return Err(CoordError::CohortBarrier { blocking });
+        }
         if self.core.next_cohort == u64::MAX {
             return Err(CoordError::IdExhausted);
         }
@@ -609,13 +652,20 @@ impl Coordinator {
 
     /// Persist a proposal→`Revision` assignment and the cohort view BEFORE
     /// dispatch; never reuses a `Revision`. The record is durable (synced)
-    /// when this returns — the persist-then-dispatch handshake.
+    /// when this returns — the persist-then-dispatch handshake. Refused
+    /// ([`CoordError::CohortBarrier`]) while any earlier cohort is not both
+    /// closed and fully committed (unreachable through the public API once
+    /// `open_cohort` enforces the barrier, but held independently so a
+    /// hand-built or future caller cannot interleave cohorts either).
     pub fn assign(&mut self, cohort: CohortId) -> Result<PendingProposal, CoordError> {
         self.ensure_live()?;
         match self.core.cohorts.get(&cohort) {
             None => return Err(CoordError::UnknownCohort(cohort)),
             Some(c) if c.closed => return Err(CoordError::CohortClosed(cohort)),
             Some(_) => {}
+        }
+        if let Some(blocking) = self.core.barrier_blocker(Some(cohort)) {
+            return Err(CoordError::CohortBarrier { blocking });
         }
         if self.core.next_proposal == u64::MAX || self.core.next_revision == u64::MAX {
             return Err(CoordError::IdExhausted);

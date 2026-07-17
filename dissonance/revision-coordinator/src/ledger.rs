@@ -105,6 +105,16 @@ pub enum LedgerError {
     /// crash-recovery test model).
     #[error("ledger backend: {0}")]
     Backend(String),
+    /// The stream carries a format version this reader does not support
+    /// (PR #124 F10: refuse — typed — rather than misparse; the format is
+    /// load-bearing for `hm-bbx.4` the moment it builds on it).
+    #[error("unsupported ledger format version {found} (this reader supports {supported})")]
+    UnsupportedVersion {
+        /// The version the stream declares.
+        found: u32,
+        /// The version this reader writes and understands.
+        supported: u32,
+    },
 }
 
 /// Append-only, fsync-ordered record log. See the module docs for the
@@ -126,13 +136,35 @@ pub trait Ledger {
 }
 
 // ---------------------------------------------------------------------------
-// Frame codec (shared by the file ledger; MemLedger stores records directly).
+// Stream codec (shared by the file ledger; MemLedger stores records
+// directly). Hardened per the PR #124 FAM-WAL ruling: versioned header
+// (F10), interior-vs-tail damage distinction (F3), bounded decode (F5).
 // ---------------------------------------------------------------------------
 
+/// Stream magic: the first four bytes of every ledger stream.
+pub(crate) const STREAM_MAGIC: [u8; 4] = *b"HWAL";
+/// The format version this codec writes and understands. Bump on any frame
+/// or record-encoding change; an unknown version is a typed refusal
+/// ([`LedgerError::UnsupportedVersion`]), never a misparse.
+pub(crate) const STREAM_VERSION: u32 = 1;
+/// Stream header layout: `magic: 4 | version: u32 LE`.
+pub(crate) const STREAM_HEADER: usize = 8;
+
 /// Frame layout: `len: u32 LE | check: 8 bytes (BLAKE3(payload) prefix) |
-/// payload: canonical serde_json`. The checksum detects the torn tail a
-/// crash-mid-write can leave.
+/// payload: canonical serde_json`. The checksum distinguishes damage from
+/// data; the torn-tail rules live in [`decode_stream`].
 const FRAME_HEADER: usize = 4 + 8;
+
+/// Bounded decode limit (F5): the writer refuses to encode a payload larger
+/// than this, so a stream length field above it is damage by definition —
+/// the decoder never allocates or skips on an attacker/rot-controlled size.
+pub(crate) const MAX_FRAME_PAYLOAD: usize = 1 << 20;
+
+/// Append the stream header to `out`.
+pub(crate) fn encode_stream_header(out: &mut Vec<u8>) {
+    out.extend_from_slice(&STREAM_MAGIC);
+    out.extend_from_slice(&STREAM_VERSION.to_le_bytes());
+}
 
 /// Encode one record as a frame, appending to `out`.
 pub(crate) fn encode_frame(record: &LedgerRecord, out: &mut Vec<u8>) -> Result<(), LedgerError> {
@@ -140,51 +172,112 @@ pub(crate) fn encode_frame(record: &LedgerRecord, out: &mut Vec<u8>) -> Result<(
         offset: out.len(),
         detail: format!("encode: {e}"),
     })?;
-    let len = u32::try_from(payload.len()).map_err(|_| LedgerError::Corrupt {
-        offset: out.len(),
-        detail: "record over u32::MAX bytes".to_owned(),
-    })?;
+    if payload.len() > MAX_FRAME_PAYLOAD {
+        return Err(LedgerError::Corrupt {
+            offset: out.len(),
+            detail: format!(
+                "record encodes to {} bytes, over the {MAX_FRAME_PAYLOAD}-byte frame bound",
+                payload.len()
+            ),
+        });
+    }
+    // Infallible: MAX_FRAME_PAYLOAD < u32::MAX.
+    let len = payload.len() as u32;
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(&blake3::hash(&payload).as_bytes()[..8]);
     out.extend_from_slice(&payload);
     Ok(())
 }
 
-/// Decode all valid frames from `bytes`. Returns the records plus the byte
-/// length of the valid prefix. An incomplete or checksum-failing frame ends
-/// decoding cleanly (the torn-tail rule: our writer only ever syncs whole
-/// frames, so a partial or mangled frame can only be the tail a crash tore;
-/// mid-file rot is indistinguishable from a torn tail and also truncates —
-/// documented limitation).
-pub(crate) fn decode_frames(bytes: &[u8]) -> (Vec<LedgerRecord>, usize) {
+/// Decode a full ledger stream (header + frames). Returns the records plus
+/// the byte length of the valid prefix (for torn-tail repair).
+///
+/// Damage rules (F3 — interior damage is an ERROR, only a genuine tear
+/// truncates):
+///
+/// - A crash tears the *tail*: the writer appends whole sync batches, so a
+///   tear is an incomplete final frame (or a truncated header on a
+///   brand-new file). Those decode to `Ok` with the shorter valid prefix.
+/// - Everything else is interior damage and refuses with
+///   [`LedgerError::Corrupt`]: a checksum mismatch on a frame whose bytes
+///   are fully present, a checksummed-but-undecodable payload, or a length
+///   field over [`MAX_FRAME_PAYLOAD`] (the writer never produces one, so
+///   it cannot be a tear). Silent truncation here would drop durable
+///   records and remint committed revisions on recovery.
+pub(crate) fn decode_stream(bytes: &[u8]) -> Result<(Vec<LedgerRecord>, usize), LedgerError> {
+    if bytes.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+    if bytes.len() < STREAM_HEADER {
+        // A torn creation (crash between file creation and the header
+        // sync) is a strict prefix of the expected header; anything else
+        // is not a ledger.
+        let mut expected = Vec::with_capacity(STREAM_HEADER);
+        encode_stream_header(&mut expected);
+        return if expected.starts_with(bytes) {
+            Ok((Vec::new(), 0))
+        } else {
+            Err(LedgerError::Corrupt {
+                offset: 0,
+                detail: "not a ledger stream (bad partial header)".to_owned(),
+            })
+        };
+    }
+    if bytes[..4] != STREAM_MAGIC {
+        return Err(LedgerError::Corrupt {
+            offset: 0,
+            detail: "not a ledger stream (bad magic)".to_owned(),
+        });
+    }
+    // Infallible: length checked above.
+    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
+    if version != STREAM_VERSION {
+        return Err(LedgerError::UnsupportedVersion {
+            found: version,
+            supported: STREAM_VERSION,
+        });
+    }
+
     let mut records = Vec::new();
-    let mut at = 0usize;
+    let mut at = STREAM_HEADER;
     loop {
         let rest = &bytes[at..];
+        if rest.is_empty() {
+            break; // clean end
+        }
         if rest.len() < FRAME_HEADER {
-            break;
+            break; // torn tail: header cut mid-write
         }
         // Infallible: length checked above.
         let len_bytes: [u8; 4] = rest[..4].try_into().unwrap_or([0; 4]);
         let len = u32::from_le_bytes(len_bytes) as usize;
-        let Some(frame_end) = FRAME_HEADER.checked_add(len) else {
-            break;
-        };
+        if len > MAX_FRAME_PAYLOAD {
+            return Err(LedgerError::Corrupt {
+                offset: at,
+                detail: format!("frame length {len} over the {MAX_FRAME_PAYLOAD}-byte bound"),
+            });
+        }
+        let frame_end = FRAME_HEADER + len;
         if rest.len() < frame_end {
-            break; // torn tail: frame extends past the durable bytes
+            break; // torn tail: payload cut mid-write (len itself is intact)
         }
         let check = &rest[4..FRAME_HEADER];
         let payload = &rest[FRAME_HEADER..frame_end];
         if &blake3::hash(payload).as_bytes()[..8] != check {
-            break; // torn or rotten frame
+            return Err(LedgerError::Corrupt {
+                offset: at,
+                detail: "checksum mismatch on a complete frame (interior damage)".to_owned(),
+            });
         }
-        let Ok(record) = serde_json::from_slice::<LedgerRecord>(payload) else {
-            break; // checksummed but undecodable: treat as tail damage
-        };
+        let record =
+            serde_json::from_slice::<LedgerRecord>(payload).map_err(|e| LedgerError::Corrupt {
+                offset: at,
+                detail: format!("checksummed frame does not decode: {e}"),
+            })?;
         records.push(record);
         at += frame_end;
     }
-    (records, at)
+    Ok((records, at))
 }
 
 // ---------------------------------------------------------------------------
@@ -328,9 +421,8 @@ mod tests {
         assert_eq!(l.durable_len(), 1);
     }
 
-    #[test]
-    fn frame_codec_round_trips_and_tolerates_torn_tail() {
-        let records = vec![
+    fn sample_records() -> Vec<LedgerRecord> {
+        vec![
             LedgerRecord::Genesis {
                 config: CampaignConfigId::digest(b"cfg"),
             },
@@ -340,32 +432,121 @@ mod tests {
                 batch: EvidenceBatchId::digest(b"batch"),
                 terminal: TerminalRecord { moment: 7, work: 9 },
             },
-        ];
+        ]
+    }
+
+    fn sample_stream() -> (Vec<LedgerRecord>, Vec<u8>) {
+        let records = sample_records();
         let mut bytes = Vec::new();
+        encode_stream_header(&mut bytes);
         for r in &records {
             encode_frame(r, &mut bytes).unwrap();
         }
-        let (decoded, len) = decode_frames(&bytes);
+        (records, bytes)
+    }
+
+    #[test]
+    fn stream_codec_round_trips_and_tolerates_only_a_torn_tail() {
+        let (records, bytes) = sample_stream();
+        let (decoded, len) = decode_stream(&bytes).unwrap();
         assert_eq!(decoded, records);
         assert_eq!(len, bytes.len());
 
-        // Every truncation of the final frame decodes to exactly the prefix.
-        let (first, first_len) = {
+        // Every truncation of the FINAL frame is a legitimate tear: the
+        // decode yields exactly the prefix, never an error.
+        let first_len = {
             let mut one = Vec::new();
+            encode_stream_header(&mut one);
             encode_frame(&records[0], &mut one).unwrap();
-            (one.clone(), one.len())
+            one.len()
         };
         for cut in first_len..bytes.len() {
-            let (decoded, len) = decode_frames(&bytes[..cut]);
+            let (decoded, len) = decode_stream(&bytes[..cut]).unwrap();
             assert_eq!(decoded, records[..1], "cut at {cut}");
-            assert_eq!(len, first.len());
+            assert_eq!(len, first_len);
         }
 
-        // A flipped payload byte fails the checksum and ends decoding.
+        // A truncated header is a torn creation: empty, repairable.
+        for cut in 0..STREAM_HEADER {
+            let (decoded, len) = decode_stream(&bytes[..cut]).unwrap();
+            assert_eq!(decoded, vec![]);
+            assert_eq!(len, 0, "cut at {cut}");
+        }
+    }
+
+    /// PR #124 F3 regression (the judge's flipped-byte probe): interior
+    /// damage — a checksum failure on a frame whose bytes are all present —
+    /// must be a typed error. The old torn-tail rule silently dropped every
+    /// durable record after the flip, and recovery then reminted committed
+    /// revisions.
+    #[test]
+    fn interior_damage_is_an_error_not_a_truncation() {
+        let (_, bytes) = sample_stream();
+        // Flip one payload byte in the FIRST frame (records follow it).
+        let mut mangled = bytes.clone();
+        mangled[STREAM_HEADER + FRAME_HEADER + 2] ^= 0xff;
+        assert!(matches!(
+            decode_stream(&mangled),
+            Err(LedgerError::Corrupt { .. })
+        ));
+
+        // A flipped byte in the final, complete frame is interior damage
+        // too — the frame is fully present, so it cannot be a tear.
         let mut mangled = bytes.clone();
         let last = mangled.len() - 1;
         mangled[last] ^= 0xff;
-        let (decoded, _) = decode_frames(&mangled);
-        assert_eq!(decoded, records[..1]);
+        assert!(matches!(
+            decode_stream(&mangled),
+            Err(LedgerError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn unknown_version_and_bad_magic_are_typed_refusals() {
+        let (_, mut bytes) = sample_stream();
+        bytes[4] = 0x2a; // version 42
+        match decode_stream(&bytes) {
+            Err(LedgerError::UnsupportedVersion { found, supported }) => {
+                assert_eq!(found, 42);
+                assert_eq!(supported, STREAM_VERSION);
+            }
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
+
+        let (_, mut bytes) = sample_stream();
+        bytes[0] = b'X';
+        assert!(matches!(
+            decode_stream(&bytes),
+            Err(LedgerError::Corrupt { .. })
+        ));
+        // A short prefix that is NOT a prefix of the real header is not a
+        // torn creation either.
+        assert!(matches!(
+            decode_stream(b"XYZ"),
+            Err(LedgerError::Corrupt { .. })
+        ));
+    }
+
+    /// PR #124 F5: decode is bounded — a length field over the frame bound
+    /// is damage by definition (the writer refuses to produce one).
+    #[test]
+    fn oversized_length_field_is_corrupt_and_encode_is_bounded() {
+        let mut bytes = Vec::new();
+        encode_stream_header(&mut bytes);
+        bytes.extend_from_slice(&(MAX_FRAME_PAYLOAD as u32 + 1).to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 8]);
+        assert!(matches!(
+            decode_stream(&bytes),
+            Err(LedgerError::Corrupt { .. })
+        ));
+
+        let big = LedgerRecord::Abort {
+            reason: "x".repeat(MAX_FRAME_PAYLOAD + 1),
+        };
+        let mut out = Vec::new();
+        assert!(matches!(
+            encode_frame(&big, &mut out),
+            Err(LedgerError::Corrupt { .. })
+        ));
     }
 }

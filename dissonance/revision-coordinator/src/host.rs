@@ -11,6 +11,13 @@
 //! the submitted revision, then consolidated and canonically ordered before
 //! it can affect selection or serialized bytes.
 //!
+//! This is deliberately an ECHO program, not the production dataflow
+//! (PR #124 F2 ruling): it proves the coordination contract — probe
+//! barriers, frontier advancement, canonical reads — over the identity
+//! relation. `hm-bbx.4` replaces the graph inside this seam with the spike
+//! crate's proven relations; the coordinator's public surface and the
+//! ledger protocol do not change when it does.
+//!
 //! The worker is built with `now: None` — timely runs entirely without a
 //! wall-clock timer (no logging registry, no timer-based activations), so no
 //! nondeterministic clock exists in the dataflow at all.

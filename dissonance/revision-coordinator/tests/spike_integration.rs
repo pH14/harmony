@@ -202,9 +202,10 @@ enum Plan {
 }
 
 /// Drive one full coordination scenario over `k` batches: mint under
-/// `plan`, complete in `order` (an arbitrary permutation), optionally crash
-/// and recover after `crash_at` completions, and return the final
-/// probe-drive view.
+/// `plan`, complete in `order` (an arbitrary permutation, applied within
+/// each cohort phase — the PR #124 cohort barrier makes cohorts strictly
+/// sequential), optionally crash and recover after `crash_at` completions,
+/// and return the final probe-drive view.
 fn coordinate(
     batches: &[EvidenceBatchId],
     order: &[usize],
@@ -215,51 +216,56 @@ fn coordinate(
     let ledger = MemLedger::new();
     let mut c = Coordinator::genesis(Box::new(ledger.clone()), config()).unwrap();
 
-    let mut pendings: Vec<PendingProposal> = Vec::new();
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
     match plan {
-        Plan::Single => {
-            let cohort = c.open_cohort().unwrap();
-            for _ in 0..k {
-                pendings.push(c.assign(cohort).unwrap());
-            }
-            c.close_cohort(cohort).unwrap();
-        }
+        Plan::Single => ranges.push(0..k),
         Plan::Split => {
             let half = k.div_ceil(2);
-            let a = c.open_cohort().unwrap();
-            for _ in 0..half {
-                pendings.push(c.assign(a).unwrap());
-            }
-            c.close_cohort(a).unwrap();
-            let b = c.open_cohort().unwrap();
-            for _ in half..k {
-                pendings.push(c.assign(b).unwrap());
-            }
-            c.close_cohort(b).unwrap();
+            ranges.push(0..half);
+            ranges.push(half..k);
         }
     }
 
-    for (t, &pi) in order.iter().enumerate() {
-        if crash_at == Some(t) {
-            // Process death mid-campaign: recover from the durable ledger
-            // and re-learn the pending set (same ProposalIds, never fresh
-            // slots).
-            ledger.crash();
-            c = Coordinator::recover(&ledger).unwrap();
-            let still_pending = c.pending();
-            for p in &pendings {
-                let done = order[..t].contains(&((p.revision.get() - 1) as usize));
-                assert_eq!(still_pending.contains(p), !done);
-            }
+    let mut pendings: Vec<PendingProposal> = Vec::new();
+    let mut completed: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut t = 0usize; // global completion step, for the crash point
+    for range in &ranges {
+        let cohort = c.open_cohort().unwrap();
+        // The frozen view is constant by construction: everything before
+        // this cohort.
+        assert_eq!(
+            c.cohort_view(cohort),
+            Some(Revision::new(range.start as u64))
+        );
+        for _ in range.clone() {
+            pendings.push(c.assign(cohort).unwrap());
         }
-        let p = pendings[pi];
-        c.complete(Completion {
-            proposal: p.proposal,
-            batch: batches[pi],
-            terminal: terminal(p.revision.get()),
-        })
-        .unwrap();
-        c.drain_ready();
+        c.close_cohort(cohort).unwrap();
+
+        for &pi in order.iter().filter(|&&pi| range.contains(&pi)) {
+            if crash_at == Some(t) {
+                // Process death mid-campaign: recover from the durable
+                // ledger and re-learn the pending set (same ProposalIds,
+                // never fresh slots).
+                ledger.crash();
+                c = Coordinator::recover(&ledger).unwrap();
+                let still_pending = c.pending();
+                for p in &pendings {
+                    let idx = (p.revision.get() - 1) as usize;
+                    assert_eq!(still_pending.contains(p), !completed.contains(&idx));
+                }
+            }
+            let p = pendings[pi];
+            c.complete(Completion {
+                proposal: p.proposal,
+                batch: batches[pi],
+                terminal: terminal(p.revision.get()),
+            })
+            .unwrap();
+            completed.insert(pi);
+            c.drain_ready();
+            t += 1;
+        }
     }
 
     c.probe_drive(Revision::new(k as u64)).unwrap()
@@ -450,12 +456,25 @@ fn partial_cohort_stays_out_of_the_visible_input_log() {
         pendings.push(c.assign(a).unwrap());
     }
     c.close_cohort(a).unwrap();
+    // The barrier: cohort B cannot open until A is fully committed.
+    assert!(matches!(
+        c.open_cohort(),
+        Err(revision_coordinator::CoordError::CohortBarrier { blocking }) if blocking == a
+    ));
+    for (i, p) in pendings.iter().enumerate().take(half) {
+        c.complete(Completion {
+            proposal: p.proposal,
+            batch: batches[i],
+            terminal: terminal(p.revision.get()),
+        })
+        .unwrap();
+    }
     let b = c.open_cohort().unwrap();
     for _ in half..k {
         pendings.push(c.assign(b).unwrap());
     }
-    // Cohort B stays OPEN; complete everything.
-    for (i, p) in pendings.iter().enumerate() {
+    // Cohort B stays OPEN; complete all its members anyway.
+    for (i, p) in pendings.iter().enumerate().skip(half) {
         c.complete(Completion {
             proposal: p.proposal,
             batch: batches[i],

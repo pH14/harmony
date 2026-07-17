@@ -110,6 +110,12 @@ impl RefState {
                 .all(|&i| self.proposals[i].committed)
     }
 
+    /// The cohort barrier is clear: every existing cohort is closed and
+    /// fully committed, so a new cohort may open.
+    fn barrier_clear(&self) -> bool {
+        (0..self.cohorts.len()).all(|c| self.cohort_done(c))
+    }
+
     fn contiguous(&self) -> u64 {
         let mut n = 0;
         while n < self.proposals.len() && self.proposals[n].committed {
@@ -223,16 +229,9 @@ impl ReferenceStateMachine for RefMachine {
             .collect();
 
         let mut options: Vec<(u32, BoxedStrategy<Transition>)> = vec![
-            (3, Just(Transition::Open).boxed()),
             (2, Just(Transition::DrainProbe).boxed()),
             (2, Just(Transition::Crash).boxed()),
             (1, Just(Transition::Abort).boxed()),
-            (
-                1,
-                prop_oneof![Just(MemFault::Append), Just(MemFault::Sync)]
-                    .prop_map(|f| Transition::Faulted(FaultOp::Open, f))
-                    .boxed(),
-            ),
             (
                 1,
                 prop_oneof![Just(MemFault::Append), Just(MemFault::Sync)]
@@ -240,6 +239,17 @@ impl ReferenceStateMachine for RefMachine {
                     .boxed(),
             ),
         ];
+        // The cohort barrier (PR #124 FAM-COHORT): a new cohort may only
+        // open once every existing cohort is closed and fully committed.
+        if state.barrier_clear() {
+            options.push((3, Just(Transition::Open).boxed()));
+            options.push((
+                1,
+                prop_oneof![Just(MemFault::Append), Just(MemFault::Sync)]
+                    .prop_map(|f| Transition::Faulted(FaultOp::Open, f))
+                    .boxed(),
+            ));
+        }
         if !open_cohorts.is_empty() {
             let oc = open_cohorts.clone();
             options.push((
@@ -345,12 +355,14 @@ impl ReferenceStateMachine for RefMachine {
         match transition {
             Transition::DrainProbe | Transition::Crash => true,
             _ if state.aborted => false,
-            Transition::Open | Transition::Abort => true,
+            Transition::Open => state.barrier_clear(),
+            Transition::Abort => true,
             Transition::Close(i) | Transition::Assign(i) => open(i),
             Transition::Complete(i) => pending(i),
             Transition::Retry(i) => *i < state.proposals.len() && state.proposals[*i].committed,
             Transition::Faulted(op, _) => match op {
-                FaultOp::Open | FaultOp::Abort => true,
+                FaultOp::Open => state.barrier_clear(),
+                FaultOp::Abort => true,
                 FaultOp::Close(i) | FaultOp::Assign(i) => open(i),
                 FaultOp::Complete(i) => pending(i),
             },
@@ -537,26 +549,28 @@ proptest! {
         seed in any::<u64>(),
         crash_at in 0..64usize,
     ) {
-        // Deterministic completion permutation from the seed (splitmix-ish).
-        let n: usize = sizes.iter().sum();
-        let mut order: Vec<usize> = (0..n).collect();
-        let mut s = seed;
-        for i in (1..n).rev() {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            order.swap(i, (s >> 33) as usize % (i + 1));
-        }
-
-        // Op tape: open+assign+close per cohort, then completions in `order`.
+        // Op tape, barrier-shaped (PR #124 FAM-COHORT): each cohort opens,
+        // mints, closes, and fully completes (members permuted by the seed)
+        // before the next cohort may open.
         let mut log: Vec<Op> = Vec::new();
+        let mut s = seed;
+        let mut offset = 0usize;
         for (ci, &size) in sizes.iter().enumerate() {
             log.push(Op::Open);
             for _ in 0..size {
                 log.push(Op::Assign(ci));
             }
             log.push(Op::Close(ci));
+            // Within-cohort completion permutation (splitmix-ish).
+            let mut order: Vec<usize> = (offset..offset + size).collect();
+            for i in (1..size).rev() {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                order.swap(i, (s >> 33) as usize % (i + 1));
+            }
+            log.extend(order.iter().map(|&p| Op::Complete(p)));
+            offset += size;
         }
-        // Map: proposal index -> completion op (assign order == revision order).
-        log.extend(order.iter().map(|&p| Op::Complete(p)));
+        let n = offset;
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wal");

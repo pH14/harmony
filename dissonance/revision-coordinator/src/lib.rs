@@ -26,6 +26,17 @@
 //! (`hm-bbx.4` owns the evidence-ledger payloads) and never authors
 //! Differential relations (the merged `spikes/differential-lineage` crate
 //! defines the proven dataflow shapes it submits inputs to).
+//!
+//! **Scope of the in-crate dataflow** (PR #124 F2 ruling): the dataflow
+//! behind [`Coordinator::probe_drive`] is deliberately an *echo* program —
+//! the committed `(Revision, EvidenceBatchId)` input relation, consolidated,
+//! captured, and probed, nothing more. The probe-barrier read discipline,
+//! frontier mechanics, and input coordination it exercises are the
+//! production contract; the *relations* are not production relations.
+//! `hm-bbx.4` wires the production dataflow (the spike crate's proven
+//! shapes) behind this same coordination seam; until then the in-crate
+//! dataflow is the test harness for the coordinator, as the M2 integration
+//! tests demonstrate against the spike program itself.
 
 mod coordinator;
 mod file_ledger;

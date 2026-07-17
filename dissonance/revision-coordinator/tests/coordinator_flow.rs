@@ -80,17 +80,25 @@ fn out_of_order_completions_drain_contiguously() {
     );
 }
 
+/// The full cohort barrier (PR #124 FAM-COHORT ruling, option (a)):
+/// cohorts run one at a time, visibility flips cohort-atomically, and a
+/// frozen view is constant by construction.
 #[test]
-fn cohort_freeze_hides_partial_results() {
+fn cohort_barrier_makes_visibility_cohort_atomic() {
     let mut c = Coordinator::genesis(Box::new(MemLedger::new()), config()).unwrap();
     let a = c.open_cohort().unwrap();
     assert_eq!(c.cohort_view(a), Some(Revision::ZERO));
     let a1 = c.assign(a).unwrap();
     let a2 = c.assign(a).unwrap();
 
-    // A later cohort's frozen view excludes A entirely while A is partial.
-    let b = c.open_cohort().unwrap();
-    assert_eq!(c.cohort_view(b), Some(Revision::ZERO));
+    // Judge probe 1 (interleaved cohorts): a second cohort cannot open
+    // while A is not closed+fully committed, so no cohort's members can
+    // ever interleave with another's revisions — the watermark can never
+    // split a cohort across the frontier.
+    assert!(matches!(
+        c.open_cohort(),
+        Err(CoordError::CohortBarrier { blocking }) if blocking == a
+    ));
 
     c.complete(completion(a1)).unwrap();
     // Partial cohort: committed but not visible, even though contiguous.
@@ -99,18 +107,25 @@ fn cohort_freeze_hides_partial_results() {
     assert_eq!(view.rows, vec![]);
 
     c.close_cohort(a).unwrap();
-    // Closed but still partial (a2 uncommitted): still invisible.
+    // Closed but still partial (a2 uncommitted): still invisible, and the
+    // barrier still holds.
     assert_eq!(c.probe_drive(Revision::ZERO).unwrap().rows, vec![]);
+    assert!(matches!(
+        c.open_cohort(),
+        Err(CoordError::CohortBarrier { blocking }) if blocking == a
+    ));
 
     c.complete(completion(a2)).unwrap();
-    // Closed + fully committed: both members become visible atomically.
+    // Closed + fully committed: both members become visible ATOMICALLY.
     let view = c.probe_drive(Revision::new(2)).unwrap();
     assert_eq!(view.frontier, Revision::new(2));
     assert_eq!(view.rows.len(), 2);
 
-    // A cohort opened now freezes the post-A view.
-    let d = c.open_cohort().unwrap();
-    assert_eq!(c.cohort_view(d), Some(Revision::new(2)));
+    // Judge probe 2 (frozen-view motion): the next cohort can only open
+    // now, so its frozen view is the whole prior campaign — a constant of
+    // the schedule, never a function of completion arrival order.
+    let b = c.open_cohort().unwrap();
+    assert_eq!(c.cohort_view(b), Some(Revision::new(2)));
 }
 
 #[test]
@@ -273,12 +288,12 @@ fn golden_encoded_projection() {
     let a = c.open_cohort().unwrap();
     let p1 = c.assign(a).unwrap();
     let p2 = c.assign(a).unwrap();
-    let b = c.open_cohort().unwrap();
-    let p3 = c.assign(b).unwrap();
     c.complete(completion(p2)).unwrap();
-    c.complete(completion(p3)).unwrap();
     c.complete(completion(p1)).unwrap();
     c.close_cohort(a).unwrap();
+    let b = c.open_cohort().unwrap();
+    let p3 = c.assign(b).unwrap();
+    c.complete(completion(p3)).unwrap();
     c.close_cohort(b).unwrap();
 
     let view = c.probe_drive(Revision::new(3)).unwrap();
