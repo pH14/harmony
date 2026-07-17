@@ -42,3 +42,9 @@ spikes/*
 # wins). Build artifacts are re-ignored by the spike's own .gitignore.
 !spikes/differential-lineage
 !spikes/differential-lineage/**
+
+# SPIKE(amd-epyc): the AMD vendor spike (docs/AMD-EPYC.md, tasks/123) tracks its
+# apparatus AND its stage evidence (overrides spikes/* and *.log above; last match
+# wins). Build artifacts are re-ignored by the spike's own .gitignore.
+!spikes/amd-epyc
+!spikes/amd-epyc/**
