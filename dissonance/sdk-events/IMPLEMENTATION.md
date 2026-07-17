@@ -216,3 +216,103 @@ Differential epic (`hm-bbx`).
   `Deserialize` removal from `SdkEvent`/`SdkSchema` is not a snapshot line (the
   snapshot runs at `-sss`, which omits auto-derived impls) and is instead enforced by
   the compile-time bound above. The legacy compat surface is unchanged.
+
+---
+
+## Follow-up batch (task 126 — `hm-jyj`, `hm-b2g`, `hm-ynt`)
+
+Three `sdk-events` follow-ups parked from the PR #120 review, landed as one
+crate-scoped batch. All are ingress-strictness / contract corrections on the decode
+boundary; none change the public API (the `tests/public-api.txt` snapshot is
+unchanged) or how **well-formed** input decodes (every prior golden still passes).
+
+### `hm-jyj` — malformed setup status (already shipped in `hm-bbx.1`)
+
+**No code change.** The F2 fix (`decode_setup` rejects a present-but-non-string
+`status` and preserves the frame raw, mirroring `site_of`) and its hostile-input
+test (`tests/load_validation.rs::f2_present_but_non_string_setup_status_stays_raw`,
+on `{"antithesis_setup":{"status":7}}`) both merged **inside** PR #120 before the
+bead was cut — the reviewer's park snapshot predated the fix. Verified in place
+(`src/antithesis.rs::decode_setup`; the guard is also documented at the top of this
+file). The bead closes as already-resolved.
+
+### `hm-b2g` — four ingress-strictness parks (PR #120 r12)
+
+Each tightens a spot where malformed ingress could mint *credible* normalized
+evidence instead of staying raw / erroring. All follow the same present-vs-absent
+discipline the merged r6–r11 fixes established (`site_of`: an absent field defaults,
+a present-but-malformed field rejects).
+
+1. **v2 assertion disposition guard was silently skipped** (`src/binary.rs::decode_assert`).
+   `parse_v2` never populated `assert_types` (a v2 catalog declares no verb), so the
+   disposition-vs-declaration guard — which for v1 keeps a kind-inconsistent firing
+   raw — did nothing for v2: a `MustHit` point accepted a `DISP_VIOLATION` and a
+   `MustNotHit` point a `DISP_HIT`. Fix: rather than fabricate a verb for the event
+   payload (a v2 point genuinely has none — reported `assert_type` stays `None`),
+   the guard now *also* reads the declared **expectation** from the schema entry
+   (`MustHit` ⇒ hits only, `MustNotHit` ⇒ violations only). This is consistent with,
+   and subsumed by, the existing verb check on the v1 path, so v1 is unaffected.
+2. **Malformed message fell back to the site `id` as property identity**
+   (`src/antithesis.rs::property_identity`). A present-but-non-string `message`
+   silently fell through to the `id`, letting a corrupt record masquerade as a
+   well-formed property keyed by its site id. `property_identity` now returns
+   `Result<Option<String>, ()>`: an absent field defaults (message→id fallback
+   preserved), a present-but-non-string `message` (or fallback `id`) rejects → raw.
+3. **Unsupported verb / malformed reachability defaulted instead of rejecting**
+   (`src/antithesis.rs::assert_type`). A `"reachability"` with a non-`Unreachable`
+   `display_type` defaulted to `Reachable` — silently dropping a `MustNotHit`
+   expectation — and an unknown verb yielded `None` yet still normalized.
+   `assert_type` now returns `Result<Option<AssertType>, ()>`: absent ⇒ `Ok(None)`
+   (a verb-less occurrence, unchanged), an **exactly** supported verb/display combo
+   ⇒ `Ok(Some(..))`, and any present-but-unsupported combo (unknown string,
+   non-string field, `reachability` without an exact `Reachable`/`Unreachable`
+   display) ⇒ `Err(())` → raw.
+4. **Valid catalog magic but a truncated version byte was silently emptied**
+   (`src/binary.rs::parse_declaration`). An `event_id == 0` record carrying the
+   `SDKC` magic *is* a declaration; truncated before the version byte it returned an
+   empty v1 schema, erasing every never-fired point it declared. It now returns a
+   typed `MalformedLength{ context: "catalog version" }`, consistent with the strict
+   field reads inside `parse_v1`/`parse_v2`. A record whose magic is **absent** stays
+   lenient (not a recognizable catalog) — that distinction is pinned by test.
+
+New hostile-input tests: `tests/normalize_binary.rs` gains
+`v2_assert_firing_disposition_must_match_the_declared_expectation` (all four
+expectation×disposition combos) and
+`a_valid_magic_catalog_truncated_before_its_version_is_malformed_not_empty`;
+`tests/normalize_antithesis.rs` gains
+`a_present_non_string_message_keeps_the_record_raw_not_id_derived` and
+`an_unsupported_or_malformed_assert_verb_keeps_the_record_raw`.
+
+### `hm-ynt` — SDK event Moment is a V-time anchor lower bound
+
+The runtime skew (an SDK event stamped with the `run_until` anchor rather than the
+exact doorbell-hypercall emission `Moment`; ~27 frames/stamp on SMB) is fixed at the
+**spine** (vmm-core, at hypercall handling) — **outside this crate's surface**. Task
+126 scopes the `sdk-events` half to the *contract*: an `SdkEvent`'s `moment` is a
+**lower bound** on emission, never the emission instant, and consumers must localize
+by `ordinal` (the rollout-local SDK-vector position), never by `moment`. The
+`SdkEvent::moment` doc is now the authoritative statement of that contract (it was a
+placeholder pointing at the open bug), spelling out the two consequences: order and
+any included-count cut are by `ordinal` (never `moment`), and `(event, moment)` as an
+exact address inherits the anchor skew.
+
+- **No wire/behaviour change** — the crate already assigns `ordinal` by source-vector
+  position and never orders or cuts by `moment` (the tasks/127 seal cut is by
+  SDK-vector prefix, so this fix introduces no Moment-as-cut reasoning). The stamped
+  value is untouched, so the `StreamCommitment` digest is **hash-neutral**; tightening
+  the stamp to the exact emission `Moment` would be an observable, versioned change and
+  is deliberately left to the spine. **Escalation criterion (spec) not met**: nothing
+  here alters a wire contract other crates depend on.
+- **GLOSSARY**: uses the ruled `Moment` axis vocabulary; "anchor lower bound" is a
+  property of the stamp, not a new shared term, so no GLOSSARY edit (and `docs/` is
+  out of this crate's surface).
+- Pinned by `tests/normalize_antithesis.rs::events_sharing_an_anchor_moment_are_ordered_by_ordinal_not_moment`.
+
+### Gates (all green, Mac-local)
+
+`cargo build / nextest / clippy -D warnings / fmt / deny -p sdk-events` — **150**
+tests pass (145 prior + 5 new), plus the `--ignored` `public_api` snapshot gate
+(`cargo public-api`, pinned nightly): **no surface drift**. No `unsafe` in the crate,
+so the Miri bar does not apply. The `hm-bbx.1` re-decode-and-compare /
+`StreamCommitment` integrity probes remain green (artifact-integrity guarantees not
+regressed).

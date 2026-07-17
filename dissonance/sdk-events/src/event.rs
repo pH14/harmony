@@ -180,10 +180,29 @@ pub enum Payload {
 /// `Deserialize` here would let a persisted event bypass that coherence check.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SdkEvent {
-    /// The V-time anchor this event surfaced at. Per the open issue `hm-ynt`, an
-    /// SDK event `Moment` is a V-time-anchor **lower bound**, not necessarily the
-    /// exact emission `Moment`; this boundary carries it through faithfully and
-    /// neither tightens nor loosens that contract.
+    /// The **V-time anchor lower bound** this event surfaced at — a point on the
+    /// `Moment` axis, **not** the emission instant of the doorbell hypercall that
+    /// produced the record. An SDK event is drained at a `run_until` anchor, which
+    /// quantizes the true emission `Moment` *up* to that anchor (a skew of ~27 frames
+    /// per stamp was observed on the SMB workload). This boundary carries the stamp
+    /// through faithfully and neither tightens nor loosens it: the contract is that an
+    /// `SdkEvent`'s `moment` is a **lower bound** on the emission — usable for coarse
+    /// localization, never read as the exact emission instant.
+    ///
+    /// Consequences a consumer must honor:
+    /// - **Order, and any included-count cut, are by [`ordinal`](SdkEvent::ordinal)**
+    ///   — the rollout-local SDK-vector position — never by `moment`. Distinct events
+    ///   may share one anchor `moment`; the `ordinal` is the total order and the cut
+    ///   coordinate, the `moment` is neither.
+    /// - Treating `(event, moment)` as an exact address (event-index targeting,
+    ///   resolution `run_to`, logtmpl correlation) inherits the anchor skew and must
+    ///   either account for it (a calibration pass, as the film gate does) or work in
+    ///   ordinal space.
+    ///
+    /// Tightening the stamp to the exact emission `Moment` is a spine concern (at the
+    /// hypercall-handling exit), above this data boundary; it would be an observable,
+    /// versioned change to the persisted stamp (see the decoder-pinning invariant in
+    /// the crate root), so it is never done implicitly here.
     pub moment: Moment,
     /// The rollout-local **source ordinal**: the event's persisted vector position.
     /// Contractual within this source (per [`OrderingScope`](crate::OrderingScope));

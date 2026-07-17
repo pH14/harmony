@@ -278,6 +278,20 @@ fn v2_state(local: u32, name: &str, op: UpdateOp) -> DeclaredPoint {
     }
 }
 
+/// A v2 assertion point. A v2 catalog carries no verb, only an `expectation`, which
+/// is what must constrain admissible dispositions on the firing path.
+fn v2_assert(local: u32, name: &str, expectation: Expectation) -> DeclaredPoint {
+    DeclaredPoint {
+        namespace: NS_ASSERT,
+        local,
+        name: name.to_string(),
+        classification: Classification::Occurrence,
+        value_shape: None,
+        base_op: None,
+        expectation: Some(expectation),
+    }
+}
+
 #[test]
 fn v2_set_max_min_declarations_round_trip_before_firing() {
     let points = vec![
@@ -412,6 +426,50 @@ fn v2_min_accumulate_require_a_declaration_at_the_firing_coordinate() {
             value: 9
         }
     );
+}
+
+#[test]
+fn v2_assert_firing_disposition_must_match_the_declared_expectation(/* hm-b2g (1) */) {
+    // A v2 catalog declares no verb, only an expectation. The disposition guard must
+    // still fire from it: a `MustHit` point (sometimes/reachable) emits only HITs and
+    // a `MustNotHit` point (unreachable) only VIOLATIONs. A contradicting disposition
+    // is a forged/malformed firing the guest would never emit — it stays raw rather
+    // than minting credible normalized evidence (before this fix `parse_v2` left
+    // `assert_types` empty, so the guard was silently skipped and a MustHit point
+    // accepted a VIOLATION and a MustNotHit point a HIT).
+    let cases = [
+        // (declared expectation, firing disposition, decodes-as-assertion?)
+        (Expectation::MustHit, DISP_HIT, true),
+        (Expectation::MustHit, DISP_VIOLATION, false), // was wrongly accepted
+        (Expectation::MustNotHit, DISP_VIOLATION, true),
+        (Expectation::MustNotHit, DISP_HIT, false), // was wrongly accepted
+    ];
+    for (expectation, disp, decodes) in cases {
+        let decl = encode_ok(&[v2_assert(3, "prop", expectation)]);
+        let raw = vec![
+            at(0, 0, decl),
+            at(5, event_id(NS_ASSERT, 3), assert_firing(disp, b"detail")),
+        ];
+        let n = decode_binary(&raw).expect("decodes totally");
+        match (&n.events[0].payload, decodes) {
+            (
+                Payload::Assertion {
+                    assert_type,
+                    condition,
+                },
+                true,
+            ) => {
+                // v2 carries no verb, so the reported verb is None; only the
+                // expectation constrained admissibility.
+                assert_eq!(*assert_type, None, "v2 declares no verb");
+                assert_eq!(*condition, Some(disp == DISP_HIT));
+            }
+            (Payload::Unknown, false) => {}
+            (other, _) => {
+                panic!("{expectation:?} + disp {disp}: expected decodes={decodes}, got {other:?}")
+            }
+        }
+    }
 }
 
 #[test]
@@ -919,6 +977,42 @@ fn a_garbled_header_is_lenient_not_an_error() {
     let n = decode_binary(&raw).expect("lenient");
     assert!(n.schema.is_empty());
     assert_eq!(n.events.len(), 1);
+}
+
+#[test]
+fn a_valid_magic_catalog_truncated_before_its_version_is_malformed_not_empty(/* hm-b2g (4) */) {
+    // An `event_id == 0` record carrying the valid `SDKC` magic IS a declaration.
+    // Truncated before the version byte, it must be a typed MalformedLength — NOT a
+    // silently-empty v1 schema, which would erase every never-fired point the catalog
+    // declared. (Contrast `a_garbled_header_is_lenient_not_an_error`: there the magic
+    // itself is absent, so the record is not a recognizable catalog and stays lenient.)
+    let magic_only = CATALOG_MAGIC.to_le_bytes().to_vec(); // exactly the 4 magic bytes
+    let err = decode_binary(&[at(0, 0, magic_only)])
+        .expect_err("valid magic but no version byte must fail, not empty");
+    assert!(
+        matches!(
+            err,
+            SdkError::MalformedLength {
+                context: "catalog version",
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+
+    // And a firing after such a declaration must not slip through under a fabricated
+    // empty schema — the whole stream fails.
+    let raw = vec![
+        at(0, 0, CATALOG_MAGIC.to_le_bytes().to_vec()),
+        at(1, event_id(NS_STATE, 1), state_firing(STATE_SET, 7)),
+    ];
+    assert!(matches!(
+        decode_binary(&raw),
+        Err(SdkError::MalformedLength {
+            context: "catalog version",
+            ..
+        })
+    ));
 }
 
 // --- unknown data is preserved raw, and decode is total ----------------------

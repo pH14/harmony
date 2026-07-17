@@ -505,6 +505,93 @@ fn a_present_non_string_site_id_keeps_the_record_raw() {
 }
 
 #[test]
+fn a_present_non_string_message_keeps_the_record_raw_not_id_derived(/* hm-b2g (2) */) {
+    // A present-but-non-string `message` is malformed. It must NOT silently fall
+    // back to the `id` as the aggregated property identity (which would let a
+    // corrupt record masquerade as a well-formed property keyed by its site id);
+    // the whole record is preserved raw (mirrors the malformed-`id` discipline).
+    for bad_message in ["7", "true", "null", "[1]", "{}"] {
+        let json = format!(
+            r#"{{"antithesis_assert":{{"assert_type":"always","condition":true,"message":{bad_message},"id":"prop-x"}}}}"#
+        );
+        let n = decode_antithesis(&[rec(1, &json)]).expect("decodes");
+        assert_eq!(
+            n.events[0].payload,
+            Payload::Unknown,
+            "non-string message `{bad_message}` (even with a valid id) must stay raw"
+        );
+        assert!(
+            n.schema.is_empty(),
+            "a malformed message mints no id-derived property entry"
+        );
+    }
+
+    // The same holds for numeric guidance: a malformed message keeps it raw rather
+    // than falling back to the id as the guidance property.
+    let guidance = r#"{"antithesis_guidance":{"guidance_type":"numeric","maximize":true,"message":7,"id":"g","guidance_data":1}}"#;
+    let n = decode_antithesis(&[rec(1, guidance)]).expect("decodes");
+    assert_eq!(n.events[0].payload, Payload::Unknown);
+    assert!(n.schema.is_empty());
+
+    // A genuinely absent message still falls back to the string `id` (the defensive
+    // fallback the contract preserves) — distinct from the malformed case above.
+    let absent = r#"{"antithesis_assert":{"assert_type":"always","condition":true,"id":"prop-x"}}"#;
+    let n = decode_antithesis(&[rec(1, absent)]).expect("decodes");
+    assert_eq!(n.events[0].id, ObservationId::Property("prop-x".into()));
+}
+
+#[test]
+fn an_unsupported_or_malformed_assert_verb_keeps_the_record_raw(/* hm-b2g (3) */) {
+    // A present `assert_type` that is not an exactly-supported verb — an unknown
+    // string, a non-string value, or a `reachability` whose `display_type` is not
+    // exactly `Reachable`/`Unreachable` — is malformed. The decoder must keep the
+    // frame raw rather than mint an assertion with a `None` verb (or default a
+    // reachability firing to `Reachable`, silently dropping a MustNotHit).
+    let raw_frames = [
+        // unknown verb string
+        r#"{"antithesis_assert":{"assert_type":"maybe","condition":true,"message":"m"}}"#,
+        // non-string assert_type
+        r#"{"antithesis_assert":{"assert_type":7,"condition":true,"message":"m"}}"#,
+        // reachability with an absent display_type (the old default-to-Reachable hole)
+        r#"{"antithesis_assert":{"assert_type":"reachability","condition":false,"message":"m"}}"#,
+        // reachability with an unrecognized display_type
+        r#"{"antithesis_assert":{"assert_type":"reachability","display_type":"Somewhere","condition":false,"message":"m"}}"#,
+        // reachability with a non-string display_type
+        r#"{"antithesis_assert":{"assert_type":"reachability","display_type":7,"condition":false,"message":"m"}}"#,
+    ];
+    for json in raw_frames {
+        let n = decode_antithesis(&[rec(1, json)]).expect("decodes");
+        assert_eq!(
+            n.events[0].payload,
+            Payload::Unknown,
+            "`{json}` must stay raw, not mint a defaulted/None-verb assertion"
+        );
+        assert!(
+            n.schema.is_empty(),
+            "an unsupported verb mints no schema entry: `{json}`"
+        );
+    }
+
+    // The exactly-supported reachability combos still normalize to their verb —
+    // `Reachable` no longer arrives by defaulting, only from the exact display token.
+    for (display, expected) in [
+        ("Reachable", AssertType::Reachable),
+        ("Unreachable", AssertType::Unreachable),
+    ] {
+        let json = format!(
+            r#"{{"antithesis_assert":{{"assert_type":"reachability","display_type":"{display}","condition":true,"message":"m"}}}}"#
+        );
+        let n = decode_antithesis(&[rec(1, &json)]).expect("decodes");
+        match n.events[0].payload {
+            Payload::Assertion { assert_type, .. } => {
+                assert_eq!(assert_type, Some(expected), "display `{display}`")
+            }
+            ref other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[test]
 fn a_malformed_setup_wrapper_does_not_fabricate_lifecycle_evidence() {
     // A scalar/null setup wrapper must not normalize to a setup_complete occurrence
     // via field defaults.
@@ -547,6 +634,38 @@ fn a_malformed_assert_or_guidance_wrapper_is_preserved_raw() {
         );
         assert!(n.schema.is_empty());
     }
+}
+
+#[test]
+fn events_sharing_an_anchor_moment_are_ordered_by_ordinal_not_moment(/* hm-ynt */) {
+    // An SDK event's `Moment` is a V-time *anchor lower bound*, not the emission
+    // instant: several records drained at one `run_until` anchor share that Moment.
+    // The total order and the included-count cut coordinate is the `ordinal` (the
+    // rollout-local SDK-vector position), never the Moment — so distinct events at
+    // one anchor get distinct, contiguous ordinals and the anchor never collapses
+    // or reorders them.
+    let anchor = 5; // one shared anchor Moment for every record
+    let records = [
+        r#"{"antithesis_assert":{"assert_type":"sometimes","condition":true,"message":"a"}}"#,
+        r#"{"antithesis_assert":{"assert_type":"sometimes","condition":true,"message":"b"}}"#,
+        r#"{"antithesis_assert":{"assert_type":"sometimes","condition":true,"message":"c"}}"#,
+    ]
+    .map(|j| rec(anchor, j));
+    let n = decode_antithesis(&records).expect("decodes");
+
+    assert_eq!(n.events.len(), 3);
+    for (i, ev) in n.events.iter().enumerate() {
+        assert_eq!(ev.moment, Moment(anchor), "all share the one anchor Moment");
+        assert_eq!(
+            ev.ordinal, i as u64,
+            "ordinal is the total order — contiguous, source-vector position"
+        );
+    }
+    // Identity is by message, in SDK-vector order — the shared Moment carries no
+    // ordering weight.
+    assert_eq!(n.events[0].id, ObservationId::Property("a".into()));
+    assert_eq!(n.events[1].id, ObservationId::Property("b".into()));
+    assert_eq!(n.events[2].id, ObservationId::Property("c".into()));
 }
 
 proptest! {
