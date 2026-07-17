@@ -117,16 +117,22 @@ binding public-API item from the spec exists with the specified semantics.
 
 ## Known limitations
 
-- **WAL damage rules** (hardened per PR #124 FAM-WAL): the stream opens
-  with `HWAL` + a u32 format version (unknown version = typed
-  `UnsupportedVersion` refusal, F10); only a genuine tear — an incomplete
-  final frame or truncated header — is repaired (truncated away and
-  fsynced before any replay is exposed, F4); interior damage (checksum
-  failure on a complete frame, undecodable checksummed payload, or a
-  length field over the 1 MiB frame bound, F5) is a typed `Corrupt` error,
-  never a silent truncation (F3). The residual limitation: rot that
-  happens to mimic a tear exactly (truncating the physical tail of the
-  file) is indistinguishable from one by construction.
+- **WAL damage rules** (hardened per PR #124 FAM-WAL + the VERIFY event):
+  the stream opens with `HWAL` + a u32 format version (unknown version =
+  typed `UnsupportedVersion` refusal, F10). Frames are
+  `len | len_check | payload_check | payload` — the length is
+  independently verified (V1), so a tear may only be declared on a
+  VERIFIED length: length prefix cut short → tear; verified length with
+  incomplete payload → tear; everything else (length check failing with
+  bytes present — the past-EOF corruption that used to masquerade as a
+  tear and truncate committed records — over-bound length F5, payload
+  check failing on a complete frame, undecodable payload) is a typed
+  `Corrupt`, never silent truncation (F3). `FileLedger::open` fsyncs
+  UNCONDITIONALLY before returning (F4 + V2: per-inode fsync also flushes
+  a dead writer's page-cache-only frames, so the clean path has the same
+  barrier as the repair path). The residual limitation: rot that exactly
+  mimics a tear (physically truncating the file tail behind a verified
+  length) is indistinguishable from one by construction.
 - **`sync` durability is `File::sync_data`** (fsync). On macOS that does not
   issue `F_FULLFSYNC`; good enough for the portable gates and the crash
   model, and the production backing is `hm-bbx.4`'s anyway.

@@ -150,10 +150,16 @@ pub(crate) const STREAM_VERSION: u32 = 1;
 /// Stream header layout: `magic: 4 | version: u32 LE`.
 pub(crate) const STREAM_HEADER: usize = 8;
 
-/// Frame layout: `len: u32 LE | check: 8 bytes (BLAKE3(payload) prefix) |
-/// payload: canonical serde_json`. The checksum distinguishes damage from
-/// data; the torn-tail rules live in [`decode_stream`].
-const FRAME_HEADER: usize = 4 + 8;
+/// Frame layout: `len: u32 LE | len_check: 4 bytes (BLAKE3(len) prefix) |
+/// payload_check: 8 bytes (BLAKE3(payload) prefix) | payload: canonical
+/// serde_json`. The LENGTH is independently verifiable (PR #124 VERIFY V1):
+/// without `len_check`, a corrupted in-bound length landing past
+/// end-of-stream is indistinguishable from a torn tail, and recovery would
+/// physically truncate committed records and re-mint their revisions. The
+/// checks distinguish damage from data; the tear rules live in
+/// [`decode_stream`].
+const LEN_PREFIX: usize = 4 + 4;
+const FRAME_HEADER: usize = LEN_PREFIX + 8;
 
 /// Bounded decode limit (F5): the writer refuses to encode a payload larger
 /// than this, so a stream length field above it is damage by definition —
@@ -183,7 +189,9 @@ pub(crate) fn encode_frame(record: &LedgerRecord, out: &mut Vec<u8>) -> Result<(
     }
     // Infallible: MAX_FRAME_PAYLOAD < u32::MAX.
     let len = payload.len() as u32;
-    out.extend_from_slice(&len.to_le_bytes());
+    let len_bytes = len.to_le_bytes();
+    out.extend_from_slice(&len_bytes);
+    out.extend_from_slice(&blake3::hash(&len_bytes).as_bytes()[..4]);
     out.extend_from_slice(&blake3::hash(&payload).as_bytes()[..8]);
     out.extend_from_slice(&payload);
     Ok(())
@@ -192,18 +200,22 @@ pub(crate) fn encode_frame(record: &LedgerRecord, out: &mut Vec<u8>) -> Result<(
 /// Decode a full ledger stream (header + frames). Returns the records plus
 /// the byte length of the valid prefix (for torn-tail repair).
 ///
-/// Damage rules (F3 — interior damage is an ERROR, only a genuine tear
-/// truncates):
+/// Damage rules (F3 + VERIFY V1 — interior damage is an ERROR, only a
+/// genuine tear truncates, and a tear may only be declared on a VERIFIED
+/// length):
 ///
-/// - A crash tears the *tail*: the writer appends whole sync batches, so a
-///   tear is an incomplete final frame (or a truncated header on a
-///   brand-new file). Those decode to `Ok` with the shorter valid prefix.
-/// - Everything else is interior damage and refuses with
-///   [`LedgerError::Corrupt`]: a checksum mismatch on a frame whose bytes
-///   are fully present, a checksummed-but-undecodable payload, or a length
-///   field over [`MAX_FRAME_PAYLOAD`] (the writer never produces one, so
-///   it cannot be a tear). Silent truncation here would drop durable
-///   records and remint committed revisions on recovery.
+/// - **Tear** (decodes to `Ok` with the shorter valid prefix): the length
+///   prefix itself cut short, or a verified length whose payload (or
+///   payload check) is incomplete — the shapes a crash mid-`write_all`
+///   can actually produce. A truncated stream header on a brand-new file
+///   is a torn creation.
+/// - **Everything else refuses** with [`LedgerError::Corrupt`]: a length
+///   check that fails with its bytes present (VERIFY V1 — without it, a
+///   corrupted in-bound length landing past end-of-stream reads as a tear
+///   and recovery physically truncates committed records), a length over
+///   [`MAX_FRAME_PAYLOAD`], a payload check that fails on a complete
+///   frame, or a checksummed-but-undecodable payload. Silent truncation
+///   here would drop durable records and remint committed revisions.
 pub(crate) fn decode_stream(bytes: &[u8]) -> Result<(Vec<LedgerRecord>, usize), LedgerError> {
     if bytes.is_empty() {
         return Ok((Vec::new(), 0));
@@ -245,11 +257,22 @@ pub(crate) fn decode_stream(bytes: &[u8]) -> Result<(Vec<LedgerRecord>, usize), 
         if rest.is_empty() {
             break; // clean end
         }
-        if rest.len() < FRAME_HEADER {
-            break; // torn tail: header cut mid-write
+        if rest.len() < LEN_PREFIX {
+            break; // tear: the length prefix itself was cut mid-write
         }
+        // The length is independently verified BEFORE it can classify
+        // anything as a tear (PR #124 VERIFY V1): an unverified corrupt
+        // length landing past end-of-stream would otherwise masquerade as
+        // a torn tail, and recovery would physically truncate committed
+        // records and re-mint their revisions.
         // Infallible: length checked above.
         let len_bytes: [u8; 4] = rest[..4].try_into().unwrap_or([0; 4]);
+        if blake3::hash(&len_bytes).as_bytes()[..4] != rest[4..LEN_PREFIX] {
+            return Err(LedgerError::Corrupt {
+                offset: at,
+                detail: "length check failed with bytes present (interior damage)".to_owned(),
+            });
+        }
         let len = u32::from_le_bytes(len_bytes) as usize;
         if len > MAX_FRAME_PAYLOAD {
             return Err(LedgerError::Corrupt {
@@ -259,14 +282,14 @@ pub(crate) fn decode_stream(bytes: &[u8]) -> Result<(Vec<LedgerRecord>, usize), 
         }
         let frame_end = FRAME_HEADER + len;
         if rest.len() < frame_end {
-            break; // torn tail: payload cut mid-write (len itself is intact)
+            break; // tear: verified length, payload (or payload check) cut
         }
-        let check = &rest[4..FRAME_HEADER];
+        let check = &rest[LEN_PREFIX..FRAME_HEADER];
         let payload = &rest[FRAME_HEADER..frame_end];
         if &blake3::hash(payload).as_bytes()[..8] != check {
             return Err(LedgerError::Corrupt {
                 offset: at,
-                detail: "checksum mismatch on a complete frame (interior damage)".to_owned(),
+                detail: "payload check failed on a complete frame (interior damage)".to_owned(),
             });
         }
         let record =
@@ -549,12 +572,16 @@ mod tests {
     }
 
     /// PR #124 F5: decode is bounded — a length field over the frame bound
-    /// is damage by definition (the writer refuses to produce one).
+    /// is damage by definition (the writer refuses to produce one). The
+    /// crafted length carries a VALID length check, so this pins the bound
+    /// branch specifically.
     #[test]
     fn oversized_length_field_is_corrupt_and_encode_is_bounded() {
         let mut bytes = Vec::new();
         encode_stream_header(&mut bytes);
-        bytes.extend_from_slice(&(MAX_FRAME_PAYLOAD as u32 + 1).to_le_bytes());
+        let len_bytes = (MAX_FRAME_PAYLOAD as u32 + 1).to_le_bytes();
+        bytes.extend_from_slice(&len_bytes);
+        bytes.extend_from_slice(&blake3::hash(&len_bytes).as_bytes()[..4]);
         bytes.extend_from_slice(&[0u8; 8]);
         assert!(matches!(
             decode_stream(&bytes),
@@ -569,5 +596,44 @@ mod tests {
             encode_frame(&big, &mut out),
             Err(LedgerError::Corrupt { .. })
         ));
+    }
+
+    /// PR #124 VERIFY V1 regression (the judge's past-EOF probe): a
+    /// corrupted frame length that stays under the 1 MiB bound but lands
+    /// past end-of-stream must refuse as Corrupt. Before the length check
+    /// existed, this read as a torn tail — `open` then physically
+    /// truncated 4 of 5 durable records and recovery re-minted a committed
+    /// Revision.
+    #[test]
+    fn past_eof_length_corruption_is_corrupt_not_a_tear() {
+        let (_, bytes) = sample_stream(); // two frames; corrupt the FIRST
+        let mut mangled = bytes.clone();
+        mangled[STREAM_HEADER..STREAM_HEADER + 4].copy_from_slice(&983_040u32.to_le_bytes());
+        assert!(matches!(
+            decode_stream(&mangled),
+            Err(LedgerError::Corrupt { .. })
+        ));
+    }
+
+    /// PR #124 VERIFY V1 control (the judge's in-bound-grow control): a
+    /// frame whose VERIFIED length extends past the stream because the
+    /// payload was genuinely cut mid-write still classifies as a tear —
+    /// the length check must not turn real tears into refusals.
+    #[test]
+    fn in_bound_grow_with_verified_length_still_tears() {
+        let records = sample_records();
+        let mut bytes = Vec::new();
+        encode_stream_header(&mut bytes);
+        encode_frame(&records[0], &mut bytes).unwrap();
+        let first_len = bytes.len();
+        encode_frame(&records[1], &mut bytes).unwrap();
+        // Cut the second frame mid-payload: its length prefix (and length
+        // check) are intact and verify, but the payload is short — the
+        // authentic length now "grows past" the available bytes.
+        let cut = first_len + FRAME_HEADER + 3;
+        assert!(cut < bytes.len());
+        let (decoded, len) = decode_stream(&bytes[..cut]).unwrap();
+        assert_eq!(decoded, records[..1]);
+        assert_eq!(len, first_len);
     }
 }

@@ -72,13 +72,11 @@ impl FileLedger {
         // Interior damage / bad magic / unknown version refuse here.
         let (_, valid_len) = decode_stream(&bytes)?;
 
-        let mut mutated = false;
         if valid_len < bytes.len() {
             // Genuine tear (incomplete final frame or truncated header):
             // truncate the damage so new frames append after the last
             // whole one.
             file.set_len(valid_len as u64)?;
-            mutated = true;
         }
         if valid_len == 0 {
             // Brand-new (or torn-at-creation) stream: write the versioned
@@ -86,13 +84,14 @@ impl FileLedger {
             let mut header = Vec::new();
             encode_stream_header(&mut header);
             (&file).write_all(&header)?;
-            mutated = true;
         }
-        if mutated {
-            // F4: the repaired/initialized stream is durable BEFORE any
-            // replay can observe it.
-            file.sync_data()?;
-        }
+        // F4 + PR #124 VERIFY V2: UNCONDITIONAL barrier before any replay
+        // is exposed — not just after a repair. fsync is per-inode, so this
+        // also flushes pages a dead writer left dirty in the page cache
+        // (killed between its write_all and sync_data, the stream is
+        // complete-looking but not durable; the clean path must not skip
+        // the barrier).
+        file.sync_data()?;
         Ok(FileLedger {
             path: path.to_path_buf(),
             file,
@@ -255,13 +254,40 @@ mod tests {
         l.sync().unwrap();
         // Keep a handle from BEFORE the damage to exercise replay() too.
         let mut bytes = std::fs::read(&path).unwrap();
-        bytes[STREAM_HEADER + 14] ^= 0xff; // inside the first frame's payload
+        bytes[STREAM_HEADER + 18] ^= 0xff; // inside the first frame's payload
         std::fs::write(&path, &bytes).unwrap();
         assert!(matches!(
             FileLedger::open(&path),
             Err(LedgerError::Corrupt { .. })
         ));
         assert!(matches!(l.replay(), Err(LedgerError::Corrupt { .. })));
+    }
+
+    /// PR #124 VERIFY V1 at the file level: a corrupted in-bound frame
+    /// length landing past end-of-stream must refuse to open — never
+    /// physically truncate committed records and let recovery re-mint
+    /// their revisions.
+    #[test]
+    fn past_eof_length_corruption_refuses_to_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wal");
+        let mut l = FileLedger::open(&path).unwrap();
+        for r in sample() {
+            l.append(&r).unwrap();
+        }
+        l.sync().unwrap();
+        drop(l);
+        let before = std::fs::read(&path).unwrap();
+        let mut bytes = before.clone();
+        // First frame's length -> 983,040 (under the bound, past EOF).
+        bytes[STREAM_HEADER..STREAM_HEADER + 4].copy_from_slice(&983_040u32.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(matches!(
+            FileLedger::open(&path),
+            Err(LedgerError::Corrupt { .. })
+        ));
+        // Refusal, not repair: the file was not truncated.
+        assert_eq!(std::fs::read(&path).unwrap().len(), before.len());
     }
 
     /// PR #124 F10: a future format version is a typed refusal, not a
