@@ -229,6 +229,12 @@ pub mod kvm {
     pub const ARM_VCPU_INIT: u64 = 0x4020_AEAE;
     /// `KVM_ARM_PREFERRED_TARGET` — `_IOR(KVMIO, 0xaf, struct kvm_vcpu_init)`.
     pub const ARM_PREFERRED_TARGET: u64 = 0x8020_AEAF;
+    /// `KVM_ARM_VCPU_PMU_V3` — `kvm_vcpu_init.features[0]` bit index enabling the vPMU
+    /// (uapi `asm/kvm.h`). Only the disposable ID-reading vCPU sets it: without it KVM
+    /// masks the guest-visible `ID_AA64DFR0_EL1.PMUVer` to 0, hiding the host PMU
+    /// version the truth table records (found on harmony-arm day one). The measurement
+    /// vCPU keeps it OFF — the guest contract denies the guest a PMU.
+    pub const VCPU_FEATURE_PMU_V3: u32 = 3;
     /// `KVM_GET_REG_LIST` — `_IOWR(KVMIO, 0xb0, struct kvm_reg_list)`.
     pub const GET_REG_LIST: u64 = 0xC008_AEB0;
     /// `KVM_ENABLE_CAP` — `_IOW(KVMIO, 0xa3, struct kvm_enable_cap)`.
@@ -816,20 +822,102 @@ pub fn online_cpu_count() -> Result<u32, SysError> {
     }
 }
 
-/// The host's EFFECTIVE KVM mode, from `/sys/module/kvm_arm/parameters/mode`
-/// (`"vhe"`/`"nvhe"`/`"protected"`/…) — the mode KVM actually selected at boot, not the
-/// architectural VHE feature bit. `Ok(None)` when the parameter is absent (an older kernel).
+/// The host's EFFECTIVE KVM mode (`"vhe"`/`"nvhe"`/`"protected"`) — the mode KVM actually
+/// selected at boot, not the architectural VHE feature bit.
+///
+/// Two surfaces, in order:
+///
+/// 1. `/sys/module/kvm_arm/parameters/mode` — where the kernel exposes it. On the kernels
+///    this apparatus has actually met (Ubuntu 6.8 arm64), `kvm-arm.mode` is an
+///    `early_param` and **no such sysfs node exists**, so this path alone reported every
+///    real box as "unknown".
+/// 2. The kernel's own boot log via `klogctl(SYSLOG_ACTION_READ_ALL)`, parsed by
+///    [`parse_kvm_mode_from_log`]: `kvm_arm_init()` prints exactly one of three
+///    mode-initialized lines at boot, and that line *is* the effective mode, said by the
+///    kernel itself — not an operator claim. Reading the ring buffer needs
+///    `kernel.dmesg_restrict=0` or `CAP_SYSLOG`; a permission refusal (or the line having
+///    rotated out of the buffer) degrades to `Ok(None)`, never to a guess.
+///
+/// `Ok(None)` when neither surface can say.
 ///
 /// # Errors
-/// [`SysError`] if the parameter exists but cannot be read.
+/// [`SysError`] if the sysfs parameter exists but cannot be read.
 pub fn kvm_mode() -> Result<Option<String>, SysError> {
     match std::fs::read_to_string("/sys/module/kvm_arm/parameters/mode") {
         Ok(s) => Ok(Some(s.trim().to_string())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(imp_kernel_log().and_then(|log| parse_kvm_mode_from_log(&log)))
+        }
         Err(_) => Err(SysError::Protocol(
             "cannot read /sys/module/kvm_arm/parameters/mode".to_string(),
         )),
     }
+}
+
+/// Parse the effective KVM mode out of the kernel boot log.
+///
+/// `arch/arm64/kvm/arm.c:kvm_arm_init()` prints exactly one of three lines when KVM
+/// initializes (6.8's set, unchanged for years):
+///
+/// - `kvm [1]: VHE mode initialized successfully` → `vhe`
+/// - `kvm [1]: Hyp mode initialized successfully` → `nvhe` (the nVHE print)
+/// - `kvm [1]: Protected nVHE mode initialized successfully` → `protected`
+///
+/// Only these exact phrases map; anything else is `None` — an unrecognized line is not
+/// evidence of a mode, and inventing one here would poison every manifest downstream.
+/// The LAST match wins: `SYSLOG_ACTION_READ_ALL` returns the buffer in order, and a
+/// wrapped buffer could in principle hold a stale partial line only earlier, never later.
+pub fn parse_kvm_mode_from_log(log: &str) -> Option<String> {
+    let mut mode = None;
+    for line in log.lines() {
+        // The kvm prefix guards against an unrelated line quoting the phrase.
+        if !line.contains("kvm") {
+            continue;
+        }
+        if line.contains("Protected nVHE mode initialized successfully") {
+            mode = Some("protected".to_string());
+        } else if line.contains("VHE mode initialized successfully") {
+            mode = Some("vhe".to_string());
+        } else if line.contains("Hyp mode initialized successfully") {
+            mode = Some("nvhe".to_string());
+        }
+    }
+    mode
+}
+
+/// Read the kernel ring buffer (`klogctl(SYSLOG_ACTION_READ_ALL)`), or `None` when it
+/// cannot be read (no privilege, or off Linux). Never an error: the caller treats an
+/// unreadable log as "this surface cannot say", exactly like an absent sysfs node.
+#[cfg(target_os = "linux")]
+fn imp_kernel_log() -> Option<String> {
+    const SYSLOG_ACTION_READ_ALL: libc::c_int = 3;
+    const SYSLOG_ACTION_SIZE_BUFFER: libc::c_int = 10;
+    // SAFETY: SIZE_BUFFER takes no buffer; READ_ALL writes at most `len` bytes into the
+    // provided buffer and returns how many it wrote.
+    unsafe {
+        let size = libc::klogctl(SYSLOG_ACTION_SIZE_BUFFER, std::ptr::null_mut(), 0);
+        if size <= 0 {
+            return None;
+        }
+        // Bound the allocation: a hostile/corrupt size must not OOM the harness.
+        let len = (size as usize).min(1 << 24);
+        let mut buf = vec![0u8; len];
+        let read = libc::klogctl(
+            SYSLOG_ACTION_READ_ALL,
+            buf.as_mut_ptr().cast::<libc::c_char>(),
+            len as libc::c_int,
+        );
+        if read < 0 {
+            return None;
+        }
+        buf.truncate(read as usize);
+        Some(String::from_utf8_lossy(&buf).into_owned())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn imp_kernel_log() -> Option<String> {
+    None
 }
 
 /// The running kernel's `uname -r` release string.
@@ -1356,6 +1444,38 @@ mod tests {
     //! so the bit positions are asserted, not trusted.
 
     use super::*;
+
+    #[test]
+    fn kvm_mode_log_parse_recognizes_exactly_the_three_kernel_lines() {
+        // The real line from the first box this apparatus met (harmony-arm, Ubuntu
+        // 6.8.0-134, where no /sys/module/kvm_arm/parameters/mode exists).
+        let vhe = "[    9.960266] kvm [1]: VHE mode initialized successfully";
+        assert_eq!(parse_kvm_mode_from_log(vhe).as_deref(), Some("vhe"));
+        let nvhe = "[    4.1] kvm [1]: Hyp mode initialized successfully";
+        assert_eq!(parse_kvm_mode_from_log(nvhe).as_deref(), Some("nvhe"));
+        let prot = "[    4.1] kvm [1]: Protected nVHE mode initialized successfully";
+        assert_eq!(parse_kvm_mode_from_log(prot).as_deref(), Some("protected"));
+
+        // "Protected nVHE" contains neither of the other two phrases' prefixes by
+        // accident: the discriminating check must not misread it as vhe/nvhe.
+        assert_ne!(parse_kvm_mode_from_log(prot).as_deref(), Some("vhe"));
+
+        // Unrecognized lines are NOT evidence: no kvm prefix, a different phrase, or
+        // an empty log all say None rather than inventing a mode.
+        assert_eq!(
+            parse_kvm_mode_from_log("VHE mode initialized successfully quoted elsewhere"),
+            None
+        );
+        assert_eq!(
+            parse_kvm_mode_from_log("[1.0] kvm [1]: some other line"),
+            None
+        );
+        assert_eq!(parse_kvm_mode_from_log(""), None);
+
+        // The last match wins across a multi-line buffer.
+        let log = format!("{nvhe}\nnoise\n{vhe}\n");
+        assert_eq!(parse_kvm_mode_from_log(&log).as_deref(), Some("vhe"));
+    }
 
     #[test]
     fn perf_flag_bits_match_the_kernel_abi() {

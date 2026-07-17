@@ -477,7 +477,15 @@ fn probe(box_config: PathBuf, rulings: Option<PathBuf>, out: PathBuf) -> Result<
         question: "ID_AA64DFR0_EL1.PMUVer — the PMU version behind the BR_RETIRED work-clock bet.",
         expected: cfg.pmuver_expected.trim().to_string(),
         found: format!("{pmuver:#x}"),
-        raw: format!("ID_AA64DFR0_EL1.PMUVer = {pmuver:#x}"),
+        raw: format!(
+            "ID_AA64DFR0_EL1.PMUVer = {pmuver:#x} (read from a {} vCPU)",
+            if regs.pmu_v3_enabled {
+                "KVM_ARM_VCPU_PMU_V3-enabled"
+            } else {
+                "featureless — host refused the vPMU init, so PMUVer is KVM's mask, not \
+                 the host PMU version"
+            }
+        ),
     });
     let vh = f4(regs.id_aa64mmfr1, 8);
     rows.push(RowInput {

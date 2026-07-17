@@ -1754,15 +1754,31 @@ fn probe_writable_id_registers_on_vcpu(
         (kvm::REG_ID_AA64DFR0_EL1, 0, "ID_AA64DFR0_EL1"),
         (kvm::REG_ID_AA64DFR1_EL1, 0, "ID_AA64DFR1_EL1"),
     ];
-    for &(reg, skip, _name) in relevant {
+    // Per-register stderr diagnostics: the row's evidence stays the bool, but an
+    // `absent` verdict over a 10-register conjunction is undiagnosable without knowing
+    // WHICH register refused (day-one lesson: harmony-arm's 6.8 kernel failed the row
+    // and the probe could not say where). Diagnostics go to stderr, never into the
+    // truth table — the table records what the probe concluded, not its trace.
+    let mut all_writable = true;
+    for &(reg, skip, name) in relevant {
         // `Some(false)` = this register HAS reducible feature fields but none is writable — the
         // surface AA-6 needs is not fully writable, so the row is FALSE. `Some(true)` (writable)
         // and `None` (nothing to freeze here) both pass this register.
-        if reduce_and_readback_id_field(vcpu_fd, reg, skip)? == Some(false) {
-            return Ok(false);
+        match reduce_and_readback_id_field(vcpu_fd, reg, skip)? {
+            Some(true) => {
+                eprintln!("writable-id-registers: {name}: writable (reduced + read back)")
+            }
+            Some(false) => {
+                eprintln!(
+                    "writable-id-registers: {name}: FROZEN (has reducible fields, none accepted \
+                     a reduced write that read back)"
+                );
+                all_writable = false;
+            }
+            None => eprintln!("writable-id-registers: {name}: no reducible field (does not gate)"),
         }
     }
-    Ok(true)
+    Ok(all_writable)
 }
 
 /// Try to reduce ONE feature nibble of an `ID_AA64*` register by 1, write it, and READ IT
@@ -1857,6 +1873,10 @@ pub struct HostIdRegisters {
     pub id_aa64dfr0: u64,
     /// `ID_AA64PFR0_EL1` (SVE in bits[35:32]).
     pub id_aa64pfr0: u64,
+    /// Whether the reading vCPU was initialised with `KVM_ARM_VCPU_PMU_V3`. When
+    /// `false`, `id_aa64dfr0`'s PMUVer field is KVM's featureless-vCPU mask (0), not
+    /// the host PMU version — the truth-table raw must say which read happened.
+    pub pmu_v3_enabled: bool,
 }
 
 /// Read [`HostIdRegisters`] from a fresh, disposable VM + vCPU.
@@ -1911,16 +1931,40 @@ fn read_host_id_registers_on_vcpu(
     {
         return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET)"));
     }
-    // SAFETY: `vcpu_fd` is valid; `init` is fully initialised by the call above.
-    if unsafe {
+    // Init WITH the vPMU feature, falling back to a plain init if the host refuses it.
+    //
+    // KVM masks the guest-visible `ID_AA64DFR0_EL1.PMUVer` to 0 on a vCPU created
+    // without `KVM_ARM_VCPU_PMU_V3` — the first real box (harmony-arm, N1 r3p1,
+    // Ubuntu 6.8) reported `pmuver = 0x0` through a featureless vCPU while its host
+    // PMU is plainly PMUv3 (the perf rows count). The truth-table row is about the
+    // PMU behind the work-clock bet, so the read must go through a PMU-enabled vCPU
+    // to see the sanitised host value. The MEASUREMENT vCPU (`Machine`) deliberately
+    // keeps the feature off — the guest contract denies the guest its own PMU; only
+    // this disposable ID-reading vCPU differs. If the host cannot init a PMU-enabled
+    // vCPU at all, the plain-init value (PMUVer masked to 0) is the honest fallback,
+    // and `pmu_v3_enabled: false` records which read happened.
+    let mut pmu_init = init;
+    pmu_init.features[0] |= 1 << kvm::VCPU_FEATURE_PMU_V3;
+    // SAFETY: `vcpu_fd` is valid; `pmu_init` is fully initialised above.
+    let pmu_v3_enabled = unsafe {
         libc::ioctl(
             vcpu_fd,
             kvm::ARM_VCPU_INIT as libc::c_ulong,
-            &raw const init,
+            &raw const pmu_init,
         )
-    } < 0
-    {
-        return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
+    } >= 0;
+    if !pmu_v3_enabled {
+        // SAFETY: `vcpu_fd` is valid; `init` is fully initialised by the call above.
+        if unsafe {
+            libc::ioctl(
+                vcpu_fd,
+                kvm::ARM_VCPU_INIT as libc::c_ulong,
+                &raw const init,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
+        }
     }
 
     let read = |id: u64, call: &'static str| -> Result<u64, SysError> {
@@ -1944,5 +1988,6 @@ fn read_host_id_registers_on_vcpu(
         id_aa64mmfr2: read(kvm::REG_ID_AA64MMFR2_EL1, "GET_ONE_REG(ID_AA64MMFR2_EL1)")?,
         id_aa64dfr0: read(kvm::REG_ID_AA64DFR0_EL1, "GET_ONE_REG(ID_AA64DFR0_EL1)")?,
         id_aa64pfr0: read(kvm::REG_ID_AA64PFR0_EL1, "GET_ONE_REG(ID_AA64PFR0_EL1)")?,
+        pmu_v3_enabled,
     })
 }
