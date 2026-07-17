@@ -721,3 +721,57 @@ bit-deterministic on a pinned N1 core. Nothing (contract work, clock implementat
 Graviton excursions, port planning) may displace that measurement. Before hardware arrives,
 the only work is offline apparatus: oracle payloads, the minimal harness, the floor-checker
 schemas — built so that arrival day is spent measuring, not scaffolding.
+
+## Dispositions (task 122 execution log — hardware arrived 2026-07-17)
+
+Box: `harmony-arm` — Ampere Altra (Neoverse N1 **r3p1**, MIDR `0x413fd0c1`), HPE
+ProLiant RL300 Gen11, BIOS 1.74, 80 cores, SMT not implemented, delivered kernel
+Ubuntu 6.8.0-134-generic, KVM VHE. Baseline manifest (the restore target):
+`spikes/arm-altra/results/box-baseline-manifest.json`. Core assignments: housekeeping
+0–3, measurement 60–69, guest 70–79 (recorded in the truth table's topology block).
+
+### AA-0 — IN PROGRESS (capability table complete + ruled; reboot-identity captures pending)
+
+Evidence: `spikes/arm-altra/results/aa-0/` — `capture-A/truth-table.json` (14 rows,
+probe RC 0), `box-config.json` + `rulings.json` (the probe inputs),
+`capture-boot0*/` (the day-one pre-fix captures, retained as the record of the two
+apparatus findings below).
+
+Every existential row confirmed on silicon: `/dev/kvm` + VHE; raw `0x21` opens
+pinned/non-multiplexed and counts; **BR_RETIRED is PMCEID1-implemented**; a host
+overflow **delivers**; `KVM_CAP_SET_GUEST_DEBUG` present; vGICv3 creatable; **ECV
+absent** (the §1 premise, now measured); **LSE present**; SVE absent; FEAT_NV absent;
+PMUVer **0x4** (PMUv3p1, per the N1 TRM); determinism cap absent (stock kernel, as
+expected).
+
+Day-one findings (apparatus fixes, committed with this log):
+
+1. **No `/sys/module/kvm_arm/parameters/mode` on this kernel** (`kvm-arm.mode` is an
+   early_param). `sys::kvm_mode` gained a strict kernel-log fallback (klogctl, parsing
+   the three `kvm_arm_init` lines); requires `dmesg_restrict=0`, applied by
+   `host/spike-posture.sh` (re-run after every reboot; nothing in the posture persists).
+2. **A featureless vCPU reads `ID_AA64DFR0_EL1.PMUVer` as 0x0** — KVM masks it without
+   `KVM_ARM_VCPU_PMU_V3`. The disposable ID-reading vCPU now inits with the vPMU
+   feature (the measurement vCPU keeps it off; the guest contract denies the guest a
+   PMU); the row's raw records which read happened.
+3. **`writable-id-registers` found ABSENT — RULED** (`results/aa-0/rulings.json`): the
+   per-register probe shows the whole enumerated `ID_AA64*` surface writable except
+   `ID_AA64PFR1_EL1` (frozen on 6.8; its writable mask is later mainline). Not a stop
+   condition. Consequence: AA-6(a) cannot fully install its freeze on the stock 6.8
+   kernel; the row is re-probed on the AA-3 patched host (6.18.35) before AA-6 relies
+   on it, else PFR1 becomes a named enforcement-truth-table row (HCR_EL2.TID3
+   trap-emulation as the fallback level).
+
+Environment decisions recorded:
+
+- **Host-kernel plan.** Ubuntu publishes no ddeb vmlinux for 6.8.0-134, so the
+  delivered kernel cannot pass the harness's build-id host attestation. Decision: build
+  the pinned **stock linux-6.18.35** natively (`host/build-stock-6.18.35.sh`) — the
+  same tree the AA-3 patch targets — and run AA-1 on it; stock-vs-patched then differs
+  by exactly the patch. The 6.8.0-134 baseline remains the recorded restore target.
+- **Reboot authorization.** The AA-0 acceptance's two reboot-identity captures (B, C)
+  and the 6.18.35 boot are pending operator authorization of box reboots (the
+  execution session's permission layer blocks autonomous `reboot`; reported rather
+  than worked around).
+
+Disposition: **not yet declared** — waits on byte-identical captures A/B/C.
