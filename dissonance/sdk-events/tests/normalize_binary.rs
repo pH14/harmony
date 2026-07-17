@@ -908,9 +908,23 @@ fn unknown_namespace_event_is_preserved_raw() {
 
 #[test]
 fn buggify_firing_decodes_as_an_occurrence() {
-    let raw = vec![at(0, event_id(NS_BUGGIFY, 2), vec![1])];
-    let n = decode_binary(&raw).expect("decodes");
-    assert_eq!(n.events[0].payload, Payload::Buggify { fired: true });
+    // The guest encoder emits only 0/1.
+    for (byte, fired) in [(0u8, false), (1u8, true)] {
+        let raw = vec![at(0, event_id(NS_BUGGIFY, 2), vec![byte])];
+        let n = decode_binary(&raw).expect("decodes");
+        assert_eq!(n.events[0].payload, Payload::Buggify { fired });
+    }
+    // A non-boolean fired byte is malformed wire data → kept raw, not coerced to a
+    // boolean (mirrors invalid dispositions / v2-only ops).
+    for byte in [2u8, 255u8] {
+        let raw = vec![at(0, event_id(NS_BUGGIFY, 2), vec![byte])];
+        let n = decode_binary(&raw).expect("decodes");
+        assert_eq!(
+            n.events[0].payload,
+            Payload::Unknown,
+            "buggify byte {byte} must stay raw"
+        );
+    }
 }
 
 proptest! {

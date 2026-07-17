@@ -714,12 +714,18 @@ fn decode_state(
     Ok(Some(Payload::State { op, value }))
 }
 
-/// Decode a buggify firing `[fired u8]`.
+/// Decode a buggify firing `[fired u8]`. The guest encoder emits only `0`/`1`; any
+/// other byte is malformed wire data and stays raw rather than coercing to a
+/// boolean (mirrors the assertion-disposition and state-op checks).
 fn decode_buggify(bytes: &[u8]) -> Option<Payload> {
     let mut r = Reader::new(bytes);
-    let fired = r.u8()?;
+    let fired = match r.u8()? {
+        0 => false,
+        1 => true,
+        _ => return None,
+    };
     if !r.at_end() {
         return None;
     }
-    Some(Payload::Buggify { fired: fired != 0 })
+    Some(Payload::Buggify { fired })
 }
