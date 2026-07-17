@@ -1061,10 +1061,36 @@ oracle grades it) behind `--single-step`/`--stage aa2`, with `run_sample` untouc
 the builder): harness **122** tests + clippy `-D warnings` + fmt, aarch64-linux `cargo
 check`/clippy (box code compiles), Miri over the new `guest_word` unsafe path, floor-check
 **67+32+3** with a new `accept-aa2-steps` fixture grading PASS (18 checks) and three
-reject fixtures each failing exactly `debug-evidence`. **Remaining before GO:** run it on
-the box (stock KVM, pinned core 60, smoke payloads) — one insn/step vs oracle,
-`BR_RETIRED` only on stepped taken branches, behaviour across `SVC`/abort/`ERET`/`WFI`
-and stepping an LL/SC sequence (direct AA-4 input), replay-identical `step_digest`.
+reject fixtures each failing exactly `debug-evidence`.
+
+**Box-validation findings (2026-07-17, first silicon contact — apparatus refinement
+required before an AA-2 disposition):**
+
+1. **The `KVM_SET_GUEST_DEBUG` ioctl `0x4208_AE9B` is ACCEPTED on N1** — the one
+   `TODO(box-verify)` is RESOLVED. `--stage aa2 --single-step` arms guest single-step
+   and steps (no `EINVAL`/`ENOTTY`); the mechanism works on silicon.
+2. **Per-step cost is the blocker for a full-payload run.** `step_run` sha256-hashes the
+   whole 4 MiB guest RAM into `step_digest` **per step** (the AA1-F3 pattern, now
+   per-step), and a full smoke payload is tens of thousands of steps, so an 8-payload
+   smoke sweep runs many minutes and did not finish in 250 s. A **step budget**
+   (`--max-steps`) is needed for a bounded, class-covering validation — and it must
+   handle the window/count coupling (a bounded run does not reach `MARK_END`, so the
+   step records cannot carry the full window count; either exempt AA-2 step records from
+   count-exactness or run to `MARK_END` while capping the recorded steps), and/or the
+   per-step digest should hash only what changes per step (registers) rather than all RAM.
+3. **Single-stepping the `llsc-atomics` payload LIVELOCKS on N1** — each single step
+   clears the exclusive monitor, so `STXR` never succeeds and the retry loops forever
+   (the run never reaches its sentinel). This is **exactly the architectural hazard AA-2
+   exists to characterize** ("single-stepping an LL/SC loop can livelock outright") and
+   is **direct AA-4 input** (it is the mechanism behind the LL/SC count-determinism
+   minefield). It independently requires the step budget to bound the loop.
+
+**Disposition: PENDING** — the single-step mechanism is confirmed on silicon; the AA-2
+GO awaits the `--max-steps` refinement (bounded, class-covering, count-coupling handled),
+then the full acceptance run (one insn/step vs oracle, `BR_RETIRED` only on stepped taken
+branches, behaviour across `SVC`/abort/`ERET`/`WFI`, the llsc-livelock characterized,
+replay-identical `step_digest`). The refinement is a clean next unit; `harness/AA2-BUILD.md`
+carries the design.
 
 **Original finding (why this was executor work): the single-step run path did not exist
 in the harness** — the
