@@ -44,9 +44,17 @@ mod host;
 mod ids;
 mod ledger;
 
-pub use coordinator::{
-    Completion, CoordError, Coordinator, DrainedView, PendingProposal, StateProjection,
-};
+pub use coordinator::{Completion, CoordError, Coordinator, DrainedView, PendingProposal};
 pub use file_ledger::FileLedger;
 pub use ids::{CampaignConfigId, CohortId, EvidenceBatchId, ProposalId, Revision, TerminalRecord};
-pub use ledger::{Ledger, LedgerError, LedgerRecord, MemFault, MemLedger};
+pub use ledger::{Ledger, LedgerError, LedgerRecord, MemLedger};
+
+// Test/golden apparatus (hm-fb0): the durable-state projection vehicle and
+// `MemLedger`'s simulated crash + fault injection. Gated behind
+// `test-support` so `hm-bbx.4` importing this crate without the feature never
+// freezes them as compat surface. The `--all-features` public-api snapshot
+// still freezes the full surface.
+#[cfg(any(test, feature = "test-support"))]
+pub use coordinator::StateProjection;
+#[cfg(any(test, feature = "test-support"))]
+pub use ledger::MemFault;

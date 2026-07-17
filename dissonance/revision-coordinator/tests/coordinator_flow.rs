@@ -216,7 +216,7 @@ fn abort_freezes_the_frontier_forever() {
 
 #[test]
 fn recovery_is_byte_identical_and_replays_committed_inputs() {
-    let ledger = MemLedger::new();
+    let mut ledger = MemLedger::new();
     let mut c = Coordinator::genesis(Box::new(ledger.clone()), config()).unwrap();
     let a = c.open_cohort().unwrap();
     let p1 = c.assign(a).unwrap();
@@ -275,6 +275,46 @@ fn file_and_mem_ledgers_produce_identical_artifacts() {
     assert_eq!(
         recovered.probe_drive(Revision::new(2)).unwrap().encode(),
         mv.encode()
+    );
+}
+
+/// hm-20m: an over-long abort reason is bounded (not rejected), so the
+/// campaign durably aborts instead of poisoning the coordinator without ever
+/// persisting the abort — identically on the file and in-memory backends,
+/// and the bounded reason survives a real restart from disk.
+#[test]
+fn oversized_abort_reason_is_bounded_and_still_persists() {
+    // 2 MiB — well over the 1 MiB ledger frame bound. Before hm-20m this
+    // poisoned the file-backed coordinator without recording the abort.
+    let huge = "x".repeat(2 * 1024 * 1024);
+    const CAP: usize = 64 * 1024; // MAX_ABORT_REASON
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wal");
+    let file = revision_coordinator::FileLedger::open(&path).unwrap();
+    let mut on_file = Coordinator::genesis(Box::new(file), config()).unwrap();
+    on_file.abort(&huge).unwrap();
+    let file_reason = on_file.aborted().expect("aborted, not poisoned").to_owned();
+    assert!(file_reason.len() <= CAP, "reason not bounded");
+    assert!(
+        huge.starts_with(&file_reason),
+        "reason is a prefix of the input"
+    );
+
+    // The in-memory backend records the identical bounded reason (aligned).
+    let mut on_mem = Coordinator::genesis(Box::new(MemLedger::new()), config()).unwrap();
+    on_mem.abort(&huge).unwrap();
+    assert_eq!(on_mem.aborted(), Some(file_reason.as_str()));
+
+    // The bounded reason survives a real process restart from disk, and the
+    // recovered projection matches the in-memory twin byte-for-byte.
+    drop(on_file);
+    let reopened = revision_coordinator::FileLedger::open(&path).unwrap();
+    let recovered = Coordinator::recover(&reopened).unwrap();
+    assert_eq!(recovered.aborted(), Some(file_reason.as_str()));
+    assert_eq!(
+        recovered.state_projection().encode(),
+        on_mem.state_projection().encode()
     );
 }
 

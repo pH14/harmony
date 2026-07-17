@@ -81,8 +81,20 @@ pub enum LedgerRecord {
     /// never advances again, and no slot is ever skipped. Always the last
     /// record of a ledger.
     Abort {
-        /// Human-readable failure description (post-mortem only; never
-        /// state-affecting).
+        /// Human-readable failure description, truncated to a bounded size
+        /// (`MAX_ABORT_REASON`, 64 KiB) on a UTF-8 boundary before it is
+        /// recorded, so the Abort frame always fits under the frame bound and
+        /// an over-long reason cannot poison the coordinator without durably
+        /// recording the abort (hm-20m).
+        ///
+        /// The reason is *control-inert*: its text never changes the
+        /// frontier, ordering, or any coordinator decision — only the
+        /// presence of an abort does. It is, however, durably recorded and
+        /// replayed verbatim on recovery, so it IS part of the coordinator's
+        /// byte-stable state projection (`StateProjection`), which a recovered
+        /// coordinator must match against its never-crashed twin. (This
+        /// corrects the earlier "never state-affecting" annotation, which was
+        /// too strong given the projection includes it — hm-9xd.)
         reason: String,
     },
 }
@@ -165,6 +177,21 @@ const FRAME_HEADER: usize = LEN_PREFIX + 8;
 /// than this, so a stream length field above it is damage by definition —
 /// the decoder never allocates or skips on an attacker/rot-controlled size.
 pub(crate) const MAX_FRAME_PAYLOAD: usize = 1 << 20;
+
+/// Upper bound on an [`LedgerRecord::Abort`] reason (hm-20m). The reason is
+/// the ONLY unbounded field of any record; `Coordinator::abort` truncates to
+/// this on a UTF-8 boundary before recording, so the encoded Abort frame
+/// always fits under [`MAX_FRAME_PAYLOAD`] even under worst-case (~6×) JSON
+/// escaping. That guarantee is what stops an over-long reason from poisoning
+/// the coordinator *without durably recording the abort*: the persist can no
+/// longer fail on size. 64 KiB is far more than a human-readable post-mortem
+/// description needs.
+pub(crate) const MAX_ABORT_REASON: usize = 64 * 1024;
+
+// The bound must leave headroom for JSON string escaping (each source byte
+// expands to at most ~6 output bytes: `\u00XX`), so the Abort frame provably
+// fits. Checked at compile time.
+const _: () = assert!(MAX_ABORT_REASON * 6 < MAX_FRAME_PAYLOAD);
 
 /// Append the stream header to `out`.
 pub(crate) fn encode_stream_header(out: &mut Vec<u8>) {
@@ -308,7 +335,10 @@ pub(crate) fn decode_stream(bytes: &[u8]) -> Result<(Vec<LedgerRecord>, usize), 
 // crash and fault injection for the M1 recovery model.
 // ---------------------------------------------------------------------------
 
-/// Where the next injected fault fires inside [`MemLedger`].
+/// Where the next injected fault fires inside [`MemLedger`]. Test apparatus
+/// (hm-fb0): gated behind `test-support` so it is not part of the
+/// coordinator's production contract.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemFault {
     /// The next `append` fails; nothing is staged.
@@ -317,22 +347,44 @@ pub enum MemFault {
     Sync,
 }
 
+/// The shared durable log: records that have survived a `sync`. Every handle
+/// (clone / `reopen`) shares one of these; a handle's own staged-but-unsynced
+/// appends live handle-locally in [`MemLedger::pending`], never here, so a
+/// failed sync on one handle cannot be resurrected by another handle's sync
+/// (hm-x4z).
 #[derive(Default)]
 struct MemStore {
     records: Vec<LedgerRecord>,
-    synced: usize,
+    /// Armed one-shot fault (test apparatus, hm-fb0).
+    #[cfg(any(test, feature = "test-support"))]
     fault: Option<MemFault>,
 }
 
-/// In-memory [`Ledger`] with simulated durability: records staged by
-/// `append` become durable only at `sync`; [`MemLedger::crash`] drops the
-/// unsynced tail exactly as a power loss would. Cloning (or `reopen`) yields
-/// a handle to the SAME store, which is how the recovery tests re-attach
-/// after a simulated crash. Single-threaded by design (`Rc`), like the
-/// coordinator itself.
-#[derive(Clone)]
+/// In-memory [`Ledger`] with simulated durability. Appends are staged in a
+/// handle-local `pending` buffer (mirroring [`FileLedger`](crate::FileLedger)'s
+/// staging) and only reach the shared durable log at `sync`; the durable log
+/// therefore only ever contains synced records. Cloning (or `reopen`) yields
+/// an INDEPENDENT handle to the SAME durable log with an empty `pending`,
+/// which is how the recovery tests re-attach after a simulated crash.
+/// Single-threaded by design (`Rc`), like the coordinator itself.
 pub struct MemLedger {
     store: std::rc::Rc<std::cell::RefCell<MemStore>>,
+    /// Frames staged since this handle's last successful `sync` — handle
+    /// local, exactly like `FileLedger::pending` (hm-x4z). A crash (or
+    /// dropping the handle) discards them; they never touch the shared log
+    /// until a sync on THIS handle succeeds.
+    pending: Vec<LedgerRecord>,
+}
+
+impl Clone for MemLedger {
+    /// A fresh handle to the same durable log, with its own empty staging
+    /// buffer. Un-synced staging is never shared between handles (hm-x4z).
+    fn clone(&self) -> Self {
+        MemLedger {
+            store: std::rc::Rc::clone(&self.store),
+            pending: Vec::new(),
+        }
+    }
 }
 
 impl MemLedger {
@@ -340,25 +392,34 @@ impl MemLedger {
     pub fn new() -> Self {
         MemLedger {
             store: std::rc::Rc::default(),
+            pending: Vec::new(),
         }
     }
 
-    /// Simulate a crash: every record staged since the last successful
-    /// `sync` is lost.
-    pub fn crash(&self) {
-        let mut s = self.store.borrow_mut();
-        let keep = s.synced;
-        s.records.truncate(keep);
+    /// Simulate a crash on THIS handle: every record staged since its last
+    /// successful `sync` (i.e. its handle-local `pending`) is lost, exactly
+    /// as a power loss drops volatile buffers. The shared durable log — which
+    /// only ever holds synced records — is untouched; recovery reopens a
+    /// fresh handle and replays it. Test apparatus (hm-fb0).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn crash(&mut self) {
+        self.pending.clear();
     }
 
     /// Arm a one-shot fault at the given point; the failing call clears it.
+    /// The fault lives in the shared store, so it fires on whichever handle
+    /// next reaches that point (the coordinator's write handle, typically a
+    /// different clone than the test's). Test apparatus (hm-fb0).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn fail_next(&self, fault: MemFault) {
         self.store.borrow_mut().fault = Some(fault);
     }
 
-    /// Number of durable (synced) records.
+    /// Number of durable (synced) records in the shared log. Test apparatus
+    /// (hm-fb0).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn durable_len(&self) -> usize {
-        self.store.borrow().synced
+        self.store.borrow().records.len()
     }
 }
 
@@ -370,32 +431,65 @@ impl Default for MemLedger {
 
 impl Ledger for MemLedger {
     fn append(&mut self, record: &LedgerRecord) -> Result<(), LedgerError> {
-        let mut s = self.store.borrow_mut();
-        if s.fault == Some(MemFault::Append) {
-            s.fault = None;
-            return Err(LedgerError::Backend("injected append fault".to_owned()));
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let mut s = self.store.borrow_mut();
+            if s.fault == Some(MemFault::Append) {
+                s.fault = None;
+                return Err(LedgerError::Backend("injected append fault".to_owned()));
+            }
         }
-        s.records.push(record.clone());
+        // hm-20m: refuse an oversized record exactly as `FileLedger`'s
+        // `encode_frame` does, so the two backends accept the same inputs
+        // (they diverged: the file ledger bounded records, this one did not).
+        let encoded = serde_json::to_vec(record).map_err(|e| LedgerError::Corrupt {
+            offset: 0,
+            detail: format!("encode: {e}"),
+        })?;
+        if encoded.len() > MAX_FRAME_PAYLOAD {
+            return Err(LedgerError::Corrupt {
+                offset: 0,
+                detail: format!(
+                    "record encodes to {} bytes, over the {MAX_FRAME_PAYLOAD}-byte frame bound",
+                    encoded.len()
+                ),
+            });
+        }
+        // Stage handle-locally; only `sync` promotes it to the shared log.
+        self.pending.push(record.clone());
         Ok(())
     }
 
     fn sync(&mut self) -> Result<(), LedgerError> {
-        let mut s = self.store.borrow_mut();
-        if s.fault == Some(MemFault::Sync) {
-            s.fault = None;
-            return Err(LedgerError::Backend("injected sync fault".to_owned()));
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let mut s = self.store.borrow_mut();
+            if s.fault == Some(MemFault::Sync) {
+                s.fault = None;
+                // The Sync fault leaves `pending` intact (staged but not
+                // durable), matching a failed fsync: a retry can re-drive it.
+                return Err(LedgerError::Backend("injected sync fault".to_owned()));
+            }
         }
-        s.synced = s.records.len();
+        // Promote this handle's staged frames to the shared durable log, in
+        // append order, and clear the staging buffer.
+        self.store.borrow_mut().records.append(&mut self.pending);
         Ok(())
     }
 
     fn replay(&self) -> Result<Vec<LedgerRecord>, LedgerError> {
-        let s = self.store.borrow();
-        Ok(s.records[..s.synced].to_vec())
+        // The durable log holds exactly the synced records; this handle's own
+        // un-synced `pending` is deliberately invisible (the crash-durable
+        // prefix), matching the `Ledger` contract and `FileLedger::replay`.
+        Ok(self.store.borrow().records.clone())
     }
 
     fn reopen(&self) -> Result<Box<dyn Ledger>, LedgerError> {
-        Ok(Box::new(self.clone()))
+        // An independent recovery handle: same durable log, empty staging.
+        Ok(Box::new(MemLedger {
+            store: std::rc::Rc::clone(&self.store),
+            pending: Vec::new(),
+        }))
     }
 }
 
@@ -422,6 +516,22 @@ mod tests {
         assert_eq!(l.replay().unwrap(), vec![rec(1)]);
     }
 
+    /// hm-20m: `MemLedger::append` enforces the same frame bound as
+    /// `FileLedger` (via `encode_frame`), so an oversized hand-built record is
+    /// refused identically on both backends — the two ledgers no longer
+    /// diverge. Nothing is staged when it refuses.
+    #[test]
+    fn mem_ledger_refuses_oversized_record() {
+        let mut l = MemLedger::new();
+        let big = LedgerRecord::Abort {
+            reason: "x".repeat(MAX_FRAME_PAYLOAD + 1),
+        };
+        assert!(matches!(l.append(&big), Err(LedgerError::Corrupt { .. })));
+        assert_eq!(l.durable_len(), 0);
+        l.sync().unwrap();
+        assert_eq!(l.replay().unwrap(), vec![]);
+    }
+
     #[test]
     fn mem_ledger_reopen_shares_durable_state() {
         let mut l = MemLedger::new();
@@ -442,6 +552,35 @@ mod tests {
         assert_eq!(l.durable_len(), 0);
         l.sync().unwrap();
         assert_eq!(l.durable_len(), 1);
+    }
+
+    /// hm-x4z: staging is handle-local (mirroring `FileLedger`), so a record
+    /// whose sync FAILED on one handle can never be resurrected by a later
+    /// successful sync on another handle sharing the durable log. Before this
+    /// fix, `append` wrote straight to the shared store and a foreign sync
+    /// promoted the failed record.
+    #[test]
+    fn failed_sync_record_is_not_resurrected_by_another_handle() {
+        let a = MemLedger::new();
+        let mut writer = a.clone(); // shares the durable log with `a`
+        writer.append(&rec(1)).unwrap(); // staged in writer.pending only
+        writer.fail_next(MemFault::Sync);
+        assert!(writer.sync().is_err()); // failed sync: rec(1) never durable
+        assert_eq!(a.durable_len(), 0);
+
+        // A different handle appends and syncs successfully.
+        let mut other = a.clone();
+        other.append(&rec(2)).unwrap();
+        other.sync().unwrap();
+
+        // Only rec(2) reached the shared log — rec(1) stayed handle-local.
+        assert_eq!(a.replay().unwrap(), vec![rec(2)]);
+
+        // Even a retry of the poisoned writer (after its crash) cannot leak
+        // the failed record.
+        writer.crash();
+        writer.sync().unwrap();
+        assert_eq!(a.replay().unwrap(), vec![rec(2)]);
     }
 
     fn sample_records() -> Vec<LedgerRecord> {
