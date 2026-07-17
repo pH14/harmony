@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # capture-baseline.sh — AE-0 record-then-modify baseline capture (docs/AMD-EPYC.md
 # §Box discipline). Runs ON the box, emits one stable-JSON manifest on stdout
