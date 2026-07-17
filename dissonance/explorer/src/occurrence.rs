@@ -183,7 +183,7 @@ fn fingerprint(property: &ObservationId, kind: CounterexampleKind) -> [u8; 32] {
 /// **monotone** satisfied count. The count only ever rises, so raw-evidence GC or
 /// working-set expiration can never move it backward and resurrect a false
 /// never-fired finding.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct PropertyAggregate {
     expectation: Option<Expectation>,
     /// How many satisfying evaluations were observed across all folded runs
@@ -191,6 +191,34 @@ struct PropertyAggregate {
     satisfied: u64,
     /// The declared human name, for reporting.
     name: Option<String>,
+}
+
+/// Serialize a `BTreeMap` whose key is not a JSON string (here
+/// [`ObservationId`], a structured enum) as a canonically-ordered vec of
+/// `(key, value)` pairs — byte-stable because the map iterates in `Ord` order.
+mod pair_map {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S, K, V>(map: &BTreeMap<K, V>, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        K: Serialize + Ord,
+        V: Serialize,
+    {
+        ser.collect_seq(map.iter())
+    }
+
+    pub(super) fn deserialize<'de, D, K, V>(de: D) -> Result<BTreeMap<K, V>, D::Error>
+    where
+        D: Deserializer<'de>,
+        K: Deserialize<'de> + Ord,
+        V: Deserialize<'de>,
+    {
+        let pairs: Vec<(K, V)> = Vec::deserialize(de)?;
+        Ok(pairs.into_iter().collect())
+    }
 }
 
 /// One absence finding: a `must_hit` property (a `sometimes`/`reachable`, or an
@@ -215,8 +243,9 @@ pub struct AbsenceFinding {
 /// and retention-stable by construction. An unresolved-reducer **state**
 /// declaration is never tracked here (it is site/schema coverage, not an
 /// expectation), so it can never become a spurious absence.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct AbsenceLedger {
+    #[serde(with = "pair_map")]
     properties: BTreeMap<ObservationId, PropertyAggregate>,
 }
 
@@ -323,6 +352,7 @@ mod tests {
                 issue: 0,
                 parent: None,
             },
+            role: crate::evidence::EvidenceRole::Rollout,
             terminal,
             env: env(),
             cut: EvidenceCut {

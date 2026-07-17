@@ -473,3 +473,113 @@ frames" doc (the single conversion point discipline):
 
 Known limitation: the session-initial spec handed to `connect` remains
 override- and marker-free (v1 boots are), per the frame doc's deliberate edge.
+
+# tasks/131 — campaign evidence retention + completeness policy (hm-5sv)
+
+Replaces the old unconditional-record-only runbook rule with the strategy's
+explicit retention contract (`docs/DISSONANCE-STRATEGY.md`, "Evidence retention
+needs an explicit bounded policy separate from archive admission"). New module
+`src/retention.rs`; the ledger (`src/ledger.rs`) gains the proof-gated GC half;
+the campaign controller folds every committed batch into one deterministic set
+of **retention views**.
+
+## The three records, kept distinct by type
+
+1. **Immutable evidence ledger** — unchanged authority (`EvidenceLedger`),
+   now with proven physical downgrade (below).
+2. **Versioned bounded working-set membership** — `WorkingSet`: admissions and
+   expirations are ordinary positive/negative `WorkingSetUpdate`s in a
+   deterministic log; expiry follows the profile's declared `ExpiryOrder`
+   (`OldestFirst`: lowest `(admitted-at issue, batch id)` first — the stable
+   tie-break, in the config, never an implementation accident).
+3. **Committed Entry cell assignments + finalized summaries** —
+   `CellAssignment` (cell, seal batch, cut, quality, **genesis-complete
+   reproducer + lineage `RunId`**) and `FinalizedSummary` (monotone counters;
+   no decrement API exists anywhere).
+
+`RetentionViews::fold_batch` is THE deterministic fold: the live `step()` calls
+it per committed batch, and `RetentionViews::rebuild` (checkpoint base + the
+retained ledger suffix in canonical `(issue, batch)` order) replays the same
+fold — so "rebuild matches live" is bit-identical **by construction**, not by
+parallel reimplementation. The operational occupancy stays in lock-step with
+the committed assignments (same strictly-greater-quality rule; bound by a
+`debug_assert` in `step()` and by the rebuild equality gate).
+
+## Ledger format v2 + proof-gated GC
+
+- Frames now carry a tagged `LedgerRecord`: `Evidence | Tombstone | Checkpoint
+  | Finalized`. **v1 files are rejected loudly** (`UnsupportedVersion`) — the
+  v1 format merged in #130 and predates any integrated deployment; campaign
+  ledgers are per-campaign artifacts, so no migration path is warranted.
+- `collect(id, protected)` — the only way raw evidence leaves the authority —
+  proves, in order: the batch is retained (`UnknownBatch`), a durable
+  checkpoint covers its issue **or** the campaign is finalized (`NotCovered`),
+  and its reproducer digest is not `protected` by a live Entry
+  (`LiveEntryReference`). The tombstone (exact completeness/loss metadata,
+  incl. the `CoverageRef` cited) is fsynced **before** any in-memory downgrade.
+- `compact()` physically reclaims file bytes: crash-safe rewrite (temp file +
+  fsync + atomic rename) that preserves the finalized marker, the rebuild
+  checkpoint, every tombstone, and all retained evidence.
+- **Loud exhaustion**: an optional declared byte budget
+  (`CampaignConfig::evidence_budget` → `EvidenceLedger::set_budget`) fails an
+  over-budget evidence append with `LedgerError::Exhausted` *before any state
+  change*. Judgment call: tombstone/checkpoint/finalized appends are exempt
+  from the budget — refusing them could block the explicit recovery that
+  reclaims space, while admitting them can never silently change policy.
+
+## Acceptance-criterion → test map
+
+| Invariant | Test |
+|---|---|
+| `CampaignConfig` carries profile + stable tie-breaks; full-retention records from the first rollout | `retention::tests::full_retention_records_from_the_first_rollout` (+ `default_profile_is_full_retention`, `bounded_expiry_is_oldest_first_with_stable_tiebreak`) |
+| Bounded expiry updates only working views; cannot retract a live Entry cell or a finalized metric | `retention::tests::bounded_expiry_updates_only_working_views` (per-step monotonicity + ledger/occupancy untouched); `full_profile_never_retracts`, `zero_cap_retracts_immediately` |
+| A ledger/live-Entry-reachable reference cannot be invalidated; GC proves reachability + checkpoint coverage first | `retention::tests::gc_proves_reachability_and_coverage_before_collecting`; ledger-level `collect_requires_coverage_and_refuses_protected_references`, `shared_payload_survives_collecting_one_referent`, `retention_cannot_delete_a_live_reference`, `finalization_permits_collection_without_checkpoint` |
+| Reports state exactly which raw evidence, derivations, and future recomputation remain | `retention::tests::report_states_exactly_what_remains` |
+| Disk pressure cannot silently change policy — exhaustion fails loudly | `retention::tests::exhaustion_fails_loudly_never_downgrades` (campaign level); `ledger::tests::exhaustion_is_loud_and_changes_no_policy` |
+| Rebuild from a supported checkpoint matches live state (bit-identical) | `retention::tests::rebuild_from_checkpoint_matches_live_state` (mid-campaign checkpoint, live suffix, GC+compaction, real file reopen, resumed campaign; + profile-mismatch refusal) |
+| Same-seed retention artifacts identical (determinism gate) | `retention::tests::same_seed_yields_identical_retention_artifacts`; proptest `bounded_working_set_holds_cap_and_determinism` (256 cases) |
+| GC leaves a rebuildable checkpoint or an explicit end to reinterpretation | coverage proof above + `retention::tests::finalized_collection_ends_reinterpretation` (rebuild after finalized-uncovered collection refuses, typed); `ledger::tests::compaction_reclaims_bytes_and_replays_identically` (the anchor survives compaction) |
+
+## Deviations / judgment calls (for review)
+
+- **`CompletedRunEvidence` gains `role: EvidenceRole` (Rollout | Seal).** The
+  strategy requires rollout vs materialized-seal records to be distinguishable
+  ("one search step may submit a completed rollout at one revision and its
+  later materialized seal at another"); without it the rebuild fold would need
+  a cut-length heuristic. This changes evidence canonical bytes → batch ids;
+  no golden pins existed and no other crate constructs the type.
+- **`DifferentialCampaign::new` now returns `Result<_, CampaignError>`** (was
+  `MachineError`): construction rebuilds the retention views from the durable
+  ledger (resuming a reopened ledger for free) and rejects a checkpoint taken
+  under a different declared profile (`ProfileMismatch` — a policy change must
+  be a new campaign configuration).
+- **Restart occupancy restore**: committed assignments re-enter the
+  operational archive with `parent = genesis` and the entry's genesis-complete
+  reproducer as suffix (snapshots are ephemeral by design; first exploit
+  re-materializes from genesis — the existing graceful worst case). The
+  step-time `seed` draw is a diagnostic, not part of the committed record, so
+  a restored exemplar carries `seed = 0`.
+- **Public API snapshot regenerated** (`tests/public-api.txt`): the retention
+  module surface, `EvidenceRole`, the two `CampaignConfig` fields, ledger GC
+  methods, and the `new` signature change — all intentional, listed above.
+- **Rejected: separate retention crate.** The policy governs the ledger and
+  campaign records merged here in #130; rule 1 keeps it in `dissonance/explorer`.
+- **Rejected: budget-triggered auto-GC.** The acceptance criteria explicitly
+  forbid disk pressure changing policy; exhaustion aborts, an operator (or a
+  new configuration) frees space via the *proven* `collect_expired`/`compact`.
+
+## Known limitations / integrator notes
+
+- **Resuming live search across restart needs the coordinator's durable
+  ledger** (its `FileLedger`), so issue coordinates continue monotonically.
+  The tests resume views/occupancy over a reopened evidence ledger but do not
+  step a resumed campaign against a fresh `MemLedger` coordinator (issues
+  would re-collide at 1). The evidence-ledger half is restart-complete.
+- **`AbsenceLedger` is now serde** (part of the checkpointed views), via a
+  `pair_map` vec-of-pairs codec because `ObservationId` is a structured key.
+- The in-crate `TraceStore` remains the stand-in payload backing; when the
+  real store arrives, `PayloadRef{digest, format_version}` and the
+  `live_references`/`retain` seam are the contract to preserve.
+- Working-set admission covers **every** committed batch (rollouts and seals);
+  the bounded cap is over batches, not bytes. A byte-denominated working-set
+  policy would be a new declared profile variant, not a reinterpretation.

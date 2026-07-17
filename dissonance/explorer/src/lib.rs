@@ -74,9 +74,12 @@ mod ledger;
 mod materialize;
 mod occurrence;
 mod prng;
+mod retention;
 mod seam;
 mod spine;
 pub mod stads;
+#[cfg(test)]
+pub(crate) mod testkit;
 
 /// Convert an `sdk-events` V-time coordinate to the spine [`Moment`] (they are
 /// one-for-one — `sdk-events` mirrors the axis locally to stay dependency-free,
@@ -96,8 +99,8 @@ pub use defaults::{
 pub use engine::{Composition, Explorer, RunOutcome};
 pub use error::{EnvCodecError, MachineError};
 pub use evidence::{
-    CompletedRunEvidence, DefaultObservationCells, ObservationCells, ObservationMap, ReducedValue,
-    RunId, reduce_at_cut,
+    CompletedRunEvidence, DefaultObservationCells, EvidenceRole, ObservationCells, ObservationMap,
+    ReducedValue, RunId, reduce_at_cut,
 };
 pub use ledger::{EvidenceLedger, LedgerError, PayloadRef, TraceStore};
 pub use materialize::{Lineage, Materialization, Materializer, SealBudget};
@@ -105,6 +108,12 @@ pub use occurrence::{
     AbsenceFinding, AbsenceLedger, CounterexampleKind, OccurrenceCounterexample, OccurrenceOracle,
 };
 pub use prng::Prng;
+pub use retention::{
+    BatchAvailability, CellAssignment, CollectedBatch, CoverageRef, ExpiryOrder, FinalizedSummary,
+    FoldOutcome, GcReport, GcSkipReason, RawAvailability, Recomputation, RetentionCheckpoint,
+    RetentionError, RetentionProfile, RetentionReport, RetentionViews, WorkingSet,
+    WorkingSetUpdate,
+};
 pub use seam::{EnvCodec, Machine, MachineFactory};
 pub use spine::{
     Archive, Bug, CellFn, CellKey, ChannelId, CoverageView, DecisionPoint, EvidenceCut,

@@ -44,11 +44,15 @@ use std::collections::BTreeMap;
 use revision_coordinator::{Completion, CoordError, Coordinator, Revision, TerminalRecord};
 
 use crate::error::MachineError;
-use crate::evidence::{CompletedRunEvidence, ObservationCells, RunId};
+use crate::evidence::{CompletedRunEvidence, EvidenceRole, ObservationCells, RunId};
 use crate::ledger::{EvidenceLedger, LedgerError};
 use crate::materialize::Materializer;
-use crate::occurrence::{AbsenceLedger, OccurrenceCounterexample, OccurrenceOracle};
+use crate::occurrence::{AbsenceLedger, OccurrenceCounterexample};
 use crate::prng::Prng;
+use crate::retention::{
+    BatchAvailability, GcReport, GcSkipReason, RawAvailability, Recomputation, RetentionCheckpoint,
+    RetentionError, RetentionProfile, RetentionReport, RetentionViews,
+};
 use crate::seam::{EnvCodec, Machine};
 use crate::spine::{
     CellKey, DecisionPoint, EvidenceCut, ExemplarRef, Frontier, FrontierEntry, Moment, Reward,
@@ -60,7 +64,7 @@ use sdk_events::{Normalized, SdkError, decode_antithesis, decode_binary};
 /// The binary-wire catalog marker event id (`hm-bbx.1`): a raw tuple whose id is
 /// this is the schema declaration, not a firing. Inherited through lineage on a
 /// branch child, never re-appended as child firing evidence.
-const CATALOG_EVENT_ID: u32 = 0;
+pub(crate) const CATALOG_EVENT_ID: u32 = 0;
 
 /// Which ingress format the controller decodes a rollout's raw SDK capture with.
 /// The internal binary Event wire (the shape [`Machine::sdk_events`] returns) is
@@ -75,8 +79,11 @@ pub enum Ingress {
     AntithesisJson,
 }
 
-/// The controller's deterministic knobs, distinct from any archive/evidence
-/// retention policy (spine invariant: retention is separate from search).
+/// The controller's deterministic knobs. Search knobs stay distinct from the
+/// declared evidence-retention policy, but both live here: every retention or
+/// eviction choice that can affect search or Resolution is declared in the
+/// campaign configuration, with stable tie-breaks, independent of disk
+/// pressure and wall time (`hm-5sv`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CampaignConfig {
     /// The maximum number of provisional candidates materialized in one step
@@ -88,6 +95,14 @@ pub struct CampaignConfig {
     pub replay_budget: u64,
     /// Which ingress format to decode each rollout's SDK capture with.
     pub ingress: Ingress,
+    /// The declared evidence-retention profile (with its stable expiry
+    /// tie-breaks). Defaults to the full-retention evaluation profile, which
+    /// records from the first rollout.
+    pub retention: RetentionProfile,
+    /// The declared evidence byte budget, if any. Exceeding it fails an append
+    /// **loudly** ([`LedgerError::Exhausted`]) — host disk pressure never
+    /// silently changes the retention policy.
+    pub evidence_budget: Option<u64>,
 }
 
 impl Default for CampaignConfig {
@@ -96,6 +111,8 @@ impl Default for CampaignConfig {
             candidate_cap: 8,
             replay_budget: u64::MAX,
             ingress: Ingress::Binary,
+            retention: RetentionProfile::Full,
+            evidence_budget: None,
         }
     }
 }
@@ -122,6 +139,10 @@ pub enum CampaignError {
     /// The reproducer codec rejected an untrusted blob.
     #[error("env codec: {0}")]
     EnvCodec(#[from] crate::error::EnvCodecError),
+    /// A retention/GC proof obligation failed (loud, never absorbed into a
+    /// silent policy change).
+    #[error("retention: {0}")]
+    Retention(#[from] RetentionError),
 }
 
 // ---------------------------------------------------------------------------
@@ -248,8 +269,6 @@ pub struct DifferentialCampaign<M: Machine> {
     tactic: Box<dyn Tactic>,
     selector: Box<dyn Selector>,
     cells: Box<dyn ObservationCells>,
-    oracle: OccurrenceOracle,
-    absences: AbsenceLedger,
     occupancy: Occupancy,
     mat: Materializer,
     ledger: EvidenceLedger,
@@ -261,9 +280,12 @@ pub struct DifferentialCampaign<M: Machine> {
     /// The remaining materialization-replay budget (charged per materialized
     /// candidate).
     replay_left: u64,
-    /// Occurrence counterexamples already reported (deduped by fingerprint across
-    /// the campaign), so an equivalent verdict is reported once.
-    seen_ces: std::collections::BTreeSet<[u8; 32]>,
+    /// The retention views (`hm-5sv`): working set, finalized summary, committed
+    /// Entry cell assignments, counterexample dedup state, and the absence fold
+    /// — maintained by the same deterministic [`RetentionViews::fold_batch`] a
+    /// restart's rebuild replays, so live state and rebuilt state are
+    /// bit-identical by construction.
+    views: RetentionViews,
 }
 
 impl<M: Machine> DifferentialCampaign<M> {
@@ -271,6 +293,14 @@ impl<M: Machine> DifferentialCampaign<M> {
     /// genesis base), a reproducer codec, the spine policies, the observation cell
     /// projection, a durable evidence ledger, and a Revision coordinator. `seed`
     /// starts the campaign stream.
+    ///
+    /// The retention views are **rebuilt from the durable ledger** (its last
+    /// committed checkpoint plus the retained suffix), so reopening a campaign's
+    /// ledger resumes with exactly the state a restart is entitled to — and a
+    /// ledger checkpointed under a different declared profile is rejected
+    /// loudly ([`RetentionError::ProfileMismatch`]), never silently
+    /// reinterpreted. The declared evidence byte budget is applied to the
+    /// ledger before any append.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         mut machine: M,
@@ -278,21 +308,46 @@ impl<M: Machine> DifferentialCampaign<M> {
         tactic: Box<dyn Tactic>,
         selector: Box<dyn Selector>,
         cells: Box<dyn ObservationCells>,
-        ledger: EvidenceLedger,
+        mut ledger: EvidenceLedger,
         coordinator: Coordinator,
         config: CampaignConfig,
         seed: u64,
-    ) -> Result<Self, MachineError> {
+    ) -> Result<Self, CampaignError> {
+        let views = RetentionViews::rebuild(config.retention, cells.as_ref(), &ledger)?;
+        ledger.set_budget(config.evidence_budget);
         let (genesis, genesis_cut) = machine.snapshot()?;
+        // Restore the operational archive from the committed Entry cell
+        // assignments, so the live occupancy and the committed record stay in
+        // lock-step across a restart. A restored Entry keeps its
+        // genesis-complete reproducer and cut; its snapshot is ephemeral by
+        // design and re-materializes from genesis on first exploit.
+        let mut occupancy = Occupancy::new();
+        for a in &views.assignments {
+            let entry = FrontierEntry {
+                exemplar: VirtualExemplar {
+                    parent: genesis,
+                    // The step-time campaign draw is a diagnostic, not part of
+                    // the committed assignment record.
+                    seed: 0,
+                    suffix: a.env.clone(),
+                    cut: a.cut,
+                },
+                env: a.env.clone(),
+                reward: Reward { new_cells: 1 },
+            };
+            let admitted = occupancy.admit(entry, a.cell.clone(), a.quality);
+            debug_assert!(
+                matches!(admitted, Occupied::Fresh(_)),
+                "assignments hold one entry per cell"
+            );
+        }
         Ok(Self {
             machine,
             codec,
             tactic,
             selector,
             cells,
-            oracle: OccurrenceOracle::new(),
-            absences: AbsenceLedger::new(),
-            occupancy: Occupancy::new(),
+            occupancy,
             mat: Materializer::new(genesis, genesis_cut.at),
             ledger,
             coordinator,
@@ -304,7 +359,7 @@ impl<M: Machine> DifferentialCampaign<M> {
             },
             config,
             replay_left: config.replay_budget,
-            seen_ces: std::collections::BTreeSet::new(),
+            views,
         })
     }
 
@@ -320,7 +375,13 @@ impl<M: Machine> DifferentialCampaign<M> {
 
     /// The finalized absence-expectations view.
     pub fn absences(&self) -> &AbsenceLedger {
-        &self.absences
+        &self.views.absences
+    }
+
+    /// The retention views (`hm-5sv`): the bounded working set (record 2) and
+    /// the finalized summary + committed Entry cell assignments (record 3).
+    pub fn views(&self) -> &RetentionViews {
+        &self.views
     }
 
     /// The Revision coordinator, read-only.
@@ -372,6 +433,7 @@ impl<M: Machine> DifferentialCampaign<M> {
         };
         let evidence = CompletedRunEvidence {
             rollout: rollout_id,
+            role: EvidenceRole::Rollout,
             terminal: rollout.stop.clone(),
             env: rollout.genesis_env.clone(),
             cut: observed_cut,
@@ -387,6 +449,14 @@ impl<M: Machine> DifferentialCampaign<M> {
         })?;
         self.coordinator.close_cohort(cohort_a)?;
 
+        // Fold the committed rollout batch into the retention views — the same
+        // deterministic fold a restart's rebuild replays (working-set
+        // admission + expiry retractions touch only working views; finalized
+        // counts and counterexample dedup are monotone).
+        let fold = self
+            .views
+            .fold_batch(self.cells.as_ref(), batch1, &evidence);
+
         // ---- Barrier 1: read only after the probe frontier passes. ----
         let view1 = self.coordinator.probe_drive(p1.revision)?;
         debug_assert!(view1.frontier >= p1.revision, "barrier 1 passed");
@@ -399,7 +469,7 @@ impl<M: Machine> DifferentialCampaign<M> {
             rollout_revision: p1.revision,
             candidates: candidates.len(),
             admitted: Vec::new(),
-            counterexamples: Vec::new(),
+            counterexamples: fold.new_counterexamples,
             explored,
         };
         if !candidates.is_empty() {
@@ -421,6 +491,7 @@ impl<M: Machine> DifferentialCampaign<M> {
                         issue: p2.proposal.get(),
                         parent: Some(rollout_id.issue),
                     },
+                    role: EvidenceRole::Seal,
                     terminal: StopReason::Quiescent {
                         vtime: actual_cut.at,
                     },
@@ -435,6 +506,14 @@ impl<M: Machine> DifferentialCampaign<M> {
                     terminal: terminal_record(&seal_evidence),
                 })?;
                 last_rev = p2.revision;
+
+                // Fold the committed seal batch into the retention views: the
+                // committed assignment (record 3) updates by the identical
+                // best-Entry-per-cell rule the operational occupancy applies
+                // below, so the two can never drift.
+                let fold2 = self
+                    .views
+                    .fold_batch(self.cells.as_ref(), batch2, &seal_evidence);
 
                 // Barrier 2: the CellFn at the ACTUAL sealed_at + occupancy.
                 let obs = seal_evidence.observations_at_cut();
@@ -451,7 +530,13 @@ impl<M: Machine> DifferentialCampaign<M> {
                     env: rollout.genesis_env.clone(),
                     reward: Reward { new_cells: 1 },
                 };
-                match self.occupancy.admit(entry, cell, quality) {
+                let outcome = self.occupancy.admit(entry, cell, quality);
+                debug_assert_eq!(
+                    fold2.admitted,
+                    !matches!(outcome, Occupied::Rejected),
+                    "the committed assignment and the operational occupancy apply one rule"
+                );
+                match outcome {
                     Occupied::Fresh(r) => {
                         self.register_seal(r, seal, base_snap, &rollout.env, actual_cut)?;
                         report.admitted.push(r);
@@ -475,16 +560,134 @@ impl<M: Machine> DifferentialCampaign<M> {
             }
         }
 
-        // The occurrence oracle over the immutable evidence view (deduped by
-        // property across the campaign), and the finalized absence fold.
-        for ce in self.oracle.judge(&evidence) {
-            if self.seen_ces.insert(ce.fingerprint) {
-                report.counterexamples.push(ce);
+        Ok(report)
+    }
+
+    // -- The retention/GC surface (`hm-5sv`) --------------------------------
+
+    /// Durably commit a retention checkpoint of the current views — the
+    /// rebuild anchor physical GC may cite for coverage. Returns the committed
+    /// checkpoint.
+    pub fn commit_checkpoint(&mut self) -> Result<RetentionCheckpoint, CampaignError> {
+        let cp = RetentionCheckpoint {
+            views: self.views.clone(),
+        };
+        self.ledger.commit_checkpoint(&cp)?;
+        Ok(cp)
+    }
+
+    /// Durably mark the campaign's **explicit end to future raw-evidence
+    /// reinterpretation** (the second leg GC may stand on). Idempotent.
+    pub fn finalize_evidence(&mut self) -> Result<(), CampaignError> {
+        self.ledger.finalize()?;
+        Ok(())
+    }
+
+    /// The payload digests live Entries require — their genesis-complete
+    /// reproducers — which GC can never invalidate while the Entry is live.
+    fn live_entry_digests(&self) -> std::collections::BTreeSet<[u8; 32]> {
+        self.occupancy
+            .frontier()
+            .iter()
+            .map(|(_, e)| *blake3::hash(&e.env.bytes).as_bytes())
+            .collect()
+    }
+
+    /// Physically collect one batch's raw evidence under the full proof chain:
+    /// the declared profile must allow collection
+    /// ([`RetentionError::FullRetentionForbidsCollection`]), the batch must be
+    /// expired from the working set ([`RetentionError::StillInWorkingSet`]),
+    /// must not be required by a live Entry, and must be covered by a durable
+    /// checkpoint or the finalized end. Every failure is loud.
+    pub fn collect_batch(
+        &mut self,
+        id: revision_coordinator::EvidenceBatchId,
+    ) -> Result<crate::retention::CollectedBatch, CampaignError> {
+        if self.config.retention == RetentionProfile::Full {
+            return Err(RetentionError::FullRetentionForbidsCollection.into());
+        }
+        if self.views.working.contains(&id) {
+            return Err(RetentionError::StillInWorkingSet { batch: id }.into());
+        }
+        let protected = self.live_entry_digests();
+        Ok(self.ledger.collect(id, &protected)?)
+    }
+
+    /// One proven GC sweep: collect every retained batch that is expired from
+    /// the working set, not required by a live Entry, and covered — reporting
+    /// exactly what was collected and what was skipped (and why; a bounded
+    /// sweep never silently caps). Errors under the full-retention profile.
+    pub fn collect_expired(&mut self) -> Result<GcReport, CampaignError> {
+        if self.config.retention == RetentionProfile::Full {
+            return Err(RetentionError::FullRetentionForbidsCollection.into());
+        }
+        let protected = self.live_entry_digests();
+        let candidates: Vec<revision_coordinator::EvidenceBatchId> =
+            self.ledger.batch_ids().copied().collect();
+        let store_before = self.ledger.trace_store().len();
+        let mut report = GcReport::default();
+        for id in candidates {
+            if self.views.working.contains(&id) {
+                report.skipped.push((id, GcSkipReason::StillInWorkingSet));
+                continue;
+            }
+            match self.ledger.collect(id, &protected) {
+                Ok(_) => report.collected.push(id),
+                Err(RetentionError::LiveEntryReference { .. }) => {
+                    report.skipped.push((id, GcSkipReason::LiveEntryReference));
+                }
+                Err(RetentionError::NotCovered { .. }) => {
+                    report.skipped.push((id, GcSkipReason::NotCovered));
+                }
+                Err(e) => return Err(e.into()),
             }
         }
-        self.absences.observe(&evidence);
-
+        report.reclaimed_payloads = store_before - self.ledger.trace_store().len();
         Ok(report)
+    }
+
+    /// Physically reclaim the collected raw bytes from the durable ledger file
+    /// (a crash-safe rewrite that preserves the rebuild anchor, tombstones,
+    /// and retained evidence). Returns the bytes reclaimed.
+    pub fn compact_ledger(&mut self) -> Result<u64, CampaignError> {
+        Ok(self.ledger.compact()?)
+    }
+
+    /// The campaign **completeness report**: exactly which raw evidence
+    /// remains (per batch, with the coverage each collection cited), which
+    /// finalized derivations and committed assignments survive, and whether
+    /// future cell recomputation is available without replay.
+    pub fn retention_report(&self) -> RetentionReport {
+        let mut batches = BTreeMap::new();
+        for id in self.ledger.batch_ids() {
+            batches.insert(
+                *id,
+                BatchAvailability {
+                    raw: RawAvailability::Retained,
+                    recompute_cells: Recomputation::FromRetainedEvidence,
+                    in_working_set: self.views.working.contains(id),
+                },
+            );
+        }
+        for (id, tomb) in self.ledger.collected() {
+            batches.insert(
+                *id,
+                BatchAvailability {
+                    raw: RawAvailability::Collected {
+                        covered_by: tomb.covered_by,
+                    },
+                    recompute_cells: Recomputation::RequiresReplay,
+                    in_working_set: false,
+                },
+            );
+        }
+        RetentionReport {
+            profile: self.config.retention,
+            finalized_end: self.ledger.is_finalized(),
+            batches,
+            derivations: self.views.finalized,
+            committed_assignments: self.views.assignments.len() as u64,
+        }
     }
 
     /// Pick the branch base: genesis (explore) or a materialized frontier exemplar
@@ -774,309 +977,13 @@ mod tests {
     use crate::defaults::{DeclineTactic, GenesisSelector};
     use crate::evidence::DefaultObservationCells;
     use crate::spine::EvidenceCut;
-    use revision_coordinator::{CampaignConfigId, Coordinator, EvidenceBatchId, MemLedger};
-    use sdk_events::{
-        Classification, DeclaredPoint, NS_STATE, ObservationId, UpdateOp, ValueShape,
+    use crate::testkit::{
+        Emit, Program, ScriptedMachine, ToyCodec, campaign, config, coordinator, ledger,
+        simple_program,
     };
-    use std::collections::BTreeMap;
+    use revision_coordinator::EvidenceBatchId;
+    use sdk_events::{NS_STATE, ObservationId, UpdateOp};
     use std::rc::Rc;
-
-    // ---- a deterministic scripted machine that emits reducible SDK state ----
-
-    /// One scripted state emission: at `at`, register `reg` takes value `value`
-    /// (declared `set`), and that moment is a sealable point.
-    #[derive(Clone)]
-    struct Emit {
-        at: u64,
-        reg: u32,
-        value: u64,
-    }
-
-    /// A run's script: its state emissions (in moment order) and terminal moment.
-    #[derive(Clone)]
-    struct Program {
-        emits: Vec<Emit>,
-        terminal: u64,
-    }
-
-    /// A pure, deterministic machine whose SDK trajectory is a function of the
-    /// branch env's seed alone — same `(base, env)` ⇒ identical trajectory,
-    /// identical cuts, identical hashes.
-    struct ScriptedMachine {
-        program: Rc<dyn Fn(u64) -> Program>,
-        regs: Vec<(u32, UpdateOp)>,
-        seed: u64,
-        emits: Vec<Emit>,
-        terminal: u64,
-        cursor: usize,
-        clock: u64,
-        recorded: Reproducer,
-        snaps: BTreeMap<u64, (u64, u64)>, // snap id -> (moment, included count)
-        next_snap: u64,
-        deadline_done: bool,
-    }
-
-    impl ScriptedMachine {
-        fn new(regs: Vec<(u32, UpdateOp)>, program: Rc<dyn Fn(u64) -> Program>) -> Self {
-            Self {
-                program,
-                regs,
-                seed: 0,
-                emits: Vec::new(),
-                terminal: 0,
-                cursor: 0,
-                clock: 0,
-                recorded: Reproducer {
-                    blob_version: 1,
-                    bytes: 0u64.to_le_bytes().to_vec(),
-                },
-                snaps: BTreeMap::new(),
-                next_snap: 1,
-                deadline_done: false,
-            }
-        }
-
-        fn catalog(&self) -> Vec<u8> {
-            let points: Vec<DeclaredPoint> = self
-                .regs
-                .iter()
-                .map(|(reg, op)| DeclaredPoint {
-                    namespace: NS_STATE,
-                    local: *reg,
-                    name: format!("r{reg}"),
-                    classification: Classification::State,
-                    value_shape: Some(ValueShape::U64),
-                    base_op: Some(*op),
-                    expectation: None,
-                })
-                .collect();
-            sdk_events::encode_v2_declaration(&points).expect("valid v2 declaration")
-        }
-
-        fn seed_of(env: &Reproducer) -> u64 {
-            let mut b = [0u8; 8];
-            let n = env.bytes.len().min(8);
-            b[..n].copy_from_slice(&env.bytes[..n]);
-            u64::from_le_bytes(b)
-        }
-
-        fn included_at(&self, moment: u64) -> u64 {
-            self.emits.iter().filter(|e| e.at <= moment).count() as u64
-        }
-    }
-
-    impl Machine for ScriptedMachine {
-        fn branch(&mut self, _snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
-            self.seed = Self::seed_of(env);
-            let prog = (self.program)(self.seed);
-            self.emits = prog.emits;
-            self.terminal = prog.terminal;
-            self.cursor = 0;
-            self.clock = 0;
-            self.deadline_done = false;
-            self.recorded = env.clone();
-            Ok(())
-        }
-
-        fn replay(&mut self, snap: SnapId) -> Result<(), MachineError> {
-            // Restore to the sealed moment (verbatim); the campaign tests never
-            // diverge a replay, so this simply reseeds from the snapshot's env is
-            // unnecessary — reset the cursor to the snapshot's included count.
-            let (_, included) = self
-                .snaps
-                .get(&snap.0)
-                .copied()
-                .ok_or(MachineError::UnknownSnapshot(snap.0))?;
-            self.cursor = included as usize;
-            Ok(())
-        }
-
-        fn run(
-            &mut self,
-            until: &StopConditions,
-            _resolve: Option<&Answer>,
-        ) -> Result<StopReason, MachineError> {
-            match until.deadline {
-                // Materialize replay: advance to the sealable point at the deadline.
-                Some(d) => {
-                    while self.cursor < self.emits.len() && self.emits[self.cursor].at < d.0 {
-                        self.clock = self.emits[self.cursor].at;
-                        self.cursor += 1;
-                    }
-                    if self.cursor < self.emits.len() && self.emits[self.cursor].at == d.0 {
-                        self.clock = d.0;
-                        self.cursor += 1;
-                        Ok(StopReason::SnapshotPoint { vtime: Moment(d.0) })
-                    } else {
-                        self.clock = self.terminal.max(d.0);
-                        Ok(StopReason::Quiescent {
-                            vtime: Moment(self.clock),
-                        })
-                    }
-                }
-                // Rollout: surface each emission's sealable point, then terminate.
-                None => {
-                    if self.cursor < self.emits.len() {
-                        self.clock = self.emits[self.cursor].at;
-                        self.cursor += 1;
-                        Ok(StopReason::SnapshotPoint {
-                            vtime: Moment(self.clock),
-                        })
-                    } else {
-                        self.clock = self.terminal;
-                        Ok(StopReason::Quiescent {
-                            vtime: Moment(self.terminal),
-                        })
-                    }
-                }
-            }
-        }
-
-        fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
-            let id = self.next_snap;
-            self.next_snap += 1;
-            let included = self.included_at(self.clock);
-            self.snaps.insert(id, (self.clock, included));
-            Ok((
-                SnapId(id),
-                EvidenceCut {
-                    at: Moment(self.clock),
-                    sdk_events: included,
-                },
-            ))
-        }
-
-        fn drop_snap(&mut self, snap: SnapId) -> Result<(), MachineError> {
-            self.snaps.remove(&snap.0);
-            Ok(())
-        }
-
-        fn hash(&mut self) -> Result<[u8; 32], MachineError> {
-            let mut h = [0u8; 32];
-            h[..8].copy_from_slice(&self.seed.to_le_bytes());
-            h[8..16].copy_from_slice(&self.clock.to_le_bytes());
-            Ok(h)
-        }
-
-        fn coverage(&self) -> &[u8] {
-            &[]
-        }
-
-        fn recorded_env(&self) -> Result<Reproducer, MachineError> {
-            Ok(self.recorded.clone())
-        }
-
-        fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
-            // The catalog (schema) then every firing emitted up to the cursor.
-            let mut out = vec![(0u64, CATALOG_EVENT_ID, self.catalog())];
-            for e in self.emits.iter().take(self.cursor) {
-                let id = ((NS_STATE as u32) << 24) | (e.reg & 0x00FF_FFFF);
-                let op = self
-                    .regs
-                    .iter()
-                    .find(|(r, _)| *r == e.reg)
-                    .map(|(_, op)| *op)
-                    .unwrap_or(UpdateOp::Set);
-                let op_byte = match op {
-                    UpdateOp::Set => 0u8,
-                    UpdateOp::Max => 1,
-                    UpdateOp::Min => 2,
-                    UpdateOp::Accumulate => 3,
-                };
-                let mut bytes = vec![op_byte];
-                bytes.extend_from_slice(&e.value.to_le_bytes());
-                out.push((e.at, id, bytes));
-            }
-            Ok(out)
-        }
-    }
-
-    /// A trivial reproducer codec: the seed is the whole env; a mutation salts the
-    /// seed; composition returns the branch-local (genesis-complete by
-    /// construction in these genesis-rooted tests).
-    struct ToyCodec;
-    impl EnvCodec for ToyCodec {
-        fn seeded(&self, seed: u64) -> Reproducer {
-            Reproducer {
-                blob_version: 1,
-                bytes: seed.to_le_bytes().to_vec(),
-            }
-        }
-        fn mutate(
-            &self,
-            base: &Reproducer,
-            salt: u64,
-        ) -> Result<Reproducer, crate::error::EnvCodecError> {
-            let s = ScriptedMachine::seed_of(base) ^ salt;
-            Ok(self.seeded(s))
-        }
-        fn compose(
-            &self,
-            _base: &Reproducer,
-            branch_local: &Reproducer,
-        ) -> Result<Reproducer, crate::error::EnvCodecError> {
-            Ok(branch_local.clone())
-        }
-    }
-
-    // ---- builders ----
-
-    fn config(cap: usize, budget: u64) -> CampaignConfig {
-        CampaignConfig {
-            candidate_cap: cap,
-            replay_budget: budget,
-            ingress: Ingress::Binary,
-        }
-    }
-
-    fn coordinator() -> Coordinator {
-        Coordinator::genesis(
-            Box::new(MemLedger::new()),
-            CampaignConfigId::digest(b"test-config"),
-        )
-        .expect("genesis")
-    }
-
-    fn ledger() -> (tempfile::TempDir, EvidenceLedger) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let led = EvidenceLedger::open(&dir.path().join("evidence.log")).expect("open");
-        (dir, led)
-    }
-
-    /// A campaign over a scripted machine whose runs emit `reg=1` (`set`) at
-    /// `value = seed % modulo`, at a single sealable moment, then terminate.
-    fn simple_program(modulo: u64) -> Rc<dyn Fn(u64) -> Program> {
-        Rc::new(move |seed| Program {
-            emits: vec![Emit {
-                at: 10,
-                reg: 1,
-                value: seed % modulo,
-            }],
-            terminal: 20,
-        })
-    }
-
-    fn campaign(
-        program: Rc<dyn Fn(u64) -> Program>,
-        cfg: CampaignConfig,
-        seed: u64,
-    ) -> (tempfile::TempDir, DifferentialCampaign<ScriptedMachine>) {
-        let (dir, led) = ledger();
-        let machine = ScriptedMachine::new(vec![(1, UpdateOp::Set)], program);
-        let camp = DifferentialCampaign::new(
-            machine,
-            Box::new(ToyCodec),
-            Box::new(DeclineTactic::new()),
-            Box::new(GenesisSelector::new()),
-            Box::new(DefaultObservationCells::new()),
-            led,
-            coordinator(),
-            cfg,
-            seed,
-        )
-        .expect("new");
-        (dir, camp)
-    }
 
     /// One two-barrier step commits the rollout at revision 1, reads it past
     /// barrier 1, materializes a provisional candidate, and admits an Entry at its
@@ -1428,12 +1335,22 @@ mod tests {
             r1.counterexamples[0].kind,
             crate::occurrence::CounterexampleKind::TerminalAssertion
         );
+        assert_eq!(
+            camp.views().finalized.counterexamples,
+            1,
+            "the finalized counter counts the distinct counterexample"
+        );
         // A second step reaching the same property reports nothing new (dedup by
         // property across the campaign).
         let r2 = camp.step().expect("step 2");
         assert!(
             r2.counterexamples.is_empty(),
             "the same property is not re-reported"
+        );
+        assert_eq!(
+            camp.views().finalized.counterexamples,
+            1,
+            "the finalized counter does not re-count the deduped property"
         );
     }
 }
