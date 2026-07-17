@@ -139,6 +139,30 @@ binding public-API item from the spec exists with the specified semantics.
 - `reopen()` while the original handle still writes is split-brain and
   unsupported (documented on the trait; recovery-only).
 
+## Scoped mutants (PR #124 batch requirement)
+
+`cargo mutants` over `ledger.rs` + `file_ledger.rs` + `coordinator.rs`:
+152 mutants — 123 caught (after adding `tests/replay_validation.rs` and the
+exact frame-bound test), 18 unviable, 6 timeouts, 5 accepted survivors,
+each argued:
+
+- `coordinator.rs barrier_blocker` `< → >` on the `before` bound: the
+  assign-side barrier is invariant-dead defense-in-depth — a cohort can
+  only open when every earlier cohort is done and done never regresses, so
+  no legal API sequence or replayable stream reaches it (the ruling asked
+  for the refusal on both verbs; it stays).
+- `coordinator.rs assign` `|| → &&` on the id-exhaustion guard:
+  `next_proposal` and `next_revision` advance in lockstep and are always
+  equal, so the operators are indistinguishable (belt-and-braces check).
+- `coordinator.rs drain_ready` `< → <=`: the extra iteration hits the
+  `committed.get(...) else break` guard immediately — equivalent mutant.
+- `file_ledger.rs open` `delete !` on `created`: flips WHEN the parent
+  dirsync happens (skip-on-create/extra-on-reopen); dirsync effects are
+  not observable without filesystem-level crash injection.
+- `file_ledger.rs open` `< → <=` on the repair condition: fires a
+  truncation to the file's current length — a no-op plus a redundant
+  fsync; behaviorally invisible.
+
 ## Integrator notes
 
 - `hm-bbx.4` supplies the production `Ledger` implementation over the

@@ -445,6 +445,27 @@ mod tests {
         (records, bytes)
     }
 
+    /// The frame bound is exact: a payload of exactly `MAX_FRAME_PAYLOAD`
+    /// bytes encodes and decodes; one byte more is refused (mutants
+    /// follow-up: pins `>` vs `>=` on both sides of the codec).
+    #[test]
+    fn frame_bound_is_exact() {
+        let overhead = serde_json::to_vec(&LedgerRecord::Abort {
+            reason: String::new(),
+        })
+        .unwrap()
+        .len();
+        let exact = LedgerRecord::Abort {
+            reason: "x".repeat(MAX_FRAME_PAYLOAD - overhead),
+        };
+        let mut bytes = Vec::new();
+        encode_stream_header(&mut bytes);
+        encode_frame(&exact, &mut bytes).unwrap();
+        let (decoded, len) = decode_stream(&bytes).unwrap();
+        assert_eq!(decoded, vec![exact]);
+        assert_eq!(len, bytes.len());
+    }
+
     #[test]
     fn stream_codec_round_trips_and_tolerates_only_a_torn_tail() {
         let (records, bytes) = sample_stream();
