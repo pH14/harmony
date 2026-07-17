@@ -971,6 +971,30 @@ in `~/aa1c-r2.log`; the 10 run-sets land under `results/aa-1c/aa1c-*-r2-{bulk,gr
    mismatch or missed/duplicate overflow survives → **NO-GO**, record the fallback the
    evidence selects (§6). The `skid_margin` becomes AA-3's landing-contract bound.
 
+**PARALLEL PIVOT (Paul's directive, 2026-07-17) — AA1-F5.** The r2 serial campaign was
+pinned to core 60 because the floor-checker's evidence-integrity backbone encodes the
+*serial* pinning model: `check_aggregation` required every non-probe AA-1 run-set to
+share ONE `pinning.core`, and the condition matrix wants the four conditions on that
+core. Paul ruled that construct wrong for a no-SMT box: **"pinned-solo" is one workload
+PER PHYSICAL CORE, not one-core-total** — sharding the matrix across the idle cores (each
+tuple on its own dedicated core, concurrently) both collapses the ~1h45m serial run to
+minutes AND *is* the co-tenant determinism stress test, because BR_RETIRED is per-core,
+frequency-independent V-time (AA-1(b)): solo ≡ co-tenant digests MUST hold; any
+divergence is a **P0** (stop and report, never serialize to hide it). Implemented: (a)
+the checker's aggregation rule now permits per-shard cores at AA-1 (keeps pinned-flag +
+governor + the weights/perf/environment/mechanism/images comparison; a per-core diff
+cannot hide a count change — that surfaces as count≠oracle or a solo≠co-tenant digest);
+(b) `host/aa1c-parallel.sh` shards each co-tenant condition across cores 4–79
+concurrently (76-wide), with per-run posture attestation and RC-propagated over every
+shard; (c) `host/aa1c-determinism-check.py` compares solo vs co-tenant **final
+state_digest** per shared tuple (the P0 detector; the skid-dependent `landed_digest`
+legitimately differs, so the cross-check shard is excluded from the floor aggregate).
+Plan: keep the nearly-done pinned-solo lane as the quiet SOLO REFERENCE, then run the
+three co-tenant conditions parallel-sharded (~minutes), plus the migration probe. The
+per-core aggregation change is gated green (floor-check 67+32+3). The same sharding
+applies to AA-2 box validation and AA-3–AA-6 (own core, concurrent, don't wait on a
+campaign lock).
+
 ### AA-2 — single-step exactness: apparatus BUILT (offline, native-gated); box validation PENDING
 
 **Update 2026-07-17:** the single-step run path is now **built and native-gated** (the

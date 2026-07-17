@@ -625,26 +625,50 @@ fn check_aggregation(
         }
     }
 
-    // Pinning is the PMU/skid measurement environment: two sets pinned to DIFFERENT cores (or
-    // under different governors) are a different measurement, not one summed population, so
-    // NORMAL sets must share one pinning posture. The ONE exception is AA-1's sanctioned
-    // migration probe, which runs UNPINNED by design — so it is exempt, while every other set
-    // (AA-1's ordinary condition sets included) is held to the first non-probe set's posture.
-    // Comparing against a non-probe reference (not simply the first set) is what stops a probe
-    // that happens to sort first from letting the normal sets diverge. Outside AA-1 there is no
-    // probe, so this reduces to "all sets share pinning".
+    // Pinning is the PMU/skid measurement environment. Two sets under different GOVERNORS, or
+    // one pinned and one not, are a different measurement, so NORMAL sets must share that
+    // posture. The CORE, however, is treated differently by stage:
+    //
+    // - Outside AA-1: normal sets must share ONE pinned core (the strict serial posture).
+    // - AA-1 (Paul's 2026-07-17 parallel ruling): shards may pin to DIFFERENT cores. Altra has
+    //   no SMT, so a tuple on its own dedicated core still satisfies the pinning discipline even
+    //   with every sibling core busy; and BR_RETIRED is a PER-CORE, frequency-independent V-time
+    //   count (AA-1(b)), so a per-shard core cannot hide a count change — a real divergence
+    //   surfaces as count != oracle (count-exactness, graded per set) or as a solo != co-tenant
+    //   state_digest (host/aa1c-determinism-check.py), both elsewhere. Running the matrix
+    //   concurrently across cores IS the co-tenant determinism stress test, so per-core shards
+    //   are the intended posture, not a violation. The weights/perf/environment/mechanism/images
+    //   comparison above still binds, so a count change cannot hide behind a compensating
+    //   constants-pack difference either.
+    //
+    // The ONE unpinned exception (the migration probe) is filtered out first, and the reference
+    // is a non-probe set so a probe sorting first cannot let the normal sets diverge.
     if let Some(reference) = loaded
         .iter()
         .map(|(rs, _, _)| rs)
         .find(|rs| !rs.pinning.migration_probe)
     {
         for (rs, _, _) in loaded {
-            if !rs.pinning.migration_probe && rs.pinning != reference.pinning {
+            if rs.pinning.migration_probe {
+                continue;
+            }
+            let posture_ok = if stage == Stage::Aa1 {
+                rs.pinning.pinned == reference.pinning.pinned
+                    && rs.pinning.governor == reference.pinning.governor
+            } else {
+                rs.pinning == reference.pinning
+            };
+            if !posture_ok {
+                let core_note = if stage == Stage::Aa1 {
+                    " (AA-1 permits per-shard cores; the mismatch is in pinned/governor)"
+                } else {
+                    ""
+                };
                 problems.push(format!(
                     "run-set {} pins to a different posture (pinned {:?}, core {:?}, governor {}) \
                      than the aggregate ({} — pinned {:?}, core {:?}, governor {}): normal sets \
-                     must share ONE pinned core and governor; only AA-1's migration probe may \
-                     run unpinned",
+                     must share the pinned flag and governor{core_note}; only AA-1's migration \
+                     probe may run unpinned",
                     rs.run_set_id,
                     rs.pinning.pinned,
                     rs.pinning.core,
@@ -4025,17 +4049,27 @@ mod tests {
             Some(Status::Fail)
         );
 
-        // At AA-1, ONLY the migration probe (unpinned by design) may differ. Two NORMAL AA-1
-        // condition sets on different cores are still a different measurement → refused.
+        // At AA-1 (Paul's 2026-07-17 parallel ruling), normal sets may pin to DIFFERENT cores:
+        // on a no-SMT box each shard owns its physical core, and BR_RETIRED is per-core V-time,
+        // so sharding the matrix across cores is the intended (and co-tenant-stress) posture, not
+        // a violation. Two normal AA-1 sets on different cores therefore AGGREGATE.
         let mut a1 = [
-            a_loaded_set(Stage::Aa1, "a", "pinned-solo", &"a".repeat(64), 2),
+            a_loaded_set(Stage::Aa1, "a", "co-tenant-other-core", &"a".repeat(64), 2),
             a_loaded_set(Stage::Aa1, "b", "co-tenant-other-core", &"b".repeat(64), 2),
         ];
         a1[1].0.pinning.core = Some(3);
         assert_eq!(
             status(&aggregate(&a1, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Pass),
+            "AA-1 shards on different cores are one sharded measurement — the parallel ruling"
+        );
+        // But a different GOVERNOR still moves the measurement environment → refused, even at AA-1.
+        let mut a1g = a1;
+        a1g[1].0.pinning.governor = "schedutil".into();
+        assert_eq!(
+            status(&aggregate(&a1g, &floors).outcomes, CheckId::Aggregation),
             Some(Status::Fail),
-            "normal AA-1 sets on different cores are not one measurement — only the probe is exempt"
+            "AA-1 permits per-shard cores but not a different governor"
         );
 
         // The migration probe, unpinned, aggregates fine beside the pinned condition set —
@@ -4063,14 +4097,17 @@ mod tests {
         probe_first[0].0.pinning.pinned = false;
         probe_first[0].0.pinning.core = None;
         probe_first[0].0.pinning.migration_probe = true;
-        probe_first[2].0.pinning.core = Some(3); // a normal set on a different core
+        // A normal set diverging in GOVERNOR (AA-1 permits per-shard cores, but not a different
+        // governor) — the reference is the first NON-probe set, so the probe sorting first must
+        // not let this slip.
+        probe_first[2].0.pinning.governor = "schedutil".into();
         assert_eq!(
             status(
                 &aggregate(&probe_first, &floors).outcomes,
                 CheckId::Aggregation
             ),
             Some(Status::Fail),
-            "a probe sorting first must not let the normal sets diverge in posture"
+            "a probe sorting first must not let the normal sets diverge in posture (governor)"
         );
     }
 
