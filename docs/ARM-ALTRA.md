@@ -1085,12 +1085,44 @@ required before an AA-2 disposition):**
    is **direct AA-4 input** (it is the mechanism behind the LL/SC count-determinism
    minefield). It independently requires the step budget to bound the loop.
 
-**Disposition: PENDING** — the single-step mechanism is confirmed on silicon; the AA-2
-GO awaits the `--max-steps` refinement (bounded, class-covering, count-coupling handled),
-then the full acceptance run (one insn/step vs oracle, `BR_RETIRED` only on stepped taken
-branches, behaviour across `SVC`/abort/`ERET`/`WFI`, the llsc-livelock characterized,
-replay-identical `step_digest`). The refinement is a clean next unit; `harness/AA2-BUILD.md`
-carries the design.
+**Box-validation run (2026-07-17, on the `-aa3preempt` kernel — single-step is a stock KVM
+feature the patch does not touch, so AA-2 semantics are identical there; the stock vmlinux
+was lost to the build-patched clobber, so AA-2 rides the patched kernel too).** The
+`--max-steps` refinement works: a bounded run (`--max-steps 12000`, all 8 payloads, reps 2)
+wrote **170,330 step records** in ~74 s (registers-only per step ≈ 0.43 ms/step).
+
+**AA-2 core result — GO on the primitive:** `KVM_GUESTDBG_SINGLESTEP` on N1 retires
+**exactly one instruction per step for all 170,330 steps** (`insn_retired == 1`
+everywhere; PC always advances). This is the trustworthy step primitive AA-3's exact
+landing depends on.
+
+**Per-step `BR_RETIRED` confirms AA1-F1 at single-step granularity** — the event counts
+branch *instructions*, taken AND not-taken: measured deltas are taken-branch = 1,
+`ERET` = 1, a **not-taken conditional branch** = 1 (pc+4 but the branch instruction
+retired), and non-branch / `SVC` / `WFI` / LDXR/STXR-exclusive = 0. So a step that lands
+at pc+4 is +0 only if it was a *non-branch*; a not-taken branch is pc+4 and +1.
+
+**LL/SC single-step LIVELOCKS deterministically** (foreman #4): the `llsc-atomics` retry
+loop at **`0x40080880`–`0x40080890`** (LDXR / STXR / CBNZ) never completes — every single
+step clears the exclusive monitor, so STXR always fails and the loop cycles forever
+(bounded here at `--max-steps`; ~2,478 steps per loop PC). This is the architectural
+hazard AA-2 exists to surface and **direct AA-4 input** — under single-step the livelock
+is *deterministic* (same retry sequence every rep), unlike AA-1's spontaneous STXR
+divergence.
+
+**Two apparatus-model fixes needed before a GREEN grade** (the FAILs are model bugs, not
+hardware): (1) `classify_transition` / `StepTransition` / `check_debug_evidence` predate
+AA1-F1 — a not-taken *branch* (pc+4) must be classified with `br_retired_delta == 1`,
+distinct from a non-branch `Sequential` (delta 0); (2) `check_replay_identity`'s rep-key
+`(payload, scale, seed)` lumps every step of a group together and compares their
+necessarily-different per-step digests — it must include the step position (pc/index) so
+step *N* of rep 1 compares to step *N* of rep 2.
+
+**Disposition: REDESIGN (apparatus, not silicon) → then GO.** The single-step primitive is
+**exact and trustworthy on N1** (the AA-3-relevant result); the AA-2 *stage* grade awaits
+the two apparatus corrections above (the AA1-F1 not-taken-branch classification + the
+step-position rep-key), after which the same run re-grades. Being fixed offline in parallel
+with AA-3; `harness/AA2-BUILD.md` carries the design.
 
 ### AA-3 — deterministic force-exit (0004-analogue) + exact landing: IN PROGRESS
 
