@@ -818,12 +818,21 @@ Post-correction status: the model correction (`certain_branches`) is implemented
 across oracle-model / el0-check / the guest checker's `total()` base, fixtures
 and the expected-counts manifest regenerated, all offline gates green; the probe
 evidence re-grades **PASS 11/11** with per-class constant offsets (+12
-straight-line, +14 branch-dense over 36 records). The graded AA-1(a) condition
-matrix (pinned-solo / co-tenant-other-core / co-tenant-same-core /
-memory-pressure × 1e6/1e7/1e8 × 3 cases × 10 reps, `host/el0-conditions.sh`,
-smoke-fire-once per condition) runs on the quiet box. The EL0 kernel-mediated
-classes (syscall / signal / page-fault) are the follow-on block. Measurement-host
-staging: stock 6.18.35 deb built and installed; the GRUB one-shot staging
-(`host/stage-6.18-boot.sh`: saved-default pinned to 6.8.0-134, `panic=30`
-self-recovery, `grub-reboot` one-shot into 6.18.35) and all reboots are BLOCKED
-pending operator authorization — reported, not worked around.
+straight-line, +14 branch-dense over 36 records).
+
+**AA-1(a) EL0 condition matrix: ALL GREEN** (evidence
+`results/aa-1a/aa1a-{pinned-solo,co-tenant-other-core,co-tenant-same-core,memory-pressure}-001`,
+smoke-fire-once per condition, quiet box, core 61): `el0-check` over the union —
+**PASS 11/11 over 720 records**. 72 repeated cases bit-identical; ONE constant
+offset per class across every condition and scale; 720/720 accumulators match.
+Wall clock moved under load; counts did not. Still open for the (a)
+sub-experiment: the kernel-mediated EL0 classes (syscall / signal / page-fault).
+(b)/(c) are guest-mode and wait on the measurement host.
+
+Measurement-host staging: stock 6.18.35 deb built and installed
+(`linux-image-6.18.35_6.18.35-2_arm64.deb`; vmlinux build-id
+`1e975db8ae7fa463a78c6190c4079a88409ab888` retained for run attestation); the
+GRUB one-shot staging (`host/stage-6.18-boot.sh`: saved-default pinned to
+6.8.0-134, `panic=30` self-recovery, `grub-reboot` one-shot into 6.18.35) and
+all reboots are BLOCKED pending operator authorization — reported, not worked
+around.
