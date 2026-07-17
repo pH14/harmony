@@ -23,8 +23,8 @@ transfer and are flagged **PROVISIONAL — re-confirm on a real EPYC** where the
 | **AE-2** | **PROVISIONAL GO** | Ruled **TF** (via `KVM_GUESTDBG_SINGLESTEP`), **not BTF** — refuting the doc's provisional lead on silicon: TF is exact + guest-transparent (`tf_kept=0`); BTF delivers 0 `#DB` through stock KVM; MOV-SS shadow the one recorded hazard. |
 | **AE-3** | **GO (mechanism) / PROVISIONAL (exact landing)** | Escalation RESOLVED (Paul 2026-07-17: build+boot 6.18.35 on this box). Patched `kvm_amd` fires **`KVM_EXIT_PREEMPT` on-silicon** every arm; skid ∈ [2581,3039] ≪ margin, never overshoots at overflow. Needed a **2nd svm.c hunk** (advertise the opt-in cap on SVM — 0003 is VMX-only). Exact single-step **landing** shows run-to-run jitter on the non-isolated core (core-isolation dependency); isolating diagnostic cut off by loss of box access. See §AE-3 execution. |
 | **AE-4** | **PROVISIONAL GO** | Freeze **demonstrated on-silicon**: guest sees frozen `AuthenticAMD` + TSC bit cleared **below host** (`0x078bfbff`→`ef`); denied MSR (HWCR) RDMSR **traps to the vmm**. `det-zen2-v1` truth table ratified. |
-| **AE-5** | **PARTIAL** | Substrate same-seed determinism **demonstrated (1000/1000 bit-identical** on SVM); full mini gate (work-clock preempt + `svm.c` force-exit + fault injection + postgres Subject) gated on **AE-3** + the appliance (`hm-tn9`, out of spike scope per `hm-u1n`). |
-| **AE-6** | **GATED** | Nested SVM **confirmed available** (`kvm_amd nested=1`); full nested gate (consonance stack as L1) follows the AE-5 bare-metal GO + appliance. |
+| **AE-5** | **PARTIAL** | Substrate same-seed determinism **demonstrated (1000/1000 bit-identical** on SVM, pre-6.18 boot). Mechanism-integrated gate harness (`harness/ae5-gate.c`: work-clock preempt + `svm.c` force-exit + fault-at-Moment + same-seed) written and cap-fix-ready, but the **full mini gate blocked on (a) the AE-3 exact-landing core-isolation residual, (b) the postgres Subject via the appliance (`hm-tn9`), and now (c) restored box access** (lost mid-run). |
+| **AE-6** | **GATED** | Nested SVM **confirmed available** (`kvm_amd nested=1` on the patched 6.18.35 L0); full nested gate (consonance stack as L1) follows the AE-5 bare-metal GO + appliance + restored box access. |
 
 No **kill condition** fired: no unexplained count mismatch (the ±1 jitter is accounted host
 interrupts, exactly 0 on clean windows), overflow never lost/duplicated/early, a single-step
@@ -165,13 +165,26 @@ while the box ran stock 6.8. That version skew is what the build-on-this-box rul
 The superseded out-of-tree recipe is `host/build-kvm-amd.sh` (kept for provenance);
 `host/build-6.18-kernel.sh` is the recipe that was actually executed.
 
-## Remaining box steps (for the foreman / next iteration)
+## Residuals (Paul 2026-07-17: land the current result; these need restored box access)
 
-- **AE-5 full mini gate + AE-6 nested** — need the AE-3 patched kernel (above) **and** the
-  appliance build (`hm-tn9`, out of spike scope): the postgres Subject + work-clock-driven
-  preemption via the `svm.c` force-exit + fault injection at seeded Moments, then the one-command
-  demo; then its nested-SVM twin (`kvm_amd nested=1` confirmed ready). The substrate half
-  (same-seed determinism, `ae5-determinism` 1000/1000) is done.
+The AE-3 patched 6.18.35 kernel is BUILT + BOOTED and the force-exit is PROVEN; the box was
+then lost (re-provisioned/keys reset). All apparatus below is committed and reproducible from a
+fresh checkout the moment box access returns:
+
+- **AE-3 exact-landing under core isolation** — the mechanism (force-exit) is a GO; the exact
+  single-step landing needs a `nohz_full`/`isolcpus` boot to kill the ~few-branch counter jitter
+  that varies the landed state run-to-run (the diagnostic — RIP+RCX-only digest to separate
+  counter jitter from RFLAGS debug-bit variance, then the 10⁶-arm replay campaign via
+  `host/run-ae3.sh` + `check-floors.py ae3` — was cut off by the box loss). This is the same
+  core-isolation the production backend runs under and that AE-1 deferred ("No isolation reboot").
+- **AE-5 full mini gate + AE-6 nested** — `harness/ae5-gate.c` (work-clock preempt + `svm.c`
+  force-exit + fault-at-Moment + same-seed) is ready and cap-fixed; it needs the AE-3 landing
+  isolation (above) plus the postgres Subject via the appliance (`hm-tn9`, out of spike scope),
+  then the nested-SVM twin on the confirmed `nested=1` L0. Substrate half (`ae5-determinism`
+  1000/1000) is done (pre-6.18).
+- **Fold the second svm.c hunk upstream** — the `svm_hardware_setup` cap-advertisement finding
+  should be reflected wherever the AMD force-exit patch is productionized (it is NOT provided by
+  the shared x86 series; patch 0003 is VMX-only).
 - **AE-2 tail** — the full `work == target` landing (single-step + work-counter inversion, the
   AE-3 harness) and the syscall/exception/`iret`/injected-interrupt classes (need the
   IDT-bearing protected/long-mode Subject); plus a direct guest-`PUSHF` confirmation of
