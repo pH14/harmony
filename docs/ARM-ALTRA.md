@@ -995,6 +995,55 @@ per-core aggregation change is gated green (floor-check 67+32+3). The same shard
 applies to AA-2 box validation and AA-3–AA-6 (own core, concurrent, don't wait on a
 campaign lock).
 
+### AA-1(c) — **GO** (2026-07-17). AA-1 (the existential trio) — **PROVISIONAL GO**.
+
+The parallel campaign (`host/aa1c-run-all.sh par1 420 6`; ~20 min wall, 256 run-sets)
+returns clean at the **normative** floor. Evidence:
+`results/aa-1c/parallel-evidence/` — `aa1c-par1-verdict.txt` (the aggregate floor-check
+output, the authoritative graded record), `aa1c-par1-constants.json` (skid/density),
+`aa1c-par1-determinism.json`; raw per-sample records (~800 MB) stay on the box under
+`results/aa-1c/parallel/`, content-addressed by each manifest's `records_sha256` and
+recomputed by the verdict.
+
+**Aggregate floor-check: `RESULT: PASS (4084 checks)`** over 255 run-sets
+(`--min-armed-overflows 1000000 --min-cases 100000`), zero FAIL, zero NOT-REQUESTED:
+
+- **`1,022,880` armed overflows** cumulative across the four-condition matrix
+  (pinned-solo / co-tenant-other-core / memory-pressure / co-tenant-same-core), **all
+  delivered exactly once** — zero missed, zero duplicate (per-record multiplicity);
+- **zero count mismatches** — every one of ~10⁶ records is count-exact vs the analytical
+  oracle, including the 250,000-record quiet **solo reference** and every co-tenant
+  shard (co-tenant count-determinism holds — counts are invariant under 76-way
+  concurrency, same-core contention, and memory pressure);
+- **`1,022,880` distinct armed target/seed cases** ≥ the 100,000 floor;
+- the migration probe (bounded, unpinned, rr #3607): **3,200 armed, 0 lost, 0 duplicated**
+  — the missed-PMI mode did not manifest under deliberate cross-core churn on this
+  kernel/silicon (favorable; pinning stays the standing condition, not relaxed on the
+  strength of one bounded probe).
+
+**The solo ≡ co-tenant determinism check (Paul's directive, the P0 detector):
+`verdict: MATCH`** — all 3,200 shared tuples across all 8 payload classes carry a
+**bit-identical final `state_digest`, `measured_taken`, and delivery count** whether run
+solo (quiet core 60) or under 76-way co-tenant load. Co-tenancy does not perturb the
+digest. Zero divergences ⇒ no P0.
+
+**Constants pack (§Definition of done #2):** the N1 **`skid_margin` = 53** — the
+worst-case early/late skid over 3,744 delivered armed overflows on the real-scale grid,
+scale-independent (the branch rate is the same loop at every scale), and **tighter than
+the x86 folklore 256**. The full per-class density (`measured_taken` ranges, skid
+distribution per payload/scale/condition) is in `aa1c-par1-constants.json` — the SimCpu /
+PlannerConfig re-parameterization inputs. AA-3's landing contract must stay within this
+53-event margin.
+
+**Existential-trio verdict: PROVISIONAL GO** (§AA-1: clean but bounded — "report
+confidence and coverage; do not call it a proof"). All three questions answered YES on
+real N1: (1) `BR_RETIRED` counting is bit-deterministic on a pinned core (and, stronger,
+on every core concurrently); (2) overflow PMIs arrive reliably exactly once out of
+`KVM_RUN`; (3) the skid bound is 53. The named bound: this is the pre-patch
+**signal-kick** mechanism; AA-3 must reproduce exactly-once delivery and a landing within
+`skid_margin` on the patched in-kernel exit. Constants feed the SimCpu re-parameterization
+and AA-3.
+
 ### AA-2 — single-step exactness: apparatus BUILT (offline, native-gated); box validation PENDING
 
 **Update 2026-07-17:** the single-step run path is now **built and native-gated** (the
