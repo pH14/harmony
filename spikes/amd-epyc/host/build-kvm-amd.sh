@@ -50,14 +50,15 @@ fetch_src() {
 apply_patches() {
   cd "$SRC"
   cp "/boot/config-${KREL}" .config
-  # the vendor-neutral determinism plumbing shared with the Intel backend:
-  local KP="$ROOT/../../consonance/vmm-backend/kvm-patches/patches"
+  # the vendor-neutral determinism plumbing shared with the Intel backend (staged from
+  # consonance/vmm-backend/kvm-patches/patches into host/patches/upstream/ on the box):
+  local KP="$SD/patches/upstream"
   git init -q 2>/dev/null || true; git add -A -q 2>/dev/null || true
   git -c user.email=s@s -c user.name=s commit -qm base 2>/dev/null || true
   for p in \
-      "$KP/0001-KVM-x86-add-KVM_EXIT_DETERMINISM-userspace-exit-ABI.patch" \
-      "$KP/0002-KVM-x86-emulate-intercepted-RDTSC-RDTSCP-RDRAND-RDSE.patch" \
-      "$KP/0004-KVM-x86-add-KVM_EXIT_PREEMPT-in-kernel-force-exit-pr.patch" \
+      "$KP"/0001-*.patch \
+      "$KP"/0002-*.patch \
+      "$KP"/0004-*.patch \
       "$SD/patches/0004-KVM-SVM-KVM_EXIT_PREEMPT-force-exit-analogue.patch"; do
     echo "applying $(basename "$p")" >&2
     git apply --index "$p" || { echo "APPLY FAILED: $p (context drift vs ${KVER}; adjust hunk)" >&2; exit 1; }

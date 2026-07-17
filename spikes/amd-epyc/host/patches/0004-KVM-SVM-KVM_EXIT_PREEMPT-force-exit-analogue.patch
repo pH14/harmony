@@ -13,55 +13,57 @@ deadline - SKID_MARGIN overflows and fires a host PMI; the in-kernel force-exit
 converts that overflow into a deterministic vCPU exit with a dedicated reason
 BEFORE any guest-visible side effect, so the V-time deadline is hit with only the
 bounded hardware-PMI skid rather than the unbounded SIGIO-delivery skid a
-CPU-bound guest can outrun (AE-1(d) measured that host-side skid at up to
-~thousands of retired branches; this patch is what bounds it).
+CPU-bound guest can outrun (AE-1(d) measured the hardware PMI skid at max 5043
+retired taken branches; this patch is what lands at it deterministically).
 
 WHY THIS IS ONLY THE svm.c HUNK (the load-bearing simplification, do not lose in
 review). Intel and AMD are the SAME x86-64 Arch and share arch/x86 (docs/ARCH-
-BOUNDARY.md): the UAPI (KVM_EXIT_PREEMPT = 42; KVM_ARM_PREEMPT_EXIT =
-_IO(KVMIO, 0xe4)), the per-vCPU one-shot arm (vcpu->arch.preempt_armed), the
-KVM_ARM_PREEMPT_EXIT ioctl case in arch/x86/kvm/x86.c, and the
-kvm->arch.deterministic_intercepts opt-in are ALL added by the vendor-neutral
-x86 patches 0001/0004 and are shared verbatim with the VMX backend. Applying
-0001..0004 to the tree already provides them; this patch adds ONLY the SVM
-exit-path hook -- the analogue of 0004's arch/x86/kvm/vmx/vmx.c
-handle_exception_nmi() hunk. There is no new UAPI, no new field, no new ioctl.
+BOUNDARY.md): the UAPI (KVM_EXIT_PREEMPT; KVM_ARM_PREEMPT_EXIT ioctl), the
+per-vCPU one-shot arm (vcpu->arch.preempt_armed), the KVM_ARM_PREEMPT_EXIT ioctl
+case in arch/x86/kvm/x86.c, and the kvm->arch.deterministic_intercepts opt-in are
+ALL added by the vendor-neutral x86 patches 0001/0004 and are shared verbatim with
+the VMX backend. Applying 0001..0004 to the tree already provides them; this patch
+adds ONLY the SVM exit-path hook -- the analogue of 0004's arch/x86/kvm/vmx/vmx.c
+handle_exception_nmi() hunk. No new UAPI, no new field, no new ioctl.
 
-ARCH DETAIL (svm.c vs vmx.c). On AMD SVM the perf-overflow PMI is delivered as
-an NMI exactly as on Intel; with the VMCB NMI intercept set (KVM's default), the
-NMI #VMEXITs with SVM_EXIT_NMI, the host PMI has already been serviced by
-svm_handle_exit_irqoff() (vcpu->arch.at_instruction_boundary is set there for
-SVM_EXIT_NMI) by the time the C-level exit handler nmi_interception() runs, and
-nmi_interception() -- the SVM twin of vmx handle_exception_nmi()'s is_nmi() arm
--- returns 1 to re-enter. This patch makes it instead return to userspace with
-KVM_EXIT_PREEMPT when the determinism opt-in and the one-shot arm are set,
-mirroring 0004 line-for-line. default-off => byte-identical stock behavior.
+ARCH DETAIL (svm.c vs vmx.c). On AMD SVM the perf-overflow PMI is delivered as an
+NMI exactly as on Intel; with the VMCB NMI intercept set (KVM's default), the NMI
+#VMEXITs with SVM_EXIT_NMI, the host PMI has already been serviced by
+svm_handle_exit_irqoff() by the time the C-level exit handler nmi_interception()
+runs, and nmi_interception() -- the SVM twin of vmx handle_exception_nmi()'s
+is_nmi() arm -- returns 1 to re-enter. This patch makes it instead return to
+userspace with KVM_EXIT_PREEMPT when the determinism opt-in and the one-shot arm
+are set, mirroring 0004 line-for-line. default-off => byte-identical stock behavior.
 
 AVIC POSTURE (docs/AMD-EPYC.md Sec 3). AVIC accelerates ordinary interrupt (IRQ)
 delivery in hardware and is disabled for the deterministic backend
 (kvm_amd avic=0, recorded in the box baseline); it does NOT accelerate NMIs, so
-the perf-overflow NMI reaches this SVM_EXIT_NMI path regardless. The AVIC-off
-posture is a recorded standing condition of the deterministic backend (the
-interrupt fabric is kept in userspace for determinism, as on Intel), not a
-correctness dependency of this hook -- but AE-3's mechanism attestation asserts
-avic=0 per run so a silent AVIC-on run cannot masquerade as this mechanism.
+the perf-overflow NMI reaches this SVM_EXIT_NMI path regardless. AVIC-off is a
+recorded standing condition (interrupt fabric kept in userspace for determinism,
+as on Intel), attested per AE-3 run so a silent AVIC-on run cannot masquerade as
+the mechanism (evidence integrity #4).
 
-Applies-and-compiles is the whole claim of this draft: git-am onto the pinned
-linux-source-6.8.0 tree and `make M=arch/x86/kvm` are the AE-3 box steps
-(host/build-kvm-amd.sh); it has not run as a host kernel and makes no claim about
-PMI-to-exit determinism or skid on real silicon -- that is AE-3's on-box job.
+BUILD STATUS (AE-3, tasks/123). The svm.c hunk below was VERIFIED against the real
+linux-source-6.8.0 tree: nmi_interception is exactly `{ return 1; }` at the target,
+so the hunk's context matches. The FULL build is BLOCKED and ESCALATED: the shared
+determinism plumbing (patches 0001/0002/0004) targets kernel ~6.18, but the box
+runs stock 6.8.0-88 whose include/uapi/linux/kvm.h tops out at
+KVM_EXIT_MEMORY_FAULT (39) with no KVM_EXIT_TDX/DETERMINISM/PREEMPT and no
+deterministic_intercepts/preempt_armed fields -- so 0001/0004 do not apply and the
+fields this hunk compiles against are absent. Resolving that (a 6.18-class box
+kernel, or an official 6.8 backport of the determinism series) is a decision above
+the spike, recorded for escalation -- NOT a NO-GO for the mechanism, which is sound.
 
 Co-developed-for: harmony AMD vendor spike AE-3 (tasks/123)
 ---
- arch/x86/kvm/svm/svm.c | 16 +++++++++++++++-
+ arch/x86/kvm/svm/svm.c | 15 ++++++++++++++-
  1 file changed, 15 insertions(+), 1 deletion(-)
 
 diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
 index 000000000..000000001 100644
 --- a/arch/x86/kvm/svm/svm.c
 +++ b/arch/x86/kvm/svm/svm.c
-@@ -2085,7 +2085,21 @@ static int smi_interception(struct kvm_vcpu *vcpu)
-
+@@ -2311,4 +2311,19 @@ static int nmi_interception(struct kvm_vcpu *vcpu)
  static int nmi_interception(struct kvm_vcpu *vcpu)
  {
 -	return 1;
@@ -82,7 +84,5 @@ index 000000000..000000001 100644
 +	}
 +	return 1;
  }
-
- static int smi_interception(struct kvm_vcpu *vcpu)
 --
 2.47.3
