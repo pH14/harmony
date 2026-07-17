@@ -61,12 +61,35 @@ impl explorer::stads::SpeciesStats
 pub fn explorer::stads::SpeciesStats::chao1(&self) -> explorer::stads::Frac
 pub fn explorer::stads::SpeciesStats::discovery_below(&self, u64, u64) -> bool
 pub fn explorer::stads::SpeciesStats::discovery_probability(&self) -> explorer::stads::Frac
+pub enum explorer::CampaignError
+pub explorer::CampaignError::Coord(revision_coordinator::coordinator::CoordError)
+pub explorer::CampaignError::Decode(sdk_events::error::SdkError)
+pub explorer::CampaignError::EnvCodec(explorer::EnvCodecError)
+pub explorer::CampaignError::Ledger(explorer::LedgerError)
+pub explorer::CampaignError::Machine(explorer::MachineError)
+pub enum explorer::CounterexampleKind
+pub explorer::CounterexampleKind::AlwaysViolated
+pub explorer::CounterexampleKind::TerminalAssertion
+pub explorer::CounterexampleKind::UnreachableReached
 pub enum explorer::EnvCodecError
 pub explorer::EnvCodecError::Malformed(u16)
 pub explorer::EnvCodecError::MisorderedChain(&'static str)
 pub explorer::EnvCodecError::NonAdjacentChain(&'static str)
 pub explorer::EnvCodecError::Overflow
 pub explorer::EnvCodecError::UnsupportedComposition
+pub enum explorer::Ingress
+pub explorer::Ingress::AntithesisJson
+pub explorer::Ingress::Binary
+pub enum explorer::LedgerError
+pub explorer::LedgerError::BadPayload
+pub explorer::LedgerError::BadPayload::detail: alloc::string::String
+pub explorer::LedgerError::BadPayload::offset: u64
+pub explorer::LedgerError::Corrupt
+pub explorer::LedgerError::Corrupt::detail: alloc::string::String
+pub explorer::LedgerError::Corrupt::offset: u64
+pub explorer::LedgerError::Io(std::io::error::Error)
+pub explorer::LedgerError::UnsupportedVersion
+pub explorer::LedgerError::UnsupportedVersion::found: u32
 pub enum explorer::MachineError
 pub explorer::MachineError::BadEnvironment(u16)
 pub explorer::MachineError::CutDivergence
@@ -86,6 +109,15 @@ pub explorer::MachineError::NotSealable(u64)
 pub explorer::MachineError::Transport(alloc::string::String)
 pub explorer::MachineError::UnknownExemplar(u64)
 pub explorer::MachineError::UnknownSnapshot(u64)
+pub enum explorer::Occupied
+pub explorer::Occupied::Dominated
+pub explorer::Occupied::Dominated::entry: explorer::ExemplarRef
+pub explorer::Occupied::Dominated::evicted: explorer::ExemplarRef
+pub explorer::Occupied::Fresh(explorer::ExemplarRef)
+pub explorer::Occupied::Rejected
+pub enum explorer::ReducedValue
+pub explorer::ReducedValue::Accumulated(alloc::collections::btree::set::BTreeSet<u64>)
+pub explorer::ReducedValue::Scalar(u64)
 pub enum explorer::SealBudget
 pub explorer::SealBudget::Frontier
 pub explorer::SealBudget::Frontier::base: u64
@@ -122,6 +154,16 @@ pub explorer::Value::Bytes(alloc::vec::Vec<u8>)
 pub explorer::Value::Int(i64)
 pub explorer::Value::Str(alloc::string::String)
 pub explorer::Value::UInt(u64)
+pub struct explorer::AbsenceFinding
+pub explorer::AbsenceFinding::expectation: sdk_events::schema::Expectation
+pub explorer::AbsenceFinding::name: core::option::Option<alloc::string::String>
+pub explorer::AbsenceFinding::property: sdk_events::schema::ObservationId
+pub struct explorer::AbsenceLedger
+impl explorer::AbsenceLedger
+pub fn explorer::AbsenceLedger::absences(&self) -> alloc::vec::Vec<explorer::AbsenceFinding>
+pub fn explorer::AbsenceLedger::new() -> Self
+pub fn explorer::AbsenceLedger::observe(&mut self, &explorer::CompletedRunEvidence)
+pub fn explorer::AbsenceLedger::satisfied(&self, &sdk_events::schema::ObservationId) -> u64
 pub struct explorer::AdapterEnv
 pub explorer::AdapterEnv::base_offset: u64
 pub explorer::AdapterEnv::pos: u64
@@ -134,7 +176,24 @@ pub struct explorer::Bug
 pub explorer::Bug::env: explorer::Reproducer
 pub explorer::Bug::fingerprint: [u8; 32]
 pub explorer::Bug::stop: explorer::StopReason
+pub struct explorer::CampaignConfig
+pub explorer::CampaignConfig::candidate_cap: usize
+pub explorer::CampaignConfig::ingress: explorer::Ingress
+pub explorer::CampaignConfig::replay_budget: u64
+impl core::default::Default for explorer::CampaignConfig
+pub fn explorer::CampaignConfig::default() -> Self
 pub struct explorer::ChannelId(pub u16)
+pub struct explorer::CompletedRunEvidence
+pub explorer::CompletedRunEvidence::cut: explorer::EvidenceCut
+pub explorer::CompletedRunEvidence::env: explorer::Reproducer
+pub explorer::CompletedRunEvidence::normalized: sdk_events::event::Normalized
+pub explorer::CompletedRunEvidence::rollout: explorer::RunId
+pub explorer::CompletedRunEvidence::terminal: explorer::StopReason
+impl explorer::CompletedRunEvidence
+pub fn explorer::CompletedRunEvidence::at(&self) -> explorer::Moment
+pub fn explorer::CompletedRunEvidence::canonical_bytes(&self) -> alloc::vec::Vec<u8>
+pub fn explorer::CompletedRunEvidence::observations_at(&self, u64) -> explorer::ObservationMap
+pub fn explorer::CompletedRunEvidence::observations_at_cut(&self) -> explorer::ObservationMap
 pub struct explorer::Composition
 pub explorer::Composition::archive: alloc::boxed::Box<dyn explorer::Archive>
 pub explorer::Composition::cells: alloc::boxed::Box<dyn explorer::CellFn>
@@ -166,9 +225,38 @@ impl explorer::DeclineTactic
 pub fn explorer::DeclineTactic::new() -> Self
 impl explorer::Tactic for explorer::DeclineTactic
 pub fn explorer::DeclineTactic::decide(&mut self, &explorer::DecisionPoint, &mut explorer::Prng) -> explorer::Answer
+pub struct explorer::DefaultObservationCells
+impl explorer::DefaultObservationCells
+pub fn explorer::DefaultObservationCells::new() -> Self
+impl explorer::ObservationCells for explorer::DefaultObservationCells
+pub fn explorer::DefaultObservationCells::key(&self, explorer::EvidenceCut, &explorer::ObservationMap) -> explorer::CellKey
+pub struct explorer::DifferentialCampaign<M: explorer::Machine>
+impl<M: explorer::Machine> explorer::DifferentialCampaign<M>
+pub fn explorer::DifferentialCampaign<M>::absences(&self) -> &explorer::AbsenceLedger
+pub fn explorer::DifferentialCampaign<M>::coordinator(&self) -> &revision_coordinator::coordinator::Coordinator
+pub fn explorer::DifferentialCampaign<M>::explore(&mut self, u64) -> core::result::Result<alloc::vec::Vec<explorer::StepReport>, explorer::CampaignError>
+pub fn explorer::DifferentialCampaign<M>::frontier(&self) -> &explorer::Frontier
+pub fn explorer::DifferentialCampaign<M>::ledger(&self) -> &explorer::EvidenceLedger
+pub fn explorer::DifferentialCampaign<M>::new(M, alloc::boxed::Box<dyn explorer::EnvCodec>, alloc::boxed::Box<dyn explorer::Tactic>, alloc::boxed::Box<dyn explorer::Selector>, alloc::boxed::Box<dyn explorer::ObservationCells>, explorer::EvidenceLedger, revision_coordinator::coordinator::Coordinator, explorer::CampaignConfig, u64) -> core::result::Result<Self, explorer::MachineError>
+pub fn explorer::DifferentialCampaign<M>::occupied(&self) -> usize
+pub fn explorer::DifferentialCampaign<M>::set_stop_conditions(&mut self, explorer::StopConditions)
+pub fn explorer::DifferentialCampaign<M>::step(&mut self) -> core::result::Result<explorer::StepReport, explorer::CampaignError>
 pub struct explorer::EvidenceCut
 pub explorer::EvidenceCut::at: explorer::Moment
 pub explorer::EvidenceCut::sdk_events: u64
+pub struct explorer::EvidenceLedger
+impl explorer::EvidenceLedger
+pub fn explorer::EvidenceLedger::append(&mut self, &explorer::CompletedRunEvidence) -> core::result::Result<revision_coordinator::ids::EvidenceBatchId, explorer::LedgerError>
+pub fn explorer::EvidenceLedger::batch_ids(&self) -> impl core::iter::traits::iterator::Iterator<Item = &revision_coordinator::ids::EvidenceBatchId>
+pub fn explorer::EvidenceLedger::contains(&self, &revision_coordinator::ids::EvidenceBatchId) -> bool
+pub fn explorer::EvidenceLedger::get(&self, &revision_coordinator::ids::EvidenceBatchId) -> core::option::Option<&explorer::CompletedRunEvidence>
+pub fn explorer::EvidenceLedger::is_empty(&self) -> bool
+pub fn explorer::EvidenceLedger::len(&self) -> usize
+pub fn explorer::EvidenceLedger::live_references(&self) -> alloc::collections::btree::set::BTreeSet<[u8; 32]>
+pub fn explorer::EvidenceLedger::open(&std::path::Path) -> core::result::Result<Self, explorer::LedgerError>
+pub fn explorer::EvidenceLedger::path(&self) -> &std::path::Path
+pub fn explorer::EvidenceLedger::retain_live_payloads(&mut self) -> usize
+pub fn explorer::EvidenceLedger::trace_store(&self) -> &explorer::TraceStore
 pub struct explorer::ExemplarRef(pub u64)
 pub struct explorer::ExploreExploitSelector
 impl explorer::ExploreExploitSelector
@@ -290,6 +378,19 @@ pub fn explorer::Materializer::set_genesis_at(&mut self, explorer::Moment)
 pub fn explorer::Materializer::set_sealable(&mut self, alloc::boxed::Box<dyn core::ops::function::Fn(explorer::Moment) -> bool>)
 pub fn explorer::Materializer::sweep_dead<M: explorer::Machine>(&mut self, &mut M, &explorer::Frontier) -> core::result::Result<(), explorer::MachineError>
 pub struct explorer::Moment(pub u64)
+pub struct explorer::OccurrenceCounterexample
+pub explorer::OccurrenceCounterexample::at: explorer::Moment
+pub explorer::OccurrenceCounterexample::fingerprint: [u8; 32]
+pub explorer::OccurrenceCounterexample::kind: explorer::CounterexampleKind
+pub explorer::OccurrenceCounterexample::property: sdk_events::schema::ObservationId
+pub explorer::OccurrenceCounterexample::site: core::option::Option<sdk_events::event::SiteId>
+pub struct explorer::OccurrenceOracle
+impl explorer::OccurrenceOracle
+pub fn explorer::OccurrenceOracle::judge(&self, &explorer::CompletedRunEvidence) -> alloc::vec::Vec<explorer::OccurrenceCounterexample>
+pub fn explorer::OccurrenceOracle::new() -> Self
+pub struct explorer::PayloadRef
+pub explorer::PayloadRef::digest: [u8; 32]
+pub explorer::PayloadRef::format_version: u16
 pub struct explorer::Prng
 impl explorer::Prng
 pub fn explorer::Prng::new(u64) -> Self
@@ -304,6 +405,9 @@ pub explorer::Reproducer::blob_version: u16
 pub explorer::Reproducer::bytes: alloc::vec::Vec<u8>
 pub struct explorer::Reward
 pub explorer::Reward::new_cells: u64
+pub struct explorer::RunId
+pub explorer::RunId::issue: u64
+pub explorer::RunId::parent: core::option::Option<u64>
 pub struct explorer::RunOutcome
 pub explorer::RunOutcome::env: explorer::Reproducer
 pub explorer::RunOutcome::stop: explorer::StopReason
@@ -334,6 +438,12 @@ impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
 pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Reproducer, &explorer::Reproducer) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Reproducer, u64) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Reproducer
+pub struct explorer::StepReport
+pub explorer::StepReport::admitted: alloc::vec::Vec<explorer::ExemplarRef>
+pub explorer::StepReport::candidates: usize
+pub explorer::StepReport::counterexamples: alloc::vec::Vec<explorer::OccurrenceCounterexample>
+pub explorer::StepReport::explored: bool
+pub explorer::StepReport::rollout_revision: revision_coordinator::ids::Revision
 pub struct explorer::StopConditions
 pub explorer::StopConditions::deadline: core::option::Option<explorer::Moment>
 pub explorer::StopConditions::on: explorer::StopMask
@@ -348,6 +458,15 @@ impl explorer::TerminalOracle
 pub fn explorer::TerminalOracle::new() -> Self
 impl explorer::Oracle for explorer::TerminalOracle
 pub fn explorer::TerminalOracle::judge(&self, &explorer::RunTrace) -> core::option::Option<explorer::Bug>
+pub struct explorer::TraceStore
+impl explorer::TraceStore
+pub fn explorer::TraceStore::contains(&self, &explorer::PayloadRef) -> bool
+pub fn explorer::TraceStore::get(&self, &explorer::PayloadRef) -> core::option::Option<&[u8]>
+pub fn explorer::TraceStore::is_empty(&self) -> bool
+pub fn explorer::TraceStore::len(&self) -> usize
+pub fn explorer::TraceStore::new() -> Self
+pub fn explorer::TraceStore::put(&mut self, &[u8], u16) -> explorer::PayloadRef
+pub fn explorer::TraceStore::retain(&mut self, &alloc::collections::btree::set::BTreeSet<[u8; 32]>) -> usize
 pub struct explorer::VirtualExemplar
 pub explorer::VirtualExemplar::cut: explorer::EvidenceCut
 pub explorer::VirtualExemplar::parent: explorer::SnapId
@@ -406,6 +525,10 @@ pub trait explorer::Matchable
 pub fn explorer::Matchable::attr(&self, &str) -> core::option::Option<explorer::Value>
 pub fn explorer::Matchable::kind(&self) -> &str
 pub fn explorer::Matchable::moment(&self) -> explorer::Moment
+pub trait explorer::ObservationCells
+pub fn explorer::ObservationCells::key(&self, explorer::EvidenceCut, &explorer::ObservationMap) -> explorer::CellKey
+impl explorer::ObservationCells for explorer::DefaultObservationCells
+pub fn explorer::DefaultObservationCells::key(&self, explorer::EvidenceCut, &explorer::ObservationMap) -> explorer::CellKey
 pub trait explorer::Oracle
 pub fn explorer::Oracle::judge(&self, &explorer::RunTrace) -> core::option::Option<explorer::Bug>
 impl explorer::Oracle for explorer::TerminalOracle
@@ -426,4 +549,6 @@ pub fn explorer::Tactic::decide(&mut self, &explorer::DecisionPoint, &mut explor
 impl explorer::Tactic for explorer::DeclineTactic
 pub fn explorer::DeclineTactic::decide(&mut self, &explorer::DecisionPoint, &mut explorer::Prng) -> explorer::Answer
 pub fn explorer::client_caps() -> control_proto::types::Caps
+pub fn explorer::reduce_at_cut(&[sdk_events::event::SdkEvent], &sdk_events::schema::SdkSchema, u64) -> explorer::ObservationMap
 pub type explorer::CellKey = alloc::vec::Vec<u8>
+pub type explorer::ObservationMap = alloc::collections::btree::map::BTreeMap<sdk_events::schema::ObservationId, explorer::ReducedValue>

@@ -10,6 +10,11 @@ workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# The crash-safe evidence ledger's frame checksums (torn-tail detection on
+# replay) and the canonical `serde_json` batch bytes the durable batch identity
+# digests (rule-5 whitelist).
+blake3 = "1"
+serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 # Task-58 sibling exceptions (the spec names explorer as the home of the
@@ -19,7 +24,24 @@ thiserror = "2"
 # alongside `path` for `cargo deny`'s wildcard ban.
 control-proto = { path = "../control-proto", version = "0.1.0" }
 environment = { path = "../environment", version = "0.1.0" }
+# hm-bbx.4 sibling exceptions — the Differential-integration culmination wires
+# these merged children into the generic Explorer's production path:
+# `sdk-events` is the normalized-evidence surface the two-barrier step reduces
+# into cells and the occurrence Oracle judges; `revision-coordinator` is the
+# durable batch-identity/commit + probe-barrier + crash-recovery seam the
+# controller drives (it owns the differential-dataflow runtime behind
+# `probe_drive`). Pinned `version` alongside `path` for `cargo deny`.
+sdk-events = { path = "../sdk-events", version = "0.1.0" }
+revision-coordinator = { path = "../revision-coordinator", version = "0.1.0" }
 
 [dev-dependencies]
 proptest = "1"
-serde_json = "1"
+# The crash-safe evidence ledger's tests write real files (torn-tail repair,
+# reopen-replay) under a scratch dir (rule-5 whitelist).
+tempfile = "3"
+# The recovery/golden vehicle for the coordinator seam in the two-barrier tests
+# (a `MemLedger` crash + a byte-stable `StateProjection`), gated off by default
+# in production builds.
+revision-coordinator = { path = "../revision-coordinator", version = "0.1.0", features = [
+    "test-support",
+] }
