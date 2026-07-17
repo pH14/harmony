@@ -216,6 +216,20 @@ fn encode_reduced_value(out: &mut Vec<u8>, val: &ReducedValue) {
     }
 }
 
+/// Which committed record a batch is — a completed **rollout** submitted at one
+/// revision, or its later materialized **seal** submitted at another (the
+/// strategy's "one search step may submit a completed rollout at one revision
+/// and its later materialized seal at another"). Carried explicitly so durable
+/// records stay distinguishable without heuristics: the retention views' rebuild
+/// admits only seal batches to occupancy and judges only rollout batches.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+pub enum EvidenceRole {
+    /// A completed open-loop rollout's terminal evidence (full SDK prefix cut).
+    Rollout,
+    /// A materialized seal's evidence at its actual server-stamped `sealed_at`.
+    Seal,
+}
+
 /// One completed rollout's **immutable evidence**: the durable, borrow-only view
 /// the campaign appends to the evidence ledger and an [`Oracle`](crate::occurrence)
 /// judges. Carrying [`Normalized`] (schema + ordered `SdkEvent`s + stream
@@ -225,6 +239,8 @@ fn encode_reduced_value(out: &mut Vec<u8>, val: &ReducedValue) {
 pub struct CompletedRunEvidence {
     /// The deterministic rollout identity (issue order + lineage).
     pub rollout: RunId,
+    /// Which committed record this batch is (rollout vs materialized seal).
+    pub role: EvidenceRole,
     /// The terminal stop that ended the rollout.
     pub terminal: StopReason,
     /// The genesis-complete reproducer that regenerates the run (identity, not a
