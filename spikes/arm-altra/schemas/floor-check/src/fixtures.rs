@@ -421,10 +421,11 @@ fn accept_aa6_gate() -> Fixture {
 /// The AA-2 step matrix: one row per transition class, each `(transition, pc_before, pc_after,
 /// br_retired_delta)`. The values satisfy `check_debug_evidence`'s per-class rules — a
 /// sequential step lands at exactly `pc_before + 4` with delta 0, a taken branch moves
-/// `BR_RETIRED` by 1, an LL/SC exclusive by 0, the exception/WFI/injection classes by a bounded
-/// 0. Each is stepped twice (two reps of one step-moment) so AA-2's replay identity has a
-/// repeated group to compare.
-fn aa2_matrix() -> [(StepTransition, u64, u64, u64); 7] {
+/// `BR_RETIRED` by 1, a NOT-taken branch lands at `pc_before + 4` but still moves `BR_RETIRED`
+/// by 1 (the branch instruction retired, AA1-F1), an LL/SC exclusive by 0, the
+/// exception/WFI/injection classes by a bounded 0. Each is stepped twice (two reps of one step
+/// position) so AA-2's replay identity has a repeated group to compare.
+fn aa2_matrix() -> [(StepTransition, u64, u64, u64); 8] {
     let b = 0x4000_8000u64;
     [
         (StepTransition::Sequential, b, b + 4, 0),
@@ -434,18 +435,24 @@ fn aa2_matrix() -> [(StepTransition, u64, u64, u64); 7] {
         (StepTransition::Wfi, b + 0x400, b + 0x404, 0),
         (StepTransition::Injection, b + 0x500, b + 0x540, 0),
         (StepTransition::LlscExclusive, b + 0x600, b + 0x604, 0),
+        // A not-taken conditional: fell through to pc_before + 4, but the branch retired (delta 1).
+        (StepTransition::NotTakenBranch, b + 0x700, b + 0x704, 1),
     ]
 }
 
 /// The AA-2 stepped record set: the full transition matrix, each class stepped twice
 /// bit-identically. Every record is a StraightLine-at-smoke run (so it carries that run's
 /// oracle-exact window count, exactly as a real stepped run does), overflow-free, on
-/// `ExitReason::Debug`, with a valid single step of its class. The two reps of one step-moment
-/// share the step-moment digest AND the final digest — a bit-identical replay.
+/// `ExitReason::Debug`, with a valid single step of its class. The two reps of one step position
+/// share its `step_index`, the step digest AND the final digest — a bit-identical replay. Modelled
+/// as two runs, each stepping the matrix in order, so the two reps of class N are step N of each
+/// run and share `step_index == N`.
 fn aa2_records() -> Vec<RunRecord> {
     let mut records = Vec::new();
-    for (transition, pc_before, pc_after, delta) in aa2_matrix() {
-        // Two reps of one step-moment (same pc_before + transition, so one RepKey group).
+    for (step_index, (transition, pc_before, pc_after, delta)) in
+        aa2_matrix().into_iter().enumerate()
+    {
+        // Two reps of one step position (same step_index, so one RepKey group).
         for _rep in 0..2u64 {
             let id = records.len() as u64;
             let mut r = generate_record(id, Payload::StraightLine, ExitReason::Debug);
@@ -453,13 +460,16 @@ fn aa2_records() -> Vec<RunRecord> {
             r.overflow = None;
             let tag = format!("{transition:?}");
             r.step = Some(StepRecord {
+                // The within-run position; both reps of this class share it, so replay identity
+                // compares step N of rep 1 to step N of rep 2.
+                step_index: step_index as u64,
                 pc_before,
                 pc_after,
                 // A single step retires exactly one instruction by construction.
                 insn_retired: 1,
                 br_retired_delta: delta,
                 transition,
-                // The step-moment digest replay identity compares; shared within the rep group.
+                // The step digest replay identity compares; shared within the rep group.
                 step_digest: format!("sha256:{}", synth_sha256(&format!("aa2-step-{tag}"))),
             });
             // The final (sentinel) digest, shared within the rep group too.
@@ -484,7 +494,7 @@ fn aa2_run_set(records: &[RunRecord]) -> RunSet {
 /// The valid AA-2 accept fixture: the FULL single-step transition matrix, each class stepped
 /// twice bit-identically. Every step is a valid single step (PC advanced, exactly one
 /// instruction retired, `BR_RETIRED` delta consistent with the class), the matrix is complete
-/// (all seven classes, including the LL/SC exclusive AA-4 needs), and each step-moment replayed
+/// (all eight classes, including the LL/SC exclusive AA-4 needs), and each step position replayed
 /// identically — everything AA-2's floor requires, in miniature. Today no run EMITS steps (the
 /// stepping run path is arrival-day), so this is the shape a real AA-2 run-set will take.
 fn accept_aa2_steps() -> Fixture {
@@ -521,8 +531,9 @@ fn accept_aa2_bounded() -> Fixture {
 }
 
 /// Build an AA-2 reject fixture by mutating ONE step of the otherwise-valid matrix, so
-/// `check_debug_evidence` is the sole failure (the mutation touches neither the window count
-/// nor the RepKey/step-moment digest, so counts and replay identity still pass).
+/// `check_debug_evidence` is the sole failure (the mutation touches neither the window count nor
+/// the RepKey `step_index`/step digest, so counts and replay identity still pass — the mutated
+/// rep still groups with its sibling rep on the same `step_index`, sharing its digest).
 fn mutated_aa2_reject(name: &'static str, mutate: impl FnOnce(&mut Vec<RunRecord>)) -> Fixture {
     let mut records = aa2_records();
     mutate(&mut records);
@@ -911,18 +922,18 @@ mod tests {
 
     #[test]
     fn the_aa2_accept_matrix_covers_every_transition_class_twice() {
-        // The generator's own invariant: the AA-2 accept fixture steps all seven transition
-        // classes, each twice (a repeated step-moment for replay identity), on Debug exits with
+        // The generator's own invariant: the AA-2 accept fixture steps all eight transition
+        // classes, each twice (a repeated step position for replay identity), on Debug exits with
         // no armed overflow.
         let records = aa2_records();
-        assert_eq!(records.len(), 14, "seven classes × two reps");
+        assert_eq!(records.len(), 16, "eight classes × two reps");
         let mut classes: Vec<StepTransition> = records
             .iter()
             .map(|r| r.step.as_ref().expect("stepped").transition)
             .collect();
         classes.sort_unstable();
         classes.dedup();
-        assert_eq!(classes.len(), 7, "every transition class is covered");
+        assert_eq!(classes.len(), 8, "every transition class is covered");
         for r in &records {
             assert_eq!(r.exit_reason, ExitReason::Debug);
             assert!(r.overflow.is_none(), "a stepped record is never armed");

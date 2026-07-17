@@ -57,7 +57,12 @@ use std::collections::BTreeMap;
 /// landing, not at the payload's eventual exit.
 ///
 /// **v3** added [`RunRecord::step`] — the structured single-step measurement AA-2's
-/// floor validates, so a bare `exit_reason: debug` can no longer certify the stage.
+/// floor validates, so a bare `exit_reason: debug` can no longer certify the stage. Its
+/// [`StepRecord`] carries a [`StepRecord::step_index`] (the within-run step position AA-2's
+/// replay identity groups on) and a [`StepTransition::NotTakenBranch`] class; both refine the
+/// step shape *within v3* rather than bumping it, because the single-step run path is arrival-day
+/// (unproduced pre-silicon), so no v3 evidence carrying a step ever shipped without them, and the
+/// v3 counting/landing evidence already retained (`step: null`) is unaffected.
 pub const SCHEMA_VERSION: u32 = 3;
 
 /// Which stage produced a run-set.
@@ -279,12 +284,21 @@ pub struct OverflowRecord {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StepTransition {
-    /// Fell through to `pc + 4`: a non-branch, or a not-taken conditional. `BR_RETIRED`
-    /// must not move.
+    /// Fell through to `pc + 4`: a **non-branch** instruction. `BR_RETIRED` must not move.
+    /// A not-taken *conditional branch* also lands at `pc + 4`, but it is [`Self::NotTakenBranch`]
+    /// — not this — because the branch instruction itself retired.
     Sequential,
     /// An architectural **taken** branch (`B`/`B.cond`/`CBZ`/`TBZ`/`BL`/`BR`/`RET`/…).
-    /// `BR_RETIRED` must increment by exactly 1.
+    /// `BR_RETIRED` must increment by exactly 1, and the PC lands on the branch target.
     TakenBranch,
+    /// A branch instruction that was **not taken** — a conditional (`B.cond`/`CBZ`/`TBZ`/…)
+    /// whose predicate failed, so the PC fell through to `pc + 4`. It lands at `pc + 4` like a
+    /// [`Self::Sequential`] step, but the branch *instruction retired*: on N1 `BR_RETIRED`
+    /// counts branch INSTRUCTIONS, taken AND not-taken (finding AA1-F1), so the delta is exactly
+    /// one. Distinguishing it from `Sequential` (a non-branch, delta 0) is what keeps a not-taken
+    /// branch from failing the sequential-step rule (`delta == 0`), and a non-branch fall-through
+    /// from being graded as though a branch retired.
+    NotTakenBranch,
     /// Synchronous **exception entry** — `SVC`, or a data/instruction abort. Not a
     /// retired branch instruction; the `BR_RETIRED` delta is AA-2's to measure.
     ExceptionEntry,
@@ -316,6 +330,14 @@ pub enum StepTransition {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StepRecord {
+    /// This step's **position within its stepped run**, 0-based. Set by [`crate::run::step_run`]
+    /// at emission and never renumbered (the caller reassigns the record-level
+    /// [`RunRecord::sample_id`] across every planned run, but this stays the within-run index).
+    /// It is the key AA-2's replay identity groups on: step N of one rep is compared to step N of
+    /// another, so a loop that revisits one `pc_before` across iterations — each a different step
+    /// with a different `step_digest` — is not read as a false divergence, and a rep with fewer
+    /// steps surfaces as a missing position (a real divergence).
+    pub step_index: u64,
     /// The PC before the step.
     pub pc_before: u64,
     /// The PC after the step — must differ from `pc_before`.
@@ -323,8 +345,10 @@ pub struct StepRecord {
     /// Instructions retired by the step. AA-2's single-step semantics require exactly 1.
     pub insn_retired: u64,
     /// `BR_RETIRED` delta across the step. Validated against [`StepRecord::transition`]:
-    /// 0 for [`StepTransition::Sequential`], 1 for [`StepTransition::TakenBranch`], and a
-    /// measured 0-or-1 for the exception/WFI/injection classes AA-2 characterizes.
+    /// 0 for [`StepTransition::Sequential`], 1 for [`StepTransition::TakenBranch`] and
+    /// [`StepTransition::NotTakenBranch`] (on N1 a not-taken branch still retires the branch
+    /// instruction, AA1-F1), and a measured 0-or-1 for the exception/WFI/injection classes AA-2
+    /// characterizes.
     pub br_retired_delta: u64,
     /// What kind of transition the step made, from the stepped opcode and the exit taken.
     pub transition: StepTransition,

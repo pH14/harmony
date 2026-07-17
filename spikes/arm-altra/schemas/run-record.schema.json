@@ -216,6 +216,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "step_index",
         "pc_before",
         "pc_after",
         "insn_retired",
@@ -224,6 +225,11 @@
         "step_digest"
       ],
       "properties": {
+        "step_index": {
+          "description": "This step's 0-based position within its stepped run. AA-2's replay identity groups on it, comparing step N of one rep to step N of another, so a loop that revisits one pc_before across iterations is not false divergence and a rep with fewer steps surfaces as a missing position. Set at emission and never renumbered (unlike the record-level sample_id).",
+          "type": "integer",
+          "minimum": 0
+        },
         "pc_before": {
           "description": "The PC before the step.",
           "type": "integer",
@@ -240,7 +246,7 @@
           "minimum": 0
         },
         "br_retired_delta": {
-          "description": "BR_RETIRED delta across the step, validated against `transition`: 0 for sequential, 1 for a taken branch, and a measured 0-or-1 for the exception/WFI/injection classes AA-2 characterizes.",
+          "description": "BR_RETIRED delta across the step, validated against `transition`: 0 for sequential (a non-branch), 1 for a taken branch and for a not-taken branch (on N1 the branch instruction retires either way, AA1-F1), and a measured 0-or-1 for the exception/WFI/injection classes AA-2 characterizes.",
           "type": "integer",
           "minimum": 0
         },
@@ -260,6 +266,7 @@
       "enum": [
         "sequential",
         "taken-branch",
+        "not-taken-branch",
         "exception-entry",
         "exception-return",
         "wfi",

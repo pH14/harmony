@@ -873,7 +873,9 @@ pub fn classify_transition(word: u32, pc_before: u64, pc_after: u64, vbar: u64) 
         }
         let taken = match branch_target(word, pc_before) {
             // An immediate branch (`B`/`BL`/`B.cond`/`CBZ`/`TBZ`/…): taken iff the PC landed
-            // on the resolved target; not taken (a conditional that fell through) is sequential.
+            // on the resolved target; not taken (a conditional that fell through to `pc + 4`) is a
+            // NotTakenBranch — the branch INSTRUCTION still retired (AA1-F1), so it is not a
+            // `Sequential` non-branch step.
             Some(target) => pc_after == target,
             // A register/indirect branch (`BR`/`BLR`/`RET`): its target is a runtime register,
             // so any transfer off the `pc + 4` fall-through is "taken".
@@ -882,7 +884,10 @@ pub fn classify_transition(word: u32, pc_before: u64, pc_after: u64, vbar: u64) 
         return if taken {
             StepTransition::TakenBranch
         } else {
-            StepTransition::Sequential
+            // A branch instruction that fell through to `pc + 4`: the branch retired but did not
+            // transfer. On N1 `BR_RETIRED` counts it (delta 1); the floor checker grades it as a
+            // NotTakenBranch (delta 1, lands at `pc + 4`), distinct from a non-branch `Sequential`.
+            StepTransition::NotTakenBranch
         };
     }
     // A non-branch instruction whose step nonetheless landed in the EL1 vector page took an
@@ -1243,6 +1248,11 @@ pub fn step_run(
             // A stepped record is never an armed landing — they are mutually exclusive.
             overflow: None,
             step: Some(StepRecord {
+                // The step's position WITHIN THIS run (0-based) — the replay-identity key. It is
+                // NOT the record's `sample_id` (which the caller renumbers densely across every
+                // planned run); it is stamped here and stays put, so step N of one rep is compared
+                // to step N of another.
+                step_index: i as u64,
                 pc_before: s.pc_before,
                 pc_after: s.pc_after,
                 // A single step retires exactly one instruction by construction of
@@ -2302,9 +2312,13 @@ mod tests {
         let s = one_step(0x4000_9000, 0xD65F_03C0, 1);
         assert_eq!(s.transition, StepTransition::TakenBranch);
 
-        // A NOT-taken conditional (`b.ne .+8` that fell through to PC+4) is sequential.
-        let s = one_step(STEP_PC + 4, 0x5400_0041, 0);
-        assert_eq!(s.transition, StepTransition::Sequential);
+        // A NOT-taken conditional (`b.ne .+8` that fell through to PC+4) is a NotTakenBranch,
+        // NOT Sequential: the branch instruction retired (AA1-F1), so BR_RETIRED moved by 1 even
+        // though the PC landed at PC+4.
+        let s = one_step(STEP_PC + 4, 0x5400_0041, 1);
+        assert_eq!(s.transition, StepTransition::NotTakenBranch);
+        assert_eq!(s.pc_after, STEP_PC + 4);
+        assert_eq!(s.br_retired_delta, 1);
 
         // SVC — synchronous exception entry, classified from the opcode not the PC.
         let s = one_step(STEP_VBAR + 0x400, 0xD400_0001, 0);
@@ -2658,9 +2672,10 @@ mod tests {
             StepTransition::TakenBranch
         );
         assert_eq!(
-            classify_transition(0x1400_0002, STEP_PC, STEP_PC + 4, STEP_VBAR),
-            StepTransition::Sequential,
-            "an immediate branch that did not reach its target did not take"
+            classify_transition(0x5400_0041, STEP_PC, STEP_PC + 4, STEP_VBAR),
+            StepTransition::NotTakenBranch,
+            "a conditional branch that fell through to PC+4 is a not-taken branch, not sequential \
+             — the branch instruction retired"
         );
         assert_eq!(
             classify_transition(0xC85F_7C41, STEP_PC, STEP_PC + 4, STEP_VBAR),

@@ -2119,7 +2119,7 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
 }
 
 /// The key a repetition is *the same run* under: same payload, scale, seed,
-/// condition, the same target **delta** (armed runs), and the same **step moment**
+/// condition, the same target **delta** (armed runs), and the same **step index**
 /// (stepped AA-2 runs).
 ///
 /// The delta is `target - work_begin`, NOT the absolute target. The plan reuses one
@@ -2131,19 +2131,15 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
 /// record where `target < work_begin` (a negative delta) is caught separately by
 /// [`check_replay_identity`].
 ///
-/// The step moment (`pc_before`, transition) is what makes an AA-2 stepped record a
-/// distinct experiment: two step points of the SAME input — an `SVC` exception entry and
-/// its `ERET` — share payload/scale/seed/condition and carry no target, so without it they
-/// group together and their necessarily-different `step_digest`s read as false divergence.
-/// Keying by the step moment groups each point with its own repetitions instead.
-type RepKey = (
-    String,
-    String,
-    u64,
-    String,
-    Option<i128>,
-    Option<(u64, StepTransition)>,
-);
+/// The **step index** (position within the stepped run) is what makes an AA-2 stepped record a
+/// distinct experiment: a whole stepped run has MANY step records under one
+/// payload/scale/seed/condition, each a different step with its own `step_digest`, so without it
+/// they all group together and read as a false divergence. Keying by `step_index` compares step N
+/// of one rep to step N of another instead — so a loop that revisits one `pc_before` across
+/// iterations (each a different state) is not false divergence, and a rep with fewer steps
+/// surfaces as a missing position. (`pc_before`/transition cannot do this: a loop body revisits
+/// one `pc_before` many times with different state, which would false-diverge.)
+type RepKey = (String, String, u64, String, Option<i128>, Option<u64>);
 
 fn rep_key(r: &RunRecord) -> RepKey {
     (
@@ -2154,7 +2150,7 @@ fn rep_key(r: &RunRecord) -> RepKey {
         r.overflow
             .as_ref()
             .map(|o| i128::from(o.target) - i128::from(r.work_begin)),
-        r.step.as_ref().map(|s| (s.pc_before, s.transition)),
+        r.step.as_ref().map(|s| s.step_index),
     )
 }
 
@@ -2656,6 +2652,30 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
                 "sample {}: a taken branch must increment BR_RETIRED by exactly 1, but delta is {}",
                 r.sample_id, s.br_retired_delta
             )),
+            // A NOT-taken branch fell through to PC+4 but the branch INSTRUCTION still retired: on
+            // N1 BR_RETIRED counts branch instructions taken AND not-taken (AA1-F1), so the delta
+            // is exactly 1 — unlike a `Sequential` non-branch (delta 0). And, having fallen
+            // through, it must land at EXACTLY PC+4 (a fixed 4-byte instruction), or it did not
+            // fall through at all. Both bind: delta 1 keeps it off the sequential rule, PC+4 keeps
+            // it off the taken-branch (which lands on the target).
+            StepTransition::NotTakenBranch => {
+                if s.br_retired_delta != 1 {
+                    bad.push(format!(
+                        "sample {}: a not-taken branch retired the branch instruction, so \
+                         BR_RETIRED must increment by exactly 1 (AA1-F1), but delta is {}",
+                        r.sample_id, s.br_retired_delta
+                    ));
+                }
+                if s.pc_after != s.pc_before.wrapping_add(4) {
+                    bad.push(format!(
+                        "sample {}: a not-taken branch fell through, so it must land at PC+4 \
+                         ({:#x}), but landed at {:#x} — a not-taken branch does not transfer",
+                        r.sample_id,
+                        s.pc_before.wrapping_add(4),
+                        s.pc_after
+                    ));
+                }
+            }
             // A single-stepped LL/SC exclusive (`LDXR`/`STXR`) is a load or a store, not a
             // taken branch, so BR_RETIRED must NOT move. (The retry is a separate `CBNZ`,
             // stepped and classified as a TakenBranch in its own right.) Grouping it with
@@ -2693,8 +2713,8 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
     if !missing.is_empty() {
         bad.push(format!(
             "the AA-2 step matrix is incomplete: no step covers {missing:?} — the stage requires \
-             stepping every transition class (sequential, taken branch, exception entry, ERET, \
-             WFI, injection), not merely a nonempty subset"
+             stepping every transition class (sequential, taken branch, not-taken branch, \
+             exception entry, ERET, WFI, injection, LL/SC exclusive), not merely a nonempty subset"
         ));
     }
 
@@ -2727,6 +2747,7 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
 const REQUIRED_AA2_TRANSITIONS: &[StepTransition] = &[
     StepTransition::Sequential,
     StepTransition::TakenBranch,
+    StepTransition::NotTakenBranch,
     StepTransition::ExceptionEntry,
     StepTransition::ExceptionReturn,
     StepTransition::Wfi,
@@ -4792,12 +4813,15 @@ mod tests {
     }
 
     /// A record carrying one stepped measurement. A real single step lands on a Debug exit and
-    /// arms no overflow, so the helper sets both (matching what the harness would emit).
+    /// arms no overflow, so the helper sets both (matching what the harness would emit). The
+    /// `step_index` is set to the record id — these debug-evidence tests key on the class, not on
+    /// replay grouping, so any distinct index is fine.
     fn a_step(id: u64, pc_after: u64, delta: u64, transition: StepTransition) -> RunRecord {
         let mut r = a_record(id);
         r.exit_reason = ExitReason::Debug;
         r.overflow = None;
         r.step = Some(StepRecord {
+            step_index: id,
             pc_before: 0x8000,
             pc_after,
             insn_retired: 1,
@@ -4808,7 +4832,10 @@ mod tests {
         r
     }
 
-    /// One valid step of each required transition class — a complete AA-2 matrix.
+    /// One valid step of each required transition class — a complete AA-2 matrix. NotTakenBranch
+    /// is appended last so the other classes keep their historical indices (tests below mutate
+    /// `m[3]`/`m[6]`). A not-taken branch fell through to PC+4 (`0x8000 + 4`) but retired the
+    /// branch instruction (delta 1).
     fn full_step_matrix() -> Vec<RunRecord> {
         vec![
             a_step(0, 0x8004, 0, StepTransition::Sequential),
@@ -4818,6 +4845,7 @@ mod tests {
             a_step(4, 0xC000, 0, StepTransition::Wfi),
             a_step(5, 0xD000, 0, StepTransition::Injection),
             a_step(6, 0xE000, 0, StepTransition::LlscExclusive),
+            a_step(7, 0x8004, 1, StepTransition::NotTakenBranch),
         ]
     }
 
@@ -4932,6 +4960,43 @@ mod tests {
             "a single-stepped LDXR/STXR is not a taken branch; delta 1 is invalid"
         );
 
+        // (g) a NOT-taken branch retired the branch instruction (AA1-F1), so BR_RETIRED must move
+        // by exactly 1 — a delta of 0 (as if it were a non-branch Sequential step) is rejected.
+        let mut m = full_step_matrix();
+        m[7] = a_step(7, 0x8004, 0, StepTransition::NotTakenBranch);
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &m, &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::Fail),
+            "a not-taken branch still retires the branch; delta 0 is invalid"
+        );
+
+        // (h) a not-taken branch that did NOT land at PC+4 did not fall through — rejected. (Its
+        // pc_before is 0x8000, so PC+4 is 0x8004; a jump to 0x9000 is a transfer, not a fall.)
+        let mut m = full_step_matrix();
+        m[7] = a_step(7, 0x9000, 1, StepTransition::NotTakenBranch);
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &m, &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::Fail),
+            "a not-taken branch must land at PC+4; a transfer off it is invalid"
+        );
+
+        // (i) the converse of (g): a NON-branch Sequential step at PC+4 must have delta 0 — a
+        // delta of 1 (as if a branch had retired) is the miss the not-taken/sequential split
+        // exists to catch, and is rejected. The full matrix is otherwise valid.
+        let mut m = full_step_matrix();
+        m[0] = a_step(0, 0x8004, 1, StepTransition::Sequential);
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &m, &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::Fail),
+            "a non-branch sequential step at PC+4 must not move BR_RETIRED; delta 1 is invalid"
+        );
+
         // The check does not fire outside AA-2.
         let mut out = Vec::new();
         check_debug_evidence(Stage::Aa3, &[a_record(0)], &mut out);
@@ -4945,6 +5010,9 @@ mod tests {
             let mut r = a_record_seeded(id, seed);
             r.overflow = None; // a stepped record is not armed (they are mutually exclusive)
             r.step = Some(StepRecord {
+                // Both reps are step 0 of their run, so they share a RepKey and are compared to
+                // each other (the seed disambiguates distinct inputs).
+                step_index: 0,
                 pc_before: 0x8000,
                 pc_after: 0x8004,
                 insn_retired: 1,
@@ -4972,6 +5040,9 @@ mod tests {
             let mut r = a_record_seeded(id, 7);
             r.overflow = None; // a stepped record is not armed (they are mutually exclusive)
             r.step = Some(StepRecord {
+                // Both reps are step 0 of their run, so they share a RepKey and are compared to
+                // each other (the seed disambiguates distinct inputs).
+                step_index: 0,
                 pc_before: 0x8000,
                 pc_after: 0x8004,
                 insn_retired: 1,
@@ -5001,15 +5072,18 @@ mod tests {
     }
 
     #[test]
-    fn two_step_moments_of_one_input_are_not_false_divergence() {
-        // Two DIFFERENT step points of the same input — an SVC exception entry and its ERET —
-        // share (payload, scale, seed, condition) and carry no target. Without the step moment
-        // in the RepKey they group together and their necessarily-different step_digests read
-        // as false divergence. With it, each point groups with its OWN repetitions and, when
-        // each is individually replay-identical, the check passes.
-        let step_at = |id: u64, pc: u64, tr: StepTransition, digest: &str| {
+    fn two_step_positions_of_one_input_are_not_false_divergence() {
+        // A whole stepped run has MANY steps under one (payload, scale, seed, condition), each
+        // carrying no target and its OWN step_digest. Without the step_index in the RepKey they
+        // all group together and their necessarily-different digests read as false divergence.
+        // With it, step N groups only with step N of the other rep, and — when each position is
+        // individually replay-identical — the check passes. Modelled as two runs, each stepping
+        // [step 0 = exception entry, step 1 = ERET].
+        let step_at = |id: u64, step_index: u64, pc: u64, tr: StepTransition, digest: &str| {
             let mut r = a_record_seeded(id, 7); // same seed for all four
+            r.overflow = None; // a stepped record is not armed, so comparison_digest is step_digest
             r.step = Some(StepRecord {
+                step_index,
                 pc_before: pc,
                 pc_after: pc + 4,
                 insn_retired: 1,
@@ -5019,21 +5093,48 @@ mod tests {
             });
             r
         };
-        // Point A (exception entry) repeated twice, point B (ERET) repeated twice; each
-        // point's two reps are bit-identical, the two points differ.
+        // Run A and run B each step position 0 (exception entry) then position 1 (ERET); each
+        // position's two reps are bit-identical, the two positions differ.
         let records = [
-            step_at(0, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
-            step_at(1, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
-            step_at(2, 0x2000, StepTransition::ExceptionReturn, "sha256:eret"),
-            step_at(3, 0x2000, StepTransition::ExceptionReturn, "sha256:eret"),
+            step_at(0, 0, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
+            step_at(1, 0, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
+            step_at(2, 1, 0x2000, StepTransition::ExceptionReturn, "sha256:eret"),
+            step_at(3, 1, 0x2000, StepTransition::ExceptionReturn, "sha256:eret"),
         ];
         let mut out = Vec::new();
         check_replay_identity(Stage::Aa2, &records, &mut out);
         assert_eq!(
             status(&out, CheckId::ReplayIdentity),
             Some(Status::Pass),
-            "two distinct step moments of one input, each individually replay-identical, are \
+            "two distinct step positions of one input, each individually replay-identical, are \
              not divergence"
+        );
+        // The same two positions, but position 1 (ERET) DIVERGES across the two reps: a real
+        // divergence, caught — the step_index key does not hide it.
+        let diverged = [
+            step_at(0, 0, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
+            step_at(1, 0, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
+            step_at(
+                2,
+                1,
+                0x2000,
+                StepTransition::ExceptionReturn,
+                "sha256:eret-a",
+            ),
+            step_at(
+                3,
+                1,
+                0x2000,
+                StepTransition::ExceptionReturn,
+                "sha256:eret-b",
+            ),
+        ];
+        let mut out = Vec::new();
+        check_replay_identity(Stage::Aa2, &diverged, &mut out);
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::Fail),
+            "step 1 diverging across reps is a real divergence the step_index key still catches"
         );
     }
 
@@ -5045,6 +5146,7 @@ mod tests {
         let stepped = |id: u64, seed: u64| {
             let mut r = a_record_seeded(id, seed);
             r.step = Some(StepRecord {
+                step_index: 0,
                 pc_before: 0x8000,
                 pc_after: 0x8004,
                 insn_retired: 1,
@@ -5380,6 +5482,7 @@ mod tests {
         // divergent landed digests went unchecked, so it is rejected as malformed.
         let mut r = a_record(0); // a_record carries an armed, delivered overflow
         r.step = Some(StepRecord {
+            step_index: 0,
             pc_before: 0x8000,
             pc_after: 0x8004,
             insn_retired: 1,
