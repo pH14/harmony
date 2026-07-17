@@ -1147,6 +1147,26 @@ skid within the AA-1 margin of 53) — this uses the **AA-3 `patched` mechanism*
 checker requires, and depends on AA-2's validated step primitive for the exact landing.
 The trait-freeze memo to `docs/ARCH-BOUNDARY.md` is an AA-3 deliverable.
 
+**Box results (2026-07-17): the patched force-exit MECHANISM is confirmed on N1.** The
+box rebooted into `-aa3preempt` in 154 s (build-id `df0f4f02` matches the built vmlinux),
+and the kernel **advertises `KVM_CAP_ARM_DETERMINISTIC_INTERCEPTS`**
+(`found=present` — the favorable deviation from the stock-absent baseline). A patched-
+mechanism smoke (`--stage aa3 --mechanism patched --with-targets`) fires the in-kernel
+exit: **`exit_reason=preempt`, `deliveries=1`** — the 0004-analogue `KVM_EXIT_PREEMPT`
+works on real silicon. The delivered records land with **skid 0–52, inside the AA-1
+`skid_margin` of 53** (the four `mmio`/no-fire records are smoke targets that exceeded the
+window — a plan-clamp detail, not a mechanism miss).
+
+**The remaining gap (unbuilt apparatus, like AA-2's step path): the EXACT landing.** The
+harness arms *at* target and records where the Preempt fired (`target + skid`), so it does
+not yet land `work == target` — the `run_until_overflow` + `single_step` contract (arm at
+`target − skid_margin`, take the Preempt exit below target, then single-step the remaining
+≤53 events to exactly target, using AA-2's validated `step_once`) is **not implemented**
+(`grep run_until` in `run.rs` is empty). Building it is the AA-3 core work — sequenced
+after the AA-2 classifier fix lands (both touch `run.rs`), then the ≥10⁶-armed exact-
+landing run + the trait-freeze memo. **Disposition: PENDING — mechanism GO on N1, exact-
+landing apparatus to build.**
+
 **Original finding (why this was executor work): the single-step run path did not exist
 in the harness** — the
 offline apparatus deliberately left it out (building it would presume AA-2's own
