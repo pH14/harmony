@@ -83,6 +83,7 @@ documented fixture invariant, its rule, and its test.
 | sequence queries name declared sources | `UndeclaredQuerySource` | `undeclared_query_source_rejected` |
 | entry commits reference a seal that exists (at some revision) | `DanglingEntryCommit` | `dangling_entry_commit_rejected` |
 | working updates reference a persisted evidence coordinate | `DanglingWorkingRef` | `dangling_working_ref_rejected` |
+| working deltas are exactly +1/-1 (anything else is not a membership update; also keeps net accumulation in range — which is checked regardless, r4) | `WorkingDeltaOutOfRange` | `working_delta_overflow_pair_rejected`, `working_delta_min_counterpart_rejected` |
 | working membership nets 0 or 1 per coordinate after every revision (admit at most once; never expire the unadmitted) | `WorkingNetOutOfRange` | `working_net_out_of_range_rejected` |
 | event source ids need NOT be declared — deliberately not validated: no view consumes an event's source except through an eligible (already-validated) query, and undeclared registers stay evidence-not-state by design | — | documented here |
 | referee replay coverage: every seal/obs cut on its rollout's vector, and every fork on BOTH the child's (inherited prefix) and the PARENT's vector (Fork points slice the parent — r3) | `ReplayTooShort` | `referee_refuses_short_replay_with_typed_error`, `referee_refuses_short_parent_replay` |
@@ -145,7 +146,7 @@ reduction, mirroring the v1 never-fired rule).
 
 ```
 cargo build            # + --release
-cargo test --locked    # 48 tests: exact (11) + parity (8) + validate (29)
+cargo test --locked    # 50 tests: exact (11) + parity (8) + validate (31)
 cargo clippy --locked --all-features --all-targets -- -D warnings
 cargo fmt -- --check
 cargo deny check --config <root>/deny.toml licenses

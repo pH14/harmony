@@ -507,6 +507,25 @@ pub enum ValidationError {
         /// Referenced position.
         pos: Pos,
     },
+    /// A working-set update's delta is not +1/-1. Bounded membership admits
+    /// or expires exactly one coordinate at a time; an unconstrained delta
+    /// is not a membership update (and could overflow net accumulation).
+    #[error(
+        "working update for rollout {rollout} pos {pos} (config {config}) at \
+         revision {rev} carries delta {delta}; membership updates are +1/-1"
+    )]
+    WorkingDeltaOutOfRange {
+        /// Campaign configuration.
+        config: CfgId,
+        /// Coordinate rollout.
+        rollout: RolloutId,
+        /// Coordinate position.
+        pos: Pos,
+        /// Offending record's revision.
+        rev: Revision,
+        /// The offending delta.
+        delta: i64,
+    },
     /// Working membership leaves {0, 1} for one coordinate after some
     /// revision's updates — bounded membership admits at most once and never
     /// expires what was not admitted.
@@ -755,6 +774,19 @@ impl Fixture {
             .map(|e| (e.config, e.rollout, e.pos))
             .collect();
         for w in &self.working {
+            // Deltas are exactly +1/-1: anything else is not a membership
+            // update, and rejecting it here also keeps the net accumulation
+            // below trivially in range (r4: a decoded i64::MAX delta must
+            // reach a typed error, not overflow inside validation).
+            if w.delta != 1 && w.delta != -1 {
+                return Err(ValidationError::WorkingDeltaOutOfRange {
+                    config: w.config,
+                    rollout: w.rollout,
+                    pos: w.pos,
+                    rev: w.rev,
+                    delta: w.delta,
+                });
+            }
             if !event_coords.contains(&(w.config, w.rollout, w.pos)) {
                 return Err(ValidationError::DanglingWorkingRef {
                     config: w.config,
@@ -781,7 +813,18 @@ impl Fixture {
             while idx < updates.len() {
                 let rev = updates[idx].0;
                 while idx < updates.len() && updates[idx].0 == rev {
-                    net += updates[idx].1;
+                    // Checked as a backstop: with deltas constrained to +1/-1
+                    // above, |net| is bounded by the update count and cannot
+                    // overflow, but the accumulation stays total regardless.
+                    net = net.checked_add(updates[idx].1).ok_or(
+                        ValidationError::WorkingNetOutOfRange {
+                            config,
+                            rollout,
+                            pos,
+                            rev,
+                            net,
+                        },
+                    )?;
                     idx += 1;
                 }
                 if !(0..=1).contains(&net) {

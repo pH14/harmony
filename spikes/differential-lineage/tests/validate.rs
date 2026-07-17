@@ -699,3 +699,76 @@ fn referee_refuses_short_parent_replay() {
         })
     );
 }
+
+#[test]
+fn working_delta_overflow_pair_rejected() {
+    // r4: delta 1 and delta i64::MAX on one (config, rollout, pos, rev) used
+    // to overflow the net accumulation inside validation itself in debug
+    // builds — before the promised typed error could be returned. The
+    // non-membership delta is now rejected as a typed error first.
+    let (mut fx, _) = fixtures::retention_properties();
+    fx.working.push(differential_lineage::data::WorkingRec {
+        rev: 3,
+        config: 0,
+        rollout: 0,
+        pos: 2,
+        delta: 1,
+    });
+    fx.working.push(differential_lineage::data::WorkingRec {
+        rev: 3,
+        config: 0,
+        rollout: 0,
+        pos: 2,
+        delta: i64::MAX,
+    });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::WorkingDeltaOutOfRange {
+            config: 0,
+            rollout: 0,
+            pos: 2,
+            rev: 3,
+            delta: i64::MAX,
+        })
+    );
+    // And the public APIs return it rather than panicking.
+    let err = differential_lineage::dataflow::run(
+        &fx,
+        differential_lineage::dataflow::BuildOpts::default(),
+        1,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        ValidationError::WorkingDeltaOutOfRange { .. }
+    ));
+}
+
+#[test]
+fn working_delta_min_counterpart_rejected() {
+    let (mut fx, _) = fixtures::retention_properties();
+    fx.working.push(differential_lineage::data::WorkingRec {
+        rev: 3,
+        config: 0,
+        rollout: 0,
+        pos: 2,
+        delta: -1,
+    });
+    fx.working.push(differential_lineage::data::WorkingRec {
+        rev: 3,
+        config: 0,
+        rollout: 0,
+        pos: 2,
+        delta: i64::MIN,
+    });
+    assert_eq!(
+        fx.validate(),
+        Err(ValidationError::WorkingDeltaOutOfRange {
+            config: 0,
+            rollout: 0,
+            pos: 2,
+            rev: 3,
+            delta: i64::MIN,
+        })
+    );
+}
