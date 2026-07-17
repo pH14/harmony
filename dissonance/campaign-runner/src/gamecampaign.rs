@@ -929,7 +929,7 @@ fn seal_base<M: Machine>(
     if let StopReason::SnapshotPoint { vtime } = stop {
         vt = vtime.0;
         match machine.snapshot() {
-            Ok(snap) => return Ok((snap, vt)),
+            Ok((snap, _cut)) => return Ok((snap, vt)),
             // In box mode the setup boundary must also SEAL there — running
             // past it into the frame loop would move the base off the setup
             // prefix. Only the toy path may fall through.
@@ -949,7 +949,7 @@ fn seal_base<M: Machine>(
     loop {
         attempts += 1;
         match machine.snapshot() {
-            Ok(snap) => return Ok((snap, vt)),
+            Ok((snap, _cut)) => return Ok((snap, vt)),
             Err(MachineError::NotQuiescent) => {
                 if attempts >= cfg.snapshot_max_attempts {
                     return Err(MachineError::NotQuiescent.into());
@@ -1109,11 +1109,19 @@ impl Machine for GameToyMachine {
         })
     }
 
-    fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+    fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
         let id = self.next_snap;
         self.next_snap += 1;
         self.snaps.insert(id, (self.vtime, self.current.clone()));
-        Ok(explorer::SnapId(id))
+        // The toy stamps its cut from the same state its seal records (task
+        // 127); it models no SDK capture, so the prefix is 0.
+        Ok((
+            explorer::SnapId(id),
+            explorer::EvidenceCut {
+                at: explorer::Moment(self.vtime),
+                sdk_events: 0,
+            },
+        ))
     }
 
     fn drop_snap(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
@@ -1260,10 +1268,10 @@ mod tests {
                 vtime: Moment(self.vtime),
             })
         }
-        fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+        fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
             let id = self.next_snap;
             self.next_snap += 1;
-            Ok(explorer::SnapId(id))
+            Ok((explorer::SnapId(id), explorer::EvidenceCut::default()))
         }
         fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
             Ok(())
@@ -1780,10 +1788,12 @@ mod tests {
                     info: vec![1],
                 })
             }
-            fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+            fn snapshot(
+                &mut self,
+            ) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
                 let id = self.next_snap;
                 self.next_snap += 1;
-                Ok(explorer::SnapId(id))
+                Ok((explorer::SnapId(id), explorer::EvidenceCut::default()))
             }
             fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
                 Ok(())
@@ -1876,10 +1886,12 @@ mod tests {
                     vtime: explorer::Moment(self.vtime),
                 })
             }
-            fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+            fn snapshot(
+                &mut self,
+            ) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
                 let id = self.next_snap;
                 self.next_snap += 1;
-                Ok(explorer::SnapId(id))
+                Ok((explorer::SnapId(id), explorer::EvidenceCut::default()))
             }
             fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
                 Ok(())
@@ -1945,7 +1957,9 @@ mod tests {
             ) -> Result<StopReason, MachineError> {
                 self.inner.run(until, resolve)
             }
-            fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+            fn snapshot(
+                &mut self,
+            ) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
                 self.inner.snapshot()
             }
             fn drop_snap(&mut self, s: explorer::SnapId) -> Result<(), MachineError> {
@@ -2102,10 +2116,10 @@ mod tests {
                 info: vec![0xDE, 0xAD],
             })
         }
-        fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+        fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
             let id = self.next_snap;
             self.next_snap += 1;
-            Ok(explorer::SnapId(id))
+            Ok((explorer::SnapId(id), explorer::EvidenceCut::default()))
         }
         fn drop_snap(&mut self, _snap: explorer::SnapId) -> Result<(), MachineError> {
             Ok(())

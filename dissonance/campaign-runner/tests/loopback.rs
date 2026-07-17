@@ -73,7 +73,7 @@ fn every_verb_round_trips_over_the_socket() {
     let (served, ()) = run_session(&mut server, |stream| {
         let mut m = SocketMachine::connect(stream, boot_env()).expect("hello negotiates");
         // snapshot → a handle.
-        let base = m.snapshot().expect("snapshot");
+        let base = m.snapshot().expect("snapshot").0;
         let base_hash = m.hash().expect("hash");
         // branch → run → hash.
         m.branch(base, &SpecEnvCodec.seeded(0x1234))
@@ -122,7 +122,7 @@ fn console_capture_round_trips_over_the_socket() {
     let mut server = mock::server(mock::recording_fork_script()).unwrap();
     let (served, ()) = run_session(&mut server, |stream| {
         let mut m = SocketMachine::connect(stream, boot_env()).expect("hello negotiates");
-        let base = m.snapshot().expect("snapshot");
+        let base = m.snapshot().expect("snapshot").0;
 
         // Branch + run: the fork guest emits "MOCK-READY\n" to COM1.
         m.branch(base, &SpecEnvCodec.seeded(0x1234))
@@ -295,7 +295,7 @@ fn replay_reproduces_the_pre_snapshot_hash_after_interleaved_verbs() {
     let mut server = mock::server(default_fork_script()).unwrap();
     let (served, ()) = run_session(&mut server, |stream| {
         let mut m = SocketMachine::connect(stream, boot_env()).unwrap();
-        let base = m.snapshot().unwrap();
+        let base = m.snapshot().unwrap().0;
         let base_hash = m.hash().unwrap();
         // Arbitrary interleaving: several branches at different seeds, runs,
         // hashes, a nested snapshot + drop — none of which must perturb the

@@ -218,11 +218,17 @@ fn snapshot_reply_hostile_bodies_are_rejected() {
     // A non-canonical taint byte (2) is rejected — no spurious `true`.
     let mut bad_taint = body.clone();
     *bad_taint.last_mut().unwrap() = 0x02;
-    assert_eq!(decode_reply(&frame(&bad_taint)), Err(ProtocolError::ShortFrame));
+    assert_eq!(
+        decode_reply(&frame(&bad_taint)),
+        Err(ProtocolError::ShortFrame)
+    );
     // Trailing bytes inside the declared body are rejected (canonical encoding).
     let mut trailing = body.clone();
     trailing.push(0x00);
-    assert_eq!(decode_reply(&frame(&trailing)), Err(ProtocolError::ShortFrame));
+    assert_eq!(
+        decode_reply(&frame(&trailing)),
+        Err(ProtocolError::ShortFrame)
+    );
 }
 
 /// An inner length field that runs past the declared frame body is `ShortFrame`

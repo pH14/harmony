@@ -6717,7 +6717,11 @@ mod tests {
         // own stream, and neither seal's count moved for it.
         let console = drain_console(&mut s);
         assert_eq!(console, b"ab", "the serial capture saw both bytes");
-        assert_eq!((n1, n2), (1, 2), "console bytes never entered the SDK count");
+        assert_eq!(
+            (n1, n2),
+            (1, 2),
+            "console bytes never entered the SDK count"
+        );
     }
 
     /// **Branch/replay preserves the captured SDK prefix length.** A verbatim

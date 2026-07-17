@@ -40,9 +40,9 @@
 //! whether a live window actually drew.
 
 use explorer::{
-    EnvCodec, ExemplarRef, Frontier, FrontierEntry, Machine, MachineError, Materialization,
-    Materializer, Moment, Reproducer, Reward, SnapId, StopConditions, StopMask, StopReason,
-    VirtualExemplar,
+    EnvCodec, EvidenceCut, ExemplarRef, Frontier, FrontierEntry, Machine, MachineError,
+    Materialization, Materializer, Moment, Reproducer, Reward, SnapId, StopConditions, StopMask,
+    StopReason, VirtualExemplar,
 };
 
 use crate::{fmt_stop, hex, probe_vtime};
@@ -154,19 +154,21 @@ pub struct MaterializeReport {
 /// Seal the machine's current point, nudging past non-sealable boundaries the
 /// same way the task-58 sweep does: on `NotQuiescent` (an RNG mid-exit
 /// completion or a non-synchronized point), run `retry_step` further — landing
-/// on the next synchronized boundary — and try again. Returns the seal, the
-/// V-time it landed at, and the attempt count.
+/// on the next synchronized boundary — and try again. Returns the seal with
+/// its **server-stamped evidence cut** (task 127 — the seal `Moment` comes
+/// from the stamp, not this loop's client-side V-time cursor) and the attempt
+/// count.
 fn seal_here<M: Machine>(
     machine: &mut M,
     mut vt: u64,
     retry_step: u64,
     max_attempts: usize,
-) -> Result<(SnapId, u64, usize), MachineError> {
+) -> Result<(SnapId, EvidenceCut, usize), MachineError> {
     let mut attempts = 0usize;
     loop {
         attempts += 1;
         match machine.snapshot() {
-            Ok(snap) => return Ok((snap, vt, attempts)),
+            Ok((snap, cut)) => return Ok((snap, cut, attempts)),
             Err(MachineError::NotQuiescent) if attempts < max_attempts => {
                 let stop = machine.run(
                     &StopConditions {
@@ -226,13 +228,14 @@ pub fn run_materialize<M: Machine>(
 
     // 1. The base: probe the current V-time and seal the campaign genesis.
     let v0 = probe_vtime(machine)?;
-    let (genesis, genesis_at, genesis_attempts) = seal_here(
+    let (genesis, genesis_cut, genesis_attempts) = seal_here(
         machine,
         v0,
         cfg.snapshot_retry_step,
         cfg.snapshot_max_attempts,
     )?;
-    let mut mat = Materializer::new(genesis, Moment(genesis_at));
+    let genesis_at = genesis_cut.at.0;
+    let mut mat = Materializer::new(genesis, genesis_cut.at);
     let mut frontier = Frontier::new();
 
     // 2. The chain: branch → run(deadline) → seal per hop, keyed by the
@@ -247,12 +250,13 @@ pub fn run_materialize<M: Machine>(
         machine.branch(cur, &codec.seeded(cfg.seed))?;
         let requested = cur_at.saturating_add(cfg.hop_delta);
         let landed = run_to(machine, requested, &format!("chain hop {i}"))?;
-        let (seal, at, attempts) = seal_here(
+        let (seal, cut, attempts) = seal_here(
             machine,
             landed,
             cfg.snapshot_retry_step,
             cfg.snapshot_max_attempts,
         )?;
+        let at = cut.at.0;
         let suffix = machine.recorded_env()?;
         let env = match &entry_env {
             None => suffix.clone(),
@@ -265,13 +269,13 @@ pub fn run_materialize<M: Machine>(
                 parent: cur,
                 seed: cfg.seed,
                 suffix: suffix.clone(),
-                at: Moment(at),
+                cut,
             },
             env: env.clone(),
             reward: Reward { new_cells: 1 },
         });
         frontier.claim((i as u64).to_le_bytes().to_vec(), r);
-        let displaced = mat.register(r, seal, cur, suffix, Moment(at));
+        let displaced = mat.register(r, seal, cur, suffix, cut);
         debug_assert!(displaced.is_none(), "fresh refs never carry a seal");
         hops.push(HopRow {
             requested,

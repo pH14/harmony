@@ -321,7 +321,7 @@ pub fn run_campaign<M: Machine>(
         loop {
             attempts += 1;
             match machine.snapshot() {
-                Ok(snap) => return Ok(snap),
+                Ok((snap, _cut)) => return Ok(snap),
                 Err(MachineError::NotQuiescent) => {
                     if attempts >= cfg.snapshot_max_attempts {
                         return Err(MachineError::NotQuiescent);
@@ -663,7 +663,7 @@ pub fn render_campaign_table(report: &CampaignReport, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use explorer::{Moment, SpecEnvCodec};
+    use explorer::{EvidenceCut, Moment, SpecEnvCodec};
 
     /// [`CampaignConfig::toy`] with its **search space narrowed under Miri**
     /// (task 104, `hm-d4y`). The full toy space is 4 gpas × 4 mask bits × an
@@ -946,11 +946,17 @@ mod tests {
                 Ok(StopReason::Quiescent { vtime: Moment(vt) })
             }
         }
-        fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+        fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
             let id = self.next;
             self.next += 1;
             self.snaps.insert(id, (self.vtime, self.current.clone()));
-            Ok(explorer::SnapId(id))
+            Ok((
+                explorer::SnapId(id),
+                EvidenceCut {
+                    at: Moment(self.vtime),
+                    sdk_events: 0,
+                },
+            ))
         }
         fn drop_snap(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
             self.snaps
@@ -984,7 +990,7 @@ mod tests {
         // The gating the fix depends on: the SAME triggering env surfaces the
         // assertion ONLY when the class is armed.
         let mut g = AssertMachine::new();
-        let b = g.snapshot().unwrap();
+        let b = g.snapshot().unwrap().0;
         // Craft the exact planted trigger env (gpa 0x3000, guard bit 31, in window).
         let mut spec = EnvSpec::Seeded {
             seed: 1,
@@ -1339,12 +1345,12 @@ mod tests {
                 }
             }
         }
-        fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+        fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
             if self.refusals_left > 0 {
                 self.refusals_left -= 1;
                 Err(MachineError::NotQuiescent)
             } else {
-                Ok(explorer::SnapId(1))
+                Ok((explorer::SnapId(1), EvidenceCut::default()))
             }
         }
         fn drop_snap(&mut self, _snap: explorer::SnapId) -> Result<(), MachineError> {
