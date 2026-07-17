@@ -263,6 +263,34 @@ fn accept_aa1_skid_is_accepted_positive_skid_and_all() {
 }
 
 #[test]
+fn accept_aa1_llsc_hazard_is_recorded_not_failed() {
+    // AA1-F2 (harmony-arm): same-seed llsc-atomics repetitions may legitimately land
+    // on different digests at AA-1 — a host IRQ between LDXR and STXR clears the
+    // monitor and adds a reported retry. The divergence is the §4 hazard datum, and
+    // the verdict must RECORD it on the face of the pass, never fail it — and never
+    // extend the exemption to any other payload or later stage (fixture 17 pins that).
+    let report = check("accept-aa1-llsc-hazard", no_floors());
+    // Counting-mode AA-1 evidence is a sub-experiment: the stage's armed-overflow
+    // floor correctly reads NOT-REQUESTED (never a full pass). The assertion here is
+    // that NOTHING FAILS — the divergence is recorded, not rejected.
+    assert!(
+        report.failed().is_empty(),
+        "the AA-1 llsc hazard fixture was rejected: {:?}",
+        report.failed()
+    );
+    let detail = report
+        .outcomes
+        .iter()
+        .find(|o| o.id == CheckId::ReplayIdentity)
+        .map(|o| o.detail.clone())
+        .unwrap_or_default();
+    assert!(
+        detail.contains("hazard observed"),
+        "the measured llsc divergence must be on the face of the verdict, got: {detail}"
+    );
+}
+
+#[test]
 fn reject_stock_mechanism() {
     // The PR-98 lesson: a run that silently exercised the stock signal-kick path
     // while claiming the patched Preempt exit must fail here.

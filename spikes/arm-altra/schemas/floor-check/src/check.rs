@@ -2226,12 +2226,30 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
     }
 
     let mut compared = 0usize;
+    let mut llsc_hazard: Vec<String> = Vec::new();
     for (key, digests) in &groups {
         let reps: usize = digests.values().map(Vec::len).sum();
         if reps < 2 {
             continue;
         }
         compared += 1;
+        // AA-1 + llsc-atomics: same-seed divergence is the §4 LL/SC hazard, MEASURED,
+        // not a determinism defect — this payload's count carries a runtime-reported
+        // retry term precisely because its execution is not deterministic under real
+        // exits (a host IRQ landing between LDXR and STXR clears the monitor; observed
+        // spontaneously on harmony-arm at 1e7/1e8, AA1-F2). The divergence is
+        // quantified in the verdict as AA-4(a) input. Every OTHER payload, and llsc at
+        // every LATER stage (AA-4's ladder exists to close exactly this), binds.
+        if stage == Stage::Aa1 && key.0 == Payload::LlscAtomics.name() && digests.len() > 1 {
+            llsc_hazard.push(format!(
+                "scale {} seed {}: {} reps over {} distinct digests",
+                key.1,
+                key.2,
+                reps,
+                digests.len()
+            ));
+            continue;
+        }
         if digests.len() > 1 {
             // Name the diverging samples: one representative id per distinct digest,
             // in sorted-digest order, so the detail is reproducible.
@@ -2263,6 +2281,16 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
         out.push(fail(CheckId::ReplayIdentity, join_problems(&problems)));
         return;
     }
+    // The llsc hazard note rides the PASS detail so the measured divergence is on the
+    // face of the verdict (it is AA-4's threat-model datum), never silently absorbed.
+    let llsc_note = if llsc_hazard.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; llsc-atomics §4 hazard observed (recorded, AA-4 input): {}",
+            llsc_hazard.join("; ")
+        )
+    };
 
     // AA-5 acceptance is TWO bit-identical mechanisms: a work-derived clock-page run AND a
     // Linux-guest boot, each replayed same-seed. BOTH classes must be present AND repeated — a
@@ -2428,7 +2456,9 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
     } else {
         out.push(pass(
             CheckId::ReplayIdentity,
-            format!("{compared} repeated group(s) landed on bit-identical state digests"),
+            format!(
+                "{compared} repeated group(s) landed on bit-identical state digests{llsc_note}"
+            ),
         ));
     }
 }

@@ -657,6 +657,31 @@ pub fn all_fixtures() -> Vec<Fixture> {
         fixtures.push(fixture("reject-clockpage-self-seeded", &run_set, &records));
     }
 
+    // 16b. accept-aa1-llsc-hazard — at AA-1, two same-seed llsc-atomics repetitions
+    //     with DIFFERENT digests (and self-consistent counts differing by their own
+    //     reported retries) are the §4 hazard, measured — recorded on the verdict,
+    //     never failed. Observed spontaneously on harmony-arm (AA1-F2): a host IRQ
+    //     between LDXR and STXR clears the monitor. Any OTHER payload diverging, or
+    //     llsc at a later stage, still fails (fixture 17).
+    {
+        // Counting-mode records, as observed live (overflow: null, exit mmio) — the
+        // divergence appeared with NO armed overflow and NO injection.
+        let mut a = generate_record(0, Payload::LlscAtomics, ExitReason::Mmio);
+        let mut b = generate_record(1, Payload::LlscAtomics, ExitReason::Mmio);
+        a.overflow = None;
+        b.overflow = None;
+        b.reported_taken = a.reported_taken + 1;
+        b.work_end += 1; // the retry's extra CBNZ execution...
+        b.measured_taken += 1; // ...so the count stays exact for ITS OWN retry term
+        a.state_digest = format!("sha256:{}", synth_sha256("llsc-rep-a"));
+        b.state_digest = format!("sha256:{}", synth_sha256("llsc-rep-b"));
+        let records = vec![a, b];
+        let mut run_set = build_run_set(Stage::Aa1, stock_mechanism(), &records);
+        // A counting run: no uniform sampling period in the manifest.
+        run_set.perf.sample_period = None;
+        fixtures.push(fixture("accept-aa1-llsc-hazard", &run_set, &records));
+    }
+
     // 17. reject-divergent-digests — two repetitions of the SAME (payload, scale,
     //     seed, condition, target) that landed on different state digests. Every
     //     count matches, every overflow was delivered exactly once, the sample count
@@ -721,13 +746,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_twenty_four_fixtures_with_unique_names() {
+    fn there_are_twenty_five_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 24);
+        assert_eq!(fixtures.len(), 25);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 24, "fixture names must be unique");
+        assert_eq!(names.len(), 25, "fixture names must be unique");
     }
 
     #[test]
