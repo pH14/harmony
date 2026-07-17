@@ -20,15 +20,17 @@ transfer and are flagged **PROVISIONAL — re-confirm on a real EPYC** where the
 |---|---|---|
 | **AE-0** | **GO** | Zen 2 part exposes every assumption: SVM full surface, `ex_ret_brn_tkn`=0xc4 openable/exact/overflow-delivers, legacy PMU (no PerfMonV2), single-step surface present. |
 | **AE-1** | **PROVISIONAL GO** | The existential trio holds: host-side + guest-mode counting bit-exact; 10⁶ overflows exactly-once; skid bounded (max 5043); SpecLockMap overcount **not reproduced** (null). |
-| **AE-2** | **REDESIGN-pending-characterization** | `DebugCtl.BTF` lead (branch granularity == the work event) + TF residual; ranked ruling awaits the on-silicon `#DB`-under-SVM data (driver apparatus pending). |
-| **AE-3** | **draft authored (build/measure pending)** | The `svm.c` `KVM_EXIT_PREEMPT` force-exit analogue is only the `svm.c` hunk (reuses all shared 0004 plumbing); build + on-silicon attest is the remaining box step. |
-| **AE-4** | **PROVISIONAL (skeleton done)** | `det-zen2-v1` enforcement truth table complete; PerfMonV2 rows inert on Zen 2; on-silicon freeze demo (shares the KVM harness) is the remaining box step. |
-| **AE-5** | **gated** | Bare-metal mini determinism gate needs the appliance build (`hm-tn9`, out of spike scope per `hm-u1n`) + the AE-2/AE-3/AE-4 box steps. |
-| **AE-6** | **gated** | Nested SVM follows the AE-5 bare-metal GO. |
+| **AE-2** | **PROVISIONAL GO** | Ruled **TF** (via `KVM_GUESTDBG_SINGLESTEP`), **not BTF** — refuting the doc's provisional lead on silicon: TF is exact + guest-transparent (`tf_kept=0`); BTF delivers 0 `#DB` through stock KVM; MOV-SS shadow the one recorded hazard. |
+| **AE-3** | **ESCALATED** | `svm.c` hunk **verified against real 6.8 source** (applies clean); full build **blocked** — the shared determinism plumbing (0001/0002/0004) targets ~6.18, box runs stock 6.8 (no `KVM_EXIT_PREEMPT`/`preempt_armed`). Doc-vs-hardware version skew; escalated per tasks/123. |
+| **AE-4** | **PROVISIONAL GO** | Freeze **demonstrated on-silicon**: guest sees frozen `AuthenticAMD` + TSC bit cleared **below host** (`0x078bfbff`→`ef`); denied MSR (HWCR) RDMSR **traps to the vmm**. `det-zen2-v1` truth table ratified. |
+| **AE-5** | **PARTIAL** | Substrate same-seed determinism **demonstrated (1000/1000 bit-identical** on SVM); full mini gate (work-clock preempt + `svm.c` force-exit + fault injection + postgres Subject) gated on **AE-3** + the appliance (`hm-tn9`, out of spike scope per `hm-u1n`). |
+| **AE-6** | **GATED** | Nested SVM **confirmed available** (`kvm_amd nested=1`); full nested gate (consonance stack as L1) follows the AE-5 bare-metal GO + appliance. |
 
 No **kill condition** fired: no unexplained count mismatch (the ±1 jitter is accounted host
-interrupts, exactly 0 on clean windows), overflow never lost/duplicated/early, both
-single-step primitives present, no un-freezable guest-visible state found.
+interrupts, exactly 0 on clean windows), overflow never lost/duplicated/early, a single-step
+primitive that lands exactly and is guest-hidden exists (TF), and no un-freezable
+guest-visible state was found (CPUID + MSR freeze demonstrated). The one **escalation** (AE-3,
+a build-environment version skew, not a mechanism failure) is recorded, not improvised around.
 
 ## Definition-of-done items
 
@@ -40,9 +42,12 @@ single-step primitives present, no un-freezable guest-visible state found.
    0-or-1/instruction; **Zen skid mean 1496 / max 5043, constant across periods** ⇒ candidate
    `skid_margin` ≈ 16384 (**~10× Intel's ~128** — re-parameterize `SimCpu`/`PlannerConfig`,
    never inherit).
-3. **Single-step ruling** — `results/ae-2/single-step-ruling.md`: ranked candidates
-   (A BTF lead / B TF residual / C DR7 aid / D PMC-step last-resort) with rejected-mode
-   analysis; final ruling gated on the `#DB`-under-SVM box step (not "TF and hope").
+3. **Single-step ruling** — `results/ae-2/single-step-ruling.md`, **settled on silicon**:
+   the primitive is **`RFLAGS.TF` via `KVM_GUESTDBG_SINGLESTEP`** (exact + guest-transparent),
+   **not BTF** (which delivered 0 `#DB` through stock KVM — the doc's provisional lead refuted
+   by data); rejected-candidate modes recorded (BTF unavailable via stock KVM; MOV-SS shadow
+   coalesces a step). Not "TF and hope" — TF with the on-silicon evidence and the mov-ss hazard
+   characterized (`results/ae-2/tf-characterization.json`).
 4. **Trait-freeze memo (preliminary, `docs/ARCH-BOUNDARY.md`'s deferred decision)** —
    AE-1(d) shows every armed overflow stops **at or after** the armed count (skid ∈ [0, 5043],
    `skid_min = 0`, **0 early / 0 lost / 0 duplicate** over 10⁶ arms). So
@@ -53,9 +58,10 @@ single-step primitives present, no un-freezable guest-visible state found.
    it with a smaller skid). No trait absorption required on the evidence so far.
 5. **Contract vendor-column skeleton + enforcement truth table** —
    `contract/enforcement-truth-table.md`: `det-zen2-v1`, each row → its SVM enforcement
-   backend (CPUID intercept / MSR-permission-bitmap / RDTSC/RDPMC/RDRAND intercepts), all
-   available per AE-0; references (never forks) `docs/cpu-msr-contract-amd-draft.toml`. PMU
-   column pinned to legacy (PerfMonV2 rows inert on Zen 2; re-confirm on Zen 4 EPYC).
+   backend; references (never forks) `docs/cpu-msr-contract-amd-draft.toml`. **Two mechanisms
+   demonstrated on-silicon (AE-4):** CPUID freeze incl. a below-host bit (`ae4-freeze`) and
+   MSR default-deny trapping to the vmm (`ae4-msr`). PMU column pinned to legacy (PerfMonV2
+   rows inert on Zen 2; re-confirm on Zen 4 EPYC).
 6. **One-command AE-5 demo** — gated on the appliance (`hm-tn9`) and the AE-2/3/4 box steps;
    `host/build-kvm-amd.sh` is the content-pinned patched-stack build recipe it will drive.
 7. **Box baseline** — `results/box-baseline-manifest.json` is the day-one restore target;
@@ -88,17 +94,31 @@ was exercised by a standalone host-side hammer and a standalone C KVM harness (e
 production edit was required.** The `svm.c` patch draft (`host/patches/`) is spike-local and
 reuses the *existing* Intel `kvm-patches/patches/0001,0002,0004` verbatim.
 
-## Residual risks & remaining box steps (for the foreman / next iteration)
+## The escalation (AE-3) — decision needed above the spike
 
-- **AE-2 empirical single-step** — build `harness/singlestep-driver.c` (guest-debug BTF/TF
-  `#DB` across straight-line/branch-dense/syscall/exception/`iret`/interrupt-shadow/injected
-  boundaries) → ratify the BTF ruling. Apparatus vehicle exists (`kvm-guest-hammer`).
-- **AE-3 build** — `build-kvm-amd.sh` needs a kernel tree matching the shared Intel patches
-  (0001/0002/0004 target a newer tree than `linux-source-6.8`); resolve the version delta or
-  rebase the shared hunks, then build + attest the patched `kvm_amd` (avic=0) via the harness.
-- **AE-4 enforcement demo** — extend `kvm-guest-hammer` with `KVM_SET_CPUID2` +
-  `KVM_X86_SET_MSR_FILTER` and a CPUID/MSR-probe guest to demonstrate the freeze (incl.
-  below-host bits) and default-deny.
+The `svm.c` force-exit mechanism is content-verified against real 6.8 source, but the box's
+stock 6.8.0-88 kernel is **older than the determinism patch series (~6.18)** it must build
+into (6.8 has no `KVM_EXIT_PREEMPT`, no `deterministic_intercepts`/`preempt_armed`), so
+patches 0001/0002/0004 do not apply and the fields the hunk compiles against are absent
+(`results/ae-3/build-environment.json`). **Two clean resolutions, both above the spike:**
+(1) a ~6.18-class box kernel matching the series, or (2) an official 6.8 backport of
+0001/0002/0004. Hand-porting the whole series onto 6.8 or hot-swapping the box kernel was
+deliberately **not** done (it would substitute a different kernel/patch set than the ruling
+names — a docs/AMD-EPYC.md §Execution-constraints prohibition, and the tasks/123 escalate rule).
+Once resolved, `host/build-kvm-amd.sh all` is a one-command build (staged + validated to the
+version-skew wall), and AE-3's landing + AE-5's full gate follow.
+
+## Remaining box steps (for the foreman / next iteration)
+
+- **AE-5 full mini gate + AE-6 nested** — need the AE-3 patched kernel (above) **and** the
+  appliance build (`hm-tn9`, out of spike scope): the postgres Subject + work-clock-driven
+  preemption via the `svm.c` force-exit + fault injection at seeded Moments, then the one-command
+  demo; then its nested-SVM twin (`kvm_amd nested=1` confirmed ready). The substrate half
+  (same-seed determinism, `ae5-determinism` 1000/1000) is done.
+- **AE-2 tail** — the full `work == target` landing (single-step + work-counter inversion, the
+  AE-3 harness) and the syscall/exception/`iret`/injected-interrupt classes (need the
+  IDT-bearing protected/long-mode Subject); plus a direct guest-`PUSHF` confirmation of
+  TF-invisibility. The core ruling (TF, mov-ss hazard, BTF-rejected) is settled.
 - **EPYC re-confirmation** — every platform-scoped row (AVIC-at-scale, EPYC topology,
   PerfMonV2 on Zen 4) re-measures on a real EPYC; the core-mechanism constants do not.
 - **SpecLockMap second data point** — the null overcount wants a contended-lock / second-Zen-
