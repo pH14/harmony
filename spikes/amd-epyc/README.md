@@ -114,11 +114,11 @@ integrity). In this apparatus:
 
 | Stage | Question | Disposition | Evidence |
 |------|----------|-------------|----------|
-| AE-0 | What part, and does it expose the assumptions? | **baseline captured** (Zen 2 Ryzen 3600); truth-table completion pending box exec | `results/box-baseline-manifest.json` |
-| AE-1 | Is `ex_ret_brn_tkn` bit-deterministic; PMI reliable; skid bound; SpecLockMap? | apparatus ready — **pending box execution** | `harness/amd-hammer.c`, `schemas/check-floors.py` |
-| AE-2 | Single-step exactness without MTF; which primitive? | candidate analysis authored; ranked ruling **pending box data** | `harness/singlestep-driver.c` |
-| AE-3 | `svm.c` force-exit at PMI + exact landing; trait-freeze memo | patch draft authored; build/measure **pending box** | `host/patches/`, `host/build-kvm-amd.sh` |
-| AE-4 | AuthenticAMD contract freeze + enforcement truth table | skeleton references `docs/cpu-msr-contract-amd-draft.toml`; on-silicon enforcement **pending box** | `contract/` |
+| AE-0 | What part, and does it expose the assumptions? | **GO** — Zen 2 Ryzen 3600; SVM full surface; AVIC present (off); legacy PMU (no PerfMonV2); `ex_ret_brn_tkn` (0xc4) openable/exact/overflow-delivers | `results/ae-0/capability-truth-table.json`, `results/box-baseline-manifest.json` |
+| AE-1 | Is `ex_ret_brn_tkn` bit-deterministic; PMI reliable; skid bound; SpecLockMap? | **PROVISIONAL GO** — count bit-exact (0 mismatches/~5000 clean windows); 10⁶ overflows exactly-once (0 lost/0 dup); skid max 5043; SpecLockMap **NULL** (no overcount) | `results/ae-1/full/`, `results/constants-pack.md` |
+| AE-2 | Single-step exactness without MTF; which primitive? | **REDESIGN-pending-characterization** — BTF lead (branch-granularity == the event); ranked ruling awaits `#DB`-under-SVM data | `results/ae-2/single-step-ruling.md`, `harness/singlestep-driver.c` |
+| AE-3 | `svm.c` force-exit at PMI + exact landing; trait-freeze memo | **draft authored** — only the `svm.c` hunk (reuses shared 0004 plumbing); build/measure is the box step | `host/patches/`, `host/build-kvm-amd.sh` |
+| AE-4 | AuthenticAMD contract freeze + enforcement truth table | **PROVISIONAL** — skeleton done (`det-zen2-v1`, PerfMonV2 rows inert); on-silicon enforcement is the box step (shares the KVM harness) | `contract/enforcement-truth-table.md` |
 | AE-5 | Bare-metal mini determinism gate (AMD×metal GO) | gated on the appliance build (`hm-tn9`) + AE-1..AE-4 GO | — |
 | AE-6 | Nested SVM (AMD×virtualized) | gated on AE-5 GO | — |
 

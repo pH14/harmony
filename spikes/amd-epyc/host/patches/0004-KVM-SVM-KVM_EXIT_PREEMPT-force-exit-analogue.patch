@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: amd-epyc-spike <s@s>
+Date: Thu, 17 Jul 2026 16:00:00 +0000
+Subject: [PATCH] KVM: SVM: KVM_EXIT_PREEMPT in-kernel force-exit analogue (AE-3)
+
+The AMD/SVM analogue of the x86/VMX deterministic in-kernel force-exit
+(consonance/vmm-backend/kvm-patches/patches/0004-KVM-x86-add-KVM_EXIT_PREEMPT-...).
+docs/AMD-EPYC.md AE-3 / harmony tasks/123. UNTESTED-ON-SILICON DRAFT.
+
+The determinism ABI is substrate-agnostic ABOVE the interrupt-delivery detail: a
+retired-taken-branch perf_event (ex_ret_brn_tkn, Zen PMCx0C4) armed at
+deadline - SKID_MARGIN overflows and fires a host PMI; the in-kernel force-exit
+converts that overflow into a deterministic vCPU exit with a dedicated reason
+BEFORE any guest-visible side effect, so the V-time deadline is hit with only the
+bounded hardware-PMI skid rather than the unbounded SIGIO-delivery skid a
+CPU-bound guest can outrun (AE-1(d) measured that host-side skid at up to
+~thousands of retired branches; this patch is what bounds it).
+
+WHY THIS IS ONLY THE svm.c HUNK (the load-bearing simplification, do not lose in
+review). Intel and AMD are the SAME x86-64 Arch and share arch/x86 (docs/ARCH-
+BOUNDARY.md): the UAPI (KVM_EXIT_PREEMPT = 42; KVM_ARM_PREEMPT_EXIT =
+_IO(KVMIO, 0xe4)), the per-vCPU one-shot arm (vcpu->arch.preempt_armed), the
+KVM_ARM_PREEMPT_EXIT ioctl case in arch/x86/kvm/x86.c, and the
+kvm->arch.deterministic_intercepts opt-in are ALL added by the vendor-neutral
+x86 patches 0001/0004 and are shared verbatim with the VMX backend. Applying
+0001..0004 to the tree already provides them; this patch adds ONLY the SVM
+exit-path hook -- the analogue of 0004's arch/x86/kvm/vmx/vmx.c
+handle_exception_nmi() hunk. There is no new UAPI, no new field, no new ioctl.
+
+ARCH DETAIL (svm.c vs vmx.c). On AMD SVM the perf-overflow PMI is delivered as
+an NMI exactly as on Intel; with the VMCB NMI intercept set (KVM's default), the
+NMI #VMEXITs with SVM_EXIT_NMI, the host PMI has already been serviced by
+svm_handle_exit_irqoff() (vcpu->arch.at_instruction_boundary is set there for
+SVM_EXIT_NMI) by the time the C-level exit handler nmi_interception() runs, and
+nmi_interception() -- the SVM twin of vmx handle_exception_nmi()'s is_nmi() arm
+-- returns 1 to re-enter. This patch makes it instead return to userspace with
+KVM_EXIT_PREEMPT when the determinism opt-in and the one-shot arm are set,
+mirroring 0004 line-for-line. default-off => byte-identical stock behavior.
+
+AVIC POSTURE (docs/AMD-EPYC.md Sec 3). AVIC accelerates ordinary interrupt (IRQ)
+delivery in hardware and is disabled for the deterministic backend
+(kvm_amd avic=0, recorded in the box baseline); it does NOT accelerate NMIs, so
+the perf-overflow NMI reaches this SVM_EXIT_NMI path regardless. The AVIC-off
+posture is a recorded standing condition of the deterministic backend (the
+interrupt fabric is kept in userspace for determinism, as on Intel), not a
+correctness dependency of this hook -- but AE-3's mechanism attestation asserts
+avic=0 per run so a silent AVIC-on run cannot masquerade as this mechanism.
+
+Applies-and-compiles is the whole claim of this draft: git-am onto the pinned
+linux-source-6.8.0 tree and `make M=arch/x86/kvm` are the AE-3 box steps
+(host/build-kvm-amd.sh); it has not run as a host kernel and makes no claim about
+PMI-to-exit determinism or skid on real silicon -- that is AE-3's on-box job.
+
+Co-developed-for: harmony AMD vendor spike AE-3 (tasks/123)
+---
+ arch/x86/kvm/svm/svm.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
+index 000000000..000000001 100644
+--- a/arch/x86/kvm/svm/svm.c
++++ b/arch/x86/kvm/svm/svm.c
+@@ -2085,7 +2085,21 @@ static int smi_interception(struct kvm_vcpu *vcpu)
+
+ static int nmi_interception(struct kvm_vcpu *vcpu)
+ {
+-	return 1;
++	/*
++	 * Deterministic preemption (harmony tasks/123; AMD/SVM analogue of the x86
++	 * KVM_EXIT_PREEMPT force-exit, patch 0004's handle_exception_nmi() hunk).
++	 * The perf-overflow PMI arrived as an NMI, #VMEXIT'd with SVM_EXIT_NMI, and
++	 * was already serviced by svm_handle_exit_irqoff() by the time we run here.
++	 * If userspace armed the one-shot force-exit under the determinism opt-in,
++	 * return to userspace with KVM_EXIT_PREEMPT instead of re-entering, so the
++	 * V-time deadline is hit with only the bounded hardware-PMI skid. Gated on
++	 * the determinism opt-in => default-off is byte-identical stock behavior.
++	 */
++	if (vcpu->kvm->arch.deterministic_intercepts && vcpu->arch.preempt_armed) {
++		vcpu->arch.preempt_armed = false;
++		vcpu->run->exit_reason = KVM_EXIT_PREEMPT;
++		return 0;
++	}
++	return 1;
+ }
+
+ static int smi_interception(struct kvm_vcpu *vcpu)
+--
+2.47.3

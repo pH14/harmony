@@ -39,6 +39,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <linux/perf_event.h>
 
@@ -65,10 +66,17 @@ static int open_counter(uint64_t raw_event, int overflow) {
     pe.pinned = 1;                  /* never multiplexed */
     pe.exclude_kernel = 1;          /* CPL3 only: host-side (a) counts user work */
     pe.exclude_hv = 1;
-    pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
     if (overflow) {
-        pe.sample_period = 0;       /* set by caller via PERF_EVENT_IOC_PERIOD */
+        /* sampling: each overflow writes a PERF_RECORD_SAMPLE carrying the counter value
+         * at the PMI (PERF_SAMPLE_READ, read_format=0 -> just the value). The kernel
+         * records that value AT the PMI, so skid = value - period is precise and
+         * race-free — no signal-delivery timing is involved. */
+        pe.sample_period = 1u << 20;  /* nonzero placeholder; real period via IOC_PERIOD */
+        pe.sample_type = PERF_SAMPLE_READ;
+        pe.read_format = 0;
         pe.wakeup_events = 1;
+    } else {
+        pe.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
     }
     /* pid=0 (this thread), cpu=-1 (follow the thread; we pin the thread ourselves) */
     long fd = perf_open(&pe, 0, -1, -1, 0);
@@ -93,7 +101,39 @@ static int sibling_of(int core) {
     int a = -1, b = -1; if (fscanf(f, "%d-%d", &a, &b) < 1 && fscanf(f, "%d,%d", &a, &b) < 1) { fclose(f); return -1; }
     fclose(f);
     /* file may be "a,b" or "a-b"; return the one that isn't `core`, else -1 */
-    if (a == core) return b; if (b == core) return a; return b;
+    if (a == core) return b;
+    if (b == core) return a;
+    return b;
+}
+
+/* Sum of every hardware interrupt delivered to `core` (its column of
+ * /proc/interrupts). Read before/after a measurement window, the DELTA is the count
+ * of async interrupts that landed during it — the accountable contamination source
+ * (evidence integrity #6): a window with delta 0 is uncontaminated, and its count
+ * must equal the oracle exactly. Rows with fewer than core+1 numeric columns (ERR/MIS)
+ * are skipped. Returns 0 on any parse failure (conservative: treats unknown as clean,
+ * but the correlation check still flags real contamination). */
+static unsigned long cpu_irq_count(int core) {
+    FILE *f = fopen("/proc/interrupts", "r");
+    if (!f) return 0;
+    char line[8192];
+    if (!fgets(line, sizeof(line), f)) { fclose(f); return 0; }  /* CPUn header */
+    unsigned long total = 0;
+    while (fgets(line, sizeof(line), f)) {
+        char *p = strchr(line, ':');
+        if (!p) continue;
+        p++;                        /* first number is column 0 (CPU0) */
+        for (int col = 0; ; col++) {
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p < '0' || *p > '9') break;     /* end of numeric columns */
+            char *end;
+            unsigned long v = strtoul(p, &end, 10);
+            if (col == core) { total += v; break; }
+            p = end;
+        }
+    }
+    fclose(f);
+    return total;
 }
 
 /* ----- JSON helpers (stable, sorted-by-construction) ---------------------- */
@@ -114,20 +154,30 @@ static int run_exactness(FILE *o, uint64_t raw_event, const oracle_payload *pl,
     int all_ok = 1;
     for (int r = 0; r < reps; r++) {
         struct read_rec rr[2]; uint64_t ns[2] = { n1, n2 };
+        unsigned long irqs[2] = { 0, 0 };
         int multiplexed = 0, sink_ok = 1;
         for (int j = 0; j < 2; j++) {
+            unsigned long irq0 = cpu_irq_count(core);
             ioctl(fd, PERF_EVENT_IOC_RESET, 0);
             ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
             volatile uint64_t sink = pl->fn(ns[j]);
             ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
             (void)sink;
+            irqs[j] = cpu_irq_count(core) - irq0;   /* async interrupts during this window */
             if (read(fd, &rr[j], sizeof(rr[j])) != (ssize_t)sizeof(rr[j])) { close(fd); return 2; }
             if (rr[j].time_enabled != rr[j].time_running) multiplexed = 1;
         }
         uint64_t delta = rr[1].value - rr[0].value;
         uint64_t oracle = pl->taken_per_iter * (n2 - n1);
+        /* a sample is CLEAN iff no interrupt landed in either sub-window; only clean
+         * windows are held to exactness (contaminated ones are accounted, not passed). */
+        int clean = (irqs[0] == 0 && irqs[1] == 0);
         int exact = (delta == oracle) && !multiplexed;
-        if (!exact) all_ok = 0;
+        /* Only a CLEAN window that is inexact is a real failure: a contaminated window's
+         * excess is accounted external interrupts, not a counting defect. The clean-
+         * window COUNT floor (guards against a vacuous all-contaminated pass) is enforced
+         * by check-floors against the retained records. */
+        if (clean && !exact) all_ok = 0;
         /* one raw record per rep (evidence integrity #6: every attempt accounted) */
         fprintf(o, "  {");
         jstr(o, "kind", "exactness", 1);
@@ -141,6 +191,9 @@ static int run_exactness(FILE *o, uint64_t raw_event, const oracle_payload *pl,
         ju64(o, "oracle_delta", oracle, 1);
         ju64(o, "taken_per_iter", pl->taken_per_iter, 1);
         ju64(o, "multiplexed", (uint64_t)multiplexed, 1);
+        ju64(o, "irqs_n1", (uint64_t)irqs[0], 1);
+        ju64(o, "irqs_n2", (uint64_t)irqs[1], 1);
+        ju64(o, "clean", (uint64_t)clean, 1);
         ju64(o, "core", (uint64_t)core, 1);
         ju64(o, "sibling", (uint64_t)(sib < 0 ? 0 : sib), 1);
         ju64(o, "exact", (uint64_t)exact, 1);
@@ -153,62 +206,134 @@ static int run_exactness(FILE *o, uint64_t raw_event, const oracle_payload *pl,
 
 /* ----- (d) overflow + skid ------------------------------------------------ */
 
-static volatile sig_atomic_t g_overflows = 0;
-static int g_fd = -1;
-static void on_overflow(int sig, siginfo_t *si, void *uc) {
-    (void)sig; (void)si; (void)uc;
-    g_overflows++;
-    ioctl(g_fd, PERF_EVENT_IOC_REFRESH, 1); /* re-arm exactly one more overflow */
+/* One-shot arming, RING-based (no signals): each rep arms EXACTLY ONE overflow at
+ * `period` via REFRESH(1) (auto-disables after one overflow), runs a payload exceeding
+ * it, then polls the mmap ring for the PERF_RECORD_SAMPLE the kernel's PMI handler
+ * wrote. The sample carries the counter value AT the PMI (PERF_SAMPLE_READ), so
+ * skid = value - period is precise and race-free — there is no signal-delivery timing
+ * in the loop. Multiplicity is proven per-arm from the ring: exactly ONE sample must
+ * appear (0 = lost PMI, >1 = duplicate); both are recorded, never inferred from a total.
+ *
+ * This measures the HARDWARE PMI skid (branches retired between the counter crossing
+ * `period` and the PMI landing) — the quantity AE-3's in-kernel svm.c force-exit must
+ * bound. (The earlier SIGIO variant conflated it with signal-delivery latency.) */
+
+/* scan [tail,head) for PERF_RECORD_SAMPLE records; return count and the last value. */
+static uint64_t ring_scan_samples(void *ring, size_t data_off, size_t data_sz,
+                                  unsigned *n_samples, uint64_t *last_value) {
+    struct perf_event_mmap_page *mp = ring;
+    uint64_t head = mp->data_head;
+    __sync_synchronize();
+    uint8_t *base = (uint8_t *)ring + data_off;
+    uint64_t tail = mp->data_tail, pos = tail;
+    *n_samples = 0; *last_value = 0;
+    while (pos < head) {
+        struct perf_event_header *h = (void *)(base + (pos % data_sz));
+        if (h->size == 0 || h->size > data_sz) break;
+        if (h->type == PERF_RECORD_SAMPLE) {
+            /* sample_type == PERF_SAMPLE_READ, read_format 0 -> one u64 value follows */
+            uint64_t v; memcpy(&v, base + ((pos + sizeof(*h)) % data_sz), sizeof(v));
+            (*n_samples)++; *last_value = v;
+        }
+        pos += h->size;
+    }
+    mp->data_tail = head;   /* drain */
+    return head - tail;
 }
 
 static int run_overflow(FILE *o, uint64_t raw_event, const oracle_payload *pl,
-                        uint64_t n, uint64_t period, int core, int sib) {
+                        uint64_t n, uint64_t period, int reps, int core, int sib) {
     int fd = open_counter(raw_event, 1);
     if (fd < 0) return 2;
-    g_fd = fd; g_overflows = 0;
 
-    struct sigaction sa; memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = on_overflow; sa.sa_flags = SA_SIGINFO;
-    sigaction(SIGIO, &sa, 0);
-    fcntl(fd, F_SETFL, O_ASYNC);
-    fcntl(fd, F_SETOWN, getpid());
-    fcntl(fd, F_SETSIG, SIGIO);
+    long ps = sysconf(_SC_PAGESIZE);
+    size_t maplen = (size_t)ps * 2;          /* 1 metadata page + 1 data page */
+    void *ring = mmap(0, maplen, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (ring == MAP_FAILED) { close(fd); return 2; }
+    struct perf_event_mmap_page *mp = ring;
+    size_t data_off = mp->data_offset ? mp->data_offset : (size_t)ps;
+    size_t data_sz = mp->data_size ? (size_t)mp->data_size : (size_t)ps;
+    if (ioctl(fd, PERF_EVENT_IOC_PERIOD, &period) != 0) { munmap(ring, maplen); close(fd); return 2; }
 
-    if (ioctl(fd, PERF_EVENT_IOC_PERIOD, &period) != 0) { close(fd); return 2; }
-    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-    ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);     /* arm the first overflow */
+    /* Aggregate to scale to ≥10^6 arms without a giant file. Every arm is ACCOUNTED in
+     * the tally totals (#6); every ANOMALY (samples!=1) is recorded in full; a bounded
+     * set of nominal exemplars is retained for spot-checking. */
+    uint64_t hits0 = 0, hits1 = 0, hitsgt1 = 0;
+    uint64_t skid_min = ~0ULL, skid_max = 0, skid_sum = 0, skid_n = 0;
+    uint64_t hist[6] = {0};   /* skid buckets: 0 | 1..9 | 10..99 | 100..999 | 1e3..9999 | >=1e4 */
+    int exemplars = 0;
 
-    volatile uint64_t sink = pl->fn(n);
-    (void)sink;
+    for (int r = 0; r < reps; r++) {
+        ioctl(fd, PERF_EVENT_IOC_RESET, 0);
+        ioctl(fd, PERF_EVENT_IOC_PERIOD, &period);   /* reset period_left so the overflow
+                                                      * fires after exactly `period`, not
+                                                      * a stale countdown from last arm */
+        ioctl(fd, PERF_EVENT_IOC_REFRESH, 1);        /* arm exactly one overflow */
+        volatile uint64_t sink = pl->fn(n);          /* n chosen so taken > period */
+        (void)sink;
+        ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);        /* stop counting; sample already written */
 
-    struct read_rec rr; if (read(fd, &rr, sizeof(rr)) != (ssize_t)sizeof(rr)) { close(fd); return 2; }
-    int armed_ok = (rr.time_enabled == rr.time_running);
+        unsigned nsamp = 0; uint64_t val = 0;
+        ring_scan_samples(ring, data_off, data_sz, &nsamp, &val);
+        uint64_t hits = nsamp;
+        int ok = (hits == 1) && (val >= period);
+        uint64_t skid = ok ? (val - period) : 0;
 
-    /* Oracle for total taken over the whole run (constant prologue ignored via the
-     * per_iter*n dominant term; the record retains raw count so the checker judges). */
-    uint64_t oracle_total = pl->taken_per_iter * n;
-    uint64_t expected_overflows = oracle_total / period;   /* lower bound */
-    uint64_t got = (uint64_t)g_overflows;
+        if (hits == 0) hits0++;
+        else if (hits == 1) hits1++;
+        else hitsgt1++;
 
+        if (ok) {
+            if (skid < skid_min) skid_min = skid;
+            if (skid > skid_max) skid_max = skid;
+            skid_sum += skid; skid_n++;
+            int b = skid == 0 ? 0 : skid < 10 ? 1 : skid < 100 ? 2 : skid < 1000 ? 3 : skid < 10000 ? 4 : 5;
+            hist[b]++;
+        }
+
+        int anomaly = (hits != 1) || (val < period);
+        if (anomaly || exemplars < 16) {
+            if (!anomaly) exemplars++;
+            fprintf(o, "  {");
+            jstr(o, "kind", anomaly ? "overflow_anomaly" : "overflow_exemplar", 1);
+            jstr(o, "payload", pl->name, 1);
+            ju64(o, "rep", (uint64_t)r, 1);
+            ju64(o, "period", period, 1);
+            ju64(o, "value_at_pmi", val, 1);
+            ju64(o, "samples", hits, 1);
+            ju64(o, "skid", skid, 0);
+            fprintf(o, "},\n");
+        }
+    }
+    munmap(ring, maplen);
+    close(fd);
+    uint64_t clean_arms = hits1, clean_skid_max = skid_max;  /* ring skid is contamination-free */
+
+    /* the summary record: tallies are the totality account (#6) */
     fprintf(o, "  {");
-    jstr(o, "kind", "overflow", 1);
+    jstr(o, "kind", "overflow_summary", 1);
     jstr(o, "payload", pl->name, 1);
     ju64(o, "event", raw_event, 1);
     ju64(o, "n", n, 1);
     ju64(o, "period", period, 1);
-    ju64(o, "final_count", rr.value, 1);
-    ju64(o, "oracle_total", oracle_total, 1);
-    ju64(o, "overflows_delivered", got, 1);
-    ju64(o, "expected_overflows_floor", expected_overflows, 1);
-    ju64(o, "multiplexed", (uint64_t)(!armed_ok), 1);
+    ju64(o, "arms_total", (uint64_t)reps, 1);
+    ju64(o, "hits_0_lost", hits0, 1);
+    ju64(o, "hits_1_ok", hits1, 1);
+    ju64(o, "hits_gt1_dup", hitsgt1, 1);
+    ju64(o, "skid_min", skid_n ? skid_min : 0, 1);
+    ju64(o, "skid_max", skid_max, 1);
+    ju64(o, "skid_mean_x1000", skid_n ? (skid_sum * 1000 / skid_n) : 0, 1);
+    ju64(o, "clean_arms", clean_arms, 1);
+    ju64(o, "clean_skid_max", clean_skid_max, 1);
+    fprintf(o, "\"skid_hist\":[%llu,%llu,%llu,%llu,%llu,%llu],",
+            (unsigned long long)hist[0], (unsigned long long)hist[1], (unsigned long long)hist[2],
+            (unsigned long long)hist[3], (unsigned long long)hist[4], (unsigned long long)hist[5]);
     ju64(o, "core", (uint64_t)core, 1);
     ju64(o, "sibling", (uint64_t)(sib < 0 ? 0 : sib), 0);
     fprintf(o, "},\n");
 
-    close(fd); g_fd = -1;
-    /* success = delivered at least the floor and no multiplexing; exact multiplicity
-     * per-record is judged by the checker over the retained records. */
-    return (got >= expected_overflows && armed_ok) ? 0 : 1;
+    /* success = zero lost, zero duplicate, and at least one delivered */
+    return (hits0 == 0 && hitsgt1 == 0 && hits1 > 0) ? 0 : 1;
 }
 
 /* ----- driver ------------------------------------------------------------- */
@@ -259,7 +384,7 @@ int main(int argc, char **argv) {
     } else if (strcmp(mode, "overflow") == 0) {
         const oracle_payload *pl = payload ? oracle_by_name(payload) : &ORACLE_PAYLOADS[0];
         if (!pl) { fprintf(stderr, "unknown payload %s\n", payload); return 2; }
-        int r = run_overflow(o, raw_event, pl, n, period, core, sib);
+        int r = run_overflow(o, raw_event, pl, n, period, reps, core, sib);
         if (r > rc) rc = r;
     } else { usage(argv[0]); return 2; }
 
