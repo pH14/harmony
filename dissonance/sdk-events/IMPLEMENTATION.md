@@ -71,9 +71,9 @@ Differential epic (`hm-bbx`).
 - **`SdkError`** (`src/error.rs`) — typed, panic-free. Structural contradictions
   are errors (mixed operations, incompatible shapes, classification conflict,
   malformed declaration lengths, unknown declaration bytes, a malformed schema entry,
-  a `DeclarationMismatch` between a persisted schema and its recorded declaration, and
-  an `IncoherentEvent` whose payload disagrees with the schema); unrecognized data is
-  never an error — it is preserved raw.
+  and an `ArtifactDivergedFromDecode` when a persisted artifact is not what a live
+  decode of its own bytes produces); unrecognized data is never an error — it is
+  preserved raw.
 
 ## Key decisions
 
@@ -88,9 +88,9 @@ Differential epic (`hm-bbx`).
   An unresolved slot is *refined* (`None` → `Some`) by a later resolved sighting,
   but a resolved value is never silently overwritten. v1 firings are checked for
   self-consistency but never resolve the schema's `base_op`. The **same** coherence
-  is re-checked when a `Normalized` is loaded from persisted input, so a decode and a
-  deserialize are held to one contract (a `set` firing at a `max`-declared coordinate
-  is `MixedOperations` either way).
+  binds persisted input structurally: loading a `Normalized` re-decodes the artifact's
+  own bytes and requires equality, so a decode and a load are one contract (a `set`
+  firing at a `max`-declared coordinate is `MixedOperations` either way).
 - **`accumulate` is declaration-only.** Only a versioned source (wire v2) may
   declare `Accumulate`; v1 cannot claim an operation it cannot encode.
 - **The declaration is schema, not an event.** Its stream slot is skipped from the
@@ -116,33 +116,43 @@ Differential epic (`hm-bbx`).
   guidance), so a setup event can be validated/materialized against the schema.
   Site coordinates (`begin_line`/`begin_column`) are `u64`, preserved exactly
   rather than truncated into a colliding site.
-- **`Normalized` is the only public deserialization entry, and it re-validates the
-  whole artifact on load.** Persisted input is never trusted more than a live decode:
-  `SdkEvent` and `SdkSchema` carry **no** bare `Deserialize`; the only way to read
-  one back is inside a `Normalized`, whose `#[serde(try_from)]` runs the same
-  contract the decoders enforce. Concretely it (a) routes every entry through the one
-  `SchemaEntry::validate` choke point (sorted + unique, and the full source-specific
-  invariant family — id↔source, point-namespace↔classification, lifecycle⇔occurrence,
-  **expectation legal only on an assertion point**, occurrence-inert, and the v1/v2/
-  antithesis state shape/op rules); (b) re-parses `original_declaration` and requires
-  it to reproduce exactly this schema's source and entries — a null, garbled, or
-  wrong-source blob (or one present where the source mints none) is a typed
-  `DeclarationMismatch`, since a binary firing adds no entry and the declaration
-  fully determines them; and (c) checks each event **coheres** with the schema — its
-  `source` agrees, ordinals strictly increase, a classified payload sits only at a
-  coordinate whose classification matches, and a reducible op matches the declared
-  base op and every earlier firing for its identity. A persisted `set` firing at a
-  `max`-declared coordinate therefore fails load with the same `MixedOperations` the
-  decoder raises live; other incoherence is a typed `IncoherentEvent`. Component
-  value types (`SchemaEntry`, `Payload`, `Raw`, …) keep `Deserialize` — they have no
-  independent load path, so they are only ever read back *within* a validated
-  `Normalized`. (The `cargo public-api` snapshot runs at `-sss`, which omits
-  auto-derived impls, so this removal is enforced by a compile-time bound in
-  `tests/load_validation.rs`, not a snapshot line.)
+- **`Normalized` is the only public deserialization entry, and it loads by
+  re-decode-and-compare — not by enumerating rules.** `SdkEvent` and `SdkSchema` carry
+  **no** bare `Deserialize`; the only way to read one back is inside a `Normalized`,
+  whose `#[serde(try_from)]` reconstructs the ingress stream from the artifact's *own*
+  preserved bytes (each event's `raw` record plus the schema's `original_declaration`,
+  in order), replays it through the **live decoder** (`decode_binary`/
+  `decode_antithesis`), and requires the result to be *structurally equal* to the
+  persisted artifact. So **loadable is definitionally what a live decode produces** —
+  there is no coherence checklist to enumerate and no gap for a plausible-but-
+  decoder-unmintable artifact. A payload from a source that cannot mint it, a
+  `min`/`accumulate` firing "upgraded" from raw at an undeclared coordinate, a shifted
+  or non-contiguous ordinal, a `raw` record contradicting the evidence it vouches for,
+  altered token content, an unsorted or fabricated schema entry — all diverge, with
+  nothing left to enumerate. A reconstructed stream the decoder itself rejects (e.g. a
+  `set` at a `max`-declared coordinate) surfaces that decoder's own `MixedOperations`;
+  everything else that differs is a typed `ArtifactDivergedFromDecode`, kept only for
+  diagnosability. This makes the load contract **decoder pinning** (see the crate
+  root): a persisted artifact is pinned to the semantics of the decoders that produced
+  it, so a future decoder change must version/migrate artifacts, never silently
+  reinterpret them. Component value types (`SchemaEntry`, `Payload`, `Raw`, …) keep
+  `Deserialize` — they have no independent load path, so they are only ever read back
+  *within* a validated `Normalized`. (The `cargo public-api` snapshot runs at `-sss`,
+  which omits auto-derived impls, so this removal is enforced by a compile-time bound
+  in `tests/load_validation.rs`, not a snapshot line.)
 
 ## Deviations considered and rejected
 
-- **Removing the legacy link-tier surface** (`decode_events`/`Catalog`,
+- **Enumerating load-time coherence rules** (an earlier draft: re-parse the
+  declaration, then walk each event checking source/ordinal/classification/op against
+  the schema). Rejected — refuted by adjudication. Enumeration produces
+  *plausible-but-wrong completeness proofs*: `State` and `Guidance` payloads share one
+  `Classification`, so a classification-based check waved a binary event carrying a
+  `Guidance` payload straight through, and a "dead code" argument for dropping a shape
+  recheck was itself unsound. The structural fix — **re-decode the artifact's own
+  bytes and require equality** — closes the whole class by construction and has no gap
+  to enumerate. It is *strictly stronger* and *simpler* (the coherence loop and its
+  helpers are gone), at an accepted `O(re-decode)` load cost.
   `LinkSensor`, `AlwaysViolation`, `LINK_*_CHANNEL`, packed `FeatureId`).
   `docs/DISSONANCE-STRATEGY.md` explicitly rules these "compatibility machinery to
   **delete during the Differential integration**" (`hm-bbx.4`), not to rename or
@@ -182,15 +192,18 @@ Differential epic (`hm-bbx`).
 - `cargo build/nextest/clippy -D warnings/fmt/deny -p sdk-events` — 140 tests
   (goldens for Antithesis assertions, max/min guidance, binary v1, wire v2; typed
   errors; totality; numeric total-order laws; serde + wire-v2 round-trips) plus
-  the ≥256/512-case proptests. `tests/load_validation.rs` holds the artifact-level
-  load probes — one per invariant family (F1a declaration provenance, F1b
-  lifecycle⇔occurrence, F1c expectation legality, F1d event↔schema coherence), the
-  setup status-fabrication guard (F2, `hm-jyj`), and a compile-time bound proving
-  `Normalized` is the only publicly-deserializable type.
-- **Scoped mutation testing** (`cargo mutants --in-diff`) on `schema.rs` / `event.rs`
-  / `binary.rs` / `antithesis.rs`: 0 missed.
-- `tests/public-api.txt` refreshed deliberately: two new error variants
-  (`DeclarationMismatch`, `IncoherentEvent`). The `Deserialize` removal from
-  `SdkEvent`/`SdkSchema` is not a snapshot line (the snapshot runs at `-sss`, which
-  omits auto-derived impls) and is instead enforced by the compile-time bound above.
-  The legacy compat surface is unchanged.
+  the ≥256/512-case proptests. `tests/load_validation.rs` holds the load probes: the
+  r14 adjudication probes **inverted** — a binary payload from the wrong source, an
+  undeclared-coordinate `min` upgrade, a deleted setup entry, shifted ordinals,
+  contradictory `raw` provenance — each now asserting a typed rejection; the decoder's
+  own `MixedOperations` surfacing on load; the setup status-fabrication guard (F2,
+  `hm-jyj`); and a compile-time bound proving `Normalized` is the only
+  publicly-deserializable type. Entry-invariant rejection is tested where it is
+  enforced (decode) in `tests/normalize_binary.rs`.
+- **Scoped mutation testing** (`cargo mutants --in-diff`) on `event.rs` / `schema.rs`
+  / `binary.rs`: 0 missed.
+- `tests/public-api.txt` refreshed deliberately: the two enumerated-check error
+  variants gave way to one structural `ArtifactDivergedFromDecode` (net −1). The
+  `Deserialize` removal from `SdkEvent`/`SdkSchema` is not a snapshot line (the
+  snapshot runs at `-sss`, which omits auto-derived impls) and is instead enforced by
+  the compile-time bound above. The legacy compat surface is unchanged.

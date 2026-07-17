@@ -173,25 +173,19 @@ pub enum SdkError {
         detail: String,
     },
 
-    /// A persisted schema's `original_declaration` does not agree with its source
-    /// and entries: it is absent where the source mints one, present where it does
-    /// not, does not re-parse, or re-parses to different entries. The decoder only
-    /// ever mints binary entries together with the declaration blob that produced
-    /// them, so a mismatched declaration is corrupt provenance.
-    #[error("declaration provenance mismatch: {detail}")]
-    DeclarationMismatch {
-        /// A description of the mismatch.
-        detail: String,
-    },
-
-    /// A persisted event does not cohere with its schema or the event vector: its
-    /// `source` disagrees with the schema, its ordinal breaks the strictly-
-    /// increasing rollout-local order, or its payload's classification disagrees
-    /// with the declared identity. (A conflicting state operation surfaces as
-    /// [`MixedOperations`](SdkError::MixedOperations), exactly as during decode.)
-    #[error("incoherent persisted event: {detail}")]
-    IncoherentEvent {
-        /// A description of the incoherence.
+    /// A persisted [`Normalized`](crate::Normalized) artifact does not equal what the
+    /// live decoders produce from its own preserved bytes. Loading re-decodes the
+    /// reconstructed ingress stream (each event's `raw` + the schema's
+    /// `original_declaration`, in order) and requires structural equality, so
+    /// *loadable* is definitionally *what a live decode produces*. Any value the
+    /// decoders never mint — a payload from the wrong source, an undeclared-coordinate
+    /// upgrade, a shifted ordinal, contradictory raw provenance, altered token content
+    /// — diverges here. (A tampered stream that the decoder itself rejects surfaces as
+    /// that decoder's own error, e.g. [`MixedOperations`](SdkError::MixedOperations),
+    /// exactly as during decode.)
+    #[error("persisted artifact diverges from a live decode of its own bytes: {detail}")]
+    ArtifactDivergedFromDecode {
+        /// What diverged (a reconstruction failure, or which field differs).
         detail: String,
     },
 

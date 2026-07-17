@@ -135,11 +135,9 @@ pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkErr
 }
 
 /// The classification a namespace's firings actually decode to on the binary path
-/// ([`decode_event`]), or `None` for a namespace that produces no reportable
-/// firing. This is the ground truth a declaration must agree with, and — reused by
-/// [`Normalized`](crate::Normalized)'s load-time coherence check — the ground truth a
-/// persisted binary event's payload must agree with at its coordinate.
-pub(crate) fn namespace_classification(namespace: u8) -> Option<Classification> {
+/// ([`decode_event`]), or `None` for a namespace that produces no reportable firing.
+/// This is the ground truth a v2 declaration must agree with.
+fn namespace_classification(namespace: u8) -> Option<Classification> {
     match namespace {
         // Assert / buggify / lifecycle firings decode to occurrence payloads…
         wire::NS_ASSERT | wire::NS_BUGGIFY | wire::NS_LIFECYCLE => Some(Classification::Occurrence),
@@ -305,23 +303,6 @@ pub fn decode_binary(raw: &[(Moment, u32, Vec<u8>)]) -> Result<Normalized, SdkEr
         schema: ctx.schema,
         events,
     })
-}
-
-/// Re-derive the schema a catalog declaration blob produces, in isolation — the
-/// declaration half of [`decode_binary`] with no firings. Used to audit a persisted
-/// [`SdkSchema`](crate::SdkSchema)'s `original_declaration`: re-parsing the recorded
-/// bytes must reproduce the same source and entries, or the provenance is corrupt.
-/// Because a binary firing never adds a schema entry (entries come only from the
-/// declaration), the returned schema's entries are exactly what a faithful persisted
-/// schema must carry.
-pub(crate) fn schema_from_declaration(bytes: &[u8]) -> Result<SdkSchema, SdkError> {
-    let mut ctx = parse_declaration(bytes)?;
-    ctx.schema.set_original_declaration(Raw {
-        source: ctx.schema.source,
-        event_id: Some(wire::CATALOG_EVENT_ID),
-        bytes: bytes.to_vec(),
-    });
-    Ok(ctx.schema)
 }
 
 /// Working state threaded through a binary decode: the schema under construction,

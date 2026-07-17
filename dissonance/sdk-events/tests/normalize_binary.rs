@@ -441,6 +441,33 @@ fn v2_non_u64_state_shape_is_rejected_on_encode_and_decode() {
 }
 
 #[test]
+fn v2_expectation_on_a_non_assertion_point_is_rejected_on_encode_and_decode() {
+    // An expectation is absence-based assertion evidence; a state point carrying one
+    // is a declaration the schema choke point would reject, so the codec must not
+    // encode it — and must reject a hand-built one on decode (encode/decode symmetry).
+    let mut p = v2_state(1, "x", UpdateOp::Set);
+    p.expectation = Some(Expectation::MustHit);
+    let err =
+        encode_v2_declaration(&[p]).expect_err("expectation on a state point must fail on encode");
+    assert!(matches!(err, SdkError::UnsupportedDeclaration { .. }));
+
+    let mut decl = Vec::new();
+    decl.extend_from_slice(&CATALOG_MAGIC.to_le_bytes());
+    decl.push(2); // version 2
+    decl.extend_from_slice(&1u32.to_le_bytes());
+    decl.push(NS_STATE);
+    decl.extend_from_slice(&1u32.to_le_bytes());
+    decl.push(1); // classification: state
+    decl.push(0); // value shape: u64
+    decl.push(0); // base op: set
+    decl.push(0); // expectation: must_hit (byte 0) — illegal on a state point
+    decl.extend_from_slice(&1u16.to_le_bytes());
+    decl.extend_from_slice(b"x");
+    let err = decode_binary(&[at(0, 0, decl)]).expect_err("must fail on decode");
+    assert!(matches!(err, SdkError::UnsupportedDeclaration { .. }));
+}
+
+#[test]
 fn v2_occurrence_carrying_a_value_or_operation_is_rejected() {
     let mut p = DeclaredPoint {
         namespace: NS_ASSERT,

@@ -55,19 +55,17 @@ pub sdk_events::PointKind::Buggify
 pub sdk_events::PointKind::StateReg
 pub sdk_events::PointKind::Unknown
 pub enum sdk_events::SdkError
+pub sdk_events::SdkError::ArtifactDivergedFromDecode
+pub sdk_events::SdkError::ArtifactDivergedFromDecode::detail: alloc::string::String
 pub sdk_events::SdkError::ClassificationConflict
 pub sdk_events::SdkError::ClassificationConflict::first: sdk_events::Classification
 pub sdk_events::SdkError::ClassificationConflict::id: sdk_events::ObservationId
 pub sdk_events::SdkError::ClassificationConflict::second: sdk_events::Classification
 pub sdk_events::SdkError::DeclarationAfterFirings
 pub sdk_events::SdkError::DeclarationAfterFirings::firings_before: usize
-pub sdk_events::SdkError::DeclarationMismatch
-pub sdk_events::SdkError::DeclarationMismatch::detail: alloc::string::String
 pub sdk_events::SdkError::DuplicateCoordinate
 pub sdk_events::SdkError::DuplicateCoordinate::local: u32
 pub sdk_events::SdkError::DuplicateCoordinate::namespace: u8
-pub sdk_events::SdkError::IncoherentEvent
-pub sdk_events::SdkError::IncoherentEvent::detail: alloc::string::String
 pub sdk_events::SdkError::IncompatibleShapes
 pub sdk_events::SdkError::IncompatibleShapes::first: sdk_events::ValueShape
 pub sdk_events::SdkError::IncompatibleShapes::id: sdk_events::ObservationId

@@ -1,24 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Artifact-level load validation: a persisted [`Normalized`] is only obtainable
-//! through its validated `try_from`, and that re-check holds a persisted artifact to
-//! the same contract the live decoders enforce. These are the adjudication probes,
-//! kept as regression tests — one per invariant family (F1a–F1d), plus the setup
-//! status-fabrication guard (F2).
+//! through its validated `try_from`, which **re-decodes the artifact's own preserved
+//! bytes and requires structural equality** — so *loadable* is definitionally *what a
+//! live decode produces* (the crate root's decoder-pinning invariant).
 //!
-//! A binary schema is only loadable inside a validated artifact whose
-//! `original_declaration` re-parses to its entries, so most probes start from a real
-//! decoded artifact and mutate exactly one field of its serde form — the smallest
-//! step from valid to corrupt — then assert the load fails with the *specific* typed
-//! error the decoder would raise, not merely that it fails.
+//! These are the r14 judge probes, **inverted**: each once demonstrated that an
+//! artifact carrying a value the decoders never mint still loaded; each now asserts
+//! that the same artifact is rejected with a typed error. A tampered stream the
+//! decoder itself refuses surfaces that decoder's own error (`MixedOperations`);
+//! everything else that a live decode would not have produced is a typed
+//! `ArtifactDivergedFromDecode`. The setup status-fabrication guard (F2, `hm-jyj`) and
+//! the compile-time proof that only `Normalized` is publicly deserializable ride
+//! along.
 
 use explorer::Moment;
 use sdk_events::{
-    Classification, DeclaredPoint, Expectation, NS_ASSERT, NS_STATE, Normalized, SdkError,
+    Classification, DeclaredPoint, Expectation, NS_ASSERT, NS_STATE, Normalized, Payload, SdkError,
     UpdateOp, ValueShape, decode_antithesis, decode_binary, encode_v2_declaration,
 };
+use serde_json::json;
 
 /// A valid binary-v2 artifact: one `max`-declared state coordinate with two `max`
-/// firings (ordinals 1 and 2). The starting point for the F1a/F1d mutation probes.
+/// firings (live ordinals 1 and 2). The starting point for the mutation probes.
 fn max_state_artifact() -> serde_json::Value {
     let decl = encode_v2_declaration(&[DeclaredPoint {
         namespace: NS_STATE,
@@ -49,148 +52,141 @@ fn load(v: serde_json::Value) -> Result<Normalized, serde_json::Error> {
     serde_json::from_value::<Normalized>(v)
 }
 
-/// The error text a failed load surfaces (serde wraps the typed `SdkError`'s
-/// `Display`), so a probe can assert it failed for the *right* reason.
-fn load_err(v: serde_json::Value) -> String {
-    load(v).expect_err("must reject").to_string()
+/// Assert an artifact fails to load because it is not what a live decode of its own
+/// bytes produces (the `ArtifactDivergedFromDecode` message).
+fn assert_diverges(v: serde_json::Value) {
+    let err = load(v).expect_err("must reject").to_string();
+    assert!(
+        err.contains("diverges from a live decode"),
+        "expected a decode-divergence rejection, got: {err}"
+    );
 }
 
-// --- F1a: declaration provenance is re-parsed and cross-checked on load ---------
+// --- The r14 probes, inverted: each defect is now a typed rejection --------------
 
+/// Probe A — a binary state event's payload swapped to `Guidance`. The raw record is
+/// still a `max` state firing, so re-decoding it mints `State`, and the persisted
+/// `Guidance` (which only the Antithesis decoder produces) diverges. Closes the
+/// `payload_classification` collapse the enumerative check could not see (`State` and
+/// `Guidance` share one `Classification`).
 #[test]
-fn f1a_declaration_provenance_is_cross_checked() {
-    let base = max_state_artifact();
-    // The unmutated artifact loads.
-    assert!(load(base.clone()).is_ok());
+fn probe_a_binary_state_payload_swapped_to_guidance_is_rejected() {
+    let mut v = max_state_artifact();
+    assert!(v["events"][0]["payload"]["State"].is_object());
+    v["events"][0]["payload"] = json!({"Guidance": {"op": "Max", "token": "123"}});
+    assert_diverges(v);
+}
 
-    // A v2 schema with its declaration nulled out — the source mints one, so its
-    // absence is corrupt provenance.
-    let mut v = base.clone();
-    v["schema"]["original_declaration"] = serde_json::Value::Null;
-    assert!(
-        load_err(v).contains("declaration provenance mismatch"),
-        "nulled declaration must be a provenance mismatch"
-    );
+/// Probe B1 — a `min` firing at an *undeclared* state coordinate, "upgraded" from the
+/// raw the live decoder keeps (no declaration blesses `min`). Re-decoding the same
+/// raw yields `Unknown`, so the persisted `State{min}` diverges.
+#[test]
+fn probe_b1_undeclared_min_firing_upgraded_from_raw_is_rejected() {
+    let decl = encode_v2_declaration(&[DeclaredPoint {
+        namespace: NS_ASSERT,
+        local: 1,
+        name: "a".into(),
+        classification: Classification::Occurrence,
+        value_shape: None,
+        base_op: None,
+        expectation: None,
+    }])
+    .expect("valid declaration");
+    let mut min_firing = vec![2u8]; // STATE_MIN
+    min_firing.extend_from_slice(&7u64.to_le_bytes());
+    let state_id = ((NS_STATE as u32) << 24) | 5;
+    let n =
+        decode_binary(&[(Moment(0), 0, decl), (Moment(5), state_id, min_firing)]).expect("decodes");
+    assert_eq!(n.events[0].payload, Payload::Unknown, "live keeps it raw");
 
-    // A declaration blob that no longer re-parses to these entries (garbage bytes).
-    let mut v = base.clone();
-    v["schema"]["original_declaration"]["bytes"] = serde_json::json!([0, 0, 0, 0]);
-    assert!(
-        load_err(v).contains("declaration provenance mismatch"),
-        "a blob that re-parses to different entries is a mismatch"
-    );
-
-    // A declaration blob tagged with the wrong source.
-    let mut v = base.clone();
-    v["schema"]["original_declaration"]["source"] = serde_json::json!("BinaryV1");
-    assert!(load_err(v).contains("declaration provenance mismatch"));
-
-    // An antithesis schema carrying a declaration blob (it mints none).
-    let n = decode_antithesis(&[(
-        Moment(1),
-        br#"{"antithesis_assert":{"assert_type":"always","condition":true,"id":"p",
-            "message":"p","must_hit":true,
-            "location":{"file":"a.rs","function":"f","begin_line":1,"begin_column":2}}}"#
-            .to_vec(),
-    )])
-    .expect("decodes");
     let mut v = serde_json::to_value(&n).unwrap();
-    v["schema"]["original_declaration"] = serde_json::json!({
-        "source": "AntithesisJson", "event_id": 0, "bytes": [],
+    v["events"][0]["payload"] = json!({"State": {"op": "Min", "value": 7}});
+    assert_diverges(v);
+}
+
+/// Probe B2 — an Antithesis setup lifecycle event with its required schema entry
+/// deleted. `decode_setup` always registers the entry alongside the event, so
+/// re-decoding the setup record restores it and the entry-less persisted schema
+/// diverges.
+#[test]
+fn probe_b2_setup_event_without_its_lifecycle_entry_is_rejected() {
+    let n =
+        decode_antithesis(&[(Moment(1), br#"{"antithesis_setup":{}}"#.to_vec())]).expect("decodes");
+    assert_eq!(
+        n.schema.entries().len(),
+        1,
+        "live registers the setup entry"
+    );
+
+    let mut v = serde_json::to_value(&n).unwrap();
+    v["schema"]["entries"] = json!([]);
+    assert_diverges(v);
+}
+
+/// Probe C — shifted, non-contiguous ordinals (99, 200) where a live decode assigns
+/// the persisted vector positions (1, 2). Re-decoding the reconstructed stream
+/// re-numbers them contiguously, so the shifted ordinals diverge — the contiguous
+/// rollout-local-ordinal contract, enforced by construction.
+#[test]
+fn probe_c_shifted_noncontiguous_ordinals_are_rejected() {
+    let mut v = max_state_artifact();
+    assert_eq!(v["events"][0]["ordinal"], 1);
+    assert_eq!(v["events"][1]["ordinal"], 2);
+    v["events"][0]["ordinal"] = json!(99);
+    v["events"][1]["ordinal"] = json!(200);
+    assert_diverges(v);
+}
+
+/// Probe D — a `raw` record contradicting the evidence it vouches for (a different
+/// source, no event id, unrelated bytes). Because the load reconstructs the stream
+/// *from* `raw`, a binary event with no `event_id` cannot be placed back on the wire
+/// at all — it can be no live decode's output.
+#[test]
+fn probe_d_corrupted_raw_provenance_is_rejected() {
+    let mut v = max_state_artifact();
+    v["events"][0]["raw"] = json!({
+        "source": "AntithesisJson",
+        "event_id": null,
+        "bytes": [1, 2, 3],
     });
+    assert_diverges(v);
+}
+
+/// A `raw` with an intact `event_id` but *unrelated bytes* also diverges: re-decoding
+/// those bytes yields a different payload (or `Unknown`) than the one persisted.
+#[test]
+fn probe_d2_raw_bytes_contradicting_the_payload_are_rejected() {
+    let mut v = max_state_artifact();
+    // Keep a valid state event_id, but replace the firing bytes with garbage that
+    // decodes to `Unknown`, not the persisted `State{max, 7}`.
+    v["events"][0]["raw"]["bytes"] = json!([0xFF, 0xFF]);
+    assert_diverges(v);
+}
+
+// --- The decoder's own error still surfaces on load ------------------------------
+
+#[test]
+fn a_raw_set_firing_at_a_max_declared_coordinate_is_mixed_operations() {
+    // Here the raw bytes themselves are a `set` firing at a `max`-declared coordinate,
+    // so re-decoding the reconstructed stream makes the *decoder* raise
+    // `MixedOperations` — its own error propagates, no divergence needed.
+    let mut v = max_state_artifact();
+    let mut set_firing = vec![0u8]; // STATE_SET
+    set_firing.extend_from_slice(&7u64.to_le_bytes());
+    v["events"][0]["payload"] = json!({"State": {"op": "Set", "value": 7}});
+    v["events"][0]["raw"]["bytes"] = json!(set_firing);
+    let err = load(v).expect_err("must reject").to_string();
     assert!(
-        load_err(v).contains("declaration provenance mismatch"),
-        "antithesis carries no separate declaration"
+        err.contains("conflicting base operations"),
+        "the decoder's own MixedOperations must surface, got: {err}"
     );
 }
 
-#[test]
-fn f1a_binary_v1_entries_require_a_declaration() {
-    // A binary-v1 schema with declared entries but no declaration: v1 entries come
-    // only from a catalog, so entries with a null declaration are impossible.
-    let artifact = serde_json::json!({
-        "schema": {
-            "source": "BinaryV1",
-            "ordering": "RolloutLocalSourceOrdinal",
-            "original_declaration": null,
-            "entries": [{
-                "id": {"Point": {"namespace": NS_STATE, "local": 1}},
-                "classification": "State", "value_shape": null,
-                "base_op": null, "expectation": null, "name": null,
-            }],
-        },
-        "events": [],
-    });
-    assert!(load_err(artifact).contains("declaration provenance mismatch"));
-}
-
-// --- F1b: a lifecycle identity is always an occurrence --------------------------
+// --- Encode/decode symmetry (independent of load) --------------------------------
 
 #[test]
-fn f1b_lifecycle_identity_must_be_an_occurrence() {
-    // An antithesis lifecycle identity persisted as `State` is forged — the decoder
-    // only ever mints the setup lifecycle as an occurrence.
-    let artifact = serde_json::json!({
-        "schema": {
-            "source": "AntithesisJson",
-            "ordering": "RolloutLocalSourceOrdinal",
-            "original_declaration": null,
-            "entries": [{
-                "id": {"Lifecycle": "antithesis.setup"},
-                "classification": "State",
-                "value_shape": "Numeric", "base_op": "Max",
-                "expectation": null, "name": null,
-            }],
-        },
-        "events": [],
-    });
-    assert!(load_err(artifact).contains("malformed schema entry"));
-}
-
-// --- F1c: an expectation is legal only on an assertion point --------------------
-
-#[test]
-fn f1c_expectation_is_legal_only_on_an_assertion_point() {
-    let with_expectation = |source: &str, id: serde_json::Value, class, shape, op| {
-        serde_json::json!({
-            "schema": {
-                "source": source,
-                "ordering": "RolloutLocalSourceOrdinal",
-                "original_declaration": null,
-                "entries": [{
-                    "id": id, "classification": class,
-                    "value_shape": shape, "base_op": op,
-                    "expectation": "MustHit", "name": null,
-                }],
-            },
-            "events": [],
-        })
-    };
-    // A binary state point carrying an expectation is malformed.
-    assert!(
-        load_err(with_expectation(
-            "BinaryV2",
-            serde_json::json!({"Point": {"namespace": NS_STATE, "local": 1}}),
-            "State",
-            serde_json::json!("U64"),
-            serde_json::json!("Set"),
-        ))
-        .contains("malformed schema entry")
-    );
-    // An antithesis guidance (state) point carrying an expectation is malformed.
-    assert!(
-        load_err(with_expectation(
-            "AntithesisJson",
-            serde_json::json!({"Property": "g"}),
-            "State",
-            serde_json::json!("Numeric"),
-            serde_json::json!("Max"),
-        ))
-        .contains("malformed schema entry")
-    );
-
-    // Encode consistency: the byte codec must not mint a declaration its own decoder
-    // would refuse — an expectation on a state point fails to encode.
+fn an_expectation_on_a_state_point_fails_to_encode() {
+    // The byte codec must not mint a declaration its own decoder would refuse.
     let encoded = encode_v2_declaration(&[DeclaredPoint {
         namespace: NS_STATE,
         local: 1,
@@ -200,94 +196,23 @@ fn f1c_expectation_is_legal_only_on_an_assertion_point() {
         base_op: Some(UpdateOp::Set),
         expectation: Some(Expectation::MustHit),
     }]);
-    assert!(
-        matches!(encoded, Err(SdkError::UnsupportedDeclaration { .. })),
-        "an expectation on a state point must fail to encode"
-    );
+    assert!(matches!(
+        encoded,
+        Err(SdkError::UnsupportedDeclaration { .. })
+    ));
 }
 
-// --- F1d: a persisted event must cohere with its schema -------------------------
+// --- Positive control: a valid artifact loads ------------------------------------
 
 #[test]
-fn f1d_set_firing_at_a_max_declared_coordinate_is_mixed_operations() {
-    // The canonical probe: a persisted `set` firing at a `max`-declared coordinate
-    // must fail load with the same `MixedOperations` the decoder raises live.
-    let mut v = max_state_artifact();
-    v["events"][0]["payload"]["State"]["op"] = serde_json::json!("Set");
-    assert!(
-        load_err(v).contains("conflicting base operations"),
-        "a set at a max coordinate is MixedOperations"
-    );
+fn a_live_decoded_artifact_loads_unchanged() {
+    let n = max_state_artifact();
+    let loaded = load(n.clone()).expect("a live-decode output loads");
+    // And re-serializing the loaded artifact reproduces the same bytes.
+    assert_eq!(serde_json::to_value(&loaded).unwrap(), n);
 }
 
-#[test]
-fn f1d_two_firings_with_conflicting_ops_are_mixed_operations() {
-    // Two firings for one identity that disagree — the decoder's per-identity
-    // `observed_ops` rule, re-checked on load (both entries stay `max`-legal, so the
-    // conflict is event-to-event, not event-to-declaration).
-    //
-    // Redeclare the coordinate with `set` so `set` is the legal declared op, then
-    // flip the *second* firing to `max`.
-    let decl = encode_v2_declaration(&[DeclaredPoint {
-        namespace: NS_STATE,
-        local: 1,
-        name: "reg".into(),
-        classification: Classification::State,
-        value_shape: Some(ValueShape::U64),
-        base_op: Some(UpdateOp::Set),
-        expectation: None,
-    }])
-    .unwrap();
-    let firing = |op: u8, val: u64| {
-        let mut b = vec![op];
-        b.extend_from_slice(&val.to_le_bytes());
-        b
-    };
-    let id = ((NS_STATE as u32) << 24) | 1;
-    let n = decode_binary(&[
-        (Moment(0), 0, decl),
-        (Moment(5), id, firing(0, 7)), // STATE_SET
-        (Moment(6), id, firing(0, 9)), // STATE_SET
-    ])
-    .unwrap();
-    let mut v = serde_json::to_value(&n).unwrap();
-    // Flip the second firing to `max`; the declared op is `set`, so this contradicts
-    // both the declaration and the first firing.
-    v["events"][1]["payload"]["State"]["op"] = serde_json::json!("Max");
-    assert!(load_err(v).contains("conflicting base operations"));
-}
-
-#[test]
-fn f1d_event_source_must_agree_with_the_schema() {
-    let mut v = max_state_artifact();
-    v["events"][0]["source"] = serde_json::json!("BinaryV1");
-    assert!(
-        load_err(v).contains("incoherent persisted event"),
-        "an event source disagreeing with the schema is incoherent"
-    );
-}
-
-#[test]
-fn f1d_ordinals_must_be_strictly_increasing() {
-    let mut v = max_state_artifact();
-    // The two firings decode to ordinals 1 and 2; make the second not exceed the first.
-    v["events"][1]["ordinal"] = serde_json::json!(1);
-    assert!(
-        load_err(v).contains("incoherent persisted event"),
-        "a non-increasing ordinal is incoherent"
-    );
-}
-
-#[test]
-fn f1d_a_classified_payload_at_the_wrong_namespace_is_incoherent() {
-    // Move a `State` firing to an assertion namespace: state payloads only decode
-    // under `NS_STATE`, so one at `NS_ASSERT` is evidence the decoder never mints.
-    let mut v = max_state_artifact();
-    v["events"][0]["id"]["Point"]["namespace"] = serde_json::json!(NS_ASSERT);
-    assert!(load_err(v).contains("incoherent persisted event"));
-}
-
-// --- F2: setup status fabrication (bead hm-jyj) --------------------------------
+// --- F2: setup status fabrication (bead hm-jyj) ----------------------------------
 
 #[test]
 fn f2_present_but_non_string_setup_status_stays_raw() {
@@ -297,28 +222,26 @@ fn f2_present_but_non_string_setup_status_stays_raw() {
     let n = decode_antithesis(&[(Moment(1), br#"{"antithesis_setup":{"status":7}}"#.to_vec())])
         .expect("decodes without panicking");
     assert_eq!(n.events.len(), 1);
-    assert_eq!(n.events[0].payload, sdk_events::Payload::Unknown);
+    assert_eq!(n.events[0].payload, Payload::Unknown);
     assert!(
         n.schema.entries().is_empty(),
         "a fabricated setup status mints no lifecycle entry"
     );
-    // The raw record survives verbatim for audit.
     assert_eq!(
         n.events[0].raw.bytes,
         br#"{"antithesis_setup":{"status":7}}"#
     );
-    // And the decoded artifact still round-trips (the raw event carries no schema
-    // coherence obligation).
+    // The raw-carrying artifact round-trips (re-decoding its raw yields itself).
     let back = serde_json::from_value::<Normalized>(serde_json::to_value(&n).unwrap()).unwrap();
     assert_eq!(back, n);
 }
 
-// --- API ruling: `Normalized` is the only publicly deserializable artifact ------
+// --- API ruling: `Normalized` is the only publicly deserializable artifact --------
 
-/// A compile-time detector for `T: DeserializeOwned` returned as a runtime bool
-/// (autoref specialization). `ViaDeserialize::probe` binds on `Probe<T>` directly
-/// and is chosen when `T: DeserializeOwned`; otherwise method resolution falls back
-/// through an autoref to `ViaFallback::probe` on `&Probe<T>`.
+/// A compile-time detector for `T: DeserializeOwned` as a runtime bool (autoref
+/// specialization): `ViaDeserialize::probe` binds on `Probe<T>` directly and is chosen
+/// when `T: DeserializeOwned`; otherwise resolution falls back through an autoref to
+/// `ViaFallback::probe` on `&Probe<T>`.
 struct Probe<T>(core::marker::PhantomData<T>);
 trait ViaDeserialize {
     fn probe(&self) -> bool;
@@ -342,14 +265,11 @@ macro_rules! is_deserializable {
     };
 }
 
-/// The API ruling, enforced mechanically: the validated [`Normalized`] artifact is
-/// the *only* publicly-deserializable entry. `SdkEvent`/`SdkSchema` must not carry a
-/// bare `Deserialize` — re-deriving one would flip a constant here and fail the test.
-///
-/// This guard exists because the `cargo public-api` snapshot runs at `-sss`, which
-/// omits every auto-derived impl (`Serialize`/`Deserialize`/`Clone`/…), so the
-/// removal of a derived `Deserialize` is invisible in that snapshot — it can only be
-/// enforced by a bound like this.
+/// The API ruling, enforced mechanically: the validated [`Normalized`] artifact is the
+/// *only* publicly-deserializable entry. `SdkEvent`/`SdkSchema` must not carry a bare
+/// `Deserialize` — re-deriving one flips a constant here and fails the test. (The
+/// `cargo public-api` snapshot runs at `-sss`, which omits auto-derived impls, so the
+/// removal is invisible there and can only be enforced by a bound like this.)
 #[test]
 fn only_normalized_is_publicly_deserializable() {
     assert!(
@@ -364,8 +284,7 @@ fn only_normalized_is_publicly_deserializable() {
         !is_deserializable!(sdk_events::SdkSchema),
         "SdkSchema must not carry a bare Deserialize (load only via Normalized)"
     );
-    // Component value types still deserialize — they have no independent load path,
-    // so they are only ever read back *inside* a validated `Normalized`.
+    // Component value types still deserialize — they have no independent load path.
     assert!(is_deserializable!(sdk_events::SchemaEntry));
-    assert!(is_deserializable!(sdk_events::Payload));
+    assert!(is_deserializable!(Payload));
 }

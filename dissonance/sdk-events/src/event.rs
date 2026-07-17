@@ -8,16 +8,12 @@
 //! plus its ordering coordinates and the recoverable raw record. It does **not**
 //! carry a cell, a reduction, or a verdict; those are above this boundary.
 
-use std::collections::BTreeMap;
-
 use explorer::Moment;
 use serde::{Deserialize, Serialize};
 
 use crate::error::SdkError;
 use crate::numeric::NumericToken;
-use crate::schema::{
-    Classification, ObservationId, Raw, SdkSchema, SdkSchemaRepr, SourceFormat, UpdateOp,
-};
+use crate::schema::{ObservationId, Raw, SdkSchema, SdkSchemaRepr, SourceFormat, UpdateOp};
 use crate::wire;
 
 /// The result of decoding one ingress stream: the normalized schema plus the
@@ -193,205 +189,86 @@ struct NormalizedRepr {
     events: Vec<SdkEventRepr>,
 }
 
-/// The classification a payload variant evidences, or `None` for an opaque
-/// [`Payload::Unknown`] (which constrains nothing — it is preserved raw).
-fn payload_classification(payload: &Payload) -> Option<Classification> {
-    match payload {
-        Payload::Assertion { .. } | Payload::Buggify { .. } | Payload::Lifecycle { .. } => {
-            Some(Classification::Occurrence)
+/// Reconstruct the ingress stream a candidate artifact was decoded from — its
+/// schema's `original_declaration` (the catalog, first) followed by every event's
+/// preserved `raw` record, in the artifact's own vector order — and re-run the live
+/// decoder over it.
+///
+/// This is the whole of load validation: `redecode(candidate)` is *what a live decode
+/// of the artifact's own bytes produces*, so requiring it to equal `candidate`
+/// (below) makes "loadable" definitionally "decoder-minted". A binary event whose
+/// `raw` carries no `event_id` cannot be placed back on the wire, so it can be no
+/// live decode's output — a divergence, not a panic.
+fn redecode(candidate: &Normalized) -> Result<Normalized, SdkError> {
+    let diverged = |detail: String| SdkError::ArtifactDivergedFromDecode { detail };
+    match candidate.schema.source {
+        SourceFormat::BinaryV1 | SourceFormat::BinaryV2 => {
+            let mut records: Vec<(Moment, u32, Vec<u8>)> = Vec::new();
+            // The catalog governs the batch and must precede every firing, so it is
+            // reconstructed first. Its own `Moment` is not part of the schema (decode
+            // ignores it), so any value round-trips; `CATALOG_EVENT_ID` is what marks
+            // it as the catalog, and the comparison re-checks the stored `event_id`.
+            if let Some(decl) = &candidate.schema.original_declaration {
+                records.push((Moment(0), wire::CATALOG_EVENT_ID, decl.bytes.clone()));
+            }
+            for ev in &candidate.events {
+                let event_id = ev.raw.event_id.ok_or_else(|| {
+                    diverged(format!(
+                        "binary event at ordinal {} has no raw event_id to reconstruct",
+                        ev.ordinal
+                    ))
+                })?;
+                records.push((ev.moment, event_id, ev.raw.bytes.clone()));
+            }
+            crate::binary::decode_binary(&records)
         }
-        Payload::State { .. } | Payload::Guidance { .. } => Some(Classification::State),
-        Payload::Unknown => None,
-    }
-}
-
-/// The base operation a reducible (state/guidance) payload carries — the op a
-/// persisted event must not contradict at its declared coordinate. `None` for a
-/// payload that carries no reducible operation.
-fn payload_op(payload: &Payload) -> Option<UpdateOp> {
-    match payload {
-        Payload::State { op, .. } | Payload::Guidance { op, .. } => Some(*op),
-        _ => None,
+        SourceFormat::AntithesisJson => {
+            // Antithesis declares implicitly through its records; there is no catalog.
+            let records: Vec<(Moment, Vec<u8>)> = candidate
+                .events
+                .iter()
+                .map(|ev| (ev.moment, ev.raw.bytes.clone()))
+                .collect();
+            crate::antithesis::decode_antithesis(&records)
+        }
     }
 }
 
 impl TryFrom<NormalizedRepr> for Normalized {
     type Error = SdkError;
 
-    /// Re-validate a persisted decode bundle as a whole. Loading is held to the same
-    /// contract the live decoders enforce, so a persisted artifact can never assert
-    /// evidence a decode would have refused:
+    /// Validate a persisted artifact by **re-decoding and comparing**, not by
+    /// enumerating coherence rules. The candidate is reconstructed from the repr,
+    /// its own preserved bytes are replayed through the live decoder ([`redecode`]),
+    /// and the result must be *structurally equal* to the candidate — so a
+    /// `Normalized` is loadable exactly when it is what a live decode produces.
     ///
-    /// - the **schema** passes the [`SchemaEntry::validate`](crate::SchemaEntry) choke
-    ///   point for every entry (sorted, unique, source-specific invariants) via
-    ///   [`SdkSchema::try_from`];
-    /// - **declaration provenance**: `original_declaration` re-parses to exactly this
-    ///   schema's source and entries (a binary firing adds no entry, so the
-    ///   declaration fully determines them) — a null/garbage blob, a blob for the
-    ///   wrong source, or one present where the source mints none is corrupt;
-    /// - **event↔schema coherence**: each event agrees with the schema `source`, the
-    ///   ordinals are strictly increasing (rollout-local order), a classified payload
-    ///   sits only at a coordinate whose classification matches, and a reducible op
-    ///   matches the declared base op and every earlier firing for its identity —
-    ///   so a persisted `set` firing at a `max`-declared coordinate fails load with
-    ///   the same [`MixedOperations`](SdkError::MixedOperations) the decoder raises.
+    /// This closes the whole family by construction: a payload from a source that
+    /// cannot mint it, a `min`/`accumulate` firing "upgraded" from raw at an
+    /// undeclared coordinate, a shifted or non-contiguous ordinal, a `raw` record
+    /// contradicting the evidence it vouches for, altered token content, an unsorted
+    /// or fabricated schema entry — none survive, with nothing left to enumerate. A
+    /// reconstructed stream the decoder itself rejects (e.g. a `set` at a
+    /// `max`-declared coordinate) surfaces that decoder's own typed error
+    /// ([`MixedOperations`](SdkError::MixedOperations)); everything else that differs
+    /// is a typed [`ArtifactDivergedFromDecode`](SdkError::ArtifactDivergedFromDecode),
+    /// kept only for diagnosability.
+    ///
+    /// The load contract this enforces is **decoder pinning** (see the crate root): a
+    /// persisted artifact is pinned to the semantics of the decoders that produced it.
     fn try_from(repr: NormalizedRepr) -> Result<Normalized, SdkError> {
-        let schema = SdkSchema::try_from(repr.schema)?;
-
-        // F1a — declaration provenance.
-        let mismatch = |detail: String| SdkError::DeclarationMismatch { detail };
-        match &schema.original_declaration {
-            Some(raw) => {
-                if !matches!(
-                    schema.source,
-                    SourceFormat::BinaryV1 | SourceFormat::BinaryV2
-                ) {
-                    return Err(mismatch(format!(
-                        "source {:?} carries no separate declaration, yet one is present",
-                        schema.source
-                    )));
-                }
-                if raw.source != schema.source {
-                    return Err(mismatch(format!(
-                        "declaration source {:?} disagrees with schema source {:?}",
-                        raw.source, schema.source
-                    )));
-                }
-                if raw.event_id != Some(wire::CATALOG_EVENT_ID) {
-                    return Err(mismatch(
-                        "declaration is not tagged as the catalog record".to_string(),
-                    ));
-                }
-                let reparsed = crate::binary::schema_from_declaration(&raw.bytes)
-                    .map_err(|e| mismatch(format!("declaration does not re-parse: {e}")))?;
-                if reparsed.source != schema.source {
-                    return Err(mismatch(format!(
-                        "declaration re-parses as source {:?}, not {:?}",
-                        reparsed.source, schema.source
-                    )));
-                }
-                if reparsed.entries() != schema.entries() {
-                    return Err(mismatch(
-                        "declaration re-parses to different entries than the schema records"
-                            .to_string(),
-                    ));
-                }
-            }
-            None => match schema.source {
-                // Antithesis declares implicitly through its records — never a blob.
-                SourceFormat::AntithesisJson => {}
-                // Binary-v1 entries come only from a catalog; with none, there are none.
-                SourceFormat::BinaryV1 => {
-                    if !schema.entries().is_empty() {
-                        return Err(mismatch(
-                            "binary v1 schema declares entries with no original declaration"
-                                .to_string(),
-                        ));
-                    }
-                }
-                // The v2 source exists only because a v2 catalog was parsed.
-                SourceFormat::BinaryV2 => {
-                    return Err(mismatch(
-                        "binary v2 schema has no original declaration".to_string(),
-                    ));
-                }
-            },
+        let candidate = Normalized {
+            schema: SdkSchema::from(repr.schema),
+            events: repr.events.into_iter().map(SdkEvent::from).collect(),
+        };
+        let redecoded = redecode(&candidate)?;
+        if redecoded != candidate {
+            return Err(SdkError::ArtifactDivergedFromDecode {
+                detail: "re-decoding the artifact's own bytes yields a different artifact"
+                    .to_string(),
+            });
         }
-
-        // F1d — event↔schema coherence, mirroring the live decoders.
-        let events: Vec<SdkEvent> = repr.events.into_iter().map(SdkEvent::from).collect();
-        let incoherent = |detail: String| SdkError::IncoherentEvent { detail };
-        let mut prev_ordinal: Option<u64> = None;
-        let mut observed_ops: BTreeMap<ObservationId, UpdateOp> = BTreeMap::new();
-        for ev in &events {
-            if ev.source != schema.source {
-                return Err(incoherent(format!(
-                    "event source {:?} disagrees with schema source {:?}",
-                    ev.source, schema.source
-                )));
-            }
-            if let Some(prev) = prev_ordinal
-                && ev.ordinal <= prev
-            {
-                return Err(incoherent(format!(
-                    "event ordinal {} does not exceed the previous ordinal {prev}",
-                    ev.ordinal
-                )));
-            }
-            prev_ordinal = Some(ev.ordinal);
-
-            // An opaque `Unknown` payload constrains nothing; preserved raw.
-            let Some(pc) = payload_classification(&ev.payload) else {
-                continue;
-            };
-
-            // Binary coordinate: a classified payload can only sit at a namespace
-            // whose firings decode to that classification — true even undeclared.
-            if let ObservationId::Point { namespace, .. } = &ev.id
-                && matches!(
-                    schema.source,
-                    SourceFormat::BinaryV1 | SourceFormat::BinaryV2
-                )
-            {
-                match crate::binary::namespace_classification(*namespace) {
-                    Some(expected) if expected == pc => {}
-                    Some(expected) => {
-                        return Err(incoherent(format!(
-                            "payload classification {pc:?} disagrees with namespace {namespace}'s firing classification {expected:?}"
-                        )));
-                    }
-                    None => {
-                        return Err(incoherent(format!(
-                            "classified payload at namespace {namespace}, which decodes only to Unknown"
-                        )));
-                    }
-                }
-            }
-
-            // Declared coordinate: agree with the entry's classification/op/shape.
-            if let Some(entry) = schema.entry(&ev.id) {
-                if entry.classification != pc {
-                    return Err(incoherent(format!(
-                        "payload classification {pc:?} disagrees with declared {:?} for {:?}",
-                        entry.classification, ev.id
-                    )));
-                }
-                if let (Some(op), Some(declared)) = (payload_op(&ev.payload), entry.base_op)
-                    && op != declared
-                {
-                    return Err(SdkError::MixedOperations {
-                        id: ev.id.clone(),
-                        first: declared,
-                        second: op,
-                    });
-                }
-                // Value **shape** needs no separate event-level check: it is pinned
-                // transitively. A reducible payload's shape follows from its variant
-                // (`State`→`u64`, `Guidance`→`Numeric`), the classification match above
-                // ties the variant to `entry.classification`, and the schema choke
-                // point already validated `entry.value_shape` against that
-                // classification and source (v2 state ⇒ `u64`, v1 state ⇒ unresolved,
-                // antithesis guidance ⇒ `Numeric`). With `source` agreement, no
-                // persisted payload can reach here carrying a shape the entry does not
-                // already declare.
-            }
-
-            // Cross-event op coherence: two reducible firings for one identity must
-            // not disagree (the decoder's per-identity `observed_ops` rule).
-            if let Some(op) = payload_op(&ev.payload) {
-                if let Some(&first) = observed_ops.get(&ev.id)
-                    && first != op
-                {
-                    return Err(SdkError::MixedOperations {
-                        id: ev.id.clone(),
-                        first,
-                        second: op,
-                    });
-                }
-                observed_ops.insert(ev.id.clone(), op);
-            }
-        }
-
-        Ok(Normalized { schema, events })
+        // `redecoded == candidate`; return the decoder-minted one as the canonical form.
+        Ok(redecoded)
     }
 }

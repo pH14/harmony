@@ -108,49 +108,12 @@ fn wire_v2_declaration_round_trips_through_the_byte_codec() {
     );
 }
 
-/// Load a bare schema (with no events) as the validated [`Normalized`] artifact —
-/// the only public deserialization entry. The schema-entry choke point runs *before*
-/// the declaration-provenance check, so a malformed entry is refused here regardless
-/// of the (here absent) declaration.
-fn load_schema(schema: serde_json::Value) -> Result<Normalized, serde_json::Error> {
-    let artifact = serde_json::json!({ "schema": schema, "events": [] }).to_string();
-    serde_json::from_str::<Normalized>(&artifact)
-}
-
 #[test]
-fn deserializing_a_noncanonical_schema_is_rejected() {
-    // `SdkSchema::entry` binary-searches its entries, so a persisted schema whose
-    // entries are unsorted or duplicated would make declared identities unfindable.
-    // Loading must reject it rather than accept silently corrupt evidence — and the
-    // sort/uniqueness check runs before the declaration-provenance check, so a null
-    // declaration (below) reaches it.
-    let entry = |local: u32| {
-        serde_json::json!({
-            "id": {"Point": {"namespace": NS_STATE, "local": local}},
-            "classification": "State",
-            "value_shape": "U64",
-            "base_op": "Set",
-            "expectation": null,
-            "name": null,
-        })
-    };
-    let make = |entries: serde_json::Value| {
-        serde_json::json!({
-            "source": "BinaryV2",
-            "ordering": "RolloutLocalSourceOrdinal",
-            "entries": entries,
-            "original_declaration": null,
-        })
-    };
-
-    // Out-of-order entries (local 5 before local 1) are rejected.
-    assert!(load_schema(make(serde_json::json!([entry(5), entry(1)]))).is_err());
-    // Duplicate ids are rejected.
-    assert!(load_schema(make(serde_json::json!([entry(1), entry(1)]))).is_err());
-
-    // A well-ordered, unique schema — as the decoder actually produces it, declaration
-    // and all — still deserializes, and binary search finds a declared entry after the
-    // round-trip.
+fn a_noncanonical_or_tampered_schema_does_not_load() {
+    // `SdkSchema::entry` binary-searches its entries, so unsorted or duplicated
+    // entries would make declared identities unfindable. A live decode always emits
+    // them sorted and unique; re-decode-and-compare rejects any persisted schema that
+    // is not, with no separate sort check to defeat.
     let point = |local, op| DeclaredPoint {
         namespace: NS_STATE,
         local,
@@ -163,8 +126,10 @@ fn deserializing_a_noncanonical_schema_is_rejected() {
     let decl = encode_v2_declaration(&[point(1, UpdateOp::Set), point(5, UpdateOp::Max)])
         .expect("valid declaration");
     let n = decode_binary(&[(Moment(0), 0, decl)]).expect("decodes");
-    let loaded =
-        serde_json::from_str::<Normalized>(&serde_json::to_string(&n).unwrap()).expect("canonical");
+    let canonical = serde_json::to_value(&n).unwrap();
+
+    // The canonical artifact loads, and binary search finds a declared entry.
+    let loaded = serde_json::from_value::<Normalized>(canonical.clone()).expect("canonical loads");
     assert!(
         loaded
             .schema
@@ -173,8 +138,24 @@ fn deserializing_a_noncanonical_schema_is_rejected() {
                 local: 5
             })
             .is_some(),
-        "binary search finds the entry after a canonical deserialize"
+        "binary search finds the entry after a canonical load"
     );
+
+    let diverges = |v: serde_json::Value| {
+        let e = serde_json::from_value::<Normalized>(v)
+            .expect_err("rejected")
+            .to_string();
+        assert!(e.contains("diverges from a live decode"), "got: {e}");
+    };
+    let entries = canonical["schema"]["entries"].as_array().unwrap().clone();
+    // Entries reversed out of sort order — the declaration re-parses to sorted entries.
+    let mut unsorted = canonical.clone();
+    unsorted["schema"]["entries"] = serde_json::json!([entries[1], entries[0]]);
+    diverges(unsorted);
+    // A duplicated entry — the declaration re-parses to the two distinct entries.
+    let mut duplicated = canonical.clone();
+    duplicated["schema"]["entries"] = serde_json::json!([entries[0], entries[0]]);
+    diverges(duplicated);
 }
 
 #[test]
@@ -212,178 +193,19 @@ fn only_a_resolved_u64_state_is_reducible() {
     assert!(!state(Some(ValueShape::U64), None).is_reducible_state());
 }
 
-/// The full source-specific schema-entry invariant family, enforced on load through
-/// the one `SchemaEntry::validate` choke point. Loading routes only through the
-/// validated [`Normalized`] artifact; the choke point runs before the
-/// declaration-provenance check, so a null-declaration wrapper (`load_schema`)
-/// reaches it and a malformed entry is refused — one rejection per invariant.
-///
-/// The acceptance direction (a valid entry per source × role is *not* over-rejected)
-/// is proved separately, in `valid_entries_load_for_every_source`, against real
-/// decoded artifacts — a binary schema is only loadable with a matching declaration,
-/// which a hand-written null-declaration schema cannot carry.
-#[test]
-fn schema_invariant_family_is_refused_on_load() {
-    use sdk_events::{NS_ASSERT, NS_LIFECYCLE};
-
-    fn schema(
-        source: &str,
-        id: serde_json::Value,
-        class: &str,
-        shape: serde_json::Value,
-        op: serde_json::Value,
-    ) -> serde_json::Value {
-        serde_json::json!({
-            "source": source,
-            "ordering": "RolloutLocalSourceOrdinal",
-            "original_declaration": null,
-            "entries": [{
-                "id": id, "classification": class,
-                "value_shape": shape, "base_op": op,
-                "expectation": null, "name": null,
-            }],
-        })
-    }
-    let point =
-        |ns: u8, local: u32| serde_json::json!({ "Point": { "namespace": ns, "local": local } });
-    let prop = |s: &str| serde_json::json!({ "Property": s });
-    let null = || serde_json::Value::Null;
-    let bad = |s: serde_json::Value| {
-        assert!(load_schema(s.clone()).is_err(), "should REJECT: {s}");
-    };
-
-    // --- INV-1: an occurrence is inert (no reducer, no shape) ---
-    bad(schema(
-        "AntithesisJson",
-        prop("p"),
-        "Occurrence",
-        serde_json::json!("U64"),
-        null(),
-    ));
-    bad(schema(
-        "AntithesisJson",
-        prop("p"),
-        "Occurrence",
-        null(),
-        serde_json::json!("Set"),
-    ));
-
-    // --- INV-2: binary v1 state never resolves a reducer/shape (the r13 catch) ---
-    bad(schema(
-        "BinaryV1",
-        point(NS_STATE, 1),
-        "State",
-        serde_json::json!("U64"),
-        serde_json::json!("Set"),
-    ));
-    bad(schema(
-        "BinaryV1",
-        point(NS_STATE, 1),
-        "State",
-        serde_json::json!("U64"),
-        null(),
-    ));
-    bad(schema(
-        "BinaryV1",
-        point(NS_STATE, 1),
-        "State",
-        null(),
-        serde_json::json!("Set"),
-    ));
-
-    // --- INV-3: binary v2 state needs a resolved op + the u64 shape ---
-    bad(schema(
-        "BinaryV2",
-        point(NS_STATE, 1),
-        "State",
-        serde_json::json!("U64"),
-        null(),
-    )); // no op
-    bad(schema(
-        "BinaryV2",
-        point(NS_STATE, 1),
-        "State",
-        serde_json::json!("Bool"),
-        serde_json::json!("Set"),
-    )); // wrong shape
-    bad(schema(
-        "BinaryV2",
-        point(NS_STATE, 1),
-        "State",
-        serde_json::json!("Numeric"),
-        serde_json::json!("Set"),
-    )); // numeric is antithesis-only
-
-    // --- INV-4: antithesis state is numeric max/min guidance ---
-    bad(schema(
-        "AntithesisJson",
-        prop("g"),
-        "State",
-        serde_json::json!("Numeric"),
-        serde_json::json!("Set"),
-    )); // wrong op
-    bad(schema(
-        "AntithesisJson",
-        prop("g"),
-        "State",
-        serde_json::json!("U64"),
-        serde_json::json!("Max"),
-    )); // wrong shape
-
-    // --- INV-5: id variant matches the source ---
-    bad(schema("BinaryV1", prop("p"), "Occurrence", null(), null())); // binary needs a Point
-    bad(schema(
-        "AntithesisJson",
-        point(NS_ASSERT, 1),
-        "Occurrence",
-        null(),
-        null(),
-    )); // antithesis needs Property/Lifecycle
-
-    // --- INV-6: a point's namespace matches its classification ---
-    bad(schema(
-        "BinaryV2",
-        point(NS_ASSERT, 1),
-        "State",
-        serde_json::json!("U64"),
-        serde_json::json!("Set"),
-    )); // state at assert ns
-    bad(schema(
-        "BinaryV1",
-        point(NS_STATE, 1),
-        "Occurrence",
-        null(),
-        null(),
-    )); // occurrence at state ns
-    bad(schema(
-        "BinaryV2",
-        point(9, 1),
-        "Occurrence",
-        null(),
-        null(),
-    )); // unknown ns
-
-    // --- INV-7: a point's local id is an addressable 24-bit coordinate ---
-    bad(schema(
-        "BinaryV1",
-        point(NS_STATE, 0x0100_0000),
-        "State",
-        null(),
-        null(),
-    )); // 2^24
-
-    // --- INV-8: a lifecycle point sits only at the setup_complete local (0) ---
-    bad(schema(
-        "BinaryV2",
-        point(NS_LIFECYCLE, 5),
-        "Occurrence",
-        null(),
-        null(),
-    ));
-}
+// The source-specific schema-entry invariant family (occurrence-inert, v1-unresolved,
+// v2-u64, antithesis-guidance, id↔source, namespace↔classification, 24-bit local,
+// lifecycle local 0, expectation legality) is enforced by `SchemaEntry::validate`
+// where entries are actually minted — at DECODE, via `merge_entry`. Those rejections
+// are tested against the byte codec in `tests/normalize_binary.rs` (e.g.
+// `v2_non_u64_state_shape_is_rejected_on_encode_and_decode`,
+// `v2_classification_must_agree_with_the_namespace`,
+// `v2_occurrence_carrying_a_value_or_operation_is_rejected`). On the LOAD path the
+// same guarantee holds by construction: `tests/load_validation.rs` shows a persisted
+// schema carrying an entry a live decode never mints diverges from the re-decode.
 
 /// Build a v1 catalog declaration blob (`SDKC` magic + version 1 + records), the
-/// only way to give a binary-v1 schema the declaration its provenance check requires.
+/// only way to give a binary-v1 schema its declaration.
 fn v1_catalog(points: &[(u8, u32, &str)]) -> Vec<u8> {
     let mut b = u32::from_le_bytes(*b"SDKC").to_le_bytes().to_vec();
     b.push(1); // version 1
@@ -397,10 +219,8 @@ fn v1_catalog(points: &[(u8, u32, &str)]) -> Vec<u8> {
     b
 }
 
-/// The acceptance direction of the invariant family: a valid entry for every
-/// (source × role) is admitted by the choke point and its artifact round-trips. Built
-/// from real decoded artifacts, since a binary schema only loads with a matching
-/// declaration the null-declaration `load_schema` helper cannot supply.
+/// A valid decoded artifact for every (source × role) round-trips through the load —
+/// the acceptance direction, proving re-decode-and-compare does not over-reject.
 #[test]
 fn valid_entries_load_for_every_source() {
     use sdk_events::{NS_ASSERT, NS_LIFECYCLE};
@@ -414,44 +234,19 @@ fn valid_entries_load_for_every_source() {
         assert_eq!(&serde_json::from_str::<Normalized>(&json).unwrap(), n);
     };
 
-    // Antithesis: assertion, numeric guidance, and setup all load (null declaration).
-    let ant =
-        |id: serde_json::Value, class: &str, shape: serde_json::Value, op: serde_json::Value| {
-            serde_json::json!({
-                "source": "AntithesisJson", "ordering": "RolloutLocalSourceOrdinal",
-                "original_declaration": null,
-                "entries": [{ "id": id, "classification": class,
-                    "value_shape": shape, "base_op": op, "expectation": null, "name": null }],
-            })
-        };
-    let n = serde_json::Value::Null;
-    assert!(
-        load_schema(ant(
-            serde_json::json!({"Property": "p"}),
-            "Occurrence",
-            n.clone(),
-            n.clone()
-        ))
-        .is_ok()
+    // Antithesis: an assertion, numeric guidance, and setup — every role in one stream.
+    let ant = decode_antithesis(&[
+        (Moment(1), br#"{"antithesis_assert":{"assert_type":"always","condition":true,"id":"p","message":"p","must_hit":true,"location":{"file":"a.rs","function":"f","begin_line":1,"begin_column":2}}}"#.to_vec()),
+        (Moment(2), br#"{"antithesis_guidance":{"guidance_type":"numeric","maximize":true,"id":"g","guidance_data":5}}"#.to_vec()),
+        (Moment(3), br#"{"antithesis_setup":{"status":"complete"}}"#.to_vec()),
+    ])
+    .expect("antithesis decodes");
+    assert_eq!(
+        ant.schema.entries().len(),
+        3,
+        "assertion + guidance + setup entries"
     );
-    assert!(
-        load_schema(ant(
-            serde_json::json!({"Property": "g"}),
-            "State",
-            serde_json::json!("Numeric"),
-            serde_json::json!("Max"),
-        ))
-        .is_ok()
-    );
-    assert!(
-        load_schema(ant(
-            serde_json::json!({"Lifecycle": "setup"}),
-            "Occurrence",
-            n.clone(),
-            n
-        ))
-        .is_ok()
-    );
+    loads(&ant);
 
     // Binary v1: an assert, an (unresolved) state, and a buggify point.
     let v1 = decode_binary(&[(

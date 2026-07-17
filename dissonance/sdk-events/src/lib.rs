@@ -28,6 +28,29 @@
 //! structural contradictions (mixed operations/shapes, malformed declaration
 //! lengths) — never a panic on untrusted input.
 //!
+//! ## Decoder pinning (binding load invariant)
+//!
+//! [`Normalized`] is the persisted artifact and the **only** publicly-deserializable
+//! type. Loading one is not a second, hand-written validation of its fields: it
+//! **re-decodes the artifact's own preserved bytes** (each event's `raw` record plus
+//! the schema's `original_declaration`, in order) through the live decoders and
+//! requires the result to be *structurally equal* to the persisted artifact.
+//! *Loadable* is therefore, by construction, *exactly what a live decode produces* —
+//! there is no set of coherence rules to enumerate and no gap for a plausible-looking
+//! but decoder-unmintable artifact to slip through.
+//!
+//! The consequence is a **binding contract: a persisted artifact is pinned to the
+//! semantics of the decoders that produced it.** Any future change to decoder
+//! semantics (a new wire version, a changed normalization) must **version and
+//! migrate** existing artifacts — it must never silently reinterpret them, because a
+//! stored artifact that no longer round-trips through the current decoders will fail
+//! to load rather than load with quietly different meaning. This is the ingestion-side
+//! face of the epic's determinism doctrine (persisted evidence has one fixed meaning).
+//! Two corollaries: load cost is `O(re-decode)` per artifact — accepted, as an
+//! artifact-boundary operation in an evidence-integrity crate; and a **subset or
+//! filtered event vector is not a valid persisted artifact** (a partial vector already
+//! violates the contiguous-ordinal contract and will not re-decode to itself).
+//!
 //! ## Determinism discipline
 //!
 //! Canonical encodings only: schema entries are sorted and unique, no `HashMap`

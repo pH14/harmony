@@ -222,9 +222,10 @@ impl SchemaEntry {
     ///   under a consumer-chosen bound could replay differently;
     /// - a **shape-less** or non-`u64` resolved state (`value_shape` `None`/`Bool`/
     ///   `Bytes`): a resolved reducer with no reducible representation. The decoders
-    ///   never produce this, but a public or *deserialized* [`SchemaEntry`] could,
-    ///   so the check refuses it here (and [`SdkSchema`] deserialization rejects the
-    ///   combination outright).
+    ///   never produce this, but a public [`SchemaEntry`] could, so the check refuses
+    ///   it here (a *persisted* one cannot smuggle it in either: loading a
+    ///   [`Normalized`](crate::Normalized) re-decodes the artifact and rejects any
+    ///   schema a live decode would not mint).
     pub fn is_reducible_state(&self) -> bool {
         self.classification == Classification::State
             && self.base_op.is_some()
@@ -232,13 +233,15 @@ impl SchemaEntry {
     }
 
     /// The **single validation choke point** for the normalized schema model:
-    /// enforce every source-specific invariant of a `SchemaEntry`. Every path that
-    /// admits an entry from persisted input routes through here —
-    /// [`SdkSchema::merge_entry`] (decode) and `SdkSchema`'s deserialization
-    /// (`try_from`) — so the invariant set lives in one place and the decoders and
-    /// persisted input are held to the same contract.
+    /// enforce every source-specific invariant of a `SchemaEntry`. It is the decode
+    /// gate — [`SdkSchema::merge_entry`] routes every entry the decoders mint through
+    /// here. Persisted input reaches the same gate transitively: loading a
+    /// [`Normalized`](crate::Normalized) re-runs the live decoder over the artifact's
+    /// own bytes (which calls `merge_entry`) and then requires structural equality, so
+    /// a persisted entry is held to exactly this contract without a second, separate
+    /// enumeration on the load path.
     ///
-    /// The invariant family (a value the decoders never mint is refused on load):
+    /// The invariant family (a value the decoders never mint):
     /// - **id ↔ source**: binary sources address [`ObservationId::Point`]s;
     ///   Antithesis addresses [`ObservationId::Property`]/[`ObservationId::Lifecycle`];
     /// - **point coordinate** (binary): the namespace matches the classification
@@ -359,10 +362,10 @@ impl SchemaEntry {
 ///
 /// `SdkSchema` is **not** independently deserializable: the persisted artifact is
 /// the whole [`Normalized`](crate::Normalized), whose validated `try_from` is the
-/// only public deserialization entry. A schema is reconstructed from persisted
-/// input only through [`SdkSchema::try_from`]`(`[`SdkSchemaRepr`]`)`, which
-/// re-verifies the sorted-and-unique invariant (`entry` binary-searches) and runs
-/// every entry through the [`SchemaEntry::validate`] choke point.
+/// only public deserialization entry. That load re-decodes the artifact's own bytes
+/// and requires the reconstructed schema — produced by the live decoder, so always
+/// sorted, unique, and choke-point-validated — to equal the persisted one, which is
+/// why the candidate schema is built here without a second, separate validation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SdkSchema {
     /// The ingress format this schema was decoded from.
@@ -377,9 +380,9 @@ pub struct SdkSchema {
     pub original_declaration: Option<Raw>,
 }
 
-/// The on-the-wire shape of an [`SdkSchema`], deserialized before its invariants
-/// are re-checked. `pub(crate)` so [`Normalized`](crate::Normalized)'s repr can
-/// embed it; the conversion to a validated [`SdkSchema`] is [`SdkSchema::try_from`].
+/// The on-the-wire shape of an [`SdkSchema`]. `pub(crate)` so
+/// [`Normalized`](crate::Normalized)'s repr can embed it; converted to a candidate
+/// [`SdkSchema`] by the infallible [`From`] below.
 #[derive(Deserialize)]
 pub(crate) struct SdkSchemaRepr {
     source: SourceFormat,
@@ -388,37 +391,21 @@ pub(crate) struct SdkSchemaRepr {
     original_declaration: Option<Raw>,
 }
 
-impl TryFrom<SdkSchemaRepr> for SdkSchema {
-    type Error = SdkError;
-
-    fn try_from(repr: SdkSchemaRepr) -> Result<SdkSchema, SdkError> {
-        let malformed = |detail: String| SdkError::MalformedSchemaEntry { detail };
-        // The invariant `entry()` depends on: strictly ascending, no duplicates.
-        for pair in repr.entries.windows(2) {
-            match pair[0].id.cmp(&pair[1].id) {
-                std::cmp::Ordering::Less => {}
-                std::cmp::Ordering::Equal => {
-                    return Err(malformed(format!(
-                        "duplicate schema entry id {:?}",
-                        pair[0].id
-                    )));
-                }
-                std::cmp::Ordering::Greater => {
-                    return Err(malformed("schema entries are not sorted by id".to_string()));
-                }
-            }
-        }
-        // Every entry admitted from persisted input passes the one validation
-        // choke point — the full source-specific invariant family.
-        for entry in &repr.entries {
-            entry.validate(repr.source).map_err(malformed)?;
-        }
-        Ok(SdkSchema {
+impl From<SdkSchemaRepr> for SdkSchema {
+    /// Build the **candidate** schema from its persisted form, *without* validating
+    /// it. Validation is not skipped — it moves to [`Normalized`](crate::Normalized)'s
+    /// load, which re-decodes the artifact's own bytes and requires the reconstructed
+    /// schema (from the live decoder, always sorted + choke-point-validated) to equal
+    /// this one. A corrupt persisted schema — unsorted, duplicated, or carrying an
+    /// entry a live decode never mints — is caught by that comparison, so this
+    /// conversion is total and holds no invariant of its own.
+    fn from(repr: SdkSchemaRepr) -> SdkSchema {
+        SdkSchema {
             source: repr.source,
             ordering: repr.ordering,
             entries: repr.entries,
             original_declaration: repr.original_declaration,
-        })
+        }
     }
 }
 
