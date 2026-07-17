@@ -730,7 +730,16 @@ Ubuntu 6.8.0-134-generic, KVM VHE. Baseline manifest (the restore target):
 `spikes/arm-altra/results/box-baseline-manifest.json`. Core assignments: housekeeping
 0–3, measurement 60–69, guest 70–79 (recorded in the truth table's topology block).
 
-### AA-0 — IN PROGRESS (capability table complete + ruled; reboot-identity captures pending)
+### AA-0 — **GO** (2026-07-17)
+
+Acceptance met in full: the 14-row truth table is complete and machine-readable;
+captures A, B, C (`results/aa-0/capture-{A,B,C}/truth-table.json`) are
+**byte-identical across two reboots** (reboot returns 173s/198s, both on
+6.8.0-134); every expect row is confirmed except `writable-id-registers`, which
+carries its explicit recorded ruling (PFR1 frozen on stock 6.8; re-probe on the
+patched host before AA-6(a) relies on it). Evidence and probe inputs under
+`results/aa-0/`; the runtime posture is re-applied after every reboot by
+`host/spike-posture.sh` (nothing persists).
 
 Evidence: `spikes/arm-altra/results/aa-0/` — `capture-A/truth-table.json` (14 rows,
 probe RC 0), `box-config.json` + `rulings.json` (the probe inputs),
