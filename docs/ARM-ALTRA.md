@@ -951,3 +951,22 @@ the smaller grid/migration sets land in git. Est. ~13 h. **Disposition: not yet
 declared** — waits on campaign completion + the aggregate floor-check
 (`--min-armed-overflows 1000000 --min-cases 100000`) + the derived `skid_margin`/density
 pack read from the grid.
+
+**Procedure on r2 completion (turnkey — for this session or a resuming one).** Success
+marker is `~/aa1c-r2-OK` on the box (written only if every stage exited 0); progress is
+in `~/aa1c-r2.log`; the 10 run-sets land under `results/aa-1c/aa1c-*-r2-{bulk,grid}` +
+`aa1c-migration-r2` (+ `aa1c-presmoke-r2`). Then, on the box:
+1. **Aggregate floor-check** over the 8 condition run-sets + the migration probe:
+   `./target/release/floor-check results/aa-1c/aa1c-{pinned-solo,co-tenant-other-core,memory-pressure,co-tenant-same-core}-r2-{bulk,grid} results/aa-1c/aa1c-migration-r2 --min-armed-overflows 1000000 --min-cases 100000 > results/aa-1c/aa1c-r2-verdict.txt`
+   — this must be `RESULT: PASS`; the verdict file is retained evidence (§Evidence
+   integrity #2). A single failing check blocks the GO.
+2. **Constants pack**: `python3 host/aa1c-skid-density.py results/aa-1c/aa1c-*-r2-grid results/aa-1c/aa1c-*-r2-bulk > results/aa-1c/aa1c-r2-constants.json` — the
+   `skid_margin_candidate_by_scale` (worst case at 1e8) is the N1 `skid_margin`; the
+   per-group density feeds the SimCpu re-parameterization.
+3. **Disposition**: if the floor-check PASSES, record **AA-1(c) GO** (and thereby the
+   AA-1 existential-trio disposition) here with the verdict + constants paths, the
+   `skid_margin`, and the migration-probe finding (whether the rr #3607 missed-PMI mode
+   appeared, from `aa1c-migration-r2`'s `lost_by_group`). Commit the manifests +
+   verdict + constants (bulk raw stays on the box, content-addressed). If any count
+   mismatch or missed/duplicate overflow survives → **NO-GO**, record the fallback the
+   evidence selects (§6). The `skid_margin` becomes AA-3's landing-contract bound.
