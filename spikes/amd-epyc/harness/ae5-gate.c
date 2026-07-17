@@ -105,6 +105,7 @@ static int vm_setup(struct vm *v) {
     if (v->vmfd < 0) { perror("KVM_CREATE_VM"); return -1; }
     struct kvm_enable_cap cap; memset(&cap, 0, sizeof(cap));
     cap.cap = KVM_CAP_X86_DETERMINISTIC_INTERCEPTS;
+    cap.args[0] = 1;                  /* enable (the handler stores args[0]&1) */
     if (ioctl(v->vmfd, KVM_ENABLE_CAP, &cap) < 0) {
         fprintf(stderr, "ENABLE_CAP DETERMINISTIC_INTERCEPTS failed: %s (patched 6.18.35?)\n",
                 strerror(errno)); return -2;

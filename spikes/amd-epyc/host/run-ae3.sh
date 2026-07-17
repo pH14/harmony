@@ -29,7 +29,12 @@ rel=$(uname -r)
 [ "$rel" = "$KVER" ] || { echo "AE-3 needs the patched $KVER kernel; on $rel — boot it first" >&2; exit 3; }
 
 OUT="$ROOT/results/ae-3/$runset"; mkdir -p "$OUT"
-[ -x "$HARNESS" ] || gcc -O2 -Wall -o "$HARNESS" "$ROOT/harness/ae3-forceexit.c"
+gcc -O2 -Wall -o "$HARNESS" "$ROOT/harness/ae3-forceexit.c"
+
+# Guest-mode sampling perf events (the overflow PMI) need an unrestricted paranoid
+# level; the fresh 6.18.35 boot resets it to the distro default (2). Scratch box under
+# exclusive lock — set it for measurement (resets to default on reboot; recorded).
+sudo sysctl -w kernel.perf_event_paranoid=-1 >/dev/null
 
 echo "=== AE-3 run-set $runset on core $core, event $event, margin $margin, arms $arms ===" >&2
 

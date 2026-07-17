@@ -53,8 +53,12 @@ install() {
   # NMI must reach the svm.c force-exit path, and the interrupt fabric stays in
   # userspace. avic is a load-time module param, so pin it before kvm_amd auto-loads.
   printf 'options kvm_amd avic=0 nested=1\n' | sudo tee /etc/modprobe.d/kvm-amd-spike.conf >/dev/null
-  # Small initramfs (fits the tight /boot) that still carries THIS box's root stack.
-  echo 'MODULES=dep' | sudo tee /etc/initramfs-tools/conf.d/amd-spike-dep.conf >/dev/null
+  # Initramfs module policy: MODULES=most (Ubuntu's default, what the booting 6.8
+  # initrd uses). NOT MODULES=dep — dep-mode silently drops the raid1 personality and
+  # the nvme host driver for this md1-RAID1-over-NVMe root (both are =m), which would
+  # leave the new kernel unable to mount root. `most` (~72M) fits the 335M-free /boot.
+  echo 'MODULES=most' | sudo tee /etc/initramfs-tools/conf.d/amd-spike-modules.conf >/dev/null
+  sudo rm -f /etc/initramfs-tools/conf.d/amd-spike-dep.conf
   sudo dpkg -i "$deb"
   hdr=$(ls "$WORK"/linux-headers-"$KVER"_*.deb 2>/dev/null | head -1)
   [ -n "$hdr" ] && sudo dpkg -i "$hdr" || true
@@ -62,13 +66,15 @@ install() {
   # carries the RAID1 + NVMe modules this box mounts root from (else it can't boot).
   [ -f "/boot/vmlinuz-$KVER" ] || { log "vmlinuz-$KVER missing after install"; exit 4; }
   [ -f "/boot/initrd.img-$KVER" ] || { log "initrd.img-$KVER missing after install"; exit 4; }
+  # Verify the =m root-stack drivers are actually present (MD core is built-in =y, so
+  # only raid1 + nvme are loadable modules the initrd must carry to mount md1 root).
   local miss=0
-  for m in raid1 md_mod nvme; do
+  for m in 'md/raid1.ko' 'nvme/host/nvme.ko'; do
     if ! sudo lsinitramfs "/boot/initrd.img-$KVER" | grep -q "$m"; then
-      log "WARNING: initrd for $KVER is missing module '$m' (root is on md1 RAID1/NVMe)"; miss=1
+      log "WARNING: initrd for $KVER is missing '$m' (root is on md1 RAID1/NVMe)"; miss=1
     fi
   done
-  [ "$miss" = 0 ] && log "initrd carries raid1 + md_mod + nvme (root stack present)" || \
+  [ "$miss" = 0 ] && log "initrd carries raid1 + nvme (root stack present)" || \
     { log "STOP: initrd lacks the root stack — boot would fail; not staging"; exit 4; }
   sudo update-grub
   log "installed $KVER; vmlinuz+initrd present, root modules verified, grub updated"

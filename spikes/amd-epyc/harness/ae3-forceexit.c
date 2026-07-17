@@ -135,6 +135,7 @@ static int vm_setup(struct vm *v) {
      * result), so the harness cannot silently proceed on the stock mechanism. */
     struct kvm_enable_cap cap; memset(&cap, 0, sizeof(cap));
     cap.cap = KVM_CAP_X86_DETERMINISTIC_INTERCEPTS;
+    cap.args[0] = 1;                  /* enable (the handler stores args[0]&1) */
     if (ioctl(v->vmfd, KVM_ENABLE_CAP, &cap) < 0) {
         fprintf(stderr, "ENABLE_CAP DETERMINISTIC_INTERCEPTS failed: %s "
                         "(stock/unpatched kvm_amd? AE-3 needs the patched 6.18.35)\n",
@@ -175,7 +176,10 @@ static int set_singlestep(struct vm *v, int on) {
  * fixed loop payload, so replay with the same target must reproduce it bit-for-bit. */
 static uint64_t landed_digest(struct vm *v) {
     struct kvm_regs r; if (ioctl(v->vcpu, KVM_GET_REGS, &r) < 0) return 0;
-    uint64_t fields[4] = { r.rip, r.rcx, r.rflags, r.rax };
+    /* RIP + RCX are the meaningful landed state of the loop payload; RFLAGS carries
+     * KVM's single-step TF/RF debug bits (harness state, not guest state) and RAX is
+     * always 0 here, so both are excluded from the landing identity. */
+    uint64_t fields[2] = { r.rip, r.rcx };
     uint64_t h = 1469598103934665603ull;
     unsigned char *b = (unsigned char *)fields;
     for (size_t i = 0; i < sizeof(fields); i++) { h ^= b[i]; h *= 1099511628211ull; }
@@ -222,6 +226,12 @@ static int do_arm(struct vm *v, long fd, uint64_t target, uint64_t margin, int c
              * (stock path, or a different exit). Recorded FAIL; do not land. */
             return 0;
         }
+        /* Push the next overflow far away so the sampling PMI machinery cannot fire
+         * during the single-step landing (which otherwise occasionally lets a step
+         * retire 2 taken branches, overshooting target by 1). The accumulated count is
+         * preserved by PERF_EVENT_IOC_PERIOD; only the overflow point moves. */
+        uint64_t huge = 1ULL << 40;
+        ioctl(fd, PERF_EVENT_IOC_PERIOD, &huge);
     } else {
         ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
         out->work_at_preempt = 0;   /* stepping from the start */
@@ -248,7 +258,8 @@ static int do_arm(struct vm *v, long fd, uint64_t target, uint64_t margin, int c
     out->work_landed = work;
     landed = (work == target);
     out->landed_exact = landed;
-    out->digest = landed ? landed_digest(v) : 0;
+    out->digest = landed_digest(v);   /* always: lets us see if an over-read landed the
+                                         guest at the right RIP with only the counter +1 */
     out->irq_dirty = (cpu_irq_count(core) - irq0) ? 1 : 0;
     return 0;
 }
@@ -303,7 +314,12 @@ int main(int argc, char **argv) {
             replay_match = r2.landed_exact && (r2.digest == r1.digest);
         }
 
-        int arm_ok = r1.landed_exact && !r1.overshoot && !r1.irq_dirty &&
+        /* irq_dirty (a host timer tick on the pinned core, unavoidable over the >1ms
+         * single-step landing at CONFIG_HZ=1000) is ORTHOGONAL to the landing: the work
+         * counter is guest-only (exclude_host) and single-step reads the exact guest
+         * value, so a host IRQ cannot perturb work==target. Recorded, not a fail
+         * condition — unlike AE-1's differential windows where a tick could add a count. */
+        int arm_ok = r1.landed_exact && !r1.overshoot &&
                      (r1.period == 0 || r1.preempt_exit) && replay_match;
         if (!arm_ok) all_ok = 0;
         fprintf(o, "  {\"kind\":\"arm\",\"idx\":%llu,\"target\":%llu,\"margin\":%llu,"
