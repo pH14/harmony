@@ -466,7 +466,7 @@ fn grade(sets: &[Loaded], floors: &El0Floors) -> El0Report {
             };
             let want = *expected_memo
                 .entry((r.class.clone(), r.scale.clone(), r.seed))
-                .or_insert_with(|| oracle_model::expected(p, sc, r.seed).certain_taken);
+                .or_insert_with(|| oracle_model::expected(p, sc, r.seed).certain_branches);
             if oracle_model::trips(p, sc) != r.trips {
                 arithmetic_fail = Some(format!(
                     "{}#{}: recorded trips {} is not the model's {} for scale {}",

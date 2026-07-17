@@ -79,8 +79,13 @@ struct ManifestEntry {
     scale: String,
     seed: u64,
     trips: u64,
-    /// Taken branches known exactly, no unknowns.
+    /// Taken branches known exactly, no unknowns (the accumulator witness's
+    /// decomposition — not the count base since finding AA1-F1).
     certain_taken: u64,
+    /// Branch instructions architecturally executed in the window — the
+    /// `BR_RETIRED` count base on N1 (AA1-F1: the event counts executed branch
+    /// instructions, taken or not).
+    certain_branches: u64,
     /// Occurrences of each unknown-weight event.
     exception_entry_count: u64,
     exception_return_count: u64,
@@ -108,6 +113,7 @@ fn emit_manifest() -> Result<(), String> {
                 seed: e.seed,
                 trips: e.trips,
                 certain_taken: e.certain_taken,
+                certain_branches: e.certain_branches,
                 exception_entry_count: e.exception_entries,
                 exception_return_count: e.exception_returns,
                 svc_count: e.svc_instructions,
