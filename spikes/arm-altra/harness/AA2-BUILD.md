@@ -33,9 +33,13 @@ the sentinel).
 1. **KVM guest-debug ioctl seam** (`sys/machine.rs`). Only the *capability* exists
    (`kvm::CAP_SET_GUEST_DEBUG = 23`, probed in AA-0). Add:
    - `KVM_SET_GUEST_DEBUG` ioctl number `_IOW(KVMIO, 0x9b, struct kvm_guest_debug)` =
-     `0x4048_AE9B` (verify the struct size on the box: `control:u32 + pad:u32 + arch`;
-     arm64 `kvm_guest_debug_arch` is `dbg_bcr/bvr/wcr/wvr[16]` = 64×u64 → total 0x208;
-     pin it with a size assertion like the other ioctls).
+     **`0x4208_AE9B`** — arm64 `struct kvm_guest_debug` is 0x208 bytes (`control:u32 +
+     pad:u32 + kvm_guest_debug_arch`, whose arm64 form is `dbg_bcr/bvr/wcr/wvr[16]` =
+     64×u64 = 0x200), so the size field is 0x208, giving `_IOW(0xAE, 0x9b, 0x208)`.
+     (An earlier draft of this line wrote the x86 value `0x4048_AE9B`, whose 0x48 is
+     x86's smaller `kvm_guest_debug_arch` — the kernel dispatches on the full command
+     number, so the arm64 size is required.) Pinned by a `size_of == 0x208`
+     const-assertion; `TODO(box-verify)` confirms the running kernel accepts it.
    - `KVM_GUESTDBG_ENABLE = 0x1`, `KVM_GUESTDBG_SINGLESTEP = 0x2`; control =
      `ENABLE | SINGLESTEP`.
    - `Machine::arm_single_step()` (set the debug control once) and a `step_once()` that

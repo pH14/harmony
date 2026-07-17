@@ -147,6 +147,62 @@ fn accept_aa6_gate_is_accepted() {
 }
 
 #[test]
+fn accept_aa2_steps_is_accepted() {
+    // A real AA-2 shape: the full single-step transition matrix, each class stepped twice
+    // bit-identically. No floors apply — AA-2 defines no armed-overflow floor and is not the
+    // AA-6 rep gate — so with no floors requested it is a clean stage acceptance: every step is
+    // a valid single step, the matrix is complete, and each step-moment replayed identically.
+    let report = check("accept-aa2-steps", no_floors());
+    assert!(
+        report.passed(),
+        "the AA-2 step-matrix fixture was rejected: {:?}",
+        report.failed()
+    );
+    assert_eq!(
+        report.status_of(CheckId::DebugEvidence),
+        Some(Status::Pass),
+        "the full step matrix must PASS debug-evidence"
+    );
+    assert_eq!(
+        report.status_of(CheckId::ReplayIdentity),
+        Some(Status::Pass),
+        "each stepped step-moment replayed bit-identically"
+    );
+    assert_eq!(report.exit_code(), 0);
+}
+
+#[test]
+fn reject_aa2_step_skips_an_instruction() {
+    // A sequential step that advanced by 8, not 4 — a skipped instruction, the miss AA-2 hunts.
+    assert_single_failure(
+        "reject-aa2-step-skips-insn",
+        no_floors(),
+        CheckId::DebugEvidence,
+    );
+}
+
+#[test]
+fn reject_aa2_step_doubled() {
+    // A step that retired two instructions, not the exactly one single-stepping requires.
+    assert_single_failure(
+        "reject-aa2-step-doubled",
+        no_floors(),
+        CheckId::DebugEvidence,
+    );
+}
+
+#[test]
+fn reject_aa2_taken_branch_did_not_retire_a_branch() {
+    // A taken branch whose BR_RETIRED did not move — the opcode's class and the measured
+    // counter disagree, which is exactly the AA-2 finding the checker surfaces.
+    assert_single_failure(
+        "reject-aa2-taken-branch-no-branch",
+        no_floors(),
+        CheckId::DebugEvidence,
+    );
+}
+
+#[test]
 fn reject_aa6_rep_floor_counts_per_input_not_total() {
     // The evasion the per-input floor closes: eight DISTINCT inputs, one rep each. The
     // total (8) meets a floor of 2, but no input is repeated even twice — which a

@@ -971,9 +971,30 @@ in `~/aa1c-r2.log`; the 10 run-sets land under `results/aa-1c/aa1c-*-r2-{bulk,gr
    mismatch or missed/duplicate overflow survives → **NO-GO**, record the fallback the
    evidence selects (§6). The `skid_margin` becomes AA-3's landing-contract bound.
 
-### AA-2 — single-step exactness: PENDING (apparatus build required — arrival-day)
+### AA-2 — single-step exactness: apparatus BUILT (offline, native-gated); box validation PENDING
 
-Not yet run. **Finding: the single-step run path does not exist in the harness** — the
+**Update 2026-07-17:** the single-step run path is now **built and native-gated** (the
+build below was executed per `harness/AA2-BUILD.md`), overlapped with the AA-1(c)
+campaign. It stays **untested on silicon** — only the *measured* single-step semantics
+need the box. What was added: the `KVM_SET_GUEST_DEBUG` seam (`sys.rs`/`sys/machine.rs`:
+ioctl `0x4208_AE9B` — the **arm64** value, `_IOW(0xAE,0x9b,0x208)`; the plan's original
+`0x4048_AE9B` was the x86 struct size and was corrected, pinned by a `size_of==0x208`
+const-assertion, with one `TODO(box-verify)` to confirm the running kernel accepts it),
+`GUESTDBG_ENABLE|SINGLESTEP`, `VBAR_EL1` read; a `StepVcpu` trait + `step_once` +
+`step_run` (one `RunRecord`/step, `exit_reason==Debug`, window measured+stamped so the
+oracle grades it) behind `--single-step`/`--stage aa2`, with `run_sample` untouched;
+`classify_transition` reusing `scan.rs` decode (a hypothesis from opcode + observed
+`pc_after`, never forced onto the measured delta). Gates re-run green (not trusted from
+the builder): harness **122** tests + clippy `-D warnings` + fmt, aarch64-linux `cargo
+check`/clippy (box code compiles), Miri over the new `guest_word` unsafe path, floor-check
+**67+32+3** with a new `accept-aa2-steps` fixture grading PASS (18 checks) and three
+reject fixtures each failing exactly `debug-evidence`. **Remaining before GO:** run it on
+the box (stock KVM, pinned core 60, smoke payloads) — one insn/step vs oracle,
+`BR_RETIRED` only on stepped taken branches, behaviour across `SVC`/abort/`ERET`/`WFI`
+and stepping an LL/SC sequence (direct AA-4 input), replay-identical `step_digest`.
+
+**Original finding (why this was executor work): the single-step run path did not exist
+in the harness** — the
 offline apparatus deliberately left it out (building it would presume AA-2's own
 single-step result, which the pre-build ruling forbids inventing; the counting loop even
 refuses an unrequested `KVM_EXIT_DEBUG`, and `check_debug_evidence` reads AA-2 as

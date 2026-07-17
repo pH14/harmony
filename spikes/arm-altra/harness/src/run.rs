@@ -53,7 +53,7 @@ use oracle_model::{Payload, Scale, UART_BASE};
 use thiserror::Error;
 
 use crate::console::{Console, Event};
-use crate::evidence::{ExitReason, OverflowRecord, RunRecord};
+use crate::evidence::{ExitReason, OverflowRecord, RunRecord, StepRecord, StepTransition};
 
 /// The default per-`KVM_RUN` watchdog budget, in seconds — generous enough that a
 /// healthy WFI/idle payload waiting on a real timer interrupt never trips it, tight
@@ -211,6 +211,28 @@ pub enum RunError {
     /// it as an overflow delivery would conflate two different mechanisms.
     #[error("a KVM_EXIT_DEBUG (single-step) landing arrived, but this loop arms no guest debug")]
     UnexpectedDebugExit,
+    /// A single step landed with `PC` outside the mapped guest RAM, so the stepped
+    /// opcode cannot be read. AA-2 classifies a step from the instruction at
+    /// `pc_before`; a `PC` that fell out of the slot is a finding (a wild step), never
+    /// a plausible zero opcode.
+    #[error(
+        "a single step's pc_before {pc:#x} is outside mapped guest RAM: the stepped opcode \
+         cannot be read, and a step off the mapping is a finding, not a decodable instruction"
+    )]
+    StepPcUnmapped {
+        /// The `pc_before` that fell outside guest RAM.
+        pc: u64,
+    },
+    /// `BR_RETIRED` went backwards across a single step. The work counter is
+    /// monotonic while the guest runs; a decrease across one stepped instruction is a
+    /// seam/hardware anomaly, refused rather than recorded as a huge wrapped delta.
+    #[error("BR_RETIRED went backwards across a single step: before {before}, after {after}")]
+    StepCounterWentBackwards {
+        /// The counter before the step.
+        before: u64,
+        /// The counter after the step.
+        after: u64,
+    },
     /// The guest touched an MMIO address that is not the console.
     #[error("the guest touched {addr:#x}, which is not the PL011 data register")]
     UnexpectedMmio {
@@ -780,6 +802,375 @@ fn parse_hex_u64(token: &str) -> Option<u64> {
         .or_else(|| token.strip_prefix("0X"))
         .unwrap_or(token);
     u64::from_str_radix(digits, 16).ok()
+}
+
+// ---------------------------------------------------------------------------------------------
+// AA-2: the single-step run path.
+//
+// `run_sample` above measures a COUNTING window and refuses an unrequested `KVM_EXIT_DEBUG`.
+// AA-2 instead arms `KVM_GUESTDBG_SINGLESTEP` and steps the guest one instruction at a time,
+// emitting one `RunRecord` (carrying a `StepRecord`) per step. Like the counting loop it is
+// pure logic over the [`Vcpu`]/[`WorkCounter`] seams — extended by [`StepVcpu`] — so it is
+// driven natively against a scripted vCPU. The measured SEMANTICS (one instruction per step,
+// the per-class `BR_RETIRED` weight) are the box's to confirm; this loop records exactly what
+// it measured, and the floor checker (`check_debug_evidence`) grades it.
+// ---------------------------------------------------------------------------------------------
+
+/// The `ERET` encoding (exception return). Fixed, no operands.
+const ERET_OPCODE: u32 = 0xD69F_03E0;
+/// The `WFI` hint encoding.
+const WFI_OPCODE: u32 = 0xD503_207F;
+/// The AArch64 exception vector table is 16 slots of `0x80` bytes = `0x800`, in four `0x200`
+/// groups (EL-target/SP variants). Within each group: `0x000` synchronous, `0x080` IRQ,
+/// `0x100` FIQ, `0x180` SError.
+const VECTOR_TABLE_SIZE: u64 = 0x800;
+
+/// Whether `word` is an `SVC #imm` (any immediate). The payloads issue `svc #0`.
+fn is_svc(word: u32) -> bool {
+    word & 0xFFE0_001F == 0xD400_0001
+}
+
+/// Classify one single step's transition, from the stepped opcode at `pc_before` and where
+/// `pc_after` landed (with `vbar` = `VBAR_EL1` for vector-page detection).
+///
+/// This is a **hypothesis** the box measurement confirms, not a verdict imposed on it. The
+/// class is read from the instruction and the observed control flow; it is never forced onto
+/// the measured `BR_RETIRED` delta or `pc_after`. Where the opcode and the observed `pc_after`
+/// disagree with the class's expected shape — a "sequential" step that skipped an instruction,
+/// a branch that did not go where it points — that disagreement **is** the AA-2 finding: the
+/// record carries the class the opcode implies together with the PC and counter actually
+/// measured, and the floor checker's per-class rule surfaces the mismatch. Reuses
+/// [`crate::scan`]'s decoders; no new instruction decode lives here.
+#[must_use]
+pub fn classify_transition(word: u32, pc_before: u64, pc_after: u64, vbar: u64) -> StepTransition {
+    use crate::scan::{branch_target, decode_branch, is_exclusive};
+    use oracle_model::BranchKind;
+
+    // An LL/SC exclusive (`LDXR`/`STXR` family) is a load/store, not a branch — the AA-4
+    // hazard AA-2 must step. `BR_RETIRED` must not move; the retry `CBNZ` steps as its own
+    // `TakenBranch`.
+    if is_exclusive(word) {
+        return StepTransition::LlscExclusive;
+    }
+    // A synchronous exception raised by the instruction itself: `SVC`.
+    if is_svc(word) {
+        return StepTransition::ExceptionEntry;
+    }
+    // `ERET` is exception return. `decode_branch` also classes it (`BranchKind::Eret`), so it
+    // is matched here, ahead of the branch arm, to keep it out of `TakenBranch`.
+    if word == ERET_OPCODE {
+        return StepTransition::ExceptionReturn;
+    }
+    // `WFI`: waited, resumed by an interrupt.
+    if word == WFI_OPCODE {
+        return StepTransition::Wfi;
+    }
+    // A branch INSTRUCTION: taken iff the PC went where the branch points.
+    if let Some(kind) = decode_branch(word) {
+        // Defensive: `ERET` is handled above, but never let it read as a taken branch.
+        if kind == BranchKind::Eret {
+            return StepTransition::ExceptionReturn;
+        }
+        let taken = match branch_target(word, pc_before) {
+            // An immediate branch (`B`/`BL`/`B.cond`/`CBZ`/`TBZ`/…): taken iff the PC landed
+            // on the resolved target; not taken (a conditional that fell through) is sequential.
+            Some(target) => pc_after == target,
+            // A register/indirect branch (`BR`/`BLR`/`RET`): its target is a runtime register,
+            // so any transfer off the `pc + 4` fall-through is "taken".
+            None => pc_after != pc_before.wrapping_add(4),
+        };
+        return if taken {
+            StepTransition::TakenBranch
+        } else {
+            StepTransition::Sequential
+        };
+    }
+    // A non-branch instruction whose step nonetheless landed in the EL1 vector page took an
+    // exception the instruction does not name: a data/instruction abort (a faulting load/store
+    // — how the abort payload enters) or an asynchronous injected interrupt. Which one is told
+    // by the vector slot: IRQ/FIQ (async) → injection, synchronous/SError → exception entry.
+    if pc_after >= vbar && pc_after < vbar.wrapping_add(VECTOR_TABLE_SIZE) {
+        let slot = (pc_after - vbar) % 0x200;
+        if slot == 0x080 || slot == 0x100 {
+            return StepTransition::Injection;
+        }
+        return StepTransition::ExceptionEntry;
+    }
+    // Everything else fell through to the next instruction.
+    StepTransition::Sequential
+}
+
+/// The vCPU as AA-2's single-step run path needs it: the counting seam ([`Vcpu`]) plus the
+/// four primitives stepping adds.
+///
+/// The real implementation is `KVM_SET_GUEST_DEBUG` + one-reg reads on a vCPU fd
+/// ([`crate::sys::Machine`]); the test implementation is a scripted vCPU, so [`step_run`] is
+/// driven natively exactly as [`run_sample`] is against [`Vcpu`].
+pub trait StepVcpu: Vcpu {
+    /// Arm `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP` once, so every subsequent
+    /// [`Vcpu::run`] returns [`VcpuExit::Debug`] after a single guest instruction.
+    ///
+    /// # Errors
+    /// [`RunError::Seam`] if the debug ioctl failed.
+    fn arm_single_step(&mut self) -> Result<(), RunError>;
+
+    /// The current `PC` (a one-reg read of the core `pc`).
+    ///
+    /// # Errors
+    /// [`RunError::Seam`] if the register could not be read.
+    fn pc(&mut self) -> Result<u64, RunError>;
+
+    /// The 32-bit instruction word at guest-physical `addr` (4 bytes of guest RAM), or `None`
+    /// when `addr` is outside the mapped slot — a step whose `pc_before` fell out of guest RAM
+    /// is a finding, not a decodable instruction.
+    ///
+    /// # Errors
+    /// [`RunError::Seam`] if guest RAM could not be read.
+    fn opcode_at(&mut self, addr: u64) -> Result<Option<u32>, RunError>;
+
+    /// `VBAR_EL1` — the exception vector base, for classifying whether a step landed in the
+    /// vector page (an exception/injection boundary) versus fell through.
+    ///
+    /// # Errors
+    /// [`RunError::Seam`] if the register could not be read.
+    fn vbar(&mut self) -> Result<u64, RunError>;
+}
+
+/// One measured single step, buffered until the run's window count and final state are known
+/// (both are stamped onto every step's [`RunRecord`] at assembly).
+struct StepMeasurement {
+    pc_before: u64,
+    pc_after: u64,
+    br_retired_delta: u64,
+    transition: StepTransition,
+    step_digest: String,
+}
+
+/// Run one payload under single-step, emitting one [`RunRecord`] (each carrying its
+/// [`StepRecord`], `exit_reason == Debug`) per stepped instruction, until the console sentinel.
+///
+/// The sibling of [`run_sample`]: same seams, same console/params/window discipline, same
+/// fail-closed refusals — but it arms `KVM_GUESTDBG_SINGLESTEP` and records a step per
+/// `KVM_EXIT_DEBUG` instead of arming an overflow. The window is still measured (`work_begin`
+/// at `MARK_BEGIN`, `work_end` at `MARK_END`) and stamped onto every step's record, so the
+/// oracle count check grades a stepped run exactly as a counting one; the per-step
+/// measurement rides alongside in the `step` field. Intended for **smoke-scale** payloads: a
+/// 1e6 window is millions of steps, so a full stepped run stays a smoke run of ~10⁴ records.
+///
+/// The returned records carry `sample_id = 0..n` (their index within THIS run); the caller
+/// reassigns dense ids across every planned run before assembling the run-set.
+///
+/// # Errors
+///
+/// [`RunError`] whenever the run could not be *measured* — the same refusals as [`run_sample`]
+/// (no window, no params attestation, no sentinel, a mislabelled scale/seed, an empty digest),
+/// plus a step whose `pc_before` left guest RAM ([`RunError::StepPcUnmapped`]) or whose
+/// `BR_RETIRED` went backwards ([`RunError::StepCounterWentBackwards`]).
+pub fn step_run(
+    vcpu: &mut impl StepVcpu,
+    counter: &mut impl WorkCounter,
+    spec: &SampleSpec,
+) -> Result<Vec<RunRecord>, RunError> {
+    let mut console = Console::new();
+    let mut work_begin: Option<u64> = None;
+    let mut work_end: Option<u64> = None;
+    let mut params_mode: Option<String> = None;
+    let mut reported_scale: Option<String> = None;
+    let mut reported_seed: Option<String> = None;
+    let mut clockpage_mode: Option<String> = None;
+    let mut reported: Option<u64> = None;
+    let mut status: Option<u8> = None;
+    let mut steps: Vec<StepMeasurement> = Vec::new();
+
+    vcpu.arm_single_step()?;
+
+    'run: while status.is_none() {
+        // The step anchors, read BEFORE the guest runs: the PC of the instruction about to
+        // execute and the `BR_RETIRED` before it. Only USED on a `Debug` exit — but they must
+        // be captured before `run`, since after it the instruction has already retired.
+        let pc_before = vcpu.pc()?;
+        let work_before = counter.read()?;
+        match vcpu.run()? {
+            VcpuExit::Debug => {
+                let pc_after = vcpu.pc()?;
+                let work_after = counter.read()?;
+                let br_retired_delta = work_after.checked_sub(work_before).ok_or(
+                    RunError::StepCounterWentBackwards {
+                        before: work_before,
+                        after: work_after,
+                    },
+                )?;
+                let word = vcpu
+                    .opcode_at(pc_before)?
+                    .ok_or(RunError::StepPcUnmapped { pc: pc_before })?;
+                let vbar = vcpu.vbar()?;
+                let transition = classify_transition(word, pc_before, pc_after, vbar);
+                // The step-moment digest, sampled at the single step before the guest resumes:
+                // AA-2's replay identity compares THIS (the final digest can converge — two
+                // divergent step states running on to the same sentinel state).
+                let step_digest = vcpu.state_digest()?;
+                steps.push(StepMeasurement {
+                    pc_before,
+                    pc_after,
+                    br_retired_delta,
+                    transition,
+                    step_digest,
+                });
+            }
+            VcpuExit::Mmio {
+                addr,
+                data,
+                is_write,
+            } => {
+                // The console handling mirrors `run_sample` exactly: the PL011 is the one
+                // userspace MMIO device, and a guest boots by configuring it and polling its
+                // flag register before every byte.
+                if !is_pl011(addr) {
+                    return Err(RunError::UnexpectedMmio { addr });
+                }
+                if !is_write {
+                    let width = data.len().clamp(1, 8);
+                    vcpu.complete_mmio_read(&PL011_FR_READY.to_le_bytes()[..width.min(4)])?;
+                    continue 'run;
+                }
+                if addr != PL011_DR {
+                    // A config-register write (CR/IBRD/FBRD/LCR_H): accepted and ignored.
+                    continue 'run;
+                }
+                let Some(&byte) = data.first() else {
+                    return Err(RunError::UnexpectedMmio { addr });
+                };
+                match console.push(byte) {
+                    Some(Event::MarkBegin) => {
+                        if work_begin.is_some() {
+                            return Err(RunError::MalformedWindow("MARK_BEGIN twice"));
+                        }
+                        // The window count is measured under single-step too — `BR_RETIRED`
+                        // counts retired branches regardless of the debug trap — so it should
+                        // equal the oracle, and the checker grades it exactly as a counting run.
+                        work_begin = Some(counter.read()?);
+                    }
+                    Some(Event::MarkEnd) => {
+                        if work_begin.is_none() {
+                            return Err(RunError::MalformedWindow("MARK_END before MARK_BEGIN"));
+                        }
+                        if work_end.is_some() {
+                            return Err(RunError::MalformedWindow("MARK_END twice"));
+                        }
+                        work_end = Some(counter.read()?);
+                    }
+                    Some(Event::Line(line)) => {
+                        absorb_line(
+                            &line,
+                            &mut params_mode,
+                            &mut reported_scale,
+                            &mut reported_seed,
+                            &mut clockpage_mode,
+                            &mut reported,
+                        );
+                    }
+                    Some(Event::Exit(code)) => {
+                        status = Some(code);
+                        break 'run;
+                    }
+                    None => {}
+                }
+            }
+            // A stepped run arms no overflow, so a mechanism exit is unexplained — never
+            // absorbed, exactly as the counting loop refuses an unrequested debug exit.
+            exit @ (VcpuExit::Preempt | VcpuExit::SignalKick) => {
+                let reason = if exit == VcpuExit::Preempt {
+                    ExitReason::Preempt
+                } else {
+                    ExitReason::SignalKick
+                };
+                return Err(RunError::UnexpectedMechanismExit(reason));
+            }
+            VcpuExit::Other(reason) => return Err(RunError::UnexpectedExit(reason)),
+        }
+    }
+
+    // The same fail-closed refusals `run_sample` makes: every way to NOT measure is an error.
+    let status = status.ok_or(RunError::NoExitSentinel)?;
+    let begin = work_begin.ok_or(RunError::NoWindowOpen)?;
+    let end = work_end.ok_or(RunError::NoWindowClose)?;
+    if end < begin {
+        return Err(RunError::CounterWentBackwards { begin, end });
+    }
+    let params_mode = params_mode.ok_or(RunError::NoParamsMode)?;
+
+    match reported_scale.as_deref() {
+        Some(s) if s == spec.scale.name() => {}
+        found => {
+            return Err(RunError::ReportedScaleMismatch {
+                expected: spec.scale.name(),
+                found: found.map(str::to_string),
+            });
+        }
+    }
+    match reported_seed.as_deref().map(parse_hex_u64) {
+        Some(Some(seed)) if seed == spec.seed => {}
+        _ => {
+            return Err(RunError::ReportedSeedMismatch {
+                expected: spec.seed,
+                found: reported_seed,
+            });
+        }
+    }
+
+    let reported_taken = if spec.payload.has_reported_term() {
+        reported.ok_or(RunError::MissingReportedTerm(spec.payload))?
+    } else {
+        reported.unwrap_or(0)
+    };
+
+    // The final state digest at the sentinel — every step record carries it as its
+    // complete-state digest (the schema requires it non-empty). It is NOT what AA-2's replay
+    // identity compares (that is each step's `step_digest`), but a record without it is
+    // malformed, so a seam that cannot produce one fails the run.
+    let state_digest = vcpu.state_digest()?;
+    if state_digest.is_empty() {
+        return Err(RunError::EmptyStateDigest);
+    }
+
+    // One record per step, each stamped with the run's shared window count and final state.
+    let records = steps
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| RunRecord {
+            sample_id: i as u64,
+            payload: spec.payload,
+            scale: spec.scale,
+            seed: spec.seed,
+            trips: spec.trips,
+            condition: spec.condition.clone(),
+            work_begin: begin,
+            work_end: end,
+            measured_taken: end - begin,
+            reported_taken,
+            // A single step lands on `KVM_EXIT_DEBUG`; the record says so, and the floor
+            // checker binds the (byte-flippable) label to the measured step beside it.
+            exit_reason: ExitReason::Debug,
+            // A stepped record is never an armed landing — they are mutually exclusive.
+            overflow: None,
+            step: Some(StepRecord {
+                pc_before: s.pc_before,
+                pc_after: s.pc_after,
+                // A single step retires exactly one instruction by construction of
+                // single-stepping. The box confirms it against the oracle; the checker
+                // rejects any record that claims otherwise.
+                insn_retired: 1,
+                br_retired_delta: s.br_retired_delta,
+                transition: s.transition,
+                step_digest: s.step_digest,
+            }),
+            state_digest: state_digest.clone(),
+            params_mode: params_mode.clone(),
+            clockpage_mode: clockpage_mode.clone(),
+            payload_status: i32::from(status),
+        })
+        .collect();
+    Ok(records)
 }
 
 #[cfg(test)]
@@ -1586,5 +1977,454 @@ mod tests {
             run_sample(&mut vcpu, &mut counter, &spec(None)),
             Err(RunError::MalformedWindow(_))
         ));
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // AA-2: the single-step run path, driven against a scripted step-vCPU (the run.rs pattern).
+    // ----------------------------------------------------------------------------------------
+
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// The scripted base address of the stepped instruction stream, and the guest's `VBAR_EL1`.
+    const STEP_PC: u64 = 0x4000_8000;
+    const STEP_VBAR: u64 = 0x4020_0000;
+
+    /// One scripted exit for [`step_run`]: a console byte, a flag-register poll, a single step,
+    /// a mechanism kick, or a non-console MMIO access.
+    #[derive(Clone)]
+    enum Scripted {
+        Console(u8),
+        Poll,
+        /// A single guest step: it advances the PC to `pc_after`, retires `opcode`, and moves
+        /// `BR_RETIRED` by `delta` (signed, so a backwards counter can be scripted).
+        Step {
+            pc_after: u64,
+            opcode: u32,
+            delta: i64,
+        },
+        /// Like [`Scripted::Step`] but the opcode word is UNREADABLE (a wild `pc_before`).
+        StepUnmapped {
+            pc_after: u64,
+        },
+        Preempt,
+        BadMmio(u64),
+    }
+
+    /// A scripted step-vCPU: hands out exits, tracks the PC and the last stepped opcode, and
+    /// shares a `BR_RETIRED` cell with [`ScriptedStepCounter`] (a real step advances the counter
+    /// while inside `run`, exactly as the guest does inside `KVM_RUN`).
+    struct ScriptedStepVcpu {
+        exits: std::collections::VecDeque<Scripted>,
+        pc: u64,
+        last_opcode: Option<u32>,
+        vbar: u64,
+        counter: Rc<Cell<u64>>,
+        digest: String,
+        armed: bool,
+        last_read_reply: Option<Vec<u8>>,
+    }
+
+    impl Vcpu for ScriptedStepVcpu {
+        fn run(&mut self) -> Result<VcpuExit, RunError> {
+            match self.exits.pop_front().ok_or(RunError::NoExitSentinel)? {
+                Scripted::Console(b) => Ok(VcpuExit::Mmio {
+                    addr: PL011_DR,
+                    data: vec![b],
+                    is_write: true,
+                }),
+                Scripted::Poll => Ok(VcpuExit::Mmio {
+                    addr: PL011_FR,
+                    data: vec![0, 0, 0, 0],
+                    is_write: false,
+                }),
+                Scripted::Step {
+                    pc_after,
+                    opcode,
+                    delta,
+                } => {
+                    self.pc = pc_after;
+                    self.last_opcode = Some(opcode);
+                    let now = self.counter.get() as i64 + delta;
+                    self.counter.set(now as u64);
+                    Ok(VcpuExit::Debug)
+                }
+                Scripted::StepUnmapped { pc_after } => {
+                    self.pc = pc_after;
+                    self.last_opcode = None;
+                    Ok(VcpuExit::Debug)
+                }
+                Scripted::Preempt => Ok(VcpuExit::Preempt),
+                Scripted::BadMmio(addr) => Ok(VcpuExit::Mmio {
+                    addr,
+                    data: vec![0],
+                    is_write: true,
+                }),
+            }
+        }
+
+        fn complete_mmio_read(&mut self, data: &[u8]) -> Result<(), RunError> {
+            self.last_read_reply = Some(data.to_vec());
+            Ok(())
+        }
+
+        fn state_digest(&mut self) -> Result<String, RunError> {
+            Ok(self.digest.clone())
+        }
+    }
+
+    impl StepVcpu for ScriptedStepVcpu {
+        fn arm_single_step(&mut self) -> Result<(), RunError> {
+            self.armed = true;
+            Ok(())
+        }
+        fn pc(&mut self) -> Result<u64, RunError> {
+            Ok(self.pc)
+        }
+        fn opcode_at(&mut self, _addr: u64) -> Result<Option<u32>, RunError> {
+            // The scripted vCPU returns the opcode the last step retired, or `None` for the
+            // unmapped-PC case — the loop passes `pc_before`, but the mapping is scripted.
+            Ok(self.last_opcode)
+        }
+        fn vbar(&mut self) -> Result<u64, RunError> {
+            Ok(self.vbar)
+        }
+    }
+
+    /// The counter half of the shared cell (see [`ScriptedStepVcpu`]).
+    struct ScriptedStepCounter {
+        value: Rc<Cell<u64>>,
+    }
+    impl WorkCounter for ScriptedStepCounter {
+        fn read(&mut self) -> Result<u64, RunError> {
+            Ok(self.value.get())
+        }
+        fn arm_overflow(&mut self, _delta: u64) -> Result<(), RunError> {
+            Ok(())
+        }
+        fn rearm(&mut self) -> Result<(), RunError> {
+            Ok(())
+        }
+        fn resume_counting(&mut self) -> Result<(), RunError> {
+            Ok(())
+        }
+    }
+
+    /// A booting console prologue: the guest's `PARAMS` attestation, then `MARK_BEGIN`.
+    fn boot_prologue() -> Vec<Scripted> {
+        let mut v: Vec<Scripted> = b"PARAMS mode=managed scale=smoke seed=0x5eed\n"
+            .iter()
+            .map(|&b| Scripted::Console(b))
+            .collect();
+        v.push(Scripted::Console(MARK_BEGIN));
+        v
+    }
+
+    /// A closing console epilogue: `MARK_END`, then the exit sentinel.
+    fn exit_epilogue() -> Vec<Scripted> {
+        let mut v = vec![Scripted::Console(MARK_END)];
+        v.extend(b"PAYLOAD EXIT 0\n".iter().map(|&b| Scripted::Console(b)));
+        v
+    }
+
+    /// Drive [`step_run`] over a scripted body (spliced between the boot prologue and the exit
+    /// epilogue), starting the counter at `counter_start`.
+    fn drive(counter_start: u64, body: Vec<Scripted>) -> Result<Vec<RunRecord>, RunError> {
+        let cell = Rc::new(Cell::new(counter_start));
+        let mut script = boot_prologue();
+        script.extend(body);
+        script.extend(exit_epilogue());
+        let mut vcpu = ScriptedStepVcpu {
+            exits: script.into(),
+            pc: STEP_PC,
+            last_opcode: None,
+            vbar: STEP_VBAR,
+            counter: Rc::clone(&cell),
+            digest: "sha256:final".into(),
+            armed: false,
+            last_read_reply: None,
+        };
+        let mut counter = ScriptedStepCounter { value: cell };
+        step_run(&mut vcpu, &mut counter, &spec(None))
+    }
+
+    /// One step of the given opcode landing at `pc_after` with a `BR_RETIRED` delta, driven to
+    /// its single [`StepRecord`].
+    fn one_step(pc_after: u64, opcode: u32, delta: i64) -> StepRecord {
+        let records = drive(
+            0,
+            vec![Scripted::Step {
+                pc_after,
+                opcode,
+                delta,
+            }],
+        )
+        .expect("a single stepped record");
+        assert_eq!(records.len(), 1, "one step ⇒ one record");
+        let r = &records[0];
+        assert_eq!(r.exit_reason, ExitReason::Debug, "a step lands on Debug");
+        assert!(r.overflow.is_none(), "a stepped record is never armed");
+        let step = r.step.clone().expect("carries a step measurement");
+        assert_eq!(step.pc_before, STEP_PC);
+        step
+    }
+
+    /// The `pc_before` of a record's step measurement.
+    fn step_pc_before(r: &RunRecord) -> u64 {
+        r.step.as_ref().expect("stepped").pc_before
+    }
+
+    #[test]
+    fn each_transition_class_is_classified_and_measured() {
+        // Sequential: a NOP that fell through to PC+4, no branch retired.
+        let s = one_step(STEP_PC + 4, 0xD503_201F, 0);
+        assert_eq!(s.transition, StepTransition::Sequential);
+        assert_eq!(s.pc_after, STEP_PC + 4);
+        assert_eq!(s.br_retired_delta, 0);
+        assert_eq!(s.insn_retired, 1);
+
+        // Taken branch (immediate `b .+8`): landed on the resolved target, one branch retired.
+        let s = one_step(STEP_PC + 8, 0x1400_0002, 1);
+        assert_eq!(s.transition, StepTransition::TakenBranch);
+        assert_eq!(s.br_retired_delta, 1);
+
+        // Taken branch (register `ret`): its target is a register, so any move off PC+4 is taken.
+        let s = one_step(0x4000_9000, 0xD65F_03C0, 1);
+        assert_eq!(s.transition, StepTransition::TakenBranch);
+
+        // A NOT-taken conditional (`b.ne .+8` that fell through to PC+4) is sequential.
+        let s = one_step(STEP_PC + 4, 0x5400_0041, 0);
+        assert_eq!(s.transition, StepTransition::Sequential);
+
+        // SVC — synchronous exception entry, classified from the opcode not the PC.
+        let s = one_step(STEP_VBAR + 0x400, 0xD400_0001, 0);
+        assert_eq!(s.transition, StepTransition::ExceptionEntry);
+
+        // ERET — exception return (a branch encoding, but ExceptionReturn, never TakenBranch).
+        let s = one_step(0x4000_A000, 0xD69F_03E0, 0);
+        assert_eq!(s.transition, StepTransition::ExceptionReturn);
+
+        // WFI — waited and resumed.
+        let s = one_step(STEP_PC + 4, 0xD503_207F, 0);
+        assert_eq!(s.transition, StepTransition::Wfi);
+
+        // LL/SC exclusive (`ldxr`) — a load, not a branch: BR_RETIRED must not move.
+        let s = one_step(STEP_PC + 4, 0xC85F_7C41, 0);
+        assert_eq!(s.transition, StepTransition::LlscExclusive);
+        assert_eq!(s.br_retired_delta, 0);
+
+        // Injection — a non-branch instruction whose step landed in the IRQ vector slot.
+        let s = one_step(STEP_VBAR + 0x080, 0xD503_201F, 0);
+        assert_eq!(s.transition, StepTransition::Injection);
+    }
+
+    #[test]
+    fn a_skipped_instruction_is_recorded_faithfully_not_forced_to_pc_plus_4() {
+        // A sequential (non-branch) step that advanced by 8 skipped an instruction. The loop
+        // records the class the OPCODE implies (Sequential) and the PC it actually MEASURED
+        // (PC+8) — it does not force pc_after to PC+4. That faithful record is exactly what
+        // `check_debug_evidence` then rejects (a sequential step must land at PC+4).
+        let s = one_step(STEP_PC + 8, 0xD503_201F, 0);
+        assert_eq!(s.transition, StepTransition::Sequential);
+        assert_eq!(
+            s.pc_after,
+            STEP_PC + 8,
+            "the measured skip is recorded, not smoothed to PC+4"
+        );
+    }
+
+    #[test]
+    fn a_taken_branch_that_did_not_move_the_counter_is_recorded_faithfully() {
+        // A `b .+8` that took the branch but whose BR_RETIRED did not move: the class is
+        // TakenBranch (the opcode branched and landed on target) and the delta is the measured
+        // 0. The loop records both truthfully; the checker's "a taken branch must increment
+        // BR_RETIRED by exactly 1" is what catches the disagreement.
+        let s = one_step(STEP_PC + 8, 0x1400_0002, 0);
+        assert_eq!(s.transition, StepTransition::TakenBranch);
+        assert_eq!(
+            s.br_retired_delta, 0,
+            "the measured delta is recorded, not forced to 1"
+        );
+    }
+
+    #[test]
+    fn one_record_per_step_with_dense_ids_and_a_shared_window_and_final_state() {
+        // Three sequential steps: three records, ids 0..3, each carrying the run's shared
+        // window count and final state digest, its own step-moment digest and measurement.
+        let body = vec![
+            Scripted::Step {
+                pc_after: STEP_PC + 4,
+                opcode: 0xD503_201F,
+                delta: 1,
+            },
+            Scripted::Step {
+                pc_after: STEP_PC + 8,
+                opcode: 0xD503_201F,
+                delta: 0,
+            },
+            Scripted::Step {
+                pc_after: STEP_PC + 12,
+                opcode: 0xD503_201F,
+                delta: 0,
+            },
+        ];
+        let records = drive(0, body).expect("three stepped records");
+        assert_eq!(records.len(), 3);
+        for (i, r) in records.iter().enumerate() {
+            assert_eq!(r.sample_id, i as u64, "dense ids within the run");
+            assert_eq!(r.exit_reason, ExitReason::Debug);
+            assert_eq!(r.state_digest, "sha256:final", "shared final-state digest");
+            // The window count is measured under single-step (one branch retired across the
+            // three steps), and stamped onto every record so the oracle check grades it.
+            assert_eq!(r.work_begin, 0);
+            assert_eq!(r.work_end, 1);
+            assert_eq!(r.measured_taken, 1);
+        }
+        // The PC chains: each step's pc_before is the previous step's pc_after.
+        assert_eq!(step_pc_before(&records[0]), STEP_PC);
+        assert_eq!(step_pc_before(&records[1]), STEP_PC + 4);
+        assert_eq!(step_pc_before(&records[2]), STEP_PC + 8);
+    }
+
+    #[test]
+    fn a_console_poll_while_stepping_is_answered() {
+        // A flag-register read spliced into the stream is answered "ready", exactly as the
+        // counting loop does — a stepped guest still polls the UART before it prints.
+        let records = drive(
+            0,
+            vec![
+                Scripted::Poll,
+                Scripted::Step {
+                    pc_after: STEP_PC + 4,
+                    opcode: 0xD503_201F,
+                    delta: 0,
+                },
+            ],
+        )
+        .expect("measured");
+        assert_eq!(records.len(), 1);
+    }
+
+    #[test]
+    fn a_mechanism_kick_while_stepping_is_refused() {
+        // A stepped run arms no overflow, so a Preempt/SignalKick is an unexplained kick —
+        // refused, exactly as the counting loop refuses an unrequested debug exit.
+        assert!(matches!(
+            drive(0, vec![Scripted::Preempt]),
+            Err(RunError::UnexpectedMechanismExit(ExitReason::Preempt))
+        ));
+    }
+
+    #[test]
+    fn a_non_console_mmio_while_stepping_is_refused() {
+        assert!(matches!(
+            drive(0, vec![Scripted::BadMmio(0xDEAD_0000)]),
+            Err(RunError::UnexpectedMmio { addr: 0xDEAD_0000 })
+        ));
+    }
+
+    #[test]
+    fn a_step_off_the_mapping_is_refused_not_read_as_a_zero_opcode() {
+        // A step whose pc_before left guest RAM cannot have its opcode read: a finding, refused
+        // rather than decoded from a plausible zero.
+        assert!(matches!(
+            drive(
+                0,
+                vec![Scripted::StepUnmapped {
+                    pc_after: STEP_PC + 4
+                }]
+            ),
+            Err(RunError::StepPcUnmapped { pc }) if pc == STEP_PC
+        ));
+    }
+
+    #[test]
+    fn a_step_whose_counter_went_backwards_is_refused() {
+        // BR_RETIRED is monotonic while the guest runs; a decrease across one step is a
+        // seam/hardware anomaly, refused rather than recorded as a huge wrapped delta.
+        assert!(matches!(
+            drive(
+                10,
+                vec![Scripted::Step {
+                    pc_after: STEP_PC + 4,
+                    opcode: 0xD503_201F,
+                    delta: -5,
+                }]
+            ),
+            Err(RunError::StepCounterWentBackwards {
+                before: 10,
+                after: 5
+            })
+        ));
+    }
+
+    #[test]
+    fn a_stepped_run_still_refuses_a_guest_that_never_opened_its_window() {
+        // The same fail-closed refusals as the counting loop: no MARK_BEGIN, no record.
+        let cell = Rc::new(Cell::new(0u64));
+        let mut script: Vec<Scripted> = b"PARAMS mode=managed scale=smoke seed=0x5eed\n"
+            .iter()
+            .map(|&b| Scripted::Console(b))
+            .collect();
+        script.extend(b"PAYLOAD EXIT 0\n".iter().map(|&b| Scripted::Console(b)));
+        let mut vcpu = ScriptedStepVcpu {
+            exits: script.into(),
+            pc: STEP_PC,
+            last_opcode: None,
+            vbar: STEP_VBAR,
+            counter: Rc::clone(&cell),
+            digest: "sha256:final".into(),
+            armed: false,
+            last_read_reply: None,
+        };
+        let mut counter = ScriptedStepCounter { value: cell };
+        assert!(matches!(
+            step_run(&mut vcpu, &mut counter, &spec(None)),
+            Err(RunError::NoWindowOpen)
+        ));
+    }
+
+    #[test]
+    fn classify_transition_is_a_pure_reuse_of_the_scanner() {
+        // Direct unit coverage of the classifier, independent of the loop.
+        assert_eq!(
+            classify_transition(0xD503_201F, STEP_PC, STEP_PC + 4, STEP_VBAR),
+            StepTransition::Sequential
+        );
+        assert_eq!(
+            classify_transition(0x1400_0002, STEP_PC, STEP_PC + 8, STEP_VBAR),
+            StepTransition::TakenBranch
+        );
+        assert_eq!(
+            classify_transition(0x1400_0002, STEP_PC, STEP_PC + 4, STEP_VBAR),
+            StepTransition::Sequential,
+            "an immediate branch that did not reach its target did not take"
+        );
+        assert_eq!(
+            classify_transition(0xC85F_7C41, STEP_PC, STEP_PC + 4, STEP_VBAR),
+            StepTransition::LlscExclusive
+        );
+        assert_eq!(
+            classify_transition(0xD400_0001, STEP_PC, STEP_VBAR + 0x400, STEP_VBAR),
+            StepTransition::ExceptionEntry
+        );
+        assert_eq!(
+            classify_transition(0xD69F_03E0, STEP_PC, 0x4000_A000, STEP_VBAR),
+            StepTransition::ExceptionReturn
+        );
+        assert_eq!(
+            classify_transition(0xD503_207F, STEP_PC, STEP_PC + 4, STEP_VBAR),
+            StepTransition::Wfi
+        );
+        // A non-branch step into the IRQ vector slot is an injection; into the sync slot, an
+        // abort (exception entry).
+        assert_eq!(
+            classify_transition(0xD503_201F, STEP_PC, STEP_VBAR + 0x080, STEP_VBAR),
+            StepTransition::Injection
+        );
+        assert_eq!(
+            classify_transition(0xD503_201F, STEP_PC, STEP_VBAR, STEP_VBAR),
+            StepTransition::ExceptionEntry
+        );
     }
 }

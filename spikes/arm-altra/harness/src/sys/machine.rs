@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::{KvmRun, PerfEventAttr, SysError, br_retired_attr, kvm};
-use crate::run::{RunError, Vcpu, VcpuExit, WorkCounter};
+use crate::run::{RunError, StepVcpu, Vcpu, VcpuExit, WorkCounter};
 
 /// Guest RAM base — the QEMU `virt` / Altra map the payload runtime is linked for
 /// (`payloads/linker.ld`: params page at `0x4000_0000`, image at `+512 KiB`).
@@ -195,6 +195,39 @@ struct KvmDeviceAttr {
     attr: u64,
     addr: u64,
 }
+
+/// The arm64 `struct kvm_guest_debug_arch`: the hardware breakpoint/watchpoint control and
+/// value registers. AA-2's single-step arms `SINGLESTEP` only, so this stays all-zero (no
+/// hardware breakpoints programmed) — but it MUST be present and correctly sized, because it is
+/// what makes `struct kvm_guest_debug` 0x208 bytes on arm64, and the ioctl number encodes that
+/// size (`KVM_ARM_MAX_DBG_REGS == 16`, `arch/arm64/include/uapi/asm/kvm.h`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct KvmGuestDebugArch {
+    dbg_bcr: [u64; 16],
+    dbg_bvr: [u64; 16],
+    dbg_wcr: [u64; 16],
+    dbg_wvr: [u64; 16],
+}
+
+/// `struct kvm_guest_debug` (arm64): `control` + `pad` + the arch breakpoint block.
+///
+/// 0x208 bytes on arm64, which the `KVM_SET_GUEST_DEBUG` ioctl number encodes — pinned by
+/// [`tests::kvm_guest_debug_is_the_arm64_abi_size`].
+#[repr(C)]
+#[derive(Default)]
+struct KvmGuestDebug {
+    control: u32,
+    pad: u32,
+    arch: KvmGuestDebugArch,
+}
+
+// The arm64 ABI sizes, pinned at compile time: `kvm_guest_debug_arch` is 64×u64 = 0x200, and
+// `kvm_guest_debug` (control + pad + arch) is 0x208 — the size the `KVM_SET_GUEST_DEBUG` ioctl
+// number encodes (`super::kvm::SET_GUEST_DEBUG == _IOW(0x9b, 0x208)`). A struct-shuffle that
+// broke either would send a differently-numbered ioctl the kernel does not recognise.
+const _: () = assert!(core::mem::size_of::<KvmGuestDebugArch>() == 0x200);
+const _: () = assert!(core::mem::size_of::<KvmGuestDebug>() == 0x208);
 
 fn errno() -> i32 {
     // SAFETY: `__errno_location` returns a valid pointer to this thread's errno.
@@ -1060,7 +1093,115 @@ impl Vcpu for Machine {
     }
 }
 
+impl StepVcpu for Machine {
+    /// Arm `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP` once (no hardware breakpoints), so
+    /// every subsequent `KVM_RUN` returns `KVM_EXIT_DEBUG` after a single guest instruction.
+    fn arm_single_step(&mut self) -> Result<(), RunError> {
+        let dbg = KvmGuestDebug {
+            control: kvm::GUESTDBG_SINGLESTEP_CONTROL,
+            pad: 0,
+            arch: KvmGuestDebugArch::default(),
+        };
+        // SAFETY: `vcpu_fd` is valid; `dbg` is a fully-initialised kvm_guest_debug on this
+        // frame, exactly the shape (and arm64 size) KVM_SET_GUEST_DEBUG reads.
+        if unsafe {
+            libc::ioctl(
+                self.vcpu_fd,
+                kvm::SET_GUEST_DEBUG as libc::c_ulong,
+                &raw const dbg,
+            )
+        } < 0
+        {
+            return Err(seam(
+                "ioctl(KVM_SET_GUEST_DEBUG, single-step)",
+                err("ioctl(KVM_SET_GUEST_DEBUG)"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn pc(&mut self) -> Result<u64, RunError> {
+        self.get_one_reg_u64(kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC)
+            .map_err(|e| seam("ioctl(KVM_GET_ONE_REG, pc)", e))
+    }
+
+    fn opcode_at(&mut self, addr: u64) -> Result<Option<u32>, RunError> {
+        // SAFETY: `self.mem` is a live mapping of `self.mem_size` bytes and the vCPU is stopped
+        // between exits, so nothing else writes it. The borrow and the bounded 4-byte decode
+        // are the portable, Miri-exercised `super::guest_ram` / `super::guest_word`.
+        let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
+        Ok(super::guest_word(ram, RAM_BASE, addr))
+    }
+
+    fn vbar(&mut self) -> Result<u64, RunError> {
+        self.get_one_reg_u64(kvm::REG_VBAR_EL1)
+            .map_err(|e| seam("ioctl(KVM_GET_ONE_REG, VBAR_EL1)", e))
+    }
+}
+
 impl Machine {
+    /// Read a 64-bit register (`KVM_GET_ONE_REG` into a `u64`) — the core `pc`, a system
+    /// register like `VBAR_EL1`, sized by the caller's id.
+    fn get_one_reg_u64(&self, id: u64) -> Result<u64, SysError> {
+        let mut value: u64 = 0;
+        let one = KvmOneReg {
+            id,
+            addr: (&raw mut value) as u64,
+        };
+        // SAFETY: `vcpu_fd` is valid; `one.addr` points at a live u64 the kernel writes.
+        if unsafe {
+            libc::ioctl(
+                self.vcpu_fd,
+                kvm::GET_ONE_REG as libc::c_ulong,
+                &raw const one,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_GET_ONE_REG)"));
+        }
+        Ok(value)
+    }
+
+    /// Do one single step: read `PC` + `BR_RETIRED`, one `KVM_RUN` (expecting
+    /// `KVM_EXIT_DEBUG`), read `PC` + `BR_RETIRED` again — returning `(pc_before, pc_after,
+    /// br_retired_delta)`. `insn_retired` is 1 by construction of a single step; the box
+    /// confirms it against the oracle (that is the AA-2 measurement).
+    ///
+    /// The single-step primitive for a caller stepping instructions that do NOT touch the
+    /// console: a non-`Debug` exit (an MMIO console access, a mechanism kick) is refused here.
+    /// [`crate::run::step_run`] is the full run loop that also services the console; this is
+    /// the direct primitive the plan (`AA2-BUILD.md`) names.
+    ///
+    /// # Errors
+    /// [`RunError`] if a register/counter read failed, the exit was not `KVM_EXIT_DEBUG`, or
+    /// `BR_RETIRED` went backwards across the step.
+    pub fn step_once(
+        &mut self,
+        counter: &mut impl WorkCounter,
+    ) -> Result<(u64, u64, u64), RunError> {
+        let pc_before = self.pc()?;
+        let work_before = counter.read()?;
+        match Vcpu::run(self)? {
+            VcpuExit::Debug => {}
+            other => {
+                return Err(RunError::Seam {
+                    context: "step_once expected KVM_EXIT_DEBUG",
+                    message: format!("got a non-debug exit: {other:?}"),
+                });
+            }
+        }
+        let pc_after = self.pc()?;
+        let work_after = counter.read()?;
+        let delta =
+            work_after
+                .checked_sub(work_before)
+                .ok_or(RunError::StepCounterWentBackwards {
+                    before: work_before,
+                    after: work_after,
+                })?;
+        Ok((pc_before, pc_after, delta))
+    }
+
     /// Dump the in-kernel vGIC's injection-relevant registers via
     /// `KVM_GET_DEVICE_ATTR`, reading **both** the redistributor (private interrupts)
     /// and the distributor (SPIs).

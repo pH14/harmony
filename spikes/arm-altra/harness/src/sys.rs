@@ -278,6 +278,34 @@ pub mod kvm {
     /// force-exit. Absent from a stock kernel, which is the point.
     pub const ARM_PREEMPT_EXIT: u64 = 0xAEE4;
 
+    /// `KVM_SET_GUEST_DEBUG` — `_IOW(KVMIO, 0x9b, struct kvm_guest_debug)`, the ioctl
+    /// AA-2's single-step run path arms guest debug through.
+    ///
+    /// **The size field is arch-specific, and that is load-bearing.** The kernel
+    /// dispatches ioctls with a `switch (ioctl)` over the *full* 32-bit command number,
+    /// whose case label is the macro expanded against the target arch's
+    /// `struct kvm_guest_debug`. On **arm64** that struct is 520 bytes (`0x208`):
+    /// `control:u32 + pad:u32` (8) plus `struct kvm_guest_debug_arch`, which is
+    /// `dbg_bcr/bvr/wcr/wvr[16]` — 64×`u64` = 512. So the encoded size is `0x208`, giving
+    /// `_IOW(0xAE, 0x9b, 0x208)` = `0x4208_AE9B`. (x86's `kvm_guest_debug_arch` is
+    /// `debugreg[8]` → 72 bytes → `0x4048_AE9B`; passing that number on arm64 matches no
+    /// case and returns `ENOTTY`.) Derived from — and pinned to — the arm64 struct size by
+    /// [`tests::kvm_ioctl_numbers_match_the_abi`] and [`machine::tests`]'s `size_of` check.
+    // TODO(box-verify): confirm the running arm64 kernel accepts KVM_SET_GUEST_DEBUG at
+    // 0x4208_AE9B (no EINVAL/ENOTTY) and that `sizeof(struct kvm_guest_debug) == 0x208`
+    // there (arch/arm64/include/uapi/asm/kvm.h KVM_ARM_MAX_DBG_REGS == 16). AA2-BUILD.md
+    // quoted the x86 number (0x4048_AE9B); this is the arm64-correct value.
+    pub const SET_GUEST_DEBUG: u64 = 0x4208_AE9B;
+    /// `KVM_GUESTDBG_ENABLE` (0x1) — the `kvm_guest_debug.control` bit that turns guest
+    /// debug on at all. Generic (identical on every arch, `include/uapi/linux/kvm.h`).
+    pub const GUESTDBG_ENABLE: u32 = 0x0000_0001;
+    /// `KVM_GUESTDBG_SINGLESTEP` (0x2) — the `control` bit that makes each guest
+    /// instruction trap out with `KVM_EXIT_DEBUG`. Generic across arches.
+    pub const GUESTDBG_SINGLESTEP: u32 = 0x0000_0002;
+    /// The `kvm_guest_debug.control` value AA-2 arms: enable guest debug AND single-step,
+    /// with no hardware breakpoints/watchpoints programmed (the `arch` array stays zero).
+    pub const GUESTDBG_SINGLESTEP_CONTROL: u32 = GUESTDBG_ENABLE | GUESTDBG_SINGLESTEP;
+
     /// `KVM_DEV_TYPE_ARM_VGIC_V3` — the in-kernel GICv3 the guest needs to exist at
     /// all. The payload runtime programs the distributor at `0x0800_0000` before it
     /// prints a byte; with no vGIC those stores are MMIO exits to userspace, which
@@ -416,6 +444,13 @@ pub mod kvm {
     pub const REG_ID_AA64MMFR1_EL1: u64 = arm64_sysreg(3, 0, 0, 7, 1);
     /// `ID_AA64MMFR2_EL1` — NV (FEAT_NV, nested virt) lives here (bits[35:32]).
     pub const REG_ID_AA64MMFR2_EL1: u64 = arm64_sysreg(3, 0, 0, 7, 2);
+
+    /// `VBAR_EL1` — the EL1 exception vector base (`S3_0_C12_C0_0`, i.e.
+    /// `(op0,op1,crn,crm,op2) = (3,0,12,0,0)`). AA-2's single-step transition classifier
+    /// reads it to tell an SVC/abort **exception entry** (`pc_after` in the synchronous
+    /// vector slot) from an injected-IRQ **injection** boundary (`pc_after` in the IRQ
+    /// slot) — a distinction PC arithmetic alone cannot make.
+    pub const REG_VBAR_EL1: u64 = arm64_sysreg(3, 0, 12, 0, 0);
 }
 
 /// `struct kvm_run`, through the MMIO arm of its exit union.
@@ -546,6 +581,24 @@ pub unsafe fn write_mmio_read(run: *mut KvmRun, data: &[u8]) {
 pub unsafe fn guest_ram<'a>(mem: *const u8, len: usize) -> &'a [u8] {
     // SAFETY: the caller guarantees `len` readable bytes at `mem`, unwritten for the borrow.
     unsafe { core::slice::from_raw_parts(mem, len) }
+}
+
+/// Read the little-endian 32-bit instruction word at guest-physical `addr` from a borrow of
+/// guest RAM based at `ram_base`. `None` when `addr` is below the base, or the 4-byte word
+/// would run past the mapping — the AA-2 stepper decodes the *stepped* opcode from this word,
+/// and a `pc_before` that fell outside the mapped slot (a wild PC after a bad step) must fail
+/// closed, never read plausible bytes from padding or panic.
+///
+/// Pure and bounds-checked, so the pointer path that produces `ram` ([`guest_ram`]) is the only
+/// `unsafe`; this decode runs against a plain slice and is exercised under Miri
+/// (`tests::guest_word_reads_the_bounded_opcode`).
+#[must_use]
+pub fn guest_word(ram: &[u8], ram_base: u64, addr: u64) -> Option<u32> {
+    let off = usize::try_from(addr.checked_sub(ram_base)?).ok()?;
+    let end = off.checked_add(4)?;
+    let bytes = ram.get(off..end)?;
+    // `bytes` is exactly 4 long, so the array conversion cannot fail.
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 /// Extract the GNU build-id (lowercase hex) from a little-endian ELF64 image's `PT_NOTE`
@@ -2078,6 +2131,53 @@ mod tests {
         assert_eq!(kvm::ARM_PREEMPT_EXIT, io(0xe4));
         assert_eq!(kvm::EXIT_PREEMPT, 42);
         assert_eq!(kvm::CAP_ARM_DETERMINISTIC_INTERCEPTS, 245);
+
+        // KVM_SET_GUEST_DEBUG is _IOW(0x9b, sizeof(struct kvm_guest_debug)). On arm64 that
+        // struct is 0x208 bytes (control+pad = 8, plus a 64×u64 kvm_guest_debug_arch = 512),
+        // NOT x86's 72 — and the kernel dispatches on the FULL command number, so the size
+        // field is load-bearing. Pin it to the arm64 number, derived and literal both.
+        assert_eq!(kvm::SET_GUEST_DEBUG, iow(0x9b, 0x208));
+        assert_eq!(kvm::SET_GUEST_DEBUG, 0x4208_AE9B);
+        // The single-step control bits (generic across arches).
+        assert_eq!(kvm::GUESTDBG_ENABLE, 0x1);
+        assert_eq!(kvm::GUESTDBG_SINGLESTEP, 0x2);
+        assert_eq!(kvm::GUESTDBG_SINGLESTEP_CONTROL, 0x3);
+    }
+
+    #[test]
+    fn the_vbar_register_id_names_vbar_el1() {
+        // VBAR_EL1 = S3_0_C12_C0_0 = (op0,op1,crn,crm,op2) = (3,0,12,0,0). A wrong id would
+        // read a different register and misclassify every exception/injection step, so derive
+        // it from the architected encoding rather than trusting a bare literal.
+        let enc = (3u64 << 14) | (12 << 7); // op0=3, crn=12; op1/crm/op2 all zero
+        assert_eq!(kvm::REG_VBAR_EL1, kvm::arm64_sysreg(3, 0, 12, 0, 0));
+        assert_eq!(
+            kvm::REG_VBAR_EL1,
+            0x6000_0000_0000_0000 | 0x0030_0000_0000_0000 | (0x0013 << 16) | enc
+        );
+        assert_eq!(kvm::REG_VBAR_EL1, 0x6030_0000_0013_C600);
+    }
+
+    #[test]
+    fn guest_word_reads_the_bounded_opcode() {
+        // The AA-2 stepper decodes the stepped opcode from a 4-byte guest-RAM read. Drive the
+        // read through the same `guest_ram` pointer seam the machine uses (a heap allocation
+        // standing in for the mapping, so Miri exercises the slice formation), then decode.
+        let base = 0x4000_0000u64;
+        let mut ram = [0u8; 64];
+        // `ret` (0xD65F03C0) at base+0x10.
+        ram[0x10..0x14].copy_from_slice(&0xD65F_03C0u32.to_le_bytes());
+        // SAFETY: `ram` is a live, uniquely-owned allocation of `ram.len()` readable bytes.
+        let borrowed = unsafe { guest_ram(ram.as_ptr(), ram.len()) };
+        assert_eq!(guest_word(borrowed, base, base + 0x10), Some(0xD65F_03C0));
+        // A word wholly inside the mapping but not at a written offset reads as zero.
+        assert_eq!(guest_word(borrowed, base, base), Some(0));
+        // Below the base: no such guest address.
+        assert_eq!(guest_word(borrowed, base, base - 4), None);
+        // The last whole word fits; one past the end does not (fail closed, never read padding).
+        assert_eq!(guest_word(borrowed, base, base + 60), Some(0));
+        assert_eq!(guest_word(borrowed, base, base + 61), None);
+        assert_eq!(guest_word(borrowed, base, base + 64), None);
     }
 
     #[test]

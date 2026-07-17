@@ -201,6 +201,11 @@ struct RunOpts {
     /// Draw seeded-random target deltas over 1..=100000 (AA-3).
     #[arg(long)]
     with_targets: bool,
+    /// AA-2: arm KVM single-step and emit one record per stepped instruction, instead of
+    /// measuring a counting window. Implied by `--stage aa2`. A stepped run is smoke-scale by
+    /// construction — a 1e6 window is millions of steps — so keep the scales small.
+    #[arg(long)]
+    single_step: bool,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables. A wedged guest past this
     /// deadline is recorded as a failed attempt rather than hanging the run.
     #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
@@ -637,6 +642,7 @@ struct RunArgs {
     cases: u64,
     reps: u64,
     with_targets: bool,
+    single_step: bool,
     watchdog_secs: u64,
 }
 
@@ -723,7 +729,7 @@ fn execute(args: RunArgs) -> Result<(), String> {
     use arm_harness::evidence::{
         ExitReason, ImagePin, Mechanism, Pinning, RunSetContext, assemble_run_set, hex_lower,
     };
-    use arm_harness::run::{ArmedMigrationProbe, SampleSpec, run_sample};
+    use arm_harness::run::{ArmedMigrationProbe, SampleSpec, run_sample, step_run};
     use arm_harness::sys::{self, Machine, ParamsPage, PerfCounter, perf_config, pin_to_core};
     use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
@@ -882,7 +888,7 @@ fn execute(args: RunArgs) -> Result<(), String> {
         &args.condition,
     ))
     .map_err(|e| e.to_string())?;
-    let attempted = samples.len() as u64;
+    let mut attempted = samples.len() as u64;
     // An empty plan measures nothing. `--reps 0` (or no payloads/scales) would
     // otherwise write an empty, all-passing run-set — a green verdict over zero
     // evidence, which is exactly the vacuity the whole apparatus refuses.
@@ -937,7 +943,9 @@ fn execute(args: RunArgs) -> Result<(), String> {
             scale_index: s.scale.index(),
             seed: s.seed,
         };
-        let result = (|| {
+        // Both modes produce a Vec of records: counting mode one per sample, single-step mode
+        // one per STEP. Uniform so the collection and failure paths below are shared.
+        let result: Result<Vec<arm_harness::evidence::RunRecord>, String> = (|| {
             let mut machine = Machine::new(&loaded.image, &params)
                 .map_err(|e| format!("create the machine: {e}"))?;
             machine.set_watchdog_secs(args.watchdog_secs);
@@ -946,30 +954,69 @@ fn execute(args: RunArgs) -> Result<(), String> {
             patch_marker = machine
                 .patch_marker_observed()
                 .map_err(|e| format!("probe the patch marker: {e}"))?;
-            // Opening the counter for the patched mechanism on a kernel that lacks the
-            // capability FAILS here. There is no code path from the patched request to
-            // the stock kick.
-            let mut counter = PerfCounter::open(&machine, mechanism_kind, s.target_delta)
-                .map_err(|e| format!("open the work counter: {e}"))?;
-            armed_attr = Some(*counter.attr());
-            let spec = SampleSpec {
-                sample_id: s.sample_id,
-                payload: s.payload,
-                scale: s.scale,
-                seed: s.seed,
-                trips: oracle_model::trips(s.payload, s.scale),
-                condition: s.condition.clone(),
-                target_delta: s.target_delta,
-                migration_probe: migration_probe.clone(),
-            };
-            run_sample(&mut machine, &mut counter, &spec).map_err(|e| e.to_string())
+            if args.single_step {
+                // AA-2: the counter is opened in COUNTING mode (no overflow armed — stepping
+                // arms guest debug, not a deadline), and the single-step run emits one record
+                // per KVM_EXIT_DEBUG. The migration probe is AA-1's alone, so no churner here.
+                let mut counter = PerfCounter::open(&machine, mechanism_kind, None)
+                    .map_err(|e| format!("open the work counter: {e}"))?;
+                armed_attr = Some(*counter.attr());
+                let spec = SampleSpec {
+                    sample_id: s.sample_id,
+                    payload: s.payload,
+                    scale: s.scale,
+                    seed: s.seed,
+                    trips: oracle_model::trips(s.payload, s.scale),
+                    condition: s.condition.clone(),
+                    target_delta: None,
+                    migration_probe: None,
+                };
+                step_run(&mut machine, &mut counter, &spec).map_err(|e| e.to_string())
+            } else {
+                // Opening the counter for the patched mechanism on a kernel that lacks the
+                // capability FAILS here. There is no code path from the patched request to
+                // the stock kick.
+                let mut counter = PerfCounter::open(&machine, mechanism_kind, s.target_delta)
+                    .map_err(|e| format!("open the work counter: {e}"))?;
+                armed_attr = Some(*counter.attr());
+                let spec = SampleSpec {
+                    sample_id: s.sample_id,
+                    payload: s.payload,
+                    scale: s.scale,
+                    seed: s.seed,
+                    trips: oracle_model::trips(s.payload, s.scale),
+                    condition: s.condition.clone(),
+                    target_delta: s.target_delta,
+                    migration_probe: migration_probe.clone(),
+                };
+                run_sample(&mut machine, &mut counter, &spec)
+                    .map(|r| vec![r])
+                    .map_err(|e| e.to_string())
+            }
         })();
         match result {
-            Ok(record) => records.push(record),
+            Ok(mut recs) => records.append(&mut recs),
             Err(e) => {
                 failure = Some(format!("sample {i} ({}): {e}", s.payload.name()));
                 break;
             }
+        }
+    }
+
+    // Single-step mode emits one record PER STEP, so the plan length is not the record count.
+    // Reassign dense sample ids across every stepped run and record how many steps were
+    // actually measured as `attempted` — the totality check then binds to the real records.
+    if args.single_step {
+        for (i, r) in records.iter_mut().enumerate() {
+            r.sample_id = i as u64;
+        }
+        attempted = records.len() as u64;
+        if attempted == 0 && failure.is_none() {
+            failure = Some(
+                "the single-step run produced no step records: no KVM_EXIT_DEBUG landed, so the \
+                 stepping run path stepped nothing — a finding, not an empty pass"
+                    .to_string(),
+            );
         }
     }
 
@@ -1159,6 +1206,8 @@ fn run() -> Result<(), String> {
                 cases: opts.cases,
                 reps: opts.reps,
                 with_targets: opts.with_targets,
+                // AA-2 is the stepping stage, so it implies single-step even without the flag.
+                single_step: opts.single_step || matches!(opts.stage, StageArg::Aa2),
                 watchdog_secs: opts.watchdog_secs,
             })
         }

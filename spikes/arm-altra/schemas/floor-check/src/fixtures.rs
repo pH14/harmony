@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The fixture generator.
 //!
-//! Twenty-four checked-in run-sets: twenty the checker must reject (one per failure
-//! mode) and four it must accept (a patched AA-3 landing run, an AA-1 counting run, an
-//! AA-1(c) early/late skid-distribution run, and an AA-6 same-input gate). They are **generated from the oracle model**, not hand
+//! Twenty-nine checked-in run-sets: twenty-three the checker must reject (one per failure
+//! mode) and six it must accept (a patched AA-3 landing run, an AA-1 counting run, an
+//! AA-1(c) early/late skid-distribution run, an AA-1 LL/SC-hazard run, an AA-6 same-input
+//! gate, and an AA-2 single-step transition matrix). They are **generated from the oracle
+//! model**, not hand
 //! written: the accept fixture's counts are the exact values
 //! [`oracle_model::expected`] predicts under a chosen (synthetic) weights pack, so
 //! the fixtures stay consistent with the model as it evolves, and a reject fixture
@@ -27,7 +29,7 @@
 
 use arm_harness::evidence::{
     Environment, ExitReason, ImagePin, Mechanism, OverflowRecord, PerfConfig, Pinning, RunRecord,
-    RunSet, SCHEMA_VERSION, Stage, hex_lower,
+    RunSet, SCHEMA_VERSION, Stage, StepRecord, StepTransition, hex_lower,
 };
 use oracle_model::{DEFAULT_SEED, Payload, Scale, Weights, expected};
 use sha2::{Digest, Sha256};
@@ -415,6 +417,91 @@ fn accept_aa6_gate() -> Fixture {
     fixture("accept-aa6-gate", &run_set, &records)
 }
 
+/// The AA-2 step matrix: one row per transition class, each `(transition, pc_before, pc_after,
+/// br_retired_delta)`. The values satisfy `check_debug_evidence`'s per-class rules — a
+/// sequential step lands at exactly `pc_before + 4` with delta 0, a taken branch moves
+/// `BR_RETIRED` by 1, an LL/SC exclusive by 0, the exception/WFI/injection classes by a bounded
+/// 0. Each is stepped twice (two reps of one step-moment) so AA-2's replay identity has a
+/// repeated group to compare.
+fn aa2_matrix() -> [(StepTransition, u64, u64, u64); 7] {
+    let b = 0x4000_8000u64;
+    [
+        (StepTransition::Sequential, b, b + 4, 0),
+        (StepTransition::TakenBranch, b + 0x100, b + 0x140, 1),
+        (StepTransition::ExceptionEntry, b + 0x200, b + 0x240, 0),
+        (StepTransition::ExceptionReturn, b + 0x300, b + 0x340, 0),
+        (StepTransition::Wfi, b + 0x400, b + 0x404, 0),
+        (StepTransition::Injection, b + 0x500, b + 0x540, 0),
+        (StepTransition::LlscExclusive, b + 0x600, b + 0x604, 0),
+    ]
+}
+
+/// The AA-2 stepped record set: the full transition matrix, each class stepped twice
+/// bit-identically. Every record is a StraightLine-at-smoke run (so it carries that run's
+/// oracle-exact window count, exactly as a real stepped run does), overflow-free, on
+/// `ExitReason::Debug`, with a valid single step of its class. The two reps of one step-moment
+/// share the step-moment digest AND the final digest — a bit-identical replay.
+fn aa2_records() -> Vec<RunRecord> {
+    let mut records = Vec::new();
+    for (transition, pc_before, pc_after, delta) in aa2_matrix() {
+        // Two reps of one step-moment (same pc_before + transition, so one RepKey group).
+        for _rep in 0..2u64 {
+            let id = records.len() as u64;
+            let mut r = generate_record(id, Payload::StraightLine, ExitReason::Debug);
+            // A stepped record is never an armed landing — mutually exclusive.
+            r.overflow = None;
+            let tag = format!("{transition:?}");
+            r.step = Some(StepRecord {
+                pc_before,
+                pc_after,
+                // A single step retires exactly one instruction by construction.
+                insn_retired: 1,
+                br_retired_delta: delta,
+                transition,
+                // The step-moment digest replay identity compares; shared within the rep group.
+                step_digest: format!("sha256:{}", synth_sha256(&format!("aa2-step-{tag}"))),
+            });
+            // The final (sentinel) digest, shared within the rep group too.
+            r.state_digest = format!("sha256:{}", synth_sha256(&format!("aa2-final-{tag}")));
+            records.push(r);
+        }
+    }
+    records
+}
+
+/// Turn an AA-2 stepped record set into a run-set: stage AA-2, the pre-patch stock mechanism
+/// (AA-2 legitimately runs pre-patch), no armed sampling period (stepping arms guest debug, not
+/// an overflow), weights present (so the oracle grades the window count each step carries).
+fn aa2_run_set(records: &[RunRecord]) -> RunSet {
+    let mut run_set = build_run_set(Stage::Aa2, stock_mechanism(), records);
+    // A stepped run arms no overflow, so its perf event carries no sampling period.
+    run_set.perf.sample_period = None;
+    run_set.records_sha256 = synth_sha256_of_bytes(records_jsonl(records).as_bytes());
+    run_set
+}
+
+/// The valid AA-2 accept fixture: the FULL single-step transition matrix, each class stepped
+/// twice bit-identically. Every step is a valid single step (PC advanced, exactly one
+/// instruction retired, `BR_RETIRED` delta consistent with the class), the matrix is complete
+/// (all seven classes, including the LL/SC exclusive AA-4 needs), and each step-moment replayed
+/// identically — everything AA-2's floor requires, in miniature. Today no run EMITS steps (the
+/// stepping run path is arrival-day), so this is the shape a real AA-2 run-set will take.
+fn accept_aa2_steps() -> Fixture {
+    let records = aa2_records();
+    let run_set = aa2_run_set(&records);
+    fixture("accept-aa2-steps", &run_set, &records)
+}
+
+/// Build an AA-2 reject fixture by mutating ONE step of the otherwise-valid matrix, so
+/// `check_debug_evidence` is the sole failure (the mutation touches neither the window count
+/// nor the RepKey/step-moment digest, so counts and replay identity still pass).
+fn mutated_aa2_reject(name: &'static str, mutate: impl FnOnce(&mut Vec<RunRecord>)) -> Fixture {
+    let mut records = aa2_records();
+    mutate(&mut records);
+    let run_set = aa2_run_set(&records);
+    fixture(name, &run_set, &records)
+}
+
 /// The AA-6 rep-floor evasion, rejected: an eight-payload matrix of DISTINCT inputs
 /// whose TOTAL record count meets a floor, though no single input is repeated even
 /// twice. A total-count floor passed this; the per-input floor does not — AA-6 needs
@@ -443,6 +530,7 @@ pub fn all_fixtures() -> Vec<Fixture> {
         accept_counting(),
         accept_aa1_skid(),
         accept_aa6_gate(),
+        accept_aa2_steps(),
         reject_aa6_rep_floor(),
     ];
 
@@ -722,6 +810,43 @@ pub fn all_fixtures() -> Vec<Fixture> {
         fixtures.push(fixture("reject-malformed-hash", &run_set, &records));
     }
 
+    // 20. reject-aa2-step-skips-insn — a SEQUENTIAL step that advanced by 8, not 4: an
+    //     instruction was skipped. AArch64 instructions are a fixed 4 bytes, so a sequential
+    //     step must land at EXACTLY pc_before + 4; a larger jump is the miss AA-2 exists to
+    //     catch. One rep of the sequential step-moment is mutated, so the RepKey/step-moment
+    //     digest is untouched and replay identity still passes — debug-evidence is the sole
+    //     failure.
+    fixtures.push(mutated_aa2_reject(
+        "reject-aa2-step-skips-insn",
+        |records| {
+            if let Some(s) = records[0].step.as_mut() {
+                s.pc_after = s.pc_before + 8;
+            }
+        },
+    ));
+
+    // 21. reject-aa2-step-doubled — a step that retired TWO instructions, not the exactly one
+    //     AA-2's single-step semantics require. The window count and the step-moment are
+    //     untouched, so debug-evidence alone fails.
+    fixtures.push(mutated_aa2_reject("reject-aa2-step-doubled", |records| {
+        if let Some(s) = records[0].step.as_mut() {
+            s.insn_retired = 2;
+        }
+    }));
+
+    // 22. reject-aa2-taken-branch-no-branch — a step CLASSIFIED as a taken branch whose
+    //     BR_RETIRED did not move (delta 0). A taken branch must increment BR_RETIRED by
+    //     exactly 1; this disagreement between the opcode's class and the measured counter is
+    //     the AA-2 finding the checker surfaces. `records[2]` is the first taken-branch rep.
+    fixtures.push(mutated_aa2_reject(
+        "reject-aa2-taken-branch-no-branch",
+        |records| {
+            if let Some(s) = records[2].step.as_mut() {
+                s.br_retired_delta = 0;
+            }
+        },
+    ));
+
     fixtures
 }
 
@@ -746,13 +871,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_twenty_five_fixtures_with_unique_names() {
+    fn there_are_twenty_nine_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 25);
+        assert_eq!(fixtures.len(), 29);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 25, "fixture names must be unique");
+        assert_eq!(names.len(), 29, "fixture names must be unique");
+    }
+
+    #[test]
+    fn the_aa2_accept_matrix_covers_every_transition_class_twice() {
+        // The generator's own invariant: the AA-2 accept fixture steps all seven transition
+        // classes, each twice (a repeated step-moment for replay identity), on Debug exits with
+        // no armed overflow.
+        let records = aa2_records();
+        assert_eq!(records.len(), 14, "seven classes × two reps");
+        let mut classes: Vec<StepTransition> = records
+            .iter()
+            .map(|r| r.step.as_ref().expect("stepped").transition)
+            .collect();
+        classes.sort_unstable();
+        classes.dedup();
+        assert_eq!(classes.len(), 7, "every transition class is covered");
+        for r in &records {
+            assert_eq!(r.exit_reason, ExitReason::Debug);
+            assert!(r.overflow.is_none(), "a stepped record is never armed");
+            let s = r.step.as_ref().expect("stepped");
+            assert_eq!(s.insn_retired, 1);
+            assert_ne!(s.pc_after, s.pc_before, "a step advances the PC");
+        }
     }
 
     #[test]
