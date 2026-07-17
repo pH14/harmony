@@ -1190,6 +1190,30 @@ reliably BELOW target, then single-step walks up to `work==target`. So the probe
 the arm-early design*; the real AA-3 reliability+exactness verdict comes from the exact-landing
 run, not this proxy. Recorded so the 1.2% is not misread as a mechanism NO-GO.
 
+**Exact landing DEMONSTRATED on N1 (`run_until_overflow` + `single_step`).** With
+`--skid-margin 53`, the patched path now arms at `target − 53`, takes the `Preempt`
+below target, and single-steps up: a 1e6 smoke of 32 samples lands **`work == target`
+EXACTLY on all 32** (skid 0, `exit=preempt`, `deliveries=1`), and — the arm-early
+payoff — **0 lost** (vs the 1.2% of the arm-at-target proxy). `check_skid` PASSES the
+AA-3 `exact_required` bar ("no overshoot; all landings within margin and exact"), with
+multiplicity and mechanism-attestation. Count-exactness holds for **7 of the 8 payloads**
+(all the deterministic-count classes). The exception is **`wfi-idle`**, whose window
+count comes back *short and varying* (e.g. 15,826 / 17,784 / 13,554 vs the oracle's
+20,000): its WFI is resumed by a **timer** whose firing shifts under the exact landing's
+slow single-step, so the number of retired branches varies. This is a real-time timer
+dependency the fast free-run hid — an **AA-5 preview**: exactly the kind of non-work-
+derived time the paravirt clock (§AA-5) exists to close. It is a characterized finding,
+not a mechanism failure; the exact landing itself is exact for every payload.
+
+**Disposition (updated): mechanism + exact-landing GO on N1; PENDING the ≥10⁶ run.** The
+0004-analogue force-exit fires, arms-early to remove the boundary loss, and lands exactly
+at the target for all deterministic-count payloads — the load-bearing AA-3 mechanism is
+proven. Remaining for the stage GO: the ≥10⁶-armed exact-landing run (sharded) with
+`wfi-idle` either excluded or its count-exemption ruled (its timer determinism is AA-5's
+to settle), plus the trait-freeze memo (does `run_until_overflow`'s late-only-stop hold on
+arm64 PMI delivery — the box answer so far: YES, the Preempt is late-only and the
+single-step lands exactly, no `Arch`-trait change forced).
+
 **Original finding (why this was executor work): the single-step run path did not exist
 in the harness** — the
 offline apparatus deliberately left it out (building it would presume AA-2's own
