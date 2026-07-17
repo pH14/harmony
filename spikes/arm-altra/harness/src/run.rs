@@ -274,6 +274,80 @@ pub enum RunError {
         /// Where it needed to reach.
         target: u64,
     },
+    /// The AA-3 exact-landing arm-early period underflows: the drawn work `delta` is not
+    /// strictly greater than the `skid_margin`, so the overflow cannot be armed a full margin
+    /// **below** the target. Without room below the target the arm-early `Preempt` cannot be
+    /// made to fire below it, and single-stepping up to an exact landing is impossible for this
+    /// window — refused rather than armed at (or above) the target and silently degraded to the
+    /// arm-at-target reliability proxy. The plan draws AA-3 deltas above the margin; a cell
+    /// whose landable window is itself below the margin surfaces here.
+    #[error(
+        "exact landing: work delta {delta} is not greater than the skid margin {skid_margin}, so \
+         the overflow cannot be armed a full margin below the target — this window is too small \
+         to land exactly with this margin"
+    )]
+    ExactLandingWindowTooSmall {
+        /// The drawn work delta (`target - work_begin`).
+        delta: u64,
+        /// The skid margin the overflow must be armed below the target by.
+        skid_margin: u64,
+    },
+    /// The AA-3 arm-early `Preempt` fired AT or ABOVE the target. The overflow was armed a
+    /// `skid_margin` below the target so it would fire strictly below it, leaving room to
+    /// single-step up; a `Preempt` at or above the target means the measured margin was too
+    /// small (the skid consumed all of it). Accepting it would be exactly the overshoot the
+    /// exact-landing contract forbids, so it fails closed rather than recording a landing past
+    /// the target.
+    #[error(
+        "exact landing: the arm-early Preempt fired at work {landed}, at or above the target \
+         {target} (skid margin {skid_margin} too small): no room was left to single-step up to \
+         the target, and accepting it would overshoot"
+    )]
+    ExactLandingKickAtOrAboveTarget {
+        /// The exact landing target (`work_begin + delta`).
+        target: u64,
+        /// Where the `Preempt` actually fired.
+        landed: u64,
+        /// The skid margin the overflow was armed below the target by.
+        skid_margin: u64,
+    },
+    /// A single step during the AA-3 landing moved the work counter PAST the target. A single
+    /// step advances `BR_RETIRED` by 0 or 1 (AA-2), so it cannot skip the target — a step that
+    /// did is a real seam/hardware anomaly, refused rather than recorded as an exact landing it
+    /// is not.
+    #[error(
+        "exact landing: a single step advanced the work counter to {landed}, past the target \
+         {target} — a single step advances BR_RETIRED by 0 or 1, so it cannot skip the target"
+    )]
+    ExactLandingOvershotTarget {
+        /// The exact landing target.
+        target: u64,
+        /// Where the counter landed after the step (`> target`).
+        landed: u64,
+    },
+    /// The AA-3 landing single-step loop took too many steps without the work counter reaching
+    /// the target — a livelocked or stuck counter. A landing loop that spins forever is worse
+    /// than one that fails, so it is bounded and refused.
+    #[error(
+        "exact landing: {steps} single steps without reaching the target (work {work}, target \
+         {target}): the counter is not advancing — refused rather than stepped forever"
+    )]
+    ExactLandingStepStorm {
+        /// How many single steps were taken.
+        steps: u64,
+        /// Where the counter had reached.
+        work: u64,
+        /// The exact landing target.
+        target: u64,
+    },
+    /// A stock signal-kick arrived on the AA-3 exact-landing path. The exact landing rides the
+    /// patched in-kernel `Preempt` force-exit ALONE; the signal kick is AA-3's forbidden
+    /// fallback (`docs/ARM-ALTRA.md` §AA-3), so it is refused rather than landed on.
+    #[error(
+        "exact landing: a stock signal-kick arrived, but the exact landing rides the patched \
+         Preempt force-exit alone — the signal kick is AA-3's forbidden fallback"
+    )]
+    ExactLandingSignalKick,
 }
 
 /// A single vCPU, as this loop needs it.
@@ -364,6 +438,16 @@ pub trait WorkCounter {
 /// that spins forever is worse than one that fails. The bound is generous: a 1e8-branch
 /// window at a 1 kHz tick produces on the order of a thousand.
 const MAX_ADVISORY_EXITS: u64 = 100_000;
+
+/// How many single steps the AA-3 exact-landing loop may take before giving up.
+///
+/// The landing walks `BR_RETIRED` up from the arm-early `Preempt` (below the target) to the
+/// target — a distance of at most `skid_margin` retired branches — one guest instruction at a
+/// time. A tight counting window retires branches every few instructions, so a real landing is
+/// tens to hundreds of steps; this bound is a generous livelock/stuck-counter backstop (AA-3's
+/// guest is LSE-only, so the `llsc` single-step livelock does not apply, but the loop is bounded
+/// defensively so a counter that never advances to the target fails rather than spins forever).
+const MAX_LANDING_STEPS: u64 = 1_000_000;
 
 /// What one sample is asked to be: which payload, at what scale and seed, and — if
 /// this is an overflow run — how far past the window's opening to arm the deadline.
@@ -746,6 +830,344 @@ pub fn run_sample(
     })
 }
 
+/// Run one AA-3 sample to an **exact** landing (`work == target`) and assemble its
+/// [`RunRecord`].
+///
+/// The AA-3 exact-landing contract (`docs/ARM-ALTRA.md` §AA-3). [`run_sample`] arms the
+/// overflow AT the target and records where the mechanism exit fired (`landed = target +
+/// skid`); box measurement showed arming AT the target has a ~1.2% boundary-miss — the
+/// overflow occasionally does not fire and the guest runs to its sentinel. This variant closes
+/// the loop instead, in two moves:
+///
+/// 1. **Arm early.** The overflow is armed `skid_margin` events BELOW the target (period
+///    `delta - skid_margin`), so the `Preempt` fires reliably *below* the target
+///    (`target - skid_margin + preempt_skid`, with `preempt_skid <= skid_margin`) — no
+///    boundary miss.
+/// 2. **Single-step up to the target.** After the `Preempt` lands below the target, guest
+///    single-step is armed and the guest is stepped one instruction at a time until the work
+///    counter reads EXACTLY the target. Each step advances `BR_RETIRED` by 0 or 1 (AA-2's
+///    validated single-step semantics), so the counter cannot skip the target — it lands
+///    exactly. The record carries `landed == target`, `skid == 0`, `deliveries == 1`,
+///    `exit_reason == Preempt` — the mechanism attestation the AA-3 checker requires still
+///    holds.
+///
+/// It **fails closed, never fudges**: a `Preempt` at or above the target
+/// ([`RunError::ExactLandingKickAtOrAboveTarget`] — the margin was too small), a step that
+/// moves the counter past the target ([`RunError::ExactLandingOvershotTarget`] — impossible
+/// under +0/+1, so a real bug), an arm-early period that underflows the margin
+/// ([`RunError::ExactLandingWindowTooSmall`]), or a stock signal-kick
+/// ([`RunError::ExactLandingSignalKick`] — AA-3's forbidden fallback) each surface as an error
+/// rather than a landing that is not exact.
+///
+/// Only the PATCHED `Preempt` path lands exactly; the stock `SignalKick` path (AA-1(c), which
+/// MEASURES skid by arming at the target) stays with [`run_sample`], unchanged. The caller
+/// gates this on the AA-3 configuration (patched mechanism + a measured skid margin).
+///
+/// # Errors
+/// [`RunError`] whenever the sample could not be *measured* or landed exactly — see the type.
+pub fn run_sample_exact(
+    vcpu: &mut impl StepVcpu,
+    counter: &mut impl WorkCounter,
+    spec: &SampleSpec,
+    skid_margin: u64,
+) -> Result<RunRecord, RunError> {
+    let mut console = Console::new();
+    let mut work_begin: Option<u64> = None;
+    let mut work_end: Option<u64> = None;
+    let mut params_mode: Option<String> = None;
+    let mut reported_scale: Option<String> = None;
+    let mut reported_seed: Option<String> = None;
+    let mut clockpage_mode: Option<String> = None;
+    let mut reported: Option<u64> = None;
+    let mut status: Option<u8> = None;
+
+    // Overflow bookkeeping, per record (§Evidence integrity #6).
+    let mut target: Option<u64> = None;
+    // Where the overflow is armed — a full `skid_margin` BELOW the target — so the `Preempt`
+    // fires below the target and single-stepping can walk the counter up to it.
+    let mut arm_point: Option<u64> = None;
+    let mut deliveries: u64 = 0;
+    let mut advisory_exits: u64 = 0;
+    let mut landed: Option<u64> = None;
+    let mut landed_digest: Option<String> = None;
+
+    'run: while status.is_none() {
+        match vcpu.run()? {
+            VcpuExit::Mmio {
+                addr,
+                data,
+                is_write,
+            } => {
+                // The console handling mirrors `run_sample` exactly: the PL011 is the one
+                // userspace MMIO device, and a guest boots by configuring it and polling its
+                // flag register before every byte.
+                if !is_pl011(addr) {
+                    return Err(RunError::UnexpectedMmio { addr });
+                }
+                if !is_write {
+                    let width = data.len().clamp(1, 8);
+                    vcpu.complete_mmio_read(&PL011_FR_READY.to_le_bytes()[..width.min(4)])?;
+                    continue 'run;
+                }
+                if addr != PL011_DR {
+                    continue 'run;
+                }
+                let Some(&byte) = data.first() else {
+                    return Err(RunError::UnexpectedMmio { addr });
+                };
+                match console.push(byte) {
+                    Some(Event::MarkBegin) => {
+                        if work_begin.is_some() {
+                            return Err(RunError::MalformedWindow("MARK_BEGIN twice"));
+                        }
+                        let begin = counter.read()?;
+                        work_begin = Some(begin);
+                        // `target = work_begin + delta` is the exact landing point; the overflow
+                        // is armed a full `skid_margin` BELOW it (period `delta - skid_margin`),
+                        // so it fires below the target reliably (no boundary miss) and the loop
+                        // single-steps up to the exact target.
+                        if let Some(delta) = spec.target_delta {
+                            let t = begin.saturating_add(delta);
+                            target = Some(t);
+                            // The arm-early period. An underflow (`delta <= skid_margin`) means
+                            // there is no room below the target for the margin — refuse rather
+                            // than arm at/above the target and silently degrade to arm-at-target.
+                            let arm_delta = match delta.checked_sub(skid_margin) {
+                                Some(d) if d >= 1 => d,
+                                _ => {
+                                    return Err(RunError::ExactLandingWindowTooSmall {
+                                        delta,
+                                        skid_margin,
+                                    });
+                                }
+                            };
+                            arm_point = Some(begin.saturating_add(arm_delta));
+                            counter.arm_overflow(arm_delta)?;
+                        }
+                    }
+                    Some(Event::MarkEnd) => {
+                        if work_begin.is_none() {
+                            return Err(RunError::MalformedWindow("MARK_END before MARK_BEGIN"));
+                        }
+                        if work_end.is_some() {
+                            return Err(RunError::MalformedWindow("MARK_END twice"));
+                        }
+                        work_end = Some(counter.read()?);
+                    }
+                    Some(Event::Line(line)) => {
+                        absorb_line(
+                            &line,
+                            &mut params_mode,
+                            &mut reported_scale,
+                            &mut reported_seed,
+                            &mut clockpage_mode,
+                            &mut reported,
+                        );
+                    }
+                    Some(Event::Exit(code)) => {
+                        status = Some(code);
+                        break 'run;
+                    }
+                    None => {}
+                }
+            }
+
+            // This loop arms guest single-step ONLY during the exact-landing walk (below), and
+            // disarms it before resuming. A Debug exit reaching the main loop is therefore an
+            // unrequested single-step landing — refused exactly as `run_sample` refuses one.
+            VcpuExit::Debug => return Err(RunError::UnexpectedDebugExit),
+
+            // The stock signal-kick is AA-3's forbidden fallback: the exact landing rides the
+            // patched in-kernel `Preempt` force-exit alone (§Evidence integrity #4).
+            VcpuExit::SignalKick => return Err(RunError::ExactLandingSignalKick),
+
+            VcpuExit::Preempt => {
+                let Some(target) = target else {
+                    // Nothing was armed, so nothing should have kicked.
+                    return Err(RunError::UnexpectedMechanismExit(ExitReason::Preempt));
+                };
+                let arm_point = arm_point.expect("arm_point is set whenever target is");
+                let work = counter.read()?;
+
+                if landed.is_some() {
+                    // A second `Preempt` after the exact landing. The perf overflow was parked
+                    // and the patch's one-shot was not re-armed, so none is expected; count it
+                    // as a duplicate delivery (multiplicity flags it) rather than re-landing.
+                    deliveries += 1;
+                    continue 'run;
+                }
+
+                // On arm64 the armed vCPU exits on ANY host IRQ, so a `Preempt` BELOW the
+                // arm-early overflow point is an unrelated tick, not the overflow — re-read,
+                // re-arm, continue (exactly the advisory path `run_sample` takes, but against
+                // the arm-early point rather than the target).
+                if work < arm_point {
+                    advisory_exits += 1;
+                    if advisory_exits > MAX_ADVISORY_EXITS {
+                        return Err(RunError::AdvisoryExitStorm {
+                            exits: advisory_exits,
+                            work,
+                            target,
+                        });
+                    }
+                    counter.rearm()?;
+                    continue 'run;
+                }
+
+                // The overflow fired. It MUST be below the target so we can single-step up: a
+                // `Preempt` at or above the target means the margin was too small (the skid
+                // consumed all of it) — fail closed, never accept the overshoot.
+                if work >= target {
+                    return Err(RunError::ExactLandingKickAtOrAboveTarget {
+                        target,
+                        landed: work,
+                        skid_margin,
+                    });
+                }
+
+                // The delivery, below the target. Re-enable the counter (the one-shot disabled
+                // it on overflow) so the single steps advance it, then walk up to the exact
+                // target one instruction at a time.
+                deliveries += 1;
+                counter.resume_counting()?;
+                vcpu.arm_single_step()?;
+                let mut work = work;
+                let mut landing_steps: u64 = 0;
+                while work != target {
+                    // Invariant: `work < target`. Step one instruction. The counting window is
+                    // pure compute between MARK_BEGIN and MARK_END (no console I/O), so only a
+                    // KVM_EXIT_DEBUG occurs here; anything else is a finding.
+                    landing_steps += 1;
+                    if landing_steps > MAX_LANDING_STEPS {
+                        return Err(RunError::ExactLandingStepStorm {
+                            steps: landing_steps,
+                            work,
+                            target,
+                        });
+                    }
+                    match vcpu.run()? {
+                        VcpuExit::Debug => {}
+                        other => {
+                            return Err(RunError::Seam {
+                                context: "exact-landing single step expected KVM_EXIT_DEBUG",
+                                message: format!("got a non-debug exit: {other:?}"),
+                            });
+                        }
+                    }
+                    let after = counter.read()?;
+                    if after < work {
+                        // The work counter is monotonic while the guest runs; a decrease across
+                        // one step is a seam/hardware anomaly, refused.
+                        return Err(RunError::StepCounterWentBackwards { before: work, after });
+                    }
+                    if after > target {
+                        // A single step advances BR_RETIRED by 0 or 1, so it cannot skip the
+                        // target — a step past it is a real anomaly, not an exact landing.
+                        return Err(RunError::ExactLandingOvershotTarget {
+                            target,
+                            landed: after,
+                        });
+                    }
+                    work = after;
+                }
+                // Exactly at the target. Digest the landed state HERE, at the landing Moment,
+                // before the guest is resumed — that is the state AA-3's replay identity is
+                // about. Then disarm single-step so the guest runs freely to MARK_END and the
+                // sentinel (leaving it armed would make every later KVM_RUN trap after one
+                // instruction, and the counting loop refuses an unrequested KVM_EXIT_DEBUG).
+                landed = Some(target);
+                landed_digest = Some(vcpu.state_digest()?);
+                vcpu.disarm_single_step()?;
+            }
+
+            VcpuExit::Other(reason) => return Err(RunError::UnexpectedExit(reason)),
+        }
+    }
+
+    // The assembly tail mirrors `run_sample`: the same fail-closed refusals and the same
+    // params/scale/seed cross-checks. The only difference is what the overflow record says —
+    // an exact landing (`landed == target`, `skid == 0`), by construction of the loop above.
+    let status = status.ok_or(RunError::NoExitSentinel)?;
+    let begin = work_begin.ok_or(RunError::NoWindowOpen)?;
+    let end = work_end.ok_or(RunError::NoWindowClose)?;
+    if end < begin {
+        return Err(RunError::CounterWentBackwards { begin, end });
+    }
+    let params_mode = params_mode.ok_or(RunError::NoParamsMode)?;
+    match reported_scale.as_deref() {
+        Some(s) if s == spec.scale.name() => {}
+        found => {
+            return Err(RunError::ReportedScaleMismatch {
+                expected: spec.scale.name(),
+                found: found.map(str::to_string),
+            });
+        }
+    }
+    match reported_seed.as_deref().map(parse_hex_u64) {
+        Some(Some(seed)) if seed == spec.seed => {}
+        _ => {
+            return Err(RunError::ReportedSeedMismatch {
+                expected: spec.seed,
+                found: reported_seed,
+            });
+        }
+    }
+    let reported_taken = if spec.payload.has_reported_term() {
+        reported.ok_or(RunError::MissingReportedTerm(spec.payload))?
+    } else {
+        reported.unwrap_or(0)
+    };
+    let state_digest = vcpu.state_digest()?;
+    if state_digest.is_empty() {
+        return Err(RunError::EmptyStateDigest);
+    }
+
+    let overflow = target.map(|target| {
+        // A lost PMI (no `Preempt` ever came) records `deliveries: 0` / `landed: 0`, its own
+        // honest skid, and the multiplicity check — not a fabricated zero — owns the failure.
+        // Arming EARLY is exactly what makes a lost PMI unlikely; when a landing WAS made it is
+        // exact by construction (`landed == target`, so `skid == 0`).
+        let landed = landed.unwrap_or(0);
+        OverflowRecord {
+            armed: true,
+            deliveries,
+            advisory_exits,
+            target,
+            landed,
+            skid: i64::try_from(i128::from(landed) - i128::from(target)).unwrap_or(i64::MIN),
+            landed_digest: landed_digest.unwrap_or_default(),
+        }
+    });
+
+    Ok(RunRecord {
+        sample_id: spec.sample_id,
+        payload: spec.payload,
+        scale: spec.scale,
+        seed: spec.seed,
+        trips: spec.trips,
+        condition: spec.condition.clone(),
+        work_begin: begin,
+        work_end: end,
+        measured_taken: end - begin,
+        reported_taken,
+        // A landing rode the patched `Preempt` force-exit; a lost PMI ran to the console
+        // sentinel, and the record says so rather than borrowing a mechanism it never took.
+        exit_reason: if landed.is_some() {
+            ExitReason::Preempt
+        } else {
+            ExitReason::Mmio
+        },
+        overflow,
+        // The exact-landing single steps are the LANDING mechanism, not AA-2 step evidence:
+        // this is an armed landing, mutually exclusive with a step record.
+        step: None,
+        state_digest,
+        params_mode,
+        clockpage_mode,
+        payload_status: i32::from(status),
+    })
+}
+
 /// Absorb one guest protocol line into the record's attested fields.
 ///
 /// The guest's own words, parsed — never the harness's assumption. `PARAMS mode=`
@@ -918,6 +1340,17 @@ pub trait StepVcpu: Vcpu {
     /// # Errors
     /// [`RunError::Seam`] if the debug ioctl failed.
     fn arm_single_step(&mut self) -> Result<(), RunError>;
+
+    /// Disarm guest single-step (`KVM_SET_GUEST_DEBUG` with an all-zero control word), so the
+    /// vCPU resumes ordinary `KVM_RUN` execution. AA-3's exact-landing loop
+    /// ([`run_sample_exact`]) arms single-step to walk `BR_RETIRED` up to the target, then MUST
+    /// disarm before resuming the guest to `MARK_END` and the sentinel — otherwise every later
+    /// `KVM_RUN` would trap after one instruction and the counting loop would refuse the
+    /// unrequested `KVM_EXIT_DEBUG`.
+    ///
+    /// # Errors
+    /// [`RunError::Seam`] if the debug ioctl failed.
+    fn disarm_single_step(&mut self) -> Result<(), RunError>;
 
     /// The current `PC` (a one-reg read of the core `pc`).
     ///
@@ -2178,6 +2611,10 @@ mod tests {
     impl StepVcpu for ScriptedStepVcpu {
         fn arm_single_step(&mut self) -> Result<(), RunError> {
             self.armed = true;
+            Ok(())
+        }
+        fn disarm_single_step(&mut self) -> Result<(), RunError> {
+            self.armed = false;
             Ok(())
         }
         fn pc(&mut self) -> Result<u64, RunError> {

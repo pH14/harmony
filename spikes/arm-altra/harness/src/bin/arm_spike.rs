@@ -739,7 +739,7 @@ fn execute(args: RunArgs) -> Result<(), String> {
     use arm_harness::evidence::{
         ExitReason, ImagePin, Mechanism, Pinning, RunSetContext, assemble_run_set, hex_lower,
     };
-    use arm_harness::run::{ArmedMigrationProbe, SampleSpec, run_sample, step_run};
+    use arm_harness::run::{ArmedMigrationProbe, SampleSpec, run_sample, run_sample_exact, step_run};
     use arm_harness::sys::{self, Machine, ParamsPage, PerfCounter, perf_config, pin_to_core};
     use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
@@ -1000,9 +1000,20 @@ fn execute(args: RunArgs) -> Result<(), String> {
                     target_delta: s.target_delta,
                     migration_probe: migration_probe.clone(),
                 };
-                run_sample(&mut machine, &mut counter, &spec)
-                    .map(|r| vec![r])
-                    .map_err(|e| e.to_string())
+                // AA-3 exact landing rides the patched mechanism WITH a measured skid margin:
+                // `run_sample_exact` re-arms the overflow `skid_margin` events below the target,
+                // takes the `Preempt` below target, then single-steps up to `work == target`
+                // (the run_until_overflow + single_step contract). A patched run WITHOUT a margin
+                // stays the arm-at-target reliability proxy; the stock kick stays `run_sample`.
+                if matches!(mechanism_kind, sys::Mechanism::Preempt) && args.skid_margin.is_some() {
+                    run_sample_exact(&mut machine, &mut counter, &spec, args.skid_margin.unwrap())
+                        .map(|r| vec![r])
+                        .map_err(|e| e.to_string())
+                } else {
+                    run_sample(&mut machine, &mut counter, &spec)
+                        .map(|r| vec![r])
+                        .map_err(|e| e.to_string())
+                }
             }
         })();
         match result {

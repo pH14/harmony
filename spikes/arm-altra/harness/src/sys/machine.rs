@@ -1106,6 +1106,30 @@ impl StepVcpu for Machine {
         Ok(())
     }
 
+    /// Disarm guest single-step: `KVM_SET_GUEST_DEBUG` with an all-zero `kvm_guest_debug`
+    /// (control 0 = debug disabled, no `KVM_GUESTDBG_ENABLE`), returning the vCPU to ordinary
+    /// `KVM_RUN` execution. AA-3's exact-landing loop steps `BR_RETIRED` up to the target, then
+    /// disarms here before resuming the guest to `MARK_END`.
+    fn disarm_single_step(&mut self) -> Result<(), RunError> {
+        let dbg = KvmGuestDebug::default();
+        // SAFETY: `vcpu_fd` is valid; `dbg` is a fully-initialised kvm_guest_debug (control 0 =
+        // debug disabled), exactly the shape (and arm64 size) KVM_SET_GUEST_DEBUG reads.
+        if unsafe {
+            libc::ioctl(
+                self.vcpu_fd,
+                kvm::SET_GUEST_DEBUG as libc::c_ulong,
+                &raw const dbg,
+            )
+        } < 0
+        {
+            return Err(seam(
+                "ioctl(KVM_SET_GUEST_DEBUG, disarm)",
+                err("ioctl(KVM_SET_GUEST_DEBUG)"),
+            ));
+        }
+        Ok(())
+    }
+
     fn pc(&mut self) -> Result<u64, RunError> {
         self.get_one_reg_u64(kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC)
             .map_err(|e| seam("ioctl(KVM_GET_ONE_REG, pc)", e))
