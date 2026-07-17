@@ -21,7 +21,7 @@ transfer and are flagged **PROVISIONAL — re-confirm on a real EPYC** where the
 | **AE-0** | **GO** | Zen 2 part exposes every assumption: SVM full surface, `ex_ret_brn_tkn`=0xc4 openable/exact/overflow-delivers, legacy PMU (no PerfMonV2), single-step surface present. |
 | **AE-1** | **PROVISIONAL GO** | The existential trio holds: host-side + guest-mode counting bit-exact; 10⁶ overflows exactly-once; skid bounded (max 5043); SpecLockMap overcount **not reproduced** (null). |
 | **AE-2** | **PROVISIONAL GO** | Ruled **TF** (via `KVM_GUESTDBG_SINGLESTEP`), **not BTF** — refuting the doc's provisional lead on silicon: TF is exact + guest-transparent (`tf_kept=0`); BTF delivers 0 `#DB` through stock KVM; MOV-SS shadow the one recorded hazard. |
-| **AE-3** | **ESCALATED** | `svm.c` hunk **verified against real 6.8 source** (applies clean); full build **blocked** — the shared determinism plumbing (0001/0002/0004) targets ~6.18, box runs stock 6.8 (no `KVM_EXIT_PREEMPT`/`preempt_armed`). Doc-vs-hardware version skew; escalated per tasks/123. |
+| **AE-3** | **GO (mechanism) / PROVISIONAL (exact landing)** | Escalation RESOLVED (Paul 2026-07-17: build+boot 6.18.35 on this box). Patched `kvm_amd` fires **`KVM_EXIT_PREEMPT` on-silicon** every arm; skid ∈ [2581,3039] ≪ margin, never overshoots at overflow. Needed a **2nd svm.c hunk** (advertise the opt-in cap on SVM — 0003 is VMX-only). Exact single-step **landing** shows run-to-run jitter on the non-isolated core (core-isolation dependency); isolating diagnostic cut off by loss of box access. See §AE-3 execution. |
 | **AE-4** | **PROVISIONAL GO** | Freeze **demonstrated on-silicon**: guest sees frozen `AuthenticAMD` + TSC bit cleared **below host** (`0x078bfbff`→`ef`); denied MSR (HWCR) RDMSR **traps to the vmm**. `det-zen2-v1` truth table ratified. |
 | **AE-5** | **PARTIAL** | Substrate same-seed determinism **demonstrated (1000/1000 bit-identical** on SVM); full mini gate (work-clock preempt + `svm.c` force-exit + fault injection + postgres Subject) gated on **AE-3** + the appliance (`hm-tn9`, out of spike scope per `hm-u1n`). |
 | **AE-6** | **GATED** | Nested SVM **confirmed available** (`kvm_amd nested=1`); full nested gate (consonance stack as L1) follows the AE-5 bare-metal GO + appliance. |
@@ -94,19 +94,76 @@ was exercised by a standalone host-side hammer and a standalone C KVM harness (e
 production edit was required.** The `svm.c` patch draft (`host/patches/`) is spike-local and
 reuses the *existing* Intel `kvm-patches/patches/0001,0002,0004` verbatim.
 
-## The escalation (AE-3) — decision needed above the spike
+## AE-3 execution (2026-07-17) — escalation RESOLVED, force-exit PROVEN on-silicon
 
-The `svm.c` force-exit mechanism is content-verified against real 6.8 source, but the box's
-stock 6.8.0-88 kernel is **older than the determinism patch series (~6.18)** it must build
-into (6.8 has no `KVM_EXIT_PREEMPT`, no `deterministic_intercepts`/`preempt_armed`), so
-patches 0001/0002/0004 do not apply and the fields the hunk compiles against are absent
-(`results/ae-3/build-environment.json`). **Two clean resolutions, both above the spike:**
-(1) a ~6.18-class box kernel matching the series, or (2) an official 6.8 backport of
-0001/0002/0004. Hand-porting the whole series onto 6.8 or hot-swapping the box kernel was
-deliberately **not** done (it would substitute a different kernel/patch set than the ruling
-names — a docs/AMD-EPYC.md §Execution-constraints prohibition, and the tasks/123 escalate rule).
-Once resolved, `host/build-kvm-amd.sh all` is a one-command build (staged + validated to the
-version-skew wall), and AE-3's landing + AE-5's full gate follow.
+Paul ruled (2026-07-17) to resolve the 6.8-vs-6.18 escalation by **building + booting the
+patched linux-6.18.35 determinism kernel on this box** (a fresh Scaleway lease is blocked by
+`hm-3cp` and buys nothing — no stock distro carries the determinism patches). Executed:
+
+1. **Built a bootable 6.18.35** (`host/build-6.18-kernel.sh`): canonical determinism series
+   0001-0005 + the AMD `svm.c` hunk, **both git-apply clean to 6.18.35** (verified on-box —
+   the hunk did NOT need re-anchoring). Config based on the running Ubuntu config for
+   boot-safety (md1 RAID1 + NVMe root), `KVM_AMD=m`, BTF/DEBUG/SIG-force off, certs cleared,
+   `LOCALVERSION=` so `uname -r` is exactly `6.18.35`. `make bindeb-pkg` → 102 MB
+   `linux-image-6.18.35` .deb (sha256 `dbe27df5…`), ~42 min.
+2. **First-ever live boot** of the x86 6.18.35 determinism kernel (task 57 built+verified it
+   but never booted it). Self-recovering GRUB one-shot (`host/stage-6.18-boot.sh`):
+   `MODULES=most` initrd (verified to carry `raid1`+`nvme` — `MODULES=dep` silently dropped
+   them for the software-RAID root, a real boot-safety catch), permanent saved-default = stock
+   6.8, one-shot `grub-reboot` into 6.18.35. **NOTE:** `/boot` is on RAID1, so GRUB cannot
+   self-clear `next_entry` (the "diskfilter" warning) — the one-shot is sticky and was cleared
+   manually from Linux immediately after boot. Box returned in 135 s on `uname -r=6.18.35`,
+   root on `/dev/md1`, patched `kvm_amd` (vermagic 6.18.35, `avic=N`, `nested=1`).
+
+3. **Force-exit fires on-silicon (the escalation resolver).** `harness/ae3-forceexit.c` arms
+   the `ex_ret_brn_tkn` (0xc4) overflow at `target − margin`; the guest exits with
+   **`KVM_EXIT_PREEMPT` (42) on every arm**, `work_at_preempt ≤ target`, **skid ∈ [2581, 3039]
+   ≪ margin (8192/16384)**, never overshooting at the overflow. A stock `kvm_amd` cannot green
+   this (the harness `ENABLE_CAP`/`ARM_PREEMPT_EXIT` fail on stock) — mechanism attestation is
+   structural.
+
+**Finding — the AMD `svm.c` 0004-analogue needed a SECOND hunk.** The committed hunk added
+only `nmi_interception`; `ENABLE_CAP(KVM_CAP_X86_DETERMINISTIC_INTERCEPTS)` returned **-EINVAL**
+because patch 0003's `kvm_caps.has_deterministic_intercepts = true` is **VMX-only**, so the
+opt-in was never advertised on SVM and the force-exit could never arm. Added the one-line
+`svm_hardware_setup()` advertisement (the `vmx_hardware_setup` analogue); rebuilt the kvm
+modules out-of-tree against the running patched tree and **hot-swapped** them (no reboot) —
+`ENABLE_CAP` then succeeded and the mechanism fired. The corrected two-hunk patch is committed
+(`host/patches/0004-KVM-SVM-…`, now VALIDATED-ON-SILICON). This is the concrete answer to
+`docs/ARCH-BOUNDARY.md`'s deferred trait question for the AMD side: the SVM force-exit needs
+**two** small svm.c additions beyond the shared x86 plumbing (the NMI hook + the cap
+advertisement), not just the one the draft assumed.
+
+**Residual — exact single-step LANDING jitters on the non-isolated core.** After the overflow
+lands early (bounded skid), the AE-2 TF single-step advances toward `work == target`. It
+reaches target most of the time, but ~30% of arms **overshoot by exactly 1** (`work_landed =
+target+1`), and — more tellingly — the **full-register landed digest varies run-to-run even on
+exact (`work==target`) landings** (12-run sample: every digest distinct). This is consistent
+with AE-1's "async interrupts leak ~1 count" effect on this `CONFIG_HZ=1000`, non-`nohz_full`
+core: the *differential* is exact (AE-1) but the *absolute* landing point has few-branch
+run-to-run jitter, so the landed state is not yet bit-reproducible. This points to a
+**core-isolation dependency** (`nohz_full`/`isolcpus`) for exact deterministic landing — the
+same isolation the production determinism backend runs under and that AE-1 deliberately
+deferred ("No isolation reboot"). The isolating diagnostic (RIP+RCX-only digest, to separate
+counter jitter from harmless RFLAGS debug-bit variance) was **cut off by loss of box access**
+(see below) and must be re-run.
+
+**Box access lost mid-AE-3 (escalated).** During the landing-jitter diagnostic the box
+**rebooted and regenerated SSH host keys, then rejected the spike SSH key** (`Permission
+denied (publickey)`, consistent over 90 s) — a re-provision or `authorized_keys` reset, not a
+transient. Per tasks/123 (escalate on box access failure) this was handed to Paul. All CODE
+(build recipe, boot-staging, harnesses, the corrected two-hunk patch) is committed and
+reproducible; the on-silicon numbers above are recorded from the live run before access was
+lost. Re-running the full AE-3 campaign (10⁶ cumulative arms, replay-identical landing under
+core isolation), AE-5, and AE-6 requires restored box access.
+
+## (historical) The pre-ruling escalation
+
+Before Paul's 2026-07-17 ruling, AE-3 was ESCALATED: the `svm.c` hunk was verified against real
+6.8 source but the full build was blocked because the shared determinism plumbing targets ~6.18
+while the box ran stock 6.8. That version skew is what the build-on-this-box ruling resolved.
+The superseded out-of-tree recipe is `host/build-kvm-amd.sh` (kept for provenance);
+`host/build-6.18-kernel.sh` is the recipe that was actually executed.
 
 ## Remaining box steps (for the foreman / next iteration)
 
