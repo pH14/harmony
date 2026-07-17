@@ -970,3 +970,18 @@ in `~/aa1c-r2.log`; the 10 run-sets land under `results/aa-1c/aa1c-*-r2-{bulk,gr
    verdict + constants (bulk raw stays on the box, content-addressed). If any count
    mismatch or missed/duplicate overflow survives → **NO-GO**, record the fallback the
    evidence selects (§6). The `skid_margin` becomes AA-3's landing-contract bound.
+
+### AA-2 — single-step exactness: PENDING (apparatus build required — arrival-day)
+
+Not yet run. **Finding: the single-step run path does not exist in the harness** — the
+offline apparatus deliberately left it out (building it would presume AA-2's own
+single-step result, which the pre-build ruling forbids inventing; the counting loop even
+refuses an unrequested `KVM_EXIT_DEBUG`, and `check_debug_evidence` reads AA-2 as
+`NOT-REQUESTED` until real stepped records exist). So AA-2 execution is gated on building
+the step path first. That build is offline-buildable and native-testable (the
+scripted-vCPU seam); only the *measured* single-step semantics need the box. Full design
++ build + native-test + box-validation plan: **`harness/AA2-BUILD.md`** (the record
+format is fixed and must not change; the three pieces are the `KVM_SET_GUEST_DEBUG` ioctl
+seam, transition classification reusing `scan.rs`, and a `step_run` mode behind
+`--single-step`). Runs after AA-1(c) frees the box; the `skid_margin` AA-3 needs comes
+from AA-1(c), the trustworthy step primitive AA-3 needs comes from here.
