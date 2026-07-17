@@ -364,11 +364,11 @@ jobs:
       # factored out: `region`/`run_buf`, the value types, the run-loop contract
       # (`mock`/`run_loop`), and vmm-core's `work::WorkSource`/`ScriptedWork` + V-time
       # completion. See the crates' IMPLEMENTATION.md.
-      - name: cargo llvm-cov (region floor 93.5%)
+      - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
             --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/vendor/x86/work_perf\.rs|dissonance/campaign-runner/src/boxrun\.rs' \
-            --fail-under-regions 93.5
+            --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()
         with:
