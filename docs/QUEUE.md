@@ -220,8 +220,8 @@ spawn these until that lane re-opens):
   task spec drafted before spawn.
 - **Cloud-vendor CLI moved out-of-band** (Paul, 2026-07-14): `hm-6ge` closed — the
   budget-gated machine-lease CLI is Paul's personal toolchain outside this repo's task
-  queue; this repo just consumes it. Spec committed to main for reference
-  (tasks/106-cloud-vendor-cli.md, b565d58).
+  queue; this repo just consumes it. The obsolete in-tree reference spec was removed
+  by Paul on 2026-07-17.
 - ~~**Nested-x86 N-2 re-run CLOSED** (`hm-dbh`, 2026-07-14): 1,052,000/1,052,000 accounted
   at the ≥1M floor~~ — **SUPERSEDED SAME DAY**: the armed count was inflated (MTF-only
   deadlines counted); true armed PMIs 588,923 of the ≥1M floor. `hm-dbh` REOPENED,

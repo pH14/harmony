@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Install the external code-quality binaries used by the quality gates
-# (.github/workflows/quality.yml and docs/CODE-QUALITY.md).
+# (.github/workflows/quality.yml, .pre-commit-config.yaml, and
+# docs/CODE-QUALITY.md).
 #
 # These are *tools*, not crate dependencies — they are exempt from the
 # Convention rule-5 dependency whitelist (tasks/00-CONVENTIONS.md).
@@ -48,6 +49,16 @@ cargo public-api --version
 if git rev-parse --git-dir >/dev/null 2>&1; then
     echo "== configuring git hooks (core.hooksPath = .githooks)"
     git config core.hooksPath .githooks
+
+    if command -v pre-commit >/dev/null 2>&1; then
+        echo "== installing pinned pre-commit hook environments"
+        pre-commit install-hooks
+    else
+        echo "== note: the credential-leak pre-commit hook requires pre-commit:"
+        echo "     brew install pre-commit        # macOS"
+        echo "     pipx install pre-commit        # portable alternative"
+        echo "     pre-commit install-hooks"
+    fi
 fi
 
 # The pre-push hook's Miri step needs a nightly toolchain with the miri component.

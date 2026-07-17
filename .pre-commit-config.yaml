@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+repos:
+  - repo: https://github.com/Yelp/detect-secrets
+    # Immutable commit for v1.5.0. Keep the version comment in sync when updating.
+    rev: 01886c8a910c64595c47f186ca1ffc0b77fa5458
+    hooks:
+      - id: detect-secrets
+        # Local commits must not make network calls with a candidate credential.
+        # Harmony intentionally tracks thousands of SHA/content/evidence digests,
+        # so generic hex entropy is not actionable here. Structured-token, private-
+        # key, keyword, and base64 detectors remain enabled.
+        args: [--no-verify, --disable-plugin, HexHighEntropyString]
