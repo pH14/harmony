@@ -75,6 +75,8 @@ pub sdk_events::SdkError::MalformedLength
 pub sdk_events::SdkError::MalformedLength::available: usize
 pub sdk_events::SdkError::MalformedLength::context: &'static str
 pub sdk_events::SdkError::MalformedLength::needed: usize
+pub sdk_events::SdkError::MalformedSchemaEntry
+pub sdk_events::SdkError::MalformedSchemaEntry::detail: alloc::string::String
 pub sdk_events::SdkError::MixedOperations
 pub sdk_events::SdkError::MixedOperations::first: sdk_events::UpdateOp
 pub sdk_events::SdkError::MixedOperations::id: sdk_events::ObservationId

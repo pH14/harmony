@@ -153,7 +153,7 @@ fn deserializing_a_noncanonical_schema_is_rejected() {
 }
 
 #[test]
-fn a_resolved_state_without_a_supported_shape_is_neither_reducible_nor_deserializable() {
+fn only_a_resolved_u64_state_is_reducible() {
     use sdk_events::SchemaEntry;
 
     let state = |shape: Option<ValueShape>, op: Option<UpdateOp>| SchemaEntry {
@@ -168,10 +168,10 @@ fn a_resolved_state_without_a_supported_shape_is_neither_reducible_nor_deseriali
         name: None,
     };
 
-    // Reducibility: only a resolved `u64` state is reducible.
+    // Only a resolved `u64` state is reducible.
     assert!(state(Some(ValueShape::U64), Some(UpdateOp::Set)).is_reducible_state());
     // A resolved state with no supported concrete shape (shape-less / bool / bytes)
-    // or a report-only numeric shape is NOT reducible.
+    // or the report-only numeric shape is NOT reducible.
     for shape in [
         None,
         Some(ValueShape::Bool),
@@ -185,39 +185,245 @@ fn a_resolved_state_without_a_supported_shape_is_neither_reducible_nor_deseriali
     }
     // An unresolved state (no base op) is never reducible.
     assert!(!state(Some(ValueShape::U64), None).is_reducible_state());
+}
 
-    // Deserialization rejects a resolved state whose shape is not U64/Numeric — a
-    // persisted schema must not admit shape-less state into downstream reduction.
-    let make = |shape: serde_json::Value| {
+/// The full source-specific schema-entry invariant family, enforced at
+/// deserialization through the one `SchemaEntry::validate` choke point — one
+/// representative accept plus one rejection per invariant.
+#[test]
+fn schema_deserialization_enforces_the_source_specific_invariant_family() {
+    use sdk_events::{NS_ASSERT, NS_BUGGIFY, NS_LIFECYCLE};
+
+    fn schema(
+        source: &str,
+        id: serde_json::Value,
+        class: &str,
+        shape: serde_json::Value,
+        op: serde_json::Value,
+    ) -> String {
         serde_json::json!({
-            "source": "BinaryV2",
+            "source": source,
             "ordering": "RolloutLocalSourceOrdinal",
             "original_declaration": null,
             "entries": [{
-                "id": {"Point": {"namespace": NS_STATE, "local": 1}},
-                "classification": "State",
-                "value_shape": shape,
-                "base_op": "Set",
-                "expectation": null,
-                "name": null,
+                "id": id, "classification": class,
+                "value_shape": shape, "base_op": op,
+                "expectation": null, "name": null,
             }],
         })
         .to_string()
-    };
-    for bad in [
-        serde_json::Value::Null,
-        serde_json::json!("Bool"),
-        serde_json::json!("Bytes"),
-    ] {
+    }
+    let point =
+        |ns: u8, local: u32| serde_json::json!({ "Point": { "namespace": ns, "local": local } });
+    let prop = |s: &str| serde_json::json!({ "Property": s });
+    let life = |s: &str| serde_json::json!({ "Lifecycle": s });
+    let null = || serde_json::Value::Null;
+    let ok = |s: String| {
         assert!(
-            serde_json::from_str::<sdk_events::SdkSchema>(&make(bad.clone())).is_err(),
-            "resolved state with shape {bad} must be rejected on deserialize"
-        );
-    }
-    // The reducible bounded integer and the report-only numeric shape still admit.
-    for ok in [serde_json::json!("U64"), serde_json::json!("Numeric")] {
-        assert!(serde_json::from_str::<sdk_events::SdkSchema>(&make(ok)).is_ok());
-    }
+            serde_json::from_str::<sdk_events::SdkSchema>(&s).is_ok(),
+            "should ACCEPT: {s}"
+        )
+    };
+    let bad = |s: String| {
+        assert!(
+            serde_json::from_str::<sdk_events::SdkSchema>(&s).is_err(),
+            "should REJECT: {s}"
+        )
+    };
+
+    // --- one valid representative per (source × role) — all must round-trip ---
+    ok(schema(
+        "AntithesisJson",
+        prop("p"),
+        "Occurrence",
+        null(),
+        null(),
+    )); // assertion
+    ok(schema(
+        "AntithesisJson",
+        prop("g"),
+        "State",
+        serde_json::json!("Numeric"),
+        serde_json::json!("Max"),
+    )); // guidance
+    ok(schema(
+        "AntithesisJson",
+        life("setup"),
+        "Occurrence",
+        null(),
+        null(),
+    )); // setup
+    ok(schema(
+        "BinaryV1",
+        point(NS_ASSERT, 1),
+        "Occurrence",
+        null(),
+        null(),
+    )); // v1 assert
+    ok(schema(
+        "BinaryV1",
+        point(NS_STATE, 1),
+        "State",
+        null(),
+        null(),
+    )); // v1 state (unresolved)
+    ok(schema(
+        "BinaryV1",
+        point(NS_BUGGIFY, 1),
+        "Occurrence",
+        null(),
+        null(),
+    )); // v1 buggify
+    ok(schema(
+        "BinaryV2",
+        point(NS_STATE, 1),
+        "State",
+        serde_json::json!("U64"),
+        serde_json::json!("Set"),
+    )); // v2 state
+    ok(schema(
+        "BinaryV2",
+        point(NS_ASSERT, 1),
+        "Occurrence",
+        null(),
+        null(),
+    )); // v2 occurrence
+    ok(schema(
+        "BinaryV2",
+        point(NS_LIFECYCLE, 0),
+        "Occurrence",
+        null(),
+        null(),
+    )); // v2 lifecycle
+
+    // --- INV-1: an occurrence is inert (no reducer, no shape) ---
+    bad(schema(
+        "AntithesisJson",
+        prop("p"),
+        "Occurrence",
+        serde_json::json!("U64"),
+        null(),
+    ));
+    bad(schema(
+        "AntithesisJson",
+        prop("p"),
+        "Occurrence",
+        null(),
+        serde_json::json!("Set"),
+    ));
+
+    // --- INV-2: binary v1 state never resolves a reducer/shape (the r13 catch) ---
+    bad(schema(
+        "BinaryV1",
+        point(NS_STATE, 1),
+        "State",
+        serde_json::json!("U64"),
+        serde_json::json!("Set"),
+    ));
+    bad(schema(
+        "BinaryV1",
+        point(NS_STATE, 1),
+        "State",
+        serde_json::json!("U64"),
+        null(),
+    ));
+    bad(schema(
+        "BinaryV1",
+        point(NS_STATE, 1),
+        "State",
+        null(),
+        serde_json::json!("Set"),
+    ));
+
+    // --- INV-3: binary v2 state needs a resolved op + the u64 shape ---
+    bad(schema(
+        "BinaryV2",
+        point(NS_STATE, 1),
+        "State",
+        serde_json::json!("U64"),
+        null(),
+    )); // no op
+    bad(schema(
+        "BinaryV2",
+        point(NS_STATE, 1),
+        "State",
+        serde_json::json!("Bool"),
+        serde_json::json!("Set"),
+    )); // wrong shape
+    bad(schema(
+        "BinaryV2",
+        point(NS_STATE, 1),
+        "State",
+        serde_json::json!("Numeric"),
+        serde_json::json!("Set"),
+    )); // numeric is antithesis-only
+
+    // --- INV-4: antithesis state is numeric max/min guidance ---
+    bad(schema(
+        "AntithesisJson",
+        prop("g"),
+        "State",
+        serde_json::json!("Numeric"),
+        serde_json::json!("Set"),
+    )); // wrong op
+    bad(schema(
+        "AntithesisJson",
+        prop("g"),
+        "State",
+        serde_json::json!("U64"),
+        serde_json::json!("Max"),
+    )); // wrong shape
+
+    // --- INV-5: id variant matches the source ---
+    bad(schema("BinaryV1", prop("p"), "Occurrence", null(), null())); // binary needs a Point
+    bad(schema(
+        "AntithesisJson",
+        point(NS_ASSERT, 1),
+        "Occurrence",
+        null(),
+        null(),
+    )); // antithesis needs Property/Lifecycle
+
+    // --- INV-6: a point's namespace matches its classification ---
+    bad(schema(
+        "BinaryV2",
+        point(NS_ASSERT, 1),
+        "State",
+        serde_json::json!("U64"),
+        serde_json::json!("Set"),
+    )); // state at assert ns
+    bad(schema(
+        "BinaryV1",
+        point(NS_STATE, 1),
+        "Occurrence",
+        null(),
+        null(),
+    )); // occurrence at state ns
+    bad(schema(
+        "BinaryV2",
+        point(9, 1),
+        "Occurrence",
+        null(),
+        null(),
+    )); // unknown ns
+
+    // --- INV-7: a point's local id is an addressable 24-bit coordinate ---
+    bad(schema(
+        "BinaryV1",
+        point(NS_STATE, 0x0100_0000),
+        "State",
+        null(),
+        null(),
+    )); // 2^24
+
+    // --- INV-8: a lifecycle point sits only at the setup_complete local (0) ---
+    bad(schema(
+        "BinaryV2",
+        point(NS_LIFECYCLE, 5),
+        "Occurrence",
+        null(),
+        null(),
+    ));
 }
 
 proptest! {

@@ -19,6 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::SdkError;
+use crate::wire;
 
 /// Which source-specific ingress format produced a schema or event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -229,6 +230,98 @@ impl SchemaEntry {
             && self.base_op.is_some()
             && self.value_shape == Some(ValueShape::U64)
     }
+
+    /// The **single validation choke point** for the normalized schema model:
+    /// enforce every source-specific invariant of a `SchemaEntry`. Every path that
+    /// admits an entry from persisted input routes through here —
+    /// [`SdkSchema::merge_entry`] (decode) and `SdkSchema`'s deserialization
+    /// (`try_from`) — so the invariant set lives in one place and the decoders and
+    /// persisted input are held to the same contract.
+    ///
+    /// The invariant family (a value the decoders never mint is refused on load):
+    /// - **id ↔ source**: binary sources address [`ObservationId::Point`]s;
+    ///   Antithesis addresses [`ObservationId::Property`]/[`ObservationId::Lifecycle`];
+    /// - **point coordinate** (binary): the namespace matches the classification
+    ///   (`NS_STATE`⇔state; `NS_ASSERT`/`NS_BUGGIFY`/`NS_LIFECYCLE`⇔occurrence), the
+    ///   local id is an addressable 24-bit coordinate, and a lifecycle point sits at
+    ///   the sole `setup_complete` local;
+    /// - **occurrence is inert**: no base operation, no value shape (any source);
+    /// - **state shape/op is source-specific**: binary-v1 leaves both unresolved;
+    ///   binary-v2 is a resolved op over the bounded-integer `u64` shape;
+    ///   Antithesis is numeric guidance — a resolved `max`/`min` over the
+    ///   report-only `Numeric` shape.
+    pub(crate) fn validate(&self, source: SourceFormat) -> Result<(), String> {
+        let err = |msg: &str| Err(format!("entry {:?} (source {source:?}): {msg}", self.id));
+
+        // id variant ↔ source, and — for binary points — the coordinate rules.
+        match (source, &self.id) {
+            (
+                SourceFormat::BinaryV1 | SourceFormat::BinaryV2,
+                ObservationId::Point { namespace, local },
+            ) => {
+                if *local > wire::LOCAL_MASK {
+                    return err("point local id exceeds the 24-bit limit");
+                }
+                let expected = match *namespace {
+                    wire::NS_STATE => Classification::State,
+                    wire::NS_ASSERT | wire::NS_BUGGIFY | wire::NS_LIFECYCLE => {
+                        Classification::Occurrence
+                    }
+                    _ => return err("point namespace has no reportable firing"),
+                };
+                if expected != self.classification {
+                    return err("classification disagrees with the point namespace");
+                }
+                if *namespace == wire::NS_LIFECYCLE && *local != wire::LIFECYCLE_SETUP_COMPLETE {
+                    return err("only the setup_complete lifecycle point (local 0) is reportable");
+                }
+            }
+            (
+                SourceFormat::AntithesisJson,
+                ObservationId::Property(_) | ObservationId::Lifecycle(_),
+            ) => {}
+            _ => return err("id variant does not match the source"),
+        }
+
+        // An occurrence is inert — no reducer, no value shape — for every source.
+        if self.classification == Classification::Occurrence {
+            if self.base_op.is_some() {
+                return err("occurrence carries a base operation");
+            }
+            if self.value_shape.is_some() {
+                return err("occurrence carries a value shape");
+            }
+            return Ok(());
+        }
+
+        // State: the shape/op contract is source-specific.
+        match source {
+            SourceFormat::BinaryV1 => {
+                if self.base_op.is_some() || self.value_shape.is_some() {
+                    return err(
+                        "binary v1 state must leave the reducer and value shape unresolved",
+                    );
+                }
+            }
+            SourceFormat::BinaryV2 => {
+                if self.base_op.is_none() {
+                    return err("binary v2 state must declare a base operation");
+                }
+                if self.value_shape != Some(ValueShape::U64) {
+                    return err("binary v2 state must carry the u64 value shape");
+                }
+            }
+            SourceFormat::AntithesisJson => {
+                if !matches!(self.base_op, Some(UpdateOp::Max) | Some(UpdateOp::Min)) {
+                    return err("antithesis state (guidance) must declare a max/min extremum");
+                }
+                if self.value_shape != Some(ValueShape::Numeric) {
+                    return err("antithesis state (guidance) must carry the numeric value shape");
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The normalized, persisted schema: every declared identity's semantics, the
@@ -283,23 +376,10 @@ impl TryFrom<SdkSchemaRepr> for SdkSchema {
                 }
             }
         }
-        // A resolved state reducer needs a concrete representation: the reducible
-        // bounded integer (`U64`) or the report-only numeric token (`Numeric`). A
-        // shape-less (or `Bool`/`Bytes`) resolved state cannot be reduced, so it
-        // must not be admitted from persisted input (the decoders never mint it).
+        // Every entry admitted from persisted input passes the one validation
+        // choke point — the full source-specific invariant family.
         for entry in &repr.entries {
-            if entry.classification == Classification::State
-                && entry.base_op.is_some()
-                && !matches!(
-                    entry.value_shape,
-                    Some(ValueShape::U64) | Some(ValueShape::Numeric)
-                )
-            {
-                return Err(format!(
-                    "state entry {:?} has a resolved base op but no supported value shape ({:?})",
-                    entry.id, entry.value_shape
-                ));
-            }
+            entry.validate(repr.source)?;
         }
         Ok(SdkSchema {
             source: repr.source,
@@ -356,6 +436,11 @@ impl SdkSchema {
     /// expectation is adopted; a resolved value is never silently overwritten by a
     /// conflicting one.
     pub(crate) fn merge_entry(&mut self, incoming: SchemaEntry) -> Result<(), SdkError> {
+        // The one validation choke point: the incoming entry must satisfy every
+        // source-specific invariant before it is admitted.
+        incoming
+            .validate(self.source)
+            .map_err(|detail| SdkError::MalformedSchemaEntry { detail })?;
         match self.entries.binary_search_by(|e| e.id.cmp(&incoming.id)) {
             Ok(i) => {
                 let existing = &mut self.entries[i];
@@ -497,5 +582,46 @@ mod tests {
         let mut slot = Some(7u8);
         assert!(reconcile_option(&mut slot, None, conflict).is_ok());
         assert_eq!(slot, Some(7));
+    }
+
+    // `merge_entry` routes every decoded entry through the `validate` choke point,
+    // so an invariant-violating entry is refused on the decode path too (not only
+    // at deserialization). `merge_entry` is `pub(crate)`, so this is in-crate.
+    #[test]
+    fn merge_entry_rejects_an_invalid_entry_via_the_choke_point() {
+        let mut schema = SdkSchema::new(
+            SourceFormat::BinaryV1,
+            OrderingScope::RolloutLocalSourceOrdinal,
+        );
+        // A binary-v1 state that resolves a reducer + shape violates INV-2.
+        let bad = SchemaEntry {
+            id: ObservationId::Point {
+                namespace: wire::NS_STATE,
+                local: 1,
+            },
+            classification: Classification::State,
+            value_shape: Some(ValueShape::U64),
+            base_op: Some(UpdateOp::Set),
+            expectation: None,
+            name: None,
+        };
+        assert!(matches!(
+            schema.merge_entry(bad),
+            Err(SdkError::MalformedSchemaEntry { .. })
+        ));
+
+        // A valid v1 state (unresolved) is admitted.
+        let good = SchemaEntry {
+            id: ObservationId::Point {
+                namespace: wire::NS_STATE,
+                local: 1,
+            },
+            classification: Classification::State,
+            value_shape: None,
+            base_op: None,
+            expectation: None,
+            name: None,
+        };
+        assert!(schema.merge_entry(good).is_ok());
     }
 }

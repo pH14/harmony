@@ -161,6 +161,18 @@ pub enum SdkError {
         firings_before: usize,
     },
 
+    /// A normalized schema entry violates a source-specific invariant of the model
+    /// (the single [`SchemaEntry::validate`](crate::SchemaEntry) choke point) — e.g.
+    /// a binary-v1 state entry that resolves a reducer, a v2 state entry without the
+    /// `u64` shape, an occurrence carrying a reducer, or an id whose variant does
+    /// not match the source. Surfaced when such an entry is admitted from persisted
+    /// input.
+    #[error("malformed schema entry: {detail}")]
+    MalformedSchemaEntry {
+        /// A description of the violated invariant.
+        detail: String,
+    },
+
     /// A catalog declaration carries bytes beyond its declared record `count`. The
     /// trailing bytes are unaccounted for (a miscounted or corrupted catalog), so
     /// the declaration is refused rather than silently discarding declared
