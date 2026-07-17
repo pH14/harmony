@@ -27,10 +27,14 @@ cd ~/kernel
 [[ -f linux-${KERNEL_VERSION}.tar.xz ]] || { echo "FAIL: stock tarball missing; run build-stock first" >&2; exit 1; }
 [[ -f "$PATCH" ]] || { echo "FAIL: patch not found at $PATCH" >&2; exit 1; }
 
-echo "==> fresh-extract patched tree"
+echo "==> fresh-extract patched tree into $PATCHED (WITHOUT touching the stock tree)"
+# BUG FIX: the first version did `tar xf` (which extracts to ./linux-6.18.35 — the SAME dir
+# the stock tree lives in, clobbering it) then `mv linux-6.18.35 -patched` (moving the stock
+# tree, including its vmlinux, which the patched build then overwrote). Extract straight into
+# $PATCHED with --strip-components so the stock ~/kernel/linux-6.18.35 tree is never touched.
 rm -rf "$PATCHED"
-tar xf linux-${KERNEL_VERSION}.tar.xz
-mv linux-${KERNEL_VERSION} "$PATCHED"   # tar extracts to linux-6.18.35; rename to -patched
+mkdir -p "$PATCHED"
+tar xf linux-${KERNEL_VERSION}.tar.xz -C "$PATCHED" --strip-components=1
 cd "$PATCHED"
 
 echo "==> apply the patch (patch -p1)"
