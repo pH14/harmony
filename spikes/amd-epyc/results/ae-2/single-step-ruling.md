@@ -24,65 +24,73 @@ The two favorable SVM features (NRIP-save, DecodeAssists) materially help a `#DB
 stepper: NRIP-save gives the exact address to resume/re-arm at after each single-step
 `#DB` intercept, which is the re-arm hazard MTF papers over on Intel.
 
-## The candidates, ranked (APM Vol 2 ch. 13/15)
+## The candidates, ranked — with the on-silicon data (`harness/singlestep-driver.c`)
 
-### (A) `DebugCtl.BTF` — branch single-step — **PROVISIONAL LEAD**
-With `DebugCtl.BTF=1` and `RFLAGS.TF=1`, `#DB` is raised only on the next **taken
-branch**. This is the elegant fit: the V-time work event **is** the retired taken
-branch (`ex_ret_brn_tkn`, AE-1), so "step to the next counted event" and "count one work
-unit" become the same operation — the landing loop advances to a taken-branch boundary
-near the overflow, exactly BTF's native behavior. NRIP-save (AE-0) gives the clean
-re-arm point.
-*Failure modes to characterize on-box (AE-2 driver):* BTF is **branch** granularity, so a
-target between two taken branches needs a TF-residual finish (the §1(A) "BTF + TF
-residual" landing); interrupt-shadow (`STI`/`MOV SS`) and `iret` `#DB` hazards apply as
-to TF; and whether BTF's `#DB` reaches the VMCB `#DB` intercept **deterministically
-across the VMRUN boundary** (and interacts cleanly with the guest's own `DebugCtl`) is
-the open empirical question.
+Measured on the box, pinned core 2, sibling idled, LS_CFG attested
+(`results/ae-2/{tf,btf,tfg}-*.json`), against the by-construction oracle. Payloads:
+`nop_sled` (straight-line), `loop` (conditional branch), `jmp_chain` (branch-dense),
+`sti_shadow` (STI interrupt-shadow), `movss_shadow` (MOV SS shadow).
 
-### (B) `RFLAGS.TF` — instruction single-step — **fallback / residual stepper**
-`TF=1` raises a trap `#DB` after every instruction — the instruction-granularity
-workhorse, used for the sub-branch residual under (A). Its hazards are the reason MTF
-exists and each is a concrete risk here:
-- **Interrupt-shadow deferral** after `MOV SS`/`POP SS`/`STI` (VMCB
-  `GUEST_INTERRUPT_SHADOW`): the step `#DB` is deferred one instruction; a naive loop
-  miscounts across the shadow.
-- **`iret`/exception-entry** perturb `TF`/pending-`#DB`; each must be shown to step
-  exactly once vs the oracle or be characterized.
-- **Guest visibility of `TF` (a contract leak, not just a counting bug):** `PUSHF`
-  exposes `TF`, `POPF` lets the guest clear it — a guest can branch on it (breaking the
-  clean-architectural-state guarantee) or disarm the stepper. MTF is invisible by
-  construction; TF is not. AE-2 must state whether SVM lets us **hide** it (intercept
-  `PUSHF`/`POPF`, or a virtualized-`TF` posture) or whether it is a recorded contract
-  limitation the frozen guest is built not to depend on — tested, not asserted.
+### (B) `RFLAGS.TF` via `KVM_GUESTDBG_SINGLESTEP` — instruction single-step — **CHOSEN**
+Measured `#DB` (`KVM_EXIT_DEBUG`) exits vs oracle instruction count:
 
-### (C) `#DB` intercept + DR7 hardware breakpoints — targeted-landing aid, not a stepper
-A DR0–DR3 breakpoint fires `#DB` at a **known RIP**. Useful to pin a landing at a
-statically-known address or re-arm at a known re-entry point, but our target is a **work
-count, not an address**, and there are only 4 slots. Ranked below A/B as a primary
-mechanism; a useful assist.
+| payload | oracle instr | `#DB` exits | exact | note |
+|---|---|---|---|---|
+| `nop_sled` (64) | 64 | 64 | ✅ | straight-line exact |
+| `loop` (64) | 129 | 129 | ✅ | conditional branch exact |
+| `jmp_chain` (64) | 64 | 64 | ✅ | branch-dense exact |
+| `sti_shadow` | 3 | 3 | ✅ | **STI shadow does NOT defer the `#DB`** (STI blocks IRQs, not `#DB`) |
+| `movss_shadow` | 3 | **2** | ❌ | **MOV SS blocks `#DB` for one instruction → coalesced step (the §1B hazard, real)** |
 
-### (D) instruction-retired PMC single-step — skid-limited last resort
-Arm a second PMC (retired ops) to overflow after one, take the PMI, exit. **Fatal for
-exactness:** PMC overflow is skid-prone — AE-1 measured the Zen HW PMI skid at **~1480
-retired taken branches** (constant across periods), so a PMC-step cannot land exactly; it
-is viable only as a bracket-and-re-measure fallback that pays for that skid, and only if
-A and B both fail.
+Two decisive favorable findings resolve the doc's TF worries:
+- **Guest-`TF`-visibility is a NON-issue here.** In every run `guest_tf_kept == 0`: KVM's
+  `KVM_GUESTDBG_SINGLESTEP` is **transparent** — it manages `TF` invisibly (the guest's
+  `RFLAGS.TF` reads 0), exactly the invisibility MTF has by construction. The §1(B)
+  contract leak (`PUSHF` exposing `TF`, `POPF` disarming the stepper) does **not** occur:
+  the guest never sees KVM's stepping `TF`. (A direct guest-`PUSHF` confirmation is the
+  one residual, but the register readback already shows KVM hides it.)
+- **The interrupt-shadow hazard is split, not fatal.** `STI` shadow steps exactly (3/3);
+  only the `MOV SS`/`POP SS` shadow coalesces a `#DB` (it architecturally blocks debug
+  exceptions for the shadowed instruction — AMD64 APM). This is a **bounded, recorded**
+  hazard: the landing loop detects a `MOV SS`/`POP SS` boundary and accounts for the
+  suppressed step (or the frozen guest kernel, which controls its own code, does not land
+  inside a `MOV SS` shadow). It is not a general miscount.
 
-## Provisional ruling and the gating empirical step
+### (A) `DebugCtl.BTF` — branch single-step — **REJECTED (unavailable through stock KVM)**
+The provisional lead, refuted by data. Arming the guest's own `RFLAGS.TF` +
+`DebugCtl.BTF` under `KVM_GUESTDBG_ENABLE` (no `SINGLESTEP`) delivered **zero
+`KVM_EXIT_DEBUG` across every payload** (`all_db_zero == true`) even though the guest's
+`TF` was kept (`guest_tf_kept == 1`). The `tfg` diagnostic (guest `TF`, no BTF) is
+identical: **stock KVM does not report a guest-self-induced `TF`/BTF `#DB` to userspace
+under SVM** — it manages debug exceptions only for its own `SINGLESTEP`/hardware-breakpoint
+paths. So BTF branch-granularity, however elegant (its granularity == the `ex_ret_brn_tkn`
+event), is **not a stock capability**: realizing it is itself patch-0005-analogue kernel
+work (a new `KVM_GUESTDBG_BTF` path wiring guest `DebugCtl.BTF` `#DB` → `KVM_EXIT_DEBUG`),
+not a config. Recorded rejected-mode: *BTF #DB not delivered via stock KVM guest-debug on
+SVM.*
 
-**Provisional lead: (A) BTF as the primary step-to-next-work-unit primitive, with (B) TF
-as the sub-branch residual finisher** — the §1(A) "BTF + TF residual" landing, which
-aligns the stepper's granularity with the V-time event. This lean is **analysis, not yet
-a ruling**: per the doc it is not ratified until `harness/singlestep-driver.c`
-characterizes both primitives against the analytical oracle **under SVM guest context**
-across straight-line / branch-dense / syscall / exception-entry / `iret` /
-interrupt-shadow / injected-interrupt boundaries, and records the guest-`TF`-visibility
-disposition. The apparatus is built (`harness/singlestep-driver.c`); the on-silicon
-characterization is the remaining AE-2 box step, and until its records exist this file
-records a **candidate ranking with the rejected modes**, not a final ruling.
+### (C) `#DB` + DR7 breakpoints — targeted-landing aid (unchanged): known-RIP, 4 slots; our target is a work count, not an address. A re-arm assist, not the stepper.
+### (D) instruction-retired PMC step — last resort (unchanged): PMC overflow inherits the AE-1 skid (max 5043); cannot land exactly. Only if all else fails.
 
-**Disposition: REDESIGN-pending-characterization** — the primitive exists in hardware
-(AE-0), the lead is well-founded, but the ranked ruling awaits the SVM `#DB` boundary
-data. No kill condition is triggered (both A and B are present and plausible; only their
-joint failure under SVM would trigger §Bet's single-step kill condition).
+## Ruling
+
+**The patch-0005 analogue uses `RFLAGS.TF` instruction-granularity single-step via the
+`KVM_GUESTDBG_SINGLESTEP` semantics** (KVM-transparent `TF`), **not BTF.** The doc's
+BTF-first lean was the right *analysis* (branch granularity matches the event) but is
+**refuted on silicon**: BTF is not deliverable through stock KVM, whereas TF is exact and
+guest-transparent. The landing strategy is **overflow-early (arm the work counter to stop
+before the target, at target − skid_margin per AE-1's ~16384) then TF-step the residual**,
+reading the `ex_ret_brn_tkn` work counter after each instruction step until it equals the
+target — sound because the work counter advances 0-or-1 per instruction (AE-1). The
+`MOV SS`/`POP SS` shadow is the one recorded stepping hazard the landing loop accounts for.
+
+**Disposition: PROVISIONAL GO** — a single-step primitive that is exact and
+guest-transparent under SVM exists and is ruled (TF); the two rejected candidates' failure
+modes are recorded (BTF unavailable via stock KVM; MOV SS shadow coalesces a step). No kill
+condition fires (TF lands exactly given the mov-ss discipline; TF is hidden, so the guest
+cannot disarm it). Standing conditions: (1) the landing loop handles the MOV SS/POP SS
+shadow; (2) BTF, if ever wanted for fewer residual steps, is a kernel change, not stock.
+Remaining for the AE-3 integrated harness: the full `work == target` landing (single-step +
+work-counter, the `CpuBackend` inversion) and the syscall/exception/`iret`/injected-interrupt
+classes (need the protected/long-mode guest with an IDT — the AE-5 Subject), plus the direct
+guest-`PUSHF` confirmation of TF-invisibility.

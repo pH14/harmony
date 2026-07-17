@@ -2,8 +2,7 @@
 # Built ON the box (native x86_64 Linux). See spikes/amd-epyc/README.md.
 CC      ?= cc
 CFLAGS  ?= -O2 -g -Wall -Wextra -std=gnu11
-# singlestep-driver (AE-2) is added as its source lands.
-BINS     = amd-hammer ae0-probe kvm-guest-hammer
+BINS     = amd-hammer ae0-probe kvm-guest-hammer singlestep-driver
 
 all: $(BINS)
 
