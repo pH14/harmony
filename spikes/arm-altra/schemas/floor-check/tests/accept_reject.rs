@@ -172,6 +172,38 @@ fn accept_aa2_steps_is_accepted() {
 }
 
 #[test]
+fn accept_aa2_bounded_is_accepted() {
+    // A BOUNDED AA-2 run: the full step matrix, but cut short at --max-steps before MARK_END, so
+    // every record's window is 0/0/0 — NOT the oracle's count. count-exactness must EXEMPT step
+    // records (a step record is graded by debug-evidence/replay-identity, never the window-count
+    // oracle), or a legitimately bounded run — the one --max-steps exists to produce, e.g. the
+    // llsc livelock — would be wrongly rejected.
+    let report = check("accept-aa2-bounded", no_floors());
+    assert!(
+        report.passed(),
+        "the bounded AA-2 fixture was rejected: {:?}",
+        report.failed()
+    );
+    assert_eq!(
+        report.status_of(CheckId::CountExactness),
+        Some(Status::Pass),
+        "step records are exempt from the window-count oracle, so count-exactness still passes"
+    );
+    assert_eq!(
+        report.status_of(CheckId::DebugEvidence),
+        Some(Status::Pass),
+        "the full step matrix still validates as AA-2 evidence"
+    );
+    assert_eq!(
+        report.status_of(CheckId::ReplayIdentity),
+        Some(Status::Pass),
+        "each stepped step-moment still replayed bit-identically"
+    );
+    assert_eq!(report.status_of(CheckId::WellFormed), Some(Status::Pass));
+    assert_eq!(report.exit_code(), 0);
+}
+
+#[test]
 fn reject_aa2_step_skips_an_instruction() {
     // A sequential step that advanced by 8, not 4 — a skipped instruction, the miss AA-2 hunts.
     assert_single_failure(

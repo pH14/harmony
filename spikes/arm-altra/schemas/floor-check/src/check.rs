@@ -1124,6 +1124,25 @@ fn check_well_formed(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outc
                 r.sample_id
             ));
         }
+        // A step record's window count is EXEMPT from the oracle (a bounded AA-2 run may never
+        // reach MARK_END, so its count is not the oracle's — check_counts skips it), but its
+        // window endpoints must still be self-consistent: `measured_taken == work_end -
+        // work_begin`, with `work_end >= work_begin`. Non-step records get this identity from
+        // check_counts (which also grades them against the oracle); a step record gets it here,
+        // so exempting it from the oracle never lets a self-contradictory window through.
+        if r.step.is_some() {
+            match r.work_end.checked_sub(r.work_begin) {
+                Some(delta) if delta == r.measured_taken => {}
+                Some(delta) => problems.push(format!(
+                    "record {}: step-record measured_taken {} != work_end - work_begin ({delta})",
+                    r.sample_id, r.measured_taken
+                )),
+                None => problems.push(format!(
+                    "record {}: step-record work_end {} is before work_begin {} (negative window)",
+                    r.sample_id, r.work_end, r.work_begin
+                )),
+            }
+        }
     }
 
     verdict(
@@ -1340,6 +1359,11 @@ fn check_weights_and_counts(run_set: &RunSet, records: &[RunRecord], out: &mut V
 
 fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>) {
     let mut problems: Vec<String> = Vec::new();
+    // How many records were actually graded against the oracle (non-step records). AA-2 step
+    // records are exempt (see below), so the verdict says how many it graded vs skipped rather
+    // than claiming to have checked records it deliberately did not.
+    let mut graded: usize = 0;
+    let stepped = records.iter().filter(|r| r.step.is_some()).count();
 
     // Memoize the oracle by `(payload, scale, seed)`. `expected` iterates the FULL
     // scale (for branch-dense, `2 * trips` PRNG steps at 1e8 = 2×10⁸ per call), and
@@ -1355,6 +1379,18 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
     let mut oracle_trips: u64 = 0;
 
     for r in records {
+        // AA-2 single-step records are EXEMPT from the window-count oracle. A bounded stepped
+        // run (stopped at `--max-steps` before MARK_END — how the llsc livelock is bounded)
+        // never closes its window, so its count is not the oracle's; and a step record's
+        // acceptance is check_debug_evidence / check_replay_identity, not the window-count
+        // oracle. Grading it here would reject a legitimately bounded run. Its window
+        // endpoints' self-consistency (`measured_taken == work_end - work_begin`) is still
+        // enforced — by check_well_formed, on every step record.
+        if r.step.is_some() {
+            continue;
+        }
+        graded += 1;
+
         // Recompute the measured count from the two window endpoints, and fail the
         // record's own `measured_taken` if it disagrees.
         match r.work_end.checked_sub(r.work_begin) {
@@ -1438,10 +1474,14 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
     verdict(
         CheckId::CountExactness,
         &problems,
-        format!(
-            "all {} records match the oracle and are self-consistent",
-            records.len()
-        ),
+        if stepped == 0 {
+            format!("all {graded} records match the oracle and are self-consistent")
+        } else {
+            format!(
+                "all {graded} counting record(s) match the oracle and are self-consistent \
+                 ({stepped} AA-2 step record(s) exempt — graded by debug-evidence/replay-identity)"
+            )
+        },
         out,
     );
 }

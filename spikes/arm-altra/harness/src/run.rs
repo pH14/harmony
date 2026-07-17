@@ -934,6 +934,19 @@ pub trait StepVcpu: Vcpu {
     /// # Errors
     /// [`RunError::Seam`] if the register could not be read.
     fn vbar(&mut self) -> Result<u64, RunError>;
+
+    /// A **registers-only** digest — the vCPU register (and vGIC) state
+    /// [`Vcpu::state_digest`] reads, hashed WITHOUT the guest-RAM slice. This is the cheap
+    /// per-step replay key: `state_digest` faults in and hashes the whole guest-RAM slot
+    /// every call, and single-stepping digests once per instruction, so a full-RAM hash per
+    /// step is infeasible. [`step_run`] stamps this on every step but the LAST, which pays
+    /// the full-RAM cost so memory divergence across the stepped window is still caught
+    /// end-to-end (the amendment). The digest is domain-separated from the full one
+    /// ([`crate::sys::digest_regs_only`]) so the two can never collide.
+    ///
+    /// # Errors
+    /// [`RunError::Seam`] if the register/vGIC state could not be read.
+    fn regs_digest(&mut self) -> Result<String, RunError>;
 }
 
 /// One measured single step, buffered until the run's window count and final state are known
@@ -947,29 +960,53 @@ struct StepMeasurement {
 }
 
 /// Run one payload under single-step, emitting one [`RunRecord`] (each carrying its
-/// [`StepRecord`], `exit_reason == Debug`) per stepped instruction, until the console sentinel.
+/// [`StepRecord`], `exit_reason == Debug`) per stepped instruction, until the console sentinel
+/// **or** `max_steps` steps, whichever comes first.
 ///
-/// The sibling of [`run_sample`]: same seams, same console/params/window discipline, same
-/// fail-closed refusals — but it arms `KVM_GUESTDBG_SINGLESTEP` and records a step per
-/// `KVM_EXIT_DEBUG` instead of arming an overflow. The window is still measured (`work_begin`
-/// at `MARK_BEGIN`, `work_end` at `MARK_END`) and stamped onto every step's record, so the
-/// oracle count check grades a stepped run exactly as a counting one; the per-step
-/// measurement rides alongside in the `step` field. Intended for **smoke-scale** payloads: a
-/// 1e6 window is millions of steps, so a full stepped run stays a smoke run of ~10⁴ records.
+/// The sibling of [`run_sample`]: same seams, same console/params discipline, same fail-closed
+/// refusals — but it arms `KVM_GUESTDBG_SINGLESTEP` and records a step per `KVM_EXIT_DEBUG`
+/// instead of arming an overflow.
+///
+/// # `max_steps`, and why a full stepped run needs it
+///
+/// `max_steps == 0` is **unbounded**: run to the console sentinel, exactly as before. A
+/// nonzero `max_steps` **bounds** the run to that many steps — normal, not an error. Two
+/// reasons a real stepped run needs the bound:
+///
+/// - **The digest cost.** [`Vcpu::state_digest`] faults in and hashes the whole 4 MiB guest-RAM
+///   slot; a 1e6 window is millions of steps, so full-hashing per step is infeasible. Every
+///   step but the last therefore carries the cheap [`StepVcpu::regs_digest`] (registers only),
+///   and only the FINAL recorded step's `step_digest` is the full-payload hash — so memory
+///   divergence anywhere in the stepped window is still caught end-to-end by replay-identity
+///   (which compares `step_digest`), never resting on registers-only evidence for the window.
+/// - **The `llsc-atomics` livelock.** Each step clears the exclusive monitor, so `STXR` never
+///   succeeds and the retry `CBNZ` loops forever — the run never reaches `MARK_END` or the
+///   sentinel. `max_steps` bounds it to a finite stepped prefix (the AA-4 hazard, characterized
+///   rather than hung on).
+///
+/// A bounded run may stop before `MARK_END` (the livelock never closes its window), so its
+/// window fields are taken from whatever closed and kept **self-consistent**
+/// (`measured_taken == work_end - work_begin`, e.g. `0/0/0`); they are NOT graded against the
+/// oracle (the floor checker exempts a `step` record from count-exactness). `PARAMS`/scale/seed
+/// are still required — a record without them is unlabelable — because the realistic bound (the
+/// livelock) prints them before `MARK_BEGIN`.
 ///
 /// The returned records carry `sample_id = 0..n` (their index within THIS run); the caller
 /// reassigns dense ids across every planned run before assembling the run-set.
 ///
 /// # Errors
 ///
-/// [`RunError`] whenever the run could not be *measured* — the same refusals as [`run_sample`]
-/// (no window, no params attestation, no sentinel, a mislabelled scale/seed, an empty digest),
-/// plus a step whose `pc_before` left guest RAM ([`RunError::StepPcUnmapped`]) or whose
-/// `BR_RETIRED` went backwards ([`RunError::StepCounterWentBackwards`]).
+/// [`RunError`] whenever the run could not be *measured* — no params attestation, a mislabelled
+/// scale/seed, an empty digest, a step whose `pc_before` left guest RAM
+/// ([`RunError::StepPcUnmapped`]) or whose `BR_RETIRED` went backwards
+/// ([`RunError::StepCounterWentBackwards`]). A run that reaches its SENTINEL must also have a
+/// complete window and (for a reported-term payload) its retry line, exactly as [`run_sample`];
+/// a run cut short at `max_steps` is exempt from those, since it never got there.
 pub fn step_run(
     vcpu: &mut impl StepVcpu,
     counter: &mut impl WorkCounter,
     spec: &SampleSpec,
+    max_steps: u64,
 ) -> Result<Vec<RunRecord>, RunError> {
     let mut console = Console::new();
     let mut work_begin: Option<u64> = None;
@@ -981,10 +1018,20 @@ pub fn step_run(
     let mut reported: Option<u64> = None;
     let mut status: Option<u8> = None;
     let mut steps: Vec<StepMeasurement> = Vec::new();
+    // Set when the run stopped because it reached `max_steps` before the sentinel — a bounded
+    // run, which may legitimately have no closed window and no exit code (the llsc livelock).
+    let mut hit_max = false;
 
     vcpu.arm_single_step()?;
 
     'run: while status.is_none() {
+        // Stop once `max_steps` steps are recorded (0 = unbounded). Checked at the top, before
+        // the next exit: console/MMIO exits do not count as steps, so this bounds the STEP
+        // count, not the exit count. Hitting the bound is the normal end of a bounded run.
+        if max_steps != 0 && steps.len() as u64 >= max_steps {
+            hit_max = true;
+            break 'run;
+        }
         // The step anchors, read BEFORE the guest runs: the PC of the instruction about to
         // execute and the `BR_RETIRED` before it. Only USED on a `Debug` exit — but they must
         // be captured before `run`, since after it the instruction has already retired.
@@ -1005,10 +1052,13 @@ pub fn step_run(
                     .ok_or(RunError::StepPcUnmapped { pc: pc_before })?;
                 let vbar = vcpu.vbar()?;
                 let transition = classify_transition(word, pc_before, pc_after, vbar);
-                // The step-moment digest, sampled at the single step before the guest resumes:
-                // AA-2's replay identity compares THIS (the final digest can converge — two
-                // divergent step states running on to the same sentinel state).
-                let step_digest = vcpu.state_digest()?;
+                // The step-moment digest, sampled at the single step before the guest resumes.
+                // Registers-only ([`StepVcpu::regs_digest`]) — the CHEAP key: full-hashing the
+                // 4 MiB guest-RAM slot every step is infeasible. The run's FINAL step is later
+                // upgraded to the full-payload hash (below), so memory divergence across the
+                // stepped window is caught end-to-end and registers-only is never the sole
+                // evidence for the window.
+                let step_digest = vcpu.regs_digest()?;
                 steps.push(StepMeasurement {
                     pc_before,
                     pc_after,
@@ -1090,15 +1140,11 @@ pub fn step_run(
         }
     }
 
-    // The same fail-closed refusals `run_sample` makes: every way to NOT measure is an error.
-    let status = status.ok_or(RunError::NoExitSentinel)?;
-    let begin = work_begin.ok_or(RunError::NoWindowOpen)?;
-    let end = work_end.ok_or(RunError::NoWindowClose)?;
-    if end < begin {
-        return Err(RunError::CounterWentBackwards { begin, end });
-    }
+    // PARAMS / scale / seed are required WHETHER OR NOT the run completed: a record without
+    // them is unlabelable evidence (a smoke run masquerading as 1e8, a wrong seed). The
+    // realistic bound — the llsc livelock — prints all three before `MARK_BEGIN`, so this
+    // holds for a bounded run too.
     let params_mode = params_mode.ok_or(RunError::NoParamsMode)?;
-
     match reported_scale.as_deref() {
         Some(s) if s == spec.scale.name() => {}
         found => {
@@ -1118,19 +1164,62 @@ pub fn step_run(
         }
     }
 
-    let reported_taken = if spec.payload.has_reported_term() {
+    // The window. A run that reached its SENTINEL must have a complete window and (for a
+    // reported-term payload) its retry line, exactly as `run_sample` — a full run with no
+    // window or no attested term is a failure to measure. A run cut short at `max_steps` may
+    // legitimately have neither (the llsc livelock never closes its window, let alone prints
+    // `retries=`), so its window is taken from whatever closed, kept self-consistent and NOT
+    // graded against the oracle (a `step` record is exempt from count-exactness). `work_end`
+    // absent ⇒ `end == begin` ⇒ `measured_taken == 0` (the `0/0/0` shape the checker's
+    // well-formed identity accepts); the counter is monotonic, so `end >= begin` still holds
+    // and a true backwards counter is still refused.
+    let (begin, end) = if hit_max {
+        let begin = work_begin.unwrap_or(0);
+        let end = work_end.unwrap_or(begin);
+        (begin, end)
+    } else {
+        (
+            work_begin.ok_or(RunError::NoWindowOpen)?,
+            work_end.ok_or(RunError::NoWindowClose)?,
+        )
+    };
+    if end < begin {
+        return Err(RunError::CounterWentBackwards { begin, end });
+    }
+
+    // A completed run that reached its sentinel must attest a reported-term payload's retry
+    // count (`run_sample`'s refusal). A bounded run that never got there reports 0 — harmless,
+    // since a step record's window count is not oracle-graded, so no fabricated term can slip
+    // through on it.
+    let reported_taken = if !hit_max && spec.payload.has_reported_term() {
         reported.ok_or(RunError::MissingReportedTerm(spec.payload))?
     } else {
         reported.unwrap_or(0)
     };
 
-    // The final state digest at the sentinel — every step record carries it as its
-    // complete-state digest (the schema requires it non-empty). It is NOT what AA-2's replay
-    // identity compares (that is each step's `step_digest`), but a record without it is
-    // malformed, so a seam that cannot produce one fails the run.
+    // A bounded run may never reach `PAYLOAD EXIT`, so it has no exit code — record 0 (cut
+    // short deliberately, not a self-check failure). A completed run carries the real status.
+    let status = if hit_max {
+        status.unwrap_or(0)
+    } else {
+        status.ok_or(RunError::NoExitSentinel)?
+    };
+
+    // The full-payload digest, computed ONCE here — registers + ALL guest RAM + vGIC. It is
+    // both the record-level `state_digest` (every record carries the complete-state digest,
+    // schema-required non-empty) AND — the amendment — the FINAL recorded step's `step_digest`:
+    // every intermediate step is registers-only (cheap), and only this last step pays the
+    // full-RAM cost, so memory divergence anywhere in the stepped window is caught end-to-end
+    // by replay-identity (which compares `step_digest`). For a `max_steps`-bounded run the
+    // guest is paused right after the final step, so this IS that step's Moment exactly; for a
+    // sentinel-terminated run it is the run's end state (the guest stepped on to the sentinel),
+    // the same Moment as `state_digest` — either way it bounds the stepped window's RAM.
     let state_digest = vcpu.state_digest()?;
     if state_digest.is_empty() {
         return Err(RunError::EmptyStateDigest);
+    }
+    if let Some(last) = steps.last_mut() {
+        last.step_digest = state_digest.clone();
     }
 
     // One record per step, each stamped with the run's shared window count and final state.
@@ -2020,6 +2109,9 @@ mod tests {
         last_opcode: Option<u32>,
         vbar: u64,
         counter: Rc<Cell<u64>>,
+        /// The registers-only digest returned per step (the cheap key).
+        regs_digest: String,
+        /// The full-payload digest returned at the run's end (and stamped on the final step).
         digest: String,
         armed: bool,
         last_read_reply: Option<Vec<u8>>,
@@ -2089,6 +2181,11 @@ mod tests {
         fn vbar(&mut self) -> Result<u64, RunError> {
             Ok(self.vbar)
         }
+        fn regs_digest(&mut self) -> Result<String, RunError> {
+            // A DISTINCT value from `state_digest`, so a test can tell an intermediate
+            // (registers-only) step's digest from the full-payload final one.
+            Ok(self.regs_digest.clone())
+        }
     }
 
     /// The counter half of the shared cell (see [`ScriptedStepVcpu`]).
@@ -2127,25 +2224,38 @@ mod tests {
         v
     }
 
-    /// Drive [`step_run`] over a scripted body (spliced between the boot prologue and the exit
-    /// epilogue), starting the counter at `counter_start`.
-    fn drive(counter_start: u64, body: Vec<Scripted>) -> Result<Vec<RunRecord>, RunError> {
+    /// Drive [`step_run`] over an exact `script` at `counter_start` under `max_steps` (0 =
+    /// unbounded). The scripted seam returns `sha256:regs` per step (the registers-only key) and
+    /// `sha256:final` at the run's end (the full-payload digest, which the final step inherits).
+    fn drive_script(
+        counter_start: u64,
+        script: Vec<Scripted>,
+        max_steps: u64,
+    ) -> Result<Vec<RunRecord>, RunError> {
         let cell = Rc::new(Cell::new(counter_start));
-        let mut script = boot_prologue();
-        script.extend(body);
-        script.extend(exit_epilogue());
         let mut vcpu = ScriptedStepVcpu {
             exits: script.into(),
             pc: STEP_PC,
             last_opcode: None,
             vbar: STEP_VBAR,
             counter: Rc::clone(&cell),
+            regs_digest: "sha256:regs".into(),
             digest: "sha256:final".into(),
             armed: false,
             last_read_reply: None,
         };
         let mut counter = ScriptedStepCounter { value: cell };
-        step_run(&mut vcpu, &mut counter, &spec(None))
+        step_run(&mut vcpu, &mut counter, &spec(None), max_steps)
+    }
+
+    /// Drive [`step_run`] unbounded over a scripted body spliced between the boot prologue and
+    /// the exit epilogue (so the run reaches its sentinel), starting the counter at
+    /// `counter_start`.
+    fn drive(counter_start: u64, body: Vec<Scripted>) -> Result<Vec<RunRecord>, RunError> {
+        let mut script = boot_prologue();
+        script.extend(body);
+        script.extend(exit_epilogue());
+        drive_script(counter_start, script, 0)
     }
 
     /// One step of the given opcode landing at `pc_after` with a `BR_RETIRED` delta, driven to
@@ -2360,28 +2470,180 @@ mod tests {
 
     #[test]
     fn a_stepped_run_still_refuses_a_guest_that_never_opened_its_window() {
-        // The same fail-closed refusals as the counting loop: no MARK_BEGIN, no record.
-        let cell = Rc::new(Cell::new(0u64));
+        // The same fail-closed refusals as the counting loop: an UNBOUNDED run that reached its
+        // sentinel with no MARK_BEGIN has no window and no record. (A bounded run is different —
+        // it may stop before the window opens; that is the livelock case below.)
         let mut script: Vec<Scripted> = b"PARAMS mode=managed scale=smoke seed=0x5eed\n"
             .iter()
             .map(|&b| Scripted::Console(b))
             .collect();
         script.extend(b"PAYLOAD EXIT 0\n".iter().map(|&b| Scripted::Console(b)));
+        assert!(matches!(
+            drive_script(0, script, 0),
+            Err(RunError::NoWindowOpen)
+        ));
+    }
+
+    // --- AA-2 bounded stepping (--max-steps): the digest split, the livelock bound ---
+
+    /// `n` sequential NOP steps (each PC+4, no branch retired).
+    fn nop_steps(n: usize) -> Vec<Scripted> {
+        (0..n)
+            .map(|i| Scripted::Step {
+                pc_after: STEP_PC + 4 * (i as u64 + 1),
+                opcode: 0xD503_201F,
+                delta: 0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn max_steps_stops_at_exactly_n_steps_even_though_the_sentinel_is_reachable() {
+        // The body has ten steps and the sentinel is present, but --max-steps 4 stops the run
+        // at exactly four recorded steps — a bounded run ending before its sentinel is normal.
+        let records = drive(0, nop_steps(10)).expect("unbounded reaches the sentinel");
+        assert_eq!(records.len(), 10, "unbounded records every step");
+
+        let mut script = boot_prologue();
+        script.extend(nop_steps(10));
+        script.extend(exit_epilogue());
+        let bounded = drive_script(0, script, 4).expect("a bounded run is not an error");
+        assert_eq!(
+            bounded.len(),
+            4,
+            "--max-steps 4 stops at exactly four steps"
+        );
+        for (i, r) in bounded.iter().enumerate() {
+            assert_eq!(r.sample_id, i as u64);
+            assert_eq!(r.exit_reason, ExitReason::Debug);
+        }
+    }
+
+    #[test]
+    fn the_final_step_carries_the_full_payload_digest_and_intermediates_are_registers_only() {
+        // The amendment: every step but the last carries the CHEAP registers-only digest
+        // (`sha256:regs`); the final recorded step's `step_digest` is the full-payload hash
+        // (`sha256:final`), so memory divergence across the stepped window is caught end-to-end.
+        let mut script = boot_prologue();
+        script.extend(nop_steps(6));
+        script.extend(exit_epilogue());
+        let records = drive_script(0, script, 3).expect("bounded run");
+        assert_eq!(records.len(), 3);
+        let digest = |r: &RunRecord| r.step.as_ref().expect("stepped").step_digest.clone();
+        assert_eq!(
+            digest(&records[0]),
+            "sha256:regs",
+            "intermediate is registers-only"
+        );
+        assert_eq!(
+            digest(&records[1]),
+            "sha256:regs",
+            "intermediate is registers-only"
+        );
+        assert_eq!(
+            digest(&records[2]),
+            "sha256:final",
+            "the FINAL step pays the full-payload cost"
+        );
+        assert_ne!(
+            digest(&records[1]),
+            digest(&records[2]),
+            "the final digest must differ from the intermediate registers-only one"
+        );
+        // The full-payload digest is also the record-level complete-state digest.
+        for r in &records {
+            assert_eq!(r.state_digest, "sha256:final");
+        }
+    }
+
+    #[test]
+    fn a_run_that_never_sentinels_stops_cleanly_at_n_the_livelock_case() {
+        // The llsc-atomics livelock: each step clears the exclusive monitor, so the run never
+        // reaches MARK_END or the sentinel. With --max-steps it stops cleanly at N rather than
+        // running the seam dry (which would be NoExitSentinel). The window opened (MARK_BEGIN)
+        // but never closed, so the window fields are self-consistent 0/0-style, NOT the oracle.
+        let mut script = boot_prologue(); // PARAMS + MARK_BEGIN, then...
+        script.extend(nop_steps(1_000)); // ...an endless stepped prefix, no MARK_END, no sentinel.
+        let records = drive_script(5, script, 8).expect("a bounded livelock is not an error");
+        assert_eq!(
+            records.len(),
+            8,
+            "stopped cleanly at --max-steps, not run dry"
+        );
+        for r in &records {
+            assert_eq!(r.exit_reason, ExitReason::Debug);
+            // Window opened at MARK_BEGIN (counter 5) but never closed: end defaults to begin,
+            // so measured_taken is 0 and the endpoints are self-consistent.
+            assert_eq!(r.work_begin, 5);
+            assert_eq!(r.work_end, 5);
+            assert_eq!(r.measured_taken, 0);
+            assert_eq!(
+                r.measured_taken,
+                r.work_end - r.work_begin,
+                "step-record window fields are self-consistent"
+            );
+            // A cut-short run has no exit code; it is not a self-check failure.
+            assert_eq!(r.payload_status, 0);
+        }
+    }
+
+    #[test]
+    fn a_bounded_run_stopped_before_the_window_opened_is_self_consistent_zeroes() {
+        // --max-steps can even stop before MARK_BEGIN (a very small budget). The window never
+        // opened, so work_begin/work_end/measured_taken are all 0 — self-consistent, ungraded.
+        let mut script: Vec<Scripted> = b"PARAMS mode=managed scale=smoke seed=0x5eed\n"
+            .iter()
+            .map(|&b| Scripted::Console(b))
+            .collect();
+        // Steps BEFORE any MARK_BEGIN, then never a window/sentinel.
+        script.extend(nop_steps(50));
+        let records = drive_script(9, script, 2).expect("bounded before the window is fine");
+        assert_eq!(records.len(), 2);
+        for r in &records {
+            assert_eq!(r.work_begin, 0);
+            assert_eq!(r.work_end, 0);
+            assert_eq!(r.measured_taken, 0);
+        }
+    }
+
+    #[test]
+    fn a_bounded_run_still_requires_its_params_attestation() {
+        // Even cut short, a record must be labelable: a run that stepped before printing PARAMS
+        // is refused (a smoke run must not masquerade as 1e8). The realistic bound prints PARAMS
+        // before MARK_BEGIN, so this only bites a pathologically tiny budget.
+        let script = nop_steps(50); // steps, but NO PARAMS line ever.
+        assert!(matches!(
+            drive_script(0, script, 3),
+            Err(RunError::NoParamsMode)
+        ));
+    }
+
+    #[test]
+    fn a_bounded_llsc_run_need_not_attest_a_retry_term_it_never_reached() {
+        // llsc-atomics HAS a reported retry term, printed AFTER the window closes — which a
+        // livelocked bounded run never reaches. Requiring it would fail exactly the run
+        // --max-steps exists to bound, so a cut-short reported-term payload reports 0 (its
+        // window count is not oracle-graded, so no fabricated term can slip through).
+        let mut llsc = spec(None);
+        llsc.payload = Payload::LlscAtomics;
+        let cell = Rc::new(Cell::new(0u64));
+        let mut script = boot_prologue();
+        script.extend(nop_steps(1_000)); // livelock: no MARK_END, no `LLSC retries=` line.
         let mut vcpu = ScriptedStepVcpu {
             exits: script.into(),
             pc: STEP_PC,
             last_opcode: None,
             vbar: STEP_VBAR,
             counter: Rc::clone(&cell),
+            regs_digest: "sha256:regs".into(),
             digest: "sha256:final".into(),
             armed: false,
             last_read_reply: None,
         };
         let mut counter = ScriptedStepCounter { value: cell };
-        assert!(matches!(
-            step_run(&mut vcpu, &mut counter, &spec(None)),
-            Err(RunError::NoWindowOpen)
-        ));
+        let records = step_run(&mut vcpu, &mut counter, &llsc, 8).expect("a bounded llsc run");
+        assert_eq!(records.len(), 8);
+        assert!(records.iter().all(|r| r.reported_taken == 0));
     }
 
     #[test]

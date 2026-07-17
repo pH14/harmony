@@ -1,0 +1,109 @@
+{
+  "schema_version": 3,
+  "stage": "aa2",
+  "run_set_id": "fixture-aa2",
+  "environment": {
+    "midr": 1094701248,
+    "soc": "Ampere Altra Q80-30 (synthetic)",
+    "firmware": {
+      "scp": "2.10.20221020",
+      "sys": "TianoCore-2.06.20230314"
+    },
+    "host_kernel": "6.18.35-arm64-det",
+    "kvm_mode": "vhe"
+  },
+  "mechanism": {
+    "kvm_patched": false,
+    "host_kernel_sha256": "df81fdddf97e7aee3cc87cd96ea9ca1a61c9cc7309a3db9f4a12f724344a902b",
+    "expected_exit_reason": "signal-kick",
+    "patch_marker_observed": false
+  },
+  "images": [
+    {
+      "path": "/boot/Image.det",
+      "sha256": "df81fdddf97e7aee3cc87cd96ea9ca1a61c9cc7309a3db9f4a12f724344a902b",
+      "md5": "2f0cdcbd2886e5830910d44d4e3bb68f",
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/straight-line",
+      "sha256": "bef674360a924ed297ab93563deeaafab749c2f88e643b5ffdf087ee39a11ae5",
+      "md5": "5666d8025283afecb11a42e64530d719",
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/branch-dense",
+      "sha256": "cdfac506fda9836bb5431de97aa91e6c342b8b2d17b7e44052779ac3d2987735",
+      "md5": "a187266c8def7c46eb966d263cc659f1",
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/svc",
+      "sha256": "3835f1a802216370c9087f0ef65346742082afb72be71933feef8d8ed077f664",
+      "md5": "348c658682ae8701d3e9d21f19187249",
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/exception-abort",
+      "sha256": "7d70d4fc4325fbdbb0203198ea3a61360ca85500bfcaa5c0aec02463b828832e",
+      "md5": "e85bc276f4a033e48b594562afacc7a2",
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/wfi-idle",
+      "sha256": "8f558d68e6cee2e75854c6ee2dd82891ac7c997e932aa88e72ebdcd89428f3ff",
+      "md5": "d93a6ae968f3c553807bf9b969886054",
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/llsc-atomics",
+      "sha256": "eb21f79cbc8cf3ee5ca6f10f6e68cfd0217393a5ff431cf70338f1c94acc460b",
+      "md5": "312516dd4095fcf918bfa5149cc87988",
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/lse-atomics",
+      "sha256": "1ee11977049ce0a93afbc266acfde789beaf80b97a3f415aa2dd6f2be66ce059",
+      "md5": "ae693a8ff1206a8b09a98adfb463e5c3",
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/clock-page",
+      "sha256": "89ed41ed7744b55d4475cc379dd281d105ef203a4e71a04edb5325e8f53c5153",
+      "md5": "c0ded9512e2a383621bec02fabda05e9",
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/linux-guest",
+      "sha256": "bd902deede5ca27e60ae501f4fcea2530d8d7fd857bc5c9285fdf7691504b0b5",
+      "md5": "6ab023924a58ec997768eaf409b47848",
+      "verified_before_boot": true
+    }
+  ],
+  "perf": {
+    "raw_event": 33,
+    "exclude_host": true,
+    "exclude_guest": false,
+    "exclude_hv": true,
+    "pinned": true,
+    "sample_period": null
+  },
+  "pinning": {
+    "pinned": true,
+    "core": 2,
+    "governor": "performance",
+    "migration_probe": false
+  },
+  "condition": "pinned-solo",
+  "weights": {
+    "exception_entry": 0,
+    "exception_return": 0,
+    "svc_instruction": 0,
+    "wfi_instruction": 0,
+    "window_offset": 2
+  },
+  "skid_margin": 64,
+  "attempted": 14,
+  "records_file": "records.jsonl",
+  "records_sha256": "b46f3aae9f465a2c29441a46a1c8ea33349c9a34e848707ba079cb11c8be2b6c"
+}

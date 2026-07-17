@@ -706,6 +706,48 @@ pub fn digest_state(
     format!("sha256:{}", crate::evidence::hex_lower(&h.finalize()))
 }
 
+/// Hash a guest state's **registers and vGIC only** — the cheap per-step replay key
+/// AA-2's single-step run path stamps on every step but the last, WITHOUT the
+/// guest-RAM slice [`digest_state`] hashes.
+///
+/// This exists because a full [`digest_state`] reads the *whole* guest-RAM slot every
+/// call (4 MiB — the AA-1(c) measurement that shrank [`crate::sys::machine::RAM_SIZE`]),
+/// and single-stepping calls the digest once **per instruction**: full-hashing RAM every
+/// step makes a stepped run infeasible. So an intermediate step hashes only the register
+/// (and vGIC) state — the same inputs [`digest_state`] reads *minus* the RAM slice — and
+/// only the run's FINAL step pays the full-RAM cost (`step_run`), so memory divergence
+/// anywhere in the stepped window is still caught end-to-end by that boundary hash.
+///
+/// A **distinct domain tag** (`arm-spike-regs-v1`, not `digest_state`'s
+/// `arm-spike-state-v2`) so a registers-only digest can never collide with a full one
+/// even over byte-identical registers — the two are compared side by side (intermediate
+/// vs final step), and they must be structurally unequal, not merely unequal-in-practice.
+/// The same host-time-register exclusion and length-prefixed vGIC discipline as
+/// [`digest_state`]; registers in sorted id order (a `BTreeMap`, Conventions rule 4).
+/// Pure and Miri-testable — no `unsafe`; `machine` reads the registers/vGIC by ioctl and
+/// hands them here, so the hashing and order discipline are interpreter-checked.
+#[must_use]
+pub fn digest_regs_only(regs: &std::collections::BTreeMap<u64, Vec<u8>>, vgic: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"arm-spike-regs-v1");
+    for (id, value) in regs {
+        // The generic-timer counters advance with real time; hashing them would make two
+        // same-seed steps digest differently the moment host scheduling differs — the same
+        // exclusion `digest_state` makes, for the same reason.
+        if is_host_time_register(*id) {
+            continue;
+        }
+        h.update(id.to_le_bytes());
+        h.update(value);
+    }
+    // The vGIC injection state, length-prefixed exactly as `digest_state` does, so an
+    // empty dump can never collide with a one-byte one.
+    h.update((vgic.len() as u64).to_le_bytes());
+    h.update(vgic);
+    format!("sha256:{}", crate::evidence::hex_lower(&h.finalize()))
+}
+
 /// Whether a `KVM_GET_ONE_REG` id names a **host-time-derived** register — one whose
 /// value advances with elapsed real time and so must not enter a determinism digest.
 ///
@@ -1963,6 +2005,58 @@ mod tests {
         );
 
         assert!(digest_state(&a, &ram, vgic).starts_with("sha256:"));
+    }
+
+    #[test]
+    fn regs_only_digest_ignores_ram_and_never_collides_with_the_full_digest() {
+        use std::collections::BTreeMap;
+        let vgic: &[u8] = &[0x00; 16];
+
+        let mut a = BTreeMap::new();
+        a.insert(2u64, vec![0xAA]);
+        a.insert(1u64, vec![0xBB]);
+        // Insertion order differs; the BTreeMap makes the registers-only digest identical.
+        let mut b = BTreeMap::new();
+        b.insert(1u64, vec![0xBB]);
+        b.insert(2u64, vec![0xAA]);
+        assert_eq!(digest_regs_only(&a, vgic), digest_regs_only(&b, vgic));
+
+        // The whole point: the registers-only digest does NOT depend on guest RAM — two
+        // states differing only in RAM digest identically here (that is the cheap per-step
+        // key), while `digest_state` (which hashes RAM) separates them.
+        let ram = vec![0u8; 64];
+        let mut other_ram = ram.clone();
+        other_ram[0] = 1;
+        assert_ne!(
+            digest_state(&a, &ram, vgic),
+            digest_state(&a, &other_ram, vgic),
+            "the full digest hashes RAM"
+        );
+
+        // A different register value or vGIC state still moves the registers-only digest —
+        // it is real evidence, not a constant.
+        let mut c = a.clone();
+        c.insert(1u64, vec![0xCC]);
+        assert_ne!(digest_regs_only(&a, vgic), digest_regs_only(&c, vgic));
+        let mut other_vgic = vgic.to_vec();
+        other_vgic[8] = 1;
+        assert_ne!(
+            digest_regs_only(&a, vgic),
+            digest_regs_only(&a, &other_vgic)
+        );
+
+        // Distinct domain separation: the registers-only digest can NEVER equal the full
+        // digest of the same registers over empty RAM — the two are compared side by side
+        // (intermediate step vs the full-payload final step), so they must be structurally
+        // unequal, not merely unequal because RAM happened to differ.
+        let empty_ram: &[u8] = &[];
+        assert_ne!(
+            digest_regs_only(&a, vgic),
+            digest_state(&a, empty_ram, vgic),
+            "the domain tags must keep the two digest kinds from ever colliding"
+        );
+
+        assert!(digest_regs_only(&a, vgic).starts_with("sha256:"));
     }
 
     #[test]

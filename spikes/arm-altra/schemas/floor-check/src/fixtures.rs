@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The fixture generator.
 //!
-//! Twenty-nine checked-in run-sets: twenty-three the checker must reject (one per failure
-//! mode) and six it must accept (a patched AA-3 landing run, an AA-1 counting run, an
+//! Thirty checked-in run-sets: twenty-three the checker must reject (one per failure
+//! mode) and seven it must accept (a patched AA-3 landing run, an AA-1 counting run, an
 //! AA-1(c) early/late skid-distribution run, an AA-1 LL/SC-hazard run, an AA-6 same-input
-//! gate, and an AA-2 single-step transition matrix). They are **generated from the oracle
-//! model**, not hand
+//! gate, an AA-2 single-step transition matrix, and an AA-2 BOUNDED (`--max-steps`) matrix
+//! whose step records' window counts are exempt from the oracle). They are **generated from
+//! the oracle model**, not hand
 //! written: the accept fixture's counts are the exact values
 //! [`oracle_model::expected`] predicts under a chosen (synthetic) weights pack, so
 //! the fixtures stay consistent with the model as it evolves, and a reject fixture
@@ -492,6 +493,33 @@ fn accept_aa2_steps() -> Fixture {
     fixture("accept-aa2-steps", &run_set, &records)
 }
 
+/// The valid AA-2 **bounded** accept fixture: the full transition matrix, each class stepped
+/// twice bit-identically — but cut short at `--max-steps` before MARK_END, so every record's
+/// window is `0/0/0` (a run that never closed its window; the shape a bounded llsc-livelock run
+/// takes). Its window count is therefore NOT the oracle's, which is exactly the case
+/// `check_counts` must EXEMPT: a step record is graded by debug-evidence / replay-identity, not
+/// the window-count oracle. Grading it would reject a legitimately bounded run. The window
+/// endpoints stay self-consistent (`measured_taken == work_end - work_begin`, enforced by
+/// well-formed), and the step evidence and replay identity are unchanged from the unbounded
+/// matrix — so the whole run-set is a clean AA-2 acceptance.
+fn aa2_bounded_records() -> Vec<RunRecord> {
+    let mut records = aa2_records();
+    for r in &mut records {
+        // Bounded: the window never closed, so the work fields are 0/0/0 — self-consistent but
+        // decoupled from the oracle count the unbounded matrix carries.
+        r.work_begin = 0;
+        r.work_end = 0;
+        r.measured_taken = 0;
+    }
+    records
+}
+
+fn accept_aa2_bounded() -> Fixture {
+    let records = aa2_bounded_records();
+    let run_set = aa2_run_set(&records);
+    fixture("accept-aa2-bounded", &run_set, &records)
+}
+
 /// Build an AA-2 reject fixture by mutating ONE step of the otherwise-valid matrix, so
 /// `check_debug_evidence` is the sole failure (the mutation touches neither the window count
 /// nor the RepKey/step-moment digest, so counts and replay identity still pass).
@@ -531,6 +559,7 @@ pub fn all_fixtures() -> Vec<Fixture> {
         accept_aa1_skid(),
         accept_aa6_gate(),
         accept_aa2_steps(),
+        accept_aa2_bounded(),
         reject_aa6_rep_floor(),
     ];
 
@@ -871,13 +900,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_twenty_nine_fixtures_with_unique_names() {
+    fn there_are_thirty_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 29);
+        assert_eq!(fixtures.len(), 30);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 29, "fixture names must be unique");
+        assert_eq!(names.len(), 30, "fixture names must be unique");
     }
 
     #[test]

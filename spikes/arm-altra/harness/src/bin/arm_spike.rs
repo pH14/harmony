@@ -206,6 +206,15 @@ struct RunOpts {
     /// construction — a 1e6 window is millions of steps — so keep the scales small.
     #[arg(long)]
     single_step: bool,
+    /// AA-2: cap a single-step run at N steps (0 = unbounded, run to the console sentinel).
+    /// A bounded run stops at N steps OR the sentinel, whichever comes first — hitting N first
+    /// is normal, not a failure. This is how the `llsc-atomics` livelock is bounded: each step
+    /// clears the exclusive monitor, so `STXR` never succeeds and the retry loops forever,
+    /// never reaching MARK_END or the sentinel. Every stepped record is registers-only except
+    /// the last, which carries the full-payload digest, so replay-identity still catches memory
+    /// divergence across the stepped window. Only meaningful with `--single-step`/`--stage aa2`.
+    #[arg(long, default_value_t = 0)]
+    max_steps: u64,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables. A wedged guest past this
     /// deadline is recorded as a failed attempt rather than hanging the run.
     #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
@@ -643,6 +652,7 @@ struct RunArgs {
     reps: u64,
     with_targets: bool,
     single_step: bool,
+    max_steps: u64,
     watchdog_secs: u64,
 }
 
@@ -971,7 +981,8 @@ fn execute(args: RunArgs) -> Result<(), String> {
                     target_delta: None,
                     migration_probe: None,
                 };
-                step_run(&mut machine, &mut counter, &spec).map_err(|e| e.to_string())
+                step_run(&mut machine, &mut counter, &spec, args.max_steps)
+                    .map_err(|e| e.to_string())
             } else {
                 // Opening the counter for the patched mechanism on a kernel that lacks the
                 // capability FAILS here. There is no code path from the patched request to
@@ -1208,6 +1219,7 @@ fn run() -> Result<(), String> {
                 with_targets: opts.with_targets,
                 // AA-2 is the stepping stage, so it implies single-step even without the flag.
                 single_step: opts.single_step || matches!(opts.stage, StageArg::Aa2),
+                max_steps: opts.max_steps,
                 watchdog_secs: opts.watchdog_secs,
             })
         }

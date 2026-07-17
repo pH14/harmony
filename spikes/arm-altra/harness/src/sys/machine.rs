@@ -1068,21 +1068,7 @@ impl Vcpu for Machine {
     /// Registers are hashed in **sorted id order** (a `BTreeMap`, never a `HashMap`):
     /// iteration order must not reach a hashed byte. Conventions rule 4.
     fn state_digest(&mut self) -> Result<String, RunError> {
-        let ids = self
-            .reg_list()
-            .map_err(|e| seam("ioctl(KVM_GET_REG_LIST)", e))?;
-
-        let mut regs: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
-        for id in ids {
-            let value = self
-                .read_reg(id)
-                .map_err(|e| seam("ioctl(KVM_GET_ONE_REG)", e))?;
-            regs.insert(id, value);
-        }
-
-        let vgic = self
-            .vgic_state()
-            .map_err(|e| seam("ioctl(KVM_GET_DEVICE_ATTR, vGIC)", e))?;
+        let (regs, vgic) = self.registers_and_vgic()?;
 
         // SAFETY: `self.mem` is a live mapping of `self.mem_size` bytes and the vCPU
         // is not running (we are between exits), so nothing else writes it. The borrow is the
@@ -1137,9 +1123,42 @@ impl StepVcpu for Machine {
         self.get_one_reg_u64(kvm::REG_VBAR_EL1)
             .map_err(|e| seam("ioctl(KVM_GET_ONE_REG, VBAR_EL1)", e))
     }
+
+    /// The registers-only digest AA-2 stamps on every step but the last: the vCPU
+    /// registers (and the in-kernel vGIC state) [`Vcpu::state_digest`] reads, hashed
+    /// **without** the 4 MiB guest-RAM slice. `state_digest` faults in and hashes the
+    /// whole slot every call, so calling it per single step is infeasible — the whole
+    /// reason `RAM_SIZE` was shrunk in the AA-1(c) disposition. This is the cheap
+    /// per-step replay key; only the run's final step pays the full-RAM cost, catching
+    /// memory divergence across the stepped window end-to-end.
+    fn regs_digest(&mut self) -> Result<String, RunError> {
+        let (regs, vgic) = self.registers_and_vgic()?;
+        Ok(super::digest_regs_only(&regs, &vgic))
+    }
 }
 
 impl Machine {
+    /// Read every architectural register (`KVM_GET_REG_LIST` + `KVM_GET_ONE_REG`, in
+    /// sorted id order) and the in-kernel vGIC injection state — the two seam-read inputs
+    /// shared by [`Vcpu::state_digest`] (which adds guest RAM) and [`StepVcpu::regs_digest`]
+    /// (which does not). Factored out so the register/vGIC read discipline has one home.
+    fn registers_and_vgic(&self) -> Result<(BTreeMap<u64, Vec<u8>>, Vec<u8>), RunError> {
+        let ids = self
+            .reg_list()
+            .map_err(|e| seam("ioctl(KVM_GET_REG_LIST)", e))?;
+        let mut regs: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        for id in ids {
+            let value = self
+                .read_reg(id)
+                .map_err(|e| seam("ioctl(KVM_GET_ONE_REG)", e))?;
+            regs.insert(id, value);
+        }
+        let vgic = self
+            .vgic_state()
+            .map_err(|e| seam("ioctl(KVM_GET_DEVICE_ATTR, vGIC)", e))?;
+        Ok((regs, vgic))
+    }
+
     /// Read a 64-bit register (`KVM_GET_ONE_REG` into a `u64`) — the core `pc`, a system
     /// register like `VBAR_EL1`, sized by the caller's id.
     fn get_one_reg_u64(&self, id: u64) -> Result<u64, SysError> {
