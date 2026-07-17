@@ -1,274 +1,229 @@
 ---
 name: pr-review
 description: >
-  Review a pull request for the harmony project and post inline comments on it.
-  Use this whenever the user asks to review a PR, look over a task branch, check a
-  delegated agent's work, or give feedback on a change — even if they just say
-  "take a look at PR 3" or name a task branch like task-02-snapshot-store. Covers
-  finding the right task spec, running the gates, a cross-model second pass (codex /
-  GPT-5.6 Sol), and posting the review via gh.
+  Review a pull request for the harmony project via the tribunal pipeline and post the
+  batched review on it. Use this whenever the user asks to review a PR, look over a task
+  branch, check a delegated agent's work, or give feedback on a change — even if they just
+  say "take a look at PR 3" or name a task branch like task-02-snapshot-store. Covers
+  finding the right task spec, running the gates, the parallel review seats (codex /
+  GPT-5.6 Sol), the judge (Fable 5), and posting the review via gh.
 ---
 
-# PR review
+# PR review — the tribunal pipeline
 
-PRs in this repo are produced by delegated agents, each implementing one crate against a
-written spec. The review's job is to check the work against **that spec and the project
+PRs in this repo are produced by delegated agents, each implementing against a written
+spec. The review's job is to check the work against **that spec and the project
 conventions** — not generic code review taste. Most real problems here are contract
-violations (wrong public API), determinism leaks, or gates that don't actually pass, so
-spend your effort there.
+violations, determinism leaks, or gates that don't prove what they claim, so the pipeline
+concentrates effort there.
 
-## 1. Gather context before reading any code
+The pipeline is **bounded by design** (ruled 2026-07-16, `docs/REVIEW-TRIBUNAL.md`): one
+discovery tribunal → one judge-triaged fix batch → one verify event → at most one
+Closer-only re-check → merge-with-parks or escalate. Never loop past the cap; extending a
+loop requires an explicit user ruling.
 
-Read these in order; they tell you what "correct" means for this PR:
+## 0. Tier and size the review
 
-1. **PR metadata**: `gh pr view <n> --json title,body,headRefName,files,url`. Note any
-   dependency-whitelist exceptions requested in the description (conventions rule 5 allows
-   ask-by-comment) and any linked issues (`Closes #N` → `gh issue view N`).
-2. **The task spec**: branch/title names the task (e.g. `task-01-hypercall-proto` →
-   `tasks/01-hypercall-proto.md`). Read it fully — especially the Public API section
-   (a contract: exact names, types, semantics) and any task-specific gates.
-3. **`tasks/00-CONVENTIONS.md`**: the hard rules every PR must satisfy. Re-read it each
-   review rather than working from memory; it changes.
-4. **Prior feedback**: check `feedback/` for earlier reviews touching this task or its
-   plan. Don't re-litigate points already resolved there, and do check that accepted
-   feedback was actually applied.
-5. **`docs/INTEGRATION.md`** whenever the PR touches anything cross-component: traits
-   other crates will implement, wire formats, magic constants, ABI registers. Cross-check
-   every shared constant against both the task spec and INTEGRATION.md — specs written in
-   parallel contradict each other, and a reviewer comparing documents is the first place
-   such a contradiction can be caught. A spec self-contradiction is a `[question]` for
-   the integrator, not a flaw to pin on the implementer.
+- **Light tier** (docs, specs, ROADMAP, feedback, handoff plans): foreman sanity read +
+  the standard gates, then merge. No tribunal, no codex.
+- **Substantive tier** (crate code, determinism surfaces, contracts/wire formats,
+  `unsafe`, gates/CI): the pipeline below.
 
-## 2. Check out the code locally
+Panel size scales with **meaningful LOC** — vendored payloads, goldens, and generated
+files are excluded (they get a provenance/manifest check, never line review):
 
-Review from a local checkout, not from `gh pr diff` alone. The diff shows you what
-changed; the checkout lets you run the gates and read whole files — and since these PRs
-add entire new crates, the "diff" is the whole crate anyway. Use a worktree (the main
-checkout must stay untouched, same as for implementers):
+| Meaningful LOC | Seats |
+|---|---|
+| < ~1k | 5 — Gate Auditor, Consonance, Contract+Adversary (merged), Wiring, Simplicity |
+| ~1k–5k | 6 — Gate Auditor, Consonance, Contract, Adversary, Wiring, Simplicity |
+| > ~5k, or a new crate/artifact/approach | 7 — add Architect |
+
+Simplicity sits at **every** size — reduction pressure is a standing directive, not a
+big-PR luxury.
+
+A single review unit over ~5k meaningful LOC should usually not exist: ask first whether
+the PR splits along spec milestones (the Architect seat's question). Review per milestone
+unit; always run Gate Auditor + Wiring on the assembled head as well.
+
+## 1. Gather context before anything reads code
+
+1. **PR metadata**: `gh pr view <n> --json title,body,headRefName,files,url`. Note
+   dependency-whitelist exceptions requested in the description (conventions rule 5) and
+   linked issues. **The PR description is judge/foreman input only — seats never see it**
+   (author framing measurably suppresses detection; see the ruling doc).
+2. **The task spec**: branch/title names the task (`task-01-hypercall-proto` →
+   `tasks/01-hypercall-proto.md`). The Public API section is a contract.
+3. **`tasks/00-CONVENTIONS.md`**: re-read each review; it changes.
+4. **Prior feedback**: `feedback/` for earlier reviews touching this task. Don't re-litigate
+   resolved points; do check accepted feedback was applied.
+5. **`docs/INTEGRATION.md`** whenever the PR touches anything cross-component.
+
+## 2. Check out and run the gates first
+
+Findings from running the code outrank findings from reading it. From a detached worktree
+(the main checkout stays untouched):
 
 ```sh
 git -C ~/workspace/harmony fetch origin
 git -C ~/workspace/harmony worktree add --detach ../harmony-review-pr<N> origin/<head-branch>
-```
-
-Detach matters: the implementer's worktree often still has the task branch checked out,
-and git refuses to check out one branch in two worktrees. Detaching at the fetched head
-commit sidesteps that and pins exactly what you're reviewing.
-
-Use `gh pr diff <n>` only as an orientation pass and to find the diff line numbers you'll
-need for inline comments.
-
-## 3. Run the gates
-
-Findings from running the code outrank findings from reading it. Run the standard gates
-plus any task-specific ones from the spec:
-
-```sh
 cargo build -p <crate> --all-features
-cargo test  -p <crate> --all-features          # note runtime; budget is ~3 min
+cargo test  -p <crate> --all-features
 cargo clippy -p <crate> --all-features --all-targets -- -D warnings
 cargo fmt -p <crate> -- --check
+# unsafe ⇒ Miri (pinned nightly + MIRIFLAGS match .github/workflows/quality.yml):
+MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly-2026-06-16 miri test -p <crate>
 ```
 
-**If the crate contains `unsafe`, also run Miri** (the unsafe⇒Miri review-bar rule, AGENTS.md):
+A red gate is an automatic P1 — quote the failing output. A platform-specific failure is
+itself a finding (rule 6, both platforms must pass). Note box-gate status for the judge:
+green box + completed tribunal ⇒ merge (2026-07-09 posture), but a green box gate certifies
+only the paths it drives — it never waives the tribunal.
+
+## 3. The discovery tribunal (parallel seats)
+
+Seats (charters in `.claude/skills/pr-review/seats/`): **gate-auditor** (does green mean
+anything), **consonance** (record==replay bit-identity), **contract** (spec/ABI/wire
+conformance), **adversary** (hostile inputs + `unsafe`), **wiring** (deliverable alive
+end-to-end), **simplicity** (what is the least of this — structural reduction, unspecced
+surface), **architect** (should this exist as designed — kill/split authority).
+
+All seats run **GPT-5.6 Sol at xhigh** (model pinned in `~/.codex/config.toml`; xhigh is
+codex's default), concurrently, each in its own detached worktree. The worktree `AGENTS.md`
+is the lens-injection mechanism — `codex review --base` accepts no positional prompt but
+auto-reads `AGENTS.md`:
 
 ```sh
-# pinned nightly + MIRIFLAGS match .github/workflows/quality.yml's `miri` job
-MIRIFLAGS=-Zmiri-permissive-provenance \
-  cargo +nightly-2026-06-16 miri test -p <crate>
+PR=<N>; HEAD=origin/<head-branch>; cd ~/workspace/harmony
+for SEAT in gate-auditor consonance contract adversary wiring simplicity architect; do  # trim per §0
+  WT=../harmony-review-pr$PR-$SEAT
+  git worktree add --detach "$WT" "$HEAD"
+  cat AGENTS.md .claude/skills/pr-review/seats/COMMON.md \
+      .claude/skills/pr-review/seats/$SEAT.md > "$WT/AGENTS.md"
+  ( cd "$WT" && gtimeout 1200 codex review --base origin/main \
+      -c approval_policy='"never"' -c sandbox_mode='"workspace-write"' \
+      > /tmp/codex-review-pr$PR-$SEAT.md 2>&1 ) &
+done; wait
 ```
 
-A Miri error is a blocking finding even when every behavioral test passes — Miri sees UB
-(out-of-bounds reads returning plausible bytes, provenance violations, aliasing) that
-value/panic assertions cannot. `grep -rl 'unsafe' consonance/<crate>/src` tells you whether it
-applies. If the crate adds `unsafe` but has no Miri-exercisable test path (the asm/privileged
-bits must sit behind a seam so the unsafe logic runs under the interpreter), that gap is
-itself a finding.
+(`--base origin/main`, never `main`: the fetch in §2 does not advance the local `main`
+ref, and a stale base makes every seat review commits that are not this PR's. At the
+5-seat size the merged Contract+Adversary seat is one worktree whose `AGENTS.md`
+concatenates both charters after `COMMON.md`.)
 
-A red gate is automatically a blocking finding — quote the failing output in the comment.
-You're on macOS; if a failure looks platform-specific, that's itself a finding
-(portability is rule 6, both platforms must pass).
+A timed-out or truncated seat gets ONE re-run; a seat that dies twice is reported to the
+judge as a named coverage gap — never silently skipped. Findings are the final `codex`
+block of each output (`grep -nE '\[P[0-9]\]'` to orient, then read the tail).
 
-## 4. What to review, in priority order
+## 4. The judge
 
-1. **Contract conformance** — diff the implemented public API against the spec's Public
-   API section item by item. Renames, changed signatures, or semantic drift are blocking
-   even when the new shape is arguably better; other workers are building against the
-   spec, not this crate.
-2. **Determinism discipline** — the reason this project exists. Grep is effective here:
-   `HashMap`/`HashSet` iteration that can reach output/hashes/encoded bytes, floating
-   point in state-affecting code, wall-clock time, unseeded randomness, `unwrap`/`expect`
-   or panics reachable from untrusted input.
-3. **Scope and isolation** — touched only its own directory (`gh pr view --json files`),
-   no edits to root `Cargo.toml`, no dependencies on sibling crates, no invented shared
-   crates. Dependencies outside the whitelist need an explicit ask in the PR description.
-4. **`unsafe`** — only if the task file grants it, only for the named purpose, every
-   block carrying a `// SAFETY:` comment that actually justifies it. **Any crate with
-   `unsafe` must run clean under Miri** — run `cargo +nightly miri test -p <crate>` (§3) and
-   treat a Miri error as blocking. Reading a `// SAFETY:` comment is not a substitute for
-   running Miri: the comment asserts soundness, Miri checks it. Confirm the unsafe logic is
-   actually *reachable* under the interpreter (asm/privileged paths behind a seam, exercised
-   by loopback/in-process tests) — an `unsafe` crate whose pointer code Miri never executes
-   has a vacuous Miri gate, which is a finding.
-5. **Quality-tooling sufficiency — is quality slipping?** The repo has an excellent quality
-   toolchain (`docs/CODE-QUALITY.md`); **a green gate is the floor, not the bar.** For the
-   code this PR adds, check it actually *uses* the right tools — and that the suite isn't
-   quietly degrading:
-   - **Coverage** (`cargo-llvm-cov`, region floor): new logic is genuinely *exercised*, not
-     merely executed; the region floor holds and **ratchets up** where the PR earns it —
-     never slips. New uncovered branches, or a lowered floor, are findings.
-   - **Mutation** (`cargo-mutants --in-diff`): would a mutation in the new logic be *killed*?
-     The gate checks the diff, but read the new tests — do they pin **exact** values/behavior
-     (what mutation testing rewards) or just loose properties a mutant survives? Missing
-     exact-count/exact-value assertions on new arithmetic or counters is a finding.
-   - **Property / stateful tests** (`proptest` ≥256 cases; `proptest-state-machine`): any new
-     state machine, codec, or invariant-bearing logic wants a property or **stateful** test
-     against an **independent** reference model (a re-derivation, not a mirror of the impl),
-     not happy-path unit tests.
-   - **Proofs** (`Kani`): new saturating/overflowing/bit-twiddling arithmetic, or a safety
-     invariant over bounded inputs, is a proof candidate — flag if it's only sampled.
-   - **Fuzzing** (`cargo-fuzz` + `arbitrary`, the Tier-1 backlog): a new parser/decoder over
-     untrusted bytes (anything shaped like `hypercall-proto::decode`) should have fuzz or
-     adversarial-property coverage — call it out if absent.
-   - **Public-API snapshot** (`cargo-public-api`): an *intended* API change must update the
-     committed snapshot; an *unintended* surface change is a finding.
-   Does the suite, taken together, catch the bugs you looked for in (1) and (2)?
-6. **Docs and handoff** — public items documented, crate-level doc comment,
-   `IMPLEMENTATION.md` present and honest about deviations/limitations.
-
-Read tests with the same suspicion as the code: a delegated agent under gate pressure is
-tempted to weaken a test, relax a gate, or lower a floor instead of fixing a bug. Quality
-should **ratchet up** across PRs, never drift down — a PR that loosens a lint, drops a floor,
-or skips a tool the code plainly calls for is a blocking/question finding, not a nit.
-
-**Verify behavioral findings before reporting them.** For anything you'd mark blocking
-based on reading the code, write a quick repro test in the review worktree and run it;
-quote the observed behavior in the comment ("dispatching `&req[..len-5]` returns
-`(0,0,0)`, spec requires `(1,1,77)`"). A confirmed repro turns an argument into a fact —
-and sometimes the code is right and your reading was wrong. Delete repro tests before
-removing the worktree.
-
-**Then make a second, targeted pass** over the two places review experience shows
-first-pass reading misses real bugs:
-
-- *State save/restore and snapshot paths*: does restore reject every state that save
-  could never have produced (degenerate values that brick a stream or violate
-  invariants)? Is a failed restore atomic, or does it leave the object half-mutated?
-  Does round-trip equality actually hold?
-- *Trust boundaries*: every length, index, or enum that arrives from the transport, the
-  host, or a decoded frame — follow it to where it's used. Unchecked slicing or
-  arithmetic on such a value is a panic reachable from untrusted input (rule 4), even
-  when the happy-path tests all pass.
-
-## 5. Cross-model second pass (MANDATORY)
-
-Single-reviewer variance is real and large — your own read misses things a different model
-catches. The cross-model pass is **`codex review` (GPT-5.6 Sol)**: a model different from the one
-doing the primary review, run over the same diff. In a live calibration on the CPU/MSR
-contract it independently caught real blocking findings the primary read missed (a
-backend-mechanism gap — instructions the contract says it traps that stock KVM has no
-userspace exit for — and a TOML-grammar violation). **This pass is mandatory. Never skip it,
-and never merge a PR without a clean codex pass.** Launch it **blind** —
-don't seed it with your own findings; an anchored reviewer re-treads your path, an
-independent one covers what you missed.
-
-### Primary: `codex review` (reliable, agentic, near-zero setup)
-
-`codex review` is OpenAI's native non-interactive reviewer hitting GPT-5.6 Sol directly
-(model pinned in `~/.codex/config.toml`; integrator switched 5.5 → 5.6 Sol 2026-07-09) — it
-reads the repo and runs tools itself, so there's no worktree-inlining dance and no headless
-stall. Run it from a detached PR-head worktree against `main`:
+A **fresh Fable 5 session at xhigh** with its own context — never the foreman in-session
+(the judge's independence and the foreman's context budget are both the point). Spawn it
+mirroring the worker pattern:
 
 ```sh
-git -C ~/workspace/harmony worktree add --detach ../harmony-review-pr<N> origin/<head-branch>
-cd ../harmony-review-pr<N>
-gtimeout 1200 codex review --base main \
-  -c approval_policy='"never"' -c sandbox_mode='"workspace-write"' \
-  > /tmp/codex-review-pr<N>.md 2>&1
+WT=../harmony-review-pr$PR-judge
+git -C ~/workspace/harmony worktree add --detach "$WT" "$HEAD"
+cat > "$WT/.judge-prompt.md" <<EOF
+You are the review judge for harmony PR #$PR. Read your charter at
+.claude/skills/pr-review/seats/judge.md in this worktree and follow it exactly.
+Seat reports: /tmp/codex-review-pr$PR-*.md. This is a <discovery|verify> event.
+Write DISPOSITION.md and ADJUDICATION.md at the worktree root, then stop.
+EOF
+tmux new-session -d -s agent-judge-pr$PR -c "$WT" \
+  "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 caffeinate -i claude --permission-mode auto \
+   --model claude-fable-5 --effort xhigh \"\$(cat .judge-prompt.md)\"; \
+   echo '[judge exited]'; exec bash"
 ```
 
-- `--base main` reviews the branch-vs-main diff; codex pulls and reads it agentically (it
-  also opens whole files and runs `git`/`rg`/`cargo`), so whole-artifact completeness checks
-  work even though it's diff-anchored.
-- `codex review` will **not** accept a custom positional prompt together with `--base`
-  (mutually exclusive) — project review focus lives in the repo's `AGENTS.md`, which codex
-  auto-reads. Keep `AGENTS.md` current; it's what makes the review determinism-aware rather
-  than generic.
-- `approval_policy=never` + `sandbox_mode=workspace-write` (workdir + /tmp only) — it can
-  build/test but can't escape or hang on a prompt. The worktree is disposable.
-- xhigh is codex's default effort here and completes reliably.
-- Output is verbose (an execution trace); the findings are the final `codex` block. Extract
-  with `grep -nE '\[P[0-9]\]' /tmp/codex-review-pr<N>.md` and read the tail. Map codex
-  severities P1→blocking, P2→suggestion (or blocking by your judgment), P3→nit.
+Wait on `DISPOSITION.md` appearing (state-based wait, never process-grep), sanity-check it,
+then kill the session. The judge pools (dedupe + cite-or-reject), **verifies every
+load-bearing claim by evidence** (CONFIRMED / PLAUSIBLE / REFUTED), and synthesizes
+dispositions against the bar — **P1 = this PR must not merge with this defect**. Details
+live in the charter; the foreman does not re-verify except by spot-check.
 
-### High-stakes artifacts
+## 5. Post, file, dispatch (foreman)
 
-For the determinism contract, security-critical crates, or anything where a missed leak is
-expensive, give the codex pass extra scrutiny: read its full reasoning (not just the `[P]`
-findings), run it from a clean PR-head worktree so it can build/test itself, and verify each
-behavioral finding with a repro in the worktree before it enters the review — treat its
-output as leads, not verdicts, and drop what doesn't hold up.
+From `DISPOSITION.md`, in one pass:
 
-### Re-review after significant findings (mandatory)
-
-If the codex pass produced **any blocking finding**, then
-after the author fixes them you MUST run the cross-model pass **again** on the updated PR
-head, and keep iterating until a cross-model pass returns with **no blocking findings**.
-Fixes introduce new code and can introduce new bugs; a spec or contract with many findings
-is rarely correct after one round. A PR is mergeable only once a *clean* cross-model pass
-confirms the fixed state — never merge on the strength of the pre-fix review alone.
-
-## 6. Post the review
-
-Post one review with all inline comments batched, not comment-by-comment. Prefix each
-comment with a severity so the author can triage:
-
-- `**[blocking]**` — must fix before merge (contract, determinism, red gate, scope)
-- `**[suggestion]**` — worth doing, author's call
-- `**[question]**` — you need an answer to finish judging something
-- `**[nit]**` — style; mention only if not already caught by clippy/fmt
-
-Build the review as a JSON file first, then submit it — this lets you proofread the whole
-review and recover if the API call fails:
+1. **Post one batched review** — build the JSON first, then submit (proofread + recover on
+   API failure). Severity prefixes: `**[blocking]**` = P1, `**[suggestion]**` = P2,
+   `**[question]**`, `**[nit]**`. `event` = `REQUEST_CHANGES` iff any P1, else `APPROVE` —
+   **except on own-authored PRs** (worker and foreman PRs share the one gh identity, i.e.
+   nearly every PR here): GitHub rejects both events on your own PR, so use
+   `event: "COMMENT"` and state the verdict as the body's first line
+   (`**REQUEST_CHANGES** (posted as comment — own-PR limitation)` / `**APPROVE** (…)`),
+   the established convention the merge condition reads.
 
 ```sh
 cat > /tmp/review-pr<N>.json <<'EOF'
-{
-  "body": "<summary: what you checked, gate results, verdict rationale>",
+{ "body": "<gates run + results; tribunal seats run; P1 count; beads filed>",
   "event": "REQUEST_CHANGES",
-  "comments": [
-    {"path": "consonance/foo/src/lib.rs", "line": 42, "side": "RIGHT",
-     "body": "**[blocking]** ..."},
-    {"path": "consonance/foo/src/wire.rs", "start_line": 10, "line": 18, "side": "RIGHT",
-     "body": "**[suggestion]** ..."}
-  ]
-}
+  "comments": [ {"path": "...", "line": 42, "side": "RIGHT", "body": "**[blocking]** ..."} ] }
 EOF
 gh api repos/{owner}/{repo}/pulls/<N>/reviews --input /tmp/review-pr<N>.json
 ```
 
-Notes on the mechanics:
-- `line` is a line number in the **head** version of the file, and it must appear in the
-  PR diff. For new crates that's every line; for edits to existing files, comment only on
-  changed/context lines or the API rejects the review.
-- `event` is `APPROVE`, `REQUEST_CHANGES`, or `COMMENT`. Any `[blocking]` finding ⇒
-  `REQUEST_CHANGES`. `APPROVE` requires **all three**: clean gates, no blocking findings,
-  and a **clean cross-model pass** (§5) on the current head — if blocking findings were
-  fixed, that means a *fresh* GPT-5.6 Sol pass after the fixes, not the original one
-  (suggestions alone shouldn't hold a delegated-task PR hostage; the integrator merges,
-  the author iterates).
-- Omitting `event` creates a *pending* (draft) review only you can see — useful if the
-  user wants to look before it goes out.
+   (`line` must be a head-version line present in the diff, or the API rejects the review.)
+2. **Post/update the adjudication record** as a PR comment from `ADJUDICATION.md` — the
+   durable per-PR log of every finding, verdict, and disposition, including refuted items
+   with their quoted refutations. This record is what kills re-raises; it dies with the PR.
+3. **File every P2 as a bead now** (`bd create`, real dependency edges), and list the bead
+   IDs in the review body.
+4. **Dispatch ONE fix batch** — P1s plus any judge-designated ride-alongs (chiefly
+   simplicity reductions; see the judge charter). Never dispatch a batch for sub-P1 items
+   alone. Existing mechanics: `agent-send.sh` to a live worker session,
+   `agent-spawn.sh <slug>` to revive one, or `agent-takeover.sh <N>` for out-of-band crate
+   code. Docs/spec fixes the foreman makes directly.
 
-The summary body should state plainly: which gates you ran and their results, whether the
-public API matches the spec, and the count of blocking findings. That's what the
-integrator reads first.
+## 6. The verify event (after the fix batch) — bounded
 
-## 7. Clean up
+Seats: **Closer** (always) + **1–2 fresh sweep seats** chosen for where the fixes
+concentrated, + a fresh judge.
+
+- The Closer is the one seat with memory. Fetch the adjudication record into its worktree
+  before composing its `AGENTS.md`:
 
 ```sh
-git -C ~/workspace/harmony worktree remove ../harmony-review-pr<N>
+gh pr view $PR --json comments -q \
+  '[.comments[] | select(.body | startswith("## Adjudication record"))] | last | .body' \
+  > "$WT/ADJUDICATION.md"
+cat AGENTS.md .claude/skills/pr-review/seats/COMMON.md \
+    .claude/skills/pr-review/seats/closer.md > "$WT/AGENTS.md"
 ```
 
-Report back to the user with the verdict, the blocking findings, and a link to the
-posted review.
+- Sweep seats run their normal charters, blind as ever, scoped by the fix-touched surface.
+- **Convergence rule: at the verify event only P1-bar findings may block; everything else
+  parks automatically — no exceptions, no "while we're here."**
+
+Outcomes:
+- **No open P1s** ⇒ APPROVE; merge with parks (§7).
+- **New P1s** ⇒ one more fix batch, then a **Closer-only re-check** (no sweeps, no
+  tribunal), judged the same way.
+- **P1s still open after that, or the same root cause bounced twice** ⇒ STOP. Escalate to
+  the user with `DISPOSITION.md`. The stop is the default.
+
+## 7. Merge and clean up
+
+Merge conditions: green portable gates + any spec-required box gate green + zero open P1s.
+Do not hold a green-box, tribunal-reviewed PR for extra passes. After any merge-conflict
+resolution or rebase, run ONE contract-seat pass on the merged head — wire regressions
+introduced by conflict resolution are a real, observed class. Then:
+
+```sh
+git -C ~/workspace/harmony worktree list | grep review-pr$PR   # remove each:
+git -C ~/workspace/harmony worktree remove ../harmony-review-pr$PR-<seat>
+tmux kill-session -t agent-judge-pr$PR 2>/dev/null
+```
+
+Report to the user: verdict, the P1s and their fixes, beads filed, adjudication link.
+
+## Standing rules (unchanged by the tribunal)
+
+- Never weaken a gate, floor, or spec to get a PR through — the Gate Auditor hunts exactly
+  this; quality ratchets up, never drifts down.
+- `unsafe` ⇒ Miri, with an interpreter-reachable path; a vacuous Miri gate is a finding.
+- The spec is the contract; spec self-contradictions are `[question]`s for the integrator,
+  never pinned on the implementer.
+- Dependency-whitelist exceptions: ask-by-comment in the PR description.
+- Both platforms must pass; check what Mac-side gates cannot see (cfg(linux)) is covered by
+  Linux CI before approving anything touching shared enums or box code.

@@ -49,9 +49,11 @@ checks, never quarter-roadmap stops (the task-69 lesson). **Maximize box (real-K
 execution; minimize ceremony on theory-only PRs.** Concretely, overriding the per-PR
 review default below:
 - **Tier the review.** *Substantive* PRs (crate code, determinism leaks, the CPU/MSR contract,
-  wire formats, `unsafe`) get the full **pr-review** treatment incl. the mandatory cross-model
-  pass (`codex review`, GPT-5.6 Sol — the sole cross-model pass). *Light* PRs (docs, specs, ROADMAP, feedback, handoff plans) get a foreman
-  sanity read + the standard gates, then merge — **no cross-model pass, no multi-round loop.**
+  wire formats, `unsafe`) get the **tribunal pipeline** (pr-review skill: parallel blind GPT-5.6
+  Sol seats → Fable 5 judge → one P1-scoped fix batch → one verify event — bounded by design;
+  ruled 2026-07-16, `docs/REVIEW-TRIBUNAL.md`). *Light* PRs (docs, specs, ROADMAP, feedback,
+  handoff plans) get a foreman sanity read + the standard gates, then merge — **no tribunal,
+  no multi-round loop.**
 - **A green box gate outranks a review round.** For box-only frontier tasks the determinism gate
   on the box (boots, runs, bit-identical `state_hash`) is the decisive signal; once it is green and
   the diff has had one substantive review, merge — do not hold frontier progress for extra rounds.
@@ -115,6 +117,11 @@ A task = one `tasks/NN-*.md` spec. Stage is a pure function of observations:
 | `mergeable` | your latest review on the current head = APPROVE |
 | `done` | PR merged |
 
+Reviews carry verdicts as COMMENT-event reviews whose body opens with `**APPROVE**` /
+`**REQUEST_CHANGES**` (own-authored PRs — the usual case here — reject the real events;
+see the pr-review skill §5). Read the stage table's REQUEST_CHANGES/APPROVE through that
+convention.
+
 ## 2b. Out-of-band PRs (authored outside the task queue)
 
 Not every PR comes from a `tasks/NN-*.md` worker. The user (or a side-branch agent, via the
@@ -137,21 +144,25 @@ A draft out-of-band PR is the author still working — skip it until they mark i
 
 Do all cheap actions; do at most ONE of the starred heavy ones per iteration.
 
-1. **Merge** every `mergeable` (task-owned and out-of-band alike — auto-merge on a clean
-   cross-model pass + green gates): `gh pr merge <N> --squash --delete-branch`, then clean up
+1. **Merge** every `mergeable` (task-owned and out-of-band alike — auto-merge on a completed
+   tribunal with zero open P1s + green gates): `gh pr merge <N> --squash --delete-branch`, then clean up
    locally. Task-owned: `tmux kill-session -t agent-<slug> 2>/dev/null; git -C ~/workspace/harmony worktree remove --force ../harmony-task-<slug> 2>/dev/null; git -C ~/workspace/harmony branch -D task/<slug> 2>/dev/null`.
    Out-of-band with a spawned fixer: same, but session `agent-pr<N>` and worktree
-   `../harmony-pr<N>`. Always also remove any review worktree (`../harmony-review-pr<N>`).
-2. ★ **Verify** one `needs-verification`: fetch the branch into a review worktree, re-run
-   the gates, check every `[blocking]` finding from your review is actually addressed
-   (not just claimed). If your prior review had **any** blocking finding, you MUST rerun
-   the blind GPT-5.6 Sol cross-model pass on the fixed head (pr-review skill §5) — fixes can
-   introduce new bugs; iterate until a *clean* cross-model pass confirms it. Only then
-   post APPROVE; otherwise REQUEST_CHANGES.
+   `../harmony-pr<N>`. Always also remove every review/seat/judge worktree
+   (`../harmony-review-pr<N>*`) and any `agent-judge-pr<N>` session.
+2. ★ **Verify** one `needs-verification`: run the **verify event** (pr-review skill §6) on
+   the fixed head — the Closer seat (with the adjudication record) + 1–2 fresh sweep seats
+   + a fresh judge. Fixes can introduce new bugs; that is what the Closer hunts. At this
+   stage only P1-bar findings may block; everything else parks as beads automatically.
+   No open P1s ⇒ APPROVE, merge with parks. New P1s ⇒ one more fix batch, then a
+   **Closer-only re-check**. P1s still open after that, or the same root cause twice ⇒
+   STOP and escalate (§4) — never keep looping; the stop is the default.
 3. ★ **Review** one `needs-review`, **tiered** (see the review-posture rule above):
    - *Substantive* (crate code, determinism, contract, wire formats, `unsafe`): invoke the
-     **pr-review skill** in full — spec conformance, gates, the **mandatory** blind GPT-5.6 Sol
-     cross-model pass, batched inline review. Never skip the cross-model pass for this tier.
+     **pr-review skill** in full — gates first, then the discovery tribunal (parallel blind
+     GPT-5.6 Sol seats) and the Fable 5 judge; post the batched review + adjudication record
+     from the judge's disposition packet, file every P2 as a bead, dispatch one P1-scoped
+     fix batch. Never skip the tribunal for this tier; never exceed the pipeline's event cap.
    - *Light* (docs, specs, ROADMAP, feedback, handoff plans): a foreman sanity read + the
      standard gates, then merge — no cross-model pass. (This is a *cheap* action, not the
      starred heavy one.)
@@ -165,8 +176,8 @@ Do all cheap actions; do at most ONE of the starred heavy ones per iteration.
      changes **crate code**, spawn a fixer on the PR's own branch:
      `~/workspace/harmony/scripts/agent-takeover.sh <N>` then
      `scripts/agent-send.sh pr<N> "..."` (the spawned session is `agent-pr<N>`). Never edit
-     crate code yourself. Either way, when fixed, re-review (the cross-model pass is
-     mandatory after any blocking finding) before merge.
+     crate code yourself. Either way, when fixed, run the verify event (pr-review skill §6)
+     before merge.
 5. **Open PRs** for `needs-pr` branches: `gh pr create --head task/<slug> --title "<task title>" --body "<task spec link + summary>"` (foreman-created PRs are fine when the worker lacks gh auth).
 6. **Nudge stalls**: a live session with no events.log entry for >45 min — inspect with
    `tmux capture-pane -p -t agent-<slug> | tail -30`. If it's waiting on a
