@@ -99,11 +99,16 @@ for SEAT in gate-auditor consonance contract adversary wiring simplicity archite
   git worktree add --detach "$WT" "$HEAD"
   cat AGENTS.md .claude/skills/pr-review/seats/COMMON.md \
       .claude/skills/pr-review/seats/$SEAT.md > "$WT/AGENTS.md"
-  ( cd "$WT" && gtimeout 1200 codex review --base main \
+  ( cd "$WT" && gtimeout 1200 codex review --base origin/main \
       -c approval_policy='"never"' -c sandbox_mode='"workspace-write"' \
       > /tmp/codex-review-pr$PR-$SEAT.md 2>&1 ) &
 done; wait
 ```
+
+(`--base origin/main`, never `main`: the fetch in §2 does not advance the local `main`
+ref, and a stale base makes every seat review commits that are not this PR's. At the
+5-seat size the merged Contract+Adversary seat is one worktree whose `AGENTS.md`
+concatenates both charters after `COMMON.md`.)
 
 A timed-out or truncated seat gets ONE re-run; a seat that dies twice is reported to the
 judge as a named coverage gap — never silently skipped. Findings are the final `codex`
@@ -142,7 +147,12 @@ From `DISPOSITION.md`, in one pass:
 
 1. **Post one batched review** — build the JSON first, then submit (proofread + recover on
    API failure). Severity prefixes: `**[blocking]**` = P1, `**[suggestion]**` = P2,
-   `**[question]**`, `**[nit]**`. `event` = `REQUEST_CHANGES` iff any P1, else `APPROVE`.
+   `**[question]**`, `**[nit]**`. `event` = `REQUEST_CHANGES` iff any P1, else `APPROVE` —
+   **except on own-authored PRs** (worker and foreman PRs share the one gh identity, i.e.
+   nearly every PR here): GitHub rejects both events on your own PR, so use
+   `event: "COMMENT"` and state the verdict as the body's first line
+   (`**REQUEST_CHANGES** (posted as comment — own-PR limitation)` / `**APPROVE** (…)`),
+   the established convention the merge condition reads.
 
 ```sh
 cat > /tmp/review-pr<N>.json <<'EOF'

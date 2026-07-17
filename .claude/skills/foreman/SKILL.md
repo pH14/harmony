@@ -117,6 +117,11 @@ A task = one `tasks/NN-*.md` spec. Stage is a pure function of observations:
 | `mergeable` | your latest review on the current head = APPROVE |
 | `done` | PR merged |
 
+Reviews carry verdicts as COMMENT-event reviews whose body opens with `**APPROVE**` /
+`**REQUEST_CHANGES**` (own-authored PRs — the usual case here — reject the real events;
+see the pr-review skill §5). Read the stage table's REQUEST_CHANGES/APPROVE through that
+convention.
+
 ## 2b. Out-of-band PRs (authored outside the task queue)
 
 Not every PR comes from a `tasks/NN-*.md` worker. The user (or a side-branch agent, via the
