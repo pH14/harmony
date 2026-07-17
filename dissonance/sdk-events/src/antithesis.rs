@@ -238,9 +238,10 @@ fn decode_assert(
         payload: Payload::Unknown,
         raw: raw.clone(),
     };
-    // A property must be identifiable; without an id or message the record is
-    // preserved raw rather than dropped or invented.
-    let Some(property) = property_identity(assert) else {
+    // A property must be identifiable; without an id or message — or with a
+    // present-but-malformed one — the record is preserved raw rather than dropped,
+    // invented, or silently reduced to a site-derived identity.
+    let Ok(Some(property)) = property_identity(assert) else {
         return Ok(unknown);
     };
     // A malformed location (a coordinate that is not a non-negative integer, etc.)
@@ -250,7 +251,11 @@ fn decode_assert(
         return Ok(unknown);
     };
 
-    let assert_type = assert_type(assert);
+    // A present-but-unsupported verb/display combo is malformed — keep it raw rather
+    // than mint an assertion with a defaulted or `None` verb.
+    let Ok(assert_type) = assert_type(assert) else {
+        return Ok(unknown);
+    };
     let condition = assert.get("condition").and_then(Value::as_bool);
     let expectation = assert_expectation(assert, assert_type);
 
@@ -300,7 +305,11 @@ fn decode_guidance(
 
     let numeric = guidance.get("guidance_type").and_then(Value::as_str) == Some("numeric");
     let maximize = guidance.get("maximize").and_then(Value::as_bool);
-    let property = property_identity(guidance);
+    // A present-but-malformed identity field keeps the record raw (rather than
+    // falling back to a site-derived identity); `Ok(None)` means no identity.
+    let Ok(property) = property_identity(guidance) else {
+        return Ok(unknown);
+    };
     // Numeric guidance needs an identity and an explicit optimization direction;
     // anything else is report-only raw evidence.
     let (Some(property), Some(maximize), true) = (property, maximize, numeric) else {
@@ -405,11 +414,25 @@ fn decode_setup(
 /// with different per-site `id`s) that share a message aggregate into one property.
 /// The per-site `id` is preserved as site metadata (see [`site_of`]), not identity.
 /// `id` is a defensive fallback only when a record carries no message.
-fn property_identity(v: &Value) -> Option<String> {
-    v.get("message")
-        .and_then(Value::as_str)
-        .or_else(|| v.get("id").and_then(Value::as_str))
-        .map(str::to_string)
+///
+/// `Ok(None)` means neither field is present (no identity to normalize). `Err(())`
+/// means a present identity field is **malformed** — a `message` (or the fallback
+/// `id`) that is present but not a string. A malformed message must not silently
+/// fall back to the `id` as the property, and a malformed `id` must not collapse to
+/// "no identity"; either keeps the whole record raw (mirrors the present-vs-absent
+/// discipline in [`site_of`]).
+fn property_identity(v: &Value) -> Result<Option<String>, ()> {
+    // The message is the property identity when present; a present-but-non-string
+    // message is malformed (reject) rather than a cue to fall back to `id`.
+    if let Some(message) = v.get("message") {
+        return Ok(Some(message.as_str().ok_or(())?.to_string()));
+    }
+    // No message: `id` is the defensive fallback identity — absent means no identity;
+    // present-but-non-string is malformed (as in `site_of`).
+    match v.get("id") {
+        None => Ok(None),
+        Some(id) => Ok(Some(id.as_str().ok_or(())?.to_string())),
+    }
 }
 
 /// The human message, if present.
@@ -418,19 +441,34 @@ fn message_of(v: &Value) -> Option<String> {
 }
 
 /// Map the Antithesis `assert_type` (+ `display_type` for reachability) to a verb.
-fn assert_type(v: &Value) -> Option<AssertType> {
-    match v.get("assert_type").and_then(Value::as_str)? {
-        "always" => Some(AssertType::Always),
-        "sometimes" => Some(AssertType::Sometimes),
-        "reachable" => Some(AssertType::Reachable),
-        "unreachable" => Some(AssertType::Unreachable),
+///
+/// `Ok(None)` when the field is absent (a verb-less occurrence). `Ok(Some(verb))`
+/// for an **exactly** supported verb/display combo. `Err(())` when the field is
+/// present but unsupported — an unknown verb string, a non-string `assert_type`, or
+/// a `"reachability"` whose `display_type` is not exactly `"Reachable"`/
+/// `"Unreachable"`. A present-but-unsupported combo keeps the whole record raw
+/// (mirrors the present-vs-absent discipline in [`site_of`]/[`property_identity`])
+/// rather than defaulting reachability to `Reachable` — which would silently drop a
+/// `MustNotHit` expectation — or minting an assertion with a `None` verb from data
+/// the decoder does not actually recognize.
+fn assert_type(v: &Value) -> Result<Option<AssertType>, ()> {
+    let Some(field) = v.get("assert_type") else {
+        return Ok(None);
+    };
+    match field.as_str().ok_or(())? {
+        "always" => Ok(Some(AssertType::Always)),
+        "sometimes" => Ok(Some(AssertType::Sometimes)),
+        "reachable" => Ok(Some(AssertType::Reachable)),
+        "unreachable" => Ok(Some(AssertType::Unreachable)),
         // The Rust SDK spells both reachability verbs `"reachability"` and
-        // distinguishes them by `display_type`.
+        // distinguishes them by `display_type`; require the exact display token
+        // rather than defaulting an unrecognized one to `Reachable`.
         "reachability" => match v.get("display_type").and_then(Value::as_str) {
-            Some("Unreachable") => Some(AssertType::Unreachable),
-            _ => Some(AssertType::Reachable),
+            Some("Reachable") => Ok(Some(AssertType::Reachable)),
+            Some("Unreachable") => Ok(Some(AssertType::Unreachable)),
+            _ => Err(()),
         },
-        _ => None,
+        _ => Err(()),
     }
 }
 

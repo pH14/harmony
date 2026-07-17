@@ -324,17 +324,21 @@ impl DeclContext {
     }
 }
 
-/// Parse a catalog declaration blob into a [`DeclContext`]. A missing/garbled
-/// header (bad magic or an unknown/absent version) yields an empty v1 context
-/// leniently — the stream simply has no usable declaration. A *present, known*
-/// version with a truncated record is a strict [`MalformedLength`](SdkError).
+/// Parse a catalog declaration blob into a [`DeclContext`]. A blob whose magic is
+/// absent or wrong is not a recognizable catalog at all, so it yields an empty v1
+/// context leniently — the stream simply has no usable declaration. Once the `SDKC`
+/// magic *is* present the blob is a declaration and is parsed strictly: an unknown
+/// version is refused, and a record truncated before (or within) any field is a
+/// [`MalformedLength`](SdkError) rather than a silently-dropped declaration.
 fn parse_declaration(bytes: &[u8]) -> Result<DeclContext, SdkError> {
     let mut r = Reader::new(bytes);
     let magic = r.u32();
-    let version = r.u8();
     if magic != Some(wire::CATALOG_MAGIC) {
         return Ok(DeclContext::empty());
     }
+    // Magic present ⇒ a declaration is present; its version byte governs the layout.
+    let available = r.remaining();
+    let version = r.u8();
     match version {
         Some(wire::SDK_WIRE_VERSION) => parse_v1(&mut r),
         Some(wire::SDK_WIRE_VERSION_V2) => parse_v2(&mut r),
@@ -343,9 +347,17 @@ fn parse_declaration(bytes: &[u8]) -> Result<DeclContext, SdkError> {
         // decode them under this decoder's layout (mirrors `decode_events`'s taint,
         // but as a typed error since this decoder returns `Result`).
         Some(other) => Err(SdkError::UnsupportedVersion { version: other }),
-        // A truncated header (version byte missing after good magic) claims no
-        // version; treat it as no usable declaration and decode events leniently.
-        None => Ok(DeclContext::empty()),
+        // Valid catalog magic but truncated before the version byte: a declaration
+        // is present (the `SDKC` magic marks it) yet unreadable. Emptying it silently
+        // would erase every never-fired point the catalog declared, so treat the
+        // truncation as the malformed record it is — consistent with the strict
+        // field reads inside `parse_v1`/`parse_v2` and with the `event_id == 0`
+        // record being an actual declaration, not just noise.
+        None => Err(SdkError::MalformedLength {
+            context: "catalog version",
+            needed: 1,
+            available,
+        }),
     }
 }
 
@@ -640,7 +652,9 @@ fn decode_event(
 }
 
 /// Decode an assertion firing `[disposition u8][detail_len u16][detail]`. The verb
-/// comes from the declaration (if the coordinate was declared).
+/// comes from a v1 declaration (if the coordinate was declared); a v2 declaration
+/// carries no verb but does carry an expectation, and both constrain which
+/// disposition is admissible at the coordinate (a contradicting firing stays raw).
 fn decode_assert(local: u32, bytes: &[u8], ctx: &DeclContext) -> Option<Payload> {
     let mut r = Reader::new(bytes);
     let disp = r.u8()?;
@@ -654,15 +668,36 @@ fn decode_assert(local: u32, bytes: &[u8], ctx: &DeclContext) -> Option<Payload>
         _ => return None,
     };
     let assert_type = ctx.assert_types.get(&(wire::NS_ASSERT, local)).copied();
-    // A declared verb constrains which disposition the guest SDK can emit: hits
-    // come only from `sometimes`/`reachable`, violations only from
-    // `always`/`unreachable`. A kind-inconsistent disposition (e.g. a hit on an
-    // `always` point) is a forged/malformed record the guest would never emit —
-    // keep it raw rather than mint credible normalized evidence.
+    // A declared verb (populated for v1 catalogs) constrains which disposition the
+    // guest SDK can emit: hits come only from `sometimes`/`reachable`, violations
+    // only from `always`/`unreachable`. A kind-inconsistent disposition (e.g. a hit
+    // on an `always` point) is a forged/malformed record the guest would never emit
+    // — keep it raw rather than mint credible normalized evidence.
     if let Some(at) = assert_type {
         let consistent = match at {
             AssertType::Sometimes | AssertType::Reachable => disp == wire::DISP_HIT,
             AssertType::Always | AssertType::Unreachable => disp == wire::DISP_VIOLATION,
+        };
+        if !consistent {
+            return None;
+        }
+    }
+    // A wire-v2 catalog declares no verb — only an `expectation` — so `assert_types`
+    // is empty for a v2 point and the verb guard above never fires. Enforce the same
+    // disposition discipline from the declared expectation instead, so the v2 guard
+    // is not silently skipped: a `MustHit` point (sometimes/reachable) emits only
+    // hits and a `MustNotHit` point (unreachable) only violations, so a disposition
+    // contradicting the declared expectation is a forged/malformed firing and stays
+    // raw. (A v1 catalog also records an expectation; this check agrees with — and is
+    // subsumed by — the verb check above, so it changes nothing on the v1 path.)
+    let id = ObservationId::Point {
+        namespace: wire::NS_ASSERT,
+        local,
+    };
+    if let Some(expectation) = ctx.schema.entry(&id).and_then(|e| e.expectation) {
+        let consistent = match expectation {
+            Expectation::MustHit => disp == wire::DISP_HIT,
+            Expectation::MustNotHit => disp == wire::DISP_VIOLATION,
         };
         if !consistent {
             return None;
