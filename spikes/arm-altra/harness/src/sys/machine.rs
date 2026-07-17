@@ -39,10 +39,28 @@ use crate::run::{RunError, Vcpu, VcpuExit, WorkCounter};
 /// (`payloads/linker.ld`: params page at `0x4000_0000`, image at `+512 KiB`).
 pub const RAM_BASE: u64 = 0x4000_0000;
 
-/// How much guest RAM the payloads need: the image loads 512 KiB in and carries a
-/// 64 KiB stack, so 64 MiB is generous and lets the whole slot be hashed cheaply
-/// for the state digest.
-pub const RAM_SIZE: usize = 64 << 20;
+/// How much guest RAM the payloads need: the image loads 512 KiB in and its whole
+/// footprint (code + rodata + data + bss + `__stack_top`, `payloads/linker.ld`) plus
+/// the two harness pages live under ~1.5 MiB, so 4 MiB is an 8× margin.
+///
+/// This was `64 << 20` in the offline apparatus, whose comment assumed the slot could
+/// be "hashed cheaply" for the state digest. AA-1(c) on real N1 measured that wrong:
+/// `state_digest` reads the **whole** slot every sample, and faulting-in + hashing 64
+/// MiB of freshly-`mmap`ed anonymous memory is ~0.45 s/sample — memory-bound, so
+/// hardware SHA-256 codegen (`target-cpu=native`) did not move it. At 10⁶ armed
+/// overflows that is ~5 days on one pinned core, and the aggregation rule forbids
+/// spreading the four contamination conditions across cores. Shrinking the slot is the
+/// only effective lever, and it is **evidence-preserving**: the 60+ MiB tail is
+/// provably always-zero (no payload touches it — the ELF loader fails closed with
+/// `RangeNotMapped` on any segment past the slot, and a guest write past the mapping
+/// faults rather than corrupting silently), so hashing it adds no divergence-detection
+/// power. The digest still covers every byte of guest state a payload can reach; only
+/// its length (and thus its hex value) changes, and digests are compared only WITHIN a
+/// run-set (replay identity), never across run-sets or against a golden. No measured
+/// count, overflow, or skid is affected. Recorded as a SPIKE(arm-altra) apparatus
+/// change in the AA-1(c) disposition. If AA-5's Linux guest (not yet built) needs more,
+/// it takes its own larger slot; nothing in the bare-metal payload path exceeds this.
+pub const RAM_SIZE: usize = 4 << 20;
 
 /// The signal used for the stock overflow kick. `SIGUSR1` rather than `SIGIO`: the
 /// handler must not be one the runtime installs for anything else, and the only

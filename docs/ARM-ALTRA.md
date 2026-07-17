@@ -851,3 +851,76 @@ back (escalation, per the authorized stop conditions; the earlier
 "self-recovering" description was wrong on this box). (b) unattended-upgrades
 installed a 6.8.0-136 image mid-spike (inert under `saved_entry` pinning;
 baseline drift noted).
+
+### AA-1(b) — guest-mode count exactness: FIRST REAL KVM_RUN, ALL GREEN
+
+Evidence: `results/aa-1b/` — `aa1b-smoke-001` (8/8, the pipeline shake-out) and
+`aa1b-pinned-solo-001` (**720 records**, 8 payloads × 3 scales {1e6,1e7,1e8} × cases ×
+reps, counting mode — `overflow.armed: false`), core 60, stock 6.18.35 (build-id
+`1e975db8…`), floor-checked.
+
+The bare-metal oracle payloads boot on a pinned single vCPU and count guest-only
+(`exclude_host`) exactly against the analytical oracle: **720/720 count-exact across
+1e6–1e8**, zero window offset — the guest-mode counts land on the same
+`certain_branches` model the EL0 half (AA-1(a)) confirmed, on first contact. The
+**weights pack is CONFIRMED** (`results/aa-1b/weights-provisional.json`:
+`exception_entry=1`, everything else 0, `window_offset=0`) — the per-class offsets are
+the differential the density table rests on.
+
+**Finding AA1-F2 (the §4 hazard, observed): `llsc-atomics` shows spontaneous
+run-to-run count divergence** even with no injection — the architecturally-permitted
+spurious `STXR` failure of `docs/ARM-ALTRA.md` §4, surfacing as data-dependent retry
+counts. It does NOT break AA-1(b): `llsc-atomics`/`clock-page` carry a guest-*reported*
+retry term (`has_reported_term`), so count-exactness grades `oracle_base + reported`
+and holds; and AA-1 replay-identity has the documented llsc carve-out (multiple llsc
+digests across reps are the expected §4 signature, not a failure). Recorded here as the
+threat AA-4 must rule on (mechanically-unreachable vs cooperative-residual); the LSE
+payload is deterministic by construction, the intended answer.
+
+### AA-1(c) — overflow + skid (the existential-trio third): IN PROGRESS, campaign launched 2026-07-17
+
+The armed-overflow experiment: sampling-mode overflow with a host-side signal kick out
+of `KVM_RUN` (the pre-patch mechanism; AA-3 moves it in-kernel), every armed overflow
+required delivered exactly once (per-record multiplicity), the early/late skid
+distribution measured → the candidate N1 `skid_margin` + density table.
+
+**Smoke (validated, clean):** `results/aa-1c/aa1c-armed-smoke-001` (16 armed records,
+core 60) floor-checks PASS on every per-set check — multiplicity exactly-once,
+count-exactness, skid self-consistent, mechanism = `SignalKick` attested, perf raw
+`0x21` guest-only + pinned, image pins verified. (Only `condition-matrix` fails, as any
+single-condition set must.)
+
+**Finding AA1-F3 (apparatus, not silicon — measured per-sample cost + evidence-neutral
+fix): the harness state digest hashed all of guest RAM every sample, and on N1 that,
+not the work clock, was the cost floor.** `state_digest` sha256-reads the *whole* guest
+RAM slot per sample; the offline apparatus set `RAM_SIZE = 64 MiB` on the unmeasured
+assumption it "hashes cheaply." On real N1 it is **~0.45 s/sample**, scale-independent
+(smoke and 1e6 cost the same) and memory-bound — rebuilding with N1-native crypto
+codegen (`target-cpu=native`, hardware SHA-256) moved it **not at all**. At the
+normative ≥10⁶ armed floor that is **~5 days on one pinned core**, and the aggregation
+rule forbids spreading the four contamination conditions across cores, so there is no
+parallel escape. Fix: `RAM_SIZE` → **4 MiB** (`harness/src/sys/machine.rs`, marked
+`SPIKE(arm-altra)`). It is **evidence-preserving**: all payload state (image at
+`+512 KiB` + `__stack_top` + bss) lives under ~1.5 MiB, the 60+ MiB tail is provably
+always-zero (the ELF loader fails closed with `RangeNotMapped` on any over-range
+segment; a guest write past the mapping faults rather than corrupting silently), so
+hashing it added no divergence-detection power. Only the digest's *length* (hence hex
+value) changes, and digests are compared only WITHIN a run-set (replay identity), never
+across sets or against a golden — no measured count, overflow, or skid is affected.
+Validated: post-fix, 8/8 (pre-spend smoke of the exact campaign config) and 80/80 (1e6)
+armed records re-grade count-exact, delivered-exactly-once, payload-status clean.
+Per-sample cost dropped 10–14× (smoke 0.458 s → 0.033 s; 1e6 0.49 s → 0.051 s),
+bringing the normative floor into an overnight batch. `AA-5's Linux guest (not yet
+built) takes its own larger slot; nothing in the bare-metal payload path exceeds 4 MiB.`
+
+**Campaign launched (`host/aa1c-conditions.sh r1 31250 30`, detached, core 60):** the
+full normative condition matrix — per condition, a 1e6 bulk (8 payloads × 31,250 cases
+= 250,000 armed overflows) + a 1e7/1e8 grid (differential + grid presence) — over
+`pinned-solo`, `co-tenant-other-core`, `memory-pressure`, `co-tenant-same-core` (last;
+its same-core contention ~doubles its wall time), then the bounded unpinned migration
+probe (rr #3607). Target: ≥10⁶ armed overflows cumulative, ≥250k per condition. Bulk
+raw records (~100 MB each) stay on the box, content-addressed by the manifest
+`records_sha256`; manifests + floor-check verdicts + the smaller grid/migration sets
+land in git. **Disposition: not yet declared** — waits on campaign completion + the
+aggregate floor-check (`--min-armed-overflows 1000000 --min-cases …`) + the derived
+`skid_margin`/density pack.
