@@ -913,14 +913,41 @@ Per-sample cost dropped 10–14× (smoke 0.458 s → 0.033 s; 1e6 0.49 s → 0.0
 bringing the normative floor into an overnight batch. `AA-5's Linux guest (not yet
 built) takes its own larger slot; nothing in the bare-metal payload path exceeds 4 MiB.`
 
-**Campaign launched (`host/aa1c-conditions.sh r1 31250 30`, detached, core 60):** the
-full normative condition matrix — per condition, a 1e6 bulk (8 payloads × 31,250 cases
-= 250,000 armed overflows) + a 1e7/1e8 grid (differential + grid presence) — over
+**Finding AA1-F4 (checker-vs-plan, two constraints that shape the campaign):** a first
+launch (`r1`, a 1e6 bulk of 31,250 cases/payload) was killed 15 min in on two grounds.
+(1) **The floor-checker's branch-dense oracle ceiling.** `count-exactness` re-simulates
+the branch-dense oracle per distinct seed; at 1e6 that is 10⁶ trips/seed, so 31,250
+distinct branch-dense seeds is 3.1×10¹⁰ > the `MAX_ORACLE_TRIPS` = 2×10¹⁰ fail-closed
+guard — the bulk would be *ungradeable*. A run-set may carry at most ~20,000 distinct
+branch-dense-1e6 seeds. (2) **Armed reps diverge by construction.** For an armed record
+the replay key is `landed_digest` (state at the landing), which is skid-dependent, and
+skid varies run-to-run (kick-latency jitter) — so `--reps > 1` on an armed run fails
+replay-identity. Reps are for counting runs; armed runs use `reps = 1`.
+
+**The two-scale decomposition (the fix):** the ≥10⁶ armed floor certifies overflow
+**delivery reliability** (exactly-once) + count invariance — which the
+arm→fire→signal-kick→land cycle exercises identically at any scale — so the volume runs
+at **smoke** scale (branch-dense oracle only 1000 trips/seed → 31,250 seeds grades
+trivially; and smoke is the cheapest cycle, ~0.033 s/sample). The **scale science** —
+per-class density table, count-exactness at scale, grid-cell presence, and the
+`skid_margin` (skid is scale-*dependent*: branches retired during a fixed kick latency
+grow with the loop's branch rate, so the worst case is at 1e8) — rides a separate
+**real-scale grid** (1e6/1e7/1e8). Validated end-to-end by a mini dress-rehearsal (all
+four conditions + load + migration probe at tiny counts): aggregate floor-check
+**PASS (148 checks)** sub-normative, and at the normative floor only the three volume
+gates (share, armed-floor, case-coverage) short while **aggregation, the grid-cell
+matrix, count-exactness, multiplicity, and the migration-probe carve-out all pass** —
+i.e. the structure is proven; only the counts need to be large.
+
+**Campaign launched (`host/aa1c-conditions.sh r2 31250 100 400`, detached, core 60):**
+per condition, a **smoke bulk** (8 payloads × 31,250 = 250,000 armed overflows) + a
+**1e6/1e7/1e8 grid** (8 × 3 × 100 = 2,400; density + skid + presence), over
 `pinned-solo`, `co-tenant-other-core`, `memory-pressure`, `co-tenant-same-core` (last;
-its same-core contention ~doubles its wall time), then the bounded unpinned migration
-probe (rr #3607). Target: ≥10⁶ armed overflows cumulative, ≥250k per condition. Bulk
-raw records (~100 MB each) stay on the box, content-addressed by the manifest
-`records_sha256`; manifests + floor-check verdicts + the smaller grid/migration sets
-land in git. **Disposition: not yet declared** — waits on campaign completion + the
-aggregate floor-check (`--min-armed-overflows 1000000 --min-cases …`) + the derived
-`skid_margin`/density pack.
+its same-core contention ~doubles that condition's wall time), then the bounded unpinned
+**migration probe** (1e6 × 400/payload = 3,200 armed; rr #3607). Totals: ~1.01×10⁶ armed
+cumulative, ~252k per condition. Bulk raw records (~100 MB each) stay on the box,
+content-addressed by the manifest `records_sha256`; manifests + floor-check verdicts +
+the smaller grid/migration sets land in git. Est. ~13 h. **Disposition: not yet
+declared** — waits on campaign completion + the aggregate floor-check
+(`--min-armed-overflows 1000000 --min-cases 100000`) + the derived `skid_margin`/density
+pack read from the grid.
