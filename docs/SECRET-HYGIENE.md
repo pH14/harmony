@@ -26,12 +26,14 @@ Do not run `pre-commit install`: Harmony tracks `.githooks/pre-commit` so the ho
 is the same for every contributor.
 
 **Beads interaction.** `core.hooksPath` is single-valued, and beads-managed clones point it
-at `.beads/hooks` (`bd hooks install`). The `.githooks/*` entry points compose the two
-families: each delegates to the matching `.beads/hooks/<hook>` shim first when it exists
-(including pure passthroughs for the beads-only hooks), so setting `core.hooksPath
-.githooks` as above keeps the full beads behavior AND adds the credential scan. Leaving
-`core.hooksPath` at `.beads/hooks` is the one unsupported state — the credential hook never
-runs there; switch to `.githooks` per the setup above.
+at `.beads/hooks` (`bd hooks install`). The two hook families compose in BOTH directions so
+neither installer order can silently disable the other: the `.githooks/*` entry points
+delegate to the matching `.beads/hooks/<hook>` shim first when it exists (including pure
+passthroughs for the beads-only hooks), and `.beads/hooks/pre-commit` carries a
+harmony-owned chain section outside its beads-managed markers that runs the credential
+stage whenever `core.hooksPath` is not `.githooks` (i.e. when beads installed last). Either
+setting therefore runs both families for commits; `.githooks` remains the documented
+setting because it also covers the pre-push quality hook.
 
 To scan every tracked file explicitly, run:
 
