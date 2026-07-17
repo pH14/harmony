@@ -4,6 +4,16 @@
 # core.hooksPath=.githooks, so `pre-commit install` must not replace this file.
 set -euo pipefail
 
+# Compose, don't clobber (review F3): beads-managed clones carry their own hook
+# family under .beads/hooks (issue-tracker sync with timeout and db-tolerance
+# logic). core.hooksPath is single-valued, so this entry point delegates to the
+# beads shim first when it exists — neither hook family may silently disable
+# the other, whichever installer ran last.
+BEADS_HOOK="$(git rev-parse --show-toplevel)/.beads/hooks/pre-commit"
+if [ -x "$BEADS_HOOK" ]; then
+    "$BEADS_HOOK" "$@"
+fi
+
 if ! command -v pre-commit >/dev/null 2>&1; then
     echo "pre-commit is required for Harmony's credential-leak check." >&2
     echo "Install it with 'brew install pre-commit' or 'pipx install pre-commit'." >&2

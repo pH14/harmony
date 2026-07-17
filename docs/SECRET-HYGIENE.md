@@ -23,7 +23,17 @@ pre-commit install-hooks
 ```
 
 Do not run `pre-commit install`: Harmony tracks `.githooks/pre-commit` so the hook behavior
-is the same for every contributor. To scan every tracked file explicitly, run:
+is the same for every contributor.
+
+**Beads interaction.** `core.hooksPath` is single-valued, and beads-managed clones point it
+at `.beads/hooks` (`bd hooks install`). The `.githooks/*` entry points compose the two
+families: each delegates to the matching `.beads/hooks/<hook>` shim first when it exists
+(including pure passthroughs for the beads-only hooks), so setting `core.hooksPath
+.githooks` as above keeps the full beads behavior AND adds the credential scan. Leaving
+`core.hooksPath` at `.beads/hooks` is the one unsupported state — the credential hook never
+runs there; switch to `.githooks` per the setup above.
+
+To scan every tracked file explicitly, run:
 
 ```sh
 pre-commit run detect-secrets --all-files

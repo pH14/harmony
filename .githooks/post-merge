@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Pure passthrough (review F3): with core.hooksPath=.githooks, hooks that exist
+# only in the beads family would otherwise stop running. Delegates to the beads
+# shim when present; a clone without beads is a no-op.
+BEADS_HOOK="$(git rev-parse --show-toplevel)/.beads/hooks/post-merge"
+if [ -x "$BEADS_HOOK" ]; then
+    exec "$BEADS_HOOK" "$@"
+fi
+exit 0
