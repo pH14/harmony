@@ -1,10 +1,17 @@
 name: nightly
 
-# Nightly safety-net jobs that are too slow / resource-heavy to gate every PR on the
-# shared `ci.slice`. Runs when the box is not contended by PR CI. Also manually
-# dispatchable. Moving Miri here (2026-06-24): it was OOM/timeout-flaky under PR
-# concurrency and blocked merges on resource limits, not bugs — it stays a UB safety
-# net, just off the per-PR critical path. See the note in quality.yml.
+# Nightly safety-net jobs (Miri UB validation) that are too slow to gate every PR on.
+# Now on GITHUB-HOSTED runners (ubuntu-latest) — harmony is public, so hosted minutes
+# are free; the box no longer runs CI. Also manually dispatchable. Moving Miri off the
+# per-PR path (2026-06-24): under PR concurrency on the shared box `ci.slice` it was
+# OOM/timeout-flaky and blocked merges on resource limits, not bugs — it stays a UB
+# safety net, off the critical path. See the note in quality.yml.
+#
+# TIMEOUT BUDGETS BELOW ARE PROVISIONAL. The timeout-minutes ceilings were calibrated
+# to the i9-9900K@5GHz box + ci.slice contention, NOT a 4-vCPU/16GB hosted runner —
+# they are raised here with headroom (GHA's hard job cap is 360 min) so the first
+# hosted nightlies stay green, and are to be re-derived from measured hosted wall-time.
+# Tracked by hm-w9s (benchmark GHA vs box CI). Do NOT treat these as measured.
 on:
   schedule:
     # 08:00 UTC daily — outside typical PR-CI hours so Miri gets the box's full memory.
@@ -50,8 +57,10 @@ jobs:
   # on the Mac) — time the command externally.
   miri-vmm-core:
     name: miri — vmm-core (UB safety net, own job)
-    runs-on: self-hosted
-    timeout-minutes: 120
+    runs-on: ubuntu-latest
+    # Provisional (was 120 on the box): raised for the slower hosted runner pending
+    # hm-w9s. Box quiet-hour wall was ~34-49 min; ceiling was 2.5x that.
+    timeout-minutes: 240
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
       MIRIFLAGS: -Zmiri-permissive-provenance
@@ -60,12 +69,13 @@ jobs:
       - name: Install pinned nightly + miri
         run: |
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - uses: Swatinem/rust-cache@v2
       - name: miri — vmm-core
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-core
 
   miri:
     name: miri (unsafe crates, UB safety net)
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     # Budget (task 98, measured on the box, run 29236400380): vmcall 13.2 +
     # vm-state 2.4 + vmm-backend 15.9 + film 16.0 + snapshot-store 0.8 +
     # flow-agent 0.1 = ~48 min co-tenant with the vmm-core job, plus the
@@ -80,7 +90,9 @@ jobs:
     # (see the vmm-core job comment) without going red. Do NOT cut this back to
     # 120 without re-measuring — 120 was 2.5x the OLD 48-minute sum, and the
     # campaign-runner step did not exist in it.
-    timeout-minutes: 155
+    # Provisional (was 155 on the box): raised for the slower hosted runner pending
+    # hm-w9s; GHA's hard job cap is 360.
+    timeout-minutes: 320
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
       MIRIFLAGS: -Zmiri-permissive-provenance
@@ -89,6 +101,7 @@ jobs:
       - name: Install pinned nightly + miri
         run: |
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - uses: Swatinem/rust-cache@v2
       # Run each unsafe crate as its own step so a single crate's failure is legible
       # and one crate's Miri memory footprint is reclaimed before the next.
       - name: miri — vmcall-transport

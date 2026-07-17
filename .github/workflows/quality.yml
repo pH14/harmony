@@ -1,25 +1,33 @@
 name: quality
 
-# Enforcement runs on a SELF-HOSTED runner on the determinism box.
-# GitHub-hosted minutes are paused (out of minutes — not to be paid for), so every
-# job here is `runs-on: self-hosted`; self-hosted runners consume no GHA minutes.
-# The box is Linux (i9-9900K), so one runner covers the whole suite — the
-# cross-platform gates (fmt, clippy -D warnings, nextest, public-api), the
-# coverage/mutation/Kani gates, AND the new Miri gate for the `unsafe` crates.
+# Enforcement runs on GITHUB-HOSTED runners (ubuntu-latest). harmony is a public
+# repo, so standard Linux runners are free with unlimited minutes — the reason these
+# jobs used to run on the self-hosted determinism box (private-repo minutes were
+# exhausted, "not to be paid for") is gone. Every job here is a CONTENT check: fmt,
+# clippy -D warnings, cargo-deny, nextest, coverage, mutation, Kani, public-api, and
+# the arm-altra pre-build apparatus incl. its Miri gate. None of them need bare metal
+# — a cache-thrashed slower run produces the same artifact and the same hash, so the
+# runner's microarchitecture and contention do not affect the verdict
+# (docs/BOX-PINNING.md, "CI runner isolation": "Correctness gates are contention-
+# immune").
 #
-# Runner: provisioned + recorded by scripts/setup-ci-runner.sh (the authoritative
-# setup record — non-root `runner` user, registration, service, toolchain incl. the
-# nightly+miri used below). It runs inside the systemd `ci.slice`
-# (`AllowedCPUs=5-7,13-15`, see docs/BOX-PINNING.md "Self-hosted CI runner
-# isolation"), so no CI job ever shares a physical core or SMT sibling with the
-# determinism measurements on cores 2/4. The correctness gates below are content
-# checks (same artifact / same hash regardless of contention), so residual
-# shared-L3/membw does not affect their verdict.
+# What STAYS on the box (NOT in this workflow, and never was): the ~23
+# live_*/determinism/seal-rate/PMU gates that need a real /dev/kvm, the patched KVM
+# module, hardware perf counters, and quiet pinned cores. Those run out-of-band
+# through scripts/box-window.sh (docs/BOX-PINNING.md, "Frontier determinism gates").
+# Formalizing them as a dispatchable `runs-on: [self-hosted, kvm]` job is a documented
+# follow-up (see the migration PR description); until then the box's role is unchanged.
 #
-# macOS portability (conventions rule 6) is no longer exercised in CI — the box is
-# Linux-only. It is held by developers running the gates locally on macOS (everyone
-# develops on a Mac) and by the fast .githooks/pre-push hook. If a macOS self-hosted
-# runner is ever added, restore a `macos` leg to the `gates` job.
+# Cargo tools (cargo-nextest, cargo-deny, cargo-llvm-cov, cargo-mutants) are installed
+# per-job with taiki-e/install-action (prebuilt binaries, seconds). The shared-temp
+# race that once flaked install-action — and forced pre-provisioning on the box — was
+# a property of CONCURRENT jobs sharing one self-hosted /tmp; on GHA every job gets a
+# fresh, isolated runner, so it cannot recur. Swatinem/rust-cache caches the cargo
+# registry + target dir across runs so only changed crates recompile.
+#
+# macOS portability (conventions rule 6) is held by developers running the gates
+# locally on macOS and by the fast .githooks/pre-push hook. A `macos-latest` leg could
+# be added to `gates` cheaply now that hosted minutes are free — left out for now.
 
 on:
   push:
@@ -38,17 +46,18 @@ jobs:
   # Gating: fmt, clippy (enforces clippy.toml), cargo-deny, and the test suite.
   gates:
     name: gates
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
-      # CI cargo tools (cargo-nextest, cargo-deny, …) are pre-provisioned on the
-      # self-hosted box by scripts/setup-ci-runner.sh — NOT installed per-job.
-      # taiki-e/install-action raced on a shared temp across the concurrent runners
-      # (`sha256sum: tmp: No such file or directory`), flaking every gate; dropped.
+      - uses: Swatinem/rust-cache@v2
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-deny@0.19.9
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
@@ -125,8 +134,8 @@ jobs:
           cargo deny --manifest-path guest/flow-agent/Cargo.toml check --config deny.toml licenses
           # Build the static musl target it actually ships as (a std-leak or a
           # cfg(linux) doorbell regression only surfaces on a real Linux target —
-          # this box runs Linux, so the cfg(target_os="linux") FFI is compiled here,
-          # which the macOS dev host and codex both skip).
+          # ubuntu-latest runs Linux, so the cfg(target_os="linux") FFI is compiled
+          # here, which the macOS dev host and codex both skip).
           rustup target add x86_64-unknown-linux-musl
           cargo build --manifest-path guest/flow-agent/Cargo.toml --bin flow-agent --target x86_64-unknown-linux-musl
       # guest/play-agent (task 86) is out-of-workspace (its own manifest), like
@@ -177,15 +186,15 @@ jobs:
   # was factored into `arm-harness` precisely so it is gated under Miri above.
   #
   # NOT gated here: the qemu-system-aarch64 TCG payload smoke (payloads/smoke.sh). It
-  # needs qemu on the runner, which this self-hosted box does not have and which no
-  # job may `sudo apt-get` into place. It stays the documented LOCAL gate — run it
+  # needs qemu on the runner, which we do not install in CI, and which the payloads'
+  # asm/MMIO can only be exercised on. It stays the documented LOCAL gate — run it
   # before pushing anything under payloads/ (spikes/arm-altra/README.md says so, and
   # says what it does and does not prove). The window-verification gate below is the
   # part of that smoke which needs no emulator, and it is the part that checks the
   # oracle's central claim: that each payload's branches are the ones the model says.
   spike-arm-altra:
     name: spikes/arm-altra (ARM pre-build apparatus)
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
       MIRIFLAGS: -Zmiri-permissive-provenance
@@ -202,6 +211,13 @@ jobs:
           # not yet in hand).
           rustup target add aarch64-unknown-none aarch64-unknown-linux-gnu
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/arm-altra
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.9
       - name: harness + floor-check (fmt, clippy, tests, deny)
         run: |
           cargo fmt --manifest-path "$SPIKE/Cargo.toml" --all -- --check
@@ -245,7 +261,7 @@ jobs:
       - name: kernel patch — format + parse gate
         # The FULL patch gate (`host/verify.sh`: apply onto pristine 6.18.35 + compile
         # against the KVM tree) needs a native-aarch64 builder with the pinned kernel
-        # tree (`host/BUILD.md`) — it cannot run on this x86 runner, and is run there.
+        # tree (`host/BUILD.md`) — it cannot run on an x86 runner, and is run there.
         # What CI CAN and now DOES cover is the most likely regression: a later edit that
         # corrupts, truncates, or malforms the patch so it stops applying. Each patch is
         # validated as a well-formed git mail-format patch whose diff parses — a mangled
@@ -253,9 +269,7 @@ jobs:
         run: |
           set -e
           cd "$SPIKE/host"
-          # Job-unique scratch files: concurrent jobs share this runner, and fixed
-          # /tmp/msg + /tmp/patch would race (one job's mailinfo clobbering another's).
-          # $RUNNER_TEMP is per-job; mktemp under it is unique even within this job.
+          # Job-unique scratch files: $RUNNER_TEMP is per-job; mktemp under it is unique.
           msg="$(mktemp "${RUNNER_TEMP:-/tmp}/patch-msg.XXXXXX")"
           patch="$(mktemp "${RUNNER_TEMP:-/tmp}/patch-diff.XXXXXX")"
           trap 'rm -f "$msg" "$patch"' EXIT
@@ -307,20 +321,26 @@ jobs:
   # The unsafe⇒Miri review-bar rule (AGENTS.md / pr-review) still applies: when a PR's
   # diff adds/changes `unsafe`, run Miri locally on that crate
   # (`cargo +nightly-2026-06-16 miri test -p <crate>`) and quote it in the review.
+  # (The OOM/timeout flakiness was a shared-box-contention artifact; a dedicated 16 GB
+  # GHA runner may make Miri MORE reliable — hm-w9s tracks re-measuring it.)
 
   # Gating: region-coverage floor measured from reality (docs/CODE-QUALITY.md,
   # "Coverage baseline"). Ratchet FLOOR up as coverage improves; never pick a
   # round number. Hardened by quality-b.
   coverage:
     name: coverage
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
           rustup toolchain install stable --profile minimal --component llvm-tools-preview
           rustup default stable
-      # tools pre-provisioned on the box (setup-ci-runner.sh); see gates job note.
+      - uses: Swatinem/rust-cache@v2
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
       # `--ignore-filename-regex` drops the box-only `cfg(linux)` substrate paths
       # from the coverage denominator: the stock-KVM path
       # (`consonance/vmm-backend/src/kvm.rs`, `…/src/kvm/`, `…/src/kvm_sys.rs`), the
@@ -335,15 +355,15 @@ jobs:
       # coverage job runs **without `--ignored`** (and on every crate's matrix), so
       # the box-only `#[ignore]` integration tests that exercise the FFI / perf
       # orchestration end-to-end never run here — counting those paths would only
-      # drag the floor, and running live KVM/perf in this job is slow + flaky. They
-      # are verified instead by those `#[ignore]` box tests and by Miri (which still
-      # *executes* `kvm.rs`'s synthetic-`kvm_run` unit tests — incl. the
-      # KVM_EXIT_DETERMINISM decode — so a logic regression still fails the suite,
-      # just not coverage-*counted*). The coverage-gated set is the portable,
-      # platform-agnostic logic the splits factored out: `region`/`run_buf`, the
-      # value types, the run-loop contract (`mock`/`run_loop`), and vmm-core's
-      # `work::WorkSource`/`ScriptedWork` + V-time completion. See the crates'
-      # IMPLEMENTATION.md.
+      # drag the floor, and running live KVM/perf in this job is impossible on a
+      # hosted runner (no /dev/kvm, no patched module). They are verified instead by
+      # those `#[ignore]` box tests and by Miri (which still *executes* `kvm.rs`'s
+      # synthetic-`kvm_run` unit tests — incl. the KVM_EXIT_DETERMINISM decode — so a
+      # logic regression still fails the suite, just not coverage-*counted*). The
+      # coverage-gated set is the portable, platform-agnostic logic the splits
+      # factored out: `region`/`run_buf`, the value types, the run-loop contract
+      # (`mock`/`run_loop`), and vmm-core's `work::WorkSource`/`ScriptedWork` + V-time
+      # completion. See the crates' IMPLEMENTATION.md.
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
@@ -362,7 +382,7 @@ jobs:
   # main, where there is no diff to compare against.
   mutants:
     name: mutants
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
@@ -373,7 +393,11 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      # tools pre-provisioned on the box (setup-ci-runner.sh); see gates job note.
+      - uses: Swatinem/rust-cache@v2
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
       - name: Compute PR diff
         run: git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
       - name: cargo mutants --in-diff
@@ -399,20 +423,32 @@ jobs:
   # `consonance/vmm-backend/src/region_proofs.rs`, and
   # `dissonance/environment/src/envcodec.rs` prove "never panics / law holds for
   # ALL inputs" — strictly stronger than the proptest sampling. Kani is
-  # Linux-only, so this job runs on the Linux box. The proof files are
+  # Linux-only, so this job runs on a Linux runner. The proof files are
   # `cfg(kani)`-only (not compiled by the normal test suite, excluded from the
   # mutation gate in `.cargo/mutants.toml`), so this job is their *only* CI check
   # — every crate with proofs must appear below. See each crate's
   # IMPLEMENTATION.md ("Formal proofs (Kani)").
   kani:
     name: kani
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      # Kani downloads CBMC + its solver backends on `cargo kani setup` (minutes).
+      # Cache the verifier binary + the setup dir so nightly reruns skip the download;
+      # bump the key's version suffix when kani-verifier is upgraded.
+      - name: Cache Kani toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-kani
+            ~/.cargo/bin/kani
+            ~/.kani
+          key: kani-${{ runner.os }}-v1
       - name: Install Kani
         run: |
           cargo install --locked kani-verifier
@@ -432,7 +468,7 @@ jobs:
   # with the tests, the miri job, and docs/CODE-QUALITY.md.
   public-api:
     name: public-api
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     env:
       # cargo-public-api needs rustdoc-JSON, which is nightly-only. Pin it so
       # the snapshot output is reproducible across runs and machines.
@@ -444,7 +480,7 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal
-      # tools pre-provisioned on the box (setup-ci-runner.sh); see gates job note.
+      - uses: Swatinem/rust-cache@v2
       - name: public-api snapshot tests
         run: |
           cargo test \
