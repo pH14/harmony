@@ -49,6 +49,10 @@ install() {
   have=$(sha256sum "$deb" | awk '{print $1}')
   [ "$want" = "$have" ] || { log "IMAGE .deb HASH MISMATCH ($have != $want) — refusing install"; exit 3; }
   log "linux-image .deb sha256 verified against the build pin"
+  # AVIC-off is a binding determinism posture (docs/AMD-EPYC.md §3): the perf-overflow
+  # NMI must reach the svm.c force-exit path, and the interrupt fabric stays in
+  # userspace. avic is a load-time module param, so pin it before kvm_amd auto-loads.
+  printf 'options kvm_amd avic=0 nested=1\n' | sudo tee /etc/modprobe.d/kvm-amd-spike.conf >/dev/null
   # Small initramfs (fits the tight /boot) that still carries THIS box's root stack.
   echo 'MODULES=dep' | sudo tee /etc/initramfs-tools/conf.d/amd-spike-dep.conf >/dev/null
   sudo dpkg -i "$deb"

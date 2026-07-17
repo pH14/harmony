@@ -136,6 +136,60 @@ def check_speclockmap(off_path, on_path):
     return on_exact
 
 
+def check_ae3(paths, margin, min_arms):
+    """AE-3 force-exit + exact landing, recomputed from the per-arm records (not from
+    the harness's own ok/rc). Independently re-derives: mechanism attestation (every
+    overflow arm forced KVM_EXIT_PREEMPT), exact landing (work_landed==target), no
+    overshoot (work_at_preempt<=target), skid<=margin, replay determinism, totality."""
+    arms = []
+    for p in paths:
+        with open(p) as f:
+            for r in json.load(f):
+                if r.get("kind") == "arm":
+                    arms.append(r)
+    if not arms:
+        print("FAIL: no AE-3 arm records"); return False
+    idxs = sorted(a["idx"] for a in arms)
+    contiguous = idxs == list(range(len(idxs)))
+    n = len(arms)
+    # recompute each floor from raw fields, never trusting the per-arm "ok"
+    no_preempt, not_exact, overshoot, over_margin, replay_bad, irq = [], [], [], [], [], 0
+    skid_max = 0
+    for a in arms:
+        period = a["period"]; target = a["target"]
+        if period > 0:                                  # overflow-driven arm
+            if not a["preempt_exit"]:
+                no_preempt.append(a["idx"])
+            skid = a["work_at_preempt"] - period
+            skid_max = max(skid_max, skid)
+            if a["work_at_preempt"] > target:
+                overshoot.append(a["idx"])
+            if skid > margin:
+                over_margin.append(a["idx"])
+        if a["work_landed"] != target or not a["landed_exact"]:
+            not_exact.append(a["idx"])
+        if a.get("replay") and not a.get("replay_match"):
+            replay_bad.append(a["idx"])
+        if a.get("irq_dirty"):
+            irq += 1
+    enough = n >= min_arms
+    good = (contiguous and enough and not no_preempt and not not_exact
+            and not overshoot and not over_margin and not replay_bad)
+    print(f"{'PASS' if good else 'FAIL'} ae3: arms={n} contiguous={contiguous} "
+          f"min_required={min_arms} met={enough}")
+    print(f"  mechanism: overflow_arms_without_KVM_EXIT_PREEMPT={len(no_preempt)} "
+          f"(a non-empty set == stock-path masquerade, hard FAIL)")
+    print(f"  landing: not_exact={len(not_exact)} overshoot={len(overshoot)} "
+          f"skid_max={skid_max} margin={margin} over_margin={len(over_margin)}")
+    print(f"  replay: mismatches={len(replay_bad)}   irq_dirty_arms={irq}")
+    for label, s in (("no_preempt", no_preempt), ("not_exact", not_exact),
+                     ("overshoot", overshoot), ("over_margin", over_margin),
+                     ("replay_bad", replay_bad)):
+        if s:
+            print(f"  first {label} idxs: {s[:10]}")
+    return good
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -144,11 +198,15 @@ def main():
     o = sub.add_parser("overflow"); o.add_argument("--min-overflows", type=int, required=True)
     o.add_argument("--records", nargs="+", required=True)
     s = sub.add_parser("speclockmap"); s.add_argument("--off", required=True); s.add_argument("--on", required=True)
+    t = sub.add_parser("ae3"); t.add_argument("--records", nargs="+", required=True)
+    t.add_argument("--margin", type=int, default=16384); t.add_argument("--min-arms", type=int, default=0)
     a = ap.parse_args()
     if a.cmd == "exactness":
         ok = check_exactness(load(a.records), a.min_reps)
     elif a.cmd == "overflow":
         ok = check_overflow(load(a.records), a.min_overflows)
+    elif a.cmd == "ae3":
+        ok = check_ae3(a.records, a.margin, a.min_arms)
     else:
         ok = check_speclockmap(a.off, a.on)
     print("FLOOR_CHECK:", "PASS" if ok else "FAIL")
