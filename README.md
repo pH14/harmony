@@ -16,6 +16,11 @@ Together, the progression back and forth between `consonance` and `dissonance` a
 
 * It might not work at all :)
 
+## Development
+
+Before contributing, configure the repository's local hooks and credential-leak checks as
+described in [`docs/SECRET-HYGIENE.md`](docs/SECRET-HYGIENE.md).
+
 ## License
 
 Harmony is free software, licensed under the GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`) — see [`LICENSE`](LICENSE).
