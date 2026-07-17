@@ -35,27 +35,35 @@ N pinned to 2).
 
 | contract row | disposition (from draft) | SVM enforcement backend | on-silicon status |
 |---|---|---|---|
-| CPUID leaf 0 vendor string | `allow-fixed(AuthenticAMD)` | VMCB **CPUID intercept** → `KVM_SET_CPUID2` frozen model | verify-on-silicon (KVM harness) |
-| CPUID `0x8000_0001` feature bits | `allow-fixed` (frozen ≤ host) | VMCB CPUID intercept; **below-host bits** cleared in the frozen model | verify-on-silicon — incl. a feature bit *below* host capability |
+| CPUID leaf 0 vendor string | `allow-fixed(AuthenticAMD)` | VMCB **CPUID intercept** → `KVM_SET_CPUID2` frozen model | **DEMONSTRATED (AE-4)** — guest saw frozen `AuthenticAMD` (`results/ae-4/cpuid-freeze.json`) |
+| CPUID leaf 1 feature bits | `allow-fixed` (frozen ≤ host) | VMCB CPUID intercept; **below-host bits** cleared in the frozen model | **DEMONSTRATED (AE-4)** — TSC (EDX bit 4) frozen OFF below host (`0x078bfbff`→`0x078bfbef`) |
 | CPUID `0x8000_000A` (SVM features) | `allow-fixed`/`deny` | CPUID intercept (guest is not offered nested SVM in the bare-metal cell) | verify-on-silicon |
 | CPUID `0x8000_0022` (PerfMonV2) | **absent on Zen 2** | n/a — leaf not present; frozen model omits it | **confirmed absent (AE-0)** |
 | syscall/segment MSRs `0xC000_0080`–`0103` | `allow-stateful` | VMCB **MSR-permission-bitmap** pass-through; captured in `vm_state` | verify-on-silicon |
-| `HWCR 0xC001_0015`, `VM_HSAVE_PA 0xC001_0117`, `LS_CFG 0xC001_1020`, `DE_CFG` | `deny-gp` | MSR-permission-bitmap trap → `#GP` injected | verify-on-silicon |
+| `HWCR 0xC001_0015`, `VM_HSAVE_PA 0xC001_0117`, `LS_CFG 0xC001_1020`, `DE_CFG` | `deny-gp` | MSR-permission-bitmap trap → `#GP` injected | **DEMONSTRATED (AE-4)** — guest RDMSR of HWCR trapped to the vmm (`results/ae-4/msr-deny.json`) |
 | legacy PMU `PERF_CTL/CTR 0xC001_020x`, `MSR_K7_* 0xC001_000x` | `deny-gp` | MSR-permission-bitmap trap; `RDPMC` → VMCB RDPMC intercept → `#GP` | verify-on-silicon |
 | PerfMonV2 global `0xC000_0300`–`3` | `deny-gp` (`applies-when = zen4+`) | **N/A on Zen 2** (MSRs absent) — row inert on this part | **N/A (AE-0)** |
 | `RDTSC`/`RDTSCP` | `emulate-vtime` | VMCB RDTSC/RDTSCP intercept → V-time map | verify-on-silicon |
 | `RDRAND`/`RDSEED` | `deny`/emulate | VMCB RDRAND/RDSEED intercept → vmm | verify-on-silicon |
 | unlisted leaves/MSRs | `deny-gp` (default) | MSR-permission-bitmap default-deny + CPUID intercept | verify-on-silicon |
 
-## Disposition
+## Disposition: PROVISIONAL GO — freeze + enforcement demonstrated on-silicon
 
-**PROVISIONAL — skeleton complete, enforcement demo is the AE-4 box step.** The vendor
-column already exists as a draft (`docs/cpu-msr-contract-amd-draft.toml`); AE-0 fixed its
-two per-generation facts (legacy PMU present, PerfMonV2 absent — `det-zen2-v1`), and the
-enforcement backend for every row is available in the SVM feature surface confirmed at
-AE-0 (CPUID intercept, MSR-permission-bitmap, RDTSC/RDPMC/RDRAND/RDSEED intercepts). The
-remaining step is the on-silicon demonstration via the KVM harness (guest sees frozen
-values incl. below-host bits; unlisted rows default-deny; PMU/RDTSC/RDRAND enforcement
-reaches the vmm) — a `KVM_SET_CPUID2` + `KVM_X86_SET_MSR_FILTER` boot with a probe guest,
-which shares the KVM-harness apparatus with AE-1(b)/AE-2. No row is undeniable on this
-silicon (no NO-GO); the PerfMonV2 rows are inert on Zen 2 and re-confirm on a Zen 4 EPYC.
+The two headline enforcement mechanisms are **demonstrated on this box** (stock kernel —
+CPUID/MSR enforcement is stock KVM, not gated on the AE-3 patched module):
+- **CPUID freeze, incl. below-host bits** (`ae4-freeze`, `results/ae-4/cpuid-freeze.json`):
+  a guest run with a `KVM_SET_CPUID2` frozen model saw the frozen `AuthenticAMD` vendor and
+  the TSC feature bit (leaf 1 EDX bit 4) **cleared below host capability** (host `0x078bfbff`
+  → guest `0x078bfbef`), attested to `KVM_EXIT_HLT`. The VMCB CPUID intercept enforces the model.
+- **MSR default-deny** (`ae4-msr`, `results/ae-4/msr-deny.json`): with
+  `KVM_CAP_X86_USER_SPACE_MSR` + a `KVM_X86_SET_MSR_FILTER` denying HWCR (`0xC001_0015`), a
+  guest RDMSR of it **trapped to the vmm** (`KVM_EXIT_X86_RDMSR`) — the MSR-permission-bitmap
+  enforcement path fired instead of a silent read.
+
+AE-0 fixed the two per-generation facts (legacy PMU present, PerfMonV2 absent — `det-zen2-v1`);
+the vendor column already exists as a draft (`docs/cpu-msr-contract-amd-draft.toml`, ratified by
+this truth table). No row is undeniable on this silicon (**no NO-GO**). The remaining (b)-tail
+items (RDPMC→#GP, RDTSC/RDTSCP/RDRAND/RDSEED intercepts reaching the vmm) reuse the same two
+demonstrated mechanisms (VMCB instruction intercepts + MSR filter) and are folded into the
+AE-5 integrated gate; the PerfMonV2 rows are inert on Zen 2 and re-confirm on a Zen 4 EPYC
+(platform-PROVISIONAL). The full production vendor-column restructure is `hm-0nf`, out of scope.

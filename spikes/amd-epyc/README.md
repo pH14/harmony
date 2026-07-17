@@ -118,7 +118,7 @@ integrity). In this apparatus:
 | AE-1 | Is `ex_ret_brn_tkn` bit-deterministic; PMI reliable; skid bound; SpecLockMap? | **PROVISIONAL GO** — host-side (a) + guest-mode (b) both bit-exact (0 mismatches/~5000 host + 355/355 guest clean windows); 10⁶ overflows exactly-once (0 lost/0 dup); skid max 5043; SpecLockMap **NULL** | `results/ae-1/full/`, `results/constants-pack.md` |
 | AE-2 | Single-step exactness without MTF; which primitive? | **PROVISIONAL GO** — ruled **TF** (not BTF): TF exact + guest-transparent under SVM; BTF unavailable via stock KVM; MOV-SS shadow the one recorded hazard | `results/ae-2/single-step-ruling.md`, `harness/singlestep-driver.c` |
 | AE-3 | `svm.c` force-exit at PMI + exact landing; trait-freeze memo | **ESCALATED** — `svm.c` hunk verified against real 6.8 source; full build blocked (determinism plumbing targets ~6.18, box runs 6.8); trait-freeze memo answered (late-only-stop holds) | `results/ae-3/`, `host/patches/`, `host/build-kvm-amd.sh` |
-| AE-4 | AuthenticAMD contract freeze + enforcement truth table | **PROVISIONAL** — skeleton done (`det-zen2-v1`, PerfMonV2 rows inert); on-silicon enforcement is the box step (shares the KVM harness) | `contract/enforcement-truth-table.md` |
+| AE-4 | AuthenticAMD contract freeze + enforcement truth table | **PROVISIONAL GO** — freeze demonstrated on-silicon: CPUID below-host bit frozen (TSC OFF) + AuthenticAMD; denied MSR (HWCR) RDMSR traps to the vmm | `results/ae-4/`, `contract/enforcement-truth-table.md` |
 | AE-5 | Bare-metal mini determinism gate (AMD×metal GO) | gated on the appliance build (`hm-tn9`) + AE-1..AE-4 GO | — |
 | AE-6 | Nested SVM (AMD×virtualized) | gated on AE-5 GO | — |
 
