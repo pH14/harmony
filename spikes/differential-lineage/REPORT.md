@@ -20,7 +20,7 @@ process, one Timely worker. Measured 2026-07-16. Update counts are
 deterministic — the benchmark asserts identical per-revision counts across
 reruns of the shared formulation, and `tests/parity.rs` asserts identical
 raw update streams for the full both-formulations build; wall times are
-single-run spike-grade numbers (±10% run to run on a quiet machine).
+single-run spike-grade numbers (variance: see Caveats).
 
 ## Verify-event correction (J3/J5 — the wide-tree exhibits are re-measured)
 
@@ -128,8 +128,8 @@ table; nothing metered is silently excluded.
 | formulation | attributable updates (formulation + lineage) | wall | first branch | median branch | deepest branch | seal wave | late seal |
 |---|---|---|---|---|---|---|---|
 | naive (per-point prefix join) | 1,600,002 | 704 ms | 637 | 31,060 | 62,742 | 328,239 | 15,638 |
-| shared (segment aggregates) | 30,690 | 77 ms | 489 | 740 | 935 | 954 | 368 |
-| direct recompute (one snapshot per revision) | 1,908 rows final | 6.85 s (final revision alone: 625 ms) | — | — | — | — | — |
+| shared (segment aggregates) | 30,690 | 76 ms | 489 | 740 | 935 | 954 | 368 |
+| direct recompute (one snapshot per revision) | 1,908 rows final | 6,848 ms (final revision alone: 624 ms) | — | — | — | — | — |
 
 Of which, in both isolated runs: lineage stages 1,521 total (0 at the first
 branch, 77 at the deepest — the ancestry closure and its per-iteration join
@@ -142,7 +142,7 @@ downstream common views (cells/transitions/occupancy/properties/…) 316.
 |---|---|---|---|---|---|---|---|
 | naive | 161,952 | 113 ms | 175 | 1,922 | 4,490 | 38,197 | 1,178 |
 | shared | 30,520 | 73 ms | 286 | 477 | 478 | 1,550 | 277 |
-| direct recompute (one snapshot per revision) | 2,876 rows final | 173 ms (final alone: 8.4 ms) | — | — | — | — | — |
+| direct recompute (one snapshot per revision) | 2,876 rows final | 173 ms (final alone: 8 ms) | — | — | — | — | — |
 
 Of which: lineage stages 477 total (19 at the deepest branch); base
 ingestion 12,000; downstream common views 476. The "deepest branch" and
@@ -150,46 +150,53 @@ ingestion 12,000; downstream common views 476. The "deepest branch" and
 totals differ slightly from pre-J3 runs because the late seal moved there.
 
 Process peak footprint for the whole benchmark (both shapes, all stages,
-fixtures and referee included): **~200 MB** max RSS (`/usr/bin/time -l`).
-Wall times in the tables are the committed `bench-results.json` run;
-observed cross-run wall variance under background load reached ±2× on some
-columns (e.g. deep-chain shared 70–142 ms across runs). Update counts are
-byte-identical across every run; walls are context.
+fixtures and referee included): ~200 MB max RSS — not an artifact field;
+source: `/usr/bin/time -l` on the artifact run.
+Wall times in the tables are the committed `bench-results.json` run
+(stored `wall_ms` fields, verbatim); ratios in the reading notes are stated
+arithmetic of stored fields. Cross-run wall variance under background load
+reached ±2× on some columns (earlier, uncommitted runs measured deep-chain
+shared between 70 and 142 ms; only the committed artifact's 76 ms is
+auditable). Update counts are byte-identical across every run; walls are
+context.
 
 ## Reading the numbers
 
 1. **Per-branch incremental cost is own-segment-dominated with a small
-   depth-linear inheritance term.** Deep chain: 489 → 740 → 935 updates from
-   first to deepest branch (≈ 11.4/ancestor, lineage stages included); naive
-   grows 637 → 62,742 (≈ 1,592/depth) — a ≈ 139× steeper slope. At depth 40
-   that is 52× less total work (30,690 vs 1,600,002) and 9.1× wall (704 ms
-   vs 77 ms, committed-artifact run). On the wide tree's true deepest
-   rollout (depth 10, J3): naive 4,490 vs shared 478 — **9.4×** at depth 10,
-   versus 1.1× at depth 1 — depth is what the naive formulation pays for.
-   The inheritance term is intrinsic to composing ancestor state (one
-   ancestry row and its iteration churn + one cum-lookup contribution per
-   dimension per ancestor); eliminating it would require materializing
-   inherited state per rollout, which is exactly the recompute shape.
+   depth-linear inheritance term.** Deep chain, genesis (depth 0) to the
+   deepest branch (`deepest_depth` = 39): shared grows 489 → 740 → 935
+   (slope (935 − 489)/39 = 11.44 updates/ancestor, lineage stages
+   included); naive grows 637 → 62,742 (slope (62,742 − 637)/39 = 1,592.4)
+   — a 1,592.4/11.44 = 139.2× steeper slope. Totals: 1,600,002/30,690 =
+   52.1× less work; walls 704/76 ms = 9.3× (committed-artifact run). At
+   the deepest branch the absolute ratio is 62,742/935 = 67.1×. On the
+   wide tree's true deepest rollout (depth 10, J3): 4,490/478 = **9.4×**,
+   while at the first branch (depth 0) naive is even cheaper (175 vs 286)
+   — depth is what the naive formulation pays for. The inheritance term is
+   intrinsic to composing ancestor state (one ancestry row and its
+   iteration churn + one cum-lookup contribution per dimension per
+   ancestor); eliminating it would require materializing inherited state
+   per rollout, which is exactly the recompute shape.
 2. **Late materialization is cheap — the two-pass design is economically
    sound.** One later mid-segment seal on the deepest rollout costs 368
    updates on the deep chain (re-partitioning the one split interval +
    cumulative re-emission + point evaluation; no lineage work — a seal adds
-   no ancestry) vs 15,638 naive (∝ the full prefix): **42×**; on the wide
-   tree's true deepest rollout, 277 vs 1,178 (**4.3×** at depth 10). This is
-   the marginal that prices materialization replay.
+   no ancestry) vs 15,638 naive (∝ the full prefix): 15,638/368 = **42.5×**;
+   on the wide tree's true deepest rollout, 1,178/277 = **4.3×** at depth
+   10. This is the marginal that prices materialization replay.
 3. **Incremental maintenance vs recompute (coherent snapshot baseline):**
    committed-artifact run — deep chain: all views current at all 43
-   revisions for 77 ms incrementally vs 6.85 s of per-revision recompute
-   (**~89×**; an earlier, more loaded artifact run measured 142 ms vs 7.4 s
-   ≈ 52× — the wall ratio is load-sensitive, the update counts are not),
-   and a single final-revision recompute (625 ms) costs ~8× the whole
-   incremental run. Shallow wide tree: per-revision gap ~2.4× (173 ms vs
-   73 ms), and a one-shot final recompute WINS (8.4 ms): incrementality pays
-   when views must be current at every revision (the Explorer's read
-   pattern — it consumes provisional transitions and occupancy after every
-   revision barrier) or when prefixes are deep; a shallow, read-once
-   campaign is served fine by direct recomputation, which the strategy
-   keeps as the semantic oracle anyway.
+   revisions for 76 ms incrementally vs 6,848 ms of per-revision recompute
+   (6,848/76 = **90.1×**; an earlier, more loaded artifact run measured
+   142 ms vs 7,435 ms ≈ 52× — the wall ratio is load-sensitive, the update
+   counts are not), and a single final-revision recompute costs 624 ms =
+   8.2× the whole incremental run (624/76). Shallow wide tree: per-revision
+   gap 173/73 ms = 2.4×, and a one-shot final recompute WINS (8 ms):
+   incrementality pays when views must be current at every revision (the
+   Explorer's read pattern — it consumes provisional transitions and
+   occupancy after every revision barrier) or when prefixes are deep; a
+   shallow, read-once campaign is served fine by direct recomputation,
+   which the strategy keeps as the semantic oracle anyway.
 4. **Boundary insertion is visible and bounded.** The seal wave (41 new
    boundaries at once) costs the shared formulation 954 updates — the
    `shared.units` re-join re-keys only split intervals — vs 328,239 naive.
