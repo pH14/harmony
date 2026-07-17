@@ -1092,6 +1092,29 @@ branches, behaviour across `SVC`/abort/`ERET`/`WFI`, the llsc-livelock character
 replay-identical `step_digest`). The refinement is a clean next unit; `harness/AA2-BUILD.md`
 carries the design.
 
+### AA-3 — deterministic force-exit (0004-analogue) + exact landing: IN PROGRESS
+
+Started per the foreman's "continue straight to AA-3, keep the box saturated" directive
+(overlapped with the AA-2 refinement). The draft patch
+(`host/patches/0001-KVM-arm64-add-KVM_EXIT_PREEMPT-in-kernel-force-exit-.patch`,
+`KVM_EXIT_PREEMPT`=42 / `KVM_ARM_PREEMPT_EXIT`=`_IO(KVMIO,0xe4)` /
+`KVM_CAP_ARM_DETERMINISTIC_INTERCEPTS`=245, hooking `ARM_EXCEPTION_IRQ` in
+`handle_exit.c`) **applies clean to a fresh linux-6.18.35 on the box** (`patch -p1`, all
+four files, mechanism symbols asserted present). The **patched kernel is building
+natively** (`host/build-patched-6.18.35.sh`: LOCALVERSION `-aa3preempt`, so it installs
+alongside stock 6.18.35 with its own build-id + `/boot` entry — stock-vs-patched is a
+one-variable experiment; `CONFIG_KVM=y` built-in, so the patch is exercised only after a
+reboot into it). One build-script fix recorded: `yes '' | make olddefconfig` under
+`pipefail` races on `yes`'s SIGPIPE (exit 141) and can kill the script after config
+succeeds — changed to `make olddefconfig </dev/null`. **Pending:** install the patched
+`.deb`, reboot into `-aa3preempt` (a reboot — coordinate authorization as for the 6.18.35
+boot), confirm the kernel advertises `KVM_CAP_ARM_DETERMINISTIC_INTERCEPTS`, then drive
+the full landing contract (`run_until_overflow` + `single_step`, the patched
+`KVM_EXIT_PREEMPT` exit attested per-record, ≥10⁶ armed deadlines with `work==target`,
+skid within the AA-1 margin of 53) — this uses the **AA-3 `patched` mechanism** the
+checker requires, and depends on AA-2's validated step primitive for the exact landing.
+The trait-freeze memo to `docs/ARCH-BOUNDARY.md` is an AA-3 deliverable.
+
 **Original finding (why this was executor work): the single-step run path did not exist
 in the harness** — the
 offline apparatus deliberately left it out (building it would presume AA-2's own
