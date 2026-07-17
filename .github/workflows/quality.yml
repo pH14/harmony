@@ -497,6 +497,21 @@ jobs:
           rustup default stable
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal
       - uses: Swatinem/rust-cache@v2
+      # The `public_api` snapshot tests shell out to `cargo public-api`; without
+      # the binary they take a loud-skip branch and exit 0, so the gate reports
+      # green-by-skipping rather than green-by-checking (hm-64j: vacuous since
+      # #118, when the GHA migration moved this job off the pre-provisioned box).
+      # Install it as a prebuilt binary (seconds), mirroring the fmt/clippy/deny
+      # jobs — the pinned nightly above supplies the rustdoc-JSON it needs.
+      # Pin the version: cargo-public-api's snapshot *formatting* is
+      # version-dependent, so an unpinned upgrade could flip a byte-identical
+      # surface to a spurious diff. 0.52.0 is the version the committed
+      # tests/public-api.txt snapshots were generated with; pin it like
+      # cargo-deny@0.19.9 above so the gate stays deterministic.
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-public-api@0.52.0
       - name: public-api snapshot tests
         run: |
           cargo test \
