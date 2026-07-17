@@ -5,8 +5,8 @@
 //! bytes survive the round-trip, and the wire-v2 declaration round-trips through
 //! the byte codec.
 
-use explorer::Moment;
 use proptest::prelude::*;
+use sdk_events::Moment;
 use sdk_events::{
     Classification, DeclaredPoint, NS_STATE, Normalized, ObservationId, Payload, UpdateOp,
     ValueShape, decode_antithesis, decode_binary, encode_v2_declaration,

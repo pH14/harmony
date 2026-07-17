@@ -334,7 +334,11 @@ pub fn run_recording<B: Backend<A = X86>>(
                 // Task 73: the link tier decodes the raw SDK event capture (the
                 // catalog + assert/state/buggify emissions) into the typed,
                 // Moment-stamped event stream — non-empty for an SDK guest.
-                events: sdk_events::decode_events(&sdk_events_raw(server)),
+                events: crate::sdk_compat::decode_sdk(&sdk_events_raw(server))
+                    .map(|n| crate::sdk_compat::guest_events_of(&n))
+                    .map_err(|e| {
+                        RecordError::Protocol(format!("SDK capture failed to decode: {e}"))
+                    })?,
                 records,
             };
             // Encode once, up front — the source of the journal length, digest,
@@ -401,18 +405,18 @@ fn drained_serial<B: Backend<A = X86>>(
     Ok(serial.get(cursor..).unwrap_or(&[]).to_vec())
 }
 
-/// The link-tier SDK event capture of the current run, remapped onto the
-/// [`Moment`] axis for [`sdk_events::decode_events`] (task 73). In-process, straight
-/// off the live VM — the SDK-channel mirror of [`drained_serial`]. No cursor is
-/// needed: the per-run `branch` resets the SDK channel, so the capture already
-/// holds exactly this run's events.
-fn sdk_events_raw<B: Backend<A = X86>>(server: &ControlServer<B>) -> Vec<(Moment, u32, Vec<u8>)> {
+/// The link-tier SDK event capture of the current run, as the raw
+/// `(Moment, event_id, bytes)` tuples [`crate::sdk_compat::decode_sdk`] ingests
+/// (task 73). In-process, straight off the live VM — the SDK-channel mirror of
+/// [`drained_serial`]. No cursor is needed: the per-run `branch` resets the SDK
+/// channel, so the capture already holds exactly this run's events.
+fn sdk_events_raw<B: Backend<A = X86>>(server: &ControlServer<B>) -> Vec<(u64, u32, Vec<u8>)> {
     server
         .vmm()
         .map(|v| {
             v.sdk_events()
                 .iter()
-                .map(|(m, id, b)| (Moment(*m), *id, b.clone()))
+                .map(|(m, id, b)| (*m, *id, b.clone()))
                 .collect()
         })
         .unwrap_or_default()

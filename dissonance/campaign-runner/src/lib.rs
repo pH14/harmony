@@ -50,6 +50,7 @@ pub mod materialize;
 pub mod mock;
 pub mod planted;
 pub mod record;
+pub mod sdk_compat;
 pub mod stopwatch;
 
 /// Run one control session: `client` on a spawned thread against `server` on

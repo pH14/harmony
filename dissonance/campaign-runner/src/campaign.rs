@@ -486,15 +486,14 @@ fn trace_of(stop: StopReason, env: Reproducer, events: Vec<(Moment, GuestEvent)>
 
 /// Fetch + decode the run's SDK event capture over the [`Machine`] seam (task 73):
 /// the socket machine round-trips to the server-side capture; a machine with no
-/// SDK (the toy machine) returns empty. This is what turns the link-tier oracle
-/// (`AlwaysViolation` / never-fired) live on the socket campaign path.
+/// SDK (the toy machine) returns empty. The `CrashOracle`/`TerminalOracle` read
+/// only the terminal, so the reconstructed `RunTrace.events` are populated for the
+/// journal/film contract, not consulted by any verdict.
 fn machine_events<M: Machine>(machine: &mut M) -> Result<Vec<(Moment, GuestEvent)>, MachineError> {
-    let raw: Vec<(Moment, u32, Vec<u8>)> = machine
-        .sdk_events()?
-        .into_iter()
-        .map(|(m, id, b)| (Moment(m), id, b))
-        .collect();
-    Ok(sdk_events::decode_events(&raw))
+    let raw = machine.sdk_events()?;
+    let normalized = crate::sdk_compat::decode_sdk(&raw)
+        .map_err(|e| MachineError::Transport(format!("SDK capture failed to decode: {e}")))?;
+    Ok(crate::sdk_compat::guest_events_of(&normalized))
 }
 
 /// The task-60 acceptance gates over a [`CampaignReport`]:

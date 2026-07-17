@@ -13,7 +13,7 @@
 //! the compile-time proof that only `Normalized` is publicly deserializable ride
 //! along.
 
-use explorer::Moment;
+use sdk_events::Moment;
 use sdk_events::{
     Classification, DeclaredPoint, Expectation, NS_ASSERT, NS_STATE, Normalized, Payload, SdkError,
     UpdateOp, ValueShape, decode_antithesis, decode_binary, encode_v2_declaration,
