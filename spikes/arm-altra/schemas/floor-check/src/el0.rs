@@ -16,9 +16,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-use arm_harness::el0::{EL0_SCHEMA_VERSION, El0Manifest, El0Record};
+use arm_harness::el0::{EL0_SCHEMA_VERSION, El0Class, El0Manifest, El0Record};
 use arm_harness::evidence::hex_lower;
-use oracle_model::{Payload, Scale};
+use oracle_model::Scale;
 use sha2::{Digest, Sha256};
 
 use crate::check::Status;
@@ -182,12 +182,8 @@ fn load(dir: &Path) -> Result<Loaded, El0LoadError> {
     })
 }
 
-fn payload_of(class: &str) -> Option<Payload> {
-    match class {
-        "straight-line" => Some(Payload::StraightLine),
-        "branch-dense" => Some(Payload::BranchDense),
-        _ => None,
-    }
+fn class_of(class: &str) -> Option<El0Class> {
+    El0Class::from_name(class)
 }
 
 fn scale_of(name: &str) -> Option<Scale> {
@@ -235,6 +231,16 @@ fn grade(sets: &[Loaded], floors: &El0Floors) -> El0Report {
                 && w[0].manifest.exclude_kernel == w[1].manifest.exclude_kernel
                 && w[0].manifest.exclude_user == w[1].manifest.exclude_user
         });
+        // The per-class offsets are properties of one built binary (the dispatch
+        // path is inside the counted region; a rebuild moved straight-line's
+        // offset +12 → +14). Summing across binaries would manufacture a
+        // variable-offset failure — or worse, mask one. Sets may sum only when
+        // every one attests the SAME tool hash.
+        let same_tool = sets.len() < 2
+            || sets.windows(2).all(|w| {
+                w[0].manifest.tool_sha256.is_some()
+                    && w[0].manifest.tool_sha256 == w[1].manifest.tool_sha256
+            });
         if let Some((a, b)) = dup {
             push(
                 El0CheckId::Aggregation,
@@ -248,6 +254,14 @@ fn grade(sets: &[Loaded], floors: &El0Floors) -> El0Report {
                 El0CheckId::Aggregation,
                 Status::Fail,
                 "aggregated run-sets differ in environment or perf config — not comparable, may not be summed".to_string(),
+            );
+        } else if !same_tool {
+            push(
+                El0CheckId::Aggregation,
+                Status::Fail,
+                "aggregated run-sets were not all measured by one attested tool binary — \
+                 per-class offsets are per-binary constants and may not be summed"
+                    .to_string(),
             );
         } else {
             push(
@@ -287,7 +301,7 @@ fn grade(sets: &[Loaded], floors: &El0Floors) -> El0Report {
             }
         }
         for r in &s.records {
-            if payload_of(&r.class).is_none() || scale_of(&r.scale).is_none() {
+            if class_of(&r.class).is_none() || scale_of(&r.scale).is_none() {
                 wf_fail.push(format!(
                     "{id}: unrecognized class/scale {:?}/{:?}",
                     r.class, r.scale
@@ -370,21 +384,24 @@ fn grade(sets: &[Loaded], floors: &El0Floors) -> El0Report {
     // Pool the records (aggregation holds or the verdict already fails).
     let pooled: Vec<&El0Record> = sets.iter().flat_map(|s| s.records.iter()).collect();
 
-    // -- accumulator: the executed predicates match the model, per record.
+    // -- accumulator: the executed-path witness, per record. Window classes match
+    // the model's predicted accumulator; kernel classes return their per-trip
+    // witness (getpid matches / handler hits), which must equal `trips` exactly —
+    // the kernel path engaged once per trip, no more, no less.
     // Memoized: branch-dense recomputes a full PRNG sweep per (seed, trips).
     {
         let mut memo: BTreeMap<(u64, u64), u64> = BTreeMap::new();
         let mut fail = None;
         for r in &pooled {
-            let Some(p) = payload_of(&r.class) else {
+            let Some(c) = class_of(&r.class) else {
                 continue;
             };
-            let want = match p {
-                Payload::StraightLine => oracle_model::straight_line_accumulator(r.trips),
-                Payload::BranchDense => *memo
+            let want = match c {
+                El0Class::StraightLine => oracle_model::straight_line_accumulator(r.trips),
+                El0Class::BranchDense => *memo
                     .entry((r.seed, r.trips))
                     .or_insert_with(|| oracle_model::branch_dense_accumulator(r.seed, r.trips)),
-                _ => continue,
+                El0Class::Syscall | El0Class::Signal | El0Class::PageFault => r.trips,
             };
             if r.accumulator != want {
                 fail = Some(format!(
@@ -455,41 +472,129 @@ fn grade(sets: &[Loaded], floors: &El0Floors) -> El0Report {
         }
     }
 
-    // -- oracle exactness: per class ONE constant offset across scales and seeds.
+    // -- oracle exactness. Window classes: ONE constant offset per class over the
+    // oracle's certain_branches, across scales and seeds. Kernel-mediated
+    // classes: no oracle exists — the per-trip event contribution IS the
+    // measured unknown — so the check demands an EXACT integer linear model
+    // `count = a·trips + b` over every record (≥2 distinct trip magnitudes), and
+    // REPORTS (a, b) as constants-pack output. Either way, a record the model
+    // does not explain exactly is a mismatch, never a calibration.
     {
         let mut expected_memo: BTreeMap<(String, String, u64), u64> = BTreeMap::new();
         let mut per_class: BTreeMap<String, BTreeMap<i128, u64>> = BTreeMap::new();
+        let mut kernel_points: BTreeMap<String, BTreeMap<u64, u64>> = BTreeMap::new();
         let mut arithmetic_fail = None;
         for r in &pooled {
-            let (Some(p), Some(sc)) = (payload_of(&r.class), scale_of(&r.scale)) else {
+            let (Some(c), Some(sc)) = (class_of(&r.class), scale_of(&r.scale)) else {
                 continue;
             };
-            let want = *expected_memo
-                .entry((r.class.clone(), r.scale.clone(), r.seed))
-                .or_insert_with(|| oracle_model::expected(p, sc, r.seed).certain_branches);
-            if oracle_model::trips(p, sc) != r.trips {
+            if c.trips(sc) != r.trips {
                 arithmetic_fail = Some(format!(
-                    "{}#{}: recorded trips {} is not the model's {} for scale {}",
+                    "{}#{}: recorded trips {} is not the class's {} for scale {}",
                     r.class,
                     r.sample_id,
                     r.trips,
-                    oracle_model::trips(p, sc),
+                    c.trips(sc),
                     r.scale
                 ));
                 break;
             }
-            let offset = i128::from(r.count) - i128::from(want);
-            *per_class
-                .entry(r.class.clone())
-                .or_default()
-                .entry(offset)
-                .or_insert(0) += 1;
+            if let Some(p) = c.oracle_payload() {
+                let want = *expected_memo
+                    .entry((r.class.clone(), r.scale.clone(), r.seed))
+                    .or_insert_with(|| oracle_model::expected(p, sc, r.seed).certain_branches);
+                let offset = i128::from(r.count) - i128::from(want);
+                *per_class
+                    .entry(r.class.clone())
+                    .or_default()
+                    .entry(offset)
+                    .or_insert(0) += 1;
+            } else {
+                match kernel_points
+                    .entry(r.class.clone())
+                    .or_default()
+                    .entry(r.trips)
+                {
+                    std::collections::btree_map::Entry::Vacant(v) => {
+                        v.insert(r.count);
+                    }
+                    std::collections::btree_map::Entry::Occupied(o) => {
+                        if *o.get() != r.count {
+                            arithmetic_fail = Some(format!(
+                                "{}: two records at trips {} disagree ({} vs {}) — no \
+                                 deterministic model exists",
+                                r.class,
+                                r.trips,
+                                o.get(),
+                                r.count
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
         }
         if let Some(d) = arithmetic_fail {
             push(El0CheckId::OracleExactness, Status::Fail, d);
         } else {
             let mut fails = Vec::new();
             let mut oks = Vec::new();
+            let mut unexercised = Vec::new();
+            // Kernel-mediated classes: the exact integer fit.
+            for (class, points) in &kernel_points {
+                if points.len() < 2 {
+                    unexercised.push(format!(
+                        "{class}: only {} distinct trip magnitude(s) — the fit needs ≥ 2",
+                        points.len()
+                    ));
+                    continue;
+                }
+                let (t1, c1) = points
+                    .iter()
+                    .next()
+                    .map(|(t, c)| (*t, *c))
+                    .unwrap_or((0, 0));
+                let (t2, c2) = points
+                    .iter()
+                    .last()
+                    .map(|(t, c)| (*t, *c))
+                    .unwrap_or((0, 0));
+                let (dt, dc) = (
+                    i128::from(t2) - i128::from(t1),
+                    i128::from(c2) - i128::from(c1),
+                );
+                if dt == 0 || dc % dt != 0 {
+                    fails.push(format!(
+                        "{class}: no integer slope fits ({dc} events over {dt} trips)"
+                    ));
+                    continue;
+                }
+                let a = dc / dt;
+                let b = i128::from(c1) - a * i128::from(t1);
+                if a < 1 {
+                    fails.push(format!(
+                        "{class}: fitted slope {a} < 1 — fewer events than back-edges is \
+                         impossible for a real window"
+                    ));
+                    continue;
+                }
+                let bad: Vec<String> = points
+                    .iter()
+                    .filter(|(t, c)| a * i128::from(**t) + b != i128::from(**c))
+                    .map(|(t, c)| format!("trips {t} → count {c}"))
+                    .collect();
+                if bad.is_empty() {
+                    oks.push(format!(
+                        "{class}: count = {a}·trips {b:+} exactly over {} magnitude(s)",
+                        points.len()
+                    ));
+                } else {
+                    fails.push(format!(
+                        "{class}: count = {a}·trips {b:+} does not explain {}",
+                        bad.join(", ")
+                    ));
+                }
+            }
             for (class, offsets) in &per_class {
                 if offsets.len() == 1 {
                     let (off, n) = offsets
@@ -514,13 +619,27 @@ fn grade(sets: &[Loaded], floors: &El0Floors) -> El0Report {
                     ));
                 }
             }
-            if per_class.is_empty() {
+            if per_class.is_empty() && kernel_points.is_empty() {
                 fails.push("no gradeable records".to_string());
             }
-            if fails.is_empty() {
-                push(El0CheckId::OracleExactness, Status::Pass, oks.join("; "));
-            } else {
+            if !fails.is_empty() {
                 push(El0CheckId::OracleExactness, Status::Fail, fails.join("; "));
+            } else if !unexercised.is_empty() {
+                push(
+                    El0CheckId::OracleExactness,
+                    Status::NotRequested,
+                    format!(
+                        "{}{}",
+                        if oks.is_empty() {
+                            String::new()
+                        } else {
+                            format!("{}; UNEXERCISED: ", oks.join("; "))
+                        },
+                        unexercised.join("; ")
+                    ),
+                );
+            } else {
+                push(El0CheckId::OracleExactness, Status::Pass, oks.join("; "));
             }
         }
     }

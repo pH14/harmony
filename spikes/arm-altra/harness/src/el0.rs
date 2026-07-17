@@ -61,6 +61,15 @@ pub struct El0Manifest {
     pub attempted: u64,
     /// sha256 of the exact `el0-records.jsonl` bytes.
     pub records_sha256: String,
+    /// sha256 of the MEASURING BINARY itself (`/proc/self/exe`), when the tool
+    /// could read it. The per-class constant offsets are properties of one built
+    /// binary (its call/dispatch path is inside the counted region) — the smoke
+    /// evidence caught straight-line's offset moving +12 → +14 across a rebuild —
+    /// so run-sets from different binaries must never be summed into one offset
+    /// claim. Optional for backward shape-compatibility; the aggregation check
+    /// refuses to sum sets that do not all carry the SAME attested hash.
+    #[serde(default)]
+    pub tool_sha256: Option<String>,
 }
 
 /// One EL0 counting sample (`el0-records.jsonl`, one JSON object per line).
@@ -113,6 +122,8 @@ pub struct El0Context {
     /// The full plan size (records may be fewer if a sample failed — the gap is
     /// the totality checker's to catch).
     pub attempted: u64,
+    /// sha256 of the measuring binary (see [`El0Manifest::tool_sha256`]).
+    pub tool_sha256: Option<String>,
 }
 
 /// Serialize the records to canonical JSONL and the manifest that pins them.
@@ -142,16 +153,115 @@ pub fn assemble_el0_set(
         condition: ctx.condition,
         attempted: ctx.attempted,
         records_sha256: hex_lower(&h.finalize()),
+        tool_sha256: ctx.tool_sha256,
     };
     let manifest_json = format!("{}\n", serde_json::to_string_pretty(&manifest)?);
     Ok((manifest_json, jsonl))
 }
 
+/// An EL0 measurement class — the AA-1(a) class set.
+///
+/// Two kinds:
+///
+/// - **Window classes** ([`El0Class::StraightLine`], [`El0Class::BranchDense`]):
+///   the guest payloads' own counted `.s` windows, linked into the EL0 binary.
+///   Their expected count is oracle-anchored ([`oracle_model::expected`]).
+/// - **Kernel-mediated classes** ([`El0Class::Syscall`], [`El0Class::Signal`],
+///   [`El0Class::PageFault`]): Linux-kernel round trips (SVC, signal delivery,
+///   translation-fault + skip) whose per-trip `BR_RETIRED` contribution is an
+///   unknown this stage MEASURES — the checker fits `count = a·trips + b` with
+///   exact integer arithmetic and reports `(a, b)` as constants-pack output; a
+///   record the fit does not explain exactly is a mismatch.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum El0Class {
+    /// The straight-line guest window (oracle-anchored).
+    StraightLine,
+    /// The branch-dense guest window (oracle-anchored).
+    BranchDense,
+    /// `getpid` via raw `SVC #0` per trip.
+    Syscall,
+    /// `kill(self, SIGUSR1)` per trip, delivered to an asm handler with a known
+    /// branch count, returning through an owned `rt_sigreturn` restorer.
+    Signal,
+    /// A store to a `PROT_NONE` page per trip; the SIGSEGV handler skips the
+    /// faulting instruction (`pc += 4`) — the EL0 mirror of the guest
+    /// exception-abort payload.
+    PageFault,
+}
+
+/// Every EL0 class, in plan order.
+pub const ALL_EL0_CLASSES: [El0Class; 5] = [
+    El0Class::StraightLine,
+    El0Class::BranchDense,
+    El0Class::Syscall,
+    El0Class::Signal,
+    El0Class::PageFault,
+];
+
+impl El0Class {
+    /// The class name — the record key and the CLI spelling.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            El0Class::StraightLine => "straight-line",
+            El0Class::BranchDense => "branch-dense",
+            El0Class::Syscall => "el0-syscall",
+            El0Class::Signal => "el0-signal",
+            El0Class::PageFault => "el0-pagefault",
+        }
+    }
+
+    /// Parse a record's class name.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        ALL_EL0_CLASSES.iter().copied().find(|c| c.name() == name)
+    }
+
+    /// The oracle payload behind a window class (`None` for the kernel-mediated
+    /// classes, whose expected count is a measured fit, not an oracle).
+    #[must_use]
+    pub const fn oracle_payload(self) -> Option<oracle_model::Payload> {
+        match self {
+            El0Class::StraightLine => Some(oracle_model::Payload::StraightLine),
+            El0Class::BranchDense => Some(oracle_model::Payload::BranchDense),
+            _ => None,
+        }
+    }
+
+    /// Trip count per scale. Window classes use the guest table
+    /// ([`oracle_model::trips`]); the kernel-mediated classes scale down (a
+    /// signal round trip costs microseconds, not nanoseconds — the same
+    /// per-payload shortening precedent as the guest WFI class), keeping three
+    /// distinct magnitudes for the differential fit.
+    #[must_use]
+    pub const fn trips(self, scale: oracle_model::Scale) -> u64 {
+        use oracle_model::Scale;
+        match self {
+            El0Class::StraightLine => {
+                oracle_model::trips(oracle_model::Payload::StraightLine, scale)
+            }
+            El0Class::BranchDense => oracle_model::trips(oracle_model::Payload::BranchDense, scale),
+            El0Class::Syscall => match scale {
+                Scale::Smoke => 1_000,
+                Scale::S1e6 => 200_000,
+                Scale::S1e7 => 2_000_000,
+                Scale::S1e8 => 20_000_000,
+            },
+            El0Class::Signal | El0Class::PageFault => match scale {
+                Scale::Smoke => 200,
+                Scale::S1e6 => 30_000,
+                Scale::S1e7 => 300_000,
+                Scale::S1e8 => 3_000_000,
+            },
+        }
+    }
+}
+
 /// One sample of the deterministic EL0 plan.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct El0Sample {
-    /// The payload class.
-    pub payload: oracle_model::Payload,
+    /// The measurement class.
+    pub class: El0Class,
     /// The scale.
     pub scale: oracle_model::Scale,
     /// The per-case seed.
@@ -165,7 +275,7 @@ pub struct El0Sample {
 /// splitmix64 (stable, documented), so a run-set is a pure function of its spec.
 #[must_use]
 pub fn el0_plan(
-    classes: &[oracle_model::Payload],
+    classes: &[El0Class],
     scales: &[oracle_model::Scale],
     master_seed: u64,
     cases: u64,
@@ -181,13 +291,13 @@ pub fn el0_plan(
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^ (z >> 31)
     };
-    for &payload in classes {
+    for &class in classes {
         for &scale in scales {
             for _ in 0..cases {
                 let seed = next();
                 for rep in 0..reps {
                     out.push(El0Sample {
-                        payload,
+                        class,
                         scale,
                         seed,
                         rep,
@@ -202,11 +312,11 @@ pub fn el0_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oracle_model::{Payload, Scale};
+    use oracle_model::Scale;
 
     #[test]
     fn the_plan_is_deterministic_and_repeats_the_same_seed_per_case() {
-        let classes = [Payload::StraightLine, Payload::BranchDense];
+        let classes = [El0Class::StraightLine, El0Class::BranchDense];
         let scales = [Scale::Smoke, Scale::S1e6];
         let a = el0_plan(&classes, &scales, 7, 2, 3);
         let b = el0_plan(&classes, &scales, 7, 2, 3);
@@ -216,7 +326,7 @@ mod tests {
         // repeated inputs, not fresh draws — the round-2 lesson from the guest plan).
         let case: Vec<_> = a
             .iter()
-            .filter(|s| s.payload == Payload::StraightLine && s.scale == Scale::Smoke)
+            .filter(|s| s.class == El0Class::StraightLine && s.scale == Scale::Smoke)
             .collect();
         assert_eq!(case.len(), 6, "2 cases x 3 reps");
         assert_eq!(case[0].seed, case[1].seed);
@@ -257,6 +367,7 @@ mod tests {
             },
             condition: "pinned-solo".into(),
             attempted: 1,
+            tool_sha256: Some("ab".repeat(32)),
         };
         let rec = El0Record {
             sample_id: 0,

@@ -21,10 +21,10 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use arm_harness::el0::el0_plan;
+use arm_harness::el0::{El0Class, el0_plan};
 use arm_harness::evidence::Environment;
 use clap::{Parser, ValueEnum};
-use oracle_model::{Payload, Scale};
+use oracle_model::Scale;
 
 #[derive(Parser)]
 #[command(
@@ -92,11 +92,10 @@ impl From<ScaleArg> for Scale {
     }
 }
 
-/// The two EL0-runnable classes. The other window payloads need the bare-metal
-/// runtime (SVC/fault handlers, WFI, the guest clock page) — their EL0 analogues
-/// are kernel-mediated and belong to the follow-on EL0 classes, not to a silent
-/// reuse of guest windows whose handlers do not exist here.
-const EL0_CLASSES: [Payload; 2] = [Payload::StraightLine, Payload::BranchDense];
+/// The class set: the two guest windows (oracle-anchored) plus the three
+/// kernel-mediated EL0 classes (syscall / signal / page-fault), whose per-trip
+/// event contribution is the measured unknown (`el0-check` fits and reports it).
+const EL0_CLASSES: [El0Class; 5] = arm_harness::el0::ALL_EL0_CLASSES;
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 mod measure {
@@ -106,7 +105,7 @@ mod measure {
     //! same bytes the guest boots — so EL0 and guest-mode counts are measurements
     //! of one artifact, not of two similar ones.
 
-    use super::{Cli, Environment, Payload, Scale};
+    use super::{Cli, El0Class, Environment, Scale};
     use arm_harness::el0::{El0Context, El0Record, El0Sample, assemble_el0_set};
     use arm_harness::sys::{self, HostCounter};
 
@@ -116,6 +115,7 @@ mod measure {
     core::arch::global_asm!(include_str!(
         "../../../payloads/oracles/src/asm/branch_dense.s"
     ));
+    core::arch::global_asm!(include_str!("el0_kernel_classes.s"));
 
     unsafe extern "C" {
         /// The straight-line counted body (`x0` mark base, `x1` trips → accumulator).
@@ -123,26 +123,121 @@ mod measure {
         /// The branch-dense counted body (`x0` mark base, `x1` trips, `x2` seed →
         /// accumulator).
         fn oracle_branch_dense(mark: u64, trips: u64, seed: u64) -> u64;
+        /// `getpid` via raw SVC per trip → #{returns == EL0_EXPECT_PID}.
+        fn oracle_el0_syscall(mark: u64, trips: u64) -> u64;
+        /// `kill(pid, SIGUSR1)` per trip → handler hits.
+        fn oracle_el0_signal(mark: u64, trips: u64, pid: u64) -> u64;
+        /// A faulting store per trip, skipped by the SEGV handler → handler hits.
+        fn oracle_el0_pagefault(mark: u64, trips: u64, fault_page: u64) -> u64;
+        /// The owned `rt_sigreturn` restorer (never called from Rust; registered).
+        fn el0_sig_restorer();
+        /// The SIGUSR1 handler (registered, not called).
+        fn el0_signal_handler();
+        /// The SIGSEGV skip-and-count handler (registered, not called).
+        fn el0_segv_handler();
+    }
+
+    /// The expected `getpid` return, published to the syscall window's witness.
+    #[unsafe(no_mangle)]
+    static mut EL0_EXPECT_PID: u64 = 0;
+    /// Handler-invocation counter, shared with the signal/pagefault handlers.
+    #[unsafe(no_mangle)]
+    static mut EL0_HANDLER_HITS: u64 = 0;
+    /// Byte offset of the saved PC inside `ucontext_t` (uc_mcontext.pc), computed
+    /// from the target's libc layout — never hardcoded in asm.
+    #[unsafe(no_mangle)]
+    static mut EL0_PC_SLOT_OFFSET: u64 = 0;
+
+    /// The kernel's `struct sigaction` (arm64): handler, flags, restorer, mask.
+    #[repr(C)]
+    struct KernelSigaction {
+        handler: usize,
+        flags: u64,
+        restorer: usize,
+        mask: u64,
+    }
+
+    /// Register `handler` for `sig` with the OWNED restorer via raw
+    /// `rt_sigaction` — libc's wrapper would substitute its own trampoline, and
+    /// the whole point is a signal-return path whose branch count is ours.
+    fn register_handler(sig: i32, handler: usize) -> Result<(), String> {
+        const SA_SIGINFO: u64 = 0x0000_0004;
+        const SA_RESTORER: u64 = 0x0400_0000;
+        let act = KernelSigaction {
+            handler,
+            flags: SA_SIGINFO | SA_RESTORER,
+            restorer: el0_sig_restorer as *const () as usize,
+            mask: 0,
+        };
+        // SAFETY: a fully-initialized kernel sigaction struct; sigsetsize 8 is the
+        // arm64 kernel's expected value.
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_rt_sigaction,
+                sig,
+                &raw const act,
+                core::ptr::null_mut::<KernelSigaction>(),
+                8usize,
+            )
+        };
+        if rc != 0 {
+            return Err(format!("rt_sigaction({sig}) failed"));
+        }
+        Ok(())
+    }
+
+    /// One-time setup for the kernel-mediated classes: publish the pid and the
+    /// ucontext PC-slot offset, register the owned handlers, map the fault page.
+    /// Returns the fault-page address.
+    fn setup_kernel_classes() -> Result<u64, String> {
+        // SAFETY: single-threaded setup before any handler can fire; plain stores.
+        unsafe {
+            EL0_EXPECT_PID = libc::getpid() as u64;
+            EL0_PC_SLOT_OFFSET = (core::mem::offset_of!(libc::ucontext_t, uc_mcontext)
+                + core::mem::offset_of!(libc::mcontext_t, pc))
+                as u64;
+        }
+        register_handler(libc::SIGUSR1, el0_signal_handler as *const () as usize)?;
+        register_handler(libc::SIGSEGV, el0_segv_handler as *const () as usize)?;
+        // SAFETY: anonymous PROT_NONE mapping; the guest of honour for SIGSEGV.
+        let page = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                4096,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if page == libc::MAP_FAILED {
+            return Err("mmap(PROT_NONE fault page) failed".to_string());
+        }
+        Ok(page as u64)
     }
 
     /// Call one window with the counter enabled around it.
     fn run_window(
         counter: &mut HostCounter,
-        payload: Payload,
+        class: El0Class,
         trips: u64,
         seed: u64,
         mark: &mut [u8; 64],
+        pid: u64,
+        fault_page: u64,
     ) -> Result<(u64, u64, u64, u64), String> {
         let mark_ptr = mark.as_mut_ptr() as u64;
         counter.reset_enable().map_err(|e| e.to_string())?;
-        // SAFETY: the windows are plain EL0 code operating on the 64-byte mark
-        // buffer (a `strb` at +0 and a word load at +0x18) and registers; both are
-        // linked into this binary from the verified payload asm.
+        // SAFETY: the window classes operate on the 64-byte mark buffer and
+        // registers; the kernel classes additionally raise/handle their own
+        // signals through the owned handlers registered in setup_kernel_classes.
         let accumulator = unsafe {
-            match payload {
-                Payload::StraightLine => oracle_straight_line(mark_ptr, trips),
-                Payload::BranchDense => oracle_branch_dense(mark_ptr, trips, seed),
-                _ => unreachable!("EL0_CLASSES is the closed set of EL0-runnable classes"),
+            match class {
+                El0Class::StraightLine => oracle_straight_line(mark_ptr, trips),
+                El0Class::BranchDense => oracle_branch_dense(mark_ptr, trips, seed),
+                El0Class::Syscall => oracle_el0_syscall(mark_ptr, trips),
+                El0Class::Signal => oracle_el0_signal(mark_ptr, trips, pid),
+                El0Class::PageFault => oracle_el0_pagefault(mark_ptr, trips, fault_page),
             }
         };
         let (count, enabled, running) = counter.disable_read().map_err(|e| e.to_string())?;
@@ -162,31 +257,36 @@ mod measure {
             );
         }
 
+        let (pid, fault_page) = {
+            let fp = setup_kernel_classes()?;
+            // SAFETY: setup published it; read-only thereafter.
+            (unsafe { EL0_EXPECT_PID }, fp)
+        };
         let mut mark = [0u8; 64];
         let mut records: Vec<El0Record> = Vec::new();
         let mut armed_attr = None;
         let mut failure: Option<String> = None;
         for (i, s) in samples.iter().enumerate() {
             let El0Sample {
-                payload,
+                class,
                 scale,
                 seed,
                 rep,
             } = *s;
-            let trips = oracle_model::trips(payload, scale);
+            let trips = class.trips(scale);
             let result = (|| {
                 // A fresh fd per sample: each record's count starts from a reset
                 // the harness chose, and a wedged descriptor cannot leak across
                 // samples.
                 let mut counter = HostCounter::open().map_err(|e| e.to_string())?;
                 armed_attr = Some(*counter.attr());
-                run_window(&mut counter, payload, trips, seed, &mut mark)
+                run_window(&mut counter, class, trips, seed, &mut mark, pid, fault_page)
             })();
             match result {
                 Ok((count, accumulator, time_enabled, time_running)) => {
                     records.push(El0Record {
                         sample_id: i as u64,
-                        class: payload.name().to_string(),
+                        class: class.name().to_string(),
                         scale: scale.name().to_string(),
                         seed,
                         trips,
@@ -198,7 +298,7 @@ mod measure {
                     });
                 }
                 Err(e) => {
-                    failure = Some(format!("sample {i} ({}): {e}", payload.name()));
+                    failure = Some(format!("sample {i} ({}): {e}", class.name()));
                     break;
                 }
             }
@@ -228,6 +328,14 @@ mod measure {
             },
             condition: cli.condition.clone(),
             attempted,
+            tool_sha256: {
+                use sha2::{Digest, Sha256};
+                std::fs::read("/proc/self/exe").ok().map(|b| {
+                    let mut h = Sha256::new();
+                    h.update(&b);
+                    arm_harness::evidence::hex_lower(&h.finalize())
+                })
+            },
         };
         let (manifest, jsonl) =
             assemble_el0_set(ctx, &records).map_err(|e| format!("assemble the run-set: {e}"))?;
