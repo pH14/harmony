@@ -152,6 +152,22 @@ jobs:
           cargo test --manifest-path guest/play-agent/Cargo.toml --all-features
           cargo deny --manifest-path guest/play-agent/Cargo.toml check --config deny.toml licenses
           cargo build --manifest-path guest/play-agent/Cargo.toml --bin play-agent
+      # spikes/differential-lineage (tasks/120, hm-bbx.2) is out-of-workspace (its
+      # own manifest, spike convention), so the root gates above never see it —
+      # gate it explicitly or its test suite rots green while it feeds the hm-bbx.5
+      # ratification decision. --locked: the committed Cargo.lock is part of the
+      # spike's reproducibility claim (differential-dataflow/timely pins).
+      # (Benchmarks are NOT run here — REPORT.md documents the local command.)
+      - name: spikes/differential-lineage gates (out-of-workspace manifest)
+        run: |
+          cargo fmt --manifest-path spikes/differential-lineage/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path spikes/differential-lineage/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path spikes/differential-lineage/Cargo.toml --all-features
+          # Release build: the benchmark (REPORT.md) is release-only, and cargo
+          # test above builds only the dev profile — a release-only codegen or
+          # link regression would otherwise escape CI (J6).
+          cargo build --locked --release --manifest-path spikes/differential-lineage/Cargo.toml --all-targets
+          cargo deny --manifest-path spikes/differential-lineage/Cargo.toml check --config deny.toml licenses
 
   # spikes/arm-altra (task 109) — the ARM pre-build apparatus: three out-of-workspace
   # workspaces (harness+floor-check, oracle-model, payloads) that the root gates above

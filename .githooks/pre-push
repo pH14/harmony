@@ -12,6 +12,13 @@
 # in sync with .github/workflows/quality.yml (the miri job).
 set -euo pipefail
 
+# Compose, don't clobber (review F3/N1): delegate to the beads shim first when
+# it exists — see .githooks/pre-commit for why.
+BEADS_HOOK="$(git rev-parse --show-toplevel)/.beads/hooks/pre-push"
+if [ -x "$BEADS_HOOK" ]; then
+    "$BEADS_HOOK" "$@"
+fi
+
 # Crates containing `unsafe` that must run clean under Miri (review-bar rule,
 # AGENTS.md / pr-review skill). Add every new `unsafe` crate here and in the
 # workflow's miri job.
