@@ -1167,6 +1167,17 @@ after the AA-2 classifier fix lands (both touch `run.rs`), then the ≥10⁶-arm
 landing run + the trait-freeze memo. **Disposition: PENDING — mechanism GO on N1, exact-
 landing apparatus to build.**
 
+**Mechanism-reliability probe (sharded, 32 cores, arm-AT-target proxy).** Over **256,000**
+armed patched overflows under 32-way co-tenancy, mechanism-attestation PASSES (every record
+carries the `Preempt` exit) but **3,092 (1.2%) were LOST** (`deliveries==0`), 0 duplicated.
+This is NOT a general PMI-loss verdict — AA-1c's stock SignalKick lost **zero** over 10⁶ at
+these scales. It is the **arm-AT-target boundary race**: arming the one-shot exactly at the
+overflow point occasionally misses and the guest runs to its sentinel. That is exactly what
+the exact landing removes by arming at **`target − skid_margin`** (53): the overflow fires
+reliably BELOW target, then single-step walks up to `work==target`. So the probe *validates
+the arm-early design*; the real AA-3 reliability+exactness verdict comes from the exact-landing
+run, not this proxy. Recorded so the 1.2% is not misread as a mechanism NO-GO.
+
 **Original finding (why this was executor work): the single-step run path did not exist
 in the harness** — the
 offline apparatus deliberately left it out (building it would presume AA-2's own
