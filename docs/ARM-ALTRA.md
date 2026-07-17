@@ -831,8 +831,14 @@ sub-experiment: the kernel-mediated EL0 classes (syscall / signal / page-fault).
 
 Measurement-host staging: stock 6.18.35 deb built and installed
 (`linux-image-6.18.35_6.18.35-2_arm64.deb`; vmlinux build-id
-`1e975db8ae7fa463a78c6190c4079a88409ab888` retained for run attestation); the
-GRUB one-shot staging (`host/stage-6.18-boot.sh`: saved-default pinned to
-6.8.0-134, `panic=30` self-recovery, `grub-reboot` one-shot into 6.18.35) and
-all reboots are BLOCKED pending operator authorization — reported, not worked
-around.
+`1e975db8ae7fa463a78c6190c4079a88409ab888` retained for run attestation).
+**Reboot sequence authorized by Paul 2026-07-17** and staged
+(`host/stage-6.18-boot.sh` run; `saved_entry` pinned to 6.8.0-134; `panic=30`
+live; one-shot deliberately cleared until captures B/C land on -134, re-armed
+before the 6.18.35 boot). Two staging findings recorded: (a) **the grubenv sits
+on LVM, so GRUB cannot self-clear `next_entry` at boot** — the "one-shot" is
+manual-clear-after-success, and a panicking 6.18.35 would loop rather than fall
+back (escalation, per the authorized stop conditions; the earlier
+"self-recovering" description was wrong on this box). (b) unattended-upgrades
+installed a 6.8.0-136 image mid-spike (inert under `saved_entry` pinning;
+baseline drift noted).
