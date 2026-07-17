@@ -32,12 +32,15 @@ GRID="${3:-6}"     # grid cases/payload/scale/shard at 1e6,1e7,1e8
 FIRST_CORE=4
 NSHARD=76          # cores 4..79
 GRID_SHARDS=8      # grid (1e8 is slow) sharded across 8 cores: 4..11
-XSEED=1000000000000001   # the pinned-solo bulk seed — the cross-check reuses it.
-# NOTE: the xcheck shard reuses XSEED, so it shares (payload,scale,seed) with pinned-solo.
-# It is written to $OUT/aa1c-xcheck-$TAG and is DELIBERATELY EXCLUDED from the floor-check
-# aggregate: armed replay-identity compares the skid-dependent landed_digest, which
-# legitimately differs solo-vs-cotenant, so aggregating it would false-fail replay-identity.
-# host/aa1c-determinism-check.py compares its FINAL state_digest to the pinned-solo reference.
+XREF=9000000000000001    # dedicated cross-check seed. A matching SOLO reference must be run
+# separately (quiet): `arm-spike run --core 60 --seed 9000000000000001 --scale smoke
+# --cases 400 --condition pinned-solo --run-set-id aa1c-xref-<tag>`. Using the SAME seed AND
+# the SAME --cases as the co-tenant xcheck below makes the plans identical, so all 8 payloads'
+# tuples align (a different case-count would shift the per-cell RNG stream and align only
+# payload 0). host/aa1c-determinism-check.py compares xref (solo) vs xcheck (co-tenant) FINAL
+# state_digests per tuple. BOTH are EXCLUDED from the floor aggregate: they share
+# (payload,scale,seed), and armed replay-identity compares the skid-dependent landed_digest,
+# which legitimately differs solo-vs-cotenant, so aggregating them would false-fail it.
 cd ~/harmony/spikes/arm-altra
 
 SPIKE=./target/release/arm-spike
@@ -101,7 +104,7 @@ run_sharded co-tenant-other-core "$(( ${CSEED[co-tenant-other-core]} + 500 ))" "
 echo "== determinism cross-check (pinned-solo seed under co-tenant load) =="
 for k in $(seq 0 15); do taskset -c $((FIRST_CORE+k)) bash -c 'while :; do :; done' </dev/null & load_pids+=($!); done
 taskset -c $((FIRST_CORE+20)) $SPIKE run $common --core $((FIRST_CORE+20)) --scale smoke --cases 400 --reps 1 \
-  --condition co-tenant-other-core --seed "$XSEED" \
+  --condition co-tenant-other-core --seed "$XREF" \
   --run-set-id "aa1c-xcheck-$TAG" --out "$OUT/aa1c-xcheck-$TAG" </dev/null || fail=1
 kill_load
 
