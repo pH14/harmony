@@ -208,22 +208,26 @@ pub struct SchemaEntry {
 
 impl SchemaEntry {
     /// Whether this entry is eligible for temporal **state reduction**: a state
-    /// identity with a resolved base operation *and* a value whose bounded exact
-    /// representation and total order are fixed.
+    /// identity with a resolved base operation *and* the one currently-supported
+    /// concrete value shape, the bounded integer [`ValueShape::U64`] (exact by
+    /// construction).
     ///
-    /// A never-fired / unresolved v1 state point (no base op) is reportable
-    /// coverage but returns `false`. A **numeric-guidance** state point
-    /// ([`ValueShape::Numeric`]) also returns `false`: its value is an unvalidated
-    /// [`NumericToken`](crate::NumericToken), and the bounded exact representation +
-    /// total order needed to reduce it (the `NumericLimits` selection) is **not**
-    /// yet versioned in the persisted schema — reducing it under a consumer-chosen
-    /// bound could replay differently. Per the strategy it stays report-only until
-    /// that selection is versioned; the initial cooperative vertical reduces the
-    /// bounded-integer (`u64`) state shape, which is exact by construction.
+    /// Everything else is reportable coverage, not reducible:
+    /// - an unresolved v1 state point (no base op);
+    /// - a **numeric-guidance** state point ([`ValueShape::Numeric`]): its value is
+    ///   an unvalidated [`NumericToken`](crate::NumericToken), and the bounded exact
+    ///   representation + total order needed to reduce it (the `NumericLimits`
+    ///   selection) is not yet versioned in the persisted schema, so reducing it
+    ///   under a consumer-chosen bound could replay differently;
+    /// - a **shape-less** or non-`u64` resolved state (`value_shape` `None`/`Bool`/
+    ///   `Bytes`): a resolved reducer with no reducible representation. The decoders
+    ///   never produce this, but a public or *deserialized* [`SchemaEntry`] could,
+    ///   so the check refuses it here (and [`SdkSchema`] deserialization rejects the
+    ///   combination outright).
     pub fn is_reducible_state(&self) -> bool {
         self.classification == Classification::State
             && self.base_op.is_some()
-            && self.value_shape != Some(ValueShape::Numeric)
+            && self.value_shape == Some(ValueShape::U64)
     }
 }
 
@@ -277,6 +281,24 @@ impl TryFrom<SdkSchemaRepr> for SdkSchema {
                 std::cmp::Ordering::Greater => {
                     return Err("schema entries are not sorted by id".to_string());
                 }
+            }
+        }
+        // A resolved state reducer needs a concrete representation: the reducible
+        // bounded integer (`U64`) or the report-only numeric token (`Numeric`). A
+        // shape-less (or `Bool`/`Bytes`) resolved state cannot be reduced, so it
+        // must not be admitted from persisted input (the decoders never mint it).
+        for entry in &repr.entries {
+            if entry.classification == Classification::State
+                && entry.base_op.is_some()
+                && !matches!(
+                    entry.value_shape,
+                    Some(ValueShape::U64) | Some(ValueShape::Numeric)
+                )
+            {
+                return Err(format!(
+                    "state entry {:?} has a resolved base op but no supported value shape ({:?})",
+                    entry.id, entry.value_shape
+                ));
             }
         }
         Ok(SdkSchema {

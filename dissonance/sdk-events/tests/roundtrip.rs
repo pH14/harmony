@@ -152,6 +152,74 @@ fn deserializing_a_noncanonical_schema_is_rejected() {
     );
 }
 
+#[test]
+fn a_resolved_state_without_a_supported_shape_is_neither_reducible_nor_deserializable() {
+    use sdk_events::SchemaEntry;
+
+    let state = |shape: Option<ValueShape>, op: Option<UpdateOp>| SchemaEntry {
+        id: ObservationId::Point {
+            namespace: NS_STATE,
+            local: 1,
+        },
+        classification: Classification::State,
+        value_shape: shape,
+        base_op: op,
+        expectation: None,
+        name: None,
+    };
+
+    // Reducibility: only a resolved `u64` state is reducible.
+    assert!(state(Some(ValueShape::U64), Some(UpdateOp::Set)).is_reducible_state());
+    // A resolved state with no supported concrete shape (shape-less / bool / bytes)
+    // or a report-only numeric shape is NOT reducible.
+    for shape in [
+        None,
+        Some(ValueShape::Bool),
+        Some(ValueShape::Bytes),
+        Some(ValueShape::Numeric),
+    ] {
+        assert!(
+            !state(shape, Some(UpdateOp::Set)).is_reducible_state(),
+            "resolved state with shape {shape:?} must not be reducible"
+        );
+    }
+    // An unresolved state (no base op) is never reducible.
+    assert!(!state(Some(ValueShape::U64), None).is_reducible_state());
+
+    // Deserialization rejects a resolved state whose shape is not U64/Numeric — a
+    // persisted schema must not admit shape-less state into downstream reduction.
+    let make = |shape: serde_json::Value| {
+        serde_json::json!({
+            "source": "BinaryV2",
+            "ordering": "RolloutLocalSourceOrdinal",
+            "original_declaration": null,
+            "entries": [{
+                "id": {"Point": {"namespace": NS_STATE, "local": 1}},
+                "classification": "State",
+                "value_shape": shape,
+                "base_op": "Set",
+                "expectation": null,
+                "name": null,
+            }],
+        })
+        .to_string()
+    };
+    for bad in [
+        serde_json::Value::Null,
+        serde_json::json!("Bool"),
+        serde_json::json!("Bytes"),
+    ] {
+        assert!(
+            serde_json::from_str::<sdk_events::SdkSchema>(&make(bad.clone())).is_err(),
+            "resolved state with shape {bad} must be rejected on deserialize"
+        );
+    }
+    // The reducible bounded integer and the report-only numeric shape still admit.
+    for ok in [serde_json::json!("U64"), serde_json::json!("Numeric")] {
+        assert!(serde_json::from_str::<sdk_events::SdkSchema>(&make(ok)).is_ok());
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
