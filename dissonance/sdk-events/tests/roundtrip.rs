@@ -82,9 +82,8 @@ fn wire_v2_declaration_round_trips_through_the_byte_codec() {
         },
     ];
     let decl = encode_v2_declaration(&points).expect("valid declaration");
-    let schema = decode_binary(&[(Moment(0), 0, decl.clone())])
-        .expect("decodes")
-        .schema;
+    let normalized = decode_binary(&[(Moment(0), 0, decl.clone())]).expect("decodes");
+    let schema = &normalized.schema;
 
     // Each declared point re-emerges from the decoded schema.
     for p in &points {
@@ -99,19 +98,32 @@ fn wire_v2_declaration_round_trips_through_the_byte_codec() {
     }
     // The original declaration bytes are recoverable for audit/migration.
     assert_eq!(schema.original_declaration.as_ref().unwrap().bytes, decl);
-    // And the schema itself round-trips through serde.
-    let json = serde_json::to_string(&schema).unwrap();
+    // And the whole normalized artifact round-trips through serde. The schema is only
+    // loadable *inside* a validated `Normalized`; its `original_declaration` re-parses
+    // to exactly these entries, so the artifact survives the round-trip unchanged.
+    let json = serde_json::to_string(&normalized).unwrap();
     assert_eq!(
-        serde_json::from_str::<sdk_events::SdkSchema>(&json).unwrap(),
-        schema
+        serde_json::from_str::<Normalized>(&json).unwrap(),
+        normalized
     );
+}
+
+/// Load a bare schema (with no events) as the validated [`Normalized`] artifact —
+/// the only public deserialization entry. The schema-entry choke point runs *before*
+/// the declaration-provenance check, so a malformed entry is refused here regardless
+/// of the (here absent) declaration.
+fn load_schema(schema: serde_json::Value) -> Result<Normalized, serde_json::Error> {
+    let artifact = serde_json::json!({ "schema": schema, "events": [] }).to_string();
+    serde_json::from_str::<Normalized>(&artifact)
 }
 
 #[test]
 fn deserializing_a_noncanonical_schema_is_rejected() {
     // `SdkSchema::entry` binary-searches its entries, so a persisted schema whose
     // entries are unsorted or duplicated would make declared identities unfindable.
-    // Deserialization must reject it rather than accept silently corrupt evidence.
+    // Loading must reject it rather than accept silently corrupt evidence — and the
+    // sort/uniqueness check runs before the declaration-provenance check, so a null
+    // declaration (below) reaches it.
     let entry = |local: u32| {
         serde_json::json!({
             "id": {"Point": {"namespace": NS_STATE, "local": local}},
@@ -129,20 +141,33 @@ fn deserializing_a_noncanonical_schema_is_rejected() {
             "entries": entries,
             "original_declaration": null,
         })
-        .to_string()
     };
 
     // Out-of-order entries (local 5 before local 1) are rejected.
-    let unsorted = make(serde_json::json!([entry(5), entry(1)]));
-    assert!(serde_json::from_str::<sdk_events::SdkSchema>(&unsorted).is_err());
+    assert!(load_schema(make(serde_json::json!([entry(5), entry(1)]))).is_err());
     // Duplicate ids are rejected.
-    let duplicate = make(serde_json::json!([entry(1), entry(1)]));
-    assert!(serde_json::from_str::<sdk_events::SdkSchema>(&duplicate).is_err());
-    // A well-ordered, unique schema still deserializes.
-    let ok = make(serde_json::json!([entry(1), entry(5)]));
-    let schema = serde_json::from_str::<sdk_events::SdkSchema>(&ok).expect("canonical");
+    assert!(load_schema(make(serde_json::json!([entry(1), entry(1)]))).is_err());
+
+    // A well-ordered, unique schema — as the decoder actually produces it, declaration
+    // and all — still deserializes, and binary search finds a declared entry after the
+    // round-trip.
+    let point = |local, op| DeclaredPoint {
+        namespace: NS_STATE,
+        local,
+        name: "reg".into(),
+        classification: Classification::State,
+        value_shape: Some(ValueShape::U64),
+        base_op: Some(op),
+        expectation: None,
+    };
+    let decl = encode_v2_declaration(&[point(1, UpdateOp::Set), point(5, UpdateOp::Max)])
+        .expect("valid declaration");
+    let n = decode_binary(&[(Moment(0), 0, decl)]).expect("decodes");
+    let loaded =
+        serde_json::from_str::<Normalized>(&serde_json::to_string(&n).unwrap()).expect("canonical");
     assert!(
-        schema
+        loaded
+            .schema
             .entry(&ObservationId::Point {
                 namespace: NS_STATE,
                 local: 5
@@ -187,12 +212,19 @@ fn only_a_resolved_u64_state_is_reducible() {
     assert!(!state(Some(ValueShape::U64), None).is_reducible_state());
 }
 
-/// The full source-specific schema-entry invariant family, enforced at
-/// deserialization through the one `SchemaEntry::validate` choke point — one
-/// representative accept plus one rejection per invariant.
+/// The full source-specific schema-entry invariant family, enforced on load through
+/// the one `SchemaEntry::validate` choke point. Loading routes only through the
+/// validated [`Normalized`] artifact; the choke point runs before the
+/// declaration-provenance check, so a null-declaration wrapper (`load_schema`)
+/// reaches it and a malformed entry is refused — one rejection per invariant.
+///
+/// The acceptance direction (a valid entry per source × role is *not* over-rejected)
+/// is proved separately, in `valid_entries_load_for_every_source`, against real
+/// decoded artifacts — a binary schema is only loadable with a matching declaration,
+/// which a hand-written null-declaration schema cannot carry.
 #[test]
-fn schema_deserialization_enforces_the_source_specific_invariant_family() {
-    use sdk_events::{NS_ASSERT, NS_BUGGIFY, NS_LIFECYCLE};
+fn schema_invariant_family_is_refused_on_load() {
+    use sdk_events::{NS_ASSERT, NS_LIFECYCLE};
 
     fn schema(
         source: &str,
@@ -200,7 +232,7 @@ fn schema_deserialization_enforces_the_source_specific_invariant_family() {
         class: &str,
         shape: serde_json::Value,
         op: serde_json::Value,
-    ) -> String {
+    ) -> serde_json::Value {
         serde_json::json!({
             "source": source,
             "ordering": "RolloutLocalSourceOrdinal",
@@ -211,90 +243,14 @@ fn schema_deserialization_enforces_the_source_specific_invariant_family() {
                 "expectation": null, "name": null,
             }],
         })
-        .to_string()
     }
     let point =
         |ns: u8, local: u32| serde_json::json!({ "Point": { "namespace": ns, "local": local } });
     let prop = |s: &str| serde_json::json!({ "Property": s });
-    let life = |s: &str| serde_json::json!({ "Lifecycle": s });
     let null = || serde_json::Value::Null;
-    let ok = |s: String| {
-        assert!(
-            serde_json::from_str::<sdk_events::SdkSchema>(&s).is_ok(),
-            "should ACCEPT: {s}"
-        )
+    let bad = |s: serde_json::Value| {
+        assert!(load_schema(s.clone()).is_err(), "should REJECT: {s}");
     };
-    let bad = |s: String| {
-        assert!(
-            serde_json::from_str::<sdk_events::SdkSchema>(&s).is_err(),
-            "should REJECT: {s}"
-        )
-    };
-
-    // --- one valid representative per (source × role) — all must round-trip ---
-    ok(schema(
-        "AntithesisJson",
-        prop("p"),
-        "Occurrence",
-        null(),
-        null(),
-    )); // assertion
-    ok(schema(
-        "AntithesisJson",
-        prop("g"),
-        "State",
-        serde_json::json!("Numeric"),
-        serde_json::json!("Max"),
-    )); // guidance
-    ok(schema(
-        "AntithesisJson",
-        life("setup"),
-        "Occurrence",
-        null(),
-        null(),
-    )); // setup
-    ok(schema(
-        "BinaryV1",
-        point(NS_ASSERT, 1),
-        "Occurrence",
-        null(),
-        null(),
-    )); // v1 assert
-    ok(schema(
-        "BinaryV1",
-        point(NS_STATE, 1),
-        "State",
-        null(),
-        null(),
-    )); // v1 state (unresolved)
-    ok(schema(
-        "BinaryV1",
-        point(NS_BUGGIFY, 1),
-        "Occurrence",
-        null(),
-        null(),
-    )); // v1 buggify
-    ok(schema(
-        "BinaryV2",
-        point(NS_STATE, 1),
-        "State",
-        serde_json::json!("U64"),
-        serde_json::json!("Set"),
-    )); // v2 state
-    ok(schema(
-        "BinaryV2",
-        point(NS_ASSERT, 1),
-        "Occurrence",
-        null(),
-        null(),
-    )); // v2 occurrence
-    ok(schema(
-        "BinaryV2",
-        point(NS_LIFECYCLE, 0),
-        "Occurrence",
-        null(),
-        null(),
-    )); // v2 lifecycle
 
     // --- INV-1: an occurrence is inert (no reducer, no shape) ---
     bad(schema(
@@ -424,6 +380,130 @@ fn schema_deserialization_enforces_the_source_specific_invariant_family() {
         null(),
         null(),
     ));
+}
+
+/// Build a v1 catalog declaration blob (`SDKC` magic + version 1 + records), the
+/// only way to give a binary-v1 schema the declaration its provenance check requires.
+fn v1_catalog(points: &[(u8, u32, &str)]) -> Vec<u8> {
+    let mut b = u32::from_le_bytes(*b"SDKC").to_le_bytes().to_vec();
+    b.push(1); // version 1
+    b.extend_from_slice(&(points.len() as u32).to_le_bytes());
+    for (kind, local, name) in points {
+        b.push(*kind);
+        b.extend_from_slice(&local.to_le_bytes());
+        b.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        b.extend_from_slice(name.as_bytes());
+    }
+    b
+}
+
+/// The acceptance direction of the invariant family: a valid entry for every
+/// (source × role) is admitted by the choke point and its artifact round-trips. Built
+/// from real decoded artifacts, since a binary schema only loads with a matching
+/// declaration the null-declaration `load_schema` helper cannot supply.
+#[test]
+fn valid_entries_load_for_every_source() {
+    use sdk_events::{NS_ASSERT, NS_LIFECYCLE};
+    // v1 catalog point-kind bytes.
+    const KIND_SOMETIMES: u8 = 1;
+    const KIND_STATE: u8 = 4;
+    const KIND_BUGGIFY: u8 = 5;
+
+    let loads = |n: &Normalized| {
+        let json = serde_json::to_string(n).unwrap();
+        assert_eq!(&serde_json::from_str::<Normalized>(&json).unwrap(), n);
+    };
+
+    // Antithesis: assertion, numeric guidance, and setup all load (null declaration).
+    let ant =
+        |id: serde_json::Value, class: &str, shape: serde_json::Value, op: serde_json::Value| {
+            serde_json::json!({
+                "source": "AntithesisJson", "ordering": "RolloutLocalSourceOrdinal",
+                "original_declaration": null,
+                "entries": [{ "id": id, "classification": class,
+                    "value_shape": shape, "base_op": op, "expectation": null, "name": null }],
+            })
+        };
+    let n = serde_json::Value::Null;
+    assert!(
+        load_schema(ant(
+            serde_json::json!({"Property": "p"}),
+            "Occurrence",
+            n.clone(),
+            n.clone()
+        ))
+        .is_ok()
+    );
+    assert!(
+        load_schema(ant(
+            serde_json::json!({"Property": "g"}),
+            "State",
+            serde_json::json!("Numeric"),
+            serde_json::json!("Max"),
+        ))
+        .is_ok()
+    );
+    assert!(
+        load_schema(ant(
+            serde_json::json!({"Lifecycle": "setup"}),
+            "Occurrence",
+            n.clone(),
+            n
+        ))
+        .is_ok()
+    );
+
+    // Binary v1: an assert, an (unresolved) state, and a buggify point.
+    let v1 = decode_binary(&[(
+        Moment(0),
+        0,
+        v1_catalog(&[
+            (KIND_SOMETIMES, 1, "s"),
+            (KIND_STATE, 2, "reg"),
+            (KIND_BUGGIFY, 3, "bug"),
+        ]),
+    )])
+    .expect("v1 decodes");
+    assert_eq!(v1.schema.entries().len(), 3);
+    loads(&v1);
+
+    // Binary v2: a resolved state, an occurrence (assert), and the lifecycle point.
+    let dp = |ns, local, name: &str, class, shape, op| DeclaredPoint {
+        namespace: ns,
+        local,
+        name: name.into(),
+        classification: class,
+        value_shape: shape,
+        base_op: op,
+        expectation: None,
+    };
+    let v2 = decode_binary(&[(
+        Moment(0),
+        0,
+        encode_v2_declaration(&[
+            dp(
+                NS_STATE,
+                1,
+                "reg",
+                Classification::State,
+                Some(ValueShape::U64),
+                Some(UpdateOp::Set),
+            ),
+            dp(NS_ASSERT, 2, "a", Classification::Occurrence, None, None),
+            dp(
+                NS_LIFECYCLE,
+                0,
+                "setup",
+                Classification::Occurrence,
+                None,
+                None,
+            ),
+        ])
+        .expect("valid v2"),
+    )])
+    .expect("v2 decodes");
+    assert_eq!(v2.schema.entries().len(), 3);
+    loads(&v2);
 }
 
 proptest! {

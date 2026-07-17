@@ -173,6 +173,28 @@ pub enum SdkError {
         detail: String,
     },
 
+    /// A persisted schema's `original_declaration` does not agree with its source
+    /// and entries: it is absent where the source mints one, present where it does
+    /// not, does not re-parse, or re-parses to different entries. The decoder only
+    /// ever mints binary entries together with the declaration blob that produced
+    /// them, so a mismatched declaration is corrupt provenance.
+    #[error("declaration provenance mismatch: {detail}")]
+    DeclarationMismatch {
+        /// A description of the mismatch.
+        detail: String,
+    },
+
+    /// A persisted event does not cohere with its schema or the event vector: its
+    /// `source` disagrees with the schema, its ordinal breaks the strictly-
+    /// increasing rollout-local order, or its payload's classification disagrees
+    /// with the declared identity. (A conflicting state operation surfaces as
+    /// [`MixedOperations`](SdkError::MixedOperations), exactly as during decode.)
+    #[error("incoherent persisted event: {detail}")]
+    IncoherentEvent {
+        /// A description of the incoherence.
+        detail: String,
+    },
+
     /// A catalog declaration carries bytes beyond its declared record `count`. The
     /// trailing bytes are unaccounted for (a miscounted or corrupted catalog), so
     /// the declaration is refused rather than silently discarding declared

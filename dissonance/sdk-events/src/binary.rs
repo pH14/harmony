@@ -82,6 +82,7 @@ pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkErr
             p.classification,
             p.value_shape,
             p.base_op,
+            p.expectation,
         )?;
         // A firing cannot distinguish two entries at one coordinate, so a
         // declaration must not list one twice.
@@ -135,8 +136,10 @@ pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkErr
 
 /// The classification a namespace's firings actually decode to on the binary path
 /// ([`decode_event`]), or `None` for a namespace that produces no reportable
-/// firing. This is the ground truth a declaration must agree with.
-fn namespace_classification(namespace: u8) -> Option<Classification> {
+/// firing. This is the ground truth a declaration must agree with, and — reused by
+/// [`Normalized`](crate::Normalized)'s load-time coherence check — the ground truth a
+/// persisted binary event's payload must agree with at its coordinate.
+pub(crate) fn namespace_classification(namespace: u8) -> Option<Classification> {
     match namespace {
         // Assert / buggify / lifecycle firings decode to occurrence payloads…
         wire::NS_ASSERT | wire::NS_BUGGIFY | wire::NS_LIFECYCLE => Some(Classification::Occurrence),
@@ -157,13 +160,18 @@ fn namespace_classification(namespace: u8) -> Option<Classification> {
 ///   state, an `NS_STATE` point cannot be declared occurrence;
 /// - a **state** point must declare a base operation and a `u64` value shape — the
 ///   only state value the binary firing wire carries ([`SdkError::UnsupportedDeclaration`]);
-/// - an **occurrence** point carries no base operation and no reducible value shape.
+/// - an **occurrence** point carries no base operation and no reducible value shape;
+/// - an **expectation** is legal only on an assertion (`NS_ASSERT`) point — a state,
+///   buggify, or lifecycle point carrying one is a declaration the schema choke
+///   point ([`SchemaEntry::validate`](crate::SchemaEntry)) would reject on decode, so
+///   encoding it would let the byte codec mint a blob its own decoder refuses.
 fn validate_v2_point(
     namespace: u8,
     local: u32,
     classification: Classification,
     value_shape: Option<ValueShape>,
     base_op: Option<UpdateOp>,
+    expectation: Option<Expectation>,
 ) -> Result<(), SdkError> {
     if local > wire::LOCAL_MASK {
         return Err(SdkError::LocalIdOutOfRange { namespace, local });
@@ -173,6 +181,15 @@ fn validate_v2_point(
         local,
         reason,
     };
+    // An expectation is absence-based assertion evidence; only an assertion point
+    // can carry it. Checked here so encode and decode agree — the schema choke point
+    // rejects a mis-placed expectation on load, and this keeps the codec from ever
+    // producing such a blob.
+    if expectation.is_some() && namespace != wire::NS_ASSERT {
+        return Err(unsupported(
+            "an expectation is legal only on an assertion point",
+        ));
+    }
     // The classification must be exactly what this namespace's firings decode to,
     // else schema and event evidence would disagree with no error surfaced.
     match namespace_classification(namespace) {
@@ -288,6 +305,23 @@ pub fn decode_binary(raw: &[(Moment, u32, Vec<u8>)]) -> Result<Normalized, SdkEr
         schema: ctx.schema,
         events,
     })
+}
+
+/// Re-derive the schema a catalog declaration blob produces, in isolation — the
+/// declaration half of [`decode_binary`] with no firings. Used to audit a persisted
+/// [`SdkSchema`](crate::SdkSchema)'s `original_declaration`: re-parsing the recorded
+/// bytes must reproduce the same source and entries, or the provenance is corrupt.
+/// Because a binary firing never adds a schema entry (entries come only from the
+/// declaration), the returned schema's entries are exactly what a faithful persisted
+/// schema must carry.
+pub(crate) fn schema_from_declaration(bytes: &[u8]) -> Result<SdkSchema, SdkError> {
+    let mut ctx = parse_declaration(bytes)?;
+    ctx.schema.set_original_declaration(Raw {
+        source: ctx.schema.source,
+        event_id: Some(wire::CATALOG_EVENT_ID),
+        bytes: bytes.to_vec(),
+    });
+    Ok(ctx.schema)
 }
 
 /// Working state threaded through a binary decode: the schema under construction,
@@ -477,7 +511,14 @@ fn parse_v2(r: &mut Reader<'_>) -> Result<DeclContext, SdkError> {
         // Accept the declaration only if the binary emission path can actually
         // report it (and the id can be addressed) — identical to the encode check,
         // so a decoded declaration is never richer than a valid encodable one.
-        validate_v2_point(namespace, local, classification, value_shape, base_op)?;
+        validate_v2_point(
+            namespace,
+            local,
+            classification,
+            value_shape,
+            base_op,
+            expectation,
+        )?;
         // One coordinate, one entry: reject a duplicate rather than let
         // `merge_entry` silently collapse it and drop the shadowed name.
         if !seen.insert((namespace, local)) {

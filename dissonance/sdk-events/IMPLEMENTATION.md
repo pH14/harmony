@@ -19,7 +19,9 @@ Differential epic (`hm-bbx`).
   (provenance/coverage, never a property verdict).
   `antithesis_guidance` (numeric) → a **monotone extremum only** (`maximize` →
   `Max`/`Min`, never `set`), the metric kept as its original token, report-only.
-  `antithesis_setup` → a lifecycle occurrence.
+  `antithesis_setup` → a lifecycle occurrence (a **string** `status`, or its absence
+  → `complete`); a present-but-non-string `status` is malformed and stays **raw**
+  rather than fabricating a lifecycle point, mirroring `site_of` (bead `hm-jyj`).
 - **`decode_binary`** (`src/binary.rs`) — the internal binary Event wire. **v1**
   preserves point identity and each fired operation but declares no reducer: a
   declared-but-never-fired state point is reportable coverage with `base_op =
@@ -52,12 +54,15 @@ Differential epic (`hm-bbx`).
   later format claim can never retroactively reassign semantics to prior bytes, and
   a catalog blob must end exactly at its declared record count
   (`TrailingDeclarationBytes`), so it cannot silently omit declared identities.
-- **`SdkSchema` / `SchemaEntry` / `SdkEvent`** (`src/schema.rs`, `src/event.rs`) —
-  the normalized model: source provenance, observation identity, value, and
-  classification are kept as separate roles (cell projection is *not* owned here).
-  Canonical serde (sorted, unique entries; no `HashMap` order; no float), so
-  output is byte-identical on macOS/Linux. `original_declaration` and per-event
-  `raw` keep the source bytes recoverable for audit/migration.
+- **`SdkSchema` / `SchemaEntry` / `SdkEvent` / `Normalized`** (`src/schema.rs`,
+  `src/event.rs`) — the normalized model: source provenance, observation identity,
+  value, and classification are kept as separate roles (cell projection is *not*
+  owned here). Canonical serde (sorted, unique entries; no `HashMap` order; no
+  float), so output is byte-identical on macOS/Linux. `original_declaration` and
+  per-event `raw` keep the source bytes recoverable for audit/migration. `Normalized`
+  is the persisted artifact and the **only** publicly-deserializable type — `SdkEvent`
+  and `SdkSchema` are serialize-only, loadable only inside a validated `Normalized`
+  (see "the only public deserialization entry" below).
 - **`NumericToken` / `BoundedNumeric`** (`src/numeric.rs`) — a guidance number
   enters as its exact original token and stays report-only until it validates into
   a bounded exact sign/coefficient/base-10-scale decimal with a deterministic
@@ -65,7 +70,9 @@ Differential epic (`hm-bbx`).
   out-of-range input fails validation and remains report-only evidence.
 - **`SdkError`** (`src/error.rs`) — typed, panic-free. Structural contradictions
   are errors (mixed operations, incompatible shapes, classification conflict,
-  malformed declaration lengths, unknown declaration bytes); unrecognized data is
+  malformed declaration lengths, unknown declaration bytes, a malformed schema entry,
+  a `DeclarationMismatch` between a persisted schema and its recorded declaration, and
+  an `IncoherentEvent` whose payload disagrees with the schema); unrecognized data is
   never an error — it is preserved raw.
 
 ## Key decisions
@@ -80,7 +87,10 @@ Differential epic (`hm-bbx`).
   the first (`merge_entry`): a differing op/shape/classification is a typed error.
   An unresolved slot is *refined* (`None` → `Some`) by a later resolved sighting,
   but a resolved value is never silently overwritten. v1 firings are checked for
-  self-consistency but never resolve the schema's `base_op`.
+  self-consistency but never resolve the schema's `base_op`. The **same** coherence
+  is re-checked when a `Normalized` is loaded from persisted input, so a decode and a
+  deserialize are held to one contract (a `set` firing at a `max`-declared coordinate
+  is `MixedOperations` either way).
 - **`accumulate` is declaration-only.** Only a versioned source (wire v2) may
   declare `Accumulate`; v1 cannot claim an operation it cannot encode.
 - **The declaration is schema, not an event.** Its stream slot is skipped from the
@@ -106,9 +116,29 @@ Differential epic (`hm-bbx`).
   guidance), so a setup event can be validated/materialized against the schema.
   Site coordinates (`begin_line`/`begin_column`) are `u64`, preserved exactly
   rather than truncated into a colliding site.
-- **Deserialization re-verifies invariants.** `SdkSchema` deserializes through a
-  `try_from` guard that rejects unsorted or duplicate entries, so `entry`'s binary
-  search can never be silently defeated by a corrupted persisted schema.
+- **`Normalized` is the only public deserialization entry, and it re-validates the
+  whole artifact on load.** Persisted input is never trusted more than a live decode:
+  `SdkEvent` and `SdkSchema` carry **no** bare `Deserialize`; the only way to read
+  one back is inside a `Normalized`, whose `#[serde(try_from)]` runs the same
+  contract the decoders enforce. Concretely it (a) routes every entry through the one
+  `SchemaEntry::validate` choke point (sorted + unique, and the full source-specific
+  invariant family — id↔source, point-namespace↔classification, lifecycle⇔occurrence,
+  **expectation legal only on an assertion point**, occurrence-inert, and the v1/v2/
+  antithesis state shape/op rules); (b) re-parses `original_declaration` and requires
+  it to reproduce exactly this schema's source and entries — a null, garbled, or
+  wrong-source blob (or one present where the source mints none) is a typed
+  `DeclarationMismatch`, since a binary firing adds no entry and the declaration
+  fully determines them; and (c) checks each event **coheres** with the schema — its
+  `source` agrees, ordinals strictly increase, a classified payload sits only at a
+  coordinate whose classification matches, and a reducible op matches the declared
+  base op and every earlier firing for its identity. A persisted `set` firing at a
+  `max`-declared coordinate therefore fails load with the same `MixedOperations` the
+  decoder raises live; other incoherence is a typed `IncoherentEvent`. Component
+  value types (`SchemaEntry`, `Payload`, `Raw`, …) keep `Deserialize` — they have no
+  independent load path, so they are only ever read back *within* a validated
+  `Normalized`. (The `cargo public-api` snapshot runs at `-sss`, which omits
+  auto-derived impls, so this removal is enforced by a compile-time bound in
+  `tests/load_validation.rs`, not a snapshot line.)
 
 ## Deviations considered and rejected
 
@@ -149,9 +179,18 @@ Differential epic (`hm-bbx`).
 
 ## Gates (all green, Mac-local)
 
-- `cargo build/nextest/clippy -D warnings/fmt/deny -p sdk-events` — 70 tests
+- `cargo build/nextest/clippy -D warnings/fmt/deny -p sdk-events` — 140 tests
   (goldens for Antithesis assertions, max/min guidance, binary v1, wire v2; typed
   errors; totality; numeric total-order laws; serde + wire-v2 round-trips) plus
-  the ≥256/512-case proptests.
-- `tests/public-api.txt` refreshed deliberately (additive; the compat surface is
-  unchanged).
+  the ≥256/512-case proptests. `tests/load_validation.rs` holds the artifact-level
+  load probes — one per invariant family (F1a declaration provenance, F1b
+  lifecycle⇔occurrence, F1c expectation legality, F1d event↔schema coherence), the
+  setup status-fabrication guard (F2, `hm-jyj`), and a compile-time bound proving
+  `Normalized` is the only publicly-deserializable type.
+- **Scoped mutation testing** (`cargo mutants --in-diff`) on `schema.rs` / `event.rs`
+  / `binary.rs` / `antithesis.rs`: 0 missed.
+- `tests/public-api.txt` refreshed deliberately: two new error variants
+  (`DeclarationMismatch`, `IncoherentEvent`). The `Deserialize` removal from
+  `SdkEvent`/`SdkSchema` is not a snapshot line (the snapshot runs at `-sss`, which
+  omits auto-derived impls) and is instead enforced by the compile-time bound above.
+  The legacy compat surface is unchanged.

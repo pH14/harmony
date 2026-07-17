@@ -245,6 +245,10 @@ impl SchemaEntry {
     ///   (`NS_STATE`⇔state; `NS_ASSERT`/`NS_BUGGIFY`/`NS_LIFECYCLE`⇔occurrence), the
     ///   local id is an addressable 24-bit coordinate, and a lifecycle point sits at
     ///   the sole `setup_complete` local;
+    /// - **lifecycle ⇔ occurrence**: a `Lifecycle` identity is always an occurrence;
+    /// - **expectation legality**: an expectation is legal only on an *assertion*
+    ///   point (binary `NS_ASSERT`, or an Antithesis property occurrence) — a state,
+    ///   buggify, lifecycle, or guidance point carrying one is malformed;
     /// - **occurrence is inert**: no base operation, no value shape (any source);
     /// - **state shape/op is source-specific**: binary-v1 leaves both unresolved;
     ///   binary-v2 is a resolved op over the bounded-integer `u64` shape;
@@ -276,11 +280,34 @@ impl SchemaEntry {
                     return err("only the setup_complete lifecycle point (local 0) is reportable");
                 }
             }
-            (
-                SourceFormat::AntithesisJson,
-                ObservationId::Property(_) | ObservationId::Lifecycle(_),
-            ) => {}
+            (SourceFormat::AntithesisJson, ObservationId::Property(_)) => {}
+            (SourceFormat::AntithesisJson, ObservationId::Lifecycle(_)) => {
+                // A lifecycle identity is always an occurrence (the decoder mints it
+                // only for the setup point); a lifecycle State would be forged.
+                if self.classification != Classification::Occurrence {
+                    return err("a lifecycle identity must be an occurrence");
+                }
+            }
             _ => return err("id variant does not match the source"),
+        }
+
+        // Expectation legality: the decoders mint an expectation only on an
+        // *assertion* point (an assertion drives absence-based judgment). Any other
+        // identity carrying one — a state register, buggify, lifecycle, or guidance
+        // point — is malformed.
+        if self.expectation.is_some() {
+            let is_assertion = self.classification == Classification::Occurrence
+                && match (source, &self.id) {
+                    (
+                        SourceFormat::BinaryV1 | SourceFormat::BinaryV2,
+                        ObservationId::Point { namespace, .. },
+                    ) => *namespace == wire::NS_ASSERT,
+                    (SourceFormat::AntithesisJson, ObservationId::Property(_)) => true,
+                    _ => false,
+                };
+            if !is_assertion {
+                return err("an expectation is legal only on an assertion point");
+            }
         }
 
         // An occurrence is inert — no reducer, no value shape — for every source.
@@ -330,13 +357,13 @@ impl SchemaEntry {
 /// serde form is **canonical** and identical across platforms (no `HashMap`
 /// iteration order, no float).
 ///
-/// Deserialization is guarded: [`SdkSchema::entry`] binary-searches `entries`, so
-/// a persisted schema with unsorted or duplicate entries would make declared
-/// identities unfindable. `#[serde(try_from)]` re-verifies the sorted-and-unique
-/// invariant on the way in and rejects a non-canonical schema rather than
-/// accepting silently corrupt evidence.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "SdkSchemaRepr")]
+/// `SdkSchema` is **not** independently deserializable: the persisted artifact is
+/// the whole [`Normalized`](crate::Normalized), whose validated `try_from` is the
+/// only public deserialization entry. A schema is reconstructed from persisted
+/// input only through [`SdkSchema::try_from`]`(`[`SdkSchemaRepr`]`)`, which
+/// re-verifies the sorted-and-unique invariant (`entry` binary-searches) and runs
+/// every entry through the [`SchemaEntry::validate`] choke point.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SdkSchema {
     /// The ingress format this schema was decoded from.
     pub source: SourceFormat,
@@ -350,10 +377,11 @@ pub struct SdkSchema {
     pub original_declaration: Option<Raw>,
 }
 
-/// The on-the-wire shape of an [`SdkSchema`], deserialized before the
-/// sorted-and-unique invariant is re-checked (see [`SdkSchema`]'s `try_from`).
+/// The on-the-wire shape of an [`SdkSchema`], deserialized before its invariants
+/// are re-checked. `pub(crate)` so [`Normalized`](crate::Normalized)'s repr can
+/// embed it; the conversion to a validated [`SdkSchema`] is [`SdkSchema::try_from`].
 #[derive(Deserialize)]
-struct SdkSchemaRepr {
+pub(crate) struct SdkSchemaRepr {
     source: SourceFormat,
     ordering: OrderingScope,
     entries: Vec<SchemaEntry>,
@@ -361,25 +389,29 @@ struct SdkSchemaRepr {
 }
 
 impl TryFrom<SdkSchemaRepr> for SdkSchema {
-    type Error = String;
+    type Error = SdkError;
 
-    fn try_from(repr: SdkSchemaRepr) -> Result<SdkSchema, String> {
+    fn try_from(repr: SdkSchemaRepr) -> Result<SdkSchema, SdkError> {
+        let malformed = |detail: String| SdkError::MalformedSchemaEntry { detail };
         // The invariant `entry()` depends on: strictly ascending, no duplicates.
         for pair in repr.entries.windows(2) {
             match pair[0].id.cmp(&pair[1].id) {
                 std::cmp::Ordering::Less => {}
                 std::cmp::Ordering::Equal => {
-                    return Err(format!("duplicate schema entry id {:?}", pair[0].id));
+                    return Err(malformed(format!(
+                        "duplicate schema entry id {:?}",
+                        pair[0].id
+                    )));
                 }
                 std::cmp::Ordering::Greater => {
-                    return Err("schema entries are not sorted by id".to_string());
+                    return Err(malformed("schema entries are not sorted by id".to_string()));
                 }
             }
         }
         // Every entry admitted from persisted input passes the one validation
         // choke point — the full source-specific invariant family.
         for entry in &repr.entries {
-            entry.validate(repr.source)?;
+            entry.validate(repr.source).map_err(malformed)?;
         }
         Ok(SdkSchema {
             source: repr.source,

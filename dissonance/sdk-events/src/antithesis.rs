@@ -355,10 +355,26 @@ fn decode_setup(
     raw: Raw,
     schema: &mut SdkSchema,
 ) -> Result<SdkEvent, SdkError> {
-    let status = setup
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("complete");
+    // An absent `status` defaults to `complete`; a present but non-string status
+    // (e.g. `7`) is malformed and must not fabricate a `setup_complete` occurrence
+    // (mirrors `site_of`'s present-but-malformed handling). Preserve the frame raw.
+    let status = match setup.get("status") {
+        None => "complete",
+        Some(v) => match v.as_str() {
+            Some(s) => s,
+            None => {
+                return Ok(SdkEvent {
+                    moment,
+                    ordinal,
+                    source: SourceFormat::AntithesisJson,
+                    id: ObservationId::Property(String::new()),
+                    site: None,
+                    payload: Payload::Unknown,
+                    raw,
+                });
+            }
+        },
+    };
     // A disjoint `Lifecycle` identity — never `Property`, so a user-forgeable
     // assertion/guidance message equal to the sentinel cannot alias it.
     let id = ObservationId::Lifecycle(SETUP_IDENTITY.to_string());
