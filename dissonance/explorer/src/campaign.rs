@@ -1335,12 +1335,22 @@ mod tests {
             r1.counterexamples[0].kind,
             crate::occurrence::CounterexampleKind::TerminalAssertion
         );
+        assert_eq!(
+            camp.views().finalized.counterexamples,
+            1,
+            "the finalized counter counts the distinct counterexample"
+        );
         // A second step reaching the same property reports nothing new (dedup by
         // property across the campaign).
         let r2 = camp.step().expect("step 2");
         assert!(
             r2.counterexamples.is_empty(),
             "the same property is not re-reported"
+        );
+        assert_eq!(
+            camp.views().finalized.counterexamples,
+            1,
+            "the finalized counter does not re-count the deduped property"
         );
     }
 }

@@ -696,10 +696,12 @@ mod tests {
     #[test]
     fn full_profile_never_retracts() {
         let mut ws = WorkingSet::new(RetentionProfile::Full);
+        assert!(ws.is_empty());
         for i in 0..100 {
             let r = ws.admit(i, bid(i));
             assert!(r.is_empty(), "full retention never expires");
         }
+        assert!(!ws.is_empty());
         assert_eq!(ws.len(), 100);
         assert!(ws.updates().iter().all(|u| u.admitted));
     }
@@ -709,6 +711,7 @@ mod tests {
     #[test]
     fn bounded_expiry_is_oldest_first_with_stable_tiebreak() {
         let mut ws = WorkingSet::new(bounded(2));
+        assert_eq!(ws.profile(), bounded(2), "the declared profile is carried");
         assert!(ws.admit(1, bid(10)).is_empty());
         assert!(ws.admit(2, bid(5)).is_empty());
         // Admitting a third expires the member with the lowest admitted issue
@@ -751,7 +754,7 @@ mod tests {
     /// the monotone finalized count.
     #[test]
     fn assignment_upsert_dominates_by_strict_quality() {
-        use crate::evidence::DefaultObservationCells;
+        use crate::evidence::{DefaultObservationCells, ObservationCells};
         let mut v = RetentionViews::new(RetentionProfile::Full);
         let cells = DefaultObservationCells::new();
         let seal =
@@ -771,6 +774,74 @@ mod tests {
         assert_eq!(v.assignments[0].batch, id2);
         assert_eq!(v.finalized.entries_admitted, 2);
         assert_eq!(v.finalized.seals, 3);
+        // The assignment accessor resolves the occupied cell (and only it).
+        let cell = cells.key(e2.cut, &e2.observations_at_cut());
+        assert_eq!(v.assignment(&cell).expect("occupied").batch, id2);
+        assert!(v.assignment(&b"no-such-cell".to_vec()).is_none());
+    }
+
+    /// Canonical bytes are the real serialized views/checkpoint/report — they
+    /// round-trip through serde exactly (never a stub).
+    #[test]
+    fn canonical_bytes_round_trip() {
+        use crate::evidence::DefaultObservationCells;
+        let mut v = RetentionViews::new(bounded(2));
+        let (id, ev) = crate::testkit::seal_evidence(3, 10, 1);
+        v.fold_batch(&DefaultObservationCells::new(), id, &ev);
+        let back: RetentionViews =
+            serde_json::from_slice(&v.canonical_bytes()).expect("views decode");
+        assert_eq!(back, v);
+        let cp = RetentionCheckpoint { views: v.clone() };
+        let back: RetentionCheckpoint =
+            serde_json::from_slice(&cp.canonical_bytes()).expect("checkpoint decodes");
+        assert_eq!(back, cp);
+        let mut batches = BTreeMap::new();
+        batches.insert(
+            id,
+            BatchAvailability {
+                raw: RawAvailability::Collected {
+                    covered_by: CoverageRef::Checkpoint { frontier_issue: 3 },
+                },
+                recompute_cells: Recomputation::RequiresReplay,
+                in_working_set: false,
+            },
+        );
+        let report = RetentionReport {
+            profile: bounded(2),
+            finalized_end: true,
+            batches,
+            derivations: v.finalized,
+            committed_assignments: v.assignments.len() as u64,
+        };
+        let back: RetentionReport =
+            serde_json::from_slice(&report.canonical_bytes()).expect("report decodes");
+        assert_eq!(back, report);
+    }
+
+    /// A batch collected at exactly the checkpoint's coverage frontier is
+    /// covered (half-open on the *outside*): rebuild still succeeds and equals
+    /// the checkpointed views.
+    #[test]
+    fn collection_at_the_checkpoint_frontier_still_rebuilds() {
+        use crate::evidence::DefaultObservationCells;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("evidence.log");
+        let mut led = EvidenceLedger::open(&path).expect("open");
+        let cells = DefaultObservationCells::new();
+        let (_id, ev) = seal_evidence(5, 10, 1);
+        let id = led.append(&ev).expect("append");
+        let mut views = RetentionViews::new(RetentionProfile::Full);
+        views.fold_batch(&cells, id, &ev);
+        assert_eq!(views.frontier_issue, 5);
+        led.commit_checkpoint(&RetentionCheckpoint {
+            views: views.clone(),
+        })
+        .expect("checkpoint");
+        led.collect(id, &BTreeSet::new())
+            .expect("covered at the frontier");
+        let rebuilt = RetentionViews::rebuild(RetentionProfile::Full, &cells, &led)
+            .expect("a frontier-covered collection does not end reinterpretation");
+        assert_eq!(rebuilt, views);
     }
 
     // ---- campaign-level acceptance gates (`hm-5sv`) ----
@@ -930,11 +1001,91 @@ mod tests {
         }
         assert_eq!(camp.ledger().collected().count(), rep.collected.len());
 
-        // Physical reclamation: compaction shrinks the durable file and the
-        // campaign continues cleanly.
+        // Physical reclamation: compaction shrinks the durable file by exactly
+        // the reported amount, and the campaign continues cleanly.
+        let file_before = std::fs::metadata(camp.ledger().path()).expect("meta").len();
         let reclaimed = camp.compact_ledger().expect("compact");
+        let file_after = std::fs::metadata(camp.ledger().path()).expect("meta").len();
         assert!(reclaimed > 0, "collected raw bytes left the file");
+        assert_eq!(
+            file_before - file_after,
+            reclaimed,
+            "reported reclamation is the real file shrinkage"
+        );
         camp.step().expect("the campaign continues after GC");
+    }
+
+    /// The campaign's explicit finalized end marker is durable and is the
+    /// second GC leg: with it set (and no covering checkpoint), expired
+    /// unprotected batches collect and the report cites the finalized end.
+    #[test]
+    fn finalize_evidence_sets_the_durable_end_marker() {
+        let (_dir, mut camp) = campaign(simple_program(4), bounded_config(1), 7);
+        camp.explore(4).expect("explore");
+        assert!(!camp.ledger().is_finalized());
+        assert!(!camp.retention_report().finalized_end);
+        camp.finalize_evidence().expect("finalize");
+        assert!(camp.ledger().is_finalized(), "the end marker is durable");
+        let rep = camp.collect_expired().expect("sweep");
+        assert!(!rep.collected.is_empty(), "finalization permits collection");
+        let report = camp.retention_report();
+        assert!(report.finalized_end);
+        assert!(
+            report.batches.values().any(|b| matches!(
+                b.raw,
+                RawAvailability::Collected {
+                    covered_by: CoverageRef::Finalized
+                }
+            )),
+            "collected loss metadata cites the finalized end"
+        );
+    }
+
+    /// The finalized summary counts exactly: one rollout per step, rollouts +
+    /// seals cover the whole ledger, and admissions match the occupied archive
+    /// (this program's admissions are all fresh claims).
+    #[test]
+    fn finalized_counts_are_exact() {
+        let (_dir, mut camp) = campaign(simple_program(4), config(8, u64::MAX), 7);
+        camp.explore(3).expect("explore");
+        let f = camp.views().finalized;
+        assert_eq!(f.rollouts, 3, "one committed rollout per step");
+        assert_eq!(
+            f.rollouts + f.seals,
+            camp.ledger().len() as u64,
+            "every ledger batch is a rollout or a seal"
+        );
+        assert!(f.seals >= 1, "the first fresh cell was sealed");
+        assert_eq!(f.entries_admitted, camp.occupied() as u64);
+        assert_eq!(f.counterexamples, 0, "no assertion fired in this program");
+    }
+
+    /// The campaign's finalized absence view is exact and retention-stable:
+    /// the test catalog's declared, never-fired must-hit property is reported
+    /// as an absence, and it survives bounded expiry and raw-evidence GC.
+    #[test]
+    fn absence_view_survives_expiry_and_gc() {
+        use sdk_events::{NS_ASSERT, ObservationId};
+        let (_dir, mut camp) = campaign(simple_program(4), bounded_config(1), 7);
+        camp.explore(4).expect("explore");
+        let check =
+            |camp: &crate::campaign::DifferentialCampaign<crate::testkit::ScriptedMachine>| {
+                let absences = camp.absences().absences();
+                assert_eq!(absences.len(), 1, "exactly the declared must-hit");
+                assert_eq!(
+                    absences[0].property,
+                    ObservationId::Point {
+                        namespace: NS_ASSERT,
+                        local: 99
+                    }
+                );
+            };
+        check(&camp);
+        // Working-set expiry already happened (cap 1); GC the expired raw
+        // evidence and the finalized absence claim still stands.
+        camp.commit_checkpoint().expect("checkpoint");
+        camp.collect_expired().expect("sweep");
+        check(&camp);
     }
 
     /// Acceptance gate: the completeness report states **exactly** which raw

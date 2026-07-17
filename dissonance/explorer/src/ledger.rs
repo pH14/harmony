@@ -854,16 +854,20 @@ mod tests {
     /// The declared byte budget fails an over-budget evidence append loudly and
     /// changes nothing: no entry is dropped, nothing is collected, the file
     /// stays valid, and space freed by policy (a raised budget) resumes appends.
+    /// The budget boundary is exact: an append that lands the file precisely at
+    /// the budget is admitted.
     #[test]
     fn exhaustion_is_loud_and_changes_no_policy() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("evidence.log");
         let mut led = EvidenceLedger::open(&path).expect("open");
+        assert_eq!(led.budget(), None, "no budget unless declared");
         let id0 = led.append(&evidence(0, b"first")).expect("append 0");
         let before_len = led.len();
         let before_end = led.end;
         // A budget below what the next append needs.
         led.set_budget(Some(led.end + 8));
+        assert_eq!(led.budget(), Some(before_end + 8), "the declared budget");
         let err = led.append(&evidence(1, b"second")).expect_err("exhausted");
         assert!(matches!(err, LedgerError::Exhausted { .. }));
         // LOUD, not lossy: nothing was expired, collected, or truncated.
@@ -871,10 +875,24 @@ mod tests {
         assert_eq!(led.end, before_end);
         assert!(led.contains(&id0));
         assert_eq!(led.collected().count(), 0, "no silent collection");
-        // The failure is not sticky policy: raising the budget (operator
-        // action) resumes appends; the ledger file was never damaged.
-        led.set_budget(None);
-        let id1 = led.append(&evidence(1, b"second")).expect("resumes");
+
+        // The exact boundary: measure the frame's true on-disk size on a twin
+        // ledger, then declare a budget the append lands on precisely — it must
+        // be admitted (the check is `needed > budget`, byte-exact arithmetic).
+        let twin_path = dir.path().join("twin.log");
+        let mut twin = EvidenceLedger::open(&twin_path).expect("twin");
+        let twin_base = std::fs::metadata(&twin_path).expect("meta").len();
+        twin.append(&evidence(1, b"second")).expect("twin append");
+        let frame = std::fs::metadata(&twin_path).expect("meta").len() - twin_base;
+        led.set_budget(Some(before_end + frame));
+        let id1 = led
+            .append(&evidence(1, b"second"))
+            .expect("an append landing exactly at the budget is admitted");
+        assert_eq!(
+            std::fs::metadata(&path).expect("meta").len(),
+            before_end + frame,
+            "the file landed exactly on the declared budget"
+        );
         drop(led);
         let led = EvidenceLedger::open(&path).expect("reopen clean");
         assert!(led.contains(&id0) && led.contains(&id1));
@@ -952,8 +970,23 @@ mod tests {
         assert_eq!(tomb.covered_by, CoverageRef::Finalized);
         // The end marker is durable.
         drop(led);
-        let led = EvidenceLedger::open(&path).expect("reopen");
+        let mut led = EvidenceLedger::open(&path).expect("reopen");
         assert!(led.is_finalized());
+        // …and it survives compaction (the rewritten file carries the marker,
+        // with the tracked end matching the real file).
+        led.compact().expect("compact");
+        assert_eq!(
+            std::fs::metadata(&path).expect("meta").len(),
+            led.end,
+            "tracked end matches the compacted file"
+        );
+        drop(led);
+        let led = EvidenceLedger::open(&path).expect("reopen compacted");
+        assert!(
+            led.is_finalized(),
+            "the finalized marker survives compaction"
+        );
+        assert_eq!(led.collected().count(), 1);
     }
 
     /// A payload shared by two batches survives collecting one of them: the

@@ -72,7 +72,7 @@ impl ScriptedMachine {
     }
 
     fn catalog(&self) -> Vec<u8> {
-        let points: Vec<DeclaredPoint> = self
+        let mut points: Vec<DeclaredPoint> = self
             .regs
             .iter()
             .map(|(reg, op)| DeclaredPoint {
@@ -85,6 +85,18 @@ impl ScriptedMachine {
                 expectation: None,
             })
             .collect();
+        // A declared, never-fired must-hit (`sometimes`) assertion point: every
+        // campaign's finalized absence view then has observable content, so the
+        // absence accessor and its retention-survival are exact-value testable.
+        points.push(DeclaredPoint {
+            namespace: sdk_events::NS_ASSERT,
+            local: 99,
+            name: "never-satisfied".into(),
+            classification: Classification::Occurrence,
+            value_shape: None,
+            base_op: None,
+            expectation: Some(sdk_events::Expectation::MustHit),
+        });
         sdk_events::encode_v2_declaration(&points).expect("valid v2 declaration")
     }
 
