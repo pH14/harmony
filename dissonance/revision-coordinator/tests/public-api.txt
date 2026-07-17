@@ -1,0 +1,170 @@
+pub mod revision_coordinator
+pub enum revision_coordinator::CoordError
+pub revision_coordinator::CoordError::Aborted
+pub revision_coordinator::CoordError::Aborted::reason: alloc::string::String
+pub revision_coordinator::CoordError::AlreadyInitialized
+pub revision_coordinator::CoordError::CohortBarrier
+pub revision_coordinator::CoordError::CohortBarrier::blocking: revision_coordinator::CohortId
+pub revision_coordinator::CoordError::CohortClosed(revision_coordinator::CohortId)
+pub revision_coordinator::CoordError::CommitConflict
+pub revision_coordinator::CoordError::CommitConflict::proposal: revision_coordinator::ProposalId
+pub revision_coordinator::CoordError::CorruptLedger
+pub revision_coordinator::CoordError::CorruptLedger::detail: alloc::string::String
+pub revision_coordinator::CoordError::FrontierStalled
+pub revision_coordinator::CoordError::FrontierStalled::target: revision_coordinator::Revision
+pub revision_coordinator::CoordError::FrontierStalled::visible: revision_coordinator::Revision
+pub revision_coordinator::CoordError::IdExhausted
+pub revision_coordinator::CoordError::Ledger(revision_coordinator::LedgerError)
+pub revision_coordinator::CoordError::MissingGenesis
+pub revision_coordinator::CoordError::Poisoned
+pub revision_coordinator::CoordError::UnknownCohort(revision_coordinator::CohortId)
+pub revision_coordinator::CoordError::UnknownProposal(revision_coordinator::ProposalId)
+pub enum revision_coordinator::LedgerError
+pub revision_coordinator::LedgerError::Backend(alloc::string::String)
+pub revision_coordinator::LedgerError::Corrupt
+pub revision_coordinator::LedgerError::Corrupt::detail: alloc::string::String
+pub revision_coordinator::LedgerError::Corrupt::offset: usize
+pub revision_coordinator::LedgerError::Io(std::io::error::Error)
+pub revision_coordinator::LedgerError::UnsupportedVersion
+pub revision_coordinator::LedgerError::UnsupportedVersion::found: u32
+pub revision_coordinator::LedgerError::UnsupportedVersion::supported: u32
+pub enum revision_coordinator::LedgerRecord
+pub revision_coordinator::LedgerRecord::Abort
+pub revision_coordinator::LedgerRecord::Abort::reason: alloc::string::String
+pub revision_coordinator::LedgerRecord::CohortClose
+pub revision_coordinator::LedgerRecord::CohortClose::cohort: revision_coordinator::CohortId
+pub revision_coordinator::LedgerRecord::CohortOpen
+pub revision_coordinator::LedgerRecord::CohortOpen::cohort: revision_coordinator::CohortId
+pub revision_coordinator::LedgerRecord::CohortOpen::view: revision_coordinator::Revision
+pub revision_coordinator::LedgerRecord::Commit
+pub revision_coordinator::LedgerRecord::Commit::batch: revision_coordinator::EvidenceBatchId
+pub revision_coordinator::LedgerRecord::Commit::proposal: revision_coordinator::ProposalId
+pub revision_coordinator::LedgerRecord::Commit::revision: revision_coordinator::Revision
+pub revision_coordinator::LedgerRecord::Commit::terminal: revision_coordinator::TerminalRecord
+pub revision_coordinator::LedgerRecord::Genesis
+pub revision_coordinator::LedgerRecord::Genesis::config: revision_coordinator::CampaignConfigId
+pub revision_coordinator::LedgerRecord::Proposal
+pub revision_coordinator::LedgerRecord::Proposal::cohort: revision_coordinator::CohortId
+pub revision_coordinator::LedgerRecord::Proposal::proposal: revision_coordinator::ProposalId
+pub revision_coordinator::LedgerRecord::Proposal::revision: revision_coordinator::Revision
+pub enum revision_coordinator::MemFault
+pub revision_coordinator::MemFault::Append
+pub revision_coordinator::MemFault::Sync
+pub struct revision_coordinator::CampaignConfigId(_)
+impl revision_coordinator::CampaignConfigId
+pub fn revision_coordinator::CampaignConfigId::as_bytes(&self) -> &[u8; 32]
+pub fn revision_coordinator::CampaignConfigId::digest(&[u8]) -> Self
+pub fn revision_coordinator::CampaignConfigId::from_bytes([u8; 32]) -> Self
+impl core::fmt::Debug for revision_coordinator::CampaignConfigId
+pub fn revision_coordinator::CampaignConfigId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for revision_coordinator::CampaignConfigId
+pub fn revision_coordinator::CampaignConfigId::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for revision_coordinator::CampaignConfigId
+pub fn revision_coordinator::CampaignConfigId::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct revision_coordinator::CohortId(_)
+impl revision_coordinator::CohortId
+pub fn revision_coordinator::CohortId::get(self) -> u64
+pub fn revision_coordinator::CohortId::new(u64) -> Self
+pub struct revision_coordinator::Completion
+pub revision_coordinator::Completion::batch: revision_coordinator::EvidenceBatchId
+pub revision_coordinator::Completion::proposal: revision_coordinator::ProposalId
+pub revision_coordinator::Completion::terminal: revision_coordinator::TerminalRecord
+pub struct revision_coordinator::Coordinator
+impl revision_coordinator::Coordinator
+pub fn revision_coordinator::Coordinator::abort(&mut self, &str) -> core::result::Result<(), revision_coordinator::CoordError>
+pub fn revision_coordinator::Coordinator::aborted(&self) -> core::option::Option<&str>
+pub fn revision_coordinator::Coordinator::assign(&mut self, revision_coordinator::CohortId) -> core::result::Result<revision_coordinator::PendingProposal, revision_coordinator::CoordError>
+pub fn revision_coordinator::Coordinator::close_cohort(&mut self, revision_coordinator::CohortId) -> core::result::Result<(), revision_coordinator::CoordError>
+pub fn revision_coordinator::Coordinator::cohort_view(&self, revision_coordinator::CohortId) -> core::option::Option<revision_coordinator::Revision>
+pub fn revision_coordinator::Coordinator::committed_frontier(&self) -> revision_coordinator::Revision
+pub fn revision_coordinator::Coordinator::complete(&mut self, revision_coordinator::Completion) -> core::result::Result<(), revision_coordinator::CoordError>
+pub fn revision_coordinator::Coordinator::config(&self) -> revision_coordinator::CampaignConfigId
+pub fn revision_coordinator::Coordinator::drain_ready(&mut self) -> alloc::vec::Vec<(revision_coordinator::Revision, revision_coordinator::EvidenceBatchId)>
+pub fn revision_coordinator::Coordinator::genesis(alloc::boxed::Box<dyn revision_coordinator::Ledger>, revision_coordinator::CampaignConfigId) -> core::result::Result<Self, revision_coordinator::CoordError>
+pub fn revision_coordinator::Coordinator::open_cohort(&mut self) -> core::result::Result<revision_coordinator::CohortId, revision_coordinator::CoordError>
+pub fn revision_coordinator::Coordinator::pending(&self) -> alloc::vec::Vec<revision_coordinator::PendingProposal>
+pub fn revision_coordinator::Coordinator::probe_drive(&mut self, revision_coordinator::Revision) -> core::result::Result<revision_coordinator::DrainedView, revision_coordinator::CoordError>
+pub fn revision_coordinator::Coordinator::recover(&dyn revision_coordinator::Ledger) -> core::result::Result<Self, revision_coordinator::CoordError>
+pub fn revision_coordinator::Coordinator::state_projection(&self) -> revision_coordinator::StateProjection
+pub fn revision_coordinator::Coordinator::visible_frontier(&self) -> revision_coordinator::Revision
+pub struct revision_coordinator::DrainedView
+pub revision_coordinator::DrainedView::frontier: revision_coordinator::Revision
+pub revision_coordinator::DrainedView::rows: alloc::vec::Vec<(revision_coordinator::Revision, revision_coordinator::EvidenceBatchId)>
+impl revision_coordinator::DrainedView
+pub fn revision_coordinator::DrainedView::encode(&self) -> alloc::vec::Vec<u8>
+pub struct revision_coordinator::EvidenceBatchId(_)
+impl revision_coordinator::EvidenceBatchId
+pub fn revision_coordinator::EvidenceBatchId::as_bytes(&self) -> &[u8; 32]
+pub fn revision_coordinator::EvidenceBatchId::digest(&[u8]) -> Self
+pub fn revision_coordinator::EvidenceBatchId::from_bytes([u8; 32]) -> Self
+impl core::fmt::Debug for revision_coordinator::EvidenceBatchId
+pub fn revision_coordinator::EvidenceBatchId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for revision_coordinator::EvidenceBatchId
+pub fn revision_coordinator::EvidenceBatchId::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for revision_coordinator::EvidenceBatchId
+pub fn revision_coordinator::EvidenceBatchId::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct revision_coordinator::FileLedger
+impl revision_coordinator::FileLedger
+pub fn revision_coordinator::FileLedger::open(&std::path::Path) -> core::result::Result<Self, revision_coordinator::LedgerError>
+impl revision_coordinator::Ledger for revision_coordinator::FileLedger
+pub fn revision_coordinator::FileLedger::append(&mut self, &revision_coordinator::LedgerRecord) -> core::result::Result<(), revision_coordinator::LedgerError>
+pub fn revision_coordinator::FileLedger::reopen(&self) -> core::result::Result<alloc::boxed::Box<dyn revision_coordinator::Ledger>, revision_coordinator::LedgerError>
+pub fn revision_coordinator::FileLedger::replay(&self) -> core::result::Result<alloc::vec::Vec<revision_coordinator::LedgerRecord>, revision_coordinator::LedgerError>
+pub fn revision_coordinator::FileLedger::sync(&mut self) -> core::result::Result<(), revision_coordinator::LedgerError>
+pub struct revision_coordinator::MemLedger
+impl revision_coordinator::MemLedger
+pub fn revision_coordinator::MemLedger::crash(&self)
+pub fn revision_coordinator::MemLedger::durable_len(&self) -> usize
+pub fn revision_coordinator::MemLedger::fail_next(&self, revision_coordinator::MemFault)
+pub fn revision_coordinator::MemLedger::new() -> Self
+impl core::default::Default for revision_coordinator::MemLedger
+pub fn revision_coordinator::MemLedger::default() -> Self
+impl revision_coordinator::Ledger for revision_coordinator::MemLedger
+pub fn revision_coordinator::MemLedger::append(&mut self, &revision_coordinator::LedgerRecord) -> core::result::Result<(), revision_coordinator::LedgerError>
+pub fn revision_coordinator::MemLedger::reopen(&self) -> core::result::Result<alloc::boxed::Box<dyn revision_coordinator::Ledger>, revision_coordinator::LedgerError>
+pub fn revision_coordinator::MemLedger::replay(&self) -> core::result::Result<alloc::vec::Vec<revision_coordinator::LedgerRecord>, revision_coordinator::LedgerError>
+pub fn revision_coordinator::MemLedger::sync(&mut self) -> core::result::Result<(), revision_coordinator::LedgerError>
+pub struct revision_coordinator::PendingProposal
+pub revision_coordinator::PendingProposal::cohort: revision_coordinator::CohortId
+pub revision_coordinator::PendingProposal::proposal: revision_coordinator::ProposalId
+pub revision_coordinator::PendingProposal::revision: revision_coordinator::Revision
+pub struct revision_coordinator::ProposalId(_)
+impl revision_coordinator::ProposalId
+pub fn revision_coordinator::ProposalId::get(self) -> u64
+pub fn revision_coordinator::ProposalId::new(u64) -> Self
+pub struct revision_coordinator::Revision(_)
+impl revision_coordinator::Revision
+pub const revision_coordinator::Revision::ZERO: revision_coordinator::Revision
+pub fn revision_coordinator::Revision::get(self) -> u64
+pub fn revision_coordinator::Revision::new(u64) -> Self
+pub struct revision_coordinator::StateProjection
+pub revision_coordinator::StateProjection::aborted: core::option::Option<alloc::string::String>
+pub revision_coordinator::StateProjection::cohorts: alloc::vec::Vec<(revision_coordinator::CohortId, revision_coordinator::Revision, bool, alloc::vec::Vec<revision_coordinator::Revision>)>
+pub revision_coordinator::StateProjection::commits: alloc::vec::Vec<(revision_coordinator::Revision, revision_coordinator::ProposalId, revision_coordinator::EvidenceBatchId, revision_coordinator::TerminalRecord)>
+pub revision_coordinator::StateProjection::committed_frontier: revision_coordinator::Revision
+pub revision_coordinator::StateProjection::config: revision_coordinator::CampaignConfigId
+pub revision_coordinator::StateProjection::next_cohort: u64
+pub revision_coordinator::StateProjection::next_proposal: u64
+pub revision_coordinator::StateProjection::next_revision: u64
+pub revision_coordinator::StateProjection::pending: alloc::vec::Vec<revision_coordinator::PendingProposal>
+pub revision_coordinator::StateProjection::visible_frontier: revision_coordinator::Revision
+impl revision_coordinator::StateProjection
+pub fn revision_coordinator::StateProjection::encode(&self) -> alloc::vec::Vec<u8>
+pub struct revision_coordinator::TerminalRecord
+pub revision_coordinator::TerminalRecord::moment: u64
+pub revision_coordinator::TerminalRecord::work: u64
+pub trait revision_coordinator::Ledger
+pub fn revision_coordinator::Ledger::append(&mut self, &revision_coordinator::LedgerRecord) -> core::result::Result<(), revision_coordinator::LedgerError>
+pub fn revision_coordinator::Ledger::reopen(&self) -> core::result::Result<alloc::boxed::Box<dyn revision_coordinator::Ledger>, revision_coordinator::LedgerError>
+pub fn revision_coordinator::Ledger::replay(&self) -> core::result::Result<alloc::vec::Vec<revision_coordinator::LedgerRecord>, revision_coordinator::LedgerError>
+pub fn revision_coordinator::Ledger::sync(&mut self) -> core::result::Result<(), revision_coordinator::LedgerError>
+impl revision_coordinator::Ledger for revision_coordinator::FileLedger
+pub fn revision_coordinator::FileLedger::append(&mut self, &revision_coordinator::LedgerRecord) -> core::result::Result<(), revision_coordinator::LedgerError>
+pub fn revision_coordinator::FileLedger::reopen(&self) -> core::result::Result<alloc::boxed::Box<dyn revision_coordinator::Ledger>, revision_coordinator::LedgerError>
+pub fn revision_coordinator::FileLedger::replay(&self) -> core::result::Result<alloc::vec::Vec<revision_coordinator::LedgerRecord>, revision_coordinator::LedgerError>
+pub fn revision_coordinator::FileLedger::sync(&mut self) -> core::result::Result<(), revision_coordinator::LedgerError>
+impl revision_coordinator::Ledger for revision_coordinator::MemLedger
+pub fn revision_coordinator::MemLedger::append(&mut self, &revision_coordinator::LedgerRecord) -> core::result::Result<(), revision_coordinator::LedgerError>
+pub fn revision_coordinator::MemLedger::reopen(&self) -> core::result::Result<alloc::boxed::Box<dyn revision_coordinator::Ledger>, revision_coordinator::LedgerError>
+pub fn revision_coordinator::MemLedger::replay(&self) -> core::result::Result<alloc::vec::Vec<revision_coordinator::LedgerRecord>, revision_coordinator::LedgerError>
+pub fn revision_coordinator::MemLedger::sync(&mut self) -> core::result::Result<(), revision_coordinator::LedgerError>
