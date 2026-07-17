@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "revision-coordinator"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Control-side input coordinator for the Differential observation plane (task 121, hm-bbx.3): persist-then-dispatch Revision assignment, out-of-order completion buffering, cohort freeze, probe-frontier drive, and crash recovery from an append-only fsync-ordered ledger"
+
+[lints]
+workspace = true
+
+[features]
+# Test apparatus (hm-fb0): the golden-projection vehicle
+# (`StateProjection`), the simulated crash + fault injection on `MemLedger`
+# (`MemFault`, `crash`, `fail_next`, `durable_len`). These are the crate's
+# own test/golden surface, NOT part of the coordinator's production contract.
+# Gating them here keeps them OUT of the default public surface so that when
+# `hm-bbx.4` imports this crate without `test-support` it never freezes them
+# as compat surface. The crate's `tests/` use them; they self-enable the
+# feature through the dev-dependency below, and the `--all-features`
+# public-api snapshot still freezes the full surface so a gated public item
+# cannot drift unnoticed.
+test-support = []
+
+[dependencies]
+# The observation/materialization plane runtime ruled by
+# docs/DISSONANCE-STRATEGY.md ("Use production differential-dataflow initially
+# with one Timely worker"). Both are off the rule-5 whitelist — ask-by-comment:
+# the task IS the Differential input coordinator, and the merged
+# spikes/differential-lineage crate (tasks/120) already proved these exact
+# versions. MIT-licensed, crates.io only.
+differential-dataflow = "0.24"
+timely = "0.30"
+# Typed, no-panic library errors (rule-5 whitelist).
+thiserror = "2"
+# Ledger records and the DrainedView canonical projection serialize with serde;
+# serde_json is the golden/artifact encoding (rule-5 whitelist, std only).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Ledger frame checksums (torn-tail detection on replay) and the digest-based
+# test mint for opaque evidence-batch identities (rule-5 whitelist).
+blake3 = "1"
+
+[dev-dependencies]
+# Self-dependency so the crate's own integration tests (`tests/`) build with
+# the `test-support` feature on (the standard Cargo idiom for a test-only
+# feature). `cargo test`/`cargo nextest` then compiles the apparatus even
+# without an explicit `--all-features`; a plain library build stays clean.
+revision-coordinator = { path = ".", version = "0.1.0", features = ["test-support"] }
+# Property tests (>=256 cases): completion-order permutation invariance,
+# no-frontier-holes, cohort freeze.
+proptest = "1"
+# The kill-at-every-await-point crash-recovery model (M1).
+proptest-state-machine = "0.3"
+# File-backed ledger tests write under a scratch dir (rule-5 whitelist).
+tempfile = "3"
+# M2: the coordinator drives the merged spike crate's dataflow (tasks/120,
+# hm-bbx.2) — committed (Revision, EvidenceBatchId) inputs resolve to spike
+# fixture records and the spike program's captured views are the artifacts
+# asserted byte-identical across permutation/restart/cohort mint order.
+# Pinned `version` alongside `path` for `cargo deny`'s wildcard ban.
+differential-lineage = { path = "../../spikes/differential-lineage", version = "0.1.0" }

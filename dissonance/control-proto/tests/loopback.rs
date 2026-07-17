@@ -62,16 +62,16 @@ impl StubServer {
             Request::Snapshot => {
                 let id = self.next_snap;
                 self.next_snap += 1;
-                // A tainted timeline surfaces the taint-carrying reply (task 81);
-                // an untainted one keeps the pre-81 taint-free `SnapId`.
-                if self.tainted {
-                    Ok(Reply::Snapshot {
-                        id: SnapId(id),
-                        tainted: true,
-                    })
-                } else {
-                    Ok(Reply::SnapId(SnapId(id)))
-                }
+                // The one seal-bound reply (task 127): the stub stamps a fixed
+                // cut (its canned SdkEvents capture has 2 events at/before the
+                // canned Moment 500) plus the timeline taint (task 81) — both
+                // taint states cross the same cut-carrying shape.
+                Ok(Reply::Snapshot {
+                    id: SnapId(id),
+                    at: Moment(500),
+                    sdk_events: 2,
+                    tainted: self.tainted,
+                })
             }
             Request::Drop(_)
             | Request::Branch { .. }
@@ -208,8 +208,8 @@ fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
 
     let snap_reply = lb.exchange(Request::Snapshot);
     let snap = match &snap_reply {
-        Ok(Reply::SnapId(s)) => *s,
-        other => panic!("expected SnapId, got {other:?}"),
+        Ok(Reply::Snapshot { id, .. }) => *id,
+        other => panic!("expected the seal-bound Snapshot reply, got {other:?}"),
     };
     replies.push(snap_reply);
 
@@ -271,7 +271,12 @@ fn loopback_exercises_every_verb_with_expected_replies() {
         replies,
         vec![
             Ok(Reply::Hello(caps())),
-            Ok(Reply::SnapId(SnapId(0))),
+            Ok(Reply::Snapshot {
+                id: SnapId(0),
+                at: Moment(500),
+                sdk_events: 2,
+                tainted: false,
+            }), // the seal-bound reply: handle + cut, untainted
             Ok(Reply::Unit), // Branch
             Ok(Reply::Stop(StopReason::Decision {
                 vtime: Moment(100),
@@ -305,8 +310,10 @@ fn loopback_exercises_every_verb_with_expected_replies() {
             Err(ControlError::Tainted), // RecordedEnv now fails loud
             Ok(Reply::Snapshot {
                 id: SnapId(1),
+                at: Moment(500),
+                sdk_events: 2,
                 tainted: true,
-            }), // a snapshot from the tainted timeline reports it
+            }), // a snapshot from the tainted timeline still binds its cut
             Ok(Reply::Unit),            // Perturb
             Err(ControlError::ResolveWithoutDecision),
             Ok(Reply::Unit), // Drop

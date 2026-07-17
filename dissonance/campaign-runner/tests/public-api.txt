@@ -29,7 +29,7 @@ pub fn campaign_runner::benchcampaign::BenchToyMachine::hash(&mut self) -> core:
 pub fn campaign_runner::benchcampaign::BenchToyMachine::recorded_env(&self) -> core::result::Result<explorer::Reproducer, explorer::error::MachineError>
 pub fn campaign_runner::benchcampaign::BenchToyMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
 pub fn campaign_runner::benchcampaign::BenchToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
-pub fn campaign_runner::benchcampaign::BenchToyMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
+pub fn campaign_runner::benchcampaign::BenchToyMachine::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::spine::EvidenceCut), explorer::error::MachineError>
 pub struct campaign_runner::benchcampaign::FindCert
 pub campaign_runner::benchcampaign::FindCert::branch: u64
 pub campaign_runner::benchcampaign::FindCert::bug: benchmark::manifest::BugId
@@ -166,7 +166,7 @@ pub fn campaign_runner::gamecampaign::GameToyMachine::recorded_env(&self) -> cor
 pub fn campaign_runner::gamecampaign::GameToyMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
 pub fn campaign_runner::gamecampaign::GameToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
 pub fn campaign_runner::gamecampaign::GameToyMachine::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
-pub fn campaign_runner::gamecampaign::GameToyMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
+pub fn campaign_runner::gamecampaign::GameToyMachine::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::spine::EvidenceCut), explorer::error::MachineError>
 pub struct campaign_runner::gamecampaign::WorkEvidence
 pub campaign_runner::gamecampaign::WorkEvidence::branches: u64
 pub campaign_runner::gamecampaign::WorkEvidence::min_completed_frames: u64
@@ -179,8 +179,8 @@ pub fn campaign_runner::gamecampaign::quiet_mutate(&explorer::Reproducer, u64, u
 pub fn campaign_runner::gamecampaign::run_game_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &campaign_runner::gamecampaign::GameCampaignConfig, benchmark::exploration::ExplorationConfig) -> core::result::Result<campaign_runner::gamecampaign::GameCampaignOutcome, campaign_runner::gamecampaign::GameCampaignError>
 pub fn campaign_runner::gamecampaign::serial_rom_sha256(&[u8]) -> core::option::Option<alloc::string::String>
 pub fn campaign_runner::gamecampaign::smb_cell_key(u64, u64, u64, u64) -> u64
-pub fn campaign_runner::gamecampaign::smb_cells(&[(explorer::spine::Moment, explorer::spine::Feature)]) -> (alloc::vec::Vec<u64>, u64)
-pub fn campaign_runner::gamecampaign::smb_completed_frames(&[(explorer::spine::Moment, explorer::spine::Feature)]) -> u64
+pub fn campaign_runner::gamecampaign::smb_cells(&[sdk_events::event::SdkEvent]) -> (alloc::vec::Vec<u64>, u64)
+pub fn campaign_runner::gamecampaign::smb_completed_frames(&[sdk_events::event::SdkEvent]) -> u64
 pub mod campaign_runner::materialize
 pub struct campaign_runner::materialize::HopRow
 pub campaign_runner::materialize::HopRow::at: u64
@@ -269,7 +269,7 @@ pub fn campaign_runner::planted::ToyPlantedMachine::hash(&mut self) -> core::res
 pub fn campaign_runner::planted::ToyPlantedMachine::recorded_env(&self) -> core::result::Result<explorer::Reproducer, explorer::error::MachineError>
 pub fn campaign_runner::planted::ToyPlantedMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
 pub fn campaign_runner::planted::ToyPlantedMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
-pub fn campaign_runner::planted::ToyPlantedMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
+pub fn campaign_runner::planted::ToyPlantedMachine::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::spine::EvidenceCut), explorer::error::MachineError>
 pub struct campaign_runner::planted::Trigger
 pub campaign_runner::planted::Trigger::gpa: u64
 pub campaign_runner::planted::Trigger::mask: u64
@@ -309,6 +309,9 @@ pub fn campaign_runner::record::run_recording<B: vmm_backend::backend::Backend<A
 pub fn campaign_runner::record::stamp(explorer::spine::Moment) -> explorer::spine::Moment
 pub fn campaign_runner::record::verify_record(&campaign_runner::record::RecordReport, usize) -> alloc::vec::Vec<alloc::string::String>
 pub fn campaign_runner::record::verify_store_reload(&runtrace::store::TraceStore, &campaign_runner::record::RecordReport) -> alloc::vec::Vec<alloc::string::String>
+pub mod campaign_runner::sdk_compat
+pub fn campaign_runner::sdk_compat::decode_sdk(&[(u64, u32, alloc::vec::Vec<u8>)]) -> core::result::Result<sdk_events::event::Normalized, sdk_events::error::SdkError>
+pub fn campaign_runner::sdk_compat::guest_events_of(&sdk_events::event::Normalized) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::GuestEvent)>
 pub mod campaign_runner::stopwatch
 pub enum campaign_runner::stopwatch::Phase
 pub campaign_runner::stopwatch::Phase::BaseSeal

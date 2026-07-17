@@ -10,6 +10,7 @@ pub fn explorer::adapter::AdapterEnv::encode(&self) -> explorer::Reproducer
 pub struct explorer::adapter::SocketMachine<S: std::io::Read + std::io::Write>
 impl<S: std::io::Read + std::io::Write> explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::connect(S, environment::recorded::EnvSpec) -> core::result::Result<Self, explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::snapshot_cut(&self, explorer::SnapId) -> core::option::Option<explorer::EvidenceCut>
 impl<S: std::io::Read + std::io::Write> explorer::Machine for explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::MachineError>
@@ -20,7 +21,7 @@ pub fn explorer::adapter::SocketMachine<S>::recorded_env(&self) -> core::result:
 pub fn explorer::adapter::SocketMachine<S>::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::EvidenceCut), explorer::MachineError>
 pub struct explorer::adapter::SpecEnvCodec
 impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
 pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Reproducer, &explorer::Reproducer) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
@@ -60,14 +61,60 @@ impl explorer::stads::SpeciesStats
 pub fn explorer::stads::SpeciesStats::chao1(&self) -> explorer::stads::Frac
 pub fn explorer::stads::SpeciesStats::discovery_below(&self, u64, u64) -> bool
 pub fn explorer::stads::SpeciesStats::discovery_probability(&self) -> explorer::stads::Frac
+pub enum explorer::CampaignError
+pub explorer::CampaignError::Coord(revision_coordinator::coordinator::CoordError)
+pub explorer::CampaignError::Decode(sdk_events::error::SdkError)
+pub explorer::CampaignError::EnvCodec(explorer::EnvCodecError)
+pub explorer::CampaignError::Ledger(explorer::LedgerError)
+pub explorer::CampaignError::Machine(explorer::MachineError)
+pub explorer::CampaignError::Retention(explorer::RetentionError)
+pub enum explorer::CounterexampleKind
+pub explorer::CounterexampleKind::AlwaysViolated
+pub explorer::CounterexampleKind::TerminalAssertion
+pub explorer::CounterexampleKind::UnreachableReached
+pub enum explorer::CoverageRef
+pub explorer::CoverageRef::Checkpoint
+pub explorer::CoverageRef::Checkpoint::frontier_issue: u64
+pub explorer::CoverageRef::Finalized
 pub enum explorer::EnvCodecError
 pub explorer::EnvCodecError::Malformed(u16)
 pub explorer::EnvCodecError::MisorderedChain(&'static str)
 pub explorer::EnvCodecError::NonAdjacentChain(&'static str)
 pub explorer::EnvCodecError::Overflow
 pub explorer::EnvCodecError::UnsupportedComposition
+pub enum explorer::EvidenceRole
+pub explorer::EvidenceRole::Rollout
+pub explorer::EvidenceRole::Seal
+pub enum explorer::ExpiryOrder
+pub explorer::ExpiryOrder::OldestFirst
+pub enum explorer::GcSkipReason
+pub explorer::GcSkipReason::LiveEntryReference
+pub explorer::GcSkipReason::NotCovered
+pub explorer::GcSkipReason::StillInWorkingSet
+pub enum explorer::Ingress
+pub explorer::Ingress::AntithesisJson
+pub explorer::Ingress::Binary
+pub enum explorer::LedgerError
+pub explorer::LedgerError::BadPayload
+pub explorer::LedgerError::BadPayload::detail: alloc::string::String
+pub explorer::LedgerError::BadPayload::offset: u64
+pub explorer::LedgerError::Corrupt
+pub explorer::LedgerError::Corrupt::detail: alloc::string::String
+pub explorer::LedgerError::Corrupt::offset: u64
+pub explorer::LedgerError::Exhausted
+pub explorer::LedgerError::Exhausted::budget: u64
+pub explorer::LedgerError::Exhausted::needed: u64
+pub explorer::LedgerError::Io(std::io::error::Error)
+pub explorer::LedgerError::UnsupportedVersion
+pub explorer::LedgerError::UnsupportedVersion::found: u32
 pub enum explorer::MachineError
 pub explorer::MachineError::BadEnvironment(u16)
+pub explorer::MachineError::CutDivergence
+pub explorer::MachineError::CutDivergence::at: u64
+pub explorer::MachineError::CutDivergence::exemplar: u64
+pub explorer::MachineError::CutDivergence::got_at: u64
+pub explorer::MachineError::CutDivergence::got_sdk_events: u64
+pub explorer::MachineError::CutDivergence::sdk_events: u64
 pub explorer::MachineError::EnvCodec(explorer::EnvCodecError)
 pub explorer::MachineError::Inadmissible(alloc::string::String)
 pub explorer::MachineError::MaterializeDivergence
@@ -79,6 +126,46 @@ pub explorer::MachineError::NotSealable(u64)
 pub explorer::MachineError::Transport(alloc::string::String)
 pub explorer::MachineError::UnknownExemplar(u64)
 pub explorer::MachineError::UnknownSnapshot(u64)
+pub enum explorer::Occupied
+pub explorer::Occupied::Dominated
+pub explorer::Occupied::Dominated::entry: explorer::ExemplarRef
+pub explorer::Occupied::Dominated::evicted: explorer::ExemplarRef
+pub explorer::Occupied::Fresh(explorer::ExemplarRef)
+pub explorer::Occupied::Rejected
+pub enum explorer::RawAvailability
+pub explorer::RawAvailability::Collected
+pub explorer::RawAvailability::Collected::covered_by: explorer::CoverageRef
+pub explorer::RawAvailability::Retained
+pub enum explorer::Recomputation
+pub explorer::Recomputation::FromRetainedEvidence
+pub explorer::Recomputation::RequiresReplay
+pub enum explorer::ReducedValue
+pub explorer::ReducedValue::Accumulated(alloc::collections::btree::set::BTreeSet<u64>)
+pub explorer::ReducedValue::Scalar(u64)
+pub enum explorer::RetentionError
+pub explorer::RetentionError::FullRetentionForbidsCollection
+pub explorer::RetentionError::Ledger(explorer::LedgerError)
+pub explorer::RetentionError::LiveEntryReference
+pub explorer::RetentionError::LiveEntryReference::batch: revision_coordinator::ids::EvidenceBatchId
+pub explorer::RetentionError::NotCovered
+pub explorer::RetentionError::NotCovered::batch: revision_coordinator::ids::EvidenceBatchId
+pub explorer::RetentionError::NotCovered::issue: u64
+pub explorer::RetentionError::ProfileMismatch
+pub explorer::RetentionError::ProfileMismatch::checkpoint: explorer::RetentionProfile
+pub explorer::RetentionError::ProfileMismatch::declared: explorer::RetentionProfile
+pub explorer::RetentionError::ReinterpretationEnded
+pub explorer::RetentionError::ReinterpretationEnded::batch: revision_coordinator::ids::EvidenceBatchId
+pub explorer::RetentionError::StillInWorkingSet
+pub explorer::RetentionError::StillInWorkingSet::batch: revision_coordinator::ids::EvidenceBatchId
+pub explorer::RetentionError::UnknownBatch
+pub explorer::RetentionError::UnknownBatch::batch: revision_coordinator::ids::EvidenceBatchId
+pub enum explorer::RetentionProfile
+pub explorer::RetentionProfile::Bounded
+pub explorer::RetentionProfile::Bounded::expiry: explorer::ExpiryOrder
+pub explorer::RetentionProfile::Bounded::working_set_cap: usize
+pub explorer::RetentionProfile::Full
+impl core::default::Default for explorer::RetentionProfile
+pub fn explorer::RetentionProfile::default() -> Self
 pub enum explorer::SealBudget
 pub explorer::SealBudget::Frontier
 pub explorer::SealBudget::Frontier::base: u64
@@ -115,6 +202,16 @@ pub explorer::Value::Bytes(alloc::vec::Vec<u8>)
 pub explorer::Value::Int(i64)
 pub explorer::Value::Str(alloc::string::String)
 pub explorer::Value::UInt(u64)
+pub struct explorer::AbsenceFinding
+pub explorer::AbsenceFinding::expectation: sdk_events::schema::Expectation
+pub explorer::AbsenceFinding::name: core::option::Option<alloc::string::String>
+pub explorer::AbsenceFinding::property: sdk_events::schema::ObservationId
+pub struct explorer::AbsenceLedger
+impl explorer::AbsenceLedger
+pub fn explorer::AbsenceLedger::absences(&self) -> alloc::vec::Vec<explorer::AbsenceFinding>
+pub fn explorer::AbsenceLedger::new() -> Self
+pub fn explorer::AbsenceLedger::observe(&mut self, &explorer::CompletedRunEvidence)
+pub fn explorer::AbsenceLedger::satisfied(&self, &sdk_events::schema::ObservationId) -> u64
 pub struct explorer::AdapterEnv
 pub explorer::AdapterEnv::base_offset: u64
 pub explorer::AdapterEnv::pos: u64
@@ -123,11 +220,49 @@ impl explorer::adapter::AdapterEnv
 pub fn explorer::adapter::AdapterEnv::decode(&explorer::Reproducer) -> core::result::Result<explorer::adapter::AdapterEnv, explorer::MachineError>
 pub fn explorer::adapter::AdapterEnv::encode(&self) -> explorer::Reproducer
 pub struct explorer::Answer(pub alloc::vec::Vec<u8>)
+pub struct explorer::BatchAvailability
+pub explorer::BatchAvailability::in_working_set: bool
+pub explorer::BatchAvailability::raw: explorer::RawAvailability
+pub explorer::BatchAvailability::recompute_cells: explorer::Recomputation
 pub struct explorer::Bug
 pub explorer::Bug::env: explorer::Reproducer
 pub explorer::Bug::fingerprint: [u8; 32]
 pub explorer::Bug::stop: explorer::StopReason
+pub struct explorer::CampaignConfig
+pub explorer::CampaignConfig::candidate_cap: usize
+pub explorer::CampaignConfig::evidence_budget: core::option::Option<u64>
+pub explorer::CampaignConfig::ingress: explorer::Ingress
+pub explorer::CampaignConfig::replay_budget: u64
+pub explorer::CampaignConfig::retention: explorer::RetentionProfile
+impl core::default::Default for explorer::CampaignConfig
+pub fn explorer::CampaignConfig::default() -> Self
+pub struct explorer::CellAssignment
+pub explorer::CellAssignment::batch: revision_coordinator::ids::EvidenceBatchId
+pub explorer::CellAssignment::cell: explorer::CellKey
+pub explorer::CellAssignment::cut: explorer::EvidenceCut
+pub explorer::CellAssignment::env: explorer::Reproducer
+pub explorer::CellAssignment::quality: u64
+pub explorer::CellAssignment::rollout: explorer::RunId
 pub struct explorer::ChannelId(pub u16)
+pub struct explorer::CollectedBatch
+pub explorer::CollectedBatch::batch: revision_coordinator::ids::EvidenceBatchId
+pub explorer::CollectedBatch::covered_by: explorer::CoverageRef
+pub explorer::CollectedBatch::cut: explorer::EvidenceCut
+pub explorer::CollectedBatch::events: u64
+pub explorer::CollectedBatch::role: explorer::EvidenceRole
+pub explorer::CollectedBatch::rollout: explorer::RunId
+pub struct explorer::CompletedRunEvidence
+pub explorer::CompletedRunEvidence::cut: explorer::EvidenceCut
+pub explorer::CompletedRunEvidence::env: explorer::Reproducer
+pub explorer::CompletedRunEvidence::normalized: sdk_events::event::Normalized
+pub explorer::CompletedRunEvidence::role: explorer::EvidenceRole
+pub explorer::CompletedRunEvidence::rollout: explorer::RunId
+pub explorer::CompletedRunEvidence::terminal: explorer::StopReason
+impl explorer::CompletedRunEvidence
+pub fn explorer::CompletedRunEvidence::at(&self) -> explorer::Moment
+pub fn explorer::CompletedRunEvidence::canonical_bytes(&self) -> alloc::vec::Vec<u8>
+pub fn explorer::CompletedRunEvidence::observations_at(&self, u64) -> explorer::ObservationMap
+pub fn explorer::CompletedRunEvidence::observations_at_cut(&self) -> explorer::ObservationMap
 pub struct explorer::Composition
 pub explorer::Composition::archive: alloc::boxed::Box<dyn explorer::Archive>
 pub explorer::Composition::cells: alloc::boxed::Box<dyn explorer::CellFn>
@@ -159,6 +294,54 @@ impl explorer::DeclineTactic
 pub fn explorer::DeclineTactic::new() -> Self
 impl explorer::Tactic for explorer::DeclineTactic
 pub fn explorer::DeclineTactic::decide(&mut self, &explorer::DecisionPoint, &mut explorer::Prng) -> explorer::Answer
+pub struct explorer::DefaultObservationCells
+impl explorer::DefaultObservationCells
+pub fn explorer::DefaultObservationCells::new() -> Self
+impl explorer::ObservationCells for explorer::DefaultObservationCells
+pub fn explorer::DefaultObservationCells::key(&self, explorer::EvidenceCut, &explorer::ObservationMap) -> explorer::CellKey
+pub struct explorer::DifferentialCampaign<M: explorer::Machine>
+impl<M: explorer::Machine> explorer::DifferentialCampaign<M>
+pub fn explorer::DifferentialCampaign<M>::absences(&self) -> &explorer::AbsenceLedger
+pub fn explorer::DifferentialCampaign<M>::collect_batch(&mut self, revision_coordinator::ids::EvidenceBatchId) -> core::result::Result<explorer::CollectedBatch, explorer::CampaignError>
+pub fn explorer::DifferentialCampaign<M>::collect_expired(&mut self) -> core::result::Result<explorer::GcReport, explorer::CampaignError>
+pub fn explorer::DifferentialCampaign<M>::commit_checkpoint(&mut self) -> core::result::Result<explorer::RetentionCheckpoint, explorer::CampaignError>
+pub fn explorer::DifferentialCampaign<M>::compact_ledger(&mut self) -> core::result::Result<u64, explorer::CampaignError>
+pub fn explorer::DifferentialCampaign<M>::coordinator(&self) -> &revision_coordinator::coordinator::Coordinator
+pub fn explorer::DifferentialCampaign<M>::explore(&mut self, u64) -> core::result::Result<alloc::vec::Vec<explorer::StepReport>, explorer::CampaignError>
+pub fn explorer::DifferentialCampaign<M>::finalize_evidence(&mut self) -> core::result::Result<(), explorer::CampaignError>
+pub fn explorer::DifferentialCampaign<M>::frontier(&self) -> &explorer::Frontier
+pub fn explorer::DifferentialCampaign<M>::ledger(&self) -> &explorer::EvidenceLedger
+pub fn explorer::DifferentialCampaign<M>::new(M, alloc::boxed::Box<dyn explorer::EnvCodec>, alloc::boxed::Box<dyn explorer::Tactic>, alloc::boxed::Box<dyn explorer::Selector>, alloc::boxed::Box<dyn explorer::ObservationCells>, explorer::EvidenceLedger, revision_coordinator::coordinator::Coordinator, explorer::CampaignConfig, u64) -> core::result::Result<Self, explorer::CampaignError>
+pub fn explorer::DifferentialCampaign<M>::occupied(&self) -> usize
+pub fn explorer::DifferentialCampaign<M>::retention_report(&self) -> explorer::RetentionReport
+pub fn explorer::DifferentialCampaign<M>::set_stop_conditions(&mut self, explorer::StopConditions)
+pub fn explorer::DifferentialCampaign<M>::step(&mut self) -> core::result::Result<explorer::StepReport, explorer::CampaignError>
+pub fn explorer::DifferentialCampaign<M>::views(&self) -> &explorer::RetentionViews
+pub struct explorer::EvidenceCut
+pub explorer::EvidenceCut::at: explorer::Moment
+pub explorer::EvidenceCut::sdk_events: u64
+pub struct explorer::EvidenceLedger
+impl explorer::EvidenceLedger
+pub fn explorer::EvidenceLedger::append(&mut self, &explorer::CompletedRunEvidence) -> core::result::Result<revision_coordinator::ids::EvidenceBatchId, explorer::LedgerError>
+pub fn explorer::EvidenceLedger::batch_ids(&self) -> impl core::iter::traits::iterator::Iterator<Item = &revision_coordinator::ids::EvidenceBatchId>
+pub fn explorer::EvidenceLedger::budget(&self) -> core::option::Option<u64>
+pub fn explorer::EvidenceLedger::collect(&mut self, revision_coordinator::ids::EvidenceBatchId, &alloc::collections::btree::set::BTreeSet<[u8; 32]>) -> core::result::Result<explorer::CollectedBatch, explorer::RetentionError>
+pub fn explorer::EvidenceLedger::collected(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&revision_coordinator::ids::EvidenceBatchId, &explorer::CollectedBatch)>
+pub fn explorer::EvidenceLedger::commit_checkpoint(&mut self, &explorer::RetentionCheckpoint) -> core::result::Result<(), explorer::LedgerError>
+pub fn explorer::EvidenceLedger::compact(&mut self) -> core::result::Result<u64, explorer::LedgerError>
+pub fn explorer::EvidenceLedger::contains(&self, &revision_coordinator::ids::EvidenceBatchId) -> bool
+pub fn explorer::EvidenceLedger::finalize(&mut self) -> core::result::Result<(), explorer::LedgerError>
+pub fn explorer::EvidenceLedger::get(&self, &revision_coordinator::ids::EvidenceBatchId) -> core::option::Option<&explorer::CompletedRunEvidence>
+pub fn explorer::EvidenceLedger::is_empty(&self) -> bool
+pub fn explorer::EvidenceLedger::is_finalized(&self) -> bool
+pub fn explorer::EvidenceLedger::last_checkpoint(&self) -> core::option::Option<&explorer::RetentionCheckpoint>
+pub fn explorer::EvidenceLedger::len(&self) -> usize
+pub fn explorer::EvidenceLedger::live_references(&self) -> alloc::collections::btree::set::BTreeSet<[u8; 32]>
+pub fn explorer::EvidenceLedger::open(&std::path::Path) -> core::result::Result<Self, explorer::LedgerError>
+pub fn explorer::EvidenceLedger::path(&self) -> &std::path::Path
+pub fn explorer::EvidenceLedger::retain_live_payloads(&mut self) -> usize
+pub fn explorer::EvidenceLedger::set_budget(&mut self, core::option::Option<u64>)
+pub fn explorer::EvidenceLedger::trace_store(&self) -> &explorer::TraceStore
 pub struct explorer::ExemplarRef(pub u64)
 pub struct explorer::ExploreExploitSelector
 impl explorer::ExploreExploitSelector
@@ -211,6 +394,15 @@ pub fn explorer::FeatureSet::new() -> Self
 pub fn explorer::FeatureSet::singleton(explorer::Feature) -> Self
 impl core::iter::traits::collect::FromIterator<explorer::Feature> for explorer::FeatureSet
 pub fn explorer::FeatureSet::from_iter<I: core::iter::traits::collect::IntoIterator<Item = explorer::Feature>>(I) -> Self
+pub struct explorer::FinalizedSummary
+pub explorer::FinalizedSummary::counterexamples: u64
+pub explorer::FinalizedSummary::entries_admitted: u64
+pub explorer::FinalizedSummary::rollouts: u64
+pub explorer::FinalizedSummary::seals: u64
+pub struct explorer::FoldOutcome
+pub explorer::FoldOutcome::admitted: bool
+pub explorer::FoldOutcome::new_counterexamples: alloc::vec::Vec<explorer::OccurrenceCounterexample>
+pub explorer::FoldOutcome::retractions: alloc::vec::Vec<explorer::WorkingSetUpdate>
 pub struct explorer::Fork
 pub explorer::Fork::coverage: core::option::Option<explorer::CoverageView>
 pub explorer::Fork::env: explorer::Reproducer
@@ -233,6 +425,10 @@ pub struct explorer::FrontierEntry
 pub explorer::FrontierEntry::env: explorer::Reproducer
 pub explorer::FrontierEntry::exemplar: explorer::VirtualExemplar
 pub explorer::FrontierEntry::reward: explorer::Reward
+pub struct explorer::GcReport
+pub explorer::GcReport::collected: alloc::vec::Vec<revision_coordinator::ids::EvidenceBatchId>
+pub explorer::GcReport::reclaimed_payloads: usize
+pub explorer::GcReport::skipped: alloc::vec::Vec<(revision_coordinator::ids::EvidenceBatchId, explorer::GcSkipReason)>
 pub struct explorer::GenesisSelector
 impl explorer::GenesisSelector
 pub fn explorer::GenesisSelector::new() -> Self
@@ -248,7 +444,7 @@ pub fn explorer::IdentityCells::new() -> Self
 impl explorer::CellFn for explorer::IdentityCells
 pub fn explorer::IdentityCells::key(&self, explorer::Moment, &explorer::FeatureSet) -> explorer::CellKey
 pub struct explorer::Lineage
-pub explorer::Lineage::at: explorer::Moment
+pub explorer::Lineage::cut: explorer::EvidenceCut
 pub explorer::Lineage::parent: explorer::SnapId
 pub explorer::Lineage::suffix: explorer::Reproducer
 pub struct explorer::Materialization
@@ -271,7 +467,7 @@ pub fn explorer::Materializer::lineage_of(&self, explorer::SnapId) -> core::opti
 pub fn explorer::Materializer::materialize<M: explorer::Machine>(&mut self, &mut M, &dyn explorer::EnvCodec, &explorer::Frontier, explorer::ExemplarRef) -> core::result::Result<(explorer::SnapId, core::option::Option<explorer::Materialization>), explorer::MachineError>
 pub fn explorer::Materializer::modeled_cost(&self, &explorer::Frontier, explorer::ExemplarRef) -> core::option::Option<u64>
 pub fn explorer::Materializer::new(explorer::SnapId, explorer::Moment) -> Self
-pub fn explorer::Materializer::register(&mut self, explorer::ExemplarRef, explorer::SnapId, explorer::SnapId, explorer::Reproducer, explorer::Moment) -> core::option::Option<explorer::SnapId>
+pub fn explorer::Materializer::register(&mut self, explorer::ExemplarRef, explorer::SnapId, explorer::SnapId, explorer::Reproducer, explorer::EvidenceCut) -> core::option::Option<explorer::SnapId>
 pub fn explorer::Materializer::seal_of(&self, explorer::ExemplarRef) -> core::option::Option<explorer::SnapId>
 pub fn explorer::Materializer::sealable_at(&self, explorer::Moment) -> bool
 pub fn explorer::Materializer::sealed_count(&self) -> usize
@@ -280,6 +476,19 @@ pub fn explorer::Materializer::set_genesis_at(&mut self, explorer::Moment)
 pub fn explorer::Materializer::set_sealable(&mut self, alloc::boxed::Box<dyn core::ops::function::Fn(explorer::Moment) -> bool>)
 pub fn explorer::Materializer::sweep_dead<M: explorer::Machine>(&mut self, &mut M, &explorer::Frontier) -> core::result::Result<(), explorer::MachineError>
 pub struct explorer::Moment(pub u64)
+pub struct explorer::OccurrenceCounterexample
+pub explorer::OccurrenceCounterexample::at: explorer::Moment
+pub explorer::OccurrenceCounterexample::fingerprint: [u8; 32]
+pub explorer::OccurrenceCounterexample::kind: explorer::CounterexampleKind
+pub explorer::OccurrenceCounterexample::property: sdk_events::schema::ObservationId
+pub explorer::OccurrenceCounterexample::site: core::option::Option<sdk_events::event::SiteId>
+pub struct explorer::OccurrenceOracle
+impl explorer::OccurrenceOracle
+pub fn explorer::OccurrenceOracle::judge(&self, &explorer::CompletedRunEvidence) -> alloc::vec::Vec<explorer::OccurrenceCounterexample>
+pub fn explorer::OccurrenceOracle::new() -> Self
+pub struct explorer::PayloadRef
+pub explorer::PayloadRef::digest: [u8; 32]
+pub explorer::PayloadRef::format_version: u16
 pub struct explorer::Prng
 impl explorer::Prng
 pub fn explorer::Prng::new(u64) -> Self
@@ -292,8 +501,38 @@ pub explorer::Record::stream: explorer::StreamId
 pub struct explorer::Reproducer
 pub explorer::Reproducer::blob_version: u16
 pub explorer::Reproducer::bytes: alloc::vec::Vec<u8>
+pub struct explorer::RetentionCheckpoint
+pub explorer::RetentionCheckpoint::views: explorer::RetentionViews
+impl explorer::RetentionCheckpoint
+pub fn explorer::RetentionCheckpoint::canonical_bytes(&self) -> alloc::vec::Vec<u8>
+pub fn explorer::RetentionCheckpoint::covers(&self, u64) -> bool
+pub struct explorer::RetentionReport
+pub explorer::RetentionReport::batches: alloc::collections::btree::map::BTreeMap<revision_coordinator::ids::EvidenceBatchId, explorer::BatchAvailability>
+pub explorer::RetentionReport::committed_assignments: u64
+pub explorer::RetentionReport::derivations: explorer::FinalizedSummary
+pub explorer::RetentionReport::finalized_end: bool
+pub explorer::RetentionReport::profile: explorer::RetentionProfile
+impl explorer::RetentionReport
+pub fn explorer::RetentionReport::canonical_bytes(&self) -> alloc::vec::Vec<u8>
+pub struct explorer::RetentionViews
+pub explorer::RetentionViews::absences: explorer::AbsenceLedger
+pub explorer::RetentionViews::assignments: alloc::vec::Vec<explorer::CellAssignment>
+pub explorer::RetentionViews::finalized: explorer::FinalizedSummary
+pub explorer::RetentionViews::frontier_issue: u64
+pub explorer::RetentionViews::profile: explorer::RetentionProfile
+pub explorer::RetentionViews::seen_counterexamples: alloc::collections::btree::set::BTreeSet<[u8; 32]>
+pub explorer::RetentionViews::working: explorer::WorkingSet
+impl explorer::RetentionViews
+pub fn explorer::RetentionViews::assignment(&self, &explorer::CellKey) -> core::option::Option<&explorer::CellAssignment>
+pub fn explorer::RetentionViews::canonical_bytes(&self) -> alloc::vec::Vec<u8>
+pub fn explorer::RetentionViews::fold_batch(&mut self, &dyn explorer::ObservationCells, revision_coordinator::ids::EvidenceBatchId, &explorer::CompletedRunEvidence) -> explorer::FoldOutcome
+pub fn explorer::RetentionViews::new(explorer::RetentionProfile) -> Self
+pub fn explorer::RetentionViews::rebuild(explorer::RetentionProfile, &dyn explorer::ObservationCells, &explorer::EvidenceLedger) -> core::result::Result<Self, explorer::RetentionError>
 pub struct explorer::Reward
 pub explorer::Reward::new_cells: u64
+pub struct explorer::RunId
+pub explorer::RunId::issue: u64
+pub explorer::RunId::parent: core::option::Option<u64>
 pub struct explorer::RunOutcome
 pub explorer::RunOutcome::env: explorer::Reproducer
 pub explorer::RunOutcome::stop: explorer::StopReason
@@ -307,6 +546,7 @@ pub struct explorer::SnapId(pub u64)
 pub struct explorer::SocketMachine<S: std::io::Read + std::io::Write>
 impl<S: std::io::Read + std::io::Write> explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::connect(S, environment::recorded::EnvSpec) -> core::result::Result<Self, explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::snapshot_cut(&self, explorer::SnapId) -> core::option::Option<explorer::EvidenceCut>
 impl<S: std::io::Read + std::io::Write> explorer::Machine for explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::MachineError>
@@ -317,12 +557,18 @@ pub fn explorer::adapter::SocketMachine<S>::recorded_env(&self) -> core::result:
 pub fn explorer::adapter::SocketMachine<S>::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::EvidenceCut), explorer::MachineError>
 pub struct explorer::SpecEnvCodec
 impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
 pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Reproducer, &explorer::Reproducer) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Reproducer, u64) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Reproducer
+pub struct explorer::StepReport
+pub explorer::StepReport::admitted: alloc::vec::Vec<explorer::ExemplarRef>
+pub explorer::StepReport::candidates: usize
+pub explorer::StepReport::counterexamples: alloc::vec::Vec<explorer::OccurrenceCounterexample>
+pub explorer::StepReport::explored: bool
+pub explorer::StepReport::rollout_revision: revision_coordinator::ids::Revision
 pub struct explorer::StopConditions
 pub explorer::StopConditions::deadline: core::option::Option<explorer::Moment>
 pub explorer::StopConditions::on: explorer::StopMask
@@ -337,11 +583,34 @@ impl explorer::TerminalOracle
 pub fn explorer::TerminalOracle::new() -> Self
 impl explorer::Oracle for explorer::TerminalOracle
 pub fn explorer::TerminalOracle::judge(&self, &explorer::RunTrace) -> core::option::Option<explorer::Bug>
+pub struct explorer::TraceStore
+impl explorer::TraceStore
+pub fn explorer::TraceStore::contains(&self, &explorer::PayloadRef) -> bool
+pub fn explorer::TraceStore::get(&self, &explorer::PayloadRef) -> core::option::Option<&[u8]>
+pub fn explorer::TraceStore::is_empty(&self) -> bool
+pub fn explorer::TraceStore::len(&self) -> usize
+pub fn explorer::TraceStore::new() -> Self
+pub fn explorer::TraceStore::put(&mut self, &[u8], u16) -> explorer::PayloadRef
+pub fn explorer::TraceStore::retain(&mut self, &alloc::collections::btree::set::BTreeSet<[u8; 32]>) -> usize
 pub struct explorer::VirtualExemplar
-pub explorer::VirtualExemplar::at: explorer::Moment
+pub explorer::VirtualExemplar::cut: explorer::EvidenceCut
 pub explorer::VirtualExemplar::parent: explorer::SnapId
 pub explorer::VirtualExemplar::seed: u64
 pub explorer::VirtualExemplar::suffix: explorer::Reproducer
+pub struct explorer::WorkingSet
+impl explorer::WorkingSet
+pub fn explorer::WorkingSet::admit(&mut self, u64, revision_coordinator::ids::EvidenceBatchId) -> alloc::vec::Vec<explorer::WorkingSetUpdate>
+pub fn explorer::WorkingSet::contains(&self, &revision_coordinator::ids::EvidenceBatchId) -> bool
+pub fn explorer::WorkingSet::is_empty(&self) -> bool
+pub fn explorer::WorkingSet::len(&self) -> usize
+pub fn explorer::WorkingSet::members(&self) -> impl core::iter::traits::iterator::Iterator<Item = &revision_coordinator::ids::EvidenceBatchId>
+pub fn explorer::WorkingSet::new(explorer::RetentionProfile) -> Self
+pub fn explorer::WorkingSet::profile(&self) -> explorer::RetentionProfile
+pub fn explorer::WorkingSet::updates(&self) -> &[explorer::WorkingSetUpdate]
+pub struct explorer::WorkingSetUpdate
+pub explorer::WorkingSetUpdate::admitted: bool
+pub explorer::WorkingSetUpdate::batch: revision_coordinator::ids::EvidenceBatchId
+pub explorer::WorkingSetUpdate::issue: u64
 pub const explorer::ADAPTER_BLOB_VERSION: u16
 pub const explorer::COVERAGE_CHANNEL: explorer::ChannelId
 pub trait explorer::Archive
@@ -376,7 +645,7 @@ pub fn explorer::Machine::recorded_env(&self) -> core::result::Result<explorer::
 pub fn explorer::Machine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::Machine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
 pub fn explorer::Machine::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::MachineError>
-pub fn explorer::Machine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
+pub fn explorer::Machine::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::EvidenceCut), explorer::MachineError>
 impl<S: std::io::Read + std::io::Write> explorer::Machine for explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::MachineError>
@@ -387,7 +656,7 @@ pub fn explorer::adapter::SocketMachine<S>::recorded_env(&self) -> core::result:
 pub fn explorer::adapter::SocketMachine<S>::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::EvidenceCut), explorer::MachineError>
 pub trait explorer::MachineFactory
 pub type explorer::MachineFactory::M: explorer::Machine
 pub fn explorer::MachineFactory::spawn(&self) -> Self::M
@@ -395,6 +664,10 @@ pub trait explorer::Matchable
 pub fn explorer::Matchable::attr(&self, &str) -> core::option::Option<explorer::Value>
 pub fn explorer::Matchable::kind(&self) -> &str
 pub fn explorer::Matchable::moment(&self) -> explorer::Moment
+pub trait explorer::ObservationCells
+pub fn explorer::ObservationCells::key(&self, explorer::EvidenceCut, &explorer::ObservationMap) -> explorer::CellKey
+impl explorer::ObservationCells for explorer::DefaultObservationCells
+pub fn explorer::DefaultObservationCells::key(&self, explorer::EvidenceCut, &explorer::ObservationMap) -> explorer::CellKey
 pub trait explorer::Oracle
 pub fn explorer::Oracle::judge(&self, &explorer::RunTrace) -> core::option::Option<explorer::Bug>
 impl explorer::Oracle for explorer::TerminalOracle
@@ -415,4 +688,6 @@ pub fn explorer::Tactic::decide(&mut self, &explorer::DecisionPoint, &mut explor
 impl explorer::Tactic for explorer::DeclineTactic
 pub fn explorer::DeclineTactic::decide(&mut self, &explorer::DecisionPoint, &mut explorer::Prng) -> explorer::Answer
 pub fn explorer::client_caps() -> control_proto::types::Caps
+pub fn explorer::reduce_at_cut(&[sdk_events::event::SdkEvent], &sdk_events::schema::SdkSchema, u64) -> explorer::ObservationMap
 pub type explorer::CellKey = alloc::vec::Vec<u8>
+pub type explorer::ObservationMap = alloc::collections::btree::map::BTreeMap<sdk_events::schema::ObservationId, explorer::ReducedValue>

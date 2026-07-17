@@ -158,14 +158,14 @@ fn sequential_entropy_fold_is_bit_identical_reseed_markers_flip_the_task68_pin()
 
         // The base.
         let v0 = probe_vtime(&mut m).expect("probe");
-        let g = m.snapshot().expect("base seal");
+        let g = m.snapshot().expect("base seal").0;
 
         // Hop 1: branch → run → seal (retrying past a staged-RNG boundary).
         m.branch(g, &seed_env).expect("branch hop 1");
         let mut a1 = run_to(&mut m, v0 + 400);
         let s1 = loop {
             match m.snapshot() {
-                Ok(s) => break s,
+                Ok((s, _cut)) => break s,
                 Err(explorer::MachineError::NotQuiescent) => a1 = run_to(&mut m, a1 + 100),
                 Err(e) => panic!("hop-1 seal: {e}"),
             }
@@ -365,10 +365,10 @@ fn host_fault_below_a_parent_rooted_fold_applies_at_the_absolute_moment() {
 
         // Base + one seed-only hop (the parent the fold will collapse onto).
         let v0 = probe_vtime(&mut m).expect("probe");
-        let g = m.snapshot().expect("base seal");
+        let g = m.snapshot().expect("base seal").0;
         m.branch(g, &codec.seeded(SEED)).expect("branch hop 1");
         let a1 = run_to(&mut m, v0 + 400);
-        let s1 = m.snapshot().expect("hop-1 seal (draw-free boundary)");
+        let s1 = m.snapshot().expect("hop-1 seal (draw-free boundary)").0;
         let suffix1 = m.recorded_env().expect("suffix 1");
 
         // The fault env below S1, in the BLOB frame: a memory upset at
@@ -481,7 +481,7 @@ fn behind_snapshot_host_fault_is_rejected_on_the_wire() {
         assert!(matches!(hello, Ok(control_proto::Reply::Hello(_))));
         // Seal the live VM (post-sync boundary, vns ~100): the branch floor.
         let base = match raw_call(&mut stream, 2, &control_proto::Request::Snapshot) {
-            Ok(control_proto::Reply::SnapId(id)) => id,
+            Ok(control_proto::Reply::Snapshot { id, .. }) => id,
             other => panic!("snapshot: {other:?}"),
         };
         let env_at = |at: u64| {

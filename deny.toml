@@ -15,6 +15,19 @@
 # RustSec advisory DB: fail on known vulnerabilities and unmaintained crates.
 version = 2
 yanked = "deny"
+# Both ignores are *unmaintained* notices (not vulnerabilities), pulled only
+# through `timely` 0.30 / `differential-dataflow` 0.24 — the observation-plane
+# runtime ruled by docs/DISSONANCE-STRATEGY.md and proven by the ratified
+# tasks/120 spike (whose own CI deny step is licenses-scoped and never hit
+# them; tasks/121 brought the pair into the root workspace graph). No upgrade
+# exists: every current timely/DD release depends on both. Re-evaluate at any
+# timely/DD version bump.
+ignore = [
+    # bincode 1.3.3 (timely's serialization): unmaintained upstream.
+    "RUSTSEC-2025-0141",
+    # paste 1.0.15 (via columnation): archived proc-macro, compile-time only.
+    "RUSTSEC-2024-0436",
+]
 
 [bans]
 # Wildcard version requirements in our own crates are a hard error.

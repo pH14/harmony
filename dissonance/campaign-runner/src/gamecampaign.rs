@@ -19,8 +19,8 @@
 //! is task 84's deliverable, reused when it lands (not rebuilt here).
 //!
 //! Cells are keyed **host-side** (R-L2): the guest emits raw state registers;
-//! [`sdk_events::LinkSensor`] turns them into `(Moment, Feature)` on
-//! `LINK_STATE_CHANNEL`; [`smb_cells`] folds those features into the
+//! `sdk-events` decodes the SDK capture into ordered [`SdkEvent`]s, and
+//! [`smb_cells`] folds their `Payload::State` firings into the
 //! `(game mode, world, level, x-bucket)` tuple key — the analog of
 //! Antithesis's discretized `(x, y)`. Retuning the key needs no guest rebuild
 //! (the sanctioned first response to a FAIL).
@@ -33,10 +33,10 @@ use std::collections::BTreeSet;
 
 use benchmark::exploration::{DiscoveryEvent, ExplorationConfig, ExplorationLog};
 use explorer::{
-    EnvCodec, Feature, Machine, MachineError, Moment, Prng, Reproducer, RunTrace, Sensor,
-    StopConditions, StopMask, StopReason,
+    EnvCodec, Machine, MachineError, Moment, Prng, Reproducer, RunTrace, StopConditions, StopMask,
+    StopReason,
 };
-use sdk_events::{LINK_STATE_CHANNEL, LinkSensor};
+use sdk_events::{NS_STATE, Normalized, ObservationId, Payload, SdkEvent};
 
 /// Local mirrors of the play-agent's state-register catalog
 /// (`guest/play-agent/src/regs.rs` — the guest crates sit outside this
@@ -446,22 +446,27 @@ pub fn smb_cell_key(mode: u64, world: u64, level: u64, x_bucket: u64) -> u64 {
         | (x_bucket & 0xFF_FFFF_FFFF)
 }
 
-/// Fold a run's `LINK_STATE_CHANNEL` features into the branch's cell set and
-/// depth: unpack each feature back into `(reg, value)` (the inverse of
-/// `LinkSensor`'s `pack_state`), track the last-seen value per tuple register,
-/// mint one cell key at each `X_BUCKET` observation (the tuple's final
-/// register each window), and take the max `DEPTH` value. Returns the branch's
-/// **distinct** cell keys (sorted) and its depth.
-pub fn smb_cells(features: &[(Moment, Feature)]) -> (Vec<u64>, u64) {
+/// Fold a run's `NS_STATE` SDK firings into the branch's cell set and depth:
+/// read each `Payload::State` firing's `(reg, value)` off its `Point` identity
+/// (`reg = local`), track the last-seen value per tuple register, mint one cell
+/// key at each `X_BUCKET` observation (the tuple's final register each window),
+/// and take the max `DEPTH` value. Returns the branch's **distinct** cell keys
+/// (sorted) and its depth.
+pub fn smb_cells(events: &[SdkEvent]) -> (Vec<u64>, u64) {
     let mut cells = BTreeSet::new();
     let mut depth = 0u64;
     let (mut mode, mut world, mut level) = (0u64, 0u64, 0u64);
-    for (_, f) in features {
-        if f.channel != LINK_STATE_CHANNEL {
+    for ev in events {
+        let Payload::State { value, .. } = &ev.payload else {
+            continue;
+        };
+        let ObservationId::Point { namespace, local } = &ev.id else {
+            continue;
+        };
+        if *namespace != NS_STATE {
             continue;
         }
-        let reg = f.id.0 >> 48;
-        let value = f.id.0 & 0x0000_FFFF_FFFF_FFFF;
+        let (reg, value) = (*local as u64, *value);
         match reg {
             reg::GAME_MODE => mode = value,
             reg::WORLD => world = value,
@@ -500,14 +505,20 @@ pub fn smb_cells(features: &[(Moment, Feature)]) -> (Vec<u64>, u64) {
 /// agent went round the loop again, which is what "a frame ran" means. (The
 /// frame clock is a `u32` the agent wraps, so demanding monotonicity would
 /// eventually call a real frame no frame.)
-pub fn smb_completed_frames(features: &[(Moment, Feature)]) -> u64 {
+pub fn smb_completed_frames(events: &[SdkEvent]) -> u64 {
     let mut completed = 0u64;
     let mut last: Option<u64> = None;
-    for (_, f) in features {
-        if f.channel != LINK_STATE_CHANNEL || f.id.0 >> 48 != reg::FRAME {
+    for ev in events {
+        let Payload::State { value, .. } = &ev.payload else {
+            continue;
+        };
+        let ObservationId::Point { namespace, local } = &ev.id else {
+            continue;
+        };
+        if *namespace != NS_STATE || *local as u64 != reg::FRAME {
             continue;
         }
-        let value = f.id.0 & 0x0000_FFFF_FFFF_FFFF;
+        let value = *value;
         if last.is_some_and(|prev| prev != value) {
             completed += 1;
         }
@@ -548,7 +559,7 @@ pub fn run_game_campaign<M: Machine>(
     // 103 finding 2): a published-but-unusable window is a loud refusal here,
     // on both paths, never a silent fall back to "no billboard".
     let setup_events = drain_events(machine)?;
-    let billboard = billboard_window_of(&setup_events, cfg.guest_ram_len)?;
+    let billboard = billboard_window_of(&setup_events.events, cfg.guest_ram_len)?;
     // Round-9 P1: on the box (`require_snapshot_point`) the billboard is
     // M0's unconditional film seam — a setup prefix that never published a
     // valid `(gpa, len)` window means film has no input, so the campaign
@@ -569,7 +580,6 @@ pub fn run_game_campaign<M: Machine>(
         on: StopMask::NONE,
     };
 
-    let sensor = LinkSensor::new();
     let mut prng = Prng::new(cfg.campaign_seed);
     let mut seen: BTreeSet<u64> = BTreeSet::new();
     let mut frontier: Vec<Exemplar> = Vec::new();
@@ -630,20 +640,20 @@ pub fn run_game_campaign<M: Machine>(
         // coords are all-zero, so same-seed runs under different deadlines
         // would collide on TraceId and the sidecar could not reconstruct the
         // actual timeline; the R1 discipline).
+        let recorded_env = machine.recorded_env()?;
+        let normalized = drain_events(machine)?;
+        let (touched, depth) = smb_cells(&normalized.events);
+        let completed_frames = smb_completed_frames(&normalized.events);
         let trace = RunTrace {
             terminal: stop,
-            env: machine.recorded_env()?,
+            env: recorded_env,
             coverage: None,
-            events: drain_events(machine)?,
+            events: crate::sdk_compat::guest_events_of(&normalized),
             records: Vec::new(),
         };
-        let features = sensor.observe(&trace);
-        let (touched, depth) = smb_cells(&features);
         work.branches += 1;
         work.min_vtime_span = work.min_vtime_span.min(vtime_span);
-        work.min_completed_frames = work
-            .min_completed_frames
-            .min(smb_completed_frames(&features));
+        work.min_completed_frames = work.min_completed_frames.min(completed_frames);
 
         // SelectorV1's thin novelty archive: admit an exemplar iff the branch
         // claimed a fresh cell.
@@ -777,16 +787,15 @@ pub fn determinism_verdict(
     })
 }
 
-/// Drain + decode the machine's SDK event capture (the task-73 seam).
-fn drain_events<M: Machine>(
-    machine: &mut M,
-) -> Result<Vec<(Moment, explorer::GuestEvent)>, MachineError> {
-    let raw: Vec<(Moment, u32, Vec<u8>)> = machine
-        .sdk_events()?
-        .into_iter()
-        .map(|(m, id, b)| (Moment(m), id, b))
-        .collect();
-    Ok(sdk_events::decode_events(&raw))
+/// Drain + decode the machine's SDK event capture into normalized evidence (the
+/// task-73 seam). The game toy's stream is clean, so a decode error can only
+/// mean a corrupt capture reached us over the control seam — surface it as the
+/// transport-class control error it is (there is precedent for treating a
+/// malformed capture as a control failure), never a panic.
+fn drain_events<M: Machine>(machine: &mut M) -> Result<Normalized, MachineError> {
+    let raw = machine.sdk_events()?;
+    crate::sdk_compat::decode_sdk(&raw)
+        .map_err(|e| MachineError::Transport(format!("SDK capture failed to decode: {e}")))
 }
 
 /// Extract the booted image's ROM sha256 from its boot serial: the last
@@ -842,20 +851,21 @@ pub fn serial_rom_sha256(serial: &[u8]) -> Option<String> {
 /// *presence*, so a guest that published `len = 0` (or a wild gpa) slipped
 /// through it into a campaign whose film seam reads nothing.
 fn billboard_window_of(
-    events: &[(Moment, explorer::GuestEvent)],
+    events: &[SdkEvent],
     guest_ram_len: u64,
 ) -> Result<Option<(u64, u64)>, GameCampaignError> {
     let (mut gpa, mut len) = (None, None);
-    for (_, ev) in events {
-        if ev.kind != sdk_events::KIND_STATE {
-            continue;
-        }
-        let (Some(explorer::Value::UInt(reg)), Some(explorer::Value::UInt(value))) =
-            (ev.attrs.get("reg"), ev.attrs.get("value"))
-        else {
+    for ev in events {
+        let Payload::State { value, .. } = &ev.payload else {
             continue;
         };
-        match *reg {
+        let ObservationId::Point { namespace, local } = &ev.id else {
+            continue;
+        };
+        if *namespace != NS_STATE {
+            continue;
+        }
+        match *local as u64 {
             reg::BILLBOARD_GPA => gpa = Some(*value),
             reg::BILLBOARD_LEN => len = Some(*value),
             _ => {}
@@ -929,7 +939,7 @@ fn seal_base<M: Machine>(
     if let StopReason::SnapshotPoint { vtime } = stop {
         vt = vtime.0;
         match machine.snapshot() {
-            Ok(snap) => return Ok((snap, vt)),
+            Ok((snap, _cut)) => return Ok((snap, vt)),
             // In box mode the setup boundary must also SEAL there — running
             // past it into the frame loop would move the base off the setup
             // prefix. Only the toy path may fall through.
@@ -949,7 +959,7 @@ fn seal_base<M: Machine>(
     loop {
         attempts += 1;
         match machine.snapshot() {
-            Ok(snap) => return Ok((snap, vt)),
+            Ok((snap, _cut)) => return Ok((snap, vt)),
             Err(MachineError::NotQuiescent) => {
                 if attempts >= cfg.snapshot_max_attempts {
                     return Err(MachineError::NotQuiescent.into());
@@ -988,8 +998,8 @@ fn hex(h: &[u8; 32]) -> String {
 /// pure function of its branch env's seed. Rightward progress with resets and
 /// occasional level-ups, so campaigns produce varied cells and depths; the
 /// portable tests drive [`run_game_campaign`] against it end-to-end (through
-/// the real wire encode → `sdk_events::decode_events` → `LinkSensor` → [`smb_cells`]
-/// path, so a register or layout drift breaks a test, not the box).
+/// the real wire encode → `sdk_events::decode_binary` → [`smb_cells`] path, so
+/// a register or layout drift breaks a test, not the box).
 pub struct GameToyMachine {
     current: Reproducer,
     vtime: u64,
@@ -1068,7 +1078,7 @@ impl GameToyMachine {
 
 /// Encode one state event the way the guest SDK wire does (`[op u8][value u64
 /// LE]` in `NS_STATE` = namespace 2) so the toy exercises the REAL
-/// `sdk_events::decode_events` path.
+/// `sdk_events::decode_binary` path.
 fn state_event(reg: u64, op: u8, value: u64) -> (u32, Vec<u8>) {
     let id = (2u32 << 24) | (reg as u32);
     let mut payload = Vec::with_capacity(9);
@@ -1109,11 +1119,19 @@ impl Machine for GameToyMachine {
         })
     }
 
-    fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+    fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
         let id = self.next_snap;
         self.next_snap += 1;
         self.snaps.insert(id, (self.vtime, self.current.clone()));
-        Ok(explorer::SnapId(id))
+        // The toy stamps its cut from the same state its seal records (task
+        // 127); it models no SDK capture, so the prefix is 0.
+        Ok((
+            explorer::SnapId(id),
+            explorer::EvidenceCut {
+                at: explorer::Moment(self.vtime),
+                sdk_events: 0,
+            },
+        ))
     }
 
     fn drop_snap(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
@@ -1260,10 +1278,10 @@ mod tests {
                 vtime: Moment(self.vtime),
             })
         }
-        fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+        fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
             let id = self.next_snap;
             self.next_snap += 1;
-            Ok(explorer::SnapId(id))
+            Ok((explorer::SnapId(id), explorer::EvidenceCut::default()))
         }
         fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
             Ok(())
@@ -1480,36 +1498,25 @@ mod tests {
     /// the unit-level pin of the round-2 finding.
     #[test]
     fn completed_frames_counts_transitions_not_markers() {
-        use explorer::FeatureId;
-        let frame = |value: u64| {
-            (
-                Moment(value + 1),
-                Feature {
-                    channel: LINK_STATE_CHANNEL,
-                    id: FeatureId((reg::FRAME << 48) | value),
-                },
-            )
+        // Each fixture is a run of `REG_FRAME` state firings through the REAL
+        // wire decode, exactly the shape a rollout's capture produces.
+        let frames = |vals: &[u64]| -> Vec<SdkEvent> {
+            decoded_state(&vals.iter().map(|v| (reg::FRAME, *v)).collect::<Vec<_>>())
         };
         // No markers at all, and a lone marker, are both zero completed frames.
-        assert_eq!(smb_completed_frames(&[]), 0);
-        assert_eq!(smb_completed_frames(&[frame(0)]), 0);
+        assert_eq!(smb_completed_frames(&frames(&[])), 0);
+        assert_eq!(smb_completed_frames(&frames(&[0])), 0);
         // The second marker proves the first frame's body ran.
-        assert_eq!(smb_completed_frames(&[frame(0), frame(1)]), 1);
-        assert_eq!(smb_completed_frames(&[frame(0), frame(1), frame(2)]), 2);
+        assert_eq!(smb_completed_frames(&frames(&[0, 1])), 1);
+        assert_eq!(smb_completed_frames(&frames(&[0, 1, 2])), 2);
         // A repeated value is not a new frame (no transition, no work).
-        assert_eq!(smb_completed_frames(&[frame(7), frame(7), frame(7)]), 0);
+        assert_eq!(smb_completed_frames(&frames(&[7, 7, 7])), 0);
         // The frame clock is a u32 the agent wraps: a wrap is still a frame, so
         // the count is on CHANGE, not on increase.
-        assert_eq!(smb_completed_frames(&[frame(u32::MAX as u64), frame(0)]), 1);
+        assert_eq!(smb_completed_frames(&frames(&[u32::MAX as u64, 0])), 1);
         // Non-FRAME registers never count, whatever their values do.
-        let other = (
-            Moment(9),
-            Feature {
-                channel: LINK_STATE_CHANNEL,
-                id: FeatureId((reg::X_BUCKET << 48) | 3),
-            },
-        );
-        assert_eq!(smb_completed_frames(&[other, other]), 0);
+        let other = decoded_state(&[(reg::X_BUCKET, 3), (reg::X_BUCKET, 3)]);
+        assert_eq!(smb_completed_frames(&other), 0);
     }
 
     /// Task 103 finding 2 — **a malformed billboard must not slip past the
@@ -1608,16 +1615,18 @@ mod tests {
 
     /// Decode `(reg, value)` state writes through the REAL wire path, so these
     /// fixtures are the same shape a guest's setup prefix produces.
-    fn decoded_state(regs: &[(u64, u64)]) -> Vec<(Moment, explorer::GuestEvent)> {
-        let raw: Vec<(Moment, u32, Vec<u8>)> = regs
+    fn decoded_state(regs: &[(u64, u64)]) -> Vec<SdkEvent> {
+        let raw: Vec<(u64, u32, Vec<u8>)> = regs
             .iter()
             .enumerate()
             .map(|(i, (reg, value))| {
                 let (id, payload) = state_event(*reg, 0, *value);
-                (Moment(i as u64 + 1), id, payload)
+                (i as u64 + 1, id, payload)
             })
             .collect();
-        sdk_events::decode_events(&raw)
+        crate::sdk_compat::decode_sdk(&raw)
+            .expect("the toy state stream decodes")
+            .events
     }
 
     /// A half-published window (one register, not both) is a broken agent, not
@@ -1780,10 +1789,12 @@ mod tests {
                     info: vec![1],
                 })
             }
-            fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+            fn snapshot(
+                &mut self,
+            ) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
                 let id = self.next_snap;
                 self.next_snap += 1;
-                Ok(explorer::SnapId(id))
+                Ok((explorer::SnapId(id), explorer::EvidenceCut::default()))
             }
             fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
                 Ok(())
@@ -1876,10 +1887,12 @@ mod tests {
                     vtime: explorer::Moment(self.vtime),
                 })
             }
-            fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+            fn snapshot(
+                &mut self,
+            ) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
                 let id = self.next_snap;
                 self.next_snap += 1;
-                Ok(explorer::SnapId(id))
+                Ok((explorer::SnapId(id), explorer::EvidenceCut::default()))
             }
             fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
                 Ok(())
@@ -1945,7 +1958,9 @@ mod tests {
             ) -> Result<StopReason, MachineError> {
                 self.inner.run(until, resolve)
             }
-            fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+            fn snapshot(
+                &mut self,
+            ) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
                 self.inner.snapshot()
             }
             fn drop_snap(&mut self, s: explorer::SnapId) -> Result<(), MachineError> {
@@ -2102,10 +2117,10 @@ mod tests {
                 info: vec![0xDE, 0xAD],
             })
         }
-        fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+        fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
             let id = self.next_snap;
             self.next_snap += 1;
-            Ok(explorer::SnapId(id))
+            Ok((explorer::SnapId(id), explorer::EvidenceCut::default()))
         }
         fn drop_snap(&mut self, _snap: explorer::SnapId) -> Result<(), MachineError> {
             Ok(())
@@ -2242,21 +2257,17 @@ mod tests {
     /// cells) and takes the max depth.
     #[test]
     fn smb_cells_ignores_frame_and_maxes_depth() {
-        use explorer::FeatureId;
-        let f = |reg: u64, value: u64| Feature {
-            channel: LINK_STATE_CHANNEL,
-            id: FeatureId((reg << 48) | value),
-        };
-        let feats = vec![
-            (Moment(1), f(reg::GAME_MODE, 1)),
-            (Moment(2), f(reg::WORLD, 0)),
-            (Moment(3), f(reg::LEVEL, 2)),
-            (Moment(4), f(reg::FRAME, 999)),
-            (Moment(5), f(reg::X_BUCKET, 3)),
-            (Moment(6), f(reg::DEPTH, 2)),
-            (Moment(7), f(reg::DEPTH, 5)),
-            (Moment(8), f(reg::DEPTH, 4)),
-        ];
+        // The tuple/frame/depth firings through the REAL wire decode.
+        let feats = decoded_state(&[
+            (reg::GAME_MODE, 1),
+            (reg::WORLD, 0),
+            (reg::LEVEL, 2),
+            (reg::FRAME, 999),
+            (reg::X_BUCKET, 3),
+            (reg::DEPTH, 2),
+            (reg::DEPTH, 5),
+            (reg::DEPTH, 4),
+        ]);
         let (cells, depth) = smb_cells(&feats);
         assert_eq!(cells, vec![smb_cell_key(1, 0, 2, 3)]);
         assert_eq!(depth, 5);

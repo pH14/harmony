@@ -10,6 +10,7 @@
 //! mutates *valid* [`Reproducer`] blobs without ever parsing task 24's structure.
 
 use crate::error::{EnvCodecError, MachineError};
+use crate::spine::EvidenceCut;
 use crate::{Answer, Reproducer, SnapId, StopConditions, StopReason};
 
 /// The control-plane driver the explorer treats as a black box. Every method is
@@ -42,9 +43,14 @@ pub trait Machine {
     ) -> Result<StopReason, MachineError>;
 
     /// Capture state at the current (quiescent) point and return a fresh
-    /// [`SnapId`]. Errors with [`MachineError::NotQuiescent`] off a quiescent
-    /// point.
-    fn snapshot(&mut self) -> Result<SnapId, MachineError>;
+    /// [`SnapId`] **bound to its server-stamped [`EvidenceCut`]** (task 127):
+    /// the synchronized seal `Moment` and the included SDK-event count, both
+    /// captured from the same stopped state the seal captures. The stamp is
+    /// the sole authority for the cut — the caller never reconstructs it with
+    /// a second read (`sdk_events()` remains a pure observation, not the
+    /// boundary). Errors with [`MachineError::NotQuiescent`] off a quiescent
+    /// point; a failed seal returns neither a handle nor a cut.
+    fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError>;
 
     /// Release `snap` (pool GC). Using a dropped handle afterward is a
     /// [`MachineError::UnknownSnapshot`].

@@ -73,7 +73,7 @@ fn every_verb_round_trips_over_the_socket() {
     let (served, ()) = run_session(&mut server, |stream| {
         let mut m = SocketMachine::connect(stream, boot_env()).expect("hello negotiates");
         // snapshot → a handle.
-        let base = m.snapshot().expect("snapshot");
+        let base = m.snapshot().expect("snapshot").0;
         let base_hash = m.hash().expect("hash");
         // branch → run → hash.
         m.branch(base, &SpecEnvCodec.seeded(0x1234))
@@ -122,7 +122,7 @@ fn console_capture_round_trips_over_the_socket() {
     let mut server = mock::server(mock::recording_fork_script()).unwrap();
     let (served, ()) = run_session(&mut server, |stream| {
         let mut m = SocketMachine::connect(stream, boot_env()).expect("hello negotiates");
-        let base = m.snapshot().expect("snapshot");
+        let base = m.snapshot().expect("snapshot").0;
 
         // Branch + run: the fork guest emits "MOCK-READY\n" to COM1.
         m.branch(base, &SpecEnvCodec.seeded(0x1234))
@@ -295,7 +295,7 @@ fn replay_reproduces_the_pre_snapshot_hash_after_interleaved_verbs() {
     let mut server = mock::server(default_fork_script()).unwrap();
     let (served, ()) = run_session(&mut server, |stream| {
         let mut m = SocketMachine::connect(stream, boot_env()).unwrap();
-        let base = m.snapshot().unwrap();
+        let base = m.snapshot().unwrap().0;
         let base_hash = m.hash().unwrap();
         // Arbitrary interleaving: several branches at different seeds, runs,
         // hashes, a nested snapshot + drop — none of which must perturb the
@@ -428,22 +428,24 @@ fn sdk_events_ride_the_wire_into_a_nonempty_runtrace() {
         "the assert-hit event id survived the round-trip"
     );
 
-    // ...and decodes into a NON-EMPTY RunTrace.events (the link tier, live).
-    let remapped: Vec<(explorer::Moment, u32, Vec<u8>)> = raw
-        .into_iter()
-        .map(|(m, id, b)| (explorer::Moment(m), id, b))
-        .collect();
-    let trace = RunTrace {
+    // ...and decodes into a NON-EMPTY normalized SDK stream (the link tier, live).
+    let normalized =
+        campaign_runner::sdk_compat::decode_sdk(&raw).expect("the captured SDK stream decodes");
+    assert!(
+        !normalized.events.is_empty(),
+        "a non-empty normalized SDK stream assembled over the real wire (link tier is no longer dead)"
+    );
+    // The production path (record.rs / campaign.rs) folds the normalized stream
+    // into RunTrace.events via guest_events_of. This capture is an assertion, so
+    // that fold — which reconstructs the legacy state-event stream only — carries
+    // no state rows; the wire round-trip proven above is the non-emptiness.
+    let _trace = RunTrace {
         terminal: stop,
         env,
         coverage: None,
-        events: sdk_events::decode_events(&remapped),
+        events: campaign_runner::sdk_compat::guest_events_of(&normalized),
         records: Vec::new(),
     };
-    assert!(
-        !trace.events.is_empty(),
-        "a non-empty RunTrace.events assembled over the real wire (link tier is no longer dead)"
-    );
 }
 
 /// **Task 73 (round-4 P1): setup_complete yields a USABLE seal.** `setup_complete`

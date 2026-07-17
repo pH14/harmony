@@ -65,29 +65,61 @@
 //! blob — task 58).
 
 pub mod adapter;
+mod campaign;
 mod defaults;
 mod engine;
 mod error;
+mod evidence;
+mod ledger;
 mod materialize;
+mod occurrence;
 mod prng;
+mod retention;
 mod seam;
 mod spine;
 pub mod stads;
+#[cfg(test)]
+pub(crate) mod testkit;
+
+/// Convert an `sdk-events` V-time coordinate to the spine [`Moment`] (they are
+/// one-for-one — `sdk-events` mirrors the axis locally to stay dependency-free,
+/// so this is a bare newtype re-wrap, never a rescale).
+pub(crate) fn sdk_moment_to_spine(m: sdk_events::Moment) -> Moment {
+    Moment(m.0)
+}
 
 pub use adapter::{ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, client_caps};
+pub use campaign::{
+    CampaignConfig, CampaignError, DifferentialCampaign, Ingress, Occupied, StepReport,
+};
 pub use defaults::{
     COVERAGE_CHANNEL, CoverageArchive, DeclineTactic, ExploreExploitSelector, GenesisSelector,
     IdentityCells, TerminalOracle,
 };
 pub use engine::{Composition, Explorer, RunOutcome};
 pub use error::{EnvCodecError, MachineError};
+pub use evidence::{
+    CompletedRunEvidence, DefaultObservationCells, EvidenceRole, ObservationCells, ObservationMap,
+    ReducedValue, RunId, reduce_at_cut,
+};
+pub use ledger::{EvidenceLedger, LedgerError, PayloadRef, TraceStore};
 pub use materialize::{Lineage, Materialization, Materializer, SealBudget};
+pub use occurrence::{
+    AbsenceFinding, AbsenceLedger, CounterexampleKind, OccurrenceCounterexample, OccurrenceOracle,
+};
 pub use prng::Prng;
+pub use retention::{
+    BatchAvailability, CellAssignment, CollectedBatch, CoverageRef, ExpiryOrder, FinalizedSummary,
+    FoldOutcome, GcReport, GcSkipReason, RawAvailability, Recomputation, RetentionCheckpoint,
+    RetentionError, RetentionProfile, RetentionReport, RetentionViews, WorkingSet,
+    WorkingSetUpdate,
+};
 pub use seam::{EnvCodec, Machine, MachineFactory};
 pub use spine::{
-    Archive, Bug, CellFn, CellKey, ChannelId, CoverageView, DecisionPoint, ExemplarRef, Feature,
-    FeatureId, FeatureSet, Fork, Frontier, FrontierEntry, GuestEvent, Matchable, Moment, Oracle,
-    Record, Reward, RunTrace, Selector, Sensor, StreamId, Tactic, Value, VirtualExemplar,
+    Archive, Bug, CellFn, CellKey, ChannelId, CoverageView, DecisionPoint, EvidenceCut,
+    ExemplarRef, Feature, FeatureId, FeatureSet, Fork, Frontier, FrontierEntry, GuestEvent,
+    Matchable, Moment, Oracle, Record, Reward, RunTrace, Selector, Sensor, StreamId, Tactic, Value,
+    VirtualExemplar,
 };
 
 use serde::{Deserialize, Serialize};

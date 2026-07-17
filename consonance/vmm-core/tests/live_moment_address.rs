@@ -288,7 +288,7 @@ fn moment_address_materializes_identically_twice() {
     let genesis: SnapId = loop {
         attempts += 1;
         match call(&mut s, &Request::Snapshot) {
-            Ok(Reply::SnapId(id)) => break id,
+            Ok(Reply::Snapshot { id, .. }) => break id,
             Ok(other) => panic!("snapshot answered {other:?}"),
             Err(control_proto::ControlError::NotQuiescent) => {
                 assert!(

@@ -54,7 +54,8 @@ const RESULT_ERR: u8 = 1;
 
 // ---- Reply variant discriminants. ----
 const REPLY_HELLO: u8 = 1;
-const REPLY_SNAPID: u8 = 2;
+// 2 was REPLY_SNAPID, the bare-handle snapshot reply — RETIRED by task 127 (the
+// cut-carrying REPLY_SNAPSHOT is the one snapshot reply); never reuse the tag.
 const REPLY_UNIT: u8 = 3;
 const REPLY_STOP: u8 = 4;
 const REPLY_HASH: u8 = 5;
@@ -356,10 +357,6 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
             w.push(REPLY_HELLO);
             write_caps(w, caps);
         }
-        Reply::SnapId(SnapId(id)) => {
-            w.push(REPLY_SNAPID);
-            put_u64(w, *id);
-        }
         Reply::Unit => w.push(REPLY_UNIT),
         Reply::Stop(reason) => {
             w.push(REPLY_STOP);
@@ -396,9 +393,19 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
             put_bytes(w, output);
             w.push(u8::from(*ok));
         }
-        Reply::Snapshot { id, tainted } => {
+        // The seal-bound reply (task 127): handle · cut (Moment + included
+        // SDK-event count) · taint, in that fixed order — the cut fields sit
+        // between the handle and the task-81 taint byte.
+        Reply::Snapshot {
+            id,
+            at,
+            sdk_events,
+            tainted,
+        } => {
             w.push(REPLY_SNAPSHOT);
             put_u64(w, id.0);
+            put_u64(w, at.0);
+            put_u64(w, *sdk_events);
             w.push(u8::from(*tainted));
         }
         Reply::Recorded(env) => {
@@ -411,7 +418,6 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
 fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
     Ok(match r.u8()? {
         REPLY_HELLO => Reply::Hello(read_caps(r)?),
-        REPLY_SNAPID => Reply::SnapId(SnapId(r.u64()?)),
         REPLY_UNIT => Reply::Unit,
         REPLY_STOP => Reply::Stop(read_stop_reason(r)?),
         REPLY_HASH => Reply::Hash(read_array32(r)?),
@@ -441,6 +447,8 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
         },
         REPLY_SNAPSHOT => Reply::Snapshot {
             id: SnapId(r.u64()?),
+            at: Moment(r.u64()?),
+            sdk_events: r.u64()?,
             tainted: r.bool()?,
         },
         REPLY_RECORDED => Reply::Recorded(read_env(r)?),

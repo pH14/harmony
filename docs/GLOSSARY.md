@@ -144,6 +144,16 @@ mechanism crate to a musical name.
 - **sweep** — the task-58 determinism-gate protocol. **Fenced as gate-only vocabulary**;
   a sweep is not a campaign and never appears in product-facing language.
 - **`Moment`**, **seal**, **`SnapId`**, and the family names.
+- **cut** / **`EvidenceCut`** (task 127, `hm-bbx.6`): a seal's **evidence cut** — the
+  server-stamped `(Moment, included SDK-event count)` pair bound to a successful seal,
+  half-open by the ordered SDK capture's **prefix length** (positions below the count
+  included, at/after excluded — never a `Moment` comparison). Captured with the seal and
+  carried verbatim (snapshot reply → metadata → pending fork → persisted lineage); the
+  stamp is the sole authority, never reconstructed by a second read. The console scrape
+  stays source-local and stop-granular — structurally outside the cut. A later
+  seal-relative source gets its **own** declared cursor; independent cursors never imply
+  cross-source order. Vocabulary ratified by `docs/DISSONANCE-STRATEGY.md` ("The cut is
+  captured with the seal"); this entry records the type name.
 
 ## The containment hierarchy
 

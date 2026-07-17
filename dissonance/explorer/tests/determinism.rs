@@ -33,7 +33,7 @@ fn campaign(seed: u64, steps: u64) -> (Vec<Bug>, Vec<Entry>) {
         .iter()
         .map(|(_, e)| {
             (
-                e.exemplar.at.0,
+                e.exemplar.cut.at.0,
                 e.exemplar.suffix.bytes.clone(),
                 e.env.bytes.clone(),
                 e.reward.new_cells,

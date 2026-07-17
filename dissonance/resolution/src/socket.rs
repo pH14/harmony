@@ -311,10 +311,12 @@ impl<S: Read + Write> Server for SocketServer<S> {
 
     fn snapshot(&mut self) -> Result<Snapshot, SessionError> {
         match self.call(&Request::Snapshot)? {
-            // The wire keeps the pre-81 taint-free reply for an untainted capture
-            // and carries the taint bit only on the task-81 variant.
-            Reply::SnapId(id) => Ok(Snapshot { id, tainted: false }),
-            Reply::Snapshot { id, tainted } => Ok(Snapshot { id, tainted }),
+            // The one seal-bound reply (task 127) carries handle + evidence
+            // cut + taint. The investigation session consumes the handle and
+            // taint; the cut (the seal Moment + included SDK-event count) is
+            // campaign-plane evidence the explorer transports — not yet a
+            // resolution concern, so it is deliberately not surfaced here.
+            Reply::Snapshot { id, tainted, .. } => Ok(Snapshot { id, tainted }),
             other => Err(unexpected("snapshot", &other)),
         }
     }

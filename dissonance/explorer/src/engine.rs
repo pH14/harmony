@@ -36,8 +36,8 @@ use crate::materialize::{Materialization, Materializer, SealBudget};
 use crate::prng::Prng;
 use crate::seam::{EnvCodec, Machine};
 use crate::spine::{
-    Archive, Bug, CellFn, CoverageView, DecisionPoint, ExemplarRef, Fork, Frontier, Moment, Oracle,
-    Record, RunTrace, Selector, Sensor, StreamId, Tactic, VirtualExemplar,
+    Archive, Bug, CellFn, CoverageView, DecisionPoint, EvidenceCut, ExemplarRef, Fork, Frontier,
+    Moment, Oracle, Record, RunTrace, Selector, Sensor, StreamId, Tactic, VirtualExemplar,
 };
 use crate::{Answer, Reproducer, SnapId, StopConditions, StopMask, StopReason};
 
@@ -55,13 +55,15 @@ pub struct RunOutcome {
 }
 
 /// A sealable point captured mid-run, awaiting admission by the enclosing
-/// search-loop step: the eagerly-minted seal, the fork moment, the **prefix**
-/// reproducer as of that point (not the whole run — a later branch's overrides
-/// would mis-key against the fork's decision-index origin), and the coverage
-/// view as of that point.
+/// search-loop step: the eagerly-minted seal **with its server-stamped
+/// evidence cut** (task 127 — the seal Moment plus the included SDK-event
+/// count, stamped by the machine at the seal; never re-derived here), the
+/// **prefix** reproducer as of that point (not the whole run — a later
+/// branch's overrides would mis-key against the fork's decision-index
+/// origin), and the coverage view as of that point.
 struct PendingFork {
     seal: SnapId,
-    at: Moment,
+    cut: EvidenceCut,
     suffix: Reproducer,
     coverage: Vec<u8>,
 }
@@ -155,7 +157,7 @@ impl<M: Machine> Explorer<M> {
         seed: u64,
     ) -> Result<Self, MachineError> {
         let mut machine = machine;
-        let genesis = machine.snapshot()?;
+        let (genesis, genesis_cut) = machine.snapshot()?;
         Ok(Self {
             machine,
             codec,
@@ -172,10 +174,10 @@ impl<M: Machine> Explorer<M> {
                 on: StopMask::ALL,
             },
             pending_forks: Vec::new(),
-            // Genesis moment defaults to 0 (exact for the toy; a live driver
-            // that probed the true origin records it via
-            // `set_genesis_moment`). Policy-only — see `Materializer`.
-            mat: Materializer::new(genesis, Moment(0)),
+            // The genesis moment is the genesis seal's own stamped cut (task
+            // 127) — the machine's authority, not a probe (`set_genesis_moment`
+            // remains as an override). Policy-only — see `Materializer`.
+            mat: Materializer::new(genesis, genesis_cut.at),
         })
     }
 
@@ -349,8 +351,12 @@ impl<M: Machine> Explorer<M> {
                     // past it. The env/coverage are captured *now* (the prefix
                     // as of this fork), not at the terminal stop — admitting
                     // the whole-run env would mis-key a later branch's
-                    // overrides against the fork's decision-index origin.
-                    let seal = self.machine.snapshot()?;
+                    // overrides against the fork's decision-index origin. The
+                    // seal's evidence cut arrives WITH the handle (task 127):
+                    // the machine's stamp is the sole authority for the fork's
+                    // Moment and SDK prefix — the stop's vtime gated the
+                    // sealable() check above but never keys the exemplar.
+                    let (seal, cut) = self.machine.snapshot()?;
                     // If capturing the prefix env fails after the seal already
                     // succeeded, the handle would leak — release it (best
                     // effort, preserving the original error) before propagating.
@@ -364,7 +370,7 @@ impl<M: Machine> Explorer<M> {
                     let coverage = self.machine.coverage().to_vec();
                     self.pending_forks.push(PendingFork {
                         seal,
-                        at: Moment(vtime.0),
+                        cut,
                         suffix,
                         coverage,
                     });
@@ -471,7 +477,7 @@ impl<M: Machine> Explorer<M> {
                     parent: base_snap,
                     seed: minted,
                     suffix: p.suffix.clone(),
-                    at: p.at,
+                    cut: p.cut,
                 },
                 env,
                 coverage: Some(CoverageView {
@@ -517,7 +523,7 @@ impl<M: Machine> Explorer<M> {
                 // must never leak — release it defensively if it exists.
                 if let Some(old) =
                     self.mat
-                        .register(new_entries[ni].0, p.seal, base_snap, p.suffix, p.at)
+                        .register(new_entries[ni].0, p.seal, base_snap, p.suffix, p.cut)
                 {
                     self.machine.drop_snap(old)?;
                 }

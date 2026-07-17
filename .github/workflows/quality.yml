@@ -152,6 +152,22 @@ jobs:
           cargo test --manifest-path guest/play-agent/Cargo.toml --all-features
           cargo deny --manifest-path guest/play-agent/Cargo.toml check --config deny.toml licenses
           cargo build --manifest-path guest/play-agent/Cargo.toml --bin play-agent
+      # spikes/differential-lineage (tasks/120, hm-bbx.2) is out-of-workspace (its
+      # own manifest, spike convention), so the root gates above never see it —
+      # gate it explicitly or its test suite rots green while it feeds the hm-bbx.5
+      # ratification decision. --locked: the committed Cargo.lock is part of the
+      # spike's reproducibility claim (differential-dataflow/timely pins).
+      # (Benchmarks are NOT run here — REPORT.md documents the local command.)
+      - name: spikes/differential-lineage gates (out-of-workspace manifest)
+        run: |
+          cargo fmt --manifest-path spikes/differential-lineage/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path spikes/differential-lineage/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path spikes/differential-lineage/Cargo.toml --all-features
+          # Release build: the benchmark (REPORT.md) is release-only, and cargo
+          # test above builds only the dev profile — a release-only codegen or
+          # link regression would otherwise escape CI (J6).
+          cargo build --locked --release --manifest-path spikes/differential-lineage/Cargo.toml --all-targets
+          cargo deny --manifest-path spikes/differential-lineage/Cargo.toml check --config deny.toml licenses
 
   # spikes/arm-altra (task 109) — the ARM pre-build apparatus: three out-of-workspace
   # workspaces (harness+floor-check, oracle-model, payloads) that the root gates above
@@ -397,7 +413,7 @@ jobs:
       - name: Install CI cargo tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants
+          tool: cargo-mutants,cargo-nextest
       - name: Compute PR diff
         run: git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
       - name: cargo mutants --in-diff
@@ -481,11 +497,30 @@ jobs:
           rustup default stable
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal
       - uses: Swatinem/rust-cache@v2
+      # The `public_api` snapshot tests shell out to `cargo public-api`; without
+      # the binary they take a loud-skip branch and exit 0, so the gate reports
+      # green-by-skipping rather than green-by-checking (hm-64j: vacuous since
+      # #118, when the GHA migration moved this job off the pre-provisioned box).
+      # Install it as a prebuilt binary (seconds), mirroring the fmt/clippy/deny
+      # jobs — the pinned nightly above supplies the rustdoc-JSON it needs.
+      # Pin the version: cargo-public-api's snapshot *formatting* is
+      # version-dependent, so an unpinned upgrade could flip a byte-identical
+      # surface to a spurious diff. 0.52.0 is the version the committed
+      # tests/public-api.txt snapshots were generated with; pin it like
+      # cargo-deny@0.19.9 above so the gate stays deterministic.
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-public-api@0.52.0
       - name: public-api snapshot tests
         run: |
           cargo test \
             -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p environment -p control-proto -p explorer -p sdk-events -p flow -p matcher -p runtrace -p campaign-runner -p tactics-regime -p logtmpl -p resolution -p det-corpus \
             --test public_api -- --ignored --nocapture
+          # revision-coordinator's snapshot test is NOT #[ignore]d (tasks/121,
+          # PR #124 F12: it also gates the plain nextest suite), so it runs
+          # without the `--ignored` filter above.
+          cargo test -p revision-coordinator --test public_api -- --nocapture
           # guest/sdk is out-of-workspace (its own manifest), so it is not in the
           # `-p` list above — freeze its public surface on its own manifest.
           cargo test --manifest-path guest/sdk/Cargo.toml \

@@ -61,8 +61,8 @@ use std::collections::BTreeMap;
 
 use environment::HostFault;
 use explorer::{
-    AdapterEnv, Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions,
-    StopReason,
+    AdapterEnv, Answer, EvidenceCut, Machine, MachineError, Moment, Reproducer, SnapId,
+    StopConditions, StopReason,
 };
 use sha2::{Digest, Sha256};
 
@@ -323,7 +323,7 @@ impl Machine for ToyPlantedMachine {
         }
     }
 
-    fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+    fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
         let id = self.next_snap;
         self.next_snap += 1;
         self.snaps.insert(
@@ -333,7 +333,15 @@ impl Machine for ToyPlantedMachine {
                 env: self.current.clone(),
             },
         );
-        Ok(SnapId(id))
+        // The toy stamps its cut from the same state its seal records (task
+        // 127); it models no SDK capture, so the prefix is 0.
+        Ok((
+            SnapId(id),
+            EvidenceCut {
+                at: Moment(self.vtime),
+                sdk_events: 0,
+            },
+        ))
     }
 
     fn drop_snap(&mut self, snap: SnapId) -> Result<(), MachineError> {
@@ -408,7 +416,7 @@ mod tests {
     }
 
     fn base(m: &mut ToyPlantedMachine) -> SnapId {
-        m.snapshot().expect("boot is quiescent")
+        m.snapshot().expect("boot is quiescent").0
     }
 
     /// The exact planted upset crashes (reboot → Crash{Shutdown}); a clean run
@@ -606,7 +614,7 @@ mod tests {
             past in 1u64..1_000_000,
         ) {
             let mut m = ToyPlantedMachine::new(trigger());
-            let b = m.snapshot().expect("boot is quiescent");
+            let b = m.snapshot().expect("boot is quiescent").0;
             let at = BASE_VTIME + MAX_TERMINAL_OFFSET + past; // strictly beyond every terminal
             let env = fault_env(gpa, 1u64 << bit, at);
             m.branch(b, &env).unwrap();
@@ -626,7 +634,7 @@ mod tests {
             bit in 0u32..64,
         ) {
             let mut m = ToyPlantedMachine::new(trigger());
-            let b = m.snapshot().expect("boot is quiescent");
+            let b = m.snapshot().expect("boot is quiescent").0;
             // The trigger's Moment (offset 3) is always inside the terminal
             // (offset >= WINDOW_COVER), so it is always reached and applied.
             let env = fault_env(gpa, 1u64 << bit, BASE_VTIME + 3);
@@ -646,7 +654,7 @@ mod tests {
         #[test]
         fn a_deadline_inside_the_crash_wins_over_the_crash(pick in 1u64..10_000) {
             let mut m = ToyPlantedMachine::new(trigger());
-            let b = m.snapshot().expect("boot is quiescent");
+            let b = m.snapshot().expect("boot is quiescent").0;
             let env = fault_env(0x3000, 1 << 31, BASE_VTIME + 3); // the exact trigger, Moment 1003
             // The crash terminal with no deadline (> the fault Moment).
             m.branch(b, &env).unwrap();

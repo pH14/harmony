@@ -196,30 +196,29 @@ fn boot_game_server() -> ControlServer<Box<dyn Backend<A = X86>>> {
 
 /// Fold the drained SDK capture into `REG_FRAME` ticks and the billboard
 /// `(gpa, len)` — the play-agent's register catalog, via the same
-/// `sdk_events::decode_events` path the campaign uses.
+/// `sdk_compat::decode_sdk` path the campaign uses.
 fn scrape_plan_inputs(raw: &[(u64, u32, Vec<u8>)]) -> (Vec<FrameTick>, Option<(u64, u64)>) {
     use campaign_runner::gamecampaign::reg;
-    let decoded = sdk_events::decode_events(
-        &raw.iter()
-            .map(|(m, id, b)| (explorer::Moment(*m), *id, b.clone()))
-            .collect::<Vec<_>>(),
-    );
+    use sdk_events::{NS_STATE, ObservationId, Payload};
+    let decoded = campaign_runner::sdk_compat::decode_sdk(raw).expect("the SDK capture decodes");
     let mut ticks: Vec<FrameTick> = Vec::new();
     let (mut gpa, mut len) = (None, None);
-    for (moment, ev) in &decoded {
-        if ev.kind != sdk_events::KIND_STATE {
-            continue;
-        }
-        let (Some(explorer::Value::UInt(reg)), Some(explorer::Value::UInt(value))) =
-            (ev.attrs.get("reg"), ev.attrs.get("value"))
-        else {
+    for ev in &decoded.events {
+        let Payload::State { value, .. } = &ev.payload else {
             continue;
         };
-        match *reg {
+        let ObservationId::Point { namespace, local } = &ev.id else {
+            continue;
+        };
+        if *namespace != NS_STATE {
+            continue;
+        }
+        let (reg_id, value, moment) = (*local as u64, *value, ev.moment.0);
+        match reg_id {
             reg::FRAME => {
                 let tick = FrameTick {
-                    frame: u32::try_from(*value).unwrap_or(u32::MAX),
-                    moment: moment.0,
+                    frame: u32::try_from(value).unwrap_or(u32::MAX),
+                    moment,
                 };
                 // SDK events are batch-stamped at drain time, so several
                 // frames can share one `Moment`. Only the LAST frame written
@@ -231,8 +230,8 @@ fn scrape_plan_inputs(raw: &[(u64, u32, Vec<u8>)]) -> (Vec<FrameTick>, Option<(u
                     _ => ticks.push(tick),
                 }
             }
-            reg::BILLBOARD_GPA => gpa = Some(*value),
-            reg::BILLBOARD_LEN => len = Some(*value),
+            reg::BILLBOARD_GPA => gpa = Some(value),
+            reg::BILLBOARD_LEN => len = Some(value),
             _ => {}
         }
     }

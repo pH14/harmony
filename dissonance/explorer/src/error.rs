@@ -176,4 +176,27 @@ pub enum MachineError {
         /// The moment the replay actually stopped at.
         landed: u64,
     },
+    /// A re-materialized seal's **server-stamped evidence cut** differs from
+    /// the entry's recorded cut (task 127): determinism makes an identical
+    /// replay re-stamp the identical `(Moment, included SDK-event count)`
+    /// pair, so any difference — a shifted seal `Moment` or a restored SDK
+    /// prefix of the wrong length — is a determinism/transport violation to
+    /// escalate, never a cut to silently overwrite (the recorded stamp is the
+    /// authority the archive admitted under).
+    #[error(
+        "materialization of exemplar {exemplar} re-stamped cut ({got_at}, {got_sdk_events}), \
+         not its recorded cut ({at}, {sdk_events})"
+    )]
+    CutDivergence {
+        /// The raw [`ExemplarRef`](crate::ExemplarRef) being materialized.
+        exemplar: u64,
+        /// The recorded cut's seal moment.
+        at: u64,
+        /// The recorded cut's included SDK-event count.
+        sdk_events: u64,
+        /// The re-stamped cut's seal moment.
+        got_at: u64,
+        /// The re-stamped cut's included SDK-event count.
+        got_sdk_events: u64,
+    },
 }

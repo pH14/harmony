@@ -33,8 +33,9 @@ use sha2::{Digest, Sha256};
 
 use explorer::{
     Answer, Composition, CoverageArchive, DecisionPoint, DeclineTactic, EnvCodec, EnvCodecError,
-    ExploreExploitSelector, GenesisSelector, IdentityCells, Machine, MachineError, MachineFactory,
-    Moment, Prng, Reproducer, SnapId, StopConditions, StopReason, Tactic, TerminalOracle,
+    EvidenceCut, ExploreExploitSelector, GenesisSelector, IdentityCells, Machine, MachineError,
+    MachineFactory, Moment, Prng, Reproducer, SnapId, StopConditions, StopReason, Tactic,
+    TerminalOracle,
 };
 
 // ---- the toy's fixed shape ----
@@ -522,7 +523,7 @@ impl Machine for ToyMachine {
         }
     }
 
-    fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+    fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
         if self.fail_snapshot {
             return Err(MachineError::NotQuiescent);
         }
@@ -542,7 +543,20 @@ impl Machine for ToyMachine {
                 overrides_abs: self.overrides_abs.clone(),
             },
         );
-        Ok(SnapId(id))
+        // The toy stamps its own evidence cut from the same state its seal
+        // captures (task 127): the seal moment on its V-time axis, and — as
+        // its stand-in ordered SDK capture — its answer log, whose prefix
+        // length at the seal is deterministic under branch/replay. Every gate
+        // driving the engine over the toy therefore exercises a NON-trivial
+        // cut riding admission, lineage, and re-materialization (where the
+        // engine's `CutDivergence` check re-verifies it).
+        Ok((
+            SnapId(id),
+            EvidenceCut {
+                at: Moment((self.answers.len() as u64).saturating_mul(VTIME_STEP)),
+                sdk_events: self.answers.len() as u64,
+            },
+        ))
     }
 
     fn drop_snap(&mut self, snap: SnapId) -> Result<(), MachineError> {
@@ -627,7 +641,7 @@ pub fn drive_to_terminal(
         match stop {
             StopReason::Decision { .. } => resolve = answer.cloned(),
             StopReason::SnapshotPoint { .. } => {
-                m.snapshot()?;
+                let _ = m.snapshot()?;
                 resolve = None;
             }
             terminal => return Ok(terminal),
@@ -645,7 +659,7 @@ pub fn drive_to_snapshot(m: &mut ToyMachine, until: &StopConditions) -> (SnapId,
         match m.run(until, None).expect("toy run") {
             StopReason::Decision { .. } => continue, // seed-answered on the next run(None)
             StopReason::SnapshotPoint { .. } => {
-                let snap = m.snapshot().expect("snapshot");
+                let (snap, _cut) = m.snapshot().expect("snapshot");
                 let env = m.recorded_env().expect("recorded_env");
                 return (snap, env);
             }

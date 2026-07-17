@@ -28,9 +28,10 @@ use std::rc::Rc;
 
 use common::{ToyCodec, ToyMachine, config, pin_composition};
 use explorer::{
-    Answer, Composition, CoverageArchive, EnvCodec, ExemplarRef, Explorer, Frontier, FrontierEntry,
-    IdentityCells, Machine, MachineError, Materializer, Moment, Prng, Reproducer, Reward,
-    SealBudget, SnapId, StopConditions, StopMask, StopReason, TerminalOracle, VirtualExemplar,
+    Answer, Composition, CoverageArchive, EnvCodec, EvidenceCut, ExemplarRef, Explorer, Frontier,
+    FrontierEntry, IdentityCells, Machine, MachineError, Materializer, Moment, Prng, Reproducer,
+    Reward, SealBudget, SnapId, StopConditions, StopMask, StopReason, TerminalOracle,
+    VirtualExemplar,
 };
 use proptest::prelude::*;
 
@@ -101,13 +102,13 @@ impl Machine for MeterMachine {
         Ok(stop)
     }
 
-    fn snapshot(&mut self) -> Result<SnapId, MachineError> {
-        let id = self.inner.snapshot()?;
+    fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
+        let (id, cut) = self.inner.snapshot()?;
         let mut m = self.meter.borrow_mut();
         let (branch_at, at) = (m.branch_at, m.last_stop);
         m.snap_at.insert(id.0, at);
         m.seals.push((branch_at, at));
-        Ok(id)
+        Ok((id, cut))
     }
 
     fn drop_snap(&mut self, snap: SnapId) -> Result<(), MachineError> {
@@ -159,7 +160,7 @@ fn build_chain(
                 break;
             }
         }
-        let seal = machine.snapshot().expect("seal");
+        let (seal, cut) = machine.snapshot().expect("seal");
         let suffix = machine.recorded_env().expect("recorded_env");
         let env = match &entry_env {
             None => suffix.clone(),
@@ -167,18 +168,19 @@ fn build_chain(
                 .compose(base, &suffix)
                 .expect("toy codec is infallible"),
         };
+        assert_eq!(cut.at, Moment(at), "the toy stamps the seal moment");
         let r = frontier.insert(FrontierEntry {
             exemplar: VirtualExemplar {
                 parent: cur,
                 seed,
                 suffix: suffix.clone(),
-                at: Moment(at),
+                cut,
             },
             env: env.clone(),
             reward: Reward { new_cells: 1 },
         });
         frontier.claim((i as u64).to_le_bytes().to_vec(), r);
-        assert_eq!(mat.register(r, seal, cur, suffix, Moment(at)), None);
+        assert_eq!(mat.register(r, seal, cur, suffix, cut), None);
         refs.push(r);
         entry_env = Some(env);
         cur = seal;
@@ -202,7 +204,7 @@ proptest! {
         evict_mask in any::<u8>(),
     ) {
         let (mut machine, meter) = MeterMachine::new();
-        let genesis = machine.snapshot().expect("genesis");
+        let (genesis, _) = machine.snapshot().expect("genesis");
         let mut mat = Materializer::new(genesis, Moment(0));
         let mut frontier = Frontier::new();
         let refs = build_chain(&mut machine, &mut mat, &mut frontier, seed, hops);
@@ -282,7 +284,7 @@ fn mirror_walk(
     r: ExemplarRef,
 ) -> (u64, bool) {
     let entry = ex.frontier().get(r).expect("live entry");
-    let at = entry.exemplar.at.0;
+    let at = entry.exemplar.cut.at.0;
     let mut cur = entry.exemplar.parent;
     loop {
         if cur == ex.genesis() {
@@ -295,6 +297,7 @@ fn mirror_walk(
                 .get(holder)
                 .expect("coverage archive never drops entries")
                 .exemplar
+                .cut
                 .at
                 .0;
             return (at - base_at, false);
@@ -492,7 +495,7 @@ proptest! {
             for &r in &refs {
                 let before = costs[&r.0];
                 let after = ex.modeled_cost(r).unwrap();
-                let bound = ex.frontier().get(r).unwrap().exemplar.at.0;
+                let bound = ex.frontier().get(r).unwrap().exemplar.cut.at.0;
                 prop_assert!(after >= before, "cost degrades monotonically");
                 prop_assert!(after <= bound, "…up to the genesis bound");
                 costs.insert(r.0, after);
@@ -500,7 +503,7 @@ proptest! {
         }
         // Everything evicted ⇒ every entry now prices at its genesis bound.
         for &r in &refs {
-            let bound = ex.frontier().get(r).unwrap().exemplar.at.0;
+            let bound = ex.frontier().get(r).unwrap().exemplar.cut.at.0;
             prop_assert_eq!(ex.modeled_cost(r).unwrap(), bound);
         }
     }
@@ -541,7 +544,7 @@ proptest! {
 
         // Every admitted exemplar keys an admissible moment…
         for (_, e) in ex.frontier().iter() {
-            prop_assert!(sealable(e.exemplar.at));
+            prop_assert!(sealable(e.exemplar.cut.at));
         }
         // …and re-materialization after total eviction stays admissible.
         ex.evict_seals().unwrap();
@@ -570,7 +573,7 @@ proptest! {
 #[test]
 fn materialize_refuses_an_inadmissible_exemplar_loudly() {
     let (mut machine, meter) = MeterMachine::new();
-    let genesis = machine.snapshot().expect("genesis");
+    let (genesis, _) = machine.snapshot().expect("genesis");
     let mut mat = Materializer::new(genesis, Moment(0));
     mat.set_sealable(Box::new(|at| at.0 != 30));
 
@@ -581,7 +584,10 @@ fn materialize_refuses_an_inadmissible_exemplar_loudly() {
             parent: genesis,
             seed: 7,
             suffix: env.clone(),
-            at: Moment(30),
+            cut: EvidenceCut {
+                at: Moment(30),
+                sdk_events: 0,
+            },
         },
         env,
         reward: Reward { new_cells: 1 },
@@ -607,7 +613,7 @@ fn materialize_refuses_an_inadmissible_exemplar_loudly() {
 #[test]
 fn materialize_divergence_is_loud_never_a_wrong_seal() {
     let (mut machine, meter) = MeterMachine::new();
-    let genesis = machine.snapshot().expect("genesis");
+    let (genesis, _) = machine.snapshot().expect("genesis");
     let mut mat = Materializer::new(genesis, Moment(0));
 
     let mut frontier = Frontier::new();
@@ -617,7 +623,11 @@ fn materialize_divergence_is_loud_never_a_wrong_seal() {
             parent: genesis,
             seed: 7,
             suffix: env.clone(),
-            at: Moment(35), // off the toy's 10-grid: the replay lands at 40
+            // off the toy's 10-grid: the replay lands at 40
+            cut: EvidenceCut {
+                at: Moment(35),
+                sdk_events: 0,
+            },
         },
         env,
         reward: Reward { new_cells: 1 },
@@ -638,5 +648,57 @@ fn materialize_divergence_is_loud_never_a_wrong_seal() {
         meter.borrow().seals.len(),
         seals_before,
         "the divergent state was never sealed"
+    );
+}
+
+/// A re-materialized seal whose **stamped cut** differs from the entry's
+/// recorded cut is a loud `CutDivergence` (task 127), never a silently
+/// overwritten stamp — and the fresh handle is released, not cached or
+/// leaked. The entry here claims an SDK prefix (99) the replayed state cannot
+/// re-stamp (the toy stamps its answer-log length, 4, at moment 40), standing
+/// in for a restore that lost or grew the captured SDK prefix on the real
+/// substrate.
+#[test]
+fn cut_divergence_is_loud_and_releases_the_fresh_seal() {
+    let mut machine = ToyMachine::new();
+    let (genesis, _) = machine.snapshot().expect("genesis");
+    let mut mat = Materializer::new(genesis, Moment(0));
+
+    let mut frontier = Frontier::new();
+    let env = ToyCodec.seeded(7);
+    let r = frontier.insert(FrontierEntry {
+        exemplar: VirtualExemplar {
+            parent: genesis,
+            seed: 7,
+            suffix: env.clone(),
+            // The moment is on-grid (the replay lands exactly), but the
+            // recorded SDK prefix length is not what the replayed state
+            // re-stamps.
+            cut: EvidenceCut {
+                at: Moment(40),
+                sdk_events: 99,
+            },
+        },
+        env,
+        reward: Reward { new_cells: 1 },
+    });
+    frontier.claim(vec![0], r);
+
+    let live_before = machine.live_snaps();
+    assert!(matches!(
+        mat.materialize(&mut machine, &ToyCodec, &frontier, r),
+        Err(MachineError::CutDivergence {
+            exemplar: 0,
+            at: 40,
+            sdk_events: 99,
+            got_at: 40,
+            got_sdk_events: 4,
+        })
+    ));
+    assert_eq!(mat.seal_of(r), None, "the divergent seal was not cached");
+    assert_eq!(
+        machine.live_snaps(),
+        live_before,
+        "the fresh handle was released, not leaked"
     );
 }

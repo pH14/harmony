@@ -106,7 +106,7 @@ proptest! {
             };
 
             let v0 = probe_vtime(&mut m).expect("probe");
-            let g = m.snapshot().expect("base seal");
+            let g = m.snapshot().expect("base seal").0;
 
             // The hop-by-hop chain: branch → run(deadline) → seal per hop
             // (retrying past staged-RNG boundaries), hash at the final stop.
@@ -121,7 +121,7 @@ proptest! {
                 if !last {
                     let seal = loop {
                         match m.snapshot() {
-                            Ok(s) => break s,
+                            Ok((s, _cut)) => break s,
                             Err(explorer::MachineError::NotQuiescent) => {
                                 at = run_to(&mut m, at + 100);
                             }

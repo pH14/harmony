@@ -31,3 +31,21 @@ if command -v bd >/dev/null 2>&1; then
   if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v1.1.0 ---
+
+# --- HARMONY CREDENTIAL-SCAN CHAIN (outside the beads-managed section; survives
+# `bd hooks install` regeneration of the marked block above). When core.hooksPath
+# points HERE (beads installed last), the .githooks/pre-commit entry never runs,
+# so the credential stage must run from this side too (review F3, verify-event
+# finding). When hooksPath is .githooks (the documented setup), that entry runs
+# the stage itself and delegates to this file only for the beads section — the
+# guard below keeps the scan from running twice.
+if [ "$(git config core.hooksPath 2>/dev/null)" != ".githooks" ]; then
+  if command -v pre-commit >/dev/null 2>&1; then
+    pre-commit run --hook-stage pre-commit || exit $?
+  else
+    echo "pre-commit is required for Harmony's credential-leak check (docs/SECRET-HYGIENE.md)." >&2
+    echo "Install it with 'brew install pre-commit' or 'pipx install pre-commit', then 'pre-commit install-hooks'." >&2
+    exit 1
+  fi
+fi
+# --- END HARMONY CREDENTIAL-SCAN CHAIN ---
