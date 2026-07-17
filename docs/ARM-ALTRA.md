@@ -1118,11 +1118,23 @@ distinct from a non-branch `Sequential` (delta 0); (2) `check_replay_identity`'s
 necessarily-different per-step digests — it must include the step position (pc/index) so
 step *N* of rep 1 compares to step *N* of rep 2.
 
-**Disposition: REDESIGN (apparatus, not silicon) → then GO.** The single-step primitive is
-**exact and trustworthy on N1** (the AA-3-relevant result); the AA-2 *stage* grade awaits
-the two apparatus corrections above (the AA1-F1 not-taken-branch classification + the
-step-position rep-key), after which the same run re-grades. Being fixed offline in parallel
-with AA-3; `harness/AA2-BUILD.md` carries the design.
+The two apparatus corrections (the AA1-F1 `NotTakenBranch` classification + the
+step-position rep-key) were made and the **same run re-graded: `RESULT: PASS (19 checks)`**
+(evidence `results/aa-2/aa2-verdict.txt`). `debug-evidence` PASS — all 170,330 records
+cover the full 8-class step matrix, each a valid single step whose `BR_RETIRED` delta
+matches its class (AA1-F1: taken/not-taken branch and `ERET` = 1, else 0);
+`replay-identity` PASS — **85,165 stepped groups each bit-identical across reps** (single
+step is not just exact but DETERMINISTIC on N1, the llsc livelock included — it binds under
+AA-2, no carve-out).
+
+**Disposition: GO** (2026-07-17). Stock `KVM_GUESTDBG_SINGLESTEP` on N1 retires **exactly
+one instruction per step**, `BR_RETIRED` increments per the AA1-F1 branch-instruction rule,
+and stepped states are **replay-identical** across the exception/`ERET`/`WFI`/injection
+classes and through LL/SC sequences (deterministic livelock). The 0005-analogue is confirmed
+nearly-free — no patch needed. The trustworthy step primitive AA-3's exact landing depends
+on is validated. **Single characterized caveat** (the LL/SC-stepping result AA-4 inherits):
+single-stepping an exclusive sequence livelocks (the monitor clears every step); a bounded
+step budget is mandatory, and stepping through exclusives cannot land — direct AA-4 input.
 
 ### AA-3 — deterministic force-exit (0004-analogue) + exact landing: IN PROGRESS
 
