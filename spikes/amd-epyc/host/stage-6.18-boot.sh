@@ -19,7 +19,7 @@
 #
 # Boot-safety of the kernel itself is in build-6.18-kernel.sh (config based on the
 # running Ubuntu config so md1 RAID1 root + NVMe drivers are present) plus a
-# MODULES=dep initramfs (set here) probed against THIS box's real root stack.
+# MODULES=most initramfs (set here) — dep-mode silently drops the raid1/nvme root stack.
 set -euo pipefail
 SD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 KVER=6.18.35

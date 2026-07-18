@@ -26,9 +26,10 @@ set -euo pipefail
 LS_CFG=0xC0011020
 BIT54_MASK=$((1 << 54))
 # Anchor to the script's own dir, NOT $HOME: under `sudo` $HOME becomes /root and the
-# manifest (needed for sibling discovery + baseline restore) would not be found.
+# manifest (needed for sibling discovery + baseline restore) would not be found. The
+# committed manifest lives under results/ — point there so a FRESH CHECKOUT resolves it.
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-BASELINE="${BASELINE:-$SCRIPT_DIR/../box-baseline-manifest.json}"
+BASELINE="${BASELINE:-$SCRIPT_DIR/../results/box-baseline-manifest.json}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing tool: $1" >&2; exit 3; }; }
 need rdmsr; need wrmsr
@@ -52,7 +53,12 @@ for row in m["topology"]:
 
 apply() {
   local core="$1" slm="$2"
+  # Fail closed (P1-4): the measurement posture is a CORRECTNESS condition (doc §2). If
+  # the baseline manifest is absent we cannot discover the SMT sibling to idle, so refuse
+  # rather than silently measure under a live sibling while the attest records "none".
+  [ -f "$BASELINE" ] || { echo "baseline manifest not found at $BASELINE — cannot establish measurement posture" >&2; exit 3; }
   local sib; sib=$(baseline_sib "$core")
+  [ -n "${sib:-}" ] || { echo "no SMT sibling for core $core in $BASELINE topology — refusing (SMT confound uncontrolled)" >&2; exit 3; }
   # 1) governor -> performance on the measurement core (frequency hygiene; counts are
   #    frequency-independent, but wall-clock skid numbers want a stable clock)
   local gov_prev="unknown"

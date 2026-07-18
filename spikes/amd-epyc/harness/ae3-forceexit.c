@@ -188,7 +188,7 @@ static uint64_t landed_digest(struct vm *v) {
 
 struct arm_result {
     uint64_t target, period, work_at_preempt, work_landed, skid, digest;
-    int preempt_exit, landed_exact, overshoot, irq_dirty;
+    int preempt_exit, landed_exact, overshoot, irq_dirty, rearmed;
 };
 
 /* One armed deadline: overflow-to-near-target, then single-step to work==target. */
@@ -208,23 +208,37 @@ static int do_arm(struct vm *v, long fd, uint64_t target, uint64_t margin, int c
     out->period = period;
 
     if (use_overflow) {
-        /* Re-arm the sampling period (one-shot per deadline) and the in-kernel exit. */
-        ioctl(fd, PERF_EVENT_IOC_PERIOD, &period);
-        ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-        if (ioctl(v->vcpu, KVM_ARM_PREEMPT_EXIT, 0) < 0) {
-            fprintf(stderr, "KVM_ARM_PREEMPT_EXIT failed: %s\n", strerror(errno));
-            return -1;
-        }
-        for (;;) {
-            if (ioctl(v->vcpu, KVM_RUN, 0) < 0) { if (errno == EINTR) continue; perror("KVM_RUN"); return -1; }
+        /* Arm the sampling period + the in-kernel one-shot exit, run to the overflow.
+         * A spurious NMI (e.g. nmi_watchdog=1) can fire KVM_EXIT_PREEMPT BEFORE the
+         * overflow — work_at_preempt < period, a negative "skid". Rather than land a
+         * bogus arm, re-prime the guest+counter and re-arm (bounded); if it still comes
+         * in premature after the budget, keep it (the checker hard-fails negative skid). */
+        for (int attempt = 0; ; attempt++) {
+            ioctl(fd, PERF_EVENT_IOC_PERIOD, &period);
+            ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
+            if (ioctl(v->vcpu, KVM_ARM_PREEMPT_EXIT, 0) < 0) {
+                fprintf(stderr, "KVM_ARM_PREEMPT_EXIT failed: %s\n", strerror(errno));
+                return -1;
+            }
+            for (;;) {
+                if (ioctl(v->vcpu, KVM_RUN, 0) < 0) { if (errno == EINTR) continue; perror("KVM_RUN"); return -1; }
+                break;
+            }
+            out->preempt_exit = (v->run->exit_reason == KVM_EXIT_PREEMPT);
+            out->work_at_preempt = perf_read(fd);
+            if (!out->preempt_exit) {
+                /* Mechanism attestation failure: overflow did not force the in-kernel
+                 * exit (stock path, or a different exit). Recorded FAIL; do not land. */
+                return 0;
+            }
+            if ((int64_t)(out->work_at_preempt - period) < 0 && attempt < 8) {
+                out->rearmed = 1;                 /* premature: re-prime + re-arm */
+                emit_loop(v->mem, LOOP_N);
+                if (vm_reset_regs(v) < 0) return -1;
+                ioctl(fd, PERF_EVENT_IOC_RESET, 0);
+                continue;
+            }
             break;
-        }
-        out->preempt_exit = (v->run->exit_reason == KVM_EXIT_PREEMPT);
-        out->work_at_preempt = perf_read(fd);
-        if (!out->preempt_exit) {
-            /* Mechanism attestation failure: overflow did not force the in-kernel exit
-             * (stock path, or a different exit). Recorded FAIL; do not land. */
-            return 0;
         }
         /* Push the next overflow far away so the sampling PMI machinery cannot fire
          * during the single-step landing (which otherwise occasionally lets a step
@@ -325,13 +339,13 @@ int main(int argc, char **argv) {
         fprintf(o, "  {\"kind\":\"arm\",\"idx\":%llu,\"target\":%llu,\"margin\":%llu,"
                    "\"period\":%llu,\"work_at_preempt\":%llu,\"skid\":%llu,"
                    "\"work_landed\":%llu,\"preempt_exit\":%d,\"landed_exact\":%d,"
-                   "\"overshoot\":%d,\"irq_dirty\":%d,\"digest\":\"%016llx\","
+                   "\"overshoot\":%d,\"irq_dirty\":%d,\"rearmed\":%d,\"digest\":\"%016llx\","
                    "\"replay\":%d,\"replay_digest\":\"%016llx\",\"replay_match\":%d,"
                    "\"core\":%d,\"ok\":%d},\n",
                 (unsigned long long)a, (unsigned long long)target, (unsigned long long)margin,
                 (unsigned long long)r1.period, (unsigned long long)r1.work_at_preempt,
                 (unsigned long long)r1.skid, (unsigned long long)r1.work_landed,
-                r1.preempt_exit, r1.landed_exact, r1.overshoot, r1.irq_dirty,
+                r1.preempt_exit, r1.landed_exact, r1.overshoot, r1.irq_dirty, r1.rearmed,
                 (unsigned long long)r1.digest, replay, (unsigned long long)digest2,
                 replay_match, core, arm_ok);
     }

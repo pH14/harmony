@@ -45,8 +45,6 @@ typedef struct {
     const char *name;
     payload_fn  fn;
     uint64_t    taken_per_iter;   /* analytical oracle: taken branches per iteration */
-    int         is_speclockmap;   /* 1 => the AE-1(c) probe class (LOCK ops present) */
-    const char *note;
 } oracle_payload;
 
 /* -------- class: loop_backedge (baseline exactness) --------------------------
@@ -157,11 +155,11 @@ static uint64_t pl_straight_line(uint64_t n) {
 
 /* The registry the harness iterates. Order is stable (evidence determinism). */
 static const oracle_payload ORACLE_PAYLOADS[] = {
-    { "loop_backedge", pl_loop_backedge, 1, 0, "single conditional backedge" },
-    { "branch_dense",  pl_branch_dense,  9, 0, "8 taken jmps + backedge" },
-    { "call_ret",      pl_call_ret,      3, 0, "call + ret + backedge" },
-    { "straight_line", pl_straight_line, 1, 0, "16 ALU ops + backedge (body-size invariance)" },
-    { "locked",        pl_locked,        1, 1, "LOCK add + backedge (SpecLockMap probe)" },
+    { "loop_backedge", pl_loop_backedge, 1 },   /* single conditional backedge */
+    { "branch_dense",  pl_branch_dense,  9 },   /* 8 taken jmps + backedge */
+    { "call_ret",      pl_call_ret,      3 },   /* call + ret + backedge */
+    { "straight_line", pl_straight_line, 1 },   /* 16 ALU ops + backedge (body-size invariance) */
+    { "locked",        pl_locked,        1 },   /* LOCK add + backedge (SpecLockMap probe) */
 };
 enum { ORACLE_N = sizeof(ORACLE_PAYLOADS) / sizeof(ORACLE_PAYLOADS[0]) };
 

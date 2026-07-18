@@ -16,6 +16,7 @@ Usage:
   check-floors.py exactness --min-reps R --records FILE [FILE ...]
   check-floors.py overflow  --min-overflows M --records FILE [FILE ...]
   check-floors.py speclockmap --off FILE --on FILE   # AE-1(c): off overcounts, on exact
+  check-floors.py ae3 --records FILE [...] --min-arms K [--margin M]  # AE-3 landing campaign
 """
 import argparse, json, sys
 
@@ -141,31 +142,40 @@ def check_ae3(paths, margin, min_arms):
     the harness's own ok/rc). Independently re-derives: mechanism attestation (every
     overflow arm forced KVM_EXIT_PREEMPT), exact landing (work_landed==target), no
     overshoot (work_at_preempt<=target), skid<=margin, replay determinism, totality."""
-    arms = []
+    arms, ends = [], []
     for p in paths:
         with open(p) as f:
             for r in json.load(f):
                 if r.get("kind") == "arm":
                     arms.append(r)
+                elif r.get("kind") == "end":
+                    ends.append(r)
     if not arms:
         print("FAIL: no AE-3 arm records"); return False
+    # gate-RC / totality (#1,#6): exactly one terminal record, rc==0, its arms count
+    # matching the arms actually retained. A crashed campaign has no clean terminal.
+    terminal_ok = (len(ends) == 1 and ends[0].get("rc", 1) == 0
+                   and ends[0].get("arms") == len(arms))
     idxs = sorted(a["idx"] for a in arms)
     contiguous = idxs == list(range(len(idxs)))
     n = len(arms)
     # recompute each floor from raw fields, never trusting the per-arm "ok"
-    no_preempt, not_exact, overshoot, over_margin, replay_bad, irq = [], [], [], [], [], 0
+    no_preempt, not_exact, overshoot, over_margin, replay_bad, neg_skid, irq = [], [], [], [], [], [], 0
     skid_max = 0
     for a in arms:
         period = a["period"]; target = a["target"]
         if period > 0:                                  # overflow-driven arm
             if not a["preempt_exit"]:
                 no_preempt.append(a["idx"])
-            skid = a["work_at_preempt"] - period
-            skid_max = max(skid_max, skid)
+            skid = a["work_at_preempt"] - period        # signed: negative == premature preempt
+            if skid < 0:                                # P2-5: a spurious pre-overflow NMI
+                neg_skid.append(a["idx"])
+            else:
+                skid_max = max(skid_max, skid)
+                if skid > margin:
+                    over_margin.append(a["idx"])
             if a["work_at_preempt"] > target:
                 overshoot.append(a["idx"])
-            if skid > margin:
-                over_margin.append(a["idx"])
         if a["work_landed"] != target or not a["landed_exact"]:
             not_exact.append(a["idx"])
         if a.get("replay") and not a.get("replay_match"):
@@ -173,18 +183,19 @@ def check_ae3(paths, margin, min_arms):
         if a.get("irq_dirty"):
             irq += 1
     enough = n >= min_arms
-    good = (contiguous and enough and not no_preempt and not not_exact
-            and not overshoot and not over_margin and not replay_bad)
+    good = (contiguous and enough and terminal_ok and not no_preempt and not not_exact
+            and not overshoot and not over_margin and not replay_bad and not neg_skid)
     print(f"{'PASS' if good else 'FAIL'} ae3: arms={n} contiguous={contiguous} "
-          f"min_required={min_arms} met={enough}")
+          f"min_required={min_arms} met={enough} terminal_ok={terminal_ok}")
     print(f"  mechanism: overflow_arms_without_KVM_EXIT_PREEMPT={len(no_preempt)} "
           f"(a non-empty set == stock-path masquerade, hard FAIL)")
     print(f"  landing: not_exact={len(not_exact)} overshoot={len(overshoot)} "
-          f"skid_max={skid_max} margin={margin} over_margin={len(over_margin)}")
+          f"skid_max={skid_max} margin={margin} over_margin={len(over_margin)} "
+          f"negative_skid={len(neg_skid)}")
     print(f"  replay: mismatches={len(replay_bad)}   irq_dirty_arms={irq}")
     for label, s in (("no_preempt", no_preempt), ("not_exact", not_exact),
                      ("overshoot", overshoot), ("over_margin", over_margin),
-                     ("replay_bad", replay_bad)):
+                     ("replay_bad", replay_bad), ("negative_skid", neg_skid)):
         if s:
             print(f"  first {label} idxs: {s[:10]}")
     return good
@@ -199,7 +210,9 @@ def main():
     o.add_argument("--records", nargs="+", required=True)
     s = sub.add_parser("speclockmap"); s.add_argument("--off", required=True); s.add_argument("--on", required=True)
     t = sub.add_parser("ae3"); t.add_argument("--records", nargs="+", required=True)
-    t.add_argument("--margin", type=int, default=16384); t.add_argument("--min-arms", type=int, default=0)
+    t.add_argument("--margin", type=int, default=16384)
+    # --min-arms is REQUIRED (P1-3): a zero default let a one-arm campaign print PASS.
+    t.add_argument("--min-arms", type=int, required=True)
     a = ap.parse_args()
     if a.cmd == "exactness":
         ok = check_exactness(load(a.records), a.min_reps)

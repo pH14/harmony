@@ -16,10 +16,10 @@
     "source": "perf list --details (kernel perf JSON tables for this part)"
   },
   "hardware_flag": "Zen 2 core (Ryzen 3600) \u2014 NOT an EPYC; platform-scoped facts PROVISIONAL (tasks/123 hardware flag)",
-  "hostname": "nimbus-6c09c29c690e",
+  "hostname": "<redacted per tasks/123: no box identifiers beyond harmony-amd>",
   "hwcr": "0x0000000189000011",
   "kernel": {
-    "cmdline": "BOOT_IMAGE=/vmlinuz-6.8.0-88-generic root=UUID=c071d4cb-6ef1-4b04-8808-5ed7724f01cd ro console=tty1 console=ttyS0 scaleway",
+    "cmdline": "BOOT_IMAGE=/vmlinuz-6.8.0-88-generic root=UUID=<redacted> ro console=tty1 console=ttyS0 scaleway",
     "release": "6.8.0-88-generic",
     "version": "#89-Ubuntu SMP PREEMPT_DYNAMIC Sat Oct 11 01:02:46 UTC 2025"
   },

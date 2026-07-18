@@ -61,13 +61,22 @@ else
 fi
 
 # --- campaign: exact-landing across seeded targets, with replay determinism ---
+# Gate-RC propagation (P1-2, the PR-98 green-on-fail lesson): capture the campaign's
+# and the floor check's exit status; a failure of either FAILS the run. `|| true` is
+# banned here — a crashed campaign or a FLOOR_CHECK: FAIL must not publish green.
 echo "--- campaign ($arms arms, replay) ---" >&2
-taskset -c "$core" "$HARNESS" --core "$core" --event "$event" --margin "$margin" \
-  --arms "$arms" --seed "$seed" --replay --out "$OUT/campaign.json" || true
+if taskset -c "$core" "$HARNESS" --core "$core" --event "$event" --margin "$margin" \
+     --arms "$arms" --seed "$seed" --replay --out "$OUT/campaign.json"; then camp_rc=0; else camp_rc=$?; fi
 
-sudo bash "$SD/posture.sh" restore >/dev/null 2>&1 || true
+# posture restore is cleanup (best-effort), done BEFORE propagating the measurement result
+sudo bash "$SD/posture.sh" restore >/dev/null 2>&1 || echo "WARNING: posture restore reported an error" >&2
 
-echo "=== floor check (recomputed from retained records) ===" >&2
-python3 "$ROOT/schemas/check-floors.py" ae3 --records "$OUT/campaign.json" --margin "$margin" \
-  | tee "$OUT/floor-check.txt" || true
+echo "=== floor check (recomputed from retained records; --min-arms enforces the campaign floor) ===" >&2
+if python3 "$ROOT/schemas/check-floors.py" ae3 --records "$OUT/campaign.json" \
+     --margin "$margin" --min-arms "$arms" | tee "$OUT/floor-check.txt"; then floor_rc=0; else floor_rc=${PIPESTATUS[0]}; fi
+
 echo "=== evidence in $OUT ===" >&2
+if [ "$camp_rc" -ne 0 ] || [ "$floor_rc" -ne 0 ]; then
+  echo "AE-3 run FAILED (campaign rc=$camp_rc, floor-check rc=$floor_rc)" >&2; exit 1
+fi
+echo "AE-3 run PASSED (campaign + floor check green, >= $arms arms)" >&2

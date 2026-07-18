@@ -94,7 +94,28 @@ fetch() {
   fi
 }
 
+# Populate $PATCHES from the IN-REPO series so a fresh checkout reproduces the build
+# (P1-4). The canonical determinism series lives in the tree; the AMD hunk lives beside
+# this script and is staged as amd-svm.patch (so the 0004-*.patch glob can't grab it).
+stage_patches() {
+  mkdir -p "$PATCHES"
+  local series="$SD/../../../consonance/vmm-backend/kvm-patches/patches"
+  local amd="$SD/../patches/0004-KVM-SVM-KVM_EXIT_PREEMPT-force-exit-analogue.patch"
+  if [ -d "$series" ] && [ -f "$amd" ]; then
+    cp "$series"/0001-*.patch "$series"/0002-*.patch "$series"/0003-*.patch \
+       "$series"/0004-*.patch "$series"/0005-*.patch "$PATCHES"/
+    cp "$amd" "$PATCHES/amd-svm.patch"
+    log "staged canonical series 0001-0005 + AMD hunk into $PATCHES from the in-repo tree"
+  elif ls "$PATCHES"/0001-*.patch >/dev/null 2>&1 && [ -f "$PATCHES/amd-svm.patch" ]; then
+    log "in-repo series absent (standalone box copy); using pre-staged patches in $PATCHES"
+  else
+    log "cannot locate the determinism series: neither in-repo ($series) nor pre-staged ($PATCHES)"
+    exit 3
+  fi
+}
+
 apply() {
+  stage_patches
   cd "$SRC"
   git config user.email s@s; git config user.name spike   # git am needs an identity
   # Re-baseline to pristine so re-runs are idempotent.

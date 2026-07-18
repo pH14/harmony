@@ -75,23 +75,40 @@ static uint64_t fnv1a(const void *p, size_t n) {
     return h;
 }
 
-/* Deterministic compute guest: cx=ITERS; loop { ax = (ax+cx)^di ; [di]=ax ; di+=2 } dec cx;
- * jnz; hlt. Writes 256 words to OUT_GPA-ish; final memory+regs is a pure function of the
- * run (and of any injected perturbation). One taken branch (jnz) per iteration => work. */
+/* Deterministic compute guest that READS the output window each iteration, so a fault
+ * injected AT a Moment propagates through every later iteration — the final state is
+ * MOMENT-DEPENDENT (a fault at Moment T perturbs more downstream iterations than one near
+ * the end; injecting before/after the Moment gives a different digest). This is what makes
+ * the fault-at-a-deterministic-Moment gate non-vacuous (P1-5). di sweeps the 128-word
+ * window [0x3000,0x30FE]; ax folds mem[di]+cx and writes back. One taken branch (jnz) per
+ * iteration == the work clock. Byte offsets (loop body at 12; jnz rel8 = 12 - 33 = -21):
+ *   0:  BF 00 30        mov di, 0x3000
+ *   3:  B8 34 12        mov ax, 0x1234        (nonzero seed)
+ *   6:  66 B9 <ITERS>   mov ecx, ITERS
+ *  12:  03 05           add ax, [di]          ; ax += mem[di]  (reads window; fault propagates)
+ *  14:  31 C8           xor ax, cx            ; ax ^= cx
+ *  16:  89 05           mov [di], ax          ; mem[di] = ax   (writes back)
+ *  18:  83 C7 02        add di, 2             ; di += 2
+ *  21:  81 E7 FE 00     and di, 0x00FE        ; wrap low byte into [0,0xFE]
+ *  25:  81 CF 00 30     or  di, 0x3000        ; back into the window
+ *  29:  66 49           dec ecx
+ *  31:  75 EB           jnz loop (-21)
+ *  33:  F4              hlt
+ */
 static void emit_compute(uint8_t *mem) {
     uint8_t code[] = {
-        0xBF, 0x00, 0x30,        /* mov di, 0x3000              */
-        0x31, 0xC0,              /* xor ax, ax                  */
-        0x66, 0xB9, (ITERS & 0xff), ((ITERS>>8)&0xff), ((ITERS>>16)&0xff), ((ITERS>>24)&0xff), /* mov ecx, ITERS */
-        /* loop: */
-        0x01, 0xC8,              /* add ax, cx                  */
-        0x31, 0xF8,              /* xor ax, di                  */
-        0x66, 0x83, 0xE7, 0x7F,  /* and edi, 0x7f  (wrap di into [0,127]) */
-        0x81, 0xC7, 0x00, 0x30,  /* add di, 0x3000 (back into the output window) */
-        0x89, 0x05,              /* mov [di], ax                */
-        0x66, 0x49,              /* dec ecx                     */
-        0x75, 0xEA,              /* jnz loop (-22)              */
-        0xF4,                    /* hlt                         */
+        0xBF, 0x00, 0x30,
+        0xB8, 0x34, 0x12,
+        0x66, 0xB9, (ITERS & 0xff), ((ITERS>>8)&0xff), ((ITERS>>16)&0xff), ((ITERS>>24)&0xff),
+        0x03, 0x05,
+        0x31, 0xC8,
+        0x89, 0x05,
+        0x83, 0xC7, 0x02,
+        0x81, 0xE7, 0xFE, 0x00,
+        0x81, 0xCF, 0x00, 0x30,
+        0x66, 0x49,
+        0x75, 0xEB,
+        0xF4,
     };
     memcpy(mem + GUEST_PHYS, code, sizeof(code));
 }
@@ -206,11 +223,24 @@ int main(int argc, char **argv) {
     if (sched_setaffinity(0, sizeof(cs), &cs) != 0 || sched_getcpu() != core) {
         fprintf(stderr, "pin to core %d failed\n", core); return 2; }
 
-    /* the seed fixes the (Moment, fault) plan shared by ALL reps — same seed, same plan. */
+    /* the seed fixes the (Moment, fault) plan shared by ALL reps — same seed, same plan.
+     * The Moment MUST exceed the margin (P1-5): otherwise period<=0 and the svm.c
+     * force-exit is never armed, so the gate would certify without exercising its own
+     * mechanism. Auto-seeded Moments are drawn from (margin, 100000]; an explicit
+     * --moment <= margin is refused. */
     unsigned s = seed;
-    if (moment == 0) moment = 1 + rand_r(&s) % 100000;
+    if (moment == 0) {
+        uint64_t span = (100000 > margin) ? (100000 - margin) : 1;
+        moment = (margin + 1) + rand_r(&s) % span;
+    }
     uint64_t fault_gpa = OUT_GPA + 2 * (rand_r(&s) % 128);
     uint16_t fault_xor = (uint16_t)(1 + rand_r(&s) % 0xfffe);
+    if (moment <= margin) {
+        fprintf(stderr, "moment %llu <= margin %llu: the force-exit would not be armed; "
+                        "refusing (the AE-5 gate must exercise the mechanism)\n",
+                (unsigned long long)moment, (unsigned long long)margin);
+        return 2;
+    }
 
     struct vm v; int rc = vm_setup(&v);
     if (rc == -2) return 3;
@@ -231,7 +261,7 @@ int main(int argc, char **argv) {
         uint64_t dig = 0; int pre = 0, hlt = 0;
         if (one_rep(&v, fd, moment, margin, core, fault_gpa, fault_xor, &dig, &pre, &hlt) < 0) {
             all_ident = 0; break; }
-        if (!pre && moment > margin) all_preempt = 0;
+        if (!pre) all_preempt = 0;   /* any rep whose force-exit did not fire fails the gate */
         if (!hlt) all_hlt = 0;
         if (r == 0) first = dig;
         else if (dig != first && all_ident) { all_ident = 0; diverged_at = (int)r; }

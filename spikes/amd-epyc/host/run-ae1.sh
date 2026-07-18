@@ -42,31 +42,44 @@ echo "=== AE-1 run-set $runset on core $core, event $event, reps $reps ovreps $o
 sudo bash "$SD/posture.sh" apply --core "$core" --speclockmap on > "$OUT/posture-on.attest.json"
 SIB=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["sibling"])' "$OUT/posture-on.attest.json")
 
+# Gate-RC propagation (P1-2, the PR-98 green-on-fail lesson): `|| true` is banned — a
+# crashed hammer or a FLOOR_CHECK: FAIL must fail the run. The one exception is the
+# AE-1(c) OFF probe, whose non-zero exit is the DELIBERATE overcount reproduction (data,
+# not a run failure) — it is logged, not gated.
+fail=0
 # (a) exactness — small n for sub-ms windows so clean samples accrue for every class
-taskset -c "$core" "$HAMMER" --mode exactness --core "$core" --event "$event" \
-  --n1 20000 --n2 40000 --reps "$reps" --out "$TMP/ae1a.json" || true
+if ! taskset -c "$core" "$HAMMER" --mode exactness --core "$core" --event "$event" \
+     --n1 20000 --n2 40000 --reps "$reps" --out "$TMP/ae1a.json"; then fail=1; echo "AE-1(a) exactness hammer FAILED" >&2; fi
 # (d) overflow + skid — one-shot arms, period 10000, payload exceeds it (≥10^6 arms
 #     is the doc's AE-1(d) acceptance floor; aggregated so the file stays small)
-taskset -c "$core" "$HAMMER" --mode overflow --core "$core" --event "$event" \
-  --payload loop_backedge --n 100000 --period 10000 --reps "$ovreps" --out "$TMP/ae1d.json" || true
+if ! taskset -c "$core" "$HAMMER" --mode overflow --core "$core" --event "$event" \
+     --payload loop_backedge --n 100000 --period 10000 --reps "$ovreps" --out "$TMP/ae1d.json"; then fail=1; echo "AE-1(d) overflow hammer FAILED" >&2; fi
 # (c) SpecLockMap ON side (locked exact under workaround)
-taskset -c "$core" "$HAMMER" --mode exactness --core "$core" --event "$event" \
-  --payload locked --n1 20000 --n2 40000 --reps "$reps" --out "$TMP/ae1c-on.json" || true
+if ! taskset -c "$core" "$HAMMER" --mode exactness --core "$core" --event "$event" \
+     --payload locked --n1 20000 --n2 40000 --reps "$reps" --out "$TMP/ae1c-on.json"; then fail=1; echo "AE-1(c)-ON hammer FAILED" >&2; fi
 
-sudo bash "$SD/posture.sh" restore >/dev/null 2>&1
+sudo bash "$SD/posture.sh" restore >/dev/null 2>&1 || echo "WARNING: posture restore reported an error" >&2
 
 # --- the one sanctioned deviation: workaround OFF, reproduce (or refute) the overcount ---
 sudo bash "$SD/posture.sh" apply --core "$core" --speclockmap off > "$OUT/posture-off.attest.json"
-taskset -c "$core" "$HAMMER" --mode exactness --core "$core" --event "$event" \
-  --payload locked --n1 20000 --n2 40000 --reps "$reps" --out "$TMP/ae1c-off.json" || true
-sudo bash "$SD/posture.sh" restore >/dev/null 2>&1   # re-apply-permanently == baseline restore
+if ! taskset -c "$core" "$HAMMER" --mode exactness --core "$core" --event "$event" \
+     --payload locked --n1 20000 --n2 40000 --reps "$reps" --out "$TMP/ae1c-off.json"; then
+  echo "AE-1(c) OFF probe returned non-zero (expected when the overcount reproduces); recorded, not gated" >&2
+fi
+sudo bash "$SD/posture.sh" restore >/dev/null 2>&1 || echo "WARNING: posture restore reported an error" >&2   # re-apply-permanently == baseline restore
 
 cp "$TMP"/*.json "$OUT/"
 
 echo "=== floor checks (recomputed from retained records) ===" >&2
-{
-  echo "# AE-1(a) exactness"; python3 "$CHECK" exactness --min-reps 30 --records "$OUT/ae1a.json" || true
-  echo "# AE-1(d) overflow+skid"; python3 "$CHECK" overflow --min-overflows "$ovreps" --records "$OUT/ae1d.json" || true
-  echo "# AE-1(c) SpecLockMap off-vs-on"; python3 "$CHECK" speclockmap --off "$OUT/ae1c-off.json" --on "$OUT/ae1c-on.json" || true
-} | tee "$OUT/floor-check.txt"
+: > "$OUT/floor-check.txt"
+check() {  # $1 label; rest cmd — tee to the retained file, propagate the check's rc
+  local label="$1"; shift
+  echo "# $label" | tee -a "$OUT/floor-check.txt" >&2
+  if "$@" | tee -a "$OUT/floor-check.txt"; then :; else fail=1; echo "FLOOR CHECK FAILED: $label" >&2; fi
+}
+check "AE-1(a) exactness"        python3 "$CHECK" exactness --min-reps 30 --records "$OUT/ae1a.json"
+check "AE-1(d) overflow+skid"    python3 "$CHECK" overflow --min-overflows "$ovreps" --records "$OUT/ae1d.json"
+check "AE-1(c) SpecLockMap off-vs-on" python3 "$CHECK" speclockmap --off "$OUT/ae1c-off.json" --on "$OUT/ae1c-on.json"
 echo "=== evidence in $OUT ===" >&2
+[ "$fail" -eq 0 ] || { echo "AE-1 run FAILED (a hammer crashed or a floor check did not pass)" >&2; exit 1; }
+echo "AE-1 run PASSED (hammers + floor checks green)" >&2

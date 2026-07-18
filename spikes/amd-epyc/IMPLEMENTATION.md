@@ -21,7 +21,7 @@ transfer and are flagged **PROVISIONAL — re-confirm on a real EPYC** where the
 | **AE-0** | **GO** | Zen 2 part exposes every assumption: SVM full surface, `ex_ret_brn_tkn`=0xc4 openable/exact/overflow-delivers, legacy PMU (no PerfMonV2), single-step surface present. |
 | **AE-1** | **PROVISIONAL GO** | The existential trio holds: host-side + guest-mode counting bit-exact; 10⁶ overflows exactly-once; skid bounded (max 5043); SpecLockMap overcount **not reproduced** (null). |
 | **AE-2** | **PROVISIONAL GO** | Ruled **TF** (via `KVM_GUESTDBG_SINGLESTEP`), **not BTF** — refuting the doc's provisional lead on silicon: TF is exact + guest-transparent (`tf_kept=0`); BTF delivers 0 `#DB` through stock KVM; MOV-SS shadow the one recorded hazard. |
-| **AE-3** | **GO (mechanism) / PROVISIONAL (exact landing)** | Escalation RESOLVED (Paul 2026-07-17: build+boot 6.18.35 on this box). Patched `kvm_amd` fires **`KVM_EXIT_PREEMPT` on-silicon** every arm; skid ∈ [2581,3039] ≪ margin, never overshoots at overflow. Needed a **2nd svm.c hunk** (advertise the opt-in cap on SVM — 0003 is VMX-only). Exact single-step **landing** shows run-to-run jitter on the non-isolated core (core-isolation dependency); isolating diagnostic cut off by loss of box access. See §AE-3 execution. |
+| **AE-3** | **ESCALATED (mechanism observed on-silicon, records not retained)** | Escalation execution (Paul 2026-07-17: build+boot 6.18.35 on this box). The patched `kvm_amd` was **observed** firing `KVM_EXIT_PREEMPT` (skid ∈ [2581,3039], no overflow overshoot), and a **2nd svm.c hunk** was needed (SVM opt-in cap advertisement — 0003 is VMX-only) — but the box was re-provisioned before the run records were committed, so **no machine evidence is retained** (`results/ae-3/` holds only the build-environment + the ESCALATED disposition, matching `README.md`). Exact single-step landing showed run-to-run jitter (core-isolation dependency). Upgrade to a real GO (retained records, exact landing under isolation, 10⁶ campaign) tracked by **hm-gig**. See §AE-3 execution. |
 | **AE-4** | **PROVISIONAL GO** | Freeze **demonstrated on-silicon**: guest sees frozen `AuthenticAMD` + TSC bit cleared **below host** (`0x078bfbff`→`ef`); denied MSR (HWCR) RDMSR **traps to the vmm**. `det-zen2-v1` truth table ratified. |
 | **AE-5** | **PARTIAL** | Substrate same-seed determinism **demonstrated (1000/1000 bit-identical** on SVM, pre-6.18 boot). Mechanism-integrated gate harness (`harness/ae5-gate.c`: work-clock preempt + `svm.c` force-exit + fault-at-Moment + same-seed) written and cap-fix-ready, but the **full mini gate blocked on (a) the AE-3 exact-landing core-isolation residual, (b) the postgres Subject via the appliance (`hm-tn9`), and now (c) restored box access** (lost mid-run). |
 | **AE-6** | **GATED** | Nested SVM **confirmed available** (`kvm_amd nested=1` on the patched 6.18.35 L0); full nested gate (consonance stack as L1) follows the AE-5 bare-metal GO + appliance + restored box access. |
@@ -94,7 +94,17 @@ was exercised by a standalone host-side hammer and a standalone C KVM harness (e
 production edit was required.** The `svm.c` patch draft (`host/patches/`) is spike-local and
 reuses the *existing* Intel `kvm-patches/patches/0001,0002,0004` verbatim.
 
-## AE-3 execution (2026-07-17) — escalation RESOLVED, force-exit PROVEN on-silicon
+## AE-3 execution (2026-07-17) — mechanism OBSERVED on-silicon; records NOT retained
+
+**Disposition per retained evidence: ESCALATED.** The escalation was *executed* — the patched
+6.18.35 kernel was built + booted and the force-exit was observed firing on-silicon — but the
+box was re-provisioned before any AE-3 run record was committed, so `results/ae-3/` retains no
+machine evidence for the observation (only the build-environment record + the ESCALATED
+disposition). The on-silicon numbers below are reported faithfully from the live terminal
+session as an execution log, NOT as retained, independently-checkable evidence; the ladder
+therefore stays ESCALATED until the box returns and `run-ae3.sh` retains the records (upgrade
+tracked by **hm-gig**). What IS a durable, checkable deliverable is the reproducible apparatus
+(build recipe, boot-staging, harness, the corrected two-hunk patch) — all committed.
 
 Paul ruled (2026-07-17) to resolve the 6.8-vs-6.18 escalation by **building + booting the
 patched linux-6.18.35 determinism kernel on this box** (a fresh Scaleway lease is blocked by
@@ -115,7 +125,7 @@ patched linux-6.18.35 determinism kernel on this box** (a fresh Scaleway lease i
    manually from Linux immediately after boot. Box returned in 135 s on `uname -r=6.18.35`,
    root on `/dev/md1`, patched `kvm_amd` (vermagic 6.18.35, `avic=N`, `nested=1`).
 
-3. **Force-exit fires on-silicon (the escalation resolver).** `harness/ae3-forceexit.c` arms
+3. **Force-exit observed on-silicon (the escalation's core question) — not retained.** `harness/ae3-forceexit.c` arms
    the `ex_ret_brn_tkn` (0xc4) overflow at `target − margin`; the guest exits with
    **`KVM_EXIT_PREEMPT` (42) on every arm**, `work_at_preempt ≤ target`, **skid ∈ [2581, 3039]
    ≪ margin (8192/16384)**, never overshooting at the overflow. A stock `kvm_amd` cannot green
@@ -167,8 +177,9 @@ The superseded out-of-tree recipe is `host/build-kvm-amd.sh` (kept for provenanc
 
 ## Residuals (Paul 2026-07-17: land the current result; these need restored box access)
 
-The AE-3 patched 6.18.35 kernel is BUILT + BOOTED and the force-exit is PROVEN; the box was
-then lost (re-provisioned/keys reset). All apparatus below is committed and reproducible from a
+The AE-3 patched 6.18.35 kernel is BUILT + BOOTED and the force-exit was OBSERVED firing
+(execution log, not retained as evidence — box lost before commit); the box was then lost
+(re-provisioned/keys reset). All apparatus below is committed and reproducible from a
 fresh checkout the moment box access returns:
 
 - **AE-3 exact-landing under core isolation** — the mechanism (force-exit) is a GO; the exact
@@ -180,8 +191,9 @@ fresh checkout the moment box access returns:
 - **AE-5 full mini gate + AE-6 nested** — `harness/ae5-gate.c` (work-clock preempt + `svm.c`
   force-exit + fault-at-Moment + same-seed) is ready and cap-fixed; it needs the AE-3 landing
   isolation (above) plus the postgres Subject via the appliance (`hm-tn9`, out of spike scope),
-  then the nested-SVM twin on the confirmed `nested=1` L0. Substrate half (`ae5-determinism`
-  1000/1000) is done (pre-6.18).
+  then the nested-SVM twin on the confirmed `nested=1` L0. Substrate half (same-seed 1000/1000,
+  retained at `results/ae-5/substrate-determinism.json`; its throwaway harness was folded into
+  `ae5-gate.c`) is done (pre-6.18).
 - **Fold the second svm.c hunk upstream** — the `svm_hardware_setup` cap-advertisement finding
   should be reflected wherever the AMD force-exit patch is productionized (it is NOT provided by
   the shared x86 series; patch 0003 is VMX-only).

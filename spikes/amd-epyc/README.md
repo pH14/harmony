@@ -37,14 +37,19 @@ spikes/amd-epyc/
 │   ├── capture-baseline.sh   # AE-0 record-then-modify baseline (→ results/box-baseline-manifest.json)
 │   ├── provision.sh          # recorded modification #1: build/measure toolchain (posture-neutral)
 │   ├── posture.sh            # per-run LS_CFG + SMT-sibling + governor apply/ATTEST/restore
-│   ├── build-kvm-amd.sh      # AE-3 patched kvm_amd module build recipe (content-pinned)
-│   └── patches/              # AE-3 svm.c 0004-analogue draft (untested-on-silicon until AE-3)
+│   ├── build-6.18-kernel.sh  # AE-3: build the BOOTABLE patched linux-6.18.35 (Paul ruling)
+│   ├── stage-6.18-boot.sh    # AE-3: install + self-recovering GRUB one-shot boot into 6.18.35
+│   ├── run-ae3.sh            # AE-3: pin/posture/smoke/campaign/floor-check orchestrator
+│   ├── build-kvm-amd.sh      # SUPERSEDED out-of-tree recipe (kept for provenance; see build-6.18-kernel.sh)
+│   └── patches/              # AE-3 svm.c 0004-analogue (two hunks; validated on-silicon)
 ├── payloads/
 │   └── oracles.h        # analytical taken-branch oracle payloads (known BY CONSTRUCTION)
 ├── harness/
 │   ├── amd-hammer.c          # AE-1(a)/(c)/(d): host-side CPL3 exactness + SpecLockMap + overflow/skid
 │   ├── kvm-guest-hammer.c    # AE-1(b): minimal SVM KVM harness, guest-mode count exactness
 │   ├── singlestep-driver.c   # AE-2: BTF/TF #DB single-step characterization under SVM
+│   ├── ae3-forceexit.c       # AE-3: force-exit (KVM_EXIT_PREEMPT) + exact TF landing
+│   ├── ae5-gate.c            # AE-5: mechanism-integrated same-seed gate (fault-at-Moment)
 │   └── Makefile
 ├── contract/            # AE-4 enforcement truth table (references docs/cpu-msr-contract-amd-draft.toml)
 ├── schemas/
@@ -117,7 +122,7 @@ integrity). In this apparatus:
 | AE-0 | What part, and does it expose the assumptions? | **GO** — Zen 2 Ryzen 3600; SVM full surface; AVIC present (off); legacy PMU (no PerfMonV2); `ex_ret_brn_tkn` (0xc4) openable/exact/overflow-delivers | `results/ae-0/capability-truth-table.json`, `results/box-baseline-manifest.json` |
 | AE-1 | Is `ex_ret_brn_tkn` bit-deterministic; PMI reliable; skid bound; SpecLockMap? | **PROVISIONAL GO** — host-side (a) + guest-mode (b) both bit-exact (0 mismatches/~5000 host + 355/355 guest clean windows); 10⁶ overflows exactly-once (0 lost/0 dup); skid max 5043; SpecLockMap **NULL** | `results/ae-1/full/`, `results/constants-pack.md` |
 | AE-2 | Single-step exactness without MTF; which primitive? | **PROVISIONAL GO** — ruled **TF** (not BTF): TF exact + guest-transparent under SVM; BTF unavailable via stock KVM; MOV-SS shadow the one recorded hazard | `results/ae-2/single-step-ruling.md`, `harness/singlestep-driver.c` |
-| AE-3 | `svm.c` force-exit at PMI + exact landing; trait-freeze memo | **ESCALATED** — `svm.c` hunk verified against real 6.8 source; full build blocked (determinism plumbing targets ~6.18, box runs 6.8); trait-freeze memo answered (late-only-stop holds) | `results/ae-3/`, `host/patches/`, `host/build-kvm-amd.sh` |
+| AE-3 | `svm.c` force-exit at PMI + exact landing; trait-freeze memo | **ESCALATED (mechanism observed on-silicon, records not retained)** — escalation resolved by build+boot of patched 6.18.35 (Paul 2026-07-17); the `svm.c` force-exit was OBSERVED firing `KVM_EXIT_PREEMPT` (skid [2581,3039], no overflow overshoot) and a 2nd svm.c hunk (SVM opt-in cap advertisement) was needed — but the box was re-provisioned before the run records were committed, so NO machine evidence is retained. Upgrade to a real GO (retained records, exact-landing under core isolation, 10⁶ campaign) tracked by `hm-gig` | `results/ae-3/` (build-environment + disposition), `host/build-6.18-kernel.sh`, `host/stage-6.18-boot.sh`, `host/patches/` |
 | AE-4 | AuthenticAMD contract freeze + enforcement truth table | **PROVISIONAL GO** — freeze demonstrated on-silicon: CPUID below-host bit frozen (TSC OFF) + AuthenticAMD; denied MSR (HWCR) RDMSR traps to the vmm | `results/ae-4/`, `contract/enforcement-truth-table.md` |
 | AE-5 | Bare-metal mini determinism gate (AMD×metal GO) | **PARTIAL** — substrate same-seed determinism demonstrated (1000/1000 bit-identical on SVM); full gate (work-clock preempt + `svm.c` force-exit + fault injection + postgres Subject) gated on AE-3 + appliance (`hm-tn9`) | `results/ae-5/` |
 | AE-6 | Nested SVM (AMD×virtualized) | **GATED** — nested SVM confirmed available (`kvm_amd nested=1`); full nested gate follows AE-5 GO + appliance | `results/ae-6/` |
