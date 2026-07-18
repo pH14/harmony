@@ -924,14 +924,11 @@ fn execute(args: RunArgs) -> Result<(), String> {
     // MARK_BEGIN than `skid_margin + LANDING_HEADROOM`, so every target can be armed that full
     // combined margin below and single-stepped up to its canonical landing PC; every other
     // configuration draws from 1.
-    let target_lo = if matches!(args.mechanism, MechanismArg::Patched) && args.skid_margin.is_some()
-    {
-        args.skid_margin
-            .unwrap()
+    let target_lo = match args.skid_margin {
+        Some(margin) if matches!(args.mechanism, MechanismArg::Patched) => margin
             .saturating_add(arm_harness::run::LANDING_HEADROOM)
-            .saturating_add(1)
-    } else {
-        1
+            .saturating_add(1),
+        _ => 1,
     };
     let samples = plan(&plan_spec(
         args.seed,
@@ -1055,14 +1052,15 @@ fn execute(args: RunArgs) -> Result<(), String> {
                 // takes the `Preempt` below target, then single-steps up to `work == target`
                 // (the run_until_overflow + single_step contract). A patched run WITHOUT a margin
                 // stays the arm-at-target reliability proxy; the stock kick stays `run_sample`.
-                if matches!(mechanism_kind, sys::Mechanism::Preempt) && args.skid_margin.is_some() {
-                    run_sample_exact(&mut machine, &mut counter, &spec, args.skid_margin.unwrap())
+                match args.skid_margin {
+                    Some(margin) if matches!(mechanism_kind, sys::Mechanism::Preempt) => {
+                        run_sample_exact(&mut machine, &mut counter, &spec, margin)
+                            .map(|r| vec![r])
+                            .map_err(|e| e.to_string())
+                    }
+                    _ => run_sample(&mut machine, &mut counter, &spec)
                         .map(|r| vec![r])
-                        .map_err(|e| e.to_string())
-                } else {
-                    run_sample(&mut machine, &mut counter, &spec)
-                        .map(|r| vec![r])
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| e.to_string()),
                 }
             }
         })();

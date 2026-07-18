@@ -1431,7 +1431,10 @@ mod tests {
         let e = expected(Payload::StraightLine, Scale::Smoke, DEFAULT_SEED);
         assert_eq!(e.trips, 1_000);
         assert_eq!(e.certain_taken, 999);
-        assert_eq!(e.certain_branches, 1_000, "the back-edge executes trips times (AA1-F1)");
+        assert_eq!(
+            e.certain_branches, 1_000,
+            "the back-edge executes trips times (AA1-F1)"
+        );
         assert_eq!(e.exception_entries, 0);
         assert_eq!(e.inline_branch_seq, seq::STRAIGHT_LINE);
     }

@@ -1178,12 +1178,18 @@ impl StepVcpu for Machine {
     }
 }
 
+/// The seam-read pair [`Machine::registers_and_vgic`] returns: every architectural register
+/// (id → bytes, sorted) and the in-kernel vGIC injection state. Named so the register/vGIC
+/// read type has one home (and the tuple-of-collections does not trip `clippy::type_complexity`
+/// on the `cfg(target_os = "linux")` box seam).
+type RegsAndVgic = (BTreeMap<u64, Vec<u8>>, Vec<u8>);
+
 impl Machine {
     /// Read every architectural register (`KVM_GET_REG_LIST` + `KVM_GET_ONE_REG`, in
     /// sorted id order) and the in-kernel vGIC injection state — the two seam-read inputs
     /// shared by [`Vcpu::state_digest`] (which adds guest RAM) and [`StepVcpu::regs_digest`]
     /// (which does not). Factored out so the register/vGIC read discipline has one home.
-    fn registers_and_vgic(&self) -> Result<(BTreeMap<u64, Vec<u8>>, Vec<u8>), RunError> {
+    fn registers_and_vgic(&self) -> Result<RegsAndVgic, RunError> {
         let ids = self
             .reg_list()
             .map_err(|e| seam("ioctl(KVM_GET_REG_LIST)", e))?;
