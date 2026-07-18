@@ -1542,9 +1542,11 @@ evidence only; none has run against `/dev/kvm` on the patched N1.
   the rejected page. `aa4-guard-write` pins the dedicated `aa4-self-modify` ELF and its exact
   instruction encodings, then requires the original full-page hash at first scan and the
   synchronous pre-store exit, a single write revocation, and the exact expected modified hash at
-  a fresh scan generation. The portable acceptance predicate carries negative controls for a
-  prematurely modified page, reused generation, missing write, wrong replacement, and inconsistent
-  aggregate exits.
+  a fresh scan generation. While that later generation is frozen, it deliberately replays the
+  previously approved generation and requires `EINVAL` before issuing the correct response. The
+  portable acceptance predicates carry negative controls for a prematurely modified page, reused
+  generation, random rather than previously valid token, wrong errno, missing write, wrong
+  replacement, and inconsistent aggregate exits.
 - The kernel patch was hardened after a fresh lock-order review: state replacement under
   `mmu_lock` uses `GFP_ATOMIC`, while notifier/memslot invalidation uses an allocation-free
   advanced-XArray erase walk. The exact format patch applies cleanly to pinned 6.18.35, passes
@@ -1558,8 +1560,8 @@ planted reject, write-before-modification/rescan, stale-generation rejection, ba
 invalidation, and the two-vCPU scan/write race. Until they run on the patched pinned host, the
 current ruling remains cooperative residual rather than mechanically unreachable.
 
-Userspace gates for this slice: 151 harness library tests, four `arm-spike` CLI tests, and the
-manifest-current test pass; aarch64-Linux Clippy is warning-free; pinned Miri passes 150 library
+Userspace gates for this slice: 152 harness library tests, four `arm-spike` CLI tests, and the
+manifest-current test pass; aarch64-Linux Clippy is warning-free; pinned Miri passes 151 library
 tests plus all four CLI tests (one intentional long-loop ignore and one isolated subprocess
 ignore). The kernel gate additionally passes strict `checkpatch` (0 errors/0 warnings), compiled
 object assertions, and the full arm64 `vmlinux` link without warnings.

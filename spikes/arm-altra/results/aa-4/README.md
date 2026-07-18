@@ -31,7 +31,9 @@ half is wired but unrun: `linux-boot --stage2-exec-guard` mediates clean pages a
 statistics, while `aa4-guard-reject` requires a hash-pinned planted exclusive to be rejected
 before its PC advances. `aa4-guard-write` pins a dedicated self-modifier and requires the original
 full-page hash both at first scan and the synchronous pre-store exit, then the exact expected
-modified hash at a fresh later scan generation. The fixture boots twice under TCG, which proves
+modified hash at a fresh later scan generation. It also replays the first approved token while
+that later scan is frozen and requires `EINVAL` before approving the exact current token. The
+fixture boots twice under TCG, which proves
 liveness/protocol only. Level 2's live W^X rescan-on-exec proof and level 3 therefore remain
 blocked on booting that patch and retaining the planted rejection/write/race/invalidation evidence,
 not on merely compiling or emulating either half.

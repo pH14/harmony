@@ -52,8 +52,9 @@ under test (`docs/ARM-ALTRA.md` §Evidence integrity #4).
   hash-verifies a planted-exclusive ELF and succeeds only after an exact-generation
   reject leaves its PC in the rejected page. `aa4-guard-write` pins the dedicated
   self-modifying ELF and requires the original page at the synchronous pre-store exit,
-  then the exact expected replacement page at a fresh scan generation. Linux/box only
-  for all syscall paths.
+  then replays the first approved token while the exact expected replacement page is
+  frozen at a fresh scan generation. The old token must return `EINVAL` before the
+  current token is approved. Linux/box only for all syscall paths.
 
 The AA-4 commands are proof apparatus, not evidence by their existence. They have not run on the
 patched N1. TCG proves only that the self-modifier completes and its protocol is stable. Live

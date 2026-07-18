@@ -186,6 +186,7 @@ struct KvmArmStage2ExecGuard {
     flags: u32,
 }
 const _: () = assert!(core::mem::size_of::<KvmArmStage2ExecGuard>() == 24);
+const _: () = assert!(super::EXEC_GUARD_STALE_ERRNO == libc::EINVAL);
 
 /// `struct kvm_vcpu_init`.
 #[repr(C)]
@@ -564,6 +565,8 @@ pub struct Machine {
     /// Optional one-page trace used by the planted self-modification proof. It is
     /// configured before the first vCPU entry and remains fixed for the VM lifetime.
     exec_guard_page_audit: Option<ExecGuardPageAudit>,
+    /// Proof-only target on whose post-write scan one superseded generation is replayed.
+    exec_guard_stale_probe_gpa: Option<u64>,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables it. See
     /// [`DEFAULT_WATCHDOG_SECS`].
     watchdog_secs: u64,
@@ -684,6 +687,7 @@ impl Machine {
             linux_clockevent,
             exec_guard: exec_guard.then_some(ExecGuardStats::default()),
             exec_guard_page_audit: None,
+            exec_guard_stale_probe_gpa: None,
             watchdog_secs: DEFAULT_WATCHDOG_SECS,
         };
         m.build(boot)?;
@@ -1111,7 +1115,35 @@ impl Machine {
             pre_write_sha256: [0; 32],
             post_write_exec_generation: 0,
             post_write_exec_sha256: [0; 32],
+            stale_reply_attempts: 0,
+            stale_reply_generation: 0,
+            stale_reply_errno: 0,
         });
+        Ok(())
+    }
+
+    /// Arm one deliberate replay of the audited page's first approved generation.
+    ///
+    /// The replay occurs only while the same page is frozen for its post-write scan;
+    /// `EINVAL` is required before the exact current generation is approved normally.
+    /// This is a planted proof hook, not part of production guard mediation.
+    ///
+    /// # Errors
+    /// [`SysError::Protocol`] unless `gpa` is the page selected by
+    /// [`Machine::audit_exec_guard_page`] and no guard exit has occurred yet.
+    pub fn probe_stale_exec_guard_generation(&mut self, gpa: u64) -> Result<(), SysError> {
+        if !matches!(self.exec_guard, Some(stats) if stats.exits == 0) {
+            return Err(SysError::Protocol(
+                "stale-generation probe must be armed on a guarded VM before first vCPU entry"
+                    .into(),
+            ));
+        }
+        if !matches!(self.exec_guard_page_audit, Some(audit) if audit.gpa == gpa) {
+            return Err(SysError::Protocol(format!(
+                "stale-generation probe page {gpa:#x} is not the selected guard audit page"
+            )));
+        }
+        self.exec_guard_stale_probe_gpa = Some(gpa);
         Ok(())
     }
 
@@ -1121,10 +1153,15 @@ impl Machine {
         self.exec_guard_page_audit
     }
 
-    fn exec_guard_reply(&self, exit: ExecGuardExit, action: u32) -> Result<(), RunError> {
+    fn exec_guard_reply_generation(
+        &self,
+        gpa: u64,
+        generation: u64,
+        action: u32,
+    ) -> Result<(), SysError> {
         let reply = KvmArmStage2ExecGuard {
-            gpa: exit.gpa,
-            generation: exit.generation,
+            gpa,
+            generation,
             action,
             flags: 0,
         };
@@ -1137,12 +1174,14 @@ impl Machine {
             )
         } < 0
         {
-            return Err(seam(
-                "ioctl(KVM_ARM_STAGE2_EXEC_GUARD)",
-                err("ioctl(KVM_ARM_STAGE2_EXEC_GUARD)"),
-            ));
+            return Err(err("ioctl(KVM_ARM_STAGE2_EXEC_GUARD)"));
         }
         Ok(())
+    }
+
+    fn exec_guard_reply(&self, exit: ExecGuardExit, action: u32) -> Result<(), RunError> {
+        self.exec_guard_reply_generation(exit.gpa, exit.generation, action)
+            .map_err(|e| seam("ioctl(KVM_ARM_STAGE2_EXEC_GUARD)", e))
     }
 
     /// Service one synchronous execute-guard exit while the vCPU is stopped.
@@ -1196,7 +1235,7 @@ impl Machine {
                     ),
                 })?;
             let page_sha256: [u8; 32] = Sha256::digest(page).into();
-            if let Some(audit) = self
+            let stale_generation = if let Some(audit) = self
                 .exec_guard_page_audit
                 .as_mut()
                 .filter(|audit| audit.gpa == exit.gpa)
@@ -1209,7 +1248,55 @@ impl Machine {
                 if audit.write_revocations > 0 && audit.post_write_exec_generation == 0 {
                     audit.post_write_exec_generation = exit.generation;
                     audit.post_write_exec_sha256 = page_sha256;
+                    Some(audit.write_generation)
+                } else {
+                    None
                 }
+            } else {
+                None
+            };
+            if self.exec_guard_stale_probe_gpa == Some(exit.gpa)
+                && let Some(stale_generation) = stale_generation
+            {
+                if stale_generation == 0 || stale_generation == exit.generation {
+                    return Err(RunError::Seam {
+                        context: "plant stale execute-guard generation",
+                        message: format!(
+                            "prior generation {stale_generation} is not a nonzero predecessor of \
+                             current generation {}",
+                            exit.generation
+                        ),
+                    });
+                }
+                let stale_errno = match self.exec_guard_reply_generation(
+                    exit.gpa,
+                    stale_generation,
+                    kvm::ARM_STAGE2_EXEC_GUARD_APPROVE_EXEC,
+                ) {
+                    Err(SysError::Errno { errno, .. }) if errno == libc::EINVAL => errno,
+                    Err(e) => {
+                        return Err(seam("replay stale KVM_ARM_STAGE2_EXEC_GUARD generation", e));
+                    }
+                    Ok(()) => {
+                        return Err(RunError::Seam {
+                            context: "replay stale KVM_ARM_STAGE2_EXEC_GUARD generation",
+                            message: format!(
+                                "kernel accepted superseded generation {stale_generation} while \
+                                 page {:#x} was frozen for generation {}",
+                                exit.gpa, exit.generation
+                            ),
+                        });
+                    }
+                };
+                let Some(audit) = self.exec_guard_page_audit.as_mut() else {
+                    return Err(RunError::Seam {
+                        context: "record stale execute-guard generation",
+                        message: "configured audit disappeared".into(),
+                    });
+                };
+                audit.stale_reply_attempts = audit.stale_reply_attempts.saturating_add(1);
+                audit.stale_reply_generation = stale_generation;
+                audit.stale_reply_errno = stale_errno;
             }
             let hazards = super::exec_guard_hazards(exit.gpa, page);
             let action = if hazards.is_empty() {

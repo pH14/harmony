@@ -605,7 +605,19 @@ pub struct ExecGuardPageAudit {
     pub post_write_exec_generation: u64,
     /// Page hash at that post-write execute scan.
     pub post_write_exec_sha256: [u8; 32],
+    /// Number of deliberately replayed, superseded approval tokens.
+    pub stale_reply_attempts: u64,
+    /// Previously valid generation replayed while the later scan was frozen.
+    pub stale_reply_generation: u64,
+    /// Errno returned for that replay; the contract requires `EINVAL`.
+    pub stale_reply_errno: i32,
 }
+
+/// Linux UAPI `EINVAL`, required when a superseded guard generation is replayed.
+///
+/// This is 22 in the generic errno ABI used by Linux arm64. Keeping the proof
+/// predicate portable lets native tests and Miri exercise the acceptance logic.
+pub const EXEC_GUARD_STALE_ERRNO: i32 = 22;
 
 /// Decide whether a page audit establishes the planted write-before-store + rescan proof.
 ///
@@ -638,6 +650,24 @@ pub fn exec_guard_write_proof_holds(
         && stats.blocked_writes == 0
         && stats.scans == stats.approvals
         && counted_exits == Some(stats.exits)
+}
+
+/// Decide whether the audited rescan rejected one exact, previously valid generation.
+///
+/// The replay is meaningful only after the first generation was approved, a write revoked
+/// it, and a strictly newer generation froze the same page. Merely sending zero or a random
+/// invalid token is not evidence for the anti-replay property.
+#[must_use]
+pub fn exec_guard_stale_generation_proof_holds(audit: ExecGuardPageAudit) -> bool {
+    audit.exec_scans == 2
+        && audit.first_exec_generation != 0
+        && audit.write_revocations == 1
+        && audit.write_generation == audit.first_exec_generation
+        && audit.post_write_exec_generation > audit.write_generation
+        && audit.stale_reply_attempts == 1
+        && audit.stale_reply_generation == audit.write_generation
+        && audit.stale_reply_generation != audit.post_write_exec_generation
+        && audit.stale_reply_errno == EXEC_GUARD_STALE_ERRNO
 }
 
 /// Decode exit 43's 24-byte union arm without introducing a Rust union.
@@ -2164,6 +2194,9 @@ mod tests {
             pre_write_sha256: initial,
             post_write_exec_generation: 11,
             post_write_exec_sha256: modified,
+            stale_reply_attempts: 1,
+            stale_reply_generation: 7,
+            stale_reply_errno: EXEC_GUARD_STALE_ERRNO,
         };
         let stats = ExecGuardStats {
             exits: 9,
@@ -2206,6 +2239,42 @@ mod tests {
         assert!(!exec_guard_write_proof_holds(
             target, initial, modified, audit, bad_stats
         ));
+    }
+
+    #[test]
+    fn execute_guard_stale_generation_proof_requires_an_exact_prior_token_einval() {
+        let audit = ExecGuardPageAudit {
+            gpa: 0x4008_2000,
+            initial_sha256: [0x11; 32],
+            exec_scans: 2,
+            first_exec_generation: 7,
+            first_exec_sha256: [0x11; 32],
+            write_revocations: 1,
+            write_generation: 7,
+            pre_write_sha256: [0x11; 32],
+            post_write_exec_generation: 11,
+            post_write_exec_sha256: [0x22; 32],
+            stale_reply_attempts: 1,
+            stale_reply_generation: 7,
+            stale_reply_errno: EXEC_GUARD_STALE_ERRNO,
+        };
+        assert!(exec_guard_stale_generation_proof_holds(audit));
+
+        let mut bad = audit;
+        bad.stale_reply_attempts = 0;
+        assert!(!exec_guard_stale_generation_proof_holds(bad));
+
+        let mut bad = audit;
+        bad.stale_reply_generation = 6;
+        assert!(!exec_guard_stale_generation_proof_holds(bad));
+
+        let mut bad = audit;
+        bad.post_write_exec_generation = bad.stale_reply_generation;
+        assert!(!exec_guard_stale_generation_proof_holds(bad));
+
+        let mut bad = audit;
+        bad.stale_reply_errno = EXEC_GUARD_STALE_ERRNO - 1;
+        assert!(!exec_guard_stale_generation_proof_holds(bad));
     }
 
     #[test]

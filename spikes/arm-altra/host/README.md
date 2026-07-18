@@ -40,7 +40,8 @@ That is only a compile-verified kernel mechanism. The harness now has the usersp
 statistics, and `aa4-guard-reject` requires a hash-pinned exclusive-bearing page to be rejected
 while its PC remains unexecuted. `aa4-guard-write` additionally audits one dedicated
 self-modifying page: original hash at first scan and the pre-store write exit, expected modified
-hash at a fresh later scan generation. Those paths are also pre-silicon. AA-4 remains
+hash at a fresh later scan generation, and `EINVAL` from replaying the previously approved token
+while that later scan is frozen. Those paths are also pre-silicon. AA-4 remains
 cooperative-residual until the patch is booted on the pinned N1 and live proofs demonstrate first
 execute, approve/reject, stale-generation rejection, exit-before-write, scan-racing writes, and
 backing replacement. No compile result or unrun VMM path is promoted to that runtime claim.

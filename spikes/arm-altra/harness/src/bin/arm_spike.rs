@@ -19,9 +19,9 @@
 //! - `aa4-guard-reject` — a bounded, hash-pinned planted-exclusive proof. It succeeds
 //!   only after the stage-2 guard scans a frozen page, rejects an exclusive-bearing
 //!   generation, and leaves the vCPU PC in that unexecuted page.
-//! - `aa4-guard-write` — a hash-pinned self-modification proof. It requires the
-//!   original page at the synchronous pre-store write exit and the exact expected
-//!   replacement page at a later, fresh execute-scan generation.
+//! - `aa4-guard-write` — a hash-pinned self-modification and anti-replay proof. It
+//!   requires the original page at the synchronous pre-store write exit, rejection
+//!   of the superseded approval token, and the exact replacement page at a fresh scan.
 //!
 //! # What `run` refuses to invent
 //!
@@ -1170,6 +1170,9 @@ fn aa4_guard_write(opts: Aa4GuardWriteOpts) -> Result<(), String> {
     machine
         .audit_exec_guard_page(target)
         .map_err(|e| format!("configure target-page audit: {e}"))?;
+    machine
+        .probe_stale_exec_guard_generation(target)
+        .map_err(|e| format!("configure stale-generation probe: {e}"))?;
     machine.set_watchdog_secs(opts.watchdog_secs);
 
     let mut console = Console::new();
@@ -1266,12 +1269,18 @@ fn aa4_guard_write(opts: Aa4GuardWriteOpts) -> Result<(), String> {
             hex_lower(&expected_modified_sha256)
         ));
     }
+    if !arm_harness::sys::exec_guard_stale_generation_proof_holds(audit) {
+        return Err(format!(
+            "stale-generation audit was internally inconsistent: target={target:#x} \
+             audit={audit:?}"
+        ));
+    }
 
     println!(
         "AA4_GUARD_WRITE PASS image_sha256={image_sha256} target={target:#x} \
          first_generation={} write_generation={} rescan_generation={} caller_exits={caller_exits} \
          guard_exits={} guard_scans={} guard_approvals={} guard_write_revocations={} \
-         initial_sha256={} modified_sha256={}",
+         stale_generation={} stale_errno={} initial_sha256={} modified_sha256={}",
         audit.first_exec_generation,
         audit.write_generation,
         audit.post_write_exec_generation,
@@ -1279,13 +1288,15 @@ fn aa4_guard_write(opts: Aa4GuardWriteOpts) -> Result<(), String> {
         stats.scans,
         stats.approvals,
         stats.write_revocations,
+        audit.stale_reply_generation,
+        audit.stale_reply_errno,
         hex_lower(&expected_initial_sha256),
         hex_lower(&expected_modified_sha256)
     );
     println!(
-        "AA-4 remains open: this proves write-before-modification and exact-page rescan; \
-         planted rejection, stale-generation, notifier replacement, and two-vCPU scan/write \
-         races remain live gates"
+        "AA-4 remains open: this proves write-before-modification, exact-page rescan, and \
+         stale-generation rejection; planted rejection, notifier replacement, and two-vCPU \
+         scan/write races remain live gates"
     );
     Ok(())
 }
