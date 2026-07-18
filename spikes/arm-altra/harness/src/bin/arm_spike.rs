@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `arm-spike` — the AA-0 capability probe and the run orchestrator.
 //!
-//! Three subcommands:
+//! Four subcommands:
 //!
 //! - `plan` — emit a deterministic run plan as stable JSON, so a run-set's sample
 //!   list can be reviewed and diffed before a single measurement is spent. Pure
@@ -12,6 +12,8 @@
 //!   planned sample to its window marks, sample `BR_RETIRED`, and write the run-set
 //!   (`run-set.json` + `records.jsonl`) the floor checker adjudicates. Linux only,
 //!   and **untested on silicon**.
+//! - `linux-boot` — a bounded, explicitly non-certifying AA-5(c) bring-up path for
+//!   a hash-pinned arm64 Image + initramfs. It stops at a fixed console marker.
 //!
 //! # What `run` refuses to invent
 //!
@@ -98,6 +100,48 @@ enum Command {
     },
     /// Run the planned samples and write a run-set (Linux/box only).
     Run(Box<RunOpts>),
+    /// Boot hash-pinned arm64 Linux to a fixed console marker (Linux/box only).
+    LinuxBoot(Box<LinuxBootOpts>),
+}
+
+const DEFAULT_LINUX_MAX_EXITS: u64 = 5_000_000;
+const DEFAULT_LINUX_MAX_CONSOLE_BYTES: usize = 16 << 20;
+const DEFAULT_LINUX_BOOTARGS: &str = "console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 \
+    keep_bootcon rdinit=/init nokaslr maxcpus=1 random.trust_cpu=off harmony_pvclock";
+
+/// `arm-spike linux-boot`'s non-certifying substrate options.
+#[derive(clap::Args, Debug)]
+struct LinuxBootOpts {
+    /// Flat arm64 Linux `Image`.
+    #[arg(long)]
+    image: PathBuf,
+    /// Trusted sha256 pin for `--image` (optional `sha256:` prefix).
+    #[arg(long)]
+    image_sha256: String,
+    /// Gzip-compressed or raw cpio initramfs consumed by the kernel.
+    #[arg(long)]
+    initramfs: PathBuf,
+    /// Trusted sha256 pin for `--initramfs` (optional `sha256:` prefix).
+    #[arg(long)]
+    initramfs_sha256: String,
+    /// The isolated host core on which to run the vCPU thread.
+    #[arg(long)]
+    core: u32,
+    /// Kernel command line placed in the generated DTB.
+    #[arg(long, default_value = DEFAULT_LINUX_BOOTARGS)]
+    bootargs: String,
+    /// Fresh path for the captured binary console transcript.
+    #[arg(long)]
+    console_out: PathBuf,
+    /// Maximum KVM exits before the boot is refused.
+    #[arg(long, default_value_t = DEFAULT_LINUX_MAX_EXITS)]
+    max_exits: u64,
+    /// Maximum captured console bytes before the boot is refused.
+    #[arg(long, default_value_t = DEFAULT_LINUX_MAX_CONSOLE_BYTES)]
+    max_console_bytes: usize,
+    /// Per-KVM_RUN watchdog seconds; 0 disables it.
+    #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
+    watchdog_secs: u64,
 }
 
 /// `arm-spike run`'s options. Boxed in the [`Command`] enum: it is far larger than
@@ -698,7 +742,142 @@ struct LoadedPayload {
 /// Normalise a recorded/expected sha256: drop an optional `sha256:` prefix, lowercase.
 #[cfg(target_os = "linux")]
 fn normalise_sha256(h: &str) -> String {
-    h.strip_prefix("sha256:").unwrap_or(h).to_ascii_lowercase()
+    h.trim()
+        .strip_prefix("sha256:")
+        .unwrap_or(h.trim())
+        .to_ascii_lowercase()
+}
+
+/// Read and verify one boot artifact against an operator-supplied content pin.
+#[cfg(target_os = "linux")]
+fn verified_artifact(
+    path: &std::path::Path,
+    expected: &str,
+    label: &str,
+    max_bytes: u64,
+) -> Result<(Vec<u8>, String), String> {
+    use std::io::Read as _;
+
+    use arm_harness::evidence::hex_lower;
+    use sha2::{Digest, Sha256};
+
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let read_limit = max_bytes
+        .checked_add(1)
+        .ok_or_else(|| format!("{label} byte limit overflows"))?;
+    let mut bytes = Vec::new();
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!(
+            "{label} {} exceeds the fixed-layout {max_bytes}-byte input limit",
+            path.display()
+        ));
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let actual = hex_lower(&hasher.finalize());
+    let expected = normalise_sha256(expected);
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!(
+            "trusted {label} sha256 must be exactly 64 hexadecimal digits (optional sha256: \
+             prefix); got `{expected}`"
+        ));
+    }
+    if actual != expected {
+        return Err(format!(
+            "{label} {} hashes to {actual}, but its trusted pin is {expected}: refusing to boot \
+             an unpinned artifact",
+            path.display()
+        ));
+    }
+    Ok((bytes, actual))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
+    use std::io::Write as _;
+
+    use arm_harness::evidence::hex_lower;
+    use arm_harness::linux_console::{LinuxConsoleConfig, run_until_ready};
+    use arm_harness::sys::{Machine, pin_to_core};
+    use sha2::{Digest, Sha256};
+
+    // Verify both byte strings immediately before constructing the VM. The hashes
+    // are operator-vouched identities, not freshly-minted identities for whatever
+    // happened to be at each path.
+    let (image, image_sha256) = verified_artifact(
+        &opts.image,
+        &opts.image_sha256,
+        "Linux Image",
+        arm_harness::linux_boot::MAX_IMAGE_BYTES,
+    )?;
+    let (initramfs, initramfs_sha256) = verified_artifact(
+        &opts.initramfs,
+        &opts.initramfs_sha256,
+        "Linux initramfs",
+        arm_harness::linux_boot::MAX_INITRAMFS_BYTES,
+    )?;
+
+    pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
+    let mut machine = Machine::new_linux(&image, &initramfs, &opts.bootargs)
+        .map_err(|e| format!("construct Linux KVM machine: {e}"))?;
+    machine.set_watchdog_secs(opts.watchdog_secs);
+    let result = run_until_ready(
+        &mut machine,
+        &LinuxConsoleConfig {
+            ready_marker: arm_harness::linux_console::LINUX_READY_MARKER.to_vec(),
+            max_exits: opts.max_exits,
+            max_console_bytes: opts.max_console_bytes,
+        },
+    )
+    .map_err(|e| format!("boot Linux: {e}"))?;
+
+    let mut transcript = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&opts.console_out)
+        .map_err(|e| {
+            format!(
+                "create {}: {e} — refusing to overwrite a prior boot transcript",
+                opts.console_out.display()
+            )
+        })?;
+    transcript
+        .write_all(&result.console)
+        .map_err(|e| format!("write {}: {e}", opts.console_out.display()))?;
+    transcript
+        .sync_all()
+        .map_err(|e| format!("sync {}: {e}", opts.console_out.display()))?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(&result.console);
+    let console_sha256 = hex_lower(&hasher.finalize());
+    println!(
+        "NON-CERTIFYING Linux boot reached its fixed console marker: exits={} console_bytes={} \
+         console_sha256={} image_sha256={} initramfs_sha256={} transcript={}",
+        result.exits,
+        result.console.len(),
+        console_sha256,
+        image_sha256,
+        initramfs_sha256,
+        opts.console_out.display()
+    );
+    println!(
+        "AA-5 remains open: this boot path still publishes FLAG_WORK_DERIVED=false and does not \
+         claim deterministic timer/clock closure"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_boot(_opts: LinuxBootOpts) -> Result<(), String> {
+    Err(
+        "`arm-spike linux-boot` issues KVM ioctls and needs /dev/kvm: it is Linux-only; \
+         artifact parsing and the console loop are tested portably on this host."
+            .into(),
+    )
 }
 
 /// Read, hash, and parse the ELF for `payload` out of `dir`, and **verify it against
@@ -1290,6 +1469,7 @@ fn run() -> Result<(), String> {
                 watchdog_secs: opts.watchdog_secs,
             })
         }
+        Command::LinuxBoot(opts) => linux_boot(*opts),
     }
 }
 

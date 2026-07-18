@@ -254,6 +254,8 @@ pub mod kvm {
     pub const ARM_VCPU_INIT: u64 = 0x4020_AEAE;
     /// `KVM_ARM_PREFERRED_TARGET` — `_IOR(KVMIO, 0xaf, struct kvm_vcpu_init)`.
     pub const ARM_PREFERRED_TARGET: u64 = 0x8020_AEAF;
+    /// `KVM_ARM_VCPU_PSCI_0_2` feature-bit index for `KVM_ARM_VCPU_INIT`.
+    pub const ARM_VCPU_PSCI_0_2: u32 = 2;
     /// `KVM_ARM_VCPU_PMU_V3` — `kvm_vcpu_init.features[0]` bit index enabling the vPMU
     /// (uapi `asm/kvm.h`). Only the disposable ID-reading vCPU sets it: without it KVM
     /// masks the guest-visible `ID_AA64DFR0_EL1.PMUVer` to 0, hiding the host PMU
@@ -386,6 +388,17 @@ pub mod kvm {
     /// `0xF8`, and **`pc` is at `0x100`**. The next field, `sp_el1`, is at `0x110`.
     pub const REG_CORE_PC_OFFSET: u64 = 0x100;
 
+    /// Byte offset of `pstate` within `struct kvm_regs`.
+    pub const REG_CORE_PSTATE_OFFSET: u64 = REG_CORE_PC_OFFSET + 8;
+
+    /// `KVM_REG_ARM_CORE_REG(regs.regs[0])`.
+    pub const REG_CORE_X0: u64 = 0;
+
+    /// Distance between adjacent 64-bit GPR register indices. KVM's arm-core
+    /// register macro divides byte offsets by `sizeof(u32)`, so each `u64` GPR
+    /// advances by two indices, not one.
+    pub const REG_CORE_X_STRIDE: u64 = 8 / 4;
+
     /// `KVM_REG_ARM_CORE_REG(regs.pc)` — the register index, which the macro defines
     /// as the byte offset divided by four: `0x100 / 4 == 0x40`.
     ///
@@ -395,6 +408,9 @@ pub mod kvm {
     /// now *derived* from the offset and pinned by a test, because an off-by-one in a
     /// register index does not fail loudly — it writes a different register.
     pub const REG_CORE_PC: u64 = REG_CORE_PC_OFFSET / 4;
+
+    /// `KVM_REG_ARM_CORE_REG(regs.pstate)`.
+    pub const REG_CORE_PSTATE: u64 = REG_CORE_PSTATE_OFFSET / 4;
     /// The size field of a register id (`KVM_REG_SIZE_MASK`).
     pub const REG_SIZE_MASK: u64 = 0x00F0_0000_0000_0000;
     /// Shift of the size field.
@@ -523,7 +539,13 @@ pub fn decode_kvm_run(run: &KvmRun) -> crate::run::VcpuExit {
     use crate::run::VcpuExit;
     match run.exit_reason {
         kvm::EXIT_MMIO => {
-            let len = (run.mmio.len as usize).min(run.mmio.data.len());
+            let len = run.mmio.len as usize;
+            if len == 0 || len > run.mmio.data.len() {
+                return VcpuExit::MalformedMmio {
+                    addr: run.mmio.phys_addr,
+                    width: run.mmio.len,
+                };
+            }
             VcpuExit::Mmio {
                 addr: run.mmio.phys_addr,
                 data: run.mmio.data[..len].to_vec(),
@@ -1852,12 +1874,17 @@ mod tests {
             other => panic!("expected Mmio, got {other:?}"),
         }
 
-        // A too-wide `len` must be clamped to the 8-byte buffer, never read past it.
-        run.mmio.len = 999;
-        if let VcpuExit::Mmio { data, .. } = decode_kvm_run(&run) {
-            assert_eq!(data.len(), 8, "len clamped to the data buffer");
-        } else {
-            panic!("expected Mmio");
+        // A zero/too-wide host length is explicit malformed input, never clamped
+        // into a plausible access that a higher layer could service.
+        for width in [0, 9, 999] {
+            run.mmio.len = width;
+            assert_eq!(
+                decode_kvm_run(&run),
+                VcpuExit::MalformedMmio {
+                    addr: 0x0900_0000,
+                    width,
+                }
+            );
         }
 
         for (reason, want) in [
@@ -2213,6 +2240,7 @@ mod tests {
         assert_eq!(kvm::SET_ONE_REG, iow(0xac, 16));
         assert_eq!(kvm::ARM_VCPU_INIT, iow(0xae, 32));
         assert_eq!(kvm::ARM_PREFERRED_TARGET, ior(0xaf, 32));
+        assert_eq!(kvm::ARM_VCPU_PSCI_0_2, 2);
         assert_eq!(kvm::GET_REG_LIST, iowr(0xb0, 8));
         // struct kvm_enable_cap is 104 bytes; kvm_create_device 12; kvm_device_attr 24.
         assert_eq!(kvm::ENABLE_CAP, iow(0xa3, 104));
@@ -2294,6 +2322,11 @@ mod tests {
         // KVM_REG_ARM_CORE_REG(name) == offsetof(struct kvm_regs, name) / sizeof(u32).
         assert_eq!(kvm::REG_CORE_PC, pc_offset / 4);
         assert_eq!(kvm::REG_CORE_PC, 0x40);
+        assert_eq!(kvm::REG_CORE_X0, 0);
+        assert_eq!(kvm::REG_CORE_X_STRIDE, 2);
+        assert_eq!(kvm::REG_CORE_PSTATE_OFFSET, pstate_offset);
+        assert_eq!(kvm::REG_CORE_PSTATE, pstate_offset / 4);
+        assert_eq!(kvm::REG_CORE_PSTATE, 0x42);
         assert_ne!(
             kvm::REG_CORE_PC,
             sp_el1_offset / 4,

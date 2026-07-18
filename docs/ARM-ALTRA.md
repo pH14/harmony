@@ -1384,7 +1384,7 @@ scan, cooperative residual (runtime-generated exclusives) bounded by W^X + stage
 artifacts, level 3's mechanism is characterized with its live planted-exclusive proof homed to
 AA-5. Awaiting Paul's ratification at PR time (foreman directive).
 
-### AA-5 — the paravirt work-derived clock: (a)+(b) DEMONSTRATED; (c) the remaining major build
+### AA-5 — the paravirt work-derived clock: (a)+(b) DEMONSTRATED; (c) executor substrate built
 
 The centerpiece. Evidence in `results/aa-5/` and the AA-3 records.
 
@@ -1410,22 +1410,29 @@ payload scans **counter-clean**. Remaining, kernel-dependent: the EL0
 `CNTVCT_EL0`-read-undefs-under-`CNTKCTL_EL1` live test, `CNTHCTL_EL2` posture, and the scan run
 against the *shipped guest kernel image*.
 
-**(c) The Linux smoke — the remaining major build, blocked on absent assets.** No arm64 guest
-kernel Image / initramfs / DTB is present on the box, and the harness boots tiny bare-metal
-payloads, not a full Linux guest (`Payload::LinuxGuest` is a placeholder returning no window
-ops). Booting our arm64 guest — paravirt clocksource + `sched_clock` + delay paths on the page,
-`CNTKCTL_EL1` closure applied — to userspace under the spike harness, to steady state (no RCU
-stalls, timers fire), then holding a same-seed determinism digest (two runs, bit-identical
-console + state), is a multi-session build: (i) acquire/build the guest kernel + rootfs with the
-pvclock clocksource, (ii) build the harness Linux-boot path (Image+DTB+initramfs load, PSCI,
-GIC, console, kernel entry). It also hosts AA-4 level-3's live planted-exclusive proof.
+**(c) The Linux smoke — executor substrate built; guest assets and clock closure remain.** The
+harness now has a portable-tested, arm64-Linux-cross-clippy-clean boot substrate: a total flat
+Image loader with bounded Image/initramfs placement, deterministic generated DTB, Linux EL1h
+entry (`x0=DTB`, reserved args zero), Linux-only PSCI 0.2 vCPU opt-in, the existing in-kernel
+vGICv3, and a bounded PL011/PrimeCell console loop. The `linux-boot` command verifies trusted
+Image/initramfs sha256 pins over hard-bounded reads immediately before VM construction, pins the
+vCPU thread, and stops on a fixed console marker. It is deliberately labelled
+**NON-CERTIFYING**: the console marker alone does not prove its producer, the clock page remains
+the explicit `FLAG_WORK_DERIVED=false` placeholder, and this path has not run on the Altra.
+
+No arm64 guest kernel Image/initramfs with the Harmony pvclock driver is present on the box yet.
+The remaining build is (i) build the pinned arm64 kernel/rootfs with the paravirt clocksource,
+`sched_clock`, delay, and `CNTKCTL_EL1` closure, (ii) validate the substrate to userspace and
+steady state on real N1, then (iii) replace the placeholder with the work-derived refresh and
+hold the same-seed bit-identical console+state gate. It also hosts AA-4 level-3's live
+planted-exclusive proof.
 
 **Disposition: AA-5 PARTIAL — (a) payload determinism and (b) the closure premise + scanner are
-demonstrated on real N1; (c) the guest-Linux smoke is the remaining major build**, blocked on
-absent guest-kernel assets + a harness Linux-boot path, and is the natural home for AA-4 L3's
-live proof and AA-6's guest-side gates. Recommended as a dedicated follow-on with the guest
-kernel in hand; not a NO-GO signal — every mechanism it needs (work clock, exact landing,
-force-exit, counter closure) is independently GO/demonstrated above.
+demonstrated on real N1; (c) has a pre-silicon executor substrate but no live guest proof**, and
+is blocked on the pvclock-enabled guest assets, live N1 bring-up, and the work-derived refresh.
+It remains the natural home for AA-4 L3's live proof and AA-6's guest-side gates. This is not a
+NO-GO signal — every underlying mechanism (work clock, exact landing, force-exit, counter
+closure) is independently GO/demonstrated above.
 
 ### AA-6 — the freezable-CPU contract + vGIC round-trip + mini determinism gate: SCOPED
 

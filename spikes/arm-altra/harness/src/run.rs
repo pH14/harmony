@@ -111,6 +111,15 @@ pub enum VcpuExit {
         /// `false` for a read (the payloads never read the UART).
         is_write: bool,
     },
+    /// `KVM_EXIT_MMIO` whose kernel-reported width cannot fit the ABI's
+    /// eight-byte data field. Kept distinct so no decoder truncation can turn a
+    /// malformed host value into a plausible access.
+    MalformedMmio {
+        /// Guest-physical address touched.
+        addr: u64,
+        /// Width reported by the kernel.
+        width: u32,
+    },
     /// `KVM_EXIT_PREEMPT` (42) — the patched in-kernel force-exit, AA-3's mechanism.
     Preempt,
     /// `KVM_RUN` returned `EINTR`: a host signal kicked the vCPU out. AA-1(c)'s
@@ -238,6 +247,14 @@ pub enum RunError {
     UnexpectedMmio {
         /// The address touched.
         addr: u64,
+    },
+    /// The host supplied an MMIO width outside the KVM ABI's 1..=8-byte field.
+    #[error("KVM reported malformed MMIO at {addr:#x} with width {width}")]
+    MalformedMmio {
+        /// Guest-physical address touched.
+        addr: u64,
+        /// Width reported by the kernel.
+        width: u32,
     },
     /// `KVM_RUN` returned an exit reason this loop does not handle.
     #[error("unhandled KVM exit reason {0}")]
@@ -916,6 +933,9 @@ pub fn run_sample(
                 }
             }
 
+            VcpuExit::MalformedMmio { addr, width } => {
+                return Err(RunError::MalformedMmio { addr, width });
+            }
             VcpuExit::Other(reason) => return Err(RunError::UnexpectedExit(reason)),
         }
     }
@@ -1223,6 +1243,9 @@ pub fn run_sample_exact(
                 vcpu.disarm_single_step()?;
             }
 
+            VcpuExit::MalformedMmio { addr, width } => {
+                return Err(RunError::MalformedMmio { addr, width });
+            }
             VcpuExit::Other(reason) => return Err(RunError::UnexpectedExit(reason)),
         }
     }
@@ -1662,6 +1685,9 @@ pub fn step_run(
                     ExitReason::SignalKick
                 };
                 return Err(RunError::UnexpectedMechanismExit(reason));
+            }
+            VcpuExit::MalformedMmio { addr, width } => {
+                return Err(RunError::MalformedMmio { addr, width });
             }
             VcpuExit::Other(reason) => return Err(RunError::UnexpectedExit(reason)),
         }

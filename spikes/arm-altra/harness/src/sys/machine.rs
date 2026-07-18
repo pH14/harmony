@@ -37,7 +37,7 @@ use crate::run::{RunError, StepVcpu, Vcpu, VcpuExit, WorkCounter};
 
 /// Guest RAM base — the QEMU `virt` / Altra map the payload runtime is linked for
 /// (`payloads/linker.ld`: params page at `0x4000_0000`, image at `+512 KiB`).
-pub const RAM_BASE: u64 = 0x4000_0000;
+pub const RAM_BASE: u64 = crate::linux_boot::RAM_BASE;
 
 /// How much guest RAM the payloads need: the image loads 512 KiB in and its whole
 /// footprint (code + rodata + data + bss + `__stack_top`, `payloads/linker.ld`) plus
@@ -511,6 +511,31 @@ pub struct Machine {
     watchdog_secs: u64,
 }
 
+enum GuestBoot<'a> {
+    Payload {
+        image: &'a crate::elf::Elf,
+        params: &'a ParamsPage,
+    },
+    Linux {
+        image: &'a [u8],
+        initramfs: &'a [u8],
+        bootargs: &'a str,
+    },
+}
+
+impl GuestBoot<'_> {
+    fn ram_size(&self) -> usize {
+        match self {
+            Self::Payload { .. } => RAM_SIZE,
+            Self::Linux { .. } => crate::linux_boot::RAM_SIZE,
+        }
+    }
+
+    fn needs_psci_0_2(&self) -> bool {
+        matches!(self, Self::Linux { .. })
+    }
+}
+
 impl Machine {
     /// Create the VM, map guest RAM, create and initialise the vCPU, load the
     /// payload's `PT_LOAD` segments, publish the params page, and set `PC` to the
@@ -526,6 +551,27 @@ impl Machine {
     /// [`SysError`] if any ioctl or mapping failed. Nothing is half-built: a failure
     /// closes what it opened.
     pub fn new(image: &crate::elf::Elf, params: &ParamsPage) -> Result<Machine, SysError> {
+        Self::new_for(GuestBoot::Payload { image, params })
+    }
+
+    /// Create the AA-5(c) Linux board, validate and load its flat Image,
+    /// initramfs, and generated DTB, then establish the arm64 Linux entry state.
+    ///
+    /// This constructor supplies boot plumbing only. The published pvclock page
+    /// remains the explicit non-work-derived placeholder, so callers cannot treat
+    /// a successful boot as AA-5 certification.
+    ///
+    /// # Errors
+    /// [`SysError`] if an artifact is malformed or any KVM operation fails.
+    pub fn new_linux(image: &[u8], initramfs: &[u8], bootargs: &str) -> Result<Machine, SysError> {
+        Self::new_for(GuestBoot::Linux {
+            image,
+            initramfs,
+            bootargs,
+        })
+    }
+
+    fn new_for(boot: GuestBoot<'_>) -> Result<Machine, SysError> {
         let kvm_fd = open_kvm()?;
         let mut m = Machine {
             kvm_fd,
@@ -538,7 +584,7 @@ impl Machine {
             mem_size: 0,
             watchdog_secs: DEFAULT_WATCHDOG_SECS,
         };
-        m.build(image, params)?;
+        m.build(boot)?;
         Ok(m)
     }
 
@@ -604,7 +650,8 @@ impl Machine {
 
     /// The build sequence, factored out so [`Machine`]'s `Drop` cleans up a partial
     /// construction rather than leaking fds on the error path.
-    fn build(&mut self, image: &crate::elf::Elf, params: &ParamsPage) -> Result<(), SysError> {
+    fn build(&mut self, boot: GuestBoot<'_>) -> Result<(), SysError> {
+        let needs_psci_0_2 = boot.needs_psci_0_2();
         // SAFETY: `kvm_fd` is a valid /dev/kvm descriptor. KVM_CREATE_VM takes a
         // machine type (0 = default) and returns a VM fd.
         self.vm_fd = unsafe { libc::ioctl(self.kvm_fd, kvm::CREATE_VM as libc::c_ulong, 0_u64) };
@@ -612,13 +659,15 @@ impl Machine {
             return Err(err("ioctl(KVM_CREATE_VM)"));
         }
 
+        let ram_size = boot.ram_size();
+
         // Guest RAM: one anonymous mapping, one memory slot.
         // SAFETY: a fresh anonymous private mapping; no pointer is derived from
         // untrusted data and the length is our own constant.
         let mem = unsafe {
             libc::mmap(
                 core::ptr::null_mut(),
-                RAM_SIZE,
+                ram_size,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
                 -1,
@@ -629,13 +678,16 @@ impl Machine {
             return Err(err("mmap(guest RAM)"));
         }
         self.mem = mem.cast::<u8>();
-        self.mem_size = RAM_SIZE;
+        self.mem_size = ram_size;
+
+        let memory_size = u64::try_from(ram_size)
+            .map_err(|_| SysError::Protocol("guest RAM size does not fit u64".into()))?;
 
         let region = KvmUserspaceMemoryRegion {
             slot: 0,
             flags: 0,
             guest_phys_addr: RAM_BASE,
-            memory_size: RAM_SIZE as u64,
+            memory_size,
             userspace_addr: self.mem as u64,
         };
         // SAFETY: `vm_fd` is valid and `region` is a fully initialised
@@ -704,6 +756,13 @@ impl Machine {
         {
             return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET)"));
         }
+        // The generated Linux DTB advertises PSCI 0.2 over HVC. Without this
+        // feature bit KVM exposes only legacy PSCI 0.1, so standardized calls
+        // such as SYSTEM_OFF/RESET are reported unsupported. Preserve the
+        // historical bare-payload init bitmap byte-for-byte; only Linux opts in.
+        if needs_psci_0_2 {
+            init.features[0] |= 1 << kvm::ARM_VCPU_PSCI_0_2;
+        }
         // SAFETY: `vcpu_fd` is valid; `init` is fully initialised by the call above.
         if unsafe {
             libc::ioctl(
@@ -723,10 +782,27 @@ impl Machine {
         // vCPU to exist) and before the guest runs.
         self.create_vgic()?;
 
-        self.load_image(image)?;
-        self.write_params(params);
-        self.publish_pvclock_page();
-        self.set_pc(image.entry())?;
+        match boot {
+            GuestBoot::Payload { image, params } => {
+                self.load_image(image)?;
+                self.write_params(params);
+                self.publish_pvclock_page();
+                self.set_pc(image.entry())?;
+            }
+            GuestBoot::Linux {
+                image,
+                initramfs,
+                bootargs,
+            } => {
+                // SAFETY: `self.mem` is the unique writable `ram_size`-byte mmap
+                // established above, and the vCPU has not run yet.
+                let ram = unsafe { core::slice::from_raw_parts_mut(self.mem, self.mem_size) };
+                let loaded = crate::linux_boot::load(image, initramfs, bootargs, ram)
+                    .map_err(|e| SysError::Protocol(format!("Linux boot layout: {e}")))?;
+                self.publish_pvclock_page();
+                self.set_linux_entry(loaded.entry_gpa, loaded.dtb_gpa)?;
+            }
+        }
 
         // The KVM_RUN watchdog handler — installed here so every Machine that can enter
         // the guest can also be pulled back out of a wedge. Orthogonal to the counter's
@@ -898,9 +974,26 @@ impl Machine {
 
     /// Set the vCPU's `PC` to the image entry point.
     fn set_pc(&mut self, pc: u64) -> Result<(), SysError> {
-        let value: u64 = pc;
+        self.set_core_reg(kvm::REG_CORE_PC, pc)
+    }
+
+    /// Establish the register state required by the arm64 Linux boot protocol:
+    /// enter the Image at EL1h with interrupts masked, pass the DTB in `x0`, and
+    /// clear the three reserved argument registers.
+    fn set_linux_entry(&mut self, entry_gpa: u64, dtb_gpa: u64) -> Result<(), SysError> {
+        const PSTATE_EL1H_DAIF: u64 = 0x3c5;
+
+        self.set_pc(entry_gpa)?;
+        self.set_core_reg(kvm::REG_CORE_X0, dtb_gpa)?;
+        for gpr in 1..=3 {
+            self.set_core_reg(kvm::REG_CORE_X0 + gpr * kvm::REG_CORE_X_STRIDE, 0)?;
+        }
+        self.set_core_reg(kvm::REG_CORE_PSTATE, PSTATE_EL1H_DAIF)
+    }
+
+    fn set_core_reg(&mut self, index: u64, value: u64) -> Result<(), SysError> {
         let one = KvmOneReg {
-            id: kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC,
+            id: kvm::REG_ARM64_CORE_U64 | index,
             addr: (&raw const value) as u64,
         };
         // SAFETY: `vcpu_fd` is valid; `one.addr` points at a live u64 on this frame,
@@ -913,7 +1006,7 @@ impl Machine {
             )
         } < 0
         {
-            return Err(err("ioctl(KVM_SET_ONE_REG, pc)"));
+            return Err(err("ioctl(KVM_SET_ONE_REG, core)"));
         }
         Ok(())
     }
