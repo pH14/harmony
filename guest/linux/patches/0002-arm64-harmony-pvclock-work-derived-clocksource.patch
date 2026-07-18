@@ -37,8 +37,8 @@ Harmony repository's designated guest-kernel patch exception.
 +	help
 +	  Replace the architected generic counter read used by the arm64
 +	  clocksource, sched_clock and delay paths with Harmony's ABI-v1
-+	  materialized work-derived page. The generic timer remains available
-+	  only as the EL1 clock-event interrupt device. EL0 generic-counter
++	  materialized work-derived page. The generic timer's driver/IRQ slot is
++	  retained for the companion work-clockevent patch. EL0 generic-counter
 +	  access and the vDSO fast path are disabled; no live-counter fallback
 +	  exists because reachable Neoverse N1 hardware cannot trap CNTVCT.
 +
@@ -291,8 +291,14 @@ Harmony repository's designated guest-kernel patch exception.
  
  	arch_timer_set_cntkctl(cntkctl);
  }
-@@ -1144,0 +1150,4 @@ static int __init arch_timer_of_init(struct device_node *np)
+@@ -1136,6 +1141,10 @@ static int __init arch_timer_of_init(struct device_node *np)
+ 		pr_warn("multiple nodes in dt, skipping\n");
+ 		return 0;
+ 	}
++
 +#ifdef CONFIG_HARMONY_ARM_PVCLOCK
 +	harmony_arm_pvclock_register();
 +#endif
-+
+ 
+ 	has_names = of_property_present(np, "interrupt-names");
+ 

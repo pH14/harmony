@@ -1417,7 +1417,7 @@ the vDSO and cross-verification reports zero live counter reads (constant `CNTFR
 remain allowed). Remaining, kernel-dependent: the EL0
 `CNTVCT_EL0`-read-undefs-under-`CNTKCTL_EL1` live test and `CNTHCTL_EL2` posture.
 
-**(c) The Linux smoke — executor + guest build substrate built; live clock closure remains.** The
+**(c) The Linux smoke — executor + guest clockevent substrate built; live proof remains.** The
 harness now has a portable-tested, arm64-Linux-cross-clippy-clean boot substrate: a total flat
 Image loader with bounded Image/initramfs placement, deterministic generated DTB, Linux EL1h
 entry (`x0=DTB`, reserved args zero), Linux-only PSCI 0.2 vCPU opt-in, the existing in-kernel
@@ -1429,9 +1429,21 @@ starts an exact cadence from work zero, and accepts the owned guest's page GPA o
 `INTEGRATION` §1.3's validated one-shot MMIO registration. No natural registration/MMIO exit
 stamps time: the first landing after registration writes canonical ABI v1 at an exact retired-
 branch target, and every later page refresh uses the same AA-3 arm-early + single-step primitive.
-The output records the pinned GPA, publication count, maximum work gap, and last exact anchor. It
-remains deliberately labelled **NON-CERTIFYING**: the console marker alone does not prove its
-producer, the timer gap below remains, and this path has not run on the Altra. The marker is
+The output records the pinned GPA, publication count, maximum work gap, last exact anchor, and
+clockevent assertion/ACK/lateness counts. At each exact publication the host compares the page's
+guest ticks with the guest's absolute MMIO deadline and raises dedicated unowned PPI 20 when due.
+The level remains high until the guest IRQ handler ACKs before calling the generic event handler;
+success requires the handler to rearm and a later exact publication. KVM's architected timer owns
+its default PPI 27, so using it for userspace injection would be silently ignored despite a
+successful ioctl. The harness instead encodes vCPU0/PPI20 as `0x02000014`, verifies the vGIC
+external-input level after every assertion and deassertion through
+`KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO`, and binds that line level plus the pending deadline into the
+replay digest. Reading `GICR_ISPENDR0` would be vacuous here: KVM's level injection changes the
+line-level bitmap, not necessarily the userspace-visible pending latch. The DT requires the
+generic `nohlt` poll loop because work time cannot advance while the sole vCPU sleeps in WFI.
+
+The path remains deliberately labelled **NON-CERTIFYING**: the console marker alone does not prove its
+producer and this path has not run on the Altra. The marker is
 latched at its UART exit but accepted only after the next exact refresh publishes; the owned init
 spins after READY so a lost/late Preempt cannot pass with a stale page merely because userspace
 printed the expected bytes.
@@ -1453,20 +1465,20 @@ the counter and LL/SC scans accept both vmlinux and the vDSO; the exact init ELF
 LL/SC scan before packing. The checksum-pinned source/config cross-build is clean, but this is
 **not native box-built evidence**: no resulting Image/initramfs is present on the Altra yet.
 
-One timer-domain gap is explicit. Upstream's virtual clockevent programs `CNTV_CVAL` as
-`page_guest_clock + delta`, while stock KVM expires it against the live architected counter.
-Equal frequency alone does not align those origins; replacing the static page with exact-work
-refreshes fixes the clocksource but does not make the in-kernel timer expiry deterministic.
-AA-5 therefore remains open until the host owns/aligned the timer-counter origin or replaces that
-clockevent path with the deterministic V-time timer, stamps the page before every corresponding
-injection, and the real N1 run proves userspace steady state plus same-seed console+state
-identity. That live substrate also hosts AA-4 level-3's planted-exclusive proof.
+The prior timer-domain gap is now closed in the pre-silicon substrate. Upstream's virtual
+clockevent programmed `CNTV_CVAL` against KVM's live architected counter; the owned kernel now
+keeps that timer disabled and exports only work-clock deadlines. The hardened raw executable-ELF
+scanner rejects linked `vmlinux`/vDSO publication if any CNTV/CNTP CVAL/TVAL program survives and
+has a planted mapping-symbol negative control. The exact Linux 6.18.35 Image build passes that
+gate with zero timer programs. AA-5 remains open for the real pinned-N1 run proving userspace
+steady state and same-seed console+state identity. That live substrate also hosts AA-4 level-3's
+planted-exclusive proof.
 
 **Disposition: AA-5 PARTIAL — (a) payload determinism and (b) the closure premise + scanner are
 demonstrated on real N1; (c) has pre-silicon executor/build substrate but no box-built asset or
 live guest proof**. The guest-registered exact-work page refresher is built but unexecuted;
-completion remains blocked on the pvclock-enabled box build, deterministic timer/event delivery,
-AA-4's live W^X/stage-2 enforcement proofs, and live N1 bring-up.
+completion remains blocked on the pvclock-enabled native box build, live deterministic
+timer/event evidence, AA-4's live W^X/stage-2 enforcement proofs, and live N1 bring-up.
 It remains the natural home for AA-4 L3's live proof and AA-6's guest-side gates. This is not a
 NO-GO signal — every underlying mechanism (work clock, exact landing, force-exit, counter
 closure) is independently GO/demonstrated above.

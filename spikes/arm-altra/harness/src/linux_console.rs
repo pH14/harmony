@@ -27,6 +27,10 @@ const PL011_FR_OFFSET: u64 = 0x018;
 const PL011_FR_TXFE_RXFE: u64 = (1 << 7) | (1 << 4);
 const PVCLOCK_REGISTER_GPA_OFFSET: u64 = 0;
 const PVCLOCK_REGISTER_ABI_OFFSET: u64 = 8;
+const PVCLOCK_CLOCKEVENT_DEADLINE_OFFSET: u64 = 0x10;
+const PVCLOCK_CLOCKEVENT_CONTROL_OFFSET: u64 = 0x18;
+const PVCLOCK_CLOCKEVENT_DISARM: u32 = 1;
+const PVCLOCK_CLOCKEVENT_ACK: u32 = 2;
 const PVCLOCK_REGISTER_END: u64 = PVCLOCK_REGISTER_BASE + PVCLOCK_REGISTER_SIZE;
 /// Marker the owned AA-5 initramfs prints after `/init` reaches userspace.
 pub const LINUX_READY_MARKER: &[u8] = b"HARMONY_AA5_READY";
@@ -85,6 +89,28 @@ pub struct LinuxWorkClockResult {
     pub last_refresh_work: u64,
     /// Guest-selected page pinned by the one-shot ARM registration write.
     pub registration_gpa: u64,
+    /// Deterministic PPI assertions observed before success.
+    pub clockevent_assertions: u64,
+    /// Guest ACKs that deasserted the level-triggered PPI before success.
+    pub clockevent_acknowledgements: u64,
+    /// Largest exact-tick lateness of a clockevent assertion.
+    pub clockevent_max_lateness_ticks: u64,
+}
+
+/// VM-owned state for the deterministic, level-triggered Harmony clockevent.
+///
+/// The external input line level is not guaranteed to appear in KVM's vGIC register dump, so
+/// this state is also bound into the machine digest by the Linux KVM implementation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct LinuxClockeventState {
+    /// Absolute work-clock tick deadline programmed by the guest.
+    pub deadline_ticks: Option<u64>,
+    /// Whether userspace currently holds PPI 20 high.
+    pub irq_asserted: bool,
+    /// Successful low-to-high line transitions.
+    pub assertions: u64,
+    /// Guest ACKs that successfully drove the line low.
+    pub acknowledgements: u64,
 }
 
 /// Which ABI-v1 write the stopped-vCPU page seam must perform.
@@ -157,6 +183,21 @@ pub trait LinuxPvclockVcpu: StepVcpu {
         guest_clock_hz: u64,
         write: PvclockWrite,
     ) -> Result<(), RunError>;
+
+    /// Snapshot the VM-owned deterministic clockevent protocol state.
+    fn linux_clockevent_state(&self) -> LinuxClockeventState;
+
+    /// Replace the pending absolute work-clock tick deadline.
+    fn program_linux_clockevent(&mut self, deadline_ticks: u64) -> Result<(), RunError>;
+
+    /// Clear a pending deadline and, if necessary, drive the external PPI low.
+    fn disarm_linux_clockevent(&mut self) -> Result<(), RunError>;
+
+    /// ACK the asserted level interrupt before the guest clockevent handler runs.
+    fn acknowledge_linux_clockevent(&mut self) -> Result<(), RunError>;
+
+    /// At an exact publication Moment, assert a due deadline and return its tick lateness.
+    fn fire_due_linux_clockevent(&mut self, now_ticks: u64) -> Result<Option<u64>, RunError>;
 }
 
 /// Why a Linux console boot was refused.
@@ -277,10 +318,8 @@ pub enum LinuxConsoleError {
         /// GPA carried by the rejected second write.
         attempted: u64,
     },
-    /// The registration device exposes exactly one 64-bit write and one 32-bit read.
-    #[error(
-        "invalid Linux pvclock registration MMIO at {addr:#x}: width={width}, write={is_write}"
-    )]
+    /// The registration/clockevent device exposes only its fixed-width ABI operations.
+    #[error("invalid Linux pvclock/clockevent MMIO at {addr:#x}: width={width}, write={is_write}")]
     InvalidPvclockRegisterMmio {
         /// Guest physical address KVM reported.
         addr: u64,
@@ -495,6 +534,38 @@ impl LinuxWorkMmio {
                 vcpu.complete_mmio_read(&abi.to_le_bytes())?;
                 Ok(false)
             }
+            (PVCLOCK_CLOCKEVENT_DEADLINE_OFFSET, 8, true) => {
+                let deadline = u64::from_le_bytes(data.try_into().map_err(|_| {
+                    LinuxConsoleError::InvalidPvclockRegisterMmio {
+                        addr,
+                        width: data.len(),
+                        is_write,
+                    }
+                })?);
+                vcpu.program_linux_clockevent(deadline)?;
+                Ok(false)
+            }
+            (PVCLOCK_CLOCKEVENT_CONTROL_OFFSET, 4, true) => {
+                let command = u32::from_le_bytes(data.try_into().map_err(|_| {
+                    LinuxConsoleError::InvalidPvclockRegisterMmio {
+                        addr,
+                        width: data.len(),
+                        is_write,
+                    }
+                })?);
+                match command {
+                    PVCLOCK_CLOCKEVENT_DISARM => vcpu.disarm_linux_clockevent()?,
+                    PVCLOCK_CLOCKEVENT_ACK => vcpu.acknowledge_linux_clockevent()?,
+                    _ => {
+                        return Err(LinuxConsoleError::InvalidPvclockRegisterMmio {
+                            addr,
+                            width: data.len(),
+                            is_write,
+                        });
+                    }
+                }
+                Ok(false)
+            }
             _ => Err(LinuxConsoleError::InvalidPvclockRegisterMmio {
                 addr,
                 width: data.len(),
@@ -598,10 +669,11 @@ pub fn run_until_ready(
 /// registration surface; the first exact forced landing canonically stamps that validated GPA,
 /// and later landings refresh it. A patched in-kernel Preempt is armed early for each
 /// `refresh_delta_work` target and the vCPU is single-stepped to the target's canonical PC before
-/// publication. Natural exits do not import their skid-tainted live counter value. This proves
-/// the registration/page/G3 half of AA-5; it deliberately does **not** claim the stock KVM
-/// generic timer is deterministic (that independent timer-domain gap remains a live-boot blocker
-/// in `docs/ARM-ALTRA.md`).
+/// publication. Natural exits do not import their skid-tainted live counter value. At each exact
+/// publication, the host compares the materialized tick count with the guest's absolute deadline
+/// and holds the dedicated PPI high until the guest ACKs it. Success requires a full assert/ACK
+/// cycle, a guest rearm proving the generic handler resumed, and a later exact publication after
+/// userspace's marker.
 ///
 /// # Errors
 /// [`LinuxConsoleError`] on invalid limits/clock configuration, a nonzero pre-entry work count,
@@ -653,6 +725,8 @@ pub fn run_until_ready_work_clock(
     let mut last_refresh_work = initial_work;
     let mut registration_floor_work = None;
     let mut advisory_exits = 0_u64;
+    let mut clockevent_max_lateness_ticks = 0_u64;
+    let mut ready_published = false;
 
     let mut mmio = LinuxWorkMmio::new(console_config);
     let mut exits = 0_u64;
@@ -741,8 +815,19 @@ pub fn run_until_ready_work_clock(
                             })?;
                             max_refresh_gap_work = max_refresh_gap_work.max(refresh_gap);
                             last_refresh_work = target;
+                            ready_published |= mmio.console.ready;
 
-                            if mmio.console.ready {
+                            // A second guest-programmed deadline after ACK proves that the
+                            // handler resumed past its MMIO store and called the generic event
+                            // handler. Accept only at this later exact publication, before
+                            // raising that next deadline at the terminal boundary.
+                            let clockevent = vcpu.linux_clockevent_state();
+                            if ready_published
+                                && clockevent.deadline_ticks.is_some()
+                                && clockevent.assertions > 0
+                                && clockevent.assertions == clockevent.acknowledgements
+                                && !clockevent.irq_asserted
+                            {
                                 return Ok(LinuxWorkClockResult {
                                     boot: LinuxConsoleResult {
                                         console: mmio.console.console,
@@ -752,7 +837,17 @@ pub fn run_until_ready_work_clock(
                                     max_refresh_gap_work,
                                     last_refresh_work,
                                     registration_gpa,
+                                    clockevent_assertions: clockevent.assertions,
+                                    clockevent_acknowledgements: clockevent.acknowledgements,
+                                    clockevent_max_lateness_ticks,
                                 });
+                            }
+
+                            if let Some(lateness) =
+                                vcpu.fire_due_linux_clockevent(clock.guest_ticks(target))?
+                            {
+                                clockevent_max_lateness_ticks =
+                                    clockevent_max_lateness_ticks.max(lateness);
                             }
                         }
 
@@ -821,6 +916,8 @@ mod tests {
         mmio_reads: Vec<Vec<u8>>,
         validations: Vec<u64>,
         publications: Vec<(u64, u64, u64, u64, PvclockWrite)>,
+        clockevent: LinuxClockeventState,
+        irq_levels: Vec<bool>,
     }
 
     impl Vcpu for ScriptedClockVcpu {
@@ -919,6 +1016,79 @@ mod tests {
                 .push((gpa, vns, guest_clock, guest_clock_hz, write));
             Ok(())
         }
+
+        fn linux_clockevent_state(&self) -> LinuxClockeventState {
+            self.clockevent
+        }
+
+        fn program_linux_clockevent(&mut self, deadline_ticks: u64) -> Result<(), RunError> {
+            if self.clockevent.irq_asserted {
+                return Err(RunError::Seam {
+                    context: "program the scripted Linux clockevent",
+                    message: "cannot replace a deadline while PPI 20 is asserted".into(),
+                });
+            }
+            self.clockevent.deadline_ticks = Some(deadline_ticks);
+            Ok(())
+        }
+
+        fn disarm_linux_clockevent(&mut self) -> Result<(), RunError> {
+            self.clockevent.deadline_ticks = None;
+            if self.clockevent.irq_asserted {
+                self.clockevent.irq_asserted = false;
+                self.irq_levels.push(false);
+            }
+            Ok(())
+        }
+
+        fn acknowledge_linux_clockevent(&mut self) -> Result<(), RunError> {
+            if !self.clockevent.irq_asserted {
+                return Err(RunError::Seam {
+                    context: "acknowledge the scripted Linux clockevent",
+                    message: "guest ACK arrived while PPI 20 was low".into(),
+                });
+            }
+            let acknowledgements =
+                self.clockevent
+                    .acknowledgements
+                    .checked_add(1)
+                    .ok_or_else(|| RunError::Seam {
+                        context: "acknowledge the scripted Linux clockevent",
+                        message: "acknowledgement counter overflow".into(),
+                    })?;
+            self.clockevent.irq_asserted = false;
+            self.clockevent.acknowledgements = acknowledgements;
+            self.irq_levels.push(false);
+            Ok(())
+        }
+
+        fn fire_due_linux_clockevent(&mut self, now_ticks: u64) -> Result<Option<u64>, RunError> {
+            let Some(deadline) = self.clockevent.deadline_ticks else {
+                return Ok(None);
+            };
+            if now_ticks < deadline {
+                return Ok(None);
+            }
+            if self.clockevent.irq_asserted {
+                return Err(RunError::Seam {
+                    context: "assert the scripted Linux clockevent",
+                    message: "PPI 20 is already asserted".into(),
+                });
+            }
+            let assertions =
+                self.clockevent
+                    .assertions
+                    .checked_add(1)
+                    .ok_or_else(|| RunError::Seam {
+                        context: "assert the scripted Linux clockevent",
+                        message: "assertion counter overflow".into(),
+                    })?;
+            self.clockevent.deadline_ticks = None;
+            self.clockevent.irq_asserted = true;
+            self.clockevent.assertions = assertions;
+            self.irq_levels.push(true);
+            Ok(Some(now_ticks - deadline))
+        }
     }
 
     struct ScriptedCounter {
@@ -977,6 +1147,33 @@ mod tests {
             mmio_reads: Vec::new(),
             validations: Vec::new(),
             publications: Vec::new(),
+            clockevent: LinuxClockeventState::default(),
+            irq_levels: Vec::new(),
+        }
+    }
+
+    fn clockevent_deadline(deadline: u64) -> VcpuExit {
+        VcpuExit::Mmio {
+            addr: PVCLOCK_REGISTER_BASE + PVCLOCK_CLOCKEVENT_DEADLINE_OFFSET,
+            data: deadline.to_le_bytes().to_vec(),
+            is_write: true,
+        }
+    }
+
+    fn clockevent_control(command: u32) -> VcpuExit {
+        VcpuExit::Mmio {
+            addr: PVCLOCK_REGISTER_BASE + PVCLOCK_CLOCKEVENT_CONTROL_OFFSET,
+            data: command.to_le_bytes().to_vec(),
+            is_write: true,
+        }
+    }
+
+    fn append_ack_rearm_and_landing(exits: &mut VecDeque<VcpuExit>, next_deadline: u64) {
+        exits.push_back(clockevent_control(PVCLOCK_CLOCKEVENT_ACK));
+        exits.push_back(clockevent_deadline(next_deadline));
+        exits.push_back(VcpuExit::Preempt);
+        for _ in 0..5 {
+            exits.push_back(VcpuExit::Debug);
         }
     }
 
@@ -1246,6 +1443,82 @@ mod tests {
     }
 
     #[test]
+    fn clockevent_mmio_is_level_triggered_bounded_and_fail_closed() {
+        let config = config(b"R");
+        let mut mmio = LinuxWorkMmio::new(&config);
+        let mut vcpu = scripted_clock_vcpu(VecDeque::new(), 0);
+
+        mmio.service(
+            &mut vcpu,
+            &config,
+            PVCLOCK_REGISTER_BASE + PVCLOCK_CLOCKEVENT_DEADLINE_OFFSET,
+            &7_u64.to_le_bytes(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(vcpu.clockevent.deadline_ticks, Some(7));
+        assert_eq!(vcpu.fire_due_linux_clockevent(6).unwrap(), None);
+        assert_eq!(vcpu.fire_due_linux_clockevent(9).unwrap(), Some(2));
+        assert_eq!(vcpu.irq_levels, [true]);
+
+        assert!(matches!(
+            mmio.service(
+                &mut vcpu,
+                &config,
+                PVCLOCK_REGISTER_BASE + PVCLOCK_CLOCKEVENT_DEADLINE_OFFSET,
+                &10_u64.to_le_bytes(),
+                true,
+            ),
+            Err(LinuxConsoleError::Run(RunError::Seam { .. }))
+        ));
+        mmio.service(
+            &mut vcpu,
+            &config,
+            PVCLOCK_REGISTER_BASE + PVCLOCK_CLOCKEVENT_CONTROL_OFFSET,
+            &PVCLOCK_CLOCKEVENT_ACK.to_le_bytes(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(vcpu.irq_levels, [true, false]);
+        assert_eq!(vcpu.clockevent.assertions, 1);
+        assert_eq!(vcpu.clockevent.acknowledgements, 1);
+
+        for command in [0, 3, u32::MAX] {
+            assert!(matches!(
+                mmio.service(
+                    &mut vcpu,
+                    &config,
+                    PVCLOCK_REGISTER_BASE + PVCLOCK_CLOCKEVENT_CONTROL_OFFSET,
+                    &command.to_le_bytes(),
+                    true,
+                ),
+                Err(LinuxConsoleError::InvalidPvclockRegisterMmio { .. })
+            ));
+        }
+        assert!(matches!(
+            mmio.service(
+                &mut vcpu,
+                &config,
+                PVCLOCK_REGISTER_BASE + PVCLOCK_CLOCKEVENT_CONTROL_OFFSET,
+                &PVCLOCK_CLOCKEVENT_ACK.to_le_bytes(),
+                true,
+            ),
+            Err(LinuxConsoleError::Run(RunError::Seam { .. }))
+        ));
+
+        vcpu.program_linux_clockevent(99).unwrap();
+        mmio.service(
+            &mut vcpu,
+            &config,
+            PVCLOCK_REGISTER_BASE + PVCLOCK_CLOCKEVENT_CONTROL_OFFSET,
+            &PVCLOCK_CLOCKEVENT_DISARM.to_le_bytes(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(vcpu.clockevent.deadline_ticks, None);
+    }
+
+    #[test]
     fn pvclock_gpa_validation_is_total_at_every_ram_boundary() {
         const BASE: u64 = 0x4000_0000;
         const LEN: usize = 0x3000;
@@ -1364,6 +1637,7 @@ mod tests {
     #[test]
     fn registration_during_the_exact_walk_publishes_only_at_the_landing() {
         let mut exits = VecDeque::from([
+            clockevent_deadline(1),
             mmio(PL011_DR_OFFSET, b"R", true),
             VcpuExit::Preempt,
             pvclock_register(PVCLOCK_GPA),
@@ -1371,9 +1645,10 @@ mod tests {
         for _ in 0..5 {
             exits.push_back(VcpuExit::Debug);
         }
+        append_ack_rearm_and_landing(&mut exits, 100);
         let mut vcpu = scripted_clock_vcpu(exits, 0xa5);
         let mut counter = ScriptedCounter {
-            reads: VecDeque::from([0, 18, 19, 20, 21, 22, 23]),
+            reads: VecDeque::from([0, 18, 19, 20, 21, 22, 23, 41, 42, 43, 44, 45, 46]),
             armed: Vec::new(),
             resumes: 0,
             rearms: 0,
@@ -1391,10 +1666,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.boot.exits, 8);
+        assert_eq!(result.boot.exits, 17);
         assert_eq!(result.registration_gpa, PVCLOCK_GPA);
-        assert_eq!(result.last_refresh_work, 23);
-        assert_eq!(vcpu.publications.len(), 1);
+        assert_eq!(result.last_refresh_work, 46);
+        assert_eq!(result.clockevent_assertions, 1);
+        assert_eq!(result.clockevent_acknowledgements, 1);
+        assert_eq!(vcpu.irq_levels, [true, false]);
+        assert_eq!(vcpu.publications.len(), 2);
         assert_eq!(vcpu.publications[0].4, PvclockWrite::Canonical);
     }
 
@@ -1404,6 +1682,7 @@ mod tests {
         // The second is the real arm-early overflow.
         let mut exits = VecDeque::from([
             pvclock_register(PVCLOCK_GPA),
+            clockevent_deadline(1),
             VcpuExit::Preempt,
             VcpuExit::Preempt,
         ]);
@@ -1414,10 +1693,11 @@ mod tests {
             exits.push_back(mmio(PL011_DR_OFFSET, &[*byte], true));
             exits.push_back(VcpuExit::Debug);
         }
+        append_ack_rearm_and_landing(&mut exits, 100);
         let mut vcpu = scripted_clock_vcpu(exits, 0xa5);
         let mut counter = ScriptedCounter {
             // Pre-entry zero; advisory at 3; overflow at 18; five steps reach target 23.
-            reads: VecDeque::from([0, 3, 18, 19, 20, 21, 22, 23]),
+            reads: VecDeque::from([0, 3, 18, 19, 20, 21, 22, 23, 41, 42, 43, 44, 45, 46]),
             armed: Vec::new(),
             resumes: 0,
             rearms: 0,
@@ -1436,23 +1716,26 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.boot.console, b"READY");
-        assert_eq!(result.boot.exits, 13);
-        assert_eq!(result.publications, 1);
+        assert_eq!(result.boot.exits, 22);
+        assert_eq!(result.publications, 2);
         assert_eq!(result.max_refresh_gap_work, 23);
-        assert_eq!(result.last_refresh_work, 23);
+        assert_eq!(result.last_refresh_work, 46);
         assert_eq!(result.registration_gpa, PVCLOCK_GPA);
         assert!(!vcpu.single_step, "debug must be disarmed before return");
-        assert_eq!(counter.armed, [6]); // 23 - skid(1) - canonical-PC headroom(16)
-        assert_eq!(counter.resumes, 1);
+        assert_eq!(counter.armed, [6, 6]); // 23 - skid(1) - canonical-PC headroom(16)
+        assert_eq!(counter.resumes, 2);
         assert_eq!(counter.rearms, 1);
         assert_eq!(
             vcpu.publications,
-            [(PVCLOCK_GPA, 23, 1, 50_000_000, PvclockWrite::Canonical)]
+            [
+                (PVCLOCK_GPA, 23, 1, 50_000_000, PvclockWrite::Canonical),
+                (PVCLOCK_GPA, 46, 2, 50_000_000, PvclockWrite::Refresh),
+            ]
         );
         let page = vtime::pvclock::read(&vcpu.page).unwrap();
-        assert_eq!(page.seq, 0);
-        assert_eq!(page.vns, 23);
-        assert_eq!(page.guest_clock, 1);
+        assert_eq!(page.seq, 2);
+        assert_eq!(page.vns, 46);
+        assert_eq!(page.guest_clock, 2);
         assert_eq!(page.flags, vtime::pvclock::PVCLOCK_FLAGS_V1);
         assert!(
             vcpu.page[vtime::pvclock::RESERVED_OFF..]
@@ -1465,15 +1748,17 @@ mod tests {
     fn work_clock_latches_an_early_marker_but_waits_for_exact_refresh() {
         let mut exits = VecDeque::from([
             pvclock_register(PVCLOCK_GPA),
+            clockevent_deadline(1),
             mmio(PL011_DR_OFFSET, b"R", true),
             VcpuExit::Preempt,
         ]);
         for _ in 0..5 {
             exits.push_back(VcpuExit::Debug);
         }
+        append_ack_rearm_and_landing(&mut exits, 100);
         let mut vcpu = scripted_clock_vcpu(exits, 0);
         let mut counter = ScriptedCounter {
-            reads: VecDeque::from([0, 18, 19, 20, 21, 22, 23]),
+            reads: VecDeque::from([0, 18, 19, 20, 21, 22, 23, 41, 42, 43, 44, 45, 46]),
             armed: Vec::new(),
             resumes: 0,
             rearms: 0,
@@ -1490,23 +1775,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.boot.console, b"R");
-        assert_eq!(result.boot.exits, 8);
-        assert_eq!(result.publications, 1);
-        assert_eq!(result.last_refresh_work, 23);
+        assert_eq!(result.boot.exits, 17);
+        assert_eq!(result.publications, 2);
+        assert_eq!(result.last_refresh_work, 46);
         assert_eq!(result.registration_gpa, PVCLOCK_GPA);
-        assert_eq!(counter.armed, [6]);
-        assert_eq!(vcpu.publications.len(), 1);
+        assert_eq!(counter.armed, [6, 6]);
+        assert_eq!(vcpu.publications.len(), 2);
     }
 
     #[test]
     fn work_clock_rearms_and_publishes_a_second_exact_period() {
-        let mut exits = VecDeque::from([pvclock_register(PVCLOCK_GPA), VcpuExit::Preempt]);
+        let mut exits = VecDeque::from([
+            pvclock_register(PVCLOCK_GPA),
+            clockevent_deadline(1),
+            VcpuExit::Preempt,
+        ]);
         for _ in 0..5 {
             exits.push_back(VcpuExit::Debug);
         }
         // READY arrives naturally after the first publication. It remains latched until the
         // second forced target proves that periodic rearming, exact landing, and refresh all
         // completed before success is reported.
+        exits.push_back(clockevent_control(PVCLOCK_CLOCKEVENT_ACK));
+        exits.push_back(clockevent_deadline(100));
         exits.push_back(mmio(PL011_DR_OFFSET, b"R", true));
         exits.push_back(VcpuExit::Preempt);
         for _ in 0..5 {
@@ -1533,7 +1824,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.boot.console, b"R");
-        assert_eq!(result.boot.exits, 14);
+        assert_eq!(result.boot.exits, 17);
         assert_eq!(result.publications, 2);
         assert_eq!(result.max_refresh_gap_work, 23);
         assert_eq!(result.last_refresh_work, 46);
@@ -1565,14 +1856,18 @@ mod tests {
         // registration occurs in the following cadence interval; its conservative G3 baseline
         // is the prior exact target (23), not pre-entry work zero.
         exits.push_back(pvclock_register(PVCLOCK_GPA));
+        exits.push_back(clockevent_deadline(2));
         exits.push_back(mmio(PL011_DR_OFFSET, b"R", true));
         exits.push_back(VcpuExit::Preempt);
         for _ in 0..5 {
             exits.push_back(VcpuExit::Debug);
         }
+        append_ack_rearm_and_landing(&mut exits, 100);
         let mut vcpu = scripted_clock_vcpu(exits, 0);
         let mut counter = ScriptedCounter {
-            reads: VecDeque::from([0, 18, 19, 20, 21, 22, 23, 41, 42, 43, 44, 45, 46]),
+            reads: VecDeque::from([
+                0, 18, 19, 20, 21, 22, 23, 41, 42, 43, 44, 45, 46, 64, 65, 66, 67, 68, 69,
+            ]),
             armed: Vec::new(),
             resumes: 0,
             rearms: 0,
@@ -1590,15 +1885,18 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.boot.exits, 14);
-        assert_eq!(result.publications, 1);
+        assert_eq!(result.boot.exits, 23);
+        assert_eq!(result.publications, 2);
         assert_eq!(result.max_refresh_gap_work, 23);
-        assert_eq!(result.last_refresh_work, 46);
+        assert_eq!(result.last_refresh_work, 69);
         assert_eq!(result.registration_gpa, PVCLOCK_GPA);
-        assert_eq!(counter.armed, [6, 6]);
+        assert_eq!(counter.armed, [6, 6, 6]);
         assert_eq!(
             vcpu.publications,
-            [(PVCLOCK_GPA, 46, 2, 50_000_000, PvclockWrite::Canonical)]
+            [
+                (PVCLOCK_GPA, 46, 2, 50_000_000, PvclockWrite::Canonical),
+                (PVCLOCK_GPA, 69, 3, 50_000_000, PvclockWrite::Refresh),
+            ]
         );
     }
 }

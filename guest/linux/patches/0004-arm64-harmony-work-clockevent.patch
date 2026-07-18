@@ -1,0 +1,198 @@
+arm64: drive the guest clockevent from exact work
+
+The architected virtual timer expires CNTV_CVAL against KVM's live counter
+domain, not Harmony's materialized work clock. Replace that final AA-5(c)
+timer-domain leak with a guest/host protocol on the existing owned MMIO page:
+the guest writes an absolute work-clock tick deadline, userspace compares it
+only after publishing an exact-work page value, and userspace holds dedicated
+PPI 20 high until the interrupt handler ACKs it. ACK precedes the generic event
+handler, so level deassertion completes before the handler rearms. The virtual
+timer control stays disabled and this path never programs CNTV_CVAL/TVAL.
+
+Work time cannot advance while the sole vCPU sleeps in WFI. Select the generic
+idle-poll bootarg support; the owned harness separately requires `nohlt` in the
+DT command line.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/drivers/clocksource/Kconfig
++++ b/drivers/clocksource/Kconfig
+@@ -327,5 +327,6 @@ config HARMONY_ARM_PVCLOCK
+ 	bool "Harmony work-derived arm64 clock page"
+ 	depends on ARM64 && ARM_ARCH_TIMER
++	select GENERIC_IDLE_POLL_SETUP
+ 	default n
+ 	help
+ 	  Replace the architected generic counter read used by the arm64
+--- a/drivers/clocksource/harmony_arm_pvclock.c
++++ b/drivers/clocksource/harmony_arm_pvclock.c
+@@ -14,6 +14,7 @@
+ #include <linux/compiler.h>
+ #include <linux/init.h>
+ #include <linux/io.h>
++#include <linux/overflow.h>
+ #include <linux/panic.h>
+ #include <linux/printk.h>
+ 
+@@ -27,6 +28,10 @@
+ #define HARMONY_PVCLOCK_REGISTER_GPA	0x0b000000ULL
+ #define HARMONY_PVCLOCK_REGISTER_SIZE	0x1000
+ #define HARMONY_PVCLOCK_REGISTER_ABI	0x8
++#define HARMONY_CLOCKEVENT_DEADLINE	0x10
++#define HARMONY_CLOCKEVENT_CONTROL	0x18
++#define HARMONY_CLOCKEVENT_DISARM	1U
++#define HARMONY_CLOCKEVENT_ACK		2U
+ #define HARMONY_PVCLOCK_REGISTER_SPINS	(1U << 28) /* host caps delta at 100M work */
+ #define HARMONY_PVCLOCK_ABI		1U
+ #define HARMONY_FLAG_MATERIALIZED	(1U << 0)
+@@ -44,6 +49,8 @@ struct harmony_arm_pvclock_page {
+ 	__le32 vcpu_index;
+ } __packed;
+ 
++static void __iomem *harmony_registers;
++
+ static __always_inline const struct harmony_arm_pvclock_page *harmony_page(void)
+ {
+ 	return (const void *)__phys_to_virt(HARMONY_PVCLOCK_GPA);
+@@ -68,18 +75,16 @@ static __always_inline bool harmony_page_valid(void)
+  */
+ void __init harmony_arm_pvclock_register(void)
+ {
+-	void __iomem *registers;
+ 	u32 abi;
+ 	u32 spin;
+ 
+-	registers = ioremap(HARMONY_PVCLOCK_REGISTER_GPA,
+-			    HARMONY_PVCLOCK_REGISTER_SIZE);
+-	if (!registers)
++	harmony_registers = ioremap(HARMONY_PVCLOCK_REGISTER_GPA,
++			    HARMONY_PVCLOCK_REGISTER_SIZE);
++	if (!harmony_registers)
+ 		panic("Harmony pvclock registration MMIO cannot be mapped");
+ 
+-	writeq(HARMONY_PVCLOCK_GPA, registers);
+-	abi = readl(registers + HARMONY_PVCLOCK_REGISTER_ABI);
+-	iounmap(registers);
++	writeq(HARMONY_PVCLOCK_GPA, harmony_registers);
++	abi = readl(harmony_registers + HARMONY_PVCLOCK_REGISTER_ABI);
+ 	if (abi != HARMONY_PVCLOCK_ABI)
+ 		panic("Harmony pvclock host returned ABI %u, expected %u",
+ 		      abi, HARMONY_PVCLOCK_ABI);
+@@ -120,3 +125,43 @@ noinstr u64 harmony_arm_pvclock_read(void)
+ 
+ 	return count;
+ }
++
++/*
++ * Program only the userspace-owned absolute deadline. The architected virtual
++ * timer remains disabled; in particular this path never writes CNTV_CVAL/TVAL.
++ */
++int harmony_arm_clockevent_set_next(unsigned long delta)
++{
++	u64 deadline;
++	u64 now;
++
++	if (!harmony_registers)
++		panic("Harmony clockevent used before MMIO registration");
++	now = harmony_arm_pvclock_read();
++	if (check_add_overflow(now, (u64)delta, &deadline))
++		panic("Harmony clockevent deadline overflow at tick %llu + %lu",
++		      now, delta);
++	writeq(deadline, harmony_registers + HARMONY_CLOCKEVENT_DEADLINE);
++	return 0;
++}
++
++void harmony_arm_clockevent_disarm(void)
++{
++	if (!harmony_registers)
++		panic("Harmony clockevent disarmed before MMIO registration");
++	writel(HARMONY_CLOCKEVENT_DISARM,
++	       harmony_registers + HARMONY_CLOCKEVENT_CONTROL);
++}
++
++/*
++ * PPI 20 is level-triggered. ACK before evt->event_handler() so userspace
++ * drives the external input low before the generic handler rearms and before
++ * the GIC CPU interface completes EOI on return from this IRQ handler.
++ */
++void harmony_arm_clockevent_ack(void)
++{
++	if (!harmony_registers)
++		panic("Harmony clockevent ACK before MMIO registration");
++	writel(HARMONY_CLOCKEVENT_ACK,
++	       harmony_registers + HARMONY_CLOCKEVENT_CONTROL);
++}
+--- a/arch/arm64/include/asm/arch_timer.h
++++ b/arch/arm64/include/asm/arch_timer.h
+@@ -170,6 +170,9 @@ static inline void arch_timer_set_cntkctl(u32 cntkctl)
+ #ifdef CONFIG_HARMONY_ARM_PVCLOCK
+ u64 harmony_arm_pvclock_read(void);
+ void __init harmony_arm_pvclock_register(void);
++int harmony_arm_clockevent_set_next(unsigned long delta);
++void harmony_arm_clockevent_disarm(void);
++void harmony_arm_clockevent_ack(void);
+ 
+ static __always_inline u64 __arch_counter_get_cntpct_stable(void)
+ {
+--- a/drivers/clocksource/arm_arch_timer.c
++++ b/drivers/clocksource/arm_arch_timer.c
+@@ -583,6 +583,12 @@ static irqreturn_t arch_timer_handler_virt(int irq, void *dev_id)
+ {
+ 	struct clock_event_device *evt = dev_id;
+ 
++	if (IS_ENABLED(CONFIG_HARMONY_ARM_PVCLOCK)) {
++		harmony_arm_clockevent_ack();
++		evt->event_handler(evt);
++		return IRQ_HANDLED;
++	}
++
+ 	return timer_handler(ARCH_TIMER_VIRT_ACCESS, evt);
+ }
+ 
+@@ -608,6 +614,13 @@ static __always_inline int arch_timer_shutdown(const int access,
+ 
+ static int arch_timer_shutdown_virt(struct clock_event_device *clk)
+ {
++	if (IS_ENABLED(CONFIG_HARMONY_ARM_PVCLOCK)) {
++		/* Keep KVM's live-domain virtual timer disabled for the VM's life. */
++		arch_timer_shutdown(ARCH_TIMER_VIRT_ACCESS, clk);
++		harmony_arm_clockevent_disarm();
++		return 0;
++	}
++
+ 	return arch_timer_shutdown(ARCH_TIMER_VIRT_ACCESS, clk);
+ }
+ 
+@@ -638,5 +651,8 @@ static int arch_timer_set_next_event_virt(unsigned long evt,
+ 					  struct clock_event_device *clk)
+ {
++	if (IS_ENABLED(CONFIG_HARMONY_ARM_PVCLOCK))
++		return harmony_arm_clockevent_set_next(evt);
++
+ 	set_next_event(ARCH_TIMER_VIRT_ACCESS, evt, clk);
+ 	return 0;
+ }
+@@ -645,5 +661,8 @@ static int arch_timer_set_next_event_phys(unsigned long evt,
+ 					  struct clock_event_device *clk)
+ {
++	if (IS_ENABLED(CONFIG_HARMONY_ARM_PVCLOCK))
++		return harmony_arm_clockevent_set_next(evt);
++
+ 	set_next_event(ARCH_TIMER_PHYS_ACCESS, evt, clk);
+ 	return 0;
+ }
+@@ -1176,6 +1195,12 @@ static int __init arch_timer_of_init(struct device_node *np)
+ 	else
+ 		arch_timer_uses_ppi = arch_timer_select_ppi();
+ 
++	if (IS_ENABLED(CONFIG_HARMONY_ARM_PVCLOCK) &&
++	    arch_timer_uses_ppi != ARCH_TIMER_VIRT_PPI) {
++		pr_err("Harmony clockevent requires the dedicated virtual-timer DT PPI\n");
++		return -EINVAL;
++	}
++
+ 	if (!arch_timer_ppi[arch_timer_uses_ppi]) {
+ 		pr_err("No interrupt available, giving up\n");
+ 		return -EINVAL;

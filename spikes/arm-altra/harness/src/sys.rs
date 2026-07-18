@@ -239,6 +239,8 @@ pub mod kvm {
     pub const CREATE_VCPU: u64 = 0xAE41;
     /// `KVM_SET_USER_MEMORY_REGION` — `_IOW(KVMIO, 0x46, struct kvm_userspace_memory_region)`.
     pub const SET_USER_MEMORY_REGION: u64 = 0x4020_AE46;
+    /// `KVM_IRQ_LINE` — `_IOW(KVMIO, 0x61, struct kvm_irq_level)`.
+    pub const IRQ_LINE: u64 = 0x4008_AE61;
     /// `KVM_RUN` — `_IO(KVMIO, 0x80)`.
     pub const RUN: u64 = 0xAE80;
     /// `KVM_GET_ONE_REG` — `_IOW(KVMIO, 0xab, struct kvm_one_reg)`. **Note the
@@ -262,6 +264,9 @@ pub mod kvm {
     /// version the truth table records (found on harmony-arm day one). The measurement
     /// vCPU keeps it OFF — the guest contract denies the guest a PMU.
     pub const VCPU_FEATURE_PMU_V3: u32 = 3;
+    /// `KVM_ARM_VCPU_HAS_EL2` feature-bit index. The owned single-level guest keeps this off;
+    /// enabling nested virtualization can allocate additional KVM-owned timer PPIs.
+    pub const VCPU_FEATURE_HAS_EL2: u32 = 7;
     /// `KVM_GET_REG_LIST` — `_IOWR(KVMIO, 0xb0, struct kvm_reg_list)`.
     pub const GET_REG_LIST: u64 = 0xC008_AEB0;
     /// `KVM_ENABLE_CAP` — `_IOW(KVMIO, 0xa3, struct kvm_enable_cap)`.
@@ -338,6 +343,13 @@ pub mod kvm {
     /// encoding; the high 32 bits are the target vCPU's `mpidr` (0 for the spike guest).
     /// These registers are 64-bit (unlike the DIST/REDIST offsets, read 32-bit).
     pub const DEV_ARM_VGIC_GRP_CPU_SYSREGS: u32 = 6;
+    /// `KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO` = **7** — the external input-line state.
+    /// Its `attr` is `mpidr(63:32) | info(31:10) | vINTID(9:0)`; vINTID names a
+    /// 32-interrupt-aligned block. Unlike `GICR_ISPENDR0`, this reports the level set by
+    /// `KVM_IRQ_LINE`, including an owner-mismatch no-op that returned success.
+    pub const DEV_ARM_VGIC_GRP_LEVEL_INFO: u32 = 7;
+    /// The only currently defined level-info selector, in the unshifted `info` namespace.
+    pub const VGIC_LEVEL_INFO_LINE_LEVEL: u64 = 0;
     /// `KVM_DEV_ARM_VGIC_CTRL_INIT`.
     pub const DEV_ARM_VGIC_CTRL_INIT: u64 = 0;
     /// `KVM_GET_DEVICE_ATTR` — `_IOW(KVMIO, 0xe2, struct kvm_device_attr)`, the same
@@ -2232,6 +2244,7 @@ mod tests {
         assert_eq!(kvm::RUN, io(0x80));
         // struct kvm_userspace_memory_region is 32 bytes; kvm_one_reg 16; kvm_vcpu_init 32.
         assert_eq!(kvm::SET_USER_MEMORY_REGION, iow(0x46, 32));
+        assert_eq!(kvm::IRQ_LINE, iow(0x61, 8));
         // Both ONE_REG ioctls are _IOW: the get form encodes write because userspace
         // writes the descriptor and the kernel fills a pointed-at buffer. Pinning them
         // to their literal ABI numbers so the direction can't drift back to _IOR.
@@ -2241,6 +2254,8 @@ mod tests {
         assert_eq!(kvm::ARM_VCPU_INIT, iow(0xae, 32));
         assert_eq!(kvm::ARM_PREFERRED_TARGET, ior(0xaf, 32));
         assert_eq!(kvm::ARM_VCPU_PSCI_0_2, 2);
+        assert_eq!(kvm::VCPU_FEATURE_PMU_V3, 3);
+        assert_eq!(kvm::VCPU_FEATURE_HAS_EL2, 7);
         assert_eq!(kvm::GET_REG_LIST, iowr(0xb0, 8));
         // struct kvm_enable_cap is 104 bytes; kvm_create_device 12; kvm_device_attr 24.
         assert_eq!(kvm::ENABLE_CAP, iow(0xa3, 104));

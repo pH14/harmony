@@ -14,8 +14,8 @@
 //!   and **untested on silicon**.
 //! - `linux-boot` — a bounded, explicitly non-certifying AA-5(c) bring-up path for
 //!   a hash-pinned arm64 Image + initramfs. It refreshes the pvclock page at exact
-//!   retired-branch targets and stops at a fixed console marker; the separate stock-KVM
-//!   generic-timer-domain gap remains explicit.
+//!   retired-branch targets, delivers the dedicated PPI 20 work clockevent, and stops
+//!   only after a fixed console marker plus a complete assert/ACK/rearm cycle.
 //!
 //! # What `run` refuses to invent
 //!
@@ -109,7 +109,7 @@ enum Command {
 const DEFAULT_LINUX_MAX_EXITS: u64 = 5_000_000;
 const DEFAULT_LINUX_MAX_CONSOLE_BYTES: usize = 16 << 20;
 const DEFAULT_LINUX_BOOTARGS: &str = "console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 \
-    keep_bootcon rdinit=/init nokaslr maxcpus=1 random.trust_cpu=off harmony_pvclock";
+    keep_bootcon rdinit=/init nokaslr maxcpus=1 random.trust_cpu=off harmony_pvclock nohlt";
 
 /// `arm-spike linux-boot`'s non-certifying substrate options.
 #[derive(clap::Args, Debug)]
@@ -883,7 +883,7 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
         "NON-CERTIFYING Linux boot reached its fixed console marker: exits={} console_bytes={} \
          console_sha256={} image_sha256={} initramfs_sha256={} pvclock_publications={} \
          pvclock_max_gap_work={} pvclock_last_work={} pvclock_gpa={:#x} guest_clock_hz={} \
-         transcript={}",
+         clockevent_assertions={} clockevent_acks={} clockevent_max_lateness_ticks={} transcript={}",
         result.boot.exits,
         result.boot.console.len(),
         console_sha256,
@@ -894,12 +894,15 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
         result.last_refresh_work,
         result.registration_gpa,
         guest_clock_hz,
+        result.clockevent_assertions,
+        result.clockevent_acknowledgements,
+        result.clockevent_max_lateness_ticks,
         opts.console_out.display()
     );
     println!(
-        "AA-5 remains open: the page is now exact-work-derived, but stock KVM still expires \
-         CNTV_CVAL against its live architected-counter domain; this command does not claim \
-         deterministic timer/injection closure or an AA-4 LSE-only image proof"
+        "AA-5 remains open: the exact-work page and dedicated PPI 20 clockevent substrate are \
+         built, but this command does not claim same-seed live N1 identity, a native pinned-N1 \
+         artifact build, or AA-4's live W^X/stage-2 proof"
     );
     Ok(())
 }

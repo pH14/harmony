@@ -37,6 +37,9 @@ apply_kernel_patch \
 apply_kernel_patch \
     "$LINUX_DIR/patches/0003-arm64-harmony-lse-only.patch" \
     "harmony LSE-only"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/0004-arm64-harmony-work-clockevent.patch" \
+    "harmony work clockevent"
 
 mkdir -p "$ARM64_KOBJ" "$ARM64_ART_DIR"
 
@@ -67,6 +70,7 @@ assert_y ARM64 64BIT SMP OF PRINTK TTY SERIAL_AMBA_PL011 \
     SERIAL_AMBA_PL011_CONSOLE BINFMT_ELF BLK_DEV_INITRD \
     RD_GZIP SYSFS DEVTMPFS POSIX_TIMERS ARM_ARCH_TIMER \
     ARM_PSCI_FW IRQCHIP ARM_GIC ARM_GIC_V3 HARMONY_ARM_PVCLOCK \
+    GENERIC_IDLE_POLL_SETUP \
     ARM64_USE_LSE_ATOMICS ARM64_LSE_ATOMICS HARMONY_ARM_LSE_ONLY \
     HZ_PERIODIC HZ_100 STRICT_KERNEL_RWX
 assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES HIGH_RES_TIMERS NO_HZ_COMMON \
@@ -104,6 +108,7 @@ cat >"$scan_probe" <<'EOF'
 _start:
 	mrs x0, cntfrq_el0
 	mrs x1, cntvct_el0
+	.word 0xd51be340 // executable data mapping: msr cntv_cval_el0, x0
 	ret
 EOF
 cc -nostdlib -static -Wl,-e,_start -o "$scan_probe_elf" "$scan_probe"
@@ -113,6 +118,11 @@ if python3 "$scan" "$scan_probe_elf" >"$scan_probe_log" 2>&1; then
 fi
 if ! grep -q '^\[REJECT\].*1 live counter read' "$scan_probe_log"; then
     echo "FAIL: AA-5 counter scanner did not identify exactly one planted live read" >&2
+    cat "$scan_probe_log" >&2
+    exit 1
+fi
+if ! grep -q '^\[REJECT\].*1 live-domain timer program' "$scan_probe_log"; then
+    echo "FAIL: AA-5 counter scanner did not identify the planted CNTV_CVAL program" >&2
     cat "$scan_probe_log" >&2
     exit 1
 fi

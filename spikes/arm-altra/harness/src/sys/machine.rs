@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::{KvmRun, PerfEventAttr, SysError, br_retired_attr, kvm};
-use crate::linux_console::{LinuxPvclockVcpu, PvclockWrite};
+use crate::linux_console::{LinuxClockeventState, LinuxPvclockVcpu, PvclockWrite};
 use crate::run::{RunError, StepVcpu, Vcpu, VcpuExit, WorkCounter};
 
 /// Guest RAM base — the QEMU `virt` / Altra map the payload runtime is linked for
@@ -70,6 +70,18 @@ pub const RAM_SIZE: usize = 4 << 20;
 /// cannot silently alias device state with an architectural register.
 const LINUX_PVCLOCK_DIGEST_STATE_ID: u64 = u64::MAX;
 const LINUX_PVCLOCK_DIGEST_STATE_TAG: &[u8] = b"harmony-pvclock-v1";
+/// Reserved digest-record id for the userspace-owned ARM clockevent input state.
+const LINUX_CLOCKEVENT_DIGEST_STATE_ID: u64 = u64::MAX - 1;
+const LINUX_CLOCKEVENT_DIGEST_STATE_TAG: &[u8] = b"harmony-clockevent-v1";
+const KVM_ARM_IRQ_TYPE_PPI: u32 = 2;
+const KVM_ARM_IRQ_TYPE_SHIFT: u32 = 24;
+const HARMONY_CLOCKEVENT_IRQ: u32 =
+    (KVM_ARM_IRQ_TYPE_PPI << KVM_ARM_IRQ_TYPE_SHIFT) | crate::linux_boot::HARMONY_CLOCKEVENT_PPI;
+const HARMONY_CLOCKEVENT_LINE_MASK: u32 = 1 << crate::linux_boot::HARMONY_CLOCKEVENT_PPI;
+/// vCPU0 MPIDR 0 | `VGIC_LEVEL_INFO_LINE_LEVEL` 0 | vINTID block base 0.
+const HARMONY_CLOCKEVENT_LEVEL_INFO_ATTR: u64 = kvm::VGIC_LEVEL_INFO_LINE_LEVEL;
+const _: () = assert!(HARMONY_CLOCKEVENT_IRQ == 0x0200_0014);
+const _: () = assert!(HARMONY_CLOCKEVENT_LEVEL_INFO_ATTR == 0);
 
 /// The signal used for the stock overflow kick. `SIGUSR1` rather than `SIGIO`: the
 /// handler must not be one the runtime installs for anything else, and the only
@@ -149,6 +161,15 @@ struct KvmUserspaceMemoryRegion {
     memory_size: u64,
     userspace_addr: u64,
 }
+
+/// `struct kvm_irq_level` for `KVM_IRQ_LINE`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KvmIrqLevel {
+    irq: u32,
+    level: u32,
+}
+const _: () = assert!(core::mem::size_of::<KvmIrqLevel>() == 8);
 
 /// `struct kvm_vcpu_init`.
 #[repr(C)]
@@ -518,6 +539,9 @@ pub struct Machine {
     /// VM-lifetime one-shot pvclock registration. `None` for bare payloads and before the
     /// owned Linux guest's validated MMIO write.
     linux_pvclock_gpa: Option<u64>,
+    /// `Some` only for the owned Linux board. The external level is VM state that KVM's
+    /// register dump does not necessarily expose, so it is retained and digest-bound here.
+    linux_clockevent: Option<LinuxClockeventState>,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables it. See
     /// [`DEFAULT_WATCHDOG_SECS`].
     watchdog_secs: u64,
@@ -585,6 +609,9 @@ impl Machine {
 
     fn new_for(boot: GuestBoot<'_>) -> Result<Machine, SysError> {
         let kvm_fd = open_kvm()?;
+        let linux_clockevent = boot
+            .needs_psci_0_2()
+            .then_some(LinuxClockeventState::default());
         let mut m = Machine {
             kvm_fd,
             vm_fd: -1,
@@ -595,6 +622,7 @@ impl Machine {
             mem: core::ptr::null_mut(),
             mem_size: 0,
             linux_pvclock_gpa: None,
+            linux_clockevent,
             watchdog_secs: DEFAULT_WATCHDOG_SECS,
         };
         m.build(boot)?;
@@ -768,6 +796,15 @@ impl Machine {
         } < 0
         {
             return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET)"));
+        }
+        let forbidden_timer_owners =
+            (1 << kvm::VCPU_FEATURE_PMU_V3) | (1 << kvm::VCPU_FEATURE_HAS_EL2);
+        if init.features[0] & forbidden_timer_owners != 0 {
+            return Err(SysError::Protocol(format!(
+                "KVM preferred target unexpectedly enables PMU/nested feature bits {:#x}; \
+                 dedicated PPI 20 ownership is no longer proven",
+                init.features[0] & forbidden_timer_owners
+            )));
         }
         // The generated Linux DTB advertises PSCI 0.2 over HVC. Without this
         // feature bit KVM exposes only legacy PSCI 0.1, so standardized calls
@@ -1360,6 +1397,149 @@ impl LinuxPvclockVcpu for Machine {
         }
         Ok(())
     }
+
+    fn linux_clockevent_state(&self) -> LinuxClockeventState {
+        self.linux_clockevent.unwrap_or_default()
+    }
+
+    fn program_linux_clockevent(&mut self, deadline_ticks: u64) -> Result<(), RunError> {
+        let state = self.linux_clockevent.ok_or_else(|| RunError::Seam {
+            context: "program the Linux deterministic clockevent",
+            message: "the VM is not the owned Linux board".into(),
+        })?;
+        if state.irq_asserted {
+            return Err(RunError::Seam {
+                context: "program the Linux deterministic clockevent",
+                message: "guest replaced its deadline while PPI 20 was still asserted".into(),
+            });
+        }
+        self.linux_clockevent
+            .as_mut()
+            .ok_or_else(|| RunError::Seam {
+                context: "program the Linux deterministic clockevent",
+                message: "Linux clockevent state disappeared".into(),
+            })?
+            .deadline_ticks = Some(deadline_ticks);
+        Ok(())
+    }
+
+    fn disarm_linux_clockevent(&mut self) -> Result<(), RunError> {
+        let state = self.linux_clockevent.ok_or_else(|| RunError::Seam {
+            context: "disarm the Linux deterministic clockevent",
+            message: "the VM is not the owned Linux board".into(),
+        })?;
+        if state.irq_asserted {
+            self.set_linux_clockevent_irq(false)?;
+            if self.linux_clockevent_line_asserted()? {
+                return Err(RunError::Seam {
+                    context: "disarm the Linux deterministic clockevent",
+                    message: "vGIC PPI 20 input line remained high after deassertion".into(),
+                });
+            }
+        }
+        let state = self
+            .linux_clockevent
+            .as_mut()
+            .ok_or_else(|| RunError::Seam {
+                context: "disarm the Linux deterministic clockevent",
+                message: "Linux clockevent state disappeared".into(),
+            })?;
+        state.deadline_ticks = None;
+        state.irq_asserted = false;
+        Ok(())
+    }
+
+    fn acknowledge_linux_clockevent(&mut self) -> Result<(), RunError> {
+        let state = self.linux_clockevent.ok_or_else(|| RunError::Seam {
+            context: "acknowledge the Linux deterministic clockevent",
+            message: "the VM is not the owned Linux board".into(),
+        })?;
+        if !state.irq_asserted {
+            return Err(RunError::Seam {
+                context: "acknowledge the Linux deterministic clockevent",
+                message: "guest ACK arrived while PPI 20 was low".into(),
+            });
+        }
+        let acknowledgements =
+            state
+                .acknowledgements
+                .checked_add(1)
+                .ok_or_else(|| RunError::Seam {
+                    context: "acknowledge the Linux deterministic clockevent",
+                    message: "acknowledgement counter overflow".into(),
+                })?;
+        self.set_linux_clockevent_irq(false)?;
+        if self.linux_clockevent_line_asserted()? {
+            return Err(RunError::Seam {
+                context: "acknowledge the Linux deterministic clockevent",
+                message: "vGIC PPI 20 input line remained high after ACK deassertion".into(),
+            });
+        }
+        let state = self
+            .linux_clockevent
+            .as_mut()
+            .ok_or_else(|| RunError::Seam {
+                context: "acknowledge the Linux deterministic clockevent",
+                message: "Linux clockevent state disappeared".into(),
+            })?;
+        state.irq_asserted = false;
+        state.acknowledgements = acknowledgements;
+        Ok(())
+    }
+
+    fn fire_due_linux_clockevent(&mut self, now_ticks: u64) -> Result<Option<u64>, RunError> {
+        let state = self.linux_clockevent.ok_or_else(|| RunError::Seam {
+            context: "assert the Linux deterministic clockevent",
+            message: "the VM is not the owned Linux board".into(),
+        })?;
+        let Some(deadline) = state.deadline_ticks else {
+            return Ok(None);
+        };
+        if now_ticks < deadline {
+            return Ok(None);
+        }
+        if state.irq_asserted {
+            return Err(RunError::Seam {
+                context: "assert the Linux deterministic clockevent",
+                message: "a due deadline found PPI 20 already asserted".into(),
+            });
+        }
+        let assertions = state
+            .assertions
+            .checked_add(1)
+            .ok_or_else(|| RunError::Seam {
+                context: "assert the Linux deterministic clockevent",
+                message: "assertion counter overflow".into(),
+            })?;
+        if self.linux_clockevent_line_asserted()? {
+            return Err(RunError::Seam {
+                context: "assert the Linux deterministic clockevent",
+                message: "vGIC reports PPI 20 input high before userspace raises its line".into(),
+            });
+        }
+
+        self.set_linux_clockevent_irq(true)?;
+        // Mutate immediately after the successful ioctl. Even if readback fails, retained state
+        // still truthfully records that userspace drove the external line high.
+        let state = self
+            .linux_clockevent
+            .as_mut()
+            .ok_or_else(|| RunError::Seam {
+                context: "assert the Linux deterministic clockevent",
+                message: "Linux clockevent state disappeared".into(),
+            })?;
+        state.deadline_ticks = None;
+        state.irq_asserted = true;
+        state.assertions = assertions;
+
+        if !self.linux_clockevent_line_asserted()? {
+            return Err(RunError::Seam {
+                context: "verify the Linux deterministic clockevent assertion",
+                message: "KVM_IRQ_LINE succeeded but vGIC PPI 20 input stayed low".into(),
+            });
+        }
+        Ok(Some(now_ticks - deadline))
+    }
 }
 
 /// The seam-read pair [`Machine::registers_and_vgic`] returns: every architectural register plus
@@ -1369,6 +1549,35 @@ impl LinuxPvclockVcpu for Machine {
 type RegsAndVgic = (BTreeMap<u64, Vec<u8>>, Vec<u8>);
 
 impl Machine {
+    fn set_linux_clockevent_irq(&self, asserted: bool) -> Result<(), RunError> {
+        let irq = KvmIrqLevel {
+            irq: HARMONY_CLOCKEVENT_IRQ,
+            level: u32::from(asserted),
+        };
+        // SAFETY: `vm_fd` is live and `irq` is the exact fixed-width kvm_irq_level value KVM
+        // reads synchronously. The encoded target is vCPU 0's dedicated PPI INTID 20.
+        if unsafe { libc::ioctl(self.vm_fd, kvm::IRQ_LINE as libc::c_ulong, &raw const irq) } < 0 {
+            return Err(seam(
+                "ioctl(KVM_IRQ_LINE, Harmony PPI 20)",
+                err("ioctl(KVM_IRQ_LINE)"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn linux_clockevent_line_asserted(&self) -> Result<bool, RunError> {
+        // `KVM_IRQ_LINE` changes `irq->line_level`; GICR_ISPENDR0's userspace accessor
+        // reports the distinct pending latch and can remain zero for a valid level assertion.
+        // LEVEL_INFO therefore both verifies delivery and catches KVM's owner-mismatch no-op.
+        let levels = self
+            .vgic_reg(
+                kvm::DEV_ARM_VGIC_GRP_LEVEL_INFO,
+                HARMONY_CLOCKEVENT_LEVEL_INFO_ATTR,
+            )
+            .map_err(|error| seam("read back vGIC PPI 20 input-line level", error))?;
+        Ok(levels & HARMONY_CLOCKEVENT_LINE_MASK != 0)
+    }
+
     /// Read the guest-visible constant generic-counter frequency (`CNTFRQ_EL0`).
     ///
     /// The AA-5 page carries this exact value and the owned kernel fails closed on a mismatch;
@@ -1407,6 +1616,28 @@ impl Machine {
                     context: "bind the Linux pvclock registration into the state digest",
                     message: format!(
                         "reserved state id {LINUX_PVCLOCK_DIGEST_STATE_ID:#x} collides with a KVM register"
+                    ),
+                });
+            }
+        }
+        if let Some(state) = self.linux_clockevent {
+            let mut encoded = Vec::with_capacity(
+                LINUX_CLOCKEVENT_DIGEST_STATE_TAG.len() + 2 + 3 * core::mem::size_of::<u64>(),
+            );
+            encoded.extend_from_slice(LINUX_CLOCKEVENT_DIGEST_STATE_TAG);
+            encoded.push(u8::from(state.deadline_ticks.is_some()));
+            encoded.extend_from_slice(&state.deadline_ticks.unwrap_or(0).to_le_bytes());
+            encoded.push(u8::from(state.irq_asserted));
+            encoded.extend_from_slice(&state.assertions.to_le_bytes());
+            encoded.extend_from_slice(&state.acknowledgements.to_le_bytes());
+            if regs
+                .insert(LINUX_CLOCKEVENT_DIGEST_STATE_ID, encoded)
+                .is_some()
+            {
+                return Err(RunError::Seam {
+                    context: "bind the Linux clockevent into the state digest",
+                    message: format!(
+                        "reserved state id {LINUX_CLOCKEVENT_DIGEST_STATE_ID:#x} collides with a KVM register"
                     ),
                 });
             }
@@ -1637,21 +1868,21 @@ impl Machine {
         Ok(value)
     }
 
-    /// Read one 32-bit vGIC save-register through `KVM_GET_DEVICE_ATTR`.
+    /// Read one 32-bit vGIC device attribute through `KVM_GET_DEVICE_ATTR`.
     ///
-    /// The DIST/REDIST accessors write the register value into the buffer the attr's
-    /// `addr` points at. `attr` = mpidr(63:32) | offset(31:0); mpidr is 0 for the
-    /// single-affinity spike guest.
-    fn vgic_reg(&self, group: u32, offset: u64) -> Result<u32, SysError> {
+    /// The DIST/REDIST and LEVEL_INFO accessors write a 32-bit value into the buffer the
+    /// attribute's `addr` points at. DIST/REDIST encode `mpidr(63:32) | offset(31:0)`;
+    /// LEVEL_INFO encodes `mpidr(63:32) | info(31:10) | vINTID(9:0)`.
+    fn vgic_reg(&self, group: u32, attr: u64) -> Result<u32, SysError> {
         let mut value: u32 = 0;
         let da = KvmDeviceAttr {
             flags: 0,
             group,
-            attr: offset,
+            attr,
             addr: (&raw mut value) as u64,
         };
         // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u32 on this frame,
-        // which is what KVM_GET_DEVICE_ATTR's DIST/REDIST accessor writes.
+        // which is what KVM_GET_DEVICE_ATTR's 32-bit vGIC accessors write.
         if unsafe {
             libc::ioctl(
                 self.vgic_fd,

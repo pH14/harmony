@@ -32,11 +32,13 @@ CONFIG_HZ_100=y
 # CONFIG_NO_HZ_FULL is not set
 
 ## Owned clock and interrupt path
-# The architected timer remains for its EL1 interrupt. The AA-5(c) kernel patch
-# replaces every live generic-counter read with the materialized work-derived
-# page and the post-build opcode scan requires zero remaining CNTVCT/CNTPCT.
+# The AA-5(c) patch replaces every live generic-counter read with the materialized
+# work-derived page and uses the timer driver's IRQ slot only for dedicated PPI 20;
+# it never programs live-domain CNTV_CVAL/TVAL. `nohlt` is mandatory in the DT so
+# the sole vCPU polls and keeps exact work targets reachable instead of entering WFI.
 CONFIG_ARM_ARCH_TIMER=y
 CONFIG_HARMONY_ARM_PVCLOCK=y
+CONFIG_GENERIC_IDLE_POLL_SETUP=y
 # All selectors of the out-of-line raw-counter workaround must be off. The
 # shipped N1 target needs none of these unrelated SoC/core errata paths.
 # CONFIG_FSL_ERRATUM_A008585 is not set

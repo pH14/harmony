@@ -17,6 +17,9 @@ pub const PVCLOCK_GPA: u64 = oracle_model::PVCLOCK_GPA;
 pub const PVCLOCK_REGISTER_BASE: u64 = 0x0b00_0000;
 /// Size of the reserved ARM pvclock registration MMIO surface.
 pub const PVCLOCK_REGISTER_SIZE: u64 = 0x1000;
+/// Dedicated, userspace-owned clockevent PPI. KVM owns the architected virtual timer's
+/// default INTID 27, so the Harmony event must use a different private interrupt.
+pub const HARMONY_CLOCKEVENT_PPI: u32 = 20;
 /// Leave the lower 128 MiB for the kernel and its effective/BSS extent.
 pub const INITRAMFS_GPA: u64 = RAM_BASE + 0x0800_0000;
 /// Place the DTB 16 MiB below the end of the 256 MiB RAM bank.
@@ -111,6 +114,10 @@ pub enum LinuxBootError {
         /// Supplied byte length.
         len: usize,
     },
+    /// Work time cannot advance while the sole vCPU sleeps in WFI. The owned kernel must
+    /// use the generic idle poll loop so every pending exact-work target remains reachable.
+    #[error("Linux bootargs must contain the exact `nohlt` token for work-clock idle polling")]
+    MissingNohlt,
     /// One artifact address/extent overflowed or fell outside RAM.
     #[error(
         "{artifact} range [{start:#x}, {end:#x}) is outside RAM [{ram_start:#x}, {ram_end:#x})"
@@ -241,6 +248,9 @@ fn load_at(
         return Err(LinuxBootError::BootargsTooLong {
             len: bootargs.len(),
         });
+    }
+    if !bootargs.split_ascii_whitespace().any(|arg| arg == "nohlt") {
+        return Err(LinuxBootError::MissingNohlt);
     }
 
     let ram_len = ram.len() as u64;
@@ -572,12 +582,23 @@ fn build_dtb(
     f.cells(
         "interrupts",
         &[
-            1, 13, 4, // secure physical PPI
-            1, 14, 4, // non-secure physical PPI
-            1, 11, 4, // virtual PPI (INTID 27)
-            1, 10, 4, // hypervisor PPI
+            1,
+            13,
+            4, // secure physical PPI
+            1,
+            14,
+            4, // non-secure physical PPI
+            1,
+            HARMONY_CLOCKEVENT_PPI - 16,
+            4, // Harmony clockevent PPI (INTID 20)
+            1,
+            10,
+            4, // hypervisor PPI
         ],
     );
+    // Work time advances whenever the owned nohlt guest runs; the host's exact clockevent
+    // publication/injection path therefore has no CPU-idle stop state.
+    f.empty("always-on");
     // Do not advertise `clock-frequency`: on KVM the architected CNTFRQ_EL0
     // value is the timer frequency. A copied QEMU-board constant could disagree
     // with the live Altra counter and make Linux's clockevent conversion wrong.
@@ -715,7 +736,7 @@ mod tests {
             TEST_BOARD,
             &image,
             &initramfs,
-            "console=ttyAMA0 rdinit=/init",
+            "console=ttyAMA0 rdinit=/init nohlt",
             &mut first,
         )
         .unwrap();
@@ -736,7 +757,7 @@ mod tests {
             TEST_BOARD,
             &image,
             &initramfs,
-            "console=ttyAMA0 rdinit=/init",
+            "console=ttyAMA0 rdinit=/init nohlt",
             &mut second,
         )
         .unwrap();
@@ -752,7 +773,7 @@ mod tests {
             TEST_BOARD,
             &image,
             &[0x5a; 128],
-            "console=ttyAMA0 rdinit=/init",
+            "console=ttyAMA0 rdinit=/init nohlt",
             &mut ram,
         )
         .unwrap();
@@ -780,13 +801,36 @@ mod tests {
         assert_eq!(prop("chosen", "stdout-path"), b"/pl011@9000000\0");
         assert_eq!(
             prop("chosen", "bootargs"),
-            b"console=ttyAMA0 rdinit=/init\0"
+            b"console=ttyAMA0 rdinit=/init nohlt\0"
         );
         assert_eq!(prop("psci", "compatible"), b"arm,psci-0.2\0");
         assert_eq!(prop("psci", "method"), b"hvc\0");
         assert_eq!(prop("intc@8000000", "compatible"), b"arm,gic-v3\0");
         assert_eq!(prop("intc@8000000", "reg").len(), 32);
-        assert_eq!(prop("timer", "interrupts").len(), 48);
+        let timer_interrupts = prop("timer", "interrupts");
+        assert_eq!(timer_interrupts.len(), 48);
+        let timer_cells: Vec<u32> = timer_interrupts
+            .chunks_exact(4)
+            .map(|cell| u32::from_be_bytes(cell.try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            timer_cells,
+            [
+                1,
+                13,
+                4,
+                1,
+                14,
+                4,
+                1,
+                HARMONY_CLOCKEVENT_PPI - 16,
+                4,
+                1,
+                10,
+                4
+            ]
+        );
+        assert_eq!(prop("timer", "always-on"), b"");
         assert_eq!(
             prop("pl011@9000000", "compatible"),
             b"arm,pl011\0arm,primecell\0"
@@ -852,7 +896,7 @@ mod tests {
                 TEST_BOARD,
                 &image(0, 0x3000, 0, 0),
                 &initramfs,
-                "",
+                "nohlt",
                 &mut ram
             ),
             Err(LinuxBootError::Overlap { .. })
@@ -862,7 +906,7 @@ mod tests {
                 TEST_BOARD,
                 &image(0x2000, 0x7000, 0, 0),
                 &initramfs,
-                "",
+                "nohlt",
                 &mut ram
             ),
             Err(LinuxBootError::Overlap { .. })
@@ -872,7 +916,7 @@ mod tests {
                 TEST_BOARD,
                 &image(0x2000, u64::MAX, 0, 0),
                 &initramfs,
-                "",
+                "nohlt",
                 &mut ram
             ),
             Err(LinuxBootError::OutsideRam { .. })
@@ -897,5 +941,9 @@ mod tests {
             ),
             Err(LinuxBootError::BootargsTooLong { .. })
         ));
+        assert_eq!(
+            load_at(TEST_BOARD, &image, &[1], "nohlty", &mut ram),
+            Err(LinuxBootError::MissingNohlt)
+        );
     }
 }

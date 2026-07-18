@@ -269,11 +269,15 @@ raw-counter path survives.
   build**, not merely deprioritized — on non-ECV silicon it would read a real, non-work-derived
   `CNTVCT` and instantly break determinism.
 - **Pinned config / no-fallback.** The guest kernel is built without the arch generic-timer
-  clocksource as a selectable source; the page clocksource is the only timekeeper. The generic
-  timer's *interrupt* (the EL1 timer for scheduling) is modeled by the vendor's GIC + generic-
-  timer device model (`docs/ARCH-BOUNDARY.md` §B, ARM row) whose deadlines flow through the same
-  `TimerQueue`/`IdlePlanner` seams — the timer fires deterministically; only the *counter read*
-  is redirected to the page.
+  clocksource as a selectable source; the page clocksource is the only timekeeper. Its virtual
+  and physical clockevent `set_next_event` paths write an absolute page-derived tick deadline to
+  `docs/INTEGRATION.md` §1.3 and never program `CNTV/CNTP_CVAL/TVAL`; the virtual timer remains
+  disabled. The host evaluates that deadline only after an exact-work page publication, then
+  holds dedicated level-triggered PPI 20 high until the guest ACKs before calling the generic
+  event handler. The owned DT places PPI 20 in the architected-timer virtual-interrupt slot and
+  requires `nohlt` polling, because a single vCPU stopped in WFI cannot retire the branches that
+  advance work time. KVM level-info readback proves each line transition rather than treating a
+  successful injection ioctl or the separate pending latch as delivery evidence.
 - **Registration transport.** The owned ARM guest publishes its selected 4 KiB page GPA through
   `docs/INTEGRATION.md` §1.3's one-shot MMIO register. The natural MMIO exit only records the
   validated pending GPA; it never imports that exit's skid-tainted PMU count. The first exact
