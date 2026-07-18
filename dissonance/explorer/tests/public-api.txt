@@ -355,6 +355,7 @@ pub explorer::FoldOutcome::retractions: alloc::vec::Vec<explorer::WorkingSetUpda
 pub struct explorer::Frontier
 impl explorer::Frontier
 pub fn explorer::Frontier::claim(&mut self, explorer::CellKey, explorer::ExemplarRef) -> bool
+pub fn explorer::Frontier::claims(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&explorer::CellKey, explorer::ExemplarRef)>
 pub fn explorer::Frontier::get(&self, explorer::ExemplarRef) -> core::option::Option<&explorer::FrontierEntry>
 pub fn explorer::Frontier::insert(&mut self, explorer::FrontierEntry) -> explorer::ExemplarRef
 pub fn explorer::Frontier::is_empty(&self) -> bool
