@@ -90,7 +90,7 @@ pub(crate) fn sdk_moment_to_spine(m: sdk_events::Moment) -> Moment {
 
 pub use adapter::{ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, client_caps};
 pub use campaign::{
-    CampaignConfig, CampaignError, DifferentialCampaign, Ingress, Occupied, StepReport,
+    CampaignConfig, CampaignError, DifferentialCampaign, Ingress, Nomination, Occupied, StepReport,
 };
 pub use defaults::{
     COVERAGE_CHANNEL, CoverageArchive, DeclineTactic, ExploreExploitSelector, GenesisSelector,

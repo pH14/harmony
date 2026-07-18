@@ -131,6 +131,9 @@ pub explorer::MachineError::NotSealable(u64)
 pub explorer::MachineError::Transport(alloc::string::String)
 pub explorer::MachineError::UnknownExemplar(u64)
 pub explorer::MachineError::UnknownSnapshot(u64)
+pub enum explorer::Nomination
+pub explorer::Nomination::EventMoments
+pub explorer::Nomination::SnapshotPoints
 pub enum explorer::Occupied
 pub explorer::Occupied::Dominated
 pub explorer::Occupied::Dominated::entry: explorer::ExemplarRef
@@ -236,7 +239,9 @@ pub explorer::Bug::stop: explorer::StopReason
 pub struct explorer::CampaignConfig
 pub explorer::CampaignConfig::candidate_cap: usize
 pub explorer::CampaignConfig::evidence_budget: core::option::Option<u64>
+pub explorer::CampaignConfig::hash_rollouts: bool
 pub explorer::CampaignConfig::ingress: explorer::Ingress
+pub explorer::CampaignConfig::nominate: explorer::Nomination
 pub explorer::CampaignConfig::replay_budget: u64
 pub explorer::CampaignConfig::retention: explorer::RetentionProfile
 impl core::default::Default for explorer::CampaignConfig
@@ -576,6 +581,7 @@ pub explorer::StepReport::candidates: usize
 pub explorer::StepReport::counterexamples: alloc::vec::Vec<explorer::OccurrenceCounterexample>
 pub explorer::StepReport::explored: bool
 pub explorer::StepReport::rollout_revision: revision_coordinator::ids::Revision
+pub explorer::StepReport::state_hash: core::option::Option<[u8; 32]>
 pub struct explorer::StopConditions
 pub explorer::StopConditions::deadline: core::option::Option<explorer::Moment>
 pub explorer::StopConditions::on: explorer::StopMask

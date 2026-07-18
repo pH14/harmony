@@ -110,6 +110,31 @@ pub struct CampaignConfig {
     /// **loudly** ([`LedgerError::Exhausted`]) — host disk pressure never
     /// silently changes the retention policy.
     pub evidence_budget: Option<u64>,
+    /// Where a rollout's provisional-cut nomination coordinates come from
+    /// (default: machine-surfaced snapshot points).
+    pub nominate: Nomination,
+    /// Whether each rollout's terminal machine state is hashed into its
+    /// [`StepReport`] (`state_hash`) — the per-branch determinism artifact a
+    /// campaign gate compares. Hash-neutral to the search itself (nothing
+    /// reads it); off by default (a full state hash costs real time on a
+    /// live backend).
+    pub hash_rollouts: bool,
+}
+
+/// Where a rollout's provisional-cut nomination coordinates come from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Nomination {
+    /// The machine-surfaced [`StopReason::SnapshotPoint`]s the sealable
+    /// predicate admits (the default; a cooperating workload with explicit
+    /// checkpoint boundaries).
+    #[default]
+    SnapshotPoints,
+    /// The distinct `Moment`s of the rollout's own SDK events (filtered by
+    /// the sealable predicate): the configured-evidence-cut source for a
+    /// workload that surfaces no mid-run snapshot points (e.g. a quiet-arm
+    /// game rollout under a deadline, whose only machine snapshot point is
+    /// its setup seal).
+    EventMoments,
 }
 
 impl Default for CampaignConfig {
@@ -120,6 +145,8 @@ impl Default for CampaignConfig {
             ingress: Ingress::Binary,
             retention: RetentionProfile::Full,
             evidence_budget: None,
+            nominate: Nomination::SnapshotPoints,
+            hash_rollouts: false,
         }
     }
 }
@@ -283,6 +310,10 @@ pub struct StepReport {
     pub counterexamples: Vec<OccurrenceCounterexample>,
     /// Whether the step explored fresh (genesis) rather than exploiting.
     pub explored: bool,
+    /// The rollout's terminal machine state hash, when
+    /// [`CampaignConfig::hash_rollouts`] is set (the per-branch determinism
+    /// artifact); `None` otherwise.
+    pub state_hash: Option<[u8; 32]>,
 }
 
 /// The two-barrier Differential campaign controller (module doc). Owns the
@@ -490,6 +521,13 @@ impl<M: Machine> DifferentialCampaign<M> {
         let (branch_env, minted) = self.mint_env(choice, &base_env)?;
 
         let rollout = self.run_rollout(base_snap, &base_env, &branch_env, parent_cut)?;
+        // The per-branch determinism artifact, taken at the rollout terminal
+        // (before any materialization replay disturbs the machine).
+        let state_hash = if self.config.hash_rollouts {
+            Some(self.machine.hash()?)
+        } else {
+            None
+        };
         // The lineage parent is the SEALED ROLLOUT behind the chosen Entry —
         // the rollout whose evidence prefix this child inherits.
         let parent_issue = match choice {
@@ -560,6 +598,7 @@ impl<M: Machine> DifferentialCampaign<M> {
             admitted: Vec::new(),
             counterexamples: fold.new_counterexamples,
             explored,
+            state_hash,
         };
         if !candidates.is_empty() {
             let cohort_b = self.coordinator.open_cohort()?;
@@ -987,6 +1026,22 @@ impl<M: Machine> DifferentialCampaign<M> {
         let raw = self.machine.sdk_events()?;
         let inherited = parent_cut.map(|c| c.sdk_events).unwrap_or(0);
         let normalized = self.decode_child_suffix(&raw, inherited)?;
+        // The nomination coordinates: machine-surfaced snapshot points (the
+        // default), or — for a workload that surfaces none mid-run — the
+        // distinct sealable moments of the rollout's own SDK events.
+        let sealable_moments = match self.config.nominate {
+            Nomination::SnapshotPoints => sealable_moments,
+            Nomination::EventMoments => {
+                let mut distinct = std::collections::BTreeSet::new();
+                for e in &normalized.events {
+                    let m = Moment(e.moment.0);
+                    if self.mat.sealable_at(m) {
+                        distinct.insert(m);
+                    }
+                }
+                distinct.into_iter().collect()
+            }
+        };
         Ok(Rollout {
             stop,
             env,

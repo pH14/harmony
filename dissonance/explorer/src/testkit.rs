@@ -302,6 +302,7 @@ pub(crate) fn config(cap: usize, budget: u64) -> CampaignConfig {
         ingress: Ingress::Binary,
         retention: RetentionProfile::Full,
         evidence_budget: None,
+        ..CampaignConfig::default()
     }
 }
 
