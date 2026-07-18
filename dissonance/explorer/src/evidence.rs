@@ -457,6 +457,71 @@ mod tests {
         }
     }
 
+    /// The lineage composition truncates an ancestor at its child's fork
+    /// count HALF-OPEN (`pos < upper`): the parent's event AT the fork count
+    /// is excluded even when the queried cut extends past it (kills the
+    /// `<`→`<=` truncation mutant directly).
+    #[test]
+    fn compose_excludes_the_parent_event_at_the_fork_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut led =
+            crate::ledger::EvidenceLedger::open(&dir.path().join("evidence.log")).expect("open");
+        // Parent (issue 1, genesis-rooted): accumulate reg 2 fires 5 then 7.
+        let parent_norm = normalized(UpdateOp::Accumulate, &[5, 7]);
+        let parent = CompletedRunEvidence {
+            rollout: RunId {
+                issue: 1,
+                parent: None,
+            },
+            role: EvidenceRole::Rollout,
+            terminal: StopReason::Quiescent { vtime: Moment(20) },
+            env: Reproducer {
+                blob_version: 1,
+                bytes: vec![1],
+            },
+            cut: EvidenceCut {
+                at: Moment(20),
+                sdk_events: 2,
+            },
+            normalized: parent_norm,
+            parent_cut: None,
+            sealable_moments: vec![],
+        };
+        // Child (issue 2) forked at (moment 10, count 1): its own suffix is
+        // one firing (9) at cumulative position 1.
+        let child_norm = normalized(UpdateOp::Accumulate, &[9]);
+        let child = CompletedRunEvidence {
+            rollout: RunId {
+                issue: 2,
+                parent: Some(1),
+            },
+            role: EvidenceRole::Rollout,
+            terminal: StopReason::Quiescent { vtime: Moment(30) },
+            env: Reproducer {
+                blob_version: 1,
+                bytes: vec![2],
+            },
+            cut: EvidenceCut {
+                at: Moment(30),
+                sdk_events: 2,
+            },
+            normalized: child_norm,
+            parent_cut: Some(EvidenceCut {
+                at: Moment(10),
+                sdk_events: 1,
+            }),
+            sealable_moments: vec![],
+        };
+        led.append(&parent).expect("parent appends");
+        led.append(&child).expect("child appends");
+        // Composed at included = 2 (past the fork): parent pos 0 (5) + child
+        // pos 1 (9). The parent's pos-1 firing (7) sits AT the fork count and
+        // is excluded — half-open, even though 1 < included.
+        let obs = compose_observations_at(&led, &child, 2);
+        let want: BTreeSet<u64> = [5, 9].into_iter().collect();
+        assert_eq!(obs.get(&reg7()), Some(&ReducedValue::Accumulated(want)));
+    }
+
     /// The canonical observation-identity encoding round-trips through its
     /// decoder for all three variants, and malformed bytes decode to `None`
     /// (kills the decoder's match-arm/length mutants).
