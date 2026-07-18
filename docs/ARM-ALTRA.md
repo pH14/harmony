@@ -1136,7 +1136,7 @@ on is validated. **Single characterized caveat** (the LL/SC-stepping result AA-4
 single-stepping an exclusive sequence livelocks (the monitor clears every step); a bounded
 step budget is mandatory, and stepping through exclusives cannot land — direct AA-4 input.
 
-### AA-3 — deterministic force-exit (0004-analogue) + exact landing: IN PROGRESS
+### AA-3 — deterministic force-exit (0004-analogue) + exact landing: GO
 
 Started per the foreman's "continue straight to AA-3, keep the box saturated" directive
 (overlapped with the AA-2 refinement). The draft patch
@@ -1230,20 +1230,34 @@ skid exceeded margin+headroom — a real anomaly, not something to accept). This
 lesson of a branch-instruction work clock on real silicon: a `Moment` named by work count is a
 `PC`-*interval*, and replay identity requires a canonical representative of that interval.
 
-**Disposition (updated): mechanism + exact-landing GO on N1; PENDING the ≥10⁶ run.** The
-0004-analogue force-exit fires, arms-early to remove the boundary loss, and lands exactly
-at the **canonical** target `PC` (AA3-F1) for all seven deterministic-count payloads — the
-load-bearing AA-3 mechanism is proven. A 3500-record smoke (`aa3-smk6`, 7 payloads ×
-250 cases × 2 reps, `wfi-idle` excluded) grades **RESULT PASS (21 checks)**: totality,
-multiplicity, count-exactness, skid (exact, no overshoot), mechanism-attestation, and
-**replay-identity 1750/1750 groups bit-identical** — `clock-page` included. Per the foreman
-ruling (2026-07-17) `wfi-idle` is **excluded** from the ≥10⁶ run (its timer determinism is
-AA-5's to settle, recorded above as the AA-5 preview); the run grades on the seven
-deterministic-count payloads. Remaining for the stage GO: the ≥10⁶-armed exact-landing run
-(sharded across cores 4–79), plus the trait-freeze memo (does `run_until_overflow`'s
-late-only-stop hold on arm64 PMI delivery — the box answer so far: YES, the Preempt is
-late-only and the single-step lands exactly at the canonical PC, no `Arch`-trait change
-forced).
+**DISPOSITION: AA-3 GO on N1.** The 0004-analogue in-kernel force-exit fires, arms-early to
+remove the boundary loss, and single-steps to the **canonical** target `PC` (AA3-F1) exactly
+for all seven deterministic-count payloads — mechanism, exact landing, and co-tenant
+determinism all proven at scale. Evidence in `results/aa-3/exact-evidence/`:
+
+- **≥10⁶ sharded run** (`aa3-exact-r3`, 76 shards pinned across cores 4–79, run concurrently
+  — the concurrent run *is* the co-tenant stress test). Aggregate `floor-check` over all 76
+  run-sets with the normative floors (`--min-armed-overflows 1000000 --min-cases 500000
+  --min-reps 2`, **no** `--sub-normative`): **RESULT PASS (1371 checks)** —
+  **1,010,800 armed overflows** (≥10⁶), **505,400 distinct** (payload, scale, seed, target)
+  cases, and every per-shard check green: totality, multiplicity, count-exactness, **skid = 0
+  exact** (no overshoot on any of 1.01M landings), mechanism-attestation = `Preempt`,
+  replay-identity, rep-floor, pinning, perf-config (raw 0x21 guest-only). `verdict.txt`.
+- **Co-tenant determinism (Paul's P0 rule): MATCH.** A solo reference lane
+  (`aa3-exact-solo-ref`, run alone on an idle box, base seed shared with co-tenant shard s0)
+  vs the co-tenant shard: **5,700 shared tuples, 0 divergences** — every tuple's exact-landing
+  digest *and* window-end full-state digest is bit-identical solo-vs-co-tenant. Co-tenancy
+  under 76-way concurrency perturbed no deterministic guest state. `determinism.json`.
+
+Per the foreman ruling (2026-07-17) `wfi-idle` is **excluded** from the run (its timer
+determinism is AA-5's, recorded above as the AA-5 preview). `llsc-atomics` is **carved from
+replay-identity** (checker + determinism comparison alike): its landed state diverges even
+within a solo lane — the §4 spontaneous STXR fail/succeed hazard, AA-4's domain, and the
+comparator's strict within-lane check *re-confirmed it is live*. The trait-freeze memo is in
+`docs/ARCH-BOUNDARY.md`: `run_until_overflow`'s late-only-stop contract **holds** on N1 (the
+Preempt is late-only; spurious host-IRQ exits below the armed point are distinguished by the
+work counter and re-armed; multiplicity = 1 delivery across all 1.01M, so the N1
+missed-PMI-on-migration hazard did not manifest pinned) — **no `Arch`-trait change forced**.
 
 **Original finding (why this was executor work): the single-step run path did not exist
 in the harness** — the

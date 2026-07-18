@@ -267,7 +267,40 @@ that slip.
 - **The spike still gates one trait decision.** ARM's PMU-overflow-to-exit path (no MTF; PMI
   delivery differs; the N1-lineage missed-PMI-on-migration bug in ARM-PORT.md §evidence) may
   pressure `run_until_overflow`'s late-only-stop contract. Design the trait now; **freeze it
-  only with spike data in hand.**
+  only with spike data in hand.** — **RESOLVED, see the trait-freeze memo below.**
+
+## AA-3 trait-freeze memo (spike data in hand — 2026-07-17)
+
+The gate above is answered. AA-3 ran the patched-KVM (`-aa3preempt`) force-exit +
+`run_until_overflow` + `single_step` exact landing at **1,010,800 armed deadlines** on the
+Ampere Altra (Neoverse N1), sharded 76-wide, aggregate `floor-check` **PASS (1371 checks)**,
+solo-vs-co-tenant determinism **MATCH** (evidence: `spikes/arm-altra/results/aa-3/exact-evidence/`,
+disposition: `docs/ARM-ALTRA.md` §AA-3). The verdict on the trait:
+
+- **`run_until_overflow`'s late-only-stop contract HOLDS on N1 — no `Arch`-trait change forced.**
+  The armed overflow is late-only: the in-kernel `Preempt` fires at or after the armed point,
+  never before. On arm64 the vCPU also exits on *any* host IRQ, so spurious exits *below* the
+  armed point do occur — but they are distinguished by the work counter (`work < arm_point`)
+  and re-armed, never mistaken for the overflow. Across all 1.01M armed landings, multiplicity
+  held at exactly **one delivery** each: the N1 missed-PMI-on-migration hazard did **not**
+  manifest in the pinned (non-migrating) configuration the deterministic contract requires.
+- **The step primitive is `KVM_GUESTDBG_SINGLESTEP`, not MTF** (AA-2). `run_until_overflow`
+  stops late (below target by the arm-early margin), then `single_step` walks `BR_RETIRED`
+  forward to the exact target. The two-level `Exit<A>` already carries `Preempt` as an
+  arch-exit; the ARM PMU path fits the *designed* trait without a new method.
+- **One contract CLARIFICATION the freeze must carry (AA3-F1), not a trait change.** ARM's work
+  clock is `BR_RETIRED` — branch **instructions** (AA1-F1) — so it ticks only on branches and a
+  branchless run is a `PC`-**plateau**: a `Moment` named by a work count is a `PC`-*interval*,
+  not a point. The exact landing must therefore land at the **canonical representative** of that
+  interval — the *first* instruction at which `work == target` (immediately after the target-th
+  retiring branch) — which the single-step-up loop reaches from any start strictly below the
+  target. The realization is a measured `LANDING_HEADROOM` added to the measured `skid_margin`
+  so the `Preempt` fires strictly below the target with room to reach the canonical `PC`; an
+  async stop *at* the target (BR-exact but PC-arbitrary) is refused fail-closed. Any backend
+  whose work clock is a subset-of-instructions counter (branches, not all-retired) inherits this
+  plateau property and must define its landing canonically; a per-retired-instruction counter
+  does not. This is a documented property of the `work()`/`run_until_overflow()` contract, not a
+  new trait shape. **§D and the `Arch`/`CpuBackend` trait may freeze against the designed shape.**
 
 ## Pre-build ruling (Paul, 2026-07-13) — build-first; the spike gates trust, not construction
 
