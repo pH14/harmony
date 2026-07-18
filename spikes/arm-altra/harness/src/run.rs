@@ -1034,9 +1034,39 @@ pub fn run_sample_exact(
                 let mut work = work;
                 let mut landing_steps: u64 = 0;
                 while work != target {
-                    // Invariant: `work < target`. Step one instruction. The counting window is
-                    // pure compute between MARK_BEGIN and MARK_END (no console I/O), so only a
-                    // KVM_EXIT_DEBUG occurs here; anything else is a finding.
+                    // Invariant: `work < target`. Step one instruction. Most of the counting
+                    // window is pure compute, but a stepped instruction CAN be a console write
+                    // (wfi-idle's timer path prints under the slow single-step); the PL011 is
+                    // serviced and the step re-run, exactly as the main loop does. Anything else
+                    // is a finding.
+                    match vcpu.run()? {
+                        VcpuExit::Debug => {}
+                        VcpuExit::Mmio {
+                            addr,
+                            data,
+                            is_write,
+                        } => {
+                            // The landing is strictly BELOW MARK_END, so no MARK event occurs
+                            // here — the byte is guest output: answer the PL011 and re-run for the
+                            // Debug exit of this instruction WITHOUT counting a landing step.
+                            if !is_pl011(addr) {
+                                return Err(RunError::UnexpectedMmio { addr });
+                            }
+                            if !is_write {
+                                let width = data.len().clamp(1, 8);
+                                vcpu.complete_mmio_read(
+                                    &PL011_FR_READY.to_le_bytes()[..width.min(4)],
+                                )?;
+                            }
+                            continue;
+                        }
+                        other => {
+                            return Err(RunError::Seam {
+                                context: "exact-landing single step expected KVM_EXIT_DEBUG or console MMIO",
+                                message: format!("got a non-debug non-console exit: {other:?}"),
+                            });
+                        }
+                    }
                     landing_steps += 1;
                     if landing_steps > MAX_LANDING_STEPS {
                         return Err(RunError::ExactLandingStepStorm {
@@ -1044,15 +1074,6 @@ pub fn run_sample_exact(
                             work,
                             target,
                         });
-                    }
-                    match vcpu.run()? {
-                        VcpuExit::Debug => {}
-                        other => {
-                            return Err(RunError::Seam {
-                                context: "exact-landing single step expected KVM_EXIT_DEBUG",
-                                message: format!("got a non-debug exit: {other:?}"),
-                            });
-                        }
                     }
                     let after = counter.read()?;
                     if after < work {
