@@ -100,7 +100,7 @@ fetch() {
 stage_patches() {
   mkdir -p "$PATCHES"
   local series="$SD/../../../consonance/vmm-backend/kvm-patches/patches"
-  local amd="$SD/../patches/0004-KVM-SVM-KVM_EXIT_PREEMPT-force-exit-analogue.patch"
+  local amd="$SD/patches/0004-KVM-SVM-KVM_EXIT_PREEMPT-force-exit-analogue.patch"
   if [ -d "$series" ] && [ -f "$amd" ]; then
     cp "$series"/0001-*.patch "$series"/0002-*.patch "$series"/0003-*.patch \
        "$series"/0004-*.patch "$series"/0005-*.patch "$PATCHES"/
@@ -198,10 +198,11 @@ case "${1:-all}" in
   deps)   deps ;;
   record) record_stock ;;
   fetch)  fetch ;;
+  stage-patches) stage_patches ;;   # populate $PATCHES from the in-repo series (repro check)
   apply)  apply ;;
   config) configure ;;
   build)  build ;;
   prep)   deps; record_stock; fetch; apply; configure ;;   # everything up to (not incl.) the long compile
   all)    deps; record_stock; fetch; apply; configure; build ;;
-  *) echo "usage: build-6.18-kernel.sh deps|record|fetch|apply|config|build|prep|all" >&2; exit 2 ;;
+  *) echo "usage: build-6.18-kernel.sh deps|record|fetch|stage-patches|apply|config|build|prep|all" >&2; exit 2 ;;
 esac

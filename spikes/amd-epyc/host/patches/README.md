@@ -50,7 +50,10 @@ is not a ruling — the draft waits on AE-2's on-silicon data (`harness/singlest
 
 ## Build + apply
 
-See `host/build-kvm-amd.sh`: fetch the pinned `linux-source-6.8.0`, `git am` patches
-0001/0002/0004 + this `svm.c` hunk, build `arch/x86/kvm/kvm-amd.ko`, content-pin it
-(sha256), and load it in place of the stock module — with the stock module's hash
-recorded first (record-then-modify) so the box restores to the baseline `kvm_amd`.
+See `host/build-6.18-kernel.sh`: fetch the pinned `linux-6.18.35`, `git am` the canonical
+determinism series 0001-0005 + this `svm.c` hunk (both apply clean to 6.18.35), and build a
+BOOTABLE patched kernel `.deb` (the 6.18 `KVM_EXIT_PREEMPT`/`preempt_armed` infrastructure is
+absent from stock 6.8, so the module must match a booted 6.18.35 host — `host/stage-6.18-boot.sh`
+installs it behind a self-recovering GRUB one-shot). The stock kernel + module hashes are
+recorded first (record-then-modify) so the box restores to baseline. (`host/build-kvm-amd.sh` is
+the SUPERSEDED out-of-tree-against-stock-6.8 recipe — kept only for provenance.)

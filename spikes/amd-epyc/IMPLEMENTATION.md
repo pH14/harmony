@@ -63,7 +63,8 @@ a build-environment version skew, not a mechanism failure) is recorded, not impr
    MSR default-deny trapping to the vmm (`ae4-msr`). PMU column pinned to legacy (PerfMonV2
    rows inert on Zen 2; re-confirm on Zen 4 EPYC).
 6. **One-command AE-5 demo** — gated on the appliance (`hm-tn9`) and the AE-2/3/4 box steps;
-   `host/build-kvm-amd.sh` is the content-pinned patched-stack build recipe it will drive.
+   `host/build-6.18-kernel.sh` + `host/stage-6.18-boot.sh` are the content-pinned patched-stack
+   build+boot recipe it will drive.
 7. **Box baseline** — `results/box-baseline-manifest.json` is the day-one restore target;
    `LS_CFG`/AVIC/SMT/governor postures recorded; box **returned to and verified at baseline**
    after every run and at spike end (`capture-baseline.sh --restore-view` diff clean).
@@ -182,7 +183,8 @@ The AE-3 patched 6.18.35 kernel is BUILT + BOOTED and the force-exit was OBSERVE
 (re-provisioned/keys reset). All apparatus below is committed and reproducible from a
 fresh checkout the moment box access returns:
 
-- **AE-3 exact-landing under core isolation** — the mechanism (force-exit) is a GO; the exact
+- **AE-3 exact-landing under core isolation** — the force-exit was observed on-silicon but is
+  NOT a retained GO (the ladder is ESCALATED until records are committed); the exact
   single-step landing needs a `nohz_full`/`isolcpus` boot to kill the ~few-branch counter jitter
   that varies the landed state run-to-run (the diagnostic — RIP+RCX-only digest to separate
   counter jitter from RFLAGS debug-bit variance, then the 10⁶-arm replay campaign via
