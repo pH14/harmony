@@ -1205,14 +1205,45 @@ dependency the fast free-run hid — an **AA-5 preview**: exactly the kind of no
 derived time the paravirt clock (§AA-5) exists to close. It is a characterized finding,
 not a mechanism failure; the exact landing itself is exact for every payload.
 
+**Finding AA3-F1 — the exact landing must land at the CANONICAL PC, because `BR_RETIRED`
+does not uniquely pin `PC`.** `BR_RETIRED` ticks only on *retired branches*, so across a
+branchless run many consecutive `PC`s share one work value — a **plateau**. Of the seven
+graded payloads, `clock-page`'s seqlock body (≈10 non-branch instructions between its loop
+branches) has the longest plateau. The exact landing's canonical point is the **first**
+instruction at which `work == target` — the one immediately after the target-th retiring
+branch — and the single-step-up loop reaches it from *any* start strictly below the target,
+since the deterministic instruction stream converges there. A first cut accepted an async
+`Preempt` that fired *at* `work == target` as a zero-step landing; that was wrong. Such a
+`Preempt` lands at an **arbitrary `PC` inside the plateau** — BR-exact but PC-non-canonical —
+so two same-seed reps, one landing via a step-up and one via that boundary, digest **different
+`PC`s** while everything else (all GPRs, `SP`, guest RAM, vGIC) is **bit-identical**. It
+surfaced as a replay-identity divergence on `clock-page` *only* (its long plateau); an earlier
+smoke had passed merely because it *errored those boundary cases out*.
+Root-caused with an env-gated per-register landing dump (`AA3_DUMP_REGS`, kept for AA-6): the
+sole diverging *hashed* register was `PC`; `CNTPCT_EL0` and `KVM_REG_ARM_TIMER_CNT` varied
+240/240 on a **passing** payload yet replay held — confirming `is_host_time_register` already
+excludes the wall-clock counters from the digest (the paravirt-clock contract-closure, §AA-5,
+previewed in the digest). **Fix (proven on-box):** arm `skid_margin + LANDING_HEADROOM` (16)
+below the target so the `Preempt` fires *strictly* below it with room to single-step up to the
+canonical `PC`; the `≥ target` guard stays fail-closed (a landing at/above target means the
+skid exceeded margin+headroom — a real anomaly, not something to accept). This is the deep
+lesson of a branch-instruction work clock on real silicon: a `Moment` named by work count is a
+`PC`-*interval*, and replay identity requires a canonical representative of that interval.
+
 **Disposition (updated): mechanism + exact-landing GO on N1; PENDING the ≥10⁶ run.** The
 0004-analogue force-exit fires, arms-early to remove the boundary loss, and lands exactly
-at the target for all deterministic-count payloads — the load-bearing AA-3 mechanism is
-proven. Remaining for the stage GO: the ≥10⁶-armed exact-landing run (sharded) with
-`wfi-idle` either excluded or its count-exemption ruled (its timer determinism is AA-5's
-to settle), plus the trait-freeze memo (does `run_until_overflow`'s late-only-stop hold on
-arm64 PMI delivery — the box answer so far: YES, the Preempt is late-only and the
-single-step lands exactly, no `Arch`-trait change forced).
+at the **canonical** target `PC` (AA3-F1) for all seven deterministic-count payloads — the
+load-bearing AA-3 mechanism is proven. A 3500-record smoke (`aa3-smk6`, 7 payloads ×
+250 cases × 2 reps, `wfi-idle` excluded) grades **RESULT PASS (21 checks)**: totality,
+multiplicity, count-exactness, skid (exact, no overshoot), mechanism-attestation, and
+**replay-identity 1750/1750 groups bit-identical** — `clock-page` included. Per the foreman
+ruling (2026-07-17) `wfi-idle` is **excluded** from the ≥10⁶ run (its timer determinism is
+AA-5's to settle, recorded above as the AA-5 preview); the run grades on the seven
+deterministic-count payloads. Remaining for the stage GO: the ≥10⁶-armed exact-landing run
+(sharded across cores 4–79), plus the trait-freeze memo (does `run_until_overflow`'s
+late-only-stop hold on arm64 PMI delivery — the box answer so far: YES, the Preempt is
+late-only and the single-step lands exactly at the canonical PC, no `Arch`-trait change
+forced).
 
 **Original finding (why this was executor work): the single-step run path did not exist
 in the harness** — the
