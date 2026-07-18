@@ -339,6 +339,11 @@ pub struct DifferentialCampaign<M: Machine> {
     coordinator: Coordinator,
     rng: Prng,
     genesis: SnapId,
+    /// The genesis seal's server-stamped cut: a genesis-rooted branch
+    /// inherits the machine's pre-campaign SDK prefix (e.g. a workload's
+    /// setup events), so its cumulative positions start here — the branch
+    /// base cut for `parent == None` rollouts (task 132).
+    genesis_cut: EvidenceCut,
     until: StopConditions,
     config: CampaignConfig,
     /// The remaining materialization-replay budget (charged per materialized
@@ -452,6 +457,7 @@ impl<M: Machine> DifferentialCampaign<M> {
             coordinator,
             rng: Prng::new(seed),
             genesis,
+            genesis_cut,
             until: StopConditions {
                 deadline: None,
                 on: StopMask::ALL,
@@ -610,11 +616,21 @@ impl<M: Machine> DifferentialCampaign<M> {
                 }
                 self.replay_left -= 1; // charge the replay budget
 
-                let p2 = self.coordinator.assign(cohort_b)?;
-                // Materialize: replay to the candidate moment, holding the seal;
-                // the machine stamps the AUTHORITATIVE cut with the seal.
+                // Materialize BEFORE reserving the revision slot: replay to
+                // the candidate moment, holding the seal; the machine stamps
+                // the AUTHORITATIVE cut with the seal. A candidate whose
+                // state disappears before a valid seal is not returnable and
+                // is DROPPED (the strategy's disappearing-state rule) — and
+                // because no slot was reserved for it, dropping it can never
+                // hold the frontier open. Any other machine failure aborts
+                // the step loudly as ever.
                 let (seal, actual_cut) =
-                    self.materialize_candidate(base_snap, &branch_env, cand.at)?;
+                    match self.materialize_candidate(base_snap, &branch_env, cand.at) {
+                        Ok(sealed) => sealed,
+                        Err(CampaignError::Machine(MachineError::NotSealable(_))) => continue,
+                        Err(e) => return Err(e),
+                    };
+                let p2 = self.coordinator.assign(cohort_b)?;
                 let seal_evidence = CompletedRunEvidence {
                     rollout: RunId {
                         issue: p2.proposal.get(),
@@ -893,7 +909,10 @@ impl<M: Machine> DifferentialCampaign<M> {
         choice: Option<ExemplarRef>,
     ) -> Result<(SnapId, Option<Reproducer>, Option<EvidenceCut>, bool), CampaignError> {
         match choice {
-            None => Ok((self.genesis, None, None, true)),
+            // Genesis explores inherit the machine's pre-campaign prefix
+            // through the genesis cut (its count is the cumulative position
+            // base; a machine with no pre-campaign SDK prefix stamps 0).
+            None => Ok((self.genesis, None, Some(self.genesis_cut), true)),
             Some(r) => {
                 let (entry_env, parent_cut) = match self.occupancy.frontier().get(r) {
                     Some(entry) => (entry.env.clone(), entry.exemplar.cut),

@@ -350,6 +350,11 @@ pub fn compose_observations_at(
     included: u64,
 ) -> ObservationMap {
     // Collect ancestor segments child-first: (segment events, start, upper).
+    // Positions are explicit — `start` is each batch's own cumulative base
+    // (its `parent_cut` count) — because the composed prefix may begin above
+    // zero: a pre-campaign (setup) prefix restored into the genesis base is
+    // inherited machine state that belongs to no rollout batch, so cumulative
+    // position and vector index differ by the root's start.
     let mut segments: Vec<(Vec<SdkEvent>, u64, u64)> = Vec::new();
     let mut parent = ev.rollout.parent;
     let mut upper = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
@@ -366,16 +371,28 @@ pub fn compose_observations_at(
         parent = anc.rollout.parent;
         upper = start;
     }
-    // Concatenate root-first: each segment truncated at its child's fork
-    // count, then this batch's own suffix. Positions are contiguous by
-    // construction, so vector index == cumulative position.
+    // Assemble the position-filtered prefix root-first: each ancestor's own
+    // events at cumulative positions `start + i`, truncated at its child's
+    // fork count, then this batch's own suffix — keeping exactly the
+    // positions `< included` (the half-open cut is by cumulative position).
     let mut events: Vec<SdkEvent> = Vec::new();
     for (seg, start, upper) in segments.into_iter().rev() {
-        let take = upper.saturating_sub(start) as usize;
-        events.extend(seg.into_iter().take(take));
+        for (i, e) in seg.into_iter().enumerate() {
+            let pos = start + i as u64;
+            if pos < upper && pos < included {
+                events.push(e);
+            }
+        }
     }
-    events.extend(ev.normalized.events.iter().cloned());
-    reduce_at_cut(&events, &ev.normalized.schema, included)
+    let own_start = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+    for (i, e) in ev.normalized.events.iter().enumerate() {
+        let pos = own_start + i as u64;
+        if pos < included {
+            events.push(e.clone());
+        }
+    }
+    let filtered = events.len() as u64;
+    reduce_at_cut(&events, &ev.normalized.schema, filtered)
 }
 
 #[cfg(test)]

@@ -104,6 +104,7 @@ pub campaign_runner::gamecampaign::GameCampaignError::BillboardMalformed::gpa: u
 pub campaign_runner::gamecampaign::GameCampaignError::BillboardMalformed::len: u64
 pub campaign_runner::gamecampaign::GameCampaignError::BillboardMalformed::why: &'static str
 pub campaign_runner::gamecampaign::GameCampaignError::BillboardMissing
+pub campaign_runner::gamecampaign::GameCampaignError::Campaign(explorer::campaign::CampaignError)
 pub campaign_runner::gamecampaign::GameCampaignError::Machine(explorer::error::MachineError)
 pub campaign_runner::gamecampaign::GameCampaignError::MalformedExemplar(alloc::string::String)
 pub campaign_runner::gamecampaign::GameCampaignError::QuietEnvCarriesFaults
@@ -133,10 +134,12 @@ pub campaign_runner::gamecampaign::DeepReproducer::depth: u64
 pub campaign_runner::gamecampaign::DeepReproducer::trace_id: core::option::Option<alloc::string::String>
 pub struct campaign_runner::gamecampaign::GameCampaignConfig
 pub campaign_runner::gamecampaign::GameCampaignConfig::campaign_seed: u64
+pub campaign_runner::gamecampaign::GameCampaignConfig::candidate_cap: usize
 pub campaign_runner::gamecampaign::GameCampaignConfig::deadline_delta: core::option::Option<u64>
 pub campaign_runner::gamecampaign::GameCampaignConfig::explore_period: u64
 pub campaign_runner::gamecampaign::GameCampaignConfig::guest_ram_len: u64
 pub campaign_runner::gamecampaign::GameCampaignConfig::max_branches: u64
+pub campaign_runner::gamecampaign::GameCampaignConfig::replay_budget: u64
 pub campaign_runner::gamecampaign::GameCampaignConfig::require_snapshot_point: bool
 pub campaign_runner::gamecampaign::GameCampaignConfig::rom_sha256: core::option::Option<alloc::string::String>
 pub campaign_runner::gamecampaign::GameCampaignConfig::setup_deadline_delta: u64
@@ -167,6 +170,9 @@ pub fn campaign_runner::gamecampaign::GameToyMachine::replay(&mut self, explorer
 pub fn campaign_runner::gamecampaign::GameToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
 pub fn campaign_runner::gamecampaign::GameToyMachine::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
 pub fn campaign_runner::gamecampaign::GameToyMachine::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::spine::EvidenceCut), explorer::error::MachineError>
+pub struct campaign_runner::gamecampaign::SmbObservationCells
+impl explorer::evidence::ObservationCells for campaign_runner::gamecampaign::SmbObservationCells
+pub fn campaign_runner::gamecampaign::SmbObservationCells::key(&self, explorer::spine::EvidenceCut, &explorer::evidence::ObservationMap) -> explorer::spine::CellKey
 pub struct campaign_runner::gamecampaign::WorkEvidence
 pub campaign_runner::gamecampaign::WorkEvidence::branches: u64
 pub campaign_runner::gamecampaign::WorkEvidence::min_completed_frames: u64
@@ -176,7 +182,7 @@ pub const campaign_runner::gamecampaign::DEFAULT_GUEST_RAM_LEN: u64
 pub const campaign_runner::gamecampaign::DETERMINISM_BAR: usize
 pub fn campaign_runner::gamecampaign::determinism_verdict(&campaign_runner::gamecampaign::GameCampaignOutcome, usize) -> core::result::Result<campaign_runner::gamecampaign::GateVerdict, campaign_runner::gamecampaign::Vacuity>
 pub fn campaign_runner::gamecampaign::quiet_mutate(&explorer::Reproducer, u64, u64) -> core::result::Result<explorer::Reproducer, campaign_runner::gamecampaign::GameCampaignError>
-pub fn campaign_runner::gamecampaign::run_game_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &campaign_runner::gamecampaign::GameCampaignConfig, benchmark::exploration::ExplorationConfig) -> core::result::Result<campaign_runner::gamecampaign::GameCampaignOutcome, campaign_runner::gamecampaign::GameCampaignError>
+pub fn campaign_runner::gamecampaign::run_game_campaign<M: explorer::seam::Machine>(M, alloc::boxed::Box<dyn explorer::seam::EnvCodec>, &campaign_runner::gamecampaign::GameCampaignConfig, benchmark::exploration::ExplorationConfig) -> core::result::Result<campaign_runner::gamecampaign::GameCampaignOutcome, campaign_runner::gamecampaign::GameCampaignError>
 pub fn campaign_runner::gamecampaign::serial_rom_sha256(&[u8]) -> core::option::Option<alloc::string::String>
 pub fn campaign_runner::gamecampaign::smb_cell_key(u64, u64, u64, u64) -> u64
 pub fn campaign_runner::gamecampaign::smb_cells(&[sdk_events::event::SdkEvent]) -> (alloc::vec::Vec<u64>, u64)

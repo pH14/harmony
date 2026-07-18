@@ -28,6 +28,14 @@ required-features = ["cli"]
 explorer = { path = "../explorer", version = "0.1.0" }
 environment = { path = "../environment", version = "0.1.0" }
 control-proto = { path = "../control-proto", version = "0.1.0" }
+# Task 132 (hm-e6q): the game campaign routes through explorer's two-barrier
+# DifferentialCampaign, whose input coordinator this crate now constructs
+# (Coordinator + MemLedger + the campaign-config identity).
+revision-coordinator = { path = "../revision-coordinator", version = "0.1.0" }
+# Task 132: the routed game campaign's durable evidence ledger needs a
+# throwaway backing file when the caller configures no trace directory
+# (whitelisted, rule 5; already a dev-dependency for the recording gates).
+tempfile = "3"
 # Task 69: the benchmark manifest + correlation-log schema this driver emits.
 benchmark = { path = "../benchmark", version = "0.1.0" }
 # Task 69 M2: the REAL task-67 signal under test (GO/NO-GO #2 must measure the

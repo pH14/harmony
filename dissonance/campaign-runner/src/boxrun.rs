@@ -512,6 +512,12 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         // The billboard-range bound (task 103 finding 2), from the RAM this
         // composition root actually boots the guest with.
         guest_ram_len: GUEST_RAM_LEN as u64,
+        // The two-barrier controller's materialization knobs (task 132): a
+        // small per-step cap — each materialized candidate replays a real
+        // rollout on the box — and a campaign budget of one replay per
+        // branch on average.
+        candidate_cap: 2,
+        replay_budget: args.game.max_branches,
     };
     let repeat = args.repeat.max(1);
     let mut first: Option<campaign_runner::gamecampaign::GameCampaignOutcome> = None;
@@ -570,8 +576,8 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
             boot_us / 1_000,
         );
         let (served, client) = run_session(&mut server, move |stream| {
-            let mut machine = SocketMachine::connect(stream, initial)?;
-            run_game_campaign(&mut machine, &SpecEnvCodec, &rep_cfg, config)
+            let machine = SocketMachine::connect(stream, initial)?;
+            run_game_campaign(machine, Box::new(SpecEnvCodec), &rep_cfg, config)
                 .map_err(|e| explorer::MachineError::Transport(e.to_string()))
         });
         let outcome = match client {

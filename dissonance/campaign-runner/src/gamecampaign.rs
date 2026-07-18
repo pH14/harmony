@@ -33,9 +33,12 @@ use std::collections::BTreeSet;
 
 use benchmark::exploration::{DiscoveryEvent, ExplorationConfig, ExplorationLog};
 use explorer::{
-    EnvCodec, Machine, MachineError, Moment, Prng, Reproducer, RunTrace, StopConditions, StopMask,
-    StopReason,
+    CampaignError, CellKey, DeclineTactic, DifferentialCampaign, EnvCodec, EvidenceCut,
+    EvidenceLedger, ExploreExploitSelector, GenesisSelector, Ingress, Machine, MachineError,
+    Moment, Nomination, ObservationCells, ObservationMap, ReducedValue, Reproducer,
+    RetentionProfile, RunTrace, Selector, StopConditions, StopMask, StopReason,
 };
+use revision_coordinator::{CampaignConfigId, Coordinator, MemLedger};
 use sdk_events::{NS_STATE, Normalized, ObservationId, Payload, SdkEvent};
 
 /// Local mirrors of the play-agent's state-register catalog
@@ -113,6 +116,16 @@ pub struct GameCampaignConfig {
     /// guest RAM (`boxrun::GUEST_RAM_LEN`), so the bound the validator checks
     /// is the bound the VM was built with, single-sourced.
     pub guest_ram_len: u64,
+    /// The two-barrier controller's per-step materialization cap (task 132):
+    /// at most this many provisional candidates replay to a held seal per
+    /// branch. Each replay costs a real rollout on the box, so the cap is
+    /// deliberately small.
+    pub candidate_cap: usize,
+    /// The controller's total materialization-replay budget across the
+    /// campaign (task 132). SelectorV1 needs admitted Entries to exploit;
+    /// PureRandom never reads the archive, but the budget applies uniformly
+    /// so both configurations run the identical two-barrier protocol.
+    pub replay_budget: u64,
 }
 
 impl GameCampaignConfig {
@@ -131,6 +144,8 @@ impl GameCampaignConfig {
             require_snapshot_point: false,
             trace_dir: None,
             guest_ram_len: DEFAULT_GUEST_RAM_LEN,
+            candidate_cap: 2,
+            replay_budget: 64,
         }
     }
 }
@@ -254,6 +269,11 @@ pub enum GameCampaignError {
     /// campaign that silently produced un-rekeyable output.
     #[error("deep-reproducer retention failed: {0}")]
     Retention(String),
+    /// The two-barrier Differential controller failed (coordinator, evidence
+    /// ledger, codec, or materialized-view failure) — loud, never absorbed
+    /// (task 132).
+    #[error("differential campaign: {0}")]
+    Campaign(#[from] CampaignError),
 }
 
 /// The deepest branch's retained reproducer pointer (round-8 P1): which
@@ -527,23 +547,188 @@ pub fn smb_completed_frames(events: &[SdkEvent]) -> u64 {
     completed
 }
 
-/// A novelty-frontier entry for the SelectorV1 configuration.
-struct Exemplar {
-    env: Reproducer,
+/// The binary-wire catalog marker event id (mirror of the sdk-events wire
+/// constant; the conventions mirror-type pattern — a raw tuple with this id
+/// is the schema declaration, not a firing).
+const CATALOG_EVENT_ID: u32 = 0;
+
+/// The SMB workload's **explicit instrumentation declaration** (task 132):
+/// the wire-v2 catalog resolving each play-agent state register to its base
+/// update operation, so the Differential relations may reduce them. The
+/// strategy forbids silently blessing v1 firings with reducers
+/// ("the first Differential vertical cannot silently bless inference from v1
+/// events") and sanctions exactly this — "an equally explicit workload
+/// instrumentation declaration" — as the alternative to a guest wire-v2
+/// rebuild. The host owns the workload contract already (the mirrored
+/// [`reg`] catalog); this states it as versioned schema.
+fn smb_instrumentation_catalog() -> Vec<u8> {
+    use sdk_events::{Classification, DeclaredPoint, UpdateOp, ValueShape};
+    let point = |local: u64, name: &str, op: UpdateOp| DeclaredPoint {
+        namespace: NS_STATE,
+        local: local as u32,
+        name: name.into(),
+        classification: Classification::State,
+        value_shape: Some(ValueShape::U64),
+        base_op: Some(op),
+        expectation: None,
+    };
+    sdk_events::encode_v2_declaration(&[
+        point(reg::GAME_MODE, "game_mode", UpdateOp::Set),
+        point(reg::WORLD, "world", UpdateOp::Set),
+        point(reg::LEVEL, "level", UpdateOp::Set),
+        point(reg::X_BUCKET, "x_bucket", UpdateOp::Set),
+        point(reg::DEPTH, "depth", UpdateOp::Max),
+        point(reg::FRAME, "frame", UpdateOp::Set),
+        point(reg::BILLBOARD_GPA, "billboard_gpa", UpdateOp::Set),
+        point(reg::BILLBOARD_LEN, "billboard_len", UpdateOp::Set),
+    ])
+    // Statically infallible: a fixed, well-formed catalog literal.
+    .expect("the SMB instrumentation catalog is well-formed")
 }
 
-/// Drive one game campaign against `machine` under `config`. Seals the base
-/// at the play-agent's `setup_complete` snapshot point (billboard primed +
-/// published, ROM running), then per branch: mint a pure seeded env
-/// (PureRandom) or exploit a novel exemplar (SelectorV1), run to the
-/// deadline, fold the SDK state events into cells + depth, and log the
-/// branch's terminal `state_hash`. The deepest branch's reproducer is
-/// retained ([`GameCampaignConfig::trace_dir`], round-8 P1) and the setup
+/// A [`Machine`] adapter that prepends the SMB instrumentation declaration to
+/// the guest's raw SDK capture (task 132): every drained capture carries the
+/// versioned schema, so the normalized evidence resolves the play-agent's v1
+/// state firings to their declared base operations. Everything else
+/// delegates.
+struct DeclaredMachine<M> {
+    inner: M,
+    catalog: Vec<u8>,
+}
+
+impl<M: Machine> DeclaredMachine<M> {
+    fn new(inner: M) -> Self {
+        DeclaredMachine {
+            inner,
+            catalog: smb_instrumentation_catalog(),
+        }
+    }
+}
+
+impl<M: Machine> Machine for DeclaredMachine<M> {
+    fn branch(&mut self, snap: explorer::SnapId, env: &Reproducer) -> Result<(), MachineError> {
+        self.inner.branch(snap, env)
+    }
+    fn replay(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
+        self.inner.replay(snap)
+    }
+    fn run(
+        &mut self,
+        until: &StopConditions,
+        resolve: Option<&explorer::Answer>,
+    ) -> Result<StopReason, MachineError> {
+        self.inner.run(until, resolve)
+    }
+    fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
+        self.inner.snapshot()
+    }
+    fn drop_snap(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
+        self.inner.drop_snap(snap)
+    }
+    fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+        self.inner.hash()
+    }
+    fn coverage(&self) -> &[u8] {
+        self.inner.coverage()
+    }
+    fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+        self.inner.recorded_env()
+    }
+    fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+        let mut out = vec![(0u64, CATALOG_EVENT_ID, self.catalog.clone())];
+        out.extend(self.inner.sdk_events()?);
+        Ok(out)
+    }
+    fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
+        self.inner.console()
+    }
+}
+
+/// The quiet-arm [`EnvCodec`] the routed campaign hands the two-barrier
+/// controller (task 132): `seeded`/`compose` delegate to the production
+/// codec; `mutate` is the [`quiet_mutate`] reseed-only move — the controller
+/// structurally cannot mint a host-plane fault on exploit. A fault-carrying
+/// exemplar maps onto the codec's fail-closed
+/// [`UnsupportedComposition`](explorer::EnvCodecError::UnsupportedComposition)
+/// class (a standing-fault-carrying input is literally its documented case).
+struct QuietCodec {
+    inner: Box<dyn EnvCodec>,
+    /// The reseed-Moment window `quiet_mutate` places its marker inside.
+    window: u64,
+}
+
+impl EnvCodec for QuietCodec {
+    fn seeded(&self, seed: u64) -> Reproducer {
+        self.inner.seeded(seed)
+    }
+
+    fn mutate(&self, base: &Reproducer, salt: u64) -> Result<Reproducer, explorer::EnvCodecError> {
+        quiet_mutate(base, salt, self.window).map_err(|e| match e {
+            GameCampaignError::QuietEnvCarriesFaults { .. } => {
+                explorer::EnvCodecError::UnsupportedComposition
+            }
+            // A malformed exemplar blob (the untrusted-input class).
+            _ => explorer::EnvCodecError::Malformed(0),
+        })
+    }
+
+    fn compose(
+        &self,
+        base: &Reproducer,
+        branch_local: &Reproducer,
+    ) -> Result<Reproducer, explorer::EnvCodecError> {
+        self.inner.compose(base, branch_local)
+    }
+}
+
+/// The SMB cell projection over the reduced observation map (task 132): the
+/// same `(game mode, world, level, x-bucket)` tuple [`smb_cells`] keys, read
+/// off the independently-reduced registers at the evaluation point's cut. A
+/// state with no `X_BUCKET` observation yet keys to the empty cell (the
+/// shared pre-progress state, exactly like [`smb_cells`] minting no key
+/// before the first X write).
+pub struct SmbObservationCells;
+
+impl ObservationCells for SmbObservationCells {
+    fn key(&self, _cut: EvidenceCut, obs: &ObservationMap) -> CellKey {
+        let get = |reg: u64| match obs.get(&ObservationId::Point {
+            namespace: NS_STATE,
+            local: reg as u32,
+        }) {
+            Some(ReducedValue::Scalar(v)) => Some(*v),
+            _ => None,
+        };
+        match get(reg::X_BUCKET) {
+            None => Vec::new(),
+            Some(x) => smb_cell_key(
+                get(reg::GAME_MODE).unwrap_or(0),
+                get(reg::WORLD).unwrap_or(0),
+                get(reg::LEVEL).unwrap_or(0),
+                x,
+            )
+            .to_le_bytes()
+            .to_vec(),
+        }
+    }
+}
+
+/// Drive one game campaign against `machine` under `config`, **end-to-end
+/// through the two-barrier [`DifferentialCampaign`] controller** (task 132,
+/// `hm-e6q`). Seals the base at the play-agent's `setup_complete` snapshot
+/// point (billboard primed + published, ROM running), then hands the machine
+/// to the controller: per branch, one two-barrier step — the selector picks
+/// genesis (PureRandom) or a retained Entry (SelectorV1 exploit, via the
+/// quiet reseed-only mutate), the rollout's normalized SDK evidence commits
+/// through the Revision coordinator, provisional cells nominate budgeted
+/// materialization replay, and occupancy admits at the actual `sealed_at`.
+/// The per-branch log (cells touched, depth, terminal `state_hash`) is
+/// derived from the committed evidence batches; the deepest branch's
+/// reproducer is retained ([`GameCampaignConfig::trace_dir`]) and the setup
 /// prefix's billboard window surfaced — film's inputs, from campaign output
 /// alone.
 pub fn run_game_campaign<M: Machine>(
-    machine: &mut M,
-    codec: &dyn EnvCodec,
+    machine: M,
+    codec: Box<dyn EnvCodec>,
     cfg: &GameCampaignConfig,
     config: ExplorationConfig,
 ) -> Result<GameCampaignOutcome, GameCampaignError> {
@@ -551,14 +736,19 @@ pub fn run_game_campaign<M: Machine>(
         return Err(GameCampaignError::SignalUnavailable);
     }
 
-    let (base, base_vtime) = seal_base(machine, cfg)?;
+    // The workload's explicit instrumentation declaration rides every SDK
+    // capture from here on (task 132): the schema that resolves the
+    // play-agent's state registers to their base operations.
+    let mut machine = DeclaredMachine::new(machine);
+
+    let (base, base_vtime) = seal_base(&mut machine, cfg)?;
     // Drain the SETUP prefix's SDK capture: the billboard gpa/len registers
     // were published before the seal, so they ride this capture, not any
     // branch's — surface them for film (round-8 P1). Also keeps setup events
     // out of branch 0's trace. The window is VALIDATED at registration (task
     // 103 finding 2): a published-but-unusable window is a loud refusal here,
     // on both paths, never a silent fall back to "no billboard".
-    let setup_events = drain_events(machine)?;
+    let setup_events = drain_events(&mut machine)?;
     let billboard = billboard_window_of(&setup_events.events, cfg.guest_ram_len)?;
     // Round-9 P1: on the box (`require_snapshot_point`) the billboard is
     // M0's unconditional film seam — a setup prefix that never published a
@@ -569,6 +759,9 @@ pub fn run_game_campaign<M: Machine>(
     if cfg.require_snapshot_point && billboard.is_none() {
         return Err(GameCampaignError::BillboardMissing);
     }
+    // The controller snapshots its own genesis from this same stopped state;
+    // the seal_base handle would only duplicate it.
+    machine.drop_snap(base)?;
 
     let until = StopConditions {
         deadline: cfg
@@ -580,9 +773,63 @@ pub fn run_game_campaign<M: Machine>(
         on: StopMask::NONE,
     };
 
-    let mut prng = Prng::new(cfg.campaign_seed);
-    let mut seen: BTreeSet<u64> = BTreeSet::new();
-    let mut frontier: Vec<Exemplar> = Vec::new();
+    // The search policies, mapped onto the controller's seams: PureRandom is
+    // the always-explore selector; SelectorV1 is the explore/exploit shape
+    // over the controller's retained Entries.
+    let selector: Box<dyn Selector> = match config {
+        ExplorationConfig::PureRandom => Box::new(GenesisSelector::new()),
+        ExplorationConfig::SelectorV1 => {
+            Box::new(ExploreExploitSelector::new().with_explore_period(cfg.explore_period))
+        }
+        // Refused above; structurally unreachable, kept total.
+        ExplorationConfig::Signal => return Err(GameCampaignError::SignalUnavailable),
+    };
+    let quiet = QuietCodec {
+        inner: codec,
+        window: cfg.deadline_delta.unwrap_or(TOY_RESEED_WINDOW),
+    };
+    // The durable evidence ledger: beside the retained traces when a trace
+    // directory is configured, else a campaign-lifetime scratch file.
+    let scratch;
+    let evidence_path = match &cfg.trace_dir {
+        Some(dir) => dir.join("evidence.log"),
+        None => {
+            scratch =
+                tempfile::tempdir().map_err(|e| GameCampaignError::Retention(e.to_string()))?;
+            scratch.path().join("evidence.log")
+        }
+    };
+    let ledger = EvidenceLedger::open(&evidence_path).map_err(CampaignError::from)?;
+    let coordinator = Coordinator::genesis(
+        Box::new(MemLedger::new()),
+        CampaignConfigId::digest(&cfg.campaign_seed.to_le_bytes()),
+    )
+    .map_err(CampaignError::from)?;
+    let mut camp = DifferentialCampaign::new(
+        machine,
+        Box::new(quiet),
+        Box::new(DeclineTactic::new()),
+        selector,
+        Box::new(SmbObservationCells),
+        ledger,
+        coordinator,
+        explorer::CampaignConfig {
+            candidate_cap: cfg.candidate_cap,
+            replay_budget: cfg.replay_budget,
+            ingress: Ingress::Binary,
+            retention: RetentionProfile::Full,
+            evidence_budget: None,
+            // The quiet game rollout surfaces no mid-run snapshot points —
+            // nomination coordinates come from the rollout's own SDK-event
+            // moments (the configured-evidence-cut source).
+            nominate: Nomination::EventMoments,
+            // The per-branch determinism artifact the 25/25 gate compares.
+            hash_rollouts: true,
+        },
+        cfg.campaign_seed,
+    )?;
+    camp.set_stop_conditions(until);
+
     let mut events = Vec::new();
     // The deepest branch's (depth, branch, trace), tracked from branch 0
     // (round-8 P1 / hm-5sv retention discipline); strictly-greater keeps the
@@ -597,75 +844,56 @@ pub fn run_game_campaign<M: Machine>(
     };
 
     for branch in 0..cfg.max_branches {
-        let step = branch + 1;
-        let exploit = config == ExplorationConfig::SelectorV1
-            && !frontier.is_empty()
-            && !step.is_multiple_of(cfg.explore_period);
-        let env = if exploit {
-            let pick = (prng.next_u64() % frontier.len() as u64) as usize;
-            // The QUIET-ARM exploit move (round-6 P1): reseed the entropy
-            // stream at a salt-derived Moment — never `codec.mutate`, whose
-            // contract inserts a host-plane fault override.
-            quiet_mutate(
-                &frontier[pick].env,
-                prng.next_u64(),
-                cfg.deadline_delta.unwrap_or(TOY_RESEED_WINDOW),
-            )?
-        } else {
-            codec.seeded(prng.next_u64())
-        };
-
-        machine.branch(base, &env)?;
-        let stop = machine.run(&until, None)?;
+        let report = camp.step()?;
+        // The branch's committed evidence batch — the durable authority the
+        // per-branch log derives from.
+        let batch = camp
+            .coordinator()
+            .committed_inputs()
+            .into_iter()
+            .find(|(rev, _, _)| *rev == report.rollout_revision)
+            .map(|(_, _, b)| b)
+            .ok_or_else(|| {
+                GameCampaignError::Retention("rollout revision has no committed batch".into())
+            })?;
+        let ev =
+            camp.ledger().get(&batch).cloned().ok_or_else(|| {
+                GameCampaignError::Retention("committed batch not in ledger".into())
+            })?;
         // Round-8 P1: in box mode the play-agent never exits — a rollout that
         // ended anywhere but its deadline DIED (crash/halt mid-rollout) and
         // must fail the campaign loudly, never be hashed and recorded like an
         // ordinary sample (the determinism gate could "pass" over
         // identically-crashed runs). The toy's natural terminal is Quiescent.
-        if cfg.require_snapshot_point && !matches!(stop, StopReason::Deadline { .. }) {
+        if cfg.require_snapshot_point && !matches!(ev.terminal, StopReason::Deadline { .. }) {
             return Err(GameCampaignError::RolloutDied {
                 branch,
-                stop: format!("{stop:?}"),
+                stop: format!("{:?}", ev.terminal),
             });
         }
-        // The rollout's own work evidence, read off the terminal before the
-        // stop is moved into the trace: how far the guest's clock actually
-        // advanced past the base. A `deadline_delta` of 0 (or a deadline the
-        // base already meets) lands here as a zero span.
-        let vtime_span = stop.vtime().0.saturating_sub(base_vtime);
-        let state_hash = machine.hash()?;
-        // Round-9 P1: the retained trace carries the RECORDED environment —
-        // genesis-complete, every decision actually drawn, keyed from the
-        // branch origin — never the pre-run proposal `env` (whose adapter
-        // coords are all-zero, so same-seed runs under different deadlines
-        // would collide on TraceId and the sidecar could not reconstruct the
-        // actual timeline; the R1 discipline).
-        let recorded_env = machine.recorded_env()?;
-        let normalized = drain_events(machine)?;
-        let (touched, depth) = smb_cells(&normalized.events);
-        let completed_frames = smb_completed_frames(&normalized.events);
+        // The rollout's own work evidence: how far the guest's clock advanced
+        // past this branch's own start (the sealed base for a genesis branch,
+        // the exploited Entry's cut for a child — its suffix is its work).
+        let branch_start = ev.parent_cut.map(|c| c.at.0).unwrap_or(base_vtime);
+        let vtime_span = ev.terminal.vtime().0.saturating_sub(branch_start);
+        // Statically infallible: `hash_rollouts` is set in the controller
+        // config above, so every report carries the terminal hash.
+        let state_hash = report.state_hash.expect("hash_rollouts is configured");
+        let (touched, depth) = smb_cells(&ev.normalized.events);
+        let completed_frames = smb_completed_frames(&ev.normalized.events);
+        // Round-9 P1: the retained trace carries the batch's RECORDED,
+        // genesis-complete environment — never a pre-run proposal (the R1
+        // discipline).
         let trace = RunTrace {
-            terminal: stop,
-            env: recorded_env,
+            terminal: ev.terminal.clone(),
+            env: ev.env.clone(),
             coverage: None,
-            events: crate::sdk_compat::guest_events_of(&normalized),
+            events: crate::sdk_compat::guest_events_of(&ev.normalized),
             records: Vec::new(),
         };
         work.branches += 1;
         work.min_vtime_span = work.min_vtime_span.min(vtime_span);
         work.min_completed_frames = work.min_completed_frames.min(completed_frames);
-
-        // SelectorV1's thin novelty archive: admit an exemplar iff the branch
-        // claimed a fresh cell.
-        let mut novel = false;
-        for &c in &touched {
-            if seen.insert(c) {
-                novel = true;
-            }
-        }
-        if novel && config == ExplorationConfig::SelectorV1 {
-            frontier.push(Exemplar { env });
-        }
 
         if deepest.as_ref().is_none_or(|(d, _, _)| depth > *d) {
             deepest = Some((depth, branch, trace));
@@ -677,8 +905,6 @@ pub fn run_game_campaign<M: Machine>(
             state_hash: hex(&state_hash),
         });
     }
-
-    machine.drop_snap(base)?;
 
     // Retain the deep reproducer (env sidecar + full journal — the REG_FRAME
     // moments film derives its shot list from ride the journal's events).
@@ -1003,7 +1229,15 @@ fn hex(h: &[u8; 32]) -> String {
 pub struct GameToyMachine {
     current: Reproducer,
     vtime: u64,
-    snaps: std::collections::BTreeMap<u64, (u64, Reproducer)>,
+    /// The branch point's V-time (the toy's own emissions are stamped
+    /// relative to it, so cuts stay coherent through the lineage).
+    branch_vtime: u64,
+    /// The restored ancestor SDK prefix (the production machine restores it
+    /// into a branched child, so counts are CUMULATIVE — task 132).
+    prefix: Vec<(u64, u32, Vec<u8>)>,
+    /// snap id -> (vtime, env, captured prefix).
+    #[allow(clippy::type_complexity)] // not order-observable: a plain snap table
+    snaps: std::collections::BTreeMap<u64, (u64, Reproducer, Vec<(u64, u32, Vec<u8>)>)>,
     next_snap: u64,
 }
 
@@ -1028,9 +1262,36 @@ impl GameToyMachine {
         GameToyMachine {
             current: explorer::SpecEnvCodec.seeded(0),
             vtime: TOY_BASE_VTIME,
+            branch_vtime: TOY_BASE_VTIME,
+            prefix: Vec::new(),
             snaps: std::collections::BTreeMap::new(),
             next_snap: 1,
         }
+    }
+
+    /// The current-branch capture: the restored ancestor prefix plus the
+    /// toy's own per-window emissions, stamped relative to the branch point
+    /// (one tuple emission per window + the depth max register + the frame
+    /// clock — the play-agent's per-window shape, over the real wire
+    /// layout).
+    fn capture(&self) -> Vec<(u64, u32, Vec<u8>)> {
+        let mut out = self.prefix.clone();
+        for (w, world, level, xb, best) in self.windows() {
+            let at = self.branch_vtime + w * 12;
+            let (id, p) = state_event(reg::GAME_MODE, 0, 1);
+            out.push((at, id, p));
+            let (id, p) = state_event(reg::WORLD, 0, world);
+            out.push((at + 1, id, p));
+            let (id, p) = state_event(reg::LEVEL, 0, level);
+            out.push((at + 2, id, p));
+            let (id, p) = state_event(reg::X_BUCKET, 0, xb);
+            out.push((at + 3, id, p));
+            let (id, p) = state_event(reg::DEPTH, 1, best);
+            out.push((at + 4, id, p));
+            let (id, p) = state_event(reg::FRAME, 0, w * 12);
+            out.push((at + 5, id, p));
+        }
+        out
     }
 
     /// The simulated per-window SMB observations for the current env:
@@ -1047,7 +1308,7 @@ impl GameToyMachine {
                 })
             })
             .unwrap_or(0);
-        let mut p = Prng::new(seed);
+        let mut p = explorer::Prng::new(seed);
         let mut x = 40u64;
         let (mut world, mut level) = (0u64, 0u64);
         let mut best = 0u64;
@@ -1089,47 +1350,72 @@ fn state_event(reg: u64, op: u8, value: u64) -> (u32, Vec<u8>) {
 
 impl Machine for GameToyMachine {
     fn branch(&mut self, snap: explorer::SnapId, env: &Reproducer) -> Result<(), MachineError> {
-        let Some((vt, _)) = self.snaps.get(&snap.0) else {
+        let Some((vt, _, prefix)) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
         explorer::AdapterEnv::decode(env)?;
         self.vtime = *vt;
+        self.branch_vtime = *vt;
+        self.prefix = prefix.clone();
         self.current = env.clone();
         Ok(())
     }
 
     fn replay(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
-        let Some((vt, env)) = self.snaps.get(&snap.0) else {
+        let Some((vt, env, prefix)) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
         self.vtime = *vt;
+        self.branch_vtime = *vt;
+        self.prefix = prefix.clone();
         self.current = env.clone();
         Ok(())
     }
 
     fn run(
         &mut self,
-        _until: &StopConditions,
+        until: &StopConditions,
         _resolve: Option<&explorer::Answer>,
     ) -> Result<StopReason, MachineError> {
-        let terminal = self.vtime.saturating_add(16 * 12);
-        self.vtime = terminal;
-        Ok(StopReason::Quiescent {
-            vtime: explorer::Moment(terminal),
-        })
+        // The play-agent never exits on its own: a configured deadline is the
+        // rollout terminal; without one the toy goes quiescent after its 16
+        // windows.
+        match until.deadline {
+            Some(d) => {
+                self.vtime = self.vtime.max(d.0);
+                Ok(StopReason::Deadline {
+                    vtime: explorer::Moment(self.vtime),
+                })
+            }
+            None => {
+                let terminal = self.vtime.saturating_add(16 * 12);
+                self.vtime = terminal;
+                Ok(StopReason::Quiescent {
+                    vtime: explorer::Moment(terminal),
+                })
+            }
+        }
     }
 
     fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
         let id = self.next_snap;
         self.next_snap += 1;
-        self.snaps.insert(id, (self.vtime, self.current.clone()));
-        // The toy stamps its cut from the same state its seal records (task
-        // 127); it models no SDK capture, so the prefix is 0.
+        // The cut is stamped from the same state the seal records (task 127):
+        // the capture prefix at or before the seal moment, CUMULATIVE through
+        // the restored ancestor prefix (task 132).
+        let vt = self.vtime;
+        let sealed: Vec<(u64, u32, Vec<u8>)> = self
+            .capture()
+            .into_iter()
+            .filter(|(at, _, _)| *at <= vt)
+            .collect();
+        let included = sealed.len() as u64;
+        self.snaps.insert(id, (vt, self.current.clone(), sealed));
         Ok((
             explorer::SnapId(id),
             explorer::EvidenceCut {
-                at: explorer::Moment(self.vtime),
-                sdk_events: 0,
+                at: explorer::Moment(vt),
+                sdk_events: included,
             },
         ))
     }
@@ -1159,25 +1445,9 @@ impl Machine for GameToyMachine {
     }
 
     fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
-        // One tuple emission per window (set ops) + the depth max register —
-        // the play-agent's per-window shape, over the real wire layout.
-        let mut out = Vec::new();
-        for (w, world, level, xb, best) in self.windows() {
-            let at = TOY_BASE_VTIME + w * 12;
-            let (id, p) = state_event(reg::GAME_MODE, 0, 1);
-            out.push((at, id, p));
-            let (id, p) = state_event(reg::WORLD, 0, world);
-            out.push((at + 1, id, p));
-            let (id, p) = state_event(reg::LEVEL, 0, level);
-            out.push((at + 2, id, p));
-            let (id, p) = state_event(reg::X_BUCKET, 0, xb);
-            out.push((at + 3, id, p));
-            let (id, p) = state_event(reg::DEPTH, 1, best);
-            out.push((at + 4, id, p));
-            let (id, p) = state_event(reg::FRAME, 0, w * 12);
-            out.push((at + 5, id, p));
-        }
-        Ok(out)
+        // The cumulative capture: the restored ancestor prefix plus this
+        // branch's own emissions (the production contract, task 132).
+        Ok(self.capture())
     }
 }
 
@@ -1281,7 +1551,16 @@ mod tests {
         fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
             let id = self.next_snap;
             self.next_snap += 1;
-            Ok((explorer::SnapId(id), explorer::EvidenceCut::default()))
+            // The cut is stamped from the stopped state (task 127). BoxGuest
+            // models per-rollout (run-local) captures, so the cumulative
+            // prefix base is 0.
+            Ok((
+                explorer::SnapId(id),
+                explorer::EvidenceCut {
+                    at: Moment(self.vtime),
+                    sdk_events: 0,
+                },
+            ))
         }
         fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
             Ok(())
@@ -1336,9 +1615,14 @@ mod tests {
         }
     }
 
-    fn run_box(guest: &mut BoxGuest, cfg: &GameCampaignConfig) -> GameCampaignOutcome {
-        run_game_campaign(guest, &SpecEnvCodec, cfg, ExplorationConfig::PureRandom)
-            .expect("the box-shaped guest campaigns cleanly")
+    fn run_box(guest: BoxGuest, cfg: &GameCampaignConfig) -> GameCampaignOutcome {
+        run_game_campaign(
+            guest,
+            Box::new(SpecEnvCodec),
+            cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .expect("the box-shaped guest campaigns cleanly")
     }
 
     /// Task 103 finding 1b — **the vacuous determinism PASS**. Each fixture is
@@ -1350,7 +1634,7 @@ mod tests {
     fn the_determinism_gate_refuses_a_run_that_did_no_work() {
         // (a) `--max-branches 0`: the gate would compare two empty state_hash
         //     sequences and find them identical.
-        let outcome = run_box(&mut BoxGuest::healthy(), &box_cfg(0, Some(2_000_000_000)));
+        let outcome = run_box(BoxGuest::healthy(), &box_cfg(0, Some(2_000_000_000)));
         assert!(outcome.log.events.is_empty());
         assert_eq!(outcome.vacuity(), Some(Vacuity::NoBranches));
         assert_eq!(
@@ -1361,11 +1645,11 @@ mod tests {
 
         // (b) `--deadline-delta 0`: the rollout's deadline is already met at the
         //     base, so every branch hashes the sealed base itself.
-        let mut guest = BoxGuest {
+        let guest = BoxGuest {
             rollout_span: 0,
             ..BoxGuest::healthy()
         };
-        let outcome = run_box(&mut guest, &box_cfg(8, Some(0)));
+        let outcome = run_box(guest, &box_cfg(8, Some(0)));
         assert_eq!(outcome.log.events.len(), 8, "the branches DID run…");
         assert_eq!(
             outcome.vacuity(),
@@ -1379,12 +1663,12 @@ mod tests {
 
         // (c) The budget that sneaks past a positivity check: V-time advances,
         //     but the guest emits nothing at all — not one frame.
-        let mut guest = BoxGuest {
+        let guest = BoxGuest {
             frame_markers: 0,
             rollout_span: 1,
             ..BoxGuest::healthy()
         };
-        let outcome = run_box(&mut guest, &box_cfg(8, Some(1)));
+        let outcome = run_box(guest, &box_cfg(8, Some(1)));
         assert_eq!(
             outcome.vacuity(),
             Some(Vacuity::NoFrames),
@@ -1401,12 +1685,12 @@ mod tests {
         //      exactly ONE observation — and zero frames executed. Counting
         //      observations would have called that one frame and let 25
         //      identical repetitions of it print DETERMINISM PASS.
-        let mut guest = BoxGuest {
+        let guest = BoxGuest {
             frame_markers: 1,
             rollout_span: 1_000,
             ..BoxGuest::healthy()
         };
-        let outcome = run_box(&mut guest, &box_cfg(8, Some(1_000)));
+        let outcome = run_box(guest, &box_cfg(8, Some(1_000)));
         assert_eq!(
             outcome.work.min_completed_frames, 0,
             "one pre-run marker announces a frame; it does not run one"
@@ -1423,19 +1707,19 @@ mod tests {
 
         // …and TWO markers prove the first frame's body completed (the loop came
         // back around to announce the next) — the boundary the guard turns on.
-        let mut guest = BoxGuest {
+        let guest = BoxGuest {
             frame_markers: 2,
             rollout_span: 1_000,
             ..BoxGuest::healthy()
         };
-        let outcome = run_box(&mut guest, &box_cfg(8, Some(1_000)));
+        let outcome = run_box(guest, &box_cfg(8, Some(1_000)));
         assert_eq!(outcome.work.min_completed_frames, 1);
         assert_eq!(outcome.vacuity(), None, "one completed frame is real work");
 
         // (d) One hollow rollout among busy ones still sinks the gate: the
         //     evidence is the WEAKEST rollout, never the total.
-        let mut guest = BoxGuest::healthy();
-        let outcome = run_box(&mut guest, &box_cfg(8, Some(2_000_000_000)));
+        let guest = BoxGuest::healthy();
+        let outcome = run_box(guest, &box_cfg(8, Some(2_000_000_000)));
         assert_eq!(outcome.vacuity(), None);
         let hollowed = GameCampaignOutcome {
             work: WorkEvidence {
@@ -1481,8 +1765,8 @@ mod tests {
     /// is cut off by the deadline, exactly as on the box).
     #[test]
     fn a_real_campaign_carries_its_work_evidence() {
-        let mut guest = BoxGuest::healthy();
-        let outcome = run_box(&mut guest, &box_cfg(4, Some(2_000_000_000)));
+        let guest = BoxGuest::healthy();
+        let outcome = run_box(guest, &box_cfg(4, Some(2_000_000_000)));
         assert_eq!(
             outcome.work,
             WorkEvidence {
@@ -1528,13 +1812,13 @@ mod tests {
     fn a_malformed_billboard_refuses_the_campaign() {
         let ram = GameCampaignConfig::smoke(0).guest_ram_len;
         let refuses = |billboard: Option<(u64, u64)>| -> GameCampaignError {
-            let mut guest = BoxGuest {
+            let guest = BoxGuest {
                 billboard,
                 ..BoxGuest::healthy()
             };
             run_game_campaign(
-                &mut guest,
-                &SpecEnvCodec,
+                guest,
+                Box::new(SpecEnvCodec),
                 &box_cfg(8, Some(2_000_000_000)),
                 ExplorationConfig::PureRandom,
             )
@@ -1559,12 +1843,12 @@ mod tests {
             GameCampaignError::BillboardMalformed { .. }
         ));
         // …and exactly a header's worth is the boundary film accepts.
-        let mut guest = BoxGuest {
+        let guest = BoxGuest {
             billboard: Some((0x04e0_0000, BILLBOARD_MIN_LEN)),
             ..BoxGuest::healthy()
         };
         assert_eq!(
-            run_box(&mut guest, &box_cfg(2, Some(2_000_000_000))).billboard,
+            run_box(guest, &box_cfg(2, Some(2_000_000_000))).billboard,
             Some((0x04e0_0000, BILLBOARD_MIN_LEN))
         );
         // Null gpa: guest-physical 0 is never a pinned billboard.
@@ -1583,12 +1867,12 @@ mod tests {
             GameCampaignError::BillboardMalformed { .. }
         ));
         // …and the last byte inside RAM is fine (the boundary is inclusive-end).
-        let mut guest = BoxGuest {
+        let guest = BoxGuest {
             billboard: Some((ram - 4_096, 4_096)),
             ..BoxGuest::healthy()
         };
         assert_eq!(
-            run_box(&mut guest, &box_cfg(2, Some(2_000_000_000))).billboard,
+            run_box(guest, &box_cfg(2, Some(2_000_000_000))).billboard,
             Some((ram - 4_096, 4_096))
         );
 
@@ -1674,12 +1958,12 @@ mod tests {
     }
 
     fn run_outcome(config: ExplorationConfig, seed: u64) -> GameCampaignOutcome {
-        let mut m = GameToyMachine::new();
+        let m = GameToyMachine::new();
         let cfg = GameCampaignConfig {
             max_branches: SMOKE_BRANCHES,
             ..GameCampaignConfig::smoke(seed)
         };
-        run_game_campaign(&mut m, &SpecEnvCodec, &cfg, config).unwrap()
+        run_game_campaign(m, Box::new(SpecEnvCodec), &cfg, config).unwrap()
     }
 
     /// Round-8 P1: the deepest branch is tracked from branch 0 and, with a
@@ -1709,13 +1993,18 @@ mod tests {
 
         // With retention: the store carries the env sidecar + journal.
         let dir = tempfile::tempdir().unwrap();
-        let mut m = GameToyMachine::new();
+        let m = GameToyMachine::new();
         let cfg = GameCampaignConfig {
             trace_dir: Some(dir.path().to_path_buf()),
             ..GameCampaignConfig::smoke(42)
         };
-        let outcome =
-            run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom).unwrap();
+        let outcome = run_game_campaign(
+            m,
+            Box::new(SpecEnvCodec),
+            &cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .unwrap();
         let id = outcome
             .deep
             .unwrap()
@@ -1822,7 +2111,7 @@ mod tests {
                 Ok(Vec::new())
             }
         }
-        let mut m = SealsThenCrashes {
+        let m = SealsThenCrashes {
             sealed: false,
             vtime: 1_000,
             next_snap: 1,
@@ -1833,8 +2122,13 @@ mod tests {
             require_snapshot_point: true,
             ..GameCampaignConfig::smoke(7)
         };
-        let err = run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom)
-            .unwrap_err();
+        let err = run_game_campaign(
+            m,
+            Box::new(SpecEnvCodec),
+            &cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .unwrap_err();
         assert!(
             matches!(err, GameCampaignError::RolloutDied { branch: 0, .. }),
             "expected RolloutDied on the first crashed rollout, got {err:?}"
@@ -1907,7 +2201,7 @@ mod tests {
                 Ok(SpecEnvCodec.seeded(0))
             }
         }
-        let mut m = SealsNoBillboard {
+        let m = SealsNoBillboard {
             sealed: false,
             vtime: 1_000,
             next_snap: 1,
@@ -1916,8 +2210,13 @@ mod tests {
             require_snapshot_point: true,
             ..GameCampaignConfig::smoke(7)
         };
-        let err = run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom)
-            .unwrap_err();
+        let err = run_game_campaign(
+            m,
+            Box::new(SpecEnvCodec),
+            &cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .unwrap_err();
         assert!(
             matches!(err, GameCampaignError::BillboardMissing),
             "expected BillboardMissing, got {err:?}"
@@ -1986,16 +2285,21 @@ mod tests {
                 trace_dir: Some(dir.path().to_path_buf()),
                 ..GameCampaignConfig::smoke(7)
             };
-            let mut m = SaltedRecording {
+            let m = SaltedRecording {
                 inner: GameToyMachine::new(),
                 salt,
             };
-            run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom)
-                .expect("campaign runs")
-                .deep
-                .expect("deep branch tracked")
-                .trace_id
-                .expect("retention configured")
+            run_game_campaign(
+                m,
+                Box::new(SpecEnvCodec),
+                &cfg,
+                ExplorationConfig::PureRandom,
+            )
+            .expect("campaign runs")
+            .deep
+            .expect("deep branch tracked")
+            .trace_id
+            .expect("retention configured")
         };
         assert_ne!(
             deep_id(1),
@@ -2199,13 +2503,18 @@ mod tests {
     /// — never a sealed dead base and a zero-cell campaign.
     #[test]
     fn a_dead_agent_never_seals_a_base_in_box_mode() {
-        let mut m = CrashedAgentMachine::new();
+        let m = CrashedAgentMachine::new();
         let cfg = GameCampaignConfig {
             require_snapshot_point: true,
             ..GameCampaignConfig::smoke(1)
         };
-        let err = run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom)
-            .unwrap_err();
+        let err = run_game_campaign(
+            m,
+            Box::new(SpecEnvCodec),
+            &cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .unwrap_err();
         assert!(
             matches!(err, GameCampaignError::SetupNotReached { .. }),
             "expected the workload gate, got {err:?}"
@@ -2215,10 +2524,10 @@ mod tests {
     /// The Signal configuration is refused until a selector artifact exists.
     #[test]
     fn signal_is_refused_loudly() {
-        let mut m = GameToyMachine::new();
+        let m = GameToyMachine::new();
         let err = run_game_campaign(
-            &mut m,
-            &SpecEnvCodec,
+            m,
+            Box::new(SpecEnvCodec),
             &GameCampaignConfig::smoke(1),
             ExplorationConfig::Signal,
         )
