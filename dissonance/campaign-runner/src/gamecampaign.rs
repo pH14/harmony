@@ -1501,6 +1501,132 @@ mod tests {
     use super::*;
     use explorer::SpecEnvCodec;
 
+    /// The instrumentation declaration is a real, decodable wire-v2 catalog
+    /// that resolves EVERY register in the resolution table to reducible
+    /// state under its declared op (task 132; kills the catalog/resolution
+    /// stub mutants — a fake catalog or an empty table fails here, not just
+    /// on the box).
+    #[test]
+    fn instrumentation_catalog_resolves_every_register() {
+        use sdk_events::UpdateOp;
+        let table = smb_resolution();
+        assert!(
+            table.len() >= 8,
+            "the resolution table covers the play-agent register set"
+        );
+        let n = sdk_events::decode_binary(&[(
+            sdk_events::Moment(0),
+            0, // the catalog marker event id
+            smb_instrumentation_catalog(),
+        )])
+        .expect("the standalone declaration decodes");
+        for (id, op) in &table {
+            let entry = n.schema.entry(id).expect("every register is declared");
+            assert!(
+                entry.is_reducible_state(),
+                "register {id:?} must be reducible state"
+            );
+            assert_eq!(entry.base_op, Some(*op), "register {id:?} keeps its op");
+        }
+        // The specific ops the workload contract pins: DEPTH is the one Max
+        // register; the tuple/billboard registers are Set.
+        let point = |local: u64| ObservationId::Point {
+            namespace: NS_STATE,
+            local: local as u32,
+        };
+        let op_of = |local: u64| {
+            table
+                .iter()
+                .find(|(id, _)| *id == point(local))
+                .map(|(_, op)| *op)
+        };
+        assert_eq!(op_of(reg::DEPTH), Some(UpdateOp::Max));
+        assert_eq!(op_of(reg::X_BUCKET), Some(UpdateOp::Set));
+        assert_eq!(op_of(reg::POWERUP), Some(UpdateOp::Set));
+    }
+
+    /// A guest-declared v1 catalog is upgraded IN PLACE (never doubled): the
+    /// wrapped capture carries exactly one catalog tuple whose schema
+    /// resolves the registers (the box round-1 smoke finding as a portable
+    /// pin).
+    #[test]
+    fn declared_machine_upgrades_a_guest_catalog_in_place() {
+        // A machine whose capture carries its own v1 catalog + one firing.
+        struct V1Guest;
+        impl Machine for V1Guest {
+            fn branch(
+                &mut self,
+                _s: explorer::SnapId,
+                _e: &Reproducer,
+            ) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn replay(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                _u: &StopConditions,
+                _r: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                Ok(StopReason::Quiescent { vtime: Moment(1) })
+            }
+            fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
+                Ok((explorer::SnapId(1), EvidenceCut::default()))
+            }
+            fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([7u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[3]
+            }
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+                Ok(SpecEnvCodec.seeded(0))
+            }
+            fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+                // A v1 catalog declaring only X_BUCKET, then one firing.
+                let v1 = {
+                    // magic "SDKC" + version 1 + count 1 + (kind, id, name).
+                    let mut b = Vec::new();
+                    b.extend_from_slice(&u32::from_le_bytes(*b"SDKC").to_le_bytes());
+                    b.push(1); // SDK_WIRE_VERSION v1
+                    b.extend_from_slice(&1u32.to_le_bytes());
+                    b.push(4); // kind byte: KIND_STATE (guest wire v1)
+                    b.extend_from_slice(&(reg::X_BUCKET as u32).to_le_bytes());
+                    b.extend_from_slice(&(1u16).to_le_bytes());
+                    b.push(b'x');
+                    b
+                };
+                let (id, p) = state_event(reg::X_BUCKET, 0, 3);
+                Ok(vec![(0, CATALOG_EVENT_ID, v1), (1, id, p)])
+            }
+        }
+        let mut m = DeclaredMachine::new(V1Guest);
+        let out = m.sdk_events().expect("capture");
+        let catalogs = out
+            .iter()
+            .filter(|(_, id, _)| *id == CATALOG_EVENT_ID)
+            .count();
+        assert_eq!(catalogs, 1, "the guest catalog is upgraded, never doubled");
+        let n = crate::sdk_compat::decode_sdk(&out).expect("upgraded capture decodes");
+        let x = ObservationId::Point {
+            namespace: NS_STATE,
+            local: reg::X_BUCKET as u32,
+        };
+        assert!(
+            n.schema.entry(&x).expect("declared").is_reducible_state(),
+            "the upgraded declaration resolves the register"
+        );
+        // Delegation is verbatim (kills the delegation stub mutants).
+        assert_eq!(m.hash().expect("hash"), [7u8; 32]);
+        assert_eq!(m.coverage(), &[3]);
+        m.replay(explorer::SnapId(1)).expect("replay delegates");
+        m.drop_snap(explorer::SnapId(1)).expect("drop delegates");
+    }
+
     /// The branch budget the in-memory smoke campaigns below drive
     /// ([`GameCampaignConfig::smoke`]'s `max_branches`), **shrunk to 8 under Miri**
     /// (task 104, `hm-d4y`). The properties these campaigns pin — a rerun is
