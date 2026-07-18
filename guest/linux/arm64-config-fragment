@@ -16,6 +16,13 @@ CONFIG_NR_CPUS=2
 # CONFIG_CPU_FREQ is not set
 # CONFIG_CPU_IDLE is not set
 
+## LSE-only atomic contract
+# The N1 exposes FEAT_LSE. The owned patch removes the runtime LL/SC atomic
+# alternative and reservation-monitor wait hints; the publication gate scans
+# every executable word in vmlinux and the vDSO for any surviving exclusive.
+CONFIG_ARM64_USE_LSE_ATOMICS=y
+CONFIG_HARMONY_ARM_LSE_ONLY=y
+
 ## Fixed periodic scheduling surface
 CONFIG_HZ_PERIODIC=y
 CONFIG_HZ_100=y
@@ -48,7 +55,7 @@ CONFIG_TTY=y
 CONFIG_SERIAL_AMBA_PL011=y
 CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
 CONFIG_BINFMT_ELF=y
-CONFIG_BINFMT_SCRIPT=y
+# CONFIG_BINFMT_SCRIPT is not set
 CONFIG_BLK_DEV_INITRD=y
 CONFIG_RD_GZIP=y
 # CONFIG_RD_BZIP2 is not set
@@ -57,10 +64,12 @@ CONFIG_RD_GZIP=y
 # CONFIG_RD_LZO is not set
 # CONFIG_RD_LZ4 is not set
 # CONFIG_RD_ZSTD is not set
-CONFIG_PROC_FS=y
+# The freestanding /init uses raw syscalls and sysfs only: no shell, libc,
+# BusyBox, script interpreter, procfs, or userspace threading primitives.
+# CONFIG_PROC_FS is not set
 CONFIG_SYSFS=y
 CONFIG_DEVTMPFS=y
-CONFIG_FUTEX=y
+# CONFIG_FUTEX is not set
 CONFIG_POSIX_TIMERS=y
 CONFIG_STRICT_KERNEL_RWX=y
 

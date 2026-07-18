@@ -2,8 +2,8 @@
 
 This directory is the **designated guest-kernel patch directory**: everything
 in it is a **diff against the pinned Linux kernel tree**
-(`versions.lock: KERNEL_VERSION`), applied by `../build-kernel.sh` right after
-`extract_kernel`, before the config merge.
+(`versions.lock: KERNEL_VERSION`), applied by the architecture-specific kernel
+build right after `extract_kernel`, before the config merge.
 
 **Licensing.** Repository policy is first-party source = `AGPL-3.0-or-later`.
 Kernel diffs are the one exception: their content is Linux-kernel code and
@@ -48,3 +48,9 @@ reviewed allowlist entry, and `run-tests.sh` must be re-run to regenerate
   timer only as a clock-event interrupt device. The arm64 build has no
   allowlist: any surviving live-counter opcode rejects the kernel before
   `Image` publication.
+- `0003-arm64-harmony-lse-only.patch` — AA-4/AA-5(c): adds the owned
+  `CONFIG_HARMONY_ARM_LSE_ONLY` contract, emits LSE atomics directly instead
+  of a runtime LL/SC alternative, and replaces reservation-monitor wait hints
+  and the early rendezvous with ordinary polling plus LSE. The arm64 build
+  rejects any surviving LL/SC opcode in `vmlinux`, the vDSO, or the
+  freestanding init before publication.

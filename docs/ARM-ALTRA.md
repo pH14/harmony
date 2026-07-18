@@ -1341,17 +1341,20 @@ ARMv8.1; Altra/Neoverse N1 is ARMv8.2), so an LSE-only guest is buildable on the
 
 **(c) The enforcement ladder, mechanisms demonstrated on the owned artifacts:**
 - **Level 1 — LSE-only build.** DEMONSTRATED: `lse-atomics` *is* an LSE-only build, clean by
-  scan and deterministic by measurement. For the guest: `-march=…+lse`, `-moutline-atomics=off`
+  scan and deterministic by measurement. For the guest: `-march=…+lse`, `-mno-outline-atomics`
   (kill libgcc/compiler-rt's LL/SC outline fallback), and removal of the vanilla kernel's LL/SC
   fallback bodies — exercised against the real guest kernel at AA-5.
 - **Level 2 — executable-page opcode scan.** BUILT + run: `host/aa4-exclusive-scan.py`
   (`results/aa-4/exclusive-scan.txt`). It scans raw instruction words for the monitor-exclusive
-  family `(insn & 0x3f800000) == 0x08000000` (LDXR/STXR/LDAXR/STLXR/LDXP/STXP…; deliberately
-  EXCLUDING LDAR/STLR and LSE `CAS`), and **self-validates** the raw mask against `objdump`
-  disassembly on every instruction (so it can neither under- nor over-report). Result: it flags
-  the two exclusives in `llsc-atomics` at their exact PCs and passes every other payload —
-  including `lse-atomics` — CLEAN, exiting non-zero to reject. This is the W^X rescan-on-exec
-  primitive; running it against the *guest kernel image* is an AA-5 step (that image is AA-5's).
+  family using the broad class `(insn & 0x3f800000) == 0x08000000` plus the required o1/size
+  discriminator (LDXR/STXR/LDAXR/STLXR/LDXP/STXP…; deliberately EXCLUDING LDAR/STLR and LSE
+  `CAS`/`CASP`), and **self-validates** the raw decoder against every word `objdump` renders as an
+  instruction. Result: it flags the two exclusives in `llsc-atomics` at their exact PCs and passes
+  every other payload — including `lse-atomics` — CLEAN, exiting non-zero to reject. The AA-5
+  owned-image build now also applies the direct-LSE kernel patch and requires `vmlinux`, the vDSO,
+  and the freestanding init to scan CLEAN; a planted LDXR/STXR ELF must be rejected with exactly
+  two hits. This completes the static build gate. Wiring the same primitive into a live W^X
+  rescan-on-exec path remains open.
 - **Level 3 — stage-2 execute-deny + trap/emulate backstop.** Mechanism characterized, not yet
   fired: mark guest executable pages non-exec at stage-2 for a deliberately-planted exclusive,
   take the permission fault, and emulate-through / reject. It needs a running guest with stage-2
@@ -1359,9 +1362,9 @@ ARMv8.1; Altra/Neoverse N1 is ARMv8.2), so an LSE-only guest is buildable on the
   as the one ladder rung whose *live* proof is deferred to AA-5 (the mechanism — KVM stage-2
   perms + a fault handler — is standard and unblocked; only the planted-exclusive run remains).
 
-**RECOMMENDED RULING (Paul ratifies): LL/SC is made MECHANICALLY UNREACHABLE in the shipped
-guest by Level 1 (LSE-only build) + Level 2 (scan-verified), with Level 3 as the runtime
-backstop; one cooperative residual, named and bounded.**
+**RECOMMENDED FINAL RULING (Paul ratifies): LL/SC is made MECHANICALLY UNREACHABLE in the shipped
+guest by Level 1 (LSE-only build) + complete Level 2 (build scan plus live rescan-on-exec), with
+Level 3 as the runtime backstop; one cooperative residual, named and bounded.**
 - *Primary — unreachable by construction.* The guest ships LSE-only (Level 1); the opcode scan
   (Level 2) is a build-gate + rescan-on-exec that fails closed if any exclusive survives
   (outline-atomics fallback, hand-asm, a stray kernel fallback body). On N1 this is real: LSE is
@@ -1378,11 +1381,12 @@ backstop; one cooperative residual, named and bounded.**
   the monitor), not a runtime one; the LSE-only ban removes every exclusive there is to
   single-step, so it cannot arise in a shipped guest.
 
-**Disposition: AA-4 CHARACTERIZED — recommended ruling *mechanically-unreachable via LSE-only +
-scan, cooperative residual (runtime-generated exclusives) bounded by W^X + stage-2*.** (a) and
-(b) are demonstrated at scale on real N1; (c) levels 1–2 are demonstrated on the owned
-artifacts, level 3's mechanism is characterized with its live planted-exclusive proof homed to
-AA-5. Awaiting Paul's ratification at PR time (foreman directive).
+**Disposition: AA-4 CHARACTERIZED; static owned-image gate complete — recommended ruling
+*mechanically-unreachable via LSE-only + scan, cooperative residual (runtime-generated
+exclusives) bounded by W^X + stage-2*.** (a) and (b) are demonstrated at scale on real N1. For
+(c), Level 1 and Level 2's static artifact half are now built and cross-verified against the owned
+kernel/vDSO/init; live W^X rescan-on-exec and Level 3's planted-exclusive proof remain homed to
+AA-5. Native publication on the pinned N1 is also still required.
 
 ### AA-5 — the paravirt work-derived clock: (a)+(b) DEMONSTRATED; (c) executor + guest build substrate built
 
@@ -1408,9 +1412,10 @@ counter-read closure scan (`host/aa5-counter-scan.py`, mirroring the unit-tested
 primitive `scan::decode_counter_read`; `results/aa-5/counter-scan.txt`) is the build/rescan
 layer: raw-opcode decode **self-validated against `objdump`**, with a **positive control** that
 rejects a `CNTVCT_EL0`/`CNTPCT_EL0` read and correctly allows the constant `CNTFRQ_EL0`. Every
-payload scans **counter-clean**. Remaining, kernel-dependent: the EL0
-`CNTVCT_EL0`-read-undefs-under-`CNTKCTL_EL1` live test, `CNTHCTL_EL2` posture, and the scan run
-against the *shipped guest kernel image*.
+payload scans **counter-clean**. The owned-image build now runs the scan against `vmlinux` and
+the vDSO and cross-verification reports zero live counter reads (constant `CNTFRQ_EL0` reads
+remain allowed). Remaining, kernel-dependent: the EL0
+`CNTVCT_EL0`-read-undefs-under-`CNTKCTL_EL1` live test and `CNTHCTL_EL2` posture.
 
 **(c) The Linux smoke — executor + guest build substrate built; live clock closure remains.** The
 harness now has a portable-tested, arm64-Linux-cross-clippy-clean boot substrate: a total flat
@@ -1432,19 +1437,21 @@ spins after READY so a lost/late Preempt cannot pass with a stale page merely be
 printed the expected bytes.
 
 The exact landing also inherits AA-4's LSE-only precondition: single-stepping through an
-`LDXR`/`STXR` sequence clears its monitor and can add retries or livelock. The current arm64
-kernel/rootfs recipe has not yet removed and scan-gated every vanilla LL/SC fallback, and
-`linux-boot` accepts a trusted hash pin rather than proving that property itself. That is another
-reason this is pre-silicon substrate only; the owned image's AA-4 level-1/2 clean build is required
-before a live result can count beyond bring-up diagnostics.
+`LDXR`/`STXR` sequence clears its monitor and can add retries or livelock. The arm64 recipe now
+patches the kernel to direct LSE, removes the unused futex LL/SC helpers from the config, replaces
+BusyBox with a freestanding LSE-only init, and scan-gates the exact kernel/vDSO/init artifacts.
+`linux-boot` still accepts a trusted hash pin rather than re-proving that property at load time,
+and the live W^X rescan-on-exec + stage-2 backstop remain open, so this is still pre-silicon
+substrate rather than a complete AA-4/AA-5 certification.
 
-The tree now has a native Linux/aarch64 build recipe for the pinned kernel and BusyBox rootfs.
-Its v6.18.35 patch routes the four shared physical/virtual counter accessors (including the
-clocksource, sched_clock, delay, and erratum/CVAL call sites) through the ABI-v1 page, disables
-the vDSO fast path and EL0 counter access, names the selected source `harmony-arm-pvclock`, and
-refuses Image publication unless the empty-allowlist opcode scan accepts both vmlinux and the
-vDSO. The recipe is source-context-checked but **not box-built evidence**: no resulting
-Image/initramfs is present on the Altra yet.
+The tree now has a native Linux/aarch64 build recipe for the pinned kernel and a freestanding
+syscall-only rootfs. Its v6.18.35 patches route the four shared physical/virtual counter accessors
+(including the clocksource, sched_clock, delay, and erratum/CVAL call sites) through the ABI-v1
+page, disable the vDSO fast path and EL0 counter access, name the selected source
+`harmony-arm-pvclock`, emit kernel atomics directly as LSE, and refuse Image publication unless
+the counter and LL/SC scans accept both vmlinux and the vDSO; the exact init ELF must pass the
+LL/SC scan before packing. The checksum-pinned source/config cross-build is clean, but this is
+**not native box-built evidence**: no resulting Image/initramfs is present on the Altra yet.
 
 One timer-domain gap is explicit. Upstream's virtual clockevent programs `CNTV_CVAL` as
 `page_guest_clock + delta`, while stock KVM expires it against the live architected counter.
@@ -1459,7 +1466,7 @@ identity. That live substrate also hosts AA-4 level-3's planted-exclusive proof.
 demonstrated on real N1; (c) has pre-silicon executor/build substrate but no box-built asset or
 live guest proof**. The guest-registered exact-work page refresher is built but unexecuted;
 completion remains blocked on the pvclock-enabled box build, deterministic timer/event delivery,
-the AA-4 LSE-only image gate, and live N1 bring-up.
+AA-4's live W^X/stage-2 enforcement proofs, and live N1 bring-up.
 It remains the natural home for AA-4 L3's live proof and AA-6's guest-side gates. This is not a
 NO-GO signal — every underlying mechanism (work clock, exact landing, force-exit, counter
 closure) is independently GO/demonstrated above.

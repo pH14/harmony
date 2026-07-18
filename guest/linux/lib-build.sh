@@ -72,7 +72,6 @@ KOBJ=$BUILD_ROOT/kernel-build
 BBSRC=$BUILD_ROOT/busybox-$BUSYBOX_VERSION
 BBOBJ=$BUILD_ROOT/busybox-build
 ARM64_KOBJ=$BUILD_ROOT/kernel-build-arm64
-ARM64_BBOBJ=$BUILD_ROOT/busybox-build-arm64
 
 # Reproducibility levers (task spec): fixed timestamp/user/host/version, fixed
 # SOURCE_DATE_EPOCH, no kconfig header timestamps. LOCALVERSION is fixed in

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Build the pinned AA-5(c) arm64 kernel natively on the pinned Altra box.
-# Publication is fail-closed behind the zero-live-counter opcode scan.
+# Publication is fail-closed behind the zero-live-counter and zero-LL/SC scans.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -13,17 +13,30 @@ require_linux_aarch64
 require_tools cc make flex bison bc xz gzip patch objdump python3
 extract_kernel
 
-PVCLOCK_PATCH=$LINUX_DIR/patches/0002-arm64-harmony-pvclock-work-derived-clocksource.patch
-if [ ! -f "$PVCLOCK_PATCH" ]; then
-    echo "FAIL: required AA-5(c) kernel patch is missing: $PVCLOCK_PATCH" >&2
-    exit 1
-fi
-if (cd "$KSRC" && patch -p1 -R --dry-run --force <"$PVCLOCK_PATCH") >/dev/null 2>&1; then
-    echo "== arm64 kernel: harmony pvclock patch already applied"
-else
-    echo "== arm64 kernel: applying harmony pvclock patch"
-    (cd "$KSRC" && patch -p1 --force <"$PVCLOCK_PATCH")
-fi
+apply_kernel_patch() {
+    patch_file=$1
+    patch_label=$2
+    if [ ! -f "$patch_file" ]; then
+        echo "FAIL: required $patch_label kernel patch is missing: $patch_file" >&2
+        exit 1
+    fi
+    if (cd "$KSRC" && patch -p1 -R --dry-run --force <"$patch_file") >/dev/null 2>&1; then
+        echo "== arm64 kernel: $patch_label patch already applied"
+    elif (cd "$KSRC" && patch -p1 --dry-run --force <"$patch_file") >/dev/null 2>&1; then
+        echo "== arm64 kernel: applying $patch_label patch"
+        (cd "$KSRC" && patch -p1 --force <"$patch_file")
+    else
+        echo "FAIL: $patch_label patch is neither cleanly applied nor cleanly applicable" >&2
+        exit 1
+    fi
+}
+
+apply_kernel_patch \
+    "$LINUX_DIR/patches/0002-arm64-harmony-pvclock-work-derived-clocksource.patch" \
+    "harmony pvclock"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/0003-arm64-harmony-lse-only.patch" \
+    "harmony LSE-only"
 
 mkdir -p "$ARM64_KOBJ" "$ARM64_ART_DIR"
 
@@ -51,9 +64,10 @@ assert_off() {
 }
 
 assert_y ARM64 64BIT SMP OF PRINTK TTY SERIAL_AMBA_PL011 \
-    SERIAL_AMBA_PL011_CONSOLE BINFMT_ELF BINFMT_SCRIPT BLK_DEV_INITRD \
-    RD_GZIP PROC_FS SYSFS DEVTMPFS FUTEX POSIX_TIMERS ARM_ARCH_TIMER \
+    SERIAL_AMBA_PL011_CONSOLE BINFMT_ELF BLK_DEV_INITRD \
+    RD_GZIP SYSFS DEVTMPFS POSIX_TIMERS ARM_ARCH_TIMER \
     ARM_PSCI_FW IRQCHIP ARM_GIC ARM_GIC_V3 HARMONY_ARM_PVCLOCK \
+    ARM64_USE_LSE_ATOMICS ARM64_LSE_ATOMICS HARMONY_ARM_LSE_ONLY \
     HZ_PERIODIC HZ_100 STRICT_KERNEL_RWX
 assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES HIGH_RES_TIMERS NO_HZ_COMMON \
     NO_HZ_IDLE NO_HZ_FULL RANDOMIZE_BASE HW_RANDOM \
@@ -62,7 +76,7 @@ assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES HIGH_RES_TIMERS NO_HZ_COMMON \
     FSL_ERRATUM_A008585 HISILICON_ERRATUM_161010101 \
     ARM64_ERRATUM_858921 SUN50I_ERRATUM_UNKNOWN1 KVM COMPAT ACPI \
     BPF_SYSCALL BPF_JIT KPROBES FUNCTION_TRACER FTRACE LIVEPATCH \
-    PERF_EVENTS HW_PERF_EVENTS
+    PERF_EVENTS HW_PERF_EVENTS BINFMT_SCRIPT PROC_FS FUTEX
 if ! grep -qxF 'CONFIG_NR_CPUS=2' "$ARM64_KOBJ/.config"; then
     echo "FAIL: CONFIG_NR_CPUS must be the arm64 minimum (2)" >&2
     exit 1
@@ -104,6 +118,37 @@ if ! grep -q '^\[REJECT\].*1 live counter read' "$scan_probe_log"; then
 fi
 echo "ok: scanner rejected the planted live-counter probe"
 python3 "$GUEST_DIR/../spikes/arm-altra/host/aa5-counter-scan.py" \
+    "$ARM64_KOBJ/vmlinux" "$ARM64_KOBJ/arch/arm64/kernel/vdso/vdso.so.dbg"
+
+# LL/SC changes the retired-branch clock when STXR fails spuriously and
+# livelocks under the exact-landing single-step path. The config removes the
+# known fallback bodies; this raw executable-word scan is the fail-closed
+# artifact proof. Its planted negative control prevents a vacuous green gate.
+echo "== arm64 kernel: zero-LL/SC executable-image gate"
+exclusive_scan=$GUEST_DIR/../spikes/arm-altra/host/aa4-exclusive-scan.py
+exclusive_probe=$BUILD_ROOT/aa4-exclusive-scan-probe.S
+exclusive_probe_elf=$BUILD_ROOT/aa4-exclusive-scan-probe
+exclusive_probe_log=$BUILD_ROOT/aa4-exclusive-scan-probe.log
+cat >"$exclusive_probe" <<'EOF'
+.text
+.global _start
+_start:
+	.word 0x885f7c20 // executable data mapping: ldxr w0, [x1]
+	.inst 0x88027c20 // stxr w2, w0, [x1]
+	ret
+EOF
+cc -nostdlib -static -Wl,-e,_start -o "$exclusive_probe_elf" "$exclusive_probe"
+if python3 "$exclusive_scan" "$exclusive_probe_elf" >"$exclusive_probe_log" 2>&1; then
+    echo "FAIL: AA-4 exclusive scanner accepted the planted LDXR/STXR probe" >&2
+    exit 1
+fi
+if ! grep -q '^\[BANNED\].*: 2 LL/SC exclusive instruction(s)$' "$exclusive_probe_log"; then
+    echo "FAIL: AA-4 exclusive scanner did not identify exactly two planted exclusives" >&2
+    cat "$exclusive_probe_log" >&2
+    exit 1
+fi
+echo "ok: scanner rejected the planted LDXR/STXR probe"
+python3 "$exclusive_scan" \
     "$ARM64_KOBJ/vmlinux" "$ARM64_KOBJ/arch/arm64/kernel/vdso/vdso.so.dbg"
 
 install -m 0644 "$ARM64_KOBJ/arch/arm64/boot/Image" "$ARM64_ART_DIR/Image"

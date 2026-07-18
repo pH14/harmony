@@ -35,10 +35,13 @@ make -C guest arm64-image
 
 They require Linux/aarch64 and publish `Image` plus `initramfs.cpio.gz` under
 `guest/build/arm64/`, so they cannot overwrite the established x86 artifacts.
-The kernel build applies the pinned ARM work-derived-clock patch and refuses
-publication unless the final `vmlinux` contains zero live generic-counter
-reads. These artifacts are spike evidence, not an AA-5 certification by
-themselves; the live pinned-box gates remain authoritative.
+The kernel build applies the pinned ARM work-derived-clock and LSE-only patches
+and refuses publication unless the final `vmlinux` and vDSO contain zero live
+generic-counter reads and zero LL/SC reservation-monitor instructions. The
+initramfs contains one freestanding syscall-only `/init` (no libc or BusyBox),
+built with LSE-only compiler flags and scanned by the same AA-4 gate. These
+artifacts are spike evidence, not an AA-5 certification by themselves; the
+live pinned-box gates remain authoritative.
 
 ## Prerequisites
 
