@@ -833,7 +833,11 @@ pub fn run_game_campaign<M: Machine>(
     // directory is configured, else a campaign-lifetime scratch file.
     let scratch;
     let evidence_path = match &cfg.trace_dir {
-        Some(dir) => dir.join("evidence.log"),
+        Some(dir) => {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| GameCampaignError::Retention(e.to_string()))?;
+            dir.join("evidence.log")
+        }
         None => {
             scratch =
                 tempfile::tempdir().map_err(|e| GameCampaignError::Retention(e.to_string()))?;
