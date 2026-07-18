@@ -373,7 +373,7 @@ fn accept_aa1_llsc_hazard_is_recorded_not_failed() {
         .map(|o| o.detail.clone())
         .unwrap_or_default();
     assert!(
-        detail.contains("hazard observed"),
+        detail.contains("llsc §4 hazard"),
         "the measured llsc divergence must be on the face of the verdict, got: {detail}"
     );
 }

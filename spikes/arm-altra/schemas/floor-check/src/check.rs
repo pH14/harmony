@@ -2317,16 +2317,23 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
             continue;
         }
         compared += 1;
-        // AA-1 + llsc-atomics: same-seed divergence is the §4 LL/SC hazard, MEASURED,
-        // not a determinism defect — this payload's count carries a runtime-reported
-        // retry term precisely because its execution is not deterministic under real
-        // exits (a host IRQ landing between LDXR and STXR clears the monitor; observed
-        // spontaneously on harmony-arm at 1e7/1e8, AA1-F2). The divergence is
-        // quantified in the verdict as AA-4(a) input. Every OTHER payload, and llsc at
-        // every LATER stage (AA-4's ladder exists to close exactly this), binds.
-        if stage == Stage::Aa1 && key.0 == Payload::LlscAtomics.name() && digests.len() > 1 {
+        // Two payloads carry a KNOWN non-mechanism non-determinism that AA-3's force-exit test
+        // must not fail on (both recorded here, never silently absorbed):
+        //  - llsc-atomics — the §4 LL/SC hazard (a host IRQ between LDXR/STXR clears the monitor;
+        //    spontaneous on harmony-arm, AA1-F2). Present at AA-1 AND AA-3: both run the current
+        //    payload BEFORE AA-4's LSE-only contract closes it. AA-4's ladder is what makes it
+        //    bind; here it is AA-4's threat datum.
+        //  - wfi-idle at AA-3 — its WFI is resumed by a timer whose firing shifts under the exact
+        //    landing's slow single-step, a real-time (non-work-derived) dependency that is AA-5's
+        //    paravirt-clock domain (foreman ruling 2026-07-17; also count-exempt at AA-3).
+        // Every OTHER payload binds, and both bind once AA-4/AA-5 close their hazards.
+        let carved = (matches!(stage, Stage::Aa1 | Stage::Aa3)
+            && key.0 == Payload::LlscAtomics.name())
+            || (stage == Stage::Aa3 && key.0 == Payload::WfiIdle.name());
+        if carved && digests.len() > 1 {
             llsc_hazard.push(format!(
-                "scale {} seed {}: {} reps over {} distinct digests",
+                "{} scale {} seed {}: {} reps over {} distinct digests",
+                key.0,
                 key.1,
                 key.2,
                 reps,
@@ -2371,7 +2378,8 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
         String::new()
     } else {
         format!(
-            "; llsc-atomics §4 hazard observed (recorded, AA-4 input): {}",
+            "; non-mechanism divergence observed and recorded (llsc §4 hazard = AA-4 input; \
+             wfi-idle timer = AA-5 paravirt-clock domain): {}",
             llsc_hazard.join("; ")
         )
     };
