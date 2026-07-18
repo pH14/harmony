@@ -240,9 +240,24 @@ RESULTS (2026-07-18, box `hetzner`, patched-KVM window, leased core 2, commit
   --check`, `cargo deny check`, public-api snapshots regenerated
   (revision-coordinator additive-only; explorer −92 deleted legacy items;
   logtmpl/matcher local-vocab; sdk-events +1; campaign-runner reroute).
-- **Mac (mutation)**: `cargo mutants --in-diff` over the full branch diff;
-  killers added for every survivor in changed production code
-  (<final count at completion>).
+- **Mac (mutation)**: `cargo mutants --in-diff` over the full branch diff
+  (270 mutants; first pass 63 missed / 173 caught / 29 unviable / 5
+  timeouts), then killer batches + `--iterate` verification passes. Killers
+  added for every survivor in changed **production** logic: the
+  instrumentation catalog/resolution (full-register coverage, per-op pins),
+  `resolve_v1_declaration` (sdk-events-local: named-identity resolution,
+  uncovered-state refusal), `DeclaredMachine` (upgrade-in-place, delegation
+  counters, console), `SmbObservationCells` (tuple key, empty-cell,
+  non-scalar), `QuietCodec` refusal classes, the occupancy-reconciliation
+  tamper test (kills the `check_occupancy` stub), the cumulative-cut
+  arithmetic + fork-truncation pins, the observation-id decode roundtrip,
+  `Frontier::claims`, and the re-homed `FeatureSet` pins. **Accepted
+  survivors** (documented, not silenced): 20 × `GameToyMachine` internal
+  arithmetic (a self-consistent test double — both sides of every outcome
+  comparison mutate together; pinning its trajectory bytes would test the
+  toy, not the product) and 1 equivalent mutant (`ProbeHost::drive`'s
+  monotone watermark `>` → `>=` assigns an equal value — a no-op). Final
+  verification: no missed mutants outside those two classes.
 - **Box (hetzner, patched KVM, leased core 2)**: smoke-fire-once probe
   (record+replay bit-identity, SMOKE_EXIT=0), determinism 25/25 gate, film
   gate — evidence above.

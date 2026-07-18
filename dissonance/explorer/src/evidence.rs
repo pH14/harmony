@@ -520,6 +520,18 @@ mod tests {
         let obs = compose_observations_at(&led, &child, 2);
         let want: BTreeSet<u64> = [5, 9].into_iter().collect();
         assert_eq!(obs.get(&reg7()), Some(&ReducedValue::Accumulated(want)));
+        // And the cut itself is half-open on BOTH bounds: at included = 0
+        // nothing participates — not even the ancestor event at position 0.
+        assert!(
+            compose_observations_at(&led, &child, 0).is_empty(),
+            "included = 0 composes the empty prefix"
+        );
+        // At included = 1 exactly the ancestor's first event participates.
+        let one: BTreeSet<u64> = [5].into_iter().collect();
+        assert_eq!(
+            compose_observations_at(&led, &child, 1).get(&reg7()),
+            Some(&ReducedValue::Accumulated(one))
+        );
     }
 
     /// The canonical observation-identity encoding round-trips through its
