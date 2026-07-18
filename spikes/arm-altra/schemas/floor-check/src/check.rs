@@ -1267,23 +1267,20 @@ fn check_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome
 /// densely renumbers `sample_id` (making record-level [`check_totality`] pass over
 /// `0..attempted`) — which, on its own, would let a run that dropped a later planned
 /// sample after earlier ones emitted steps present a contiguous, complete-looking
-/// manifest. This check closes that: each planned sample's steps begin with
-/// `step_index == 0` (never renumbered), so the number of `step_index == 0` records is
-/// the number of planned samples that produced steps, and it must equal the manifest's
-/// `planned` count. A dropped planned sample leaves that count short — machine-detectable
-/// from the retained records alone, without leaning on the harness exit code.
+/// manifest. This check closes that with `planned_sample_id`, copied from the pre-execution plan
+/// into every emitted step and never renumbered. The distinct ids must be exactly `0..planned`.
+/// Duplicating one run's `step_index == 0` record while omitting another plan entry therefore
+/// remains a visible missing id instead of satisfying a count.
 ///
 /// Runs off `run_set.planned`: evidence written before the field existed carries `None`,
 /// for which this check is NOT-REQUESTED (its completeness rests on the harness exit code,
 /// documented in the stage disposition). Non-step run-sets are unaffected (no step records
 /// → the check does not apply).
 fn check_step_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
-    // Count each planned sample's first step. A step run keeps `step_index` un-renumbered,
-    // so exactly one `step_index == 0` record exists per planned sample that produced steps.
-    let started = records
+    let planned_ids: BTreeSet<u64> = records
         .iter()
-        .filter(|r| r.step.as_ref().is_some_and(|s| s.step_index == 0))
-        .count() as u64;
+        .filter_map(|r| r.step.as_ref().map(|s| s.planned_sample_id))
+        .collect();
     let any_steps = records.iter().any(|r| r.step.is_some());
     if !any_steps {
         // Not a single-step run-set — record-level totality already covers it.
@@ -1302,19 +1299,45 @@ fn check_step_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Ou
             CheckId::StepTotality,
             "manifest planned is 0 — a step run that intended no sample measures nothing",
         )),
-        Some(planned) if started == planned => out.push(pass(
-            CheckId::StepTotality,
-            format!("all {planned} planned sample(s) represented in the step records"),
-        )),
-        Some(planned) => out.push(fail(
-            CheckId::StepTotality,
-            format!(
-                "{started} of {planned} planned sample(s) produced step records — {} planned \
-                 sample(s) dropped (a missing planned sample is a failure to account, not a pass; \
-                 dense step renumbering cannot mask it)",
-                planned.saturating_sub(started)
-            ),
-        )),
+        Some(planned) => {
+            let missing: Vec<u64> = (0..planned)
+                .filter(|id| !planned_ids.contains(id))
+                .collect();
+            let out_of_range: Vec<u64> = planned_ids
+                .iter()
+                .copied()
+                .filter(|id| *id >= planned)
+                .collect();
+            if missing.is_empty() && out_of_range.is_empty() {
+                out.push(pass(
+                    CheckId::StepTotality,
+                    format!(
+                        "all {planned} planned sample id(s) 0..{planned} represented in the step records"
+                    ),
+                ));
+            } else {
+                let mut problems = Vec::new();
+                if !missing.is_empty() {
+                    problems.push(format!(
+                        "missing planned sample ids {}",
+                        preview(missing.into_iter())
+                    ));
+                }
+                if !out_of_range.is_empty() {
+                    problems.push(format!(
+                        "planned sample ids outside 0..{planned}: {}",
+                        preview(out_of_range.into_iter())
+                    ));
+                }
+                out.push(fail(
+                    CheckId::StepTotality,
+                    format!(
+                        "{} (dense record renumbering or duplicate step-zero rows cannot mask a dropped plan entry)",
+                        problems.join("; ")
+                    ),
+                ));
+            }
+        }
     }
 }
 
@@ -1537,7 +1560,7 @@ fn check_counts(weights: &Weights, records: &[RunRecord], stage: Stage, out: &mu
             )),
             Some(predicted) if predicted != r.measured_taken => problems.push(format!(
                 "sample {}: payload {} scale {} seed {}: oracle predicts {predicted} \
-                 taken branches but the record measured {}",
+                 branch-instruction events but the record measured {}",
                 r.sample_id,
                 r.payload.name(),
                 r.scale.name(),
@@ -2718,7 +2741,7 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
         // not the transfer. So `delta == 1` is forced only where the architecture
         // guarantees a retired branch; the exception/WFI/injection classes are where AA-2
         // *measures* the weight (e.g. ERET's is unknown by construction), bounded only by
-        // "a single step retires at most one taken branch".
+        // "a single step retires at most one branch instruction".
         match s.transition {
             StepTransition::Sequential => {
                 if s.br_retired_delta != 0 {
@@ -4917,6 +4940,7 @@ mod tests {
         r.exit_reason = ExitReason::Debug;
         r.overflow = None;
         r.step = Some(StepRecord {
+            planned_sample_id: 0,
             step_index: id,
             pc_before: 0x8000,
             pc_after,
@@ -4946,15 +4970,16 @@ mod tests {
     }
 
     /// Step records for `samples` planned samples, each stepped `steps_each` times with a
-    /// `step_index` that resets to 0 at every planned sample (as the harness emits it before
-    /// densely renumbering the record-level `sample_id`).
+    /// stable `planned_sample_id` plus a `step_index` that resets to 0 at every planned sample.
     fn stepped_run(samples: u64, steps_each: u64) -> Vec<RunRecord> {
         let mut recs = Vec::new();
         let mut id = 0u64;
-        for _ in 0..samples {
+        for planned_sample_id in 0..samples {
             for step_index in 0..steps_each {
                 let mut r = a_step(id, 0x8004 + id, 0, StepTransition::Sequential);
-                r.step.as_mut().unwrap().step_index = step_index;
+                let step = r.step.as_mut().unwrap();
+                step.planned_sample_id = planned_sample_id;
+                step.step_index = step_index;
                 recs.push(r);
                 id += 1;
             }
@@ -4974,6 +4999,31 @@ mod tests {
         let mut out = Vec::new();
         check_step_totality(&rs, &recs, &mut out);
         assert_eq!(status(&out, CheckId::StepTotality), Some(Status::Pass));
+
+        // The exact bounced-J2 attack: duplicate planned run 0's identity over run 1 while
+        // retaining two step_index==0 rows. Counting first steps still equals planned and would
+        // pass; distinct stable ids expose planned id 1 as missing.
+        let mut forged = recs.clone();
+        for record in &mut forged {
+            if let Some(step) = record.step.as_mut() {
+                step.planned_sample_id = 0;
+            }
+        }
+        assert_eq!(
+            forged
+                .iter()
+                .filter(|r| r.step.as_ref().is_some_and(|s| s.step_index == 0))
+                .count(),
+            2,
+            "the old step-zero count is forged to equal planned"
+        );
+        let mut out = Vec::new();
+        check_step_totality(&rs, &forged, &mut out);
+        assert_eq!(
+            status(&out, CheckId::StepTotality),
+            Some(Status::Fail),
+            "duplicating one planned identity cannot conceal a different dropped plan entry"
+        );
 
         // planned == 3 but only two planned samples produced steps: the third was dropped after
         // the first two emitted steps — the exact certifiable-incomplete case. Must FAIL, from the
@@ -5169,6 +5219,7 @@ mod tests {
             let mut r = a_record_seeded(id, seed);
             r.overflow = None; // a stepped record is not armed (they are mutually exclusive)
             r.step = Some(StepRecord {
+                planned_sample_id: id,
                 // Both reps are step 0 of their run, so they share a RepKey and are compared to
                 // each other (the seed disambiguates distinct inputs).
                 step_index: 0,
@@ -5199,6 +5250,7 @@ mod tests {
             let mut r = a_record_seeded(id, 7);
             r.overflow = None; // a stepped record is not armed (they are mutually exclusive)
             r.step = Some(StepRecord {
+                planned_sample_id: id,
                 // Both reps are step 0 of their run, so they share a RepKey and are compared to
                 // each other (the seed disambiguates distinct inputs).
                 step_index: 0,
@@ -5242,6 +5294,7 @@ mod tests {
             let mut r = a_record_seeded(id, 7); // same seed for all four
             r.overflow = None; // a stepped record is not armed, so comparison_digest is step_digest
             r.step = Some(StepRecord {
+                planned_sample_id: id,
                 step_index,
                 pc_before: pc,
                 pc_after: pc + 4,
@@ -5305,6 +5358,7 @@ mod tests {
         let stepped = |id: u64, seed: u64| {
             let mut r = a_record_seeded(id, seed);
             r.step = Some(StepRecord {
+                planned_sample_id: id,
                 step_index: 0,
                 pc_before: 0x8000,
                 pc_after: 0x8004,
@@ -5641,6 +5695,7 @@ mod tests {
         // divergent landed digests went unchecked, so it is rejected as malformed.
         let mut r = a_record(0); // a_record carries an armed, delivered overflow
         r.step = Some(StepRecord {
+            planned_sample_id: 0,
             step_index: 0,
             pc_before: 0x8000,
             pc_after: 0x8004,

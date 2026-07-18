@@ -17,5 +17,6 @@
   "shared_tuples_compared": 3200,
   "solo_only_examples": [],
   "solo_tuples": 3200,
-  "verdict": "MATCH"
+  "verdict": "MATCH",
+  "work_clock_binding": "arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)"
 }

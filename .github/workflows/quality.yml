@@ -223,8 +223,8 @@ jobs:
           rustup default stable
           # The bare-metal payload target, and the Altra's Linux target: `cargo check`
           # for aarch64-linux is what proves the KVM/perf syscall seam COMPILES for the
-          # box (it cannot be run here, and it has never run anywhere — the hardware is
-          # not yet in hand).
+          # box. It cannot run on the hosted CI runner; retained N1 execution evidence lives
+          # under spikes/arm-altra/results/.
           rustup target add aarch64-unknown-none aarch64-unknown-linux-gnu
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
       - uses: Swatinem/rust-cache@v2
@@ -240,6 +240,16 @@ jobs:
           cargo clippy --manifest-path "$SPIKE/Cargo.toml" --all-features --all-targets -- -D warnings
           cargo test --manifest-path "$SPIKE/Cargo.toml" --all-features
           cargo deny --manifest-path "$SPIKE/Cargo.toml" check --config deny.toml
+      - name: retained AA-1(a) EL0 evidence — checker transcript replay
+        run: |
+          transcript="$RUNNER_TEMP/aa1a-el0-verdict.txt"
+          cargo run --quiet --manifest-path "$SPIKE/Cargo.toml" --bin el0-check -- \
+            "$SPIKE/results/aa-1a/aa1a-pinned-solo-002" \
+            "$SPIKE/results/aa-1a/aa1a-co-tenant-other-core-002" \
+            "$SPIKE/results/aa-1a/aa1a-co-tenant-same-core-002" \
+            "$SPIKE/results/aa-1a/aa1a-memory-pressure-002" \
+            --min-reps 10 --min-cases 3 | tee "$transcript"
+          diff -u "$SPIKE/results/aa-1a/el0-verdict.txt" "$transcript"
       - name: oracle-model (own workspace; no_std + std)
         run: |
           cargo fmt --manifest-path "$SPIKE/oracle-model/Cargo.toml" --all -- --check

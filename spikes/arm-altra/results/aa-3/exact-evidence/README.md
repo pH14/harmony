@@ -34,6 +34,9 @@ A representative full shard's records (the `aa3-smk6` smoke, 3500 records) is co
 `results/aa-3/exact-smoke/` for spot-checking the record schema and re-running `floor-check`
 locally.
 
-**Disposition:** AA-3 GO — see `docs/ARM-ALTRA.md` (§AA-3) and the trait-freeze memo in
-`docs/ARCH-BOUNDARY.md`. Finding **AA3-F1** (BR_RETIRED under-determines PC; the exact landing
-must reach the canonical first-PC-at-`work==target`) is recorded there.
+**Disposition (voided 2026-07-18):** results retained; certification pending; mechanism presumed
+sound. The retained raw evidence full-joins at 5,700/5,700 keys with zero divergences, but the
+campaign/comparator apparatus must complete re-verification before AA-3 GO or the trait freeze is
+re-issued. See `docs/ARM-ALTRA.md` §AA-3 and `docs/ARCH-BOUNDARY.md`. Finding **AA3-F1**
+(BR_RETIRED under-determines PC; the exact landing must reach the canonical
+first-PC-at-`work==target`) remains a retained physical finding.

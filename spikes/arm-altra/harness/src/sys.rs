@@ -41,10 +41,10 @@
 
 use crate::evidence::PerfConfig;
 
-/// The raw `BR_RETIRED` event on aarch64 PMUv3: retired *taken* branches
-/// (`docs/ARM-PORT.md`, `docs/ARM-ALTRA.md` §2). Not invented here — it is the
-/// event those documents name, surfaced as a constant so the harness cannot
-/// silently arm a different one.
+/// The raw `BR_RETIRED` event on aarch64 PMUv3: all architecturally executed branch
+/// instructions, taken or not (N1 finding AA1-F1; `docs/ARM-PORT.md`,
+/// `docs/ARM-ALTRA.md` §2). This ARM binding does not change the x86 clock. The event is
+/// surfaced as a constant so the harness cannot silently arm a different one.
 pub const BR_RETIRED_RAW: u64 = 0x21;
 
 /// `PERF_TYPE_RAW` — the event is a raw PMU event number, not a generic alias.

@@ -12,17 +12,18 @@
 //!
 //! # The model
 //!
-//! V-time on ARM counts `BR_RETIRED` (raw event `0x21`) = retired **taken**
-//! branches (`docs/ARM-PORT.md`, `docs/ARM-ALTRA.md` §2 — the binding statement of
-//! the event's semantics; nothing here invents it). Each payload runs a hand-written
+//! V-time on ARM counts `BR_RETIRED` (raw event `0x21`) = every architecturally
+//! executed branch instruction, taken or not (N1 finding AA1-F1;
+//! `docs/ARM-PORT.md`, `docs/ARM-ALTRA.md` §2). This is an ARM-only binding; the x86
+//! clock is unchanged. Each payload runs a hand-written
 //! asm body bracketed by two MMIO console stores, so the counting window contains
 //! *exactly* that body — no compiler-generated code, no UART poll loop, no boot
 //! code (see `payloads/README.md` §The counting window). Within a body every branch
 //! instruction is explicit, so the count decomposes as
 //!
 //! ```text
-//! measured = certain_taken                    // exactly derived, below
-//!          + reported_taken                   // branches the payload counts and reports
+//! measured = certain_branches                 // every executed branch instruction
+//!          + reported_taken                   // legacy field: retry-branch executions
 //!          + w_entry * exception_entries      // <- unknown weights: MEASURED on
 //!          + w_eret  * exception_returns      //    silicon by stage AA-1, never
 //!          + w_svc   * svc_instructions       //    assumed here

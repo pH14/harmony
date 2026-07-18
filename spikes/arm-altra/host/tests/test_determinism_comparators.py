@@ -103,6 +103,32 @@ class Aa1cComparatorTests(unittest.TestCase):
             self.assertEqual(report["verdict"], "INVALID_INPUT")
             self.assertIn("duplicate comparison key", report["error"])
 
+    def test_joined_digest_divergence_is_p0(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            solo = write_run_set(root, "solo", [aa1c_record(1, "sha256:solo")])
+            cotenant = write_run_set(
+                root, "cotenant", [aa1c_record(1, "sha256:cotenant")]
+            )
+            result, report = run_comparator(AA1C, solo, cotenant)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(report["verdict"], "P0_DIVERGENCE")
+            self.assertEqual(report["divergences"][0]["field"], "state_digest")
+
+    def test_manifest_hash_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            solo = write_run_set(root, "solo", [aa1c_record(1)])
+            cotenant = write_run_set(root, "cotenant", [aa1c_record(1)])
+            manifest_path = solo / "run-set.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["records_sha256"] = "0" * 64
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            result, report = run_comparator(AA1C, solo, cotenant)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(report["verdict"], "INVALID_INPUT")
+            self.assertIn("sha256", report["error"])
+
 
 class Aa3ComparatorTests(unittest.TestCase):
     def test_full_join_matches_with_repetitions(self):
@@ -164,6 +190,18 @@ class Aa3ComparatorTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertEqual(report["verdict"], "INVALID_INPUT")
             self.assertIn("duplicate co-tenant tuple", report["error"])
+
+    def test_joined_exact_landing_divergence_is_p0(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            solo = write_run_set(root, "solo", [aa3_record(0, 1, "sha256:solo")])
+            cotenant = write_run_set(
+                root, "cotenant", [aa3_record(0, 1, "sha256:cotenant")]
+            )
+            result, report = run_comparator(AA3, solo, cotenant)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(report["verdict"], "P0_DIVERGENCE")
+            self.assertEqual(len(report["divergences"]), 1)
 
 
 if __name__ == "__main__":

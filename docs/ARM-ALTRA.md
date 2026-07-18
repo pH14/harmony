@@ -94,13 +94,15 @@ exits from the hot path. One design, two axes; `hm-8h8` owns it.)
 
 ## 2. The work clock bet: BR_RETIRED on N1
 
-V-time on ARM counts **`BR_RETIRED` (retired *taken* branches, raw event `0x21`)**. Two facts,
-one favorable and one demanding:
+V-time on ARM counts **`BR_RETIRED` (raw event `0x21`) = every architecturally executed
+branch instruction, taken or not**. This is the integrator-ruled ARM binding from measured
+finding **AA1-F1**. It is deliberately per-architecture: x86 remains retired conditional
+branches, unchanged. Two facts, one favorable and one demanding:
 
 - **Favorable:** N1 is the **best rr-characterized aarch64 lineage** — rr's production
   aarch64 support was developed and empirically trusted on Cortex-A76/Neoverse-N1-class cores
   (`docs/ARM-PORT.md` §evidence). Of every ARM part we could have received, this is the one
-  with the strongest external evidence that precise taken-branch counting is physically
+  with the strongest external evidence that precise branch-instruction counting is physically
   achievable. (Contrast Neoverse V2: in rr's allowlist speculatively, zero tested data.)
 - **Demanding:** it is a **different event** than x86's retired *conditional* branches
   (`0x1c4`). Same trait contract (`CpuBackend`: monotonic, 0-or-1-per-instruction `u64`
@@ -475,7 +477,8 @@ re-measurement before an ARM-wide conclusion, then software work counter or emul
 exactly-one-instruction steps with deterministic work accounting?
 
 Method: stock KVM, pinned vCPU, oracle payloads. Verify: one instruction retired per step
-(vs oracle); `BR_RETIRED` increments exactly on stepped taken branches and never otherwise;
+(vs oracle); `BR_RETIRED` increments exactly on stepped branch instructions, taken or not,
+and not on ordinary non-branch instructions;
 step behavior across exception entry/return, WFI, and injected-interrupt boundaries (no
 skipped or doubled instructions); and — deliberately — stepping **through LL/SC sequences**,
 where the architectural hazard is that each step clears the exclusive monitor and can
@@ -793,7 +796,7 @@ Evidence: `spikes/arm-altra/results/aa-1a/` — `aa1a-smoke-001` (2 classes × 2
 `.s` bodies the guest boots, linked into a pinned EL0 process, raw 0x21 counting
 this thread's EL0 execution) and graded by `el0-check`.
 
-**Finding AA1-F1 (doc-vs-hardware, needs a ruling): N1's `BR_RETIRED` (0x21)
+**Finding AA1-F1 (doc-vs-hardware, ruled 2026-07-18): N1's `BR_RETIRED` (0x21)
 counts architecturally-executed branch INSTRUCTIONS — taken and not-taken — not
 "retired taken branches" as §2 and `docs/ARM-PORT.md` state.** The evidence
 signature is unambiguous: branch-dense counts are IDENTICAL across seeds
@@ -810,11 +813,11 @@ deviation), across seeds, reps, and two cores — measured incidentally under an
 80-core kernel-build co-tenant, which the counts did not notice. 0-or-1 per
 instruction, monotonic, data-independent for fixed control flow.
 
-Recommended ruling (not yet ruled): keep 0x21 as the work clock with the
-corrected semantics — the model's expected counts move from taken-branches to
-branch-instructions-executed (knowable by construction from the same windows);
-the accumulator machinery stays as the predicate witness. No event substitution
-occurs: the hardware event is unchanged, our description of it corrects.
+**Integrator ruling:** keep 0x21 as the ARM work clock with the corrected semantics — the
+model's expected counts are branch-instructions-executed, knowable by construction from the
+same windows; the accumulator machinery stays as the predicate witness. No event substitution
+occurred: the hardware event is unchanged, our description of it is corrected. This ruling
+does not alter the x86 retired-conditional-branch clock.
 
 Caveats recorded: (a) both probe run-sets are labeled `pinned-solo` but ran
 beside the kernel build — they are pipeline probes, not disposition evidence; the
@@ -1151,20 +1154,22 @@ on is validated. **Single characterized caveat** (the LL/SC-stepping result AA-4
 single-stepping an exclusive sequence livelocks (the monitor clears every step); a bounded
 step budget is mandatory, and stepping through exclusives cannot land — direct AA-4 input.
 
-**Evidence-trail note (J2, review 2026-07-17): step totality is now certifiable standalone.**
+**Evidence-trail note (J2, corrected 2026-07-18): step totality is now certifiable standalone.**
 In single-step mode one planned sample emits many step records, so the harness densely
 renumbers `sample_id` and sets `attempted` to the step count — which, alone, let record-level
 totality read a run that dropped a *later* planned sample (after earlier ones emitted steps) as
-complete. The checker now records the **planned sample count** in the manifest (`planned`) and
-adds a **`step-totality`** check that binds every planned sample to a `step_index == 0` record,
-so a dropped planned sample is machine-detectable from the retained records alone (reject
-fixture `reject-aa2-dropped-planned-sample`; the fix does not lean on the harness exit code).
-The **retained AA-2 evidence** here (`aa2-verdict.txt`, 170,330 steps) predates the `planned`
-field and its record set completed at **harness exit 0** — no planned sample was dropped — so
-its GO stands; re-grading it reads `step-totality` as NOT-REQUESTED (no `planned` recorded),
-which is the honest verdict for pre-field evidence, and every NEW step run self-certifies.
+complete. The checker records the **planned sample count** in the manifest (`planned`), and
+every step carries the plan's stable `planned_sample_id`. The **`step-totality`** check requires
+the distinct ids to be exactly `0..planned`; duplicating one run's `step_index == 0` row cannot
+conceal another dropped plan entry (pinned negative control
+`reject-aa2-dropped-planned-sample`; the fix does not lean on the harness exit code).
+The **retained AA-2 evidence** here (`aa2-verdict.txt`, 170,330 steps) is historical schema-v3
+evidence, predating the stable `planned_sample_id` field. Its record set completed at **harness
+exit 0**, and the retained v3 checker transcript remains evidence of the physical result, but
+the v4 checker deliberately refuses to re-certify that older shape. Every new step run emits
+schema v4 and self-certifies plan totality from its records.
 
-### AA-3 — deterministic force-exit (0004-analogue) + exact landing: GO
+### AA-3 — deterministic force-exit (0004-analogue) + exact landing: certification pending
 
 Started per the foreman's "continue straight to AA-3, keep the box saturated" directive
 (overlapped with the AA-2 refinement). The draft patch
@@ -1234,7 +1239,7 @@ derived time the paravirt clock (§AA-5) exists to close. It is a characterized 
 not a mechanism failure; the exact landing itself is exact for every payload.
 
 **Finding AA3-F1 — the exact landing must land at the CANONICAL PC, because `BR_RETIRED`
-does not uniquely pin `PC`.** `BR_RETIRED` ticks only on *retired branches*, so across a
+does not uniquely pin `PC`.** `BR_RETIRED` ticks only on retired branch instructions, so across a
 branchless run many consecutive `PC`s share one work value — a **plateau**. Of the seven
 graded payloads, `clock-page`'s seqlock body (≈10 non-branch instructions between its loop
 branches) has the longest plateau. The exact landing's canonical point is the **first**
@@ -1258,10 +1263,13 @@ skid exceeded margin+headroom — a real anomaly, not something to accept). This
 lesson of a branch-instruction work clock on real silicon: a `Moment` named by work count is a
 `PC`-*interval*, and replay identity requires a canonical representative of that interval.
 
-**DISPOSITION: AA-3 GO on N1.** The 0004-analogue in-kernel force-exit fires, arms-early to
-remove the boundary loss, and single-steps to the **canonical** target `PC` (AA3-F1) exactly
-for all seven deterministic-count payloads — mechanism, exact landing, and co-tenant
-determinism all proven at scale. Evidence in `results/aa-3/exact-evidence/`:
+**DISPOSITION (voided 2026-07-18): results retained; certification pending; mechanism presumed
+sound.** The former GO certificate was voided after verification found that the campaign scripts
+did not invoke the determinism comparators and the old comparators accepted intersections. A
+coverage-asserting recomputation over the retained raw records subsequently produced full-join
+MATCHes (AA-1C 3,200/3,200; AA-3 5,700/5,700, zero missing keys or divergences), so no physical
+result was falsified. The apparatus must complete re-verification before GO or the trait freeze is
+re-issued. Evidence in `results/aa-3/exact-evidence/`:
 
 - **≥10⁶ sharded run** (`aa3-exact-r3`, 76 shards pinned across cores 4–79, run concurrently
   — the concurrent run *is* the co-tenant stress test). Aggregate `floor-check` over all 76
@@ -1271,9 +1279,10 @@ determinism all proven at scale. Evidence in `results/aa-3/exact-evidence/`:
   cases, and every per-shard check green: totality, multiplicity, count-exactness, **skid = 0
   exact** (no overshoot on any of 1.01M landings), mechanism-attestation = `Preempt`,
   replay-identity, rep-floor, pinning, perf-config (raw 0x21 guest-only). `verdict.txt`.
-- **Co-tenant determinism (Paul's P0 rule): MATCH.** A solo reference lane
+- **Co-tenant determinism (Paul's P0 rule): retained full-join MATCH; certification pending.** A solo reference lane
   (`aa3-exact-solo-ref`, run alone on an idle box, base seed shared with co-tenant shard s0)
-  vs the co-tenant shard: **5,700 shared tuples, 0 divergences** — every tuple's exact-landing
+  vs the co-tenant shard: **5,700/5,700 joined tuples, 0 missing/extra, 0 multiplicity
+  mismatches, 0 divergences** — every tuple's exact-landing
   digest *and* window-end full-state digest is bit-identical solo-vs-co-tenant. Co-tenancy
   under 76-way concurrency perturbed no deterministic guest state. `determinism.json`.
 

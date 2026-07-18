@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use arm_harness::evidence::ARM64_WORK_CLOCK_BINDING;
 use clap::Parser;
 use floor_check::check::Status;
 use floor_check::el0::{El0Floors, check_el0_sets};
@@ -56,6 +57,7 @@ fn main() -> ExitCode {
         }
     };
 
+    println!("work clock binding: {ARM64_WORK_CLOCK_BINDING}");
     println!("el0-check {}", report.run_set_ids.join("+"));
     for o in &report.outcomes {
         println!("  [{}] {}: {}", o.status, o.id, o.detail);

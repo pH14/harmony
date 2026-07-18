@@ -12,7 +12,8 @@
 #
 # Detached: nohup setsid bash host/aa3-exact-shard.sh <tag> <cases_per_shard> </dev/null \
 #     >~/aa3-exact-<tag>.log 2>&1 &
-# Success marker: ~/aa3-exact-<tag>-OK (written only if every shard exited 0).
+# Success marker: ~/aa3-exact-<tag>-OK (written only if every shard exits 0 AND the retained
+# quiet solo reference fully joins and MATCHes co-tenant shard s0).
 set -uo pipefail
 
 TAG="${1:?usage: aa3-exact-shard.sh <tag> <cases_per_shard>}"
@@ -38,5 +39,25 @@ for k in $(seq 0 $((NSHARD-1))); do
 done
 for p in "${pids[@]}"; do wait "$p" || fail=1; done
 
-if [ "$fail" = 0 ]; then touch ~/aa3-exact-"$TAG"-OK; echo AA3_EXACT_ALL_OK
-else echo "AA3_EXACT_FAILED (a shard exited nonzero) — inspect the run-sets"; exit 1; fi
+echo "== solo/co-tenant full-join determinism grade =="
+DET_JSON="$OUT/determinism-$TAG.json"
+DET_TRANSCRIPT="$OUT/determinism-$TAG.txt"
+if [ "$fail" = 0 ]; then
+  if python3 host/aa3-determinism-compare.py \
+    results/aa-3/exact-solo-ref "$OUT/aa3-exact-$TAG-s0" \
+    >"$DET_JSON" 2>"$DET_TRANSCRIPT"; then
+    cat "$DET_TRANSCRIPT"
+  else
+    fail=1
+    cat "$DET_TRANSCRIPT"
+    echo "AA3_DETERMINISM_FAILED — no success marker; see $DET_JSON and $DET_TRANSCRIPT"
+  fi
+fi
+
+if [ "$fail" = 0 ]; then
+  touch ~/aa3-exact-"$TAG"-OK
+  echo "AA3_EXACT_ALL_OK (shards + full-join determinism MATCH)"
+else
+  echo "AA3_EXACT_FAILED (shard or comparator) — inspect the run-sets"
+  exit 1
+fi

@@ -16,13 +16,14 @@
 # host/aa1c-determinism-check.py can compare solo vs co-tenant state_digests per tuple.
 #
 # P0 DISCIPLINE: a count mismatch or a solo!=cotenant digest is a determinism finding — STOP
-# and report, NEVER serialize to make it disappear. This script only GATHERS; the floor-check
-# + determinism-check grade.
+# and report, NEVER serialize to make it disappear. This script gathers AND runs the dedicated
+# solo/co-tenant comparator; its success marker depends on the comparator's full-join MATCH.
 #
 # Run detached:
 #   nohup setsid bash host/aa1c-parallel.sh <tag> <bulk_cases> <grid_cases> </dev/null \
 #       >~/aa1c-par-<tag>.log 2>&1 &
-# Success marker: ~/aa1c-par-<tag>-OK — written ONLY if every shard of every phase exited 0.
+# Success marker: ~/aa1c-par-<tag>-OK — written ONLY if every shard exits 0 and the retained
+# solo reference fully joins and MATCHes the co-tenant cross-check.
 set -uo pipefail   # NOT -e: shard RCs are collected explicitly across concurrent waits.
 
 TAG="${1:?usage: aa1c-parallel.sh <tag> <bulk_cases_per_shard> [grid_cases_per_shard]}"
@@ -127,10 +128,25 @@ taskset -c 4-79 $SPIKE run $common --core 4 --migration-probe --scale 1e6 --case
   --condition migration-probe --seed 5000000000000001 \
   --run-set-id "aa1c-migration-$TAG" --out "$OUT/aa1c-migration-$TAG" </dev/null || fail=1
 
+echo "== solo/co-tenant full-join determinism grade =="
+DET_JSON="$OUT/aa1c-determinism-$TAG.json"
+DET_TRANSCRIPT="$OUT/aa1c-determinism-$TAG.txt"
+if [ "$fail" = "0" ]; then
+  if python3 host/aa1c-determinism-check.py \
+    "$OUT/aa1c-xref-$TAG" "$OUT/aa1c-xcheck-$TAG" \
+    >"$DET_JSON" 2>"$DET_TRANSCRIPT"; then
+    cat "$DET_TRANSCRIPT"
+  else
+    fail=1
+    cat "$DET_TRANSCRIPT"
+    echo "AA1C_DETERMINISM_FAILED — no success marker; see $DET_JSON and $DET_TRANSCRIPT"
+  fi
+fi
+
 if [ "$fail" = "0" ]; then
   touch ~/aa1c-par-"$TAG"-OK
-  echo "AA1C_PARALLEL_ALL_OK"
+  echo "AA1C_PARALLEL_ALL_OK (shards + full-join determinism MATCH)"
 else
-  echo "AA1C_PARALLEL_FAILED (a shard exited nonzero) — inspect the run-sets; do NOT declare GO"
+  echo "AA1C_PARALLEL_FAILED (shard or comparator) — inspect the run-sets; do NOT declare GO"
   exit 1
 fi

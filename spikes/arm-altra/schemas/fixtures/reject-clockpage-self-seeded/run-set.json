@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "stage": "aa5",
   "run_set_id": "fixture-aa5",
   "environment": {

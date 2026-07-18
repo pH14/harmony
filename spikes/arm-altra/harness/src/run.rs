@@ -292,6 +292,16 @@ pub enum RunError {
         /// The skid margin the overflow must be armed below the target by.
         skid_margin: u64,
     },
+    /// The configured skid margin cannot be combined with the fixed canonical-landing headroom
+    /// in `u64`. Refuse before subtracting so a hostile CLI value cannot panic in debug or wrap
+    /// into a small, apparently valid margin in release.
+    #[error(
+        "exact landing: skid margin {skid_margin} plus the fixed landing headroom overflows u64"
+    )]
+    ExactLandingMarginOverflow {
+        /// The configured skid margin.
+        skid_margin: u64,
+    },
     /// The AA-3 arm-early `Preempt` fired AT or ABOVE the target. The overflow was armed
     /// `skid_margin + LANDING_HEADROOM` below the target so it would fire STRICTLY below it,
     /// leaving room to single-step up to the canonical landing PC. Firing at or above the target
@@ -468,6 +478,16 @@ const MAX_LANDING_STEPS: u64 = 1_000_000;
 /// fail-closed anomaly (the skid exceeded margin+headroom), not silently accepted. The cost is a
 /// few extra single steps per landing; the payoff is a canonical, path-independent landing `PC`.
 pub const LANDING_HEADROOM: u64 = 16;
+
+fn exact_arm_delta(delta: u64, skid_margin: u64) -> Result<u64, RunError> {
+    let early_by = skid_margin
+        .checked_add(LANDING_HEADROOM)
+        .ok_or(RunError::ExactLandingMarginOverflow { skid_margin })?;
+    match delta.checked_sub(early_by) {
+        Some(arm_delta) if arm_delta >= 1 => Ok(arm_delta),
+        _ => Err(RunError::ExactLandingWindowTooSmall { delta, skid_margin }),
+    }
+}
 
 /// What one sample is asked to be: which payload, at what scale and seed, and — if
 /// this is an overflow run — how far past the window's opening to arm the deadline.
@@ -965,7 +985,8 @@ pub fn run_sample(
 /// LANDING_HEADROOM`, so it could not reach the canonical landing PC), a step that
 /// moves the counter past the target ([`RunError::ExactLandingOvershotTarget`] — impossible
 /// under +0/+1, so a real bug), an arm-early period that underflows the margin
-/// ([`RunError::ExactLandingWindowTooSmall`]), or a stock signal-kick
+/// ([`RunError::ExactLandingWindowTooSmall`]), a margin whose headroom addition overflows
+/// ([`RunError::ExactLandingMarginOverflow`]), or a stock signal-kick
 /// ([`RunError::ExactLandingSignalKick`] — AA-3's forbidden fallback) each surface as an error
 /// rather than a landing that is not exact.
 ///
@@ -1039,16 +1060,7 @@ pub fn run_sample_exact(
                             // landing PC (see `LANDING_HEADROOM`). An underflow (`delta` no larger
                             // than that combined margin) means there is no room below the target —
                             // refuse rather than arm at/above the target and land non-canonically.
-                            let arm_delta = match delta.checked_sub(skid_margin + LANDING_HEADROOM)
-                            {
-                                Some(d) if d >= 1 => d,
-                                _ => {
-                                    return Err(RunError::ExactLandingWindowTooSmall {
-                                        delta,
-                                        skid_margin,
-                                    });
-                                }
-                            };
+                            let arm_delta = exact_arm_delta(delta, skid_margin)?;
                             arm_point = Some(begin.saturating_add(arm_delta));
                             counter.arm_overflow(arm_delta)?;
                         }
@@ -1758,6 +1770,10 @@ pub fn step_run(
             // A stepped record is never an armed landing — they are mutually exclusive.
             overflow: None,
             step: Some(StepRecord {
+                // Stable identity of the PLAN entry that emitted every step in this run. The
+                // caller later renumbers record-level sample ids, but this remains unchanged so
+                // the checker can require distinct coverage of every planned run.
+                planned_sample_id: spec.sample_id,
                 // The step's position WITHIN THIS run (0-based) — the replay-identity key. It is
                 // NOT the record's `sample_id` (which the caller renumbers densely across every
                 // planned run); it is stamped here and stays put, so step N of one rep is compared
@@ -1918,6 +1934,24 @@ mod tests {
             target_delta,
             migration_probe: None,
         }
+    }
+
+    #[test]
+    fn exact_arm_delta_checks_margin_addition_before_subtraction() {
+        assert_eq!(exact_arm_delta(100, 53).expect("landable"), 31);
+        assert!(matches!(
+            exact_arm_delta(u64::MAX, u64::MAX),
+            Err(RunError::ExactLandingMarginOverflow {
+                skid_margin: u64::MAX
+            })
+        ));
+        assert!(matches!(
+            exact_arm_delta(69, 53),
+            Err(RunError::ExactLandingWindowTooSmall {
+                delta: 69,
+                skid_margin: 53
+            })
+        ));
     }
 
     #[test]

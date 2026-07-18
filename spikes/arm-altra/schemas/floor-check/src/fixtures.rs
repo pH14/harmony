@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The fixture generator.
 //!
-//! Thirty checked-in run-sets: twenty-three the checker must reject (one per failure
+//! Thirty-one checked-in run-sets: twenty-four the checker must reject (one per failure
 //! mode) and seven it must accept (a patched AA-3 landing run, an AA-1 counting run, an
 //! AA-1(c) early/late skid-distribution run, an AA-1 LL/SC-hazard run, an AA-6 same-input
 //! gate, an AA-2 single-step transition matrix, and an AA-2 BOUNDED (`--max-steps`) matrix
@@ -34,7 +34,7 @@ use arm_harness::evidence::{
 };
 use oracle_model::{DEFAULT_SEED, Payload, Scale, Weights, expected};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One generated fixture: a directory name and the two files' contents.
 #[derive(Clone, Debug)]
@@ -130,7 +130,7 @@ fn synthetic_images() -> Vec<ImagePin> {
 
 fn synthetic_perf() -> PerfConfig {
     PerfConfig {
-        // 0x21 = BR_RETIRED (retired taken branches).
+        // 0x21 = BR_RETIRED (all architecturally executed branch instructions on N1, AA1-F1).
         raw_event: 0x21,
         exclude_host: true,
         exclude_guest: false,
@@ -263,14 +263,14 @@ fn build_run_set(stage: Stage, mechanism: Mechanism, records: &[RunRecord]) -> R
     // first image (the kernel) to whatever kernel this mechanism claims.
     let mut images = synthetic_images();
     images[0].sha256 = mechanism.host_kernel_sha256.clone();
-    // For step evidence one planned sample emits many step records, so `planned` is the
-    // number of `step_index == 0` records (one per planned sample); for ordinary evidence
-    // each record is a sample, so `planned == attempted`.
+    // For step evidence one planned sample emits many step records, so `planned` is the number
+    // of distinct stable planned-sample ids; for ordinary evidence each record is a sample.
     let planned = if records.iter().any(|r| r.step.is_some()) {
         records
             .iter()
-            .filter(|r| r.step.as_ref().is_some_and(|s| s.step_index == 0))
-            .count() as u64
+            .filter_map(|r| r.step.as_ref().map(|s| s.planned_sample_id))
+            .collect::<BTreeSet<_>>()
+            .len() as u64
     } else {
         records.len() as u64
     };
@@ -465,13 +465,14 @@ fn aa2_records() -> Vec<RunRecord> {
         aa2_matrix().into_iter().enumerate()
     {
         // Two reps of one step position (same step_index, so one RepKey group).
-        for _rep in 0..2u64 {
+        for rep in 0..2u64 {
             let id = records.len() as u64;
             let mut r = generate_record(id, Payload::StraightLine, ExitReason::Debug);
             // A stepped record is never an armed landing — mutually exclusive.
             r.overflow = None;
             let tag = format!("{transition:?}");
             r.step = Some(StepRecord {
+                planned_sample_id: rep,
                 // The within-run position; both reps of this class share it, so replay identity
                 // compares step N of rep 1 to step N of rep 2.
                 step_index: step_index as u64,
@@ -899,17 +900,20 @@ pub fn all_fixtures() -> Vec<Fixture> {
         },
     ));
 
-    // 23. reject-aa2-dropped-planned-sample — the single-step TOTALITY defect (J2). The step
-    //     records are a valid matrix (2 reps × 8 positions = 2 planned samples, two
-    //     `step_index == 0`), but the manifest claims 3 planned samples: a run that dropped a
-    //     planned sample after earlier ones emitted steps. Dense `sample_id` renumbering makes
-    //     record-level totality pass over `0..attempted`; step-totality catches the drop from the
-    //     retained records alone (the `step_index == 0` count is short of `planned`), so the
-    //     checker rejects incomplete step evidence standalone, not by leaning on the exit code.
+    // 23. reject-aa2-dropped-planned-sample — the single-step TOTALITY defect (J2). Two planned
+    //     runs each emitted eight steps, but an attacker duplicates planned id 0 over id 1. The
+    //     file still has two `step_index == 0` rows and dense record ids, so the bounced counter
+    //     check passed it; distinct stable planned ids expose id 1 as missing.
     {
-        let records = aa2_records();
-        let mut run_set = aa2_run_set(&records);
-        run_set.planned = Some(run_set.planned.unwrap_or(0) + 1);
+        let original = aa2_records();
+        let mut run_set = aa2_run_set(&original);
+        let mut records = original;
+        for record in &mut records {
+            if let Some(step) = record.step.as_mut() {
+                step.planned_sample_id = 0;
+            }
+        }
+        run_set.records_sha256 = synth_sha256_of_bytes(records_jsonl(&records).as_bytes());
         fixtures.push(fixture(
             "reject-aa2-dropped-planned-sample",
             &run_set,

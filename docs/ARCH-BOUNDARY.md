@@ -75,7 +75,8 @@ seam may branch on which ISA is in use.
 
 - **`consonance/vtime`** — `CpuBackend` (`planner.rs`: `work()` / `run_until_overflow()` /
   `single_step()` over a monotonic, 0-or-1-per-instruction `u64` counter) is exactly as valid
-  for ARM `BR_RETIRED` (taken branches) as for Intel conditional branches. ARM-PORT.md's claim
+  for ARM `BR_RETIRED` (all executed branch instructions, AA1-F1) as for Intel conditional
+  branches. ARM-PORT.md's claim
   that this trait "already models the one hard hardware seam correctly" is **verified**.
   `PlannerConfig::skid_margin` is a re-measured *value*, not structure. `VClock::tsc()`
   (`clock.rs`) is structurally a generic Hz-scaled counter mapping unchanged to
@@ -267,15 +268,19 @@ that slip.
 - **The spike still gates one trait decision.** ARM's PMU-overflow-to-exit path (no MTF; PMI
   delivery differs; the N1-lineage missed-PMI-on-migration bug in ARM-PORT.md §evidence) may
   pressure `run_until_overflow`'s late-only-stop contract. Design the trait now; **freeze it
-  only with spike data in hand.** — **RESOLVED, see the trait-freeze memo below.**
+  only with spike data in hand.** — **RESULTS RETAINED; certification pending.**
 
-## AA-3 trait-freeze memo (spike data in hand — 2026-07-17)
+## AA-3 trait-freeze memo (certificate voided 2026-07-18; results retained)
 
-The gate above is answered. AA-3 ran the patched-KVM (`-aa3preempt`) force-exit +
+AA-3 ran the patched-KVM (`-aa3preempt`) force-exit +
 `run_until_overflow` + `single_step` exact landing at **1,010,800 armed deadlines** on the
 Ampere Altra (Neoverse N1), sharded 76-wide, aggregate `floor-check` **PASS (1371 checks)**,
 solo-vs-co-tenant determinism **MATCH** (evidence: `spikes/arm-altra/results/aa-3/exact-evidence/`,
-disposition: `docs/ARM-ALTRA.md` §AA-3). The verdict on the trait:
+disposition: `docs/ARM-ALTRA.md` §AA-3). Verification later found the campaign did not invoke
+the comparator and the original comparator accepted intersections. Full-join recomputation over
+the retained records still MATCHed 5,700/5,700 keys with zero divergences, so the physical findings
+below are retained and the mechanism is presumed sound; however, the GO certificate and trait
+freeze are **void** until the repaired apparatus completes re-verification:
 
 - **`run_until_overflow`'s late-only-stop contract HOLDS on N1 — no `Arch`-trait change forced.**
   The armed overflow is late-only: the in-kernel `Preempt` fires at or after the armed point,
@@ -300,7 +305,8 @@ disposition: `docs/ARM-ALTRA.md` §AA-3). The verdict on the trait:
   whose work clock is a subset-of-instructions counter (branches, not all-retired) inherits this
   plateau property and must define its landing canonically; a per-retired-instruction counter
   does not. This is a documented property of the `work()`/`run_until_overflow()` contract, not a
-  new trait shape. **§D and the `Arch`/`CpuBackend` trait may freeze against the designed shape.**
+  new trait shape. **This is a retained measured conclusion, not a current freeze authorization;
+  §D and the `Arch`/`CpuBackend` trait remain designed-but-unfrozen pending re-verification.**
 
 ## Pre-build ruling (Paul, 2026-07-13) — build-first; the spike gates trust, not construction
 

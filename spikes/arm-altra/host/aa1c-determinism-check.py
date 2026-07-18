@@ -8,20 +8,27 @@ a tuple's execution must be BIT-IDENTICAL whether it ran solo or with every sibl
 busy. This compares, per shared `(payload, scale, seed, target)` tuple, the **final
 state_digest** (the state at the exit sentinel — deterministic, unlike the skid-dependent
 landed_digest) between a SOLO reference run-set and a CO-TENANT run-set that reused the
-solo seed. Any divergence is a **P0 determinism finding** (`docs/ARM-ALTRA.md` §the-bet):
+solo seed. It requires a full join: missing or extra keys are incomplete coverage, never a
+match. Any divergence is a **P0 determinism finding** (`docs/ARM-ALTRA.md` §the-bet):
 STOP and report; never serialize to make it disappear.
 
 It also cross-checks `measured_taken` (the count) and `overflow.deliveries` per tuple.
 
 Usage:  aa1c-determinism-check.py <solo-run-set-dir> <cotenant-run-set-dir>
-Exit 0 iff every shared tuple's state_digest (and count, and delivery) matches. Emits a
-stable-JSON report on stdout; a human summary on stderr. Exit 2 if there are NO shared
-tuples (nothing was compared — not a pass).
+Exit 0 iff both key sets are identical and every joined tuple's state_digest (and count, and
+delivery) matches. Emits a stable-JSON report on stdout; a human summary on stderr. Exit 2
+for invalid or incomplete evidence.
 """
 import hashlib
 import json
 import sys
 from pathlib import Path
+
+
+WORK_CLOCK_BINDING = (
+    "arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions "
+    "(taken or not; AA1-F1)"
+)
 
 
 class EvidenceError(ValueError):
@@ -54,8 +61,8 @@ def load(dir_path):
         raise EvidenceError(f"cannot load {manifest_path}: {exc}") from exc
 
     expected = manifest.get("attempted")
-    if not isinstance(expected, int) or expected < 0:
-        raise EvidenceError(f"{manifest_path}: attempted must be a non-negative integer")
+    if not isinstance(expected, int) or expected < 1:
+        raise EvidenceError(f"{manifest_path}: attempted must be a positive integer")
 
     records_path = d / manifest.get("records_file", "records.jsonl")
     expected_hash = manifest.get("records_sha256")
@@ -111,8 +118,13 @@ def main(argv):
         solo_input = load(argv[1])
         cot_input = load(argv[2])
     except EvidenceError as exc:
-        report = {"error": str(exc), "verdict": "INVALID_INPUT"}
+        report = {
+            "error": str(exc),
+            "verdict": "INVALID_INPUT",
+            "work_clock_binding": WORK_CLOCK_BINDING,
+        }
         print(json.dumps(report, indent=2, sort_keys=True))
+        print(f"work clock binding: {WORK_CLOCK_BINDING}", file=sys.stderr)
         print(f"INVALID INPUT: {exc}", file=sys.stderr)
         return 2
 
@@ -150,6 +162,7 @@ def main(argv):
         verdict = "NO_OVERLAP"
 
     report = {
+        "work_clock_binding": WORK_CLOCK_BINDING,
         "solo_tuples": len(solo),
         "cotenant_tuples": len(cot),
         "shared_tuples_compared": len(shared),
@@ -173,6 +186,7 @@ def main(argv):
     print(json.dumps(report, indent=2, sort_keys=True))
 
     print("\n--- AA-1(c) solo==co-tenant determinism ---", file=sys.stderr)
+    print(f"work clock binding: {WORK_CLOCK_BINDING}", file=sys.stderr)
     print(
         "full join: "
         f"solo {len(solo)}/{solo_input['expected_records']} keys/records; "

@@ -1,18 +1,15 @@
-# AA-2 single-step run path — build plan (arrival-day executor work)
+# AA-2 single-step run path — implementation and verification record
 
 `docs/ARM-ALTRA.md` §AA-2 characterizes stock `KVM_GUESTDBG_SINGLESTEP`
-(`MDSCR_EL1.SS`/`PSTATE.SS`) exactness. The offline apparatus deliberately did **not**
-build the stepping run path — it would presume AA-2's own unknown single-step result
-(the pre-build ruling forbids inventing AA-1/AA-2 unknowns; the counting loop
-`run.rs` even *refuses* an unrequested `KVM_EXIT_DEBUG`, and `check_debug_evidence`
-reads AA-2 as `NOT-REQUESTED` until real stepped records exist). This is the work to do
-when AA-1(c) frees the box. It is offline-buildable and native-testable against the
-scripted-vCPU seam; only the *measured semantics* need the box.
+(`MDSCR_EL1.SS`/`PSTATE.SS`) exactness. The path described below was implemented and exercised
+on N1. The retained physical transcript is schema v3; new runs use schema v4 so stable planned
+sample identity is part of every step record.
 
-## What a step record is (already defined — do not change)
+## What a step record is
 
-`evidence::StepRecord { pc_before, pc_after, insn_retired, br_retired_delta,
-transition: StepTransition, step_digest }`, carried as `RunRecord::step: Some(..)`, with
+`evidence::StepRecord { planned_sample_id, step_index, pc_before, pc_after, insn_retired,
+br_retired_delta, transition: StepTransition, step_digest }`, carried as
+`RunRecord::step: Some(..)`, with
 `exit_reason == Debug`. One record = **one measured step**. The checker
 (`check_debug_evidence`, check.rs:2495) enforces, per record: `exit_reason == Debug`;
 `pc_after != pc_before`; `insn_retired == 1`; and `br_retired_delta` vs the recorded
@@ -20,6 +17,8 @@ transition: StepTransition, step_digest }`, carried as `RunRecord::step: Some(..
 - `Sequential`  → delta 0 **and** `pc_after == pc_before + 4` (fixed 4-byte insns; a
   larger jump = skipped insn, equal/smaller = doubled/stalled — the exact miss AA-2 hunts);
 - `TakenBranch` → delta exactly 1;
+- `NotTakenBranch` → delta exactly 1 and `pc_after == pc_before + 4` (AA1-F1: the branch
+  instruction retires regardless of direction);
 - `LlscExclusive` (LDXR/STXR) → delta 0 (a load/store, not a branch; the retry `CBNZ`
   steps as its own `TakenBranch`);
 - `ExceptionEntry`/`ExceptionReturn`/`Wfi`/`Injection` → delta measured, bounded 0-or-1.
@@ -48,12 +47,12 @@ the sentinel).
      the work counter before/after. `insn_retired` is 1 by construction of a single step
      — but VERIFY on the box against the oracle (that is the AA-2 measurement).
 
-2. **Transition classification** (reuse `scan.rs`, no new decode). Decode the word at
+2. **Transition classification** (reuses `scan.rs`, no duplicate decoder). Decode the word at
    `pc_before` (read 4 bytes of guest RAM at `pc_before - RAM_BASE`):
    - `scan::is_exclusive(word)` → `LlscExclusive`.
    - `scan::decode_branch(word)` `Some(kind)`: taken iff `pc_after == scan::branch_target(word, pc_before)`
      (for immediate branches) or `pc_after != pc_before + 4` (for register branches
-     BR/RET); taken → `TakenBranch`, else `Sequential`.
+     BR/RET); taken → `TakenBranch`, conditional fall-through → `NotTakenBranch`.
    - `SVC` (`word & 0xFFE0001F == 0xD4000001`) → `ExceptionEntry`; the abort payloads
      enter via a faulting load/store → also `ExceptionEntry` (detect by `pc_after` in the
      vector page, `VBAR`-based, rather than by opcode).
@@ -65,7 +64,7 @@ the sentinel).
    the observed `pc_after` disagree with the expected class, that disagreement **is** the
    AA-2 finding — record it, do not force it.
 
-3. **Step-run mode + CLI** (`run.rs` + `arm_spike.rs`). A `step_run()` sibling of
+3. **Step-run mode + CLI** (`run.rs` + `arm_spike.rs`). The `step_run()` sibling of
    `run_sample`: arm single-step, loop `step_once()` emitting one `RunRecord` per step
    (with its `StepRecord`) until the console sentinel, on a **smoke-scale** payload (a
    1e6 payload is millions of steps — smoke keeps a full stepped run to ~10⁴ records).
@@ -86,8 +85,9 @@ the sentinel).
 
 ## Box validation (AA-2 proper, when the lock frees)
 
-Stock KVM, pinned core 60, smoke payloads. Confirm on real N1: exactly one instruction
-per step vs the oracle; `BR_RETIRED` moves only on stepped taken branches; step behaviour
+Stock KVM, pinned core 60, smoke payloads. The real N1 run confirmed exactly one instruction
+per step vs the oracle; `BR_RETIRED` moves on every stepped branch instruction, taken or not,
+and not on ordinary non-branches; step behaviour
 across `SVC`/abort entry, `ERET`, `WFI`, and — deliberately — **stepping an LL/SC
 sequence** (does each step clear the monitor and livelock the retry? that is direct AA-4
 input). Acceptance: exact step counts vs oracle across all classes; replay-identical

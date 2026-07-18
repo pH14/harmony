@@ -36,13 +36,20 @@
 //! shape here is therefore `deny_unknown_fields`, so the Rust loader and the JSON
 //! schema agree about what a valid run-set is.
 //!
-//! **Untested on silicon.** These records have never been produced by real
-//! hardware; the shapes are what AA-0..AA-6 will fill.
+//! The predecessor v3 shape was exercised with retained N1 evidence. Schema v4 is the offline
+//! totality/semantics hardening for the next run and has not yet been emitted on the box;
+//! historical v3 results remain retained under the checker version that produced their
+//! transcripts.
 
 use oracle_model::{Payload, Scale, Weights};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+
+/// The measured and integrator-ruled ARM work-clock binding (AA1-F1).
+///
+/// This is deliberately ARM-specific. The x86 work clock remains retired conditional branches.
+pub const ARM64_WORK_CLOCK_BINDING: &str = "arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)";
 
 /// Bump when a field's meaning changes. A checker refuses a version it does not
 /// know, rather than silently misreading it.
@@ -57,13 +64,13 @@ use std::collections::BTreeMap;
 /// landing, not at the payload's eventual exit.
 ///
 /// **v3** added [`RunRecord::step`] — the structured single-step measurement AA-2's
-/// floor validates, so a bare `exit_reason: debug` can no longer certify the stage. Its
-/// [`StepRecord`] carries a [`StepRecord::step_index`] (the within-run step position AA-2's
-/// replay identity groups on) and a [`StepTransition::NotTakenBranch`] class; both refine the
-/// step shape *within v3* rather than bumping it, because the single-step run path is arrival-day
-/// (unproduced pre-silicon), so no v3 evidence carrying a step ever shipped without them, and the
-/// v3 counting/landing evidence already retained (`step: null`) is unaffected.
-pub const SCHEMA_VERSION: u32 = 3;
+/// floor validates, so a bare `exit_reason: debug` can no longer certify the stage.
+///
+/// **v4** adds [`StepRecord::planned_sample_id`], [`StepRecord::step_index`], and
+/// [`StepTransition::NotTakenBranch`]. These are required wire fields/classes: the stable planned
+/// id makes step totality non-forgeable after record ids are densely renumbered, while the step
+/// position and explicit not-taken class bind replay identity and AA1-F1's all-branch semantics.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Which stage produced a run-set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -164,9 +171,10 @@ pub struct ImagePin {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PerfConfig {
-    /// The raw event. `BR_RETIRED` is `0x21` — retired *taken* branches
-    /// (`docs/ARM-PORT.md`, `docs/ARM-ALTRA.md` §2). Recorded rather than assumed,
-    /// so a run that silently counted a different event is visible as such.
+    /// The raw event. On N1, `BR_RETIRED` is `0x21` and counts all architecturally executed
+    /// branch instructions, taken or not (AA1-F1; `docs/ARM-PORT.md`,
+    /// `docs/ARM-ALTRA.md` §2). Recorded rather than assumed, so a run that silently counted
+    /// a different event is visible as such.
     pub raw_event: u64,
     /// `exclude_host` — the count must be guest-only.
     pub exclude_host: bool,
@@ -324,12 +332,18 @@ pub enum StepTransition {
 /// opcode. The AA-2 floor validates them: a step must advance the PC and retire exactly
 /// one instruction, and its `br_retired_delta` must agree with its transition class.
 ///
-/// **Untested on silicon and unproduced pre-silicon:** the single-step *run path*
-/// (`KVM_SET_GUEST_DEBUG` + the stepping loop) is arrival-day work, so no current run
-/// emits this. The field exists so the AA-2 floor is non-forgeable now and ready then.
+/// This shape was exercised on N1 by AA-2. Schema v4 adds the stable planned-sample identity
+/// needed to make totality independently certifiable from retained step records.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StepRecord {
+    /// Stable id of the plan entry that emitted this step.
+    ///
+    /// Every step from one planned run carries the same id, copied from the pre-execution plan.
+    /// Unlike [`RunRecord::sample_id`], it is never densely renumbered after multiple stepped runs
+    /// are concatenated. Step totality requires the distinct ids to be exactly `0..planned`, so
+    /// duplicating one run's step-zero record cannot conceal a different dropped plan entry.
+    pub planned_sample_id: u64,
     /// This step's **position within its stepped run**, 0-based. Set by [`crate::run::step_run`]
     /// at emission and never renumbered (the caller reassigns the record-level
     /// [`RunRecord::sample_id`] across every planned run, but this stays the within-run index).
@@ -458,8 +472,9 @@ pub struct RunSet {
     /// How many **planned samples** the run intended to measure (the plan length).
     /// Equals `attempted` for ordinary runs; in single-step mode it is DISTINCT
     /// from `attempted` (which is the step count), and the totality checker uses it
-    /// to verify every planned sample is represented — dense step renumbering must
-    /// not let a dropped planned sample pass as a complete `0..attempted`. `Option`
+    /// to verify every planned sample is represented by its stable
+    /// [`StepRecord::planned_sample_id`] — dense step renumbering or duplicated step-zero rows
+    /// must not let a dropped planned sample pass as a complete `0..attempted`. `Option`
     /// so evidence written before this field deserializes (its completeness rests
     /// on the harness exit code, documented per stage).
     #[serde(default)]

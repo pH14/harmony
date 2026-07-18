@@ -24,6 +24,10 @@ from pathlib import Path
 
 
 DEFAULT_EXCLUDE = {"llsc-atomics", "wfi-idle"}
+WORK_CLOCK_BINDING = (
+    "arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions "
+    "(taken or not; AA1-F1)"
+)
 
 
 class EvidenceError(ValueError):
@@ -55,8 +59,8 @@ def resolve_input(input_path):
         raise EvidenceError(f"cannot load {manifest_path}: {exc}") from exc
 
     expected = manifest.get("attempted")
-    if not isinstance(expected, int) or expected < 0:
-        raise EvidenceError(f"{manifest_path}: attempted must be a non-negative integer")
+    if not isinstance(expected, int) or expected < 1:
+        raise EvidenceError(f"{manifest_path}: attempted must be a positive integer")
     expected_hash = manifest.get("records_sha256")
     if not isinstance(expected_hash, str):
         raise EvidenceError(f"{manifest_path}: records_sha256 is required")
@@ -189,13 +193,23 @@ def main(argv):
                 cotenant_multiplicities[key] = lane["multiplicities"][key]
                 cotenant_sources[key] = lane["source"]
     except WithinLaneDivergence as exc:
-        report = {"error": str(exc), "verdict": "P0_WITHIN_LANE_DIVERGENCE"}
+        report = {
+            "error": str(exc),
+            "verdict": "P0_WITHIN_LANE_DIVERGENCE",
+            "work_clock_binding": WORK_CLOCK_BINDING,
+        }
         print(json.dumps(report, indent=2, sort_keys=True))
+        print(f"work clock binding: {WORK_CLOCK_BINDING}", file=sys.stderr)
         print(f"P0 DETERMINISM FINDING: {exc}", file=sys.stderr)
         return 1
     except EvidenceError as exc:
-        report = {"error": str(exc), "verdict": "INVALID_INPUT"}
+        report = {
+            "error": str(exc),
+            "verdict": "INVALID_INPUT",
+            "work_clock_binding": WORK_CLOCK_BINDING,
+        }
         print(json.dumps(report, indent=2, sort_keys=True))
+        print(f"work clock binding: {WORK_CLOCK_BINDING}", file=sys.stderr)
         print(f"INVALID INPUT: {exc}", file=sys.stderr)
         return 2
 
@@ -232,6 +246,7 @@ def main(argv):
         verdict = "NO_OVERLAP"
 
     report = {
+        "work_clock_binding": WORK_CLOCK_BINDING,
         "solo_tuples": len(solo),
         "cotenant_tuples": len(cotenant),
         "shared_tuples_compared": len(shared),
@@ -265,6 +280,7 @@ def main(argv):
         "verdict": verdict,
     }
     print(json.dumps(report, indent=2, sort_keys=True))
+    print(f"work clock binding: {WORK_CLOCK_BINDING}", file=sys.stderr)
     print(
         "full join: "
         f"solo {len(solo)} keys/{solo_input['included_records']} included records; "

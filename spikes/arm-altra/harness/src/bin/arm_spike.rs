@@ -102,6 +102,8 @@ enum Command {
 
 /// `arm-spike run`'s options. Boxed in the [`Command`] enum: it is far larger than
 /// the other variants, and clap parses it straight into this shape.
+const DEFAULT_AA2_MAX_STEPS: u64 = 12_000;
+
 #[derive(clap::Args, Debug)]
 struct RunOpts {
     /// Directory of built payload ELFs, one per class, named by
@@ -214,14 +216,14 @@ struct RunOpts {
     /// construction — a 1e6 window is millions of steps — so keep the scales small.
     #[arg(long)]
     single_step: bool,
-    /// AA-2: cap a single-step run at N steps (0 = unbounded, run to the console sentinel).
+    /// AA-2: cap a single-step run at N steps (default 12000; explicit 0 is unbounded).
     /// A bounded run stops at N steps OR the sentinel, whichever comes first — hitting N first
-    /// is normal, not a failure. This is how the `llsc-atomics` livelock is bounded: each step
-    /// clears the exclusive monitor, so `STXR` never succeeds and the retry loops forever,
+    /// is normal, not a failure. The finite default fail-closes the `llsc-atomics` livelock: each
+    /// step clears the exclusive monitor, so `STXR` never succeeds and the retry loops forever,
     /// never reaching MARK_END or the sentinel. Every stepped record is registers-only except
     /// the last, which carries the full-payload digest, so replay-identity still catches memory
     /// divergence across the stepped window. Only meaningful with `--single-step`/`--stage aa2`.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = DEFAULT_AA2_MAX_STEPS)]
     max_steps: u64,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables. A wedged guest past this
     /// deadline is recorded as a failed attempt rather than hanging the run.
@@ -1076,10 +1078,10 @@ fn execute(args: RunArgs) -> Result<(), String> {
     // Single-step mode emits one record PER STEP, so the plan length is not the record count.
     // Reassign dense sample ids across every stepped run and record how many steps were
     // actually measured as `attempted` — the record-level totality check binds to the real
-    // records. The PLANNED sample count is retained separately (`planned`, above), and each
-    // step keeps its within-run `step_index` (reset to 0 at each planned sample's first step),
-    // so the checker verifies every planned sample is represented (a `step_index == 0` per
-    // planned sample) — dense renumbering cannot make a dropped planned sample look complete.
+    // records. The PLANNED sample count is retained separately (`planned`, above), and every
+    // step keeps the plan's stable `planned_sample_id`, so the checker requires distinct
+    // coverage of `0..planned` — dense renumbering or a duplicated step-zero row cannot make a
+    // dropped planned sample look complete.
     if args.single_step {
         for (i, r) in records.iter_mut().enumerate() {
             r.sample_id = i as u64;
@@ -1298,5 +1300,29 @@ fn main() -> ExitCode {
             eprintln!("FAIL: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn aa2_cli_defaults_to_a_finite_step_budget() {
+        let command = Cli::command();
+        let run = command
+            .find_subcommand("run")
+            .expect("run subcommand must exist");
+        let max_steps = run
+            .get_arguments()
+            .find(|arg| arg.get_id() == "max_steps")
+            .expect("--max-steps must exist");
+        assert_eq!(
+            max_steps.get_default_values(),
+            [OsStr::new("12000")],
+            "AA-2 must fail closed with a finite default; explicit --max-steps 0 is the opt-in"
+        );
     }
 }
