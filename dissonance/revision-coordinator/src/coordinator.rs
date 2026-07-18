@@ -3,7 +3,8 @@
 //! completion buffering, cohort freeze, probe-frontier drive, and crash
 //! recovery. See the crate docs for the contract summary.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +13,9 @@ use crate::ids::{
     CampaignConfigId, CohortId, EvidenceBatchId, ProposalId, Revision, TerminalRecord,
 };
 use crate::ledger::{Ledger, LedgerError, LedgerRecord, MAX_ABORT_REASON};
+use crate::relations::{
+    CellProjection, EvidenceRows, MaterializedViews, ObsKey, ReduceOp, canonical_cell,
+};
 
 /// A proposal whose `Revision` assignment is durable: the caller may
 /// dispatch it. A crashed worker retries the SAME `ProposalId` (re-read via
@@ -134,6 +138,36 @@ pub enum CoordError {
     CohortBarrier {
         /// The earliest cohort still holding the barrier.
         blocking: CohortId,
+    },
+    /// `set_cell_projection` after inputs already entered the live dataflow —
+    /// the graph cannot be rebuilt once fed (install the projection before
+    /// the first drain).
+    #[error("cell projection installed after {submitted} inputs were fed")]
+    ProjectionTooLate {
+        /// How many inputs the live dataflow had already received.
+        submitted: u64,
+    },
+    /// A second, non-identical evidence staging for an already-staged
+    /// proposal — a determinism violation in the retried worker, surfaced
+    /// rather than absorbed (mirroring [`CoordError::CommitConflict`]).
+    #[error("conflicting evidence staging for {proposal:?}")]
+    StageConflict {
+        /// The already-staged proposal.
+        proposal: ProposalId,
+    },
+    /// Evidence staged for a proposal whose revision already drained into
+    /// the live dataflow — too late to participate in its revision.
+    #[error("evidence for {proposal:?} staged after its revision drained")]
+    StagedTooLate {
+        /// The late proposal.
+        proposal: ProposalId,
+    },
+    /// One observation identity declared under two different base
+    /// operations — a schema conflict (a determinism violation, surfaced).
+    #[error("observation declared under conflicting base operations")]
+    DeclarationConflict {
+        /// The conflicted observation identity (opaque canonical bytes).
+        obs: ObsKey,
     },
 }
 
@@ -513,6 +547,16 @@ pub struct Coordinator {
     /// recovered coordinator starts at 0 and re-feeds the durable prefix).
     submitted: u64,
     poisoned: bool,
+    /// Staged evidence rows per revision, awaiting their drain (process-
+    /// local; a recovered coordinator's controller re-stages from its own
+    /// durable evidence ledger before the first drive).
+    staged: BTreeMap<u64, EvidenceRows>,
+    /// Every observation declaration seen (staged or fed), for the schema
+    /// conflict check — one identity, one base operation.
+    declared: BTreeMap<ObsKey, ReduceOp>,
+    /// Identities already fed to the live dataflow (a declaration is fed
+    /// exactly once, so declaration joins never fan out).
+    fed_declares: BTreeSet<ObsKey>,
 }
 
 impl Coordinator {
@@ -529,9 +573,12 @@ impl Coordinator {
         Ok(Coordinator {
             core: Core::new(config),
             ledger,
-            host: ProbeHost::new(),
+            host: ProbeHost::new(Rc::new(canonical_cell)),
             submitted: 0,
             poisoned: false,
+            staged: BTreeMap::new(),
+            declared: BTreeMap::new(),
+            fed_declares: BTreeSet::new(),
         })
     }
 
@@ -551,9 +598,12 @@ impl Coordinator {
         Ok(Coordinator {
             core,
             ledger: owned,
-            host: ProbeHost::new(),
+            host: ProbeHost::new(Rc::new(canonical_cell)),
             submitted: 0,
             poisoned: false,
+            staged: BTreeMap::new(),
+            declared: BTreeMap::new(),
+            fed_declares: BTreeSet::new(),
         })
     }
 
@@ -766,11 +816,73 @@ impl Coordinator {
         Ok(())
     }
 
+    /// Install the cell projection the production relations evaluate at
+    /// every evaluation point (default: [`canonical_cell`]). Rebuilds the
+    /// live dataflow, so it is only legal **before the first drain** —
+    /// afterwards it fails with [`CoordError::ProjectionTooLate`] rather
+    /// than silently reinterpreting already-fed inputs. The projection must
+    /// be a pure function of its arguments (the determinism contract).
+    pub fn set_cell_projection(&mut self, proj: CellProjection) -> Result<(), CoordError> {
+        self.ensure_live()?;
+        if self.submitted > 0 {
+            return Err(CoordError::ProjectionTooLate {
+                submitted: self.submitted,
+            });
+        }
+        self.host = ProbeHost::new(proj);
+        self.fed_declares.clear();
+        Ok(())
+    }
+
+    /// Stage the typed evidence rows of one assigned proposal's batch: they
+    /// enter the production relations at the proposal's revision when it
+    /// drains. Idempotent for a byte-identical restage (crashed worker); a
+    /// divergent restage is a [`CoordError::StageConflict`]. Staging after
+    /// the revision drained is a [`CoordError::StagedTooLate`]; declaring
+    /// one observation identity under two base operations is a
+    /// [`CoordError::DeclarationConflict`].
+    pub fn stage_evidence(
+        &mut self,
+        proposal: ProposalId,
+        rows: EvidenceRows,
+    ) -> Result<(), CoordError> {
+        self.ensure_live()?;
+        let state = self
+            .core
+            .proposals
+            .get(&proposal)
+            .ok_or(CoordError::UnknownProposal(proposal))?;
+        let rev = state.revision.get();
+        if rev <= self.submitted {
+            return Err(CoordError::StagedTooLate { proposal });
+        }
+        for (obs, op) in &rows.declares {
+            match self.declared.get(obs) {
+                Some(existing) if existing != op => {
+                    return Err(CoordError::DeclarationConflict { obs: obs.clone() });
+                }
+                _ => {}
+            }
+        }
+        if let Some(existing) = self.staged.get(&rev) {
+            if *existing == rows {
+                return Ok(()); // deterministic retry: absorb
+            }
+            return Err(CoordError::StageConflict { proposal });
+        }
+        for (obs, op) in &rows.declares {
+            self.declared.insert(obs.clone(), *op);
+        }
+        self.staged.insert(rev, rows);
+        Ok(())
+    }
+
     /// Drain contiguous Revision-ordered completions up to the first unmet
     /// slot, advancing the probe frontier: each drained pair is submitted to
-    /// the live dataflow at its revision. Returns the newly drained pairs
-    /// (empty after an abort or poisoning — the frontier never advances
-    /// again).
+    /// the live dataflow at its revision, together with its staged evidence
+    /// rows (declarations deduplicated so the declaration join never fans
+    /// out). Returns the newly drained pairs (empty after an abort or
+    /// poisoning — the frontier never advances again).
     pub fn drain_ready(&mut self) -> Vec<(Revision, EvidenceBatchId)> {
         if self.ensure_live().is_err() {
             return Vec::new();
@@ -782,11 +894,50 @@ impl Coordinator {
                 break; // unreachable: contiguous counts committed slots
             };
             self.host.insert(rev.get(), info.batch.0);
+            if let Some(mut rows) = self.staged.remove(&rev.get()) {
+                rows.declares
+                    .retain(|(obs, _)| self.fed_declares.insert(obs.clone()));
+                self.host.feed_rows(rev.get(), &rows);
+            }
             out.push((rev, info.batch));
             self.submitted += 1;
         }
         self.host.advance(self.submitted + 1);
         out
+    }
+
+    /// The consolidated, canonically ordered materialized views at `at`
+    /// (inclusive) — the production observations/cells/occupancy relations.
+    /// Follows the probe-barrier read discipline: `at` must be at or below
+    /// both the search-visible frontier and the driven probe watermark
+    /// (call after [`Coordinator::probe_drive`] has passed it), else this
+    /// fails with [`CoordError::FrontierStalled`].
+    pub fn materialized(&self, at: Revision) -> Result<MaterializedViews, CoordError> {
+        self.ensure_live()?;
+        let readable = self.core.visible.min(self.host.driven().saturating_sub(1));
+        if at.get() > readable {
+            return Err(CoordError::FrontierStalled {
+                target: at,
+                visible: Revision::new(readable),
+            });
+        }
+        Ok(self.host.materialized(at.get()))
+    }
+
+    /// Every committed input in revision order:
+    /// `(revision, proposal, batch)`. The recovery hook a controller uses to
+    /// re-stage evidence rows from its own durable evidence ledger before
+    /// the first drive (restart replays committed ledger inputs, never a
+    /// live arrangement).
+    pub fn committed_inputs(&self) -> Vec<(Revision, ProposalId, EvidenceBatchId)> {
+        self.core
+            .committed
+            .iter()
+            .map(|(rev, info)| {
+                let proposal = self.core.by_revision.get(rev).copied().unwrap_or_default();
+                (*rev, proposal, info.batch)
+            })
+            .collect()
     }
 
     /// Drive Differential probes until the search-visible frontier passes

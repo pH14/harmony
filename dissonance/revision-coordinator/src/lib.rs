@@ -27,27 +27,38 @@
 //! Differential relations (the merged `spikes/differential-lineage` crate
 //! defines the proven dataflow shapes it submits inputs to).
 //!
-//! **Scope of the in-crate dataflow** (PR #124 F2 ruling): the dataflow
-//! behind [`Coordinator::probe_drive`] is deliberately an *echo* program —
-//! the committed `(Revision, EvidenceBatchId)` input relation, consolidated,
-//! captured, and probed, nothing more. The probe-barrier read discipline,
-//! frontier mechanics, and input coordination it exercises are the
-//! production contract; the *relations* are not production relations.
-//! `hm-bbx.4` wires the production dataflow (the spike crate's proven
-//! shapes) behind this same coordination seam; until then the in-crate
-//! dataflow is the test harness for the coordinator, as the M2 integration
-//! tests demonstrate against the spike program itself.
+//! **Scope of the in-crate dataflow** (task 132, `hm-e6q`): the dataflow
+//! behind [`Coordinator::probe_drive`] carries two planes. The committed
+//! `(Revision, EvidenceBatchId)` input relation — consolidated, captured,
+//! probed, and read back as the [`DrainedView`] — is the coordination
+//! contract, byte-for-byte unchanged from the PR #124 echo program. Beside
+//! it now run the **production observation/materialization relations** (the
+//! merged `spikes/differential-lineage` shapes, productionized in
+//! [`relations`]): typed evidence rows staged per proposal
+//! ([`Coordinator::stage_evidence`]) enter at their batch's committed
+//! revision, and the graph materializes lineage-composed per-observation
+//! reductions, cells under an installed projection
+//! ([`Coordinator::set_cell_projection`]), and best-entry-per-cell
+//! occupancy, read after the probe barrier via
+//! [`Coordinator::materialized`]. The coordinator stays payload-blind: rows
+//! carry opaque canonical observation identities, never decoded SDK bytes.
 
 mod coordinator;
 mod file_ledger;
 mod host;
 mod ids;
 mod ledger;
+pub mod relations;
 
 pub use coordinator::{Completion, CoordError, Coordinator, DrainedView, PendingProposal};
 pub use file_ledger::FileLedger;
 pub use ids::{CampaignConfigId, CohortId, EvidenceBatchId, ProposalId, Revision, TerminalRecord};
 pub use ledger::{Ledger, LedgerError, LedgerRecord, MemLedger};
+pub use relations::{
+    CellBytes, CellProjection, CutRow, EntryCommitRow, EntryKey, EvidenceRows, LineageRow,
+    MaterializedViews, ObsKey, PointRow, ReduceOp, ReducedRow, RolloutKey, SealKey, SealRow,
+    StateEventRow, canonical_cell,
+};
 
 // Test/golden apparatus (hm-fb0): the durable-state projection vehicle and
 // `MemLedger`'s simulated crash + fault injection. Gated behind

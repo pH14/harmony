@@ -1,4 +1,55 @@
 pub mod revision_coordinator
+pub mod revision_coordinator::relations
+pub enum revision_coordinator::relations::PointRow
+pub revision_coordinator::relations::PointRow::Cut(u64)
+pub revision_coordinator::relations::PointRow::Seal(revision_coordinator::relations::SealKey)
+pub enum revision_coordinator::relations::ReduceOp
+pub revision_coordinator::relations::ReduceOp::Accumulate
+pub revision_coordinator::relations::ReduceOp::Max
+pub revision_coordinator::relations::ReduceOp::Min
+pub revision_coordinator::relations::ReduceOp::Set
+pub enum revision_coordinator::relations::ReducedRow
+pub revision_coordinator::relations::ReducedRow::Accumulated(alloc::vec::Vec<u64>)
+pub revision_coordinator::relations::ReducedRow::Scalar(u64)
+pub struct revision_coordinator::relations::CutRow
+pub revision_coordinator::relations::CutRow::count: u64
+pub revision_coordinator::relations::CutRow::moment: u64
+pub struct revision_coordinator::relations::EntryCommitRow
+pub revision_coordinator::relations::EntryCommitRow::entry: revision_coordinator::relations::EntryKey
+pub revision_coordinator::relations::EntryCommitRow::quality: u64
+pub struct revision_coordinator::relations::EvidenceRows
+pub revision_coordinator::relations::EvidenceRows::declares: alloc::vec::Vec<(revision_coordinator::relations::ObsKey, revision_coordinator::relations::ReduceOp)>
+pub revision_coordinator::relations::EvidenceRows::entry: core::option::Option<revision_coordinator::relations::EntryCommitRow>
+pub revision_coordinator::relations::EvidenceRows::events: alloc::vec::Vec<revision_coordinator::relations::StateEventRow>
+pub revision_coordinator::relations::EvidenceRows::lineage: core::option::Option<revision_coordinator::relations::LineageRow>
+pub revision_coordinator::relations::EvidenceRows::obs_cuts: alloc::vec::Vec<revision_coordinator::relations::CutRow>
+pub revision_coordinator::relations::EvidenceRows::rollout: revision_coordinator::relations::RolloutKey
+pub revision_coordinator::relations::EvidenceRows::seal: core::option::Option<revision_coordinator::relations::SealRow>
+pub struct revision_coordinator::relations::LineageRow
+pub revision_coordinator::relations::LineageRow::cut: revision_coordinator::relations::CutRow
+pub revision_coordinator::relations::LineageRow::parent: revision_coordinator::relations::RolloutKey
+pub struct revision_coordinator::relations::MaterializedViews
+pub revision_coordinator::relations::MaterializedViews::cells: alloc::vec::Vec<((revision_coordinator::relations::RolloutKey, revision_coordinator::relations::PointRow, revision_coordinator::relations::CutRow), revision_coordinator::relations::CellBytes)>
+pub revision_coordinator::relations::MaterializedViews::observations: alloc::vec::Vec<((revision_coordinator::relations::RolloutKey, revision_coordinator::relations::PointRow, revision_coordinator::relations::ObsKey), revision_coordinator::relations::ReducedRow)>
+pub revision_coordinator::relations::MaterializedViews::occupancy: alloc::vec::Vec<(revision_coordinator::relations::CellBytes, revision_coordinator::relations::EntryKey)>
+impl revision_coordinator::relations::MaterializedViews
+pub fn revision_coordinator::relations::MaterializedViews::cell_at(&self, revision_coordinator::relations::RolloutKey, revision_coordinator::relations::PointRow) -> core::option::Option<&revision_coordinator::relations::CellBytes>
+pub fn revision_coordinator::relations::MaterializedViews::occupant(&self, &[u8]) -> core::option::Option<revision_coordinator::relations::EntryKey>
+pub struct revision_coordinator::relations::SealRow
+pub revision_coordinator::relations::SealRow::cut: revision_coordinator::relations::CutRow
+pub revision_coordinator::relations::SealRow::seal: revision_coordinator::relations::SealKey
+pub struct revision_coordinator::relations::StateEventRow
+pub revision_coordinator::relations::StateEventRow::moment: u64
+pub revision_coordinator::relations::StateEventRow::obs: revision_coordinator::relations::ObsKey
+pub revision_coordinator::relations::StateEventRow::pos: u64
+pub revision_coordinator::relations::StateEventRow::value: u64
+pub fn revision_coordinator::relations::canonical_cell(revision_coordinator::relations::CutRow, &[(revision_coordinator::relations::ObsKey, revision_coordinator::relations::ReducedRow)]) -> revision_coordinator::relations::CellBytes
+pub type revision_coordinator::relations::CellBytes = alloc::vec::Vec<u8>
+pub type revision_coordinator::relations::CellProjection = alloc::rc::Rc<dyn core::ops::function::Fn(revision_coordinator::relations::CutRow, &[(revision_coordinator::relations::ObsKey, revision_coordinator::relations::ReducedRow)]) -> revision_coordinator::relations::CellBytes>
+pub type revision_coordinator::relations::EntryKey = u64
+pub type revision_coordinator::relations::ObsKey = alloc::vec::Vec<u8>
+pub type revision_coordinator::relations::RolloutKey = u64
+pub type revision_coordinator::relations::SealKey = u64
 pub enum revision_coordinator::CoordError
 pub revision_coordinator::CoordError::Aborted
 pub revision_coordinator::CoordError::Aborted::reason: alloc::string::String
@@ -10,6 +61,8 @@ pub revision_coordinator::CoordError::CommitConflict
 pub revision_coordinator::CoordError::CommitConflict::proposal: revision_coordinator::ProposalId
 pub revision_coordinator::CoordError::CorruptLedger
 pub revision_coordinator::CoordError::CorruptLedger::detail: alloc::string::String
+pub revision_coordinator::CoordError::DeclarationConflict
+pub revision_coordinator::CoordError::DeclarationConflict::obs: revision_coordinator::relations::ObsKey
 pub revision_coordinator::CoordError::FrontierStalled
 pub revision_coordinator::CoordError::FrontierStalled::target: revision_coordinator::Revision
 pub revision_coordinator::CoordError::FrontierStalled::visible: revision_coordinator::Revision
@@ -17,6 +70,12 @@ pub revision_coordinator::CoordError::IdExhausted
 pub revision_coordinator::CoordError::Ledger(revision_coordinator::LedgerError)
 pub revision_coordinator::CoordError::MissingGenesis
 pub revision_coordinator::CoordError::Poisoned
+pub revision_coordinator::CoordError::ProjectionTooLate
+pub revision_coordinator::CoordError::ProjectionTooLate::submitted: u64
+pub revision_coordinator::CoordError::StageConflict
+pub revision_coordinator::CoordError::StageConflict::proposal: revision_coordinator::ProposalId
+pub revision_coordinator::CoordError::StagedTooLate
+pub revision_coordinator::CoordError::StagedTooLate::proposal: revision_coordinator::ProposalId
 pub revision_coordinator::CoordError::UnknownCohort(revision_coordinator::CohortId)
 pub revision_coordinator::CoordError::UnknownProposal(revision_coordinator::ProposalId)
 pub enum revision_coordinator::LedgerError
@@ -50,6 +109,17 @@ pub revision_coordinator::LedgerRecord::Proposal::revision: revision_coordinator
 pub enum revision_coordinator::MemFault
 pub revision_coordinator::MemFault::Append
 pub revision_coordinator::MemFault::Sync
+pub enum revision_coordinator::PointRow
+pub revision_coordinator::PointRow::Cut(u64)
+pub revision_coordinator::PointRow::Seal(revision_coordinator::relations::SealKey)
+pub enum revision_coordinator::ReduceOp
+pub revision_coordinator::ReduceOp::Accumulate
+pub revision_coordinator::ReduceOp::Max
+pub revision_coordinator::ReduceOp::Min
+pub revision_coordinator::ReduceOp::Set
+pub enum revision_coordinator::ReducedRow
+pub revision_coordinator::ReducedRow::Accumulated(alloc::vec::Vec<u64>)
+pub revision_coordinator::ReducedRow::Scalar(u64)
 pub struct revision_coordinator::CampaignConfigId(_)
 impl revision_coordinator::CampaignConfigId
 pub fn revision_coordinator::CampaignConfigId::as_bytes(&self) -> &[u8; 32]
@@ -77,21 +147,31 @@ pub fn revision_coordinator::Coordinator::assign(&mut self, revision_coordinator
 pub fn revision_coordinator::Coordinator::close_cohort(&mut self, revision_coordinator::CohortId) -> core::result::Result<(), revision_coordinator::CoordError>
 pub fn revision_coordinator::Coordinator::cohort_view(&self, revision_coordinator::CohortId) -> core::option::Option<revision_coordinator::Revision>
 pub fn revision_coordinator::Coordinator::committed_frontier(&self) -> revision_coordinator::Revision
+pub fn revision_coordinator::Coordinator::committed_inputs(&self) -> alloc::vec::Vec<(revision_coordinator::Revision, revision_coordinator::ProposalId, revision_coordinator::EvidenceBatchId)>
 pub fn revision_coordinator::Coordinator::complete(&mut self, revision_coordinator::Completion) -> core::result::Result<(), revision_coordinator::CoordError>
 pub fn revision_coordinator::Coordinator::config(&self) -> revision_coordinator::CampaignConfigId
 pub fn revision_coordinator::Coordinator::drain_ready(&mut self) -> alloc::vec::Vec<(revision_coordinator::Revision, revision_coordinator::EvidenceBatchId)>
 pub fn revision_coordinator::Coordinator::genesis(alloc::boxed::Box<dyn revision_coordinator::Ledger>, revision_coordinator::CampaignConfigId) -> core::result::Result<Self, revision_coordinator::CoordError>
+pub fn revision_coordinator::Coordinator::materialized(&self, revision_coordinator::Revision) -> core::result::Result<revision_coordinator::relations::MaterializedViews, revision_coordinator::CoordError>
 pub fn revision_coordinator::Coordinator::open_cohort(&mut self) -> core::result::Result<revision_coordinator::CohortId, revision_coordinator::CoordError>
 pub fn revision_coordinator::Coordinator::pending(&self) -> alloc::vec::Vec<revision_coordinator::PendingProposal>
 pub fn revision_coordinator::Coordinator::probe_drive(&mut self, revision_coordinator::Revision) -> core::result::Result<revision_coordinator::DrainedView, revision_coordinator::CoordError>
 pub fn revision_coordinator::Coordinator::recover(&dyn revision_coordinator::Ledger) -> core::result::Result<Self, revision_coordinator::CoordError>
+pub fn revision_coordinator::Coordinator::set_cell_projection(&mut self, revision_coordinator::relations::CellProjection) -> core::result::Result<(), revision_coordinator::CoordError>
+pub fn revision_coordinator::Coordinator::stage_evidence(&mut self, revision_coordinator::ProposalId, revision_coordinator::relations::EvidenceRows) -> core::result::Result<(), revision_coordinator::CoordError>
 pub fn revision_coordinator::Coordinator::state_projection(&self) -> revision_coordinator::StateProjection
 pub fn revision_coordinator::Coordinator::visible_frontier(&self) -> revision_coordinator::Revision
+pub struct revision_coordinator::CutRow
+pub revision_coordinator::CutRow::count: u64
+pub revision_coordinator::CutRow::moment: u64
 pub struct revision_coordinator::DrainedView
 pub revision_coordinator::DrainedView::frontier: revision_coordinator::Revision
 pub revision_coordinator::DrainedView::rows: alloc::vec::Vec<(revision_coordinator::Revision, revision_coordinator::EvidenceBatchId)>
 impl revision_coordinator::DrainedView
 pub fn revision_coordinator::DrainedView::encode(&self) -> alloc::vec::Vec<u8>
+pub struct revision_coordinator::EntryCommitRow
+pub revision_coordinator::EntryCommitRow::entry: revision_coordinator::relations::EntryKey
+pub revision_coordinator::EntryCommitRow::quality: u64
 pub struct revision_coordinator::EvidenceBatchId(_)
 impl revision_coordinator::EvidenceBatchId
 pub fn revision_coordinator::EvidenceBatchId::as_bytes(&self) -> &[u8; 32]
@@ -103,6 +183,14 @@ impl serde_core::ser::Serialize for revision_coordinator::EvidenceBatchId
 pub fn revision_coordinator::EvidenceBatchId::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for revision_coordinator::EvidenceBatchId
 pub fn revision_coordinator::EvidenceBatchId::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct revision_coordinator::EvidenceRows
+pub revision_coordinator::EvidenceRows::declares: alloc::vec::Vec<(revision_coordinator::relations::ObsKey, revision_coordinator::relations::ReduceOp)>
+pub revision_coordinator::EvidenceRows::entry: core::option::Option<revision_coordinator::relations::EntryCommitRow>
+pub revision_coordinator::EvidenceRows::events: alloc::vec::Vec<revision_coordinator::relations::StateEventRow>
+pub revision_coordinator::EvidenceRows::lineage: core::option::Option<revision_coordinator::relations::LineageRow>
+pub revision_coordinator::EvidenceRows::obs_cuts: alloc::vec::Vec<revision_coordinator::relations::CutRow>
+pub revision_coordinator::EvidenceRows::rollout: revision_coordinator::relations::RolloutKey
+pub revision_coordinator::EvidenceRows::seal: core::option::Option<revision_coordinator::relations::SealRow>
 pub struct revision_coordinator::FileLedger
 impl revision_coordinator::FileLedger
 pub fn revision_coordinator::FileLedger::open(&std::path::Path) -> core::result::Result<Self, revision_coordinator::LedgerError>
@@ -111,6 +199,16 @@ pub fn revision_coordinator::FileLedger::append(&mut self, &revision_coordinator
 pub fn revision_coordinator::FileLedger::reopen(&self) -> core::result::Result<alloc::boxed::Box<dyn revision_coordinator::Ledger>, revision_coordinator::LedgerError>
 pub fn revision_coordinator::FileLedger::replay(&self) -> core::result::Result<alloc::vec::Vec<revision_coordinator::LedgerRecord>, revision_coordinator::LedgerError>
 pub fn revision_coordinator::FileLedger::sync(&mut self) -> core::result::Result<(), revision_coordinator::LedgerError>
+pub struct revision_coordinator::LineageRow
+pub revision_coordinator::LineageRow::cut: revision_coordinator::relations::CutRow
+pub revision_coordinator::LineageRow::parent: revision_coordinator::relations::RolloutKey
+pub struct revision_coordinator::MaterializedViews
+pub revision_coordinator::MaterializedViews::cells: alloc::vec::Vec<((revision_coordinator::relations::RolloutKey, revision_coordinator::relations::PointRow, revision_coordinator::relations::CutRow), revision_coordinator::relations::CellBytes)>
+pub revision_coordinator::MaterializedViews::observations: alloc::vec::Vec<((revision_coordinator::relations::RolloutKey, revision_coordinator::relations::PointRow, revision_coordinator::relations::ObsKey), revision_coordinator::relations::ReducedRow)>
+pub revision_coordinator::MaterializedViews::occupancy: alloc::vec::Vec<(revision_coordinator::relations::CellBytes, revision_coordinator::relations::EntryKey)>
+impl revision_coordinator::relations::MaterializedViews
+pub fn revision_coordinator::relations::MaterializedViews::cell_at(&self, revision_coordinator::relations::RolloutKey, revision_coordinator::relations::PointRow) -> core::option::Option<&revision_coordinator::relations::CellBytes>
+pub fn revision_coordinator::relations::MaterializedViews::occupant(&self, &[u8]) -> core::option::Option<revision_coordinator::relations::EntryKey>
 pub struct revision_coordinator::MemLedger
 impl revision_coordinator::MemLedger
 pub fn revision_coordinator::MemLedger::crash(&mut self)
@@ -139,6 +237,14 @@ impl revision_coordinator::Revision
 pub const revision_coordinator::Revision::ZERO: revision_coordinator::Revision
 pub fn revision_coordinator::Revision::get(self) -> u64
 pub fn revision_coordinator::Revision::new(u64) -> Self
+pub struct revision_coordinator::SealRow
+pub revision_coordinator::SealRow::cut: revision_coordinator::relations::CutRow
+pub revision_coordinator::SealRow::seal: revision_coordinator::relations::SealKey
+pub struct revision_coordinator::StateEventRow
+pub revision_coordinator::StateEventRow::moment: u64
+pub revision_coordinator::StateEventRow::obs: revision_coordinator::relations::ObsKey
+pub revision_coordinator::StateEventRow::pos: u64
+pub revision_coordinator::StateEventRow::value: u64
 pub struct revision_coordinator::StateProjection
 pub revision_coordinator::StateProjection::aborted: core::option::Option<alloc::string::String>
 pub revision_coordinator::StateProjection::cohorts: alloc::vec::Vec<(revision_coordinator::CohortId, revision_coordinator::Revision, bool, alloc::vec::Vec<revision_coordinator::Revision>)>
@@ -170,3 +276,10 @@ pub fn revision_coordinator::MemLedger::append(&mut self, &revision_coordinator:
 pub fn revision_coordinator::MemLedger::reopen(&self) -> core::result::Result<alloc::boxed::Box<dyn revision_coordinator::Ledger>, revision_coordinator::LedgerError>
 pub fn revision_coordinator::MemLedger::replay(&self) -> core::result::Result<alloc::vec::Vec<revision_coordinator::LedgerRecord>, revision_coordinator::LedgerError>
 pub fn revision_coordinator::MemLedger::sync(&mut self) -> core::result::Result<(), revision_coordinator::LedgerError>
+pub fn revision_coordinator::canonical_cell(revision_coordinator::relations::CutRow, &[(revision_coordinator::relations::ObsKey, revision_coordinator::relations::ReducedRow)]) -> revision_coordinator::relations::CellBytes
+pub type revision_coordinator::CellBytes = alloc::vec::Vec<u8>
+pub type revision_coordinator::CellProjection = alloc::rc::Rc<dyn core::ops::function::Fn(revision_coordinator::relations::CutRow, &[(revision_coordinator::relations::ObsKey, revision_coordinator::relations::ReducedRow)]) -> revision_coordinator::relations::CellBytes>
+pub type revision_coordinator::EntryKey = u64
+pub type revision_coordinator::ObsKey = alloc::vec::Vec<u8>
+pub type revision_coordinator::RolloutKey = u64
+pub type revision_coordinator::SealKey = u64
