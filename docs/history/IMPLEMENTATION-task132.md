@@ -186,7 +186,18 @@ RESULTS (2026-07-18, box `hetzner`, patched-KVM window, leased core 2, commit
 - **Deep reproducer** retained per repetition (content-addressed; e.g. rep
   trace `b6946502…e1d2`, branch 4, depth 1 — the small-budget PureRandom
   depth plateau matches the M0 baseline record).
-- **Film gate**: <filled at completion>
+- **Film gate** (task-87 projector path, `tests/live_film.rs`): PASS
+  (`FILM_GATE_EXIT=0`) — 383 exact `(frame, moment)` pairs calibrated, plan
+  of 300 frames, unfilmed terminal hash stable 25/25, **hash-neutrality
+  25/25 (filmed == unfilmed)**, render determinism (300 frames + contact
+  sheet, twice, identical), sheet blake3
+  `82aea5ca5a19ee88163aea10e633f388babc9a78ac74afa76ca444fbaffc3b17`;
+  artifacts under `/root/t132-film` on the box (bundle.json + 300 PPMs +
+  contact.ppm); a downscaled contact-sheet preview was delivered for visual
+  inspection. (One environmental retry: `HARMONY_SMB_CORE` must be an
+  absolute path — `cargo test` runs from the crate dir; the first attempt's
+  deterministic half passed identically, the render half refused the
+  relative core path loudly.)
 
 ## M3 — Legacy spine retired (physically removed)
 

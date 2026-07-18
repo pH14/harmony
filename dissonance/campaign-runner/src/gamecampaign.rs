@@ -1552,7 +1552,13 @@ mod tests {
     #[test]
     fn declared_machine_upgrades_a_guest_catalog_in_place() {
         // A machine whose capture carries its own v1 catalog + one firing.
-        struct V1Guest;
+        // The counters prove the wrapper CALLS the inner machine (delegation,
+        // not a stub).
+        #[derive(Default)]
+        struct V1Guest {
+            replays: u32,
+            drops: u32,
+        }
         impl Machine for V1Guest {
             fn branch(
                 &mut self,
@@ -1562,6 +1568,7 @@ mod tests {
                 Ok(())
             }
             fn replay(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                self.replays += 1;
                 Ok(())
             }
             fn run(
@@ -1575,6 +1582,7 @@ mod tests {
                 Ok((explorer::SnapId(1), EvidenceCut::default()))
             }
             fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                self.drops += 1;
                 Ok(())
             }
             fn hash(&mut self) -> Result<[u8; 32], MachineError> {
@@ -1607,7 +1615,7 @@ mod tests {
                 Ok(vec![(0, CATALOG_EVENT_ID, v1), (1, id, p)])
             }
         }
-        let mut m = DeclaredMachine::new(V1Guest);
+        let mut m = DeclaredMachine::new(V1Guest::default());
         let out = m.sdk_events().expect("capture");
         let catalogs = out
             .iter()
@@ -1632,6 +1640,11 @@ mod tests {
         );
         m.replay(explorer::SnapId(1)).expect("replay delegates");
         m.drop_snap(explorer::SnapId(1)).expect("drop delegates");
+        assert_eq!(
+            (m.inner.replays, m.inner.drops),
+            (1, 1),
+            "the wrapper reached the inner machine"
+        );
     }
 
     /// The quiet codec's exploit-mutate maps the two refusal classes onto the

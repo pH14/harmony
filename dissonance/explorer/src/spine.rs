@@ -621,6 +621,11 @@ mod tests {
         assert_eq!(f.occupy(vec![7], r1), Some(r0));
         assert_eq!(f.occupant(&vec![7]), Some(r1));
 
+        // The claims iterator yields every claimed cell with its CURRENT
+        // occupant, in canonical order (the reconciliation read).
+        let claims: Vec<(Vec<u8>, ExemplarRef)> = f.claims().map(|(c, r)| (c.clone(), r)).collect();
+        assert_eq!(claims, vec![(vec![7], r1)]);
+
         // One cell, two entries: entries can exceed cells only through
         // domination history, never through admission (the archive claims at
         // least one fresh cell per admitted entry).

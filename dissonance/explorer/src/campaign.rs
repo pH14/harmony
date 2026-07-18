@@ -1761,6 +1761,133 @@ mod tests {
         assert_eq!(views.occupancy, expected_occ, "occupancy diverges");
     }
 
+    /// The occupancy reconciliation is live: the REAL views pass, a
+    /// tampered occupancy view fails with the typed divergence (kills the
+    /// `check_occupancy -> Ok(())` stub).
+    #[test]
+    fn occupancy_reconciliation_rejects_a_tampered_view() {
+        let (_dir, mut camp) = campaign(simple_program(4), config(8, u64::MAX), 7);
+        camp.step().expect("step");
+        let frontier = camp.coordinator().visible_frontier();
+        let views = camp.coordinator().materialized(frontier).expect("readable");
+        camp.check_occupancy(&views).expect("the real views agree");
+        let mut tampered = views.clone();
+        tampered.occupancy.push((b"no-such-cell".to_vec(), 999));
+        assert!(matches!(
+            camp.check_occupancy(&tampered),
+            Err(CampaignError::OccupancyDivergence { .. })
+        ));
+        let mut wrong_entry = views;
+        if let Some(first) = wrong_entry.occupancy.first_mut() {
+            first.1 += 1;
+            assert!(matches!(
+                camp.check_occupancy(&wrong_entry),
+                Err(CampaignError::OccupancyDivergence { .. })
+            ));
+        }
+    }
+
+    /// The lineage-composed recompute EXCLUDES a parent's post-fork
+    /// accumulate value (the half-open fork truncation, `pos < upper`), and
+    /// a child batch's observed cut is the parent count PLUS its suffix
+    /// length (the cumulative-position arithmetic).
+    #[test]
+    fn lineage_cut_arithmetic_and_fork_truncation_are_exact() {
+        use crate::defaults::ExploreExploitSelector;
+        let program: Rc<dyn Fn(u64) -> Program> = Rc::new(|seed| Program {
+            emits: vec![
+                Emit {
+                    at: 10,
+                    reg: 2,
+                    value: seed % 5,
+                },
+                Emit {
+                    at: 20,
+                    reg: 2,
+                    value: 100 + seed % 5,
+                },
+            ],
+            terminal: 30,
+        });
+        let (_dir, led) = ledger();
+        let machine = ScriptedMachine::new(vec![(2, UpdateOp::Accumulate)], program);
+        let mut camp = DifferentialCampaign::new(
+            machine,
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            // Explore period 3: steps 1..2 exploit once an entry exists.
+            Box::new(ExploreExploitSelector::new().with_explore_period(3)),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            // Cap 1: only the FIRST provisional candidate (the shallower
+            // seal) is materialized, so the exploited entry's fork cut lies
+            // strictly below the parent's persisted extent — the parent has
+            // a post-fork accumulate value to exclude.
+            config(1, u64::MAX),
+            13,
+        )
+        .expect("new");
+        for _ in 0..6 {
+            camp.step().expect("step");
+        }
+        let ledger = camp.ledger();
+        let mut checked_child = false;
+        for id in ledger.batch_ids() {
+            let ev = ledger.get(id).expect("retained");
+            if ev.role != EvidenceRole::Rollout {
+                continue;
+            }
+            let start = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+            // The cumulative-cut arithmetic: observed cut = start + suffix.
+            assert_eq!(
+                ev.cut.sdk_events,
+                start + ev.normalized.events.len() as u64,
+                "cumulative observed cut"
+            );
+            let Some(parent_issue) = ev.rollout.parent else {
+                continue;
+            };
+            // A real branch child below a mid-run fork: the parent's
+            // post-fork accumulate values must NOT reach the child's map.
+            let parent = ledger
+                .batch_ids()
+                .filter_map(|i| ledger.get(i))
+                .find(|b| b.role == EvidenceRole::Rollout && b.rollout.issue == parent_issue)
+                .expect("parent rollout batch");
+            let parent_start = parent.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+            let parent_extent = parent_start + parent.normalized.events.len() as u64;
+            if start >= parent_extent {
+                continue; // forked at the parent's extent: nothing excluded
+            }
+            checked_child = true;
+            let excluded_value = {
+                let idx = (start - parent_start) as usize;
+                match &parent.normalized.events[idx].payload {
+                    sdk_events::Payload::State { value, .. } => *value,
+                    other => panic!("unexpected payload {other:?}"),
+                }
+            };
+            let obs = crate::evidence::compose_observations_at(ledger, ev, start);
+            let reg2 = sdk_events::ObservationId::Point {
+                namespace: sdk_events::NS_STATE,
+                local: 2,
+            };
+            if let Some(crate::evidence::ReducedValue::Accumulated(set)) = obs.get(&reg2) {
+                assert!(
+                    !set.contains(&excluded_value)
+                        || parent.normalized.events[..(start - parent_start) as usize]
+                            .iter()
+                            .any(|e| matches!(&e.payload,
+                                sdk_events::Payload::State { value, .. } if *value == excluded_value)),
+                    "the parent's post-fork value {excluded_value} leaked into the \
+                     child's inherited prefix"
+                );
+            }
+        }
+        assert!(checked_child, "a mid-run fork child was exercised");
+    }
+
     /// A genesis-rooted multi-op campaign: after every step, every
     /// materialized view equals the direct recomputation (the M1 gate).
     #[test]
