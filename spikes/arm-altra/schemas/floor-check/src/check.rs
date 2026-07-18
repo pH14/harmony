@@ -1354,11 +1354,21 @@ fn check_weights_and_counts(run_set: &RunSet, records: &[RunRecord], out: &mut V
         CheckId::WeightsPresent,
         "the manifest carries measured weights",
     ));
-    check_counts(&weights, records, out);
+    check_counts(&weights, records, run_set.stage, out);
 }
 
-fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>) {
+fn check_counts(weights: &Weights, records: &[RunRecord], stage: Stage, out: &mut Vec<Outcome>) {
     let mut problems: Vec<String> = Vec::new();
+    // AA-3-only: `wfi-idle` is EXEMPT from the window-count oracle (foreman ruling 2026-07-17).
+    // Its WFI is resumed by a timer whose firing shifts under the exact landing's slow single-
+    // step, so its retired-branch count comes back short and varying — a REAL-TIME (non-work-
+    // derived) time dependency that is AA-5's paravirt-clock domain, not an AA-3 force-exit
+    // mechanism failure (the landing itself is exact for `wfi-idle` too). AA-3 grades count
+    // exactness on the seven deterministic-count payloads; `wfi-idle`'s window self-consistency
+    // (`measured_taken == work_end - work_begin`, above) is still enforced. Recorded as an
+    // AA-5-domain finding in the spike report. This exemption is AA-3-specific: at AA-1
+    // `wfi-idle` counts exactly (free-run) and binds.
+    let mut wfi_exempt: usize = 0;
     // How many records were actually graded against the oracle (non-step records). AA-2 step
     // records are exempt (see below), so the verdict says how many it graded vs skipped rather
     // than claiming to have checked records it deliberately did not.
@@ -1407,6 +1417,13 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
 
         // The oracle is only defined for payloads that have a counting window.
         if !r.payload.has_window() {
+            continue;
+        }
+
+        // AA-3 `wfi-idle` exemption (see the top of this fn): skip the oracle comparison, its
+        // self-consistency already checked above. Never at AA-1 (there it binds).
+        if stage == Stage::Aa3 && r.payload == Payload::WfiIdle {
+            wfi_exempt += 1;
             continue;
         }
 
@@ -1471,15 +1488,24 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
         }
     }
 
+    let wfi_note = if wfi_exempt > 0 {
+        format!(
+            "; {wfi_exempt} AA-3 wfi-idle record(s) exempt — its timer resume is real-time \
+             (non-work-derived), AA-5's paravirt-clock domain, not an AA-3 mechanism failure"
+        )
+    } else {
+        String::new()
+    };
     verdict(
         CheckId::CountExactness,
         &problems,
         if stepped == 0 {
-            format!("all {graded} records match the oracle and are self-consistent")
+            format!("all {graded} records match the oracle and are self-consistent{wfi_note}")
         } else {
             format!(
                 "all {graded} counting record(s) match the oracle and are self-consistent \
-                 ({stepped} AA-2 step record(s) exempt — graded by debug-evidence/replay-identity)"
+                 ({stepped} AA-2 step record(s) exempt — graded by debug-evidence/replay-identity)\
+                 {wfi_note}"
             )
         },
         out,
@@ -5628,7 +5654,7 @@ mod tests {
         let mut r = a_record(0);
         r.work_end = r.work_begin + r.measured_taken + 1; // endpoints now disagree
         let mut out = Vec::new();
-        check_counts(&Weights::measured(0, 0, 0, 0, 2), &[r], &mut out);
+        check_counts(&Weights::measured(0, 0, 0, 0, 2), &[r], Stage::Aa1, &mut out);
         assert_eq!(status(&out, CheckId::CountExactness), Some(Status::Fail));
     }
 
@@ -5645,7 +5671,7 @@ mod tests {
         r.measured_taken = u64::MAX;
         let huge = Weights::measured(u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX);
         let mut out = Vec::new();
-        check_counts(&huge, &[r], &mut out);
+        check_counts(&huge, &[r], Stage::Aa1, &mut out);
         assert_eq!(
             status(&out, CheckId::CountExactness),
             Some(Status::Fail),
