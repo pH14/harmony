@@ -1,0 +1,20 @@
+[
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":0,"period":10000,"value_at_pmi":11495,"samples":1,"skid":1495},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":1,"period":10000,"value_at_pmi":11488,"samples":1,"skid":1488},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":2,"period":10000,"value_at_pmi":11466,"samples":1,"skid":1466},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":3,"period":10000,"value_at_pmi":11478,"samples":1,"skid":1478},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":4,"period":10000,"value_at_pmi":11481,"samples":1,"skid":1481},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":5,"period":10000,"value_at_pmi":11492,"samples":1,"skid":1492},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":6,"period":10000,"value_at_pmi":11471,"samples":1,"skid":1471},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":7,"period":10000,"value_at_pmi":11476,"samples":1,"skid":1476},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":8,"period":10000,"value_at_pmi":11491,"samples":1,"skid":1491},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":9,"period":10000,"value_at_pmi":11476,"samples":1,"skid":1476},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":10,"period":10000,"value_at_pmi":11473,"samples":1,"skid":1473},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":11,"period":10000,"value_at_pmi":11497,"samples":1,"skid":1497},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":12,"period":10000,"value_at_pmi":11474,"samples":1,"skid":1474},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":13,"period":10000,"value_at_pmi":11476,"samples":1,"skid":1476},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":14,"period":10000,"value_at_pmi":11487,"samples":1,"skid":1487},
+  {"kind":"overflow_exemplar","payload":"loop_backedge","rep":15,"period":10000,"value_at_pmi":11198,"samples":1,"skid":1198},
+  {"kind":"overflow_summary","payload":"loop_backedge","event":196,"n":100000,"period":10000,"arms_total":1000000,"hits_0_lost":0,"hits_1_ok":1000000,"hits_gt1_dup":0,"skid_min":0,"skid_max":5043,"skid_mean_x1000":1496062,"clean_arms":1000000,"clean_skid_max":5043,"skid_hist":[1,9,53,455,999482,0],"core":2,"sibling":0},
+  {"kind":"end","rc":0}
+]

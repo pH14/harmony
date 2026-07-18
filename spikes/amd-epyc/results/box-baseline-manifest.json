@@ -1,0 +1,224 @@
+{
+  "captured_at": "2026-07-17T15:44:05Z",
+  "cpu_identity": {
+    "family": 23,
+    "microcode": "0x8701034",
+    "model": 113,
+    "model_name": "AMD Ryzen 5 PRO 3600 6-Core Processor",
+    "stepping": 0,
+    "vendor_id": "AuthenticAMD",
+    "zen_generation": "zen2",
+    "zen_generation_basis": "family 0x17 model 0x71"
+  },
+  "cpufreq_boost": "1",
+  "event_encoding": {
+    "ex_ret_brn_tkn": "event=0xc4",
+    "source": "perf list --details (kernel perf JSON tables for this part)"
+  },
+  "hardware_flag": "Zen 2 core (Ryzen 3600) \u2014 NOT an EPYC; platform-scoped facts PROVISIONAL (tasks/123 hardware flag)",
+  "hostname": "<redacted per tasks/123: no box identifiers beyond harmony-amd>",
+  "hwcr": "0x0000000189000011",
+  "kernel": {
+    "cmdline": "BOOT_IMAGE=/vmlinuz-6.8.0-88-generic root=UUID=<redacted> ro console=tty1 console=ttyS0 scaleway",
+    "release": "6.8.0-88-generic",
+    "version": "#89-Ubuntu SMP PREEMPT_DYNAMIC Sat Oct 11 01:02:46 UTC 2025"
+  },
+  "kvm": {
+    "avic_posture": "N",
+    "dev_kvm": "present",
+    "kvm": {
+      "params": {
+        "eager_page_split": "Y",
+        "enable_pmu": "Y",
+        "enable_vmware_backdoor": "N",
+        "flush_on_reuse": "N",
+        "force_emulation_prefix": "0",
+        "halt_poll_ns": "200000",
+        "halt_poll_ns_grow": "2",
+        "halt_poll_ns_grow_start": "10000",
+        "halt_poll_ns_shrink": "0",
+        "ignore_msrs": "N",
+        "kvmclock_periodic_sync": "Y",
+        "lapic_timer_advance_ns": "-1",
+        "min_timer_period_us": "200",
+        "mitigate_smt_rsb": "N",
+        "mmio_caching": "Y",
+        "nx_huge_pages": "N",
+        "nx_huge_pages_recovery_period_ms": "0",
+        "nx_huge_pages_recovery_ratio": "60",
+        "pi_inject_timer": "0",
+        "report_ignored_msrs": "Y",
+        "tdp_mmu": "Y",
+        "tsc_tolerance_ppm": "250",
+        "vector_hashing": "Y"
+      },
+      "path": "/lib/modules/6.8.0-88-generic/kernel/arch/x86/kvm/kvm.ko.zst",
+      "sha256": "a0cbdfcc91647b08a61afc978f1b21e6ba4b0fc102b5d8cdf387912626833b20",
+      "srcversion": "9CC78FE56D8AAD5C8000F62"
+    },
+    "kvm_amd": {
+      "identity": "stock-signed-distro-module",
+      "params": {
+        "avic": "N",
+        "debug_swap": "N",
+        "dump_invalid_vmcb": "N",
+        "force_avic": "N",
+        "intercept_smi": "Y",
+        "lbrv": "1",
+        "nested": "1",
+        "npt": "Y",
+        "nrips": "1",
+        "pause_filter_count": "3000",
+        "pause_filter_count_grow": "2",
+        "pause_filter_count_max": "65535",
+        "pause_filter_count_shrink": "0",
+        "pause_filter_thresh": "128",
+        "sev": "Y",
+        "sev_es": "N",
+        "tsc_scaling": "1",
+        "vgif": "1",
+        "vls": "1",
+        "vnmi": "N"
+      },
+      "path": "/lib/modules/6.8.0-88-generic/kernel/arch/x86/kvm/kvm-amd.ko.zst",
+      "sha256": "6071a690f68628370e3ff929770b3acbf0aa3ef436fba84f234d11c93137d0f9",
+      "srcversion": "55355B9ED3671C25A8F7760"
+    },
+    "nested": "1"
+  },
+  "ls_cfg_bit54_speclockmap_workaround": "clear-on-baseline (speculative lock mapping ENABLED \u2014 overcount hazard live; AE-1(c) probes then sets)",
+  "ls_cfg_msr": "0xC0011020",
+  "ls_cfg_per_cpu": {
+    "0": "0x0006404000000000",
+    "1": "0x0006404000000000",
+    "2": "0x0006404000000000",
+    "3": "0x0006404000000000",
+    "4": "0x0006404000000000",
+    "5": "0x0006404000000000",
+    "6": "0x0006404000000000",
+    "7": "0x0006404000000000",
+    "8": "0x0006404000000000",
+    "9": "0x0006404000000000",
+    "10": "0x0006404000000000",
+    "11": "0x0006404000000000"
+  },
+  "nmi_watchdog": "1",
+  "online_cpus": "0-11",
+  "perf_event_paranoid": "-1",
+  "perf_version": "6.8.12",
+  "scaling_governor_per_cpu": {
+    "0": "schedutil",
+    "1": "schedutil",
+    "2": "schedutil",
+    "3": "schedutil",
+    "4": "schedutil",
+    "5": "schedutil",
+    "6": "schedutil",
+    "7": "schedutil",
+    "8": "schedutil",
+    "9": "schedutil",
+    "10": "schedutil",
+    "11": "schedutil"
+  },
+  "schema": "amd-epyc-box-baseline-v1",
+  "services_running": [
+    "ModemManager.service",
+    "cron.service",
+    "dbus.service",
+    "dbus.socket",
+    "fwupd.service",
+    "getty@tty1.service",
+    "init.scope",
+    "multipathd.service",
+    "multipathd.socket",
+    "polkit.service",
+    "proc-sys-fs-binfmt_misc.automount",
+    "rsyslog.service",
+    "serial-getty@ttyS0.service",
+    "session-28.scope",
+    "ssh.service",
+    "ssh.socket",
+    "syslog.socket",
+    "systemd-journald-dev-log.socket",
+    "systemd-journald.service",
+    "systemd-journald.socket",
+    "systemd-logind.service",
+    "systemd-networkd.service",
+    "systemd-networkd.socket",
+    "systemd-resolved.service",
+    "systemd-timesyncd.service",
+    "systemd-udevd-control.socket",
+    "systemd-udevd-kernel.socket",
+    "systemd-udevd.service",
+    "udisks2.service",
+    "unattended-upgrades.service",
+    "upower.service",
+    "user@1000.service"
+  ],
+  "smt": {
+    "active": "1",
+    "control": "on"
+  },
+  "topology": [
+    {
+      "core_id": 0,
+      "cpu": 0,
+      "thread_siblings": "0,6"
+    },
+    {
+      "core_id": 1,
+      "cpu": 1,
+      "thread_siblings": "1,7"
+    },
+    {
+      "core_id": 2,
+      "cpu": 2,
+      "thread_siblings": "2,8"
+    },
+    {
+      "core_id": 4,
+      "cpu": 3,
+      "thread_siblings": "3,9"
+    },
+    {
+      "core_id": 5,
+      "cpu": 4,
+      "thread_siblings": "4,10"
+    },
+    {
+      "core_id": 6,
+      "cpu": 5,
+      "thread_siblings": "5,11"
+    },
+    {
+      "core_id": 0,
+      "cpu": 6,
+      "thread_siblings": "0,6"
+    },
+    {
+      "core_id": 1,
+      "cpu": 7,
+      "thread_siblings": "1,7"
+    },
+    {
+      "core_id": 2,
+      "cpu": 8,
+      "thread_siblings": "2,8"
+    },
+    {
+      "core_id": 4,
+      "cpu": 9,
+      "thread_siblings": "3,9"
+    },
+    {
+      "core_id": 5,
+      "cpu": 10,
+      "thread_siblings": "4,10"
+    },
+    {
+      "core_id": 6,
+      "cpu": 11,
+      "thread_siblings": "5,11"
+    }
+  ]
+}
