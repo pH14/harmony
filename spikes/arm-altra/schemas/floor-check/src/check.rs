@@ -652,23 +652,21 @@ fn check_aggregation(
             if rs.pinning.migration_probe {
                 continue;
             }
-            let posture_ok = if stage == Stage::Aa1 {
-                rs.pinning.pinned == reference.pinning.pinned
-                    && rs.pinning.governor == reference.pinning.governor
-            } else {
-                rs.pinning == reference.pinning
-            };
+            // Per-shard cores are permitted at EVERY stage (Paul's 2026-07-17 ruling extended to
+            // AA-3..AA-6): on a no-SMT box a tuple owns its physical core even with every sibling
+            // busy, and BR_RETIRED is per-core V-time, so sharding the matrix across cores is the
+            // intended posture. Only the pinned flag and governor must match (the skid/PMU
+            // measurement environment); AA-3's skid is EXACT (0) so per-core cannot move it, and
+            // count changes still surface as count!=oracle or a solo!=cotenant digest. The
+            // weights/perf/environment/mechanism/images comparison above still binds.
+            let posture_ok = rs.pinning.pinned == reference.pinning.pinned
+                && rs.pinning.governor == reference.pinning.governor;
             if !posture_ok {
-                let core_note = if stage == Stage::Aa1 {
-                    " (AA-1 permits per-shard cores; the mismatch is in pinned/governor)"
-                } else {
-                    ""
-                };
                 problems.push(format!(
                     "run-set {} pins to a different posture (pinned {:?}, core {:?}, governor {}) \
                      than the aggregate ({} — pinned {:?}, core {:?}, governor {}): normal sets \
-                     must share the pinned flag and governor{core_note}; only AA-1's migration \
-                     probe may run unpinned",
+                     must share the pinned flag and governor (per-shard cores are permitted); only \
+                     AA-1's migration probe may run unpinned",
                     rs.run_set_id,
                     rs.pinning.pinned,
                     rs.pinning.core,
@@ -4118,17 +4116,18 @@ mod tests {
             "same core + governor → comparable"
         );
 
-        // A different pinned core → refused: the PMU/skid measurement environment moved, so
-        // two half-floors are not one floor of one measurement.
+        // A different pinned core → PERMITTED at every stage (Paul's ruling extended to
+        // AA-3..AA-6): per-shard cores are the intended sharded posture, so two shards on
+        // different cores aggregate.
         let mut c = pair();
         c[1].0.pinning.core = Some(3);
         assert_eq!(
             status(&aggregate(&c, &floors).outcomes, CheckId::Aggregation),
-            Some(Status::Fail),
-            "AA-3 sets pinned to different cores must not be summed"
+            Some(Status::Pass),
+            "AA-3 shards on different cores are one sharded measurement"
         );
 
-        // A different governor → refused for the same reason.
+        // A different governor → still refused (the measurement environment moved).
         let mut g = pair();
         g[1].0.pinning.governor = "schedutil".into();
         assert_eq!(
@@ -5654,7 +5653,12 @@ mod tests {
         let mut r = a_record(0);
         r.work_end = r.work_begin + r.measured_taken + 1; // endpoints now disagree
         let mut out = Vec::new();
-        check_counts(&Weights::measured(0, 0, 0, 0, 2), &[r], Stage::Aa1, &mut out);
+        check_counts(
+            &Weights::measured(0, 0, 0, 0, 2),
+            &[r],
+            Stage::Aa1,
+            &mut out,
+        );
         assert_eq!(status(&out, CheckId::CountExactness), Some(Status::Fail));
     }
 
