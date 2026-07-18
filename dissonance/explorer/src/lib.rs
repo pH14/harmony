@@ -100,7 +100,7 @@ pub use engine::{Composition, Explorer, RunOutcome};
 pub use error::{EnvCodecError, MachineError};
 pub use evidence::{
     CompletedRunEvidence, DefaultObservationCells, EvidenceRole, ObservationCells, ObservationMap,
-    ReducedValue, RunId, reduce_at_cut,
+    ReducedValue, RunId, compose_observations_at, reduce_at_cut,
 };
 pub use ledger::{EvidenceLedger, LedgerError, PayloadRef, TraceStore};
 pub use materialize::{Lineage, Materialization, Materializer, SealBudget};

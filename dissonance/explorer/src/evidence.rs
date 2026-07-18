@@ -179,7 +179,7 @@ impl ObservationCells for DefaultObservationCells {
 /// Canonically encode an observation identity into a cell key (domain-tagged so
 /// the three variants can never alias, length-prefixed so no two strings run
 /// together).
-fn encode_observation_id(out: &mut Vec<u8>, id: &ObservationId) {
+pub(crate) fn encode_observation_id(out: &mut Vec<u8>, id: &ObservationId) {
     match id {
         ObservationId::Point { namespace, local } => {
             out.push(0x01);
@@ -196,6 +196,39 @@ fn encode_observation_id(out: &mut Vec<u8>, id: &ObservationId) {
             out.extend_from_slice(&(s.len() as u64).to_le_bytes());
             out.extend_from_slice(s.as_bytes());
         }
+    }
+}
+
+/// Decode one canonically encoded observation identity (the exact inverse of
+/// [`encode_observation_id`]). Total: `None` on any malformed encoding, never
+/// a panic — the production caller feeds only its own encoder's output, so a
+/// `None` there is an internal-invariant break the caller surfaces loudly.
+pub(crate) fn decode_observation_id(bytes: &[u8]) -> Option<ObservationId> {
+    let (&tag, rest) = bytes.split_first()?;
+    match tag {
+        0x01 => {
+            let (&namespace, rest) = rest.split_first()?;
+            let local = u32::from_le_bytes(rest.try_into().ok()?);
+            Some(ObservationId::Point { namespace, local })
+        }
+        0x02 | 0x03 => {
+            if rest.len() < 8 {
+                return None;
+            }
+            let (len, s) = rest.split_at(8);
+            // Statically infallible: split_at(8) yields exactly 8 bytes.
+            let len = u64::from_le_bytes(len.try_into().expect("8-byte slice"));
+            if s.len() as u64 != len {
+                return None;
+            }
+            let s = String::from_utf8(s.to_vec()).ok()?;
+            Some(if tag == 0x02 {
+                ObservationId::Property(s)
+            } else {
+                ObservationId::Lifecycle(s)
+            })
+        }
+        _ => None,
     }
 }
 
@@ -252,6 +285,18 @@ pub struct CompletedRunEvidence {
     pub cut: EvidenceCut,
     /// The normalized SDK evidence (schema + ordered events + commitment).
     pub normalized: Normalized,
+    /// The branch-point cut on the parent rollout's evidence vector (`None`
+    /// for a genesis-rooted run): the lineage authority for prefix
+    /// composition. A branch child's `normalized` carries only its own
+    /// suffix; positions are cumulative from `parent_cut.count` (task 132).
+    #[serde(default)]
+    pub parent_cut: Option<EvidenceCut>,
+    /// The sealable-point moments this rollout observed, in observation
+    /// order — the provisional-cut nomination coordinates, persisted so a
+    /// restart re-stages the exact same relation inputs (task 132). Empty
+    /// for a seal batch.
+    #[serde(default)]
+    pub sealable_moments: Vec<u64>,
 }
 
 impl CompletedRunEvidence {
@@ -285,6 +330,52 @@ impl CompletedRunEvidence {
     pub fn at(&self) -> Moment {
         self.cut.at
     }
+}
+
+/// The **lineage-composed** reduced observation map at `included` (a
+/// cumulative position count): the ancestor evidence segments through their
+/// fork cuts, root-first, plus this batch's own suffix — reduced under this
+/// batch's schema. This is the direct-recomputation ORACLE for the
+/// production Differential relations ("direct recomputation is an oracle,
+/// not a second backend"), and the retention fold's cell authority.
+///
+/// The chain walks `rollout.parent` through the ledger's **rollout** batches
+/// (a seal batch's `parent` is the rollout it seals, whose own `parent_cut`
+/// continues the chain). A collected (GC'd) ancestor contributes nothing —
+/// composition proceeds over the retained prefix (the retention rules keep
+/// live-Entry lineage collectible only behind a covering checkpoint).
+pub fn compose_observations_at(
+    ledger: &crate::ledger::EvidenceLedger,
+    ev: &CompletedRunEvidence,
+    included: u64,
+) -> ObservationMap {
+    // Collect ancestor segments child-first: (segment events, start, upper).
+    let mut segments: Vec<(Vec<SdkEvent>, u64, u64)> = Vec::new();
+    let mut parent = ev.rollout.parent;
+    let mut upper = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+    while let Some(issue) = parent {
+        let Some(anc) = ledger
+            .batch_ids()
+            .filter_map(|id| ledger.get(id))
+            .find(|b| b.role == EvidenceRole::Rollout && b.rollout.issue == issue)
+        else {
+            break; // collected or foreign ancestor: compose the retained prefix
+        };
+        let start = anc.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+        segments.push((anc.normalized.events.clone(), start, upper));
+        parent = anc.rollout.parent;
+        upper = start;
+    }
+    // Concatenate root-first: each segment truncated at its child's fork
+    // count, then this batch's own suffix. Positions are contiguous by
+    // construction, so vector index == cumulative position.
+    let mut events: Vec<SdkEvent> = Vec::new();
+    for (seg, start, upper) in segments.into_iter().rev() {
+        let take = upper.saturating_sub(start) as usize;
+        events.extend(seg.into_iter().take(take));
+    }
+    events.extend(ev.normalized.events.iter().cloned());
+    reduce_at_cut(&events, &ev.normalized.schema, included)
 }
 
 #[cfg(test)]

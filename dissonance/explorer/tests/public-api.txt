@@ -67,7 +67,12 @@ pub explorer::CampaignError::Decode(sdk_events::error::SdkError)
 pub explorer::CampaignError::EnvCodec(explorer::EnvCodecError)
 pub explorer::CampaignError::Ledger(explorer::LedgerError)
 pub explorer::CampaignError::Machine(explorer::MachineError)
+pub explorer::CampaignError::OccupancyDivergence
+pub explorer::CampaignError::OccupancyDivergence::detail: alloc::string::String
 pub explorer::CampaignError::Retention(explorer::RetentionError)
+pub explorer::CampaignError::ViewIncomplete
+pub explorer::CampaignError::ViewIncomplete::rollout: u64
+pub explorer::CampaignError::ViewIncomplete::what: &'static str
 pub enum explorer::CounterexampleKind
 pub explorer::CounterexampleKind::AlwaysViolated
 pub explorer::CounterexampleKind::TerminalAssertion
@@ -255,8 +260,10 @@ pub struct explorer::CompletedRunEvidence
 pub explorer::CompletedRunEvidence::cut: explorer::EvidenceCut
 pub explorer::CompletedRunEvidence::env: explorer::Reproducer
 pub explorer::CompletedRunEvidence::normalized: sdk_events::event::Normalized
+pub explorer::CompletedRunEvidence::parent_cut: core::option::Option<explorer::EvidenceCut>
 pub explorer::CompletedRunEvidence::role: explorer::EvidenceRole
 pub explorer::CompletedRunEvidence::rollout: explorer::RunId
+pub explorer::CompletedRunEvidence::sealable_moments: alloc::vec::Vec<u64>
 pub explorer::CompletedRunEvidence::terminal: explorer::StopReason
 impl explorer::CompletedRunEvidence
 pub fn explorer::CompletedRunEvidence::at(&self) -> explorer::Moment
@@ -525,7 +532,7 @@ pub explorer::RetentionViews::working: explorer::WorkingSet
 impl explorer::RetentionViews
 pub fn explorer::RetentionViews::assignment(&self, &explorer::CellKey) -> core::option::Option<&explorer::CellAssignment>
 pub fn explorer::RetentionViews::canonical_bytes(&self) -> alloc::vec::Vec<u8>
-pub fn explorer::RetentionViews::fold_batch(&mut self, &dyn explorer::ObservationCells, revision_coordinator::ids::EvidenceBatchId, &explorer::CompletedRunEvidence) -> explorer::FoldOutcome
+pub fn explorer::RetentionViews::fold_batch(&mut self, &dyn explorer::ObservationCells, &explorer::EvidenceLedger, revision_coordinator::ids::EvidenceBatchId, &explorer::CompletedRunEvidence) -> explorer::FoldOutcome
 pub fn explorer::RetentionViews::new(explorer::RetentionProfile) -> Self
 pub fn explorer::RetentionViews::rebuild(explorer::RetentionProfile, &dyn explorer::ObservationCells, &explorer::EvidenceLedger) -> core::result::Result<Self, explorer::RetentionError>
 pub struct explorer::Reward
@@ -688,6 +695,7 @@ pub fn explorer::Tactic::decide(&mut self, &explorer::DecisionPoint, &mut explor
 impl explorer::Tactic for explorer::DeclineTactic
 pub fn explorer::DeclineTactic::decide(&mut self, &explorer::DecisionPoint, &mut explorer::Prng) -> explorer::Answer
 pub fn explorer::client_caps() -> control_proto::types::Caps
+pub fn explorer::compose_observations_at(&explorer::EvidenceLedger, &explorer::CompletedRunEvidence, u64) -> explorer::ObservationMap
 pub fn explorer::reduce_at_cut(&[sdk_events::event::SdkEvent], &sdk_events::schema::SdkSchema, u64) -> explorer::ObservationMap
 pub type explorer::CellKey = alloc::vec::Vec<u8>
 pub type explorer::ObservationMap = alloc::collections::btree::map::BTreeMap<sdk_events::schema::ObservationId, explorer::ReducedValue>

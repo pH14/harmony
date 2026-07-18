@@ -714,6 +714,8 @@ mod tests {
                 sdk_events: 1,
             },
             normalized: n,
+            parent_cut: None,
+            sealable_moments: Vec::new(),
         }
     }
 

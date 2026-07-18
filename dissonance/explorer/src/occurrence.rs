@@ -360,6 +360,8 @@ mod tests {
                 sdk_events: included,
             },
             normalized,
+            parent_cut: None,
+            sealable_moments: Vec::new(),
         }
     }
 

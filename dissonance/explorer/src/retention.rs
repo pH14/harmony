@@ -396,6 +396,7 @@ impl RetentionViews {
     pub fn fold_batch(
         &mut self,
         cells: &dyn crate::evidence::ObservationCells,
+        ledger: &crate::ledger::EvidenceLedger,
         id: EvidenceBatchId,
         ev: &crate::evidence::CompletedRunEvidence,
     ) -> FoldOutcome {
@@ -417,7 +418,11 @@ impl RetentionViews {
             }
             crate::evidence::EvidenceRole::Seal => {
                 self.finalized.seals += 1;
-                let obs = ev.observations_at_cut();
+                // The LINEAGE-COMPOSED map at the actual sealed_at (task
+                // 132): a branch child's cell reflects inherited ancestor
+                // state, exactly as the production Differential relations
+                // materialize it.
+                let obs = crate::evidence::compose_observations_at(ledger, ev, ev.cut.sdk_events);
                 let cell = cells.key(ev.cut, &obs);
                 // The occupancy quality metric (progress depth), kept in
                 // lock-step with the controller's barrier-2 admission.
@@ -501,7 +506,8 @@ impl RetentionViews {
         suffix.sort();
         for (_, id) in suffix {
             let ev = ledger.get(&id).expect("suffix ids are retained");
-            views.fold_batch(cells, id, ev);
+            let owned = ev.clone();
+            views.fold_batch(cells, ledger, id, &owned);
         }
         Ok(views)
     }
@@ -757,6 +763,7 @@ mod tests {
         use crate::evidence::{DefaultObservationCells, ObservationCells};
         let mut v = RetentionViews::new(RetentionProfile::Full);
         let cells = DefaultObservationCells::new();
+        let (_dir, led) = crate::testkit::ledger();
         let seal =
             |issue: u64, at: u64, value: u64| crate::testkit::seal_evidence(issue, at, value);
         // Two seals reaching the same reduced state (same cell) at different
@@ -764,13 +771,16 @@ mod tests {
         let (id1, e1) = seal(1, 10, 5);
         let (id2, e2) = seal(2, 30, 5);
         let (id3, e3) = seal(3, 30, 5);
-        assert!(v.fold_batch(&cells, id1, &e1).admitted);
+        assert!(v.fold_batch(&cells, &led, id1, &e1).admitted);
         assert_eq!(v.assignments.len(), 1);
-        assert!(v.fold_batch(&cells, id2, &e2).admitted, "deeper dominates");
+        assert!(
+            v.fold_batch(&cells, &led, id2, &e2).admitted,
+            "deeper dominates"
+        );
         assert_eq!(v.assignments.len(), 1);
         assert_eq!(v.assignments[0].batch, id2);
         // Equal quality: the earlier occupant stays.
-        assert!(!v.fold_batch(&cells, id3, &e3).admitted);
+        assert!(!v.fold_batch(&cells, &led, id3, &e3).admitted);
         assert_eq!(v.assignments[0].batch, id2);
         assert_eq!(v.finalized.entries_admitted, 2);
         assert_eq!(v.finalized.seals, 3);
@@ -786,8 +796,9 @@ mod tests {
     fn canonical_bytes_round_trip() {
         use crate::evidence::DefaultObservationCells;
         let mut v = RetentionViews::new(bounded(2));
+        let (_dir, led) = crate::testkit::ledger();
         let (id, ev) = crate::testkit::seal_evidence(3, 10, 1);
-        v.fold_batch(&DefaultObservationCells::new(), id, &ev);
+        v.fold_batch(&DefaultObservationCells::new(), &led, id, &ev);
         let back: RetentionViews =
             serde_json::from_slice(&v.canonical_bytes()).expect("views decode");
         assert_eq!(back, v);
@@ -831,7 +842,7 @@ mod tests {
         let (_id, ev) = seal_evidence(5, 10, 1);
         let id = led.append(&ev).expect("append");
         let mut views = RetentionViews::new(RetentionProfile::Full);
-        views.fold_batch(&cells, id, &ev);
+        views.fold_batch(&cells, &led, id, &ev);
         assert_eq!(views.frontier_issue, 5);
         led.commit_checkpoint(&RetentionCheckpoint {
             views: views.clone(),
