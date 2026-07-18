@@ -301,9 +301,10 @@ for raw counter opcodes:
 The scan inherits task-100's enforcement ladder: kernel-config guarantee → static opcode scan →
 **W^X + rescan-on-exec** for any page the guest makes executable at runtime. The last rung is a
 required mechanism, not something stock arm64 KVM already supplies: Linux 6.18.35 grants stage-2
-execute internally on an instruction fault and exposes no per-GFN XN/execute-fault UAPI. Until a
-Harmony execute-guard patch provides default-XN, pre-execute scan approval, and write-revokes-
-execute, the owned no-runtime-code guest is a cooperative boundary and any JIT/self-modifying ARM
+execute internally on an instruction fault and exposes no per-GFN XN/execute-fault UAPI. The
+draft `spikes/arm-altra/host/patches/0002-*` provides default-XN, pre-execute scan approval, and
+write-revokes-execute and is apply+compile verified, but has no live planted proof. Until that
+proof passes, the owned no-runtime-code guest is a cooperative boundary and any JIT/self-modifying ARM
 guest triggers §7's kill condition. `KVM_EXIT_MEMORY_FAULT`, dirty logging, and `userfaultfd` are
 not synchronous pre-execute substitutes.
 

@@ -159,13 +159,15 @@ monitor). N1 has LSE (Armv8.1 atomics, mandatory ≥ v8.1), so the design answer
 2. **Verification:** opcode scan of every executable guest page for LDXR/STXR-family
    encodings, made durable by **W^X + rescan-on-exec** so runtime code generation cannot
    smuggle exclusives past a boot-time scan.
-3. **Runtime execute guard (backstop only; requires a KVM patch):** every GFN starts stage-2
+3. **Runtime execute guard (backstop only; requires the Harmony KVM patch):** every GFN starts stage-2
    execute-denied. First execute must exit to userspace for a scan before the page becomes
    executable/read-only; a write to an approved page must exit first, revoke execute, and require
    another scan. Stock Linux 6.18.35 arm64 KVM exposes neither per-GFN XN control nor an execute-
    fault exit: it grants `KVM_PGTABLE_PROT_X` internally and resumes. Therefore level 3 is
-   unavailable until `kvm-cap-arm-stage2-exec-guard` is present; `KVM_EXIT_MEMORY_FAULT`, dirty
-   logging, `userfaultfd`, and `guest_memfd` do not substitute for this state machine.
+   unavailable on stock KVM. The draft `host/patches/0002-*` implements the required
+   `kvm-cap-arm-stage2-exec-guard` state machine against pinned Linux 6.18.35, but apply+compile
+   evidence is not runtime proof; `KVM_EXIT_MEMORY_FAULT`, dirty logging, `userfaultfd`, and
+   `guest_memfd` do not substitute for it.
 
 **The final ruling — a mandatory AA-4 deliverable — must state which of two worlds we are
 in:** LL/SC is **mechanically unreachable** (levels 1+2 airtight; level 3 never engaged), or
@@ -1358,19 +1360,24 @@ ARMv8.1; Altra/Neoverse N1 is ARMv8.2), so an LSE-only guest is buildable on the
   and the freestanding init to scan CLEAN; a planted LDXR/STXR ELF must be rejected with exactly
   two hits. This completes the static build gate. Wiring the same primitive into a live W^X
   rescan-on-exec path remains open.
-- **Level 3 — stage-2 execute guard. BLOCKED ON A KVM EXTENSION, not merely a box run.** Stock
+- **Level 3 — stage-2 execute guard. DRAFT KVM EXTENSION BUILT; BLOCKED ON LIVE PROOF.** Stock
   Linux 6.18.35 arm64 KVM recognizes an instruction fault but adds
   `KVM_PGTABLE_PROT_X` inside `user_mem_abort()` and resumes; it exposes no userspace per-GFN XN
   attribute and no execute-fault exit. `KVM_SET_MEMORY_ATTRIBUTES` is x86-only here and defines
   only `PRIVATE`; `KVM_EXIT_MEMORY_FAULT` does not report RWX. Dirty logging is retrospective,
   and `userfaultfd` has no execute event. A non-vacuous backstop therefore requires a Harmony KVM
   state machine: default XN → exit before first execute → scan → approve executable/read-only;
-  write fault → exit before modification → revoke execute → rescan before later execution. The
-  harness now probes the reserved `kvm-cap-arm-stage2-exec-guard` and expects it absent on stock
-  KVM. An unmapped-GPA abort, `BRK`, or post-execution dirty scan is not level-3 evidence.
+  write fault → exit before modification → revoke execute → rescan before later execution.
+  `host/patches/0002-*` now implements that page-granular state machine with non-reused scan
+  generations, notifier/memslot invalidation, and a documented unique-backing/no-DMA VMM
+  boundary; the exact pinned series applies and compiles. The harness still expects the cap
+  absent on stock KVM. Until the patched kernel is booted and a planted test proves first
+  execute, approve/reject, stale-token rejection, racing writes, exit-before-modification, and
+  backing replacement, this is not level-3 evidence. An unmapped-GPA abort, `BRK`, or
+  post-execution dirty scan is not a substitute.
 
 **CURRENT RULING: cooperative residual risk on stock KVM. The stronger mechanically-unreachable
-ruling remains conditional on the missing execute-guard patch and its planted proof.**
+ruling remains conditional on booting the draft execute-guard patch and passing its planted proof.**
 - *Static owned image — unreachable at publication.* The guest ships LSE-only (Level 1), and the
   opcode scan (the completed static half of Level 2) fails closed if any exclusive survives in
   the kernel, vDSO, or init artifact: outline-atomics fallback, hand assembly, or a stray kernel
@@ -1389,8 +1396,8 @@ ruling remains conditional on the missing execute-guard patch and its planted pr
 **Disposition: AA-4 CHARACTERIZED; static owned-image gate complete; current ruling is
 cooperative residual on stock KVM.** (a) and (b) are demonstrated at scale on real N1. For (c),
 Level 1 and Level 2's static artifact half are built and cross-verified against the owned
-kernel/vDSO/init. Live W^X rescan-on-exec and Level 3 require a new arm64 KVM execute-guard patch
-before their planted proof can run; they are not ordinary arrival-day box work. Native
+kernel/vDSO/init. The arm64 KVM execute-guard draft now applies and compiles, but live W^X
+rescan-on-exec and Level 3 still require its non-vacuous planted proof on the pinned host. Native
 publication on the pinned N1 is also still required.
 
 ### AA-5 — the paravirt work-derived clock: (a)+(b) DEMONSTRATED; (c) executor + guest build substrate built

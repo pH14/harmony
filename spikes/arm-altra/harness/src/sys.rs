@@ -376,8 +376,8 @@ pub mod kvm {
     /// patched kernel is the one running (§Evidence integrity #4), and its absence
     /// on a stock kernel is a legitimate, recordable "no".
     pub const CAP_ARM_DETERMINISTIC_INTERCEPTS: u64 = 245;
-    /// Reserved capability for the not-yet-built Harmony arm64 stage-2 execute guard.
-    /// Stock 6.18.35 must report this absent. A future patch must provide a per-GFN
+    /// Capability reserved for the Harmony arm64 stage-2 execute-guard draft.
+    /// Stock 6.18.35 must report this absent. The patch provides a per-GFN
     /// default-XN, execute-before-userspace-scan, write-revokes-execute state machine;
     /// merely returning a generic memory fault does not satisfy this capability.
     pub const CAP_ARM_STAGE2_EXEC_GUARD: u64 = 246;
@@ -1130,7 +1130,7 @@ pub enum Capability {
     DeterministicIntercepts,
     /// A Harmony arm64 KVM execute guard is advertised. Stock KVM has no per-GFN XN
     /// userspace API and resolves instruction faults internally, so absence is the
-    /// expected result until the dedicated AA-4 kernel extension exists.
+    /// expected result until the dedicated AA-4 kernel extension is built and booted.
     Stage2ExecGuard,
 }
 
