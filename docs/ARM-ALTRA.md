@@ -1346,3 +1346,67 @@ scan, cooperative residual (runtime-generated exclusives) bounded by W^X + stage
 (b) are demonstrated at scale on real N1; (c) levels 1–2 are demonstrated on the owned
 artifacts, level 3's mechanism is characterized with its live planted-exclusive proof homed to
 AA-5. Awaiting Paul's ratification at PR time (foreman directive).
+
+### AA-5 — the paravirt work-derived clock: (a)+(b) DEMONSTRATED; (c) the remaining major build
+
+The centerpiece. Evidence in `results/aa-5/` and the AA-3 records.
+
+**(a) Payload-level determinism — demonstrated (AA-3).** `clock-page` reads a materialized
+work-derived clock page via a seqlock, with no `CNTVCT`/`CNTPCT` in the read path (the payload
+`payloads/oracles/src/asm/clock_page.s`). In the ≥10⁶ AA-3 run it landed **bit-identical across
+same-seed reps** (replay-identity PASS after the AA3-F1 canonical-landing fix) and **MATCH**
+solo-vs-co-tenant. The page is presently a *static* placeholder (`FLAG_WORK_DERIVED` clear —
+the plumbing, not a live refresh), so it is trivially wall-clock-invariant; the
+value-advances-with-work refresh is `hm-8h8`'s design, which AA-5 validates once that lands. The
+digest **excludes** the live host-time counters (`is_host_time_register`), verified in AA-3
+where `CNTPCT_EL0`/`KVM_REG_ARM_TIMER_CNT` varied 240/240 on a passing payload while replay
+held — wall-clock never reaches a compared digest.
+
+**(b) Closure — premise + scanner demonstrated.** Premise from AA-0: `ID_AA64MMFR0_EL1.ECV =
+0x0` on N1 (all captures) — **FEAT_ECV absent**, so `CNTVCT_EL0` cannot be trapped in hardware
+and raw-counter closure MUST be contract-level (exactly why the paravirt clock exists). The
+counter-read closure scan (`host/aa5-counter-scan.py`, mirroring the unit-tested harness
+primitive `scan::decode_counter_read`; `results/aa-5/counter-scan.txt`) is the build/rescan
+layer: raw-opcode decode **self-validated against `objdump`**, with a **positive control** that
+rejects a `CNTVCT_EL0`/`CNTPCT_EL0` read and correctly allows the constant `CNTFRQ_EL0`. Every
+payload scans **counter-clean**. Remaining, kernel-dependent: the EL0
+`CNTVCT_EL0`-read-undefs-under-`CNTKCTL_EL1` live test, `CNTHCTL_EL2` posture, and the scan run
+against the *shipped guest kernel image*.
+
+**(c) The Linux smoke — the remaining major build, blocked on absent assets.** No arm64 guest
+kernel Image / initramfs / DTB is present on the box, and the harness boots tiny bare-metal
+payloads, not a full Linux guest (`Payload::LinuxGuest` is a placeholder returning no window
+ops). Booting our arm64 guest — paravirt clocksource + `sched_clock` + delay paths on the page,
+`CNTKCTL_EL1` closure applied — to userspace under the spike harness, to steady state (no RCU
+stalls, timers fire), then holding a same-seed determinism digest (two runs, bit-identical
+console + state), is a multi-session build: (i) acquire/build the guest kernel + rootfs with the
+pvclock clocksource, (ii) build the harness Linux-boot path (Image+DTB+initramfs load, PSCI,
+GIC, console, kernel entry). It also hosts AA-4 level-3's live planted-exclusive proof.
+
+**Disposition: AA-5 PARTIAL — (a) payload determinism and (b) the closure premise + scanner are
+demonstrated on real N1; (c) the guest-Linux smoke is the remaining major build**, blocked on
+absent guest-kernel assets + a harness Linux-boot path, and is the natural home for AA-4 L3's
+live proof and AA-6's guest-side gates. Recommended as a dedicated follow-on with the guest
+kernel in hand; not a NO-GO signal — every mechanism it needs (work clock, exact landing,
+force-exit, counter closure) is independently GO/demonstrated above.
+
+### AA-6 — the freezable-CPU contract + vGIC round-trip + mini determinism gate: SCOPED
+
+Not started as a distinct stage; recorded here for the follow-on. Its pieces and their current
+footing:
+- **ID_AA64* freeze + trapped-sysreg table.** The register digest (`registers_and_vgic`) already
+  reads the ID registers, and AA-0's `truth-table.json` pins the ID-register reality (MIDR,
+  ID_AA64ISAR0/PFR0/MMFR*). The freeze is the data-driven table→model→enforce shape named in
+  `docs/ARCH-BOUNDARY.md`; building + enforcing it against a running guest is AA-6 work.
+- **vGIC round-trip.** The digest already includes the in-kernel vGIC injection state
+  (`vgic_state()`, length-prefixed into `digest_state`), and AA-3's replay-identity compared it
+  across 1.01M landings bit-identically — so the vGIC state is *captured and determinism-checked*
+  today. The explicit save/restore round-trip gate is the remaining AA-6 piece.
+- **Mini determinism gate (≥1000 reps).** The floor-checker's `rep-floor` supports an
+  AA-6-normative `--min-reps 1000`; a ≥1000-rep bit-identity run on a bare-metal payload is
+  runnable now on the box (the AA-3 apparatus already produces the digests), independent of the
+  guest-Linux build.
+
+**Disposition: AA-6 SCOPED — its determinism-digest substrate (register+vGIC digest, rep-floor)
+exists and was exercised at 10⁶ scale by AA-3; the freezable-CPU contract enforcement and the
+vGIC save/restore round-trip are the remaining build, best done alongside the AA-5(c) guest.**
