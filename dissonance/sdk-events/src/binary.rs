@@ -134,6 +134,55 @@ pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkErr
     Ok(out)
 }
 
+/// Upgrade a **wire-v1 catalog declaration** to wire v2 with resolved base
+/// operations for the listed identities — the host-side **explicit workload
+/// instrumentation declaration** (task 132, `hm-e6q`).
+///
+/// The strategy forbids silently blessing v1 state firings with reducers and
+/// sanctions exactly one alternative to a guest wire-v2 rebuild: "an equally
+/// explicit workload instrumentation declaration." This helper materializes
+/// that declaration **through the decoder's own v1 parsing** — the guest's
+/// declared points (classification, expectation, name) are read back exactly
+/// as [`decode_binary`] normalizes them, so nothing can drift — and each
+/// identity named in `ops` is resolved to its declared base operation (with
+/// the [`ValueShape::U64`] shape the initial cooperative vertical uses).
+/// Identities not named stay unresolved (reportable coverage, not reducible
+/// state), exactly as before.
+///
+/// Errors with the decoder's own typed error on a malformed catalog, and
+/// with [`SdkError::MixedOperations`]-class validation on re-encode if the
+/// resolution contradicts the declaration.
+pub fn resolve_v1_declaration(
+    catalog: &[u8],
+    ops: &[(ObservationId, UpdateOp)],
+) -> Result<Vec<u8>, SdkError> {
+    let normalized = decode_binary(&[(Moment(0), wire::CATALOG_EVENT_ID, catalog.to_vec())])?;
+    let mut points = Vec::with_capacity(normalized.schema.len());
+    for entry in normalized.schema.entries() {
+        // A v1 catalog declares only point identities; the decode above can
+        // mint nothing else from a bare declaration tuple.
+        let ObservationId::Point { namespace, local } = entry.id else {
+            continue;
+        };
+        let resolved = ops
+            .iter()
+            .find(|(id, _)| *id == entry.id)
+            .map(|(_, op)| *op);
+        points.push(DeclaredPoint {
+            namespace,
+            local,
+            name: entry.name.clone().unwrap_or_default(),
+            classification: entry.classification,
+            value_shape: entry
+                .value_shape
+                .or(resolved.map(|_| crate::schema::ValueShape::U64)),
+            base_op: entry.base_op.or(resolved),
+            expectation: entry.expectation,
+        });
+    }
+    encode_v2_declaration(&points)
+}
+
 /// The classification a namespace's firings actually decode to on the binary path
 /// ([`decode_event`]), or `None` for a namespace that produces no reportable firing.
 /// This is the ground truth a v2 declaration must agree with.

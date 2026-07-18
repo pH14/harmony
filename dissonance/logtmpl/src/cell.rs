@@ -36,7 +36,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use explorer::{CellFn, CellKey, ChannelId, FeatureSet, Moment};
+use explorer::{CellKey, Moment};
+
+use crate::feature::{ChannelId, FeatureSet};
 
 use crate::sensor::TEMPLATE_CHANNEL;
 
@@ -187,11 +189,12 @@ impl CellFnV1 {
     }
 }
 
-impl CellFn for CellFnV1 {
+impl CellFnV1 {
     /// Key the slice: reduce to the channel-value tuple, then length-prefix
     /// encode it. Moment-blind — `at` selects which features are *in* the slice,
-    /// not the key.
-    fn key(&self, _at: Moment, feats: &FeatureSet) -> CellKey {
+    /// not the key. (An inherent projection since task 132 M3 retired the
+    /// compat `CellFn` trait; the algorithm is unchanged.)
+    pub fn key(&self, _at: Moment, feats: &FeatureSet) -> CellKey {
         encode_cell_key(&self.fields(feats))
     }
 }
@@ -246,7 +249,7 @@ pub fn decode_cell_key(bytes: &[u8]) -> Option<Vec<Option<u64>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use explorer::{Feature, FeatureId};
+    use crate::feature::{Feature, FeatureId};
 
     fn feat(channel: u16, id: u64) -> Feature {
         Feature {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The log-template [`Sensor`] — the scrape tier's first real signal channel.
+//! The log-template sensor — the scrape tier's first real signal channel.
 //!
 //! The codebook is **a stateful fold over the run *sequence*, not just one run**
 //! (the EXPLORATION ruling / task-67 spec): template ids are minted in first-seen
@@ -9,11 +9,10 @@
 //! otherwise downstream cells (a `Feature` carries only `(channel, id)`) would
 //! conflate distinct species. The sensor therefore holds its codebook as
 //! campaign state behind interior mutability ([`RefCell`] — a `&self`
-//! [`Sensor::observe`] must thread the state; `Box<dyn Sensor>` carries no
-//! `Send`/`Sync` bound, so this is sound: the campaign drives one sensor
-//! sequentially).
+//! [`observe`](LogSensor::observe) must thread the state; the campaign drives
+//! one sensor sequentially, so this is sound).
 //!
-//! **Read/write split.** [`observe`](Sensor::observe) is the *mutating* fold —
+//! **Read/write split.** [`observe`](LogSensor::observe) is the *mutating* fold —
 //! it advances the campaign codebook. [`adapt`](LogSensor::adapt) is a
 //! *read-only, order-invariant* view — it folds a **clone**, so it never
 //! advances the campaign, and it folds the whole trace before reading params.
@@ -28,20 +27,21 @@
 
 use std::cell::RefCell;
 
-use explorer::{ChannelId, Feature, FeatureId, Moment, Record, RunTrace, Sensor};
+use explorer::{Moment, Record, RunTrace};
+
+use crate::feature::{ChannelId, Feature, FeatureId};
 
 use crate::cluster::{Assignment, Codebook};
 use crate::error::Result;
 use crate::record::TemplateRecord;
 
 /// The default channel the log-template sensor files its species features under.
-/// Channel numbering is a campaign convention (the spine only needs stability);
-/// `0` is the explorer defaults' coverage channel, so the scrape tier starts
-/// at `1`.
+/// Channel numbering is a campaign convention (only stability matters); `0` was
+/// the historical coverage channel, so the scrape tier starts at `1`.
 pub const TEMPLATE_CHANNEL: ChannelId = ChannelId(1);
 
-/// The log-template sensor: Drain clustering behind the spine [`Sensor`] trait,
-/// over a **campaign-persistent** codebook (ids stable across the run sequence).
+/// The log-template sensor: Drain clustering over a **campaign-persistent**
+/// codebook (ids stable across the run sequence).
 #[derive(Clone)]
 pub struct LogSensor {
     channel: ChannelId,
@@ -190,7 +190,7 @@ impl LogSensor {
     }
 }
 
-impl Sensor for LogSensor {
+impl LogSensor {
     /// The timestamped template-species stream: one feature per log line, `id` =
     /// the line's campaign-stable template. This is the **mutating** fold — it
     /// advances the campaign codebook (ids stable across the run sequence,
@@ -199,7 +199,9 @@ impl Sensor for LogSensor {
     /// Each emitted id is canonicalized through the alias table, so a species that
     /// merged under the shape-uniqueness invariant is emitted under its survivor
     /// id — including for lines assigned the retired id earlier in the same fold.
-    fn observe(&self, t: &RunTrace) -> Vec<(Moment, Feature)> {
+    /// (An inherent fold since task 132 M3 retired the compat `Sensor` trait;
+    /// the purity contract `observe(t) == observe(t)` is unchanged.)
+    pub fn observe(&self, t: &RunTrace) -> Vec<(Moment, Feature)> {
         let mut codebook = self.codebook.borrow_mut();
         let derived = Self::fold_into(&mut codebook, t);
         derived

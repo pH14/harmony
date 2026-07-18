@@ -3,8 +3,9 @@
 
 #![allow(dead_code)] // each test binary uses a different subset
 
-use explorer::{CellFn, Feature, FeatureId, FeatureSet, Moment, RunTrace, Sensor, StopReason};
+use explorer::{Moment, RunTrace, StopReason};
 use logtmpl::{CellFnV1, LogSensor, load_console_log};
+use logtmpl::{Feature, FeatureId, FeatureSet};
 
 /// The committed k3s console capture (≥ 5,000 lines — the cardinality gate).
 pub const K3S: &str = include_str!("../fixtures/k3s-console.log");
@@ -68,7 +69,7 @@ pub fn timeline_cell_keys(fixture: &str) -> Vec<Vec<u8>> {
 /// A convenience for building an expected feature.
 pub fn feat(channel: u16, id: u64) -> Feature {
     Feature {
-        channel: explorer::ChannelId(channel),
+        channel: logtmpl::ChannelId(channel),
         id: FeatureId(id),
     }
 }

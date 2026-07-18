@@ -7,8 +7,8 @@
 //! expressions over any record type implementing the spine
 //! [`Matchable`](explorer::Matchable) trait, and routes every match by its one
 //! declared **[`Role`]** — `sometimes` / `cell` / `state_max` to a
-//! [`Feature`](explorer::Feature) stream ([`MatchSensor`], an
-//! [`explorer::Sensor`]), `never` to a bug verdict ([`MatchOracle`], an
+//! [`Feature`] stream ([`MatchSensor`]; the vocabulary is crate-local since
+//! task 132 M3 retired the compat spine), `never` to a bug verdict ([`MatchOracle`], an
 //! [`explorer::Oracle`]). The declared set is also the [`Catalog`], so a
 //! `sometimes` that never matched is never-fired detection — uniform across the
 //! scrape (config-declared) and link (SDK-declared, task 73) tiers.
@@ -48,6 +48,7 @@
 
 mod catalog;
 mod error;
+mod feature;
 mod glob;
 mod router;
 mod signal;
@@ -56,5 +57,6 @@ mod value;
 
 pub use catalog::{Catalog, CatalogReport};
 pub use error::MatchError;
+pub use feature::{ChannelId, Feature, FeatureId};
 pub use router::{ChannelSource, ContextSource, MatchOracle, MatchSensor};
 pub use signal::{During, MatchExpr, Role, SignalDecl, SignalId, SignalSet};

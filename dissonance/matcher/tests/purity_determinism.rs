@@ -9,15 +9,17 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{arb_faults, arb_records, arb_signal_set, trace};
-use explorer::{ChannelId, Feature, FeatureSet, Moment, Oracle};
+use explorer::{Moment, Oracle};
 use matcher::stub::{FaultMoments, OwnedRecords, RecordRec};
+use matcher::{ChannelId, Feature};
 use matcher::{MatchOracle, MatchSensor, SignalSet};
 use proptest::prelude::*;
+use std::collections::BTreeSet;
 
-/// Group a feature stream into the per-`Moment` [`FeatureSet`] a `CellFn` keys —
+/// Group a feature stream into the per-`Moment` [`BTreeSet<Feature>`] a `CellFn` keys —
 /// the spine-level view the router feeds downstream.
-fn feature_sets(stream: &[(Moment, Feature)]) -> BTreeMap<Moment, FeatureSet> {
-    let mut m: BTreeMap<Moment, FeatureSet> = BTreeMap::new();
+fn feature_sets(stream: &[(Moment, Feature)]) -> BTreeMap<Moment, BTreeSet<Feature>> {
+    let mut m: BTreeMap<Moment, BTreeSet<Feature>> = BTreeMap::new();
     for (moment, f) in stream {
         m.entry(*moment).or_default().insert(*f);
     }
@@ -128,7 +130,7 @@ proptest! {
 
     /// Round-3 P1, the dedicated shuffle proptest: a **random permutation** of
     /// the source's records (which reorders same-Moment records arbitrarily)
-    /// yields the identical per-`Moment` `FeatureSet`, the identical raw feature
+    /// yields the identical per-`Moment` `BTreeSet<Feature>`, the identical raw feature
     /// stream, and the identical `judge()` / `verdicts()` output. The router's
     /// result is a pure function of record content, never of emission order.
     #[test]
@@ -152,7 +154,7 @@ proptest! {
         let (f1, j1, v1) = eval(recs);
         let (f2, j2, v2) = eval(shuffled);
 
-        prop_assert_eq!(feature_sets(&f1), feature_sets(&f2), "FeatureSet differs under shuffle");
+        prop_assert_eq!(feature_sets(&f1), feature_sets(&f2), "BTreeSet<Feature> differs under shuffle");
         prop_assert_eq!(f1, f2, "raw feature stream differs under shuffle");
         prop_assert_eq!(j1, j2, "judge() differs under shuffle");
         prop_assert_eq!(v1, v2, "verdicts() differ under shuffle");

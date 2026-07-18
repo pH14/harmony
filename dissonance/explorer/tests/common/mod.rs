@@ -32,10 +32,8 @@ use proptest::prelude::ProptestConfig;
 use sha2::{Digest, Sha256};
 
 use explorer::{
-    Answer, Composition, CoverageArchive, DecisionPoint, DeclineTactic, EnvCodec, EnvCodecError,
-    EvidenceCut, ExploreExploitSelector, GenesisSelector, IdentityCells, Machine, MachineError,
+    Answer, DecisionPoint, EnvCodec, EnvCodecError, EvidenceCut, Machine, MachineError,
     MachineFactory, Moment, Prng, Reproducer, SnapId, StopConditions, StopReason, Tactic,
-    TerminalOracle,
 };
 
 // ---- the toy's fixed shape ----
@@ -691,32 +689,6 @@ impl Tactic for PinTactic {
     fn decide(&mut self, pt: &DecisionPoint, rng: &mut Prng) -> Answer {
         let r = rng.next_u64() ^ fnv(&pt.ctx);
         Answer(vec![(r & 0xff) as u8])
-    }
-}
-
-/// The default composition with the answering half swapped for [`PinTactic`]
-/// — the coverage-guided campaign shape the replay/GC/smoke gates drive.
-pub fn pin_composition() -> Composition {
-    Composition {
-        tactic: Box::new(PinTactic),
-        selector: Box::new(ExploreExploitSelector::new()),
-        archive: Box::new(CoverageArchive::new()),
-        oracle: Box::new(TerminalOracle::new()),
-        cells: Box::new(IdentityCells::new()),
-        sensors: Vec::new(),
-    }
-}
-
-/// The pure-DST composition: decline every decision, always explore from
-/// genesis (the pre-refactor `SeedStrategy` decomposed).
-pub fn seed_composition() -> Composition {
-    Composition {
-        tactic: Box::new(DeclineTactic::new()),
-        selector: Box::new(GenesisSelector::new()),
-        archive: Box::new(CoverageArchive::new()),
-        oracle: Box::new(TerminalOracle::new()),
-        cells: Box::new(IdentityCells::new()),
-        sensors: Vec::new(),
     }
 }
 

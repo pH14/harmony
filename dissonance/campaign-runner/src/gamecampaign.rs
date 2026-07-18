@@ -552,45 +552,67 @@ pub fn smb_completed_frames(events: &[SdkEvent]) -> u64 {
 /// is the schema declaration, not a firing).
 const CATALOG_EVENT_ID: u32 = 0;
 
-/// The SMB workload's **explicit instrumentation declaration** (task 132):
-/// the wire-v2 catalog resolving each play-agent state register to its base
-/// update operation, so the Differential relations may reduce them. The
-/// strategy forbids silently blessing v1 firings with reducers
-/// ("the first Differential vertical cannot silently bless inference from v1
-/// events") and sanctions exactly this — "an equally explicit workload
-/// instrumentation declaration" — as the alternative to a guest wire-v2
-/// rebuild. The host owns the workload contract already (the mirrored
-/// [`reg`] catalog); this states it as versioned schema.
-fn smb_instrumentation_catalog() -> Vec<u8> {
-    use sdk_events::{Classification, DeclaredPoint, UpdateOp, ValueShape};
-    let point = |local: u64, name: &str, op: UpdateOp| DeclaredPoint {
+/// The SMB workload's base-operation resolution table (task 132): each
+/// play-agent state register the campaign reduces, with its declared base
+/// update operation. The host owns the workload contract already (the
+/// mirrored [`reg`] catalog); this states it as data for the explicit
+/// instrumentation declaration.
+fn smb_resolution() -> Vec<(ObservationId, sdk_events::UpdateOp)> {
+    use sdk_events::UpdateOp;
+    let point = |local: u64| ObservationId::Point {
         namespace: NS_STATE,
         local: local as u32,
-        name: name.into(),
-        classification: Classification::State,
-        value_shape: Some(ValueShape::U64),
-        base_op: Some(op),
-        expectation: None,
     };
-    sdk_events::encode_v2_declaration(&[
-        point(reg::GAME_MODE, "game_mode", UpdateOp::Set),
-        point(reg::WORLD, "world", UpdateOp::Set),
-        point(reg::LEVEL, "level", UpdateOp::Set),
-        point(reg::X_BUCKET, "x_bucket", UpdateOp::Set),
-        point(reg::DEPTH, "depth", UpdateOp::Max),
-        point(reg::FRAME, "frame", UpdateOp::Set),
-        point(reg::BILLBOARD_GPA, "billboard_gpa", UpdateOp::Set),
-        point(reg::BILLBOARD_LEN, "billboard_len", UpdateOp::Set),
-    ])
-    // Statically infallible: a fixed, well-formed catalog literal.
-    .expect("the SMB instrumentation catalog is well-formed")
+    vec![
+        (point(reg::GAME_MODE), UpdateOp::Set),
+        (point(reg::WORLD), UpdateOp::Set),
+        (point(reg::LEVEL), UpdateOp::Set),
+        (point(reg::X_BUCKET), UpdateOp::Set),
+        (point(reg::DEPTH), UpdateOp::Max),
+        (point(reg::FRAME), UpdateOp::Set),
+        (point(reg::BILLBOARD_GPA), UpdateOp::Set),
+        (point(reg::BILLBOARD_LEN), UpdateOp::Set),
+    ]
 }
 
-/// A [`Machine`] adapter that prepends the SMB instrumentation declaration to
-/// the guest's raw SDK capture (task 132): every drained capture carries the
-/// versioned schema, so the normalized evidence resolves the play-agent's v1
-/// state firings to their declared base operations. Everything else
-/// delegates.
+/// The SMB workload's **explicit instrumentation declaration** for a guest
+/// with NO catalog of its own (the portable toys): a wire-v2 catalog
+/// resolving each register in [`smb_resolution`]. The strategy forbids
+/// silently blessing v1 firings with reducers ("the first Differential
+/// vertical cannot silently bless inference from v1 events") and sanctions
+/// exactly this — "an equally explicit workload instrumentation
+/// declaration" — as the alternative to a guest wire-v2 rebuild.
+fn smb_instrumentation_catalog() -> Vec<u8> {
+    use sdk_events::{Classification, DeclaredPoint, ValueShape};
+    let points: Vec<DeclaredPoint> = smb_resolution()
+        .into_iter()
+        .filter_map(|(id, op)| match id {
+            ObservationId::Point { namespace, local } => Some(DeclaredPoint {
+                namespace,
+                local,
+                name: format!("smb_reg_{local}"),
+                classification: Classification::State,
+                value_shape: Some(ValueShape::U64),
+                base_op: Some(op),
+                expectation: None,
+            }),
+            _ => None,
+        })
+        .collect();
+    // Statically infallible: a fixed, well-formed catalog literal.
+    sdk_events::encode_v2_declaration(&points)
+        .expect("the SMB instrumentation catalog is well-formed")
+}
+
+/// A [`Machine`] adapter carrying the SMB instrumentation declaration
+/// (task 132): every drained capture resolves the play-agent's state
+/// registers to their declared base operations, so the normalized evidence
+/// is reducible by the Differential relations. A guest that declared its own
+/// (wire-v1) catalog has that declaration **upgraded in place**
+/// ([`sdk_events::resolve_v1_declaration`] — the guest's declared points,
+/// expectations, and names are preserved through the decoder's own parsing);
+/// a guest with no catalog (the portable toys) has the standalone
+/// declaration prepended. Everything else delegates.
 struct DeclaredMachine<M> {
     inner: M,
     catalog: Vec<u8>,
@@ -635,8 +657,24 @@ impl<M: Machine> Machine for DeclaredMachine<M> {
         self.inner.recorded_env()
     }
     fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
-        let mut out = vec![(0u64, CATALOG_EVENT_ID, self.catalog.clone())];
-        out.extend(self.inner.sdk_events()?);
+        let mut out = self.inner.sdk_events()?;
+        match out.iter_mut().find(|(_, id, _)| *id == CATALOG_EVENT_ID) {
+            // The guest declared its own catalog: upgrade it in place with
+            // the resolution table (a malformed guest catalog is the same
+            // transport-class failure a malformed capture is).
+            Some((_, _, bytes)) => {
+                *bytes =
+                    sdk_events::resolve_v1_declaration(bytes, &smb_resolution()).map_err(|e| {
+                        MachineError::Transport(format!(
+                            "guest catalog failed to upgrade to the instrumentation \
+                             declaration: {e}"
+                        ))
+                    })?;
+            }
+            // No guest catalog (the portable toys): prepend the standalone
+            // declaration.
+            None => out.insert(0, (0u64, CATALOG_EVENT_ID, self.catalog.clone())),
+        }
         Ok(out)
     }
     fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {

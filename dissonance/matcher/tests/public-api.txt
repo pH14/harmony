@@ -49,6 +49,11 @@ pub fn matcher::Catalog::report(&self, &alloc::collections::btree::set::BTreeSet
 pub struct matcher::CatalogReport
 pub matcher::CatalogReport::fired: alloc::collections::btree::set::BTreeSet<matcher::SignalId>
 pub matcher::CatalogReport::never_fired: alloc::collections::btree::set::BTreeSet<matcher::SignalId>
+pub struct matcher::ChannelId(pub u16)
+pub struct matcher::Feature
+pub matcher::Feature::channel: matcher::ChannelId
+pub matcher::Feature::id: matcher::FeatureId
+pub struct matcher::FeatureId(pub u64)
 pub struct matcher::MatchExpr
 pub matcher::MatchExpr::attr: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub matcher::MatchExpr::attr_max: core::option::Option<alloc::string::String>
@@ -63,16 +68,16 @@ impl<S: matcher::ChannelSource, C: matcher::ContextSource> explorer::spine::Orac
 pub fn matcher::MatchOracle<S, C>::judge(&self, &explorer::spine::RunTrace) -> core::option::Option<explorer::spine::Bug>
 pub struct matcher::MatchSensor<S: matcher::ChannelSource, C: matcher::ContextSource>
 impl<S: matcher::ChannelSource, C: matcher::ContextSource> matcher::MatchSensor<S, C>
-pub const matcher::MatchSensor<S, C>::FIRED_FEATURE: explorer::spine::FeatureId
-pub fn matcher::MatchSensor<S, C>::channel_base(&self) -> explorer::spine::ChannelId
-pub fn matcher::MatchSensor<S, C>::channel_of(&self, &matcher::SignalId) -> core::option::Option<explorer::spine::ChannelId>
+pub const matcher::MatchSensor<S, C>::FIRED_FEATURE: matcher::FeatureId
+pub fn matcher::MatchSensor<S, C>::channel_base(&self) -> matcher::ChannelId
+pub fn matcher::MatchSensor<S, C>::channel_of(&self, &matcher::SignalId) -> core::option::Option<matcher::ChannelId>
 pub fn matcher::MatchSensor<S, C>::decode_misses(&self, &explorer::spine::RunTrace) -> u64
-pub fn matcher::MatchSensor<S, C>::features(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Feature)>
+pub fn matcher::MatchSensor<S, C>::features(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<(explorer::spine::Moment, matcher::Feature)>
 pub fn matcher::MatchSensor<S, C>::fired(&self, &explorer::spine::RunTrace) -> alloc::collections::btree::set::BTreeSet<matcher::SignalId>
-pub fn matcher::MatchSensor<S, C>::new(matcher::SignalSet, S, C, explorer::spine::ChannelId) -> core::result::Result<Self, matcher::MatchError>
-pub fn matcher::MatchSensor<S, C>::next_free_channel(&self) -> explorer::spine::ChannelId
-impl<S: matcher::ChannelSource, C: matcher::ContextSource> explorer::spine::Sensor for matcher::MatchSensor<S, C>
-pub fn matcher::MatchSensor<S, C>::observe(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Feature)>
+pub fn matcher::MatchSensor<S, C>::new(matcher::SignalSet, S, C, matcher::ChannelId) -> core::result::Result<Self, matcher::MatchError>
+pub fn matcher::MatchSensor<S, C>::next_free_channel(&self) -> matcher::ChannelId
+impl<S: matcher::ChannelSource, C: matcher::ContextSource> matcher::MatchSensor<S, C>
+pub fn matcher::MatchSensor<S, C>::observe(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<(explorer::spine::Moment, matcher::Feature)>
 pub struct matcher::SignalDecl
 pub matcher::SignalDecl::expr: matcher::MatchExpr
 pub matcher::SignalDecl::name: matcher::SignalId
