@@ -13,6 +13,10 @@ pub const RAM_BASE: u64 = oracle_model::PARAMS_GPA;
 pub const RAM_SIZE: usize = 256 << 20;
 /// The fixed managed pvclock page used by the spike ABI.
 pub const PVCLOCK_GPA: u64 = oracle_model::PVCLOCK_GPA;
+/// ARM pvclock registration MMIO page (INTEGRATION §1.3).
+pub const PVCLOCK_REGISTER_BASE: u64 = 0x0b00_0000;
+/// Size of the reserved ARM pvclock registration MMIO surface.
+pub const PVCLOCK_REGISTER_SIZE: u64 = 0x1000;
 /// Leave the lower 128 MiB for the kernel and its effective/BSS extent.
 pub const INITRAMFS_GPA: u64 = RAM_BASE + 0x0800_0000;
 /// Place the DTB 16 MiB below the end of the 256 MiB RAM bank.
@@ -48,6 +52,8 @@ pub struct BoardLayout {
     pub ram_base: u64,
     /// Reserved host-maintained clock page.
     pub pvclock_gpa: u64,
+    /// One-shot guest-to-host pvclock registration MMIO page.
+    pub pvclock_register_base: u64,
     /// Initramfs load address.
     pub initramfs_gpa: u64,
     /// DTB load address.
@@ -58,6 +64,7 @@ pub struct BoardLayout {
 pub const BOARD: BoardLayout = BoardLayout {
     ram_base: RAM_BASE,
     pvclock_gpa: PVCLOCK_GPA,
+    pvclock_register_base: PVCLOCK_REGISTER_BASE,
     initramfs_gpa: INITRAMFS_GPA,
     dtb_gpa: DTB_GPA,
 };
@@ -531,6 +538,17 @@ fn build_dtb(
     f.end();
     f.end();
 
+    f.begin(&format!(
+        "pvclock-register@{:x}",
+        board.pvclock_register_base
+    ));
+    f.string("compatible", "harmony,pvclock-register-v1");
+    f.reg(
+        "reg",
+        &[(board.pvclock_register_base, PVCLOCK_REGISTER_SIZE)],
+    );
+    f.end();
+
     f.begin("clock@0");
     f.string("compatible", "fixed-clock");
     f.u32("#clock-cells", 0);
@@ -614,6 +632,7 @@ mod tests {
     const TEST_BOARD: BoardLayout = BoardLayout {
         ram_base: 0x4000_0000,
         pvclock_gpa: 0x4000_1000,
+        pvclock_register_base: PVCLOCK_REGISTER_BASE,
         initramfs_gpa: 0x4000_8000,
         dtb_gpa: 0x4000_c000,
     };
@@ -745,6 +764,7 @@ mod tests {
             "memory@40000000",
             "reserved-memory",
             "pvclock@40001000",
+            "pvclock-register@b000000",
             "intc@8000000",
             "timer",
             "pl011@9000000",
@@ -778,6 +798,11 @@ mod tests {
             "pvclock must remain reserved but linearly mapped for the early clock reader"
         );
         assert_eq!(prop("pvclock@40001000", "reg").len(), 16);
+        assert_eq!(
+            prop("pvclock-register@b000000", "compatible"),
+            b"harmony,pvclock-register-v1\0"
+        );
+        assert_eq!(prop("pvclock-register@b000000", "reg").len(), 16);
     }
 
     #[test]

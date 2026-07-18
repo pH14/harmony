@@ -41,8 +41,10 @@ reviewed allowlist entry, and `run-tests.sh` must be re-run to regenerate
   doorbell registration bracketed by the two deliberate rdtsc traps.
   Runtime-inert without the `harmony_pvclock` kernel parameter.
 - `0002-arm64-harmony-pvclock-work-derived-clocksource.patch` — AA-5(c):
-  redirects the arm64 generic-counter accessors to the fixed reserved ABI-v1
-  page, disables the counter-reading vDSO and EL0 CNTVCT/CNTPCT access, and
-  leaves the architected timer only as a clock-event interrupt device. The
-  arm64 build has no allowlist: any surviving live-counter opcode rejects the
-  kernel before `Image` publication.
+  redirects the arm64 generic-counter accessors to the owned guest's reserved
+  ABI-v1 page, publishes that guest-selected GPA through the one-shot ARM MMIO
+  registration ABI, waits for the first exact-work stamp, disables the
+  counter-reading vDSO and EL0 CNTVCT/CNTPCT access, and leaves the architected
+  timer only as a clock-event interrupt device. The arm64 build has no
+  allowlist: any surviving live-counter opcode rejects the kernel before
+  `Image` publication.

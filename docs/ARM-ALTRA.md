@@ -1420,14 +1420,16 @@ vGICv3, and a bounded PL011/PrimeCell console loop. The `linux-boot` command ver
 Image/initramfs sha256 pins over hard-bounded reads immediately before VM construction, pins the
 vCPU thread, and stops on a fixed console marker. With the operator-supplied measured skid
 margin, it now requires the patched Preempt mechanism, reads the guest's actual `CNTFRQ_EL0`,
-canonically stamps ABI v1 before entry, and forces every later page refresh at an exact
-retired-branch target via the AA-3 arm-early + single-step primitive. The output records refresh
-count, maximum work gap, and last exact anchor. It remains deliberately labelled
-**NON-CERTIFYING**: the console marker alone does not prove its producer, the fixed board GPA is
-not yet the contract's guest-registered one-shot transport, the timer gap below remains, and this
-path has not run on the Altra. The marker is latched at its UART exit but accepted only after the
-next exact refresh publishes; the owned init spins after READY so a lost/late Preempt cannot pass
-with a stale page merely because userspace printed the expected bytes.
+starts an exact cadence from work zero, and accepts the owned guest's page GPA only through
+`INTEGRATION` §1.3's validated one-shot MMIO registration. No natural registration/MMIO exit
+stamps time: the first landing after registration writes canonical ABI v1 at an exact retired-
+branch target, and every later page refresh uses the same AA-3 arm-early + single-step primitive.
+The output records the pinned GPA, publication count, maximum work gap, and last exact anchor. It
+remains deliberately labelled **NON-CERTIFYING**: the console marker alone does not prove its
+producer, the timer gap below remains, and this path has not run on the Altra. The marker is
+latched at its UART exit but accepted only after the next exact refresh publishes; the owned init
+spins after READY so a lost/late Preempt cannot pass with a stale page merely because userspace
+printed the expected bytes.
 
 The exact landing also inherits AA-4's LSE-only precondition: single-stepping through an
 `LDXR`/`STXR` sequence clears its monitor and can add retries or livelock. The current arm64
@@ -1455,9 +1457,9 @@ identity. That live substrate also hosts AA-4 level-3's planted-exclusive proof.
 
 **Disposition: AA-5 PARTIAL — (a) payload determinism and (b) the closure premise + scanner are
 demonstrated on real N1; (c) has pre-silicon executor/build substrate but no box-built asset or
-live guest proof**. The exact-work page refresher is built but unexecuted; completion remains
-blocked on the pvclock-enabled box build, one-shot page registration, deterministic timer/event
-delivery, and live N1 bring-up.
+live guest proof**. The guest-registered exact-work page refresher is built but unexecuted;
+completion remains blocked on the pvclock-enabled box build, deterministic timer/event delivery,
+the AA-4 LSE-only image gate, and live N1 bring-up.
 It remains the natural home for AA-4 L3's live proof and AA-6's guest-side gates. This is not a
 NO-GO signal — every underlying mechanism (work clock, exact landing, force-exit, counter
 closure) is independently GO/demonstrated above.

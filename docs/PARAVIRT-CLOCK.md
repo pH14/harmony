@@ -274,6 +274,15 @@ raw-counter path survives.
   timer device model (`docs/ARCH-BOUNDARY.md` §B, ARM row) whose deadlines flow through the same
   `TimerQueue`/`IdlePlanner` seams — the timer fires deterministically; only the *counter read*
   is redirected to the page.
+- **Registration transport.** The owned ARM guest publishes its selected 4 KiB page GPA through
+  `docs/INTEGRATION.md` §1.3's one-shot MMIO register. The natural MMIO exit only records the
+  validated pending GPA; it never imports that exit's skid-tainted PMU count. The first exact
+  arm-early + single-step cadence landing canonically stamps the page, and the guest remains in a
+  bounded deterministic spin until that stamp appears. Any second registration is a guest fault,
+  including a repeat of the same GPA. This is the ARM substitute for x86's post-doorbell RDTSC
+  handshake: non-ECV N1 has no counter-read intercept, so exact forced landing is the only lawful
+  first anchor. The owned build's `2^28`-iteration spin is paired with a host-enforced
+  `Δ <= 100_000_000` retired-branch ceiling, so the first target cannot lawfully outlive the poll.
 
 ### 3.3 Reachability gate — no raw-counter path survives (LL/SC-scan discipline transposed)
 

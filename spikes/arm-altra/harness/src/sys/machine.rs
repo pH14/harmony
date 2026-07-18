@@ -63,6 +63,14 @@ pub const RAM_BASE: u64 = crate::linux_boot::RAM_BASE;
 /// it takes its own larger slot; nothing in the bare-metal payload path exceeds this.
 pub const RAM_SIZE: usize = 4 << 20;
 
+/// Reserved digest-record id for the VM-owned Linux pvclock registration.
+///
+/// KVM register ids always carry a real architecture in their high byte; all ones is outside
+/// that namespace. The insertion still fails closed on a collision so a future ABI extension
+/// cannot silently alias device state with an architectural register.
+const LINUX_PVCLOCK_DIGEST_STATE_ID: u64 = u64::MAX;
+const LINUX_PVCLOCK_DIGEST_STATE_TAG: &[u8] = b"harmony-pvclock-v1";
+
 /// The signal used for the stock overflow kick. `SIGUSR1` rather than `SIGIO`: the
 /// handler must not be one the runtime installs for anything else, and the only
 /// thing it does is exist, so `KVM_RUN` returns `EINTR`.
@@ -507,6 +515,9 @@ pub struct Machine {
     run_size: usize,
     mem: *mut u8,
     mem_size: usize,
+    /// VM-lifetime one-shot pvclock registration. `None` for bare payloads and before the
+    /// owned Linux guest's validated MMIO write.
+    linux_pvclock_gpa: Option<u64>,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables it. See
     /// [`DEFAULT_WATCHDOG_SECS`].
     watchdog_secs: u64,
@@ -558,9 +569,9 @@ impl Machine {
     /// Create the AA-5(c) Linux board, validate and load its flat Image,
     /// initramfs, and generated DTB, then establish the arm64 Linux entry state.
     ///
-    /// This constructor supplies boot plumbing only. The published pvclock page
-    /// remains the explicit non-work-derived placeholder, so callers cannot treat
-    /// a successful boot as AA-5 certification.
+    /// This constructor supplies boot plumbing only. The page remains zero until the guest's
+    /// one-shot registration is followed by an exact-work landing, so callers cannot treat a
+    /// successful construction as AA-5 certification.
     ///
     /// # Errors
     /// [`SysError`] if an artifact is malformed or any KVM operation fails.
@@ -583,6 +594,7 @@ impl Machine {
             run_size: 0,
             mem: core::ptr::null_mut(),
             mem_size: 0,
+            linux_pvclock_gpa: None,
             watchdog_secs: DEFAULT_WATCHDOG_SECS,
         };
         m.build(boot)?;
@@ -1151,14 +1163,15 @@ impl Vcpu for Machine {
     }
 
     /// A digest of the landed state: every architectural register the kernel will
-    /// hand over, plus the whole of guest RAM.
+    /// hand over, VM-owned pvclock registration state, and the whole of guest RAM.
     ///
     /// This is what AA-3's replay-identity and AA-6's ≥1,000-rep bit-identity floors
     /// are *about*, and it is computed here rather than left empty — a rep floor
     /// that counts records without ever comparing their digests would be vacuous on
     /// the axis it exists for, so there must be a real digest to compare.
     ///
-    /// Registers are hashed in **sorted id order** (a `BTreeMap`, never a `HashMap`):
+    /// Registers and the reserved device-state record are hashed in **sorted id order** (a
+    /// `BTreeMap`, never a `HashMap`):
     /// iteration order must not reach a hashed byte. Conventions rule 4.
     fn state_digest(&mut self) -> Result<String, RunError> {
         let (regs, vgic) = self.registers_and_vgic()?;
@@ -1258,9 +1271,9 @@ impl StepVcpu for Machine {
             .map_err(|e| seam("ioctl(KVM_GET_ONE_REG, VBAR_EL1)", e))
     }
 
-    /// The registers-only digest AA-2 stamps on every step but the last: the vCPU
-    /// registers (and the in-kernel vGIC state) [`Vcpu::state_digest`] reads, hashed
-    /// **without** the 4 MiB guest-RAM slice. `state_digest` faults in and hashes the
+    /// The registers-only digest AA-2 stamps on every step but the last: the vCPU registers,
+    /// VM-owned pvclock registration, and in-kernel vGIC state [`Vcpu::state_digest`] reads,
+    /// hashed **without** the 4 MiB guest-RAM slice. `state_digest` faults in and hashes the
     /// whole slot every call, so calling it per single step is infeasible — the whole
     /// reason `RAM_SIZE` was shrunk in the AA-1(c) disposition. This is the cheap
     /// per-step replay key; only the run's final step pays the full-RAM cost, catching
@@ -1272,6 +1285,24 @@ impl StepVcpu for Machine {
 }
 
 impl LinuxPvclockVcpu for Machine {
+    fn linux_pvclock_gpa(&self) -> Option<u64> {
+        self.linux_pvclock_gpa
+    }
+
+    fn register_linux_pvclock_gpa(&mut self, gpa: u64) -> Result<(), RunError> {
+        if let Some(registered) = self.linux_pvclock_gpa {
+            return Err(RunError::Seam {
+                context: "register the Linux pvclock page",
+                message: format!("one-shot already pinned to {registered:#x}; rejected {gpa:#x}"),
+            });
+        }
+        // Validation precedes mutation so an invalid guest value cannot consume the VM-lifetime
+        // one-shot even if this trait method is called outside the ordinary MMIO dispatcher.
+        crate::linux_console::linux_pvclock_page_range(gpa, RAM_BASE, self.mem_size)?;
+        self.linux_pvclock_gpa = Some(gpa);
+        Ok(())
+    }
+
     fn publish_linux_pvclock(
         &mut self,
         vns: u64,
@@ -1279,37 +1310,22 @@ impl LinuxPvclockVcpu for Machine {
         guest_clock_hz: u64,
         write: PvclockWrite,
     ) -> Result<(), RunError> {
-        let page_offset = oracle_model::PVCLOCK_GPA
-            .checked_sub(RAM_BASE)
-            .and_then(|offset| usize::try_from(offset).ok())
-            .ok_or_else(|| RunError::Seam {
-                context: "locate the Linux pvclock page",
-                message: format!(
-                    "pvclock GPA {:#x} is below or not representable relative to RAM base {RAM_BASE:#x}",
-                    oracle_model::PVCLOCK_GPA
-                ),
-            })?;
+        let gpa = self.linux_pvclock_gpa.ok_or_else(|| RunError::Seam {
+            context: "publish the Linux pvclock page",
+            message: "no VM-owned pvclock registration exists".into(),
+        })?;
+        let page_range =
+            crate::linux_console::linux_pvclock_page_range(gpa, RAM_BASE, self.mem_size)?;
 
         // SAFETY: `self.mem` is the unique live mapping of exactly `self.mem_size` bytes and
         // this method is called only after a KVM exit, while the sole vCPU is stopped. The
-        // subsequent slice lookup bounds the page before either shared stamping function runs.
+        // pure range validator bounds the complete page before either shared stamping function
+        // runs.
         let ram = unsafe { core::slice::from_raw_parts_mut(self.mem, self.mem_size) };
-        let page_end = page_offset
-            .checked_add(vtime::pvclock::PVCLOCK_PAGE_LEN)
-            .ok_or_else(|| RunError::Seam {
-                context: "bound the Linux pvclock page",
-                message: "pvclock page end overflows usize".into(),
-            })?;
-        let ram_len = ram.len();
-        let page = ram
-            .get_mut(page_offset..page_end)
-            .ok_or_else(|| RunError::Seam {
-                context: "bound the Linux pvclock page",
-                message: format!(
-                    "pvclock page [{page_offset:#x}, {page_end:#x}) is outside {} bytes of guest RAM",
-                    ram_len
-                ),
-            })?;
+        let page = ram.get_mut(page_range).ok_or_else(|| RunError::Seam {
+            context: "bound the Linux pvclock page after validation",
+            message: "validated pvclock page disappeared from guest RAM".into(),
+        })?;
         match write {
             PvclockWrite::Canonical => {
                 vtime::pvclock::stamp_canonical(page, vns, guest_clock, guest_clock_hz);
@@ -1346,10 +1362,10 @@ impl LinuxPvclockVcpu for Machine {
     }
 }
 
-/// The seam-read pair [`Machine::registers_and_vgic`] returns: every architectural register
-/// (id → bytes, sorted) and the in-kernel vGIC injection state. Named so the register/vGIC
-/// read type has one home (and the tuple-of-collections does not trip `clippy::type_complexity`
-/// on the `cfg(target_os = "linux")` box seam).
+/// The seam-read pair [`Machine::registers_and_vgic`] returns: every architectural register plus
+/// VM-owned digest-bound device state (id → bytes, sorted), and the in-kernel vGIC injection
+/// state. Named so the state/vGIC read type has one home (and the tuple-of-collections does not
+/// trip `clippy::type_complexity` on the `cfg(target_os = "linux")` box seam).
 type RegsAndVgic = (BTreeMap<u64, Vec<u8>>, Vec<u8>);
 
 impl Machine {
@@ -1362,7 +1378,8 @@ impl Machine {
     }
 
     /// Read every architectural register (`KVM_GET_REG_LIST` + `KVM_GET_ONE_REG`, in
-    /// sorted id order) and the in-kernel vGIC injection state — the two seam-read inputs
+    /// sorted id order), add any VM-owned pvclock registration, and read the in-kernel vGIC
+    /// injection state — the seam-read inputs
     /// shared by [`Vcpu::state_digest`] (which adds guest RAM) and [`StepVcpu::regs_digest`]
     /// (which does not). Factored out so the register/vGIC read discipline has one home.
     fn registers_and_vgic(&self) -> Result<RegsAndVgic, RunError> {
@@ -1375,6 +1392,24 @@ impl Machine {
                 .read_reg(id)
                 .map_err(|e| seam("ioctl(KVM_GET_ONE_REG)", e))?;
             regs.insert(id, value);
+        }
+        if let Some(gpa) = self.linux_pvclock_gpa {
+            let mut encoded = Vec::with_capacity(
+                LINUX_PVCLOCK_DIGEST_STATE_TAG.len() + core::mem::size_of::<u64>(),
+            );
+            encoded.extend_from_slice(LINUX_PVCLOCK_DIGEST_STATE_TAG);
+            encoded.extend_from_slice(&gpa.to_le_bytes());
+            if regs
+                .insert(LINUX_PVCLOCK_DIGEST_STATE_ID, encoded)
+                .is_some()
+            {
+                return Err(RunError::Seam {
+                    context: "bind the Linux pvclock registration into the state digest",
+                    message: format!(
+                        "reserved state id {LINUX_PVCLOCK_DIGEST_STATE_ID:#x} collides with a KVM register"
+                    ),
+                });
+            }
         }
         let vgic = self
             .vgic_state()

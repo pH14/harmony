@@ -9,12 +9,16 @@ clocksource, sched_clock, delay and erratum CVAL paths through their shared
 accessors. Disable the vDSO counter fast path and clear both EL0 counter
 enable bits in CNTKCTL_EL1.
 
-The host-owned page is a reserved, linearly mapped RAM page at the AA-5 board
-GPA. Its reader requires ABI 1, the exact materialized|work-derived flags,
-vcpu 0, and a frequency equal to CNTFRQ_EL0; malformed or placeholder bytes
-fail closed to zero rather than falling back to a live host counter. The
-post-build empty-allowlist opcode scan is the second half of this change: it
-rejects any raw CNTVCT/CNTPCT instruction that survives configuration.
+The page is reserved and linearly mapped at the owned guest's chosen GPA. The
+architected-timer discovery path publishes that address through the ARM one-shot
+registration MMIO ABI before registering any clocksource or delay reader,
+verifies the host's ABI response, and spins for the first exact-work publication
+before boot continues. Its reader requires ABI 1, the exact
+materialized|work-derived flags, vcpu 0, and a frequency equal to CNTFRQ_EL0;
+malformed or placeholder bytes fail closed to zero rather than falling back to
+a live host counter. The post-build empty-allowlist opcode scan is the second
+half of this change: it rejects any raw CNTVCT/CNTPCT instruction that survives
+configuration.
 
 This patch is Linux-kernel code (GPL-2.0), carried as a diff under the
 Harmony repository's designated guest-kernel patch exception.
@@ -55,26 +59,37 @@ Harmony repository's designated guest-kernel patch exception.
  obj-$(CONFIG_ARMV7M_SYSTICK)		+= armv7m_systick.o
 --- /dev/null
 +++ b/drivers/clocksource/harmony_arm_pvclock.c
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,122 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Harmony's materialized work-derived arm64 clock page.
 + *
 + * The page is reserved from the guest allocator but deliberately retained in
 + * arm64's linear map: the counter accessor is used before general memremap()
-+ * allocation is available. Host updates happen only while the sole vCPU is
-+ * stopped; the sequence field keeps the ABI correct for future SMP readers.
++ * allocation is available. The guest publishes that page through a one-shot
++ * MMIO registration surface and waits for the first exact-work stamp before
++ * proceeding. Host updates happen only while the sole vCPU is stopped; the
++ * sequence field keeps the ABI correct for future SMP readers.
 + */
 +
-+#include <linux/byteorder/generic.h>
-+#include <linux/compiler.h>
 +#include <linux/types.h>
++#include <linux/compiler.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/panic.h>
++#include <linux/printk.h>
 +
 +#include <asm/arch_timer.h>
 +#include <asm/barrier.h>
++#include <asm/byteorder.h>
 +#include <asm/memory.h>
++#include <asm/processor.h>
 +
 +#define HARMONY_PVCLOCK_GPA		0x40001000ULL
++#define HARMONY_PVCLOCK_REGISTER_GPA	0x0b000000ULL
++#define HARMONY_PVCLOCK_REGISTER_SIZE	0x1000
++#define HARMONY_PVCLOCK_REGISTER_ABI	0x8
++#define HARMONY_PVCLOCK_REGISTER_SPINS	(1U << 28) /* host caps delta at 100M work */
 +#define HARMONY_PVCLOCK_ABI		1U
 +#define HARMONY_FLAG_MATERIALIZED	(1U << 0)
 +#define HARMONY_FLAG_WORK_DERIVED	(1U << 1)
@@ -96,6 +111,52 @@ Harmony repository's designated guest-kernel patch exception.
 +	return (const void *)__phys_to_virt(HARMONY_PVCLOCK_GPA);
 +}
 +
++static __always_inline bool harmony_page_valid(void)
++{
++	const struct harmony_arm_pvclock_page *p = harmony_page();
++
++	return le32_to_cpu(READ_ONCE(p->abi_version)) == HARMONY_PVCLOCK_ABI &&
++	       le32_to_cpu(READ_ONCE(p->flags)) == HARMONY_FLAGS_V1 &&
++	       le32_to_cpu(READ_ONCE(p->vcpu_index)) == 0 &&
++	       le64_to_cpu(READ_ONCE(p->guest_clock_hz)) ==
++			arch_timer_get_cntfrq();
++}
++
++/*
++ * Registration is deliberately not a stamping Moment: KVM's natural MMIO
++ * exit carries skid. The host records the validated GPA and publishes only at
++ * the next exact forced landing. This bounded deterministic spin retires work
++ * until that canonical publication appears; it never consults wall time.
++ */
++void __init harmony_arm_pvclock_register(void)
++{
++	void __iomem *registers;
++	u32 abi;
++	u32 spin;
++
++	registers = ioremap(HARMONY_PVCLOCK_REGISTER_GPA,
++			    HARMONY_PVCLOCK_REGISTER_SIZE);
++	if (!registers)
++		panic("Harmony pvclock registration MMIO cannot be mapped");
++
++	writeq(HARMONY_PVCLOCK_GPA, registers);
++	abi = readl(registers + HARMONY_PVCLOCK_REGISTER_ABI);
++	iounmap(registers);
++	if (abi != HARMONY_PVCLOCK_ABI)
++		panic("Harmony pvclock host returned ABI %u, expected %u",
++		      abi, HARMONY_PVCLOCK_ABI);
++
++	for (spin = 0; spin < HARMONY_PVCLOCK_REGISTER_SPINS; spin++) {
++		if (harmony_page_valid()) {
++			pr_info("Harmony pvclock: registered page %#llx (ABI %u)\n",
++				HARMONY_PVCLOCK_GPA, HARMONY_PVCLOCK_ABI);
++			return;
++		}
++		cpu_relax();
++	}
++	panic("Harmony pvclock registration was accepted but no exact-work stamp arrived");
++}
++
 +/*
 + * Return the virtual generic-counter value. Zero is the fail-closed value:
 + * this dedicated kernel has no raw-counter fallback, and the build gate
@@ -107,11 +168,7 @@ Harmony repository's designated guest-kernel patch exception.
 +	u32 seq;
 +	u64 count;
 +
-+	if (le32_to_cpu(READ_ONCE(p->abi_version)) != HARMONY_PVCLOCK_ABI ||
-+	    le32_to_cpu(READ_ONCE(p->flags)) != HARMONY_FLAGS_V1 ||
-+	    le32_to_cpu(READ_ONCE(p->vcpu_index)) != 0 ||
-+	    le64_to_cpu(READ_ONCE(p->guest_clock_hz)) !=
-+			arch_timer_get_cntfrq())
++	if (!harmony_page_valid())
 +		return 0;
 +
 +	do {
@@ -127,12 +184,13 @@ Harmony repository's designated guest-kernel patch exception.
 +}
 --- a/arch/arm64/include/asm/arch_timer.h
 +++ b/arch/arm64/include/asm/arch_timer.h
-@@ -167,6 +167,29 @@ static inline void arch_timer_set_cntkctl(u32 cntkctl)
+@@ -167,6 +167,30 @@ static inline void arch_timer_set_cntkctl(u32 cntkctl)
  	isb();
  }
  
 +#ifdef CONFIG_HARMONY_ARM_PVCLOCK
 +u64 harmony_arm_pvclock_read(void);
++void __init harmony_arm_pvclock_register(void);
 +
 +static __always_inline u64 __arch_counter_get_cntpct_stable(void)
 +{
@@ -233,3 +291,8 @@ Harmony repository's designated guest-kernel patch exception.
  
  	arch_timer_set_cntkctl(cntkctl);
  }
+@@ -1144,0 +1150,4 @@ static int __init arch_timer_of_init(struct device_node *np)
++#ifdef CONFIG_HARMONY_ARM_PVCLOCK
++	harmony_arm_pvclock_register();
++#endif
++

@@ -1467,35 +1467,51 @@ mechanism is presumed sound, but certification remains pending re-verification.
 
 ## AA-5(c) exact-work pvclock executor (hm-9r1, 2026-07-18)
 
-The Linux bring-up command now replaces its construction-time static placeholder before the
-first KVM entry and advances the ABI-v1 page from exact retired-branch anchors:
+The Linux bring-up command now leaves the page unstamped until the owned guest publishes its
+selected GPA, then advances ABI v1 only from exact retired-branch anchors:
 
 - `linux-boot` requires the box-measured skid margin and the patched Preempt capability, reads
-  the guest's actual `CNTFRQ_EL0`, requires the guest-only counter's pre-entry value to be zero,
-  and writes the canonical registration frame through `vtime::pvclock` (the production ABI
-  implementation, not a second layout).
+  the guest's actual `CNTFRQ_EL0`, and requires the guest-only counter's pre-entry value to be
+  zero. The guest writes its selected page GPA to `INTEGRATION` §1.3's ARM registration MMIO;
+  the host checks page alignment and complete RAM containment before consuming the one-shot.
+  A rejected GPA leaves registration available, while every second valid write is a guest fault,
+  including a repeat of the same GPA. The read-only status register reports ABI 1 only after the
+  host has pinned the target. The pin lives in `Machine`, survives run-loop re-entry, and is bound
+  into both full and registers-only replay digests under a reserved, collision-checked device-state
+  id. This spike has no restore surface; a future restore must serialize, revalidate, and retain the
+  consumed one-shot rather than silently reopening registration.
 - AA-3's arm-early/advisory/single-step logic is factored into one bounded primitive shared by
   the measurement path and Linux. Natural exits never publish their skid-tainted live count.
-  Each Δ deadline lands at the first PC with exactly the target work, then stamps
-  `MATERIALIZED|WORK_DERIVED` before resuming. The loop counts internal debug/MMIO exits against
-  the caller's hard budget. A ready marker observed at a natural UART exit is only latched; the
-  harness keeps running until the next exact refresh has published, so a lost/late armed Preempt
-  cannot pass with a page stale beyond Δ. The owned init retires branches after the marker to
-  keep that proof target reachable.
-- The result reports distinct refresh count, maximum exact-work gap, and last anchor. Portable
-  tests plant an advisory host IRQ, complete the ready marker while single-stepping, and require
-  the executor to finish the exact landing, publish, and disarm debug before returning.
+  Each Δ deadline lands at the first PC with exactly the target work. Before registration it
+  advances the cadence without touching guest RAM; the first post-registration landing writes a
+  canonical `MATERIALIZED|WORK_DERIVED` page through the shared `vtime::pvclock` implementation,
+  and later landings use its value-keyed refresh. Registration MMIO encountered during the exact
+  walk is serviced inline but still cannot publish until that canonical landing. The loop counts
+  internal debug/MMIO exits against the caller's hard budget. A ready marker observed at a natural
+  UART exit is only latched; the harness keeps running until the next exact refresh has published,
+  so a lost/late armed Preempt cannot pass with a page stale beyond Δ. The owned init retires
+  branches after the marker to keep that proof target reachable.
+- The result reports the pinned GPA, distinct publication count, maximum exact-work gap, and last
+  anchor. Portable tests plant an advisory host IRQ, register during an exact walk, exercise
+  reject-without-consuming + re-registration refusal across a fresh run-loop dispatcher + ABI
+  status, reject executor reuse before reading or arming the counter, complete the ready marker
+  while single-stepping, and prove two exact publication periods before return.
+- The owned kernel writes `0x4000_1000` to the MMIO register, verifies the ABI response, and spins
+  for the first fully valid page before continuing boot. The spin has a fixed branch bound and no
+  wall-time input; the host rejects `Δ > 100_000_000`, comfortably below the kernel's `2^28`
+  iterations. The generated DTB describes the registration page at `0x0b00_0000`; the host uses
+  only the validated write value as its stamping target, not a fixed page constant.
 
-This is still **pre-silicon substrate, not AA-5 acceptance evidence**. The page remains at the
-spike's fixed board GPA rather than the contract's guest-registered one-shot GPA, and stock KVM
-still expires `CNTV_CVAL` against the live architected-counter domain. Equal `CNTFRQ` does not
-align those origins. A deterministic clockevent/injection path and the native N1 build/run are
-therefore still required before the Linux smoke can certify steady-state timers or replay. Exact
-single-step landing also requires AA-4's LSE-only image: the present guest recipe does not yet
-remove/scan-gate all kernel and static-BusyBox LL/SC fallback bodies, and the CLI's hash pin is an
-identity check, not proof of that property. Live evidence stays non-certifying until the owned
+This is still **pre-silicon substrate, not AA-5 acceptance evidence**. Stock KVM expires
+`CNTV_CVAL` against the live architected-counter domain; equal `CNTFRQ` does not align that origin
+with the work-derived page. A deterministic clockevent/injection path and the native N1 build/run
+are therefore still required before the Linux smoke can certify steady-state timers or replay.
+Exact single-step landing also requires AA-4's LSE-only image: the present guest recipe does not
+yet remove/scan-gate all kernel and static-BusyBox LL/SC fallback bodies, and the CLI's hash pin is
+an identity check, not proof of that property. Live evidence stays non-certifying until the owned
 Image/rootfs passes AA-4 levels 1–2 (with level 3's planted proof still homed here).
 
-Gates: 142 harness tests plus bin/manifest tests; native and aarch64-linux Clippy with
-`-D warnings`; aarch64-linux check; fmt and diff checks; pinned Miri 141 pass / one intentional
+Gates: 147 harness tests plus bin/manifest tests; native and aarch64-linux Clippy with
+`-D warnings`; aarch64-linux check; exact patch application plus GCC 14 arm64 object compile
+against checksum-pinned Linux 6.18.35; fmt and diff checks; pinned Miri 146 pass / one intentional
 long-loop ignore, plus bin tests (manifest subprocess intentionally ignored under isolation).

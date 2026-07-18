@@ -144,7 +144,7 @@ struct LinuxBootOpts {
     /// Measured N1 PMU skid margin for exact work-clock refresh landings.
     #[arg(long)]
     skid_margin: u64,
-    /// Maximum retired branches between work-derived clock-page publications.
+    /// Maximum retired branches between publications (1..=100,000,000 for the owned guest).
     #[arg(
         long,
         default_value_t = arm_harness::linux_console::DEFAULT_REFRESH_DELTA_WORK
@@ -881,16 +881,18 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
     let console_sha256 = hex_lower(&hasher.finalize());
     println!(
         "NON-CERTIFYING Linux boot reached its fixed console marker: exits={} console_bytes={} \
-         console_sha256={} image_sha256={} initramfs_sha256={} pvclock_refreshes={} \
-         pvclock_max_gap_work={} pvclock_last_work={} guest_clock_hz={} transcript={}",
+         console_sha256={} image_sha256={} initramfs_sha256={} pvclock_publications={} \
+         pvclock_max_gap_work={} pvclock_last_work={} pvclock_gpa={:#x} guest_clock_hz={} \
+         transcript={}",
         result.boot.exits,
         result.boot.console.len(),
         console_sha256,
         image_sha256,
         initramfs_sha256,
-        result.refreshes,
+        result.publications,
         result.max_refresh_gap_work,
         result.last_refresh_work,
+        result.registration_gpa,
         guest_clock_hz,
         opts.console_out.display()
     );
