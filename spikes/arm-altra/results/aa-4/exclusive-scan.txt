@@ -1,0 +1,16 @@
+AA-4(c) level-2 exclusive-opcode scan (host/aa4-exclusive-scan.py)
+Mask (insn & 0x3f800000)==0x08000000 = LL/SC monitor exclusives; excludes LDAR/STLR + CAS.
+Self-validating: raw-opcode mask must agree with objdump disassembly on every instruction.
+
+[CLEAN]  ident: no LL/SC exclusive instructions (mask self-check passed)
+[CLEAN]  straight-line: no LL/SC exclusive instructions (mask self-check passed)
+[CLEAN]  branch-dense: no LL/SC exclusive instructions (mask self-check passed)
+[CLEAN]  svc: no LL/SC exclusive instructions (mask self-check passed)
+[CLEAN]  exception-abort: no LL/SC exclusive instructions (mask self-check passed)
+[CLEAN]  clock-page: no LL/SC exclusive instructions (mask self-check passed)
+[CLEAN]  wfi-idle: no LL/SC exclusive instructions (mask self-check passed)
+[BANNED] llsc-atomics: 2 LL/SC exclusive instruction(s)
+    40080880: c85f7c44  ldxr	x4, [x2]
+    40080888: c8057c44  stxr	w5, x4, [x2]
+[CLEAN]  lse-atomics: no LL/SC exclusive instructions (mask self-check passed)
+scan-exit(1=some image BANNED)=1

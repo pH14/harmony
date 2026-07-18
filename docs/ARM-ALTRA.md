@@ -1272,3 +1272,77 @@ format is fixed and must not change; the three pieces are the `KVM_SET_GUEST_DEB
 seam, transition classification reusing `scan.rs`, and a `step_run` mode behind
 `--single-step`). Runs after AA-1(c) frees the box; the `skid_margin` AA-3 needs comes
 from AA-1(c), the trustworthy step primitive AA-3 needs comes from here.
+
+### AA-4 — the LL/SC vs LSE ruling: CHARACTERIZED; recommended ruling below (Paul ratifies)
+
+Per the foreman's directive (2026-07-17): produce the LL/SC characterization + recommended
+ruling; Paul ratifies at PR time. The evidence rides the AA-3 apparatus — the exact-landing
+run already carries an `llsc-atomics` payload (LL/SC) and an `lse-atomics` payload (LSE-only,
+same computation) under an identical injection schedule (the arm-early `Preempt` + single-step
+IS the event injection at a seeded `Moment`). Evidence: `results/aa-4/` and the AA-3 records.
+
+**(a) The hazard, quantified on real N1 silicon** (`host/aa4-llsc-characterize.py`,
+`results/aa-4/llsc-characterization.txt`). Across the ≥10⁶ run, `llsc-atomics` tuples diverge
+run-to-run — and the divergence is **in the work clock itself, not merely in state**:
+`measured_taken`/`work_end` differ by **±2 retired branches** between same-seed reps (one
+extra `LDXR`/`STXR` monitor-clear retry). Rates: **26.3 %** of tuples in the *solo* lane (so the
+hazard is **intrinsic**, not a co-tenancy artifact) and **31.6 %** under 76-way co-tenant load
+(neighbours raise the spurious-`STXR`-failure rate via cache/monitor pressure, as §4 predicts).
+`payload_status = 0` throughout: the computation is *correct*, only its branch count is
+non-deterministic. The exclusive loop is two instructions —
+`0x40080880 ldxr x4,[x2]` / `0x40080888 stxr w5,x4,[x2]` — the **same PCs** as the AA-2
+single-step LL/SC livelock (single-stepping clears the monitor every step, so `STXR` never
+succeeds): the runtime spurious-failure hazard and the single-step livelock are the same loop.
+**Why this is fatal, not tolerable:** a non-deterministic *work clock* defeats the entire
+V-time thesis — LL/SC cannot be mitigated down to acceptable, it must be made unreachable.
+
+**(b) The answer, demonstrated at scale.** `lse-atomics` — the identical algorithm rebuilt
+LSE-only (single-instruction `CAS`/`SWP`/`LDADD`, no monitor, no retry) — diverges in
+**0 of 73,150 tuples** (72,200 co-tenant + 950 solo), in *both* count and state. LSE is
+perfectly work-clock-deterministic under the same injection. N1 has FEAT_LSE (mandatory since
+ARMv8.1; Altra/Neoverse N1 is ARMv8.2), so an LSE-only guest is buildable on the target.
+
+**(c) The enforcement ladder, mechanisms demonstrated on the owned artifacts:**
+- **Level 1 — LSE-only build.** DEMONSTRATED: `lse-atomics` *is* an LSE-only build, clean by
+  scan and deterministic by measurement. For the guest: `-march=…+lse`, `-moutline-atomics=off`
+  (kill libgcc/compiler-rt's LL/SC outline fallback), and removal of the vanilla kernel's LL/SC
+  fallback bodies — exercised against the real guest kernel at AA-5.
+- **Level 2 — executable-page opcode scan.** BUILT + run: `host/aa4-exclusive-scan.py`
+  (`results/aa-4/exclusive-scan.txt`). It scans raw instruction words for the monitor-exclusive
+  family `(insn & 0x3f800000) == 0x08000000` (LDXR/STXR/LDAXR/STLXR/LDXP/STXP…; deliberately
+  EXCLUDING LDAR/STLR and LSE `CAS`), and **self-validates** the raw mask against `objdump`
+  disassembly on every instruction (so it can neither under- nor over-report). Result: it flags
+  the two exclusives in `llsc-atomics` at their exact PCs and passes every other payload —
+  including `lse-atomics` — CLEAN, exiting non-zero to reject. This is the W^X rescan-on-exec
+  primitive; running it against the *guest kernel image* is an AA-5 step (that image is AA-5's).
+- **Level 3 — stage-2 execute-deny + trap/emulate backstop.** Mechanism characterized, not yet
+  fired: mark guest executable pages non-exec at stage-2 for a deliberately-planted exclusive,
+  take the permission fault, and emulate-through / reject. It needs a running guest with stage-2
+  under harness control — best exercised against the AA-5 guest with a planted `STXR`; recorded
+  as the one ladder rung whose *live* proof is deferred to AA-5 (the mechanism — KVM stage-2
+  perms + a fault handler — is standard and unblocked; only the planted-exclusive run remains).
+
+**RECOMMENDED RULING (Paul ratifies): LL/SC is made MECHANICALLY UNREACHABLE in the shipped
+guest by Level 1 (LSE-only build) + Level 2 (scan-verified), with Level 3 as the runtime
+backstop; one cooperative residual, named and bounded.**
+- *Primary — unreachable by construction.* The guest ships LSE-only (Level 1); the opcode scan
+  (Level 2) is a build-gate + rescan-on-exec that fails closed if any exclusive survives
+  (outline-atomics fallback, hand-asm, a stray kernel fallback body). On N1 this is real: LSE is
+  present, and the LSE build is measured bit-identical. No reachable `STXR` ⇒ the
+  architecturally-permitted spurious-failure hazard (a) has nothing to fire on — **closed**, not
+  mitigated.
+- *Residual (cooperative, bounded): runtime-generated exclusives.* Code produced after the scan
+  — a guest JIT or self-modifying page emitting `LDXR`/`STXR` — is the only path to a reachable
+  exclusive. It is bounded by Level 3: W^X forces every to-be-executed page through a
+  rescan-on-exec (Level 2) before it is made executable, and the stage-2 execute-deny backstop
+  catches anything that still slips through. A guest that JITs exclusives *and* defeats W^X is
+  outside the owned-guest contract (§4's cooperative boundary) — named, not hand-waved.
+- *Non-residual: the single-step livelock (AA-2).* A measurement-time hazard (single-step clears
+  the monitor), not a runtime one; the LSE-only ban removes every exclusive there is to
+  single-step, so it cannot arise in a shipped guest.
+
+**Disposition: AA-4 CHARACTERIZED — recommended ruling *mechanically-unreachable via LSE-only +
+scan, cooperative residual (runtime-generated exclusives) bounded by W^X + stage-2*.** (a) and
+(b) are demonstrated at scale on real N1; (c) levels 1–2 are demonstrated on the owned
+artifacts, level 3's mechanism is characterized with its live planted-exclusive proof homed to
+AA-5. Awaiting Paul's ratification at PR time (foreman directive).
