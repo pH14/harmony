@@ -18,6 +18,9 @@
 set -uo pipefail
 
 TAG="${1:?usage: aa1c-run-all.sh <tag> <bulk_cases> [grid_cases]}"
+OK_MARKER="${HOME}/aa1c-all-${TAG}-OK"
+# Invalidate any prior same-tag success before the first phase can fail.
+rm -f -- "$OK_MARKER"
 BULK="${2:-420}"
 GRID="${3:-6}"
 cd ~/harmony/spikes/arm-altra
@@ -58,7 +61,7 @@ if [ "$fail" != "0" ]; then echo "AA1C_QUIET_PHASE_FAILED"; exit 1; fi
 bash host/aa1c-parallel.sh "$TAG" "$BULK" "$GRID" || fail=1
 
 if [ "$fail" = "0" ]; then
-  touch ~/aa1c-all-"$TAG"-OK
+  touch "$OK_MARKER"
   echo "AA1C_RUN_ALL_OK"
 else
   echo "AA1C_RUN_ALL_FAILED — inspect the run-sets; do NOT declare GO"

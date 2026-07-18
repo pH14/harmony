@@ -1097,6 +1097,9 @@ fn check_well_formed(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outc
     if run_set.perf.sample_period == Some(0) {
         problems.push("perf.sample_period is 0 (schema minimum is 1)".to_string());
     }
+    if run_set.planned == 0 {
+        problems.push("planned is 0 (schema minimum is 1)".to_string());
+    }
 
     // Every record's condition is non-empty, and its state_digest is present (schema
     // `minLength: 1`). The digest matters even for armed/stepped records that also carry a
@@ -1272,10 +1275,8 @@ fn check_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome
 /// Duplicating one run's `step_index == 0` record while omitting another plan entry therefore
 /// remains a visible missing id instead of satisfying a count.
 ///
-/// Runs off `run_set.planned`: evidence written before the field existed carries `None`,
-/// for which this check is NOT-REQUESTED (its completeness rests on the harness exit code,
-/// documented in the stage disposition). Non-step run-sets are unaffected (no step records
-/// → the check does not apply).
+/// Runs off required schema-v4 `run_set.planned`. Non-step run-sets are unaffected
+/// (no step records → the check does not apply).
 fn check_step_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
     let planned_ids: BTreeSet<u64> = records
         .iter()
@@ -1286,59 +1287,68 @@ fn check_step_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Ou
         // Not a single-step run-set — record-level totality already covers it.
         return;
     }
-    match run_set.planned {
-        None => out.push(Outcome {
-            id: CheckId::StepTotality,
-            status: Status::NotRequested,
-            detail: "step evidence carries no `planned` count — completeness cannot be certified \
-                     standalone (this predates the field; the run's completeness rests on the \
-                     harness exit code, per the stage disposition)"
-                .to_string(),
-        }),
-        Some(0) => out.push(fail(
+    let planned = run_set.planned;
+    if planned == 0 {
+        out.push(fail(
             CheckId::StepTotality,
             "manifest planned is 0 — a step run that intended no sample measures nothing",
-        )),
-        Some(planned) => {
-            let missing: Vec<u64> = (0..planned)
-                .filter(|id| !planned_ids.contains(id))
-                .collect();
-            let out_of_range: Vec<u64> = planned_ids
-                .iter()
-                .copied()
-                .filter(|id| *id >= planned)
-                .collect();
-            if missing.is_empty() && out_of_range.is_empty() {
-                out.push(pass(
-                    CheckId::StepTotality,
-                    format!(
-                        "all {planned} planned sample id(s) 0..{planned} represented in the step records"
-                    ),
-                ));
-            } else {
-                let mut problems = Vec::new();
-                if !missing.is_empty() {
-                    problems.push(format!(
-                        "missing planned sample ids {}",
-                        preview(missing.into_iter())
-                    ));
+        ));
+        return;
+    }
+
+    // Compute the missing cardinality arithmetically. `planned` is untrusted
+    // manifest input; collecting `0..planned` would hang or exhaust memory for
+    // values such as u64::MAX. The preview walk stops after eight gaps and is
+    // therefore bounded by the number of present ids plus eight.
+    let in_range_seen = planned_ids.iter().filter(|id| **id < planned).count() as u64;
+    let missing_count = planned.saturating_sub(in_range_seen);
+    let mut missing_preview = Vec::new();
+    if missing_count > 0 {
+        for id in 0..planned {
+            if !planned_ids.contains(&id) {
+                missing_preview.push(id);
+                if missing_preview.len() == 8 {
+                    break;
                 }
-                if !out_of_range.is_empty() {
-                    problems.push(format!(
-                        "planned sample ids outside 0..{planned}: {}",
-                        preview(out_of_range.into_iter())
-                    ));
-                }
-                out.push(fail(
-                    CheckId::StepTotality,
-                    format!(
-                        "{} (dense record renumbering or duplicate step-zero rows cannot mask a dropped plan entry)",
-                        problems.join("; ")
-                    ),
-                ));
             }
         }
     }
+    let out_of_range: Vec<u64> = planned_ids
+        .iter()
+        .copied()
+        .filter(|id| *id >= planned)
+        .collect();
+
+    if missing_count == 0 && out_of_range.is_empty() {
+        out.push(pass(
+            CheckId::StepTotality,
+            format!(
+                "all {planned} planned sample id(s) 0..{planned} represented in the step records"
+            ),
+        ));
+        return;
+    }
+
+    let mut problems = Vec::new();
+    if missing_count > 0 {
+        problems.push(format!(
+            "{missing_count} missing planned sample id(s) {}",
+            preview_of(&missing_preview, missing_count)
+        ));
+    }
+    if !out_of_range.is_empty() {
+        problems.push(format!(
+            "planned sample ids outside 0..{planned}: {}",
+            preview(out_of_range.into_iter())
+        ));
+    }
+    out.push(fail(
+        CheckId::StepTotality,
+        format!(
+            "{} (dense record renumbering or duplicate step-zero rows cannot mask a dropped plan entry)",
+            problems.join("; ")
+        ),
+    ));
 }
 
 fn check_multiplicity(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
@@ -3471,7 +3481,7 @@ mod tests {
             weights: Some(Weights::measured(0, 0, 0, 0, 2)),
             skid_margin: Some(64),
             attempted: 1,
-            planned: Some(1),
+            planned: 1,
             records_file: "records.jsonl".into(),
             records_sha256: "0".repeat(64),
         }
@@ -3495,6 +3505,19 @@ mod tests {
         let mut out = Vec::new();
         check_schema_version(&rs, &mut out);
         assert_eq!(status(&out, CheckId::SchemaVersion), Some(Status::Fail));
+    }
+
+    #[test]
+    fn schema_v4_manifest_without_planned_is_rejected_during_load() {
+        let mut value = serde_json::to_value(a_run_set()).expect("serializable run-set");
+        value
+            .as_object_mut()
+            .expect("run-set serializes as an object")
+            .remove("planned");
+        assert!(
+            serde_json::from_value::<RunSet>(value).is_err(),
+            "schema-v4 planned is required by both JSON Schema and the Rust wire type"
+        );
     }
 
     #[test]
@@ -4995,7 +5018,7 @@ mod tests {
         rs.stage = Stage::Aa2;
 
         // planned == 2, both samples represented → PASS.
-        rs.planned = Some(2);
+        rs.planned = 2;
         let mut out = Vec::new();
         check_step_totality(&rs, &recs, &mut out);
         assert_eq!(status(&out, CheckId::StepTotality), Some(Status::Pass));
@@ -5028,7 +5051,7 @@ mod tests {
         // planned == 3 but only two planned samples produced steps: the third was dropped after
         // the first two emitted steps — the exact certifiable-incomplete case. Must FAIL, from the
         // records alone, without leaning on the harness exit code.
-        rs.planned = Some(3);
+        rs.planned = 3;
         let mut out = Vec::new();
         check_step_totality(&rs, &recs, &mut out);
         assert_eq!(
@@ -5037,15 +5060,12 @@ mod tests {
             "a run that dropped a planned sample after earlier ones emitted steps must not pass"
         );
 
-        // Evidence predating the `planned` field → NOT-REQUESTED (documented; completeness rests
-        // on the harness exit code, per the stage disposition), never a silent pass.
-        rs.planned = None;
+        // An attacker-controlled huge plan count fails in bounded work instead of
+        // allocating or walking the entire 0..planned range.
+        rs.planned = u64::MAX;
         let mut out = Vec::new();
         check_step_totality(&rs, &recs, &mut out);
-        assert_eq!(
-            status(&out, CheckId::StepTotality),
-            Some(Status::NotRequested)
-        );
+        assert_eq!(status(&out, CheckId::StepTotality), Some(Status::Fail));
 
         // Non-step evidence: the check does not apply — no spurious outcome.
         let normal = vec![a_record(0), a_record(1)];

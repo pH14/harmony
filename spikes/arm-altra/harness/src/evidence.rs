@@ -474,11 +474,10 @@ pub struct RunSet {
     /// from `attempted` (which is the step count), and the totality checker uses it
     /// to verify every planned sample is represented by its stable
     /// [`StepRecord::planned_sample_id`] — dense step renumbering or duplicated step-zero rows
-    /// must not let a dropped planned sample pass as a complete `0..attempted`. `Option`
-    /// so evidence written before this field deserializes (its completeness rests
-    /// on the harness exit code, documented per stage).
-    #[serde(default)]
-    pub planned: Option<u64>,
+    /// must not let a dropped planned sample pass as a complete `0..attempted`.
+    /// Required in schema v4; older schemas are intentionally not accepted by the
+    /// v4 checker.
+    pub planned: u64,
     /// The records file, relative to the manifest.
     pub records_file: String,
     /// sha256 of the records file, so a swapped or truncated one is caught.
@@ -569,7 +568,7 @@ pub fn assemble_run_set(
         weights: ctx.weights,
         skid_margin: ctx.skid_margin,
         attempted: ctx.attempted,
-        planned: Some(ctx.planned),
+        planned: ctx.planned,
         records_file: "records.jsonl".to_string(),
         records_sha256,
     };

@@ -17,6 +17,9 @@
 set -uo pipefail
 
 TAG="${1:?usage: aa3-exact-shard.sh <tag> <cases_per_shard>}"
+OK_MARKER="${HOME}/aa3-exact-${TAG}-OK"
+# Invalidate any prior same-tag success before the first shard can fail.
+rm -f -- "$OK_MARKER"
 CASES="${2:?cases/payload/shard (8*CASES*2reps*NSHARD = armed; keep CASES<=20000 for 1e6 branch-dense)}"
 NSHARD=76
 FIRST_CORE=4
@@ -55,7 +58,7 @@ if [ "$fail" = 0 ]; then
 fi
 
 if [ "$fail" = 0 ]; then
-  touch ~/aa3-exact-"$TAG"-OK
+  touch "$OK_MARKER"
   echo "AA3_EXACT_ALL_OK (shards + full-join determinism MATCH)"
 else
   echo "AA3_EXACT_FAILED (shard or comparator) — inspect the run-sets"

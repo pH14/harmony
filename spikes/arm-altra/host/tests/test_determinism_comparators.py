@@ -13,6 +13,11 @@ from pathlib import Path
 HOST = Path(__file__).resolve().parents[1]
 AA1C = HOST / "aa1c-determinism-check.py"
 AA3 = HOST / "aa3-determinism-compare.py"
+CAMPAIGN_SCRIPTS = (
+    HOST / "aa1c-parallel.sh",
+    HOST / "aa1c-run-all.sh",
+    HOST / "aa3-exact-shard.sh",
+)
 
 
 def write_run_set(root, name, records):
@@ -115,6 +120,22 @@ class Aa1cComparatorTests(unittest.TestCase):
             self.assertEqual(report["verdict"], "P0_DIVERGENCE")
             self.assertEqual(report["divergences"][0]["field"], "state_digest")
 
+    def test_divergence_is_p0_even_when_coverage_is_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            solo = write_run_set(
+                root,
+                "solo",
+                [aa1c_record(1, "sha256:solo"), aa1c_record(2)],
+            )
+            cotenant = write_run_set(
+                root, "cotenant", [aa1c_record(1, "sha256:cotenant")]
+            )
+            result, report = run_comparator(AA1C, solo, cotenant)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(report["verdict"], "P0_DIVERGENCE")
+            self.assertFalse(report["join_cardinality"]["full_both_sides"])
+
     def test_manifest_hash_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -202,6 +223,44 @@ class Aa3ComparatorTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertEqual(report["verdict"], "P0_DIVERGENCE")
             self.assertEqual(len(report["divergences"]), 1)
+
+    def test_divergence_is_p0_even_when_coverage_is_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            solo = write_run_set(
+                root,
+                "solo",
+                [aa3_record(0, 1, "sha256:solo"), aa3_record(1, 2)],
+            )
+            cotenant = write_run_set(
+                root, "cotenant", [aa3_record(0, 1, "sha256:cotenant")]
+            )
+            result, report = run_comparator(AA3, solo, cotenant)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(report["verdict"], "P0_DIVERGENCE")
+            self.assertFalse(report["join_cardinality"]["full_both_sides"])
+
+    def test_bare_records_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            solo = write_run_set(root, "solo", [aa3_record(0, 1)])
+            cotenant = write_run_set(root, "cotenant", [aa3_record(0, 1)])
+            result, report = run_comparator(
+                AA3, solo / "records.jsonl", cotenant / "records.jsonl"
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(report["verdict"], "INVALID_INPUT")
+            self.assertIn("run-set directory", report["error"])
+
+
+class CampaignMarkerTests(unittest.TestCase):
+    def test_same_tag_success_marker_is_invalidated_before_campaign_work(self):
+        for script in CAMPAIGN_SCRIPTS:
+            with self.subTest(script=script.name):
+                source = script.read_text(encoding="utf-8")
+                invalidation = source.index('rm -f -- "$OK_MARKER"')
+                self.assertLess(invalidation, source.index("cd ~/harmony"))
+                self.assertIn('touch "$OK_MARKER"', source)
 
 
 if __name__ == "__main__":

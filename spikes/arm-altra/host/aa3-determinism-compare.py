@@ -5,8 +5,9 @@
 Usage:
   aa3-determinism-compare.py [--exclude-payload P]... <solo-run-set> <cotenant-run-set> [...]
 
-Each input may be a run-set directory (preferred: the manifest's count and sha256 are
-verified) or a legacy records.jsonl path. The comparison is a FULL JOIN over
+Each input must be a run-set directory whose manifest count and sha256 are verified.
+Bare records.jsonl inputs are rejected because their expected coverage is unknowable.
+The comparison is a FULL JOIN over
 (`payload`, `scale`, `seed`, `target`): MATCH requires identical key sets, identical
 per-key repetition counts, and identical landed + final-state digests. Partial overlap
 is INCOMPLETE_COVERAGE, never MATCH. Duplicate sample ids and tuple collisions across
@@ -50,7 +51,10 @@ def display_key(key):
 def resolve_input(input_path):
     path = Path(input_path)
     if not path.is_dir():
-        return path, None, None
+        raise EvidenceError(
+            f"{path}: expected a run-set directory with run-set.json; "
+            "bare records files cannot certify expected coverage"
+        )
 
     manifest_path = path / "run-set.json"
     try:
@@ -236,10 +240,11 @@ def main(argv):
             divergences.append(divergence)
 
     full_join = not solo_only and not cotenant_only and not multiplicity_mismatches
-    if not full_join:
-        verdict = "INCOMPLETE_COVERAGE"
-    elif divergences:
+    # Coverage defects cannot mask an observed same-key determinism failure.
+    if divergences:
         verdict = "P0_DIVERGENCE"
+    elif not full_join:
+        verdict = "INCOMPLETE_COVERAGE"
     elif shared:
         verdict = "MATCH"
     else:
@@ -292,6 +297,12 @@ def main(argv):
         file=sys.stderr,
     )
 
+    if divergences:
+        print(
+            f"P0 DETERMINISM FINDING: {len(divergences)} joined tuple(s) diverged.",
+            file=sys.stderr,
+        )
+        return 1
     if not full_join:
         print(
             "INCOMPLETE COVERAGE: solo and co-tenant inputs do not form a full join; "
@@ -302,12 +313,6 @@ def main(argv):
     if not shared:
         print("NO SHARED TUPLES: nothing was compared; not a pass.", file=sys.stderr)
         return 2
-    if divergences:
-        print(
-            f"P0 DETERMINISM FINDING: {len(divergences)} joined tuple(s) diverged.",
-            file=sys.stderr,
-        )
-        return 1
     print(
         f"MATCH: all {len(shared)} tuples joined on both sides with equal repetition counts "
         "and bit-identical exact-landing + final-state digests.",

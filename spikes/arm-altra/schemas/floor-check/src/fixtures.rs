@@ -287,7 +287,7 @@ fn build_run_set(stage: Stage, mechanism: Mechanism, records: &[RunRecord]) -> R
         weights: Some(synthetic_weights()),
         skid_margin: Some(SYNTHETIC_SKID_MARGIN),
         attempted: records.len() as u64,
-        planned: Some(planned),
+        planned,
         records_file: "records.jsonl".to_string(),
         records_sha256: sha,
     }

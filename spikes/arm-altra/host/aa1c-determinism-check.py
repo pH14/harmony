@@ -152,10 +152,11 @@ def main(argv):
                     "field": field, "solo": sv, "cotenant": cv,
                 })
 
-    if not full_join:
-        verdict = "INCOMPLETE_COVERAGE"
-    elif divergences:
+    # Coverage defects cannot mask an observed same-key determinism failure.
+    if divergences:
         verdict = "P0_DIVERGENCE"
+    elif not full_join:
+        verdict = "INCOMPLETE_COVERAGE"
     elif shared:
         verdict = "MATCH"
     else:
@@ -195,6 +196,13 @@ def main(argv):
         f"co-tenant-only {len(cot_only)}",
         file=sys.stderr,
     )
+    if divergences:
+        print(f"P0 DETERMINISM FINDING: {len(divergences)} field divergence(s) — solo != "
+              f"co-tenant. STOP and report; do not serialize to hide it.", file=sys.stderr)
+        for d in divergences[:8]:
+            print(f"  {d['payload']}/{d['scale']}/seed={d['seed']}: {d['field']} "
+                  f"solo={d['solo']} cotenant={d['cotenant']}", file=sys.stderr)
+        return 1
     if not full_join:
         print(
             "INCOMPLETE COVERAGE: solo and co-tenant key sets differ; MATCH is unknown.",
@@ -205,13 +213,6 @@ def main(argv):
         print("NO SHARED TUPLES — the co-tenant set did not reuse the solo seed; nothing "
               "was compared. NOT a pass.", file=sys.stderr)
         return 2
-    if divergences:
-        print(f"P0 DETERMINISM FINDING: {len(divergences)} field divergence(s) — solo != "
-              f"co-tenant. STOP and report; do not serialize to hide it.", file=sys.stderr)
-        for d in divergences[:8]:
-            print(f"  {d['payload']}/{d['scale']}/seed={d['seed']}: {d['field']} "
-                  f"solo={d['solo']} cotenant={d['cotenant']}", file=sys.stderr)
-        return 1
     print(
         f"MATCH: all {len(shared)} tuples joined on both sides and are bit-identical "
         "solo vs co-tenant (state_digest + count + delivery). Co-tenancy does not "

@@ -27,6 +27,10 @@
 set -uo pipefail   # NOT -e: shard RCs are collected explicitly across concurrent waits.
 
 TAG="${1:?usage: aa1c-parallel.sh <tag> <bulk_cases_per_shard> [grid_cases_per_shard]}"
+OK_MARKER="${HOME}/aa1c-par-${TAG}-OK"
+# A same-tag rerun must start UNKNOWN. Otherwise a failed rerun can leave the
+# previous campaign's success marker looking current.
+rm -f -- "$OK_MARKER"
 BULK="${2:?bulk cases/payload/shard at SMOKE (8*BULK*NSHARD = armed/condition)}"
 GRID="${3:-6}"     # grid cases/payload/scale/shard at 1e6,1e7,1e8
 
@@ -144,7 +148,7 @@ if [ "$fail" = "0" ]; then
 fi
 
 if [ "$fail" = "0" ]; then
-  touch ~/aa1c-par-"$TAG"-OK
+  touch "$OK_MARKER"
   echo "AA1C_PARALLEL_ALL_OK (shards + full-join determinism MATCH)"
 else
   echo "AA1C_PARALLEL_FAILED (shard or comparator) — inspect the run-sets; do NOT declare GO"
