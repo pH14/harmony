@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::{KvmRun, PerfEventAttr, SysError, br_retired_attr, kvm};
+use crate::linux_console::{LinuxPvclockVcpu, PvclockWrite};
 use crate::run::{RunError, StepVcpu, Vcpu, VcpuExit, WorkCounter};
 
 /// Guest RAM base — the QEMU `virt` / Altra map the payload runtime is linked for
@@ -943,17 +944,16 @@ impl Machine {
         }
     }
 
-    /// Publish a **managed** work-derived clock page (`docs/PARAVIRT-CLOCK.md` ABI 1)
-    /// at `PVCLOCK_GPA`, so an AA-5 guest reads `CLOCKPAGE mode=managed`.
+    /// Publish the managed **bootstrap placeholder** (`docs/PARAVIRT-CLOCK.md` ABI 1)
+    /// at `PVCLOCK_GPA`, so bare AA-5 payloads read `CLOCKPAGE mode=managed-static`.
     ///
     /// Without this the page reads as zeroed RAM, the guest falls back to publishing
     /// its own static page, and reports `self-seeded` — which AA-5's acceptance forbids
     /// (`payloads/runtime/src/pvclock.rs`). This is the *minimum* the harness owes AA-5:
-    /// a valid, materialized, deterministic page. The full work-derived refresh (the
-    /// value advancing with `work`) is `hm-8h8`'s design, which AA-5 validates; a static
-    /// materialized page is deterministic across same-seed reps and is what the
-    /// pre-silicon apparatus needs to exercise the managed-vs-self-seeded attestation.
-    /// The page is published for every stage — non-AA-5 payloads simply do not read it.
+    /// a valid, materialized, deterministic page. Bare payload runs retain that historical
+    /// static attestation. The Linux executor overwrites it canonically, with
+    /// `FLAG_WORK_DERIVED` set and the actual `CNTFRQ_EL0`, after its guest-only perf counter
+    /// establishes the work-zero anchor and before the first KVM entry.
     fn publish_pvclock_page(&mut self) {
         // The page bytes are built by the shared, Miri-tested layout in oracle-model. A
         // materialized STATIC placeholder — `work_derived = false` — with V-time and
@@ -1271,6 +1271,81 @@ impl StepVcpu for Machine {
     }
 }
 
+impl LinuxPvclockVcpu for Machine {
+    fn publish_linux_pvclock(
+        &mut self,
+        vns: u64,
+        guest_clock: u64,
+        guest_clock_hz: u64,
+        write: PvclockWrite,
+    ) -> Result<(), RunError> {
+        let page_offset = oracle_model::PVCLOCK_GPA
+            .checked_sub(RAM_BASE)
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or_else(|| RunError::Seam {
+                context: "locate the Linux pvclock page",
+                message: format!(
+                    "pvclock GPA {:#x} is below or not representable relative to RAM base {RAM_BASE:#x}",
+                    oracle_model::PVCLOCK_GPA
+                ),
+            })?;
+
+        // SAFETY: `self.mem` is the unique live mapping of exactly `self.mem_size` bytes and
+        // this method is called only after a KVM exit, while the sole vCPU is stopped. The
+        // subsequent slice lookup bounds the page before either shared stamping function runs.
+        let ram = unsafe { core::slice::from_raw_parts_mut(self.mem, self.mem_size) };
+        let page_end = page_offset
+            .checked_add(vtime::pvclock::PVCLOCK_PAGE_LEN)
+            .ok_or_else(|| RunError::Seam {
+                context: "bound the Linux pvclock page",
+                message: "pvclock page end overflows usize".into(),
+            })?;
+        let ram_len = ram.len();
+        let page = ram
+            .get_mut(page_offset..page_end)
+            .ok_or_else(|| RunError::Seam {
+                context: "bound the Linux pvclock page",
+                message: format!(
+                    "pvclock page [{page_offset:#x}, {page_end:#x}) is outside {} bytes of guest RAM",
+                    ram_len
+                ),
+            })?;
+        match write {
+            PvclockWrite::Canonical => {
+                vtime::pvclock::stamp_canonical(page, vns, guest_clock, guest_clock_hz);
+            }
+            PvclockWrite::Refresh => {
+                vtime::pvclock::stamp(page, vns, guest_clock, guest_clock_hz);
+            }
+        }
+
+        let fields = vtime::pvclock::read(page).ok_or_else(|| RunError::Seam {
+            context: "read back the Linux pvclock page",
+            message: "stamping did not leave a stable ABI-v1 page".into(),
+        })?;
+        if fields.vns != vns
+            || fields.guest_clock != guest_clock
+            || fields.guest_clock_hz != guest_clock_hz
+            || fields.flags != vtime::pvclock::PVCLOCK_FLAGS_V1
+            || fields.vcpu_index != 0
+        {
+            return Err(RunError::Seam {
+                context: "read back the Linux pvclock page",
+                message: format!(
+                    "published ({vns}, {guest_clock}, {guest_clock_hz}) but read back \
+                     ({}, {}, {}, flags {:#x}, vcpu {})",
+                    fields.vns,
+                    fields.guest_clock,
+                    fields.guest_clock_hz,
+                    fields.flags,
+                    fields.vcpu_index
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// The seam-read pair [`Machine::registers_and_vgic`] returns: every architectural register
 /// (id → bytes, sorted) and the in-kernel vGIC injection state. Named so the register/vGIC
 /// read type has one home (and the tuple-of-collections does not trip `clippy::type_complexity`
@@ -1278,6 +1353,14 @@ impl StepVcpu for Machine {
 type RegsAndVgic = (BTreeMap<u64, Vec<u8>>, Vec<u8>);
 
 impl Machine {
+    /// Read the guest-visible constant generic-counter frequency (`CNTFRQ_EL0`).
+    ///
+    /// The AA-5 page carries this exact value and the owned kernel fails closed on a mismatch;
+    /// no host-frequency guess or DT constant is accepted.
+    pub fn linux_cntfrq_hz(&self) -> Result<u64, SysError> {
+        self.get_one_reg_u64(kvm::arm64_sysreg(3, 3, 14, 0, 0))
+    }
+
     /// Read every architectural register (`KVM_GET_REG_LIST` + `KVM_GET_ONE_REG`, in
     /// sorted id order) and the in-kernel vGIC injection state — the two seam-read inputs
     /// shared by [`Vcpu::state_digest`] (which adds guest RAM) and [`StepVcpu::regs_digest`]

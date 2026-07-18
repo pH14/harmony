@@ -13,7 +13,9 @@
 //!   (`run-set.json` + `records.jsonl`) the floor checker adjudicates. Linux only,
 //!   and **untested on silicon**.
 //! - `linux-boot` — a bounded, explicitly non-certifying AA-5(c) bring-up path for
-//!   a hash-pinned arm64 Image + initramfs. It stops at a fixed console marker.
+//!   a hash-pinned arm64 Image + initramfs. It refreshes the pvclock page at exact
+//!   retired-branch targets and stops at a fixed console marker; the separate stock-KVM
+//!   generic-timer-domain gap remains explicit.
 //!
 //! # What `run` refuses to invent
 //!
@@ -139,6 +141,15 @@ struct LinuxBootOpts {
     /// Maximum captured console bytes before the boot is refused.
     #[arg(long, default_value_t = DEFAULT_LINUX_MAX_CONSOLE_BYTES)]
     max_console_bytes: usize,
+    /// Measured N1 PMU skid margin for exact work-clock refresh landings.
+    #[arg(long)]
+    skid_margin: u64,
+    /// Maximum retired branches between work-derived clock-page publications.
+    #[arg(
+        long,
+        default_value_t = arm_harness::linux_console::DEFAULT_REFRESH_DELTA_WORK
+    )]
+    refresh_delta_work: u64,
     /// Per-KVM_RUN watchdog seconds; 0 disables it.
     #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
     watchdog_secs: u64,
@@ -800,8 +811,10 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
     use std::io::Write as _;
 
     use arm_harness::evidence::hex_lower;
-    use arm_harness::linux_console::{LinuxConsoleConfig, run_until_ready};
-    use arm_harness::sys::{Machine, pin_to_core};
+    use arm_harness::linux_console::{
+        LinuxConsoleConfig, LinuxWorkClockConfig, run_until_ready_work_clock,
+    };
+    use arm_harness::sys::{Machine, Mechanism, PerfCounter, pin_to_core};
     use sha2::{Digest, Sha256};
 
     // Verify both byte strings immediately before constructing the VM. The hashes
@@ -824,12 +837,24 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
     let mut machine = Machine::new_linux(&image, &initramfs, &opts.bootargs)
         .map_err(|e| format!("construct Linux KVM machine: {e}"))?;
     machine.set_watchdog_secs(opts.watchdog_secs);
-    let result = run_until_ready(
+    let guest_clock_hz = machine
+        .linux_cntfrq_hz()
+        .map_err(|e| format!("read guest CNTFRQ_EL0: {e}"))?;
+    let mut counter =
+        PerfCounter::open(&machine, Mechanism::Preempt, Some(opts.refresh_delta_work))
+            .map_err(|e| format!("open patched BR_RETIRED work counter: {e}"))?;
+    let result = run_until_ready_work_clock(
         &mut machine,
+        &mut counter,
         &LinuxConsoleConfig {
             ready_marker: arm_harness::linux_console::LINUX_READY_MARKER.to_vec(),
             max_exits: opts.max_exits,
             max_console_bytes: opts.max_console_bytes,
+        },
+        LinuxWorkClockConfig {
+            refresh_delta_work: opts.refresh_delta_work,
+            skid_margin: opts.skid_margin,
+            guest_clock_hz,
         },
     )
     .map_err(|e| format!("boot Linux: {e}"))?;
@@ -845,28 +870,34 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
             )
         })?;
     transcript
-        .write_all(&result.console)
+        .write_all(&result.boot.console)
         .map_err(|e| format!("write {}: {e}", opts.console_out.display()))?;
     transcript
         .sync_all()
         .map_err(|e| format!("sync {}: {e}", opts.console_out.display()))?;
 
     let mut hasher = Sha256::new();
-    hasher.update(&result.console);
+    hasher.update(&result.boot.console);
     let console_sha256 = hex_lower(&hasher.finalize());
     println!(
         "NON-CERTIFYING Linux boot reached its fixed console marker: exits={} console_bytes={} \
-         console_sha256={} image_sha256={} initramfs_sha256={} transcript={}",
-        result.exits,
-        result.console.len(),
+         console_sha256={} image_sha256={} initramfs_sha256={} pvclock_refreshes={} \
+         pvclock_max_gap_work={} pvclock_last_work={} guest_clock_hz={} transcript={}",
+        result.boot.exits,
+        result.boot.console.len(),
         console_sha256,
         image_sha256,
         initramfs_sha256,
+        result.refreshes,
+        result.max_refresh_gap_work,
+        result.last_refresh_work,
+        guest_clock_hz,
         opts.console_out.display()
     );
     println!(
-        "AA-5 remains open: this boot path still publishes FLAG_WORK_DERIVED=false and does not \
-         claim deterministic timer/clock closure"
+        "AA-5 remains open: the page is now exact-work-derived, but stock KVM still expires \
+         CNTV_CVAL against its live architected-counter domain; this command does not claim \
+         deterministic timer/injection closure or an AA-4 LSE-only image proof"
     );
     Ok(())
 }

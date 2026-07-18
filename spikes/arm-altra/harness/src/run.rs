@@ -367,6 +367,19 @@ pub enum RunError {
         /// The exact landing target.
         target: u64,
     },
+    /// The exact-landing walk consumed its caller-supplied `KVM_RUN` budget before reaching
+    /// the target. Linux boot shares this primitive with AA-3, and its total exit ceiling must
+    /// remain effective while the vCPU is being single-stepped (MMIO exits included).
+    #[error(
+        "exact landing: consumed the {limit}-exit landing budget before reaching work target \
+         {target} — refused rather than running an unbounded single-step/MMIO loop"
+    )]
+    ExactLandingExitLimit {
+        /// Maximum `KVM_RUN` calls permitted inside this landing walk.
+        limit: u64,
+        /// The exact work target the walk had not yet reached.
+        target: u64,
+    },
     /// A stock signal-kick arrived on the AA-3 exact-landing path. The exact landing rides the
     /// patched in-kernel `Preempt` force-exit ALONE; the signal kick is AA-3's forbidden
     /// fallback (`docs/ARM-ALTRA.md` §AA-3), so it is refused rather than landed on.
@@ -476,6 +489,11 @@ const MAX_ADVISORY_EXITS: u64 = 100_000;
 /// defensively so a counter that never advances to the target fails rather than spins forever).
 const MAX_LANDING_STEPS: u64 = 1_000_000;
 
+/// Hard ceiling on all `KVM_RUN` calls made by one AA-3 landing walk. A stepped MMIO
+/// instruction can produce an MMIO exit followed by its debug exit, so this is deliberately
+/// larger than [`MAX_LANDING_STEPS`] while still making the loop total.
+const MAX_LANDING_RUN_EXITS: u64 = 2_000_000;
+
 /// Extra `BR_RETIRED` headroom, ADDED to the measured `skid_margin`, that the exact-landing
 /// overflow is armed below the target.
 ///
@@ -496,7 +514,7 @@ const MAX_LANDING_STEPS: u64 = 1_000_000;
 /// few extra single steps per landing; the payoff is a canonical, path-independent landing `PC`.
 pub const LANDING_HEADROOM: u64 = 16;
 
-fn exact_arm_delta(delta: u64, skid_margin: u64) -> Result<u64, RunError> {
+pub(crate) fn exact_arm_delta(delta: u64, skid_margin: u64) -> Result<u64, RunError> {
     let early_by = skid_margin
         .checked_add(LANDING_HEADROOM)
         .ok_or(RunError::ExactLandingMarginOverflow { skid_margin })?;
@@ -504,6 +522,124 @@ fn exact_arm_delta(delta: u64, skid_margin: u64) -> Result<u64, RunError> {
         Some(arm_delta) if arm_delta >= 1 => Ok(arm_delta),
         _ => Err(RunError::ExactLandingWindowTooSmall { delta, skid_margin }),
     }
+}
+
+/// Result of servicing one patched [`VcpuExit::Preempt`] for an exact work deadline.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ExactPreemptOutcome {
+    /// An unrelated host IRQ forced the armed vCPU out before the early arm point. The caller
+    /// should continue; [`WorkCounter::rearm`] has already restored the patch's one-shot.
+    Advisory {
+        /// Work observed at the advisory exit.
+        work: u64,
+    },
+    /// The overflow arrived below the target and the vCPU was single-stepped to its canonical
+    /// first instruction boundary at exactly `target`.
+    Landed {
+        /// Number of retired instructions single-stepped (debug exits).
+        single_steps: u64,
+        /// Total `KVM_RUN` calls inside the walk, including serviced MMIO exits.
+        run_exits: u64,
+    },
+}
+
+/// Service an armed patched-Preempt exit and, when it is the real overflow, land exactly.
+///
+/// This is the common AA-3/AA-5 primitive: arm-early overflow, advisory-host-IRQ handling, and
+/// single-step convergence to the first instruction boundary whose work count is `target`.
+/// `service_mmio` is deliberately supplied by the caller because the bare payload and Linux
+/// expose different PL011 surfaces. It runs only while the vCPU is stopped.
+pub(crate) fn service_exact_preempt<V, F, E>(
+    vcpu: &mut V,
+    counter: &mut impl WorkCounter,
+    target: u64,
+    arm_point: u64,
+    skid_margin: u64,
+    max_run_exits: u64,
+    mut service_mmio: F,
+) -> Result<ExactPreemptOutcome, E>
+where
+    V: StepVcpu,
+    F: FnMut(&mut V, u64, &[u8], bool) -> Result<(), E>,
+    E: From<RunError>,
+{
+    let mut work = counter.read()?;
+    if work < arm_point {
+        counter.rearm()?;
+        return Ok(ExactPreemptOutcome::Advisory { work });
+    }
+    if work >= target {
+        return Err(RunError::ExactLandingKickAtOrAboveTarget {
+            target,
+            landed: work,
+            skid_margin,
+        }
+        .into());
+    }
+
+    counter.resume_counting()?;
+    vcpu.arm_single_step()?;
+    let mut single_steps = 0;
+    let mut run_exits = 0;
+    while work != target {
+        if run_exits == max_run_exits {
+            return Err(RunError::ExactLandingExitLimit {
+                limit: max_run_exits,
+                target,
+            }
+            .into());
+        }
+        run_exits += 1;
+        match vcpu.run()? {
+            VcpuExit::Debug => {}
+            VcpuExit::Mmio {
+                addr,
+                data,
+                is_write,
+            } => {
+                service_mmio(vcpu, addr, &data, is_write)?;
+                continue;
+            }
+            other => {
+                return Err(RunError::Seam {
+                    context: "exact-landing single step expected KVM_EXIT_DEBUG or serviced MMIO",
+                    message: format!("got a non-debug non-MMIO exit: {other:?}"),
+                }
+                .into());
+            }
+        }
+
+        single_steps += 1;
+        if single_steps > MAX_LANDING_STEPS {
+            return Err(RunError::ExactLandingStepStorm {
+                steps: single_steps,
+                work,
+                target,
+            }
+            .into());
+        }
+        let after = counter.read()?;
+        if after < work {
+            return Err(RunError::StepCounterWentBackwards {
+                before: work,
+                after,
+            }
+            .into());
+        }
+        if after > target {
+            return Err(RunError::ExactLandingOvershotTarget {
+                target,
+                landed: after,
+            }
+            .into());
+        }
+        work = after;
+    }
+    vcpu.disarm_single_step()?;
+    Ok(ExactPreemptOutcome::Landed {
+        single_steps,
+        run_exits,
+    })
 }
 
 /// What one sample is asked to be: which payload, at what scale and seed, and — if
@@ -1126,8 +1262,12 @@ pub fn run_sample_exact(
                     // Nothing was armed, so nothing should have kicked.
                     return Err(RunError::UnexpectedMechanismExit(ExitReason::Preempt));
                 };
-                let arm_point = arm_point.expect("arm_point is set whenever target is");
-                let work = counter.read()?;
+                let Some(arm_point) = arm_point else {
+                    return Err(RunError::Seam {
+                        context: "exact-landing target has no arm point",
+                        message: "target was installed without its arm-early point".into(),
+                    });
+                };
 
                 if landed.is_some() {
                     // A second `Preempt` after the exact landing. The perf overflow was parked
@@ -1137,110 +1277,35 @@ pub fn run_sample_exact(
                     continue 'run;
                 }
 
-                // On arm64 the armed vCPU exits on ANY host IRQ, so a `Preempt` BELOW the
-                // arm-early overflow point is an unrelated tick, not the overflow — re-read,
-                // re-arm, continue (exactly the advisory path `run_sample` takes, but against
-                // the arm-early point rather than the target).
-                if work < arm_point {
-                    advisory_exits += 1;
-                    if advisory_exits > MAX_ADVISORY_EXITS {
-                        return Err(RunError::AdvisoryExitStorm {
-                            exits: advisory_exits,
-                            work,
-                            target,
-                        });
-                    }
-                    counter.rearm()?;
-                    continue 'run;
-                }
-
-                // The overflow fired. It MUST be STRICTLY below the target so the single-step-up
-                // loop can walk to the canonical landing PC (the first instruction at which
-                // `work == target`). Arming `skid_margin + LANDING_HEADROOM` below the target
-                // guarantees this on the measured skid. A `Preempt` AT or above the target is
-                // BR-exact but PC-non-canonical (it lands at an arbitrary PC on the target's
-                // branchless plateau, which two same-seed reps need not share) — and means the
-                // skid exceeded margin+headroom. Fail closed rather than record a non-canonical
-                // landing that breaks replay identity.
-                if work >= target {
-                    return Err(RunError::ExactLandingKickAtOrAboveTarget {
-                        target,
-                        landed: work,
-                        skid_margin,
-                    });
-                }
-
-                // The delivery, below the target. Re-enable the counter (the one-shot disabled
-                // it on overflow) so the single steps advance it, then walk up to the exact
-                // target one instruction at a time.
-                deliveries += 1;
-                counter.resume_counting()?;
-                vcpu.arm_single_step()?;
-                let mut work = work;
-                let mut landing_steps: u64 = 0;
-                while work != target {
-                    // Invariant: `work < target`. Step one instruction. Most of the counting
-                    // window is pure compute, but a stepped instruction CAN be a console write
-                    // (wfi-idle's timer path prints under the slow single-step); the PL011 is
-                    // serviced and the step re-run, exactly as the main loop does. Anything else
-                    // is a finding.
-                    match vcpu.run()? {
-                        VcpuExit::Debug => {}
-                        VcpuExit::Mmio {
-                            addr,
-                            data,
-                            is_write,
-                        } => {
-                            // The landing is strictly BELOW MARK_END, so no MARK event occurs
-                            // here — a PL011 access is guest output during the slow single-step:
-                            // service a read, ignore a config/data write, and re-run for this
-                            // instruction's Debug exit WITHOUT counting a landing step. A
-                            // non-PL011 access is a finding (`service_pl011_read` refuses it).
-                            service_pl011_read(vcpu, addr, &data, is_write)?;
-                            continue;
-                        }
-                        other => {
-                            return Err(RunError::Seam {
-                                context: "exact-landing single step expected KVM_EXIT_DEBUG or console MMIO",
-                                message: format!("got a non-debug non-console exit: {other:?}"),
+                match service_exact_preempt(
+                    vcpu,
+                    counter,
+                    target,
+                    arm_point,
+                    skid_margin,
+                    MAX_LANDING_RUN_EXITS,
+                    |vcpu, addr, data, is_write| {
+                        service_pl011_read(vcpu, addr, data, is_write).map(|_| ())
+                    },
+                )? {
+                    ExactPreemptOutcome::Advisory { work } => {
+                        advisory_exits += 1;
+                        if advisory_exits > MAX_ADVISORY_EXITS {
+                            return Err(RunError::AdvisoryExitStorm {
+                                exits: advisory_exits,
+                                work,
+                                target,
                             });
                         }
                     }
-                    landing_steps += 1;
-                    if landing_steps > MAX_LANDING_STEPS {
-                        return Err(RunError::ExactLandingStepStorm {
-                            steps: landing_steps,
-                            work,
-                            target,
-                        });
+                    ExactPreemptOutcome::Landed { .. } => {
+                        // Digest the landed state at the exact Moment, before free-running guest
+                        // execution resumes. The helper already disarmed guest debug.
+                        deliveries += 1;
+                        landed = Some(target);
+                        landed_digest = Some(vcpu.state_digest()?);
                     }
-                    let after = counter.read()?;
-                    if after < work {
-                        // The work counter is monotonic while the guest runs; a decrease across
-                        // one step is a seam/hardware anomaly, refused.
-                        return Err(RunError::StepCounterWentBackwards {
-                            before: work,
-                            after,
-                        });
-                    }
-                    if after > target {
-                        // A single step advances BR_RETIRED by 0 or 1, so it cannot skip the
-                        // target — a step past it is a real anomaly, not an exact landing.
-                        return Err(RunError::ExactLandingOvershotTarget {
-                            target,
-                            landed: after,
-                        });
-                    }
-                    work = after;
                 }
-                // Exactly at the target. Digest the landed state HERE, at the landing Moment,
-                // before the guest is resumed — that is the state AA-3's replay identity is
-                // about. Then disarm single-step so the guest runs freely to MARK_END and the
-                // sentinel (leaving it armed would make every later KVM_RUN trap after one
-                // instruction, and the counting loop refuses an unrequested KVM_EXIT_DEBUG).
-                landed = Some(target);
-                landed_digest = Some(vcpu.state_digest()?);
-                vcpu.disarm_single_step()?;
             }
 
             VcpuExit::MalformedMmio { addr, width } => {

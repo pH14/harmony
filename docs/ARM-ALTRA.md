@@ -1392,10 +1392,12 @@ The centerpiece. Evidence in `results/aa-5/` and the AA-3 records.
 work-derived clock page via a seqlock, with no `CNTVCT`/`CNTPCT` in the read path (the payload
 `payloads/oracles/src/asm/clock_page.s`). In the ≥10⁶ AA-3 run it landed **bit-identical across
 same-seed reps** (replay-identity PASS after the AA3-F1 canonical-landing fix) and **MATCH**
-solo-vs-co-tenant. The page is presently a *static* placeholder (`FLAG_WORK_DERIVED` clear —
-the plumbing, not a live refresh), so it is trivially wall-clock-invariant; the
-value-advances-with-work refresh is `hm-8h8`'s design, which AA-5 validates once that lands. The
-digest **excludes** the live host-time counters (`is_host_time_register`), verified in AA-3
+solo-vs-co-tenant. Those retained payload runs used a *static* placeholder
+(`FLAG_WORK_DERIVED` clear — the plumbing, not a live refresh), so their clock value was
+trivially wall-clock-invariant; they are not retroactively claimed as a live-refresh result.
+The Linux executor now has the `hm-8h8` value-advancing path pre-silicon: it stamps from the
+skid-free exact-work anchor, not from natural-exit live counts, but has not run on the N1. The
+retained digest **excludes** the live host-time counters (`is_host_time_register`), verified in AA-3
 where `CNTPCT_EL0`/`KVM_REG_ARM_TIMER_CNT` varied 240/240 on a passing payload while replay
 held — wall-clock never reaches a compared digest.
 
@@ -1416,9 +1418,23 @@ Image loader with bounded Image/initramfs placement, deterministic generated DTB
 entry (`x0=DTB`, reserved args zero), Linux-only PSCI 0.2 vCPU opt-in, the existing in-kernel
 vGICv3, and a bounded PL011/PrimeCell console loop. The `linux-boot` command verifies trusted
 Image/initramfs sha256 pins over hard-bounded reads immediately before VM construction, pins the
-vCPU thread, and stops on a fixed console marker. It is deliberately labelled
-**NON-CERTIFYING**: the console marker alone does not prove its producer, the clock page remains
-the explicit `FLAG_WORK_DERIVED=false` placeholder, and this path has not run on the Altra.
+vCPU thread, and stops on a fixed console marker. With the operator-supplied measured skid
+margin, it now requires the patched Preempt mechanism, reads the guest's actual `CNTFRQ_EL0`,
+canonically stamps ABI v1 before entry, and forces every later page refresh at an exact
+retired-branch target via the AA-3 arm-early + single-step primitive. The output records refresh
+count, maximum work gap, and last exact anchor. It remains deliberately labelled
+**NON-CERTIFYING**: the console marker alone does not prove its producer, the fixed board GPA is
+not yet the contract's guest-registered one-shot transport, the timer gap below remains, and this
+path has not run on the Altra. The marker is latched at its UART exit but accepted only after the
+next exact refresh publishes; the owned init spins after READY so a lost/late Preempt cannot pass
+with a stale page merely because userspace printed the expected bytes.
+
+The exact landing also inherits AA-4's LSE-only precondition: single-stepping through an
+`LDXR`/`STXR` sequence clears its monitor and can add retries or livelock. The current arm64
+kernel/rootfs recipe has not yet removed and scan-gated every vanilla LL/SC fallback, and
+`linux-boot` accepts a trusted hash pin rather than proving that property itself. That is another
+reason this is pre-silicon substrate only; the owned image's AA-4 level-1/2 clean build is required
+before a live result can count beyond bring-up diagnostics.
 
 The tree now has a native Linux/aarch64 build recipe for the pinned kernel and BusyBox rootfs.
 Its v6.18.35 patch routes the four shared physical/virtual counter accessors (including the
@@ -1430,17 +1446,18 @@ Image/initramfs is present on the Altra yet.
 
 One timer-domain gap is explicit. Upstream's virtual clockevent programs `CNTV_CVAL` as
 `page_guest_clock + delta`, while stock KVM expires it against the live architected counter.
-Equal frequency alone does not align those origins, and the current static-zero placeholder can
-make the deadline immediately expired. AA-5 therefore remains open until the host owns/aligned
-the timer-counter origin or replaces that clockevent path with the deterministic V-time timer,
-stamps the page from retired-branch work before entry/injection, and the real N1 run proves
-userspace steady state plus same-seed console+state identity. That live substrate also hosts
-AA-4 level-3's planted-exclusive proof.
+Equal frequency alone does not align those origins; replacing the static page with exact-work
+refreshes fixes the clocksource but does not make the in-kernel timer expiry deterministic.
+AA-5 therefore remains open until the host owns/aligned the timer-counter origin or replaces that
+clockevent path with the deterministic V-time timer, stamps the page before every corresponding
+injection, and the real N1 run proves userspace steady state plus same-seed console+state
+identity. That live substrate also hosts AA-4 level-3's planted-exclusive proof.
 
 **Disposition: AA-5 PARTIAL — (a) payload determinism and (b) the closure premise + scanner are
 demonstrated on real N1; (c) has pre-silicon executor/build substrate but no box-built asset or
-live guest proof**, and is blocked on the pvclock-enabled guest build, deterministic page/timer
-refresh, and live N1 bring-up.
+live guest proof**. The exact-work page refresher is built but unexecuted; completion remains
+blocked on the pvclock-enabled box build, one-shot page registration, deterministic timer/event
+delivery, and live N1 bring-up.
 It remains the natural home for AA-4 L3's live proof and AA-6's guest-side gates. This is not a
 NO-GO signal — every underlying mechanism (work clock, exact landing, force-exit, counter
 closure) is independently GO/demonstrated above.

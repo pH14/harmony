@@ -12,7 +12,11 @@
 use oracle_model::UART_BASE;
 use thiserror::Error;
 
-use crate::run::{RunError, Vcpu, VcpuExit};
+use crate::run::{
+    ExactPreemptOutcome, RunError, StepVcpu, Vcpu, VcpuExit, WorkCounter, exact_arm_delta,
+    service_exact_preempt,
+};
+use vtime::{VClock, VClockConfig};
 
 const PL011_PAGE: u64 = 0x1000;
 const PL011_DR_OFFSET: u64 = 0x000;
@@ -25,6 +29,9 @@ pub const MAX_CONSOLE_BYTES: usize = 64 << 20;
 /// Hard operational exit ceiling above the ordinary command default.
 pub const MAX_KVM_EXITS: u64 = 100_000_000;
 const MAX_MARKER_BYTES: usize = 4096;
+/// Default §2/G3 pvclock staleness bound, in retired branches (10 ms of contract V-time).
+pub const DEFAULT_REFRESH_DELTA_WORK: u64 = 10_000_000;
+const MAX_CLOCK_ADVISORY_EXITS: u64 = 100_000;
 
 /// Limits and requested console marker for one Linux boot.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -44,6 +51,54 @@ pub struct LinuxConsoleResult {
     pub console: Vec<u8>,
     /// Number of KVM exits serviced.
     pub exits: u64,
+}
+
+/// Exact-count work-clock configuration for the AA-5 Linux executor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LinuxWorkClockConfig {
+    /// Maximum retired branches between distinct page publications.
+    pub refresh_delta_work: u64,
+    /// Measured N1 PMU skid margin used by arm-early + single-step landing.
+    pub skid_margin: u64,
+    /// Guest `CNTFRQ_EL0`, which the owned kernel cross-checks against the page.
+    pub guest_clock_hz: u64,
+}
+
+/// Linux boot result plus the non-vacuous work-clock refresh evidence observed in-process.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LinuxWorkClockResult {
+    /// Console transcript and total `KVM_RUN` count.
+    pub boot: LinuxConsoleResult,
+    /// Number of distinct post-registration page publications.
+    pub refreshes: u64,
+    /// Largest exact-work gap between the canonical registration stamp and later refreshes.
+    pub max_refresh_gap_work: u64,
+    /// Exact work count carried by the last published value.
+    pub last_refresh_work: u64,
+}
+
+/// Which ABI-v1 write the stopped-vCPU page seam must perform.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PvclockWrite {
+    /// Whole-page registration form: sequence zero and reserved tail zeroed.
+    Canonical,
+    /// Value-keyed live refresh: sequence advances only if published values change.
+    Refresh,
+}
+
+/// A step-capable Linux vCPU whose stopped guest RAM contains the pvclock page.
+pub trait LinuxPvclockVcpu: StepVcpu {
+    /// Publish one page value while the vCPU is stopped.
+    ///
+    /// # Errors
+    /// [`RunError`] if the page no longer lies wholly inside guest RAM or read-back differs.
+    fn publish_linux_pvclock(
+        &mut self,
+        vns: u64,
+        guest_clock: u64,
+        guest_clock_hz: u64,
+        write: PvclockWrite,
+    ) -> Result<(), RunError>;
 }
 
 /// Why a Linux console boot was refused.
@@ -119,6 +174,25 @@ pub enum LinuxConsoleError {
     /// A measurement/debug mechanism exit has no place in an unarmed boot.
     #[error("unexpected {0} while booting Linux without an armed measurement")]
     UnexpectedMechanism(&'static str),
+    /// A zero Δ cannot advance a materialized page and would arm an immediate-exit loop.
+    #[error("the Linux work-clock refresh delta is zero")]
+    ZeroRefreshDelta,
+    /// The page frequency is contractual and must match a non-zero guest `CNTFRQ_EL0`.
+    #[error("the Linux work-clock guest frequency is zero")]
+    ZeroGuestClockHz,
+    /// Guest work must start from the canonical reset anchor; pre-entry work means the perf
+    /// event included execution outside the owned guest interval.
+    #[error("the guest-only work counter read {work} before the first KVM entry; expected 0")]
+    NonzeroInitialWork {
+        /// Unexpected pre-entry work value.
+        work: u64,
+    },
+    /// Advancing the periodic forced-refresh target would wrap and make time go backwards.
+    #[error("the next Linux work-clock refresh target overflows after work {work}")]
+    RefreshTargetOverflow {
+        /// Last exact refresh work count.
+        work: u64,
+    },
 }
 
 fn pl011_offset(addr: u64, width: usize) -> Result<u64, RunError> {
@@ -154,6 +228,40 @@ fn read_value(offset: u64) -> u64 {
     }
 }
 
+fn validate_config(config: &LinuxConsoleConfig) -> Result<(), LinuxConsoleError> {
+    if config.ready_marker.is_empty() {
+        return Err(LinuxConsoleError::EmptyReadyMarker);
+    }
+    if config.max_exits == 0 {
+        return Err(LinuxConsoleError::ZeroExitBudget);
+    }
+    if config.max_exits > MAX_KVM_EXITS {
+        return Err(LinuxConsoleError::ExitBoundTooLarge {
+            requested: config.max_exits,
+            maximum: MAX_KVM_EXITS,
+        });
+    }
+    if config.max_console_bytes > MAX_CONSOLE_BYTES {
+        return Err(LinuxConsoleError::ConsoleBoundTooLarge {
+            requested: config.max_console_bytes,
+            maximum: MAX_CONSOLE_BYTES,
+        });
+    }
+    if config.ready_marker.len() > MAX_MARKER_BYTES {
+        return Err(LinuxConsoleError::MarkerTooLarge {
+            requested: config.ready_marker.len(),
+            maximum: MAX_MARKER_BYTES,
+        });
+    }
+    if config.ready_marker.len() > config.max_console_bytes {
+        return Err(LinuxConsoleError::MarkerExceedsConsoleLimit {
+            marker_len: config.ready_marker.len(),
+            limit: config.max_console_bytes,
+        });
+    }
+    Ok(())
+}
+
 /// Streaming Knuth-Morris-Pratt matcher: one amortized-constant update per
 /// console byte, so a long repeated near-match cannot turn bounded input into
 /// quadratic work.
@@ -161,6 +269,58 @@ struct MarkerMatcher {
     needle: Vec<u8>,
     prefix: Vec<usize>,
     matched: usize,
+}
+
+struct LinuxConsoleCapture {
+    console: Vec<u8>,
+    marker: MarkerMatcher,
+    ready: bool,
+}
+
+impl LinuxConsoleCapture {
+    fn new(config: &LinuxConsoleConfig) -> Self {
+        Self {
+            console: Vec::new(),
+            marker: MarkerMatcher::new(&config.ready_marker),
+            ready: false,
+        }
+    }
+
+    fn service_mmio(
+        &mut self,
+        vcpu: &mut impl Vcpu,
+        config: &LinuxConsoleConfig,
+        addr: u64,
+        data: &[u8],
+        is_write: bool,
+    ) -> Result<(), LinuxConsoleError> {
+        if data.is_empty() {
+            return Err(LinuxConsoleError::ZeroWidthMmio { addr });
+        }
+        if !matches!(data.len(), 1 | 2 | 4) {
+            return Err(LinuxConsoleError::UnsupportedMmioWidth {
+                addr,
+                width: data.len(),
+            });
+        }
+        let offset = pl011_offset(addr, data.len())?;
+        if is_write {
+            if offset != PL011_DR_OFFSET || self.ready {
+                return Ok(());
+            }
+            if self.console.len() == config.max_console_bytes {
+                return Err(LinuxConsoleError::ConsoleLimit {
+                    limit: config.max_console_bytes,
+                });
+            }
+            self.console.push(data[0]);
+            self.ready = self.marker.push(data[0]);
+        } else {
+            let bytes = read_value(offset).to_le_bytes();
+            vcpu.complete_mmio_read(&bytes[..data.len()])?;
+        }
+        Ok(())
+    }
 }
 
 impl MarkerMatcher {
@@ -213,39 +373,9 @@ pub fn run_until_ready(
     vcpu: &mut impl Vcpu,
     config: &LinuxConsoleConfig,
 ) -> Result<LinuxConsoleResult, LinuxConsoleError> {
-    if config.ready_marker.is_empty() {
-        return Err(LinuxConsoleError::EmptyReadyMarker);
-    }
-    if config.max_exits == 0 {
-        return Err(LinuxConsoleError::ZeroExitBudget);
-    }
-    if config.max_exits > MAX_KVM_EXITS {
-        return Err(LinuxConsoleError::ExitBoundTooLarge {
-            requested: config.max_exits,
-            maximum: MAX_KVM_EXITS,
-        });
-    }
-    if config.max_console_bytes > MAX_CONSOLE_BYTES {
-        return Err(LinuxConsoleError::ConsoleBoundTooLarge {
-            requested: config.max_console_bytes,
-            maximum: MAX_CONSOLE_BYTES,
-        });
-    }
-    if config.ready_marker.len() > MAX_MARKER_BYTES {
-        return Err(LinuxConsoleError::MarkerTooLarge {
-            requested: config.ready_marker.len(),
-            maximum: MAX_MARKER_BYTES,
-        });
-    }
-    if config.ready_marker.len() > config.max_console_bytes {
-        return Err(LinuxConsoleError::MarkerExceedsConsoleLimit {
-            marker_len: config.ready_marker.len(),
-            limit: config.max_console_bytes,
-        });
-    }
+    validate_config(config)?;
 
-    let mut console = Vec::new();
-    let mut marker = MarkerMatcher::new(&config.ready_marker);
+    let mut capture = LinuxConsoleCapture::new(config);
     for exits in 1..=config.max_exits {
         match vcpu.run()? {
             VcpuExit::Mmio {
@@ -253,33 +383,12 @@ pub fn run_until_ready(
                 data,
                 is_write,
             } => {
-                if data.is_empty() {
-                    return Err(LinuxConsoleError::ZeroWidthMmio { addr });
-                }
-                if !matches!(data.len(), 1 | 2 | 4) {
-                    return Err(LinuxConsoleError::UnsupportedMmioWidth {
-                        addr,
-                        width: data.len(),
+                capture.service_mmio(vcpu, config, addr, &data, is_write)?;
+                if capture.ready {
+                    return Ok(LinuxConsoleResult {
+                        console: capture.console,
+                        exits,
                     });
-                }
-                let offset = pl011_offset(addr, data.len())?;
-                if is_write {
-                    if offset != PL011_DR_OFFSET {
-                        continue;
-                    }
-                    if console.len() == config.max_console_bytes {
-                        return Err(LinuxConsoleError::ConsoleLimit {
-                            limit: config.max_console_bytes,
-                        });
-                    }
-                    console.push(data[0]);
-                    if marker.push(data[0]) {
-                        return Ok(LinuxConsoleResult { console, exits });
-                    }
-                } else {
-                    let bytes = read_value(offset).to_le_bytes();
-                    let response = &bytes[..data.len()];
-                    vcpu.complete_mmio_read(response)?;
                 }
             }
             VcpuExit::MalformedMmio { addr, width } => {
@@ -299,6 +408,169 @@ pub fn run_until_ready(
     }
     Err(LinuxConsoleError::ExitLimit {
         limit: config.max_exits,
+    })
+}
+
+/// Run Linux with a real ABI-v1 work-derived page refreshed at exact retired-branch Moments.
+///
+/// The page is canonically stamped at the pre-entry work anchor (required to be zero), then a
+/// patched in-kernel Preempt is armed early for each `refresh_delta_work` target and the vCPU is
+/// single-stepped to the target's canonical PC before publication. Natural exits do not import
+/// their skid-tainted live counter value. This proves the page/G3 half of AA-5; it deliberately
+/// does **not** claim the stock KVM generic timer is deterministic (that independent timer-domain
+/// gap remains a live-boot blocker in `docs/ARM-ALTRA.md`).
+///
+/// # Errors
+/// [`LinuxConsoleError`] on invalid limits/clock configuration, a nonzero pre-entry work count,
+/// any imprecise or unbounded landing, page publication failure, or an unexpected KVM exit.
+pub fn run_until_ready_work_clock(
+    vcpu: &mut impl LinuxPvclockVcpu,
+    counter: &mut impl WorkCounter,
+    console_config: &LinuxConsoleConfig,
+    clock_config: LinuxWorkClockConfig,
+) -> Result<LinuxWorkClockResult, LinuxConsoleError> {
+    validate_config(console_config)?;
+    if clock_config.refresh_delta_work == 0 {
+        return Err(LinuxConsoleError::ZeroRefreshDelta);
+    }
+    if clock_config.guest_clock_hz == 0 {
+        return Err(LinuxConsoleError::ZeroGuestClockHz);
+    }
+
+    let initial_work = counter.read()?;
+    if initial_work != 0 {
+        return Err(LinuxConsoleError::NonzeroInitialWork { work: initial_work });
+    }
+    let clock = VClock::new(VClockConfig {
+        ratio_num: 1,
+        ratio_den: 1,
+        guest_hz: clock_config.guest_clock_hz,
+        guest_base: 0,
+        vns_base: 0,
+    })
+    .map_err(|error| RunError::Seam {
+        context: "construct the AA-5 work-derived clock",
+        message: error.to_string(),
+    })?;
+    vcpu.publish_linux_pvclock(
+        clock.vns(initial_work),
+        clock.guest_ticks(initial_work),
+        clock_config.guest_clock_hz,
+        PvclockWrite::Canonical,
+    )?;
+
+    let arm_delta = exact_arm_delta(clock_config.refresh_delta_work, clock_config.skid_margin)?;
+    counter.arm_overflow(arm_delta)?;
+    let mut target = clock_config.refresh_delta_work;
+    let mut arm_point = arm_delta;
+    let mut refreshes = 0_u64;
+    let mut max_refresh_gap_work = 0_u64;
+    let mut last_refresh_work = initial_work;
+    let mut advisory_exits = 0_u64;
+
+    let mut capture = LinuxConsoleCapture::new(console_config);
+    let mut exits = 0_u64;
+    while exits < console_config.max_exits {
+        exits += 1;
+        match vcpu.run()? {
+            VcpuExit::Mmio {
+                addr,
+                data,
+                is_write,
+            } => {
+                capture.service_mmio(vcpu, console_config, addr, &data, is_write)?;
+                // READY is latched, never accepted at this natural MMIO exit: its live work
+                // count is skid-tainted and an armed forced refresh may already be late/lost.
+                // Keep running until the next exact landing publishes, then return from the
+                // `Landed` arm below. The owned init spins after READY so that target remains
+                // reachable instead of powering off between marker and proof.
+            }
+            VcpuExit::Preempt => {
+                let remaining = console_config.max_exits - exits;
+                match service_exact_preempt(
+                    vcpu,
+                    counter,
+                    target,
+                    arm_point,
+                    clock_config.skid_margin,
+                    remaining,
+                    |vcpu, addr, data, is_write| {
+                        capture.service_mmio(vcpu, console_config, addr, data, is_write)
+                    },
+                )? {
+                    ExactPreemptOutcome::Advisory { work } => {
+                        advisory_exits += 1;
+                        if advisory_exits > MAX_CLOCK_ADVISORY_EXITS {
+                            return Err(RunError::AdvisoryExitStorm {
+                                exits: advisory_exits,
+                                work,
+                                target,
+                            }
+                            .into());
+                        }
+                    }
+                    ExactPreemptOutcome::Landed { run_exits, .. } => {
+                        exits += run_exits;
+                        vcpu.publish_linux_pvclock(
+                            clock.vns(target),
+                            clock.guest_ticks(target),
+                            clock_config.guest_clock_hz,
+                            PvclockWrite::Refresh,
+                        )?;
+                        refreshes += 1;
+                        let refresh_gap =
+                            target.checked_sub(last_refresh_work).ok_or_else(|| {
+                                RunError::Seam {
+                                    context: "advance the Linux pvclock refresh anchor",
+                                    message: format!(
+                                        "exact target {target} went backwards from prior anchor \
+                                     {last_refresh_work}"
+                                    ),
+                                }
+                            })?;
+                        max_refresh_gap_work = max_refresh_gap_work.max(refresh_gap);
+                        last_refresh_work = target;
+
+                        if capture.ready {
+                            return Ok(LinuxWorkClockResult {
+                                boot: LinuxConsoleResult {
+                                    console: capture.console,
+                                    exits,
+                                },
+                                refreshes,
+                                max_refresh_gap_work,
+                                last_refresh_work,
+                            });
+                        }
+
+                        let next_target = target
+                            .checked_add(clock_config.refresh_delta_work)
+                            .ok_or(LinuxConsoleError::RefreshTargetOverflow { work: target })?;
+                        let next_arm_point = target
+                            .checked_add(arm_delta)
+                            .ok_or(LinuxConsoleError::RefreshTargetOverflow { work: target })?;
+                        counter.arm_overflow(arm_delta)?;
+                        target = next_target;
+                        arm_point = next_arm_point;
+                    }
+                }
+            }
+            VcpuExit::MalformedMmio { addr, width } => {
+                return Err(RunError::MalformedMmio { addr, width }.into());
+            }
+            VcpuExit::Other(reason) => {
+                return Err(RunError::UnexpectedExit(reason).into());
+            }
+            VcpuExit::SignalKick => {
+                return Err(LinuxConsoleError::UnexpectedMechanism("signal kick"));
+            }
+            VcpuExit::Debug => {
+                return Err(LinuxConsoleError::UnexpectedMechanism("KVM_EXIT_DEBUG"));
+            }
+        }
+    }
+    Err(LinuxConsoleError::ExitLimit {
+        limit: console_config.max_exits,
     })
 }
 
@@ -325,6 +597,113 @@ mod tests {
 
         fn state_digest(&mut self) -> Result<String, RunError> {
             Ok("unused".into())
+        }
+    }
+
+    struct ScriptedClockVcpu {
+        exits: VecDeque<VcpuExit>,
+        page: Vec<u8>,
+        single_step: bool,
+        publications: Vec<(u64, u64, u64, PvclockWrite)>,
+    }
+
+    impl Vcpu for ScriptedClockVcpu {
+        fn run(&mut self) -> Result<VcpuExit, RunError> {
+            self.exits.pop_front().ok_or(RunError::UnexpectedExit(999))
+        }
+
+        fn complete_mmio_read(&mut self, _data: &[u8]) -> Result<(), RunError> {
+            Ok(())
+        }
+
+        fn state_digest(&mut self) -> Result<String, RunError> {
+            Ok("unused".into())
+        }
+    }
+
+    impl StepVcpu for ScriptedClockVcpu {
+        fn arm_single_step(&mut self) -> Result<(), RunError> {
+            self.single_step = true;
+            Ok(())
+        }
+
+        fn disarm_single_step(&mut self) -> Result<(), RunError> {
+            self.single_step = false;
+            Ok(())
+        }
+
+        fn pc(&mut self) -> Result<u64, RunError> {
+            Ok(0)
+        }
+
+        fn opcode_at(&mut self, _addr: u64) -> Result<Option<u32>, RunError> {
+            Ok(Some(0))
+        }
+
+        fn vbar(&mut self) -> Result<u64, RunError> {
+            Ok(0)
+        }
+
+        fn regs_digest(&mut self) -> Result<String, RunError> {
+            Ok("unused".into())
+        }
+    }
+
+    impl LinuxPvclockVcpu for ScriptedClockVcpu {
+        fn publish_linux_pvclock(
+            &mut self,
+            vns: u64,
+            guest_clock: u64,
+            guest_clock_hz: u64,
+            write: PvclockWrite,
+        ) -> Result<(), RunError> {
+            match write {
+                PvclockWrite::Canonical => {
+                    vtime::pvclock::stamp_canonical(
+                        &mut self.page,
+                        vns,
+                        guest_clock,
+                        guest_clock_hz,
+                    );
+                }
+                PvclockWrite::Refresh => {
+                    vtime::pvclock::stamp(&mut self.page, vns, guest_clock, guest_clock_hz);
+                }
+            }
+            self.publications
+                .push((vns, guest_clock, guest_clock_hz, write));
+            Ok(())
+        }
+    }
+
+    struct ScriptedCounter {
+        reads: VecDeque<u64>,
+        armed: Vec<u64>,
+        resumes: u64,
+        rearms: u64,
+    }
+
+    impl WorkCounter for ScriptedCounter {
+        fn read(&mut self) -> Result<u64, RunError> {
+            self.reads.pop_front().ok_or_else(|| RunError::Seam {
+                context: "scripted Linux work counter",
+                message: "no scripted read remains".into(),
+            })
+        }
+
+        fn arm_overflow(&mut self, delta: u64) -> Result<(), RunError> {
+            self.armed.push(delta);
+            Ok(())
+        }
+
+        fn rearm(&mut self) -> Result<(), RunError> {
+            self.rearms += 1;
+            Ok(())
+        }
+
+        fn resume_counting(&mut self) -> Result<(), RunError> {
+            self.resumes += 1;
+            Ok(())
         }
     }
 
@@ -505,5 +884,170 @@ mod tests {
         let mut matcher = MarkerMatcher::new(b"aaab");
         let matches: Vec<bool> = b"aaaaab".iter().map(|byte| matcher.push(*byte)).collect();
         assert_eq!(matches, [false, false, false, false, false, true]);
+    }
+
+    #[test]
+    fn work_clock_publishes_only_after_exact_landing_and_finishes_the_step() {
+        // First Preempt is an unrelated host IRQ below the arm point; the page must not move.
+        // The second is the real arm-early overflow.
+        let mut exits = VecDeque::from([VcpuExit::Preempt, VcpuExit::Preempt]);
+        // Each stepped PL011 write exits once for MMIO and once for the debug landing. The
+        // marker completes before the exact work target, but the executor must finish landing,
+        // publish the page, and disarm debug before it returns.
+        for byte in b"READY" {
+            exits.push_back(mmio(PL011_DR_OFFSET, &[*byte], true));
+            exits.push_back(VcpuExit::Debug);
+        }
+        let mut vcpu = ScriptedClockVcpu {
+            exits,
+            page: vec![0xa5; vtime::pvclock::PVCLOCK_PAGE_LEN],
+            single_step: false,
+            publications: Vec::new(),
+        };
+        let mut counter = ScriptedCounter {
+            // Pre-entry zero; advisory at 3; overflow at 18; five steps reach target 23.
+            reads: VecDeque::from([0, 3, 18, 19, 20, 21, 22, 23]),
+            armed: Vec::new(),
+            resumes: 0,
+            rearms: 0,
+        };
+
+        let result = run_until_ready_work_clock(
+            &mut vcpu,
+            &mut counter,
+            &config(b"READY"),
+            LinuxWorkClockConfig {
+                refresh_delta_work: 23,
+                skid_margin: 1,
+                guest_clock_hz: 50_000_000,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.boot.console, b"READY");
+        assert_eq!(result.boot.exits, 12);
+        assert_eq!(result.refreshes, 1);
+        assert_eq!(result.max_refresh_gap_work, 23);
+        assert_eq!(result.last_refresh_work, 23);
+        assert!(!vcpu.single_step, "debug must be disarmed before return");
+        assert_eq!(counter.armed, [6]); // 23 - skid(1) - canonical-PC headroom(16)
+        assert_eq!(counter.resumes, 1);
+        assert_eq!(counter.rearms, 1);
+        assert_eq!(
+            vcpu.publications,
+            [
+                (0, 0, 50_000_000, PvclockWrite::Canonical),
+                (23, 1, 50_000_000, PvclockWrite::Refresh),
+            ]
+        );
+        let page = vtime::pvclock::read(&vcpu.page).unwrap();
+        assert_eq!(page.seq, 2);
+        assert_eq!(page.vns, 23);
+        assert_eq!(page.guest_clock, 1);
+        assert_eq!(page.flags, vtime::pvclock::PVCLOCK_FLAGS_V1);
+        assert!(
+            vcpu.page[vtime::pvclock::RESERVED_OFF..]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+    }
+
+    #[test]
+    fn work_clock_latches_an_early_marker_but_waits_for_exact_refresh() {
+        let mut exits = VecDeque::from([mmio(PL011_DR_OFFSET, b"R", true), VcpuExit::Preempt]);
+        for _ in 0..5 {
+            exits.push_back(VcpuExit::Debug);
+        }
+        let mut vcpu = ScriptedClockVcpu {
+            exits,
+            page: vec![0; vtime::pvclock::PVCLOCK_PAGE_LEN],
+            single_step: false,
+            publications: Vec::new(),
+        };
+        let mut counter = ScriptedCounter {
+            reads: VecDeque::from([0, 18, 19, 20, 21, 22, 23]),
+            armed: Vec::new(),
+            resumes: 0,
+            rearms: 0,
+        };
+        let result = run_until_ready_work_clock(
+            &mut vcpu,
+            &mut counter,
+            &config(b"R"),
+            LinuxWorkClockConfig {
+                refresh_delta_work: 23,
+                skid_margin: 1,
+                guest_clock_hz: 50_000_000,
+            },
+        )
+        .unwrap();
+        assert_eq!(result.boot.console, b"R");
+        assert_eq!(result.boot.exits, 7);
+        assert_eq!(result.refreshes, 1);
+        assert_eq!(result.last_refresh_work, 23);
+        assert_eq!(counter.armed, [6]);
+        assert_eq!(vcpu.publications.len(), 2);
+    }
+
+    #[test]
+    fn work_clock_rearms_and_publishes_a_second_exact_period() {
+        let mut exits = VecDeque::from([VcpuExit::Preempt]);
+        for _ in 0..5 {
+            exits.push_back(VcpuExit::Debug);
+        }
+        // READY arrives naturally after the first publication. It remains latched until the
+        // second forced target proves that periodic rearming, exact landing, and refresh all
+        // completed before success is reported.
+        exits.push_back(mmio(PL011_DR_OFFSET, b"R", true));
+        exits.push_back(VcpuExit::Preempt);
+        for _ in 0..5 {
+            exits.push_back(VcpuExit::Debug);
+        }
+        let mut vcpu = ScriptedClockVcpu {
+            exits,
+            page: vec![0; vtime::pvclock::PVCLOCK_PAGE_LEN],
+            single_step: false,
+            publications: Vec::new(),
+        };
+        let mut counter = ScriptedCounter {
+            reads: VecDeque::from([0, 18, 19, 20, 21, 22, 23, 41, 42, 43, 44, 45, 46]),
+            armed: Vec::new(),
+            resumes: 0,
+            rearms: 0,
+        };
+
+        let result = run_until_ready_work_clock(
+            &mut vcpu,
+            &mut counter,
+            &config(b"R"),
+            LinuxWorkClockConfig {
+                refresh_delta_work: 23,
+                skid_margin: 1,
+                guest_clock_hz: 50_000_000,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.boot.console, b"R");
+        assert_eq!(result.boot.exits, 13);
+        assert_eq!(result.refreshes, 2);
+        assert_eq!(result.max_refresh_gap_work, 23);
+        assert_eq!(result.last_refresh_work, 46);
+        assert!(!vcpu.single_step);
+        assert_eq!(counter.armed, [6, 6]);
+        assert_eq!(counter.resumes, 2);
+        assert_eq!(counter.rearms, 0);
+        assert_eq!(
+            vcpu.publications,
+            [
+                (0, 0, 50_000_000, PvclockWrite::Canonical),
+                (23, 1, 50_000_000, PvclockWrite::Refresh),
+                (46, 2, 50_000_000, PvclockWrite::Refresh),
+            ]
+        );
+        let page = vtime::pvclock::read(&vcpu.page).unwrap();
+        assert_eq!(page.seq, 4);
+        assert_eq!(page.vns, 46);
+        assert_eq!(page.guest_clock, 2);
     }
 }

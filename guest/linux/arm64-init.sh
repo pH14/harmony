@@ -14,4 +14,11 @@ if [ "$clocksource" != harmony-arm-pvclock ]; then
 fi
 echo HARMONY_AA5_CLOCKSOURCE_OK
 echo HARMONY_AA5_READY
-exec /bin/busybox poweroff -f
+
+# The host latches READY at this UART exit but accepts it only after the next exact-work
+# pvclock refresh has landed and published. Keep retiring deterministic branches so that target
+# remains reachable; the harness terminates the VM after the proof instead of relying on a
+# live-counter-domain PSCI/timer shutdown path.
+while :; do
+    :
+done

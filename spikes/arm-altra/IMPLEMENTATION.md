@@ -1464,3 +1464,38 @@ mechanism is presumed sound, but certification remains pending re-verification.
   Checker/comparator output self-declares the ARM clock binding: raw `0x21` counts every
   architecturally executed branch instruction, taken or not (AA1-F1). This is ARM-only; x86's
   retired-conditional-branch clock is unchanged.
+
+## AA-5(c) exact-work pvclock executor (hm-9r1, 2026-07-18)
+
+The Linux bring-up command now replaces its construction-time static placeholder before the
+first KVM entry and advances the ABI-v1 page from exact retired-branch anchors:
+
+- `linux-boot` requires the box-measured skid margin and the patched Preempt capability, reads
+  the guest's actual `CNTFRQ_EL0`, requires the guest-only counter's pre-entry value to be zero,
+  and writes the canonical registration frame through `vtime::pvclock` (the production ABI
+  implementation, not a second layout).
+- AA-3's arm-early/advisory/single-step logic is factored into one bounded primitive shared by
+  the measurement path and Linux. Natural exits never publish their skid-tainted live count.
+  Each Δ deadline lands at the first PC with exactly the target work, then stamps
+  `MATERIALIZED|WORK_DERIVED` before resuming. The loop counts internal debug/MMIO exits against
+  the caller's hard budget. A ready marker observed at a natural UART exit is only latched; the
+  harness keeps running until the next exact refresh has published, so a lost/late armed Preempt
+  cannot pass with a page stale beyond Δ. The owned init retires branches after the marker to
+  keep that proof target reachable.
+- The result reports distinct refresh count, maximum exact-work gap, and last anchor. Portable
+  tests plant an advisory host IRQ, complete the ready marker while single-stepping, and require
+  the executor to finish the exact landing, publish, and disarm debug before returning.
+
+This is still **pre-silicon substrate, not AA-5 acceptance evidence**. The page remains at the
+spike's fixed board GPA rather than the contract's guest-registered one-shot GPA, and stock KVM
+still expires `CNTV_CVAL` against the live architected-counter domain. Equal `CNTFRQ` does not
+align those origins. A deterministic clockevent/injection path and the native N1 build/run are
+therefore still required before the Linux smoke can certify steady-state timers or replay. Exact
+single-step landing also requires AA-4's LSE-only image: the present guest recipe does not yet
+remove/scan-gate all kernel and static-BusyBox LL/SC fallback bodies, and the CLI's hash pin is an
+identity check, not proof of that property. Live evidence stays non-certifying until the owned
+Image/rootfs passes AA-4 levels 1–2 (with level 3's planted proof still homed here).
+
+Gates: 142 harness tests plus bin/manifest tests; native and aarch64-linux Clippy with
+`-D warnings`; aarch64-linux check; fmt and diff checks; pinned Miri 141 pass / one intentional
+long-loop ignore, plus bin tests (manifest subprocess intentionally ignored under isolation).
