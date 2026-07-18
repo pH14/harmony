@@ -423,6 +423,13 @@ impl Frontier {
     pub fn occupy(&mut self, cell: CellKey, r: ExemplarRef) -> Option<ExemplarRef> {
         self.cells.insert(cell, r)
     }
+
+    /// Every claimed cell with its current occupant, in canonical cell order
+    /// (the occupancy-reconciliation read; a claim may name an evicted ref —
+    /// see the type docs).
+    pub fn claims(&self) -> impl Iterator<Item = (&CellKey, ExemplarRef)> {
+        self.cells.iter().map(|(c, r)| (c, *r))
+    }
 }
 
 // ---------------------------------------------------------------------------

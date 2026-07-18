@@ -748,11 +748,29 @@ impl<M: Machine> DifferentialCampaign<M> {
     ) -> Result<(), CampaignError> {
         let claims = self.occupancy.frontier().occupied_cells();
         if views.occupancy.len() != claims {
+            let hex =
+                |b: &[u8]| -> String { b.iter().take(24).map(|x| format!("{x:02x}")).collect() };
+            let view_side: Vec<String> = views
+                .occupancy
+                .iter()
+                .map(|(c, e)| format!("{}=>{e}", hex(c)))
+                .collect();
+            let mirror_side: Vec<String> = self
+                .occupancy
+                .frontier()
+                .claims()
+                .map(|(c, r)| {
+                    let key = self.entry_key.get(&r.0).copied();
+                    format!("{}=>{key:?}", hex(c))
+                })
+                .collect();
             return Err(CampaignError::OccupancyDivergence {
                 detail: format!(
-                    "{} materialized cells vs {} mirror claims",
+                    "{} materialized cells vs {} mirror claims; view [{}]; mirror [{}]",
                     views.occupancy.len(),
-                    claims
+                    claims,
+                    view_side.join(", "),
+                    mirror_side.join(", ")
                 ),
             });
         }
