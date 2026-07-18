@@ -168,7 +168,25 @@ FILM_OUT_DIR=… taskset -c 2 cargo test -p campaign-runner --release \
   --test live_film -- --ignored --nocapture --test-threads=1
 ```
 
-RESULTS: <filled at gate completion>
+RESULTS (2026-07-18, box `hetzner`, patched-KVM window, leased core 2, commit
+`c99759af`):
+
+- **Smoke-fire-once** (4 branches, `--repeat 2`): PASS — record + replay
+  bit-identical on real KVM (`SMOKE_EXIT=0`), after the four findings above.
+- **Determinism gate**: `game box DETERMINISM PASS: 25/25 identical
+  per-branch state_hash sequences (gate floor 25)` — fresh boot per
+  repetition, PureRandom seed 1, 8 branches, 2 s of V-time per rollout,
+  through the full two-barrier path (evidence append → coordinator commit →
+  barrier-1 materialized cut cells → budgeted materialization replay →
+  barrier-2 materialized seal cells + occupancy reconciliation).
+- **Work evidence** (vacuity guard satisfied): 8 branches, weakest rollout
+  2 000 000 064 ns of V-time / 4 976 COMPLETED frames.
+- **Billboard window** (film's input, from the setup prefix):
+  `gpa=0x4e00000 len=15838`.
+- **Deep reproducer** retained per repetition (content-addressed; e.g. rep
+  trace `b6946502…e1d2`, branch 4, depth 1 — the small-budget PureRandom
+  depth plateau matches the M0 baseline record).
+- **Film gate**: <filled at completion>
 
 ## M3 — Legacy spine retired (physically removed)
 

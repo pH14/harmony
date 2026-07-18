@@ -142,9 +142,8 @@ pub fn reduce_at_cut(events: &[SdkEvent], schema: &SdkSchema, included: u64) -> 
 /// from the complete materialized observation map to one opaque [`CellKey`]. This
 /// is the `CellFn` role the strategy keeps — evaluated on the complete projected
 /// observations at the actual `sealed_at`, over independently-reduced
-/// observations rather than a packed feature set. (The spine's legacy
-/// [`CellFn`](crate::CellFn) over a `FeatureSet` is retained for the log-template
-/// consumer; this is the Differential-plane projection.)
+/// observations rather than a packed feature set (the legacy `FeatureSet`
+/// spine retired in task 132 M3; this is the one production cell projection).
 pub trait ObservationCells {
     /// Key the observation map true at `cut` into an opaque cell.
     fn key(&self, cut: EvidenceCut, obs: &ObservationMap) -> CellKey;
@@ -456,6 +455,47 @@ mod tests {
             namespace: NS_STATE,
             local: 7,
         }
+    }
+
+    /// The canonical observation-identity encoding round-trips through its
+    /// decoder for all three variants, and malformed bytes decode to `None`
+    /// (kills the decoder's match-arm/length mutants).
+    #[test]
+    fn observation_id_encoding_round_trips() {
+        let ids = [
+            ObservationId::Point {
+                namespace: NS_STATE,
+                local: 0x00AB_CDEF,
+            },
+            ObservationId::Property("prop".into()),
+            ObservationId::Lifecycle("setup_complete".into()),
+            ObservationId::Property(String::new()),
+        ];
+        for id in &ids {
+            let mut bytes = Vec::new();
+            encode_observation_id(&mut bytes, id);
+            assert_eq!(
+                decode_observation_id(&bytes).as_ref(),
+                Some(id),
+                "round-trip for {id:?}"
+            );
+        }
+        // Distinct variants never alias (domain tags).
+        let mut a = Vec::new();
+        encode_observation_id(&mut a, &ObservationId::Property("x".into()));
+        let mut b = Vec::new();
+        encode_observation_id(&mut b, &ObservationId::Lifecycle("x".into()));
+        assert_ne!(a, b);
+        // Malformed inputs are total Nones: empty, bad tag, truncated point,
+        // bad length prefix, trailing junk.
+        assert_eq!(decode_observation_id(&[]), None);
+        assert_eq!(decode_observation_id(&[0x09, 1, 2]), None);
+        assert_eq!(decode_observation_id(&[0x01, 2]), None);
+        assert_eq!(decode_observation_id(&[0x02, 5, 0, 0, 0, 0, 0, 0, 0]), None);
+        let mut long = Vec::new();
+        encode_observation_id(&mut long, &ObservationId::Property("x".into()));
+        long.push(0);
+        assert_eq!(decode_observation_id(&long), None, "trailing junk refused");
     }
 
     /// `set` keeps the latest value in the prefix; the cut is half-open by the

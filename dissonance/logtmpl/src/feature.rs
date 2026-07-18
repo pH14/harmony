@@ -90,3 +90,42 @@ impl FromIterator<Feature> for FeatureSet {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `FeatureSet` is canonically ordered and deduplicated (the retired
+    /// spine test, re-homed with the vocabulary — task 132 M3).
+    #[test]
+    fn feature_set_is_canonical() {
+        let f1 = Feature {
+            channel: ChannelId(0),
+            id: FeatureId(9),
+        };
+        let f2 = Feature {
+            channel: ChannelId(0),
+            id: FeatureId(1),
+        };
+        let mut s = FeatureSet::new();
+        assert!(s.insert(f1));
+        assert!(s.insert(f2));
+        assert!(!s.insert(f1), "duplicates are refused");
+        assert_eq!(s.len(), 2);
+        assert!(!s.is_empty(), "a filled slice is not empty");
+        assert!(s.contains(&f1));
+        assert!(
+            !s.contains(&Feature {
+                channel: ChannelId(9),
+                id: FeatureId(9),
+            }),
+            "absent features are not contained"
+        );
+        let order: Vec<u64> = s.iter().map(|f| f.id.0).collect();
+        assert_eq!(order, vec![1, 9], "iteration is sorted, not insertion");
+        assert_eq!(FeatureSet::singleton(f1).len(), 1);
+        assert!(FeatureSet::new().is_empty());
+        let collected: FeatureSet = [f1, f2, f1].into_iter().collect();
+        assert_eq!(collected.len(), 2, "FromIterator dedups");
+    }
+}

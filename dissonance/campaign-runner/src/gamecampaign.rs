@@ -1583,6 +1583,9 @@ mod tests {
             fn coverage(&self) -> &[u8] {
                 &[3]
             }
+            fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
+                Ok(vec![(9, b"line".to_vec())])
+            }
             fn recorded_env(&self) -> Result<Reproducer, MachineError> {
                 Ok(SpecEnvCodec.seeded(0))
             }
@@ -1623,8 +1626,64 @@ mod tests {
         // Delegation is verbatim (kills the delegation stub mutants).
         assert_eq!(m.hash().expect("hash"), [7u8; 32]);
         assert_eq!(m.coverage(), &[3]);
+        assert_eq!(
+            m.console().expect("console delegates"),
+            vec![(9u64, b"line".to_vec())]
+        );
         m.replay(explorer::SnapId(1)).expect("replay delegates");
         m.drop_snap(explorer::SnapId(1)).expect("drop delegates");
+    }
+
+    /// The quiet codec's exploit-mutate maps the two refusal classes onto the
+    /// codec's typed errors: a fault-carrying exemplar is the fail-closed
+    /// UnsupportedComposition; junk bytes are the malformed-blob class.
+    #[test]
+    fn quiet_codec_maps_refusals_onto_codec_errors() {
+        let quiet = QuietCodec {
+            inner: Box::new(SpecEnvCodec),
+            window: 1_000,
+        };
+        // A fault-carrying env (one host action) is refused as unsupported.
+        let decoded = explorer::AdapterEnv::decode(&SpecEnvCodec.seeded(1)).expect("decodes");
+        let spec = environment::EnvSpec::Recorded {
+            seed: decoded.spec.seed(),
+            policy: decoded.spec.policy().clone(),
+            overrides: decoded.spec.overrides().clone(),
+            standing: Vec::new(),
+            reseeds: std::collections::BTreeMap::new(),
+        };
+        // Splice a host fault in via the environment vocabulary.
+        let mut with_fault = explorer::AdapterEnv {
+            base_offset: decoded.base_offset,
+            pos: decoded.pos,
+            spec,
+        };
+        if let environment::EnvSpec::Recorded { overrides, .. } = &mut with_fault.spec {
+            overrides.insert(
+                1,
+                environment::Action::Host(environment::HostFault::InjectInterrupt { vector: 32 }),
+            );
+        }
+        assert!(matches!(
+            quiet.mutate(&with_fault.encode(), 7),
+            Err(explorer::EnvCodecError::UnsupportedComposition)
+        ));
+        // Junk bytes are the malformed-blob class.
+        let junk = Reproducer {
+            blob_version: 1,
+            bytes: vec![0xFF; 4],
+        };
+        assert!(matches!(
+            quiet.mutate(&junk, 7),
+            Err(explorer::EnvCodecError::Malformed(_))
+        ));
+        // A clean env mutates to a reseed-only variant (no faults minted).
+        let out = quiet
+            .mutate(&SpecEnvCodec.seeded(3), 7)
+            .expect("clean env mutates");
+        let d = explorer::AdapterEnv::decode(&out).expect("decodes");
+        assert!(d.spec.host_faults().next().is_none());
+        assert!(!d.spec.reseeds().is_empty());
     }
 
     /// `SmbObservationCells` keys the `(mode, world, level, x-bucket)` tuple
