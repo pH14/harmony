@@ -146,12 +146,18 @@ pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkErr
 /// as [`decode_binary`] normalizes them, so nothing can drift — and each
 /// identity named in `ops` is resolved to its declared base operation (with
 /// the [`ValueShape::U64`] shape the initial cooperative vertical uses).
-/// Identities not named stay unresolved (reportable coverage, not reducible
-/// state), exactly as before.
+/// A declared **occurrence** point not named in `ops` carries over untouched.
+///
+/// A declared v1 **state** point NOT named in `ops` fails loudly on
+/// re-encode: wire v2 cannot express unresolved state (a v2 state point must
+/// declare its base operation), so the instrumentation declaration must
+/// resolve **every** state register the guest declares — an incomplete
+/// resolution table is a contract error, never a silently dropped or
+/// silently blessed register.
 ///
 /// Errors with the decoder's own typed error on a malformed catalog, and
-/// with [`SdkError::MixedOperations`]-class validation on re-encode if the
-/// resolution contradicts the declaration.
+/// with the encoder's validation on re-encode if the resolution contradicts
+/// or fails to cover the declaration.
 pub fn resolve_v1_declaration(
     catalog: &[u8],
     ops: &[(ObservationId, UpdateOp)],

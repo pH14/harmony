@@ -54,6 +54,8 @@ pub mod reg {
     pub const LEVEL: u64 = 3;
     /// Bucketed absolute X.
     pub const X_BUCKET: u64 = 4;
+    /// Current power-up state (a `set` register; not a cell-key input).
+    pub const POWERUP: u64 = 5;
     /// Furthest `(world, level)` ordinal (a `state_max` register).
     pub const DEPTH: u64 = 6;
     /// The frame clock (task 87's film addresses frames by it; ignored by the
@@ -568,6 +570,7 @@ fn smb_resolution() -> Vec<(ObservationId, sdk_events::UpdateOp)> {
         (point(reg::WORLD), UpdateOp::Set),
         (point(reg::LEVEL), UpdateOp::Set),
         (point(reg::X_BUCKET), UpdateOp::Set),
+        (point(reg::POWERUP), UpdateOp::Set),
         (point(reg::DEPTH), UpdateOp::Max),
         (point(reg::FRAME), UpdateOp::Set),
         (point(reg::BILLBOARD_GPA), UpdateOp::Set),
