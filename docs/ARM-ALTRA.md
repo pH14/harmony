@@ -1373,11 +1373,14 @@ ARMv8.1; Altra/Neoverse N1 is ARMv8.2), so an LSE-only guest is buildable on the
   boundary; the exact pinned series applies and compiles. The harness now has an explicit guarded
   constructor and exact-generation response loop: `linux-boot --stage2-exec-guard` requires
   nonzero execute/scan/approval counts, while `aa4-guard-reject` hash-verifies a planted ELF and
-  requires an exclusive-bearing generation to be rejected with the PC still in that page. Both
-  remain unrun. Until the patched kernel is booted and retained evidence proves first execute,
-  approve/reject, stale-token rejection, racing writes, exit-before-modification, and backing
-  replacement, this is not level-3 evidence. An unmapped-GPA abort, `BRK`, or post-execution dirty
-  scan is not a substitute.
+  requires an exclusive-bearing generation to be rejected with the PC still in that page.
+  `aa4-guard-write` pins a page-aligned self-modifier and requires the original page hash at first
+  scan and the pre-store write exit, then the exact expected modified hash at a fresh scan
+  generation. The fixture passes TCG liveness/protocol twice; all guard paths remain unrun. Until
+  the patched kernel is booted and retained evidence proves first execute, approve/reject,
+  stale-token rejection, racing writes, exit-before-modification, and backing replacement, this
+  is not level-3 evidence. An unmapped-GPA abort, `BRK`, or post-execution dirty scan is not a
+  substitute.
 
 **CURRENT RULING: cooperative residual risk on stock KVM. The stronger mechanically-unreachable
 ruling remains conditional on booting the draft execute-guard patch and passing its planted proof.**

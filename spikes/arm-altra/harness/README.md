@@ -50,11 +50,15 @@ under test (`docs/ARM-ALTRA.md` §Evidence integrity #4).
   `linux-boot --stage2-exec-guard` opts the owned Linux VM into AA-4's default-XN
   mediation and requires nonzero execute/scan/approval counts. `aa4-guard-reject`
   hash-verifies a planted-exclusive ELF and succeeds only after an exact-generation
-  reject leaves its PC in the rejected page. Linux/box only for all syscall paths.
+  reject leaves its PC in the rejected page. `aa4-guard-write` pins the dedicated
+  self-modifying ELF and requires the original page at the synchronous pre-store exit,
+  then the exact expected replacement page at a fresh scan generation. Linux/box only
+  for all syscall paths.
 
 The AA-4 commands are proof apparatus, not evidence by their existence. They have not run on the
-patched N1. The planted command presently proves only pre-execute reject; live write-before-store,
-stale-generation, notifier replacement, and two-vCPU scan/write-race tests remain required.
+patched N1. TCG proves only that the self-modifier completes and its protocol is stable. Live
+planted rejection, write-before-store/rescan, stale-generation, notifier replacement, and
+two-vCPU scan/write-race tests remain required.
 
 ## Build / test
 

@@ -13,10 +13,11 @@ The four directories + READMEs the task specifies, all under `spikes/arm-altra/`
   entry/return, SVC, WFI) are unknowns with no `Default`, solved from an
   over-determined measurement set. 17 unit tests + 2 TCG-observed accumulator pins.
 - **`payloads/`** — the minimal aarch64 bare-metal runtime (boot shim, MMU, GICv3,
-  PL011, params/pvclock pages, semihosting exit) and nine oracle payloads with
-  hand-written counted bodies. `smoke.sh` boots each twice under
-  `qemu-system-aarch64` (TCG), verifies windows against the model, diffs normalized
-  console vs `golden/`, and propagates every RC.
+  PL011, params/pvclock pages, semihosting exit), nine oracle payloads with
+  hand-written counted bodies, and the AA-4 page-aligned self-modification fixture.
+  `smoke.sh` boots all ten twice under `qemu-system-aarch64` (TCG);
+  it verifies windows against the model, diffs normalized console vs `golden/`, and
+  propagates every RC.
 - **`harness/`** — the KVM harness: the ioctl-level single-vCPU machine
   (`KVM_CREATE_VM` → memory slot → `KVM_CREATE_VCPU` → `KVM_RUN`), the measurement
   loop over it, the aarch64 opcode scanner (branch / exclusive / counter-read), a
@@ -41,8 +42,8 @@ The four directories + READMEs the task specifies, all under `spikes/arm-altra/`
 | Gate | Command | Result |
 |---|---|---|
 | oracle model | `cd oracle-model && cargo test --features std` | 17 + 2 pass |
-| payloads build | `cd payloads && cargo build --release` | 9 payloads link (aarch64-unknown-none) |
-| TCG smoke | `cd payloads && ./smoke.sh` | all 9 boot ×2, golden-match, RC-propagated (verified: tampered golden ⇒ nonzero) |
+| payloads build | `cd payloads && cargo build --release` | 9 oracle payloads + 1 AA-4 proof fixture link (aarch64-unknown-none) |
+| TCG smoke | `cd payloads && ./smoke.sh` | all 10 boot ×2, golden-match, RC-propagated (verified: tampered golden ⇒ nonzero) |
 | window verify | `arm-scan windows …` | 8 windows match the model |
 | harness logic | `cd harness && cargo test` | 63 + manifest test pass |
 | harness cross-build | `cargo check --target aarch64-unknown-linux-gnu --all-targets` | the syscall seam compiles for the box |
@@ -1518,9 +1519,9 @@ long-loop ignore, plus bin tests (manifest subprocess intentionally ignored unde
 
 ## AA-4 stage-2 execute-guard VMM (hm-rfz, 2026-07-18)
 
-The draft kernel state machine now has a fail-closed userspace consumer and a planted rejection
-command. This is still compile/test evidence only; neither path has run against `/dev/kvm` on the
-patched N1.
+The draft kernel state machine now has a fail-closed userspace consumer, a planted rejection
+command, and a page-specific self-modification audit. This is still compile/test/emulation
+evidence only; none has run against `/dev/kvm` on the patched N1.
 
 - Guarded constructors require capability 246 before creating the vCPU. The board remains inside
   the kernel patch's trusted boundary: one anonymous private RAM slot, one vCPU for the current
@@ -1538,20 +1539,27 @@ patched N1.
   can report its already non-certifying AA-5 smoke result. `aa4-guard-reject` hash-verifies the
   planted ELF, pins the vCPU thread, and requires a nonzero generation, at least one decoded
   exclusive, one successful rejection, consistent transition counts, and a PC that still lies in
-  the rejected page.
+  the rejected page. `aa4-guard-write` pins the dedicated `aa4-self-modify` ELF and its exact
+  instruction encodings, then requires the original full-page hash at first scan and the
+  synchronous pre-store exit, a single write revocation, and the exact expected modified hash at
+  a fresh scan generation. The portable acceptance predicate carries negative controls for a
+  prematurely modified page, reused generation, missing write, wrong replacement, and inconsistent
+  aggregate exits.
 - The kernel patch was hardened after a fresh lock-order review: state replacement under
   `mmu_lock` uses `GFP_ATOMIC`, while notifier/memslot invalidation uses an allocation-free
   advanced-XArray erase walk. The exact format patch applies cleanly to pinned 6.18.35, passes
   strict `checkpatch`, compiles the arm64 KVM subtree, satisfies object-code assertions for the
   cap/ioctl/exit/flag/lock/XArray/direct-unmap paths, and links a warning-free `vmlinux`.
 
-Remaining live AA-4 gates are deliberately named in the CLI result: write-before-modification and
-rescan, stale-generation rejection, backing replacement invalidation, and the two-vCPU
-scan/write race. Until those and the planted reject run on the patched pinned host, the current
-ruling remains cooperative residual rather than mechanically unreachable.
+The self-modifier is a dedicated 4 KiB page containing `mov x0,#1; ret`; it replaces only the
+first word with `mov x0,#2`, performs the architected D/I-cache maintenance, and passes the golden
+protocol twice under TCG. That is liveness, not guard evidence. Remaining live AA-4 gates are the
+planted reject, write-before-modification/rescan, stale-generation rejection, backing replacement
+invalidation, and the two-vCPU scan/write race. Until they run on the patched pinned host, the
+current ruling remains cooperative residual rather than mechanically unreachable.
 
-Userspace gates for this slice: 150 harness library tests, three `arm-spike` CLI tests, and the
-manifest-current test pass; aarch64-Linux Clippy is warning-free; pinned Miri passes 149 library
-tests plus all three CLI tests (one intentional long-loop ignore and one isolated subprocess
+Userspace gates for this slice: 151 harness library tests, four `arm-spike` CLI tests, and the
+manifest-current test pass; aarch64-Linux Clippy is warning-free; pinned Miri passes 150 library
+tests plus all four CLI tests (one intentional long-loop ignore and one isolated subprocess
 ignore). The kernel gate additionally passes strict `checkpatch` (0 errors/0 warnings), compiled
 object assertions, and the full arm64 `vmlinux` link without warnings.

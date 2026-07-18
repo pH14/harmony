@@ -32,7 +32,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use super::{ExecGuardExit, KvmRun, PerfEventAttr, SysError, br_retired_attr, kvm};
+use sha2::{Digest, Sha256};
+
+use super::{
+    ExecGuardExit, ExecGuardPageAudit, ExecGuardStats, KvmRun, PerfEventAttr, SysError,
+    br_retired_attr, kvm,
+};
 use crate::linux_console::{LinuxClockeventState, LinuxPvclockVcpu, PvclockWrite};
 use crate::run::{RunError, StepVcpu, Vcpu, VcpuExit, WorkCounter};
 
@@ -556,26 +561,12 @@ pub struct Machine {
     /// Present only for the guarded constructors. Counts every hidden synchronous
     /// guard transition so a live proof cannot pass without exercising the mechanism.
     exec_guard: Option<ExecGuardStats>,
+    /// Optional one-page trace used by the planted self-modification proof. It is
+    /// configured before the first vCPU entry and remains fixed for the VM lifetime.
+    exec_guard_page_audit: Option<ExecGuardPageAudit>,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables it. See
     /// [`DEFAULT_WATCHDOG_SECS`].
     watchdog_secs: u64,
-}
-
-/// Non-vacuous execution counts from the stage-2 execute-guard path.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct ExecGuardStats {
-    /// Total exit-43 records consumed by the VMM.
-    pub exits: u64,
-    /// Stable executable pages scanned.
-    pub scans: u64,
-    /// Clean scan generations approved executable/read-only.
-    pub approvals: u64,
-    /// Hazard-bearing scan generations rejected writable/XN.
-    pub rejections: u64,
-    /// Approved pages whose first later write revoked execute before the store.
-    pub write_revocations: u64,
-    /// Writes reported blocked behind an active scan. Impossible on this single-vCPU board.
-    pub blocked_writes: u64,
 }
 
 /// Bound transparent guard exits inside one [`Vcpu::run`] call. A guest that endlessly
@@ -692,6 +683,7 @@ impl Machine {
             linux_pvclock_gpa: None,
             linux_clockevent,
             exec_guard: exec_guard.then_some(ExecGuardStats::default()),
+            exec_guard_page_audit: None,
             watchdog_secs: DEFAULT_WATCHDOG_SECS,
         };
         m.build(boot)?;
@@ -1081,6 +1073,54 @@ impl Machine {
         self.exec_guard
     }
 
+    /// Select one guarded RAM page for bounded write/rescan audit before first entry.
+    ///
+    /// # Errors
+    /// [`SysError::Protocol`] if this is not a guarded VM, any guard exit already
+    /// occurred, or `gpa` is not one complete page in the single RAM slot.
+    pub fn audit_exec_guard_page(&mut self, gpa: u64) -> Result<(), SysError> {
+        let Some(stats) = self.exec_guard else {
+            return Err(SysError::Protocol(
+                "cannot audit an execute-guard page on an unguarded VM".into(),
+            ));
+        };
+        if stats.exits != 0 {
+            return Err(SysError::Protocol(
+                "execute-guard page audit must be selected before first vCPU entry".into(),
+            ));
+        }
+
+        // SAFETY: construction completed, the vCPU has never entered, and this machine
+        // exclusively owns the complete live RAM mapping.
+        let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
+        let page = super::exec_guard_page(ram, RAM_BASE, gpa).ok_or_else(|| {
+            SysError::Protocol(format!(
+                "execute-guard audit page {gpa:#x} is not one aligned page inside [{:#x}, {:#x})",
+                RAM_BASE,
+                RAM_BASE.saturating_add(self.mem_size as u64)
+            ))
+        })?;
+        self.exec_guard_page_audit = Some(ExecGuardPageAudit {
+            gpa,
+            initial_sha256: Sha256::digest(page).into(),
+            exec_scans: 0,
+            first_exec_generation: 0,
+            first_exec_sha256: [0; 32],
+            write_revocations: 0,
+            write_generation: 0,
+            pre_write_sha256: [0; 32],
+            post_write_exec_generation: 0,
+            post_write_exec_sha256: [0; 32],
+        });
+        Ok(())
+    }
+
+    /// Page-specific observations configured by [`Machine::audit_exec_guard_page`].
+    #[must_use]
+    pub fn exec_guard_page_audit(&self) -> Option<ExecGuardPageAudit> {
+        self.exec_guard_page_audit
+    }
+
     fn exec_guard_reply(&self, exit: ExecGuardExit, action: u32) -> Result<(), RunError> {
         let reply = KvmArmStage2ExecGuard {
             gpa: exit.gpa,
@@ -1155,6 +1195,22 @@ impl Machine {
                         RAM_BASE.saturating_add(self.mem_size as u64)
                     ),
                 })?;
+            let page_sha256: [u8; 32] = Sha256::digest(page).into();
+            if let Some(audit) = self
+                .exec_guard_page_audit
+                .as_mut()
+                .filter(|audit| audit.gpa == exit.gpa)
+            {
+                audit.exec_scans = audit.exec_scans.saturating_add(1);
+                if audit.first_exec_generation == 0 {
+                    audit.first_exec_generation = exit.generation;
+                    audit.first_exec_sha256 = page_sha256;
+                }
+                if audit.write_revocations > 0 && audit.post_write_exec_generation == 0 {
+                    audit.post_write_exec_generation = exit.generation;
+                    audit.post_write_exec_sha256 = page_sha256;
+                }
+            }
             let hazards = super::exec_guard_hazards(exit.gpa, page);
             let action = if hazards.is_empty() {
                 kvm::ARM_STAGE2_EXEC_GUARD_APPROVE_EXEC
@@ -1204,6 +1260,22 @@ impl Machine {
 
         // The kernel has already changed approved -> dirty/XN, synchronously unmapped
         // the old mapping, and exited before the store. No response ioctl is required.
+        if matches!(self.exec_guard_page_audit, Some(audit) if audit.gpa == exit.gpa) {
+            // SAFETY: the vCPU is stopped before the faulting store retries, and this
+            // machine exclusively owns the complete live RAM mapping.
+            let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
+            let page =
+                super::exec_guard_page(ram, RAM_BASE, exit.gpa).ok_or_else(|| RunError::Seam {
+                    context: "audit KVM_EXIT_ARM_STAGE2_EXEC_GUARD write page",
+                    message: format!("page {:#x} left the single RAM slot", exit.gpa),
+                })?;
+            let page_sha256: [u8; 32] = Sha256::digest(page).into();
+            if let Some(audit) = self.exec_guard_page_audit.as_mut() {
+                audit.write_revocations = audit.write_revocations.saturating_add(1);
+                audit.write_generation = exit.generation;
+                audit.pre_write_sha256 = page_sha256;
+            }
+        }
         stats.write_revocations = stats.write_revocations.saturating_add(1);
         Ok(())
     }

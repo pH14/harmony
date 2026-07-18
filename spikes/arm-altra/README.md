@@ -54,7 +54,7 @@ opcode fixtures are the real target ISA.
 | What | Command | What it proves |
 |---|---|---|
 | Oracle model | `cd oracle-model && cargo test --features std` | the derivation is self-consistent; the TCG-observed accumulators match the model |
-| Payloads build | `cd payloads && cargo build --release` | nine payloads link for `aarch64-unknown-none` |
+| Payloads build | `cd payloads && cargo build --release` | nine oracle payloads plus the AA-4 self-modification proof fixture link for `aarch64-unknown-none` |
 | **TCG smoke** | `cd payloads && ./smoke.sh` | every payload boots under `qemu-system-aarch64`, round-trips its protocol, matches golden structure — **liveness and protocol only**, with RC propagation |
 | Window verification | `cd harness && cargo run --bin arm-scan -- windows ../payloads/target/aarch64-unknown-none/release` | every payload's window branches match the oracle model (makes "known by construction" checked) |
 | Harness logic | `cd harness && cargo test` | scanner, ELF reader, console, planner, evidence, **and the `KVM_RUN` loop** (driven against a scripted seam) — all pure-logic, tested natively |

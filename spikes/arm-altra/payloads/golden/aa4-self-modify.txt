@@ -1,0 +1,5 @@
+PAYLOAD aa4-self-modify START
+AA4 target=0x40082000
+OK write-rescan-complete
+PAYLOAD aa4-self-modify PASS
+PAYLOAD EXIT 0

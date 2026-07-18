@@ -29,9 +29,12 @@ Harmony arm64 KVM execute-guard extension now applies and compiles against pinne
 stock KVM still resolves execute faults internally and exposes no per-GFN XN UAPI. Its userspace
 half is wired but unrun: `linux-boot --stage2-exec-guard` mediates clean pages and refuses vacuous
 statistics, while `aa4-guard-reject` requires a hash-pinned planted exclusive to be rejected
-before its PC advances. Level 2's live W^X rescan-on-exec proof and level 3 therefore remain
-blocked on booting that patch and retaining the planted rejection/write/race/invalidation
-evidence, not on merely compiling either half.
+before its PC advances. `aa4-guard-write` pins a dedicated self-modifier and requires the original
+full-page hash both at first scan and the synchronous pre-store exit, then the exact expected
+modified hash at a fresh later scan generation. The fixture boots twice under TCG, which proves
+liveness/protocol only. Level 2's live W^X rescan-on-exec proof and level 3 therefore remain
+blocked on booting that patch and retaining the planted rejection/write/race/invalidation evidence,
+not on merely compiling or emulating either half.
 
 **Current ruling:** cooperative residual risk on stock KVM. The owned guest disables known
 runtime code-generation surfaces and its static image is clean, but a JIT/self-modifying page is

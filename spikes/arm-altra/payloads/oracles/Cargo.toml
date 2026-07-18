@@ -48,3 +48,7 @@ path = "src/bin/lse_atomics.rs"
 [[bin]]
 name = "clock-page"
 path = "src/bin/clock_page.rs"
+
+[[bin]]
+name = "aa4-self-modify"
+path = "src/bin/aa4_self_modify.rs"

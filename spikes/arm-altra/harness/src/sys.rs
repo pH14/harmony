@@ -561,6 +561,85 @@ pub struct ExecGuardExit {
     pub generation: u64,
 }
 
+/// Non-vacuous execution counts from the stage-2 execute-guard path.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct ExecGuardStats {
+    /// Total exit-43 records consumed by the VMM.
+    pub exits: u64,
+    /// Stable executable pages scanned.
+    pub scans: u64,
+    /// Clean scan generations approved executable/read-only.
+    pub approvals: u64,
+    /// Hazard-bearing scan generations rejected writable/XN.
+    pub rejections: u64,
+    /// Approved pages whose first later write revoked execute before the store.
+    pub write_revocations: u64,
+    /// Writes reported blocked behind an active scan.
+    pub blocked_writes: u64,
+}
+
+/// Bounded, page-specific observations for the AA-4 write/revoke/rescan proof.
+///
+/// The hashes are captured while the vCPU is stopped at synchronous guard exits. A
+/// successful planted proof requires the initial scan and pre-write exit to see the
+/// original page, then a fresh generation to scan the exact expected modified page.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ExecGuardPageAudit {
+    /// Page-aligned guest-physical address selected before first vCPU entry.
+    pub gpa: u64,
+    /// Hash immediately after VM construction, before the page can execute.
+    pub initial_sha256: [u8; 32],
+    /// Number of execute scans observed for this page.
+    pub exec_scans: u64,
+    /// First scan generation (zero until observed).
+    pub first_exec_generation: u64,
+    /// Page hash at the first execute scan.
+    pub first_exec_sha256: [u8; 32],
+    /// Number of execute-revoking writes observed for this page.
+    pub write_revocations: u64,
+    /// Generation carried by the most recent pre-store write exit.
+    pub write_generation: u64,
+    /// Page hash at that pre-store write exit.
+    pub pre_write_sha256: [u8; 32],
+    /// First execute generation observed after a write revocation.
+    pub post_write_exec_generation: u64,
+    /// Page hash at that post-write execute scan.
+    pub post_write_exec_sha256: [u8; 32],
+}
+
+/// Decide whether a page audit establishes the planted write-before-store + rescan proof.
+///
+/// This predicate is portable and Miri-tested so the Linux-only CLI cannot weaken the
+/// proof by accidentally checking only that *some* write and *some* scan occurred.
+#[must_use]
+pub fn exec_guard_write_proof_holds(
+    target_gpa: u64,
+    expected_initial_sha256: [u8; 32],
+    expected_modified_sha256: [u8; 32],
+    audit: ExecGuardPageAudit,
+    stats: ExecGuardStats,
+) -> bool {
+    let counted_exits = stats
+        .scans
+        .checked_add(stats.write_revocations)
+        .and_then(|n| n.checked_add(stats.blocked_writes));
+
+    audit.gpa == target_gpa
+        && audit.exec_scans == 2
+        && audit.write_revocations == 1
+        && audit.first_exec_generation != 0
+        && audit.write_generation == audit.first_exec_generation
+        && audit.post_write_exec_generation > audit.write_generation
+        && audit.initial_sha256 == expected_initial_sha256
+        && audit.first_exec_sha256 == expected_initial_sha256
+        && audit.pre_write_sha256 == expected_initial_sha256
+        && audit.post_write_exec_sha256 == expected_modified_sha256
+        && stats.rejections == 0
+        && stats.blocked_writes == 0
+        && stats.scans == stats.approvals
+        && counted_exits == Some(stats.exits)
+}
+
 /// Decode exit 43's 24-byte union arm without introducing a Rust union.
 ///
 /// [`KvmRun::mmio`] occupies the same 24 bytes. The first two `u64`s line up with
@@ -1679,8 +1758,8 @@ pub mod machine;
 
 #[cfg(target_os = "linux")]
 pub use machine::{
-    ExecGuardStats, HostIdRegisters, Machine, Mechanism, MigrationChurner, ParamsPage, PerfCounter,
-    allowed_cores, current_tid, pin_to_core, read_host_id_registers,
+    HostIdRegisters, Machine, Mechanism, MigrationChurner, ParamsPage, PerfCounter, allowed_cores,
+    current_tid, pin_to_core, read_host_id_registers,
 };
 
 /// AA-1(a)'s host-side EL0 counter: raw `BR_RETIRED` over THIS thread's userspace
@@ -2066,6 +2145,66 @@ mod tests {
         assert!(matches!(
             hits[1].kind,
             crate::scan::HitKind::CounterRead(crate::scan::CounterReg::Cntvct)
+        ));
+    }
+
+    #[test]
+    fn execute_guard_write_proof_requires_pre_store_identity_and_fresh_rescan() {
+        let initial = [0x11; 32];
+        let modified = [0x22; 32];
+        let target = 0x4008_2000;
+        let audit = ExecGuardPageAudit {
+            gpa: target,
+            initial_sha256: initial,
+            exec_scans: 2,
+            first_exec_generation: 7,
+            first_exec_sha256: initial,
+            write_revocations: 1,
+            write_generation: 7,
+            pre_write_sha256: initial,
+            post_write_exec_generation: 11,
+            post_write_exec_sha256: modified,
+        };
+        let stats = ExecGuardStats {
+            exits: 9,
+            scans: 8,
+            approvals: 8,
+            rejections: 0,
+            write_revocations: 1,
+            blocked_writes: 0,
+        };
+        assert!(exec_guard_write_proof_holds(
+            target, initial, modified, audit, stats
+        ));
+
+        let mut bad = audit;
+        bad.pre_write_sha256 = modified;
+        assert!(!exec_guard_write_proof_holds(
+            target, initial, modified, bad, stats
+        ));
+
+        let mut bad = audit;
+        bad.post_write_exec_generation = bad.write_generation;
+        assert!(!exec_guard_write_proof_holds(
+            target, initial, modified, bad, stats
+        ));
+
+        let mut bad = audit;
+        bad.post_write_exec_sha256 = initial;
+        assert!(!exec_guard_write_proof_holds(
+            target, initial, modified, bad, stats
+        ));
+
+        let mut bad = audit;
+        bad.write_revocations = 0;
+        assert!(!exec_guard_write_proof_holds(
+            target, initial, modified, bad, stats
+        ));
+
+        let mut bad_stats = stats;
+        bad_stats.exits = 8;
+        assert!(!exec_guard_write_proof_holds(
+            target, initial, modified, audit, bad_stats
         ));
     }
 

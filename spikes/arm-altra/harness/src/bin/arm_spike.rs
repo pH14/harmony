@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `arm-spike` — the AA-0 capability probe and the run orchestrator.
 //!
-//! Five subcommands:
+//! Six subcommands:
 //!
 //! - `plan` — emit a deterministic run plan as stable JSON, so a run-set's sample
 //!   list can be reviewed and diffed before a single measurement is spent. Pure
@@ -19,6 +19,9 @@
 //! - `aa4-guard-reject` — a bounded, hash-pinned planted-exclusive proof. It succeeds
 //!   only after the stage-2 guard scans a frozen page, rejects an exclusive-bearing
 //!   generation, and leaves the vCPU PC in that unexecuted page.
+//! - `aa4-guard-write` — a hash-pinned self-modification proof. It requires the
+//!   original page at the synchronous pre-store write exit and the exact expected
+//!   replacement page at a later, fresh execute-scan generation.
 //!
 //! # What `run` refuses to invent
 //!
@@ -109,6 +112,8 @@ enum Command {
     LinuxBoot(Box<LinuxBootOpts>),
     /// Prove a hash-pinned planted-exclusive page is rejected before execution.
     Aa4GuardReject(Box<Aa4GuardRejectOpts>),
+    /// Prove write-revokes-execute before modification and forces an exact rescan.
+    Aa4GuardWrite(Box<Aa4GuardWriteOpts>),
 }
 
 const DEFAULT_LINUX_MAX_EXITS: u64 = 5_000_000;
@@ -176,6 +181,26 @@ struct Aa4GuardRejectOpts {
     /// Isolated host core on which to run the vCPU thread.
     #[arg(long)]
     core: u32,
+    /// Per-KVM_RUN watchdog seconds; 0 disables it.
+    #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
+    watchdog_secs: u64,
+}
+
+/// `arm-spike aa4-guard-write`'s planted self-modification proof inputs.
+#[derive(clap::Args, Debug)]
+struct Aa4GuardWriteOpts {
+    /// Bare `aa4-self-modify` ELF built from this tree.
+    #[arg(long)]
+    image: PathBuf,
+    /// Trusted sha256 pin for `--image` (optional `sha256:` prefix).
+    #[arg(long)]
+    image_sha256: String,
+    /// Isolated host core on which to run the vCPU thread.
+    #[arg(long)]
+    core: u32,
+    /// Maximum caller-visible KVM exits before the proof is refused.
+    #[arg(long, default_value_t = 1_000_000)]
+    max_exits: u64,
     /// Per-KVM_RUN watchdog seconds; 0 disables it.
     #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
     watchdog_secs: u64,
@@ -1079,6 +1104,197 @@ fn aa4_guard_reject(_opts: Aa4GuardRejectOpts) -> Result<(), String> {
     )
 }
 
+/// Run the dedicated self-modifying ELF through one audited target page.
+///
+/// Success binds three synchronous observations to the hash-pinned artifact: the initial
+/// execute scan sees the original `mov x0, #1` page; the write exit still sees that exact
+/// page before the store retries; and a fresh scan generation sees the exact page with only
+/// that instruction changed to `mov x0, #2` before it executes.
+#[cfg(target_os = "linux")]
+fn aa4_guard_write(opts: Aa4GuardWriteOpts) -> Result<(), String> {
+    use arm_harness::console::{Console, Event};
+    use arm_harness::elf::Elf;
+    use arm_harness::evidence::hex_lower;
+    use arm_harness::run::{PL011_DR, PL011_FR, PL011_FR_READY, Vcpu, VcpuExit};
+    use arm_harness::sys::{Machine, ParamsPage, pin_to_core};
+    use sha2::{Digest, Sha256};
+
+    const PAGE_SIZE: u64 = 4096;
+    const ORIGINAL_MOV_X0_1: u32 = 0xD280_0020;
+    const MODIFIED_MOV_X0_2: u32 = 0xD280_0040;
+    const RET: u32 = 0xD65F_03C0;
+
+    if opts.max_exits == 0 {
+        return Err("--max-exits must be nonzero".into());
+    }
+    let (bytes, image_sha256) = verified_artifact(
+        &opts.image,
+        &opts.image_sha256,
+        "AA-4 self-modifying ELF",
+        arm_harness::linux_boot::MAX_IMAGE_BYTES,
+    )?;
+    let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", opts.image.display()))?;
+    let target = image
+        .symbol("aa4_self_modify_target")
+        .map_err(|e| format!("resolve aa4_self_modify_target: {e}"))?;
+    if target & (PAGE_SIZE - 1) != 0 {
+        return Err(format!(
+            "aa4_self_modify_target {target:#x} is not page-aligned"
+        ));
+    }
+    let target_end = target
+        .checked_add(PAGE_SIZE)
+        .ok_or_else(|| "aa4_self_modify_target page end overflowed".to_string())?;
+    let original_page = image
+        .bytes(target, target_end)
+        .map_err(|e| format!("read planted target page: {e}"))?
+        .to_vec();
+    let original_prefix = [ORIGINAL_MOV_X0_1.to_le_bytes(), RET.to_le_bytes()].concat();
+    if original_page.get(..original_prefix.len()) != Some(original_prefix.as_slice()) {
+        return Err(format!(
+            "planted target at {target:#x} is not `mov x0, #1; ret`"
+        ));
+    }
+    let expected_initial_sha256: [u8; 32] = Sha256::digest(&original_page).into();
+    let mut modified_page = original_page;
+    modified_page[..4].copy_from_slice(&MODIFIED_MOV_X0_2.to_le_bytes());
+    let expected_modified_sha256: [u8; 32] = Sha256::digest(&modified_page).into();
+
+    pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
+    let params = ParamsPage {
+        scale_index: 0,
+        seed: 0xAA04_AA04_5752_4954,
+    };
+    let mut machine = Machine::new_guarded(&image, &params)
+        .map_err(|e| format!("construct guarded KVM machine: {e}"))?;
+    machine
+        .audit_exec_guard_page(target)
+        .map_err(|e| format!("configure target-page audit: {e}"))?;
+    machine.set_watchdog_secs(opts.watchdog_secs);
+
+    let mut console = Console::new();
+    let mut saw_ok = false;
+    let mut saw_pass = false;
+    let mut completed = None;
+    for exits in 1..=opts.max_exits {
+        match Vcpu::run(&mut machine).map_err(|e| format!("run self-modifying payload: {e}"))? {
+            VcpuExit::Mmio {
+                addr,
+                data,
+                is_write,
+            } => {
+                if !(oracle_model::UART_BASE..oracle_model::UART_BASE + PAGE_SIZE).contains(&addr) {
+                    return Err(format!(
+                        "self-modifying payload touched unexpected MMIO {addr:#x}"
+                    ));
+                }
+                if !is_write {
+                    if addr != PL011_FR || data.is_empty() || data.len() > 8 {
+                        return Err(format!(
+                            "unexpected PL011 read at {addr:#x} with width {}",
+                            data.len()
+                        ));
+                    }
+                    let ready = PL011_FR_READY.to_le_bytes();
+                    machine
+                        .complete_mmio_read(&ready[..data.len().min(ready.len())])
+                        .map_err(|e| format!("complete PL011 read: {e}"))?;
+                    continue;
+                }
+                if addr != PL011_DR {
+                    continue;
+                }
+                let byte = *data
+                    .first()
+                    .ok_or_else(|| "zero-width PL011 data write".to_string())?;
+                match console.push(byte) {
+                    Some(Event::Line(line)) if line == "OK write-rescan-complete" => saw_ok = true,
+                    Some(Event::Line(line)) if line == "PAYLOAD aa4-self-modify PASS" => {
+                        saw_pass = true;
+                    }
+                    Some(Event::Line(_)) | None => {}
+                    Some(Event::Exit(status)) => {
+                        completed = Some((status, exits));
+                        break;
+                    }
+                    Some(Event::MarkBegin | Event::MarkEnd) => {
+                        return Err("self-modifying proof emitted an oracle window marker".into());
+                    }
+                }
+            }
+            VcpuExit::MalformedMmio { addr, width } => {
+                return Err(format!("malformed MMIO at {addr:#x} with width {width}"));
+            }
+            other => {
+                return Err(format!(
+                    "self-modifying proof produced unexpected caller-visible exit {other:?}"
+                ));
+            }
+        }
+    }
+
+    let (status, caller_exits) = completed.ok_or_else(|| {
+        format!(
+            "self-modifying proof exceeded --max-exits {} before PAYLOAD EXIT",
+            opts.max_exits
+        )
+    })?;
+    if status != 0 || !saw_ok || !saw_pass {
+        return Err(format!(
+            "self-modifying payload did not attest success: status={status} saw_ok={saw_ok} \
+             saw_pass={saw_pass}"
+        ));
+    }
+
+    let audit = machine
+        .exec_guard_page_audit()
+        .ok_or_else(|| "guarded machine returned no target-page audit".to_string())?;
+    let stats = machine
+        .exec_guard_stats()
+        .ok_or_else(|| "guarded machine returned no execute-guard statistics".to_string())?;
+    if !arm_harness::sys::exec_guard_write_proof_holds(
+        target,
+        expected_initial_sha256,
+        expected_modified_sha256,
+        audit,
+        stats,
+    ) {
+        return Err(format!(
+            "write/rescan audit was internally inconsistent: target={target:#x} audit={audit:?} \
+             stats={stats:?} expected_initial={} expected_modified={}",
+            hex_lower(&expected_initial_sha256),
+            hex_lower(&expected_modified_sha256)
+        ));
+    }
+
+    println!(
+        "AA4_GUARD_WRITE PASS image_sha256={image_sha256} target={target:#x} \
+         first_generation={} write_generation={} rescan_generation={} caller_exits={caller_exits} \
+         guard_exits={} guard_scans={} guard_approvals={} guard_write_revocations={} \
+         initial_sha256={} modified_sha256={}",
+        audit.first_exec_generation,
+        audit.write_generation,
+        audit.post_write_exec_generation,
+        stats.exits,
+        stats.scans,
+        stats.approvals,
+        stats.write_revocations,
+        hex_lower(&expected_initial_sha256),
+        hex_lower(&expected_modified_sha256)
+    );
+    println!(
+        "AA-4 remains open: this proves write-before-modification and exact-page rescan; \
+         planted rejection, stale-generation, notifier replacement, and two-vCPU scan/write \
+         races remain live gates"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn aa4_guard_write(_opts: Aa4GuardWriteOpts) -> Result<(), String> {
+    Err("`arm-spike aa4-guard-write` issues KVM ioctls and needs /dev/kvm: it is Linux-only".into())
+}
+
 /// Read, hash, and parse the ELF for `payload` out of `dir`, and **verify it against
 /// its trusted expected pin** before returning it.
 ///
@@ -1670,6 +1886,7 @@ fn run() -> Result<(), String> {
         }
         Command::LinuxBoot(opts) => linux_boot(*opts),
         Command::Aa4GuardReject(opts) => aa4_guard_reject(*opts),
+        Command::Aa4GuardWrite(opts) => aa4_guard_write(*opts),
     }
 }
 
@@ -1741,5 +1958,29 @@ mod tests {
                 .any(|arg| arg.get_id() == "stage2_exec_guard"),
             "the guarded Linux smoke must remain an explicit CLI opt-in"
         );
+    }
+
+    #[test]
+    fn aa4_guard_write_cli_is_hash_pinned_and_bounded() {
+        let cli = Cli::try_parse_from([
+            "arm-spike",
+            "aa4-guard-write",
+            "--image",
+            "aa4-self-modify",
+            "--image-sha256",
+            "22bb",
+            "--core",
+            "9",
+        ])
+        .expect("the documented write/rescan proof command must parse");
+
+        let Command::Aa4GuardWrite(opts) = cli.command else {
+            panic!("aa4-guard-write must select its dedicated command");
+        };
+        assert_eq!(opts.image, PathBuf::from("aa4-self-modify"));
+        assert_eq!(opts.image_sha256, "22bb");
+        assert_eq!(opts.core, 9);
+        assert_eq!(opts.max_exits, 1_000_000);
+        assert_eq!(opts.watchdog_secs, arm_harness::run::DEFAULT_WATCHDOG_SECS);
     }
 }
