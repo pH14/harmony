@@ -201,6 +201,14 @@ struct RunOpts {
     /// Draw seeded-random target deltas over 1..=100000 (AA-3).
     #[arg(long)]
     with_targets: bool,
+    /// Payload class(es) to EXCLUDE from the plan (by name, repeatable). At AA-3 the exact
+    /// landing passes `--exclude-payload wfi-idle`: its WFI is resumed by a real-time timer that
+    /// shifts under the slow single-step, so under the exact landing it loses PMIs and exits
+    /// without closing its window — an AA-5 (paravirt-clock) breakage, not a force-exit failure.
+    /// The run grades on the seven deterministic-count payloads rather than fabricating wfi-idle
+    /// evidence it cannot produce.
+    #[arg(long = "exclude-payload")]
+    exclude_payloads: Vec<String>,
     /// AA-2: arm KVM single-step and emit one record per stepped instruction, instead of
     /// measuring a counting window. Implied by `--stage aa2`. A stepped run is smoke-scale by
     /// construction — a 1e6 window is millions of steps — so keep the scales small.
@@ -281,6 +289,10 @@ impl From<StageArg> for Stage {
     }
 }
 
+// An internal plan-builder: each argument is one plan dimension threaded straight from the CLI
+// (seed, cases, reps, with-targets, scales, condition, target lower bound, payload exclusions).
+// Bundling them into a struct would only rename the same fields; the flat list is the plan shape.
+#[allow(clippy::too_many_arguments)]
 fn plan_spec(
     seed: u64,
     cases: u64,
@@ -294,12 +306,20 @@ fn plan_spec(
     // target, or arming at/above it fails mechanism-attestation) — those deltas are simply not
     // drawn, rather than drawn and then failed.
     target_lo: u64,
+    // Payload names to EXCLUDE from the plan. Empty for AA-1/AA-2. At AA-3 the exact landing
+    // excludes `wfi-idle`: its WFI is resumed by a real-time timer whose firing shifts under the
+    // slow single-step, so under the exact landing it loses PMIs and exits without closing its
+    // window — an AA-5 (paravirt-clock) breakage, not a force-exit failure (foreman ruling: the
+    // ≥10⁶ run grades on the seven deterministic-count payloads). Excluding it is honest: the run
+    // does not fabricate wfi-idle exact-landing evidence it cannot produce.
+    exclude_payloads: &[String],
 ) -> PlanSpec {
     PlanSpec {
         payloads: ALL_PAYLOADS
             .iter()
             .copied()
             .filter(|p| p.has_window())
+            .filter(|p| !exclude_payloads.iter().any(|x| x == p.name()))
             .collect(),
         scales,
         conditions: vec![condition.to_string()],
@@ -319,6 +339,7 @@ fn emit_plan(seed: u64, cases: u64, reps: u64, with_targets: bool) -> Result<(),
         vec![Scale::Smoke],
         "pinned-solo",
         1,
+        &[],
     ))
     .map_err(|e| e.to_string())?;
     let json =
@@ -658,6 +679,7 @@ struct RunArgs {
     cases: u64,
     reps: u64,
     with_targets: bool,
+    exclude_payloads: Vec<String>,
     single_step: bool,
     max_steps: u64,
     watchdog_secs: u64,
@@ -915,6 +937,7 @@ fn execute(args: RunArgs) -> Result<(), String> {
         scales,
         &args.condition,
         target_lo,
+        &args.exclude_payloads,
     ))
     .map_err(|e| e.to_string())?;
     let mut attempted = samples.len() as u64;
@@ -1247,6 +1270,7 @@ fn run() -> Result<(), String> {
                 cases: opts.cases,
                 reps: opts.reps,
                 with_targets: opts.with_targets,
+                exclude_payloads: opts.exclude_payloads,
                 // AA-2 is the stepping stage, so it implies single-step even without the flag.
                 single_step: opts.single_step || matches!(opts.stage, StageArg::Aa2),
                 max_steps: opts.max_steps,
