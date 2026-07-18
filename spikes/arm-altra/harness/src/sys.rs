@@ -276,6 +276,13 @@ pub mod kvm {
     /// `KVM_ARCH_FLAG_DETERMINISTIC_INTERCEPTS`, which is set only through this
     /// ioctl — so without it every arm returns `EINVAL`, on the patched kernel.
     pub const ENABLE_CAP: u64 = 0x4068_AEA3;
+    /// `KVM_ARM_STAGE2_EXEC_GUARD` —
+    /// `_IOW(KVMIO, 0xb7, struct kvm_arm_stage2_exec_guard)`.
+    pub const ARM_STAGE2_EXEC_GUARD: u64 = 0x4018_AEB7;
+    /// Approve the exact frozen scan generation for execute/read-only mapping.
+    pub const ARM_STAGE2_EXEC_GUARD_APPROVE_EXEC: u32 = 0;
+    /// Reject the exact frozen scan generation and return it to writable/XN.
+    pub const ARM_STAGE2_EXEC_GUARD_REJECT_EXEC: u32 = 1;
     /// `KVM_CREATE_DEVICE` — `_IOWR(KVMIO, 0xe0, struct kvm_create_device)`.
     pub const CREATE_DEVICE: u64 = 0xC00C_AEE0;
     /// `KVM_SET_DEVICE_ATTR` — `_IOW(KVMIO, 0xe1, struct kvm_device_attr)`.
@@ -393,6 +400,15 @@ pub mod kvm {
     /// patch draft; a stock kernel can never return it, which is exactly why the
     /// records may attest the mechanism by it.
     pub const EXIT_PREEMPT: u32 = 42;
+    /// `KVM_EXIT_ARM_STAGE2_EXEC_GUARD` (43) — the patched synchronous execute/write
+    /// mediation exit. Its 24-byte union arm is decoded by [`decode_exec_guard_exit`].
+    pub const EXIT_ARM_STAGE2_EXEC_GUARD: u32 = 43;
+    /// The guest attempted to execute a frozen/default-XN page.
+    pub const ARM_STAGE2_EXEC_GUARD_EXIT_EXEC: u64 = 1 << 0;
+    /// The guest attempted to write an approved executable/read-only page.
+    pub const ARM_STAGE2_EXEC_GUARD_EXIT_WRITE: u64 = 1 << 1;
+    /// The write raced another vCPU's active scan and remains blocked.
+    pub const ARM_STAGE2_EXEC_GUARD_EXIT_BLOCKED: u64 = 1 << 2;
 
     /// `KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_CORE` — the prefix of the
     /// core-register ids (`user_pt_regs`), whose `pc` this harness sets.
@@ -532,6 +548,74 @@ pub struct KvmRunMmio {
     pub is_write: u8,
     /// Padding to the union's alignment.
     pub padding: [u8; 3],
+}
+
+/// The 24-byte `KVM_EXIT_ARM_STAGE2_EXEC_GUARD` union arm.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ExecGuardExit {
+    /// One of the execute/write flags defined in [`kvm`].
+    pub flags: u64,
+    /// Page-aligned guest-physical address whose permission transition faulted.
+    pub gpa: u64,
+    /// Nonzero scan generation. Approval/rejection must echo this exact value.
+    pub generation: u64,
+}
+
+/// Decode exit 43's 24-byte union arm without introducing a Rust union.
+///
+/// [`KvmRun::mmio`] occupies the same 24 bytes. The first two `u64`s line up with
+/// `phys_addr` and `data`; the final `u64` occupies `len`, `is_write`, and padding.
+/// Reassembling that last word from its native-endian field bytes keeps this pure and
+/// Miri-testable while preserving the native-endian KVM UAPI representation.
+#[must_use]
+pub fn decode_exec_guard_exit(run: &KvmRun) -> Option<ExecGuardExit> {
+    if run.exit_reason != kvm::EXIT_ARM_STAGE2_EXEC_GUARD {
+        return None;
+    }
+    let mut generation = [0_u8; 8];
+    generation[..4].copy_from_slice(&run.mmio.len.to_ne_bytes());
+    generation[4] = run.mmio.is_write;
+    generation[5..].copy_from_slice(&run.mmio.padding);
+    Some(ExecGuardExit {
+        flags: run.mmio.phys_addr,
+        gpa: u64::from_ne_bytes(run.mmio.data),
+        generation: u64::from_ne_bytes(generation),
+    })
+}
+
+/// Borrow one page named by a guarded execute exit from the single guest-RAM slot.
+///
+/// Every arithmetic operation is checked because the GPA is kernel-supplied state and
+/// therefore untrusted at this boundary. A misaligned, below-base, or overrunning page
+/// returns `None`, never a partial page and never a panic.
+#[must_use]
+pub fn exec_guard_page(ram: &[u8], ram_base: u64, gpa: u64) -> Option<&[u8]> {
+    const PAGE_SIZE: usize = 4096;
+    if gpa & (PAGE_SIZE as u64 - 1) != 0 {
+        return None;
+    }
+    let offset = usize::try_from(gpa.checked_sub(ram_base)?).ok()?;
+    let end = offset.checked_add(PAGE_SIZE)?;
+    ram.get(offset..end)
+}
+
+/// Scan a frozen page for guest instructions forbidden by the combined AA-4/AA-5
+/// runtime contract.
+///
+/// Branches and `CNTFRQ_EL0` are allowed. Monitor exclusives and live counter reads
+/// are rejected. The owned Linux image contains audited constant-frequency reads, so
+/// rejecting `CNTFRQ_EL0` here would contradict the static gate rather than strengthen it.
+#[must_use]
+pub fn exec_guard_hazards(gpa: u64, page: &[u8]) -> Vec<crate::scan::Hit> {
+    use crate::scan::{CounterReg, HitKind};
+
+    crate::scan::scan(gpa, page)
+        .into_iter()
+        .filter(|hit| {
+            matches!(hit.kind, HitKind::Exclusive)
+                || matches!(hit.kind, HitKind::CounterRead(reg) if reg != CounterReg::Cntfrq)
+        })
+        .collect()
 }
 
 // -- The vCPU-exit pointer logic, portable and Miri-reachable --
@@ -1595,8 +1679,8 @@ pub mod machine;
 
 #[cfg(target_os = "linux")]
 pub use machine::{
-    HostIdRegisters, Machine, Mechanism, MigrationChurner, ParamsPage, PerfCounter, allowed_cores,
-    current_tid, pin_to_core, read_host_id_registers,
+    ExecGuardStats, HostIdRegisters, Machine, Mechanism, MigrationChurner, ParamsPage, PerfCounter,
+    allowed_cores, current_tid, pin_to_core, read_host_id_registers,
 };
 
 /// AA-1(a)'s host-side EL0 counter: raw `BR_RETIRED` over THIS thread's userspace
@@ -1921,6 +2005,68 @@ mod tests {
             run.exit_reason = reason;
             assert_eq!(decode_kvm_run(&run), want);
         }
+    }
+
+    #[test]
+    fn execute_guard_union_decode_preserves_all_three_native_words() {
+        let mut run = blank_kvm_run();
+        run.exit_reason = kvm::EXIT_ARM_STAGE2_EXEC_GUARD;
+        let flags = kvm::ARM_STAGE2_EXEC_GUARD_EXIT_WRITE | kvm::ARM_STAGE2_EXEC_GUARD_EXIT_BLOCKED;
+        let gpa = 0x0000_0000_4123_4000_u64;
+        let generation = 0x8877_6655_4433_2211_u64;
+        let generation_bytes = generation.to_ne_bytes();
+        run.mmio.phys_addr = flags;
+        run.mmio.data = gpa.to_ne_bytes();
+        run.mmio.len = u32::from_ne_bytes(generation_bytes[..4].try_into().unwrap());
+        run.mmio.is_write = generation_bytes[4];
+        run.mmio.padding.copy_from_slice(&generation_bytes[5..]);
+
+        assert_eq!(
+            decode_exec_guard_exit(&run),
+            Some(ExecGuardExit {
+                flags,
+                gpa,
+                generation,
+            })
+        );
+
+        run.exit_reason = kvm::EXIT_MMIO;
+        assert_eq!(decode_exec_guard_exit(&run), None);
+    }
+
+    #[test]
+    fn execute_guard_page_bounds_and_hazard_policy_fail_closed() {
+        let mut ram = vec![0_u8; 8192];
+        let base = 0x4000_0000_u64;
+        assert!(exec_guard_page(&ram, base, base - 4096).is_none());
+        assert!(exec_guard_page(&ram, base, base + 1).is_none());
+        assert!(exec_guard_page(&ram, base, base + 8192).is_none());
+        assert_eq!(
+            exec_guard_page(&ram, base, base + 4096).unwrap().len(),
+            4096
+        );
+
+        // A branch, CNTFRQ read, and LSE CAS are allowed. LDXR and a live CNTVCT read
+        // are rejected, in address order, from the independent raw-byte scan.
+        let words = [
+            0x1400_0000_u32,
+            0xD53B_E000,
+            0xC8A0_7C41,
+            0xC85F_7C41,
+            0xD53B_E040,
+        ];
+        for (i, word) in words.into_iter().enumerate() {
+            ram[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        let hits = exec_guard_hazards(base, &ram[..4096]);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].addr, base + 12);
+        assert_eq!(hits[0].kind, crate::scan::HitKind::Exclusive);
+        assert_eq!(hits[1].addr, base + 16);
+        assert!(matches!(
+            hits[1].kind,
+            crate::scan::HitKind::CounterRead(crate::scan::CounterReg::Cntvct)
+        ));
     }
 
     #[test]
@@ -2282,6 +2428,14 @@ mod tests {
         assert_eq!(kvm::EXIT_PREEMPT, 42);
         assert_eq!(kvm::CAP_ARM_DETERMINISTIC_INTERCEPTS, 245);
         assert_eq!(kvm::CAP_ARM_STAGE2_EXEC_GUARD, 246);
+        assert_eq!(kvm::EXIT_ARM_STAGE2_EXEC_GUARD, 43);
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD, iow(0xb7, 24));
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD, 0x4018_AEB7);
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD_APPROVE_EXEC, 0);
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD_REJECT_EXEC, 1);
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD_EXIT_EXEC, 1);
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD_EXIT_WRITE, 2);
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD_EXIT_BLOCKED, 4);
 
         // KVM_SET_GUEST_DEBUG is _IOW(0x9b, sizeof(struct kvm_guest_debug)). On arm64 that
         // struct is 0x208 bytes (control+pad = 8, plus a 64×u64 kvm_guest_debug_arch = 512),

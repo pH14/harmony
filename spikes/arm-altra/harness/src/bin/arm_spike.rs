@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `arm-spike` — the AA-0 capability probe and the run orchestrator.
 //!
-//! Four subcommands:
+//! Five subcommands:
 //!
 //! - `plan` — emit a deterministic run plan as stable JSON, so a run-set's sample
 //!   list can be reviewed and diffed before a single measurement is spent. Pure
@@ -16,6 +16,9 @@
 //!   a hash-pinned arm64 Image + initramfs. It refreshes the pvclock page at exact
 //!   retired-branch targets, delivers the dedicated PPI 20 work clockevent, and stops
 //!   only after a fixed console marker plus a complete assert/ACK/rearm cycle.
+//! - `aa4-guard-reject` — a bounded, hash-pinned planted-exclusive proof. It succeeds
+//!   only after the stage-2 guard scans a frozen page, rejects an exclusive-bearing
+//!   generation, and leaves the vCPU PC in that unexecuted page.
 //!
 //! # What `run` refuses to invent
 //!
@@ -104,6 +107,8 @@ enum Command {
     Run(Box<RunOpts>),
     /// Boot hash-pinned arm64 Linux to a fixed console marker (Linux/box only).
     LinuxBoot(Box<LinuxBootOpts>),
+    /// Prove a hash-pinned planted-exclusive page is rejected before execution.
+    Aa4GuardReject(Box<Aa4GuardRejectOpts>),
 }
 
 const DEFAULT_LINUX_MAX_EXITS: u64 = 5_000_000;
@@ -150,6 +155,27 @@ struct LinuxBootOpts {
         default_value_t = arm_harness::linux_console::DEFAULT_REFRESH_DELTA_WORK
     )]
     refresh_delta_work: u64,
+    /// Per-KVM_RUN watchdog seconds; 0 disables it.
+    #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
+    watchdog_secs: u64,
+    /// Enable the AA-4 default-XN stage-2 execute guard before vCPU creation.
+    /// Requires the patched capability; clean pages are scanned/approved transparently.
+    #[arg(long)]
+    stage2_exec_guard: bool,
+}
+
+/// `arm-spike aa4-guard-reject`'s planted runtime proof inputs.
+#[derive(clap::Args, Debug)]
+struct Aa4GuardRejectOpts {
+    /// Bare arm64 ELF containing a planted LDXR/STXR-family instruction.
+    #[arg(long)]
+    image: PathBuf,
+    /// Trusted sha256 pin for `--image` (optional `sha256:` prefix).
+    #[arg(long)]
+    image_sha256: String,
+    /// Isolated host core on which to run the vCPU thread.
+    #[arg(long)]
+    core: u32,
     /// Per-KVM_RUN watchdog seconds; 0 disables it.
     #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
     watchdog_secs: u64,
@@ -845,8 +871,12 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
     )?;
 
     pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
-    let mut machine = Machine::new_linux(&image, &initramfs, &opts.bootargs)
-        .map_err(|e| format!("construct Linux KVM machine: {e}"))?;
+    let mut machine = if opts.stage2_exec_guard {
+        Machine::new_linux_guarded(&image, &initramfs, &opts.bootargs)
+    } else {
+        Machine::new_linux(&image, &initramfs, &opts.bootargs)
+    }
+    .map_err(|e| format!("construct Linux KVM machine: {e}"))?;
     machine.set_watchdog_secs(opts.watchdog_secs);
     let guest_clock_hz = machine
         .linux_cntfrq_hz()
@@ -869,6 +899,16 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
         },
     )
     .map_err(|e| format!("boot Linux: {e}"))?;
+    let guard = machine.exec_guard_stats();
+    if opts.stage2_exec_guard
+        && !matches!(guard, Some(stats) if stats.exits > 0 && stats.scans > 0 && stats.approvals > 0)
+    {
+        return Err(format!(
+            "stage-2 execute guard was requested but no non-vacuous execute/scan/approval \
+             sequence was observed: {guard:?}"
+        ));
+    }
+    let guard = guard.unwrap_or_default();
 
     let mut transcript = std::fs::OpenOptions::new()
         .write(true)
@@ -894,7 +934,10 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
         "NON-CERTIFYING Linux boot reached its fixed console marker: exits={} console_bytes={} \
          console_sha256={} image_sha256={} initramfs_sha256={} pvclock_publications={} \
          pvclock_max_gap_work={} pvclock_last_work={} pvclock_gpa={:#x} guest_clock_hz={} \
-         clockevent_assertions={} clockevent_acks={} clockevent_max_lateness_ticks={} transcript={}",
+         clockevent_assertions={} clockevent_acks={} clockevent_max_lateness_ticks={} \
+         exec_guard_enabled={} exec_guard_exits={} exec_guard_scans={} exec_guard_approvals={} \
+         exec_guard_rejections={} exec_guard_write_revocations={} exec_guard_blocked_writes={} \
+         transcript={}",
         result.boot.exits,
         result.boot.console.len(),
         console_sha256,
@@ -908,12 +951,19 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
         result.clockevent_assertions,
         result.clockevent_acknowledgements,
         result.clockevent_max_lateness_ticks,
+        opts.stage2_exec_guard,
+        guard.exits,
+        guard.scans,
+        guard.approvals,
+        guard.rejections,
+        guard.write_revocations,
+        guard.blocked_writes,
         opts.console_out.display()
     );
     println!(
         "AA-5 remains open: the exact-work page and dedicated PPI 20 clockevent substrate are \
          built, but this command does not claim same-seed live N1 identity, a native pinned-N1 \
-         artifact build, or AA-4's live W^X/stage-2 proof"
+         artifact build, or AA-4's planted rejection/write-before-modification proof"
     );
     Ok(())
 }
@@ -923,6 +973,108 @@ fn linux_boot(_opts: LinuxBootOpts) -> Result<(), String> {
     Err(
         "`arm-spike linux-boot` issues KVM ioctls and needs /dev/kvm: it is Linux-only; \
          artifact parsing and the console loop are tested portably on this host."
+            .into(),
+    )
+}
+
+/// Run a planted-exclusive ELF only far enough for the guard to reject its frozen page.
+///
+/// This is deliberately a rejection proof, not a generic payload run: success requires an
+/// exit-43 scan generation, at least one decoded exclusive, a successful REJECT response, and
+/// the vCPU PC still pointing into the rejected page. A normal exit or a counter-only rejection
+/// cannot satisfy it.
+#[cfg(target_os = "linux")]
+fn aa4_guard_reject(opts: Aa4GuardRejectOpts) -> Result<(), String> {
+    use arm_harness::elf::Elf;
+    use arm_harness::run::{RunError, StepVcpu, Vcpu};
+    use arm_harness::sys::{Machine, ParamsPage, pin_to_core};
+
+    let (bytes, sha256) = verified_artifact(
+        &opts.image,
+        &opts.image_sha256,
+        "AA-4 planted ELF",
+        arm_harness::linux_boot::MAX_IMAGE_BYTES,
+    )?;
+    let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", opts.image.display()))?;
+    pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
+
+    let params = ParamsPage {
+        scale_index: 0,
+        seed: 0xAA04_AA04_AA04_AA04,
+    };
+    let mut machine = Machine::new_guarded(&image, &params)
+        .map_err(|e| format!("construct guarded KVM machine: {e}"))?;
+    machine.set_watchdog_secs(opts.watchdog_secs);
+    let pc_before = StepVcpu::pc(&mut machine).map_err(|e| format!("read initial PC: {e}"))?;
+
+    let (gpa, generation, hazards, exclusive_hazards, live_counter_hazards, summary) =
+        match Vcpu::run(&mut machine) {
+            Err(RunError::ExecGuardRejected {
+                gpa,
+                generation,
+                hazards,
+                exclusive_hazards,
+                live_counter_hazards,
+                summary,
+            }) => (
+                gpa,
+                generation,
+                hazards,
+                exclusive_hazards,
+                live_counter_hazards,
+                summary,
+            ),
+            Err(other) => {
+                return Err(format!(
+                    "guard run failed before planted rejection: {other}"
+                ));
+            }
+            Ok(exit) => {
+                return Err(format!(
+                    "guarded planted ELF produced caller-visible {exit:?} instead of rejection"
+                ));
+            }
+        };
+    let pc_after = StepVcpu::pc(&mut machine).map_err(|e| format!("read rejected PC: {e}"))?;
+    let stats = machine
+        .exec_guard_stats()
+        .ok_or_else(|| "guarded constructor returned no execute-guard statistics".to_string())?;
+
+    if exclusive_hazards == 0
+        || hazards < exclusive_hazards
+        || generation == 0
+        || gpa != pc_after & !0xfff
+        || stats.rejections != 1
+        || stats.scans != stats.approvals.saturating_add(stats.rejections)
+        || stats.exits != stats.scans
+        || stats.write_revocations != 0
+        || stats.blocked_writes != 0
+    {
+        return Err(format!(
+            "planted rejection was internally inconsistent: gpa={gpa:#x} generation={generation} \
+             hazards={hazards} exclusives={exclusive_hazards} live_counters={live_counter_hazards} \
+             pc_before={pc_before:#x} pc_after={pc_after:#x} stats={stats:?}"
+        ));
+    }
+
+    println!(
+        "AA4_GUARD_REJECT PASS image_sha256={sha256} gpa={gpa:#x} generation={generation} \
+         hazards={hazards} exclusives={exclusive_hazards} live_counters={live_counter_hazards} \
+         pc_before={pc_before:#x} pc_after={pc_after:#x} exits={} scans={} approvals={} \
+         rejections={} summary={summary}",
+        stats.exits, stats.scans, stats.approvals, stats.rejections
+    );
+    println!(
+        "AA-4 remains open: this proves pre-execute planted rejection; write-before-modification, \
+         stale-generation, notifier replacement, and two-vCPU scan/write races remain live gates"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn aa4_guard_reject(_opts: Aa4GuardRejectOpts) -> Result<(), String> {
+    Err(
+        "`arm-spike aa4-guard-reject` issues KVM ioctls and needs /dev/kvm: it is Linux-only"
             .into(),
     )
 }
@@ -1517,6 +1669,7 @@ fn run() -> Result<(), String> {
             })
         }
         Command::LinuxBoot(opts) => linux_boot(*opts),
+        Command::Aa4GuardReject(opts) => aa4_guard_reject(*opts),
     }
 }
 
@@ -1533,7 +1686,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
     use std::ffi::OsStr;
 
     #[test]
@@ -1550,6 +1703,43 @@ mod tests {
             max_steps.get_default_values(),
             [OsStr::new("12000")],
             "AA-2 must fail closed with a finite default; explicit --max-steps 0 is the opt-in"
+        );
+    }
+
+    #[test]
+    fn aa4_guard_reject_cli_requires_a_pinned_artifact_and_core() {
+        let cli = Cli::try_parse_from([
+            "arm-spike",
+            "aa4-guard-reject",
+            "--image",
+            "planted-exclusive",
+            "--image-sha256",
+            "11aa",
+            "--core",
+            "7",
+        ])
+        .expect("the documented planted-proof command must parse");
+
+        let Command::Aa4GuardReject(opts) = cli.command else {
+            panic!("aa4-guard-reject must select its dedicated command");
+        };
+        assert_eq!(opts.image, PathBuf::from("planted-exclusive"));
+        assert_eq!(opts.image_sha256, "11aa");
+        assert_eq!(opts.core, 7);
+        assert_eq!(opts.watchdog_secs, arm_harness::run::DEFAULT_WATCHDOG_SECS);
+    }
+
+    #[test]
+    fn linux_boot_exposes_explicit_stage2_guard_opt_in() {
+        let command = Cli::command();
+        let linux_boot = command
+            .find_subcommand("linux-boot")
+            .expect("linux-boot subcommand must exist");
+        assert!(
+            linux_boot
+                .get_arguments()
+                .any(|arg| arg.get_id() == "stage2_exec_guard"),
+            "the guarded Linux smoke must remain an explicit CLI opt-in"
         );
     }
 }

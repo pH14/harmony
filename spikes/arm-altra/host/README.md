@@ -35,10 +35,13 @@ mapping from bypassing the state machine, and final approval is serialized with 
 lock. The trusted VMM boundary is explicit: unique anonymous backing, no DMA-capable assigned
 device, and no direct host write to an approved page without revocation.
 
-That is only a compile-verified kernel mechanism. AA-4 remains cooperative-residual until the
-patch is booted on the pinned N1 and a non-vacuous planted proof demonstrates first execute,
-approve/reject, stale-generation rejection, exit-before-write, scan-racing writes, and backing
-replacement. No compile result is promoted to that runtime claim.
+That is only a compile-verified kernel mechanism. The harness now has the userspace half:
+`linux-boot --stage2-exec-guard` scans and approves clean pages while requiring nonzero guard
+statistics, and `aa4-guard-reject` requires a hash-pinned exclusive-bearing page to be rejected
+while its PC remains unexecuted. Those paths are also pre-silicon. AA-4 remains
+cooperative-residual until the patch is booted on the pinned N1 and live proofs demonstrate first
+execute, approve/reject, stale-generation rejection, exit-before-write, scan-racing writes, and
+backing replacement. No compile result or unrun VMM path is promoted to that runtime claim.
 
 ## The load-bearing arch difference (why this is a *draft*, not a port)
 

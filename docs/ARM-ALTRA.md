@@ -1370,11 +1370,14 @@ ARMv8.1; Altra/Neoverse N1 is ARMv8.2), so an LSE-only guest is buildable on the
   write fault → exit before modification → revoke execute → rescan before later execution.
   `host/patches/0002-*` now implements that page-granular state machine with non-reused scan
   generations, notifier/memslot invalidation, and a documented unique-backing/no-DMA VMM
-  boundary; the exact pinned series applies and compiles. The harness still expects the cap
-  absent on stock KVM. Until the patched kernel is booted and a planted test proves first
-  execute, approve/reject, stale-token rejection, racing writes, exit-before-modification, and
-  backing replacement, this is not level-3 evidence. An unmapped-GPA abort, `BRK`, or
-  post-execution dirty scan is not a substitute.
+  boundary; the exact pinned series applies and compiles. The harness now has an explicit guarded
+  constructor and exact-generation response loop: `linux-boot --stage2-exec-guard` requires
+  nonzero execute/scan/approval counts, while `aa4-guard-reject` hash-verifies a planted ELF and
+  requires an exclusive-bearing generation to be rejected with the PC still in that page. Both
+  remain unrun. Until the patched kernel is booted and retained evidence proves first execute,
+  approve/reject, stale-token rejection, racing writes, exit-before-modification, and backing
+  replacement, this is not level-3 evidence. An unmapped-GPA abort, `BRK`, or post-execution dirty
+  scan is not a substitute.
 
 **CURRENT RULING: cooperative residual risk on stock KVM. The stronger mechanically-unreachable
 ruling remains conditional on booting the draft execute-guard patch and passing its planted proof.**
@@ -1396,9 +1399,10 @@ ruling remains conditional on booting the draft execute-guard patch and passing 
 **Disposition: AA-4 CHARACTERIZED; static owned-image gate complete; current ruling is
 cooperative residual on stock KVM.** (a) and (b) are demonstrated at scale on real N1. For (c),
 Level 1 and Level 2's static artifact half are built and cross-verified against the owned
-kernel/vDSO/init. The arm64 KVM execute-guard draft now applies and compiles, but live W^X
-rescan-on-exec and Level 3 still require its non-vacuous planted proof on the pinned host. Native
-publication on the pinned N1 is also still required.
+kernel/vDSO/init. The arm64 KVM execute-guard draft now applies and compiles and its VMM scan/reply
+path is built, but live W^X rescan-on-exec and Level 3 still require the non-vacuous planted
+reject/write/race/invalidation proofs on the pinned host. Native publication on the pinned N1 is
+also still required.
 
 ### AA-5 — the paravirt work-derived clock: (a)+(b) DEMONSTRATED; (c) executor + guest build substrate built
 

@@ -259,6 +259,27 @@ pub enum RunError {
     /// `KVM_RUN` returned an exit reason this loop does not handle.
     #[error("unhandled KVM exit reason {0}")]
     UnexpectedExit(u32),
+    /// The synchronous AA-4/AA-5 page scan found a forbidden instruction. The
+    /// exact generation was rejected back to writable/XN before this error surfaced.
+    #[error(
+        "execute guard rejected page {gpa:#x} generation {generation} with {hazards} forbidden \
+         instruction(s) ({exclusive_hazards} exclusive, {live_counter_hazards} live-counter): \
+         {summary}"
+    )]
+    ExecGuardRejected {
+        /// Frozen page that was scanned.
+        gpa: u64,
+        /// Nonzero kernel generation rejected by the response ioctl.
+        generation: u64,
+        /// Total forbidden instructions found on the page.
+        hazards: usize,
+        /// Monitor-exclusive instructions found on the page.
+        exclusive_hazards: usize,
+        /// Live counter reads found on the page (constant `CNTFRQ_EL0` excluded).
+        live_counter_hazards: usize,
+        /// Deterministic summary of the first bounded set of hits.
+        summary: String,
+    },
     /// The counter went backwards across the window.
     #[error("the work counter went backwards: work_end {end} < work_begin {begin}")]
     CounterWentBackwards {

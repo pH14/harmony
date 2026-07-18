@@ -109,6 +109,8 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 objdump -d arch/arm64/kvm/arm.o         > /tmp/verify-arm.dis
 objdump -d arch/arm64/kvm/handle_exit.o > /tmp/verify-handle_exit.dis
 objdump -dr arch/arm64/kvm/mmu.o        > /tmp/verify-mmu.dis
+objdump -dr --disassemble=kvm_arm_stage2_exec_guard_apply \
+	arch/arm64/kvm/mmu.o                 > /tmp/verify-exec-guard-apply.dis
 nm arch/arm64/kvm/mmu.o                 > /tmp/verify-mmu.nm
 
 # (a) KVM_ARM_PREEMPT_EXIT ioctl number -- _IO(KVMIO, 0xe4) == (0xAE << 8) | 0xe4 == 0xaee4 --
@@ -149,11 +151,14 @@ grep -Eq 'movk[[:space:]]+w[0-9]+, #0x4018, lsl #16' /tmp/verify-arm.dis \
 #     unmap stage-2 mappings, and clear state ranges for notifier/memslot invalidation.
 grep -q ' T kvm_arm_stage2_exec_guard_apply$' /tmp/verify-mmu.nm \
 	|| fail "kvm_arm_stage2_exec_guard_apply not exported by mmu.o"
-grep -Eq '(tbz|tbnz)[[:space:]]+w[0-9]+, #0xc,' /tmp/verify-mmu.dis \
+grep -Eq '(tbz|tbnz)[[:space:]]+w[0-9]+, #(0xc|12),' /tmp/verify-mmu.dis \
 	|| fail "bit-12 (KVM_ARCH_FLAG_STAGE2_EXEC_GUARD) test not found in mmu.o"
 grep -Eq 'mov[[:space:]]+w[0-9]+, #0x2b[[:space:]]+// #43' /tmp/verify-mmu.dis \
 	|| fail "KVM_EXIT_ARM_STAGE2_EXEC_GUARD (43 / 0x2b) not found in mmu.o"
-for relocation in _raw_write_lock xa_load __unmap_stage2_range xa_store_range; do
+grep -Eq 'bl[[:space:]]+[[:xdigit:]]+[[:space:]]+<__unmap_stage2_range>' \
+	/tmp/verify-exec-guard-apply.dis \
+	|| fail "direct __unmap_stage2_range call not found in execute-guard apply path"
+for relocation in _raw_write_lock xa_load xas_find xas_store; do
 	grep -q "R_AARCH64_CALL26[[:space:]]${relocation}" /tmp/verify-mmu.dis \
 		|| fail "${relocation} call not found in mmu.o"
 done

@@ -1515,3 +1515,43 @@ Gates: 147 harness tests plus bin/manifest tests; native and aarch64-linux Clipp
 `-D warnings`; aarch64-linux check; exact patch application plus GCC 14 arm64 object compile
 against checksum-pinned Linux 6.18.35; fmt and diff checks; pinned Miri 146 pass / one intentional
 long-loop ignore, plus bin tests (manifest subprocess intentionally ignored under isolation).
+
+## AA-4 stage-2 execute-guard VMM (hm-rfz, 2026-07-18)
+
+The draft kernel state machine now has a fail-closed userspace consumer and a planted rejection
+command. This is still compile/test evidence only; neither path has run against `/dev/kvm` on the
+patched N1.
+
+- Guarded constructors require capability 246 before creating the vCPU. The board remains inside
+  the kernel patch's trusted boundary: one anonymous private RAM slot, one vCPU for the current
+  proof, and no assigned/DMA-capable device. Exit 43 is decoded through the already-sized 24-byte
+  `kvm_run` union storage without adding an unsafe Rust union.
+- A synchronous execute exit bounds-checks the kernel-supplied page, scans its frozen bytes with
+  the existing raw-instruction scanner, and answers the exact generation. Clean pages become
+  executable/read-only; monitor exclusives and live counter reads are rejected back to
+  writable/XN before a hard `RunError::ExecGuardRejected` reaches the caller. `CNTFRQ_EL0` remains
+  allowed because the owned image's static audit permits that constant-frequency read. A write
+  exit records the kernel's already-completed execute revocation; a blocked write is an error on
+  the single-vCPU board. A million-transition internal bound prevents transparent mediation from
+  hiding an infinite exit loop.
+- `linux-boot --stage2-exec-guard` requires observed execute exits, scans, and approvals before it
+  can report its already non-certifying AA-5 smoke result. `aa4-guard-reject` hash-verifies the
+  planted ELF, pins the vCPU thread, and requires a nonzero generation, at least one decoded
+  exclusive, one successful rejection, consistent transition counts, and a PC that still lies in
+  the rejected page.
+- The kernel patch was hardened after a fresh lock-order review: state replacement under
+  `mmu_lock` uses `GFP_ATOMIC`, while notifier/memslot invalidation uses an allocation-free
+  advanced-XArray erase walk. The exact format patch applies cleanly to pinned 6.18.35, passes
+  strict `checkpatch`, compiles the arm64 KVM subtree, satisfies object-code assertions for the
+  cap/ioctl/exit/flag/lock/XArray/direct-unmap paths, and links a warning-free `vmlinux`.
+
+Remaining live AA-4 gates are deliberately named in the CLI result: write-before-modification and
+rescan, stale-generation rejection, backing replacement invalidation, and the two-vCPU
+scan/write race. Until those and the planted reject run on the patched pinned host, the current
+ruling remains cooperative residual rather than mechanically unreachable.
+
+Userspace gates for this slice: 150 harness library tests, three `arm-spike` CLI tests, and the
+manifest-current test pass; aarch64-Linux Clippy is warning-free; pinned Miri passes 149 library
+tests plus all three CLI tests (one intentional long-loop ignore and one isolated subprocess
+ignore). The kernel gate additionally passes strict `checkpatch` (0 errors/0 warnings), compiled
+object assertions, and the full arm64 `vmlinux` link without warnings.

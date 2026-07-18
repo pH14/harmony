@@ -47,7 +47,14 @@ under test (`docs/ARM-ALTRA.md` §Evidence integrity #4).
   mandatory row is absent *or unprobed*** — a disposition may never rest on a probe
   that could not run), and `run` (the measurement loop: create the VM, publish the
   params page, run each planned sample, write `run-set.json` + `records.jsonl`).
-  Linux/box only for the latter two.
+  `linux-boot --stage2-exec-guard` opts the owned Linux VM into AA-4's default-XN
+  mediation and requires nonzero execute/scan/approval counts. `aa4-guard-reject`
+  hash-verifies a planted-exclusive ELF and succeeds only after an exact-generation
+  reject leaves its PC in the rejected page. Linux/box only for all syscall paths.
+
+The AA-4 commands are proof apparatus, not evidence by their existence. They have not run on the
+patched N1. The planted command presently proves only pre-execute reject; live write-before-store,
+stale-generation, notifier replacement, and two-vCPU scan/write-race tests remain required.
 
 ## Build / test
 

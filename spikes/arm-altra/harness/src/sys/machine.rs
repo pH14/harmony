@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use super::{KvmRun, PerfEventAttr, SysError, br_retired_attr, kvm};
+use super::{ExecGuardExit, KvmRun, PerfEventAttr, SysError, br_retired_attr, kvm};
 use crate::linux_console::{LinuxClockeventState, LinuxPvclockVcpu, PvclockWrite};
 use crate::run::{RunError, StepVcpu, Vcpu, VcpuExit, WorkCounter};
 
@@ -170,6 +170,17 @@ struct KvmIrqLevel {
     level: u32,
 }
 const _: () = assert!(core::mem::size_of::<KvmIrqLevel>() == 8);
+
+/// `struct kvm_arm_stage2_exec_guard`, the exact-generation VM-ioctl response.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KvmArmStage2ExecGuard {
+    gpa: u64,
+    generation: u64,
+    action: u32,
+    flags: u32,
+}
+const _: () = assert!(core::mem::size_of::<KvmArmStage2ExecGuard>() == 24);
 
 /// `struct kvm_vcpu_init`.
 #[repr(C)]
@@ -542,10 +553,35 @@ pub struct Machine {
     /// `Some` only for the owned Linux board. The external level is VM state that KVM's
     /// register dump does not necessarily expose, so it is retained and digest-bound here.
     linux_clockevent: Option<LinuxClockeventState>,
+    /// Present only for the guarded constructors. Counts every hidden synchronous
+    /// guard transition so a live proof cannot pass without exercising the mechanism.
+    exec_guard: Option<ExecGuardStats>,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables it. See
     /// [`DEFAULT_WATCHDOG_SECS`].
     watchdog_secs: u64,
 }
+
+/// Non-vacuous execution counts from the stage-2 execute-guard path.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct ExecGuardStats {
+    /// Total exit-43 records consumed by the VMM.
+    pub exits: u64,
+    /// Stable executable pages scanned.
+    pub scans: u64,
+    /// Clean scan generations approved executable/read-only.
+    pub approvals: u64,
+    /// Hazard-bearing scan generations rejected writable/XN.
+    pub rejections: u64,
+    /// Approved pages whose first later write revoked execute before the store.
+    pub write_revocations: u64,
+    /// Writes reported blocked behind an active scan. Impossible on this single-vCPU board.
+    pub blocked_writes: u64,
+}
+
+/// Bound transparent guard exits inside one [`Vcpu::run`] call. A guest that endlessly
+/// rewrites and re-executes pages must surface as a failure instead of hiding an unbounded
+/// exit loop below the caller's own exit budget.
+const MAX_EXEC_GUARD_EXITS_PER_RUN: u64 = 1_000_000;
 
 enum GuestBoot<'a> {
     Payload {
@@ -587,7 +623,16 @@ impl Machine {
     /// [`SysError`] if any ioctl or mapping failed. Nothing is half-built: a failure
     /// closes what it opened.
     pub fn new(image: &crate::elf::Elf, params: &ParamsPage) -> Result<Machine, SysError> {
-        Self::new_for(GuestBoot::Payload { image, params })
+        Self::new_for(GuestBoot::Payload { image, params }, false)
+    }
+
+    /// Create a bare-payload VM with the AA-4 stage-2 execute guard enabled before
+    /// vCPU creation. Used by the planted clean/exclusive runtime proof.
+    ///
+    /// # Errors
+    /// [`SysError`] if the patched capability is absent, cannot be enabled, or construction fails.
+    pub fn new_guarded(image: &crate::elf::Elf, params: &ParamsPage) -> Result<Machine, SysError> {
+        Self::new_for(GuestBoot::Payload { image, params }, true)
     }
 
     /// Create the AA-5(c) Linux board, validate and load its flat Image,
@@ -600,14 +645,37 @@ impl Machine {
     /// # Errors
     /// [`SysError`] if an artifact is malformed or any KVM operation fails.
     pub fn new_linux(image: &[u8], initramfs: &[u8], bootargs: &str) -> Result<Machine, SysError> {
-        Self::new_for(GuestBoot::Linux {
-            image,
-            initramfs,
-            bootargs,
-        })
+        Self::new_for(
+            GuestBoot::Linux {
+                image,
+                initramfs,
+                bootargs,
+            },
+            false,
+        )
     }
 
-    fn new_for(boot: GuestBoot<'_>) -> Result<Machine, SysError> {
+    /// Create the owned Linux board with default-XN execute mediation enabled before
+    /// vCPU creation. Guard exits are scanned and serviced transparently by [`Machine::run`].
+    ///
+    /// # Errors
+    /// [`SysError`] if the patched capability is absent, cannot be enabled, or construction fails.
+    pub fn new_linux_guarded(
+        image: &[u8],
+        initramfs: &[u8],
+        bootargs: &str,
+    ) -> Result<Machine, SysError> {
+        Self::new_for(
+            GuestBoot::Linux {
+                image,
+                initramfs,
+                bootargs,
+            },
+            true,
+        )
+    }
+
+    fn new_for(boot: GuestBoot<'_>, exec_guard: bool) -> Result<Machine, SysError> {
         let kvm_fd = open_kvm()?;
         let linux_clockevent = boot
             .needs_psci_0_2()
@@ -623,6 +691,7 @@ impl Machine {
             mem_size: 0,
             linux_pvclock_gpa: None,
             linux_clockevent,
+            exec_guard: exec_guard.then_some(ExecGuardStats::default()),
             watchdog_secs: DEFAULT_WATCHDOG_SECS,
         };
         m.build(boot)?;
@@ -698,6 +767,13 @@ impl Machine {
         self.vm_fd = unsafe { libc::ioctl(self.kvm_fd, kvm::CREATE_VM as libc::c_ulong, 0_u64) };
         if self.vm_fd < 0 {
             return Err(err("ioctl(KVM_CREATE_VM)"));
+        }
+
+        // The kernel contract requires the guard opt-in before any vCPU exists.
+        // Enabling it here also makes the VMM's controlled boundary explicit: this
+        // board has one anonymous private slot and no assigned/DMA-capable device.
+        if self.exec_guard.is_some() {
+            self.enable_stage2_exec_guard()?;
         }
 
         let ram_size = boot.ram_size();
@@ -965,6 +1041,173 @@ impl Machine {
         Ok(())
     }
 
+    /// Enable the AA-4 execute guard before vCPU creation, refusing an absent marker
+    /// rather than letting an unknown enable-cap failure masquerade as patched coverage.
+    fn enable_stage2_exec_guard(&self) -> Result<(), SysError> {
+        // SAFETY: `vm_fd` is valid and KVM_CHECK_EXTENSION takes the scalar cap number.
+        let present = unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::CHECK_EXTENSION as libc::c_ulong,
+                kvm::CAP_ARM_STAGE2_EXEC_GUARD,
+            )
+        };
+        if present < 0 {
+            return Err(err("ioctl(KVM_CHECK_EXTENSION, ARM_STAGE2_EXEC_GUARD)"));
+        }
+        if present == 0 {
+            return Err(SysError::Protocol(
+                "the AA-4 stage-2 execute guard was requested but the running kernel does not \
+                 advertise KVM_CAP_ARM_STAGE2_EXEC_GUARD"
+                    .into(),
+            ));
+        }
+
+        let cap = KvmEnableCap {
+            cap: kvm::CAP_ARM_STAGE2_EXEC_GUARD as u32,
+            ..Default::default()
+        };
+        // SAFETY: `vm_fd` is valid; `cap` is fully initialized and no vCPU exists yet.
+        if unsafe { libc::ioctl(self.vm_fd, kvm::ENABLE_CAP as libc::c_ulong, &raw const cap) } < 0
+        {
+            return Err(err("ioctl(KVM_ENABLE_CAP, ARM_STAGE2_EXEC_GUARD)"));
+        }
+        Ok(())
+    }
+
+    /// Counts proving which execute-guard transitions this VM actually exercised.
+    #[must_use]
+    pub fn exec_guard_stats(&self) -> Option<ExecGuardStats> {
+        self.exec_guard
+    }
+
+    fn exec_guard_reply(&self, exit: ExecGuardExit, action: u32) -> Result<(), RunError> {
+        let reply = KvmArmStage2ExecGuard {
+            gpa: exit.gpa,
+            generation: exit.generation,
+            action,
+            flags: 0,
+        };
+        // SAFETY: `vm_fd` is valid; `reply` is the fully initialized 24-byte UAPI struct.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::ARM_STAGE2_EXEC_GUARD as libc::c_ulong,
+                &raw const reply,
+            )
+        } < 0
+        {
+            return Err(seam(
+                "ioctl(KVM_ARM_STAGE2_EXEC_GUARD)",
+                err("ioctl(KVM_ARM_STAGE2_EXEC_GUARD)"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Service one synchronous execute-guard exit while the vCPU is stopped.
+    ///
+    /// The frozen page is borrowed only for the scan. A clean page is approved for
+    /// execute/read-only; a hazardous page is rejected first, then surfaced as a hard
+    /// error so no caller can resume it and mistake rejection for successful execution.
+    fn service_exec_guard(&mut self, exit: ExecGuardExit) -> Result<(), RunError> {
+        let Some(stats) = self.exec_guard.as_mut() else {
+            return Err(RunError::UnexpectedExit(kvm::EXIT_ARM_STAGE2_EXEC_GUARD));
+        };
+        stats.exits = stats.exits.saturating_add(1);
+
+        let known = kvm::ARM_STAGE2_EXEC_GUARD_EXIT_EXEC
+            | kvm::ARM_STAGE2_EXEC_GUARD_EXIT_WRITE
+            | kvm::ARM_STAGE2_EXEC_GUARD_EXIT_BLOCKED;
+        let is_exec = exit.flags == kvm::ARM_STAGE2_EXEC_GUARD_EXIT_EXEC;
+        let is_write = exit.flags == kvm::ARM_STAGE2_EXEC_GUARD_EXIT_WRITE;
+        let is_blocked = exit.flags
+            == (kvm::ARM_STAGE2_EXEC_GUARD_EXIT_WRITE | kvm::ARM_STAGE2_EXEC_GUARD_EXIT_BLOCKED);
+        if exit.flags & !known != 0 || !(is_exec || is_write || is_blocked) {
+            return Err(RunError::Seam {
+                context: "decode KVM_EXIT_ARM_STAGE2_EXEC_GUARD",
+                message: format!("invalid execute-guard flags {:#x}", exit.flags),
+            });
+        }
+        if exit.generation == 0 || exit.gpa & 0xfff != 0 {
+            return Err(RunError::Seam {
+                context: "validate KVM_EXIT_ARM_STAGE2_EXEC_GUARD",
+                message: format!(
+                    "kernel supplied gpa {:#x}, generation {} (page alignment and nonzero \
+                     generation are mandatory)",
+                    exit.gpa, exit.generation
+                ),
+            });
+        }
+
+        if is_exec {
+            stats.scans = stats.scans.saturating_add(1);
+            // SAFETY: the vCPU is stopped at the synchronous exit and this machine owns the
+            // entire live mapping. The bounded page helper rejects every out-of-slot GPA.
+            let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
+            let page =
+                super::exec_guard_page(ram, RAM_BASE, exit.gpa).ok_or_else(|| RunError::Seam {
+                    context: "scan KVM_EXIT_ARM_STAGE2_EXEC_GUARD page",
+                    message: format!(
+                        "page {:#x} is outside the single [{:#x}, {:#x}) RAM slot",
+                        exit.gpa,
+                        RAM_BASE,
+                        RAM_BASE.saturating_add(self.mem_size as u64)
+                    ),
+                })?;
+            let hazards = super::exec_guard_hazards(exit.gpa, page);
+            let action = if hazards.is_empty() {
+                kvm::ARM_STAGE2_EXEC_GUARD_APPROVE_EXEC
+            } else {
+                kvm::ARM_STAGE2_EXEC_GUARD_REJECT_EXEC
+            };
+            self.exec_guard_reply(exit, action)?;
+            let Some(stats) = self.exec_guard.as_mut() else {
+                return Err(RunError::UnexpectedExit(kvm::EXIT_ARM_STAGE2_EXEC_GUARD));
+            };
+            if hazards.is_empty() {
+                stats.approvals = stats.approvals.saturating_add(1);
+                return Ok(());
+            }
+
+            stats.rejections = stats.rejections.saturating_add(1);
+            let first: Vec<String> = hazards
+                .iter()
+                .take(8)
+                .map(|hit| format!("{:#x}:{:?}", hit.addr, hit.kind))
+                .collect();
+            let exclusive_hazards = hazards
+                .iter()
+                .filter(|hit| matches!(hit.kind, crate::scan::HitKind::Exclusive))
+                .count();
+            return Err(RunError::ExecGuardRejected {
+                gpa: exit.gpa,
+                generation: exit.generation,
+                hazards: hazards.len(),
+                exclusive_hazards,
+                live_counter_hazards: hazards.len() - exclusive_hazards,
+                summary: first.join(", "),
+            });
+        }
+
+        if is_blocked {
+            stats.blocked_writes = stats.blocked_writes.saturating_add(1);
+            return Err(RunError::Seam {
+                context: "service blocked execute-guard write",
+                message: format!(
+                    "single-vCPU board reported a write blocked behind scan generation {} at \
+                     {:#x}; there is no second vCPU that can own that scan",
+                    exit.generation, exit.gpa
+                ),
+            });
+        }
+
+        // The kernel has already changed approved -> dirty/XN, synchronously unmapped
+        // the old mapping, and exited before the store. No response ioctl is required.
+        stats.write_revocations = stats.write_revocations.saturating_add(1);
+        Ok(())
+    }
+
     /// Copy the image's loadable segments into guest RAM at their link addresses.
     ///
     /// The bounds-checked copy itself lives in [`crate::elf::Elf::load_into`], which
@@ -1117,6 +1360,7 @@ impl Vcpu for Machine {
     /// its mechanism honestly.
     fn run(&mut self) -> Result<VcpuExit, RunError> {
         use std::sync::atomic::Ordering;
+        let mut exec_guard_exits = 0_u64;
         loop {
             // A stock overflow can be DELIVERED — its SIGUSR1 handled, setting
             // PERF_SOURCED_KICK — in the narrow window AFTER a prior KVM_RUN already returned
@@ -1180,6 +1424,20 @@ impl Vcpu for Machine {
             // SAFETY: `self.run` is a live MAP_SHARED mapping of at least
             // size_of::<KvmRun>() bytes (checked at construction).
             let snapshot = unsafe { core::ptr::read_volatile(self.run) };
+            if let Some(exit) = super::decode_exec_guard_exit(&snapshot) {
+                exec_guard_exits = exec_guard_exits.saturating_add(1);
+                if exec_guard_exits > MAX_EXEC_GUARD_EXITS_PER_RUN {
+                    return Err(RunError::Seam {
+                        context: "service KVM_EXIT_ARM_STAGE2_EXEC_GUARD",
+                        message: format!(
+                            "more than {MAX_EXEC_GUARD_EXITS_PER_RUN} guard exits occurred \
+                             without one caller-visible exit"
+                        ),
+                    });
+                }
+                self.service_exec_guard(exit)?;
+                continue;
+            }
             return Ok(super::decode_kvm_run(&snapshot));
         }
     }
