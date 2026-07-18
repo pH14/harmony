@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # variables are consumed by the sourcing scripts
-# Shared setup for the Part B (guest Linux image) scripts. Source from
-# guest/linux/ with CWD = guest/linux/. Linux-only: every entry point calls
-# require_linux_amd64 before doing anything.
+# Shared setup for the guest Linux image scripts. Source from guest/linux/
+# with CWD = guest/linux/. Every entry point selects its native build host
+# explicitly: the established x86 image uses Linux/x86_64; the AA-5(c) image
+# uses Linux/aarch64 on the pinned Altra box.
 
 # shellcheck source=../scripts/lib.sh disable=SC1091
 . ../scripts/lib.sh
@@ -15,6 +16,17 @@ require_linux_amd64() {
     if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
         echo "FAIL: the guest Linux image builds and tests only on Linux/x86_64." >&2
         echo "      On macOS run it in a linux/amd64 container — see docs/BUILDING.md." >&2
+        exit 1
+    fi
+}
+
+# Fail fast (never cross-build silently) when the AA-5(c) artifacts are not
+# being built on the pinned Linux/aarch64 execution host. Native builds keep
+# the compiler and absolute build paths inside the recorded box contract.
+require_linux_aarch64() {
+    if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "aarch64" ]; then
+        echo "FAIL: the AA-5(c) guest image builds only on Linux/aarch64." >&2
+        echo "      Run it natively on the pinned Altra box — see docs/ARM-ALTRA.md." >&2
         exit 1
     fi
 }
@@ -38,6 +50,10 @@ DL_DIR=$GUEST_DIR/dl
 # Final artifacts (bzImage, initramfs.cpio.gz) live on the repo side so they
 # survive the container session.
 ART_DIR=$GUEST_DIR/build
+# AA-5(c) artifacts are isolated from the x86 image. In particular, an ARM
+# build must never overwrite the canonical bzImage/initramfs pair consumed by
+# the established x86 gates.
+ARM64_ART_DIR=$ART_DIR/arm64
 
 # Build trees live at a fixed absolute path on a native filesystem:
 # - fixed, so absolute paths are identical between the two reproducibility
@@ -55,6 +71,8 @@ KSRC=$BUILD_ROOT/linux-$KERNEL_VERSION
 KOBJ=$BUILD_ROOT/kernel-build
 BBSRC=$BUILD_ROOT/busybox-$BUSYBOX_VERSION
 BBOBJ=$BUILD_ROOT/busybox-build
+ARM64_KOBJ=$BUILD_ROOT/kernel-build-arm64
+ARM64_BBOBJ=$BUILD_ROOT/busybox-build-arm64
 
 # Reproducibility levers (task spec): fixed timestamp/user/host/version, fixed
 # SOURCE_DATE_EPOCH, no kconfig header timestamps. LOCALVERSION is fixed in

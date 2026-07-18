@@ -524,7 +524,10 @@ fn build_dtb(
     f.begin(&format!("pvclock@{:x}", board.pvclock_gpa));
     f.string("compatible", "harmony,pvclock-page");
     f.reg("reg", &[(board.pvclock_gpa, PAGE)]);
-    f.empty("no-map");
+    // Reserve the host-owned page from the guest allocator while retaining its
+    // normal linear-map alias. The arm64 clock reader is needed before the
+    // general memremap allocator is available; `no-map` would make that early
+    // reader impossible without a second architecture-specific fixmap.
     f.end();
     f.end();
 
@@ -770,7 +773,10 @@ mod tests {
         );
         assert_eq!(prop("pl011@9000000", "clocks").len(), 8);
         assert_eq!(prop("reserved-memory", "ranges"), b"");
-        assert_eq!(prop("pvclock@40001000", "no-map"), b"");
+        assert!(
+            !props.contains_key(&("pvclock@40001000".to_string(), "no-map".to_string())),
+            "pvclock must remain reserved but linearly mapped for the early clock reader"
+        );
         assert_eq!(prop("pvclock@40001000", "reg").len(), 16);
     }
 

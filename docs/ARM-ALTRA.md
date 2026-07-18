@@ -1384,7 +1384,7 @@ scan, cooperative residual (runtime-generated exclusives) bounded by W^X + stage
 artifacts, level 3's mechanism is characterized with its live planted-exclusive proof homed to
 AA-5. Awaiting Paul's ratification at PR time (foreman directive).
 
-### AA-5 — the paravirt work-derived clock: (a)+(b) DEMONSTRATED; (c) executor substrate built
+### AA-5 — the paravirt work-derived clock: (a)+(b) DEMONSTRATED; (c) executor + guest build substrate built
 
 The centerpiece. Evidence in `results/aa-5/` and the AA-3 records.
 
@@ -1410,7 +1410,7 @@ payload scans **counter-clean**. Remaining, kernel-dependent: the EL0
 `CNTVCT_EL0`-read-undefs-under-`CNTKCTL_EL1` live test, `CNTHCTL_EL2` posture, and the scan run
 against the *shipped guest kernel image*.
 
-**(c) The Linux smoke — executor substrate built; guest assets and clock closure remain.** The
+**(c) The Linux smoke — executor + guest build substrate built; live clock closure remains.** The
 harness now has a portable-tested, arm64-Linux-cross-clippy-clean boot substrate: a total flat
 Image loader with bounded Image/initramfs placement, deterministic generated DTB, Linux EL1h
 entry (`x0=DTB`, reserved args zero), Linux-only PSCI 0.2 vCPU opt-in, the existing in-kernel
@@ -1420,16 +1420,27 @@ vCPU thread, and stops on a fixed console marker. It is deliberately labelled
 **NON-CERTIFYING**: the console marker alone does not prove its producer, the clock page remains
 the explicit `FLAG_WORK_DERIVED=false` placeholder, and this path has not run on the Altra.
 
-No arm64 guest kernel Image/initramfs with the Harmony pvclock driver is present on the box yet.
-The remaining build is (i) build the pinned arm64 kernel/rootfs with the paravirt clocksource,
-`sched_clock`, delay, and `CNTKCTL_EL1` closure, (ii) validate the substrate to userspace and
-steady state on real N1, then (iii) replace the placeholder with the work-derived refresh and
-hold the same-seed bit-identical console+state gate. It also hosts AA-4 level-3's live
-planted-exclusive proof.
+The tree now has a native Linux/aarch64 build recipe for the pinned kernel and BusyBox rootfs.
+Its v6.18.35 patch routes the four shared physical/virtual counter accessors (including the
+clocksource, sched_clock, delay, and erratum/CVAL call sites) through the ABI-v1 page, disables
+the vDSO fast path and EL0 counter access, names the selected source `harmony-arm-pvclock`, and
+refuses Image publication unless the empty-allowlist opcode scan accepts both vmlinux and the
+vDSO. The recipe is source-context-checked but **not box-built evidence**: no resulting
+Image/initramfs is present on the Altra yet.
+
+One timer-domain gap is explicit. Upstream's virtual clockevent programs `CNTV_CVAL` as
+`page_guest_clock + delta`, while stock KVM expires it against the live architected counter.
+Equal frequency alone does not align those origins, and the current static-zero placeholder can
+make the deadline immediately expired. AA-5 therefore remains open until the host owns/aligned
+the timer-counter origin or replaces that clockevent path with the deterministic V-time timer,
+stamps the page from retired-branch work before entry/injection, and the real N1 run proves
+userspace steady state plus same-seed console+state identity. That live substrate also hosts
+AA-4 level-3's planted-exclusive proof.
 
 **Disposition: AA-5 PARTIAL — (a) payload determinism and (b) the closure premise + scanner are
-demonstrated on real N1; (c) has a pre-silicon executor substrate but no live guest proof**, and
-is blocked on the pvclock-enabled guest assets, live N1 bring-up, and the work-derived refresh.
+demonstrated on real N1; (c) has pre-silicon executor/build substrate but no box-built asset or
+live guest proof**, and is blocked on the pvclock-enabled guest build, deterministic page/timer
+refresh, and live N1 bring-up.
 It remains the natural home for AA-4 L3's live proof and AA-6's guest-side gates. This is not a
 NO-GO signal — every underlying mechanism (work clock, exact landing, force-exit, counter
 closure) is independently GO/demonstrated above.

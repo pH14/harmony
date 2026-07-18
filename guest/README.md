@@ -27,6 +27,19 @@ be bind-mounted from a case-insensitive macOS filesystem that a kernel tree
 cannot be extracted onto, and because identical absolute paths are one of the
 reproducibility requirements.
 
+The AA-5(c) ARM spike has separate native-Altra entry points:
+
+```sh
+make -C guest arm64-image
+```
+
+They require Linux/aarch64 and publish `Image` plus `initramfs.cpio.gz` under
+`guest/build/arm64/`, so they cannot overwrite the established x86 artifacts.
+The kernel build applies the pinned ARM work-derived-clock patch and refuses
+publication unless the final `vmlinux` contains zero live generic-counter
+reads. These artifacts are spike evidence, not an AA-5 certification by
+themselves; the live pinned-box gates remain authoritative.
+
 ## Prerequisites
 
 Everywhere: Rust via rustup (the repo's `rust-toolchain.toml` applies), plus

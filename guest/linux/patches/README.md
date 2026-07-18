@@ -40,3 +40,9 @@ reviewed allowlist entry, and `run-tests.sh` must be re-run to regenerate
   seqlock page read; TSC marked unstable once the page is live; one-shot
   doorbell registration bracketed by the two deliberate rdtsc traps.
   Runtime-inert without the `harmony_pvclock` kernel parameter.
+- `0002-arm64-harmony-pvclock-work-derived-clocksource.patch` — AA-5(c):
+  redirects the arm64 generic-counter accessors to the fixed reserved ABI-v1
+  page, disables the counter-reading vDSO and EL0 CNTVCT/CNTPCT access, and
+  leaves the architected timer only as a clock-event interrupt device. The
+  arm64 build has no allowlist: any surviving live-counter opcode rejects the
+  kernel before `Image` publication.

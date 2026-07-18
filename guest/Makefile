@@ -4,7 +4,7 @@
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: test test-payloads test-linux fetch kernel initramfs image postgres-image campaign-image docker-image game-image clean
+.PHONY: test test-payloads test-linux fetch kernel initramfs image arm64-kernel arm64-initramfs arm64-image postgres-image campaign-image docker-image game-image clean
 
 test: test-payloads test-linux
 
@@ -28,7 +28,7 @@ endif
 fetch:
 	scripts/fetch.sh
 
-kernel initramfs image postgres-image campaign-image docker-image game-image:
+kernel initramfs image arm64-kernel arm64-initramfs arm64-image postgres-image campaign-image docker-image game-image:
 ifeq ($(UNAME_S),Linux)
 	$(MAKE) -C linux $@
 else
