@@ -301,10 +301,10 @@ fn plan_spec(
     scales: Vec<Scale>,
     condition: &str,
     // The LOWER bound of the seeded-random target draw. 1 for AA-1/AA-3-proxy; for the AA-3
-    // EXACT landing it is `skid_margin + 1`, because a target closer to `MARK_BEGIN` than the
-    // margin cannot be landed by the Preempt (its 0..margin latency would overshoot such a small
-    // target, or arming at/above it fails mechanism-attestation) — those deltas are simply not
-    // drawn, rather than drawn and then failed.
+    // EXACT landing it is `skid_margin + LANDING_HEADROOM + 1`, because a target closer to
+    // `MARK_BEGIN` than that combined margin cannot be armed strictly below and single-stepped up
+    // to its canonical landing PC — those deltas are simply not drawn, rather than drawn and then
+    // failed.
     target_lo: u64,
     // Payload names to EXCLUDE from the plan. Empty for AA-1/AA-2. At AA-3 the exact landing
     // excludes `wfi-idle`: its WFI is resumed by a real-time timer whose firing shifts under the
@@ -921,11 +921,15 @@ fn execute(args: RunArgs) -> Result<(), String> {
         args.scales.clone()
     };
     // AA-3 exact landing (patched mechanism + a measured skid margin) draws targets no closer to
-    // MARK_BEGIN than `skid_margin`, so every target can be armed a full margin below and landed
-    // exactly by the Preempt; every other configuration draws from 1.
+    // MARK_BEGIN than `skid_margin + LANDING_HEADROOM`, so every target can be armed that full
+    // combined margin below and single-stepped up to its canonical landing PC; every other
+    // configuration draws from 1.
     let target_lo = if matches!(args.mechanism, MechanismArg::Patched) && args.skid_margin.is_some()
     {
-        args.skid_margin.unwrap().saturating_add(1)
+        args.skid_margin
+            .unwrap()
+            .saturating_add(arm_harness::run::LANDING_HEADROOM)
+            .saturating_add(1)
     } else {
         1
     };

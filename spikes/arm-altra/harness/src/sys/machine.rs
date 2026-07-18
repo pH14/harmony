@@ -1075,7 +1075,24 @@ impl Vcpu for Machine {
         // portable, Miri-exercised `super::guest_ram`; the hashing and sorted-order discipline
         // are the portable, Miri-tested `digest_state`.
         let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
-        Ok(super::digest_state(&regs, ram, &vgic))
+        let digest = super::digest_state(&regs, ram, &vgic);
+
+        // Diagnostic (env-gated, off by default): when replay-identity flags a divergent
+        // landing, `AA3_DUMP_REGS=1` emits the regs-only and RAM sub-digests plus every
+        // (id -> value) pair for THIS landing to stderr, tagged with the full digest. Diffing
+        // two divergent reps' dumps isolates whether the divergence is a register (which one)
+        // or guest RAM — the difference between a measurement artifact and a real anomaly.
+        if std::env::var_os("AA3_DUMP_REGS").is_some() {
+            let regs_only = super::digest_regs_only(&regs, &vgic);
+            let ram_digest = super::digest_state(&BTreeMap::new(), ram, &[]);
+            eprintln!("AA3REGS digest={digest} regs_only={regs_only} ram={ram_digest}");
+            for (id, val) in &regs {
+                let hexval: String = val.iter().map(|b| format!("{b:02x}")).collect();
+                eprintln!("AA3REGS   id={id:#018x} val={hexval}");
+            }
+        }
+
+        Ok(digest)
     }
 }
 

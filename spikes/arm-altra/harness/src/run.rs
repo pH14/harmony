@@ -292,16 +292,16 @@ pub enum RunError {
         /// The skid margin the overflow must be armed below the target by.
         skid_margin: u64,
     },
-    /// The AA-3 arm-early `Preempt` fired STRICTLY ABOVE the target. The overflow was armed a
-    /// `skid_margin` below the target so it would fire at or below it (a landing exactly at the
-    /// target is the valid max-skid boundary; a landing below it single-steps up). A `Preempt`
-    /// past the target means the skid exceeded the AA-1 measured max margin — accepting it would
-    /// be exactly the overshoot the exact-landing contract forbids, so it fails closed rather
-    /// than recording a landing past the target.
+    /// The AA-3 arm-early `Preempt` fired AT or ABOVE the target. The overflow was armed
+    /// `skid_margin + LANDING_HEADROOM` below the target so it would fire STRICTLY below it,
+    /// leaving room to single-step up to the canonical landing PC. Firing at or above the target
+    /// means the skid exceeded margin+headroom: the landing would be BR-exact but at a
+    /// PC-non-canonical point on the target's branchless plateau (which same-seed reps need not
+    /// share), breaking replay identity — so it fails closed rather than recording it.
     #[error(
-        "exact landing: the arm-early Preempt fired at work {landed}, above the target \
-         {target} (skid margin {skid_margin} too small): the skid exceeded the measured max, \
-         so it overshot the target with no room to single-step up"
+        "exact landing: the arm-early Preempt fired at work {landed}, at or above the target \
+         {target} (skid margin {skid_margin} + headroom too small): the skid left no room to \
+         single-step up to the canonical landing PC"
     )]
     ExactLandingKickAtOrAboveTarget {
         /// The exact landing target (`work_begin + delta`).
@@ -448,6 +448,26 @@ const MAX_ADVISORY_EXITS: u64 = 100_000;
 /// guest is LSE-only, so the `llsc` single-step livelock does not apply, but the loop is bounded
 /// defensively so a counter that never advances to the target fails rather than spins forever).
 const MAX_LANDING_STEPS: u64 = 1_000_000;
+
+/// Extra `BR_RETIRED` headroom, ADDED to the measured `skid_margin`, that the exact-landing
+/// overflow is armed below the target.
+///
+/// `BR_RETIRED` does not uniquely pin `PC`: it ticks only on retired branches, so across a
+/// branchless run (clock-page's seqlock body is ~10 non-branch instructions between its loop
+/// branches) many consecutive `PC`s share one `BR_RETIRED` value — a *plateau*. The exact
+/// landing's canonical point is the FIRST instruction at which `work == target`, i.e. the one
+/// immediately after the target-th retiring branch; the single-step-up loop reaches it from ANY
+/// start strictly below the target (the deterministic instruction stream converges there). But
+/// an arm-early `Preempt` that fires AT `work == target` lands at an ARBITRARY `PC` inside the
+/// plateau — BR-exact yet PC-non-canonical — so two same-seed reps that land one via a step-up
+/// and one via that boundary digest DIFFERENT `PC`s (everything else, RAM included, is
+/// bit-identical). The measured `skid_margin` alone leaves the `Preempt` able to fire exactly at
+/// the target (skid == margin); this headroom arms `skid_margin + LANDING_HEADROOM` below it so
+/// the `Preempt` fires STRICTLY below the target with room to single-step up to the canonical
+/// `PC`. Landing at/above the target then never occurs on the measured skid and is kept as a
+/// fail-closed anomaly (the skid exceeded margin+headroom), not silently accepted. The cost is a
+/// few extra single steps per landing; the payoff is a canonical, path-independent landing `PC`.
+pub const LANDING_HEADROOM: u64 = 16;
 
 /// What one sample is asked to be: which payload, at what scale and seed, and — if
 /// this is an overflow run — how far past the window's opening to arm the deadline.
@@ -851,9 +871,9 @@ pub fn run_sample(
 ///    `exit_reason == Preempt` — the mechanism attestation the AA-3 checker requires still
 ///    holds.
 ///
-/// It **fails closed, never fudges**: a `Preempt` strictly above the target
-/// ([`RunError::ExactLandingKickAtOrAboveTarget`] — the skid exceeded the measured max margin;
-/// a landing exactly at the target is the valid zero-step boundary), a step that
+/// It **fails closed, never fudges**: a `Preempt` at or above the target
+/// ([`RunError::ExactLandingKickAtOrAboveTarget`] — the skid exceeded `skid_margin +
+/// LANDING_HEADROOM`, so it could not reach the canonical landing PC), a step that
 /// moves the counter past the target ([`RunError::ExactLandingOvershotTarget`] — impossible
 /// under +0/+1, so a real bug), an arm-early period that underflows the margin
 /// ([`RunError::ExactLandingWindowTooSmall`]), or a stock signal-kick
@@ -930,10 +950,14 @@ pub fn run_sample_exact(
                         if let Some(delta) = spec.target_delta {
                             let t = begin.saturating_add(delta);
                             target = Some(t);
-                            // The arm-early period. An underflow (`delta <= skid_margin`) means
-                            // there is no room below the target for the margin — refuse rather
-                            // than arm at/above the target and silently degrade to arm-at-target.
-                            let arm_delta = match delta.checked_sub(skid_margin) {
+                            // The arm-early period: a full `skid_margin + LANDING_HEADROOM` below
+                            // the target, so the `Preempt` fires STRICTLY below it (skid <= margin
+                            // < margin + headroom) with room to single-step up to the canonical
+                            // landing PC (see `LANDING_HEADROOM`). An underflow (`delta` no larger
+                            // than that combined margin) means there is no room below the target —
+                            // refuse rather than arm at/above the target and land non-canonically.
+                            let arm_delta = match delta.checked_sub(skid_margin + LANDING_HEADROOM)
+                            {
                                 Some(d) if d >= 1 => d,
                                 _ => {
                                     return Err(RunError::ExactLandingWindowTooSmall {
@@ -1015,15 +1039,15 @@ pub fn run_sample_exact(
                     continue 'run;
                 }
 
-                // The overflow fired. With the margin set to the AA-1 max skid, it lands in
-                // `[target - skid_margin, target]`: normally BELOW the target (single-step up),
-                // and at the max-skid boundary EXACTLY at it (the `while work != target` loop
-                // below runs zero steps — a valid zero-step exact landing whose digested state is
-                // identical to the below-target-then-step path, since the landed state is a
-                // function of (payload, scale, seed, target), not of the skid path). Only a
-                // `Preempt` STRICTLY above the target is an overshoot the margin cannot absorb —
-                // fail closed, never accept it.
-                if work > target {
+                // The overflow fired. It MUST be STRICTLY below the target so the single-step-up
+                // loop can walk to the canonical landing PC (the first instruction at which
+                // `work == target`). Arming `skid_margin + LANDING_HEADROOM` below the target
+                // guarantees this on the measured skid. A `Preempt` AT or above the target is
+                // BR-exact but PC-non-canonical (it lands at an arbitrary PC on the target's
+                // branchless plateau, which two same-seed reps need not share) — and means the
+                // skid exceeded margin+headroom. Fail closed rather than record a non-canonical
+                // landing that breaks replay identity.
+                if work >= target {
                     return Err(RunError::ExactLandingKickAtOrAboveTarget {
                         target,
                         landed: work,
