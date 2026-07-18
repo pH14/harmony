@@ -159,10 +159,13 @@ monitor). N1 has LSE (Armv8.1 atomics, mandatory ≥ v8.1), so the design answer
 2. **Verification:** opcode scan of every executable guest page for LDXR/STXR-family
    encodings, made durable by **W^X + rescan-on-exec** so runtime code generation cannot
    smuggle exclusives past a boot-time scan.
-3. **Trap/emulate fallback (backstop only):** pages the scan flags get stage-2
-   execute-denied; residual exclusive sequences fault to the host and are stepped/emulated
-   atomically. Expensive by construction; its existence is what makes level 2's verdict
-   enforceable rather than advisory.
+3. **Runtime execute guard (backstop only; requires a KVM patch):** every GFN starts stage-2
+   execute-denied. First execute must exit to userspace for a scan before the page becomes
+   executable/read-only; a write to an approved page must exit first, revoke execute, and require
+   another scan. Stock Linux 6.18.35 arm64 KVM exposes neither per-GFN XN control nor an execute-
+   fault exit: it grants `KVM_PGTABLE_PROT_X` internally and resumes. Therefore level 3 is
+   unavailable until `kvm-cap-arm-stage2-exec-guard` is present; `KVM_EXIT_MEMORY_FAULT`, dirty
+   logging, `userfaultfd`, and `guest_memfd` do not substitute for this state machine.
 
 **The final ruling — a mandatory AA-4 deliverable — must state which of two worlds we are
 in:** LL/SC is **mechanically unreachable** (levels 1+2 airtight; level 3 never engaged), or
@@ -536,9 +539,9 @@ Method (§4's ladder, evaluated on real artifacts, not in prose):
 - **(c) Evaluate the enforcement ladder** on the real owned-guest artifacts: the LSE-only
   kernel + userspace build (level 1, including removal of the vanilla kernel's LL/SC
   fallback bodies); the executable-page opcode scan with W^X + rescan-on-exec (level 2) run
-  against the actual guest kernel image and a running guest; the stage-2 execute-deny +
-  trap/emulate backstop (level 3) exercised at least once against a deliberately planted
-  exclusive, to prove the backstop engages.
+  against the actual guest kernel image and a running guest; the patched stage-2 execute guard
+  (level 3) advertised by `kvm-cap-arm-stage2-exec-guard` and exercised at least once against a
+  deliberately planted exclusive, to prove the pre-execute scan/reject path engages.
 
 **Acceptance:** divergence demonstrated (a), invariance demonstrated (b), all three ladder
 levels exercised with evidence (c), and **the ruling recorded** — mechanically unreachable
@@ -1355,38 +1358,40 @@ ARMv8.1; Altra/Neoverse N1 is ARMv8.2), so an LSE-only guest is buildable on the
   and the freestanding init to scan CLEAN; a planted LDXR/STXR ELF must be rejected with exactly
   two hits. This completes the static build gate. Wiring the same primitive into a live W^X
   rescan-on-exec path remains open.
-- **Level 3 — stage-2 execute-deny + trap/emulate backstop.** Mechanism characterized, not yet
-  fired: mark guest executable pages non-exec at stage-2 for a deliberately-planted exclusive,
-  take the permission fault, and emulate-through / reject. It needs a running guest with stage-2
-  under harness control — best exercised against the AA-5 guest with a planted `STXR`; recorded
-  as the one ladder rung whose *live* proof is deferred to AA-5 (the mechanism — KVM stage-2
-  perms + a fault handler — is standard and unblocked; only the planted-exclusive run remains).
+- **Level 3 — stage-2 execute guard. BLOCKED ON A KVM EXTENSION, not merely a box run.** Stock
+  Linux 6.18.35 arm64 KVM recognizes an instruction fault but adds
+  `KVM_PGTABLE_PROT_X` inside `user_mem_abort()` and resumes; it exposes no userspace per-GFN XN
+  attribute and no execute-fault exit. `KVM_SET_MEMORY_ATTRIBUTES` is x86-only here and defines
+  only `PRIVATE`; `KVM_EXIT_MEMORY_FAULT` does not report RWX. Dirty logging is retrospective,
+  and `userfaultfd` has no execute event. A non-vacuous backstop therefore requires a Harmony KVM
+  state machine: default XN → exit before first execute → scan → approve executable/read-only;
+  write fault → exit before modification → revoke execute → rescan before later execution. The
+  harness now probes the reserved `kvm-cap-arm-stage2-exec-guard` and expects it absent on stock
+  KVM. An unmapped-GPA abort, `BRK`, or post-execution dirty scan is not level-3 evidence.
 
-**RECOMMENDED FINAL RULING (Paul ratifies): LL/SC is made MECHANICALLY UNREACHABLE in the shipped
-guest by Level 1 (LSE-only build) + complete Level 2 (build scan plus live rescan-on-exec), with
-Level 3 as the runtime backstop; one cooperative residual, named and bounded.**
-- *Primary — unreachable by construction.* The guest ships LSE-only (Level 1); the opcode scan
-  (Level 2) is a build-gate + rescan-on-exec that fails closed if any exclusive survives
-  (outline-atomics fallback, hand-asm, a stray kernel fallback body). On N1 this is real: LSE is
-  present, and the LSE build is measured bit-identical. No reachable `STXR` ⇒ the
-  architecturally-permitted spurious-failure hazard (a) has nothing to fire on — **closed**, not
-  mitigated.
-- *Residual (cooperative, bounded): runtime-generated exclusives.* Code produced after the scan
-  — a guest JIT or self-modifying page emitting `LDXR`/`STXR` — is the only path to a reachable
-  exclusive. It is bounded by Level 3: W^X forces every to-be-executed page through a
-  rescan-on-exec (Level 2) before it is made executable, and the stage-2 execute-deny backstop
-  catches anything that still slips through. A guest that JITs exclusives *and* defeats W^X is
-  outside the owned-guest contract (§4's cooperative boundary) — named, not hand-waved.
+**CURRENT RULING: cooperative residual risk on stock KVM. The stronger mechanically-unreachable
+ruling remains conditional on the missing execute-guard patch and its planted proof.**
+- *Static owned image — unreachable at publication.* The guest ships LSE-only (Level 1), and the
+  opcode scan (the completed static half of Level 2) fails closed if any exclusive survives in
+  the kernel, vDSO, or init artifact: outline-atomics fallback, hand assembly, or a stray kernel
+  fallback body. On N1 this is real: LSE is present, and the LSE build is measured bit-identical.
+  This closes the bytes published in the owned image, not code generated or modified at runtime.
+- *Residual (cooperative, presently unbounded by the VMM): runtime-generated exclusives.* Code
+  produced after the static scan — a guest JIT or self-modifying page emitting `LDXR`/`STXR` —
+  can execute on stock KVM without a userspace-visible permission transition. The owned guest
+  disables modules, BPF JIT, kprobes, ftrace, livepatch, and other known code-generation paths,
+  so this is outside its cooperative contract; it is nevertheless not mechanically closed until
+  the execute-guard capability exists and is exercised.
 - *Non-residual: the single-step livelock (AA-2).* A measurement-time hazard (single-step clears
   the monitor), not a runtime one; the LSE-only ban removes every exclusive there is to
   single-step, so it cannot arise in a shipped guest.
 
-**Disposition: AA-4 CHARACTERIZED; static owned-image gate complete — recommended ruling
-*mechanically-unreachable via LSE-only + scan, cooperative residual (runtime-generated
-exclusives) bounded by W^X + stage-2*.** (a) and (b) are demonstrated at scale on real N1. For
-(c), Level 1 and Level 2's static artifact half are now built and cross-verified against the owned
-kernel/vDSO/init; live W^X rescan-on-exec and Level 3's planted-exclusive proof remain homed to
-AA-5. Native publication on the pinned N1 is also still required.
+**Disposition: AA-4 CHARACTERIZED; static owned-image gate complete; current ruling is
+cooperative residual on stock KVM.** (a) and (b) are demonstrated at scale on real N1. For (c),
+Level 1 and Level 2's static artifact half are built and cross-verified against the owned
+kernel/vDSO/init. Live W^X rescan-on-exec and Level 3 require a new arm64 KVM execute-guard patch
+before their planted proof can run; they are not ordinary arrival-day box work. Native
+publication on the pinned N1 is also still required.
 
 ### AA-5 — the paravirt work-derived clock: (a)+(b) DEMONSTRATED; (c) executor + guest build substrate built
 
@@ -1478,10 +1483,10 @@ planted-exclusive proof.
 demonstrated on real N1; (c) has pre-silicon executor/build substrate but no box-built asset or
 live guest proof**. The guest-registered exact-work page refresher is built but unexecuted;
 completion remains blocked on the pvclock-enabled native box build, live deterministic
-timer/event evidence, AA-4's live W^X/stage-2 enforcement proofs, and live N1 bring-up.
-It remains the natural home for AA-4 L3's live proof and AA-6's guest-side gates. This is not a
-NO-GO signal — every underlying mechanism (work clock, exact landing, force-exit, counter
-closure) is independently GO/demonstrated above.
+timer/event evidence, AA-4's missing KVM execute-guard patch plus live proof, and live N1
+bring-up. The AA-5 guest remains the natural workload for the eventual planted proof and AA-6's
+guest-side gates. The work clock, exact landing, force-exit, and static counter closure are
+independently demonstrated; the AA-4 runtime execute guard is explicitly not.
 
 ### AA-6 — the freezable-CPU contract + vGIC round-trip + mini determinism gate: SCOPED
 

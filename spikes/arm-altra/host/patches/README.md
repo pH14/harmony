@@ -11,6 +11,14 @@ the pre-silicon draft the pre-build ruling (`docs/ARCH-BOUNDARY.md` §Pre-build 
 exist before that GO/NO-GO. See `../BUILD.md` for the apply+build recipe and `../verify.sh` for
 the automated apply+build+assert gate.
 
+AA-4's runtime execute guard is a separate, currently missing kernel extension. Stock arm64 KVM
+does not expose per-GFN stage-2 XN state or execute faults to userspace; it resolves instruction
+faults by granting execute internally. The harness reserves
+`KVM_CAP_ARM_STAGE2_EXEC_GUARD = 246` as an expect-absent marker only. Presence must eventually
+mean the full non-vacuous state machine: default XN, exit before first execute, userspace scan,
+approve executable/read-only, and exit-before-write to revoke execute. No current patch in this
+directory advertises it.
+
 ## What the patch does
 
 Mirrors the x86 mechanism exactly, mechanism-for-mechanism:

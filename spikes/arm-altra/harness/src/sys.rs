@@ -376,6 +376,11 @@ pub mod kvm {
     /// patched kernel is the one running (§Evidence integrity #4), and its absence
     /// on a stock kernel is a legitimate, recordable "no".
     pub const CAP_ARM_DETERMINISTIC_INTERCEPTS: u64 = 245;
+    /// Reserved capability for the not-yet-built Harmony arm64 stage-2 execute guard.
+    /// Stock 6.18.35 must report this absent. A future patch must provide a per-GFN
+    /// default-XN, execute-before-userspace-scan, write-revokes-execute state machine;
+    /// merely returning a generic memory fault does not satisfy this capability.
+    pub const CAP_ARM_STAGE2_EXEC_GUARD: u64 = 246;
 
     /// `KVM_EXIT_DEBUG` — a single-step landed (AA-2).
     pub const EXIT_DEBUG: u32 = 4;
@@ -1123,6 +1128,10 @@ pub enum Capability {
     /// The 0004-analogue determinism capability (`host/patches/`) is advertised —
     /// the positive probe that the patched kernel is actually running.
     DeterministicIntercepts,
+    /// A Harmony arm64 KVM execute guard is advertised. Stock KVM has no per-GFN XN
+    /// userspace API and resolves instruction faults internally, so absence is the
+    /// expected result until the dedicated AA-4 kernel extension exists.
+    Stage2ExecGuard,
 }
 
 impl Capability {
@@ -1138,6 +1147,7 @@ impl Capability {
             Capability::Vgicv3Creatable => "vgicv3-creatable",
             Capability::WritableIdRegisters => "writable-id-registers",
             Capability::DeterministicIntercepts => "kvm-cap-arm-deterministic-intercepts",
+            Capability::Stage2ExecGuard => "kvm-cap-arm-stage2-exec-guard",
         }
     }
 
@@ -1145,8 +1155,8 @@ impl Capability {
     /// truth-table rows probed on the host (as opposed to the guest ID-register facts the
     /// `ident` payload reads). Every one must be `Present` or the probe exits nonzero; a
     /// row absent or unprobed is a host missing an existential mechanism, not a pass.
-    /// [`Capability::DeterministicIntercepts`] is NOT here — it is the expect-*absent*
-    /// patch marker, reported separately.
+    /// The two KVM patch capabilities are NOT here — both are expect-*absent* markers
+    /// on stock KVM and are reported separately.
     #[must_use]
     pub const fn mandatory_aa0() -> &'static [Capability] {
         &[
@@ -1162,13 +1172,15 @@ impl Capability {
 
     /// Whether `docs/ARM-ALTRA.md` §AA-0 expects this capability **present**.
     ///
-    /// [`Capability::DeterministicIntercepts`] is the one row expected *absent* on a
-    /// stock kernel — it appears only once the patch draft is built and booted
-    /// (AA-3). Absent is therefore a legitimate finding for it and a blocking one
-    /// for the others. What is never legitimate for any of them is *unprobed*.
+    /// The deterministic-preempt and stage-2 execute-guard rows are expected *absent*
+    /// on a stock kernel. Each becomes present only after its dedicated patch is built
+    /// and booted (AA-3 and AA-4 respectively). What is never legitimate is *unprobed*.
     #[must_use]
     pub const fn expect_present(self) -> bool {
-        !matches!(self, Capability::DeterministicIntercepts)
+        !matches!(
+            self,
+            Capability::DeterministicIntercepts | Capability::Stage2ExecGuard
+        )
     }
 }
 
@@ -1573,6 +1585,7 @@ mod imp {
             Capability::DeterministicIntercepts => {
                 probe_vm_capability(kvm::CAP_ARM_DETERMINISTIC_INTERCEPTS)
             }
+            Capability::Stage2ExecGuard => probe_vm_capability(kvm::CAP_ARM_STAGE2_EXEC_GUARD),
         }
     }
 }
@@ -2268,6 +2281,7 @@ mod tests {
         assert_eq!(kvm::ARM_PREEMPT_EXIT, io(0xe4));
         assert_eq!(kvm::EXIT_PREEMPT, 42);
         assert_eq!(kvm::CAP_ARM_DETERMINISTIC_INTERCEPTS, 245);
+        assert_eq!(kvm::CAP_ARM_STAGE2_EXEC_GUARD, 246);
 
         // KVM_SET_GUEST_DEBUG is _IOW(0x9b, sizeof(struct kvm_guest_debug)). On arm64 that
         // struct is 0x208 bytes (control+pad = 8, plus a 64×u64 kvm_guest_debug_arch = 512),
@@ -2455,10 +2469,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_patch_row_is_expected_absent() {
+    fn only_patch_rows_are_expected_absent() {
         // AA-0's expect column: every mandatory row must be present on any usable box;
-        // the determinism cap appears only once the patched kernel boots (AA-3), so it
-        // is the one row expected absent — and it is NOT in the mandatory set.
+        // patch caps appear only once their kernels boot, so they are expected absent
+        // and are NOT in the mandatory stock-host set.
         for cap in Capability::mandatory_aa0() {
             assert!(
                 cap.expect_present(),
@@ -2466,8 +2480,11 @@ mod tests {
                 cap.name()
             );
             assert!(
-                !matches!(cap, Capability::DeterministicIntercepts),
-                "the expect-absent patch marker must not be in the mandatory set"
+                !matches!(
+                    cap,
+                    Capability::DeterministicIntercepts | Capability::Stage2ExecGuard
+                ),
+                "expect-absent patch markers must not be in the mandatory set"
             );
         }
         // The seven host-probeable mandatory rows, exactly.
@@ -2478,6 +2495,7 @@ mod tests {
         assert!(Capability::Vgicv3Creatable.expect_present());
         assert!(Capability::WritableIdRegisters.expect_present());
         assert!(!Capability::DeterministicIntercepts.expect_present());
+        assert!(!Capability::Stage2ExecGuard.expect_present());
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -2493,6 +2511,7 @@ mod tests {
             Capability::Vgicv3Creatable,
             Capability::WritableIdRegisters,
             Capability::DeterministicIntercepts,
+            Capability::Stage2ExecGuard,
         ] {
             assert!(matches!(probe(cap), Err(SysError::Unsupported)));
         }

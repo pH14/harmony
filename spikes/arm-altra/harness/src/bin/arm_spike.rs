@@ -528,6 +528,17 @@ fn probe(box_config: PathBuf, rulings: Option<PathBuf>, out: PathBuf) -> Result<
         di_found,
         di_raw,
     ));
+    // AA-4's stock-KVM feasibility marker. Absence is the honest result until the
+    // dedicated per-GFN execute-guard patch exists; a generic MEMORY_FAULT cap is not it.
+    let (wx_found, wx_raw) = probe_cap(Capability::Stage2ExecGuard);
+    rows.push(RowInput::cap(
+        "kvm-cap-arm-stage2-exec-guard",
+        "kvm",
+        "the AA-4 per-GFN stage-2 execute guard advertised? Expect absent on stock KVM.",
+        Found::Absent,
+        wx_found,
+        wx_raw,
+    ));
 
     // The ID-register rows (read from a disposable VM's vCPU).
     let ecv = f4(regs.id_aa64mmfr0, 60);

@@ -299,9 +299,13 @@ for raw counter opcodes:
 - x86: `rdtsc` (`0F 31`), `rdtscp` (`0F 01 F9`).
 
 The scan inherits task-100's enforcement ladder: kernel-config guarantee → static opcode scan →
-**W^X + rescan-on-exec** for any page the guest makes executable at runtime (so a JIT/self-modifying
-guest cannot introduce a counter read the static scan never saw). A guest that can mint executable
-counter-read code the vmm cannot re-scan is out of contract — see §7.
+**W^X + rescan-on-exec** for any page the guest makes executable at runtime. The last rung is a
+required mechanism, not something stock arm64 KVM already supplies: Linux 6.18.35 grants stage-2
+execute internally on an instruction fault and exposes no per-GFN XN/execute-fault UAPI. Until a
+Harmony execute-guard patch provides default-XN, pre-execute scan approval, and write-revokes-
+execute, the owned no-runtime-code guest is a cooperative boundary and any JIT/self-modifying ARM
+guest triggers §7's kill condition. `KVM_EXIT_MEMORY_FAULT`, dirty logging, and `userfaultfd` are
+not synchronous pre-execute substitutes.
 
 **The bar is per-vendor, because closure is (§4):**
 

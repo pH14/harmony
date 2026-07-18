@@ -35,8 +35,9 @@ clean, and the independent AA-5 scan still reports zero live counter reads
 
 This closes the static artifact half of AA-4 levels 1–2 for the owned image. It
 does not claim the live W^X rescan-on-exec path, the stage-2 planted-exclusive
-backstop, a native pinned-N1 build, or an AA-5 runtime result; those remain box
-work. The shared `atomic_ll_sc.h` include remains because upstream's LSE header
+backstop, a native pinned-N1 build, or an AA-5 runtime result. The first two
+require a new arm64 KVM execute-guard extension; they are not merely box work.
+The shared `atomic_ll_sc.h` include remains because upstream's LSE header
 uses its 128-bit helper type, but the direct-LSE macros emit none of those
 inline bodies and the raw final-artifact scan is the proof.
 

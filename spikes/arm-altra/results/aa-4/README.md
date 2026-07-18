@@ -25,11 +25,11 @@ identical arm-early `Preempt` + single-step injection schedule.
 
 Level 1 (LSE-only build) is demonstrated by `lse-atomics` itself and is now applied to the
 AA-5 owned kernel/init image, whose static artifact gate also uses this scanner. Level 2's live
-W^X rescan-on-exec wiring and level 3 (stage-2 execute-deny + trap/emulate against a planted
-exclusive) remain homed to the running AA-5 guest.
+W^X rescan-on-exec wiring and level 3 are blocked on a Harmony arm64 KVM execute-guard extension,
+not just the running AA-5 guest: stock 6.18.35 resolves execute faults internally and exposes no
+per-GFN XN UAPI.
 
-**Recommended final ruling (Paul ratifies at PR time):** LL/SC mechanically unreachable in the
-shipped guest via level 1 (LSE-only) + complete level 2 (build scan and live rescan-on-exec),
-level 3 the runtime backstop; the one cooperative residual — runtime-generated exclusives (JIT /
-self-modifying code) — is bounded by W^X rescan-on-exec + the stage-2 backstop. The static half
-is complete; the live halves remain open as stated above.
+**Current ruling:** cooperative residual risk on stock KVM. The owned guest disables known
+runtime code-generation surfaces and its static image is clean, but a JIT/self-modifying page is
+not mechanically intercepted. The stronger mechanically-unreachable ruling is conditional on a
+default-XN, pre-execute scan, write-revokes-execute KVM patch plus a planted-exclusive proof.
