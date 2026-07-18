@@ -292,16 +292,16 @@ pub enum RunError {
         /// The skid margin the overflow must be armed below the target by.
         skid_margin: u64,
     },
-    /// The AA-3 arm-early `Preempt` fired AT or ABOVE the target. The overflow was armed a
-    /// `skid_margin` below the target so it would fire strictly below it, leaving room to
-    /// single-step up; a `Preempt` at or above the target means the measured margin was too
-    /// small (the skid consumed all of it). Accepting it would be exactly the overshoot the
-    /// exact-landing contract forbids, so it fails closed rather than recording a landing past
-    /// the target.
+    /// The AA-3 arm-early `Preempt` fired STRICTLY ABOVE the target. The overflow was armed a
+    /// `skid_margin` below the target so it would fire at or below it (a landing exactly at the
+    /// target is the valid max-skid boundary; a landing below it single-steps up). A `Preempt`
+    /// past the target means the skid exceeded the AA-1 measured max margin — accepting it would
+    /// be exactly the overshoot the exact-landing contract forbids, so it fails closed rather
+    /// than recording a landing past the target.
     #[error(
-        "exact landing: the arm-early Preempt fired at work {landed}, at or above the target \
-         {target} (skid margin {skid_margin} too small): no room was left to single-step up to \
-         the target, and accepting it would overshoot"
+        "exact landing: the arm-early Preempt fired at work {landed}, above the target \
+         {target} (skid margin {skid_margin} too small): the skid exceeded the measured max, \
+         so it overshot the target with no room to single-step up"
     )]
     ExactLandingKickAtOrAboveTarget {
         /// The exact landing target (`work_begin + delta`).
@@ -851,8 +851,9 @@ pub fn run_sample(
 ///    `exit_reason == Preempt` — the mechanism attestation the AA-3 checker requires still
 ///    holds.
 ///
-/// It **fails closed, never fudges**: a `Preempt` at or above the target
-/// ([`RunError::ExactLandingKickAtOrAboveTarget`] — the margin was too small), a step that
+/// It **fails closed, never fudges**: a `Preempt` strictly above the target
+/// ([`RunError::ExactLandingKickAtOrAboveTarget`] — the skid exceeded the measured max margin;
+/// a landing exactly at the target is the valid zero-step boundary), a step that
 /// moves the counter past the target ([`RunError::ExactLandingOvershotTarget`] — impossible
 /// under +0/+1, so a real bug), an arm-early period that underflows the margin
 /// ([`RunError::ExactLandingWindowTooSmall`]), or a stock signal-kick
@@ -1014,10 +1015,15 @@ pub fn run_sample_exact(
                     continue 'run;
                 }
 
-                // The overflow fired. It MUST be below the target so we can single-step up: a
-                // `Preempt` at or above the target means the margin was too small (the skid
-                // consumed all of it) — fail closed, never accept the overshoot.
-                if work >= target {
+                // The overflow fired. With the margin set to the AA-1 max skid, it lands in
+                // `[target - skid_margin, target]`: normally BELOW the target (single-step up),
+                // and at the max-skid boundary EXACTLY at it (the `while work != target` loop
+                // below runs zero steps — a valid zero-step exact landing whose digested state is
+                // identical to the below-target-then-step path, since the landed state is a
+                // function of (payload, scale, seed, target), not of the skid path). Only a
+                // `Preempt` STRICTLY above the target is an overshoot the margin cannot absorb —
+                // fail closed, never accept it.
+                if work > target {
                     return Err(RunError::ExactLandingKickAtOrAboveTarget {
                         target,
                         landed: work,
