@@ -829,14 +829,29 @@ and the expected-counts manifest regenerated, all offline gates green; the probe
 evidence re-grades **PASS 11/11** with per-class constant offsets (+12
 straight-line, +14 branch-dense over 36 records).
 
-**AA-1(a) EL0 condition matrix: ALL GREEN** (evidence
-`results/aa-1a/aa1a-{pinned-solo,co-tenant-other-core,co-tenant-same-core,memory-pressure}-001`,
-smoke-fire-once per condition, quiet box, core 61): `el0-check` over the union —
-**PASS 11/11 over 720 records**. 72 repeated cases bit-identical; ONE constant
-offset per class across every condition and scale; 720/720 accumulators match.
-Wall clock moved under load; counts did not. Still open for the (a)
-sub-experiment: the kernel-mediated EL0 classes (syscall / signal / page-fault).
-(b)/(c) are guest-mode and wait on the measurement host.
+**AA-1(a) EL0 condition matrix: ALL GREEN — self-certified on the tool-attested
+5-class union.** Certified evidence:
+`results/aa-1a/aa1a-{pinned-solo,co-tenant-other-core,co-tenant-same-core,memory-pressure}-002`
+(the full five-class sets — `straight-line`, `branch-dense`, `el0-syscall`,
+`el0-signal`, `el0-pagefault` — 450 records each = **1800 records**, all four
+conditions carrying one shared `tool_sha256` `fa3327…`, quiet box, core 61).
+`el0-check` over the union: **RESULT PASS (12 checks)**, retained verbatim at
+`results/aa-1a/el0-verdict.txt` (§Evidence-integrity #2 — the checker's output is
+itself retained evidence, as for every other stage). It recomputes: the 5×4
+class×condition matrix complete; the 1e6/1e7/1e8 differential covered per class;
+180 repeated cases bit-identical; 1800/1800 accumulators match; and the per-class
+constants — window classes `straight-line +14`, `branch-dense +13` (one constant
+each across every condition and scale), kernel-mediated classes fit exactly as
+`el0-syscall = 1·trips + 13`, `el0-signal = 2·trips + 14`,
+`el0-pagefault = 2·trips + 14`. Wall clock moved under load; counts did not.
+
+The disposition rests on the `-002` union and not the earlier `-001` sets by
+design: the `-001` sets carry only two classes and a null `tool_sha256`, and
+`el0-check` now **rejects** that union (aggregation: not one attested tool;
+coverage-matrix: three classes missing under every condition) — the checker
+self-certifies which evidence is admissible, and `host/el0-conditions.sh` writes
+its success marker only if `el0-check` passes. (b)/(c) are guest-mode; (b) is
+covered by AA-1(b) below, (c) by AA-1(c).
 
 Measurement-host staging: stock 6.18.35 deb built and installed
 (`linux-image-6.18.35_6.18.35-2_arm64.deb`; vmlinux build-id
@@ -1135,6 +1150,19 @@ nearly-free — no patch needed. The trustworthy step primitive AA-3's exact lan
 on is validated. **Single characterized caveat** (the LL/SC-stepping result AA-4 inherits):
 single-stepping an exclusive sequence livelocks (the monitor clears every step); a bounded
 step budget is mandatory, and stepping through exclusives cannot land — direct AA-4 input.
+
+**Evidence-trail note (J2, review 2026-07-17): step totality is now certifiable standalone.**
+In single-step mode one planned sample emits many step records, so the harness densely
+renumbers `sample_id` and sets `attempted` to the step count — which, alone, let record-level
+totality read a run that dropped a *later* planned sample (after earlier ones emitted steps) as
+complete. The checker now records the **planned sample count** in the manifest (`planned`) and
+adds a **`step-totality`** check that binds every planned sample to a `step_index == 0` record,
+so a dropped planned sample is machine-detectable from the retained records alone (reject
+fixture `reject-aa2-dropped-planned-sample`; the fix does not lean on the harness exit code).
+The **retained AA-2 evidence** here (`aa2-verdict.txt`, 170,330 steps) predates the `planned`
+field and its record set completed at **harness exit 0** — no planned sample was dropped — so
+its GO stands; re-grading it reads `step-totality` as NOT-REQUESTED (no `planned` recorded),
+which is the honest verdict for pre-field evidence, and every NEW step run self-certifies.
 
 ### AA-3 — deterministic force-exit (0004-analogue) + exact landing: GO
 

@@ -98,6 +98,7 @@
   "weights": null,
   "skid_margin": 64,
   "attempted": 8,
+  "planned": 8,
   "records_file": "records.jsonl",
   "records_sha256": "bdff9a34757383948828ec232fffcb9dbc27bce9dc0b76b7ea6ce3ce9330a37b"
 }

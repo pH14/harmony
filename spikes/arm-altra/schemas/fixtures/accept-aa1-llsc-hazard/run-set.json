@@ -104,6 +104,7 @@
   },
   "skid_margin": 64,
   "attempted": 2,
+  "planned": 2,
   "records_file": "records.jsonl",
   "records_sha256": "a0739b53f1b37d811d8d2c7ba4c08fff7769c25ef0521617318b730c133f72ae"
 }

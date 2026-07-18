@@ -263,6 +263,17 @@ fn build_run_set(stage: Stage, mechanism: Mechanism, records: &[RunRecord]) -> R
     // first image (the kernel) to whatever kernel this mechanism claims.
     let mut images = synthetic_images();
     images[0].sha256 = mechanism.host_kernel_sha256.clone();
+    // For step evidence one planned sample emits many step records, so `planned` is the
+    // number of `step_index == 0` records (one per planned sample); for ordinary evidence
+    // each record is a sample, so `planned == attempted`.
+    let planned = if records.iter().any(|r| r.step.is_some()) {
+        records
+            .iter()
+            .filter(|r| r.step.as_ref().is_some_and(|s| s.step_index == 0))
+            .count() as u64
+    } else {
+        records.len() as u64
+    };
     RunSet {
         schema_version: SCHEMA_VERSION,
         stage,
@@ -276,6 +287,7 @@ fn build_run_set(stage: Stage, mechanism: Mechanism, records: &[RunRecord]) -> R
         weights: Some(synthetic_weights()),
         skid_margin: Some(SYNTHETIC_SKID_MARGIN),
         attempted: records.len() as u64,
+        planned: Some(planned),
         records_file: "records.jsonl".to_string(),
         records_sha256: sha,
     }
@@ -887,6 +899,24 @@ pub fn all_fixtures() -> Vec<Fixture> {
         },
     ));
 
+    // 23. reject-aa2-dropped-planned-sample — the single-step TOTALITY defect (J2). The step
+    //     records are a valid matrix (2 reps × 8 positions = 2 planned samples, two
+    //     `step_index == 0`), but the manifest claims 3 planned samples: a run that dropped a
+    //     planned sample after earlier ones emitted steps. Dense `sample_id` renumbering makes
+    //     record-level totality pass over `0..attempted`; step-totality catches the drop from the
+    //     retained records alone (the `step_index == 0` count is short of `planned`), so the
+    //     checker rejects incomplete step evidence standalone, not by leaning on the exit code.
+    {
+        let records = aa2_records();
+        let mut run_set = aa2_run_set(&records);
+        run_set.planned = Some(run_set.planned.unwrap_or(0) + 1);
+        fixtures.push(fixture(
+            "reject-aa2-dropped-planned-sample",
+            &run_set,
+            &records,
+        ));
+    }
+
     fixtures
 }
 
@@ -911,13 +941,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_thirty_fixtures_with_unique_names() {
+    fn there_are_thirty_one_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 30);
+        assert_eq!(fixtures.len(), 31);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 30, "fixture names must be unique");
+        assert_eq!(names.len(), 31, "fixture names must be unique");
     }
 
     #[test]

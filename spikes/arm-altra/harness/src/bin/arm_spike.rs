@@ -945,6 +945,10 @@ fn execute(args: RunArgs) -> Result<(), String> {
     ))
     .map_err(|e| e.to_string())?;
     let mut attempted = samples.len() as u64;
+    // The plan length, captured BEFORE single-step mode reassigns `attempted` to the
+    // step count. The totality checker binds every planned sample to this, so a dropped
+    // planned sample cannot hide behind densely-renumbered step records.
+    let planned = samples.len() as u64;
     // An empty plan measures nothing. `--reps 0` (or no payloads/scales) would
     // otherwise write an empty, all-passing run-set — a green verdict over zero
     // evidence, which is exactly the vacuity the whole apparatus refuses.
@@ -1073,7 +1077,11 @@ fn execute(args: RunArgs) -> Result<(), String> {
 
     // Single-step mode emits one record PER STEP, so the plan length is not the record count.
     // Reassign dense sample ids across every stepped run and record how many steps were
-    // actually measured as `attempted` — the totality check then binds to the real records.
+    // actually measured as `attempted` — the record-level totality check binds to the real
+    // records. The PLANNED sample count is retained separately (`planned`, above), and each
+    // step keeps its within-run `step_index` (reset to 0 at each planned sample's first step),
+    // so the checker verifies every planned sample is represented (a `step_index == 0` per
+    // planned sample) — dense renumbering cannot make a dropped planned sample look complete.
     if args.single_step {
         for (i, r) in records.iter_mut().enumerate() {
             r.sample_id = i as u64;
@@ -1182,6 +1190,7 @@ fn execute(args: RunArgs) -> Result<(), String> {
             weights: args.weights,
             skid_margin: args.skid_margin,
             attempted,
+            planned,
         };
         let (manifest, records_jsonl) = assemble_run_set(context, &records)
             .map_err(|e| format!("assemble the run-set: {e}"))?;

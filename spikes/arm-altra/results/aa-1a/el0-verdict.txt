@@ -1,0 +1,4 @@
+AA-1(a) EL0 counting — el0-check verdict over the tool-attested 5-class -002 union
+Command: el0-check <4 conditions × -002> --min-reps 10 --min-cases 3   (normative; no --sub-normative)
+Sets: aa1a-{pinned-solo,co-tenant-other-core,co-tenant-same-core,memory-pressure}-002 (450 rec each, tool_sha256 fa3327…)
+

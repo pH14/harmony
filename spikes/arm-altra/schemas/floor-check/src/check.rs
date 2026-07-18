@@ -113,6 +113,9 @@ pub enum CheckId {
     RecordsSha256,
     /// The sample ids are exactly `0..attempted`, each present once.
     Totality,
+    /// For single-step evidence: every one of the `planned` samples is represented
+    /// (a dropped planned sample cannot hide behind densely-renumbered step records).
+    StepTotality,
     /// Every armed overflow was delivered exactly once.
     Multiplicity,
     /// The manifest carries measured weights (else counts cannot be checked).
@@ -178,6 +181,7 @@ impl CheckId {
             CheckId::WellFormed => "well-formed",
             CheckId::RecordsSha256 => "records-sha256",
             CheckId::Totality => "totality",
+            CheckId::StepTotality => "step-totality",
             CheckId::Multiplicity => "multiplicity",
             CheckId::WeightsPresent => "weights-present",
             CheckId::CountExactness => "count-exactness",
@@ -359,6 +363,7 @@ fn run_stage_checks(
     check_well_formed(run_set, records, out);
     check_records_sha256(run_set, records_bytes, out);
     check_totality(run_set, records, out);
+    check_step_totality(run_set, records, out);
     check_multiplicity(run_set, records, out);
     check_weights_and_counts(run_set, records, out);
     check_skid(run_set, records, out);
@@ -1254,6 +1259,63 @@ fn check_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome
         ));
     }
     out.push(fail(CheckId::Totality, problems.join("; ")));
+}
+
+/// Single-step totality: every PLANNED sample is represented in the step records.
+///
+/// In single-step mode one planned sample emits many step records, so the harness
+/// densely renumbers `sample_id` (making record-level [`check_totality`] pass over
+/// `0..attempted`) — which, on its own, would let a run that dropped a later planned
+/// sample after earlier ones emitted steps present a contiguous, complete-looking
+/// manifest. This check closes that: each planned sample's steps begin with
+/// `step_index == 0` (never renumbered), so the number of `step_index == 0` records is
+/// the number of planned samples that produced steps, and it must equal the manifest's
+/// `planned` count. A dropped planned sample leaves that count short — machine-detectable
+/// from the retained records alone, without leaning on the harness exit code.
+///
+/// Runs off `run_set.planned`: evidence written before the field existed carries `None`,
+/// for which this check is NOT-REQUESTED (its completeness rests on the harness exit code,
+/// documented in the stage disposition). Non-step run-sets are unaffected (no step records
+/// → the check does not apply).
+fn check_step_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    // Count each planned sample's first step. A step run keeps `step_index` un-renumbered,
+    // so exactly one `step_index == 0` record exists per planned sample that produced steps.
+    let started = records
+        .iter()
+        .filter(|r| r.step.as_ref().is_some_and(|s| s.step_index == 0))
+        .count() as u64;
+    let any_steps = records.iter().any(|r| r.step.is_some());
+    if !any_steps {
+        // Not a single-step run-set — record-level totality already covers it.
+        return;
+    }
+    match run_set.planned {
+        None => out.push(Outcome {
+            id: CheckId::StepTotality,
+            status: Status::NotRequested,
+            detail: "step evidence carries no `planned` count — completeness cannot be certified \
+                     standalone (this predates the field; the run's completeness rests on the \
+                     harness exit code, per the stage disposition)"
+                .to_string(),
+        }),
+        Some(0) => out.push(fail(
+            CheckId::StepTotality,
+            "manifest planned is 0 — a step run that intended no sample measures nothing",
+        )),
+        Some(planned) if started == planned => out.push(pass(
+            CheckId::StepTotality,
+            format!("all {planned} planned sample(s) represented in the step records"),
+        )),
+        Some(planned) => out.push(fail(
+            CheckId::StepTotality,
+            format!(
+                "{started} of {planned} planned sample(s) produced step records — {} planned \
+                 sample(s) dropped (a missing planned sample is a failure to account, not a pass; \
+                 dense step renumbering cannot mask it)",
+                planned.saturating_sub(started)
+            ),
+        )),
+    }
 }
 
 fn check_multiplicity(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
@@ -3386,6 +3448,7 @@ mod tests {
             weights: Some(Weights::measured(0, 0, 0, 0, 2)),
             skid_margin: Some(64),
             attempted: 1,
+            planned: Some(1),
             records_file: "records.jsonl".into(),
             records_sha256: "0".repeat(64),
         }
@@ -4880,6 +4943,69 @@ mod tests {
             a_step(6, 0xE000, 0, StepTransition::LlscExclusive),
             a_step(7, 0x8004, 1, StepTransition::NotTakenBranch),
         ]
+    }
+
+    /// Step records for `samples` planned samples, each stepped `steps_each` times with a
+    /// `step_index` that resets to 0 at every planned sample (as the harness emits it before
+    /// densely renumbering the record-level `sample_id`).
+    fn stepped_run(samples: u64, steps_each: u64) -> Vec<RunRecord> {
+        let mut recs = Vec::new();
+        let mut id = 0u64;
+        for _ in 0..samples {
+            for step_index in 0..steps_each {
+                let mut r = a_step(id, 0x8004 + id, 0, StepTransition::Sequential);
+                r.step.as_mut().unwrap().step_index = step_index;
+                recs.push(r);
+                id += 1;
+            }
+        }
+        recs
+    }
+
+    #[test]
+    fn step_totality_detects_a_dropped_planned_sample() {
+        // Two planned samples, each stepped three times.
+        let recs = stepped_run(2, 3);
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa2;
+
+        // planned == 2, both samples represented → PASS.
+        rs.planned = Some(2);
+        let mut out = Vec::new();
+        check_step_totality(&rs, &recs, &mut out);
+        assert_eq!(status(&out, CheckId::StepTotality), Some(Status::Pass));
+
+        // planned == 3 but only two planned samples produced steps: the third was dropped after
+        // the first two emitted steps — the exact certifiable-incomplete case. Must FAIL, from the
+        // records alone, without leaning on the harness exit code.
+        rs.planned = Some(3);
+        let mut out = Vec::new();
+        check_step_totality(&rs, &recs, &mut out);
+        assert_eq!(
+            status(&out, CheckId::StepTotality),
+            Some(Status::Fail),
+            "a run that dropped a planned sample after earlier ones emitted steps must not pass"
+        );
+
+        // Evidence predating the `planned` field → NOT-REQUESTED (documented; completeness rests
+        // on the harness exit code, per the stage disposition), never a silent pass.
+        rs.planned = None;
+        let mut out = Vec::new();
+        check_step_totality(&rs, &recs, &mut out);
+        assert_eq!(
+            status(&out, CheckId::StepTotality),
+            Some(Status::NotRequested)
+        );
+
+        // Non-step evidence: the check does not apply — no spurious outcome.
+        let normal = vec![a_record(0), a_record(1)];
+        let mut out = Vec::new();
+        check_step_totality(&rs, &normal, &mut out);
+        assert_eq!(
+            status(&out, CheckId::StepTotality),
+            None,
+            "an ordinary (non-step) run-set gets no step-totality outcome"
+        );
     }
 
     #[test]

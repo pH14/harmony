@@ -235,6 +235,19 @@ fn reject_aa2_taken_branch_did_not_retire_a_branch() {
 }
 
 #[test]
+fn reject_aa2_dropped_planned_sample() {
+    // A step run-set that claims more planned samples than its step records represent — a
+    // planned sample dropped after earlier ones emitted steps. Dense sample_id renumbering
+    // makes record-level totality pass, but step-totality catches the drop from the records
+    // alone (J2: the checker must reject incomplete step evidence standalone).
+    assert_single_failure(
+        "reject-aa2-dropped-planned-sample",
+        no_floors(),
+        CheckId::StepTotality,
+    );
+}
+
+#[test]
 fn reject_aa6_rep_floor_counts_per_input_not_total() {
     // The evasion the per-input floor closes: eight DISTINCT inputs, one rep each. The
     // total (8) meets a floor of 2, but no input is repeated even twice — which a

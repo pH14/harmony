@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "stage": "aa3",
-  "run_set_id": "fixture-aa3",
+  "stage": "aa2",
+  "run_set_id": "fixture-aa2",
   "environment": {
     "midr": 1094701248,
     "soc": "Ampere Altra Q80-30 (synthetic)",
@@ -13,15 +13,15 @@
     "kvm_mode": "vhe"
   },
   "mechanism": {
-    "kvm_patched": true,
-    "host_kernel_sha256": "2f0cdcbd2886e5830910d44d4e3bb68fdd2194cc9f75d83c4f64e2938cf64989",
-    "expected_exit_reason": "preempt",
-    "patch_marker_observed": true
+    "kvm_patched": false,
+    "host_kernel_sha256": "df81fdddf97e7aee3cc87cd96ea9ca1a61c9cc7309a3db9f4a12f724344a902b",
+    "expected_exit_reason": "signal-kick",
+    "patch_marker_observed": false
   },
   "images": [
     {
       "path": "/boot/Image.det",
-      "sha256": "2f0cdcbd2886e5830910d44d4e3bb68fdd2194cc9f75d83c4f64e2938cf64989",
+      "sha256": "df81fdddf97e7aee3cc87cd96ea9ca1a61c9cc7309a3db9f4a12f724344a902b",
       "md5": "2f0cdcbd2886e5830910d44d4e3bb68f",
       "verified_before_boot": true
     },
@@ -86,7 +86,7 @@
     "exclude_guest": false,
     "exclude_hv": true,
     "pinned": true,
-    "sample_period": 500
+    "sample_period": null
   },
   "pinning": {
     "pinned": true,
@@ -103,8 +103,8 @@
     "window_offset": 2
   },
   "skid_margin": 64,
-  "attempted": 8,
-  "planned": 8,
+  "attempted": 16,
+  "planned": 3,
   "records_file": "records.jsonl",
-  "records_sha256": "d54e3fad7f83309f97195009d7046f81023b15229d2f95ea161eccb126bfa8bc"
+  "records_sha256": "530489e3553954eca06d93de3378d9ebac31130dbfc49d3260f76eca18632eb5"
 }

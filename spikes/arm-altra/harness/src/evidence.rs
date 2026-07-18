@@ -451,8 +451,19 @@ pub struct RunSet {
     /// [`RunSet::weights`]; a checker cannot bound skid without it and must say so.
     pub skid_margin: Option<u64>,
     /// How many samples were **attempted**. Every one of them must appear in the
-    /// records file.
+    /// records file. In single-step mode one attempted sample emits MANY step
+    /// records, so `attempted` is the STEP count there, not the plan size — see
+    /// [`RunSet::planned`].
     pub attempted: u64,
+    /// How many **planned samples** the run intended to measure (the plan length).
+    /// Equals `attempted` for ordinary runs; in single-step mode it is DISTINCT
+    /// from `attempted` (which is the step count), and the totality checker uses it
+    /// to verify every planned sample is represented — dense step renumbering must
+    /// not let a dropped planned sample pass as a complete `0..attempted`. `Option`
+    /// so evidence written before this field deserializes (its completeness rests
+    /// on the harness exit code, documented per stage).
+    #[serde(default)]
+    pub planned: Option<u64>,
     /// The records file, relative to the manifest.
     pub records_file: String,
     /// sha256 of the records file, so a swapped or truncated one is caught.
@@ -489,8 +500,15 @@ pub struct RunSetContext {
     pub weights: Option<Weights>,
     /// The measured skid margin (AA-1). `None` until it exists.
     pub skid_margin: Option<u64>,
-    /// How many samples were **attempted** — the plan's length, not the records'.
+    /// How many samples were **attempted** — for an ordinary run this is the plan's
+    /// length; in single-step mode the caller sets it to the STEP count (one plan
+    /// sample emits many step records).
     pub attempted: u64,
+    /// How many **planned samples** the run intended — the plan length, always,
+    /// regardless of mode. Equals `attempted` for ordinary runs and is DISTINCT from
+    /// it in single-step mode, where the totality checker needs it to verify every
+    /// planned sample is represented (see [`RunSet::planned`]).
+    pub planned: u64,
 }
 
 /// Assemble a run-set: serialize the records, pin their real sha256, emit the
@@ -536,6 +554,7 @@ pub fn assemble_run_set(
         weights: ctx.weights,
         skid_margin: ctx.skid_margin,
         attempted: ctx.attempted,
+        planned: Some(ctx.planned),
         records_file: "records.jsonl".to_string(),
         records_sha256,
     };

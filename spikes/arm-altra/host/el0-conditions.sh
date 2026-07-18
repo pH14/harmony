@@ -69,5 +69,24 @@ sleep 3
 run_one memory-pressure
 cleanup
 
-touch ~/el0-cond-OK
-echo "EL0_CONDITIONS_OK"
+# Grade the matrix BEFORE the success marker: the marker attests a PASSING el0-check
+# verdict, not merely that the runs completed. el0-check recomputes every floor from the
+# retained records (aggregation + one-attested-tool, the 5×4 class×condition matrix, the
+# 1e6/1e7/1e8 scale sweep, oracle-exactness); its transcript is itself retained evidence
+# (docs/ARM-ALTRA.md §Evidence-integrity #2 — "the disposition may not be written until the
+# checker passes; the checker's output is itself retained evidence").
+echo "== grade =="
+CHECK=./target/release/el0-check
+VERDICT="results/aa-1a/el0-verdict-$TAG.txt"
+if $CHECK \
+  "results/aa-1a/aa1a-pinned-solo-$TAG" \
+  "results/aa-1a/aa1a-co-tenant-other-core-$TAG" \
+  "results/aa-1a/aa1a-co-tenant-same-core-$TAG" \
+  "results/aa-1a/aa1a-memory-pressure-$TAG" \
+  --min-reps 10 --min-cases 3 | tee "$VERDICT"; then
+  touch ~/el0-cond-OK
+  echo "EL0_CONDITIONS_OK"
+else
+  echo "EL0_CONDITIONS_FAILED — el0-check rejected the matrix; see $VERDICT (no marker written)"
+  exit 1
+fi

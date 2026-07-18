@@ -23,6 +23,27 @@ use sha2::{Digest, Sha256};
 
 use crate::check::Status;
 
+/// The contamination conditions the AA-1(a) EL0 matrix must cover — the same four
+/// as the guest AA-1 matrix. A normative verdict requires every one present.
+const REQUIRED_EL0_CONDITIONS: &[&str] = &[
+    "pinned-solo",
+    "co-tenant-other-core",
+    "co-tenant-same-core",
+    "memory-pressure",
+];
+
+/// The five EL0 classes AA-1(a) must characterize under every condition: the two
+/// window classes (`straight-line`, `branch-dense`) and the three kernel-mediated
+/// classes (`el0-syscall`, `el0-signal`, `el0-pagefault`). A submission missing a
+/// class in a condition never measured that condition's contamination for it.
+const REQUIRED_EL0_CLASSES: &[El0Class] = &[
+    El0Class::StraightLine,
+    El0Class::BranchDense,
+    El0Class::Syscall,
+    El0Class::Signal,
+    El0Class::PageFault,
+];
+
 /// Which EL0 check produced an outcome.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum El0CheckId {
@@ -45,6 +66,10 @@ pub enum El0CheckId {
     OracleExactness,
     /// The differential needs the full 1e6/1e7/1e8 sweep per class.
     ScaleCoverage,
+    /// Every required EL0 class is measured under every required contamination
+    /// condition — the full class×condition matrix, rectangular (no partially
+    /// measured condition, no missing condition).
+    CoverageMatrix,
     /// The caller-named per-case repetition floor.
     RepFloor,
     /// The caller-named distinct-cases floor.
@@ -66,6 +91,7 @@ impl El0CheckId {
             El0CheckId::ReplayIdentity => "replay-identity",
             El0CheckId::OracleExactness => "oracle-exactness",
             El0CheckId::ScaleCoverage => "scale-coverage",
+            El0CheckId::CoverageMatrix => "coverage-matrix",
             El0CheckId::RepFloor => "rep-floor",
             El0CheckId::CaseFloor => "case-floor",
             El0CheckId::Aggregation => "aggregation",
@@ -225,11 +251,17 @@ fn grade(sets: &[Loaded], floors: &El0Floors) -> El0Report {
                 dup = Some((prev, i));
             }
         }
+        // Comparable sets share the measured posture: environment, the armed attr, the
+        // EL0/EL1 exclusions, AND the pinning (core + governor). A count is core- and
+        // frequency-independent by the stage's own claim, but summing sets measured under
+        // different pinning postures would sum evidence gathered under different contracts —
+        // the aggregation must attest one posture, not paper over a drift in it.
         let comparable = sets.windows(2).all(|w| {
             w[0].manifest.environment == w[1].manifest.environment
                 && w[0].manifest.perf == w[1].manifest.perf
                 && w[0].manifest.exclude_kernel == w[1].manifest.exclude_kernel
                 && w[0].manifest.exclude_user == w[1].manifest.exclude_user
+                && w[0].manifest.pinning == w[1].manifest.pinning
         });
         // The per-class offsets are properties of one built binary (the dispatch
         // path is inside the counted region; a rebuild moved straight-line's
@@ -337,19 +369,26 @@ fn grade(sets: &[Loaded], floors: &El0Floors) -> El0Report {
             }
         }
         let p = &m.perf;
+        // EL0 host counting: raw 0x21 (BR_RETIRED), pinned, counting mode (no period),
+        // count EL0 user (exclude_user=false) and NOT EL1 (exclude_kernel=true) on the
+        // host (exclude_host=false), and NOT the hypervisor (exclude_hv=true) — EL2
+        // branches are apparatus, not the measured EL0 window, and leaving them counted
+        // inflates the offset. `exclude_hv` was attested but never demanded until now.
         if p.raw_event != 0x21
             || !p.pinned
             || p.exclude_host
+            || !p.exclude_hv
             || p.sample_period.is_some()
             || !m.exclude_kernel
             || m.exclude_user
         {
             perf_fail.push(format!(
                 "{id}: armed attr is not the EL0 work clock (raw={:#x} pinned={} exclude_host={} \
-                 exclude_kernel={} exclude_user={} period={:?})",
+                 exclude_hv={} exclude_kernel={} exclude_user={} period={:?})",
                 p.raw_event,
                 p.pinned,
                 p.exclude_host,
+                p.exclude_hv,
                 m.exclude_kernel,
                 m.exclude_user,
                 p.sample_period
@@ -388,16 +427,23 @@ fn grade(sets: &[Loaded], floors: &El0Floors) -> El0Report {
     // the model's predicted accumulator; kernel classes return their per-trip
     // witness (getpid matches / handler hits), which must equal `trips` exactly —
     // the kernel path engaged once per trip, no more, no less.
-    // Memoized: branch-dense recomputes a full PRNG sweep per (seed, trips).
+    // Memoized: branch-dense recomputes a full PRNG sweep per (seed, trips), and
+    // straight-line an O(trips) fold per record — both keyed so the 1e8 sweep is
+    // computed ONCE per (seed,)trips, not once per record. Without the straight-line
+    // memo, grading the documented 1e8 records is impractical (an un-memoized pass
+    // over 30 reps × 1e8 trips does not terminate in a usable time).
     {
         let mut memo: BTreeMap<(u64, u64), u64> = BTreeMap::new();
+        let mut sl_memo: BTreeMap<u64, u64> = BTreeMap::new();
         let mut fail = None;
         for r in &pooled {
             let Some(c) = class_of(&r.class) else {
                 continue;
             };
             let want = match c {
-                El0Class::StraightLine => oracle_model::straight_line_accumulator(r.trips),
+                El0Class::StraightLine => *sl_memo
+                    .entry(r.trips)
+                    .or_insert_with(|| oracle_model::straight_line_accumulator(r.trips)),
                 El0Class::BranchDense => *memo
                     .entry((r.seed, r.trips))
                     .or_insert_with(|| oracle_model::branch_dense_accumulator(r.seed, r.trips)),
@@ -682,6 +728,65 @@ fn grade(sets: &[Loaded], floors: &El0Floors) -> El0Report {
         }
     }
 
+    // -- coverage matrix: every required class under every required condition. The stage's
+    // claim is the full 5-class × 4-condition contamination grid; the checker must demand it,
+    // not grade whatever classes happen to be present under whatever conditions were submitted.
+    // Condition comes from each set's manifest, classes from its records.
+    {
+        let mut matrix: BTreeMap<String, std::collections::BTreeSet<El0Class>> = BTreeMap::new();
+        for s in sets {
+            let entry = matrix.entry(s.manifest.condition.clone()).or_default();
+            for r in &s.records {
+                if let Some(c) = class_of(&r.class) {
+                    entry.insert(c);
+                }
+            }
+        }
+        let mut gaps: Vec<String> = Vec::new();
+        for &cond in REQUIRED_EL0_CONDITIONS {
+            match matrix.get(cond) {
+                None => gaps.push(format!("condition '{cond}' not measured")),
+                Some(classes) => {
+                    let missing: Vec<&str> = REQUIRED_EL0_CLASSES
+                        .iter()
+                        .filter(|c| !classes.contains(c))
+                        .map(|c| c.name())
+                        .collect();
+                    if !missing.is_empty() {
+                        gaps.push(format!("condition '{cond}' missing class(es) {missing:?}"));
+                    }
+                }
+            }
+        }
+        if gaps.is_empty() {
+            push(
+                El0CheckId::CoverageMatrix,
+                Status::Pass,
+                format!(
+                    "the {}×{} class×condition matrix is complete: {:?} under {:?}",
+                    REQUIRED_EL0_CLASSES.len(),
+                    REQUIRED_EL0_CONDITIONS.len(),
+                    REQUIRED_EL0_CLASSES
+                        .iter()
+                        .map(|c| c.name())
+                        .collect::<Vec<_>>(),
+                    REQUIRED_EL0_CONDITIONS
+                ),
+            );
+        } else if floors.sub_normative {
+            push(
+                El0CheckId::CoverageMatrix,
+                Status::Pass,
+                format!(
+                    "[SUB-NORMATIVE] class×condition matrix incomplete: {}",
+                    gaps.join("; ")
+                ),
+            );
+        } else {
+            push(El0CheckId::CoverageMatrix, Status::Fail, gaps.join("; "));
+        }
+    }
+
     // -- caller-named floors. A floor of zero is met by measuring nothing — fail closed.
     if let Some(min) = floors.min_reps {
         if min == 0 {
@@ -753,5 +858,186 @@ fn grade(sets: &[Loaded], floors: &El0Floors) -> El0Report {
     El0Report {
         run_set_ids: sets.iter().map(|s| s.manifest.run_set_id.clone()).collect(),
         outcomes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arm_harness::evidence::{Environment, PerfConfig, Pinning};
+
+    const ALL5: &[&str] = &[
+        "straight-line",
+        "branch-dense",
+        "el0-syscall",
+        "el0-signal",
+        "el0-pagefault",
+    ];
+
+    fn env() -> Environment {
+        Environment {
+            midr: 1,
+            soc: "test".into(),
+            firmware: BTreeMap::new(),
+            host_kernel: "k".into(),
+            kvm_mode: "vhe".into(),
+        }
+    }
+    fn perf(exclude_hv: bool) -> PerfConfig {
+        PerfConfig {
+            raw_event: 0x21,
+            exclude_host: false,
+            exclude_guest: false,
+            exclude_hv,
+            pinned: true,
+            sample_period: None,
+        }
+    }
+    fn pinning(core: u32) -> Pinning {
+        Pinning {
+            pinned: true,
+            core: Some(core),
+            governor: "performance".into(),
+            migration_probe: false,
+        }
+    }
+
+    /// A well-formed run-set for `condition` carrying exactly `classes` (one small record
+    /// each). Kept trivial (`trips = 100`) so the coverage/perf/aggregation checks under test
+    /// are exercised without any O(trips) oracle work.
+    fn loaded(
+        cond: &str,
+        tool: Option<&str>,
+        perf: PerfConfig,
+        pin: Pinning,
+        classes: &[&str],
+    ) -> Loaded {
+        let records: Vec<El0Record> = classes
+            .iter()
+            .enumerate()
+            .map(|(i, c)| El0Record {
+                sample_id: i as u64,
+                class: (*c).into(),
+                scale: "1e6".into(),
+                seed: 7,
+                trips: 100,
+                rep: 0,
+                count: 100,
+                accumulator: 100,
+                time_enabled: 1,
+                time_running: 1,
+            })
+            .collect();
+        let mut bytes = Vec::new();
+        for r in &records {
+            bytes.extend_from_slice(serde_json::to_string(r).unwrap().as_bytes());
+            bytes.push(b'\n');
+        }
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        let manifest = El0Manifest {
+            schema_version: EL0_SCHEMA_VERSION,
+            stage: "aa1a".into(),
+            run_set_id: format!("t-{cond}"),
+            environment: env(),
+            perf,
+            exclude_kernel: true,
+            exclude_user: false,
+            pinning: pin,
+            condition: cond.into(),
+            attempted: records.len() as u64,
+            records_sha256: hex_lower(&h.finalize()),
+            tool_sha256: tool.map(String::from),
+        };
+        Loaded {
+            manifest,
+            records,
+            records_bytes: bytes,
+        }
+    }
+
+    fn status_of(rep: &El0Report, id: El0CheckId) -> Status {
+        rep.outcomes.iter().find(|o| o.id == id).unwrap().status
+    }
+
+    fn full_matrix(perf_hv: bool, core: u32) -> Vec<Loaded> {
+        REQUIRED_EL0_CONDITIONS
+            .iter()
+            .map(|c| loaded(c, Some("tool-hash"), perf(perf_hv), pinning(core), ALL5))
+            .collect()
+    }
+
+    #[test]
+    fn coverage_matrix_complete_passes() {
+        let rep = grade(&full_matrix(true, 61), &El0Floors::default());
+        assert_eq!(status_of(&rep, El0CheckId::CoverageMatrix), Status::Pass);
+    }
+
+    #[test]
+    fn coverage_matrix_missing_class_fails() {
+        let mut sets = full_matrix(true, 61);
+        // Drop three classes from the first condition — a partially-measured condition.
+        sets[0] = loaded(
+            REQUIRED_EL0_CONDITIONS[0],
+            Some("tool-hash"),
+            perf(true),
+            pinning(61),
+            &["straight-line", "branch-dense"],
+        );
+        let rep = grade(&sets, &El0Floors::default());
+        assert_eq!(status_of(&rep, El0CheckId::CoverageMatrix), Status::Fail);
+    }
+
+    #[test]
+    fn coverage_matrix_missing_condition_fails() {
+        // Only three of the four required conditions present.
+        let sets: Vec<Loaded> = REQUIRED_EL0_CONDITIONS[..3]
+            .iter()
+            .map(|c| loaded(c, Some("tool-hash"), perf(true), pinning(61), ALL5))
+            .collect();
+        let rep = grade(&sets, &El0Floors::default());
+        assert_eq!(status_of(&rep, El0CheckId::CoverageMatrix), Status::Fail);
+    }
+
+    #[test]
+    fn coverage_matrix_incomplete_passes_sub_normative() {
+        let sets: Vec<Loaded> = REQUIRED_EL0_CONDITIONS[..1]
+            .iter()
+            .map(|c| loaded(c, Some("tool-hash"), perf(true), pinning(61), ALL5))
+            .collect();
+        let floors = El0Floors {
+            sub_normative: true,
+            ..El0Floors::default()
+        };
+        let rep = grade(&sets, &floors);
+        assert_eq!(status_of(&rep, El0CheckId::CoverageMatrix), Status::Pass);
+    }
+
+    #[test]
+    fn exclude_hv_false_fails_perf_config() {
+        let rep = grade(&full_matrix(false, 61), &El0Floors::default());
+        assert_eq!(status_of(&rep, El0CheckId::PerfConfig), Status::Fail);
+    }
+
+    #[test]
+    fn differing_pinning_fails_aggregation() {
+        let sets = vec![
+            loaded(
+                "pinned-solo",
+                Some("tool-hash"),
+                perf(true),
+                pinning(61),
+                ALL5,
+            ),
+            loaded(
+                "co-tenant-other-core",
+                Some("tool-hash"),
+                perf(true),
+                pinning(62),
+                ALL5,
+            ),
+        ];
+        let rep = grade(&sets, &El0Floors::default());
+        assert_eq!(status_of(&rep, El0CheckId::Aggregation), Status::Fail);
     }
 }

@@ -83,7 +83,12 @@
       ]
     },
     "attempted": {
-      "description": "How many samples were ATTEMPTED. Every one of them must appear in `records.jsonl` with a `sample_id` in `0..attempted`, exactly once \u2014 a missing sample is a failure to account, not a pass (\u00a7Evidence integrity #6). At least 1: a run-set that attempted nothing measures nothing and must not pass vacuously.",
+      "description": "How many samples were ATTEMPTED. Every one of them must appear in `records.jsonl` with a `sample_id` in `0..attempted`, exactly once \u2014 a missing sample is a failure to account, not a pass (\u00a7Evidence integrity #6). At least 1: a run-set that attempted nothing measures nothing and must not pass vacuously. In single-step mode one planned sample emits many step records, so this is the STEP count there; see `planned`.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "planned": {
+      "description": "How many PLANNED samples the run intended (the plan length). Equals `attempted` for ordinary runs; DISTINCT from it in single-step mode (where `attempted` is the step count). The step-totality check binds every planned sample to this so a dropped planned sample cannot hide behind densely-renumbered step records. Optional for backward shape-compatibility \u2014 evidence written before this field carries no `planned`, and its completeness rests on the harness exit code (documented per stage).",
       "type": "integer",
       "minimum": 1
     },

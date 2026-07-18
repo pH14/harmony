@@ -534,6 +534,174 @@ impl ArmedMigrationProbe {
     }
 }
 
+/// The overflow bookkeeping a run accumulates (§Evidence integrity #6), shared by both
+/// landing policies. [`run_sample`] fills it via the advisory (arm-at-target) path;
+/// [`run_sample_exact`] via the exact (arm-early + single-step) path. Either way the
+/// **record assembly** below is identical, so both build this and hand it to
+/// [`assemble_measured_record`].
+struct OverflowBookkeeping {
+    /// The armed deadline (`work_begin + delta`), or `None` for an unarmed counting run.
+    target: Option<u64>,
+    /// How many mechanism exits were counted as deliveries (multiplicity grades this).
+    deliveries: u64,
+    /// How many mechanism exits were advisory (below the arm point / target) and re-armed.
+    advisory_exits: u64,
+    /// Where the delivery landed (`work` at the landing), or `None` for a lost PMI.
+    landed: Option<u64>,
+    /// The state digest AT the landing Moment (what replay identity compares).
+    landed_digest: Option<String>,
+    /// The mechanism reason of the landing (`Preempt`/`SignalKick`), or `None` if the run
+    /// reached its console sentinel without a delivery — then the record's exit is `Mmio`.
+    mechanism_exit: Option<ExitReason>,
+}
+
+/// Everything the shared record-assembly reads that the run loop accumulated, beyond the
+/// overflow bookkeeping — bundled so the assembler takes three arguments, not a dozen.
+struct SampleAssembly {
+    status: Option<u8>,
+    work_begin: Option<u64>,
+    work_end: Option<u64>,
+    params_mode: Option<String>,
+    reported_scale: Option<String>,
+    reported_seed: Option<String>,
+    clockpage_mode: Option<String>,
+    reported: Option<u64>,
+    overflow: OverflowBookkeeping,
+}
+
+/// Service a PL011 **register read** (the guest polling the flag register before it prints).
+///
+/// The one MMIO read both the counting loop and the exact-landing single-step loop must
+/// answer identically: the PL011 is the harness's only userspace MMIO device, so a guest
+/// boots by configuring it and polling `PL011_FR` before every byte, and with no in-kernel
+/// PL011 every poll is an exit that must be answered "ready" or `KVM_RUN` resumes with stale
+/// data. Anything outside the PL011 page is a genuine finding (the GIC is the in-kernel vGIC,
+/// RAM is a real slot), refused. Returns `Ok(true)` if it serviced a PL011 read (caller
+/// `continue`s), `Ok(false)` if it was a PL011 WRITE (caller handles the byte), `Err` if the
+/// access was not the PL011 at all.
+fn service_pl011_read(
+    vcpu: &mut impl Vcpu,
+    addr: u64,
+    data: &[u8],
+    is_write: bool,
+) -> Result<bool, RunError> {
+    if !is_pl011(addr) {
+        return Err(RunError::UnexpectedMmio { addr });
+    }
+    if !is_write {
+        let width = data.len().clamp(1, 8);
+        vcpu.complete_mmio_read(&PL011_FR_READY.to_le_bytes()[..width.min(4)])?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Assemble the [`RunRecord`] from a completed run's accumulated state — the shared tail of
+/// both landing policies.
+///
+/// This is the "attestation / digest / record" path the two run functions must keep in
+/// lockstep: the fail-closed refusals (no sentinel / no window / counter backwards / no
+/// params), the guest-attested scale+seed cross-checks (the only thing that catches a stale
+/// seed on a seed-ignoring payload), the reported-term accounting, the sentinel state digest,
+/// and the overflow sub-record. Single-sourced so a change here cannot land in one policy and
+/// not the other. The **only** thing the two policies decide is the OverflowBookkeeping they
+/// hand in (arm-at-target advisory skid vs arm-early exact `skid == 0`) — the record shape is
+/// one.
+fn assemble_measured_record(
+    vcpu: &mut impl Vcpu,
+    spec: &SampleSpec,
+    a: SampleAssembly,
+) -> Result<RunRecord, RunError> {
+    let status = a.status.ok_or(RunError::NoExitSentinel)?;
+    let begin = a.work_begin.ok_or(RunError::NoWindowOpen)?;
+    let end = a.work_end.ok_or(RunError::NoWindowClose)?;
+    if end < begin {
+        return Err(RunError::CounterWentBackwards { begin, end });
+    }
+    let params_mode = a.params_mode.ok_or(RunError::NoParamsMode)?;
+
+    // Cross-check the scale and seed the GUEST attested against the sample spec. The guest
+    // prints what it read off the params page; if that disagrees with the (payload, scale,
+    // seed) this record is labelled with, the page was stale or mis-written and the record
+    // would attribute its counts to an input the guest never ran. It is precisely the
+    // seed-ignoring payloads whose counts still pass on a wrong seed, so this is the only
+    // thing that catches a stale seed on them.
+    match a.reported_scale.as_deref() {
+        Some(s) if s == spec.scale.name() => {}
+        found => {
+            return Err(RunError::ReportedScaleMismatch {
+                expected: spec.scale.name(),
+                found: found.map(str::to_string),
+            });
+        }
+    }
+    match a.reported_seed.as_deref().map(parse_hex_u64) {
+        Some(Some(seed)) if seed == spec.seed => {}
+        _ => {
+            return Err(RunError::ReportedSeedMismatch {
+                expected: spec.seed,
+                found: a.reported_seed,
+            });
+        }
+    }
+
+    // A payload whose count includes an in-band runtime term (`STXR`/seqlock retries) MUST
+    // have printed it. Defaulting to 0 would let the record match the oracle while claiming a
+    // reported term it never made. A payload with no reported term that printed none reports 0.
+    let reported_taken = if spec.payload.has_reported_term() {
+        a.reported
+            .ok_or(RunError::MissingReportedTerm(spec.payload))?
+    } else {
+        a.reported.unwrap_or(0)
+    };
+
+    // The landed state, digested at the sentinel — read from the seam, never synthesised.
+    let state_digest = vcpu.state_digest()?;
+    if state_digest.is_empty() {
+        return Err(RunError::EmptyStateDigest);
+    }
+
+    let ov = a.overflow;
+    let overflow = ov.target.map(|target| {
+        // A lost PMI means no exit ever came: `landed` is None and `deliveries` is 0. The
+        // record says so — it does not quietly substitute the window's end. When a landing WAS
+        // made the skid is `landed - target` (0 by construction for the exact policy).
+        let landed = ov.landed.unwrap_or(0);
+        OverflowRecord {
+            armed: true,
+            deliveries: ov.deliveries,
+            advisory_exits: ov.advisory_exits,
+            target,
+            landed,
+            skid: i64::try_from(i128::from(landed) - i128::from(target)).unwrap_or(i64::MIN),
+            landed_digest: ov.landed_digest.unwrap_or_default(),
+        }
+    });
+
+    Ok(RunRecord {
+        sample_id: spec.sample_id,
+        payload: spec.payload,
+        scale: spec.scale,
+        seed: spec.seed,
+        trips: spec.trips,
+        condition: spec.condition.clone(),
+        work_begin: begin,
+        work_end: end,
+        measured_taken: end - begin,
+        reported_taken,
+        // With no delivery the run ended at the console sentinel: the record says `Mmio`
+        // rather than borrowing a mechanism it never exercised.
+        exit_reason: ov.mechanism_exit.unwrap_or(ExitReason::Mmio),
+        overflow,
+        // These counting/landing loops measure windows, not steps — never step evidence.
+        step: None,
+        state_digest,
+        params_mode,
+        clockpage_mode: a.clockpage_mode,
+        payload_status: i32::from(status),
+    })
+}
+
 /// Run one sample to completion and assemble its [`RunRecord`].
 ///
 /// The loop: enter the guest; on each MMIO store to [`PL011_DR`] feed the byte to
@@ -583,24 +751,10 @@ pub fn run_sample(
                 data,
                 is_write,
             } => {
-                // The PL011 is the harness's one userspace MMIO device. A guest boots
-                // by writing the UART's config registers (CR/IBRD/FBRD/LCR_H) and polls
-                // its flag register before it can print a byte; with no in-kernel
-                // PL011, every one of those is an exit the harness must model, or the
-                // very first `runtime_init` write is rejected and no payload reaches
-                // MARK_BEGIN. Anything OUTSIDE the PL011 page, though, is a genuine
-                // finding (the GIC is the in-kernel vGIC; RAM is a real memory slot).
-                if !is_pl011(addr) {
-                    return Err(RunError::UnexpectedMmio { addr });
-                }
-
-                if !is_write {
-                    // A register read — the guest is polling. Answer the flag register
-                    // as "ready" (see PL011_FR_READY) and re-enter; any other PL011
-                    // read (the payloads make none) also reads as zero. The value MUST
-                    // be handed back, or KVM_RUN resumes with stale data.
-                    let width = data.len().clamp(1, 8);
-                    vcpu.complete_mmio_read(&PL011_FR_READY.to_le_bytes()[..width.min(4)])?;
+                // The PL011 is the harness's one userspace MMIO device (guests boot by
+                // configuring it and polling its flag register before every byte). Service a
+                // register read here; a non-PL011 access is a genuine finding, refused.
+                if service_pl011_read(vcpu, addr, &data, is_write)? {
                     continue 'run;
                 }
 
@@ -758,96 +912,31 @@ pub fn run_sample(
         probe.mark_observed();
     }
 
-    let status = status.ok_or(RunError::NoExitSentinel)?;
-    let begin = work_begin.ok_or(RunError::NoWindowOpen)?;
-    let end = work_end.ok_or(RunError::NoWindowClose)?;
-    if end < begin {
-        return Err(RunError::CounterWentBackwards { begin, end });
-    }
-    let params_mode = params_mode.ok_or(RunError::NoParamsMode)?;
-
-    // Cross-check the scale and seed the GUEST attested against the sample spec. The guest
-    // prints what it read off the params page; if that disagrees with the (payload, scale,
-    // seed) this record is being labelled with, the page was stale or mis-written and the
-    // record would attribute its counts to an input the guest never ran. It is precisely
-    // the seed-ignoring payloads whose counts still pass on a wrong seed, so this is the
-    // only thing that catches a stale seed on them.
-    match reported_scale.as_deref() {
-        Some(s) if s == spec.scale.name() => {}
-        found => {
-            return Err(RunError::ReportedScaleMismatch {
-                expected: spec.scale.name(),
-                found: found.map(str::to_string),
-            });
-        }
-    }
-    match reported_seed.as_deref().map(parse_hex_u64) {
-        Some(Some(seed)) if seed == spec.seed => {}
-        _ => {
-            return Err(RunError::ReportedSeedMismatch {
-                expected: spec.seed,
-                found: reported_seed,
-            });
-        }
-    }
-
-    // A payload whose count includes an in-band runtime term (`STXR`/seqlock retries)
-    // MUST have printed it. If it did not, the count is unaccountable — defaulting to 0
-    // would let the record match the oracle while claiming a reported term it never made,
-    // and pass the floor checker on a fabricated zero. A payload with no reported term
-    // that printed no retries legitimately reports 0.
-    let reported_taken = if spec.payload.has_reported_term() {
-        reported.ok_or(RunError::MissingReportedTerm(spec.payload))?
-    } else {
-        reported.unwrap_or(0)
-    };
-
-    // The landed state, digested at the sentinel — the thing AA-3's replay identity
-    // and AA-6's rep floor actually compare. Read from the seam, never synthesised.
-    let state_digest = vcpu.state_digest()?;
-    if state_digest.is_empty() {
-        return Err(RunError::EmptyStateDigest);
-    }
-
-    let overflow = target.map(|target| {
-        // A lost PMI means no exit ever came: `landed` is None and `deliveries` is
-        // 0. The record says so — it does not quietly substitute the window's end.
-        let landed = landed.unwrap_or(0);
-        OverflowRecord {
-            armed: true,
-            deliveries,
-            advisory_exits,
-            target,
-            landed,
-            skid: i64::try_from(i128::from(landed) - i128::from(target)).unwrap_or(i64::MIN),
-            landed_digest: landed_digest.unwrap_or_default(),
-        }
-    });
-
-    Ok(RunRecord {
-        sample_id: spec.sample_id,
-        payload: spec.payload,
-        scale: spec.scale,
-        seed: spec.seed,
-        trips: spec.trips,
-        condition: spec.condition.clone(),
-        work_begin: begin,
-        work_end: end,
-        measured_taken: end - begin,
-        reported_taken,
-        // With no overflow armed, the run ended at the console sentinel: the last
-        // exit really was an MMIO one, and the record says so rather than borrowing
-        // a mechanism it never exercised.
-        exit_reason: mechanism_exit.unwrap_or(ExitReason::Mmio),
-        overflow,
-        // AA-2's single-step run path is arrival-day; this loop measures counting
-        // windows, not steps, so it never produces step evidence.
-        step: None,
-        state_digest,
-        params_mode,
-        clockpage_mode,
-        payload_status: i32::from(status),
-    })
+    // The advisory landing policy fills the overflow bookkeeping; the record assembly (the
+    // fail-closed refusals, the guest-attested scale/seed cross-checks, the digest, the
+    // overflow sub-record) is shared with the exact policy.
+    assemble_measured_record(
+        vcpu,
+        spec,
+        SampleAssembly {
+            status,
+            work_begin,
+            work_end,
+            params_mode,
+            reported_scale,
+            reported_seed,
+            clockpage_mode,
+            reported,
+            overflow: OverflowBookkeeping {
+                target,
+                deliveries,
+                advisory_exits,
+                landed,
+                landed_digest,
+                mechanism_exit,
+            },
+        },
+    )
 }
 
 /// Run one AA-3 sample to an **exact** landing (`work == target`) and assemble its
@@ -919,15 +1008,9 @@ pub fn run_sample_exact(
                 data,
                 is_write,
             } => {
-                // The console handling mirrors `run_sample` exactly: the PL011 is the one
-                // userspace MMIO device, and a guest boots by configuring it and polling its
-                // flag register before every byte.
-                if !is_pl011(addr) {
-                    return Err(RunError::UnexpectedMmio { addr });
-                }
-                if !is_write {
-                    let width = data.len().clamp(1, 8);
-                    vcpu.complete_mmio_read(&PL011_FR_READY.to_le_bytes()[..width.min(4)])?;
+                // The console handling mirrors `run_sample`: same PL011 read servicing (shared),
+                // same config-write skip.
+                if service_pl011_read(vcpu, addr, &data, is_write)? {
                     continue 'run;
                 }
                 if addr != PL011_DR {
@@ -1077,17 +1160,11 @@ pub fn run_sample_exact(
                             is_write,
                         } => {
                             // The landing is strictly BELOW MARK_END, so no MARK event occurs
-                            // here — the byte is guest output: answer the PL011 and re-run for the
-                            // Debug exit of this instruction WITHOUT counting a landing step.
-                            if !is_pl011(addr) {
-                                return Err(RunError::UnexpectedMmio { addr });
-                            }
-                            if !is_write {
-                                let width = data.len().clamp(1, 8);
-                                vcpu.complete_mmio_read(
-                                    &PL011_FR_READY.to_le_bytes()[..width.min(4)],
-                                )?;
-                            }
+                            // here — a PL011 access is guest output during the slow single-step:
+                            // service a read, ignore a config/data write, and re-run for this
+                            // instruction's Debug exit WITHOUT counting a landing step. A
+                            // non-PL011 access is a finding (`service_pl011_read` refuses it).
+                            service_pl011_read(vcpu, addr, &data, is_write)?;
                             continue;
                         }
                         other => {
@@ -1138,88 +1215,34 @@ pub fn run_sample_exact(
         }
     }
 
-    // The assembly tail mirrors `run_sample`: the same fail-closed refusals and the same
-    // params/scale/seed cross-checks. The only difference is what the overflow record says —
-    // an exact landing (`landed == target`, `skid == 0`), by construction of the loop above.
-    let status = status.ok_or(RunError::NoExitSentinel)?;
-    let begin = work_begin.ok_or(RunError::NoWindowOpen)?;
-    let end = work_end.ok_or(RunError::NoWindowClose)?;
-    if end < begin {
-        return Err(RunError::CounterWentBackwards { begin, end });
-    }
-    let params_mode = params_mode.ok_or(RunError::NoParamsMode)?;
-    match reported_scale.as_deref() {
-        Some(s) if s == spec.scale.name() => {}
-        found => {
-            return Err(RunError::ReportedScaleMismatch {
-                expected: spec.scale.name(),
-                found: found.map(str::to_string),
-            });
-        }
-    }
-    match reported_seed.as_deref().map(parse_hex_u64) {
-        Some(Some(seed)) if seed == spec.seed => {}
-        _ => {
-            return Err(RunError::ReportedSeedMismatch {
-                expected: spec.seed,
-                found: reported_seed,
-            });
-        }
-    }
-    let reported_taken = if spec.payload.has_reported_term() {
-        reported.ok_or(RunError::MissingReportedTerm(spec.payload))?
-    } else {
-        reported.unwrap_or(0)
-    };
-    let state_digest = vcpu.state_digest()?;
-    if state_digest.is_empty() {
-        return Err(RunError::EmptyStateDigest);
-    }
-
-    let overflow = target.map(|target| {
-        // A lost PMI (no `Preempt` ever came) records `deliveries: 0` / `landed: 0`, its own
-        // honest skid, and the multiplicity check — not a fabricated zero — owns the failure.
-        // Arming EARLY is exactly what makes a lost PMI unlikely; when a landing WAS made it is
-        // exact by construction (`landed == target`, so `skid == 0`).
-        let landed = landed.unwrap_or(0);
-        OverflowRecord {
-            armed: true,
-            deliveries,
-            advisory_exits,
-            target,
-            landed,
-            skid: i64::try_from(i128::from(landed) - i128::from(target)).unwrap_or(i64::MIN),
-            landed_digest: landed_digest.unwrap_or_default(),
-        }
-    });
-
-    Ok(RunRecord {
-        sample_id: spec.sample_id,
-        payload: spec.payload,
-        scale: spec.scale,
-        seed: spec.seed,
-        trips: spec.trips,
-        condition: spec.condition.clone(),
-        work_begin: begin,
-        work_end: end,
-        measured_taken: end - begin,
-        reported_taken,
-        // A landing rode the patched `Preempt` force-exit; a lost PMI ran to the console
-        // sentinel, and the record says so rather than borrowing a mechanism it never took.
-        exit_reason: if landed.is_some() {
-            ExitReason::Preempt
-        } else {
-            ExitReason::Mmio
+    // The exact landing policy fills the overflow bookkeeping — `landed == target` (so
+    // `skid == 0`) by construction of the single-step loop above, and the mechanism is the
+    // patched `Preempt` whenever a landing was made. The record assembly is shared with the
+    // advisory policy (`run_sample`), so the two cannot drift apart.
+    assemble_measured_record(
+        vcpu,
+        spec,
+        SampleAssembly {
+            status,
+            work_begin,
+            work_end,
+            params_mode,
+            reported_scale,
+            reported_seed,
+            clockpage_mode,
+            reported,
+            overflow: OverflowBookkeeping {
+                target,
+                deliveries,
+                advisory_exits,
+                landed,
+                landed_digest,
+                // A landing rode the patched `Preempt`; a lost PMI ran to the sentinel and the
+                // shared assembler records `Mmio`.
+                mechanism_exit: landed.map(|_| ExitReason::Preempt),
+            },
         },
-        overflow,
-        // The exact-landing single steps are the LANDING mechanism, not AA-2 step evidence:
-        // this is an armed landing, mutually exclusive with a step record.
-        step: None,
-        state_digest,
-        params_mode,
-        clockpage_mode,
-        payload_status: i32::from(status),
-    })
+    )
 }
 
 /// Absorb one guest protocol line into the record's attested fields.
