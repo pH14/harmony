@@ -1,15 +1,35 @@
 {
-  "solo_tuples": 5700,
+  "cotenant_only_examples": [],
   "cotenant_tuples": 5700,
-  "shared_tuples_compared": 5700,
-  "excluded_payloads": [
-    "llsc-atomics",
-    "wfi-idle"
-  ],
   "digests_compared_per_tuple": [
     "overflow.landed_digest",
     "state_digest"
   ],
   "divergences": [],
+  "excluded_payloads": [
+    "llsc-atomics",
+    "wfi-idle"
+  ],
+  "inputs": {
+    "cotenant_manifests_verified": true,
+    "solo_manifest_verified": true
+  },
+  "join_cardinality": {
+    "cotenant_included_records": 11400,
+    "cotenant_only_keys": 0,
+    "cotenant_raw_records": 13300,
+    "cotenant_unique_keys": 5700,
+    "full_both_sides": true,
+    "multiplicity_mismatches": 0,
+    "shared_keys": 5700,
+    "solo_included_records": 11400,
+    "solo_only_keys": 0,
+    "solo_raw_records": 13300,
+    "solo_unique_keys": 5700
+  },
+  "multiplicity_mismatch_examples": [],
+  "shared_tuples_compared": 5700,
+  "solo_only_examples": [],
+  "solo_tuples": 5700,
   "verdict": "MATCH"
 }

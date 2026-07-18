@@ -296,6 +296,8 @@ jobs:
             git apply --stat "$patch" >/dev/null           # the diff parses (hunks well-formed)
           done
           echo "patch format + parse OK; the apply-onto-6.18.35 + compile gate runs on the aarch64 builder (host/BUILD.md §0)"
+      - name: determinism comparator negative controls
+        run: python3 -m unittest discover -s "$SPIKE/host/tests" -p 'test_*.py'
       # arm-harness is the crate with `unsafe` (the perf/KVM syscall seam), so the
       # repo's unsafe⇒Miri bar applies to it. The Machine's raw-pointer ops that a real
       # KVM mapping otherwise hides from the interpreter — the volatile kvm_run
