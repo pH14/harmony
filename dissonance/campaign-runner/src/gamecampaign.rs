@@ -1627,6 +1627,47 @@ mod tests {
         m.drop_snap(explorer::SnapId(1)).expect("drop delegates");
     }
 
+    /// `SmbObservationCells` keys the `(mode, world, level, x-bucket)` tuple
+    /// off the reduced map: no `X_BUCKET` ⇒ the empty (pre-progress) cell;
+    /// missing tuple registers default to 0; non-scalar values are ignored
+    /// (kills the reduced-value match-arm mutants portably).
+    #[test]
+    fn smb_observation_cells_key_the_reduced_tuple() {
+        use explorer::{ObservationMap, ReducedValue};
+        let cells = SmbObservationCells;
+        let cut = EvidenceCut::default();
+        let point = |local: u64| ObservationId::Point {
+            namespace: NS_STATE,
+            local: local as u32,
+        };
+        // Pre-X state: the empty cell.
+        let mut obs = ObservationMap::new();
+        obs.insert(point(reg::GAME_MODE), ReducedValue::Scalar(1));
+        assert!(cells.key(cut, &obs).is_empty());
+        // The full tuple packs exactly smb_cell_key.
+        obs.insert(point(reg::WORLD), ReducedValue::Scalar(2));
+        obs.insert(point(reg::LEVEL), ReducedValue::Scalar(3));
+        obs.insert(point(reg::X_BUCKET), ReducedValue::Scalar(7));
+        assert_eq!(
+            cells.key(cut, &obs),
+            smb_cell_key(1, 2, 3, 7).to_le_bytes().to_vec()
+        );
+        // Missing mode/world/level default to 0 (x alone still mints a cell).
+        let mut only_x = ObservationMap::new();
+        only_x.insert(point(reg::X_BUCKET), ReducedValue::Scalar(7));
+        assert_eq!(
+            cells.key(cut, &only_x),
+            smb_cell_key(0, 0, 0, 7).to_le_bytes().to_vec()
+        );
+        // A non-scalar (accumulated) value never reaches the tuple.
+        let mut acc = ObservationMap::new();
+        acc.insert(
+            point(reg::X_BUCKET),
+            ReducedValue::Accumulated([7].into_iter().collect()),
+        );
+        assert!(cells.key(cut, &acc).is_empty());
+    }
+
     /// The branch budget the in-memory smoke campaigns below drive
     /// ([`GameCampaignConfig::smoke`]'s `max_branches`), **shrunk to 8 under Miri**
     /// (task 104, `hm-d4y`). The properties these campaigns pin — a rerun is
