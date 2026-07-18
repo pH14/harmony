@@ -288,6 +288,12 @@ fn plan_spec(
     with_targets: bool,
     scales: Vec<Scale>,
     condition: &str,
+    // The LOWER bound of the seeded-random target draw. 1 for AA-1/AA-3-proxy; for the AA-3
+    // EXACT landing it is `skid_margin + 1`, because a target closer to `MARK_BEGIN` than the
+    // margin cannot be landed by the Preempt (its 0..margin latency would overshoot such a small
+    // target, or arming at/above it fails mechanism-attestation) — those deltas are simply not
+    // drawn, rather than drawn and then failed.
+    target_lo: u64,
 ) -> PlanSpec {
     PlanSpec {
         payloads: ALL_PAYLOADS
@@ -300,7 +306,7 @@ fn plan_spec(
         cases,
         reps,
         seed,
-        target_delta_range: with_targets.then_some((1, 100_000)),
+        target_delta_range: with_targets.then_some((target_lo, 100_000)),
     }
 }
 
@@ -312,6 +318,7 @@ fn emit_plan(seed: u64, cases: u64, reps: u64, with_targets: bool) -> Result<(),
         with_targets,
         vec![Scale::Smoke],
         "pinned-solo",
+        1,
     ))
     .map_err(|e| e.to_string())?;
     let json =
@@ -739,7 +746,9 @@ fn execute(args: RunArgs) -> Result<(), String> {
     use arm_harness::evidence::{
         ExitReason, ImagePin, Mechanism, Pinning, RunSetContext, assemble_run_set, hex_lower,
     };
-    use arm_harness::run::{ArmedMigrationProbe, SampleSpec, run_sample, run_sample_exact, step_run};
+    use arm_harness::run::{
+        ArmedMigrationProbe, SampleSpec, run_sample, run_sample_exact, step_run,
+    };
     use arm_harness::sys::{self, Machine, ParamsPage, PerfCounter, perf_config, pin_to_core};
     use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
@@ -889,6 +898,15 @@ fn execute(args: RunArgs) -> Result<(), String> {
     } else {
         args.scales.clone()
     };
+    // AA-3 exact landing (patched mechanism + a measured skid margin) draws targets no closer to
+    // MARK_BEGIN than `skid_margin`, so every target can be armed a full margin below and landed
+    // exactly by the Preempt; every other configuration draws from 1.
+    let target_lo = if matches!(args.mechanism, MechanismArg::Patched) && args.skid_margin.is_some()
+    {
+        args.skid_margin.unwrap().saturating_add(1)
+    } else {
+        1
+    };
     let samples = plan(&plan_spec(
         args.seed,
         args.cases,
@@ -896,6 +914,7 @@ fn execute(args: RunArgs) -> Result<(), String> {
         args.with_targets,
         scales,
         &args.condition,
+        target_lo,
     ))
     .map_err(|e| e.to_string())?;
     let mut attempted = samples.len() as u64;

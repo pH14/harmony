@@ -1058,7 +1058,10 @@ pub fn run_sample_exact(
                     if after < work {
                         // The work counter is monotonic while the guest runs; a decrease across
                         // one step is a seam/hardware anomaly, refused.
-                        return Err(RunError::StepCounterWentBackwards { before: work, after });
+                        return Err(RunError::StepCounterWentBackwards {
+                            before: work,
+                            after,
+                        });
                     }
                     if after > target {
                         // A single step advances BR_RETIRED by 0 or 1, so it cannot skip the
