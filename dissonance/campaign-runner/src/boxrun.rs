@@ -564,7 +564,17 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
             }
             _ => {}
         }
-        let rep_cfg = cfg.clone();
+        let mut rep_cfg = cfg.clone();
+        // Repetitions must be INDEPENDENT for the determinism gate: each gets
+        // its own trace/evidence directory (a shared durable evidence ledger
+        // would seed repetition N's archive with repetition N-1's committed
+        // assignments — resumption, not repetition; task 132). The retained
+        // deep trace is content-addressed, so identical reps still yield the
+        // identical trace_id.
+        rep_cfg.trace_dir = cfg
+            .trace_dir
+            .as_ref()
+            .map(|d| d.join(format!("rep-{}", rep + 1)));
         let initial = boot_env();
         println!(
             "[campaign-runner] game box: campaign {}/{repeat} (config={:?}, {} branches, {} ns per \
