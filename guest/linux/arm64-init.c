@@ -12,6 +12,12 @@
 #define NR_CLOSE 57
 #define NR_READ 63
 #define NR_WRITE 64
+#define NR_EXIT_GROUP 94
+#define NR_CLONE 220
+#define NR_WAIT4 260
+
+#define SIGCHLD 17
+#define SIGILL 4
 
 static long syscall1(long number, long arg0)
 {
@@ -99,6 +105,88 @@ static __attribute__((noreturn)) void fail(void)
 	stop();
 }
 
+#ifdef HARMONY_AA5_EL0_PROBE
+/*
+ * AA-5(b) live closure probe, built ONLY into the el0probe initramfs variant
+ * (this planted CNTVCT_EL0 read must never ship in the scan-clean init).
+ *
+ * Under CNTKCTL_EL1 EL0 denial the raw read traps to EL1; the owned kernel's
+ * trap emulation resolves through the pvclock page. 1000 consecutive EL0
+ * reads therefore observe at most a handful of distinct values (the page
+ * advances only at exact publications), while an unclosed live counter makes
+ * essentially every read distinct. A SIGILL death is the stricter
+ * deny-without-emulation posture and also proves closure.
+ */
+#define EL0_PROBE_READS 1000
+#define EL0_PROBE_MAX_DISTINCT 16
+#define EL0_PROBE_LIVE_EXIT 7
+
+static __attribute__((noreturn)) void exit_group(long code)
+{
+	syscall1(NR_EXIT_GROUP, code);
+	stop();
+}
+
+static __attribute__((noreturn)) void el0_probe_child(void)
+{
+	unsigned long previous = 0;
+	unsigned long distinct = 0;
+	unsigned long index;
+
+	for (index = 0; index < EL0_PROBE_READS; index++) {
+		unsigned long value;
+
+		__asm__ volatile("mrs %0, cntvct_el0" : "=r"(value));
+		if (index == 0 || value != previous)
+			distinct++;
+		previous = value;
+	}
+	exit_group(distinct > EL0_PROBE_MAX_DISTINCT ? EL0_PROBE_LIVE_EXIT : 0);
+}
+
+static long wait_for(long pid)
+{
+	int status = 0;
+	long waited = syscall5(NR_WAIT4, pid, (long)&status, 0, 0, 0);
+
+	if (waited != pid)
+		fail();
+	return status;
+}
+
+static void el0_counter_probe(void)
+{
+	long pid;
+	int status;
+
+	pid = (long)syscall5(NR_CLONE, SIGCHLD, 0, 0, 0, 0);
+	if (pid < 0)
+		fail();
+	if (pid == 0)
+		el0_probe_child();
+	status = (int)wait_for(pid);
+	if ((status & 0x7f) == SIGILL) {
+		write_all("HARMONY_AA5_EL0_CNTVCT_UNDEF_OK\n");
+	} else if ((status & 0x7f) == 0 && ((status >> 8) & 0xff) == 0) {
+		write_all("HARMONY_AA5_EL0_CNTVCT_PAGE_OK\n");
+	} else {
+		/* A live-counter observation (exit 7) or anything else is a closure hole. */
+		fail();
+	}
+
+	/* Discriminator control: a cleanly exiting nonzero child must be told apart. */
+	pid = (long)syscall5(NR_CLONE, SIGCHLD, 0, 0, 0, 0);
+	if (pid < 0)
+		fail();
+	if (pid == 0)
+		exit_group(42);
+	status = (int)wait_for(pid);
+	if ((status & 0x7f) != 0 || ((status >> 8) & 0xff) != 42)
+		fail();
+	write_all("HARMONY_AA5_EL0_PROBE_CONTROL_OK\n");
+}
+#endif
+
 void __attribute__((noreturn)) _start(void)
 {
 	static const char source[] = "sysfs";
@@ -123,6 +211,12 @@ void __attribute__((noreturn)) _start(void)
 		fail();
 
 	write_all("HARMONY_AA5_CLOCKSOURCE_OK\n");
+#ifdef HARMONY_AA5_EL0_PROBE
+	/* Probe only after the pvclock clocksource is verified live: "page time"
+	 * is only a meaningful verdict on a guest actually running the page.
+	 */
+	el0_counter_probe();
+#endif
 	write_all("HARMONY_AA5_READY\n");
 	stop();
 }
