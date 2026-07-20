@@ -44,3 +44,16 @@ Because the page is never modified, the second scan is attributable only to the 
 update's invalidation. `notifier_forced_rescan=true` and `control_reused_approval=true`.
 Target-page-specific `audit.exec_scans` isolates the effect (a memslot replace re-scans every
 executable page; only the audited target measures the approval invalidation on it).
+
+## AA-4 concurrency: backing-replacement — PASS (`backing.out`)
+
+`aa4-guard-backing` — same `aa4-reexec` payload and control, but the interposed op moves
+slot 0 to a **distinct** anonymous backing whose contents are byte-identical (fresh mmap +
+full copy, old backing unmapped). The guard must re-scan the target on the second execute
+even though the page content is unchanged — proving the approval is keyed to the **mapping**,
+not to a content hash:
+
+- **control** (no move): `control_scans=1`, generation stable at 4 (approval reused).
+- **backing** (move to distinct identical backing): `backing_scans=2`, generation **4 → 7**.
+
+`backing_forced_rescan=true`, `control_reused_approval=true`.
