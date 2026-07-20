@@ -59,7 +59,7 @@ Harmony repository's designated guest-kernel patch exception.
  obj-$(CONFIG_ARMV7M_SYSTICK)		+= armv7m_systick.o
 --- /dev/null
 +++ b/drivers/clocksource/harmony_arm_pvclock.c
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,128 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Harmony's materialized work-derived arm64 clock page.
@@ -106,6 +106,10 @@ Harmony repository's designated guest-kernel patch exception.
 +	__le32 vcpu_index;
 +} __packed;
 +
++/* Set once registration has validated the page; guards reads before its
++ * linear mapping exists (an early counter read would otherwise fault). */
++static bool harmony_pvclock_ready __ro_after_init;
++
 +static __always_inline const struct harmony_arm_pvclock_page *harmony_page(void)
 +{
 +	return (const void *)__phys_to_virt(HARMONY_PVCLOCK_GPA);
@@ -148,6 +152,7 @@ Harmony repository's designated guest-kernel patch exception.
 +
 +	for (spin = 0; spin < HARMONY_PVCLOCK_REGISTER_SPINS; spin++) {
 +		if (harmony_page_valid()) {
++			WRITE_ONCE(harmony_pvclock_ready, true);
 +			pr_info("Harmony pvclock: registered page %#llx (ABI %u)\n",
 +				HARMONY_PVCLOCK_GPA, HARMONY_PVCLOCK_ABI);
 +			return;
@@ -167,6 +172,9 @@ Harmony repository's designated guest-kernel patch exception.
 +	const struct harmony_arm_pvclock_page *p = harmony_page();
 +	u32 seq;
 +	u64 count;
++
++	if (!READ_ONCE(harmony_pvclock_ready))
++		return 0;
 +
 +	if (!harmony_page_valid())
 +		return 0;
