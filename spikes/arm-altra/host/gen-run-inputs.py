@@ -26,8 +26,28 @@ import re
 import subprocess
 import sys
 
-SOC = "Ampere(R) Altra(R) Processor (HPE ProLiant RL300 Gen11)"
-FIRMWARE = {"bios_release_date": "01/16/2025", "bios_version": "1.74"}
+def dmi_field(name):
+    """A live SMBIOS identity field; absent DMI is a stop, not a guess (hm-66l)."""
+    path = f"/sys/class/dmi/id/{name}"
+    try:
+        with open(path) as f:
+            value = f.read().strip()
+    except OSError:
+        sys.exit(f"FAIL: cannot read {path} — box identity must be read live, never assumed")
+    if not value:
+        sys.exit(f"FAIL: {path} is empty — box identity must be read live, never assumed")
+    return value
+
+
+def live_soc():
+    return f"Ampere(R) Altra(R) Processor ({dmi_field('sys_vendor')} {dmi_field('product_name')})"
+
+
+def live_firmware():
+    return {
+        "bios_release_date": dmi_field("bios_date"),
+        "bios_version": dmi_field("bios_version"),
+    }
 
 
 def sha256_file(path):
@@ -79,8 +99,8 @@ def main():
 
     env = {
         "midr": midr,
-        "soc": SOC,
-        "firmware": FIRMWARE,
+        "soc": live_soc(),
+        "firmware": live_firmware(),
         "host_kernel": release,
         "kvm_mode": kvm_mode(),
     }
