@@ -3133,6 +3133,504 @@ fn read_host_id_registers_on_vcpu(
     })
 }
 
+// ============================================================================
+// AA-6(a) ID-register-freeze enforcement proof (standalone; own VM/vCPU, like
+// `probe_writable_id_registers`). Additive: it touches no `Machine`, run-loop,
+// or W^X code.
+// ============================================================================
+
+/// One register's freeze result in the AA-6(a) enforcement truth-table.
+#[derive(Clone, Copy, Debug)]
+pub struct IdFreezeRow {
+    /// Register name (e.g. `ID_AA64ISAR0_EL1`).
+    pub name: &'static str,
+    /// The host-presented value before the freeze.
+    pub host_value: u64,
+    /// The below-host value installed via `KVM_SET_ONE_REG`.
+    pub frozen_value: u64,
+    /// The nibble (feature field) that was reduced.
+    pub field_shift: u32,
+    /// The value read back after the SET — what the guest's `mrs` observes (KVM
+    /// emulates EL1 ID reads from exactly this).
+    pub read_back: u64,
+    /// The freeze held: `read_back == frozen_value` and the field is strictly below host.
+    pub enforced: bool,
+}
+
+/// The AA-6(a) ID-register-freeze enforcement result.
+#[derive(Clone, Debug)]
+pub struct IdFreezeProof {
+    /// One row per `ID_AA64*` register that carries a reducible feature.
+    pub rows: Vec<IdFreezeRow>,
+    /// A vCPU created WITHOUT `KVM_ARM_VCPU_PMU_V3` reads `ID_AA64DFR0_EL1.PMUVer` as 0 —
+    /// KVM denies the guest its own PMU (the guest contract). The enforcement row for the
+    /// counter/PMU surface.
+    pub pmu_denied_without_feature: bool,
+    /// `ID_AA64DFR0_EL1.PMUVer` a PMU-enabled disposable vCPU sees (the sanitised host PMU
+    /// version), for contrast with the denied read.
+    pub host_pmuver: u64,
+}
+
+/// Install a below-host reduced value in the first reducible feature field of `reg` and
+/// confirm the guest-visible read-back holds it. `None` when the register carries no
+/// reducible field (nothing to freeze).
+#[cfg(target_os = "linux")]
+fn install_id_freeze_field(
+    vcpu_fd: libc::c_int,
+    reg: u64,
+    name: &'static str,
+    skip_low_nibbles: u32,
+) -> Result<Option<IdFreezeRow>, SysError> {
+    let mut host_value: u64 = 0;
+    let get = KvmOneReg {
+        id: reg,
+        addr: (&raw mut host_value) as u64,
+    };
+    // SAFETY: `vcpu_fd` is valid; `get.addr` points at a live u64 the kernel writes.
+    if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get) } < 0 {
+        return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64* freeze)"));
+    }
+    for nibble in skip_low_nibbles..16u32 {
+        let shift = nibble * 4;
+        let field = (host_value >> shift) & 0xF;
+        if field == 0 || field == 0xF {
+            continue;
+        }
+        let frozen = (host_value & !(0xFu64 << shift)) | ((field - 1) << shift);
+        let set = KvmOneReg {
+            id: reg,
+            addr: (&raw const frozen) as u64,
+        };
+        // SAFETY: `vcpu_fd` is valid; `set.addr` points at a live u64 the kernel reads.
+        let rc = unsafe { libc::ioctl(vcpu_fd, kvm::SET_ONE_REG as libc::c_ulong, &raw const set) };
+        if rc < 0 {
+            let e = errno();
+            if e == libc::EINVAL || e == libc::EPERM || e == libc::ENOENT {
+                continue;
+            }
+            return Err(err("ioctl(KVM_SET_ONE_REG, ID_AA64* freeze)"));
+        }
+        let mut read_back: u64 = 0;
+        let get2 = KvmOneReg {
+            id: reg,
+            addr: (&raw mut read_back) as u64,
+        };
+        // SAFETY: `vcpu_fd` is valid; `get2.addr` points at a live u64 the kernel writes.
+        if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get2) } < 0 {
+            return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64* freeze readback)"));
+        }
+        if read_back == frozen {
+            return Ok(Some(IdFreezeRow {
+                name,
+                host_value,
+                frozen_value: frozen,
+                field_shift: shift,
+                read_back,
+                enforced: true,
+            }));
+        }
+        // Accepted but clamped back to host — not a real freeze; try the next field.
+    }
+    Ok(None)
+}
+
+/// Prove AA-6(a) ID-register freeze enforcement on a disposable VM+vCPU.
+///
+/// Installs a shrunk (below-host) synthetic model across the `ID_AA64*` surface and confirms
+/// each frozen value survives read-back — the value a guest's EL1 `mrs` observes, since KVM
+/// emulates ID reads from the vCPU's stored register. Also confirms the PMU is denied to a
+/// vCPU without `KVM_ARM_VCPU_PMU_V3` (guest PMU reads mask to 0).
+///
+/// # Errors
+/// [`SysError`] if a VM/vCPU could not be created/initialised or a register access failed.
+#[cfg(target_os = "linux")]
+pub fn id_freeze_proof() -> Result<IdFreezeProof, SysError> {
+    let kvm_fd = open_kvm()?;
+    // SAFETY: valid /dev/kvm fd; KVM_CREATE_VM returns a VM fd.
+    let vm_fd = unsafe { libc::ioctl(kvm_fd, kvm::CREATE_VM as libc::c_ulong, 0_u64) };
+    if vm_fd < 0 {
+        let e = err("ioctl(KVM_CREATE_VM)");
+        // SAFETY: `kvm_fd` is valid and owned here.
+        unsafe { libc::close(kvm_fd) };
+        return Err(e);
+    }
+    let out = id_freeze_proof_on_vm(vm_fd);
+    // SAFETY: both descriptors are valid and owned here.
+    unsafe {
+        libc::close(vm_fd);
+        libc::close(kvm_fd);
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn id_freeze_proof_on_vm(vm_fd: libc::c_int) -> Result<IdFreezeProof, SysError> {
+    // SAFETY: `vm_fd` is valid; KVM_CREATE_VCPU takes a vcpu index and returns a fd.
+    let vcpu_fd = unsafe { libc::ioctl(vm_fd, kvm::CREATE_VCPU as libc::c_ulong, 0_u64) };
+    if vcpu_fd < 0 {
+        return Err(err("ioctl(KVM_CREATE_VCPU)"));
+    }
+    let out = id_freeze_proof_on_vcpu(vm_fd, vcpu_fd);
+    // SAFETY: `vcpu_fd` is valid and owned here.
+    unsafe { libc::close(vcpu_fd) };
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn id_freeze_proof_on_vcpu(
+    vm_fd: libc::c_int,
+    vcpu_fd: libc::c_int,
+) -> Result<IdFreezeProof, SysError> {
+    // A featureless vCPU (NO PMU): the guest contract denies the guest its own PMU.
+    let mut init = KvmVcpuInit::default();
+    // SAFETY: `vm_fd` is valid; KVM_ARM_PREFERRED_TARGET fills `init`.
+    if unsafe {
+        libc::ioctl(
+            vm_fd,
+            kvm::ARM_PREFERRED_TARGET as libc::c_ulong,
+            &raw mut init,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET)"));
+    }
+    // SAFETY: `vcpu_fd` is valid; `init` is fully initialised above.
+    if unsafe {
+        libc::ioctl(
+            vcpu_fd,
+            kvm::ARM_VCPU_INIT as libc::c_ulong,
+            &raw const init,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
+    }
+
+    // Same surface as the writable-ID probe; PFR0's low four nibbles are EL0..3 support
+    // (lowering them breaks the VM), so they are skipped.
+    let relevant: &[(u64, u32, &str)] = &[
+        (kvm::REG_ID_AA64PFR0_EL1, 4, "ID_AA64PFR0_EL1"),
+        (kvm::REG_ID_AA64PFR1_EL1, 0, "ID_AA64PFR1_EL1"),
+        (kvm::REG_ID_AA64ISAR0_EL1, 0, "ID_AA64ISAR0_EL1"),
+        (kvm::REG_ID_AA64ISAR1_EL1, 0, "ID_AA64ISAR1_EL1"),
+        (kvm::REG_ID_AA64ISAR2_EL1, 0, "ID_AA64ISAR2_EL1"),
+        (kvm::REG_ID_AA64MMFR0_EL1, 0, "ID_AA64MMFR0_EL1"),
+        (kvm::REG_ID_AA64MMFR1_EL1, 0, "ID_AA64MMFR1_EL1"),
+        (kvm::REG_ID_AA64MMFR2_EL1, 0, "ID_AA64MMFR2_EL1"),
+        (kvm::REG_ID_AA64DFR0_EL1, 0, "ID_AA64DFR0_EL1"),
+        (kvm::REG_ID_AA64DFR1_EL1, 0, "ID_AA64DFR1_EL1"),
+    ];
+    let mut rows = Vec::new();
+    for &(reg, skip, name) in relevant {
+        if let Some(row) = install_id_freeze_field(vcpu_fd, reg, name, skip)? {
+            rows.push(row);
+        }
+    }
+
+    // PMU denial: this featureless vCPU reads ID_AA64DFR0_EL1.PMUVer (bits [11:8]) as 0.
+    let mut dfr0: u64 = 0;
+    let get = KvmOneReg {
+        id: kvm::REG_ID_AA64DFR0_EL1,
+        addr: (&raw mut dfr0) as u64,
+    };
+    // SAFETY: `vcpu_fd` is valid; `get.addr` points at a live u64 the kernel writes.
+    if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get) } < 0 {
+        return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64DFR0_EL1 PMUVer)"));
+    }
+    let pmu_denied_without_feature = (dfr0 >> 8) & 0xF == 0;
+
+    // For contrast: the sanitised host PMU version through a PMU-enabled vCPU.
+    let host = read_host_id_registers()?;
+    let host_pmuver = (host.id_aa64dfr0 >> 8) & 0xF;
+
+    Ok(IdFreezeProof {
+        rows,
+        pmu_denied_without_feature,
+        host_pmuver,
+    })
+}
+
+// ============================================================================
+// AA-6(b) vGIC save/restore round-trip proof (standalone; own VM/vCPU/vGIC).
+// Additive: it touches no `Machine`, run-loop, or W^X code.
+// ============================================================================
+
+/// The redistributor SGI-frame private-interrupt (SGI/PPI, IDs 0–31) registers whose values
+/// carry a guest's injection state — enable, pending, active, group, config, priority. Saved
+/// and restored through `KVM_DEV_ARM_VGIC_GRP_REDIST_REGS`, whose GET/SET give absolute
+/// migration-grade access (not the write-1-to-set MMIO semantics). Offsets are RD_base
+/// relative; the SGI frame is one 64 KiB frame past RD_base.
+#[cfg(target_os = "linux")]
+const VGIC_REDIST_PRIVATE_REGS: &[(u64, &str)] = &[
+    (0x1_0000 + 0x0080, "GICR_IGROUPR0"),
+    (0x1_0000 + 0x0D00, "GICR_IGRPMODR0"),
+    (0x1_0000 + 0x0100, "GICR_ISENABLER0"),
+    (0x1_0000 + 0x0200, "GICR_ISPENDR0"),
+    (0x1_0000 + 0x0300, "GICR_ISACTIVER0"),
+    (0x1_0000 + 0x0C00, "GICR_ICFGR0"),
+    (0x1_0000 + 0x0C04, "GICR_ICFGR1"),
+    (0x1_0000 + 0x0400, "GICR_IPRIORITYR0"),
+    (0x1_0000 + 0x0404, "GICR_IPRIORITYR1"),
+    (0x1_0000 + 0x0408, "GICR_IPRIORITYR2"),
+    (0x1_0000 + 0x040C, "GICR_IPRIORITYR3"),
+    (0x1_0000 + 0x0410, "GICR_IPRIORITYR4"),
+    (0x1_0000 + 0x0414, "GICR_IPRIORITYR5"),
+    (0x1_0000 + 0x0418, "GICR_IPRIORITYR6"),
+    (0x1_0000 + 0x041C, "GICR_IPRIORITYR7"),
+];
+
+/// The private-interrupt ID the round-trip injects (a PPI, matching AA-5's dedicated
+/// clockevent PPI 20). Its ISENABLER0/ISPENDR0 bit distinguishes an injected state from a
+/// fresh vGIC's quiescent default.
+#[cfg(target_os = "linux")]
+const VGIC_ROUNDTRIP_INTID: u32 = 20;
+
+/// The AA-6(b) vGIC save/restore round-trip result.
+#[derive(Clone, Debug)]
+pub struct VgicRoundtrip {
+    /// The injected private interrupt (enabled + pending on machine A).
+    pub injected_intid: u32,
+    /// Register labels saved, in order (parallel to the value vectors).
+    pub labels: Vec<&'static str>,
+    /// Machine A's saved private-IRQ register values.
+    pub saved: Vec<u32>,
+    /// A fresh machine B's values BEFORE restore.
+    pub fresh_before: Vec<u32>,
+    /// Machine B's values AFTER restoring A's save.
+    pub fresh_after: Vec<u32>,
+    /// Negative control: the fresh vGIC differed from the injected save before restore (so a
+    /// match after restore is transfer, not coincidence).
+    pub negative_control_differs: bool,
+    /// The round-trip held: B after restore is byte-identical to A's save.
+    pub roundtrip_identical: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn vgic_device_get(vgic_fd: libc::c_int, group: u32, attr: u64) -> Result<u32, SysError> {
+    let mut value: u32 = 0;
+    let da = KvmDeviceAttr {
+        flags: 0,
+        group,
+        attr,
+        addr: (&raw mut value) as u64,
+    };
+    // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u32 the GET accessor writes.
+    if unsafe {
+        libc::ioctl(
+            vgic_fd,
+            kvm::GET_DEVICE_ATTR as libc::c_ulong,
+            &raw const da,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_GET_DEVICE_ATTR, vGIC redist reg)"));
+    }
+    Ok(value)
+}
+
+#[cfg(target_os = "linux")]
+fn vgic_device_set(
+    vgic_fd: libc::c_int,
+    group: u32,
+    attr: u64,
+    value: u32,
+) -> Result<(), SysError> {
+    let da = KvmDeviceAttr {
+        flags: 0,
+        group,
+        attr,
+        addr: (&raw const value) as u64,
+    };
+    // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u32 the SET accessor reads.
+    if unsafe {
+        libc::ioctl(
+            vgic_fd,
+            kvm::SET_DEVICE_ATTR as libc::c_ulong,
+            &raw const da,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_SET_DEVICE_ATTR, vGIC redist reg)"));
+    }
+    Ok(())
+}
+
+/// Build a disposable VM + single vCPU + initialised in-kernel vGICv3, run `f(vgic_fd)`, and
+/// tear all three fds down on every path. Mirrors [`Machine::create_vgic`]'s ioctl sequence
+/// without touching `Machine`.
+#[cfg(target_os = "linux")]
+fn with_vm_vcpu_vgic<T>(f: impl FnOnce(libc::c_int) -> Result<T, SysError>) -> Result<T, SysError> {
+    let kvm_fd = open_kvm()?;
+    // SAFETY: valid /dev/kvm fd; KVM_CREATE_VM returns a VM fd.
+    let vm_fd = unsafe { libc::ioctl(kvm_fd, kvm::CREATE_VM as libc::c_ulong, 0_u64) };
+    if vm_fd < 0 {
+        let e = err("ioctl(KVM_CREATE_VM)");
+        // SAFETY: `kvm_fd` is valid and owned here.
+        unsafe { libc::close(kvm_fd) };
+        return Err(e);
+    }
+    let body = || -> Result<T, SysError> {
+        // SAFETY: `vm_fd` is valid; KVM_CREATE_VCPU takes a vcpu index and returns a fd.
+        let vcpu_fd = unsafe { libc::ioctl(vm_fd, kvm::CREATE_VCPU as libc::c_ulong, 0_u64) };
+        if vcpu_fd < 0 {
+            return Err(err("ioctl(KVM_CREATE_VCPU)"));
+        }
+        let inner = || -> Result<T, SysError> {
+            // The vCPU must be initialised before the vGIC's CTRL_INIT.
+            let mut init = KvmVcpuInit::default();
+            // SAFETY: `vm_fd` is valid; KVM_ARM_PREFERRED_TARGET fills `init`.
+            if unsafe {
+                libc::ioctl(
+                    vm_fd,
+                    kvm::ARM_PREFERRED_TARGET as libc::c_ulong,
+                    &raw mut init,
+                )
+            } < 0
+            {
+                return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET)"));
+            }
+            // SAFETY: `vcpu_fd` is valid; `init` is fully initialised above.
+            if unsafe {
+                libc::ioctl(
+                    vcpu_fd,
+                    kvm::ARM_VCPU_INIT as libc::c_ulong,
+                    &raw const init,
+                )
+            } < 0
+            {
+                return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
+            }
+
+            let mut dev = KvmCreateDevice {
+                type_: kvm::DEV_TYPE_ARM_VGIC_V3,
+                fd: 0,
+                flags: 0,
+            };
+            // SAFETY: `vm_fd` is valid; KVM_CREATE_DEVICE fills `dev.fd`.
+            if unsafe { libc::ioctl(vm_fd, kvm::CREATE_DEVICE as libc::c_ulong, &raw mut dev) } < 0
+            {
+                return Err(err("ioctl(KVM_CREATE_DEVICE, vGICv3)"));
+            }
+            let vgic_fd = dev.fd as libc::c_int;
+            let with_vgic = || -> Result<T, SysError> {
+                let dist = kvm::GICD_BASE;
+                let redist = kvm::GICR_BASE;
+                let set_addr = |attr: u64, value: &u64| -> Result<(), SysError> {
+                    let da = KvmDeviceAttr {
+                        flags: 0,
+                        group: kvm::DEV_ARM_VGIC_GRP_ADDR,
+                        attr,
+                        addr: (value as *const u64) as u64,
+                    };
+                    // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u64 the ADDR
+                    // group reads.
+                    if unsafe {
+                        libc::ioctl(
+                            vgic_fd,
+                            kvm::SET_DEVICE_ATTR as libc::c_ulong,
+                            &raw const da,
+                        )
+                    } < 0
+                    {
+                        return Err(err("ioctl(KVM_SET_DEVICE_ATTR, vGIC addr)"));
+                    }
+                    Ok(())
+                };
+                set_addr(kvm::VGIC_V3_ADDR_TYPE_DIST, &dist)?;
+                set_addr(kvm::VGIC_V3_ADDR_TYPE_REDIST, &redist)?;
+                let ctrl = KvmDeviceAttr {
+                    flags: 0,
+                    group: kvm::DEV_ARM_VGIC_GRP_CTRL,
+                    attr: kvm::DEV_ARM_VGIC_CTRL_INIT,
+                    addr: 0,
+                };
+                // SAFETY: `vgic_fd` is valid; the CTRL/INIT attr takes no address argument.
+                if unsafe {
+                    libc::ioctl(
+                        vgic_fd,
+                        kvm::SET_DEVICE_ATTR as libc::c_ulong,
+                        &raw const ctrl,
+                    )
+                } < 0
+                {
+                    return Err(err("ioctl(KVM_DEV_ARM_VGIC_CTRL_INIT)"));
+                }
+                f(vgic_fd)
+            };
+            let out = with_vgic();
+            // SAFETY: `vgic_fd` is valid and owned here.
+            unsafe { libc::close(vgic_fd) };
+            out
+        };
+        let out = inner();
+        // SAFETY: `vcpu_fd` is valid and owned here.
+        unsafe { libc::close(vcpu_fd) };
+        out
+    };
+    let out = body();
+    // SAFETY: both descriptors are valid and owned here.
+    unsafe {
+        libc::close(vm_fd);
+        libc::close(kvm_fd);
+    }
+    out
+}
+
+/// Read the private-IRQ register bank from a vGIC in fixed order.
+#[cfg(target_os = "linux")]
+fn vgic_save_private(vgic_fd: libc::c_int) -> Result<Vec<u32>, SysError> {
+    VGIC_REDIST_PRIVATE_REGS
+        .iter()
+        .map(|&(off, _)| vgic_device_get(vgic_fd, kvm::DEV_ARM_VGIC_GRP_REDIST_REGS, off))
+        .collect()
+}
+
+/// Prove AA-6(b) vGIC injection state round-trips through save/restore.
+///
+/// Machine A enables + sets pending on PPI [`VGIC_ROUNDTRIP_INTID`] and its private-IRQ bank
+/// is saved. A fresh machine B is read (negative control: it differs), the save is restored
+/// into it, and B is read again — a bit-identical match proves save→restore fidelity.
+///
+/// # Errors
+/// [`SysError`] on any VM/vCPU/vGIC construction or device-attribute access failure.
+#[cfg(target_os = "linux")]
+pub fn vgic_roundtrip_proof() -> Result<VgicRoundtrip, SysError> {
+    let intid = VGIC_ROUNDTRIP_INTID;
+    let bit = 1u32 << intid; // PPI 20 is in the first 32-bit private-IRQ word.
+    let g = kvm::DEV_ARM_VGIC_GRP_REDIST_REGS;
+    let en = 0x1_0000 + 0x0100u64; // GICR_ISENABLER0
+    let pend = 0x1_0000 + 0x0200u64; // GICR_ISPENDR0
+
+    // Machine A: inject (enable + pending on the PPI), then save the private-IRQ bank.
+    let saved = with_vm_vcpu_vgic(|vgic_fd| {
+        let cur_en = vgic_device_get(vgic_fd, g, en)?;
+        vgic_device_set(vgic_fd, g, en, cur_en | bit)?;
+        let cur_pend = vgic_device_get(vgic_fd, g, pend)?;
+        vgic_device_set(vgic_fd, g, pend, cur_pend | bit)?;
+        vgic_save_private(vgic_fd)
+    })?;
+
+    // Machine B: read fresh, restore A's save, read again.
+    let (fresh_before, fresh_after) = with_vm_vcpu_vgic(|vgic_fd| {
+        let before = vgic_save_private(vgic_fd)?;
+        for (&(off, _), &value) in VGIC_REDIST_PRIVATE_REGS.iter().zip(saved.iter()) {
+            vgic_device_set(vgic_fd, g, off, value)?;
+        }
+        let after = vgic_save_private(vgic_fd)?;
+        Ok((before, after))
+    })?;
+
+    Ok(VgicRoundtrip {
+        injected_intid: intid,
+        labels: VGIC_REDIST_PRIVATE_REGS.iter().map(|&(_, l)| l).collect(),
+        negative_control_differs: fresh_before != saved,
+        roundtrip_identical: fresh_after == saved,
+        saved,
+        fresh_before,
+        fresh_after,
+    })
+}
+
 #[cfg(test)]
 mod churner_validation_tests {
     use super::*;

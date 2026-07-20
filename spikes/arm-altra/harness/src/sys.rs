@@ -1839,8 +1839,9 @@ pub mod machine;
 
 #[cfg(target_os = "linux")]
 pub use machine::{
-    HostIdRegisters, Machine, Mechanism, MigrationChurner, ParamsPage, PerfCounter, allowed_cores,
-    current_tid, pin_to_core, read_host_id_registers,
+    HostIdRegisters, IdFreezeProof, IdFreezeRow, Machine, Mechanism, MigrationChurner, ParamsPage,
+    PerfCounter, VgicRoundtrip, allowed_cores, current_tid, id_freeze_proof, pin_to_core,
+    read_host_id_registers, vgic_roundtrip_proof,
 };
 
 /// AA-1(a)'s host-side EL0 counter: raw `BR_RETIRED` over THIS thread's userspace

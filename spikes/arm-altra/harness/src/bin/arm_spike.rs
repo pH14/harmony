@@ -114,6 +114,20 @@ enum Command {
     Aa4GuardReject(Box<Aa4GuardRejectOpts>),
     /// Prove write-revokes-execute before modification and forces an exact rescan.
     Aa4GuardWrite(Box<Aa4GuardWriteOpts>),
+    /// AA-6(a): install a below-host synthetic ID-register model and prove the guest sees the
+    /// frozen values (Linux/box only).
+    IdFreeze {
+        /// Where to write the enforcement truth-table JSON.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// AA-6(b): prove the in-kernel vGIC's injection state round-trips through save/restore
+    /// bit-identically (Linux/box only).
+    VgicRoundtrip {
+        /// Where to write the round-trip result JSON.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 const DEFAULT_LINUX_MAX_EXITS: u64 = 5_000_000;
@@ -1323,6 +1337,135 @@ fn aa4_guard_write(_opts: Aa4GuardWriteOpts) -> Result<(), String> {
     Err("`arm-spike aa4-guard-write` issues KVM ioctls and needs /dev/kvm: it is Linux-only".into())
 }
 
+/// AA-6(a): install a below-host synthetic ID-register model on a disposable vCPU and confirm
+/// every frozen value survives read-back (the guest-visible value). Writes an enforcement
+/// truth-table and fails closed unless every reducible register froze and the PMU is denied.
+#[cfg(target_os = "linux")]
+fn id_freeze(out: PathBuf) -> Result<(), String> {
+    use std::fmt::Write as _;
+
+    let proof = sys::id_freeze_proof().map_err(|e| format!("run the ID-freeze proof: {e}"))?;
+    if proof.rows.is_empty() {
+        return Err("no ID_AA64* register carried a reducible feature to freeze".to_string());
+    }
+    let all_enforced = proof.rows.iter().all(|r| {
+        let f = (r.frozen_value >> r.field_shift) & 0xF;
+        let h = (r.host_value >> r.field_shift) & 0xF;
+        r.enforced && r.read_back == r.frozen_value && f < h
+    });
+
+    // Machine-readable enforcement truth-table (stable JSON, sorted-order fields).
+    let mut json = String::new();
+    json.push_str("{\n  \"check\": \"aa6-id-register-freeze\",\n");
+    let _ = writeln!(
+        json,
+        "  \"pmu_denied_without_feature\": {},",
+        proof.pmu_denied_without_feature
+    );
+    let _ = writeln!(json, "  \"host_pmuver\": {},", proof.host_pmuver);
+    let _ = writeln!(json, "  \"all_enforced\": {},", all_enforced);
+    json.push_str("  \"rows\": [\n");
+    for (i, r) in proof.rows.iter().enumerate() {
+        let comma = if i + 1 < proof.rows.len() { "," } else { "" };
+        let _ = writeln!(
+            json,
+            "    {{\"name\": \"{}\", \"field_shift\": {}, \"host_value\": \"{:#018x}\", \
+             \"frozen_value\": \"{:#018x}\", \"read_back\": \"{:#018x}\", \"enforced\": {}}}{}",
+            r.name, r.field_shift, r.host_value, r.frozen_value, r.read_back, r.enforced, comma
+        );
+    }
+    json.push_str("  ]\n}\n");
+    std::fs::write(&out, &json).map_err(|e| format!("write {}: {e}", out.display()))?;
+
+    for r in &proof.rows {
+        println!(
+            "ID_FREEZE {} field_shift={} host={:#018x} frozen={:#018x} read_back={:#018x} enforced={}",
+            r.name, r.field_shift, r.host_value, r.frozen_value, r.read_back, r.enforced
+        );
+    }
+    println!(
+        "ID_FREEZE pmu_denied_without_feature={} host_pmuver={} rows={} all_enforced={} out={}",
+        proof.pmu_denied_without_feature,
+        proof.host_pmuver,
+        proof.rows.len(),
+        all_enforced,
+        out.display()
+    );
+    if all_enforced && proof.pmu_denied_without_feature {
+        Ok(())
+    } else {
+        Err(format!(
+            "ID-register freeze NOT fully enforced: all_enforced={} pmu_denied={} — the guest \
+             would see an unfrozen field or its own PMU",
+            all_enforced, proof.pmu_denied_without_feature
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn id_freeze(_out: PathBuf) -> Result<(), String> {
+    Err("`arm-spike id-freeze` issues KVM ioctls and needs /dev/kvm: it is Linux-only".into())
+}
+
+/// AA-6(b): prove the in-kernel vGIC's injection state round-trips through save/restore
+/// bit-identically, with a fresh-vGIC negative control.
+#[cfg(target_os = "linux")]
+fn vgic_roundtrip(out: PathBuf) -> Result<(), String> {
+    use std::fmt::Write as _;
+
+    let rt = sys::vgic_roundtrip_proof().map_err(|e| format!("run the vGIC round-trip: {e}"))?;
+
+    let mut json = String::new();
+    json.push_str("{\n  \"check\": \"aa6-vgic-save-restore-roundtrip\",\n");
+    let _ = writeln!(json, "  \"injected_intid\": {},", rt.injected_intid);
+    let _ = writeln!(
+        json,
+        "  \"negative_control_differs\": {},",
+        rt.negative_control_differs
+    );
+    let _ = writeln!(
+        json,
+        "  \"roundtrip_identical\": {},",
+        rt.roundtrip_identical
+    );
+    json.push_str("  \"registers\": [\n");
+    for (i, label) in rt.labels.iter().enumerate() {
+        let comma = if i + 1 < rt.labels.len() { "," } else { "" };
+        let _ = writeln!(
+            json,
+            "    {{\"reg\": \"{}\", \"saved\": \"{:#010x}\", \"fresh_before\": \"{:#010x}\", \
+             \"fresh_after\": \"{:#010x}\"}}{}",
+            label, rt.saved[i], rt.fresh_before[i], rt.fresh_after[i], comma
+        );
+    }
+    json.push_str("  ]\n}\n");
+    std::fs::write(&out, &json).map_err(|e| format!("write {}: {e}", out.display()))?;
+
+    println!(
+        "VGIC_ROUNDTRIP injected_intid={} negative_control_differs={} roundtrip_identical={} \
+         registers={} out={}",
+        rt.injected_intid,
+        rt.negative_control_differs,
+        rt.roundtrip_identical,
+        rt.labels.len(),
+        out.display()
+    );
+    if rt.roundtrip_identical && rt.negative_control_differs {
+        Ok(())
+    } else {
+        Err(format!(
+            "vGIC round-trip NOT proven: roundtrip_identical={} negative_control_differs={} — a \
+             non-identical restore or a vacuous match (fresh already equalled the save)",
+            rt.roundtrip_identical, rt.negative_control_differs
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn vgic_roundtrip(_out: PathBuf) -> Result<(), String> {
+    Err("`arm-spike vgic-roundtrip` issues KVM ioctls and needs /dev/kvm: it is Linux-only".into())
+}
+
 /// Read, hash, and parse the ELF for `payload` out of `dir`, and **verify it against
 /// its trusted expected pin** before returning it.
 ///
@@ -1918,6 +2061,8 @@ fn run() -> Result<(), String> {
         Command::LinuxBoot(opts) => linux_boot(*opts),
         Command::Aa4GuardReject(opts) => aa4_guard_reject(*opts),
         Command::Aa4GuardWrite(opts) => aa4_guard_write(*opts),
+        Command::IdFreeze { out } => id_freeze(out),
+        Command::VgicRoundtrip { out } => vgic_roundtrip(out),
     }
 }
 
