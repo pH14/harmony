@@ -943,6 +943,14 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
         .state_digest()
         .map_err(|e| format!("digest final machine state: {e}"))?;
 
+    // Diagnostic (env-gated, off by default): when the same-seed gate flags a RAM-only
+    // divergence, `AA5_DUMP_RAM=<path>` writes the final guest RAM so two runs' dumps can
+    // be byte-diffed and mapped through System.map to the diverging kernel object.
+    if let Some(path) = std::env::var_os("AA5_DUMP_RAM") {
+        std::fs::write(&path, machine.guest_ram_bytes())
+            .map_err(|e| format!("write {}: {e}", std::path::Path::new(&path).display()))?;
+    }
+
     let mut transcript = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)

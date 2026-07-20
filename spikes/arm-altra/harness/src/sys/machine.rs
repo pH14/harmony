@@ -2020,6 +2020,16 @@ impl Machine {
         Ok(levels & HARMONY_CLOCKEVENT_LINE_MASK != 0)
     }
 
+    /// Borrow the guest RAM mapping between exits (diagnostic surface for the AA-5
+    /// RAM-divergence dump; the vCPU must be stopped).
+    #[must_use]
+    pub fn guest_ram_bytes(&self) -> &[u8] {
+        // SAFETY: `self.mem` is a live mapping of `self.mem_size` bytes and the vCPU is
+        // stopped between exits, so nothing else writes it; the borrow is the portable,
+        // Miri-exercised `super::guest_ram`.
+        unsafe { super::guest_ram(self.mem, self.mem_size) }
+    }
+
     /// Read the guest-visible constant generic-counter frequency (`CNTFRQ_EL0`).
     ///
     /// The AA-5 page carries this exact value and the owned kernel fails closed on a mismatch;
