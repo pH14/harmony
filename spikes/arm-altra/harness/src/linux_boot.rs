@@ -48,6 +48,16 @@ const UART_BASE: u64 = 0x0900_0000;
 const UART_SIZE: u64 = 0x1000;
 const UART_SPI: u32 = 1;
 
+/// Fixed 64-byte deterministic CRNG seed advertised in `/chosen/rng-seed`. Full
+/// entropy is credited under `CONFIG_RANDOM_TRUST_BOOTLOADER`, so the guest's CRNG
+/// initializes from this exact value rather than the wall-clock jitter harvester.
+const RNG_SEED: [u8; 64] = [
+    0x48, 0x61, 0x72, 0x6d, 0x6f, 0x6e, 0x79, 0x2d, 0x41, 0x41, 0x35, 0x2d, 0x72, 0x6e, 0x67, 0x2d,
+    0x73, 0x65, 0x65, 0x64, 0x2d, 0x76, 0x31, 0x2d, 0x64, 0x65, 0x74, 0x65, 0x72, 0x6d, 0x69, 0x6e,
+    0x69, 0x73, 0x74, 0x69, 0x63, 0x2d, 0x66, 0x69, 0x78, 0x65, 0x64, 0x2d, 0x62, 0x79, 0x2d, 0x63,
+    0x6f, 0x6e, 0x73, 0x74, 0x72, 0x75, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x2d, 0x30, 0x30, 0x30, 0x31,
+];
+
 /// Fixed board addresses, factored so small unit-test RAM can exercise layout.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct BoardLayout {
@@ -526,6 +536,16 @@ fn build_dtb(
     f.string("bootargs", bootargs);
     f.u64("linux,initrd-start", initramfs_start);
     f.u64("linux,initrd-end", initramfs_end);
+    // Deterministic CRNG seed. Without a credited bootloader seed the guest runs
+    // `try_to_generate_entropy()`, a timing-jitter harvester driven by the
+    // wall-clock-backed hrtimer (NOT the work clock) — its iteration count varies
+    // run-to-run and injects live entropy into the kernel CRNG, breaking same-seed
+    // state identity even though the counter is fully page-routed (AA-5, 2026-07-20
+    // live finding). With CONFIG_RANDOM_TRUST_BOOTLOADER, a fixed `rng-seed` is
+    // credited as full entropy, so `crng_ready()` holds before `wait_for_random_bytes`
+    // and the jitter loop never runs. The value is fixed by construction: reproducing
+    // the seed is the point, not concealing it.
+    f.prop("rng-seed", &RNG_SEED);
     f.end();
 
     f.begin("psci");
@@ -852,6 +872,8 @@ mod tests {
             prop("chosen", "bootargs"),
             b"console=ttyAMA0 rdinit=/init nohlt\0"
         );
+        // The deterministic CRNG seed is advertised, fixed, and full-length.
+        assert_eq!(prop("chosen", "rng-seed"), RNG_SEED);
         assert_eq!(prop("psci", "compatible"), b"arm,psci-0.2\0");
         assert_eq!(prop("psci", "method"), b"hvc\0");
         assert_eq!(prop("intc@8000000", "compatible"), b"arm,gic-v3\0");
