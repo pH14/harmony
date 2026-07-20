@@ -114,6 +114,9 @@ enum Command {
     Aa4GuardReject(Box<Aa4GuardRejectOpts>),
     /// Prove write-revokes-execute before modification and forces an exact rescan.
     Aa4GuardWrite(Box<Aa4GuardWriteOpts>),
+    /// AA-4 concurrency: prove a memslot update's mmu-notifier invalidation forces the guard
+    /// to re-scan an already-approved page (Linux/box only).
+    Aa4GuardNotifier(Box<Aa4GuardNotifierOpts>),
     /// AA-6(a): install a below-host synthetic ID-register model and prove the guest sees the
     /// frozen values (Linux/box only).
     IdFreeze {
@@ -204,6 +207,26 @@ struct Aa4GuardRejectOpts {
 #[derive(clap::Args, Debug)]
 struct Aa4GuardWriteOpts {
     /// Bare `aa4-self-modify` ELF built from this tree.
+    #[arg(long)]
+    image: PathBuf,
+    /// Trusted sha256 pin for `--image` (optional `sha256:` prefix).
+    #[arg(long)]
+    image_sha256: String,
+    /// Isolated host core on which to run the vCPU thread.
+    #[arg(long)]
+    core: u32,
+    /// Maximum caller-visible KVM exits before the proof is refused.
+    #[arg(long, default_value_t = 1_000_000)]
+    max_exits: u64,
+    /// Per-KVM_RUN watchdog seconds; 0 disables it.
+    #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
+    watchdog_secs: u64,
+}
+
+/// `arm-spike aa4-guard-notifier`'s inputs.
+#[derive(clap::Args, Debug)]
+struct Aa4GuardNotifierOpts {
+    /// Bare `aa4-reexec` ELF built from this tree.
     #[arg(long)]
     image: PathBuf,
     /// Trusted sha256 pin for `--image` (optional `sha256:` prefix).
@@ -1354,6 +1377,172 @@ fn aa4_guard_write(_opts: Aa4GuardWriteOpts) -> Result<(), String> {
     Err("`arm-spike aa4-guard-write` issues KVM ioctls and needs /dev/kvm: it is Linux-only".into())
 }
 
+/// Run the `aa4-reexec` payload to completion under the guard. When `do_notifier`, replace the
+/// memslot at the first-execute marker. Returns `(guard_scans, first_scan_gen, last_scan_gen)`.
+#[cfg(target_os = "linux")]
+fn aa4_run_reexec(
+    image: &arm_harness::elf::Elf,
+    target: u64,
+    watchdog_secs: u64,
+    max_exits: u64,
+    do_notifier: bool,
+) -> Result<(u64, u64, u64), String> {
+    use arm_harness::console::{Console, Event};
+    use arm_harness::run::{PL011_DR, PL011_FR, PL011_FR_READY, Vcpu, VcpuExit};
+    use arm_harness::sys::{Machine, ParamsPage};
+
+    let params = ParamsPage {
+        scale_index: 0,
+        seed: 0xAA04_4E4F_5449_4659,
+    };
+    let mut machine = Machine::new_guarded(image, &params)
+        .map_err(|e| format!("construct guarded machine: {e}"))?;
+    machine
+        .audit_exec_guard_page(target)
+        .map_err(|e| format!("configure target-page audit: {e}"))?;
+    machine.set_watchdog_secs(watchdog_secs);
+
+    let mut console = Console::new();
+    let mut replaced = false;
+    let mut saw_first = false;
+    let mut saw_second = false;
+    let mut passed = false;
+    for exits in 1..=max_exits {
+        let exit = Vcpu::run(&mut machine).map_err(|e| format!("run aa4-reexec: {e}"))?;
+        let guard_exits = machine.exec_guard_stats().map_or(0, |s| s.exits);
+        if exits.saturating_add(guard_exits) > max_exits {
+            return Err(format!(
+                "guard exits ({guard_exits}) + caller exits exceeded max"
+            ));
+        }
+        match exit {
+            VcpuExit::Mmio {
+                addr,
+                data,
+                is_write,
+            } => {
+                if !is_write {
+                    if addr == PL011_FR {
+                        let ready = PL011_FR_READY.to_le_bytes();
+                        machine
+                            .complete_mmio_read(&ready[..data.len().min(ready.len())])
+                            .map_err(|e| format!("complete PL011 read: {e}"))?;
+                    }
+                    continue;
+                }
+                if addr != PL011_DR {
+                    continue;
+                }
+                let byte = *data
+                    .first()
+                    .ok_or_else(|| "zero-width PL011 write".to_string())?;
+                match console.push(byte) {
+                    Some(Event::Line(line)) if line == "OK reexec-first" => {
+                        saw_first = true;
+                        // The target's first execute has scanned+approved it. Interpose the
+                        // memslot update here, before the second execute.
+                        if do_notifier && !replaced {
+                            machine
+                                .notifier_replace_slot0()
+                                .map_err(|e| format!("notifier-replace slot 0: {e}"))?;
+                            replaced = true;
+                        }
+                    }
+                    Some(Event::Line(line)) if line == "OK reexec-second" => saw_second = true,
+                    Some(Event::Line(_)) | None => {}
+                    Some(Event::Exit(status)) => {
+                        if status != 0 {
+                            return Err(format!("aa4-reexec exited nonzero: {status}"));
+                        }
+                        passed = true;
+                        break;
+                    }
+                    Some(Event::MarkBegin | Event::MarkEnd) => {
+                        return Err("aa4-reexec emitted an oracle window marker".into());
+                    }
+                }
+            }
+            VcpuExit::MalformedMmio { addr, width } => {
+                return Err(format!("malformed MMIO at {addr:#x} width {width}"));
+            }
+            other => return Err(format!("aa4-reexec unexpected exit {other:?}")),
+        }
+    }
+    if !(saw_first && saw_second && passed) {
+        return Err(format!(
+            "aa4-reexec did not complete: first={saw_first} second={saw_second} pass={passed}"
+        ));
+    }
+    // Target-page-specific scan count (NOT total scans: a memslot replace re-scans every
+    // executable page, so only the audited target isolates the notifier's effect on it).
+    let audit = machine
+        .exec_guard_page_audit()
+        .ok_or_else(|| "no execute-guard page audit".to_string())?;
+    Ok((
+        audit.exec_scans,
+        audit.first_exec_generation,
+        machine.exec_guard_last_scan_generation(),
+    ))
+}
+
+/// AA-4 concurrency: a memslot update's mmu-notifier invalidation must force the guard to
+/// re-scan an already-approved page. Self-verifying via a negative control: the same payload
+/// run WITHOUT the memslot update reuses the approval (one scan), so a second scan in the
+/// notifier run is attributable only to the invalidation.
+#[cfg(target_os = "linux")]
+fn aa4_guard_notifier(opts: Aa4GuardNotifierOpts) -> Result<(), String> {
+    use arm_harness::elf::Elf;
+    use arm_harness::sys::pin_to_core;
+
+    let (bytes, image_sha256) = verified_artifact(
+        &opts.image,
+        &opts.image_sha256,
+        "AA-4 reexec ELF",
+        arm_harness::linux_boot::MAX_IMAGE_BYTES,
+    )?;
+    let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", opts.image.display()))?;
+    let target = image
+        .symbol("aa4_reexec_target")
+        .map_err(|e| format!("resolve aa4_reexec_target: {e}"))?;
+    pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
+
+    // Negative control first: no memslot update — the second execute must reuse the approval.
+    let (ctrl_scans, ctrl_first_gen, ctrl_last_gen) =
+        aa4_run_reexec(&image, target, opts.watchdog_secs, opts.max_exits, false)?;
+    // Notifier run: replace the memslot at the marker — the second execute must re-scan.
+    let (notif_scans, notif_first_gen, notif_last_gen) =
+        aa4_run_reexec(&image, target, opts.watchdog_secs, opts.max_exits, true)?;
+
+    let control_reused = ctrl_scans == 1;
+    let notifier_rescanned = notif_scans == 2 && notif_last_gen > notif_first_gen;
+    println!(
+        "AA4_GUARD_NOTIFIER image_sha256={image_sha256} \
+         control_scans={ctrl_scans} control_first_gen={ctrl_first_gen} control_last_gen={ctrl_last_gen} \
+         notifier_scans={notif_scans} notifier_first_gen={notif_first_gen} notifier_last_gen={notif_last_gen} \
+         control_reused_approval={control_reused} notifier_forced_rescan={notifier_rescanned}"
+    );
+    if control_reused && notifier_rescanned {
+        println!(
+            "AA4_GUARD_NOTIFIER PASS: a memslot update forced a fresh scan (gen {notif_first_gen} -> \
+             {notif_last_gen}) where the unchanged page otherwise reused its approval"
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "notifier-replacement NOT proven: control_reused={control_reused} (want 1 scan) \
+             notifier_rescanned={notifier_rescanned} (want 2 scans, newer gen)"
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn aa4_guard_notifier(_opts: Aa4GuardNotifierOpts) -> Result<(), String> {
+    Err(
+        "`arm-spike aa4-guard-notifier` issues KVM ioctls and needs /dev/kvm: it is Linux-only"
+            .into(),
+    )
+}
+
 /// AA-6(a): install a below-host synthetic ID-register model on a disposable vCPU and confirm
 /// every frozen value survives read-back (the guest-visible value). Writes an enforcement
 /// truth-table and fails closed unless every reducible register froze and the PMU is denied.
@@ -2078,6 +2267,7 @@ fn run() -> Result<(), String> {
         Command::LinuxBoot(opts) => linux_boot(*opts),
         Command::Aa4GuardReject(opts) => aa4_guard_reject(*opts),
         Command::Aa4GuardWrite(opts) => aa4_guard_write(*opts),
+        Command::Aa4GuardNotifier(opts) => aa4_guard_notifier(*opts),
         Command::IdFreeze { out } => id_freeze(out),
         Command::VgicRoundtrip { out } => vgic_roundtrip(out),
     }

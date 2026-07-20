@@ -602,6 +602,10 @@ pub struct Machine {
     exec_guard_page_audit: Option<ExecGuardPageAudit>,
     /// Proof-only target on whose post-write scan one superseded generation is replayed.
     exec_guard_stale_probe_gpa: Option<u64>,
+    /// The generation of the most recent execute-scan the guard serviced (0 before any).
+    /// Used by the notifier-replacement proof to show a memslot update forced a fresh scan
+    /// at a strictly newer generation.
+    exec_guard_last_scan_generation: u64,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables it. See
     /// [`DEFAULT_WATCHDOG_SECS`].
     watchdog_secs: u64,
@@ -723,6 +727,7 @@ impl Machine {
             exec_guard: exec_guard.then_some(ExecGuardStats::default()),
             exec_guard_page_audit: None,
             exec_guard_stale_probe_gpa: None,
+            exec_guard_last_scan_generation: 0,
             watchdog_secs: DEFAULT_WATCHDOG_SECS,
         };
         m.build(boot)?;
@@ -1178,6 +1183,67 @@ impl Machine {
         self.exec_guard_page_audit
     }
 
+    /// The generation of the most recent execute-scan the guard serviced (0 before any).
+    #[must_use]
+    pub fn exec_guard_last_scan_generation(&self) -> u64 {
+        self.exec_guard_last_scan_generation
+    }
+
+    /// Re-establish RAM slot 0 (same GPA, size, and anonymous backing) to fire KVM's mmu
+    /// notifier — the invalidation a live memslot update causes — clearing the guard's
+    /// stage-2 execute approvals. Guest RAM survives (the backing mapping is untouched); only
+    /// the KVM slot and its approvals are torn down and rebuilt, so the next execute of an
+    /// already-approved page must re-scan at a fresh generation.
+    ///
+    /// # Errors
+    /// [`SysError`] if either the delete or the re-add ioctl fails, or on an unguarded VM.
+    pub fn notifier_replace_slot0(&mut self) -> Result<(), SysError> {
+        if self.exec_guard.is_none() {
+            return Err(SysError::Protocol(
+                "notifier-replacement needs the stage-2 execute guard".into(),
+            ));
+        }
+        let memory_size = self.mem_size as u64;
+        // Delete slot 0 (memory_size 0), then re-add it with the identical backing.
+        let delete = KvmUserspaceMemoryRegion {
+            slot: 0,
+            flags: 0,
+            guest_phys_addr: RAM_BASE,
+            memory_size: 0,
+            userspace_addr: self.mem as u64,
+        };
+        // SAFETY: `vm_fd` is valid; `delete` is a fully initialised memory-region struct.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::SET_USER_MEMORY_REGION as libc::c_ulong,
+                &raw const delete,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_SET_USER_MEMORY_REGION delete)"));
+        }
+        let add = KvmUserspaceMemoryRegion {
+            slot: 0,
+            flags: 0,
+            guest_phys_addr: RAM_BASE,
+            memory_size,
+            userspace_addr: self.mem as u64,
+        };
+        // SAFETY: `vm_fd` is valid; `add` reinstates the identical mapping.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::SET_USER_MEMORY_REGION as libc::c_ulong,
+                &raw const add,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_SET_USER_MEMORY_REGION re-add)"));
+        }
+        Ok(())
+    }
+
     fn exec_guard_reply_generation(
         &self,
         gpa: u64,
@@ -1246,6 +1312,7 @@ impl Machine {
 
         if is_exec {
             stats.scans = stats.scans.saturating_add(1);
+            self.exec_guard_last_scan_generation = exit.generation;
             // SAFETY: the vCPU is stopped at the synchronous exit and this machine owns the
             // entire live mapping. The bounded page helper rejects every out-of-slot GPA.
             let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };

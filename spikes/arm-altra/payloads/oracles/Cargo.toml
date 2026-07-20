@@ -52,3 +52,7 @@ path = "src/bin/clock_page.rs"
 [[bin]]
 name = "aa4-self-modify"
 path = "src/bin/aa4_self_modify.rs"
+
+[[bin]]
+name = "aa4-reexec"
+path = "src/bin/aa4_reexec.rs"
