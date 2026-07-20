@@ -16,7 +16,6 @@ core::arch::global_asm!(include_str!("../asm/aa4_reexec.s"));
 
 unsafe extern "C" {
     fn aa4_reexec_target() -> u64;
-    static aa4_reexec_target: u8;
 }
 
 const NAME: &str = "aa4-reexec";
@@ -24,7 +23,9 @@ const NAME: &str = "aa4-reexec";
 #[unsafe(no_mangle)]
 extern "C" fn payload_main() -> ! {
     payload::start(NAME);
-    let target = &raw const aa4_reexec_target as u64;
+    // The harness resolves the target page from the ELF `aa4_reexec_target` symbol; this
+    // print is a diagnostic derived from the same function's address.
+    let target = aa4_reexec_target as usize as u64;
     println!("AA4 target={target:#x}");
 
     // SAFETY: the target is a self-contained `mov x0, #1; ret` on its own page.
