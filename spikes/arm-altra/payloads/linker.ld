@@ -27,7 +27,14 @@ SECTIONS
         *(.text .text.*)
     }
 
-    .rodata : ALIGN(8) {
+    /* Page-align rodata so no executable page carries data words. The AA-4
+     * stage-2 execute guard scans whole executable PAGES (it sees pages, not ELF
+     * sections); a rodata word sharing the text tail's page can match an
+     * exclusive/counter encoding and be rejected as a hazard even though the ELF
+     * executable sections are clean (observed on N1 2026-07-20 with aa4-self-modify).
+     * Separating code and data onto distinct pages is the W^X layout the guard
+     * requires and mirrors the deterministic guest kernel's STRICT_KERNEL_RWX. */
+    .rodata : ALIGN(4096) {
         *(.rodata .rodata.*)
     }
 
