@@ -1,0 +1,2 @@
+wrote 6000 of 6000 attempted records to /home/ubuntu/harmony/spikes/arm-altra/results/aa-6/live-20260720/aa6-minigate-001
+NOTE: this harness's verdict is not a disposition. Run `floor-check /home/ubuntu/harmony/spikes/arm-altra/results/aa-6/live-20260720/aa6-minigate-001` with the stage's floors; the checker's output is the evidence.
