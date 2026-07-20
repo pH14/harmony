@@ -1410,7 +1410,10 @@ fn execute(args: RunArgs) -> Result<(), String> {
                  cross-core-migration failure mode"
             ));
         }
-        Some(sys::MigrationChurner::start(sys::current_tid(), cores))
+        Some(
+            sys::MigrationChurner::start(sys::current_tid(), cores)
+                .map_err(|e| format!("start the migration churner: {e}"))?,
+        )
     } else {
         pin_to_core(args.core).map_err(|e| format!("pin to core {}: {e}", args.core))?;
         None

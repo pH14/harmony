@@ -402,10 +402,27 @@ pub struct MigrationChurner {
 }
 
 impl MigrationChurner {
-    /// Start churning `tid`'s affinity across `cores` (which must be non-empty and in range,
-    /// as [`allowed_cores`] guarantees) until dropped or [`MigrationChurner::stop`]ped.
-    #[must_use]
-    pub fn start(tid: libc::pid_t, cores: Vec<u32>) -> MigrationChurner {
+    /// Start churning `tid`'s affinity across `cores` until dropped or
+    /// [`MigrationChurner::stop`]ped.
+    ///
+    /// # Errors
+    /// [`SysError::Protocol`] on an empty core list (the modulo below would panic) or any
+    /// core at/past `CPU_SETSIZE` (libc's `CPU_SET` panics rather than erroring). Callers
+    /// normally pass [`allowed_cores`] output, but library code must not panic on a caller
+    /// contract violation.
+    pub fn start(tid: libc::pid_t, cores: Vec<u32>) -> Result<MigrationChurner, SysError> {
+        if cores.is_empty() {
+            return Err(SysError::Protocol(
+                "migration churner needs a non-empty core list".to_owned(),
+            ));
+        }
+        let cpu_setsize = core::mem::size_of::<libc::cpu_set_t>() * 8;
+        if let Some(bad) = cores.iter().find(|&&c| (c as usize) >= cpu_setsize) {
+            return Err(SysError::Protocol(format!(
+                "churner core {bad} is at or past CPU_SETSIZE ({cpu_setsize}): out of range \
+                 for an affinity mask"
+            )));
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let moves = Arc::new(AtomicU64::new(0));
         let (stop_t, moves_t) = (Arc::clone(&stop), Arc::clone(&moves));
@@ -450,11 +467,11 @@ impl MigrationChurner {
                 std::thread::sleep(std::time::Duration::from_micros(200));
             }
         });
-        MigrationChurner {
+        Ok(MigrationChurner {
             stop,
             moves,
             handle: Some(handle),
-        }
+        })
     }
 
     /// How many affinity moves the churner has successfully issued so far.
@@ -3082,4 +3099,21 @@ fn read_host_id_registers_on_vcpu(
         id_aa64pfr0: read(kvm::REG_ID_AA64PFR0_EL1, "GET_ONE_REG(ID_AA64PFR0_EL1)")?,
         pmu_v3_enabled,
     })
+}
+
+#[cfg(test)]
+mod churner_validation_tests {
+    use super::*;
+
+    #[test]
+    fn churner_refuses_an_empty_core_list() {
+        assert!(MigrationChurner::start(current_tid(), Vec::new()).is_err());
+    }
+
+    #[test]
+    fn churner_refuses_an_out_of_range_core() {
+        let cpu_setsize = core::mem::size_of::<libc::cpu_set_t>() * 8;
+        let cores = vec![0, u32::try_from(cpu_setsize).expect("CPU_SETSIZE fits u32")];
+        assert!(MigrationChurner::start(current_tid(), cores).is_err());
+    }
 }
