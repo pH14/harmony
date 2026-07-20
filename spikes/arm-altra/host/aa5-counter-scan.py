@@ -84,6 +84,13 @@ def scan(path: str):
         addr, raw, asm = m.group(1), m.group(2), m.group(3).strip()
         word = int(raw, 16)
         low = asm.lower()
+        if low.startswith((".word", ".inst")):
+            # Mapping-symbol data that this objdump renders word-wise (binutils 2.42 prints
+            # one 8-hex-digit token; older versions print bytes and never reach here). There
+            # is no mnemonic to cross-check; the raw executable-word walk below remains the
+            # authority that rejects a counter/timer opcode hidden as data.
+            decoded[int(addr, 16)] = (word, asm)
+            continue
         counter = decode_counter_read(word)
         timer = decode_timer_program(word)
         mnem_counter = low.startswith("mrs") and bool(

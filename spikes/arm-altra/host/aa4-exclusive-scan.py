@@ -159,6 +159,12 @@ def disassembly_cross_check(path: str):
         # 32-bit value), so int(raw,16) is the instruction word directly.
         word = int(raw, 16)
         mnem = asm.split()[0].lower() if asm else ""
+        if mnem in (".word", ".inst"):
+            # Mapping-symbol data that this objdump renders word-wise (binutils 2.42) rather
+            # than byte-wise. No mnemonic exists to check; the ELF-byte walk stays the
+            # authority that rejects an exclusive hidden as data.
+            decoded[int(addr, 16)] = (word, asm)
+            continue
         # An exclusive-monitor mnemonic per objdump: starts with ldxr/stxr/ldaxr/stlxr/ldxp/stxp..
         mnem_is_excl = bool(re.match(r"(ld(a)?xr[bh]?|st(l)?xr[bh]?|ld(a)?xp|st(l)?xp)$", mnem))
         if is_llsc_exclusive(word) != mnem_is_excl:
