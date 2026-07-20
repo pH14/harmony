@@ -2023,9 +2023,31 @@ impl Machine {
     /// Read the guest-visible constant generic-counter frequency (`CNTFRQ_EL0`).
     ///
     /// The AA-5 page carries this exact value and the owned kernel fails closed on a mismatch;
-    /// no host-frequency guess or DT constant is accepted.
+    /// no host-frequency guess or DT constant is accepted. KVM exposes no `CNTFRQ_EL0`
+    /// one-reg (verified against the pinned 6.18.35 sysreg table on-box, 2026-07-20 — a
+    /// `KVM_GET_ONE_REG` of encoding (3,3,14,0,0) is ENOENT on 6.8 and 6.18 alike): the
+    /// guest observes the host's own frequency, which EL0 reads directly.
     pub fn linux_cntfrq_hz(&self) -> Result<u64, SysError> {
-        self.get_one_reg_u64(kvm::arm64_sysreg(3, 3, 14, 0, 0))
+        #[cfg(target_arch = "aarch64")]
+        {
+            let hz: u64;
+            // SAFETY: CNTFRQ_EL0 is architecturally EL0-readable (Linux leaves EL0 counter
+            // access enabled on the host); the read has no side effects.
+            unsafe { core::arch::asm!("mrs {hz}, cntfrq_el0", hz = out(reg) hz) };
+            if hz == 0 {
+                return Err(SysError::Protocol(
+                    "host CNTFRQ_EL0 reads 0 — no usable guest counter frequency".to_owned(),
+                ));
+            }
+            Ok(hz)
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            Err(SysError::Protocol(
+                "guest CNTFRQ_EL0 is the host counter frequency, readable only on aarch64"
+                    .to_owned(),
+            ))
+        }
     }
 
     /// Read every architectural register (`KVM_GET_REG_LIST` + `KVM_GET_ONE_REG`, in
