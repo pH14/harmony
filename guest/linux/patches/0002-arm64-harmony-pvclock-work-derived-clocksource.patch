@@ -302,3 +302,15 @@ Harmony repository's designated guest-kernel patch exception.
  
  	has_names = of_property_present(np, "interrupt-names");
  
+diff --git a/arch/arm64/kernel/process.c b/arch/arm64/kernel/process.c
+--- a/arch/arm64/kernel/process.c
++++ b/arch/arm64/kernel/process.c
+@@ -662,6 +662,7 @@ static void update_cntkctl_el1(struct task_struct *next)
+ 	struct thread_info *ti = task_thread_info(next);
+ 
+-	if (test_ti_thread_flag(ti, TIF_TSC_SIGSEGV) ||
++	if (IS_ENABLED(CONFIG_HARMONY_ARM_PVCLOCK) ||
++	    test_ti_thread_flag(ti, TIF_TSC_SIGSEGV) ||
+ 	    has_erratum_handler(read_cntvct_el0) ||
+ 	    (IS_ENABLED(CONFIG_ARM64_ERRATUM_1418040) &&
+ 	     this_cpu_has_cap(ARM64_WORKAROUND_1418040) &&
