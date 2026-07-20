@@ -38,21 +38,24 @@ New **additive** subcommands (own VM/vCPU/vGIC; no run-loop/W^X touch), both **P
 - **F3-GUARD-BUDGET** — guard exits charged to the guard-write `--max-exits` budget
   (caller-side; write proof re-run PASS, no regression).
 
-## Still needing dedicated builds (post-window unless the window allows)
+## AA-4 concurrency — landed
 
-Each needs new machinery beyond a self-contained command — a dedicated payload flow plus new
-`service_exec_guard` generation-tracking branches (concurrency) or a Linux-guest
-injection-record path (AA-6 matrix). The #135 substrate is cleared, so these are unblocked,
-but each is a multi-hour build:
+- **`aa4-guard-notifier`** — notifier-replacement gate, **PASS** on N1. A memslot update's
+  mmu-notifier invalidation forces the guard to re-scan an already-approved page (target gen
+  4→7) where the unchanged page otherwise reused its approval (self-verifying negative
+  control). New `aa4-reexec` payload + a `notifier_replace_slot0` Machine method; core run
+  loop and W^X service path untouched. (`results/aa-4/live-20260720/notifier.out`.)
 
+## Still needing dedicated builds
+
+- **AA-4 backing-replacement** — a close variant of the notifier gate (move slot 0 to a
+  distinct but byte-identical backing; the guard must re-scan even though content is
+  unchanged), reusing the `aa4-reexec` machinery.
 - **AA-6 full injection matrix** — needs a `LinuxGuest` armed+delivered run-set record
   (injecting into the running guest and emitting a record); the bare-payload mini-gate is
-  already DEMONSTRATED above.
-- **AA-4 backing-replacement** live command — predicate committed (`sys.rs`); needs a
-  3-execute payload flow (exec→replace→exec→write→exec) + a `replace_exec_guard_backing`
-  method wired into the guard audit.
-- **AA-4 notifier-replacement** and **two-vCPU scan/write race** — memslot-invalidation
-  interposition; the latter also needs a 2-vCPU guarded machine (harness is single-vCPU).
+  already DEMONSTRATED above. Touches the run/boot path.
+- **AA-4 two-vCPU scan/write race** — needs a 2-vCPU guarded machine (the harness is
+  single-vCPU throughout).
 
 ## Host kernels built this window (`host/build-window-hosts.sh`)
 
