@@ -288,6 +288,24 @@ fn err(call: &'static str) -> SysError {
     }
 }
 
+fn map_guest_ram(len: usize) -> Result<*mut u8, SysError> {
+    // SAFETY: a fresh anonymous private mapping; `len` is a VMM-owned board constant.
+    let mem = unsafe {
+        libc::mmap(
+            core::ptr::null_mut(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+            -1,
+            0,
+        )
+    };
+    if mem == libc::MAP_FAILED {
+        return Err(err("mmap(guest RAM)"));
+    }
+    Ok(mem.cast::<u8>())
+}
+
 /// Adapt a seam failure into the run loop's error type. The loop never turns a
 /// failed syscall into a record with a plausible zero in it.
 fn seam(context: &'static str, e: SysError) -> RunError {
@@ -775,22 +793,7 @@ impl Machine {
         let ram_size = boot.ram_size();
 
         // Guest RAM: one anonymous mapping, one memory slot.
-        // SAFETY: a fresh anonymous private mapping; no pointer is derived from
-        // untrusted data and the length is our own constant.
-        let mem = unsafe {
-            libc::mmap(
-                core::ptr::null_mut(),
-                ram_size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
-                -1,
-                0,
-            )
-        };
-        if mem == libc::MAP_FAILED {
-            return Err(err("mmap(guest RAM)"));
-        }
-        self.mem = mem.cast::<u8>();
+        self.mem = map_guest_ram(ram_size)?;
         self.mem_size = ram_size;
 
         let memory_size = u64::try_from(ram_size)
@@ -1115,6 +1118,11 @@ impl Machine {
             pre_write_sha256: [0; 32],
             post_write_exec_generation: 0,
             post_write_exec_sha256: [0; 32],
+            backing_replacements: 0,
+            pre_replace_sha256: [0; 32],
+            replacement_sha256: [0; 32],
+            post_replace_exec_generation: 0,
+            post_replace_exec_sha256: [0; 32],
             stale_reply_attempts: 0,
             stale_reply_generation: 0,
             stale_reply_errno: 0,

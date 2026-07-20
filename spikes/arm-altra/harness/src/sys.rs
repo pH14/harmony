@@ -605,6 +605,16 @@ pub struct ExecGuardPageAudit {
     pub post_write_exec_generation: u64,
     /// Page hash at that post-write execute scan.
     pub post_write_exec_sha256: [u8; 32],
+    /// Successful slot-0 moves to a distinct anonymous userspace backing.
+    pub backing_replacements: u64,
+    /// Target-page hash in the approved old backing immediately before the move.
+    pub pre_replace_sha256: [u8; 32],
+    /// Target-page hash in the copied, not-yet-registered replacement backing.
+    pub replacement_sha256: [u8; 32],
+    /// First target execute generation observed after the backing move.
+    pub post_replace_exec_generation: u64,
+    /// Target-page hash at that post-replacement execute scan.
+    pub post_replace_exec_sha256: [u8; 32],
     /// Number of deliberately replayed, superseded approval tokens.
     pub stale_reply_attempts: u64,
     /// Previously valid generation replayed while the later scan was frozen.
@@ -637,7 +647,8 @@ pub fn exec_guard_write_proof_holds(
         .and_then(|n| n.checked_add(stats.blocked_writes));
 
     audit.gpa == target_gpa
-        && audit.exec_scans == 2
+        && audit.backing_replacements <= 1
+        && audit.exec_scans == 2 + audit.backing_replacements
         && audit.write_revocations == 1
         && audit.first_exec_generation != 0
         && audit.write_generation == audit.first_exec_generation
@@ -659,7 +670,8 @@ pub fn exec_guard_write_proof_holds(
 /// invalid token is not evidence for the anti-replay property.
 #[must_use]
 pub fn exec_guard_stale_generation_proof_holds(audit: ExecGuardPageAudit) -> bool {
-    audit.exec_scans == 2
+    audit.backing_replacements <= 1
+        && audit.exec_scans == 2 + audit.backing_replacements
         && audit.first_exec_generation != 0
         && audit.write_revocations == 1
         && audit.write_generation == audit.first_exec_generation
@@ -668,6 +680,31 @@ pub fn exec_guard_stale_generation_proof_holds(audit: ExecGuardPageAudit) -> boo
         && audit.stale_reply_generation == audit.write_generation
         && audit.stale_reply_generation != audit.post_write_exec_generation
         && audit.stale_reply_errno == EXEC_GUARD_STALE_ERRNO
+}
+
+/// Decide whether moving slot 0 to a distinct but byte-identical backing invalidated approval.
+///
+/// The old target generation is first approved. While the vCPU is still stopped, userspace
+/// copies RAM into a fresh anonymous mapping and moves the unchanged slot to that new address.
+/// A successful proof requires the same exact page to exit and scan at a newer generation
+/// before the guest's later write can execute against it.
+#[must_use]
+pub fn exec_guard_backing_replacement_proof_holds(
+    expected_sha256: [u8; 32],
+    audit: ExecGuardPageAudit,
+) -> bool {
+    audit.exec_scans == 3
+        && audit.first_exec_generation != 0
+        && audit.backing_replacements == 1
+        && audit.post_replace_exec_generation > audit.first_exec_generation
+        && audit.write_revocations == 1
+        && audit.write_generation == audit.post_replace_exec_generation
+        && audit.post_write_exec_generation > audit.write_generation
+        && audit.initial_sha256 == expected_sha256
+        && audit.first_exec_sha256 == expected_sha256
+        && audit.pre_replace_sha256 == expected_sha256
+        && audit.replacement_sha256 == expected_sha256
+        && audit.post_replace_exec_sha256 == expected_sha256
 }
 
 /// Decode exit 43's 24-byte union arm without introducing a Rust union.
@@ -813,6 +850,20 @@ pub unsafe fn write_mmio_read(run: *mut KvmRun, data: &[u8]) {
 pub unsafe fn guest_ram<'a>(mem: *const u8, len: usize) -> &'a [u8] {
     // SAFETY: the caller guarantees `len` readable bytes at `mem`, unwritten for the borrow.
     unsafe { core::slice::from_raw_parts(mem, len) }
+}
+
+/// Borrow a uniquely owned guest-RAM allocation as mutable bytes.
+///
+/// Split out of the Linux memslot replacement path so its `from_raw_parts_mut`
+/// provenance and length reasoning are exercised under Miri.
+///
+/// # Safety
+/// `mem` must point at `len` initialized, writable bytes uniquely owned for the
+/// returned borrow's lifetime.
+#[must_use]
+pub unsafe fn guest_ram_mut<'a>(mem: *mut u8, len: usize) -> &'a mut [u8] {
+    // SAFETY: the caller guarantees unique access to `len` writable bytes at `mem`.
+    unsafe { core::slice::from_raw_parts_mut(mem, len) }
 }
 
 /// Read the little-endian 32-bit instruction word at guest-physical `addr` from a borrow of
@@ -2194,6 +2245,11 @@ mod tests {
             pre_write_sha256: initial,
             post_write_exec_generation: 11,
             post_write_exec_sha256: modified,
+            backing_replacements: 0,
+            pre_replace_sha256: [0; 32],
+            replacement_sha256: [0; 32],
+            post_replace_exec_generation: 0,
+            post_replace_exec_sha256: [0; 32],
             stale_reply_attempts: 1,
             stale_reply_generation: 7,
             stale_reply_errno: EXEC_GUARD_STALE_ERRNO,
@@ -2254,6 +2310,11 @@ mod tests {
             pre_write_sha256: [0x11; 32],
             post_write_exec_generation: 11,
             post_write_exec_sha256: [0x22; 32],
+            backing_replacements: 0,
+            pre_replace_sha256: [0; 32],
+            replacement_sha256: [0; 32],
+            post_replace_exec_generation: 0,
+            post_replace_exec_sha256: [0; 32],
             stale_reply_attempts: 1,
             stale_reply_generation: 7,
             stale_reply_errno: EXEC_GUARD_STALE_ERRNO,
@@ -2275,6 +2336,48 @@ mod tests {
         let mut bad = audit;
         bad.stale_reply_errno = EXEC_GUARD_STALE_ERRNO - 1;
         assert!(!exec_guard_stale_generation_proof_holds(bad));
+    }
+
+    #[test]
+    fn execute_guard_backing_replacement_proof_requires_an_identical_fresh_rescan() {
+        let expected = [0x11; 32];
+        let audit = ExecGuardPageAudit {
+            gpa: 0x4008_2000,
+            initial_sha256: expected,
+            exec_scans: 3,
+            first_exec_generation: 7,
+            first_exec_sha256: expected,
+            write_revocations: 1,
+            write_generation: 11,
+            pre_write_sha256: expected,
+            post_write_exec_generation: 19,
+            post_write_exec_sha256: [0x22; 32],
+            backing_replacements: 1,
+            pre_replace_sha256: expected,
+            replacement_sha256: expected,
+            post_replace_exec_generation: 11,
+            post_replace_exec_sha256: expected,
+            stale_reply_attempts: 1,
+            stale_reply_generation: 11,
+            stale_reply_errno: EXEC_GUARD_STALE_ERRNO,
+        };
+        assert!(exec_guard_backing_replacement_proof_holds(expected, audit));
+
+        let mut bad = audit;
+        bad.backing_replacements = 0;
+        assert!(!exec_guard_backing_replacement_proof_holds(expected, bad));
+
+        let mut bad = audit;
+        bad.post_replace_exec_generation = bad.first_exec_generation;
+        assert!(!exec_guard_backing_replacement_proof_holds(expected, bad));
+
+        let mut bad = audit;
+        bad.replacement_sha256 = [0x33; 32];
+        assert!(!exec_guard_backing_replacement_proof_holds(expected, bad));
+
+        let mut bad = audit;
+        bad.post_replace_exec_sha256 = [0x33; 32];
+        assert!(!exec_guard_backing_replacement_proof_holds(expected, bad));
     }
 
     #[test]
@@ -2323,6 +2426,15 @@ mod tests {
             digest_state(&std::collections::BTreeMap::new(), slice, empty),
             digest_state(&std::collections::BTreeMap::new(), &buf, empty)
         );
+    }
+
+    #[test]
+    fn guest_ram_mut_borrows_the_unique_allocation() {
+        let mut buf = vec![1u8, 2, 3, 4, 5];
+        // SAFETY: `buf` uniquely owns `len` initialized, writable bytes.
+        let slice = unsafe { guest_ram_mut(buf.as_mut_ptr(), buf.len()) };
+        slice.copy_from_slice(&[5, 4, 3, 2, 1]);
+        assert_eq!(buf, [5, 4, 3, 2, 1]);
     }
 
     #[test]
