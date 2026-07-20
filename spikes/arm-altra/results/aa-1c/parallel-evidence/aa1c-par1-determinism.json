@@ -1,0 +1,22 @@
+{
+  "cotenant_only_examples": [],
+  "cotenant_tuples": 3200,
+  "divergences": [],
+  "join_cardinality": {
+    "cotenant_expected_records": 3200,
+    "cotenant_only_keys": 0,
+    "cotenant_records": 3200,
+    "cotenant_unique_keys": 3200,
+    "full_both_sides": true,
+    "shared_keys": 3200,
+    "solo_expected_records": 3200,
+    "solo_only_keys": 0,
+    "solo_records": 3200,
+    "solo_unique_keys": 3200
+  },
+  "shared_tuples_compared": 3200,
+  "solo_only_examples": [],
+  "solo_tuples": 3200,
+  "verdict": "MATCH",
+  "work_clock_binding": "arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)"
+}

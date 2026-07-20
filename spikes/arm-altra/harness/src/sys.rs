@@ -41,10 +41,10 @@
 
 use crate::evidence::PerfConfig;
 
-/// The raw `BR_RETIRED` event on aarch64 PMUv3: retired *taken* branches
-/// (`docs/ARM-PORT.md`, `docs/ARM-ALTRA.md` §2). Not invented here — it is the
-/// event those documents name, surfaced as a constant so the harness cannot
-/// silently arm a different one.
+/// The raw `BR_RETIRED` event on aarch64 PMUv3: all architecturally executed branch
+/// instructions, taken or not (N1 finding AA1-F1; `docs/ARM-PORT.md`,
+/// `docs/ARM-ALTRA.md` §2). This ARM binding does not change the x86 clock. The event is
+/// surfaced as a constant so the harness cannot silently arm a different one.
 pub const BR_RETIRED_RAW: u64 = 0x21;
 
 /// `PERF_TYPE_RAW` — the event is a raw PMU event number, not a generic alias.
@@ -174,6 +174,31 @@ pub fn br_retired_attr(sample_period: Option<u64>) -> PerfEventAttr {
     }
 }
 
+/// The AA-1(a) host-side counting event: raw `BR_RETIRED`, **pinned**, counting
+/// **EL0 of this thread only** — `exclude_kernel` + `exclude_hv` so
+/// scheduler/IRQ/hypervisor branches never inflate the count, and NO
+/// `exclude_host` (there is no guest; a guest-only counter over a host loop reads
+/// exactly zero — the round-5 probe lesson). Opened disabled; the tool encloses
+/// the window call in an explicit enable/disable pair, whose EL0 tail is part of
+/// the per-class constant offset AA-1(a) measures.
+#[must_use]
+pub fn el0_count_attr() -> PerfEventAttr {
+    PerfEventAttr {
+        type_: PERF_TYPE_RAW,
+        size: PERF_ATTR_SIZE_VER6,
+        config: BR_RETIRED_RAW,
+        // PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING: read()
+        // returns [count, enabled, running], and the checker demands
+        // enabled == running (pinned events are never silently multiplexed).
+        read_format: 0b11,
+        flags: perf_flags::DISABLED
+            | perf_flags::PINNED
+            | perf_flags::EXCLUDE_KERNEL
+            | perf_flags::EXCLUDE_HV,
+        ..Default::default()
+    }
+}
+
 /// The evidence record of what was armed — **derived from the attr itself**, never
 /// hand-written beside it.
 ///
@@ -229,6 +254,12 @@ pub mod kvm {
     pub const ARM_VCPU_INIT: u64 = 0x4020_AEAE;
     /// `KVM_ARM_PREFERRED_TARGET` — `_IOR(KVMIO, 0xaf, struct kvm_vcpu_init)`.
     pub const ARM_PREFERRED_TARGET: u64 = 0x8020_AEAF;
+    /// `KVM_ARM_VCPU_PMU_V3` — `kvm_vcpu_init.features[0]` bit index enabling the vPMU
+    /// (uapi `asm/kvm.h`). Only the disposable ID-reading vCPU sets it: without it KVM
+    /// masks the guest-visible `ID_AA64DFR0_EL1.PMUVer` to 0, hiding the host PMU
+    /// version the truth table records (found on harmony-arm day one). The measurement
+    /// vCPU keeps it OFF — the guest contract denies the guest a PMU.
+    pub const VCPU_FEATURE_PMU_V3: u32 = 3;
     /// `KVM_GET_REG_LIST` — `_IOWR(KVMIO, 0xb0, struct kvm_reg_list)`.
     pub const GET_REG_LIST: u64 = 0xC008_AEB0;
     /// `KVM_ENABLE_CAP` — `_IOW(KVMIO, 0xa3, struct kvm_enable_cap)`.
@@ -246,6 +277,34 @@ pub mod kvm {
     /// patch draft** (`host/patches/0001-…`): arms the one-shot in-kernel
     /// force-exit. Absent from a stock kernel, which is the point.
     pub const ARM_PREEMPT_EXIT: u64 = 0xAEE4;
+
+    /// `KVM_SET_GUEST_DEBUG` — `_IOW(KVMIO, 0x9b, struct kvm_guest_debug)`, the ioctl
+    /// AA-2's single-step run path arms guest debug through.
+    ///
+    /// **The size field is arch-specific, and that is load-bearing.** The kernel
+    /// dispatches ioctls with a `switch (ioctl)` over the *full* 32-bit command number,
+    /// whose case label is the macro expanded against the target arch's
+    /// `struct kvm_guest_debug`. On **arm64** that struct is 520 bytes (`0x208`):
+    /// `control:u32 + pad:u32` (8) plus `struct kvm_guest_debug_arch`, which is
+    /// `dbg_bcr/bvr/wcr/wvr[16]` — 64×`u64` = 512. So the encoded size is `0x208`, giving
+    /// `_IOW(0xAE, 0x9b, 0x208)` = `0x4208_AE9B`. (x86's `kvm_guest_debug_arch` is
+    /// `debugreg[8]` → 72 bytes → `0x4048_AE9B`; passing that number on arm64 matches no
+    /// case and returns `ENOTTY`.) Derived from — and pinned to — the arm64 struct size by
+    /// [`tests::kvm_ioctl_numbers_match_the_abi`] and [`machine::tests`]'s `size_of` check.
+    // TODO(box-verify): confirm the running arm64 kernel accepts KVM_SET_GUEST_DEBUG at
+    // 0x4208_AE9B (no EINVAL/ENOTTY) and that `sizeof(struct kvm_guest_debug) == 0x208`
+    // there (arch/arm64/include/uapi/asm/kvm.h KVM_ARM_MAX_DBG_REGS == 16). AA2-BUILD.md
+    // quoted the x86 number (0x4048_AE9B); this is the arm64-correct value.
+    pub const SET_GUEST_DEBUG: u64 = 0x4208_AE9B;
+    /// `KVM_GUESTDBG_ENABLE` (0x1) — the `kvm_guest_debug.control` bit that turns guest
+    /// debug on at all. Generic (identical on every arch, `include/uapi/linux/kvm.h`).
+    pub const GUESTDBG_ENABLE: u32 = 0x0000_0001;
+    /// `KVM_GUESTDBG_SINGLESTEP` (0x2) — the `control` bit that makes each guest
+    /// instruction trap out with `KVM_EXIT_DEBUG`. Generic across arches.
+    pub const GUESTDBG_SINGLESTEP: u32 = 0x0000_0002;
+    /// The `kvm_guest_debug.control` value AA-2 arms: enable guest debug AND single-step,
+    /// with no hardware breakpoints/watchpoints programmed (the `arch` array stays zero).
+    pub const GUESTDBG_SINGLESTEP_CONTROL: u32 = GUESTDBG_ENABLE | GUESTDBG_SINGLESTEP;
 
     /// `KVM_DEV_TYPE_ARM_VGIC_V3` — the in-kernel GICv3 the guest needs to exist at
     /// all. The payload runtime programs the distributor at `0x0800_0000` before it
@@ -385,6 +444,13 @@ pub mod kvm {
     pub const REG_ID_AA64MMFR1_EL1: u64 = arm64_sysreg(3, 0, 0, 7, 1);
     /// `ID_AA64MMFR2_EL1` — NV (FEAT_NV, nested virt) lives here (bits[35:32]).
     pub const REG_ID_AA64MMFR2_EL1: u64 = arm64_sysreg(3, 0, 0, 7, 2);
+
+    /// `VBAR_EL1` — the EL1 exception vector base (`S3_0_C12_C0_0`, i.e.
+    /// `(op0,op1,crn,crm,op2) = (3,0,12,0,0)`). AA-2's single-step transition classifier
+    /// reads it to tell an SVC/abort **exception entry** (`pc_after` in the synchronous
+    /// vector slot) from an injected-IRQ **injection** boundary (`pc_after` in the IRQ
+    /// slot) — a distinction PC arithmetic alone cannot make.
+    pub const REG_VBAR_EL1: u64 = arm64_sysreg(3, 0, 12, 0, 0);
 }
 
 /// `struct kvm_run`, through the MMIO arm of its exit union.
@@ -517,6 +583,24 @@ pub unsafe fn guest_ram<'a>(mem: *const u8, len: usize) -> &'a [u8] {
     unsafe { core::slice::from_raw_parts(mem, len) }
 }
 
+/// Read the little-endian 32-bit instruction word at guest-physical `addr` from a borrow of
+/// guest RAM based at `ram_base`. `None` when `addr` is below the base, or the 4-byte word
+/// would run past the mapping — the AA-2 stepper decodes the *stepped* opcode from this word,
+/// and a `pc_before` that fell outside the mapped slot (a wild PC after a bad step) must fail
+/// closed, never read plausible bytes from padding or panic.
+///
+/// Pure and bounds-checked, so the pointer path that produces `ram` ([`guest_ram`]) is the only
+/// `unsafe`; this decode runs against a plain slice and is exercised under Miri
+/// (`tests::guest_word_reads_the_bounded_opcode`).
+#[must_use]
+pub fn guest_word(ram: &[u8], ram_base: u64, addr: u64) -> Option<u32> {
+    let off = usize::try_from(addr.checked_sub(ram_base)?).ok()?;
+    let end = off.checked_add(4)?;
+    let bytes = ram.get(off..end)?;
+    // `bytes` is exactly 4 long, so the array conversion cannot fail.
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
 /// Extract the GNU build-id (lowercase hex) from a little-endian ELF64 image's `PT_NOTE`
 /// segments — the build-id of the artifact ON DISK, so the caller can bind the hashed kernel
 /// image to the RUNNING kernel's build-id (`/sys/kernel/notes`). Hashing the file and reading
@@ -617,6 +701,48 @@ pub fn digest_state(
     h.update(ram);
     // The vGIC distributor state (enable/pending/active) — the injection axis AA-6
     // exercises. Length-prefixed so an empty dump can never collide with a one-byte one.
+    h.update((vgic.len() as u64).to_le_bytes());
+    h.update(vgic);
+    format!("sha256:{}", crate::evidence::hex_lower(&h.finalize()))
+}
+
+/// Hash a guest state's **registers and vGIC only** — the cheap per-step replay key
+/// AA-2's single-step run path stamps on every step but the last, WITHOUT the
+/// guest-RAM slice [`digest_state`] hashes.
+///
+/// This exists because a full [`digest_state`] reads the *whole* guest-RAM slot every
+/// call (4 MiB — the AA-1(c) measurement that shrank [`crate::sys::machine::RAM_SIZE`]),
+/// and single-stepping calls the digest once **per instruction**: full-hashing RAM every
+/// step makes a stepped run infeasible. So an intermediate step hashes only the register
+/// (and vGIC) state — the same inputs [`digest_state`] reads *minus* the RAM slice — and
+/// only the run's FINAL step pays the full-RAM cost (`step_run`), so memory divergence
+/// anywhere in the stepped window is still caught end-to-end by that boundary hash.
+///
+/// A **distinct domain tag** (`arm-spike-regs-v1`, not `digest_state`'s
+/// `arm-spike-state-v2`) so a registers-only digest can never collide with a full one
+/// even over byte-identical registers — the two are compared side by side (intermediate
+/// vs final step), and they must be structurally unequal, not merely unequal-in-practice.
+/// The same host-time-register exclusion and length-prefixed vGIC discipline as
+/// [`digest_state`]; registers in sorted id order (a `BTreeMap`, Conventions rule 4).
+/// Pure and Miri-testable — no `unsafe`; `machine` reads the registers/vGIC by ioctl and
+/// hands them here, so the hashing and order discipline are interpreter-checked.
+#[must_use]
+pub fn digest_regs_only(regs: &std::collections::BTreeMap<u64, Vec<u8>>, vgic: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"arm-spike-regs-v1");
+    for (id, value) in regs {
+        // The generic-timer counters advance with real time; hashing them would make two
+        // same-seed steps digest differently the moment host scheduling differs — the same
+        // exclusion `digest_state` makes, for the same reason.
+        if is_host_time_register(*id) {
+            continue;
+        }
+        h.update(id.to_le_bytes());
+        h.update(value);
+    }
+    // The vGIC injection state, length-prefixed exactly as `digest_state` does, so an
+    // empty dump can never collide with a one-byte one.
     h.update((vgic.len() as u64).to_le_bytes());
     h.update(vgic);
     format!("sha256:{}", crate::evidence::hex_lower(&h.finalize()))
@@ -816,20 +942,102 @@ pub fn online_cpu_count() -> Result<u32, SysError> {
     }
 }
 
-/// The host's EFFECTIVE KVM mode, from `/sys/module/kvm_arm/parameters/mode`
-/// (`"vhe"`/`"nvhe"`/`"protected"`/…) — the mode KVM actually selected at boot, not the
-/// architectural VHE feature bit. `Ok(None)` when the parameter is absent (an older kernel).
+/// The host's EFFECTIVE KVM mode (`"vhe"`/`"nvhe"`/`"protected"`) — the mode KVM actually
+/// selected at boot, not the architectural VHE feature bit.
+///
+/// Two surfaces, in order:
+///
+/// 1. `/sys/module/kvm_arm/parameters/mode` — where the kernel exposes it. On the kernels
+///    this apparatus has actually met (Ubuntu 6.8 arm64), `kvm-arm.mode` is an
+///    `early_param` and **no such sysfs node exists**, so this path alone reported every
+///    real box as "unknown".
+/// 2. The kernel's own boot log via `klogctl(SYSLOG_ACTION_READ_ALL)`, parsed by
+///    [`parse_kvm_mode_from_log`]: `kvm_arm_init()` prints exactly one of three
+///    mode-initialized lines at boot, and that line *is* the effective mode, said by the
+///    kernel itself — not an operator claim. Reading the ring buffer needs
+///    `kernel.dmesg_restrict=0` or `CAP_SYSLOG`; a permission refusal (or the line having
+///    rotated out of the buffer) degrades to `Ok(None)`, never to a guess.
+///
+/// `Ok(None)` when neither surface can say.
 ///
 /// # Errors
-/// [`SysError`] if the parameter exists but cannot be read.
+/// [`SysError`] if the sysfs parameter exists but cannot be read.
 pub fn kvm_mode() -> Result<Option<String>, SysError> {
     match std::fs::read_to_string("/sys/module/kvm_arm/parameters/mode") {
         Ok(s) => Ok(Some(s.trim().to_string())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(imp_kernel_log().and_then(|log| parse_kvm_mode_from_log(&log)))
+        }
         Err(_) => Err(SysError::Protocol(
             "cannot read /sys/module/kvm_arm/parameters/mode".to_string(),
         )),
     }
+}
+
+/// Parse the effective KVM mode out of the kernel boot log.
+///
+/// `arch/arm64/kvm/arm.c:kvm_arm_init()` prints exactly one of three lines when KVM
+/// initializes (6.8's set, unchanged for years):
+///
+/// - `kvm [1]: VHE mode initialized successfully` → `vhe`
+/// - `kvm [1]: Hyp mode initialized successfully` → `nvhe` (the nVHE print)
+/// - `kvm [1]: Protected nVHE mode initialized successfully` → `protected`
+///
+/// Only these exact phrases map; anything else is `None` — an unrecognized line is not
+/// evidence of a mode, and inventing one here would poison every manifest downstream.
+/// The LAST match wins: `SYSLOG_ACTION_READ_ALL` returns the buffer in order, and a
+/// wrapped buffer could in principle hold a stale partial line only earlier, never later.
+pub fn parse_kvm_mode_from_log(log: &str) -> Option<String> {
+    let mut mode = None;
+    for line in log.lines() {
+        // The kvm prefix guards against an unrelated line quoting the phrase.
+        if !line.contains("kvm") {
+            continue;
+        }
+        if line.contains("Protected nVHE mode initialized successfully") {
+            mode = Some("protected".to_string());
+        } else if line.contains("VHE mode initialized successfully") {
+            mode = Some("vhe".to_string());
+        } else if line.contains("Hyp mode initialized successfully") {
+            mode = Some("nvhe".to_string());
+        }
+    }
+    mode
+}
+
+/// Read the kernel ring buffer (`klogctl(SYSLOG_ACTION_READ_ALL)`), or `None` when it
+/// cannot be read (no privilege, or off Linux). Never an error: the caller treats an
+/// unreadable log as "this surface cannot say", exactly like an absent sysfs node.
+#[cfg(target_os = "linux")]
+fn imp_kernel_log() -> Option<String> {
+    const SYSLOG_ACTION_READ_ALL: libc::c_int = 3;
+    const SYSLOG_ACTION_SIZE_BUFFER: libc::c_int = 10;
+    // SAFETY: SIZE_BUFFER takes no buffer; READ_ALL writes at most `len` bytes into the
+    // provided buffer and returns how many it wrote.
+    unsafe {
+        let size = libc::klogctl(SYSLOG_ACTION_SIZE_BUFFER, std::ptr::null_mut(), 0);
+        if size <= 0 {
+            return None;
+        }
+        // Bound the allocation: a hostile/corrupt size must not OOM the harness.
+        let len = (size as usize).min(1 << 24);
+        let mut buf = vec![0u8; len];
+        let read = libc::klogctl(
+            SYSLOG_ACTION_READ_ALL,
+            buf.as_mut_ptr().cast::<libc::c_char>(),
+            len as libc::c_int,
+        );
+        if read < 0 {
+            return None;
+        }
+        buf.truncate(read as usize);
+        Some(String::from_utf8_lossy(&buf).into_owned())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn imp_kernel_log() -> Option<String> {
+    None
 }
 
 /// The running kernel's `uname -r` release string.
@@ -1344,6 +1552,120 @@ pub use machine::{
     current_tid, pin_to_core, read_host_id_registers,
 };
 
+/// AA-1(a)'s host-side EL0 counter: raw `BR_RETIRED` over THIS thread's userspace
+/// execution ([`el0_count_attr`]), read with the enabled/running times so the
+/// checker can prove the pinned event was never multiplexed off.
+#[cfg(target_os = "linux")]
+mod el0counter {
+    use super::{PerfEventAttr, SysError, el0_count_attr, imp};
+
+    fn errno() -> i32 {
+        // SAFETY: `__errno_location` returns a valid pointer to this thread's errno.
+        unsafe { *libc::__errno_location() }
+    }
+
+    /// A host-thread `BR_RETIRED` counter (AA-1(a)). Opened disabled; the caller
+    /// brackets each window call with [`HostCounter::reset_enable`] /
+    /// [`HostCounter::disable_read`].
+    pub struct HostCounter {
+        fd: i32,
+        attr: PerfEventAttr,
+    }
+
+    impl HostCounter {
+        /// Open on the current thread (pid 0), whatever CPU it is pinned to
+        /// (cpu −1), disabled.
+        ///
+        /// # Errors
+        /// [`SysError`] if `perf_event_open` refuses.
+        pub fn open() -> Result<Self, SysError> {
+            let attr = el0_count_attr();
+            // SAFETY: `attr` is fully initialized on this frame and valid for the call.
+            let fd = unsafe { imp::perf_event_open(&raw const attr, 0, -1, -1, 0) };
+            if fd < 0 {
+                return Err(SysError::Errno {
+                    call: "perf_event_open(EL0 BR_RETIRED)",
+                    errno: errno(),
+                });
+            }
+            Ok(Self {
+                fd: fd as i32,
+                attr,
+            })
+        }
+
+        /// The attr the fd was actually opened with — the manifest's `perf` block
+        /// derives from this, never from a hand-written description.
+        #[must_use]
+        pub fn attr(&self) -> &PerfEventAttr {
+            &self.attr
+        }
+
+        /// Zero the counter and enable it.
+        ///
+        /// # Errors
+        /// [`SysError`] if either ioctl refuses.
+        pub fn reset_enable(&mut self) -> Result<(), SysError> {
+            const PERF_IOC_ENABLE: libc::c_ulong = 0x2400;
+            const PERF_IOC_RESET: libc::c_ulong = 0x2403;
+            // SAFETY: `self.fd` is a valid perf descriptor; both ioctls take an int arg.
+            unsafe {
+                if libc::ioctl(self.fd, PERF_IOC_RESET, 0_u64) < 0 {
+                    return Err(SysError::Errno {
+                        call: "PERF_EVENT_IOC_RESET(EL0)",
+                        errno: errno(),
+                    });
+                }
+                if libc::ioctl(self.fd, PERF_IOC_ENABLE, 0_u64) < 0 {
+                    return Err(SysError::Errno {
+                        call: "PERF_EVENT_IOC_ENABLE(EL0)",
+                        errno: errno(),
+                    });
+                }
+            }
+            Ok(())
+        }
+
+        /// Disable, then read `(count, time_enabled, time_running)`.
+        ///
+        /// # Errors
+        /// [`SysError`] if the ioctl or the 24-byte read refuses.
+        pub fn disable_read(&mut self) -> Result<(u64, u64, u64), SysError> {
+            const PERF_IOC_DISABLE: libc::c_ulong = 0x2401;
+            // SAFETY: `self.fd` is valid; the read buffer is 24 bytes for
+            // [count, enabled, running] per the attr's read_format.
+            unsafe {
+                if libc::ioctl(self.fd, PERF_IOC_DISABLE, 0_u64) < 0 {
+                    return Err(SysError::Errno {
+                        call: "PERF_EVENT_IOC_DISABLE(EL0)",
+                        errno: errno(),
+                    });
+                }
+                let mut buf = [0u64; 3];
+                let n = libc::read(self.fd, buf.as_mut_ptr().cast::<libc::c_void>(), 24);
+                if n != 24 {
+                    return Err(SysError::Errno {
+                        call: "read(EL0 BR_RETIRED)",
+                        errno: errno(),
+                    });
+                }
+                Ok((buf[0], buf[1], buf[2]))
+            }
+        }
+    }
+
+    impl Drop for HostCounter {
+        fn drop(&mut self) {
+            // SAFETY: `self.fd` is owned and valid; close-on-drop only.
+            unsafe {
+                libc::close(self.fd);
+            }
+        }
+    }
+}
+#[cfg(target_os = "linux")]
+pub use el0counter::HostCounter;
+
 #[cfg(test)]
 mod tests {
     //! The ABI, pinned.
@@ -1356,6 +1678,38 @@ mod tests {
     //! so the bit positions are asserted, not trusted.
 
     use super::*;
+
+    #[test]
+    fn kvm_mode_log_parse_recognizes_exactly_the_three_kernel_lines() {
+        // The real line from the first box this apparatus met (harmony-arm, Ubuntu
+        // 6.8.0-134, where no /sys/module/kvm_arm/parameters/mode exists).
+        let vhe = "[    9.960266] kvm [1]: VHE mode initialized successfully";
+        assert_eq!(parse_kvm_mode_from_log(vhe).as_deref(), Some("vhe"));
+        let nvhe = "[    4.1] kvm [1]: Hyp mode initialized successfully";
+        assert_eq!(parse_kvm_mode_from_log(nvhe).as_deref(), Some("nvhe"));
+        let prot = "[    4.1] kvm [1]: Protected nVHE mode initialized successfully";
+        assert_eq!(parse_kvm_mode_from_log(prot).as_deref(), Some("protected"));
+
+        // "Protected nVHE" contains neither of the other two phrases' prefixes by
+        // accident: the discriminating check must not misread it as vhe/nvhe.
+        assert_ne!(parse_kvm_mode_from_log(prot).as_deref(), Some("vhe"));
+
+        // Unrecognized lines are NOT evidence: no kvm prefix, a different phrase, or
+        // an empty log all say None rather than inventing a mode.
+        assert_eq!(
+            parse_kvm_mode_from_log("VHE mode initialized successfully quoted elsewhere"),
+            None
+        );
+        assert_eq!(
+            parse_kvm_mode_from_log("[1.0] kvm [1]: some other line"),
+            None
+        );
+        assert_eq!(parse_kvm_mode_from_log(""), None);
+
+        // The last match wins across a multi-line buffer.
+        let log = format!("{nvhe}\nnoise\n{vhe}\n");
+        assert_eq!(parse_kvm_mode_from_log(&log).as_deref(), Some("vhe"));
+    }
 
     #[test]
     fn perf_flag_bits_match_the_kernel_abi() {
@@ -1654,6 +2008,58 @@ mod tests {
     }
 
     #[test]
+    fn regs_only_digest_ignores_ram_and_never_collides_with_the_full_digest() {
+        use std::collections::BTreeMap;
+        let vgic: &[u8] = &[0x00; 16];
+
+        let mut a = BTreeMap::new();
+        a.insert(2u64, vec![0xAA]);
+        a.insert(1u64, vec![0xBB]);
+        // Insertion order differs; the BTreeMap makes the registers-only digest identical.
+        let mut b = BTreeMap::new();
+        b.insert(1u64, vec![0xBB]);
+        b.insert(2u64, vec![0xAA]);
+        assert_eq!(digest_regs_only(&a, vgic), digest_regs_only(&b, vgic));
+
+        // The whole point: the registers-only digest does NOT depend on guest RAM — two
+        // states differing only in RAM digest identically here (that is the cheap per-step
+        // key), while `digest_state` (which hashes RAM) separates them.
+        let ram = vec![0u8; 64];
+        let mut other_ram = ram.clone();
+        other_ram[0] = 1;
+        assert_ne!(
+            digest_state(&a, &ram, vgic),
+            digest_state(&a, &other_ram, vgic),
+            "the full digest hashes RAM"
+        );
+
+        // A different register value or vGIC state still moves the registers-only digest —
+        // it is real evidence, not a constant.
+        let mut c = a.clone();
+        c.insert(1u64, vec![0xCC]);
+        assert_ne!(digest_regs_only(&a, vgic), digest_regs_only(&c, vgic));
+        let mut other_vgic = vgic.to_vec();
+        other_vgic[8] = 1;
+        assert_ne!(
+            digest_regs_only(&a, vgic),
+            digest_regs_only(&a, &other_vgic)
+        );
+
+        // Distinct domain separation: the registers-only digest can NEVER equal the full
+        // digest of the same registers over empty RAM — the two are compared side by side
+        // (intermediate step vs the full-payload final step), so they must be structurally
+        // unequal, not merely unequal because RAM happened to differ.
+        let empty_ram: &[u8] = &[];
+        assert_ne!(
+            digest_regs_only(&a, vgic),
+            digest_state(&a, empty_ram, vgic),
+            "the domain tags must keep the two digest kinds from ever colliding"
+        );
+
+        assert!(digest_regs_only(&a, vgic).starts_with("sha256:"));
+    }
+
+    #[test]
     fn host_time_registers_are_the_generic_timer_counters() {
         // ARM64_SYS_REG(op0,op1,crn,crm,op2) id builder.
         // KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG (0x0013 << 16 — the
@@ -1819,6 +2225,53 @@ mod tests {
         assert_eq!(kvm::ARM_PREEMPT_EXIT, io(0xe4));
         assert_eq!(kvm::EXIT_PREEMPT, 42);
         assert_eq!(kvm::CAP_ARM_DETERMINISTIC_INTERCEPTS, 245);
+
+        // KVM_SET_GUEST_DEBUG is _IOW(0x9b, sizeof(struct kvm_guest_debug)). On arm64 that
+        // struct is 0x208 bytes (control+pad = 8, plus a 64×u64 kvm_guest_debug_arch = 512),
+        // NOT x86's 72 — and the kernel dispatches on the FULL command number, so the size
+        // field is load-bearing. Pin it to the arm64 number, derived and literal both.
+        assert_eq!(kvm::SET_GUEST_DEBUG, iow(0x9b, 0x208));
+        assert_eq!(kvm::SET_GUEST_DEBUG, 0x4208_AE9B);
+        // The single-step control bits (generic across arches).
+        assert_eq!(kvm::GUESTDBG_ENABLE, 0x1);
+        assert_eq!(kvm::GUESTDBG_SINGLESTEP, 0x2);
+        assert_eq!(kvm::GUESTDBG_SINGLESTEP_CONTROL, 0x3);
+    }
+
+    #[test]
+    fn the_vbar_register_id_names_vbar_el1() {
+        // VBAR_EL1 = S3_0_C12_C0_0 = (op0,op1,crn,crm,op2) = (3,0,12,0,0). A wrong id would
+        // read a different register and misclassify every exception/injection step, so derive
+        // it from the architected encoding rather than trusting a bare literal.
+        let enc = (3u64 << 14) | (12 << 7); // op0=3, crn=12; op1/crm/op2 all zero
+        assert_eq!(kvm::REG_VBAR_EL1, kvm::arm64_sysreg(3, 0, 12, 0, 0));
+        assert_eq!(
+            kvm::REG_VBAR_EL1,
+            0x6000_0000_0000_0000 | 0x0030_0000_0000_0000 | (0x0013 << 16) | enc
+        );
+        assert_eq!(kvm::REG_VBAR_EL1, 0x6030_0000_0013_C600);
+    }
+
+    #[test]
+    fn guest_word_reads_the_bounded_opcode() {
+        // The AA-2 stepper decodes the stepped opcode from a 4-byte guest-RAM read. Drive the
+        // read through the same `guest_ram` pointer seam the machine uses (a heap allocation
+        // standing in for the mapping, so Miri exercises the slice formation), then decode.
+        let base = 0x4000_0000u64;
+        let mut ram = [0u8; 64];
+        // `ret` (0xD65F03C0) at base+0x10.
+        ram[0x10..0x14].copy_from_slice(&0xD65F_03C0u32.to_le_bytes());
+        // SAFETY: `ram` is a live, uniquely-owned allocation of `ram.len()` readable bytes.
+        let borrowed = unsafe { guest_ram(ram.as_ptr(), ram.len()) };
+        assert_eq!(guest_word(borrowed, base, base + 0x10), Some(0xD65F_03C0));
+        // A word wholly inside the mapping but not at a written offset reads as zero.
+        assert_eq!(guest_word(borrowed, base, base), Some(0));
+        // Below the base: no such guest address.
+        assert_eq!(guest_word(borrowed, base, base - 4), None);
+        // The last whole word fits; one past the end does not (fail closed, never read padding).
+        assert_eq!(guest_word(borrowed, base, base + 60), Some(0));
+        assert_eq!(guest_word(borrowed, base, base + 61), None);
+        assert_eq!(guest_word(borrowed, base, base + 64), None);
     }
 
     #[test]

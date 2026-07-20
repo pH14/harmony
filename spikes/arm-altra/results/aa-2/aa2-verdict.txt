@@ -1,0 +1,22 @@
+work clock binding: arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)
+floor-check aa2-val stage=aa2
+  [PASS] aggregation: one stage, distinct run-sets, one constants pack + measurement environment
+  [PASS] schema-version: schema version 3
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 04eb58f6efbe7716f18c13122d09779133e9abb255330a8798dd692e3ac071d7 matches the manifest
+  [PASS] totality: all 170330 attempted samples present exactly once
+  [PASS] multiplicity: all 0 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 0 counting record(s) match the oracle and are self-consistent (170330 AA-2 step record(s) exempt — graded by debug-evidence/replay-identity)
+  [PASS] skid: skid distribution recorded and self-consistent (AA-1 measures it; the landing contract does not bind here)
+  [PASS] mechanism-attestation: all records carry the claimed SignalKick exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 60
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 85165 stepped group(s) each replayed on bit-identical state digests
+  [PASS] debug-evidence: 170330 record(s) cover the full AA-2 step matrix, each a valid single step with a BR_RETIRED delta consistent with its transition class
+  [PASS] condition-consistency: every record's condition matches the manifest's (pinned-solo)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 85165 distinct input(s), each repeated at least 2 times (floor 2)
+RESULT: PASS (19 checks)

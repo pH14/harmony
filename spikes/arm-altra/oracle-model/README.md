@@ -1,9 +1,9 @@
-# `oracle-model/` — the analytical taken-branch oracle
+# `oracle-model/` — the analytical ARM branch-instruction oracle
 
 **UNTESTED ON SILICON.** This is derivation, not measurement — nothing here has
 been checked against a hardware PMU.
 
-The single definition of every payload parameter and every expected taken-branch
+The single definition of every payload parameter and every expected branch-instruction
 count, compiled into *both* the bare-metal payloads (`no_std`) and the host harness
 (`std`) so the asm and the model cannot drift. `docs/ARM-ALTRA.md` §Evidence
 integrity #5 forbids judging counts by PMU-vs-PMU comparison (circular); this crate
@@ -11,11 +11,13 @@ is the independent oracle counts are judged against instead.
 
 ## The model
 
-V-time on ARM counts `BR_RETIRED` (raw `0x21`) = retired **taken** branches
-(`docs/ARM-PORT.md`, `docs/ARM-ALTRA.md` §2). A window's count decomposes as
+V-time on ARM counts `BR_RETIRED` (raw `0x21`) = every architecturally executed branch
+instruction, taken or not (N1 finding AA1-F1; `docs/ARM-PORT.md`,
+`docs/ARM-ALTRA.md` §2). This ARM binding leaves the x86 clock unchanged. A window's count
+decomposes as
 
 ```
-measured = certain_taken + reported_taken
+measured = certain_branches + reported_taken
          + w_entry·entries + w_eret·erets + w_svc·svcs + w_wfi·wfis
          + window_offset
 ```

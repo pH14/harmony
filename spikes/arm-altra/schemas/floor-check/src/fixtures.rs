@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The fixture generator.
 //!
-//! Twenty-four checked-in run-sets: twenty the checker must reject (one per failure
-//! mode) and four it must accept (a patched AA-3 landing run, an AA-1 counting run, an
-//! AA-1(c) early/late skid-distribution run, and an AA-6 same-input gate). They are **generated from the oracle model**, not hand
+//! Thirty-one checked-in run-sets: twenty-four the checker must reject (one per failure
+//! mode) and seven it must accept (a patched AA-3 landing run, an AA-1 counting run, an
+//! AA-1(c) early/late skid-distribution run, an AA-1 LL/SC-hazard run, an AA-6 same-input
+//! gate, an AA-2 single-step transition matrix, and an AA-2 BOUNDED (`--max-steps`) matrix
+//! whose step records' window counts are exempt from the oracle). They are **generated from
+//! the oracle model**, not hand
 //! written: the accept fixture's counts are the exact values
 //! [`oracle_model::expected`] predicts under a chosen (synthetic) weights pack, so
 //! the fixtures stay consistent with the model as it evolves, and a reject fixture
@@ -27,11 +30,11 @@
 
 use arm_harness::evidence::{
     Environment, ExitReason, ImagePin, Mechanism, OverflowRecord, PerfConfig, Pinning, RunRecord,
-    RunSet, SCHEMA_VERSION, Stage, hex_lower,
+    RunSet, SCHEMA_VERSION, Stage, StepRecord, StepTransition, hex_lower,
 };
 use oracle_model::{DEFAULT_SEED, Payload, Scale, Weights, expected};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One generated fixture: a directory name and the two files' contents.
 #[derive(Clone, Debug)]
@@ -127,7 +130,7 @@ fn synthetic_images() -> Vec<ImagePin> {
 
 fn synthetic_perf() -> PerfConfig {
     PerfConfig {
-        // 0x21 = BR_RETIRED (retired taken branches).
+        // 0x21 = BR_RETIRED (all architecturally executed branch instructions on N1, AA1-F1).
         raw_event: 0x21,
         exclude_host: true,
         exclude_guest: false,
@@ -260,6 +263,17 @@ fn build_run_set(stage: Stage, mechanism: Mechanism, records: &[RunRecord]) -> R
     // first image (the kernel) to whatever kernel this mechanism claims.
     let mut images = synthetic_images();
     images[0].sha256 = mechanism.host_kernel_sha256.clone();
+    // For step evidence one planned sample emits many step records, so `planned` is the number
+    // of distinct stable planned-sample ids; for ordinary evidence each record is a sample.
+    let planned = if records.iter().any(|r| r.step.is_some()) {
+        records
+            .iter()
+            .filter_map(|r| r.step.as_ref().map(|s| s.planned_sample_id))
+            .collect::<BTreeSet<_>>()
+            .len() as u64
+    } else {
+        records.len() as u64
+    };
     RunSet {
         schema_version: SCHEMA_VERSION,
         stage,
@@ -273,6 +287,7 @@ fn build_run_set(stage: Stage, mechanism: Mechanism, records: &[RunRecord]) -> R
         weights: Some(synthetic_weights()),
         skid_margin: Some(SYNTHETIC_SKID_MARGIN),
         attempted: records.len() as u64,
+        planned,
         records_file: "records.jsonl".to_string(),
         records_sha256: sha,
     }
@@ -415,6 +430,130 @@ fn accept_aa6_gate() -> Fixture {
     fixture("accept-aa6-gate", &run_set, &records)
 }
 
+/// The AA-2 step matrix: one row per transition class, each `(transition, pc_before, pc_after,
+/// br_retired_delta)`. The values satisfy `check_debug_evidence`'s per-class rules — a
+/// sequential step lands at exactly `pc_before + 4` with delta 0, a taken branch moves
+/// `BR_RETIRED` by 1, a NOT-taken branch lands at `pc_before + 4` but still moves `BR_RETIRED`
+/// by 1 (the branch instruction retired, AA1-F1), an LL/SC exclusive by 0, the
+/// exception/WFI/injection classes by a bounded 0. Each is stepped twice (two reps of one step
+/// position) so AA-2's replay identity has a repeated group to compare.
+fn aa2_matrix() -> [(StepTransition, u64, u64, u64); 8] {
+    let b = 0x4000_8000u64;
+    [
+        (StepTransition::Sequential, b, b + 4, 0),
+        (StepTransition::TakenBranch, b + 0x100, b + 0x140, 1),
+        (StepTransition::ExceptionEntry, b + 0x200, b + 0x240, 0),
+        (StepTransition::ExceptionReturn, b + 0x300, b + 0x340, 0),
+        (StepTransition::Wfi, b + 0x400, b + 0x404, 0),
+        (StepTransition::Injection, b + 0x500, b + 0x540, 0),
+        (StepTransition::LlscExclusive, b + 0x600, b + 0x604, 0),
+        // A not-taken conditional: fell through to pc_before + 4, but the branch retired (delta 1).
+        (StepTransition::NotTakenBranch, b + 0x700, b + 0x704, 1),
+    ]
+}
+
+/// The AA-2 stepped record set: the full transition matrix, each class stepped twice
+/// bit-identically. Every record is a StraightLine-at-smoke run (so it carries that run's
+/// oracle-exact window count, exactly as a real stepped run does), overflow-free, on
+/// `ExitReason::Debug`, with a valid single step of its class. The two reps of one step position
+/// share its `step_index`, the step digest AND the final digest — a bit-identical replay. Modelled
+/// as two runs, each stepping the matrix in order, so the two reps of class N are step N of each
+/// run and share `step_index == N`.
+fn aa2_records() -> Vec<RunRecord> {
+    let mut records = Vec::new();
+    for (step_index, (transition, pc_before, pc_after, delta)) in
+        aa2_matrix().into_iter().enumerate()
+    {
+        // Two reps of one step position (same step_index, so one RepKey group).
+        for rep in 0..2u64 {
+            let id = records.len() as u64;
+            let mut r = generate_record(id, Payload::StraightLine, ExitReason::Debug);
+            // A stepped record is never an armed landing — mutually exclusive.
+            r.overflow = None;
+            let tag = format!("{transition:?}");
+            r.step = Some(StepRecord {
+                planned_sample_id: rep,
+                // The within-run position; both reps of this class share it, so replay identity
+                // compares step N of rep 1 to step N of rep 2.
+                step_index: step_index as u64,
+                pc_before,
+                pc_after,
+                // A single step retires exactly one instruction by construction.
+                insn_retired: 1,
+                br_retired_delta: delta,
+                transition,
+                // The step digest replay identity compares; shared within the rep group.
+                step_digest: format!("sha256:{}", synth_sha256(&format!("aa2-step-{tag}"))),
+            });
+            // The final (sentinel) digest, shared within the rep group too.
+            r.state_digest = format!("sha256:{}", synth_sha256(&format!("aa2-final-{tag}")));
+            records.push(r);
+        }
+    }
+    records
+}
+
+/// Turn an AA-2 stepped record set into a run-set: stage AA-2, the pre-patch stock mechanism
+/// (AA-2 legitimately runs pre-patch), no armed sampling period (stepping arms guest debug, not
+/// an overflow), weights present (so the oracle grades the window count each step carries).
+fn aa2_run_set(records: &[RunRecord]) -> RunSet {
+    let mut run_set = build_run_set(Stage::Aa2, stock_mechanism(), records);
+    // A stepped run arms no overflow, so its perf event carries no sampling period.
+    run_set.perf.sample_period = None;
+    run_set.records_sha256 = synth_sha256_of_bytes(records_jsonl(records).as_bytes());
+    run_set
+}
+
+/// The valid AA-2 accept fixture: the FULL single-step transition matrix, each class stepped
+/// twice bit-identically. Every step is a valid single step (PC advanced, exactly one
+/// instruction retired, `BR_RETIRED` delta consistent with the class), the matrix is complete
+/// (all eight classes, including the LL/SC exclusive AA-4 needs), and each step position replayed
+/// identically — everything AA-2's floor requires, in miniature. Today no run EMITS steps (the
+/// stepping run path is arrival-day), so this is the shape a real AA-2 run-set will take.
+fn accept_aa2_steps() -> Fixture {
+    let records = aa2_records();
+    let run_set = aa2_run_set(&records);
+    fixture("accept-aa2-steps", &run_set, &records)
+}
+
+/// The valid AA-2 **bounded** accept fixture: the full transition matrix, each class stepped
+/// twice bit-identically — but cut short at `--max-steps` before MARK_END, so every record's
+/// window is `0/0/0` (a run that never closed its window; the shape a bounded llsc-livelock run
+/// takes). Its window count is therefore NOT the oracle's, which is exactly the case
+/// `check_counts` must EXEMPT: a step record is graded by debug-evidence / replay-identity, not
+/// the window-count oracle. Grading it would reject a legitimately bounded run. The window
+/// endpoints stay self-consistent (`measured_taken == work_end - work_begin`, enforced by
+/// well-formed), and the step evidence and replay identity are unchanged from the unbounded
+/// matrix — so the whole run-set is a clean AA-2 acceptance.
+fn aa2_bounded_records() -> Vec<RunRecord> {
+    let mut records = aa2_records();
+    for r in &mut records {
+        // Bounded: the window never closed, so the work fields are 0/0/0 — self-consistent but
+        // decoupled from the oracle count the unbounded matrix carries.
+        r.work_begin = 0;
+        r.work_end = 0;
+        r.measured_taken = 0;
+    }
+    records
+}
+
+fn accept_aa2_bounded() -> Fixture {
+    let records = aa2_bounded_records();
+    let run_set = aa2_run_set(&records);
+    fixture("accept-aa2-bounded", &run_set, &records)
+}
+
+/// Build an AA-2 reject fixture by mutating ONE step of the otherwise-valid matrix, so
+/// `check_debug_evidence` is the sole failure (the mutation touches neither the window count nor
+/// the RepKey `step_index`/step digest, so counts and replay identity still pass — the mutated
+/// rep still groups with its sibling rep on the same `step_index`, sharing its digest).
+fn mutated_aa2_reject(name: &'static str, mutate: impl FnOnce(&mut Vec<RunRecord>)) -> Fixture {
+    let mut records = aa2_records();
+    mutate(&mut records);
+    let run_set = aa2_run_set(&records);
+    fixture(name, &run_set, &records)
+}
+
 /// The AA-6 rep-floor evasion, rejected: an eight-payload matrix of DISTINCT inputs
 /// whose TOTAL record count meets a floor, though no single input is repeated even
 /// twice. A total-count floor passed this; the per-input floor does not — AA-6 needs
@@ -443,6 +582,8 @@ pub fn all_fixtures() -> Vec<Fixture> {
         accept_counting(),
         accept_aa1_skid(),
         accept_aa6_gate(),
+        accept_aa2_steps(),
+        accept_aa2_bounded(),
         reject_aa6_rep_floor(),
     ];
 
@@ -657,6 +798,31 @@ pub fn all_fixtures() -> Vec<Fixture> {
         fixtures.push(fixture("reject-clockpage-self-seeded", &run_set, &records));
     }
 
+    // 16b. accept-aa1-llsc-hazard — at AA-1, two same-seed llsc-atomics repetitions
+    //     with DIFFERENT digests (and self-consistent counts differing by their own
+    //     reported retries) are the §4 hazard, measured — recorded on the verdict,
+    //     never failed. Observed spontaneously on harmony-arm (AA1-F2): a host IRQ
+    //     between LDXR and STXR clears the monitor. Any OTHER payload diverging, or
+    //     llsc at a later stage, still fails (fixture 17).
+    {
+        // Counting-mode records, as observed live (overflow: null, exit mmio) — the
+        // divergence appeared with NO armed overflow and NO injection.
+        let mut a = generate_record(0, Payload::LlscAtomics, ExitReason::Mmio);
+        let mut b = generate_record(1, Payload::LlscAtomics, ExitReason::Mmio);
+        a.overflow = None;
+        b.overflow = None;
+        b.reported_taken = a.reported_taken + 1;
+        b.work_end += 1; // the retry's extra CBNZ execution...
+        b.measured_taken += 1; // ...so the count stays exact for ITS OWN retry term
+        a.state_digest = format!("sha256:{}", synth_sha256("llsc-rep-a"));
+        b.state_digest = format!("sha256:{}", synth_sha256("llsc-rep-b"));
+        let records = vec![a, b];
+        let mut run_set = build_run_set(Stage::Aa1, stock_mechanism(), &records);
+        // A counting run: no uniform sampling period in the manifest.
+        run_set.perf.sample_period = None;
+        fixtures.push(fixture("accept-aa1-llsc-hazard", &run_set, &records));
+    }
+
     // 17. reject-divergent-digests — two repetitions of the SAME (payload, scale,
     //     seed, condition, target) that landed on different state digests. Every
     //     count matches, every overflow was delivered exactly once, the sample count
@@ -697,6 +863,64 @@ pub fn all_fixtures() -> Vec<Fixture> {
         fixtures.push(fixture("reject-malformed-hash", &run_set, &records));
     }
 
+    // 20. reject-aa2-step-skips-insn — a SEQUENTIAL step that advanced by 8, not 4: an
+    //     instruction was skipped. AArch64 instructions are a fixed 4 bytes, so a sequential
+    //     step must land at EXACTLY pc_before + 4; a larger jump is the miss AA-2 exists to
+    //     catch. One rep of the sequential step-moment is mutated, so the RepKey/step-moment
+    //     digest is untouched and replay identity still passes — debug-evidence is the sole
+    //     failure.
+    fixtures.push(mutated_aa2_reject(
+        "reject-aa2-step-skips-insn",
+        |records| {
+            if let Some(s) = records[0].step.as_mut() {
+                s.pc_after = s.pc_before + 8;
+            }
+        },
+    ));
+
+    // 21. reject-aa2-step-doubled — a step that retired TWO instructions, not the exactly one
+    //     AA-2's single-step semantics require. The window count and the step-moment are
+    //     untouched, so debug-evidence alone fails.
+    fixtures.push(mutated_aa2_reject("reject-aa2-step-doubled", |records| {
+        if let Some(s) = records[0].step.as_mut() {
+            s.insn_retired = 2;
+        }
+    }));
+
+    // 22. reject-aa2-taken-branch-no-branch — a step CLASSIFIED as a taken branch whose
+    //     BR_RETIRED did not move (delta 0). A taken branch must increment BR_RETIRED by
+    //     exactly 1; this disagreement between the opcode's class and the measured counter is
+    //     the AA-2 finding the checker surfaces. `records[2]` is the first taken-branch rep.
+    fixtures.push(mutated_aa2_reject(
+        "reject-aa2-taken-branch-no-branch",
+        |records| {
+            if let Some(s) = records[2].step.as_mut() {
+                s.br_retired_delta = 0;
+            }
+        },
+    ));
+
+    // 23. reject-aa2-dropped-planned-sample — the single-step TOTALITY defect (J2). Two planned
+    //     runs each emitted eight steps, but an attacker duplicates planned id 0 over id 1. The
+    //     file still has two `step_index == 0` rows and dense record ids, so the bounced counter
+    //     check passed it; distinct stable planned ids expose id 1 as missing.
+    {
+        let original = aa2_records();
+        let mut run_set = aa2_run_set(&original);
+        let mut records = original;
+        for record in &mut records {
+            if let Some(step) = record.step.as_mut() {
+                step.planned_sample_id = 0;
+            }
+        }
+        run_set.records_sha256 = synth_sha256_of_bytes(records_jsonl(&records).as_bytes());
+        fixtures.push(fixture(
+            "reject-aa2-dropped-planned-sample",
+            &run_set,
+            &records,
+        ));
+    }
+
     fixtures
 }
 
@@ -721,13 +945,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_twenty_four_fixtures_with_unique_names() {
+    fn there_are_thirty_one_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 24);
+        assert_eq!(fixtures.len(), 31);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 24, "fixture names must be unique");
+        assert_eq!(names.len(), 31, "fixture names must be unique");
+    }
+
+    #[test]
+    fn the_aa2_accept_matrix_covers_every_transition_class_twice() {
+        // The generator's own invariant: the AA-2 accept fixture steps all eight transition
+        // classes, each twice (a repeated step position for replay identity), on Debug exits with
+        // no armed overflow.
+        let records = aa2_records();
+        assert_eq!(records.len(), 16, "eight classes × two reps");
+        let mut classes: Vec<StepTransition> = records
+            .iter()
+            .map(|r| r.step.as_ref().expect("stepped").transition)
+            .collect();
+        classes.sort_unstable();
+        classes.dedup();
+        assert_eq!(classes.len(), 8, "every transition class is covered");
+        for r in &records {
+            assert_eq!(r.exit_reason, ExitReason::Debug);
+            assert!(r.overflow.is_none(), "a stepped record is never armed");
+            let s = r.step.as_ref().expect("stepped");
+            assert_eq!(s.insn_retired, 1);
+            assert_ne!(s.pc_after, s.pc_before, "a step advances the PC");
+        }
     }
 
     #[test]

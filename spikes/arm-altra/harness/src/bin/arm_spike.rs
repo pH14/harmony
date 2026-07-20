@@ -102,6 +102,8 @@ enum Command {
 
 /// `arm-spike run`'s options. Boxed in the [`Command`] enum: it is far larger than
 /// the other variants, and clap parses it straight into this shape.
+const DEFAULT_AA2_MAX_STEPS: u64 = 12_000;
+
 #[derive(clap::Args, Debug)]
 struct RunOpts {
     /// Directory of built payload ELFs, one per class, named by
@@ -201,6 +203,28 @@ struct RunOpts {
     /// Draw seeded-random target deltas over 1..=100000 (AA-3).
     #[arg(long)]
     with_targets: bool,
+    /// Payload class(es) to EXCLUDE from the plan (by name, repeatable). At AA-3 the exact
+    /// landing passes `--exclude-payload wfi-idle`: its WFI is resumed by a real-time timer that
+    /// shifts under the slow single-step, so under the exact landing it loses PMIs and exits
+    /// without closing its window — an AA-5 (paravirt-clock) breakage, not a force-exit failure.
+    /// The run grades on the seven deterministic-count payloads rather than fabricating wfi-idle
+    /// evidence it cannot produce.
+    #[arg(long = "exclude-payload")]
+    exclude_payloads: Vec<String>,
+    /// AA-2: arm KVM single-step and emit one record per stepped instruction, instead of
+    /// measuring a counting window. Implied by `--stage aa2`. A stepped run is smoke-scale by
+    /// construction — a 1e6 window is millions of steps — so keep the scales small.
+    #[arg(long)]
+    single_step: bool,
+    /// AA-2: cap a single-step run at N steps (default 12000; explicit 0 is unbounded).
+    /// A bounded run stops at N steps OR the sentinel, whichever comes first — hitting N first
+    /// is normal, not a failure. The finite default fail-closes the `llsc-atomics` livelock: each
+    /// step clears the exclusive monitor, so `STXR` never succeeds and the retry loops forever,
+    /// never reaching MARK_END or the sentinel. Every stepped record is registers-only except
+    /// the last, which carries the full-payload digest, so replay-identity still catches memory
+    /// divergence across the stepped window. Only meaningful with `--single-step`/`--stage aa2`.
+    #[arg(long, default_value_t = DEFAULT_AA2_MAX_STEPS)]
+    max_steps: u64,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables. A wedged guest past this
     /// deadline is recorded as a failed attempt rather than hanging the run.
     #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
@@ -267,6 +291,10 @@ impl From<StageArg> for Stage {
     }
 }
 
+// An internal plan-builder: each argument is one plan dimension threaded straight from the CLI
+// (seed, cases, reps, with-targets, scales, condition, target lower bound, payload exclusions).
+// Bundling them into a struct would only rename the same fields; the flat list is the plan shape.
+#[allow(clippy::too_many_arguments)]
 fn plan_spec(
     seed: u64,
     cases: u64,
@@ -274,19 +302,33 @@ fn plan_spec(
     with_targets: bool,
     scales: Vec<Scale>,
     condition: &str,
+    // The LOWER bound of the seeded-random target draw. 1 for AA-1/AA-3-proxy; for the AA-3
+    // EXACT landing it is `skid_margin + LANDING_HEADROOM + 1`, because a target closer to
+    // `MARK_BEGIN` than that combined margin cannot be armed strictly below and single-stepped up
+    // to its canonical landing PC — those deltas are simply not drawn, rather than drawn and then
+    // failed.
+    target_lo: u64,
+    // Payload names to EXCLUDE from the plan. Empty for AA-1/AA-2. At AA-3 the exact landing
+    // excludes `wfi-idle`: its WFI is resumed by a real-time timer whose firing shifts under the
+    // slow single-step, so under the exact landing it loses PMIs and exits without closing its
+    // window — an AA-5 (paravirt-clock) breakage, not a force-exit failure (foreman ruling: the
+    // ≥10⁶ run grades on the seven deterministic-count payloads). Excluding it is honest: the run
+    // does not fabricate wfi-idle exact-landing evidence it cannot produce.
+    exclude_payloads: &[String],
 ) -> PlanSpec {
     PlanSpec {
         payloads: ALL_PAYLOADS
             .iter()
             .copied()
             .filter(|p| p.has_window())
+            .filter(|p| !exclude_payloads.iter().any(|x| x == p.name()))
             .collect(),
         scales,
         conditions: vec![condition.to_string()],
         cases,
         reps,
         seed,
-        target_delta_range: with_targets.then_some((1, 100_000)),
+        target_delta_range: with_targets.then_some((target_lo, 100_000)),
     }
 }
 
@@ -298,6 +340,8 @@ fn emit_plan(seed: u64, cases: u64, reps: u64, with_targets: bool) -> Result<(),
         with_targets,
         vec![Scale::Smoke],
         "pinned-solo",
+        1,
+        &[],
     ))
     .map_err(|e| e.to_string())?;
     let json =
@@ -477,7 +521,15 @@ fn probe(box_config: PathBuf, rulings: Option<PathBuf>, out: PathBuf) -> Result<
         question: "ID_AA64DFR0_EL1.PMUVer — the PMU version behind the BR_RETIRED work-clock bet.",
         expected: cfg.pmuver_expected.trim().to_string(),
         found: format!("{pmuver:#x}"),
-        raw: format!("ID_AA64DFR0_EL1.PMUVer = {pmuver:#x}"),
+        raw: format!(
+            "ID_AA64DFR0_EL1.PMUVer = {pmuver:#x} (read from a {} vCPU)",
+            if regs.pmu_v3_enabled {
+                "KVM_ARM_VCPU_PMU_V3-enabled"
+            } else {
+                "featureless — host refused the vPMU init, so PMUVer is KVM's mask, not \
+                 the host PMU version"
+            }
+        ),
     });
     let vh = f4(regs.id_aa64mmfr1, 8);
     rows.push(RowInput {
@@ -629,6 +681,9 @@ struct RunArgs {
     cases: u64,
     reps: u64,
     with_targets: bool,
+    exclude_payloads: Vec<String>,
+    single_step: bool,
+    max_steps: u64,
     watchdog_secs: u64,
 }
 
@@ -715,7 +770,9 @@ fn execute(args: RunArgs) -> Result<(), String> {
     use arm_harness::evidence::{
         ExitReason, ImagePin, Mechanism, Pinning, RunSetContext, assemble_run_set, hex_lower,
     };
-    use arm_harness::run::{ArmedMigrationProbe, SampleSpec, run_sample};
+    use arm_harness::run::{
+        ArmedMigrationProbe, SampleSpec, run_sample, run_sample_exact, step_run,
+    };
     use arm_harness::sys::{self, Machine, ParamsPage, PerfCounter, perf_config, pin_to_core};
     use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
@@ -865,6 +922,16 @@ fn execute(args: RunArgs) -> Result<(), String> {
     } else {
         args.scales.clone()
     };
+    // AA-3 exact landing (patched mechanism + a measured skid margin) draws targets no closer to
+    // MARK_BEGIN than `skid_margin + LANDING_HEADROOM`, so every target can be armed that full
+    // combined margin below and single-stepped up to its canonical landing PC; every other
+    // configuration draws from 1.
+    let target_lo = match args.skid_margin {
+        Some(margin) if matches!(args.mechanism, MechanismArg::Patched) => margin
+            .saturating_add(arm_harness::run::LANDING_HEADROOM)
+            .saturating_add(1),
+        _ => 1,
+    };
     let samples = plan(&plan_spec(
         args.seed,
         args.cases,
@@ -872,9 +939,15 @@ fn execute(args: RunArgs) -> Result<(), String> {
         args.with_targets,
         scales,
         &args.condition,
+        target_lo,
+        &args.exclude_payloads,
     ))
     .map_err(|e| e.to_string())?;
-    let attempted = samples.len() as u64;
+    let mut attempted = samples.len() as u64;
+    // The plan length, captured BEFORE single-step mode reassigns `attempted` to the
+    // step count. The totality checker binds every planned sample to this, so a dropped
+    // planned sample cannot hide behind densely-renumbered step records.
+    let planned = samples.len() as u64;
     // An empty plan measures nothing. `--reps 0` (or no payloads/scales) would
     // otherwise write an empty, all-passing run-set — a green verdict over zero
     // evidence, which is exactly the vacuity the whole apparatus refuses.
@@ -929,7 +1002,9 @@ fn execute(args: RunArgs) -> Result<(), String> {
             scale_index: s.scale.index(),
             seed: s.seed,
         };
-        let result = (|| {
+        // Both modes produce a Vec of records: counting mode one per sample, single-step mode
+        // one per STEP. Uniform so the collection and failure paths below are shared.
+        let result: Result<Vec<arm_harness::evidence::RunRecord>, String> = (|| {
             let mut machine = Machine::new(&loaded.image, &params)
                 .map_err(|e| format!("create the machine: {e}"))?;
             machine.set_watchdog_secs(args.watchdog_secs);
@@ -938,30 +1013,86 @@ fn execute(args: RunArgs) -> Result<(), String> {
             patch_marker = machine
                 .patch_marker_observed()
                 .map_err(|e| format!("probe the patch marker: {e}"))?;
-            // Opening the counter for the patched mechanism on a kernel that lacks the
-            // capability FAILS here. There is no code path from the patched request to
-            // the stock kick.
-            let mut counter = PerfCounter::open(&machine, mechanism_kind, s.target_delta)
-                .map_err(|e| format!("open the work counter: {e}"))?;
-            armed_attr = Some(*counter.attr());
-            let spec = SampleSpec {
-                sample_id: s.sample_id,
-                payload: s.payload,
-                scale: s.scale,
-                seed: s.seed,
-                trips: oracle_model::trips(s.payload, s.scale),
-                condition: s.condition.clone(),
-                target_delta: s.target_delta,
-                migration_probe: migration_probe.clone(),
-            };
-            run_sample(&mut machine, &mut counter, &spec).map_err(|e| e.to_string())
+            if args.single_step {
+                // AA-2: the counter is opened in COUNTING mode (no overflow armed — stepping
+                // arms guest debug, not a deadline), and the single-step run emits one record
+                // per KVM_EXIT_DEBUG. The migration probe is AA-1's alone, so no churner here.
+                let mut counter = PerfCounter::open(&machine, mechanism_kind, None)
+                    .map_err(|e| format!("open the work counter: {e}"))?;
+                armed_attr = Some(*counter.attr());
+                let spec = SampleSpec {
+                    sample_id: s.sample_id,
+                    payload: s.payload,
+                    scale: s.scale,
+                    seed: s.seed,
+                    trips: oracle_model::trips(s.payload, s.scale),
+                    condition: s.condition.clone(),
+                    target_delta: None,
+                    migration_probe: None,
+                };
+                step_run(&mut machine, &mut counter, &spec, args.max_steps)
+                    .map_err(|e| e.to_string())
+            } else {
+                // Opening the counter for the patched mechanism on a kernel that lacks the
+                // capability FAILS here. There is no code path from the patched request to
+                // the stock kick.
+                let mut counter = PerfCounter::open(&machine, mechanism_kind, s.target_delta)
+                    .map_err(|e| format!("open the work counter: {e}"))?;
+                armed_attr = Some(*counter.attr());
+                let spec = SampleSpec {
+                    sample_id: s.sample_id,
+                    payload: s.payload,
+                    scale: s.scale,
+                    seed: s.seed,
+                    trips: oracle_model::trips(s.payload, s.scale),
+                    condition: s.condition.clone(),
+                    target_delta: s.target_delta,
+                    migration_probe: migration_probe.clone(),
+                };
+                // AA-3 exact landing rides the patched mechanism WITH a measured skid margin:
+                // `run_sample_exact` re-arms the overflow `skid_margin` events below the target,
+                // takes the `Preempt` below target, then single-steps up to `work == target`
+                // (the run_until_overflow + single_step contract). A patched run WITHOUT a margin
+                // stays the arm-at-target reliability proxy; the stock kick stays `run_sample`.
+                match args.skid_margin {
+                    Some(margin) if matches!(mechanism_kind, sys::Mechanism::Preempt) => {
+                        run_sample_exact(&mut machine, &mut counter, &spec, margin)
+                            .map(|r| vec![r])
+                            .map_err(|e| e.to_string())
+                    }
+                    _ => run_sample(&mut machine, &mut counter, &spec)
+                        .map(|r| vec![r])
+                        .map_err(|e| e.to_string()),
+                }
+            }
         })();
         match result {
-            Ok(record) => records.push(record),
+            Ok(mut recs) => records.append(&mut recs),
             Err(e) => {
                 failure = Some(format!("sample {i} ({}): {e}", s.payload.name()));
                 break;
             }
+        }
+    }
+
+    // Single-step mode emits one record PER STEP, so the plan length is not the record count.
+    // Reassign dense sample ids across every stepped run and record how many steps were
+    // actually measured as `attempted` — the record-level totality check binds to the real
+    // records. The PLANNED sample count is retained separately (`planned`, above), and every
+    // step keeps the plan's stable `planned_sample_id`, so the checker requires distinct
+    // coverage of `0..planned` — dense renumbering or a duplicated step-zero row cannot make a
+    // dropped planned sample look complete.
+    if args.single_step {
+        for (i, r) in records.iter_mut().enumerate() {
+            r.sample_id = i as u64;
+        }
+        attempted = records.len() as u64;
+        if attempted == 0 && failure.is_none() {
+            failure = Some(
+                "the single-step run produced no step records: no KVM_EXIT_DEBUG landed, so the \
+                 stepping run path stepped nothing — a finding, not an empty pass"
+                    .to_string(),
+            );
         }
     }
 
@@ -1059,6 +1190,7 @@ fn execute(args: RunArgs) -> Result<(), String> {
             weights: args.weights,
             skid_margin: args.skid_margin,
             attempted,
+            planned,
         };
         let (manifest, records_jsonl) = assemble_run_set(context, &records)
             .map_err(|e| format!("assemble the run-set: {e}"))?;
@@ -1151,6 +1283,10 @@ fn run() -> Result<(), String> {
                 cases: opts.cases,
                 reps: opts.reps,
                 with_targets: opts.with_targets,
+                exclude_payloads: opts.exclude_payloads,
+                // AA-2 is the stepping stage, so it implies single-step even without the flag.
+                single_step: opts.single_step || matches!(opts.stage, StageArg::Aa2),
+                max_steps: opts.max_steps,
                 watchdog_secs: opts.watchdog_secs,
             })
         }
@@ -1164,5 +1300,29 @@ fn main() -> ExitCode {
             eprintln!("FAIL: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn aa2_cli_defaults_to_a_finite_step_budget() {
+        let command = Cli::command();
+        let run = command
+            .find_subcommand("run")
+            .expect("run subcommand must exist");
+        let max_steps = run
+            .get_arguments()
+            .find(|arg| arg.get_id() == "max_steps")
+            .expect("--max-steps must exist");
+        assert_eq!(
+            max_steps.get_default_values(),
+            [OsStr::new("12000")],
+            "AA-2 must fail closed with a finite default; explicit --max-steps 0 is the opt-in"
+        );
     }
 }

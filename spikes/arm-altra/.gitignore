@@ -7,3 +7,9 @@ target/
 # command (§Evidence integrity) — so the manifests land, the raw sample dumps do
 # not.
 results/**/raw/
+
+# AA-1(c) bulk runs carry ~250k records each (~100 MB). The raw per-sample dump is
+# too large for git; it stays on the box, content-addressed by the manifest's
+# `records_sha256`, graded there, and its floor-check verdict is what lands. The
+# run-set.json manifest (small) beside it is still tracked (§Evidence integrity).
+results/aa-1c/*-bulk/records.jsonl

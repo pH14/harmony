@@ -52,11 +52,12 @@ kind of thing that would silently break a time-virtualization assumption.
    reads `CNTVCT_EL0`; trapping it needs **FEAT_ECV** + the generic-timer offset/scaling
    registers, and a generic-timer/GIC device model instead of PIT/HPET/LAPIC. *Better on
    Spark (has ECV) than Grace (does not).*
-2. **PMU instruction clock (the hard bet).** x86: guest-only **retired conditional branches**
-   via perf_event, PMC-overflow → exit, single-step to exact count. ARM: the closest event is
-   `BR_RETIRED` (raw `0x21`) = **retired *taken* branches** — a *different* event. V-time =
-   f(taken-branches) is still deterministic in principle, but every `skid_margin` / event-
-   density constant in `vtime` was reasoned for conditional branches and must be re-measured.
+2. **PMU instruction clock (measured binding).** x86: guest-only **retired conditional
+   branches** via perf_event, PMC-overflow → exit, single-step to exact count. ARM:
+   `BR_RETIRED` (raw `0x21`) = **all architecturally executed branch instructions, taken or
+   not**, per N1 finding **AA1-F1** and the 2026-07-18 integrator ruling. This is a per-arch
+   binding; x86 is unchanged. Every `skid_margin` / event-density constant was therefore
+   re-measured on ARM rather than inherited from x86.
 3. **Guest-visible CPU contract.** `docs/CPU-MSR-CONTRACT.md` (~1640 lines) is entirely Intel
    CPUID leaves + IA32_* MSRs enforced via `KVM_X86_SET_MSR_FILTER` / VMX controls. There are
    no MSRs or CPUID on ARM. The analogue freezes the `ID_AA64*` ID registers and traps system-
@@ -116,9 +117,9 @@ is entirely PMU determinism on uncharacterized, heterogeneous client cores.
 pre-build ruling re-scopes what the gate sequences — construction no longer waits; trust,
 constants, and the trait freeze do. The measurement and its kill conditions are unchanged.)*
 
-Before any line of ARM `vmm-core`, run docs/PLAN.md's PMU precise-count spike on the actual box:
-measure whether `BR_RETIRED` (taken-branch) counting is **bit-deterministic** on one pinned
-X925 (Spark) or V2 (Grace), whether overflow interrupts fire reliably out of `KVM_RUN`, and
+Run docs/PLAN.md's PMU precise-count spike on the actual box: measure whether `BR_RETIRED`
+(all executed branch instructions, AA1-F1) counting is **bit-deterministic** on one pinned
+candidate core, whether overflow interrupts fire reliably out of `KVM_RUN`, and
 the **skid bound** (→ a port-specific `PlannerConfig::skid_margin`). Pin to one core type
 (heterogeneous PMUs on Spark; rr's big.LITTLE caveat applies). Confirm `ID_AA64MMFR0_EL1.ECV`
 on real silicon. If this spike fails, no arch abstraction saves the port — which is the

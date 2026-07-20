@@ -1,10 +1,9 @@
 # `schemas/` — canonical evidence formats + the floor-checker
 
-> **UNTESTED ON SILICON.** Nothing here has judged evidence produced by real
-> hardware. The schemas are the *shape* stages AA-0..AA-6 will fill; the fixtures
-> are synthesised from the oracle model, not measured. This directory is offline
-> apparatus built so that Altra arrival day is `scp + run`, not scaffolding
-> (`docs/ARM-ALTRA.md` §Execution constraints, task 109 deliverable 3).
+The checker graded retained N1 evidence under schema v3. Schema v4 is the offline
+totality/semantics hardening for the next run and has not yet been emitted on the box. The
+checked-in fixtures remain synthetic oracle outputs, not measurements; their role is to pin the
+acceptance and rejection logic.
 
 This is the part of the ARM spike that makes `docs/ARM-ALTRA.md` §Evidence integrity
 **mechanical**. That section was written after the nested-x86 review (2026-07-12,
@@ -27,7 +26,7 @@ whose records the checker accepts, under an explicit floor, has.
 | `run-record.schema.json` | One line of `records.jsonl`: one attempted sample. Mirrors `arm_harness::evidence::RunRecord`. Every attempted sample gets a record — a missing sample is a failure to account, not a pass. |
 | `truth-table.schema.json` | The AA-0 capability truth table: MIDR/SoC/core count, the standing core-assignment topology, and **thirteen mandatory** expect-vs-found rows (ECV **expect absent**, LSE **expect present**, PMUVer, SVE **expect absent**, BR_RETIRED-in-`PMCEID1` (event 0x21 is bit 1 of `PMCEID1_EL0`, which covers 0x20..0x3f; `PMCEID0_EL0` covers only 0x00..0x1f), **`perf_event_open` of raw 0x21 pinned SUCCEEDS**, **a host-side overflow test DELIVERS**, `/dev/kvm`, VHE-vs-nVHE, `KVM_CAP_SET_GUEST_DEBUG`, vGICv3 creatable, **the writable-ID-register surface**). The two work-clock rows are existential: AA-1 — the whole point of AA-0 — rests on them, so a schema-valid table cannot leave them unmeasured. Deviations must carry an explicit recorded disposition, including a *favourable* one. |
 | `floor-check/` | The Rust crate: the `floor-check` binary (the checker), the `gen-fixtures` binary (regenerates the fixtures from the model), and the accept/reject integration tests. |
-| `fixtures/` | Twenty-four checked-in run-sets — **four** the checker must accept (a patched AA-3 landing run, an AA-1 counting run, an AA-1(c) early/late skid-distribution run, and an AA-6 same-input gate), **twenty** it must reject (one per failure mode). Generated from the oracle model by `gen-fixtures`; committed as files because they are the evidence the tests read. |
+| `fixtures/` | Thirty-one checked-in run-sets — **seven** the checker must accept and **twenty-four** it must reject (one per pinned failure mode). Generated from the oracle model by `gen-fixtures`; committed as files because they are the evidence the tests read. |
 
 The schemas are JSON Schema **draft 2020-12**, hand-written, no codegen. They match
 `spikes/arm-altra/harness/src/evidence.rs` field-for-field: every generated fixture
