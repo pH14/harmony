@@ -65,7 +65,7 @@
 
 use std::path::PathBuf;
 
-use acceptance_suite::{CorpusItem, Oracle, check_determinism, load_manifest};
+use acceptance_suite::{CorpusItem, OracleKind, check_determinism, load_manifest};
 use sha2::{Digest, Sha256};
 use unison::{RunOutcome, Subject, SubjectFactory};
 use vmm_core::corpus::CorpusMachine;
@@ -215,7 +215,7 @@ fn sweep(items: &[CorpusItem], bless: bool) -> Vec<ItemVerdict> {
         let declares_o2 = item
             .oracles
             .iter()
-            .any(|o| matches!(o, Oracle::Conformance));
+            .any(|o| matches!(o, OracleKind::Conformance));
         if !declares_o2 {
             eprintln!(
                 "[box-corpus] {:<14} O2-deferred (timer/IRQ payload — needs vmm-core LAPIC/PIT/IRQ \
@@ -382,7 +382,7 @@ fn c1_corpus_o1_diagnostic() {
         if !item
             .oracles
             .iter()
-            .any(|o| matches!(o, Oracle::Conformance))
+            .any(|o| matches!(o, OracleKind::Conformance))
         {
             continue;
         }
