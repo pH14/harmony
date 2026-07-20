@@ -16,24 +16,43 @@ the box bare repo, **not pushed to origin** (overseer pushes). Evidence committe
 | AA-4 **W^X + rescan-on-exec** | hm-rfz | **PROVEN** — reject / selective-approve / write-revoke→rescan→stale-EINVAL |
 | AA-2 **single-step exactness** | hm-idb | **DEMONSTRATED** — full step matrix, 1 insn/step, replay-deterministic |
 | AA-6 **mini determinism gate** | hm-idb | **DEMONSTRATED** — ≥1000-rep bit-identity, patched mechanism |
+| AA-6 **contract: ID-freeze + vGIC round-trip** | hm-idb | **DEMONSTRATED** — below-host ID freeze held guest-visibly; PPI-20 vGIC state round-trips bit-identically |
 | PR-108 arrival-day P2s | hm-f99 | **DONE** — churner-list / trips-grading / image-keying + tests |
 
-## Blocked on new harness code (substrate — needs sign-off while PR #135 is under review)
+## AA-6 contract mechanisms — landed after the #135 green light
 
-These items each need a **new harness command** that does not exist today, so they are
-paused pending reconciliation with the review:
+New **additive** subcommands (own VM/vCPU/vGIC; no run-loop/W^X touch), both **PASS** on N1:
 
-- **AA-6 full injection matrix** — the `aa6-matrix` floor requires an armed+delivered
-  record for every windowed payload **and** a `LinuxGuest` class record; no path injects
-  into the running Linux guest and emits a run-set record. (The bare-payload mini-gate is
-  already DEMONSTRATED above.)
-- **vGIC save/restore round-trip** — harness has `KVM_DEV_ARM_VGIC_CTRL_INIT` only; no
-  save→restore→save-compare over `KVM_DEV_ARM_VGIC_GRP_*`.
-- **ID-register-freeze enforcement** — no command installs a shrunk synthetic ID model via
-  the writable-ID surface and verifies the guest sees frozen values (now known installable —
-  the AA-0 patched re-probe confirms the surface is present on 6.18.35).
-- **AA-4 concurrency gates** — notifier-replacement, two-vCPU scan/write race, and a live
-  backing-replacement command (only the portable predicate is committed in `sys.rs`).
+- **`vgic-roundtrip`** — AA-6(b) vGIC save/restore round-trip. PPI-20 injection state saves
+  via `KVM_DEV_ARM_VGIC_GRP_REDIST_REGS`, restores into a fresh vGIC byte-identical, with a
+  negative control. (`results/aa-6/live-20260720/vgic-roundtrip.json`.)
+- **`id-freeze`** — AA-6(a) ID-register-freeze enforcement. 8 `ID_AA64*` registers frozen
+  below host with the guest-visible read-back holding each; PMU denied to a featureless vCPU.
+  (`results/aa-6/live-20260720/id-freeze.json`.)
+
+## PR #135 P2 hardening — folded in (all three)
+
+- **F3-SCAN-SEG** — `aa4-exclusive-scan.py` now also walks executable `PT_LOAD` segments,
+  not just `SHF_EXECINSTR` sections (parity validated on-box; reused by the counter scan).
+- **F3-REJECT-PC** — the reject proof asserts `pc_after == pc_before` (validated).
+- **F3-GUARD-BUDGET** — guard exits charged to the guard-write `--max-exits` budget
+  (caller-side; write proof re-run PASS, no regression).
+
+## Still needing dedicated builds (post-window unless the window allows)
+
+Each needs new machinery beyond a self-contained command — a dedicated payload flow plus new
+`service_exec_guard` generation-tracking branches (concurrency) or a Linux-guest
+injection-record path (AA-6 matrix). The #135 substrate is cleared, so these are unblocked,
+but each is a multi-hour build:
+
+- **AA-6 full injection matrix** — needs a `LinuxGuest` armed+delivered run-set record
+  (injecting into the running guest and emitting a record); the bare-payload mini-gate is
+  already DEMONSTRATED above.
+- **AA-4 backing-replacement** live command — predicate committed (`sys.rs`); needs a
+  3-execute payload flow (exec→replace→exec→write→exec) + a `replace_exec_guard_backing`
+  method wired into the guard audit.
+- **AA-4 notifier-replacement** and **two-vCPU scan/write race** — memslot-invalidation
+  interposition; the latter also needs a 2-vCPU guarded machine (harness is single-vCPU).
 
 ## Host kernels built this window (`host/build-window-hosts.sh`)
 
