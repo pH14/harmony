@@ -117,6 +117,9 @@ enum Command {
     /// AA-4 concurrency: prove a memslot update's mmu-notifier invalidation forces the guard
     /// to re-scan an already-approved page (Linux/box only).
     Aa4GuardNotifier(Box<Aa4GuardNotifierOpts>),
+    /// AA-4 concurrency: prove moving slot 0 to a distinct byte-identical backing forces a
+    /// re-scan (approval keyed to the mapping, not content) (Linux/box only).
+    Aa4GuardBacking(Box<Aa4GuardNotifierOpts>),
     /// AA-6(a): install a below-host synthetic ID-register model and prove the guest sees the
     /// frozen values (Linux/box only).
     IdFreeze {
@@ -1377,15 +1380,27 @@ fn aa4_guard_write(_opts: Aa4GuardWriteOpts) -> Result<(), String> {
     Err("`arm-spike aa4-guard-write` issues KVM ioctls and needs /dev/kvm: it is Linux-only".into())
 }
 
-/// Run the `aa4-reexec` payload to completion under the guard. When `do_notifier`, replace the
-/// memslot at the first-execute marker. Returns `(guard_scans, first_scan_gen, last_scan_gen)`.
+/// The memslot operation the `aa4-reexec` harness interposes at the first-execute marker.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReexecSlotOp {
+    /// No memslot change — the second execute must reuse the approval (negative control).
+    None,
+    /// Re-add the SAME backing (notifier-replacement).
+    Notifier,
+    /// Move to a DISTINCT byte-identical backing (backing-replacement).
+    Backing,
+}
+
+/// Run the `aa4-reexec` payload to completion under the guard, applying `slot_op` at the
+/// first-execute marker. Returns `(target_scans, first_scan_gen, last_scan_gen)`.
 #[cfg(target_os = "linux")]
 fn aa4_run_reexec(
     image: &arm_harness::elf::Elf,
     target: u64,
     watchdog_secs: u64,
     max_exits: u64,
-    do_notifier: bool,
+    slot_op: ReexecSlotOp,
 ) -> Result<(u64, u64, u64), String> {
     use arm_harness::console::{Console, Event};
     use arm_harness::run::{PL011_DR, PL011_FR, PL011_FR_READY, Vcpu, VcpuExit};
@@ -1441,10 +1456,16 @@ fn aa4_run_reexec(
                         saw_first = true;
                         // The target's first execute has scanned+approved it. Interpose the
                         // memslot update here, before the second execute.
-                        if do_notifier && !replaced {
-                            machine
-                                .notifier_replace_slot0()
-                                .map_err(|e| format!("notifier-replace slot 0: {e}"))?;
+                        if !replaced {
+                            match slot_op {
+                                ReexecSlotOp::Notifier => machine
+                                    .notifier_replace_slot0()
+                                    .map_err(|e| format!("notifier-replace slot 0: {e}"))?,
+                                ReexecSlotOp::Backing => machine
+                                    .backing_replace_slot0()
+                                    .map_err(|e| format!("backing-replace slot 0: {e}"))?,
+                                ReexecSlotOp::None => {}
+                            }
                             replaced = true;
                         }
                     }
@@ -1507,11 +1528,21 @@ fn aa4_guard_notifier(opts: Aa4GuardNotifierOpts) -> Result<(), String> {
     pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
 
     // Negative control first: no memslot update — the second execute must reuse the approval.
-    let (ctrl_scans, ctrl_first_gen, ctrl_last_gen) =
-        aa4_run_reexec(&image, target, opts.watchdog_secs, opts.max_exits, false)?;
+    let (ctrl_scans, ctrl_first_gen, ctrl_last_gen) = aa4_run_reexec(
+        &image,
+        target,
+        opts.watchdog_secs,
+        opts.max_exits,
+        ReexecSlotOp::None,
+    )?;
     // Notifier run: replace the memslot at the marker — the second execute must re-scan.
-    let (notif_scans, notif_first_gen, notif_last_gen) =
-        aa4_run_reexec(&image, target, opts.watchdog_secs, opts.max_exits, true)?;
+    let (notif_scans, notif_first_gen, notif_last_gen) = aa4_run_reexec(
+        &image,
+        target,
+        opts.watchdog_secs,
+        opts.max_exits,
+        ReexecSlotOp::Notifier,
+    )?;
 
     let control_reused = ctrl_scans == 1;
     let notifier_rescanned = notif_scans == 2 && notif_last_gen > notif_first_gen;
@@ -1539,6 +1570,72 @@ fn aa4_guard_notifier(opts: Aa4GuardNotifierOpts) -> Result<(), String> {
 fn aa4_guard_notifier(_opts: Aa4GuardNotifierOpts) -> Result<(), String> {
     Err(
         "`arm-spike aa4-guard-notifier` issues KVM ioctls and needs /dev/kvm: it is Linux-only"
+            .into(),
+    )
+}
+
+/// AA-4 concurrency: moving RAM slot 0 to a DISTINCT byte-identical backing must force the
+/// guard to re-scan an already-approved page — the approval is keyed to the mapping, not to a
+/// content hash. Self-verifying via the same negative control as the notifier gate.
+#[cfg(target_os = "linux")]
+fn aa4_guard_backing(opts: Aa4GuardNotifierOpts) -> Result<(), String> {
+    use arm_harness::elf::Elf;
+    use arm_harness::sys::pin_to_core;
+
+    let (bytes, image_sha256) = verified_artifact(
+        &opts.image,
+        &opts.image_sha256,
+        "AA-4 reexec ELF",
+        arm_harness::linux_boot::MAX_IMAGE_BYTES,
+    )?;
+    let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", opts.image.display()))?;
+    let target = image
+        .symbol("aa4_reexec_target")
+        .map_err(|e| format!("resolve aa4_reexec_target: {e}"))?;
+    pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
+
+    let (ctrl_scans, ctrl_first_gen, ctrl_last_gen) = aa4_run_reexec(
+        &image,
+        target,
+        opts.watchdog_secs,
+        opts.max_exits,
+        ReexecSlotOp::None,
+    )?;
+    let (move_scans, move_first_gen, move_last_gen) = aa4_run_reexec(
+        &image,
+        target,
+        opts.watchdog_secs,
+        opts.max_exits,
+        ReexecSlotOp::Backing,
+    )?;
+
+    let control_reused = ctrl_scans == 1;
+    let backing_rescanned = move_scans == 2 && move_last_gen > move_first_gen;
+    println!(
+        "AA4_GUARD_BACKING image_sha256={image_sha256} \
+         control_scans={ctrl_scans} control_first_gen={ctrl_first_gen} control_last_gen={ctrl_last_gen} \
+         backing_scans={move_scans} backing_first_gen={move_first_gen} backing_last_gen={move_last_gen} \
+         control_reused_approval={control_reused} backing_forced_rescan={backing_rescanned}"
+    );
+    if control_reused && backing_rescanned {
+        println!(
+            "AA4_GUARD_BACKING PASS: moving slot 0 to a distinct byte-identical backing forced a \
+             fresh scan (gen {move_first_gen} -> {move_last_gen}); content unchanged, approval not \
+             reused across the move"
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "backing-replacement NOT proven: control_reused={control_reused} (want 1 scan) \
+             backing_rescanned={backing_rescanned} (want 2 scans, newer gen)"
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn aa4_guard_backing(_opts: Aa4GuardNotifierOpts) -> Result<(), String> {
+    Err(
+        "`arm-spike aa4-guard-backing` issues KVM ioctls and needs /dev/kvm: it is Linux-only"
             .into(),
     )
 }
@@ -2268,6 +2365,7 @@ fn run() -> Result<(), String> {
         Command::Aa4GuardReject(opts) => aa4_guard_reject(*opts),
         Command::Aa4GuardWrite(opts) => aa4_guard_write(*opts),
         Command::Aa4GuardNotifier(opts) => aa4_guard_notifier(*opts),
+        Command::Aa4GuardBacking(opts) => aa4_guard_backing(*opts),
         Command::IdFreeze { out } => id_freeze(out),
         Command::VgicRoundtrip { out } => vgic_roundtrip(out),
     }

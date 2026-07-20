@@ -1244,6 +1244,76 @@ impl Machine {
         Ok(())
     }
 
+    /// Move RAM slot 0 to a DISTINCT anonymous backing whose contents are byte-identical to
+    /// the current one. Unlike [`Machine::notifier_replace_slot0`] (which reinstates the same
+    /// backing), this proves the guard re-scans even when the page content is unchanged — the
+    /// approval is keyed to the mapping, not to a content hash. The old backing is unmapped.
+    ///
+    /// # Errors
+    /// [`SysError`] if the fresh mapping or either ioctl fails, or on an unguarded VM.
+    pub fn backing_replace_slot0(&mut self) -> Result<(), SysError> {
+        if self.exec_guard.is_none() {
+            return Err(SysError::Protocol(
+                "backing-replacement needs the stage-2 execute guard".into(),
+            ));
+        }
+        let len = self.mem_size;
+        let fresh = map_guest_ram(len)?;
+        // SAFETY: `self.mem` and `fresh` are both live, uniquely-owned, `len`-byte mappings
+        // that do not overlap (distinct anonymous mmaps); copy the full guest RAM verbatim.
+        unsafe { core::ptr::copy_nonoverlapping(self.mem, fresh, len) };
+
+        let memory_size = len as u64;
+        let delete = KvmUserspaceMemoryRegion {
+            slot: 0,
+            flags: 0,
+            guest_phys_addr: RAM_BASE,
+            memory_size: 0,
+            userspace_addr: self.mem as u64,
+        };
+        // SAFETY: `vm_fd` is valid; `delete` is a fully initialised memory-region struct.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::SET_USER_MEMORY_REGION as libc::c_ulong,
+                &raw const delete,
+            )
+        } < 0
+        {
+            let e = err("ioctl(KVM_SET_USER_MEMORY_REGION delete)");
+            // SAFETY: `fresh` is a live `len`-byte mapping owned here; nothing else aliases it.
+            unsafe { libc::munmap(fresh.cast::<libc::c_void>(), len) };
+            return Err(e);
+        }
+        let add = KvmUserspaceMemoryRegion {
+            slot: 0,
+            flags: 0,
+            guest_phys_addr: RAM_BASE,
+            memory_size,
+            userspace_addr: fresh as u64,
+        };
+        // SAFETY: `vm_fd` is valid; `add` points slot 0 at the fresh identical backing.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::SET_USER_MEMORY_REGION as libc::c_ulong,
+                &raw const add,
+            )
+        } < 0
+        {
+            let e = err("ioctl(KVM_SET_USER_MEMORY_REGION re-add fresh backing)");
+            // SAFETY: `fresh` is a live `len`-byte mapping owned here; nothing else aliases it.
+            unsafe { libc::munmap(fresh.cast::<libc::c_void>(), len) };
+            return Err(e);
+        }
+        // The move succeeded: free the old backing and adopt the new one.
+        // SAFETY: the old `self.mem` mapping is no longer referenced by the slot; this machine
+        // owns it and nothing else aliases it.
+        unsafe { libc::munmap(self.mem.cast::<libc::c_void>(), len) };
+        self.mem = fresh;
+        Ok(())
+    }
+
     fn exec_guard_reply_generation(
         &self,
         gpa: u64,
