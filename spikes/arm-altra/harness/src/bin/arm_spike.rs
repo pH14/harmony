@@ -1214,7 +1214,21 @@ fn aa4_guard_write(opts: Aa4GuardWriteOpts) -> Result<(), String> {
     let mut saw_pass = false;
     let mut completed = None;
     for exits in 1..=opts.max_exits {
-        match Vcpu::run(&mut machine).map_err(|e| format!("run self-modifying payload: {e}"))? {
+        let exit =
+            Vcpu::run(&mut machine).map_err(|e| format!("run self-modifying payload: {e}"))?;
+        // F3-GUARD-BUDGET: the guard's scan/approve/reject exits are serviced inside
+        // `Vcpu::run` and never reach this caller-visible loop, so counting only
+        // caller-visible exits let an adversarial guest mint unbounded guard work under a
+        // small `--max-exits`. Charge cumulative guard exits to the same budget.
+        let guard_exits = machine.exec_guard_stats().map_or(0, |s| s.exits);
+        if exits.saturating_add(guard_exits) > opts.max_exits {
+            return Err(format!(
+                "guard exits ({guard_exits}) plus caller-visible exits ({exits}) exceeded \
+                 --max-exits {} — refusing unbounded guard work",
+                opts.max_exits
+            ));
+        }
+        match exit {
             VcpuExit::Mmio {
                 addr,
                 data,
