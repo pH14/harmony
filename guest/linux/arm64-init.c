@@ -160,8 +160,10 @@ static void el0_counter_probe(void)
 	int status;
 
 	pid = (long)syscall5(NR_CLONE, SIGCHLD, 0, 0, 0, 0);
-	if (pid < 0)
+	if (pid < 0) {
+		write_all("HARMONY_AA5_EL0_CLONE_FAIL\n");
 		fail();
+	}
 	if (pid == 0)
 		el0_probe_child();
 	status = (int)wait_for(pid);
@@ -169,8 +171,12 @@ static void el0_counter_probe(void)
 		write_all("HARMONY_AA5_EL0_CNTVCT_UNDEF_OK\n");
 	} else if ((status & 0x7f) == 0 && ((status >> 8) & 0xff) == 0) {
 		write_all("HARMONY_AA5_EL0_CNTVCT_PAGE_OK\n");
+	} else if ((status & 0x7f) == 0 && ((status >> 8) & 0xff) == EL0_PROBE_LIVE_EXIT) {
+		/* The EL0 read observed a moving value: the raw counter is reachable. */
+		write_all("HARMONY_AA5_EL0_LIVE_COUNTER_HOLE\n");
+		fail();
 	} else {
-		/* A live-counter observation (exit 7) or anything else is a closure hole. */
+		write_all("HARMONY_AA5_EL0_WAIT_STATUS_FAIL\n");
 		fail();
 	}
 
@@ -181,8 +187,10 @@ static void el0_counter_probe(void)
 	if (pid == 0)
 		exit_group(42);
 	status = (int)wait_for(pid);
-	if ((status & 0x7f) != 0 || ((status >> 8) & 0xff) != 42)
+	if ((status & 0x7f) != 0 || ((status >> 8) & 0xff) != 42) {
+		write_all("HARMONY_AA5_EL0_CONTROL_FAIL\n");
 		fail();
+	}
 	write_all("HARMONY_AA5_EL0_PROBE_CONTROL_OK\n");
 }
 #endif
