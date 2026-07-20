@@ -27,7 +27,7 @@ pub const DTB_GPA: u64 = RAM_BASE + 0x0f00_0000;
 /// Largest Image file the fixed layout will read before validation. The
 /// effective Image extent must end before the initramfs placement (and the
 /// pvclock overlap check is tighter for ordinary nonzero text offsets).
-pub const MAX_IMAGE_BYTES: u64 = INITRAMFS_GPA - RAM_BASE;
+pub const MAX_IMAGE_BYTES: u64 = INITRAMFS_GPA - RAM_BASE - KERNEL_LOAD_OFFSET;
 /// Largest initramfs file that can end before the fixed DTB placement.
 pub const MAX_INITRAMFS_BYTES: u64 = DTB_GPA - INITRAMFS_GPA;
 
@@ -53,6 +53,12 @@ const UART_SPI: u32 = 1;
 pub struct BoardLayout {
     /// GPA of the RAM slice's first byte.
     pub ram_base: u64,
+    /// Offset from `ram_base` at which the kernel image is placed (before the
+    /// header's own `text_offset`). A real 6.18 `Image` carries `text_offset` 0,
+    /// which would sit the kernel's first pages exactly over the reserved low
+    /// pages (params, pvclock) — and the host publishes into the pvclock page
+    /// live, so the kernel must load wholly above them.
+    pub kernel_offset: u64,
     /// Reserved host-maintained clock page.
     pub pvclock_gpa: u64,
     /// One-shot guest-to-host pvclock registration MMIO page.
@@ -63,9 +69,14 @@ pub struct BoardLayout {
     pub dtb_gpa: u64,
 }
 
+/// Kernel placement offset on the real board: the arm64 boot protocol accepts
+/// any 2 MiB-aligned base, and 2 MiB clears the reserved low pages.
+pub const KERNEL_LOAD_OFFSET: u64 = 0x0020_0000;
+
 /// The AA-5(c) board layout used on the Altra.
 pub const BOARD: BoardLayout = BoardLayout {
     ram_base: RAM_BASE,
+    kernel_offset: KERNEL_LOAD_OFFSET,
     pvclock_gpa: PVCLOCK_GPA,
     pvclock_register_base: PVCLOCK_REGISTER_BASE,
     initramfs_gpa: INITRAMFS_GPA,
@@ -264,17 +275,21 @@ fn load_at(
             ram_start: board.ram_base,
             ram_end: u64::MAX,
         })?;
-    let kernel_start =
-        board
-            .ram_base
-            .checked_add(text_offset)
-            .ok_or(LinuxBootError::OutsideRam {
-                artifact: "Image",
-                start: board.ram_base,
-                end: u64::MAX,
-                ram_start: board.ram_base,
-                ram_end,
-            })?;
+    let kernel_start = board
+        .ram_base
+        .checked_add(board.kernel_offset)
+        .and_then(|base| {
+            // The protocol places the image text_offset bytes past a 2 MiB-aligned base.
+            base.is_multiple_of(0x0020_0000).then_some(base)
+        })
+        .and_then(|base| base.checked_add(text_offset))
+        .ok_or(LinuxBootError::OutsideRam {
+            artifact: "Image",
+            start: board.ram_base,
+            end: u64::MAX,
+            ram_start: board.ram_base,
+            ram_end,
+        })?;
     let kernel_span = (image.len() as u64).max(image_size);
     let kernel = Region::new("Image", kernel_start, kernel_span, board.ram_base, ram_end)?;
     let pvclock = Region::new("pvclock", board.pvclock_gpa, PAGE, board.ram_base, ram_end)?;
@@ -652,6 +667,7 @@ mod tests {
 
     const TEST_BOARD: BoardLayout = BoardLayout {
         ram_base: 0x4000_0000,
+        kernel_offset: 0,
         pvclock_gpa: 0x4000_1000,
         pvclock_register_base: PVCLOCK_REGISTER_BASE,
         initramfs_gpa: 0x4000_8000,
@@ -763,6 +779,39 @@ mod tests {
         .unwrap();
         assert_eq!(loaded, again);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn a_real_shape_image_loads_above_the_reserved_low_pages() {
+        // A pinned 6.18 Image carries text_offset 0: without the board's kernel_offset
+        // its footprint would cover the pvclock page the host publishes into. This is
+        // the on-silicon 2026-07-20 finding, locked in both directions.
+        let board = BoardLayout {
+            ram_base: 0x4000_0000,
+            kernel_offset: 0x0020_0000,
+            pvclock_gpa: 0x4000_1000,
+            pvclock_register_base: PVCLOCK_REGISTER_BASE,
+            initramfs_gpa: 0x4000_0000 + 0x0040_0000,
+            dtb_gpa: 0x4000_0000 + 0x0060_0000,
+        };
+        let image = image(0, 0x0018_0000, 0, 256);
+        let initramfs = vec![0x5a; 512];
+        let mut ram = vec![0u8; 0x0080_0000];
+        let loaded = load_at(board, &image, &initramfs, "nohlt", &mut ram).unwrap();
+        assert_eq!(loaded.entry_gpa, board.ram_base + 0x0020_0000);
+        assert_eq!(
+            &ram[0x0020_0000..0x0020_0000 + image.len()],
+            image.as_slice()
+        );
+
+        // The same image against a kernel_offset-0 board must be REFUSED, not loaded
+        // over the live-published page.
+        let overlapping = BoardLayout {
+            kernel_offset: 0,
+            ..board
+        };
+        let err = load_at(overlapping, &image, &initramfs, "nohlt", &mut ram).unwrap_err();
+        assert!(matches!(err, LinuxBootError::Overlap { .. }), "{err:?}");
     }
 
     #[test]
