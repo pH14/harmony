@@ -73,7 +73,9 @@ build_one() {
   scripts/config --disable DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT --enable DEBUG_INFO_NONE
   scripts/config --set-str LOCALVERSION "$localversion"
   scripts/config --disable LOCALVERSION_AUTO
-  yes '' | make ARCH=arm64 olddefconfig
+  # NOT `yes '' | make`: under pipefail, yes dies of SIGPIPE when make exits
+  # and silently kills the script. olddefconfig never prompts.
+  make ARCH=arm64 olddefconfig </dev/null
   grep -E '^CONFIG_KVM=' .config
   grep -E '^CONFIG_LOCALVERSION=' .config
 
