@@ -876,6 +876,7 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
     use arm_harness::linux_console::{
         LinuxConsoleConfig, LinuxWorkClockConfig, run_until_ready_work_clock,
     };
+    use arm_harness::run::Vcpu as _;
     use arm_harness::sys::{Machine, Mechanism, PerfCounter, pin_to_core};
     use sha2::{Digest, Sha256};
 
@@ -935,6 +936,13 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
     }
     let guard = guard.unwrap_or_default();
 
+    // The run ends at the canonical landing of the first exact publication after the
+    // marker latched, so this digest is landing-anchored state identity — the value the
+    // AA-5(c) same-seed gate compares across runs (console alone cannot prove state).
+    let state_digest = machine
+        .state_digest()
+        .map_err(|e| format!("digest final machine state: {e}"))?;
+
     let mut transcript = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -962,7 +970,7 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
          clockevent_assertions={} clockevent_acks={} clockevent_max_lateness_ticks={} \
          exec_guard_enabled={} exec_guard_exits={} exec_guard_scans={} exec_guard_approvals={} \
          exec_guard_rejections={} exec_guard_write_revocations={} exec_guard_blocked_writes={} \
-         transcript={}",
+         state_digest={} transcript={}",
         result.boot.exits,
         result.boot.console.len(),
         console_sha256,
@@ -983,6 +991,7 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
         guard.rejections,
         guard.write_revocations,
         guard.blocked_writes,
+        state_digest,
         opts.console_out.display()
     );
     println!(
