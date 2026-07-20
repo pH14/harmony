@@ -59,7 +59,7 @@ Harmony repository's designated guest-kernel patch exception.
  obj-$(CONFIG_ARMV7M_SYSTICK)		+= armv7m_systick.o
 --- /dev/null
 +++ b/drivers/clocksource/harmony_arm_pvclock.c
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,130 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Harmony's materialized work-derived arm64 clock page.
