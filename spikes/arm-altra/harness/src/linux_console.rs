@@ -449,6 +449,14 @@ impl LinuxConsoleCapture {
                 });
             }
             self.console.push(data[0]);
+            // Diagnostic (env-gated, off by default): tee console bytes to stderr as they
+            // arrive, so a boot that FAILS before the marker still leaves its transcript
+            // (the success path alone persists `console`).
+            #[cfg(not(miri))]
+            if std::env::var_os("AA5_TEE_CONSOLE").is_some() {
+                use std::io::Write as _;
+                let _ = std::io::stderr().write_all(&data[..1]);
+            }
             self.ready = self.marker.push(data[0]);
         } else {
             let bytes = read_value(offset).to_le_bytes();
