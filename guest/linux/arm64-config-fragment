@@ -10,11 +10,11 @@ CONFIG_LOCALVERSION=""
 
 ## Deterministic CRNG seed. The guest's only non-work entropy source is the
 ## timing-jitter harvester (try_to_generate_entropy), driven by the wall-clock
-## hrtimer, which breaks same-seed state identity (AA-5, 2026-07-20). Crediting the
-## fixed /chosen/rng-seed the harness DTB provides as full entropy makes crng_ready()
-## hold before wait_for_random_bytes, so the jitter loop never runs.
-CONFIG_RANDOM_TRUST_BOOTLOADER=y
-# CONFIG_RANDOM_TRUST_CPU is not set
+## hrtimer, which breaks same-seed state identity (AA-5, 2026-07-20). The harness DTB
+## provides a fixed /chosen/rng-seed; drivers/of/fdt.c credits it as full entropy
+## because random.c's trust_bootloader defaults true in 6.18 (no Kconfig symbol), so
+## crng_ready() holds before wait_for_random_bytes and the jitter loop never runs. No
+## CONFIG toggle is needed or exists; do NOT pass random.trust_bootloader=0.
 
 ## One DT-presented vCPU and no autonomous host-frequency policy
 # arm64 v6.18 makes CONFIG_SMP unconditional and NR_CPUS has a minimum of 2;
