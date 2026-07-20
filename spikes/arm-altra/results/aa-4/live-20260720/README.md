@@ -28,3 +28,19 @@ under the guard.
 ## Remaining (recorded, not run this window)
 Notifier-replacement invalidation, two-vCPU concurrent scan/write race, and the
 backing-replacement move (portable predicate committed at `sys.rs`; no live command yet).
+
+## AA-4 concurrency: notifier-replacement — PASS (`notifier.out`)
+
+`aa4-guard-notifier` (payload `aa4-reexec`: execute a clean page, marker, execute the SAME
+unchanged page again). A memslot update's mmu-notifier invalidation must force the guard to
+re-scan an already-approved page — proven with a self-verifying negative control:
+
+- **control** (no memslot op): the target page's approval is REUSED on the second execute —
+  `control_scans=1`, generation stable at 4.
+- **notifier** (delete + re-add slot 0, same backing, at the marker): the second execute
+  RE-SCANS — `notifier_scans=2`, generation **4 → 7**.
+
+Because the page is never modified, the second scan is attributable only to the memslot
+update's invalidation. `notifier_forced_rescan=true` and `control_reused_approval=true`.
+Target-page-specific `audit.exec_scans` isolates the effect (a memslot replace re-scans every
+executable page; only the audited target measures the approval invalidation on it).

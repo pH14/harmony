@@ -1,0 +1,2 @@
+AA4_GUARD_NOTIFIER image_sha256=5663156cb83fdbecff36282065db54ce05634b1e7ec37f96190a2f93b97b1d99 control_scans=1 control_first_gen=4 control_last_gen=4 notifier_scans=2 notifier_first_gen=4 notifier_last_gen=7 control_reused_approval=true notifier_forced_rescan=true
+AA4_GUARD_NOTIFIER PASS: a memslot update forced a fresh scan (gen 4 -> 7) where the unchanged page otherwise reused its approval
