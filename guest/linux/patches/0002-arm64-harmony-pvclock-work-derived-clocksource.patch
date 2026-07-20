@@ -325,7 +325,7 @@ diff --git a/arch/arm64/kernel/process.c b/arch/arm64/kernel/process.c
 diff --git a/drivers/char/random.c b/drivers/char/random.c
 --- a/drivers/char/random.c
 +++ b/drivers/char/random.c
-@@ -1104,10 +1104,18 @@ void add_interrupt_randomness(int irq)
+@@ -1105,12 +1105,24 @@ void add_interrupt_randomness(int irq)
  {
  	enum { MIX_INFLIGHT = 1U << 31 };
 -	unsigned long entropy = random_get_entropy();
