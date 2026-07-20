@@ -583,13 +583,19 @@ fn check_aggregation(
     // part of the measurement environment, but its ONE sanctioned exception is per-SET, not
     // per-stage: only AA-1's migration probe (the one set that runs unpinned by design) may
     // differ; every normal set — AA-1's ordinary condition sets included — must share one
-    // posture, checked against a non-probe reference below. The workload identity is the set
-    // of image content hashes (paths are never trusted).
-    let image_ids = |rs: &RunSet| -> Vec<String> {
-        let mut v: Vec<String> = rs
+    // posture, checked against a non-probe reference below. The workload identity is the
+    // content hash PER PINNED ARTIFACT NAME, not an unordered hash multiset: two sets whose
+    // straight-line and branch-dense binaries swapped hashes carry the same multiset while
+    // measuring different workloads under each label. The path basename is only the
+    // comparison KEY (the label the pin was recorded under); the hash stays the identity.
+    let image_ids = |rs: &RunSet| -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = rs
             .images
             .iter()
-            .map(|i| normalise_hash(&i.sha256))
+            .map(|i| {
+                let name = i.path.rsplit('/').next().unwrap_or(&i.path).to_owned();
+                (name, normalise_hash(&i.sha256))
+            })
             .collect();
         v.sort();
         v
@@ -1506,6 +1512,21 @@ fn check_counts(weights: &Weights, records: &[RunRecord], stage: Stage, out: &mu
                 "sample {}: work_end {} is before work_begin {} (negative window)",
                 r.sample_id, r.work_end, r.work_begin
             )),
+        }
+
+        // The trip count the record claims the payload was given must be the analytic
+        // per-(payload, scale) constant the oracle grades against — a zeroed or corrupt
+        // `trips` field must not ride through count-exactness ungraded.
+        let expected_trips = trips(r.payload, r.scale);
+        if r.trips != expected_trips {
+            problems.push(format!(
+                "sample {}: payload {} scale {} carries trips {} but the oracle defines {}",
+                r.sample_id,
+                r.payload.name(),
+                r.scale.name(),
+                r.trips,
+                expected_trips
+            ));
         }
 
         // The oracle is only defined for payloads that have a counting window.
@@ -4210,6 +4231,32 @@ mod tests {
             status(&aggregate(&im, &floors).outcomes, CheckId::Aggregation),
             Some(Status::Fail)
         );
+
+        // The same hash MULTISET with a swapped per-artifact assignment → refused: keying
+        // the comparison by artifact name catches a straight-line/branch-dense binary swap
+        // that an unordered hash comparison would accept.
+        let mut sw = pair();
+        for (which, entry) in sw.iter_mut().enumerate() {
+            let (first, second) = if which == 0 { ("a", "b") } else { ("b", "a") };
+            entry.0.images = vec![
+                ImagePin {
+                    path: "payloads/straight-line".into(),
+                    sha256: first.repeat(64),
+                    md5: None,
+                    verified_before_boot: true,
+                },
+                ImagePin {
+                    path: "payloads/branch-dense".into(),
+                    sha256: second.repeat(64),
+                    md5: None,
+                    verified_before_boot: true,
+                },
+            ];
+        }
+        assert_eq!(
+            status(&aggregate(&sw, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Fail)
+        );
     }
 
     #[test]
@@ -5889,6 +5936,30 @@ mod tests {
             status(&out, CheckId::CountExactness),
             Some(Status::Fail),
             "an unrepresentable prediction is malformed evidence, not a valid count"
+        );
+    }
+
+    #[test]
+    fn a_zeroed_trips_field_fails_count_exactness() {
+        // The record's trips claim is graded against the analytic per-(payload, scale)
+        // constant — a zeroed field must not ride through count-exactness ungraded.
+        let weights = Weights::measured(1, 1, 1, 1, 1);
+        let mut out = Vec::new();
+        check_counts(&weights, &[a_record(0)], Stage::Aa1, &mut out);
+        assert_eq!(
+            status(&out, CheckId::CountExactness),
+            Some(Status::Pass),
+            "the unmodified fixture must pass so the failure below is attributable to trips"
+        );
+
+        let mut r = a_record(0);
+        r.trips = 0;
+        let mut out = Vec::new();
+        check_counts(&weights, &[r], Stage::Aa1, &mut out);
+        assert_eq!(
+            status(&out, CheckId::CountExactness),
+            Some(Status::Fail),
+            "a trips claim disagreeing with oracle_model::trips is corrupt evidence"
         );
     }
 
