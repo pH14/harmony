@@ -69,12 +69,12 @@ def executable_words(path: str):
         machine,
         version,
         _entry,
-        _program_offset,
+        program_offset,
         section_offset,
         _flags,
         elf_header_size,
-        _program_entry_size,
-        _program_count,
+        program_entry_size,
+        program_count,
         section_entry_size,
         section_count,
         string_section_index,
@@ -134,8 +134,44 @@ def executable_words(path: str):
             addresses.add(word_address)
             word = int.from_bytes(section[word_offset : word_offset + 4], "little")
             words.append((word_address, word, name))
+
+    # F3-SCAN-SEG: also walk executable PT_LOAD SEGMENTS, not just SHF_EXECINSTR sections.
+    # The stage-2 execute guard scans whatever the guest makes executable at PAGE/segment
+    # granularity; a word in an executable segment that lies in a non-exec-flagged section
+    # (or in no section at all) is still executable in the guest and must be scanned. Union
+    # the segment words with the section words (dedup by address); a segment word already
+    # covered by a section keeps the section's label.
+    program_header = "<IIQQQQQQ"  # p_type, p_flags, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_align
+    if program_count and program_entry_size >= struct.calcsize(program_header):
+        table_size = program_count * program_entry_size
+        if program_offset > len(data) or table_size > len(data) - program_offset:
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: program table outside file")
+        for index in range(program_count):
+            off = program_offset + index * program_entry_size
+            p_type, p_flags, p_offset, p_vaddr, _paddr, p_filesz, _memsz, _align = struct.unpack_from(
+                program_header, data, off
+            )
+            if p_type != 1 or p_flags & 0x1 == 0:  # PT_LOAD with PF_X
+                continue
+            if p_vaddr % 4 != 0 or p_filesz % 4 != 0:
+                raise SystemExit(f"SCANNER ELF ERROR for {path}: unaligned executable segment {index}")
+            if p_offset > len(data) or p_filesz > len(data) - p_offset:
+                raise SystemExit(f"SCANNER ELF ERROR for {path}: executable segment {index} outside file")
+            if p_filesz > (1 << 64) - p_vaddr:
+                raise SystemExit(f"SCANNER ELF ERROR for {path}: executable segment {index} wraps")
+            segment = data[p_offset : p_offset + p_filesz]
+            label = f"<exec-segment {index}>"
+            for word_offset in range(0, p_filesz, 4):
+                word_address = p_vaddr + word_offset
+                if word_address in addresses:
+                    continue  # already scanned as part of an executable section
+                addresses.add(word_address)
+                word = int.from_bytes(segment[word_offset : word_offset + 4], "little")
+                words.append((word_address, word, label))
+
     if not words:
         raise SystemExit(f"SCANNER ELF ERROR for {path}: no executable words")
+    words.sort(key=lambda w: w[0])
     return words
 
 

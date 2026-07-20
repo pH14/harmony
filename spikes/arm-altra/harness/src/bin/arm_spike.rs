@@ -1099,6 +1099,9 @@ fn aa4_guard_reject(opts: Aa4GuardRejectOpts) -> Result<(), String> {
     if exclusive_hazards == 0
         || hazards < exclusive_hazards
         || generation == 0
+        // F3-REJECT-PC: the guest must not have advanced AT ALL — a page rejected before its
+        // first execute leaves PC exactly at entry, not merely somewhere in the rejected page.
+        || pc_after != pc_before
         || gpa != pc_after & !0xfff
         || stats.rejections != 1
         || stats.scans != stats.approvals.saturating_add(stats.rejections)
