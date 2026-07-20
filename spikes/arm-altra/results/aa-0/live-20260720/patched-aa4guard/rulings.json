@@ -1,0 +1,5 @@
+{
+  "writable-id-registers": "RULED 2026-07-17 (stock 6.8) / RE-PROBED 2026-07-20 (patched 6.18.35-aa4guard): PRESENT on the patched host — the whole enumerated ID_AA64* surface is writable (reduced write + read-back) or carries no reducible field. The stock-6.8 ID_AA64PFR1_EL1 freeze does NOT recur on 6.18.35, so AA-6(a)'s whole-surface synthetic ID-register freeze can install via KVM's writable-ID surface on the determinism host. Row is CONFIRMED on the patched host, no longer a pending re-probe.",
+  "kvm-cap-arm-deterministic-intercepts": "RULED 2026-07-20: PRESENT on 6.18.35-aa4guard by construction — host patch 0001 adds KVM_CAP_ARM_DETERMINISTIC_INTERCEPTS / KVM_EXIT_PREEMPT (the AA-3 in-kernel force-exit). Absent on stock 6.8 (as expected there); its presence on the patched host is the intended, favourable deviation, not a stop.",
+  "kvm-cap-arm-stage2-exec-guard": "RULED 2026-07-20: PRESENT on 6.18.35-aa4guard by construction — host patch 0002 adds KVM_CAP_ARM_STAGE2_EXEC_GUARD=246 / exit 43 (the AA-4 W^X execute guard). Absent on stock 6.8 (as expected there); its presence on the patched host is the intended, favourable deviation, not a stop."
+}
