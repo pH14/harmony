@@ -56,7 +56,7 @@ def load_run(run_dir: Path):
     for marker in REQUIRED_MARKERS:
         if marker not in console:
             raise SystemExit(f"FAIL: {run_dir}: console lacks {marker.decode()}")
-    if not re.fullmatch(r"[0-9a-f]{16,}", fields["state_digest"]):
+    if not re.fullmatch(r"(sha256:)?[0-9a-f]{16,}", fields["state_digest"]):
         raise SystemExit(f"FAIL: {run_dir}: malformed state_digest")
     return fields, recomputed, console
 
