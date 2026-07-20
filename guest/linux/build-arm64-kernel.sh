@@ -11,7 +11,27 @@ cd "$(dirname "$0")"
 
 require_linux_aarch64
 require_tools cc make flex bison bc xz gzip patch objdump python3
-extract_kernel
+
+# The arm64 patch stack overlaps itself (0003/0004 modify files 0002 creates), so a
+# per-patch "already applied?" probe cannot certify a previously patched tree — and the
+# x86 recipe patches the shared $KSRC extract with its own stack. Build from a dedicated
+# tree re-extracted pristine on every run, and rebuild the object dir with it.
+ARM64_SRC_ROOT=$BUILD_ROOT/arm64-src
+kernel_tarball=$DL_DIR/$(basename "$KERNEL_URL")
+if [ ! -f "$kernel_tarball" ]; then
+    echo "FAIL: $kernel_tarball missing — run 'make -C guest fetch' first (needs network once)" >&2
+    exit 1
+fi
+got=$(sha256_of "$kernel_tarball")
+if [ "$got" != "$KERNEL_SHA256" ]; then
+    echo "FAIL: $kernel_tarball sha256 mismatch (want $KERNEL_SHA256, got $got)" >&2
+    exit 1
+fi
+echo "== arm64 kernel: pristine extract of linux-$KERNEL_VERSION (sha256 verified)"
+rm -rf "$ARM64_SRC_ROOT" "$ARM64_KOBJ"
+mkdir -p "$ARM64_SRC_ROOT"
+tar -xf "$kernel_tarball" -C "$ARM64_SRC_ROOT"
+KSRC=$ARM64_SRC_ROOT/linux-$KERNEL_VERSION
 
 apply_kernel_patch() {
     patch_file=$1
@@ -20,15 +40,12 @@ apply_kernel_patch() {
         echo "FAIL: required $patch_label kernel patch is missing: $patch_file" >&2
         exit 1
     fi
-    if (cd "$KSRC" && patch -p1 -R --dry-run --force <"$patch_file") >/dev/null 2>&1; then
-        echo "== arm64 kernel: $patch_label patch already applied"
-    elif (cd "$KSRC" && patch -p1 --dry-run --force <"$patch_file") >/dev/null 2>&1; then
-        echo "== arm64 kernel: applying $patch_label patch"
-        (cd "$KSRC" && patch -p1 --force <"$patch_file")
-    else
-        echo "FAIL: $patch_label patch is neither cleanly applied nor cleanly applicable" >&2
+    if ! (cd "$KSRC" && patch -p1 --dry-run --force <"$patch_file") >/dev/null 2>&1; then
+        echo "FAIL: $patch_label patch does not apply cleanly to the pristine tree" >&2
         exit 1
     fi
+    echo "== arm64 kernel: applying $patch_label patch"
+    (cd "$KSRC" && patch -p1 --force <"$patch_file")
 }
 
 apply_kernel_patch \
