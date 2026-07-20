@@ -10,12 +10,30 @@ the box bare repo, **not pushed to origin** (overseer pushes). Evidence committe
 
 | Item | Bead | Result |
 |------|------|--------|
+| AA-0 **capability truth-table + reboot-determinism** | hm-idb | **PASS** — stock-6.8 byte-identical across 3 reboots; patched-host re-probe shows writable-ID surface present |
 | AA-5(c) paravirt-clock **mechanism** | hm-9r1 | **PROVEN** — boot to steady state; same-seed console + register identity; counter fully page-routed (0 raw `cntvct`); EL0 closure |
 | AA-5(c) full-RAM **state identity** | hm-9r1 | **CHARACTERIZED RESIDUAL** — kernel-CRNG entropy (2 channels closed, 1 remains) |
 | AA-4 **W^X + rescan-on-exec** | hm-rfz | **PROVEN** — reject / selective-approve / write-revoke→rescan→stale-EINVAL |
 | AA-2 **single-step exactness** | hm-idb | **DEMONSTRATED** — full step matrix, 1 insn/step, replay-deterministic |
 | AA-6 **mini determinism gate** | hm-idb | **DEMONSTRATED** — ≥1000-rep bit-identity, patched mechanism |
 | PR-108 arrival-day P2s | hm-f99 | **DONE** — churner-list / trips-grading / image-keying + tests |
+
+## Blocked on new harness code (substrate — needs sign-off while PR #135 is under review)
+
+These items each need a **new harness command** that does not exist today, so they are
+paused pending reconciliation with the review:
+
+- **AA-6 full injection matrix** — the `aa6-matrix` floor requires an armed+delivered
+  record for every windowed payload **and** a `LinuxGuest` class record; no path injects
+  into the running Linux guest and emits a run-set record. (The bare-payload mini-gate is
+  already DEMONSTRATED above.)
+- **vGIC save/restore round-trip** — harness has `KVM_DEV_ARM_VGIC_CTRL_INIT` only; no
+  save→restore→save-compare over `KVM_DEV_ARM_VGIC_GRP_*`.
+- **ID-register-freeze enforcement** — no command installs a shrunk synthetic ID model via
+  the writable-ID surface and verifies the guest sees frozen values (now known installable —
+  the AA-0 patched re-probe confirms the surface is present on 6.18.35).
+- **AA-4 concurrency gates** — notifier-replacement, two-vCPU scan/write race, and a live
+  backing-replacement command (only the portable predicate is committed in `sys.rs`).
 
 ## Host kernels built this window (`host/build-window-hosts.sh`)
 
