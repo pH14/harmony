@@ -30,7 +30,8 @@ P1_SHA256=069c226ad2dfe87d31ea5147875088c0244c6c87d8d66bf58d5757bfeeca9555
 P2_SHA256=b51a75f6daad7ad8c8f50e2384bb170660acf429dabc2e72058b2771705736ad
 
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  flex bison bc libssl-dev libelf-dev fakeroot dpkg-dev rsync kmod cpio zstd
+  flex bison bc libssl-dev libelf-dev fakeroot dpkg-dev rsync kmod cpio zstd \
+  debhelper libdw-dev
 
 mkdir -p ~/kernel && cd ~/kernel
 if [[ ! -f linux-${KERNEL_VERSION}.tar.xz ]]; then
