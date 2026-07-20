@@ -20,7 +20,7 @@ finding actually got better.
 A bug that cannot be expressed this way does not belong in the collection:
 
 1. **Workload** — what runs in the guest (payload, container image, or init script; reuse the
-   `guest/payloads/` and `guest/linux/` conventions).
+   `consonance/acceptance-suite/payloads/` and `harmony-linux/linux/` conventions).
 2. **Fault surface** — which Harmony dimension triggers it: timing/interrupt perturbation
    (vtime), entropy values, host-plane faults (task 59), kill/restart at a Moment
    (snapshot/branch), block-layer faults (future), net faults (task 61, future).

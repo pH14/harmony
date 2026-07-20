@@ -8,7 +8,7 @@
 Class `kvm-exposed` covers the synthetic MSRs that KVM itself manufactures and advertises
 through `KVM_GET_MSR_INDEX_LIST` — reference-set clause (a), the `emulated_msrs_all` array
 in `arch/x86/kvm/x86.c` at v6.18.35 (lines 394–461; the pin agrees with
-`guest/linux/versions.lock`, KERNEL_VERSION=6.18.35). Match rule: every `HV_X64_MSR_*`
+`harmony-linux/linux/versions.lock`, KERNEL_VERSION=6.18.35). Match rule: every `HV_X64_MSR_*`
 name in that array's `CONFIG_KVM_HYPERV` block (x86.c:398–416) plus every `MSR_KVM_*`
 PV-feature MSR in the array (x86.c:418–419, 459), excluding entries already disposed in
 sibling fragments — the kvmclock fragment owns `MSR_KVM_WALL_CLOCK`/`MSR_KVM_SYSTEM_TIME`

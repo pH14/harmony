@@ -16,7 +16,7 @@ BASE="${APPLIANCE_BASE:-/root/nested-x86-spike/n1}"
 KVER=6.12.90+deb13.1-amd64
 PATCHED=/root/kvm-spike/deb612/hdr/usr/src/linux-headers-$KVER/arch/x86/kvm
 SRCROOT="${SRCROOT:-/root/harmony-nested}"
-PG="${PG_IMAGES:-/root/harmony-pr44/guest/build}"
+PG="${PG_IMAGES:-/root/harmony-pr44/harmony-linux/build}"
 IR=$BASE/initramfs
 
 # pinned L2 postgres pair (pr44 build; foreman ruling hm-xdp)
@@ -32,8 +32,8 @@ rm -rf "$IR"
 mkdir -p "$BASE" "$IR"/{bin,dev,proc,sys,tmp,mod,gate,lib/x86_64-linux-gnu,lib64}
 # stage the artifact tree at the SAME absolute path the gate binaries baked in
 # at compile time (CARGO_MANIFEST_DIR/../..): $SRCROOT, not a fixed name
-mkdir -p "$IR$SRCROOT/guest/build"
-mkdir -p "$IR$SRCROOT/guest/payloads/target/x86_64-unknown-none/release"
+mkdir -p "$IR$SRCROOT/harmony-linux/build"
+mkdir -p "$IR$SRCROOT/consonance/acceptance-suite/payloads/target/x86_64-unknown-none/release"
 # tests resolve artifacts via CARGO_MANIFEST_DIR/../.. — the manifest dir chain
 # must exist in the initramfs for `..` traversal to resolve
 mkdir -p "$IR$SRCROOT/consonance/vmm-core"
@@ -84,17 +84,17 @@ cp "$PATCHED/kvm-intel.ko" "$IR/mod/kvm-intel.ko"
 # pinned L2 postgres pair, at the exact compile-time repo_root() path
 pin "$PG/bzImage" "$PIN_BZIMAGE"
 pin "$PG/initramfs-postgres.cpio.gz" "$PIN_INITRAMFS"
-cp "$PG/bzImage" "$IR$SRCROOT/guest/build/"
-cp "$PG/initramfs-postgres.cpio.gz" "$IR$SRCROOT/guest/build/"
+cp "$PG/bzImage" "$IR$SRCROOT/harmony-linux/build/"
+cp "$PG/initramfs-postgres.cpio.gz" "$IR$SRCROOT/harmony-linux/build/"
 
 # C1 payload ELFs (live_preemption + box_corpus), at their compile-time path
-find "$SRCROOT/guest/payloads/target/x86_64-unknown-none/release" -maxdepth 1 -type f -executable \
-    -exec cp {} "$IR$SRCROOT/guest/payloads/target/x86_64-unknown-none/release/" \;
+find "$SRCROOT/consonance/acceptance-suite/payloads/target/x86_64-unknown-none/release" -maxdepth 1 -type f -executable \
+    -exec cp {} "$IR$SRCROOT/consonance/acceptance-suite/payloads/target/x86_64-unknown-none/release/" \;
 
 # corpus manifest + committed goldens (box_corpus O2)
-mkdir -p "$IR$SRCROOT/docs" "$IR$SRCROOT/guest/golden"
+mkdir -p "$IR$SRCROOT/docs" "$IR$SRCROOT/consonance/acceptance-suite/golden"
 cp "$SRCROOT/docs/corpus-manifest.toml" "$IR$SRCROOT/docs/"
-cp -r "$SRCROOT/guest/golden/." "$IR$SRCROOT/guest/golden/"
+cp -r "$SRCROOT/consonance/acceptance-suite/golden/." "$IR$SRCROOT/consonance/acceptance-suite/golden/"
 
 cp "${INIT_SCRIPT:-/root/nested-x86-spike/n1/src/l1-appliance-init.sh}" "$IR/init"
 chmod +x "$IR/init"

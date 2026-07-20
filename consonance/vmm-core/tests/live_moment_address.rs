@@ -27,7 +27,7 @@
 //! never touch another lease's cores or its patched-KVM window). ALWAYS revert KVM
 //! to stock **1396736** + verify after any patched run.
 //! ```text
-//! make -C guest fetch && make -C guest/linux postgres-image     # or copy a prebuilt image
+//! make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image     # or copy a prebuilt image
 //! taskset -c <core> cargo test -p vmm-core --release --test live_moment_address -- --ignored --nocapture
 //! ```
 //! Tunable via env (defaults below): `MA_GENESIS_STEP` (V-time ns to nudge past a
@@ -72,16 +72,16 @@ fn repo_root() -> std::path::PathBuf {
 
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in guest/build or guest/linux — build it first on the \
-         box: `make -C guest fetch && make -C guest/linux postgres-image`."
+        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
+         box: `make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image`."
     );
 }
 

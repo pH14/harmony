@@ -2,10 +2,10 @@
 #
 # One entry per corpus item (docs/DETERMINISM-CORPUS.md "Deliverable structure"):
 # name, kind, source path (relative to repo root), the oracles it participates in,
-# and (for conformance items) the golden digest. The det-corpus harness (task 17,
-# consonance/det-corpus) parses this via load_manifest; reviewing a diff to this
+# and (for conformance items) the golden digest. The acceptance-suite harness (task 17,
+# consonance/acceptance-suite) parses this via load_manifest; reviewing a diff to this
 # file is how "we added/changed a determinism test" is audited. Schema + tokens:
-# consonance/det-corpus/corpus-manifest.example.toml.
+# consonance/acceptance-suite/corpus-manifest.example.toml.
 #
 #   kind     = "micro" | "workload" | "fuzz_seed"
 #   oracles  = any of:
@@ -23,12 +23,12 @@
 # conformance payload reports its trap-dependent values (V-time TSC reads, seeded
 # RNG words, frozen CPUID/MSR values, retired counts) over the dedicated report
 # channel (port 0x0CA2, docs/INTEGRATION.md §1.1); the box runs it on the patched
-# backend as a det-corpus `Machine` and digests the report stream + serial banner
+# backend as a acceptance-suite `Machine` and digests the report stream + serial banner
 # into `observable_digest`. That digest is the committed 64-hex
-# guest/golden/<name>.digest pinned here. The goldens are V-time/seeded-PRNG-
+# consonance/acceptance-suite/golden/<name>.digest pinned here. The goldens are V-time/seeded-PRNG-
 # derived, so they are captured on the box (DETCORPUS_BLESS=1, see
 # consonance/vmm-core/tests/box_corpus.rs); they are distinct from the
-# run-tests.sh *serial-shape* goldens (guest/golden/<name>.txt).
+# run-tests.sh *serial-shape* goldens (consonance/acceptance-suite/golden/<name>.txt).
 #
 # Conformance is declared on the **six** payloads that run to a clean
 # isa-debug-exit PASS on vmm-core's current event loop (trapped instructions /
@@ -46,44 +46,44 @@
 [[item]]
 name = "insn-rdtsc"
 kind = "micro"
-source = "guest/payloads/insn-rdtsc"
+source = "consonance/acceptance-suite/payloads/insn-rdtsc"
 oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
-golden = "guest/golden/insn-rdtsc.digest"
+golden = "consonance/acceptance-suite/golden/insn-rdtsc.digest"
 
 [[item]]
 name = "insn-rng"
 kind = "micro"
-source = "guest/payloads/insn-rng"
+source = "consonance/acceptance-suite/payloads/insn-rng"
 oracles = ["determinism", "seed_sensitivity:rng", "conformance"]
-golden = "guest/golden/insn-rng.digest"
+golden = "consonance/acceptance-suite/golden/insn-rng.digest"
 
 [[item]]
 name = "insn-cpuid"
 kind = "micro"
-source = "guest/payloads/insn-cpuid"
+source = "consonance/acceptance-suite/payloads/insn-cpuid"
 oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
-golden = "guest/golden/insn-cpuid.digest"
+golden = "consonance/acceptance-suite/golden/insn-cpuid.digest"
 
 [[item]]
 name = "insn-rdpmc"
 kind = "micro"
-source = "guest/payloads/insn-rdpmc"
+source = "consonance/acceptance-suite/payloads/insn-rdpmc"
 oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
-golden = "guest/golden/insn-rdpmc.digest"
+golden = "consonance/acceptance-suite/golden/insn-rdpmc.digest"
 
 [[item]]
 name = "msr-allowed"
 kind = "micro"
-source = "guest/payloads/msr-allowed"
+source = "consonance/acceptance-suite/payloads/msr-allowed"
 oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
-golden = "guest/golden/msr-allowed.digest"
+golden = "consonance/acceptance-suite/golden/msr-allowed.digest"
 
 [[item]]
 name = "msr-denied"
 kind = "micro"
-source = "guest/payloads/msr-denied"
+source = "consonance/acceptance-suite/payloads/msr-denied"
 oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
-golden = "guest/golden/msr-denied.digest"
+golden = "consonance/acceptance-suite/golden/msr-denied.digest"
 
 # --- O2-deferred: payloads that can't reach a clean PASS on today's event loop
 #     (timer/IRQ: insn-hlt/irq-landing/pit-pic-stub; MONITOR/MWAIT: insn-mwait) ---
@@ -91,23 +91,23 @@ golden = "guest/golden/msr-denied.digest"
 [[item]]
 name = "insn-hlt"
 kind = "micro"
-source = "guest/payloads/insn-hlt"
+source = "consonance/acceptance-suite/payloads/insn-hlt"
 oracles = ["determinism", "seed_sensitivity:pure"]
 
 [[item]]
 name = "insn-mwait"
 kind = "micro"
-source = "guest/payloads/insn-mwait"
+source = "consonance/acceptance-suite/payloads/insn-mwait"
 oracles = ["determinism", "seed_sensitivity:pure"]
 
 [[item]]
 name = "irq-landing"
 kind = "micro"
-source = "guest/payloads/irq-landing"
+source = "consonance/acceptance-suite/payloads/irq-landing"
 oracles = ["determinism", "seed_sensitivity:pure"]
 
 [[item]]
 name = "pit-pic-stub"
 kind = "micro"
-source = "guest/payloads/pit-pic-stub"
+source = "consonance/acceptance-suite/payloads/pit-pic-stub"
 oracles = ["determinism", "seed_sensitivity:pure"]

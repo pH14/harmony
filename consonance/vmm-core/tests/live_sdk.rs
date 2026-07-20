@@ -53,7 +53,7 @@ const ALWAYS_POINT: u32 = 20;
 /// The two `sometimes` points: one fires every iteration, one never.
 const COMMIT_SEEN: u32 = 1;
 const ROLLBACK_SEEN: u32 = 2;
-/// SDK wire layout (mirror of `guest/sdk/src/wire.rs`) — the assert namespace.
+/// SDK wire layout (mirror of `harmony-linux/sdk/src/wire.rs`) — the assert namespace.
 const NS_ASSERT: u32 = 1;
 const NS_SHIFT: u32 = 24;
 
@@ -68,11 +68,12 @@ fn repo_root() -> PathBuf {
 }
 
 fn payload_bytes() -> Vec<u8> {
-    let p = repo_root().join("guest/payloads/target/x86_64-unknown-none/release/sdk-demo");
+    let p = repo_root()
+        .join("consonance/acceptance-suite/payloads/target/x86_64-unknown-none/release/sdk-demo");
     std::fs::read(&p).unwrap_or_else(|e| {
         panic!(
             "sdk-demo payload not found at {p:?} ({e}) — build it on the box first: \
-             `cd guest/payloads && cargo build -p sdk-demo --release`."
+             `cd consonance/acceptance-suite/payloads && cargo build -p sdk-demo --release`."
         )
     })
 }

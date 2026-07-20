@@ -36,7 +36,7 @@ fn public_api_matches_snapshot() {
             // gates its guest seam (`Transport`, `Client`, …) behind `feature =
             // "guest"`, which is absent from `default = ["host"]`; without this the
             // snapshot would silently ignore drift in the guest contract that
-            // `vmcall-transport` (task 10) builds against.
+            // `hypercall-doorbell` (task 10) builds against.
             "--all-features",
             "-sss",
             "--color",

@@ -98,7 +98,7 @@ writing any code — the seam is already designed-in and partly stubbed, your jo
    (something preemption alone does not resolve), implement what you can, prove gates 1–2 + as much of
    3 as the primitive unlocks, and **document the precise next blocker** as the frontier — do not fake
    the gate or relax it.
-4. **No regression:** M1/M2/P6 + det-corpus + unison goldens **byte-identical** (the `run_until`
+4. **No regression:** M1/M2/P6 + acceptance-suite + unison goldens **byte-identical** (the `run_until`
    path is additive — the existing `run()` + HLT-warp path for quiescent guests is unchanged);
    standard gates green (`cargo build`/`test`/`clippy -D warnings`/`fmt`); any new `unsafe` (perf
    overflow signal, `KVM_SET_GUEST_DEBUG`) carries a `// SAFETY:` and runs clean under Miri behind a

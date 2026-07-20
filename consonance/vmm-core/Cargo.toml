@@ -45,7 +45,7 @@ sha2 = "0.10"
 # off-Miri; under Miri `GuestRam` falls back to a `Vec<u8>` (see src/vmm.rs).
 memmap2 = "0.9"
 # Rule-2 sibling exception (corpus box-integration, task 28): the VMM-backed
-# `det-corpus` `Machine` bridge (`corpus::CorpusMachine`) lives above the trait in
+# `acceptance-suite` `Machine` bridge (`corpus::CorpusMachine`) lives above the trait in
 # vmm-core (the frontier glue the dissonance ruling places here), so it implements
 # `unison::Machine` directly. unison is the generic divergence bisector this
 # composes — promoted from a dev-dependency now that the adapter is library code,
@@ -104,11 +104,11 @@ libc = "0.2"
 vmm-backend = { path = "../vmm-backend", version = "0.1.0", features = ["mock"] }
 # Drive the corpus oracles over the VMM-backed `Machine` in the box-only
 # `box_corpus` integration test (task 28). The library bridge depends only on
-# `unison` (above); `det-corpus` is the harness that owns the manifest + O1
+# `unison` (above); `acceptance-suite` is the harness that owns the manifest + O1
 # runner, used test-side. Pinned `version` alongside `path` (cargo-deny wildcard
 # ban). `default-features = false` drops its CLI deps (clap/serde_json) — the
 # test needs only the library (manifest + oracles).
-det-corpus = { path = "../det-corpus", version = "0.1.0", default-features = false }
+acceptance-suite = { path = "../acceptance-suite", version = "0.1.0", default-features = false }
 # Wire the userspace xAPIC in the box-only `live_preemption` gate (task 47): that
 # test boots the bare `irq-landing` payload on the patched backend, `wire_lapic`s a
 # timer, and proves preemption lands the LAPIC-timer interrupt mid-busy-spin. `lapic`

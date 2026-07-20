@@ -31,16 +31,16 @@ mkdir -p /root/harmony-nested /root/nested-x86-spike/n1/src
 # excluded from deletion — they are box-produced state, not source, and the
 # appliance manifest pins every artifact it bundles by sha256 regardless.
 rsync -a --delete \
-  --exclude /target/ --exclude /guest/payloads/target/ --exclude /guest/build/ \
-  --exclude /guest/dl/ --exclude /.spike-source-commit \
+  --exclude /target/ --exclude /consonance/acceptance-suite/payloads/target/ --exclude /harmony-linux/build/ \
+  --exclude /harmony-linux/dl/ --exclude /.spike-source-commit \
   src-$HEAD/ /root/harmony-nested/
 echo $HEAD > /root/harmony-nested/.spike-source-commit
 # assert: every staged source file matches the recorded source commit
 # (tar listing == staged tree, excluding the box-produced paths above)
 tar -tzf harmony-$HEAD.tar.gz | grep -v '/$' | sort > /tmp/stage-manifest-$HEAD
 ( cd /root/harmony-nested && find . -type f \
-    ! -path './target/*' ! -path './guest/payloads/target/*' \
-    ! -path './guest/build/*' ! -path './guest/dl/*' ! -name .spike-source-commit \
+    ! -path './target/*' ! -path './consonance/acceptance-suite/payloads/target/*' \
+    ! -path './harmony-linux/build/*' ! -path './harmony-linux/dl/*' ! -name .spike-source-commit \
     | sed 's|^\./||' | sort ) > /tmp/stage-actual-$HEAD
 diff /tmp/stage-manifest-$HEAD /tmp/stage-actual-$HEAD > /dev/null \
   || { echo 'STAGE_MISMATCH: staged tree != source commit listing'; diff /tmp/stage-manifest-$HEAD /tmp/stage-actual-$HEAD | head -20; exit 1; }

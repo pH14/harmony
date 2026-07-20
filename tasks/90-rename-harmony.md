@@ -3,7 +3,7 @@
 > **Close-out note (task 62, 2026-07-01).** This rename is **~95% executed**, not fully pending as
 > the header below still implies: the source layout, crate names, docs, and skills already use
 > `harmony`/`consonance`/`dissonance`/`unison` throughout. The real straggler is narrow and
-> **deliberate**: the `hypervizor` strings at `guest/linux/lib-build.sh:48,59,60` are **hashed
+> **deliberate**: the `hypervizor` strings at `harmony-linux/linux/lib-build.sh:48,59,60` are **hashed
 > `MANIFEST.sha256` build inputs** (the task-43 landmine — changing them invalidates the manifest
 > and forces a rebaseline). **Integrator ruling: document-as-deliberately-stale**, not
 > rebaseline-now. A comment sits at each site pointing back here; the strings themselves are
@@ -49,7 +49,7 @@ dirs are themed, plus the one crate rename `detharness → unison`):
 harmony/                      # repo root (GitHub repo + workspace; see "External actions")
   consonance/                 # the deterministic VM
     hypercall-proto/
-    vmcall-transport/
+    hypercall-doorbell/
     snapshot-store/
     vtime/
     vm-state/
@@ -57,7 +57,7 @@ harmony/                      # repo root (GitHub repo + workspace; see "Externa
     vmm-core/                 # (once task 15 lands)
     lapic/                    # (once task 13 lands)
   unison/                     # the determinism harness (ex-detharness) — crate renamed `unison`
-  dissonance/                 # corpus + fuzzer (once tasks 17/19 land): det-corpus/, fuzz/
+  dissonance/                 # corpus + fuzzer (once tasks 17/19 land): acceptance-suite/, fuzz/
   spikes/  docs/  guest/  tasks/  scripts/  .github/
 ```
 
@@ -74,7 +74,7 @@ A tree-wide sweep. At minimum:
 - **Cargo**: workspace `members`/`default-members`; every crate's path-dep and `[dependencies]`
   entry that names `detharness`; `Cargo.lock`.
 - **Rust imports**: every `use detharness::…` / `detharness::` path → `unison::` (≈ the harness's
-  dependents: `vmm-core` dev-dep, `det-corpus` (task 17), and any test).
+  dependents: `vmm-core` dev-dep, `acceptance-suite` (task 17), and any test).
 - **CI** (`.github/workflows/quality.yml`): the `-p <crate>` lists in the miri / public-api /
   coverage jobs; any path-scoped step; `.cargo/mutants.toml` exclude globs (`**/clock_proofs.rs`,
   `**/device_proofs.rs`, the `cfg(linux)` kvm regex — paths change under `consonance/`);

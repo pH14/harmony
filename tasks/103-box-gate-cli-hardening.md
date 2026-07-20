@@ -34,7 +34,7 @@ hardening gaps" in the foreman disposition), `bd show hm-9wa`,
 
 ## Constraints
 
-- Fixes live in the conductor CLI/gate layer; do NOT touch guest/play-agent behavior or
+- Fixes live in the conductor CLI/gate layer; do NOT touch harmony-linux/play-agent behavior or
   the sealed campaign semantics — this task changes what counts as a valid gate
   invocation, not what a campaign does.
 - Every fix gets a regression test whose fixture is the vacuous input and whose

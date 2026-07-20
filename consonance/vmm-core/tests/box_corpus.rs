@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only corpus gate (`#[cfg(target_os = "linux")]` **and `#[ignore]`d**): run
-//! the C1 conformance corpus on the **patched** backend as a `det-corpus`
+//! the C1 conformance corpus on the **patched** backend as a `acceptance-suite`
 //! `Subject` — the proof point the whole corpus box-integration (task 28) exists
 //! for. For every **conformance** item in `docs/corpus-manifest.toml` it drives the
 //! VMM-backed [`vmm_core::corpus::CorpusMachine`] and asserts:
 //!
-//! - **O1 (determinism):** `det_corpus::check_determinism` — two runs at one seed
+//! - **O1 (determinism):** `acceptance_suite::check_determinism` — two runs at one seed
 //!   produce a bit-identical `state_hash` (localized on failure by the bisector);
 //! - **O2 (conformance):** the run's `observable_digest` (the report-stream + serial
-//!   digest) equals the committed 64-hex golden at `guest/golden/<name>.digest`;
+//!   digest) equals the committed 64-hex golden at `consonance/acceptance-suite/golden/<name>.digest`;
 //! - and the whole sweep is **deterministic twice** — an aggregate digest over
 //!   every item's (O1 pass, O2 digest) is identical across two back-to-back sweeps.
 //!
@@ -40,7 +40,7 @@
 //! box (patched modules loaded, then reverted to stock afterwards), CPU-pinned:
 //!
 //! ```sh
-//! cd guest/payloads && cargo build --release          # build the C1 payloads
+//! cd consonance/acceptance-suite/payloads && cargo build --release          # build the C1 payloads
 //! cd ../..
 //! taskset -c 2 cargo test -p vmm-core --test box_corpus -- --ignored --nocapture
 //! ```
@@ -48,7 +48,7 @@
 //! **Blessing the O2 goldens (one-time, on the box).** The report-stream digests
 //! are V-time/seeded-PRNG-derived, so they can only be captured on the patched
 //! box. Capture/refresh them with `DETCORPUS_BLESS=1` (writes each
-//! `guest/golden/<name>.digest`), review the diff, commit, then run the gate
+//! `consonance/acceptance-suite/golden/<name>.digest`), review the diff, commit, then run the gate
 //! (without the env var) to verify:
 //!
 //! ```sh
@@ -65,7 +65,7 @@
 
 use std::path::PathBuf;
 
-use det_corpus::{CorpusItem, Oracle, check_determinism, load_manifest};
+use acceptance_suite::{CorpusItem, Oracle, check_determinism, load_manifest};
 use sha2::{Digest, Sha256};
 use unison::{RunOutcome, Subject, SubjectFactory};
 use vmm_core::corpus::CorpusMachine;
@@ -93,22 +93,22 @@ fn repo_root() -> PathBuf {
 }
 
 /// The built payload ELF for a corpus item
-/// (`guest/payloads/target/x86_64-unknown-none/release/<name>`).
+/// (`consonance/acceptance-suite/payloads/target/x86_64-unknown-none/release/<name>`).
 fn payload_path(name: &str) -> PathBuf {
     repo_root()
-        .join("guest/payloads/target/x86_64-unknown-none/release")
+        .join("consonance/acceptance-suite/payloads/target/x86_64-unknown-none/release")
         .join(name)
 }
 
 /// The committed O2 golden path for a conformance item, taken from the **manifest's**
 /// `golden` field (resolved against the repo root) so the gate and the manifest cannot
-/// drift to different files. Panics if a conformance item has no golden — `det-corpus
+/// drift to different files. Panics if a conformance item has no golden — `acceptance-suite
 /// validate` forbids that, so it would be a manifest bug.
 fn golden_path(item: &CorpusItem) -> PathBuf {
     let rel = item.golden.as_deref().unwrap_or_else(|| {
         panic!(
             "conformance item `{}` has no `golden` in docs/corpus-manifest.toml \
-             (det-corpus validate should have rejected this)",
+             (acceptance-suite validate should have rejected this)",
             item.name
         )
     });
@@ -154,12 +154,12 @@ fn require_payload(name: &str) -> Vec<u8> {
     std::fs::read(payload_path(name)).unwrap_or_else(|e| {
         panic!(
             "payload `{name}` not built ({e}) — build it first on the box: \
-             `cd guest/payloads && cargo build --release` (target x86_64-unknown-none)."
+             `cd consonance/acceptance-suite/payloads && cargo build --release` (target x86_64-unknown-none)."
         )
     })
 }
 
-/// Lowercase 64-char hex of a digest (the `det-corpus` / contract idiom).
+/// Lowercase 64-char hex of a digest (the `acceptance-suite` / contract idiom).
 fn hex32(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -330,7 +330,7 @@ fn c1_corpus_o1_o2_on_the_patched_backend() {
         eprintln!("[box-corpus] DETCORPUS_BLESS set — capturing O2 goldens (not gating)");
         let _ = sweep(&items, true);
         eprintln!(
-            "[box-corpus] goldens written; review `git diff guest/golden/*.digest` and commit"
+            "[box-corpus] goldens written; review `git diff consonance/acceptance-suite/golden/*.digest` and commit"
         );
         return;
     }
@@ -390,7 +390,7 @@ fn c1_corpus_o1_diagnostic() {
             name: item.name.clone(),
             payload: require_payload(&item.name),
         };
-        // Two fresh patched VMs at the same seed — exactly what det-corpus O1 does.
+        // Two fresh patched VMs at the same seed — exactly what acceptance-suite O1 does.
         let mut a = factory.spawn(CORPUS_SEED);
         a.run_to(LIMIT).expect("run_to");
         let mut b = factory.spawn(CORPUS_SEED);
@@ -496,7 +496,7 @@ fn c1_corpus_o1_diagnostic() {
 /// Box-only **N-run O1 localizer for the two payloads PR #51 still fails**
 /// (`#[ignore]`d, non-asserting). After task 27 (#53) made `Vmm::state_hash`'s `VTIM`
 /// chunk skid-free, `insn-rdtsc` / `insn-rng` still report O1=FAIL with the telling
-/// `det-corpus` detail "diverged in (0, 1] but bisection could not localize it: state
+/// `acceptance-suite` detail "diverged in (0, 1] but bisection could not localize it: state
 /// hashes are equal at hi = 1: no divergence to bisect". That message is dispositive:
 /// `check_determinism` → `compare_runs` reached the `(Halted, Halted)` branch with
 /// **equal `work()`** (else it would be a `HaltMismatch`, not "diverged"), so the
@@ -525,7 +525,7 @@ fn c1_corpus_o1_diagnostic() {
 /// `compare_runs` makes first), both `CorpusMachine::state_hash` values (the exact
 /// terminal-checkpoint quantity), the underlying `Vmm::state_hash` + `observable_digest`,
 /// and — when the architectural hash diverges — the diverging `state_components`. It
-/// also runs the real `det_corpus::check_determinism` each iteration (its own spawns +
+/// also runs the real `acceptance_suite::check_determinism` each iteration (its own spawns +
 /// bisect) and logs the verdict next to the raw values. A final SUMMARY gives the
 /// divergence counts and a per-component histogram.
 #[test]

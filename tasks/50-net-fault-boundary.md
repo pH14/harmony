@@ -176,7 +176,7 @@ Beyond the standard suite (on the reshaped `environment`, with `pv-net` removed)
   placement. **This is the next task, deferred deliberately.** Task 50 defines the *seam and the
   ruling*, not the enforcer.
 - **The `net_decide` hypercall-service wiring** (a new `ServiceId` in `hypercall-proto` + the
-  `vmcall-transport`/`vmm-core` dispatch + the guest-side issuing path) — frontier glue, built with
+  `hypercall-doorbell`/`vmm-core` dispatch + the guest-side issuing path) — frontier glue, built with
   the utility.
 - **Per-message (reorder/dup/corrupt) and L2 byte-corruption faults** — the SDK/L7 tier (a later
   task); noted in the catalog, not built here.

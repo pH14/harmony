@@ -8,7 +8,7 @@ The `public-api` job in `.github/workflows/quality.yml` installs the pinned nigh
 toolchain but **never installs the `cargo-public-api` CLI binary** that the `public_api`
 integration tests shell out to. When the binary is absent the tests take a loud-skip
 branch and exit 0 — so the gate has reported **green-by-skipping**, not green-by-checking,
-for **all 21 workspace crates + `guest/sdk`** ever since **#118** (the GHA migration moved
+for **all 21 workspace crates + `harmony-linux/sdk`** ever since **#118** (the GHA migration moved
 this job off the pre-provisioned self-hosted box, where the tool existed, to hosted runners
 and dropped it). The gate proves nothing today. (Both the PR-120 and PR-124 closers had to
 run `cargo public-api` by hand to verify their crates because the CI job is asleep.)
@@ -31,9 +31,9 @@ run `cargo public-api` by hand to verify their crates because the CI job is asle
    cargo test -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state \
      -p vmm-backend -p vmm-core -p lapic -p gicv3 -p environment -p control-proto \
      -p explorer -p sdk-events -p flow -p matcher -p runtrace -p campaign-runner \
-     -p tactics-regime -p logtmpl -p resolution -p det-corpus \
+     -p tactics-regime -p logtmpl -p resolution -p acceptance-suite \
      --test public_api -- --ignored --nocapture
-   cargo test --manifest-path guest/sdk/Cargo.toml --test public_api -- --ignored --nocapture
+   cargo test --manifest-path harmony-linux/sdk/Cargo.toml --test public_api -- --ignored --nocapture
    ```
    For **every** crate that now fails the snapshot diff, classify the drift:
    - **Legitimate/intended** (an additive or renamed surface that matches already-merged

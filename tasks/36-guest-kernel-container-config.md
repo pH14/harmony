@@ -12,13 +12,13 @@
 > (kernel build); they do not run on macOS.
 
 Read `tasks/00-CONVENTIONS.md`, `tasks/30-linux-boot.md`, `tasks/34-deterministic-linux-boot.md`,
-`consonance/vmm-core/IMPLEMENTATION.md` (Task 30/33/34 sections), `guest/linux/config-fragment`,
-`guest/linux/build-kernel.sh` + `lib-build.sh`, and `consonance/vmm-core/src/devices.rs` (the
+`consonance/vmm-core/IMPLEMENTATION.md` (Task 30/33/34 sections), `harmony-linux/linux/config-fragment`,
+`harmony-linux/linux/build-kernel.sh` + `lib-build.sh`, and `consonance/vmm-core/src/devices.rs` (the
 `LegacyPlatform` / i8042 fast-fail) first.
 
 ## Why (the decision this task implements)
 
-Today the guest kernel is `make ARCH=x86_64 tinyconfig` + the hand-curated `guest/linux/config-fragment`,
+Today the guest kernel is `make ARCH=x86_64 tinyconfig` + the hand-curated `harmony-linux/linux/config-fragment`,
 which boots a busybox `init.sh` to `GUEST_READY`. That base is **far** below what Postgres + Docker need
 (cgroup-v2, overlayfs, namespaces, ext4, a RAM block device, epoll/futex/`/proc`/`/sys`, …), and growing
 `tinyconfig` symbol-by-symbol toward "runs containers" is exactly the bespoke curation we are moving away
@@ -28,7 +28,7 @@ So the config only governs *capability* and *probe surface*, and we should adopt
 container-host config rather than author one.
 
 **Decision:** swap the kernel **base** from `tinyconfig` to a **Kata Containers guest-kernel config**
-(vendored + pinned under `guest/linux/`), and keep `config-fragment` as the **determinism overlay**
+(vendored + pinned under `harmony-linux/linux/`), and keep `config-fragment` as the **determinism overlay**
 merged on top (`merge_config.sh` + `olddefconfig`), unchanged in intent. Build it with the *existing*
 `build-kernel.sh` pipeline (reproducible levers, pinned bytes, `MANIFEST.sha256`) — we use Kata's
 *config*, not Kata's *binary* (we keep brd/loop, the golden flow, and a reproducible artifact; we never
@@ -37,7 +37,7 @@ boot Kata's agent/initramfs — `init.sh` stays our init).
 ## Phase 1 — rebase the base, preserve the determinism overlay
 
 - Vendor + pin a Kata guest-kernel `.config` (or its fragment) for the kernel version in
-  `guest/linux/versions.lock`; record provenance (Kata release + URL/commit) in `IMPLEMENTATION.md`.
+  `harmony-linux/linux/versions.lock`; record provenance (Kata release + URL/commit) in `IMPLEMENTATION.md`.
 - Change `build-kernel.sh`: base `= kata.config` instead of `tinyconfig`, then `merge_config.sh -m`
   the **determinism overlay** (`config-fragment`) on top, then `olddefconfig`. Keep the `assert_y`/
   `assert_off` guards — **every** determinism symbol now in the fragment (KASLR off, `SMP` off, `NUMA`
@@ -91,7 +91,7 @@ follow-on config delta, not a silent gap.
 3. **Probe stalls closed:** the patched boot reaches `GUEST_READY` in a bounded V-time + wall budget;
    every new stall is documented with its deterministic fix (cmdline or device fail-fast).
 4. **Capability audit** present and honest (the §Phase-3 table); any missing must-have flagged.
-5. **No regression:** M1/M2/P6 + det-corpus goldens byte-identical (the kernel change is Linux-path;
+5. **No regression:** M1/M2/P6 + acceptance-suite goldens byte-identical (the kernel change is Linux-path;
    non-Linux `state_hash` unchanged); standard gates green incl. mutants/Miri/public-api where touched.
 6. **Box hygiene:** every patched-module run reverts to stock KVM (`1396736`) after; verify `lsmod`.
 

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The VMM-backed [`unison::Subject`] bridge — "the VMM running a payload" as a
-//! logical guest the `det-corpus` oracles drive (corpus box-integration, task 28).
+//! logical guest the `acceptance-suite` oracles drive (corpus box-integration, task 28).
 //!
-//! `det-corpus` (#48) runs its O1/O2/O3 oracles over any [`unison::Subject`];
-//! `guest/payloads` (#49) ships the C1 instruction-sweep payloads. This module is
+//! `acceptance-suite` (#48) runs its O1/O2/O3 oracles over any [`unison::Subject`];
+//! `consonance/acceptance-suite/payloads` (#49) ships the C1 instruction-sweep payloads. This module is
 //! the third piece: a [`CorpusMachine`] that wraps a [`Vmm`] running one payload,
 //! so the determinism/conformance corpus actually executes on the patched backend.
 //! It is the frontier glue the dissonance ruling places **in vmm-core** (above the
@@ -126,7 +126,7 @@ impl<B: Backend<A: Vendor>> Subject for CorpusMachine<B> {
 
     fn state_hash(&self) -> [u8; 32] {
         // Fold the report stream (via `observable_digest`) into the O1 hash so
-        // `det-corpus` determinism DIRECTLY observes the report channel: a
+        // `acceptance-suite` determinism DIRECTLY observes the report channel: a
         // same-seed run that diverges ONLY in `REPORT_PORT` values must fail O1,
         // not pass it (`Vmm::state_hash` deliberately excludes the report stream).
         // `Vmm::state_hash` itself is left UNCHANGED — this composition lives only
@@ -353,7 +353,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Coexistence regression (PR #51 box O1). `det_corpus::check_determinism` →
+    // Coexistence regression (PR #51 box O1). `acceptance_suite::check_determinism` →
     // `unison::compare_runs` spawns BOTH machines and THEN runs each in turn, while
     // the box `perf_event` work counter is a shared vCPU-thread resource — so the
     // second-spawned VM's counter accumulated the first VM's guest branches,

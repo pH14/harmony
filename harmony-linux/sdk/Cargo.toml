@@ -1,0 +1,39 @@
+# The harmony guest SDK (task 73): a `no_std`, `alloc`-free, hooks-and-transport
+# crate the in-guest workload calls to emit assertions, IJON state registers,
+# buggify decisions, and lifecycle points over the existing hypercall Event/SDK
+# services. It composes with `Client<VmcallTransport>` with zero new transport
+# code.
+#
+# Standalone workspace (like `consonance/acceptance-suite/payloads`): the root Cargo.toml excludes
+# `harmony-linux/`, so this crate declares its own `[workspace]` and carries its own
+# lockfile. It depends on the `consonance` hypercall protocol by path.
+[package]
+name = "harmony-sdk"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "The harmony guest SDK (task 73): no_std assertions/state/buggify/lifecycle hooks over the hypercall Event + SDK services"
+
+# Own workspace root so cargo does not try to fold this into the excluded
+# harmony-linux tree or the repo root workspace.
+[workspace]
+
+# The guest-side hypercall client + Transport trait (no_std, guest feature only).
+# Explicit `version` alongside `path` for `cargo deny`'s wildcard ban, mirroring
+# `hypercall-doorbell`.
+[dependencies]
+hypercall-proto = { path = "../../consonance/hypercall-proto", version = "0.1.0", default-features = false, features = ["guest"] }
+
+# The host `Dispatcher` + reference services (`EventSink`, `SdkBuggify`) drive the
+# loopback gate. Their `host` feature implies `std`; under the v2 resolver it
+# unifies only into the `cargo test` graph, never into
+# `cargo build --target x86_64-unknown-none`, so the library stays no_std. The
+# real guest doorbell transport (`hypercall-doorbell`) is exercised only in the
+# box gate, so it is a dev-dependency here (the SDK is generic over `Transport`).
+[dev-dependencies]
+hypercall-proto = { path = "../../consonance/hypercall-proto", version = "0.1.0", features = ["host"] }
+hypercall-doorbell = { path = "../../consonance/hypercall-doorbell", version = "0.1.0" }
+
+# No `panic = "abort"` override: the `x86_64-unknown-none` target already aborts
+# by default (the no_std proof needs nothing here), and forcing abort would break
+# the host `cargo test` harness's per-test unwinding.

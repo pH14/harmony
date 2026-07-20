@@ -245,7 +245,7 @@ Responsibility is split deliberately:
 
 `docs/LAYERS.md` R-L3 remains authoritative about the app-facing SDK: normal applications consume
 the Antithesis SDK surface unmodified and send Antithesis JSON through `/dev/harmony`. The existing
-binary `guest/sdk` wire remains an internal surface for bare-metal payloads and guest-resident
+binary `harmony-linux/sdk` wire remains an internal surface for bare-metal payloads and guest-resident
 agents. The strategy must not mistake that internal wire for the product API.
 
 `sdk-events` owns both source-specific decoders and normalizes their output into persisted

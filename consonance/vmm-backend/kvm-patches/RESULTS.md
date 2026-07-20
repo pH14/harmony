@@ -70,7 +70,7 @@ All diagnostics were box-local throwaways (the committed patch 0004 and the comm
 
 The `live_runc_postgres` r1/r2/r3 headline (gate 2's named workload) exercises the
 **same** `run_until` → force-exit path on a heavier guest; it needs the ~160 MiB
-runc + Postgres OCI payload (`guest/` build with the pinned Postgres debs + the
+runc + Postgres OCI payload (`harmony-linux/` build with the pinned Postgres debs + the
 `postgres:17` image — not bundled in this branch's payloads). The mechanism it relies
 on is proven above (deterministic-twice, max skid 1, zero `PastDeadline`); the
 foreman should run the runc/Postgres trio with this 0004 module + task-54 routing to

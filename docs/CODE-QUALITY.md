@@ -119,7 +119,7 @@ this philosophy (it *is* an oracle harness); extend the pattern into the stores.
 Snapshot testing for canonical encodings: the hypercall wire frames, the `vm_state` blob codec
 (task 09 when it lands), the CPU/MSR contract artifacts (`docs/cpu-msr-contract.toml` is
 already a golden-style artifact), and `unison` state-hash outputs. Makes "the encoding
-changed" a reviewable diff instead of a silent break. Complements the existing `guest/golden/`
+changed" a reviewable diff instead of a silent break. Complements the existing `consonance/acceptance-suite/golden/`
 approach.
 
 ---

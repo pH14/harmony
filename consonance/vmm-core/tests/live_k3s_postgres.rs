@@ -10,9 +10,9 @@
 //! `gen_random_uuid()`/`clock_timestamp()` workload, and it comes out
 //! **bit-identical across two same-seed runs**.
 //!
-//! These boot `guest/build/bzImage` (the *unchanged* task-36 container-class
-//! kernel) + `guest/build/initramfs-k3s.cpio.gz` (built by
-//! `guest/linux/build-k3s-image.sh`) via [`vmm_core::vendor::x86::bringup::boot_linux_selected`],
+//! These boot `harmony-linux/build/bzImage` (the *unchanged* task-36 container-class
+//! kernel) + `harmony-linux/build/initramfs-k3s.cpio.gz` (built by
+//! `harmony-linux/linux/build-k3s-image.sh`) via [`vmm_core::vendor::x86::bringup::boot_linux_selected`],
 //! selecting the k3s `/init` with `rdinit=/k3s-init` (`k3s-init.sh`). That init
 //! brings up the cluster, waits for the postgres pod Ready, applies the client pod,
 //! and streams the client's workload output to `ttyS0`.
@@ -56,7 +56,7 @@
 //! (build the image first), patched modules loaded, CPU-pinned, wall-clock-bounded:
 //!
 //! ```sh
-//! make -C guest fetch && make -C guest/linux k3s-image     # build the image
+//! make -C harmony-linux fetch && make -C harmony-linux/linux k3s-image     # build the image
 //! # load patched kvm.ko/kvm-intel.ko (the ORIGINAL stable module), then:
 //! taskset -c 2 timeout 14400 cargo test -p vmm-core --test live_k3s_postgres \
 //!     -- --ignored --nocapture --test-threads=1 k2_k3s_postgres_deterministic_twice_patched
@@ -157,21 +157,21 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
-/// Read a built guest artifact, trying `guest/build/<name>` then `guest/linux/<name>`.
+/// Read a built guest artifact, trying `harmony-linux/build/<name>` then `harmony-linux/linux/<name>`.
 /// Panics loudly (with the build command) if absent — these `#[ignore]`d gates run
 /// only on the box, where the image is built first.
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in guest/build or guest/linux — build it first on the \
-         box: `make -C guest fetch && make -C guest/linux k3s-image`."
+        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
+         box: `make -C harmony-linux fetch && make -C harmony-linux/linux k3s-image`."
     );
 }
 

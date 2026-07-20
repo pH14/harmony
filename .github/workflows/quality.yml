@@ -65,12 +65,12 @@ jobs:
       - name: cargo deny
         run: cargo deny check
       # The root `cargo deny check` only sees the root workspace. License-check the
-      # out-of-workspace manifests too (guest/payloads + the cargo-fuzz harnesses), so
+      # out-of-workspace manifests too (consonance/acceptance-suite/payloads + the cargo-fuzz harnesses), so
       # their deps — e.g. libfuzzer-sys's NCSA-licensed LLVM runtime — are asserted
       # AGPL-compatible against the same allow-list (task 91).
       - name: cargo deny (guest + fuzz manifests)
         run: |
-          cargo deny --manifest-path guest/payloads/Cargo.toml check --config deny.toml licenses
+          cargo deny --manifest-path consonance/acceptance-suite/payloads/Cargo.toml check --config deny.toml licenses
           cargo deny --manifest-path dissonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
           cargo deny --manifest-path dissonance/flow/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
@@ -96,62 +96,62 @@ jobs:
           rustup target add aarch64-unknown-linux-gnu
           CARGO_FEATURE_NO_NEON=1 cargo clippy --target aarch64-unknown-linux-gnu \
             --all-features --all-targets -- -D warnings
-      # guest/sdk is an out-of-workspace `no_std` crate (its own Cargo.toml), so the
+      # harmony-linux/sdk is an out-of-workspace `no_std` crate (its own Cargo.toml), so the
       # root fmt/clippy/nextest above never see it. Gate it explicitly on its own
       # manifest — its host-side loopback tests (duplicate-coordinate rejection,
       # emission dispositions, determinism) must stay green like any other crate.
-      - name: guest/sdk gates (out-of-workspace manifest)
+      - name: harmony-linux/sdk gates (out-of-workspace manifest)
         run: |
-          cargo fmt --manifest-path guest/sdk/Cargo.toml --all -- --check
-          cargo clippy --manifest-path guest/sdk/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --manifest-path guest/sdk/Cargo.toml --all-features
+          cargo fmt --manifest-path harmony-linux/sdk/Cargo.toml --all -- --check
+          cargo clippy --manifest-path harmony-linux/sdk/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --manifest-path harmony-linux/sdk/Cargo.toml --all-features
           # License-check its deps against the same allow-list (like the guest/fuzz
           # manifests above) — the root `cargo deny` never sees this manifest.
-          cargo deny --manifest-path guest/sdk/Cargo.toml check --config deny.toml licenses
+          cargo deny --manifest-path harmony-linux/sdk/Cargo.toml check --config deny.toml licenses
           # no_std build proof: the crate and its deps must compile for the bare
           # metal target the guest actually runs in (host-only tests can't catch a
           # std leak). Fails the gate if anything pulls in std.
           rustup target add x86_64-unknown-none
-          cargo build --manifest-path guest/sdk/Cargo.toml --lib --target x86_64-unknown-none
+          cargo build --manifest-path harmony-linux/sdk/Cargo.toml --lib --target x86_64-unknown-none
       # Actually LINK the SDK-instrumented demo guest for bare metal — from its own
-      # dir, so guest/payloads/.cargo/config.toml (target + linker) applies. The
-      # guest/sdk `--lib` proof above compiles the library, but only a full payload
+      # dir, so consonance/acceptance-suite/payloads/.cargo/config.toml (target + linker) applies. The
+      # harmony-linux/sdk `--lib` proof above compiles the library, but only a full payload
       # link exercises the SDK end-to-end against the boot shim; a regression that
       # breaks the demo (the box gate's guest) would otherwise surface only on the box.
-      - name: guest/payloads sdk-demo build (bare metal, from its dir)
-        working-directory: guest/payloads
+      - name: consonance/acceptance-suite/payloads sdk-demo build (bare metal, from its dir)
+        working-directory: consonance/acceptance-suite/payloads
         run: cargo build -p sdk-demo
-      # guest/flow-agent (task 61) is out-of-workspace (its own manifest), like
-      # guest/sdk, so the root fmt/clippy/nextest/deny above never see it. Gate it
+      # harmony-linux/flow-agent (task 61) is out-of-workspace (its own manifest), like
+      # harmony-linux/sdk, so the root fmt/clippy/nextest/deny above never see it. Gate it
       # explicitly on its own manifest — the flow-agent brain (answer→policy,
       # enforcement plan, decider) + its cfg(linux) doorbell must stay green like any
       # other crate, or the crate rots green (the gap that just red-mained us).
-      - name: guest/flow-agent gates (out-of-workspace manifest)
+      - name: harmony-linux/flow-agent gates (out-of-workspace manifest)
         run: |
-          cargo fmt --manifest-path guest/flow-agent/Cargo.toml --all -- --check
-          cargo clippy --manifest-path guest/flow-agent/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --manifest-path guest/flow-agent/Cargo.toml --all-features
-          cargo deny --manifest-path guest/flow-agent/Cargo.toml check --config deny.toml licenses
+          cargo fmt --manifest-path harmony-linux/flow-agent/Cargo.toml --all -- --check
+          cargo clippy --manifest-path harmony-linux/flow-agent/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --manifest-path harmony-linux/flow-agent/Cargo.toml --all-features
+          cargo deny --manifest-path harmony-linux/flow-agent/Cargo.toml check --config deny.toml licenses
           # Build the static musl target it actually ships as (a std-leak or a
           # cfg(linux) doorbell regression only surfaces on a real Linux target —
           # ubuntu-latest runs Linux, so the cfg(target_os="linux") FFI is compiled
           # here, which the macOS dev host and codex both skip).
           rustup target add x86_64-unknown-linux-musl
-          cargo build --manifest-path guest/flow-agent/Cargo.toml --bin flow-agent --target x86_64-unknown-linux-musl
-      # guest/play-agent (task 86) is out-of-workspace (its own manifest), like
+          cargo build --manifest-path harmony-linux/flow-agent/Cargo.toml --bin flow-agent --target x86_64-unknown-linux-musl
+      # harmony-linux/play-agent (task 86) is out-of-workspace (its own manifest), like
       # flow-agent — gate it explicitly or it rots green. The portable brain
       # (chord decode, RAM map, billboard, mock-core agent loop) tests everywhere;
       # the native bin build compiles the cfg(linux) libretro-FFI + hugetlb +
       # doorbell glue, which the macOS dev host skips. Dynamic glibc build (it
       # dlopens the pinned core at runtime), so the native build IS the ship
       # target here — no musl step.
-      - name: guest/play-agent gates (out-of-workspace manifest)
+      - name: harmony-linux/play-agent gates (out-of-workspace manifest)
         run: |
-          cargo fmt --manifest-path guest/play-agent/Cargo.toml --all -- --check
-          cargo clippy --manifest-path guest/play-agent/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --manifest-path guest/play-agent/Cargo.toml --all-features
-          cargo deny --manifest-path guest/play-agent/Cargo.toml check --config deny.toml licenses
-          cargo build --manifest-path guest/play-agent/Cargo.toml --bin play-agent
+          cargo fmt --manifest-path harmony-linux/play-agent/Cargo.toml --all -- --check
+          cargo clippy --manifest-path harmony-linux/play-agent/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --manifest-path harmony-linux/play-agent/Cargo.toml --all-features
+          cargo deny --manifest-path harmony-linux/play-agent/Cargo.toml check --config deny.toml licenses
+          cargo build --manifest-path harmony-linux/play-agent/Cargo.toml --bin play-agent
       # spikes/differential-lineage (tasks/120, hm-bbx.2) is out-of-workspace (its
       # own manifest, spike convention), so the root gates above never see it —
       # gate it explicitly or its test suite rots green while it feeds the hm-bbx.5
@@ -418,20 +418,20 @@ jobs:
         run: git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
       - name: cargo mutants --in-diff
         run: cargo mutants --no-shuffle --in-diff pr.diff
-      # guest/sdk is out-of-workspace (its own manifest), so the root run above
+      # harmony-linux/sdk is out-of-workspace (its own manifest), so the root run above
       # never mutates it even when the PR diff touches its files — leaving the SDK
       # harness (assert/buggify/state hooks + wire encode) ungated. Mutate its
       # diffed lines on their own manifest, mirroring the fmt/clippy/test/public-api
-      # split the `gates` job already applies to guest/sdk. `--in-diff` filters to
-      # the PR's changed guest/sdk lines; its own `.cargo/mutants.toml` (if any)
+      # split the `gates` job already applies to harmony-linux/sdk. `--in-diff` filters to
+      # the PR's changed harmony-linux/sdk lines; its own `.cargo/mutants.toml` (if any)
       # auto-discovers, else the run is config-free.
-      - name: cargo mutants --in-diff (guest/sdk, out-of-workspace manifest)
-        run: cargo mutants --manifest-path guest/sdk/Cargo.toml --no-shuffle --in-diff pr.diff
-      # guest/flow-agent (task 61) is out-of-workspace too — mutate its diffed lines
+      - name: cargo mutants --in-diff (harmony-linux/sdk, out-of-workspace manifest)
+        run: cargo mutants --manifest-path harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff
+      # harmony-linux/flow-agent (task 61) is out-of-workspace too — mutate its diffed lines
       # on its own manifest so the flow-agent brain (answer→policy / enforcement plan
-      # / decider) is gated like guest/sdk, not left ungated by the root run.
-      - name: cargo mutants --in-diff (guest/flow-agent, out-of-workspace manifest)
-        run: cargo mutants --manifest-path guest/flow-agent/Cargo.toml --no-shuffle --in-diff pr.diff
+      # / decider) is gated like harmony-linux/sdk, not left ungated by the root run.
+      - name: cargo mutants --in-diff (harmony-linux/flow-agent, out-of-workspace manifest)
+        run: cargo mutants --manifest-path harmony-linux/flow-agent/Cargo.toml --no-shuffle --in-diff pr.diff
 
   # Gating (quality-f): formal proofs on saturating/bounded integer arithmetic
   # via Kani (bounded model checking). The `#[cfg(kani)]` harnesses in
@@ -515,13 +515,13 @@ jobs:
       - name: public-api snapshot tests
         run: |
           cargo test \
-            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p environment -p control-proto -p explorer -p sdk-events -p flow -p matcher -p runtrace -p campaign-runner -p tactics-regime -p logtmpl -p resolution -p det-corpus \
+            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p environment -p control-proto -p explorer -p sdk-events -p flow -p matcher -p runtrace -p campaign-runner -p tactics-regime -p logtmpl -p resolution -p acceptance-suite \
             --test public_api -- --ignored --nocapture
           # revision-coordinator's snapshot test is NOT #[ignore]d (tasks/121,
           # PR #124 F12: it also gates the plain nextest suite), so it runs
           # without the `--ignored` filter above.
           cargo test -p revision-coordinator --test public_api -- --nocapture
-          # guest/sdk is out-of-workspace (its own manifest), so it is not in the
+          # harmony-linux/sdk is out-of-workspace (its own manifest), so it is not in the
           # `-p` list above — freeze its public surface on its own manifest.
-          cargo test --manifest-path guest/sdk/Cargo.toml \
+          cargo test --manifest-path harmony-linux/sdk/Cargo.toml \
             --test public_api -- --ignored --nocapture

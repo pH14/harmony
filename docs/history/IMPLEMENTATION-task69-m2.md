@@ -102,7 +102,7 @@ default `CellFnV1`.
 - `explorer/src/stads.rs` — the `Frac` `Ord` cross-multiply now falls back to an
   **exact, non-overflowing continued-fraction comparison** on `u128` overflow
   (fast path unchanged for campaign magnitudes).
-- `guest/linux/order-super.c` — the involuntary-ctxsw counter is now sampled
+- `harmony-linux/linux/order-super.c` — the involuntary-ctxsw counter is now sampled
   **after** the torn window fully closes (`mirror = ~primary`), so an interrupt
   landing in the last sliver of the window is not missed.
 - `dissonance/benchmark/src/manifest.rs` — the ORDER_BUG (bug 2) crash-kind is
@@ -243,8 +243,8 @@ campaign's `state_hash` is microarchitecture-independent, so **up to 3 concurren
 campaigns on distinct cores** is sanctioned (and is the determinism stress-test).
 
 1. **Build the three planted-bug images.** Bug 1's `initramfs-campaign.cpio.gz`
-   already exists (task 60). Build bugs 2 & 3 from `guest/linux/order-super.c` and
-   `guest/linux/uuid-super.c` via the `build-campaign-image.sh` / `campaign-init.sh`
+   already exists (task 60). Build bugs 2 & 3 from `harmony-linux/linux/order-super.c` and
+   `harmony-linux/linux/uuid-super.c` via the `build-campaign-image.sh` / `campaign-init.sh`
    conventions (distinct markers `ORDER_READY` / `UUID_READY`, `ORDER_BUG` /
    `UUID_BUG`). Validate each boots to its readiness marker.
 

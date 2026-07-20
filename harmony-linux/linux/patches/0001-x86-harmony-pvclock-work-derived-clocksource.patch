@@ -1,0 +1,371 @@
+x86: harmony_pvclock — work-derived paravirt clocksource (task 110)
+
+Kernel side of the harmony deterministic hypervisor's paravirt work-derived
+clock page (HARMONY_PVCLOCK_ABI 1; docs/PARAVIRT-CLOCK.md in the harmony repo
+is the layout authority): a kvmclock-shaped clocksource with the interpolation
+deleted (.read() = a seqlock page load returning materialized V-time),
+sched_clock routed through the same read, TSC marked unstable once the page is
+live. Runtime-inert without the `harmony_pvclock` kernel parameter, which only
+the harmony vmm appends when it offers the page — one image serves as both the
+page-on and page-off measurement arm. Registration rides the hypercall
+doorbell (service 7 op 1), one-shot per the ABI ruling, bracketed by two
+deliberate rdtsc traps: an anchor-freshener before ringing, and the REQUIRED
+post-doorbell handshake rdtsc that the host stamps the page and arms its Δ
+refresh from (the OUT only records a pending registration — r8 handshake
+ruling).
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+harmony-linux/linux/patches/ per the repo's kernel-patch licensing exception
+(patches/README.md); it is not first-party harmony source. Applied by
+harmony-linux/linux/build-kernel.sh; the counter-opcode reachability gate
+(scan-counter-opcodes.sh) accounts for this file's two deliberate rdtsc
+reads in its reviewed allowlist.
+
+---
+--- a/arch/x86/Kconfig
++++ b/arch/x86/Kconfig
+@@ -832,6 +832,20 @@
+ 
+ source "arch/x86/xen/Kconfig"
+ 
++config HARMONY_PVCLOCK
++	bool "Harmony paravirt work-derived clock"
++	depends on X86_64 && PARAVIRT
++	default n
++	help
++	  Clocksource and sched_clock backed by the harmony deterministic
++	  hypervisor's materialized work-derived clock page (a seqlock page
++	  the host re-stamps at every virtual-time advance; the read path is
++	  a page load, never a raw counter read). Inert unless the
++	  harmony_pvclock kernel parameter is present AND the host accepts
++	  the page registration over the hypercall doorbell; when active the
++	  TSC is marked unstable so kernel timekeeping can never fall back
++	  to raw RDTSC. Say N unless building the harmony determinism guest.
++
+ config KVM_GUEST
+ 	bool "KVM Guest support (including kvmclock)"
+ 	depends on PARAVIRT
+--- a/arch/x86/kernel/Makefile
++++ b/arch/x86/kernel/Makefile
+@@ -139,6 +139,7 @@
+ obj-$(CONFIG_DEBUG_NMI_SELFTEST) += nmi_selftest.o
+ 
+ obj-$(CONFIG_KVM_GUEST)		+= kvm.o kvmclock.o
++obj-$(CONFIG_HARMONY_PVCLOCK)	+= harmony_pvclock.o
+ obj-$(CONFIG_PARAVIRT)		+= paravirt.o
+ obj-$(CONFIG_PARAVIRT_SPINLOCKS)+= paravirt-spinlocks.o
+ obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
+--- /dev/null
++++ b/arch/x86/kernel/harmony_pvclock.c
+@@ -0,0 +1,311 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * harmony_pvclock — clocksource + sched_clock over the harmony deterministic
++ * hypervisor's materialized, work-derived clock page (HARMONY_PVCLOCK_ABI 1;
++ * docs/PARAVIRT-CLOCK.md in the harmony repo is the layout authority).
++ *
++ * This file is Linux-kernel code and ships ONLY as part of the kernel diff
++ * under harmony-linux/linux/patches/ (the repo's GPL-2.0 kernel-patch exception —
++ * see patches/README.md); it is not first-party harmony source.
++ *
++ * Shaped like kvmclock with the interpolation DELETED: the page carries a
++ * finished V-time value (vns, nanoseconds) and a finished virtual counter
++ * (guest_clock), both pure functions of work performed — the read path is a
++ * seqlock-guarded page load and NOTHING else. There is no rdtsc term here at
++ * all: between two host refreshes the clock is piecewise-constant by design
++ * (the host bounds the staleness at its Δ refresh window), and any raw rdtsc
++ * anywhere else in the system still traps to the hypervisor and returns the
++ * same work-derived value (the enforcement backstop).
++ *
++ * Everything is gated on the `harmony_pvclock` kernel parameter, which only
++ * the harmony vmm appends to the command line when it offers the page — this
++ * file is dead weight (and this kernel behaves exactly as before) on any
++ * other host, which is what lets one kernel image serve as both the page-on
++ * and page-off arm of the perf measurement.
++ *
++ * Registration transport: the hypercall doorbell (harmony INTEGRATION.md §1)
++ * — stage a request frame at REQ_GPA (0xE000), OUT the frame length to port
++ * 0x0CA1 (one OUT = the whole exchange, serviced while this vCPU is paused),
++ * read the response frame at RESP_GPA (0xF000). The request is service 7
++ * (Pvclock) opcode 1 with an 8-byte little-endian GPA payload; the response
++ * payload is the 4-byte page-layout ABI version.
++ */
++#define pr_fmt(fmt) "harmony_pvclock: " fmt
++
++#include <linux/clocksource.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/kernel.h>
++#include <linux/mm.h>
++#include <linux/printk.h>
++#include <linux/string.h>
++#include <linux/unaligned.h>
++
++#include <asm/io.h>
++#include <asm/msr.h>
++#include <asm/paravirt.h>
++#include <asm/tsc.h>
++
++/* ---- the clock page (PARAVIRT-CLOCK.md §1, ABI v1) ---------------------- */
++
++#define HARMONY_PVCLOCK_ABI		1u
++#define HARMONY_FLAG_MATERIALIZED	(1u << 0)
++#define HARMONY_FLAG_WORK_DERIVED	(1u << 1)
++/* The exact ABI-v1 flags word every real stamp publishes; all other bits are
++ * reserved-zero. The reader requires this word exactly (not just a bit test),
++ * so a placeholder page — e.g. the ARM spike's static page that leaves
++ * WORK_DERIVED clear — fails closed. */
++#define HARMONY_FLAGS_V1 \
++	(HARMONY_FLAG_MATERIALIZED | HARMONY_FLAG_WORK_DERIVED)
++
++struct harmony_pvclock_page {
++	u32 abi_version;
++	u32 seq;		/* odd = update in progress (retry) */
++	u64 vns;		/* materialized V-time, nanoseconds */
++	u64 guest_clock;	/* materialized virtual counter */
++	u64 guest_clock_hz;	/* counter frequency, Hz */
++	u32 flags;		/* bit 0 MATERIALIZED | bit 1 WORK_DERIVED; rest reserved 0 */
++	u32 vcpu_index;		/* pinned 0 (single vCPU) */
++	u8 reserved[PAGE_SIZE - 0x28];
++} __packed;
++
++/*
++ * The page lives in this image's .bss (zeroed, page-aligned); its physical
++ * address is a pure function of the build (KASLR is compiled out of the
++ * determinism kernel), so the registered GPA is identical across same-seed
++ * runs — a determinism requirement, not a convenience.
++ */
++static struct harmony_pvclock_page harmony_page __aligned(PAGE_SIZE);
++
++/* ---- the hypercall doorbell (INTEGRATION.md §1) ------------------------- */
++
++#define HARMONY_DOORBELL_PORT	0x0CA1
++#define HARMONY_REQ_GPA		0xE000UL
++#define HARMONY_RESP_GPA	0xF000UL
++
++#define HC_MAGIC		0x31504348u
++#define HC_KIND_REQUEST		1
++#define HC_KIND_RESPONSE	2
++#define HC_SERVICE_PVCLOCK	7
++#define HC_OP_REGISTER		1
++#define HC_STATUS_OK		0
++#define HC_HEADER_LEN		24
++
++struct harmony_hc_header {
++	__le32 magic;
++	__le16 kind;
++	__le16 service;
++	__le16 opcode;
++	__le16 status;
++	__le32 seq;
++	__le32 payload_len;
++	__le32 reserved;
++} __packed;
++
++static bool harmony_pvclock_requested __initdata;
++
++static int __init harmony_pvclock_setup(char *arg)
++{
++	harmony_pvclock_requested = true;
++	return 0;
++}
++early_param("harmony_pvclock", harmony_pvclock_setup);
++
++/*
++ * The §1 seqlock read. The host writes only while this vCPU is paused at a
++ * VM exit, so on today's single-vCPU machine the retry fires only for a read
++ * that straddled an exit/resume boundary; the loop is the ABI's forward
++ * guarantee (a future SMP guest needs it unchanged).
++ */
++static __always_inline u64 harmony_pvclock_read_vns(void)
++{
++	const struct harmony_pvclock_page *p = &harmony_page;
++	u32 seq;
++	u64 vns;
++
++	do {
++		while ((seq = READ_ONCE(p->seq)) & 1)
++			cpu_relax();
++		virt_rmb();
++		vns = READ_ONCE(p->vns);
++		virt_rmb();
++	} while (unlikely(READ_ONCE(p->seq) != seq));
++
++	return vns;
++}
++
++static u64 harmony_clocksource_read(struct clocksource *cs)
++{
++	return harmony_pvclock_read_vns();
++}
++
++/*
++ * ns-native (vns), registered at 1 GHz so mult/shift are the identity to
++ * within the core's rounding; rated above tsc (300) and kvmclock (400) so the
++ * core always prefers it. No VDSO clock mode: userspace clock_gettime takes
++ * the syscall path into this read — a page load, never a raw counter.
++ */
++static struct clocksource harmony_clocksource = {
++	.name	= "harmony-pvclock",
++	.rating	= 450,
++	.read	= harmony_clocksource_read,
++	.mask	= CLOCKSOURCE_MASK(64),
++	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
++};
++
++static noinstr u64 harmony_sched_clock(void)
++{
++	return harmony_pvclock_read_vns();
++}
++
++/*
++ * Publish the page GPA over the doorbell and validate the answer. Returns 0
++ * with the host's ABI version in *abi on success, -errno on any failure —
++ * every failure path leaves the kernel on its trap-backstopped time (correct,
++ * just slower), never half-registered.
++ */
++static int __init harmony_ring_register(phys_addr_t page_pa, u32 *abi)
++{
++	struct harmony_hc_header *req;
++	const struct harmony_hc_header *resp;
++	void *req_page, *resp_page;
++	const u8 *payload;
++	int ret = 0;
++
++	req_page = memremap(HARMONY_REQ_GPA, PAGE_SIZE, MEMREMAP_WB);
++	resp_page = memremap(HARMONY_RESP_GPA, PAGE_SIZE, MEMREMAP_WB);
++	if (!req_page || !resp_page) {
++		pr_warn("cannot map the doorbell frame pages\n");
++		ret = -ENOMEM;
++		goto out;
++	}
++
++	/* The transport zeroes both pages before ringing. */
++	memset(req_page, 0, PAGE_SIZE);
++	memset(resp_page, 0, PAGE_SIZE);
++	req = req_page;
++	req->magic = cpu_to_le32(HC_MAGIC);
++	req->kind = cpu_to_le16(HC_KIND_REQUEST);
++	req->service = cpu_to_le16(HC_SERVICE_PVCLOCK);
++	req->opcode = cpu_to_le16(HC_OP_REGISTER);
++	req->status = 0;
++	req->seq = cpu_to_le32(1);
++	req->payload_len = cpu_to_le32(8);
++	req->reserved = 0;
++	put_unaligned_le64(page_pa, (u8 *)req_page + HC_HEADER_LEN);
++
++	/*
++	 * One raw rdtsc immediately before ringing — deliberately: it traps to
++	 * the hypervisor (the retained backstop) as a V-time intercept, which
++	 * refreshes the host's skid-free anchor to within a few branches of this
++	 * point. This keeps the anchor fresh across the doorbell OUT; the actual
++	 * page stamp and Δ arm happen at the REQUIRED post-registration handshake
++	 * rdtsc below (the OUT itself is a PIO, not an intercept). This is one of
++	 * two intentional rdtscs in this file; the §3.3 opcode-scan allowlist
++	 * records both.
++	 */
++	(void)rdtsc();
++
++	/* One OUT = the host services the whole exchange before we resume. */
++	virt_wmb();
++	outl(HC_HEADER_LEN + 8, HARMONY_DOORBELL_PORT);
++	virt_rmb();
++
++	resp = resp_page;
++	if (le32_to_cpu(resp->magic) != HC_MAGIC ||
++	    le16_to_cpu(resp->kind) != HC_KIND_RESPONSE ||
++	    le16_to_cpu(resp->service) != HC_SERVICE_PVCLOCK ||
++	    le16_to_cpu(resp->opcode) != HC_OP_REGISTER) {
++		pr_warn("malformed doorbell response\n");
++		ret = -EPROTO;
++		goto out;
++	}
++	if (le16_to_cpu(resp->status) != HC_STATUS_OK) {
++		/* UnknownService = "not offered": the clean opt-out answer. */
++		pr_info("host declined registration (status %u)\n",
++			le16_to_cpu(resp->status));
++		ret = -ENODEV;
++		goto out;
++	}
++	if (le32_to_cpu(resp->payload_len) != 4) {
++		pr_warn("bad registration response payload length %u\n",
++			le32_to_cpu(resp->payload_len));
++		ret = -EPROTO;
++		goto out;
++	}
++	payload = (const u8 *)resp_page + HC_HEADER_LEN;
++	*abi = get_unaligned_le32(payload);
++
++out:
++	if (req_page)
++		memunmap(req_page);
++	if (resp_page)
++		memunmap(resp_page);
++	return ret;
++}
++
++static int __init harmony_pvclock_init(void)
++{
++	u32 abi = 0;
++	int ret;
++
++	BUILD_BUG_ON(sizeof(struct harmony_pvclock_page) != PAGE_SIZE);
++
++	if (!harmony_pvclock_requested)
++		return 0;
++
++	ret = harmony_ring_register(__pa(&harmony_page), &abi);
++	if (ret) {
++		pr_warn("registration failed (%d); keeping trap-backstopped time\n",
++			ret);
++		return 0;
++	}
++	/*
++	 * The REGISTRATION HANDSHAKE (harmony PARAVIRT-CLOCK.md §3.1, the r8
++	 * ruling). The doorbell OUT above only records a *pending* registration;
++	 * the host lays down the first (canonical) page stamp and arms its Δ
++	 * forced refresh **only** at the first V-time intercept after the OUT —
++	 * the OUT is a PIO, not an intercept, so its counter read is skid-tainted
++	 * and the pre-OUT anchor may be stale. This deliberate rdtsc IS that
++	 * intercept: REQUIRED PROTOCOL, not a courtesy. Its trap is skid-free, so
++	 * the host stamps + arms off a fresh, current anchor (never born overdue).
++	 * It MUST precede the ABI validation below: the validation reads the page's
++	 * abi_version/flags, which the host only writes at this handshake, so a
++	 * guest that validated first would see an unstamped page and refuse it. A
++	 * guest that omits the handshake is out of contract: its page stays
++	 * unstamped and no refresh arms. The §3.3 opcode-scan allowlist records
++	 * both deliberate reads in this file.
++	 */
++	(void)rdtsc();
++
++	/*
++	 * An ABI mismatch is a hard fault, never a silent reinterpret
++	 * (PARAVIRT-CLOCK.md §1): refuse the page entirely — and loudly —
++	 * rather than read fields whose layout this reader does not know.
++	 * The trap backstop keeps time correct meanwhile. (The page is now
++	 * stamped by the handshake above, so these reads see the real values.)
++	 */
++	if (abi != HARMONY_PVCLOCK_ABI ||
++	    READ_ONCE(harmony_page.abi_version) != HARMONY_PVCLOCK_ABI ||
++	    READ_ONCE(harmony_page.flags) != HARMONY_FLAGS_V1) {
++		pr_err("ABI mismatch (host answered %u, page says %u, flags %#x want %#x); refusing the page\n",
++		       abi, READ_ONCE(harmony_page.abi_version),
++		       READ_ONCE(harmony_page.flags), HARMONY_FLAGS_V1);
++		return 0;
++	}
++
++	/*
++	 * The page is live (the host stamped it at the handshake rdtsc above).
++	 * Route the kernel's time paths through it and make the TSC unselectable
++	 * for timekeeping — raw rdtsc still executes (and traps to the same
++	 * work-derived value), but the kernel never keeps time by it again.
++	 */
++	mark_tsc_unstable("harmony-pvclock");
++	paravirt_set_sched_clock(harmony_sched_clock);
++	clocksource_register_hz(&harmony_clocksource, NSEC_PER_SEC);
++	pr_info("work-derived clock page registered at %pa (abi %u, counter %llu Hz)\n",
++		&(phys_addr_t){ __pa(&harmony_page) }, abi,
++		(unsigned long long)READ_ONCE(harmony_page.guest_clock_hz));
++	return 0;
++}
++early_initcall(harmony_pvclock_init);

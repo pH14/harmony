@@ -17,7 +17,7 @@
  * differential is a mismatch, not a calibration (doc §AE-1(a)).
  *
  * ISA note (docs/AMD-EPYC.md §Topology): these are pure x86-64 payloads, identical to
- * the Intel det-corpus classes — AMD is the same Arch. The hammer is run first with the
+ * the Intel acceptance-suite classes — AMD is the same Arch. The hammer is run first with the
  * Intel event (0x1c4) as an apparatus self-test (hm-8v4), then with 0xc4 on Zen.
  *
  * What counts as a "taken branch" on Zen ExRetBrnTkn (APM Vol 2 §Perf; PPR 17h PMCx0C4):

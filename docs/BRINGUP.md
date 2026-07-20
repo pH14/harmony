@@ -11,7 +11,7 @@ sequences the work and pins the contracts it implements; it does not negotiate w
 Phase 0's "boots and prints" **plus** the start of Phase 1's determinism gate, in one push:
 
 1. **M1 — boots & prints.** The skeleton loads the task-04 `hello` payload and reproduces
-   `guest/golden/hello.txt` byte-for-byte over the emulated serial port, then exits clean.
+   `consonance/acceptance-suite/golden/hello.txt` byte-for-byte over the emulated serial port, then exits clean.
 2. **M2 — deterministic twice.** `hello` and `compute` run **twice** under the unison and
    produce **identical state hashes + identical serial output**. These two payloads are
    RDTSC/RDRAND-free, so they meet the gate on **stock `KvmBackend`** — no kernel patch needed yet.
@@ -58,7 +58,7 @@ stock-KVM deterministic VMM) — see the `prior-art-det-hypervisors` memory.
 
 ## The entry contract (task 04 — host side must replicate QEMU `-kernel`)
 
-Verified from `guest/payloads/common/src/boot.s`, `uart.rs`, `lib.rs`, `linker.ld`:
+Verified from `consonance/acceptance-suite/payloads/common/src/boot.s`, `uart.rs`, `lib.rs`, `linker.ld`:
 
 | What | Value |
 |---|---|
@@ -69,7 +69,7 @@ Verified from `guest/payloads/common/src/boot.s`, `uart.rs`, `lib.rs`, `linker.l
 | GPRs | `EAX = 0x2BADB002` (Multiboot **bootloader** magic the loader passes at entry — **not** `0x1BADB002`, which is the *header* magic embedded in the image); `EBX` → a minimal Multiboot info struct in guest RAM (the shim doesn't read it, but set a valid pointer); `EFLAGS.IF = 0` |
 | Console | polled **8250 UART, port `0x3F8`** (115200 8N1). Guest spins on LSR (`0x3FD`) THR-empty, then writes bytes to THR (`0x3F8`) |
 | Halt/exit | write `u8` to port **`0xF4`** (isa-debug-exit): `0` = PASS, `1` = FAIL; falls back to a `hlt` loop if absent |
-| Oracle | `guest/golden/<name>.txt` — byte-exact expected serial output (`PAYLOAD <name> START` … `PAYLOAD <name> PASS`) |
+| Oracle | `consonance/acceptance-suite/golden/<name>.txt` — byte-exact expected serial output (`PAYLOAD <name> START` … `PAYLOAD <name> PASS`) |
 
 The shim itself enables PAE/long-mode and loads a 64-bit GDT after entry, so the host only has to
 nail the **Multiboot 32-bit-PM handoff** — nothing more.
@@ -102,7 +102,7 @@ nail the **Multiboot 32-bit-PM handoff** — nothing more.
 4. **Bring-up device shims** (`vmm-core`): a minimal 8250 on `0x3F8` (accept init writes; LSR reads
    return THR-empty; THR writes append to a serial capture buffer) and isa-debug-exit on `0xF4`
    (terminate the run with the code). Treat `HLT` as terminal too.
-5. **M1**: boot `hello`, assert the serial capture equals `guest/golden/hello.txt` **and** the
+5. **M1**: boot `hello`, assert the serial capture equals `consonance/acceptance-suite/golden/hello.txt` **and** the
    terminal reason is a clean isa-debug-exit with code `PASS` (0) — not the fallback `HLT` and not a
    FAIL code (a payload can print `PASS` then exit non-clean; task 04's QEMU gate checks exit status too). **Boots & prints.**
 6. **M2**: drive `hello` + `compute` through the **unison** (`Subject`/`SubjectFactory` adapter,

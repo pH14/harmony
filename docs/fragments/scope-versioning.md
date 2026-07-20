@@ -8,7 +8,7 @@
 | Field | Value |
 |---|---|
 | contract-version | 1 |
-| reference kernel | Linux **v6.18.35** — equals `guest/linux/versions.lock` `KERNEL_VERSION=6.18.35` (tarball sha256 `f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236`); all `arch/x86/kvm/x86.c` and `arch/x86/include/asm/msr-index.h` citations are to that tag |
+| reference kernel | Linux **v6.18.35** — equals `harmony-linux/linux/versions.lock` `KERNEL_VERSION=6.18.35` (tarball sha256 `f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236`); all `arch/x86/kvm/x86.c` and `arch/x86/include/asm/msr-index.h` citations are to that tag |
 | baseline microarchitecture | the named baseline of the frozen CPUID model (§2) |
 | contract hash | `contract_hash` = SHA-256 of the canonical serialized form, computed per §4 from the assembled tables — never hand-written into this document |
 

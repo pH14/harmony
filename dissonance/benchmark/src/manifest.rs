@@ -41,7 +41,7 @@ pub enum BugClass {
 }
 
 /// How a triggered bug is observed as a crash. The guest maps the outcome to a
-/// distinct guest terminal (see `guest/linux/campaign-init.sh`); the campaign
+/// distinct guest terminal (see `harmony-linux/linux/campaign-init.sh`); the campaign
 /// oracle keys on the terminal **class**, and the per-bug serial marker plus this
 /// tag attribute the find. Mirrors `campaign_runner::campaign`'s `CRASH_KIND_*`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -141,7 +141,7 @@ impl Benchmark {
                     id: BugId(1),
                     name: "fault-timing-crash".to_string(),
                     class: BugClass::FaultTiming,
-                    // Task 60's marker (guest/linux/campaign-super.c).
+                    // Task 60's marker (harmony-linux/linux/campaign-super.c).
                     serial_marker: "CAMPAIGN_BUG".to_string(),
                     crash_kind: CrashKind::Shutdown,
                     // Exactly campaign_runner::planted::Trigger::toy(): gpa 0x3000, bit

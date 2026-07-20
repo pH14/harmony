@@ -63,8 +63,8 @@ fn repo_root() -> std::path::PathBuf {
 
 fn artifact(name: &str) -> Option<Vec<u8>> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return Some(bytes);
@@ -174,7 +174,7 @@ fn boot_server(
     let (Some(kernel), Some(initramfs)) = (artifact(kernel_name), artifact(initramfs_name)) else {
         eprintln!(
             "[campaign-runner] guest image missing ({kernel_name} / {initramfs_name}) — build it \
-             first: `make -C guest fetch && make -C guest/linux campaign-image` (or \
+             first: `make -C harmony-linux fetch && make -C harmony-linux/linux campaign-image` (or \
              `postgres-image`), or pass --initramfs for an image already on the box."
         );
         return Err(ExitCode::FAILURE);

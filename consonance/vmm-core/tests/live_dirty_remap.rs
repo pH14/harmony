@@ -34,10 +34,10 @@
 //!
 //! **Images are pinned by content hash** (hm-xdp): the harness refuses to run
 //! on a bzImage/initramfs whose sha256 differs from the pinned task-78-proven
-//! pair — stage that build (e.g. from the box's `/root/harmony-pr44/guest/build`)
+//! pair — stage that build (e.g. from the box's `/root/harmony-pr44/harmony-linux/build`)
 //! or deliberately override with `INITRAMFS=<name> INITRAMFS_SHA256=<hex>`
 //! (+ `BZIMAGE_SHA256=<hex>`). Verify before staging:
-//! `sha256sum guest/build/{bzImage,initramfs-postgres.cpio.gz}` against the
+//! `sha256sum harmony-linux/build/{bzImage,initramfs-postgres.cpio.gz}` against the
 //! `PINNED_*` constants below.
 //!
 //! Knobs: `DR_RUN_VNS` (V-time the guest runs before the first seal, default
@@ -96,16 +96,16 @@ fn repo_root() -> std::path::PathBuf {
 
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in guest/build or guest/linux — build it first on the \
-         box: `make -C guest fetch && make -C guest/linux postgres-image`."
+        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
+         box: `make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image`."
     );
 }
 

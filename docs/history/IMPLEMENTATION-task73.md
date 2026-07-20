@@ -143,7 +143,7 @@ seam (61 reuses it).
 ## THE SPLIT (integrator ruling 2026-07-04) — this is **PR B** (the vmm-core/control seams)
 
 Round 8's fresh pass found 1 P1 (again on the SDK×hash surface), so the split executed. The stable
-tiers (environment, guest/sdk, link, sdk-demo, hypercall-proto) land as **PR A** (`task/guest-sdk`,
+tiers (environment, harmony-linux/sdk, link, sdk-demo, hypercall-proto) land as **PR A** (`task/guest-sdk`,
 reduced); this branch (`task/guest-sdk-vmm-seams`) carries the vmm-core/control seams — doorbell
 dispatch, SDK channel + snapshot/restore, stop surfacing/StopMask, the `SdkEvents` verb + paging,
 the explorer `SocketMachine` override, the E820 doorbell reservation — with its own box gate, on top
@@ -172,7 +172,7 @@ buggify biasing at the same (position-0) stream hash differently; the same polic
   reserved for task 61's Net); guest `Client::buggify_decide(point) -> bool`;
   reference host `SdkBuggify` service for loopback tests. no_std guest build
   unchanged; `public-api.txt` re-frozen.
-- **`guest/sdk`** (new, standalone `no_std` workspace `harmony-sdk`): the SDK
+- **`harmony-linux/sdk`** (new, standalone `no_std` workspace `harmony-sdk`): the SDK
   verbs + the canonical wire convention (`wire.rs`). 8 loopback tests green,
   builds `x86_64-unknown-none`, composes over `Client<VmcallTransport>`
   (compile-proven).
@@ -183,14 +183,14 @@ buggify biasing at the same (position-0) stream hash differently; the same polic
 - **`dissonance/tactics-regime`**: one exhaustiveness arm for the additive
   `DecisionClass::Buggify` (`class_tag`); `class_from_tag` still rejects tag 7 so
   buggify declines to the seeded `FaultPolicy` biasing — behavior preserved.
-- **`guest/payloads/sdk-demo`** (new bare-metal payload): drives every SDK verb
+- **`consonance/acceptance-suite/payloads/sdk-demo`** (new bare-metal payload): drives every SDK verb
   over the real doorbell transport; a buggify-gated planted always-violation.
   **Compile-verified** for `x86_64-unknown-none` (produces the ELF the box gate
   boots); box-only to *run*.
 
 ## The wire convention (the guest/host contract)
 
-Owned by `guest/sdk/src/wire.rs` (canonical); mirrored privately in
+Owned by `harmony-linux/sdk/src/wire.rs` (canonical); mirrored privately in
 `dissonance/link/src/wire.rs` and (below) in vmm-core. `event_id = (ns << 24) |
 local`; all integers little-endian.
 
@@ -255,7 +255,7 @@ clause). All the pure logic it needs is in `dissonance/link`.
 results table above). Runs with:
 
 ```
-cd guest/payloads && cargo build -p sdk-demo --release
+cd consonance/acceptance-suite/payloads && cargo build -p sdk-demo --release
 # then, inside the box-window (below), pinned to the leased core:
 cargo test -p vmm-core --release --test live_sdk -- --ignored --nocapture
 ```

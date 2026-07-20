@@ -4,12 +4,12 @@
 //! `KvmBackend`).
 //!
 //! - **M1 — boots & prints.** `boot(KvmBackend::new(), hello, ram)` then `run()`:
-//!   the serial capture equals `guest/golden/hello.txt` byte-for-byte **and** the
+//!   the serial capture equals `consonance/acceptance-suite/golden/hello.txt` byte-for-byte **and** the
 //!   terminal reason is a clean isa-debug-exit `PASS` (`DebugExit { code: 0 }`).
 //! - **M2 — deterministic twice.** A `unison::SubjectFactory` builds a fresh
 //!   `Vmm<KvmBackend>` per payload; for both `hello` and `compute`, two runs
 //!   produce identical `state_hash` **and** identical serial; `compute`'s serial
-//!   also equals `guest/golden/compute.txt`.
+//!   also equals `consonance/acceptance-suite/golden/compute.txt`.
 //!
 //! **Gate honesty (why `#[ignore]`).** These tests need real KVM, the built
 //! payloads, and a host that matches the frozen `det-cfl-v1` baseline — none of
@@ -19,7 +19,7 @@
 //! when invoked explicitly on the box:
 //!
 //! ```sh
-//! cd guest/payloads && cargo build --release           # build the payloads first
+//! cd consonance/acceptance-suite/payloads && cargo build --release           # build the payloads first
 //! taskset -c 1 cargo test -p vmm-core --test live_m1_m2 -- --ignored --test-threads=1
 //! ```
 //!
@@ -52,28 +52,32 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
-/// The built payload ELF (`guest/payloads/target/x86_64-unknown-none/release/<name>`).
+/// The built payload ELF (`consonance/acceptance-suite/payloads/target/x86_64-unknown-none/release/<name>`).
 fn payload_path(name: &str) -> PathBuf {
     repo_root()
-        .join("guest/payloads/target/x86_64-unknown-none/release")
+        .join("consonance/acceptance-suite/payloads/target/x86_64-unknown-none/release")
         .join(name)
 }
 
-/// The byte-exact serial oracle (`guest/golden/<name>.txt`).
+/// The byte-exact serial oracle (`consonance/acceptance-suite/golden/<name>.txt`).
 fn golden(name: &str) -> Vec<u8> {
-    std::fs::read(repo_root().join("guest/golden").join(format!("{name}.txt")))
-        .unwrap_or_else(|e| panic!("read golden {name}.txt: {e}"))
+    std::fs::read(
+        repo_root()
+            .join("consonance/acceptance-suite/golden")
+            .join(format!("{name}.txt")),
+    )
+    .unwrap_or_else(|e| panic!("read golden {name}.txt: {e}"))
 }
 
 /// Require a built payload, else **panic (loud FAILURE)**. These tests are
 /// `#[ignore]`d and run only explicitly on the box, where the M1/M2 step builds
-/// `guest/payloads` first — so an unbuilt payload is a real failure to surface,
+/// `consonance/acceptance-suite/payloads` first — so an unbuilt payload is a real failure to surface,
 /// never an early-return `Ok` that counts as a vacuous pass.
 fn require_payload(name: &str) -> Vec<u8> {
     std::fs::read(payload_path(name)).unwrap_or_else(|e| {
         panic!(
             "payload `{name}` not built ({e}) — build it first: \
-             `cd guest/payloads && cargo build --release` (target x86_64-unknown-none) on the box."
+             `cd consonance/acceptance-suite/payloads && cargo build --release` (target x86_64-unknown-none) on the box."
         )
     })
 }
@@ -157,7 +161,7 @@ fn m1_hello_boots_and_prints() {
     assert_eq!(
         result.serial,
         golden("hello"),
-        "M1 serial must equal guest/golden/hello.txt byte-for-byte"
+        "M1 serial must equal consonance/acceptance-suite/golden/hello.txt byte-for-byte"
     );
     assert_eq!(
         result.reason,
@@ -248,7 +252,7 @@ fn assert_deterministic_twice(name: &str, payload: Vec<u8>, check_golden: bool) 
         assert_eq!(
             a.serial,
             golden(name),
-            "M2 {name}: serial must equal guest/golden/{name}.txt"
+            "M2 {name}: serial must equal consonance/acceptance-suite/golden/{name}.txt"
         );
     }
 }

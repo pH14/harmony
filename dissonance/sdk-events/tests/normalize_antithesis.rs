@@ -69,6 +69,27 @@ fn assertion_normalizes_to_occurrence_property_evidence() {
 }
 
 #[test]
+fn device_attribution_is_ignored_without_hiding_the_sdk_record() {
+    let json = r#"{"antithesis_assert":{
+        "assert_type":"always","condition":true,"message":"attributed property"
+    },"harmony_attribution":{"user_rip":4660,"pid":7,"comm_hex":"74657374"}}"#;
+    let n = decode_antithesis(&[rec(100, json)]).expect("decodes");
+
+    assert_eq!(n.events.len(), 1);
+    assert_eq!(
+        n.events[0].id,
+        ObservationId::Property("attributed property".into())
+    );
+    assert_eq!(
+        n.events[0].payload,
+        Payload::Assertion {
+            assert_type: Some(AssertType::Always),
+            condition: Some(true),
+        }
+    );
+}
+
+#[test]
 fn every_assertion_verb_maps_to_its_type() {
     for (verb, expected) in [
         ("always", AssertType::Always),

@@ -1,0 +1,40 @@
+# Example corpus manifest — the schema `load_manifest` / `to_manifest` speak.
+#
+# The canonical registry is docs/corpus-manifest.toml. This smaller file documents
+# the schema beside the runner. Each [[item]] declares which oracles apply to a workload;
+# a diff to such a file is how "we added/changed a determinism test" is reviewed.
+#
+# Tokens:
+#   kind     = "micro" | "workload" | "fuzz_seed"
+#   oracles  = any of:
+#                "determinism"            (O1)
+#                "conformance"            (O2 — requires `golden`)
+#                "seed_sensitivity:rng"   (O3, RNG-consuming payload)
+#                "seed_sensitivity:pure"  (O3, seed-pure payload)
+#   golden   = path to the committed digest; required iff "conformance" is listed.
+
+[[item]]
+name = "rdtsc-monotonic"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/rdtsc.bin"
+oracles = ["determinism", "conformance"]
+golden = "consonance/acceptance-suite/golden/rdtsc.digest"
+
+[[item]]
+name = "rdrand-stream"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/rdrand.bin"
+oracles = ["determinism", "conformance", "seed_sensitivity:rng"]
+golden = "consonance/acceptance-suite/golden/rdrand.digest"
+
+[[item]]
+name = "cpuid-sweep"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/cpuid.bin"
+oracles = ["determinism", "seed_sensitivity:pure"]
+
+[[item]]
+name = "compute"
+kind = "workload"
+source = "consonance/acceptance-suite/payloads/compute.bin"
+oracles = ["determinism"]

@@ -53,7 +53,7 @@ oracle — this task must not weaken or remove it.
    - G2 page-stamp == RDTSC-trap-oracle function-equality at every refresh Moment
      (NOT whole-hash equality across page-on/page-off — §6 rules that out);
    - G3 busy-wait liveness within Δ;
-   - perf: RDTSC-exit rate page-off vs page-on, boot ratio, det-corpus + postgres campaign
+   - perf: RDTSC-exit rate page-off vs page-on, boot ratio, acceptance-suite + postgres campaign
      smoke, reported as ppm-style ratios. Kill condition 3 threshold (<2× reduction =
      "not worth it") reported honestly either way.
 
