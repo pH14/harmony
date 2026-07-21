@@ -16,7 +16,7 @@ BASE="${APPLIANCE_BASE:-/root/nested-x86-spike/n1}"
 KVER=6.12.90+deb13.1-amd64
 PATCHED=/root/kvm-spike/deb612/hdr/usr/src/linux-headers-$KVER/arch/x86/kvm
 SRCROOT="${SRCROOT:-/root/harmony-nested}"
-PG="${PG_IMAGES:-/root/harmony-pr44/harmony-linux/build}"
+PG="${PG_IMAGES:-/root/harmony-pr44/guest/build}"
 IR=$BASE/initramfs
 
 # pinned L2 postgres pair (pr44 build; foreman ruling hm-xdp)

@@ -6,7 +6,6 @@
 #include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <unistd.h>
 
 #ifndef HARMONY_OPEN
@@ -24,12 +23,8 @@
 
 static pthread_mutex_t harmony_device_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static const char *harmony_device_path(void)
-{
-    const char *override = getenv("HARMONY_DEVICE_PATH");
-
-    return override != NULL && override[0] != '\0' ? override : "/dev/harmony";
-}
+/* The R-L3 transport ruling fixes the device path; it is not configurable. */
+static const char harmony_device_path[] = "/dev/harmony";
 
 static int write_all(int fd, const unsigned char *data, size_t size)
 {
@@ -69,7 +64,7 @@ void fuzz_json_data(const char *data, size_t size)
         return;
     if (pthread_mutex_lock(&harmony_device_lock) != 0)
         return;
-    fd = HARMONY_OPEN(harmony_device_path(), O_WRONLY | O_CLOEXEC);
+    fd = HARMONY_OPEN(harmony_device_path, O_WRONLY | O_CLOEXEC);
     if (fd >= 0) {
         (void)write_all(fd, (const unsigned char *)data, size);
         (void)HARMONY_CLOSE(fd);
@@ -87,7 +82,7 @@ uint64_t fuzz_get_random(void)
 
     if (pthread_mutex_lock(&harmony_device_lock) != 0)
         return 0;
-    fd = HARMONY_OPEN(harmony_device_path(), O_RDWR | O_CLOEXEC);
+    fd = HARMONY_OPEN(harmony_device_path, O_RDWR | O_CLOEXEC);
     if (fd < 0)
         goto out;
     if (write_all(fd, &request, sizeof(request)) != 0 ||

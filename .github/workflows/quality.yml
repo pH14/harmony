@@ -152,6 +152,15 @@ jobs:
           cargo test --manifest-path harmony-linux/play-agent/Cargo.toml --all-features
           cargo deny --manifest-path harmony-linux/play-agent/Cargo.toml check --config deny.toml licenses
           cargo build --manifest-path harmony-linux/play-agent/Cargo.toml --bin play-agent
+      # harmony-linux/libvoidstar (task 43) is a C subtree with its own Makefile — the
+      # root cargo gates never see it, and nothing else in CI builds it, so a change
+      # that broke the clean-room ABI shim would merge green. `make test-libvoidstar`
+      # builds the .so under the strict warning set (-Werror -Wconversion -Wpedantic),
+      # runs the ABI mock test (tests/abi_test.c), and asserts the exported symbol set
+      # (check-symbols.sh). Runs on any host — no Linux/KVM needed — so the C shim is
+      # gated here even though the guest-image repro that installs the .so is box-only.
+      - name: harmony-linux/libvoidstar ABI (C subtree, out-of-workspace)
+        run: make -C harmony-linux test-libvoidstar
       # spikes/differential-lineage (tasks/120, hm-bbx.2) is out-of-workspace (its
       # own manifest, spike convention), so the root gates above never see it —
       # gate it explicitly or its test suite rots green while it feeds the hm-bbx.5
