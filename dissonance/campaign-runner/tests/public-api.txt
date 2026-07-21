@@ -96,6 +96,7 @@ pub const campaign_runner::gamecampaign::reg::DEPTH: u64
 pub const campaign_runner::gamecampaign::reg::FRAME: u64
 pub const campaign_runner::gamecampaign::reg::GAME_MODE: u64
 pub const campaign_runner::gamecampaign::reg::LEVEL: u64
+pub const campaign_runner::gamecampaign::reg::POWERUP: u64
 pub const campaign_runner::gamecampaign::reg::WORLD: u64
 pub const campaign_runner::gamecampaign::reg::X_BUCKET: u64
 pub enum campaign_runner::gamecampaign::GameCampaignError
