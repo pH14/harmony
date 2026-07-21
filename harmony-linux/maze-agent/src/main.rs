@@ -73,6 +73,15 @@ struct Args {
     /// rollouts at their deadline).
     #[arg(long, default_value_t = 0)]
     steps: u64,
+    /// Deterministic busy-work iterations between steps (integer spin, fixed
+    /// count — rule 4). The VMM can stop the guest only at its V-time
+    /// interception grid (PVCLOCK_DEFAULT_DELTA_WORK = 10ms quanta), so an
+    /// unpaced walk crams ~62k steps into the smallest stoppable rollout —
+    /// flooding the SDK capture and quantizing every deadline to 62k-step
+    /// multiples (measured, task 134 M1). Pacing spreads ~50 steps over one
+    /// quantum, the campaign's design point.
+    #[arg(long, default_value_t = 60_000)]
+    pace: u64,
     /// Portable smoke: walk with a local xorshift entropy stream and print
     /// progress — no doorbell, no hypervisor.
     #[arg(long)]
@@ -160,12 +169,13 @@ mod real {
         // script's pre-exec marker is MAZE_LAUNCH (driving boot to
         // MAZE_READY thus guarantees the spec line is already on the serial).
         println!(
-            "MAZE_SPEC: w={} l={} doors={} seed={:#x} reachable={}",
+            "MAZE_SPEC: w={} l={} doors={} seed={:#x} reachable={} pace={}",
             spec.width(),
             spec.levels(),
             spec.doors(),
             spec.maze_seed,
-            maze::reachable_cells(&spec)
+            maze::reachable_cells(&spec),
+            args.pace
         );
         println!("MAZE_READY: maze-agent up");
 
@@ -193,6 +203,16 @@ mod real {
             if args.steps != 0 && i >= args.steps {
                 println!("MAZE_DONE: steps={i} deepest_level={}", state.y_register());
                 return Ok(());
+            }
+            // The deterministic pacing spin (see the --pace doc): a pure
+            // integer recurrence the compiler cannot fold away, spreading the
+            // walk over the VMM's stoppable V-time grid.
+            let mut z = i.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            for _ in 0..args.pace {
+                z ^= z << 13;
+                z ^= z >> 7;
+                z ^= z << 17;
+                std::hint::black_box(z);
             }
             let mut b = [0u8; 1];
             sdk.entropy_fill(&mut b)
