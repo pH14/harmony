@@ -106,6 +106,8 @@ pub campaign_runner::gamecampaign::GameCampaignError::BillboardMalformed::len: u
 pub campaign_runner::gamecampaign::GameCampaignError::BillboardMalformed::why: &'static str
 pub campaign_runner::gamecampaign::GameCampaignError::BillboardMissing
 pub campaign_runner::gamecampaign::GameCampaignError::Campaign(explorer::campaign::CampaignError)
+pub campaign_runner::gamecampaign::GameCampaignError::ConfigUnavailable
+pub campaign_runner::gamecampaign::GameCampaignError::ConfigUnavailable::config: &'static str
 pub campaign_runner::gamecampaign::GameCampaignError::Machine(explorer::error::MachineError)
 pub campaign_runner::gamecampaign::GameCampaignError::MalformedExemplar(alloc::string::String)
 pub campaign_runner::gamecampaign::GameCampaignError::MarkerBeyondSeal
@@ -236,6 +238,92 @@ pub fn campaign_runner::materialize::depth_ratio_ppm(&explorer::materialize::Mat
 pub fn campaign_runner::materialize::render_materialize_table(&campaign_runner::materialize::MaterializeReport) -> alloc::string::String
 pub fn campaign_runner::materialize::run_materialize<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &campaign_runner::materialize::MaterializeConfig) -> core::result::Result<campaign_runner::materialize::MaterializeReport, explorer::error::MachineError>
 pub fn campaign_runner::materialize::verify_materialize(&campaign_runner::materialize::MaterializeReport, core::option::Option<u64>) -> alloc::vec::Vec<alloc::string::String>
+pub mod campaign_runner::mazecampaign
+pub mod campaign_runner::mazecampaign::reg
+pub const campaign_runner::mazecampaign::reg::X: u64
+pub const campaign_runner::mazecampaign::reg::Y: u64
+pub enum campaign_runner::mazecampaign::MazeCampaignError
+pub campaign_runner::mazecampaign::MazeCampaignError::Campaign(explorer::campaign::CampaignError)
+pub campaign_runner::mazecampaign::MazeCampaignError::Machine(explorer::error::MachineError)
+pub campaign_runner::mazecampaign::MazeCampaignError::Retention(alloc::string::String)
+pub campaign_runner::mazecampaign::MazeCampaignError::RolloutDied
+pub campaign_runner::mazecampaign::MazeCampaignError::RolloutDied::branch: u64
+pub campaign_runner::mazecampaign::MazeCampaignError::RolloutDied::stop: alloc::string::String
+pub campaign_runner::mazecampaign::MazeCampaignError::SetupNotReached
+pub campaign_runner::mazecampaign::MazeCampaignError::SetupNotReached::stop: alloc::string::String
+pub campaign_runner::mazecampaign::MazeCampaignError::SignalUnavailable
+pub enum campaign_runner::mazecampaign::MazeVacuity
+pub campaign_runner::mazecampaign::MazeVacuity::NoBranches
+pub campaign_runner::mazecampaign::MazeVacuity::NoSteps
+pub campaign_runner::mazecampaign::MazeVacuity::NoVTime
+pub struct campaign_runner::mazecampaign::MazeCampaignConfig
+pub campaign_runner::mazecampaign::MazeCampaignConfig::campaign_seed: u64
+pub campaign_runner::mazecampaign::MazeCampaignConfig::candidate_cap: usize
+pub campaign_runner::mazecampaign::MazeCampaignConfig::deadline_delta: core::option::Option<u64>
+pub campaign_runner::mazecampaign::MazeCampaignConfig::explore_period: u64
+pub campaign_runner::mazecampaign::MazeCampaignConfig::max_branches: u64
+pub campaign_runner::mazecampaign::MazeCampaignConfig::replay_budget: u64
+pub campaign_runner::mazecampaign::MazeCampaignConfig::require_snapshot_point: bool
+pub campaign_runner::mazecampaign::MazeCampaignConfig::setup_deadline_delta: u64
+pub campaign_runner::mazecampaign::MazeCampaignConfig::snapshot_max_attempts: usize
+pub campaign_runner::mazecampaign::MazeCampaignConfig::snapshot_retry_step: u64
+pub campaign_runner::mazecampaign::MazeCampaignConfig::spec: maze::MazeSpec
+pub campaign_runner::mazecampaign::MazeCampaignConfig::steps_per_rollout: u32
+pub campaign_runner::mazecampaign::MazeCampaignConfig::trace_dir: core::option::Option<std::path::PathBuf>
+impl campaign_runner::mazecampaign::MazeCampaignConfig
+pub fn campaign_runner::mazecampaign::MazeCampaignConfig::smoke(u64) -> Self
+pub struct campaign_runner::mazecampaign::MazeCampaignOutcome
+pub campaign_runner::mazecampaign::MazeCampaignOutcome::deep: core::option::Option<campaign_runner::mazecampaign::MazeDeepReproducer>
+pub campaign_runner::mazecampaign::MazeCampaignOutcome::goal_hits: u64
+pub campaign_runner::mazecampaign::MazeCampaignOutcome::log: benchmark::exploration::ExplorationLog
+pub campaign_runner::mazecampaign::MazeCampaignOutcome::open_expectations: u64
+pub campaign_runner::mazecampaign::MazeCampaignOutcome::work: campaign_runner::mazecampaign::MazeWorkEvidence
+impl campaign_runner::mazecampaign::MazeCampaignOutcome
+pub fn campaign_runner::mazecampaign::MazeCampaignOutcome::vacuity(&self) -> core::option::Option<campaign_runner::mazecampaign::MazeVacuity>
+pub struct campaign_runner::mazecampaign::MazeDeclaredMachine<M>
+impl<M: explorer::seam::Machine> campaign_runner::mazecampaign::MazeDeclaredMachine<M>
+pub fn campaign_runner::mazecampaign::MazeDeclaredMachine<M>::new(M) -> Self
+impl<M: explorer::seam::Machine> explorer::seam::Machine for campaign_runner::mazecampaign::MazeDeclaredMachine<M>
+pub fn campaign_runner::mazecampaign::MazeDeclaredMachine<M>::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeDeclaredMachine<M>::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeDeclaredMachine<M>::coverage(&self) -> &[u8]
+pub fn campaign_runner::mazecampaign::MazeDeclaredMachine<M>::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeDeclaredMachine<M>::hash(&mut self) -> core::result::Result<[u8; 32], explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeDeclaredMachine<M>::recorded_env(&self) -> core::result::Result<explorer::Reproducer, explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeDeclaredMachine<M>::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeDeclaredMachine<M>::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeDeclaredMachine<M>::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeDeclaredMachine<M>::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::spine::EvidenceCut), explorer::error::MachineError>
+pub struct campaign_runner::mazecampaign::MazeDeepReproducer
+pub campaign_runner::mazecampaign::MazeDeepReproducer::branch: u64
+pub campaign_runner::mazecampaign::MazeDeepReproducer::depth: u64
+pub campaign_runner::mazecampaign::MazeDeepReproducer::trace_id: core::option::Option<alloc::string::String>
+pub struct campaign_runner::mazecampaign::MazeObservationCells
+impl explorer::evidence::ObservationCells for campaign_runner::mazecampaign::MazeObservationCells
+pub fn campaign_runner::mazecampaign::MazeObservationCells::key(&self, explorer::spine::EvidenceCut, &explorer::evidence::ObservationMap) -> explorer::spine::CellKey
+pub struct campaign_runner::mazecampaign::MazeToyMachine
+impl campaign_runner::mazecampaign::MazeToyMachine
+pub fn campaign_runner::mazecampaign::MazeToyMachine::new(maze::MazeSpec, u32) -> Self
+impl explorer::seam::Machine for campaign_runner::mazecampaign::MazeToyMachine
+pub fn campaign_runner::mazecampaign::MazeToyMachine::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeToyMachine::coverage(&self) -> &[u8]
+pub fn campaign_runner::mazecampaign::MazeToyMachine::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeToyMachine::hash(&mut self) -> core::result::Result<[u8; 32], explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeToyMachine::recorded_env(&self) -> core::result::Result<explorer::Reproducer, explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeToyMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeToyMachine::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
+pub fn campaign_runner::mazecampaign::MazeToyMachine::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::spine::EvidenceCut), explorer::error::MachineError>
+pub struct campaign_runner::mazecampaign::MazeWorkEvidence
+pub campaign_runner::mazecampaign::MazeWorkEvidence::branches: u64
+pub campaign_runner::mazecampaign::MazeWorkEvidence::min_steps: u64
+pub campaign_runner::mazecampaign::MazeWorkEvidence::min_vtime_span: u64
+pub const campaign_runner::mazecampaign::GOAL_LOCAL: u32
+pub const campaign_runner::mazecampaign::MAZE_TOY_STEP: u64
+pub fn campaign_runner::mazecampaign::goal_id() -> sdk_events::schema::ObservationId
+pub fn campaign_runner::mazecampaign::maze_cell_key(u64, u64) -> u64
+pub fn campaign_runner::mazecampaign::maze_cells(&[sdk_events::event::SdkEvent]) -> (alloc::vec::Vec<u64>, u64, u64)
+pub fn campaign_runner::mazecampaign::run_maze_campaign<M: explorer::seam::Machine>(M, alloc::boxed::Box<dyn explorer::seam::EnvCodec>, &campaign_runner::mazecampaign::MazeCampaignConfig, benchmark::exploration::ExplorationConfig) -> core::result::Result<campaign_runner::mazecampaign::MazeCampaignOutcome, campaign_runner::mazecampaign::MazeCampaignError>
 pub mod campaign_runner::mock
 pub struct campaign_runner::mock::CountedWork(_)
 impl vmm_core::work::WorkSource for campaign_runner::mock::CountedWork

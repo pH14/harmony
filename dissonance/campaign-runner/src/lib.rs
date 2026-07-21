@@ -47,6 +47,7 @@ pub mod benchcampaign;
 pub mod campaign;
 pub mod gamecampaign;
 pub mod materialize;
+pub mod mazecampaign;
 pub mod mock;
 pub mod planted;
 pub mod record;

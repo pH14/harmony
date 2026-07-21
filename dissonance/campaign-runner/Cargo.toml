@@ -38,6 +38,10 @@ revision-coordinator = { path = "../revision-coordinator", version = "0.1.0" }
 tempfile = "3"
 # Task 69: the benchmark manifest + correlation-log schema this driver emits.
 benchmark = { path = "../benchmark", version = "0.1.0" }
+# Task 134 (hm-cs5): the deterministic maze workload the first cooperative
+# exploration gate drives — the portable toy machine and the maze guest agent
+# share this one transition function.
+maze = { path = "../maze", version = "0.1.0" }
 # Task 69 M2: the REAL task-67 signal under test (GO/NO-GO #2 must measure the
 # actual CellFn the selectors get built on, not a stand-in). The benchmark campaign
 # clusters the captured guest console into template species (LogSensor) and keys the
