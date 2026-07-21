@@ -1360,6 +1360,21 @@ ARMv8.1; Altra/Neoverse N1 is ARMv8.2), so an LSE-only guest is buildable on the
   and the freestanding init to scan CLEAN; a planted LDXR/STXR ELF must be rejected with exactly
   two hits. This completes the static build gate. The same primitive wired into a live W^X
   rescan-on-exec path is the Level-3 guard below — now proven live on N1.
+
+  *Section-aware pre-flight (2026-07-21; hm-jth / hm-7o68-F3).* The static scan is a **section-aware
+  PRE-FLIGHT**, not the authoritative W^X gate. Its raw executable-`PT_LOAD`-segment walk (F3-SCAN-SEG)
+  initially rejected the rebuilt owned kernel with **424 false positives** — every one a data word
+  (`.rodata`/`.altinstructions`/`.data`) that shares vmlinux's writable-executable init `PT_LOAD` in
+  the ELF but is mapped **non-executable at runtime** under `STRICT_KERNEL_RWX`; the executable
+  *sections* were clean. The scanner now **excludes defined non-exec data sections** from the segment
+  walk, while still scanning every executable section and any word in **no** section (the
+  forged/stripped-header case). This is tighter-and-truer, not a loosening, because the
+  **AUTHORITATIVE** W^X enforcer is the Level-3 runtime execute-guard: it is default-XN and rescans the
+  actual bytes of any page the guest makes executable, so it does not trust ELF section metadata. The
+  `aa4-mislabel-evasion` fixture proves the split carries no evasion hole — a forged ELF that hides an
+  `LDXR/STXR` pair in a data-labelled page **passes** the static scan (the evasion) but the runtime
+  guard **rejects it at entry** on N1 (`results/aa-4/live-20260721/mislabel-evasion.guard-reject.out`:
+  `gpa=0x40081000`, both exclusives decoded, `pc_before==pc_after` — the guest never advanced).
 - **Level 3 — stage-2 execute guard. PROVEN ON N1, 2026-07-20** (`results/aa-4/live-20260720/`). Stock
   Linux 6.18.35 arm64 KVM recognizes an instruction fault but adds
   `KVM_PGTABLE_PROT_X` inside `user_mem_abort()` and resumes; it exposes no userspace per-GFN XN

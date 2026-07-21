@@ -55,3 +55,4 @@ spikes/*
 # wins). Build artifacts are re-ignored by the spike's own .gitignore.
 !spikes/amd-epyc
 !spikes/amd-epyc/**
+spikes/arm-altra/payloads/fixtures/*.elf

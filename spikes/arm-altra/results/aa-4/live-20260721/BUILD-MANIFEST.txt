@@ -14,5 +14,5 @@ initramfs.cpio.gz sha256: 604733be3338ac55cc0f387ba55b7b6b31250d158761ca2cc422cf
 initramfs-el0probe.cpio.gz sha256: 46b2bc5a53818654a436e2c36e0e016b2c55c29312898586cd3b2e622d33a12b
 
 == AA-4 anti-weakening fixture (aa4-mislabel-evasion) ==
-fixture ELF sha256: 75b3851a6d9d9e8eacd9c7fdc91c14cd89d10d5670762c0db235bcd0d0dbc35a
-  static section-aware scan: PASS (evasion); runtime guard rejection: pending aa4guard boot
+fixture ELF sha256: 330c6181052085f5268d648695bfe65e6a105fa2b1ba14e8dc2fe20db4dc7d36
+  static section-aware scan: PASS (evasion); runtime guard REJECTS at entry on aa4guard (mislabel-evasion.guard-reject.out) = anti-weakening proof
