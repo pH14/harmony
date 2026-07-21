@@ -306,6 +306,74 @@ fn map_guest_ram(len: usize) -> Result<*mut u8, SysError> {
     Ok(mem.cast::<u8>())
 }
 
+/// EL1h with DAIF masked — the guest-entry PSTATE the bare-payload boot uses.
+const PSTATE_EL1H_DAIF: u64 = 0x3c5;
+
+/// Set one arm64 core register on an arbitrary vCPU fd (the [`Machine`] method targets only
+/// vCPU 0; the two-vCPU race proof also sets the writer vCPU).
+fn set_core_reg_on(vcpu_fd: libc::c_int, index: u64, value: u64) -> Result<(), SysError> {
+    let one = KvmOneReg {
+        id: kvm::REG_ARM64_CORE_U64 | index,
+        addr: (&raw const value) as u64,
+    };
+    // SAFETY: `vcpu_fd` is valid; `one.addr` points at a live u64 on this frame, which is
+    // exactly what KVM_SET_ONE_REG's contract requires.
+    if unsafe { libc::ioctl(vcpu_fd, kvm::SET_ONE_REG as libc::c_ulong, &raw const one) } < 0 {
+        return Err(err("ioctl(KVM_SET_ONE_REG, core)"));
+    }
+    Ok(())
+}
+
+/// The decoded outcome of one two-vCPU-race `KVM_RUN`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RaceExit {
+    /// The guard froze a page for a scan (an execute fault awaiting approval).
+    GuardExec { gpa: u64, generation: u64 },
+    /// A write revoked execute and exited before the store (page not frozen for a scan).
+    GuardWrite { gpa: u64, generation: u64 },
+    /// A write BLOCKED behind a concurrent frozen scan — the race's proof outcome.
+    GuardBlocked { gpa: u64, generation: u64 },
+    /// Any other exit (MMIO, error, or unexpected).
+    Other(String),
+}
+
+/// One `KVM_RUN` of `vcpu_fd`, decoding its exit into a [`RaceExit`] without servicing it.
+fn race_run_and_decode(vcpu_fd: libc::c_int, run: *mut KvmRun) -> Result<RaceExit, SysError> {
+    // SAFETY: `vcpu_fd` is valid; KVM_RUN takes no argument and returns 0 or -1.
+    if unsafe { libc::ioctl(vcpu_fd, kvm::RUN as libc::c_ulong, 0_u64) } < 0 {
+        return Err(err("ioctl(KVM_RUN, race)"));
+    }
+    // SAFETY: `run` is a live `MAP_SHARED` kvm_run mapping; the vCPU has stopped, so snapshot
+    // it once and decode through the portable seam.
+    let snapshot = unsafe { core::ptr::read_volatile(run) };
+    if let Some(exit) = super::decode_exec_guard_exit(&snapshot) {
+        let write = kvm::ARM_STAGE2_EXEC_GUARD_EXIT_WRITE;
+        let blocked = kvm::ARM_STAGE2_EXEC_GUARD_EXIT_BLOCKED;
+        return Ok(if exit.flags == kvm::ARM_STAGE2_EXEC_GUARD_EXIT_EXEC {
+            RaceExit::GuardExec {
+                gpa: exit.gpa,
+                generation: exit.generation,
+            }
+        } else if exit.flags == write {
+            RaceExit::GuardWrite {
+                gpa: exit.gpa,
+                generation: exit.generation,
+            }
+        } else if exit.flags == (write | blocked) {
+            RaceExit::GuardBlocked {
+                gpa: exit.gpa,
+                generation: exit.generation,
+            }
+        } else {
+            RaceExit::Other(format!("guard flags {:#x} at {:#x}", exit.flags, exit.gpa))
+        });
+    }
+    Ok(RaceExit::Other(format!(
+        "{:?}",
+        super::decode_kvm_run(&snapshot)
+    )))
+}
+
 /// Adapt a seam failure into the run loop's error type. The loop never turns a
 /// failed syscall into a record with a plausible zero in it.
 fn seam(context: &'static str, e: SysError) -> RunError {
@@ -606,6 +674,11 @@ pub struct Machine {
     /// Used by the notifier-replacement proof to show a memslot update forced a fresh scan
     /// at a strictly newer generation.
     exec_guard_last_scan_generation: u64,
+    /// The second vCPU used only by the two-vCPU scan/write race proof: its fd and its own
+    /// `kvm_run` mapping. `-1`/null until [`Machine::race_create_writer`] creates it.
+    race_writer_fd: i32,
+    race_writer_run: *mut KvmRun,
+    race_writer_run_size: usize,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables it. See
     /// [`DEFAULT_WATCHDOG_SECS`].
     watchdog_secs: u64,
@@ -728,6 +801,9 @@ impl Machine {
             exec_guard_page_audit: None,
             exec_guard_stale_probe_gpa: None,
             exec_guard_last_scan_generation: 0,
+            race_writer_fd: -1,
+            race_writer_run: core::ptr::null_mut(),
+            race_writer_run_size: 0,
             watchdog_secs: DEFAULT_WATCHDOG_SECS,
         };
         m.build(boot)?;
@@ -1314,6 +1390,146 @@ impl Machine {
         Ok(())
     }
 
+    // ========================================================================
+    // AA-4 two-vCPU scan/write race proof. A SECOND vCPU (MMU off, entered at a
+    // tiny writer routine) stores to a page a FIRST vCPU has frozen for a scan;
+    // the guard must block that write behind the pending scan. Additive: no
+    // change to `Vcpu::run` or the guard service path.
+    // ========================================================================
+
+    /// Aim vCPU 0 at `target_gpa` with the MMU off (its reset default, since it has not run
+    /// the payload boot). Its first instruction fetch faults into the guard, freezing the
+    /// target page for a scan — the race's pending-scan side.
+    ///
+    /// # Errors
+    /// [`SysError`] if a register write fails.
+    pub fn race_arm_vcpu0(&mut self, target_gpa: u64) -> Result<(), SysError> {
+        self.set_core_reg(kvm::REG_CORE_PC, target_gpa)?;
+        self.set_core_reg(kvm::REG_CORE_PSTATE, PSTATE_EL1H_DAIF)
+    }
+
+    /// Create the second (writer) vCPU: MMU off, entered at `writer_gpa` with `x1 = target_gpa`
+    /// and `w2 = value`, so it stores `value` to the target GPA. The store transits stage-2, so
+    /// the execute guard sees it even with the writer's stage-1 disabled.
+    ///
+    /// # Errors
+    /// [`SysError`] if the vCPU, its `kvm_run` mapping, its init, or a register write fails.
+    /// A failure here IS the finding when KVM refuses a second vCPU on the guarded VM.
+    pub fn race_create_writer(
+        &mut self,
+        writer_gpa: u64,
+        target_gpa: u64,
+        value: u32,
+    ) -> Result<(), SysError> {
+        // SAFETY: `vm_fd` is valid; KVM_CREATE_VCPU takes a vcpu index.
+        let fd = unsafe { libc::ioctl(self.vm_fd, kvm::CREATE_VCPU as libc::c_ulong, 1_u64) };
+        if fd < 0 {
+            return Err(err("ioctl(KVM_CREATE_VCPU, writer)"));
+        }
+        self.race_writer_fd = fd as libc::c_int;
+
+        // SAFETY: `kvm_fd` is valid; KVM_GET_VCPU_MMAP_SIZE takes no argument.
+        let run_size =
+            unsafe { libc::ioctl(self.kvm_fd, kvm::GET_VCPU_MMAP_SIZE as libc::c_ulong, 0_u64) };
+        if run_size < core::mem::size_of::<KvmRun>() as libc::c_int {
+            return Err(err("ioctl(KVM_GET_VCPU_MMAP_SIZE, writer)"));
+        }
+        // SAFETY: `run_size` bytes shared with KVM at the writer vCPU fd, offset 0.
+        let run = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                run_size as usize,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                self.race_writer_fd,
+                0,
+            )
+        };
+        if run == libc::MAP_FAILED {
+            return Err(err("mmap(kvm_run, writer)"));
+        }
+        self.race_writer_run = run.cast::<KvmRun>();
+        self.race_writer_run_size = run_size as usize;
+
+        let mut init = KvmVcpuInit::default();
+        // SAFETY: `vm_fd` is valid; KVM_ARM_PREFERRED_TARGET fills `init`.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::ARM_PREFERRED_TARGET as libc::c_ulong,
+                &raw mut init,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET, writer)"));
+        }
+        // SAFETY: `race_writer_fd` is valid; `init` is fully initialised above.
+        if unsafe {
+            libc::ioctl(
+                self.race_writer_fd,
+                kvm::ARM_VCPU_INIT as libc::c_ulong,
+                &raw const init,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_ARM_VCPU_INIT, writer)"));
+        }
+
+        set_core_reg_on(self.race_writer_fd, kvm::REG_CORE_PC, writer_gpa)?;
+        set_core_reg_on(
+            self.race_writer_fd,
+            kvm::REG_CORE_X0 + kvm::REG_CORE_X_STRIDE, // x1 = target GPA
+            target_gpa,
+        )?;
+        set_core_reg_on(
+            self.race_writer_fd,
+            kvm::REG_CORE_X0 + 2 * kvm::REG_CORE_X_STRIDE, // x2 (w2) = store value
+            u64::from(value),
+        )?;
+        set_core_reg_on(self.race_writer_fd, kvm::REG_CORE_PSTATE, PSTATE_EL1H_DAIF)
+    }
+
+    /// One `KVM_RUN` of vCPU 0, decoding the exit for the race proof (no servicing).
+    ///
+    /// # Errors
+    /// [`SysError`] if the `KVM_RUN` ioctl fails.
+    pub fn race_run_vcpu0(&mut self) -> Result<RaceExit, SysError> {
+        race_run_and_decode(self.vcpu_fd, self.run)
+    }
+
+    /// One `KVM_RUN` of the writer vCPU, decoding the exit for the race proof.
+    ///
+    /// # Errors
+    /// [`SysError`] if the writer vCPU is absent or the `KVM_RUN` ioctl fails.
+    pub fn race_run_writer(&mut self) -> Result<RaceExit, SysError> {
+        if self.race_writer_fd < 0 {
+            return Err(SysError::Protocol("no race writer vCPU created".into()));
+        }
+        race_run_and_decode(self.race_writer_fd, self.race_writer_run)
+    }
+
+    /// Scan the frozen page at `gpa` and reply APPROVE for `generation` — the clean-page half
+    /// of guard servicing, exposed so the race proof can clear the writer's own code-page scan
+    /// (and, at the end, vCPU 0's frozen target scan) without going through [`Vcpu::run`].
+    ///
+    /// # Errors
+    /// [`SysError`] if the page is outside RAM, carries a hazard (so cannot be approved), or
+    /// the reply ioctl fails.
+    pub fn race_scan_and_approve(&mut self, gpa: u64, generation: u64) -> Result<(), SysError> {
+        // SAFETY: the vCPU that faulted is stopped at the synchronous guard exit and this
+        // machine owns the whole live mapping; the page is frozen by the kernel for the scan.
+        let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
+        let page = super::exec_guard_page(ram, RAM_BASE, gpa).ok_or_else(|| {
+            SysError::Protocol(format!("race approve page {gpa:#x} is outside guest RAM"))
+        })?;
+        if !super::exec_guard_hazards(gpa, page).is_empty() {
+            return Err(SysError::Protocol(format!(
+                "race approve page {gpa:#x} carries a hazard and cannot be approved"
+            )));
+        }
+        self.exec_guard_reply_generation(gpa, generation, kvm::ARM_STAGE2_EXEC_GUARD_APPROVE_EXEC)
+    }
+
     fn exec_guard_reply_generation(
         &self,
         gpa: u64,
@@ -1594,8 +1810,6 @@ impl Machine {
     /// enter the Image at EL1h with interrupts masked, pass the DTB in `x0`, and
     /// clear the three reserved argument registers.
     fn set_linux_entry(&mut self, entry_gpa: u64, dtb_gpa: u64) -> Result<(), SysError> {
-        const PSTATE_EL1H_DAIF: u64 = 0x3c5;
-
         self.set_pc(entry_gpa)?;
         self.set_core_reg(kvm::REG_CORE_X0, dtb_gpa)?;
         for gpr in 1..=3 {
@@ -1605,23 +1819,7 @@ impl Machine {
     }
 
     fn set_core_reg(&mut self, index: u64, value: u64) -> Result<(), SysError> {
-        let one = KvmOneReg {
-            id: kvm::REG_ARM64_CORE_U64 | index,
-            addr: (&raw const value) as u64,
-        };
-        // SAFETY: `vcpu_fd` is valid; `one.addr` points at a live u64 on this frame,
-        // which is exactly what KVM_SET_ONE_REG's contract requires.
-        if unsafe {
-            libc::ioctl(
-                self.vcpu_fd,
-                kvm::SET_ONE_REG as libc::c_ulong,
-                &raw const one,
-            )
-        } < 0
-        {
-            return Err(err("ioctl(KVM_SET_ONE_REG, core)"));
-        }
-        Ok(())
+        set_core_reg_on(self.vcpu_fd, index, value)
     }
 
     /// The vCPU fd, for the counter's patched-mechanism arming.
@@ -1660,10 +1858,22 @@ impl Drop for Machine {
             if !self.run.is_null() {
                 libc::munmap(self.run.cast::<libc::c_void>(), self.run_size);
             }
+            if !self.race_writer_run.is_null() {
+                libc::munmap(
+                    self.race_writer_run.cast::<libc::c_void>(),
+                    self.race_writer_run_size,
+                );
+            }
             if !self.mem.is_null() {
                 libc::munmap(self.mem.cast::<libc::c_void>(), self.mem_size);
             }
-            for fd in [self.vgic_fd, self.vcpu_fd, self.vm_fd, self.kvm_fd] {
+            for fd in [
+                self.vgic_fd,
+                self.race_writer_fd,
+                self.vcpu_fd,
+                self.vm_fd,
+                self.kvm_fd,
+            ] {
                 if fd >= 0 {
                     libc::close(fd);
                 }

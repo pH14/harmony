@@ -120,6 +120,9 @@ enum Command {
     /// AA-4 concurrency: prove moving slot 0 to a distinct byte-identical backing forces a
     /// re-scan (approval keyed to the mapping, not content) (Linux/box only).
     Aa4GuardBacking(Box<Aa4GuardNotifierOpts>),
+    /// AA-4 concurrency: prove a second vCPU's write to a page a first vCPU has frozen for a
+    /// scan is BLOCKED behind that scan (Linux/box only).
+    Aa4GuardRace(Box<Aa4GuardNotifierOpts>),
     /// AA-6(a): install a below-host synthetic ID-register model and prove the guest sees the
     /// frozen values (Linux/box only).
     IdFreeze {
@@ -1640,6 +1643,103 @@ fn aa4_guard_backing(_opts: Aa4GuardNotifierOpts) -> Result<(), String> {
     )
 }
 
+/// AA-4 concurrency: a second vCPU's store to a page a first vCPU has frozen for a scan must be
+/// BLOCKED behind that pending scan. Self-verifying negative control: once the first vCPU's
+/// scan is APPROVED (page no longer frozen), the same store instead revokes execute (WRITE),
+/// not blocked.
+#[cfg(target_os = "linux")]
+fn aa4_guard_race(opts: Aa4GuardNotifierOpts) -> Result<(), String> {
+    use arm_harness::elf::Elf;
+    use arm_harness::sys::{Machine, ParamsPage, RaceExit, pin_to_core};
+
+    let (bytes, image_sha256) = verified_artifact(
+        &opts.image,
+        &opts.image_sha256,
+        "AA-4 reexec ELF",
+        arm_harness::linux_boot::MAX_IMAGE_BYTES,
+    )?;
+    let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", opts.image.display()))?;
+    let target = image
+        .symbol("aa4_reexec_target")
+        .map_err(|e| format!("resolve aa4_reexec_target: {e}"))?;
+    let writer = image
+        .symbol("aa4_reexec_writer")
+        .map_err(|e| format!("resolve aa4_reexec_writer: {e}"))?;
+    let writer_page = writer & !0xfff;
+    pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
+
+    // One scenario: freeze the target on vCPU 0, optionally approve it, then have the writer
+    // vCPU store to it. Returns the writer store's exit.
+    let run_scenario = |approve_target_first: bool| -> Result<RaceExit, String> {
+        let params = ParamsPage {
+            scale_index: 0,
+            seed: 0xAA04_5241_4345_0000,
+        };
+        let mut m = Machine::new_guarded(&image, &params)
+            .map_err(|e| format!("construct guarded machine: {e}"))?;
+        m.set_watchdog_secs(opts.watchdog_secs);
+        m.race_arm_vcpu0(target)
+            .map_err(|e| format!("arm vCPU 0 at the target: {e}"))?;
+        m.race_create_writer(writer, target, 0xd280_0040)
+            .map_err(|e| {
+                format!("create the writer vCPU (KVM may refuse a 2nd vCPU on the guarded VM): {e}")
+            })?;
+
+        // vCPU 0 fault-freezes the target page for a scan.
+        let target_gen = match m.race_run_vcpu0().map_err(|e| format!("run vCPU 0: {e}"))? {
+            RaceExit::GuardExec { gpa, generation } if gpa == target => generation,
+            other => return Err(format!("vCPU 0 did not fault-freeze the target: {other:?}")),
+        };
+        if approve_target_first {
+            m.race_scan_and_approve(target, target_gen)
+                .map_err(|e| format!("approve the target scan: {e}"))?;
+        }
+        // The writer vCPU first faults on its own code page; approve it.
+        match m
+            .race_run_writer()
+            .map_err(|e| format!("run writer (code fault): {e}"))?
+        {
+            RaceExit::GuardExec { gpa, generation } if gpa == writer_page => m
+                .race_scan_and_approve(writer_page, generation)
+                .map_err(|e| format!("approve the writer code page: {e}"))?,
+            other => return Err(format!("writer did not fault its own code page: {other:?}")),
+        }
+        // The writer's store to the target: BLOCKED while frozen, WRITE-revoke once approved.
+        m.race_run_writer()
+            .map_err(|e| format!("run writer (store): {e}"))
+    };
+
+    let race = run_scenario(false)?;
+    let control = run_scenario(true)?;
+
+    let blocked_when_frozen = matches!(race, RaceExit::GuardBlocked { gpa, .. } if gpa == target);
+    let write_when_approved = matches!(control, RaceExit::GuardWrite { gpa, .. } if gpa == target);
+    println!(
+        "AA4_GUARD_RACE image_sha256={image_sha256} target={target:#x} writer={writer:#x} \
+         race={race:?} control={control:?} blocked_when_frozen={blocked_when_frozen} \
+         write_when_approved={write_when_approved}"
+    );
+    if blocked_when_frozen && write_when_approved {
+        println!(
+            "AA4_GUARD_RACE PASS: a writer vCPU's store to a page frozen for another vCPU's scan \
+             was BLOCKED; once that scan was approved the same store revoked execute (WRITE), not \
+             blocked"
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "two-vCPU race NOT proven: blocked_when_frozen={blocked_when_frozen} (want a BLOCKED \
+             store while frozen) write_when_approved={write_when_approved} (want a WRITE store once \
+             approved)"
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn aa4_guard_race(_opts: Aa4GuardNotifierOpts) -> Result<(), String> {
+    Err("`arm-spike aa4-guard-race` issues KVM ioctls and needs /dev/kvm: it is Linux-only".into())
+}
+
 /// AA-6(a): install a below-host synthetic ID-register model on a disposable vCPU and confirm
 /// every frozen value survives read-back (the guest-visible value). Writes an enforcement
 /// truth-table and fails closed unless every reducible register froze and the PMU is denied.
@@ -2366,6 +2466,7 @@ fn run() -> Result<(), String> {
         Command::Aa4GuardWrite(opts) => aa4_guard_write(*opts),
         Command::Aa4GuardNotifier(opts) => aa4_guard_notifier(*opts),
         Command::Aa4GuardBacking(opts) => aa4_guard_backing(*opts),
+        Command::Aa4GuardRace(opts) => aa4_guard_race(*opts),
         Command::IdFreeze { out } => id_freeze(out),
         Command::VgicRoundtrip { out } => vgic_roundtrip(out),
     }

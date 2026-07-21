@@ -1840,7 +1840,7 @@ pub mod machine;
 #[cfg(target_os = "linux")]
 pub use machine::{
     HostIdRegisters, IdFreezeProof, IdFreezeRow, Machine, Mechanism, MigrationChurner, ParamsPage,
-    PerfCounter, VgicRoundtrip, allowed_cores, current_tid, id_freeze_proof, pin_to_core,
+    PerfCounter, RaceExit, VgicRoundtrip, allowed_cores, current_tid, id_freeze_proof, pin_to_core,
     read_host_id_registers, vgic_roundtrip_proof,
 };
 
