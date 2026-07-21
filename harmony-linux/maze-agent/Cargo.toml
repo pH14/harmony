@@ -1,0 +1,51 @@
+# The harmony in-guest maze agent (task 134): the deterministic maze workload
+# — the first cooperative Differential exploration gate's guest half. A single
+# supervised Linux guest process that walks the shared `dissonance/maze`
+# gauntlet: one entropy byte per step from the seeded stream
+# (`Sdk::entropy_fill`, the single guest-random source), the X/Y position
+# reported through IJON state registers every step (X then Y — the host owns
+# cell interpretation, R-L2), and the goal marked with `assert_reachable`
+# (task 84's legibility marker, never a bug). Zero fault vocabulary.
+#
+# Standalone workspace (like `harmony-linux/flow-agent` and `harmony-linux/sdk`): the root
+# Cargo.toml excludes `harmony-linux/`, so this crate declares its own `[workspace]` and
+# carries its own lockfile. It is a **guest-resident harmony-linux artifact** —
+# the no-`cfg(target_os)` portability rule does not apply to it (conventions
+# "Environment"); the pure *brain* is the shared `dissonance/maze` crate (the
+# portable toy machine walks the identical transition function, so the guest
+# and the host cannot drift), and only the doorbell transport is Linux.
+[package]
+name = "harmony-maze-agent"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "The harmony in-guest maze agent (task 134): the deterministic maze workload — entropy-driven walk, X/Y state registers, the goal reachable marker"
+
+# Own workspace root so cargo does not fold this into the excluded harmony-linux tree or
+# the repo root workspace.
+[workspace]
+
+[[bin]]
+name = "maze-agent"
+path = "src/main.rs"
+
+# Explicit `version` alongside `path` for `cargo deny`'s wildcard ban, mirroring
+# the other guest crates.
+[dependencies]
+# The shared maze transition function (the workload's whole brain).
+maze = { path = "../../dissonance/maze", version = "0.1.0" }
+# The guest SDK: `state_set`/`assert_reachable`/`entropy_fill`/`setup_complete`
+# over the hypercall Event service (read-only surface — composed, never
+# modified).
+harmony-sdk = { path = "../sdk", version = "0.1.0" }
+# The guest-side hypercall client + Transport trait the SDK is generic over.
+hypercall-proto = { path = "../../consonance/hypercall-proto", version = "0.1.0", default-features = false, features = ["guest"] }
+# The real doorbell transport (mapped out of /dev/mem, the flow-agent pattern).
+hypercall-doorbell = { path = "../../consonance/hypercall-doorbell", version = "0.1.0" }
+clap = { version = "4", features = ["derive"] }
+
+# Guest-resident Linux glue: the /dev/mem doorbell mapping. Only referenced
+# under `cfg(target_os = "linux")`; on the macOS dev host the bin builds
+# without it (`--smoke` works everywhere).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2" }

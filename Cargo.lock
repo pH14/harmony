@@ -180,6 +180,7 @@ dependencies = [
  "film",
  "hypercall-proto",
  "logtmpl",
+ "maze",
  "proptest",
  "resolution",
  "revision-coordinator",
@@ -629,6 +630,13 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+]
+
+[[package]]
+name = "maze"
+version = "0.1.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]
