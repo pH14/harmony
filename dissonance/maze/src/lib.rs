@@ -17,17 +17,18 @@
 //! [`step`]: inside a corridor the byte drives a rightward-drifting random
 //! walk; at the corridor's end tile the byte picks one of `doors` doors. One
 //! door per level is correct (a pure function of the [`MazeSpec::maze_seed`])
-//! and advances the walker to the next level's start; every other door is an
-//! **absorbing dead end** — the walk is stuck there for the rest of the
-//! rollout. Completing the last level reaches the **goal** (also absorbing).
+//! and advances the walker to the next level's start; every other door
+//! **resets the walk to the maze start** `(0, 0)` (task 84's junction-reset
+//! shape). Completing the last level reaches the **goal** (absorbing).
 //!
-//! This makes random-restart search geometrically poor in depth — a fresh
-//! walk reaches level `d` only by drawing `d` consecutive correct doors, so
-//! `P(depth ≥ d) = doors⁻ᵈ` — while a search that returns exactly to a
-//! retained deep state and re-draws only the next door is linear in depth:
-//! precisely the property (the Metroid discipline) that makes the exploration
-//! gate non-vacuous. The reachable-cell count is exact ([`reachable_cells`])
-//! so the gate can check the claim, not just state it.
+//! This makes random search geometrically poor in depth — from the start,
+//! reaching level `d` needs `d` consecutive correct draws (each `1/doors`),
+//! and every wrong draw sends the walk back to re-climb the whole gauntlet —
+//! while a search that returns exactly to a retained deep state re-draws only
+//! the next door: roughly linear in depth. Precisely the property (the
+//! Metroid discipline) that makes the exploration gate non-vacuous. The
+//! reachable-cell count is exact ([`reachable_cells`]) so the gate can check
+//! the claim, not just state it.
 //!
 //! Determinism discipline (conventions rule 4): everything is integer state;
 //! the walk is a pure function `(spec, state, byte) → state`; the crate draws
@@ -99,14 +100,12 @@ impl MazeSpec {
 /// coordinates (see [`MazeState::x_register`]).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct MazeState {
-    /// Corridor position, `0 ..= width - 1`; in a dead end,
-    /// `width + door` (each wrong door is its own room).
+    /// Corridor position, `0 ..= width - 1` (0 at the goal tile).
     pub x: u32,
     /// Corridor level, `0 ..= levels - 1`; at the goal, `levels`.
     pub level: u32,
-    /// Absorbed in a dead-end room (a wrong door was taken).
-    pub dead: bool,
-    /// Reached the goal (the last level was completed).
+    /// Reached the goal (the last level was completed) — the one absorbing
+    /// state.
     pub goal: bool,
 }
 
@@ -116,9 +115,8 @@ impl MazeState {
         MazeState::default()
     }
 
-    /// The X state-register value: the corridor position, or `width + door`
-    /// inside a dead-end room (dead ends are distinct observable tiles), or
-    /// `0` at the goal tile.
+    /// The X state-register value: the corridor position (`0` at the goal
+    /// tile).
     pub fn x_register(&self) -> u64 {
         u64::from(self.x)
     }
@@ -128,10 +126,9 @@ impl MazeState {
         u64::from(self.level)
     }
 
-    /// Whether the walk is absorbed (dead end or goal) — no further byte
-    /// changes it.
+    /// Whether the walk is absorbed (the goal) — no further byte changes it.
     pub fn absorbed(&self) -> bool {
-        self.dead || self.goal
+        self.goal
     }
 }
 
@@ -139,13 +136,13 @@ impl MazeState {
 /// pure function — same `(spec, state, byte)` ⇒ same successor; total on all
 /// 256 byte values and on any (clamped) spec.
 ///
-/// - **Absorbed** states (dead end / goal) return themselves.
+/// - The **goal** (absorbed) returns itself.
 /// - **Corridor** (`x < width - 1`): `byte % 8` drives a rightward drift —
 ///   `0..=4` step right, `5..=6` stay, `7` step left (floored at 0).
 /// - **Junction** (`x = width - 1`): `byte % doors` picks a door. The
 ///   level's correct door advances to `(0, level + 1)` — or the goal after
-///   the last level; a wrong door absorbs into that door's dead-end room
-///   `(width + door, level)`.
+///   the last level; a wrong door **resets the walk to the maze start**
+///   `(0, 0)`.
 pub fn step(spec: &MazeSpec, state: MazeState, byte: u8) -> MazeState {
     if state.absorbed() {
         return state;
@@ -164,7 +161,6 @@ pub fn step(spec: &MazeSpec, state: MazeState, byte: u8) -> MazeState {
         return MazeState {
             x,
             level,
-            dead: false,
             goal: false,
         };
     }
@@ -175,24 +171,18 @@ pub fn step(spec: &MazeSpec, state: MazeState, byte: u8) -> MazeState {
             MazeState {
                 x: 0,
                 level: spec.levels(),
-                dead: false,
                 goal: true,
             }
         } else {
             MazeState {
                 x: 0,
                 level: level + 1,
-                dead: false,
                 goal: false,
             }
         }
     } else {
-        MazeState {
-            x: width + door,
-            level,
-            dead: true,
-            goal: false,
-        }
+        // The junction reset: back to the maze start, keep walking.
+        MazeState::start()
     }
 }
 
@@ -213,11 +203,9 @@ pub fn walk(spec: &MazeSpec, mut state: MazeState, bytes: &[u8]) -> Vec<MazeStat
 /// which the non-vacuity claim (“the baseline plateaus **below** the
 /// reachable frontier”) is checked rather than asserted in prose.
 ///
-/// Per level: `width` corridor tiles plus one dead-end room per wrong door
-/// (`doors - 1`); plus the goal tile. (The correct door leads onward, so it
-/// owns no room.)
+/// `width` corridor tiles per level, plus the goal tile.
 pub fn reachable_cells(spec: &MazeSpec) -> u64 {
-    u64::from(spec.levels()) * (u64::from(spec.width()) + u64::from(spec.doors()) - 1) + 1
+    u64::from(spec.levels()) * u64::from(spec.width()) + 1
 }
 
 /// A byte stream that walks the maze straight to the goal: drift right to
@@ -277,13 +265,12 @@ mod tests {
         let last = states.last().copied().unwrap();
         assert!(last.goal);
         assert_eq!(last.y_register(), u64::from(s.levels()));
-        assert!(!last.dead);
     }
 
     /// A fixed stream drives a fixed path (the determinism pin), and a wrong
-    /// door absorbs for the rest of the walk.
+    /// door resets the walk to the maze start.
     #[test]
-    fn fixed_stream_fixed_path_and_dead_ends_absorb() {
+    fn fixed_stream_fixed_path_and_wrong_doors_reset() {
         let s = spec();
         let bytes = stream(7, 64);
         let a = walk(&s, MazeState::start(), &bytes);
@@ -294,15 +281,22 @@ mod tests {
         let wrong = (s.correct_door(0) + 1) % s.doors();
         let mut bytes: Vec<u8> = std::iter::repeat_n(0u8, (s.width() - 1) as usize).collect();
         bytes.push(wrong as u8);
-        bytes.extend([0u8, 3, 250]); // absorbed: further bytes change nothing
         let states = walk(&s, MazeState::start(), &bytes);
-        let at_death = states[(s.width() - 1) as usize];
-        assert!(at_death.dead);
-        assert_eq!(at_death.x_register(), u64::from(s.width() + wrong));
+        assert_eq!(
+            *states.last().unwrap(),
+            MazeState::start(),
+            "a wrong door resets to (0, 0)"
+        );
+        // The goal, once reached, absorbs.
+        let mut bytes = oracle_bytes(&s);
+        bytes.extend([0u8, 3, 250]);
+        let states = walk(&s, MazeState::start(), &bytes);
+        let at_goal = *states.last().unwrap();
+        assert!(at_goal.goal);
         assert!(
-            states[(s.width() - 1) as usize..]
+            states[oracle_bytes(&s).len() - 1..]
                 .iter()
-                .all(|st| *st == at_death)
+                .all(|st| *st == at_goal)
         );
     }
 
@@ -330,25 +324,38 @@ mod tests {
         assert_eq!(tiles.len() as u64, reachable_cells(&s));
     }
 
-    /// The non-vacuity property, measured: independent seeded random walks
-    /// plateau well below the goal (geometric decay in depth), while the
-    /// oracle depth witness is the full `levels`. 64 seeds × a generous
-    /// budget: no random walk gets past half the gauntlet.
+    /// The non-vacuity property, measured at the campaign's per-rollout
+    /// budget: independent seeded random walks plateau well below the goal
+    /// (every wrong door re-climbs the whole gauntlet, so depth decays
+    /// geometrically), while the oracle depth witness is the full `levels`.
+    /// Deterministic measurement over 64 fixed seeds × one 48-step rollout
+    /// (the smoke config's `steps_per_rollout`): no walk reaches the goal,
+    /// none gets within one level of it, and the median stays shallow.
     #[test]
     fn random_walks_plateau_well_short_of_the_goal() {
         let s = spec();
-        let budget = 256;
-        let mut max_depth = 0u64;
-        for seed in 0..64u64 {
-            let states = walk(&s, MazeState::start(), &stream(seed, budget));
-            let depth = states.iter().map(|st| st.y_register()).max().unwrap_or(0);
-            max_depth = max_depth.max(depth);
-        }
+        let budget = 48;
+        let mut depths: Vec<u64> = (0..64u64)
+            .map(|seed| {
+                walk(&s, MazeState::start(), &stream(seed, budget))
+                    .iter()
+                    .map(|st| st.y_register())
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        depths.sort_unstable();
+        let max_depth = depths[63];
+        let median = depths[32];
         assert!(
-            max_depth <= u64::from(s.levels()) / 2,
+            max_depth + 1 < u64::from(s.levels()),
             "random plateau reached depth {max_depth} of {} — the maze is too easy \
              (the non-vacuity property fails)",
             s.levels()
+        );
+        assert!(
+            median <= 2,
+            "random median depth {median} — the maze is too easy"
         );
     }
 
