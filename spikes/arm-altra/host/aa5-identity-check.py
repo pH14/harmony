@@ -21,6 +21,10 @@ import re
 import sys
 from pathlib import Path
 
+# Transcripts and summaries are kilobytes; this cap guards the checker from OOMing
+# on a malformed/oversized run dir before it has a chance to validate anything (F6).
+MAX_RUN_FILE = 64 * 1024 * 1024  # 64 MiB
+
 REQUIRED_MARKERS = [b"HARMONY_AA5_CLOCKSOURCE_OK", b"HARMONY_AA5_READY"]
 SUMMARY_KEYS = [
     "exits",
@@ -40,9 +44,19 @@ SUMMARY_KEYS = [
 ]
 
 
+def _read_bounded(path: Path, *, binary: bool):
+    # Bound the read by the file size before pulling bytes into memory (F6): a run
+    # dir is operator-supplied, and read_text/read_bytes would otherwise slurp an
+    # arbitrarily large file whole.
+    size = path.stat().st_size
+    if size > MAX_RUN_FILE:
+        raise SystemExit(f"FAIL: {path}: {size} bytes exceeds the {MAX_RUN_FILE}-byte run-file cap")
+    return path.read_bytes() if binary else path.read_text()
+
+
 def load_run(run_dir: Path):
-    stdout = (run_dir / "stdout.txt").read_text()
-    console = (run_dir / "console.bin").read_bytes()
+    stdout = _read_bounded(run_dir / "stdout.txt", binary=False)
+    console = _read_bounded(run_dir / "console.bin", binary=True)
     fields = dict(re.findall(r"([a-z_0-9]+)=([^\s]+)", stdout))
     missing = [k for k in SUMMARY_KEYS if k not in fields]
     if missing:
@@ -56,7 +70,10 @@ def load_run(run_dir: Path):
     for marker in REQUIRED_MARKERS:
         if marker not in console:
             raise SystemExit(f"FAIL: {run_dir}: console lacks {marker.decode()}")
-    if not re.fullmatch(r"(sha256:)?[0-9a-f]{16,}", fields["state_digest"]):
+    # A sha256 is exactly 64 hex digits; require the full width (F5). The old
+    # `{16,}` accepted a truncated digest, which would weaken the cross-run
+    # comparison below to a 16-nibble prefix.
+    if not re.fullmatch(r"(sha256:)?[0-9a-f]{64}", fields["state_digest"]):
         raise SystemExit(f"FAIL: {run_dir}: malformed state_digest")
     return fields, recomputed, console
 

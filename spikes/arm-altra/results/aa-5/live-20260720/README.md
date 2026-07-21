@@ -84,6 +84,30 @@ Full AA-5(c) state identity therefore needs an explicit **entropy-closure contra
 for the deterministic guest, analogous to the counter-closure row — recorded here as
 the remaining build, not a paravirt-clock failure.
 
+## Image provenance (which run used which build)
+
+This window iterated the guest kernel as findings were fixed, so the run dirs span
+four `Image` builds (each run's `stdout.txt` records its own `image_sha256`). The
+**MANIFEST-pinned** image is the final `980b7982…`; the same-seed rows above are
+scoped to specific builds, not all to the pinned one:
+
+| `image_sha256` | run dirs | role |
+|---|---|---|
+| `bc6f29b0…` | `run-a/b`, `smoke`, `diag-*`, `neg-refresh` | first same-seed pair + divergence-localization (register isolation) |
+| `f77ea5c5…` | `seed2-*` | intermediate same-seed set |
+| `980b7982…` | `seed3-*` | **MANIFEST-pinned final** same-seed set (console PASS; full-state FAIL on the CRNG residual) |
+| `135f8716…` | `fix-run-*`, `fix-ram-*`, `el0probe-fixed` | AA-5(b) EL0-closure + entropy-fix builds |
+
+**Scoping the register-identity row.** The `regs_only` register-digest identity was
+demonstrated on the `diag-*` runs, i.e. the **`bc6f29b0…` diag build** — a register-
+isolated variant, not the pinned `980b7982…`. The pinned `seed3-*` runs retain a
+full-machine `state_digest` (which FAILs on the CRNG residual, as above), not a
+standalone `regs_only` digest. So the register-identity claim is: *on a nokaslr diag
+build, same-seed register state is bit-identical* — it is not a property re-measured on
+the pinned image, whose same-seed evidence is console-identity plus the full-state
+digest. (`console.bin` for these runs is now committed — see the repo `.gitignore`
+exception — so `aa5-identity-check.py` can recompute the console hashes from a checkout.)
+
 ## Also noted
 
 - **Skid headroom.** The AA-1 constant `skid_margin = 53` overshoots on the Linux guest

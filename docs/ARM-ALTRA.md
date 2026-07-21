@@ -1484,8 +1484,10 @@ page merely because userspace printed the expected bytes. On 2026-07-20 this pat
 N1 (`results/aa-5/live-20260720/`, host `6.18.35-aa3preempt` = stock + patch 0001, per-run
 mechanism attestation with a stock-host control failing closed): the guest boots to userspace and
 steady state (`HARMONY_AA5_CLOCKSOURCE_OK`, no RCU stall), same-seed **console** and **register**
-digests are bit-identical, the counter is fully page-routed (0 raw `cntvct` in `vmlinux`), and EL0
-raw-counter access is closed (`EL0_CNTVCT_PAGE_OK`). Same-seed **full-RAM** state identity is **not**
+digests are bit-identical (console on the pinned `980b7982…` image; the `regs_only` register digest
+on a nokaslr `bc6f29b0…` diag build — see the results README image-provenance note), the counter is
+fully page-routed (0 raw `cntvct` in `vmlinux`), and EL0 raw-counter access is closed
+(`EL0_CNTVCT_PAGE_OK`). Same-seed **full-RAM** state identity is **not**
 achieved: a characterized kernel-CRNG entropy residual (`base_crng`/`input_pool` reseed *content*
 varies — 400–700 differing bytes in 256 MB, console and registers unaffected, divergence unstable
 run-to-run) remains — a subsystem distinct from the clock, tracked as the entropy-closure contract
