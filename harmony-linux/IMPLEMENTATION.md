@@ -17,7 +17,7 @@ unchanged.
 
 ## New environment ABI
 
-`linux/patches/0002-x86-harmony-character-device.patch` adds a built-in misc
+`linux/patches/x86/0002-x86-harmony-character-device.patch` adds a built-in misc
 driver at `/dev/harmony`. It is Linux kernel code carried only as a GPL-2.0 diff.
 The driver rides the existing fixed-page/OUT doorbell; consonance and the wire
 protocol do not change. A global mutex makes every exchange single-in-flight,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `arm-spike` — the AA-0 capability probe and the run orchestrator.
 //!
-//! Three subcommands:
+//! Six subcommands:
 //!
 //! - `plan` — emit a deterministic run plan as stable JSON, so a run-set's sample
 //!   list can be reviewed and diffed before a single measurement is spent. Pure
@@ -12,6 +12,16 @@
 //!   planned sample to its window marks, sample `BR_RETIRED`, and write the run-set
 //!   (`run-set.json` + `records.jsonl`) the floor checker adjudicates. Linux only,
 //!   and **untested on silicon**.
+//! - `linux-boot` — a bounded, explicitly non-certifying AA-5(c) bring-up path for
+//!   a hash-pinned arm64 Image + initramfs. It refreshes the pvclock page at exact
+//!   retired-branch targets, delivers the dedicated PPI 20 work clockevent, and stops
+//!   only after a fixed console marker plus a complete assert/ACK/rearm cycle.
+//! - `aa4-guard-reject` — a bounded, hash-pinned planted-exclusive proof. It succeeds
+//!   only after the stage-2 guard scans a frozen page, rejects an exclusive-bearing
+//!   generation, and leaves the vCPU PC in that unexecuted page.
+//! - `aa4-guard-write` — a hash-pinned self-modification and anti-replay proof. It
+//!   requires the original page at the synchronous pre-store write exit, rejection
+//!   of the superseded approval token, and the exact replacement page at a fresh scan.
 //!
 //! # What `run` refuses to invent
 //!
@@ -98,6 +108,145 @@ enum Command {
     },
     /// Run the planned samples and write a run-set (Linux/box only).
     Run(Box<RunOpts>),
+    /// Boot hash-pinned arm64 Linux to a fixed console marker (Linux/box only).
+    LinuxBoot(Box<LinuxBootOpts>),
+    /// Prove a hash-pinned planted-exclusive page is rejected before execution.
+    Aa4GuardReject(Box<Aa4GuardRejectOpts>),
+    /// Prove write-revokes-execute before modification and forces an exact rescan.
+    Aa4GuardWrite(Box<Aa4GuardWriteOpts>),
+    /// AA-4 concurrency: prove a memslot update's mmu-notifier invalidation forces the guard
+    /// to re-scan an already-approved page (Linux/box only).
+    Aa4GuardNotifier(Box<Aa4GuardNotifierOpts>),
+    /// AA-4 concurrency: prove moving slot 0 to a distinct byte-identical backing forces a
+    /// re-scan (approval keyed to the mapping, not content) (Linux/box only).
+    Aa4GuardBacking(Box<Aa4GuardNotifierOpts>),
+    /// AA-4 concurrency: prove a second vCPU's write to a page a first vCPU has frozen for a
+    /// scan is BLOCKED behind that scan (Linux/box only).
+    Aa4GuardRace(Box<Aa4GuardNotifierOpts>),
+    /// AA-6(a): install a below-host synthetic ID-register model and prove the guest sees the
+    /// frozen values (Linux/box only).
+    IdFreeze {
+        /// Where to write the enforcement truth-table JSON.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// AA-6(b): prove the in-kernel vGIC's injection state round-trips through save/restore
+    /// bit-identically (Linux/box only).
+    VgicRoundtrip {
+        /// Where to write the round-trip result JSON.
+        #[arg(long)]
+        out: PathBuf,
+    },
+}
+
+const DEFAULT_LINUX_MAX_EXITS: u64 = 5_000_000;
+const DEFAULT_LINUX_MAX_CONSOLE_BYTES: usize = 16 << 20;
+const DEFAULT_LINUX_BOOTARGS: &str = "console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 \
+    keep_bootcon rdinit=/init nokaslr maxcpus=1 random.trust_cpu=off harmony_pvclock nohlt";
+
+/// `arm-spike linux-boot`'s non-certifying substrate options.
+#[derive(clap::Args, Debug)]
+struct LinuxBootOpts {
+    /// Flat arm64 Linux `Image`.
+    #[arg(long)]
+    image: PathBuf,
+    /// Trusted sha256 pin for `--image` (optional `sha256:` prefix).
+    #[arg(long)]
+    image_sha256: String,
+    /// Gzip-compressed or raw cpio initramfs consumed by the kernel.
+    #[arg(long)]
+    initramfs: PathBuf,
+    /// Trusted sha256 pin for `--initramfs` (optional `sha256:` prefix).
+    #[arg(long)]
+    initramfs_sha256: String,
+    /// The isolated host core on which to run the vCPU thread.
+    #[arg(long)]
+    core: u32,
+    /// Kernel command line placed in the generated DTB.
+    #[arg(long, default_value = DEFAULT_LINUX_BOOTARGS)]
+    bootargs: String,
+    /// Fresh path for the captured binary console transcript.
+    #[arg(long)]
+    console_out: PathBuf,
+    /// Maximum KVM exits before the boot is refused.
+    #[arg(long, default_value_t = DEFAULT_LINUX_MAX_EXITS)]
+    max_exits: u64,
+    /// Maximum captured console bytes before the boot is refused.
+    #[arg(long, default_value_t = DEFAULT_LINUX_MAX_CONSOLE_BYTES)]
+    max_console_bytes: usize,
+    /// Measured N1 PMU skid margin for exact work-clock refresh landings.
+    #[arg(long)]
+    skid_margin: u64,
+    /// Maximum retired branches between publications (1..=100,000,000 for the owned guest).
+    #[arg(
+        long,
+        default_value_t = arm_harness::linux_console::DEFAULT_REFRESH_DELTA_WORK
+    )]
+    refresh_delta_work: u64,
+    /// Per-KVM_RUN watchdog seconds; 0 disables it.
+    #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
+    watchdog_secs: u64,
+    /// Enable the AA-4 default-XN stage-2 execute guard before vCPU creation.
+    /// Requires the patched capability; clean pages are scanned/approved transparently.
+    #[arg(long)]
+    stage2_exec_guard: bool,
+}
+
+/// `arm-spike aa4-guard-reject`'s planted runtime proof inputs.
+#[derive(clap::Args, Debug)]
+struct Aa4GuardRejectOpts {
+    /// Bare arm64 ELF containing a planted LDXR/STXR-family instruction.
+    #[arg(long)]
+    image: PathBuf,
+    /// Trusted sha256 pin for `--image` (optional `sha256:` prefix).
+    #[arg(long)]
+    image_sha256: String,
+    /// Isolated host core on which to run the vCPU thread.
+    #[arg(long)]
+    core: u32,
+    /// Per-KVM_RUN watchdog seconds; 0 disables it.
+    #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
+    watchdog_secs: u64,
+}
+
+/// `arm-spike aa4-guard-write`'s planted self-modification proof inputs.
+#[derive(clap::Args, Debug)]
+struct Aa4GuardWriteOpts {
+    /// Bare `aa4-self-modify` ELF built from this tree.
+    #[arg(long)]
+    image: PathBuf,
+    /// Trusted sha256 pin for `--image` (optional `sha256:` prefix).
+    #[arg(long)]
+    image_sha256: String,
+    /// Isolated host core on which to run the vCPU thread.
+    #[arg(long)]
+    core: u32,
+    /// Maximum caller-visible KVM exits before the proof is refused.
+    #[arg(long, default_value_t = 1_000_000)]
+    max_exits: u64,
+    /// Per-KVM_RUN watchdog seconds; 0 disables it.
+    #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
+    watchdog_secs: u64,
+}
+
+/// `arm-spike aa4-guard-notifier`'s inputs.
+#[derive(clap::Args, Debug)]
+struct Aa4GuardNotifierOpts {
+    /// Bare `aa4-reexec` ELF built from this tree.
+    #[arg(long)]
+    image: PathBuf,
+    /// Trusted sha256 pin for `--image` (optional `sha256:` prefix).
+    #[arg(long)]
+    image_sha256: String,
+    /// Isolated host core on which to run the vCPU thread.
+    #[arg(long)]
+    core: u32,
+    /// Maximum caller-visible KVM exits before the proof is refused.
+    #[arg(long, default_value_t = 1_000_000)]
+    max_exits: u64,
+    /// Per-KVM_RUN watchdog seconds; 0 disables it.
+    #[arg(long, default_value_t = arm_harness::run::DEFAULT_WATCHDOG_SECS)]
+    watchdog_secs: u64,
 }
 
 /// `arm-spike run`'s options. Boxed in the [`Command`] enum: it is far larger than
@@ -473,6 +622,17 @@ fn probe(box_config: PathBuf, rulings: Option<PathBuf>, out: PathBuf) -> Result<
         di_found,
         di_raw,
     ));
+    // AA-4's stock-KVM feasibility marker. Absence is the honest result until the
+    // dedicated per-GFN execute-guard patch exists; a generic MEMORY_FAULT cap is not it.
+    let (wx_found, wx_raw) = probe_cap(Capability::Stage2ExecGuard);
+    rows.push(RowInput::cap(
+        "kvm-cap-arm-stage2-exec-guard",
+        "kvm",
+        "the AA-4 per-GFN stage-2 execute guard advertised? Expect absent on stock KVM.",
+        Found::Absent,
+        wx_found,
+        wx_raw,
+    ));
 
     // The ID-register rows (read from a disposable VM's vCPU).
     let ecv = f4(regs.id_aa64mmfr0, 60);
@@ -698,7 +858,1042 @@ struct LoadedPayload {
 /// Normalise a recorded/expected sha256: drop an optional `sha256:` prefix, lowercase.
 #[cfg(target_os = "linux")]
 fn normalise_sha256(h: &str) -> String {
-    h.strip_prefix("sha256:").unwrap_or(h).to_ascii_lowercase()
+    h.trim()
+        .strip_prefix("sha256:")
+        .unwrap_or(h.trim())
+        .to_ascii_lowercase()
+}
+
+/// Read and verify one boot artifact against an operator-supplied content pin.
+#[cfg(target_os = "linux")]
+fn verified_artifact(
+    path: &std::path::Path,
+    expected: &str,
+    label: &str,
+    max_bytes: u64,
+) -> Result<(Vec<u8>, String), String> {
+    use std::io::Read as _;
+
+    use arm_harness::evidence::hex_lower;
+    use sha2::{Digest, Sha256};
+
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let read_limit = max_bytes
+        .checked_add(1)
+        .ok_or_else(|| format!("{label} byte limit overflows"))?;
+    let mut bytes = Vec::new();
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!(
+            "{label} {} exceeds the fixed-layout {max_bytes}-byte input limit",
+            path.display()
+        ));
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let actual = hex_lower(&hasher.finalize());
+    let expected = normalise_sha256(expected);
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!(
+            "trusted {label} sha256 must be exactly 64 hexadecimal digits (optional sha256: \
+             prefix); got `{expected}`"
+        ));
+    }
+    if actual != expected {
+        return Err(format!(
+            "{label} {} hashes to {actual}, but its trusted pin is {expected}: refusing to boot \
+             an unpinned artifact",
+            path.display()
+        ));
+    }
+    Ok((bytes, actual))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
+    use std::io::Write as _;
+
+    use arm_harness::evidence::hex_lower;
+    use arm_harness::linux_console::{
+        LinuxConsoleConfig, LinuxWorkClockConfig, run_until_ready_work_clock,
+    };
+    use arm_harness::run::{StepVcpu as _, Vcpu as _};
+    use arm_harness::sys::{Machine, Mechanism, PerfCounter, pin_to_core};
+    use sha2::{Digest, Sha256};
+
+    // Verify both byte strings immediately before constructing the VM. The hashes
+    // are operator-vouched identities, not freshly-minted identities for whatever
+    // happened to be at each path.
+    let (image, image_sha256) = verified_artifact(
+        &opts.image,
+        &opts.image_sha256,
+        "Linux Image",
+        arm_harness::linux_boot::MAX_IMAGE_BYTES,
+    )?;
+    let (initramfs, initramfs_sha256) = verified_artifact(
+        &opts.initramfs,
+        &opts.initramfs_sha256,
+        "Linux initramfs",
+        arm_harness::linux_boot::MAX_INITRAMFS_BYTES,
+    )?;
+
+    pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
+    let mut machine = if opts.stage2_exec_guard {
+        Machine::new_linux_guarded(&image, &initramfs, &opts.bootargs)
+    } else {
+        Machine::new_linux(&image, &initramfs, &opts.bootargs)
+    }
+    .map_err(|e| format!("construct Linux KVM machine: {e}"))?;
+    machine.set_watchdog_secs(opts.watchdog_secs);
+    let guest_clock_hz = machine
+        .linux_cntfrq_hz()
+        .map_err(|e| format!("read guest CNTFRQ_EL0: {e}"))?;
+    let mut counter =
+        PerfCounter::open(&machine, Mechanism::Preempt, Some(opts.refresh_delta_work))
+            .map_err(|e| format!("open patched BR_RETIRED work counter: {e}"))?;
+    let result = run_until_ready_work_clock(
+        &mut machine,
+        &mut counter,
+        &LinuxConsoleConfig {
+            ready_marker: arm_harness::linux_console::LINUX_READY_MARKER.to_vec(),
+            max_exits: opts.max_exits,
+            max_console_bytes: opts.max_console_bytes,
+        },
+        LinuxWorkClockConfig {
+            refresh_delta_work: opts.refresh_delta_work,
+            skid_margin: opts.skid_margin,
+            guest_clock_hz,
+        },
+    )
+    .map_err(|e| format!("boot Linux: {e}"))?;
+    let guard = machine.exec_guard_stats();
+    if opts.stage2_exec_guard
+        && !matches!(guard, Some(stats) if stats.exits > 0 && stats.scans > 0 && stats.approvals > 0)
+    {
+        return Err(format!(
+            "stage-2 execute guard was requested but no non-vacuous execute/scan/approval \
+             sequence was observed: {guard:?}"
+        ));
+    }
+    let guard = guard.unwrap_or_default();
+
+    // The run ends at the canonical landing of the first exact publication after the
+    // marker latched, so this digest is landing-anchored state identity — the value the
+    // AA-5(c) same-seed gate compares across runs (console alone cannot prove state).
+    let state_digest = machine
+        .state_digest()
+        .map_err(|e| format!("digest final machine state: {e}"))?;
+    // A registers-only (+ vGIC) digest of the SAME landed state, emitted alongside the
+    // full state digest (hm-of6t F12). The full state digest carries the kernel-CRNG
+    // entropy residual and diverges same-seed; the registers-only digest isolates
+    // architectural register identity, which holds bit-identical on the pinned nokaslr
+    // image — so the register-identity claim rests on the pinned build itself, not a
+    // separate diag build. `digest_regs_only` can never collide with the full digest.
+    let regs_digest = machine
+        .regs_digest()
+        .map_err(|e| format!("digest final register state: {e}"))?;
+    // Core registers only (excludes the vGIC injection state): isolates architectural
+    // register identity so the same-seed gate can attribute a regs_digest divergence to
+    // the host-IRQ-timing vGIC vs the core registers (hm-of6t F12).
+    let core_regs_digest = machine
+        .core_regs_digest()
+        .map_err(|e| format!("digest final core register state: {e}"))?;
+
+    // Diagnostic (env-gated, off by default): when the same-seed gate flags a RAM-only
+    // divergence, `AA5_DUMP_RAM=<path>` writes the final guest RAM so two runs' dumps can
+    // be byte-diffed and mapped through System.map to the diverging kernel object.
+    if let Some(path) = std::env::var_os("AA5_DUMP_RAM") {
+        std::fs::write(&path, machine.guest_ram_bytes())
+            .map_err(|e| format!("write {}: {e}", std::path::Path::new(&path).display()))?;
+    }
+    // Diagnostic (env-gated): `AA5_DUMP_REGS=<path>` writes the per-register dump so two
+    // same-seed runs can be diffed to attribute a regs_digest divergence to the exact
+    // register(s) — hm-of6t F12 register-residual attribution.
+    if let Some(path) = std::env::var_os("AA5_DUMP_REGS") {
+        let dump = machine
+            .regs_dump_text()
+            .map_err(|e| format!("dump registers: {e}"))?;
+        std::fs::write(&path, dump)
+            .map_err(|e| format!("write {}: {e}", std::path::Path::new(&path).display()))?;
+    }
+
+    let mut transcript = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&opts.console_out)
+        .map_err(|e| {
+            format!(
+                "create {}: {e} — refusing to overwrite a prior boot transcript",
+                opts.console_out.display()
+            )
+        })?;
+    transcript
+        .write_all(&result.boot.console)
+        .map_err(|e| format!("write {}: {e}", opts.console_out.display()))?;
+    transcript
+        .sync_all()
+        .map_err(|e| format!("sync {}: {e}", opts.console_out.display()))?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(&result.boot.console);
+    let console_sha256 = hex_lower(&hasher.finalize());
+    println!(
+        "NON-CERTIFYING Linux boot reached its fixed console marker: exits={} console_bytes={} \
+         console_sha256={} image_sha256={} initramfs_sha256={} pvclock_publications={} \
+         pvclock_max_gap_work={} pvclock_last_work={} pvclock_gpa={:#x} guest_clock_hz={} \
+         clockevent_assertions={} clockevent_acks={} clockevent_max_lateness_ticks={} \
+         exec_guard_enabled={} exec_guard_exits={} exec_guard_scans={} exec_guard_approvals={} \
+         exec_guard_rejections={} exec_guard_write_revocations={} exec_guard_blocked_writes={} \
+         state_digest={} regs_digest={} core_regs_digest={} transcript={}",
+        result.boot.exits,
+        result.boot.console.len(),
+        console_sha256,
+        image_sha256,
+        initramfs_sha256,
+        result.publications,
+        result.max_refresh_gap_work,
+        result.last_refresh_work,
+        result.registration_gpa,
+        guest_clock_hz,
+        result.clockevent_assertions,
+        result.clockevent_acknowledgements,
+        result.clockevent_max_lateness_ticks,
+        opts.stage2_exec_guard,
+        guard.exits,
+        guard.scans,
+        guard.approvals,
+        guard.rejections,
+        guard.write_revocations,
+        guard.blocked_writes,
+        state_digest,
+        regs_digest,
+        core_regs_digest,
+        opts.console_out.display()
+    );
+    println!(
+        "AA-5 remains open: the exact-work page and dedicated PPI 20 clockevent substrate are \
+         built, but this command does not claim same-seed live N1 identity, a native pinned-N1 \
+         artifact build, or AA-4's planted rejection/write-before-modification proof"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_boot(_opts: LinuxBootOpts) -> Result<(), String> {
+    Err(
+        "`arm-spike linux-boot` issues KVM ioctls and needs /dev/kvm: it is Linux-only; \
+         artifact parsing and the console loop are tested portably on this host."
+            .into(),
+    )
+}
+
+/// Run a planted-exclusive ELF only far enough for the guard to reject its frozen page.
+///
+/// This is deliberately a rejection proof, not a generic payload run: success requires an
+/// exit-43 scan generation, at least one decoded exclusive, a successful REJECT response, and
+/// the vCPU PC still pointing into the rejected page. A normal exit or a counter-only rejection
+/// cannot satisfy it.
+#[cfg(target_os = "linux")]
+fn aa4_guard_reject(opts: Aa4GuardRejectOpts) -> Result<(), String> {
+    use arm_harness::elf::Elf;
+    use arm_harness::run::{RunError, StepVcpu, Vcpu};
+    use arm_harness::sys::{Machine, ParamsPage, pin_to_core};
+
+    let (bytes, sha256) = verified_artifact(
+        &opts.image,
+        &opts.image_sha256,
+        "AA-4 planted ELF",
+        arm_harness::linux_boot::MAX_IMAGE_BYTES,
+    )?;
+    let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", opts.image.display()))?;
+    pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
+
+    let params = ParamsPage {
+        scale_index: 0,
+        seed: 0xAA04_AA04_AA04_AA04,
+    };
+    let mut machine = Machine::new_guarded(&image, &params)
+        .map_err(|e| format!("construct guarded KVM machine: {e}"))?;
+    machine.set_watchdog_secs(opts.watchdog_secs);
+    let pc_before = StepVcpu::pc(&mut machine).map_err(|e| format!("read initial PC: {e}"))?;
+
+    let (gpa, generation, hazards, exclusive_hazards, live_counter_hazards, summary) =
+        match Vcpu::run(&mut machine) {
+            Err(RunError::ExecGuardRejected {
+                gpa,
+                generation,
+                hazards,
+                exclusive_hazards,
+                live_counter_hazards,
+                summary,
+            }) => (
+                gpa,
+                generation,
+                hazards,
+                exclusive_hazards,
+                live_counter_hazards,
+                summary,
+            ),
+            Err(other) => {
+                return Err(format!(
+                    "guard run failed before planted rejection: {other}"
+                ));
+            }
+            Ok(exit) => {
+                return Err(format!(
+                    "guarded planted ELF produced caller-visible {exit:?} instead of rejection"
+                ));
+            }
+        };
+    let pc_after = StepVcpu::pc(&mut machine).map_err(|e| format!("read rejected PC: {e}"))?;
+    let stats = machine
+        .exec_guard_stats()
+        .ok_or_else(|| "guarded constructor returned no execute-guard statistics".to_string())?;
+
+    if exclusive_hazards == 0
+        || hazards < exclusive_hazards
+        || generation == 0
+        // F3-REJECT-PC: the guest must not have advanced AT ALL — a page rejected before its
+        // first execute leaves PC exactly at entry, not merely somewhere in the rejected page.
+        || pc_after != pc_before
+        || gpa != pc_after & !0xfff
+        || stats.rejections != 1
+        || stats.scans != stats.approvals.saturating_add(stats.rejections)
+        || stats.exits != stats.scans
+        || stats.write_revocations != 0
+        || stats.blocked_writes != 0
+    {
+        return Err(format!(
+            "planted rejection was internally inconsistent: gpa={gpa:#x} generation={generation} \
+             hazards={hazards} exclusives={exclusive_hazards} live_counters={live_counter_hazards} \
+             pc_before={pc_before:#x} pc_after={pc_after:#x} stats={stats:?}"
+        ));
+    }
+
+    println!(
+        "AA4_GUARD_REJECT PASS image_sha256={sha256} gpa={gpa:#x} generation={generation} \
+         hazards={hazards} exclusives={exclusive_hazards} live_counters={live_counter_hazards} \
+         pc_before={pc_before:#x} pc_after={pc_after:#x} exits={} scans={} approvals={} \
+         rejections={} summary={summary}",
+        stats.exits, stats.scans, stats.approvals, stats.rejections
+    );
+    println!(
+        "AA-4 remains open: this proves pre-execute planted rejection; write-before-modification, \
+         stale-generation, notifier replacement, and two-vCPU scan/write races remain live gates"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn aa4_guard_reject(_opts: Aa4GuardRejectOpts) -> Result<(), String> {
+    Err(
+        "`arm-spike aa4-guard-reject` issues KVM ioctls and needs /dev/kvm: it is Linux-only"
+            .into(),
+    )
+}
+
+/// Run the dedicated self-modifying ELF through one audited target page.
+///
+/// Success binds three synchronous observations to the hash-pinned artifact: the initial
+/// execute scan sees the original `mov x0, #1` page; the write exit still sees that exact
+/// page before the store retries; and a fresh scan generation sees the exact page with only
+/// that instruction changed to `mov x0, #2` before it executes.
+#[cfg(target_os = "linux")]
+fn aa4_guard_write(opts: Aa4GuardWriteOpts) -> Result<(), String> {
+    use arm_harness::console::{Console, Event};
+    use arm_harness::elf::Elf;
+    use arm_harness::evidence::hex_lower;
+    use arm_harness::run::{PL011_DR, PL011_FR, PL011_FR_READY, Vcpu, VcpuExit};
+    use arm_harness::sys::{Machine, ParamsPage, pin_to_core};
+    use sha2::{Digest, Sha256};
+
+    const PAGE_SIZE: u64 = 4096;
+    const ORIGINAL_MOV_X0_1: u32 = 0xD280_0020;
+    const MODIFIED_MOV_X0_2: u32 = 0xD280_0040;
+    const RET: u32 = 0xD65F_03C0;
+
+    if opts.max_exits == 0 {
+        return Err("--max-exits must be nonzero".into());
+    }
+    let (bytes, image_sha256) = verified_artifact(
+        &opts.image,
+        &opts.image_sha256,
+        "AA-4 self-modifying ELF",
+        arm_harness::linux_boot::MAX_IMAGE_BYTES,
+    )?;
+    let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", opts.image.display()))?;
+    let target = image
+        .symbol("aa4_self_modify_target")
+        .map_err(|e| format!("resolve aa4_self_modify_target: {e}"))?;
+    if target & (PAGE_SIZE - 1) != 0 {
+        return Err(format!(
+            "aa4_self_modify_target {target:#x} is not page-aligned"
+        ));
+    }
+    let target_end = target
+        .checked_add(PAGE_SIZE)
+        .ok_or_else(|| "aa4_self_modify_target page end overflowed".to_string())?;
+    let original_page = image
+        .bytes(target, target_end)
+        .map_err(|e| format!("read planted target page: {e}"))?
+        .to_vec();
+    let original_prefix = [ORIGINAL_MOV_X0_1.to_le_bytes(), RET.to_le_bytes()].concat();
+    if original_page.get(..original_prefix.len()) != Some(original_prefix.as_slice()) {
+        return Err(format!(
+            "planted target at {target:#x} is not `mov x0, #1; ret`"
+        ));
+    }
+    let expected_initial_sha256: [u8; 32] = Sha256::digest(&original_page).into();
+    let mut modified_page = original_page;
+    modified_page[..4].copy_from_slice(&MODIFIED_MOV_X0_2.to_le_bytes());
+    let expected_modified_sha256: [u8; 32] = Sha256::digest(&modified_page).into();
+
+    pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
+    let params = ParamsPage {
+        scale_index: 0,
+        seed: 0xAA04_AA04_5752_4954,
+    };
+    let mut machine = Machine::new_guarded(&image, &params)
+        .map_err(|e| format!("construct guarded KVM machine: {e}"))?;
+    machine
+        .audit_exec_guard_page(target)
+        .map_err(|e| format!("configure target-page audit: {e}"))?;
+    machine
+        .probe_stale_exec_guard_generation(target)
+        .map_err(|e| format!("configure stale-generation probe: {e}"))?;
+    machine.set_watchdog_secs(opts.watchdog_secs);
+
+    let mut console = Console::new();
+    let mut saw_ok = false;
+    let mut saw_pass = false;
+    let mut completed = None;
+    for exits in 1..=opts.max_exits {
+        let exit =
+            Vcpu::run(&mut machine).map_err(|e| format!("run self-modifying payload: {e}"))?;
+        // F3-GUARD-BUDGET: the guard's scan/approve/reject exits are serviced inside
+        // `Vcpu::run` and never reach this caller-visible loop, so counting only
+        // caller-visible exits let an adversarial guest mint unbounded guard work under a
+        // small `--max-exits`. Charge cumulative guard exits to the same budget.
+        let guard_exits = machine.exec_guard_stats().map_or(0, |s| s.exits);
+        if exits.saturating_add(guard_exits) > opts.max_exits {
+            return Err(format!(
+                "guard exits ({guard_exits}) plus caller-visible exits ({exits}) exceeded \
+                 --max-exits {} — refusing unbounded guard work",
+                opts.max_exits
+            ));
+        }
+        match exit {
+            VcpuExit::Mmio {
+                addr,
+                data,
+                is_write,
+            } => {
+                if !(oracle_model::UART_BASE..oracle_model::UART_BASE + PAGE_SIZE).contains(&addr) {
+                    return Err(format!(
+                        "self-modifying payload touched unexpected MMIO {addr:#x}"
+                    ));
+                }
+                if !is_write {
+                    if addr != PL011_FR || data.is_empty() || data.len() > 8 {
+                        return Err(format!(
+                            "unexpected PL011 read at {addr:#x} with width {}",
+                            data.len()
+                        ));
+                    }
+                    let ready = PL011_FR_READY.to_le_bytes();
+                    machine
+                        .complete_mmio_read(&ready[..data.len().min(ready.len())])
+                        .map_err(|e| format!("complete PL011 read: {e}"))?;
+                    continue;
+                }
+                if addr != PL011_DR {
+                    continue;
+                }
+                let byte = *data
+                    .first()
+                    .ok_or_else(|| "zero-width PL011 data write".to_string())?;
+                match console.push(byte) {
+                    Some(Event::Line(line)) if line == "OK write-rescan-complete" => saw_ok = true,
+                    Some(Event::Line(line)) if line == "PAYLOAD aa4-self-modify PASS" => {
+                        saw_pass = true;
+                    }
+                    Some(Event::Line(_)) | None => {}
+                    Some(Event::Exit(status)) => {
+                        completed = Some((status, exits));
+                        break;
+                    }
+                    Some(Event::MarkBegin | Event::MarkEnd) => {
+                        return Err("self-modifying proof emitted an oracle window marker".into());
+                    }
+                }
+            }
+            VcpuExit::MalformedMmio { addr, width } => {
+                return Err(format!("malformed MMIO at {addr:#x} with width {width}"));
+            }
+            other => {
+                return Err(format!(
+                    "self-modifying proof produced unexpected caller-visible exit {other:?}"
+                ));
+            }
+        }
+    }
+
+    let (status, caller_exits) = completed.ok_or_else(|| {
+        format!(
+            "self-modifying proof exceeded --max-exits {} before PAYLOAD EXIT",
+            opts.max_exits
+        )
+    })?;
+    if status != 0 || !saw_ok || !saw_pass {
+        return Err(format!(
+            "self-modifying payload did not attest success: status={status} saw_ok={saw_ok} \
+             saw_pass={saw_pass}"
+        ));
+    }
+
+    let audit = machine
+        .exec_guard_page_audit()
+        .ok_or_else(|| "guarded machine returned no target-page audit".to_string())?;
+    let stats = machine
+        .exec_guard_stats()
+        .ok_or_else(|| "guarded machine returned no execute-guard statistics".to_string())?;
+    if !arm_harness::sys::exec_guard_write_proof_holds(
+        target,
+        expected_initial_sha256,
+        expected_modified_sha256,
+        audit,
+        stats,
+    ) {
+        return Err(format!(
+            "write/rescan audit was internally inconsistent: target={target:#x} audit={audit:?} \
+             stats={stats:?} expected_initial={} expected_modified={}",
+            hex_lower(&expected_initial_sha256),
+            hex_lower(&expected_modified_sha256)
+        ));
+    }
+    if !arm_harness::sys::exec_guard_stale_generation_proof_holds(audit) {
+        return Err(format!(
+            "stale-generation audit was internally inconsistent: target={target:#x} \
+             audit={audit:?}"
+        ));
+    }
+
+    println!(
+        "AA4_GUARD_WRITE PASS image_sha256={image_sha256} target={target:#x} \
+         first_generation={} write_generation={} rescan_generation={} caller_exits={caller_exits} \
+         guard_exits={} guard_scans={} guard_approvals={} guard_write_revocations={} \
+         stale_generation={} stale_errno={} initial_sha256={} modified_sha256={}",
+        audit.first_exec_generation,
+        audit.write_generation,
+        audit.post_write_exec_generation,
+        stats.exits,
+        stats.scans,
+        stats.approvals,
+        stats.write_revocations,
+        audit.stale_reply_generation,
+        audit.stale_reply_errno,
+        hex_lower(&expected_initial_sha256),
+        hex_lower(&expected_modified_sha256)
+    );
+    println!(
+        "AA-4 remains open: this proves write-before-modification, exact-page rescan, and \
+         stale-generation rejection; planted rejection, notifier replacement, and two-vCPU \
+         scan/write races remain live gates"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn aa4_guard_write(_opts: Aa4GuardWriteOpts) -> Result<(), String> {
+    Err("`arm-spike aa4-guard-write` issues KVM ioctls and needs /dev/kvm: it is Linux-only".into())
+}
+
+/// The memslot operation the `aa4-reexec` harness interposes at the first-execute marker.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReexecSlotOp {
+    /// No memslot change — the second execute must reuse the approval (negative control).
+    None,
+    /// Re-add the SAME backing (notifier-replacement).
+    Notifier,
+    /// Move to a DISTINCT byte-identical backing (backing-replacement).
+    Backing,
+}
+
+/// Run the `aa4-reexec` payload to completion under the guard, applying `slot_op` at the
+/// first-execute marker. Returns `(target_scans, first_scan_gen, last_scan_gen)`.
+#[cfg(target_os = "linux")]
+fn aa4_run_reexec(
+    image: &arm_harness::elf::Elf,
+    target: u64,
+    watchdog_secs: u64,
+    max_exits: u64,
+    slot_op: ReexecSlotOp,
+) -> Result<(u64, u64, u64), String> {
+    use arm_harness::console::{Console, Event};
+    use arm_harness::run::{PL011_DR, PL011_FR, PL011_FR_READY, Vcpu, VcpuExit};
+    use arm_harness::sys::{Machine, ParamsPage};
+
+    let params = ParamsPage {
+        scale_index: 0,
+        seed: 0xAA04_4E4F_5449_4659,
+    };
+    let mut machine = Machine::new_guarded(image, &params)
+        .map_err(|e| format!("construct guarded machine: {e}"))?;
+    machine
+        .audit_exec_guard_page(target)
+        .map_err(|e| format!("configure target-page audit: {e}"))?;
+    machine.set_watchdog_secs(watchdog_secs);
+
+    let mut console = Console::new();
+    let mut replaced = false;
+    let mut saw_first = false;
+    let mut saw_second = false;
+    let mut passed = false;
+    for exits in 1..=max_exits {
+        let exit = Vcpu::run(&mut machine).map_err(|e| format!("run aa4-reexec: {e}"))?;
+        let guard_exits = machine.exec_guard_stats().map_or(0, |s| s.exits);
+        if exits.saturating_add(guard_exits) > max_exits {
+            return Err(format!(
+                "guard exits ({guard_exits}) + caller exits exceeded max"
+            ));
+        }
+        match exit {
+            VcpuExit::Mmio {
+                addr,
+                data,
+                is_write,
+            } => {
+                if !is_write {
+                    if addr == PL011_FR {
+                        let ready = PL011_FR_READY.to_le_bytes();
+                        machine
+                            .complete_mmio_read(&ready[..data.len().min(ready.len())])
+                            .map_err(|e| format!("complete PL011 read: {e}"))?;
+                    }
+                    continue;
+                }
+                if addr != PL011_DR {
+                    continue;
+                }
+                let byte = *data
+                    .first()
+                    .ok_or_else(|| "zero-width PL011 write".to_string())?;
+                match console.push(byte) {
+                    Some(Event::Line(line)) if line == "OK reexec-first" => {
+                        saw_first = true;
+                        // The target's first execute has scanned+approved it. Interpose the
+                        // memslot update here, before the second execute.
+                        if !replaced {
+                            match slot_op {
+                                ReexecSlotOp::Notifier => machine
+                                    .notifier_replace_slot0()
+                                    .map_err(|e| format!("notifier-replace slot 0: {e}"))?,
+                                ReexecSlotOp::Backing => machine
+                                    .backing_replace_slot0()
+                                    .map_err(|e| format!("backing-replace slot 0: {e}"))?,
+                                ReexecSlotOp::None => {}
+                            }
+                            replaced = true;
+                        }
+                    }
+                    Some(Event::Line(line)) if line == "OK reexec-second" => saw_second = true,
+                    Some(Event::Line(_)) | None => {}
+                    Some(Event::Exit(status)) => {
+                        if status != 0 {
+                            return Err(format!("aa4-reexec exited nonzero: {status}"));
+                        }
+                        passed = true;
+                        break;
+                    }
+                    Some(Event::MarkBegin | Event::MarkEnd) => {
+                        return Err("aa4-reexec emitted an oracle window marker".into());
+                    }
+                }
+            }
+            VcpuExit::MalformedMmio { addr, width } => {
+                return Err(format!("malformed MMIO at {addr:#x} width {width}"));
+            }
+            other => return Err(format!("aa4-reexec unexpected exit {other:?}")),
+        }
+    }
+    if !(saw_first && saw_second && passed) {
+        return Err(format!(
+            "aa4-reexec did not complete: first={saw_first} second={saw_second} pass={passed}"
+        ));
+    }
+    // Target-page-specific scan count (NOT total scans: a memslot replace re-scans every
+    // executable page, so only the audited target isolates the notifier's effect on it).
+    let audit = machine
+        .exec_guard_page_audit()
+        .ok_or_else(|| "no execute-guard page audit".to_string())?;
+    Ok((
+        audit.exec_scans,
+        audit.first_exec_generation,
+        machine.exec_guard_last_scan_generation(),
+    ))
+}
+
+/// AA-4 concurrency: a memslot update's mmu-notifier invalidation must force the guard to
+/// re-scan an already-approved page. Self-verifying via a negative control: the same payload
+/// run WITHOUT the memslot update reuses the approval (one scan), so a second scan in the
+/// notifier run is attributable only to the invalidation.
+#[cfg(target_os = "linux")]
+fn aa4_guard_notifier(opts: Aa4GuardNotifierOpts) -> Result<(), String> {
+    use arm_harness::elf::Elf;
+    use arm_harness::sys::pin_to_core;
+
+    let (bytes, image_sha256) = verified_artifact(
+        &opts.image,
+        &opts.image_sha256,
+        "AA-4 reexec ELF",
+        arm_harness::linux_boot::MAX_IMAGE_BYTES,
+    )?;
+    let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", opts.image.display()))?;
+    let target = image
+        .symbol("aa4_reexec_target")
+        .map_err(|e| format!("resolve aa4_reexec_target: {e}"))?;
+    pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
+
+    // Negative control first: no memslot update — the second execute must reuse the approval.
+    let (ctrl_scans, ctrl_first_gen, ctrl_last_gen) = aa4_run_reexec(
+        &image,
+        target,
+        opts.watchdog_secs,
+        opts.max_exits,
+        ReexecSlotOp::None,
+    )?;
+    // Notifier run: replace the memslot at the marker — the second execute must re-scan.
+    let (notif_scans, notif_first_gen, notif_last_gen) = aa4_run_reexec(
+        &image,
+        target,
+        opts.watchdog_secs,
+        opts.max_exits,
+        ReexecSlotOp::Notifier,
+    )?;
+
+    let control_reused = ctrl_scans == 1;
+    let notifier_rescanned = notif_scans == 2 && notif_last_gen > notif_first_gen;
+    println!(
+        "AA4_GUARD_NOTIFIER image_sha256={image_sha256} \
+         control_scans={ctrl_scans} control_first_gen={ctrl_first_gen} control_last_gen={ctrl_last_gen} \
+         notifier_scans={notif_scans} notifier_first_gen={notif_first_gen} notifier_last_gen={notif_last_gen} \
+         control_reused_approval={control_reused} notifier_forced_rescan={notifier_rescanned}"
+    );
+    if control_reused && notifier_rescanned {
+        println!(
+            "AA4_GUARD_NOTIFIER PASS: a memslot update forced a fresh scan (gen {notif_first_gen} -> \
+             {notif_last_gen}) where the unchanged page otherwise reused its approval"
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "notifier-replacement NOT proven: control_reused={control_reused} (want 1 scan) \
+             notifier_rescanned={notifier_rescanned} (want 2 scans, newer gen)"
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn aa4_guard_notifier(_opts: Aa4GuardNotifierOpts) -> Result<(), String> {
+    Err(
+        "`arm-spike aa4-guard-notifier` issues KVM ioctls and needs /dev/kvm: it is Linux-only"
+            .into(),
+    )
+}
+
+/// AA-4 concurrency: moving RAM slot 0 to a DISTINCT byte-identical backing must force the
+/// guard to re-scan an already-approved page — the approval is keyed to the mapping, not to a
+/// content hash. Self-verifying via the same negative control as the notifier gate.
+#[cfg(target_os = "linux")]
+fn aa4_guard_backing(opts: Aa4GuardNotifierOpts) -> Result<(), String> {
+    use arm_harness::elf::Elf;
+    use arm_harness::sys::pin_to_core;
+
+    let (bytes, image_sha256) = verified_artifact(
+        &opts.image,
+        &opts.image_sha256,
+        "AA-4 reexec ELF",
+        arm_harness::linux_boot::MAX_IMAGE_BYTES,
+    )?;
+    let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", opts.image.display()))?;
+    let target = image
+        .symbol("aa4_reexec_target")
+        .map_err(|e| format!("resolve aa4_reexec_target: {e}"))?;
+    pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
+
+    let (ctrl_scans, ctrl_first_gen, ctrl_last_gen) = aa4_run_reexec(
+        &image,
+        target,
+        opts.watchdog_secs,
+        opts.max_exits,
+        ReexecSlotOp::None,
+    )?;
+    let (move_scans, move_first_gen, move_last_gen) = aa4_run_reexec(
+        &image,
+        target,
+        opts.watchdog_secs,
+        opts.max_exits,
+        ReexecSlotOp::Backing,
+    )?;
+
+    let control_reused = ctrl_scans == 1;
+    let backing_rescanned = move_scans == 2 && move_last_gen > move_first_gen;
+    println!(
+        "AA4_GUARD_BACKING image_sha256={image_sha256} \
+         control_scans={ctrl_scans} control_first_gen={ctrl_first_gen} control_last_gen={ctrl_last_gen} \
+         backing_scans={move_scans} backing_first_gen={move_first_gen} backing_last_gen={move_last_gen} \
+         control_reused_approval={control_reused} backing_forced_rescan={backing_rescanned}"
+    );
+    if control_reused && backing_rescanned {
+        println!(
+            "AA4_GUARD_BACKING PASS: moving slot 0 to a distinct byte-identical backing forced a \
+             fresh scan (gen {move_first_gen} -> {move_last_gen}); content unchanged, approval not \
+             reused across the move"
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "backing-replacement NOT proven: control_reused={control_reused} (want 1 scan) \
+             backing_rescanned={backing_rescanned} (want 2 scans, newer gen)"
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn aa4_guard_backing(_opts: Aa4GuardNotifierOpts) -> Result<(), String> {
+    Err(
+        "`arm-spike aa4-guard-backing` issues KVM ioctls and needs /dev/kvm: it is Linux-only"
+            .into(),
+    )
+}
+
+/// AA-4 concurrency: a second vCPU's store to a page a first vCPU has frozen for a scan must be
+/// BLOCKED behind that pending scan. Self-verifying negative control: once the first vCPU's
+/// scan is APPROVED (page no longer frozen), the same store instead revokes execute (WRITE),
+/// not blocked.
+#[cfg(target_os = "linux")]
+fn aa4_guard_race(opts: Aa4GuardNotifierOpts) -> Result<(), String> {
+    use arm_harness::elf::Elf;
+    use arm_harness::sys::{Machine, ParamsPage, RaceExit, pin_to_core};
+
+    let (bytes, image_sha256) = verified_artifact(
+        &opts.image,
+        &opts.image_sha256,
+        "AA-4 reexec ELF",
+        arm_harness::linux_boot::MAX_IMAGE_BYTES,
+    )?;
+    let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", opts.image.display()))?;
+    let target = image
+        .symbol("aa4_reexec_target")
+        .map_err(|e| format!("resolve aa4_reexec_target: {e}"))?;
+    let writer = image
+        .symbol("aa4_reexec_writer")
+        .map_err(|e| format!("resolve aa4_reexec_writer: {e}"))?;
+    let writer_page = writer & !0xfff;
+    pin_to_core(opts.core).map_err(|e| format!("pin to core {}: {e}", opts.core))?;
+
+    // One scenario: freeze the target on vCPU 0, optionally approve it, then have the writer
+    // vCPU store to it. Returns the writer store's exit.
+    let run_scenario = |approve_target_first: bool| -> Result<RaceExit, String> {
+        let params = ParamsPage {
+            scale_index: 0,
+            seed: 0xAA04_5241_4345_0000,
+        };
+        let mut m = Machine::new_race_guarded(&image, &params)
+            .map_err(|e| format!("construct race (no-vGIC) guarded machine: {e}"))?;
+        m.set_watchdog_secs(opts.watchdog_secs);
+        m.race_arm_vcpu0(target)
+            .map_err(|e| format!("arm vCPU 0 at the target: {e}"))?;
+        m.race_create_writer(writer, target, 0xd280_0040)
+            .map_err(|e| {
+                format!("create the writer vCPU (KVM may refuse a 2nd vCPU on the guarded VM): {e}")
+            })?;
+
+        // vCPU 0 fault-freezes the target page for a scan.
+        let target_gen = match m.race_run_vcpu0().map_err(|e| format!("run vCPU 0: {e}"))? {
+            RaceExit::GuardExec { gpa, generation } if gpa == target => generation,
+            other => return Err(format!("vCPU 0 did not fault-freeze the target: {other:?}")),
+        };
+        if approve_target_first {
+            m.race_scan_and_approve(target, target_gen)
+                .map_err(|e| format!("approve the target scan: {e}"))?;
+        }
+        // The writer vCPU first faults on its own code page; approve it.
+        match m
+            .race_run_writer()
+            .map_err(|e| format!("run writer (code fault): {e}"))?
+        {
+            RaceExit::GuardExec { gpa, generation } if gpa == writer_page => m
+                .race_scan_and_approve(writer_page, generation)
+                .map_err(|e| format!("approve the writer code page: {e}"))?,
+            other => return Err(format!("writer did not fault its own code page: {other:?}")),
+        }
+        // The writer's store to the target: BLOCKED while frozen, WRITE-revoke once approved.
+        m.race_run_writer()
+            .map_err(|e| format!("run writer (store): {e}"))
+    };
+
+    let race = run_scenario(false)?;
+    let control = run_scenario(true)?;
+
+    let blocked_when_frozen = matches!(race, RaceExit::GuardBlocked { gpa, .. } if gpa == target);
+    let write_when_approved = matches!(control, RaceExit::GuardWrite { gpa, .. } if gpa == target);
+    println!(
+        "AA4_GUARD_RACE image_sha256={image_sha256} target={target:#x} writer={writer:#x} \
+         race={race:?} control={control:?} blocked_when_frozen={blocked_when_frozen} \
+         write_when_approved={write_when_approved}"
+    );
+    if blocked_when_frozen && write_when_approved {
+        println!(
+            "AA4_GUARD_RACE PASS: a writer vCPU's store to a page frozen for another vCPU's scan \
+             was BLOCKED; once that scan was approved the same store revoked execute (WRITE), not \
+             blocked"
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "two-vCPU race NOT proven: blocked_when_frozen={blocked_when_frozen} (want a BLOCKED \
+             store while frozen) write_when_approved={write_when_approved} (want a WRITE store once \
+             approved)"
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn aa4_guard_race(_opts: Aa4GuardNotifierOpts) -> Result<(), String> {
+    Err("`arm-spike aa4-guard-race` issues KVM ioctls and needs /dev/kvm: it is Linux-only".into())
+}
+
+/// AA-6(a): install a below-host synthetic ID-register model on a disposable vCPU and confirm
+/// every frozen value survives read-back (the guest-visible value). Writes an enforcement
+/// truth-table and fails closed unless every reducible register froze and the PMU is denied.
+#[cfg(target_os = "linux")]
+fn id_freeze(out: PathBuf) -> Result<(), String> {
+    use std::fmt::Write as _;
+
+    let proof = sys::id_freeze_proof().map_err(|e| format!("run the ID-freeze proof: {e}"))?;
+    if proof.rows.is_empty() {
+        return Err("no ID_AA64* register carried a reducible feature to freeze".to_string());
+    }
+    let all_enforced = proof.rows.iter().all(|r| {
+        let f = (r.frozen_value >> r.field_shift) & 0xF;
+        let h = (r.host_value >> r.field_shift) & 0xF;
+        r.enforced && r.read_back == r.frozen_value && f < h
+    });
+
+    // Machine-readable enforcement truth-table (stable JSON, sorted-order fields).
+    let mut json = String::new();
+    json.push_str("{\n  \"check\": \"aa6-id-register-freeze\",\n");
+    let _ = writeln!(
+        json,
+        "  \"pmu_denied_without_feature\": {},",
+        proof.pmu_denied_without_feature
+    );
+    let _ = writeln!(json, "  \"host_pmuver\": {},", proof.host_pmuver);
+    let _ = writeln!(json, "  \"all_enforced\": {},", all_enforced);
+    json.push_str("  \"rows\": [\n");
+    for (i, r) in proof.rows.iter().enumerate() {
+        let comma = if i + 1 < proof.rows.len() { "," } else { "" };
+        let _ = writeln!(
+            json,
+            "    {{\"name\": \"{}\", \"field_shift\": {}, \"host_value\": \"{:#018x}\", \
+             \"frozen_value\": \"{:#018x}\", \"read_back\": \"{:#018x}\", \"enforced\": {}}}{}",
+            r.name, r.field_shift, r.host_value, r.frozen_value, r.read_back, r.enforced, comma
+        );
+    }
+    json.push_str("  ]\n}\n");
+    std::fs::write(&out, &json).map_err(|e| format!("write {}: {e}", out.display()))?;
+
+    for r in &proof.rows {
+        println!(
+            "ID_FREEZE {} field_shift={} host={:#018x} frozen={:#018x} read_back={:#018x} enforced={}",
+            r.name, r.field_shift, r.host_value, r.frozen_value, r.read_back, r.enforced
+        );
+    }
+    println!(
+        "ID_FREEZE pmu_denied_without_feature={} host_pmuver={} rows={} all_enforced={} out={}",
+        proof.pmu_denied_without_feature,
+        proof.host_pmuver,
+        proof.rows.len(),
+        all_enforced,
+        out.display()
+    );
+    if all_enforced && proof.pmu_denied_without_feature {
+        Ok(())
+    } else {
+        Err(format!(
+            "ID-register freeze NOT fully enforced: all_enforced={} pmu_denied={} — the guest \
+             would see an unfrozen field or its own PMU",
+            all_enforced, proof.pmu_denied_without_feature
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn id_freeze(_out: PathBuf) -> Result<(), String> {
+    Err("`arm-spike id-freeze` issues KVM ioctls and needs /dev/kvm: it is Linux-only".into())
+}
+
+/// AA-6(b): prove the in-kernel vGIC's injection state round-trips through save/restore
+/// bit-identically, with a fresh-vGIC negative control.
+#[cfg(target_os = "linux")]
+fn vgic_roundtrip(out: PathBuf) -> Result<(), String> {
+    use std::fmt::Write as _;
+
+    let rt = sys::vgic_roundtrip_proof().map_err(|e| format!("run the vGIC round-trip: {e}"))?;
+
+    let mut json = String::new();
+    json.push_str("{\n  \"check\": \"aa6-vgic-save-restore-roundtrip\",\n");
+    let _ = writeln!(json, "  \"injected_intid\": {},", rt.injected_intid);
+    let _ = writeln!(
+        json,
+        "  \"negative_control_differs\": {},",
+        rt.negative_control_differs
+    );
+    let _ = writeln!(
+        json,
+        "  \"roundtrip_identical\": {},",
+        rt.roundtrip_identical
+    );
+    json.push_str("  \"registers\": [\n");
+    for (i, label) in rt.labels.iter().enumerate() {
+        let comma = if i + 1 < rt.labels.len() { "," } else { "" };
+        let _ = writeln!(
+            json,
+            "    {{\"reg\": \"{}\", \"saved\": \"{:#010x}\", \"fresh_before\": \"{:#010x}\", \
+             \"fresh_after\": \"{:#010x}\"}}{}",
+            label, rt.saved[i], rt.fresh_before[i], rt.fresh_after[i], comma
+        );
+    }
+    json.push_str("  ]\n}\n");
+    std::fs::write(&out, &json).map_err(|e| format!("write {}: {e}", out.display()))?;
+
+    println!(
+        "VGIC_ROUNDTRIP injected_intid={} negative_control_differs={} roundtrip_identical={} \
+         registers={} out={}",
+        rt.injected_intid,
+        rt.negative_control_differs,
+        rt.roundtrip_identical,
+        rt.labels.len(),
+        out.display()
+    );
+    if rt.roundtrip_identical && rt.negative_control_differs {
+        Ok(())
+    } else {
+        Err(format!(
+            "vGIC round-trip NOT proven: roundtrip_identical={} negative_control_differs={} — a \
+             non-identical restore or a vacuous match (fresh already equalled the save)",
+            rt.roundtrip_identical, rt.negative_control_differs
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn vgic_roundtrip(_out: PathBuf) -> Result<(), String> {
+    Err("`arm-spike vgic-roundtrip` issues KVM ioctls and needs /dev/kvm: it is Linux-only".into())
 }
 
 /// Read, hash, and parse the ELF for `payload` out of `dir`, and **verify it against
@@ -796,7 +1991,10 @@ fn execute(args: RunArgs) -> Result<(), String> {
                  cross-core-migration failure mode"
             ));
         }
-        Some(sys::MigrationChurner::start(sys::current_tid(), cores))
+        Some(
+            sys::MigrationChurner::start(sys::current_tid(), cores)
+                .map_err(|e| format!("start the migration churner: {e}"))?,
+        )
     } else {
         pin_to_core(args.core).map_err(|e| format!("pin to core {}: {e}", args.core))?;
         None
@@ -1290,6 +2488,14 @@ fn run() -> Result<(), String> {
                 watchdog_secs: opts.watchdog_secs,
             })
         }
+        Command::LinuxBoot(opts) => linux_boot(*opts),
+        Command::Aa4GuardReject(opts) => aa4_guard_reject(*opts),
+        Command::Aa4GuardWrite(opts) => aa4_guard_write(*opts),
+        Command::Aa4GuardNotifier(opts) => aa4_guard_notifier(*opts),
+        Command::Aa4GuardBacking(opts) => aa4_guard_backing(*opts),
+        Command::Aa4GuardRace(opts) => aa4_guard_race(*opts),
+        Command::IdFreeze { out } => id_freeze(out),
+        Command::VgicRoundtrip { out } => vgic_roundtrip(out),
     }
 }
 
@@ -1306,7 +2512,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
     use std::ffi::OsStr;
 
     #[test]
@@ -1324,5 +2530,66 @@ mod tests {
             [OsStr::new("12000")],
             "AA-2 must fail closed with a finite default; explicit --max-steps 0 is the opt-in"
         );
+    }
+
+    #[test]
+    fn aa4_guard_reject_cli_requires_a_pinned_artifact_and_core() {
+        let cli = Cli::try_parse_from([
+            "arm-spike",
+            "aa4-guard-reject",
+            "--image",
+            "planted-exclusive",
+            "--image-sha256",
+            "11aa",
+            "--core",
+            "7",
+        ])
+        .expect("the documented planted-proof command must parse");
+
+        let Command::Aa4GuardReject(opts) = cli.command else {
+            panic!("aa4-guard-reject must select its dedicated command");
+        };
+        assert_eq!(opts.image, PathBuf::from("planted-exclusive"));
+        assert_eq!(opts.image_sha256, "11aa");
+        assert_eq!(opts.core, 7);
+        assert_eq!(opts.watchdog_secs, arm_harness::run::DEFAULT_WATCHDOG_SECS);
+    }
+
+    #[test]
+    fn linux_boot_exposes_explicit_stage2_guard_opt_in() {
+        let command = Cli::command();
+        let linux_boot = command
+            .find_subcommand("linux-boot")
+            .expect("linux-boot subcommand must exist");
+        assert!(
+            linux_boot
+                .get_arguments()
+                .any(|arg| arg.get_id() == "stage2_exec_guard"),
+            "the guarded Linux smoke must remain an explicit CLI opt-in"
+        );
+    }
+
+    #[test]
+    fn aa4_guard_write_cli_is_hash_pinned_and_bounded() {
+        let cli = Cli::try_parse_from([
+            "arm-spike",
+            "aa4-guard-write",
+            "--image",
+            "aa4-self-modify",
+            "--image-sha256",
+            "22bb",
+            "--core",
+            "9",
+        ])
+        .expect("the documented write/rescan proof command must parse");
+
+        let Command::Aa4GuardWrite(opts) = cli.command else {
+            panic!("aa4-guard-write must select its dedicated command");
+        };
+        assert_eq!(opts.image, PathBuf::from("aa4-self-modify"));
+        assert_eq!(opts.image_sha256, "22bb");
+        assert_eq!(opts.core, 9);
+        assert_eq!(opts.max_exits, 1_000_000);
+        assert_eq!(opts.watchdog_secs, arm_harness::run::DEFAULT_WATCHDOG_SECS);
     }
 }

@@ -1,0 +1,123 @@
+arm64: add a dedicated LSE-only Harmony guest contract
+
+The deterministic ARM guest cannot contain reservation-monitor atomics:
+single-stepping clears the monitor and ordinary execution permits spurious
+store-exclusive failure, so either case changes the retired-branch clock.
+
+Add an owned-guest config that emits the LSE implementation directly instead
+of retaining the runtime LL/SC alternative.  Replace cmpwait's monitor-based
+WFE hint with ordinary polling, and use LSE plus ordinary polling for the
+early linear-map rendezvous.  The image build separately rejects every
+remaining LL/SC opcode before publication.
+
+--- a/arch/arm64/Kconfig
++++ b/arch/arm64/Kconfig
+@@ -1887,6 +1887,14 @@
+ config ARM64_LSE_ATOMICS
+ 	bool
+ 	default ARM64_USE_LSE_ATOMICS
++
++config HARMONY_ARM_LSE_ONLY
++	bool "Harmony LSE-only guest contract"
++	depends on ARM64_LSE_ATOMICS
++	default n
++	help
++	  Remove the LL/SC alternatives from the dedicated Harmony guest and
++	  emit only LSE atomics. This kernel requires FEAT_LSE at boot.
+ 
+ config ARM64_USE_LSE_ATOMICS
+ 	bool "Atomic instructions"
+--- a/arch/arm64/include/asm/lse.h
++++ b/arch/arm64/include/asm/lse.h
+@@ -4,10 +4,19 @@
+ 
+ #include <asm/atomic_ll_sc.h>
+ 
+-#ifdef CONFIG_ARM64_LSE_ATOMICS
++#if defined(CONFIG_HARMONY_ARM_LSE_ONLY)
+ 
+ #define __LSE_PREAMBLE	".arch_extension lse\n"
+ 
++#include <asm/atomic_lse.h>
++
++#define __lse_ll_sc_body(op, ...)	__lse_##op(__VA_ARGS__)
++#define ARM64_LSE_ATOMIC_INSN(llsc, lse)	__LSE_PREAMBLE lse
++
++#elif defined(CONFIG_ARM64_LSE_ATOMICS)
++
++#define __LSE_PREAMBLE	".arch_extension lse\n"
++
+ #include <linux/compiler_types.h>
+ #include <linux/export.h>
+ #include <linux/stringify.h>
+--- a/arch/arm64/include/asm/cmpxchg.h
++++ b/arch/arm64/include/asm/cmpxchg.h
+@@ -208,9 +208,26 @@
+ 	__cmpxchg128((ptr), (o), (n));						\
+ })
+ 
++#ifdef CONFIG_HARMONY_ARM_LSE_ONLY
+ #define __CMPWAIT_CASE(w, sfx, sz)					\
+ static inline void __cmpwait_case_##sz(volatile void *ptr,		\
+ 				       unsigned long val)		\
++{								\
++	unsigned long tmp;					\
++								\
++	asm volatile(						\
++	"	ldr" #sfx "\t%" #w "[tmp], %[v]\n"			\
++	"	eor	%" #w "[tmp], %" #w "[tmp], %" #w "[val]\n"	\
++	"	cbnz	%" #w "[tmp], 1f\n"			\
++	"	yield\n"						\
++	"1:"							\
++	: [tmp] "=&r" (tmp), [v] "+Q" (*(u##sz *)ptr)		\
++	: [val] "r" (val));					\
++}
++#else
++#define __CMPWAIT_CASE(w, sfx, sz)					\
++static inline void __cmpwait_case_##sz(volatile void *ptr,		\
++				       unsigned long val)		\
+ {									\
+ 	unsigned long tmp;						\
+ 									\
+@@ -226,6 +243,8 @@
+ 	: [val] "r" (val));						\
+ }
+ 
++#endif
++
+ __CMPWAIT_CASE(w, b, 8);
+ __CMPWAIT_CASE(w, h, 16);
+ __CMPWAIT_CASE(w,  , 32);
+--- a/arch/arm64/mm/proc.S
++++ b/arch/arm64/mm/proc.S
+@@ -440,16 +440,30 @@
+ 
+ scondary_cpu_wait:
+ 	/* Increment the flag to let the boot CPU we're ready */
++#ifdef CONFIG_HARMONY_ARM_LSE_ONLY
++	.arch_extension lse
++	mov	w16, #1
++	ldaddal	w16, w17, [flag_ptr]
++#else
+ 1:	ldxr	w16, [flag_ptr]
+ 	add	w16, w16, #1
+ 	stxr	w17, w16, [flag_ptr]
+ 	cbnz	w17, 1b
++#endif
+ 
+ 	/* Wait for the boot CPU to finish messing around with swapper */
++#ifdef CONFIG_HARMONY_ARM_LSE_ONLY
++1:	ldar	w16, [flag_ptr]
++	cbz	w16, 2f
++	yield
++	b	1b
++2:
++#else
+ 	sevl
+ 1:	wfe
+ 	ldxr	w16, [flag_ptr]
+ 	cbnz	w16, 1b
++#endif
+ 
+ 	/* All done, act like nothing happened */
+ 	msr	ttbr1_el1, swapper_ttb

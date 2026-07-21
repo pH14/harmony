@@ -14,17 +14,32 @@ identical arm-early `Preempt` + single-step injection schedule.
   `lse-atomics` diverges in **0 of 73,150** tuples (count and state). `payload_status = 0`
   throughout — correct computation, non-deterministic branch count.
 - **`exclusive-scan.txt`** — `host/aa4-exclusive-scan.py`, the level-2 executable-page
-  opcode scan. Raw-opcode mask `(insn & 0x3f800000) == 0x08000000` (monitor exclusives;
-  excludes LDAR/STLR and LSE `CAS`), **self-validated against `objdump`** on every instruction.
+  opcode scan. It walks raw ELF executable-section words and decodes the broad class
+  `(insn & 0x3f800000) == 0x08000000` with the o1/size discriminator (monitor exclusives;
+  excludes LDAR/STLR and LSE `CAS`/`CASP`), **self-validated against `objdump`** wherever the
+  disassembler renders an instruction. The independent byte walk also catches mapping-symbol
+  data that `objdump -d` deliberately does not decode.
   Flags the two exclusives in `llsc-atomics` (`0x40080880 ldxr` / `0x40080888 stxr` — the same
   PCs as the AA-2 single-step livelock) and passes every other payload, `lse-atomics` included,
   CLEAN; exits non-zero to reject.
 
-Level 1 (LSE-only build) is demonstrated by `lse-atomics` itself; level 3 (stage-2 execute-deny
-+ trap/emulate backstop against a planted exclusive) has its mechanism characterized in the
-disposition, with the live planted-exclusive proof homed to AA-5 (it needs the running guest).
+Level 1 (LSE-only build) is demonstrated by `lse-atomics` itself and is now applied to the
+AA-5 owned kernel/init image, whose static artifact gate also uses this scanner. The draft
+Harmony arm64 KVM execute-guard extension now applies and compiles against pinned 6.18.35;
+stock KVM still resolves execute faults internally and exposes no per-GFN XN UAPI. Its userspace
+half is wired but unrun: `linux-boot --stage2-exec-guard` mediates clean pages and refuses vacuous
+statistics, while `aa4-guard-reject` requires a hash-pinned planted exclusive to be rejected
+before its PC advances. `aa4-guard-write` pins a dedicated self-modifier and requires the original
+full-page hash both at first scan and the synchronous pre-store exit, then the exact expected
+modified hash at a fresh later scan generation. It also replays the first approved token while
+that later scan is frozen and requires `EINVAL` before approving the exact current token. The
+fixture boots twice under TCG, which proves
+liveness/protocol only. Level 2's live W^X rescan-on-exec proof and level 3 therefore remain
+blocked on booting that patch and retaining the planted rejection/write/race/invalidation evidence,
+not on merely compiling or emulating either half.
 
-**Recommended ruling (Paul ratifies at PR time):** LL/SC mechanically unreachable in the
-shipped guest via level 1 (LSE-only) + level 2 (scan-verified), level 3 the runtime backstop;
-the one cooperative residual — runtime-generated exclusives (JIT / self-modifying code) — is
-bounded by W^X rescan-on-exec + the stage-2 backstop.
+**Current ruling:** cooperative residual risk on stock KVM. The owned guest disables known
+runtime code-generation surfaces and its static image is clean, but a JIT/self-modifying page is
+not mechanically intercepted. The stronger mechanically-unreachable ruling is conditional on a
+default-XN, pre-execute scan, write-revokes-execute KVM patch plus a planted-exclusive proof;
+the kernel and VMM paths exist, but the live proof does not yet.

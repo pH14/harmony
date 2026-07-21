@@ -32,7 +32,7 @@ cd "$(dirname "$0")"
 CPU=neoverse-n1
 BIN=target/aarch64-unknown-none/release
 PAYLOADS="ident straight-line branch-dense svc exception-abort wfi-idle \
-llsc-atomics lse-atomics clock-page"
+llsc-atomics lse-atomics clock-page aa4-self-modify"
 
 if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
     echo "FAIL: qemu-system-aarch64 not found." >&2

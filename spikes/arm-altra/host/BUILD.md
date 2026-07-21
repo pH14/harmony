@@ -1,4 +1,4 @@
-# BUILD.md — apply → build for the arm64 KVM_EXIT_PREEMPT draft patch
+# BUILD.md — apply → build for the Harmony arm64 KVM patch series
 
 **Status: DRAFT, untested on silicon.** This recipe proves *applies + compiles*, nothing more.
 It has never produced a booted host kernel. See `patches/README.md` for the mechanism and the
@@ -37,13 +37,15 @@ git tag v6.18.35-pristine
 rooted at the pristine extracted tarball, tagged `v6.18.35-pristine`, so the patch can be
 produced and re-applied with `git am`/`git format-patch` against a real commit graph.)
 
-## 2. Apply the patch
+## 2. Apply the patch series
 
 ```sh
-git am /path/to/spikes/arm-altra/host/patches/0001-KVM-arm64-add-KVM_EXIT_PREEMPT-in-kernel-force-exit-.patch
+git am \
+  /path/to/spikes/arm-altra/host/patches/0001-KVM-arm64-add-KVM_EXIT_PREEMPT-in-kernel-force-exit-.patch \
+  /path/to/spikes/arm-altra/host/patches/0002-KVM-arm64-add-userspace-stage-2-execute-guard.patch
 ```
 
-`git am` applies clean to pristine `v6.18.35-pristine` — this is acceptance gate #1
+Both patches apply cleanly, in order, to pristine `v6.18.35-pristine` — this is acceptance gate #1
 (reproduced by `verify.sh`). If it does not apply cleanly against a *different* checkout of the
 same tag, that's a real problem worth reporting, not something to route around with `--3way` or
 `-C1` fuzz — the patch is generated directly from this exact tree.
@@ -89,16 +91,16 @@ make ARCH=arm64 -j"$(nproc)" arch/arm64/kvm/
 Recorded build (this container, 10 vCPUs, gcc 14.2.0 Debian trixie, native aarch64):
 
 ```
-arch/arm64/kvm/built-in.a   (27 objects on the pre-existing baseline; the same count plus the
-                              4 patched files rebuilding — arm.o, handle_exit.o,
-                              plus the .h-dependent recompiles — every time the patch is applied)
+arch/arm64/kvm/built-in.a   (27 objects on the pre-existing baseline; patched files rebuilding,
+                              including arm.o, handle_exit.o, and mmu.o, plus header-dependent
+                              recompiles)
 ```
 
 Clean: no new warnings, no errors, verified by grepping the full build log for
 `warning:`/`error:` and finding nothing beyond the expected zero. This is gate #2, reproduced by
 `verify.sh`, which also asserts (by disassembling the built `.o` files, not by reading source)
-that the patched exit path is actually present in the compiled objects — see `verify.sh`'s
-`assert_compiled_in` step and the specific instruction sequences it checks for.
+that both patched paths are actually present in the compiled objects: the AA-3 force-exit and
+the AA-4 execute-guard capability/ioctl/exit plus its XArray, lock, unmap, and invalidation calls.
 
 ## 5. Arrival-day fact: arm64 KVM is built-in, not a module
 
@@ -132,7 +134,7 @@ see the top-level report for whether it completed within budget and its result.
 
 ## What proves the gate
 
-1. `git am` exits 0 against a fresh `v6.18.35-pristine` checkout.
+1. `git am` of both ordered patches exits 0 against a fresh `v6.18.35-pristine` checkout.
 2. `make ARCH=arm64 -j$(nproc) arch/arm64/kvm/` exits 0 with an empty
    `warning:`/`error:` grep over its full log.
 3. The compiled `.o` files contain the patched code paths (checked by disassembly, not by

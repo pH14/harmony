@@ -1,0 +1,4 @@
+FAIL weights-present: the manifest carries no measured weights (`weights: null`): refusing to check counts rather than substituting a default (task 109: count offsets are spike deliverables, never defaults)
+FAIL count-exactness: not checked: counts cannot be recomputed without measured weights
+NOT-REQUESTED replay-identity: stage Aa2 carries 78529 stepped record(s) but not one is repeated (--reps 1): no stepped state was replayed, so replay identity is untested — and an unrelated repeated group does not stand in for a stepped one. Submit repeated inputs
+FAIL debug-evidence: 1 AA-2 step problem(s): the AA-2 step matrix is incomplete: no step covers [Wfi, Injection] — the stage requires stepping every transition class (sequential, taken branch, not-taken branch, exception entry, ERET, WFI, injection, LL/SC exclusive), not merely a nonempty subset

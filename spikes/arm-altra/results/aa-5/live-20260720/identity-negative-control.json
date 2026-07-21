@@ -1,0 +1,73 @@
+{
+ "check": "aa5-same-seed-identity",
+ "expect_mismatch": true,
+ "fields": {
+  "clockevent_acks": {
+   "a": "1",
+   "b": "1",
+   "identical": true
+  },
+  "clockevent_assertions": {
+   "a": "1",
+   "b": "1",
+   "identical": true
+  },
+  "clockevent_max_lateness_ticks": {
+   "a": "0",
+   "b": "0",
+   "identical": true
+  },
+  "console_bytes": {
+   "a": "5321",
+   "b": "5321",
+   "identical": true
+  },
+  "console_bytes_bitwise": {
+   "a_sha256": "bae2f8513fe3bc41300148f59fde6051efaad5f8aaef690e43174898a6e2d4e7",
+   "b_sha256": "bae2f8513fe3bc41300148f59fde6051efaad5f8aaef690e43174898a6e2d4e7",
+   "identical": true
+  },
+  "console_sha256": {
+   "a": "bae2f8513fe3bc41300148f59fde6051efaad5f8aaef690e43174898a6e2d4e7",
+   "b": "bae2f8513fe3bc41300148f59fde6051efaad5f8aaef690e43174898a6e2d4e7",
+   "identical": true
+  },
+  "exits": {
+   "a": "21252",
+   "b": "25215",
+   "identical": false
+  },
+  "guest_clock_hz": {
+   "a": "25000000",
+   "b": "25000000",
+   "identical": true
+  },
+  "pvclock_gpa": {
+   "a": "0x40001000",
+   "b": "0x40001000",
+   "identical": true
+  },
+  "pvclock_last_work": {
+   "a": "30000000",
+   "b": "20000000",
+   "identical": false
+  },
+  "pvclock_max_gap_work": {
+   "a": "10000000",
+   "b": "5000000",
+   "identical": false
+  },
+  "pvclock_publications": {
+   "a": "3",
+   "b": "4",
+   "identical": false
+  },
+  "state_digest": {
+   "a": "sha256:adffedde78cc7b45faaf343524ff48fb01a955f0e460c523420ace4354b9f090",
+   "b": "sha256:4e1f3011f44c478b5cdd576cc83ea48b79d9ecea8b3fe377dce67da26b65eb66",
+   "identical": false
+  }
+ },
+ "identical": false,
+ "result": "PASS(negative-control)"
+}

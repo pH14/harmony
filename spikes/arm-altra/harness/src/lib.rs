@@ -36,6 +36,8 @@ pub mod console;
 pub mod el0;
 pub mod elf;
 pub mod evidence;
+pub mod linux_boot;
+pub mod linux_console;
 pub mod plan;
 pub mod run;
 pub mod scan;

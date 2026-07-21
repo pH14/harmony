@@ -1,0 +1,73 @@
+{
+ "check": "aa5-same-seed-identity",
+ "expect_mismatch": false,
+ "fields": {
+  "clockevent_acks": {
+   "a": "1",
+   "b": "1",
+   "identical": true
+  },
+  "clockevent_assertions": {
+   "a": "1",
+   "b": "1",
+   "identical": true
+  },
+  "clockevent_max_lateness_ticks": {
+   "a": "0",
+   "b": "0",
+   "identical": true
+  },
+  "console_bytes": {
+   "a": "5345",
+   "b": "5345",
+   "identical": true
+  },
+  "console_bytes_bitwise": {
+   "a_sha256": "badeaeb94c2ef317ee781bd6673887a3e049b3ce6d124045da39bdd7a7ea7a90",
+   "b_sha256": "badeaeb94c2ef317ee781bd6673887a3e049b3ce6d124045da39bdd7a7ea7a90",
+   "identical": true
+  },
+  "console_sha256": {
+   "a": "badeaeb94c2ef317ee781bd6673887a3e049b3ce6d124045da39bdd7a7ea7a90",
+   "b": "badeaeb94c2ef317ee781bd6673887a3e049b3ce6d124045da39bdd7a7ea7a90",
+   "identical": true
+  },
+  "exits": {
+   "a": "21320",
+   "b": "21338",
+   "identical": false
+  },
+  "guest_clock_hz": {
+   "a": "25000000",
+   "b": "25000000",
+   "identical": true
+  },
+  "pvclock_gpa": {
+   "a": "0x40001000",
+   "b": "0x40001000",
+   "identical": true
+  },
+  "pvclock_last_work": {
+   "a": "30000000",
+   "b": "30000000",
+   "identical": true
+  },
+  "pvclock_max_gap_work": {
+   "a": "10000000",
+   "b": "10000000",
+   "identical": true
+  },
+  "pvclock_publications": {
+   "a": "3",
+   "b": "3",
+   "identical": true
+  },
+  "state_digest": {
+   "a": "sha256:04a7b0124f5bda589af4147b42363747f3ec79d2217e409862d571da88fd5ab2",
+   "b": "sha256:bc538ada6ec7a50d494fb03bf75860ecca04852969c9e5ce7d0e0af3c6e9b1ab",
+   "identical": false
+  }
+ },
+ "identical": false,
+ "result": "FAIL"
+}

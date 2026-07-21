@@ -2,7 +2,7 @@
 # linux/amd64 container (docs/BUILDING.md). The heavy lifting lives in the
 # *.sh scripts next to this Makefile.
 
-.PHONY: kernel initramfs image exec-image postgres-image campaign-image docker-image k3s-image game-image test test-linux clean-artifacts
+.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image exec-image postgres-image campaign-image docker-image k3s-image game-image test test-linux clean-artifacts
 
 kernel:
 	./build-kernel.sh
@@ -11,6 +11,16 @@ initramfs:
 	./build-initramfs.sh
 
 image: kernel initramfs
+
+# AA-5(c) artifacts build natively on the pinned Linux/aarch64 Altra box and
+# land under harmony-linux/build/arm64/, isolated from the established x86 image.
+arm64-kernel:
+	./build-arm64-kernel.sh
+
+arm64-initramfs:
+	./build-arm64-initramfs.sh
+
+arm64-image: arm64-kernel arm64-initramfs
 
 # Task 81 exec-capable initramfs: static busybox + an interactive root shell on
 # ttyS0 (`exec-init.sh`), so the `exec` improvisation channel has a shell to inject

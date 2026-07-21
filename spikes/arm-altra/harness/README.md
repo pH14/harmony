@@ -47,7 +47,19 @@ under test (`docs/ARM-ALTRA.md` §Evidence integrity #4).
   mandatory row is absent *or unprobed*** — a disposition may never rest on a probe
   that could not run), and `run` (the measurement loop: create the VM, publish the
   params page, run each planned sample, write `run-set.json` + `records.jsonl`).
-  Linux/box only for the latter two.
+  `linux-boot --stage2-exec-guard` opts the owned Linux VM into AA-4's default-XN
+  mediation and requires nonzero execute/scan/approval counts. `aa4-guard-reject`
+  hash-verifies a planted-exclusive ELF and succeeds only after an exact-generation
+  reject leaves its PC in the rejected page. `aa4-guard-write` pins the dedicated
+  self-modifying ELF and requires the original page at the synchronous pre-store exit,
+  then replays the first approved token while the exact expected replacement page is
+  frozen at a fresh scan generation. The old token must return `EINVAL` before the
+  current token is approved. Linux/box only for all syscall paths.
+
+The AA-4 commands are proof apparatus, not evidence by their existence. They have not run on the
+patched N1. TCG proves only that the self-modifier completes and its protocol is stable. Live
+planted rejection, write-before-store/rescan, stale-generation, notifier replacement, and
+two-vCPU scan/write-race tests remain required.
 
 ## Build / test
 

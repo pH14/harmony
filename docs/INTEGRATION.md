@@ -160,6 +160,68 @@ its module doc):
 - An unregistered service id is `Status::UnknownService`; an opcode a service does not implement is
   `Status::UnknownOpcode` — never a silent drop.
 
+### 1.3 ARM pvclock + clockevent MMIO (v1)
+
+ARM has no port-I/O instruction, and the reachable N1 has no trappable generic-counter read to
+serve as x86's post-doorbell registration handshake. The owned AA-5 board therefore carries the
+same one-shot pvclock-registration semantics over a dedicated MMIO page:
+
+- `ARM_PVCLOCK_REGISTER_GPA = 0x0B00_0000`, size `0x1000`. This is device MMIO, outside guest
+  RAM and clear of the GIC (`0x0800_0000`/`0x080A_0000`) and PL011 (`0x0900_0000`) ranges.
+- Offset `0x000`, 8-byte little-endian **write only**: the guest-selected pvclock-page GPA. The
+  host validates 4 KiB alignment and complete containment in ordinary guest RAM before recording
+  it. A rejected first GPA does not consume the one-shot. After one valid write, every later write
+  is a guest protocol fault even if it repeats the same GPA; the target is pinned for the VM's
+  life.
+- Offset `0x008`, 4-byte little-endian **read only**: zero before a valid registration and
+  `HARMONY_PVCLOCK_ABI` (currently 1) after it.
+- Offset `0x010`, 8-byte little-endian **write only**: replace the pending clockevent deadline
+  with this absolute value in the pvclock page's `guest_clock` tick domain. A write while PPI 20
+  is asserted is a guest protocol fault. A deadline may arrive before page registration, but it
+  cannot be evaluated or delivered until an exact landing has published a valid page.
+- Offset `0x018`, 4-byte little-endian **write only**: clockevent control. Value 1 (`DISARM`)
+  clears the pending deadline and drives PPI 20 low if it is asserted. Value 2 (`ACK`) is valid
+  only while PPI 20 is asserted; it drives the line low and consumes that assertion before the
+  guest's generic event handler rearms. Every other value is a guest protocol fault.
+- Every other width, offset, or direction is a guest protocol fault. All arithmetic over the
+  KVM-reported address and width is checked before a slice or narrowing conversion.
+
+The registration write is a natural `KVM_EXIT_MMIO`, so its live PMU count is skid-tainted and
+MUST NOT stamp the page or become a V-time anchor. Before first entry the host starts the usual
+exact-work cadence (`Δ`, `2Δ`, …) but has no page target. A valid write records the GPA as pending;
+the next arm-early + canonical-single-step landing stamps that GPA in canonical ABI form and
+activates later periodic refreshes. The guest waits on the still-zero page until that first exact
+publication appears. Thus registration-to-first-stamp latency is bounded by one cadence interval
+without importing a natural-exit count. Registration MMIO encountered during an exact single-step
+walk is serviced inline, but publication still waits for that walk's canonical landing.
+The current owned guest polls for at most `2^28` loop iterations, and its harness admits
+`1 <= Δ <= 100_000_000` retired branches; the strict host ceiling leaves ample deterministic
+instruction headroom inside the guest bound. A larger operator-supplied cadence is rejected before
+first entry rather than risking a guest panic before the first stamp.
+
+Deadline and control writes are also natural MMIO exits and MUST NOT stamp time. Immediately
+after each exact page publication, the host compares the published `guest_clock` with the pending
+absolute deadline. If due, it clears the deadline and asserts dedicated level-triggered PPI 20;
+the line stays high until `ACK` or `DISARM`. The guest ACKs before invoking the generic event
+handler, so deassertion completes before rearm and interrupt return. KVM's architected virtual
+timer owns PPI 27, so this transport instead uses vCPU0/PPI20 (`KVM_IRQ_LINE` encoding
+`0x0200_0014`) and fails closed unless `KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO` confirms the external
+input level changed after both assertion and deassertion. The owned DT places PPI 20 in the
+architected-timer virtual-interrupt slot, keeps `CNTV_CTL` disabled, requires `nohlt` polling, and
+the shipped-image gate rejects any `CNTV/CNTP_CVAL/TVAL` program. Delivery lateness is therefore
+deterministically bounded by one exact-publication cadence, never by a natural-exit count.
+
+This is an ARM transport specialization of task 110's guest-registered one-shot GPA, not a second
+page ABI: validation, pinning, page layout, flags, and restore obligations are unchanged. The
+owned AA-5 guest currently chooses `0x4000_1000`; that address is guest policy carried by the write,
+not a host stamping constant. In the pre-silicon harness the accepted GPA, pending clockevent
+deadline, external line level, and assertion/ACK counters are owned by `Machine` and included in
+both its full-state and registers-only replay digests. The spike exposes no snapshot/restore entry
+point. Any future one must serialize these fields, revalidate the GPA against the restored RAM
+layout before first entry, restore the external line consistently with the saved level, and
+preserve the consumed one-shot; clearing or replacing future-affecting state on restore is
+inadmissible.
+
 ## 2. Run-loop ownership
 
 `vmm-core` owns the `KVM_RUN` loop. The vtime `InjectionPlanner` was specced as the driver

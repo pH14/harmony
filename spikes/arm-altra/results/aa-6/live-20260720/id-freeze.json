@@ -1,0 +1,16 @@
+{
+  "check": "aa6-id-register-freeze",
+  "pmu_denied_without_feature": true,
+  "host_pmuver": 4,
+  "all_enforced": true,
+  "rows": [
+    {"name": "ID_AA64PFR0_EL1", "field_shift": 24, "host_value": "0x1100000011111112", "frozen_value": "0x1100000010111112", "read_back": "0x1100000010111112", "enforced": true},
+    {"name": "ID_AA64PFR1_EL1", "field_shift": 4, "host_value": "0x0000000000000020", "frozen_value": "0x0000000000000010", "read_back": "0x0000000000000010", "enforced": true},
+    {"name": "ID_AA64ISAR0_EL1", "field_shift": 4, "host_value": "0x0000100010211120", "frozen_value": "0x0000100010211110", "read_back": "0x0000100010211110", "enforced": true},
+    {"name": "ID_AA64ISAR1_EL1", "field_shift": 0, "host_value": "0x0000000000100001", "frozen_value": "0x0000000000100000", "read_back": "0x0000000000100000", "enforced": true},
+    {"name": "ID_AA64MMFR0_EL1", "field_shift": 0, "host_value": "0x0000000000101125", "frozen_value": "0x0000000000101124", "read_back": "0x0000000000101124", "enforced": true},
+    {"name": "ID_AA64MMFR1_EL1", "field_shift": 0, "host_value": "0x0000000010212122", "frozen_value": "0x0000000010212121", "read_back": "0x0000000010212121", "enforced": true},
+    {"name": "ID_AA64MMFR2_EL1", "field_shift": 0, "host_value": "0x0100000000000011", "frozen_value": "0x0100000000000010", "read_back": "0x0100000000000010", "enforced": true},
+    {"name": "ID_AA64DFR0_EL1", "field_shift": 0, "host_value": "0x0000000010305008", "frozen_value": "0x0000000010305007", "read_back": "0x0000000010305007", "enforced": true}
+  ]
+}

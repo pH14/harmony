@@ -1,0 +1,15 @@
+{
+  "soc": "Ampere(R) Altra(R) Processor (HPE ProLiant RL300 Gen11)",
+  "firmware": {
+    "bios_release_date": "05/23/2024",
+    "bios_version": "1.70"
+  },
+  "topology": {
+    "housekeeping_cores": [0, 1, 2, 3],
+    "measurement_cores": [60, 61, 62, 63, 64, 65, 66, 67, 68, 69],
+    "guest_cores": [70, 71, 72, 73, 74, 75, 76, 77, 78, 79],
+    "governor": "performance"
+  },
+  "pmuver_expected": "0x4",
+  "kvm_mode_expected": "vhe"
+}

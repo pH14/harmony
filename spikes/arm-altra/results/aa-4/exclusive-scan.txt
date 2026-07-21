@@ -1,6 +1,8 @@
 AA-4(c) level-2 exclusive-opcode scan (host/aa4-exclusive-scan.py)
-Mask (insn & 0x3f800000)==0x08000000 = LL/SC monitor exclusives; excludes LDAR/STLR + CAS.
-Self-validating: raw-opcode mask must agree with objdump disassembly on every instruction.
+Historical N1 payload capture; result set unchanged by the later hm-9r1 scanner hardening.
+Decoder: broad class (insn & 0x3f800000)==0x08000000 plus o1/size discriminator;
+excludes LDAR/STLR and LSE CAS/CASP. Current scanner walks ELF executable-section bytes
+independently and cross-checks the decoder wherever objdump renders an instruction.
 
 [CLEAN]  ident: no LL/SC exclusive instructions (mask self-check passed)
 [CLEAN]  straight-line: no LL/SC exclusive instructions (mask self-check passed)

@@ -1,0 +1,9 @@
+ID_FREEZE ID_AA64PFR0_EL1 field_shift=24 host=0x1100000011111112 frozen=0x1100000010111112 read_back=0x1100000010111112 enforced=true
+ID_FREEZE ID_AA64PFR1_EL1 field_shift=4 host=0x0000000000000020 frozen=0x0000000000000010 read_back=0x0000000000000010 enforced=true
+ID_FREEZE ID_AA64ISAR0_EL1 field_shift=4 host=0x0000100010211120 frozen=0x0000100010211110 read_back=0x0000100010211110 enforced=true
+ID_FREEZE ID_AA64ISAR1_EL1 field_shift=0 host=0x0000000000100001 frozen=0x0000000000100000 read_back=0x0000000000100000 enforced=true
+ID_FREEZE ID_AA64MMFR0_EL1 field_shift=0 host=0x0000000000101125 frozen=0x0000000000101124 read_back=0x0000000000101124 enforced=true
+ID_FREEZE ID_AA64MMFR1_EL1 field_shift=0 host=0x0000000010212122 frozen=0x0000000010212121 read_back=0x0000000010212121 enforced=true
+ID_FREEZE ID_AA64MMFR2_EL1 field_shift=0 host=0x0100000000000011 frozen=0x0100000000000010 read_back=0x0100000000000010 enforced=true
+ID_FREEZE ID_AA64DFR0_EL1 field_shift=0 host=0x0000000010305008 frozen=0x0000000010305007 read_back=0x0000000010305007 enforced=true
+ID_FREEZE pmu_denied_without_feature=true host_pmuver=4 rows=8 all_enforced=true out=/home/ubuntu/harmony/spikes/arm-altra/results/aa-6/live-20260720/id-freeze.json

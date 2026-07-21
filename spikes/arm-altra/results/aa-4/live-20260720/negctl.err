@@ -1,0 +1,1 @@
+FAIL: guarded planted ELF produced caller-visible Mmio { addr: 150994992, data: [0, 0, 0, 0], is_write: true } instead of rejection

@@ -13,10 +13,11 @@ The four directories + READMEs the task specifies, all under `spikes/arm-altra/`
   entry/return, SVC, WFI) are unknowns with no `Default`, solved from an
   over-determined measurement set. 17 unit tests + 2 TCG-observed accumulator pins.
 - **`payloads/`** — the minimal aarch64 bare-metal runtime (boot shim, MMU, GICv3,
-  PL011, params/pvclock pages, semihosting exit) and nine oracle payloads with
-  hand-written counted bodies. `smoke.sh` boots each twice under
-  `qemu-system-aarch64` (TCG), verifies windows against the model, diffs normalized
-  console vs `golden/`, and propagates every RC.
+  PL011, params/pvclock pages, semihosting exit), nine oracle payloads with
+  hand-written counted bodies, and the AA-4 page-aligned self-modification fixture.
+  `smoke.sh` boots all ten twice under `qemu-system-aarch64` (TCG);
+  it verifies windows against the model, diffs normalized console vs `golden/`, and
+  propagates every RC.
 - **`harness/`** — the KVM harness: the ioctl-level single-vCPU machine
   (`KVM_CREATE_VM` → memory slot → `KVM_CREATE_VCPU` → `KVM_RUN`), the measurement
   loop over it, the aarch64 opcode scanner (branch / exclusive / counter-read), a
@@ -41,8 +42,8 @@ The four directories + READMEs the task specifies, all under `spikes/arm-altra/`
 | Gate | Command | Result |
 |---|---|---|
 | oracle model | `cd oracle-model && cargo test --features std` | 17 + 2 pass |
-| payloads build | `cd payloads && cargo build --release` | 9 payloads link (aarch64-unknown-none) |
-| TCG smoke | `cd payloads && ./smoke.sh` | all 9 boot ×2, golden-match, RC-propagated (verified: tampered golden ⇒ nonzero) |
+| payloads build | `cd payloads && cargo build --release` | 9 oracle payloads + 1 AA-4 proof fixture link (aarch64-unknown-none) |
+| TCG smoke | `cd payloads && ./smoke.sh` | all 10 boot ×2, golden-match, RC-propagated (verified: tampered golden ⇒ nonzero) |
 | window verify | `arm-scan windows …` | 8 windows match the model |
 | harness logic | `cd harness && cargo test` | 63 + manifest test pass |
 | harness cross-build | `cargo check --target aarch64-unknown-linux-gnu --all-targets` | the syscall seam compiles for the box |
@@ -1464,3 +1465,103 @@ mechanism is presumed sound, but certification remains pending re-verification.
   Checker/comparator output self-declares the ARM clock binding: raw `0x21` counts every
   architecturally executed branch instruction, taken or not (AA1-F1). This is ARM-only; x86's
   retired-conditional-branch clock is unchanged.
+
+## AA-5(c) exact-work pvclock executor (hm-9r1, 2026-07-18)
+
+The Linux bring-up command now leaves the page unstamped until the owned guest publishes its
+selected GPA, then advances ABI v1 only from exact retired-branch anchors:
+
+- `linux-boot` requires the box-measured skid margin and the patched Preempt capability, reads
+  the guest's actual `CNTFRQ_EL0`, and requires the guest-only counter's pre-entry value to be
+  zero. The guest writes its selected page GPA to `INTEGRATION` §1.3's ARM registration MMIO;
+  the host checks page alignment and complete RAM containment before consuming the one-shot.
+  A rejected GPA leaves registration available, while every second valid write is a guest fault,
+  including a repeat of the same GPA. The read-only status register reports ABI 1 only after the
+  host has pinned the target. The pin lives in `Machine`, survives run-loop re-entry, and is bound
+  into both full and registers-only replay digests under a reserved, collision-checked device-state
+  id. This spike has no restore surface; a future restore must serialize, revalidate, and retain the
+  consumed one-shot rather than silently reopening registration.
+- AA-3's arm-early/advisory/single-step logic is factored into one bounded primitive shared by
+  the measurement path and Linux. Natural exits never publish their skid-tainted live count.
+  Each Δ deadline lands at the first PC with exactly the target work. Before registration it
+  advances the cadence without touching guest RAM; the first post-registration landing writes a
+  canonical `MATERIALIZED|WORK_DERIVED` page through the shared `vtime::pvclock` implementation,
+  and later landings use its value-keyed refresh. Registration MMIO encountered during the exact
+  walk is serviced inline but still cannot publish until that canonical landing. The loop counts
+  internal debug/MMIO exits against the caller's hard budget. A ready marker observed at a natural
+  UART exit is only latched; the harness keeps running until the next exact refresh has published,
+  so a lost/late armed Preempt cannot pass with a page stale beyond Δ. The owned init retires
+  branches after the marker to keep that proof target reachable.
+- The result reports the pinned GPA, distinct publication count, maximum exact-work gap, and last
+  anchor. Portable tests plant an advisory host IRQ, register during an exact walk, exercise
+  reject-without-consuming + re-registration refusal across a fresh run-loop dispatcher + ABI
+  status, reject executor reuse before reading or arming the counter, complete the ready marker
+  while single-stepping, and prove two exact publication periods before return.
+- The owned kernel writes `0x4000_1000` to the MMIO register, verifies the ABI response, and spins
+  for the first fully valid page before continuing boot. The spin has a fixed branch bound and no
+  wall-time input; the host rejects `Δ > 100_000_000`, comfortably below the kernel's `2^28`
+  iterations. The generated DTB describes the registration page at `0x0b00_0000`; the host uses
+  only the validated write value as its stamping target, not a fixed page constant.
+
+This is still **pre-silicon substrate, not AA-5 acceptance evidence**. Stock KVM expires
+`CNTV_CVAL` against the live architected-counter domain; equal `CNTFRQ` does not align that origin
+with the work-derived page. A deterministic clockevent/injection path and the native N1 build/run
+are therefore still required before the Linux smoke can certify steady-state timers or replay.
+Exact single-step landing also requires AA-4's LSE-only image: the present guest recipe does not
+yet remove/scan-gate all kernel and static-BusyBox LL/SC fallback bodies, and the CLI's hash pin is
+an identity check, not proof of that property. Live evidence stays non-certifying until the owned
+Image/rootfs passes AA-4 levels 1–2 (with level 3's planted proof still homed here).
+
+Gates: 147 harness tests plus bin/manifest tests; native and aarch64-linux Clippy with
+`-D warnings`; aarch64-linux check; exact patch application plus GCC 14 arm64 object compile
+against checksum-pinned Linux 6.18.35; fmt and diff checks; pinned Miri 146 pass / one intentional
+long-loop ignore, plus bin tests (manifest subprocess intentionally ignored under isolation).
+
+## AA-4 stage-2 execute-guard VMM (hm-rfz, 2026-07-18)
+
+The draft kernel state machine now has a fail-closed userspace consumer, a planted rejection
+command, and a page-specific self-modification audit. This is still compile/test/emulation
+evidence only; none has run against `/dev/kvm` on the patched N1.
+
+- Guarded constructors require capability 246 before creating the vCPU. The board remains inside
+  the kernel patch's trusted boundary: one anonymous private RAM slot, one vCPU for the current
+  proof, and no assigned/DMA-capable device. Exit 43 is decoded through the already-sized 24-byte
+  `kvm_run` union storage without adding an unsafe Rust union.
+- A synchronous execute exit bounds-checks the kernel-supplied page, scans its frozen bytes with
+  the existing raw-instruction scanner, and answers the exact generation. Clean pages become
+  executable/read-only; monitor exclusives and live counter reads are rejected back to
+  writable/XN before a hard `RunError::ExecGuardRejected` reaches the caller. `CNTFRQ_EL0` remains
+  allowed because the owned image's static audit permits that constant-frequency read. A write
+  exit records the kernel's already-completed execute revocation; a blocked write is an error on
+  the single-vCPU board. A million-transition internal bound prevents transparent mediation from
+  hiding an infinite exit loop.
+- `linux-boot --stage2-exec-guard` requires observed execute exits, scans, and approvals before it
+  can report its already non-certifying AA-5 smoke result. `aa4-guard-reject` hash-verifies the
+  planted ELF, pins the vCPU thread, and requires a nonzero generation, at least one decoded
+  exclusive, one successful rejection, consistent transition counts, and a PC that still lies in
+  the rejected page. `aa4-guard-write` pins the dedicated `aa4-self-modify` ELF and its exact
+  instruction encodings, then requires the original full-page hash at first scan and the
+  synchronous pre-store exit, a single write revocation, and the exact expected modified hash at
+  a fresh scan generation. While that later generation is frozen, it deliberately replays the
+  previously approved generation and requires `EINVAL` before issuing the correct response. The
+  portable acceptance predicates carry negative controls for a prematurely modified page, reused
+  generation, random rather than previously valid token, wrong errno, missing write, wrong
+  replacement, and inconsistent aggregate exits.
+- The kernel patch was hardened after a fresh lock-order review: state replacement under
+  `mmu_lock` uses `GFP_ATOMIC`, while notifier/memslot invalidation uses an allocation-free
+  advanced-XArray erase walk. The exact format patch applies cleanly to pinned 6.18.35, passes
+  strict `checkpatch`, compiles the arm64 KVM subtree, satisfies object-code assertions for the
+  cap/ioctl/exit/flag/lock/XArray/direct-unmap paths, and links a warning-free `vmlinux`.
+
+The self-modifier is a dedicated 4 KiB page containing `mov x0,#1; ret`; it replaces only the
+first word with `mov x0,#2`, performs the architected D/I-cache maintenance, and passes the golden
+protocol twice under TCG. That is liveness, not guard evidence. Remaining live AA-4 gates are the
+planted reject, write-before-modification/rescan, stale-generation rejection, backing replacement
+invalidation, and the two-vCPU scan/write race. Until they run on the patched pinned host, the
+current ruling remains cooperative residual rather than mechanically unreachable.
+
+Userspace gates for this slice: 152 harness library tests, four `arm-spike` CLI tests, and the
+manifest-current test pass; aarch64-Linux Clippy is warning-free; pinned Miri passes 151 library
+tests plus all four CLI tests (one intentional long-loop ignore and one isolated subprocess
+ignore). The kernel gate additionally passes strict `checkpatch` (0 errors/0 warnings), compiled
+object assertions, and the full arm64 `vmlinux` link without warnings.

@@ -1,4 +1,4 @@
-# arm64 KVM_EXIT_PREEMPT patch — DRAFT, untested on silicon
+# Harmony arm64 KVM patch series — DRAFT, untested on silicon
 
 Status: **draft, harmony task 109 (ARM pre-build apparatus).** This is the arm64 analogue of
 the x86 in-kernel force-exit preemption patch
@@ -10,6 +10,16 @@ arm64 KVM patch work" that stage validates on real Ampere Altra silicon — this
 the pre-silicon draft the pre-build ruling (`docs/ARCH-BOUNDARY.md` §Pre-build ruling) allows to
 exist before that GO/NO-GO. See `../BUILD.md` for the apply+build recipe and `../verify.sh` for
 the automated apply+build+assert gate.
+
+Patch `0002` is the draft AA-4 runtime execute guard that stock arm64 KVM lacks. It advertises
+`KVM_CAP_ARM_STAGE2_EXEC_GUARD = 246` only after implementing the non-vacuous state machine:
+default writable/XN, freeze plus a generation-bearing userspace exit before first execute,
+explicit approval to executable/read-only, and synchronous execute revocation plus an exit
+before a later write. It clears approval on MMU-notifier backing replacement and memslot reuse,
+forces page mappings, and serializes final approval with the MMU write lock. Its controlled VMM
+boundary requires unique non-aliased backing, no DMA-capable assigned devices, and no unmediated
+host write to an approved page. It applies and compiles; it has not been booted or exercised, so
+AA-4 remains cooperative-residual until the planted live proof succeeds.
 
 ## What the patch does
 
@@ -36,6 +46,10 @@ Mirrors the x86 mechanism exactly, mechanism-for-mechanism:
 | `KVM_CAP_ARM_DETERMINISTIC_INTERCEPTS` | `245` | `include/uapi/linux/kvm.h` | **New, arm64-only.** Next free `KVM_CAP_*` in this tree (last existing: `KVM_CAP_GUEST_MEMFD_FLAGS` = 244). Not the same cap as x86's `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` — arm64 gets its own cap number because `kvm_vm_ioctl_check_extension()`/`kvm_vm_ioctl_enable_cap()` are per-arch dispatch, but the cap namespace (the `#define`) is the shared `include/uapi/linux/kvm.h`, so it still needed a value that isn't taken by anything, x86 or arm64. |
 | `KVM_ARCH_FLAG_DETERMINISTIC_INTERCEPTS` | bit `11` | `arch/arm64/include/asm/kvm_host.h`, `struct kvm_arch.flags` | Next free bit after `KVM_ARCH_FLAG_WRITABLE_IMP_ID_REGS` (bit 10). VM-level opt-in, default-off. |
 | `vcpu->arch.preempt_armed` | `bool` | `arch/arm64/include/asm/kvm_host.h`, `struct kvm_vcpu_arch` | Per-vCPU one-shot. Set by `KVM_ARM_PREEMPT_EXIT`, cleared only when the kernel fires it (mirrors the x86 patch's own disarm asymmetry — see below). |
+| `KVM_CAP_ARM_STAGE2_EXEC_GUARD` | `246` | `include/uapi/linux/kvm.h` | VM opt-in; must be enabled before vCPU creation. Protected and nested use are rejected. |
+| `KVM_EXIT_ARM_STAGE2_EXEC_GUARD` | `43` | `include/uapi/linux/kvm.h` | Synchronous pre-execute or pre-write exit carrying flags, page GPA, and scan generation. |
+| `KVM_ARM_STAGE2_EXEC_GUARD` | `_IOW(KVMIO, 0xb7, struct kvm_arm_stage2_exec_guard)` | `include/uapi/linux/kvm.h` | Approves or rejects the exact frozen page generation. |
+| `KVM_ARCH_FLAG_STAGE2_EXEC_GUARD` | bit `12` | `arch/arm64/include/asm/kvm_host.h` | Enables page-granular execute mediation. |
 
 Call sequence: userspace enables `KVM_CAP_ARM_DETERMINISTIC_INTERCEPTS` once per VM
 (`kvm_vm_ioctl_enable_cap`) → before each `KVM_RUN` where a force-exit is wanted, issues the
@@ -103,3 +117,5 @@ patches were generated against (functionally) the same pristine base, so:
 
 - `0001-KVM-arm64-add-KVM_EXIT_PREEMPT-in-kernel-force-exit-.patch` — the patch, produced with
   `git format-patch` against tag `v6.18.35-pristine` (author `spike <s@s>`).
+- `0002-KVM-arm64-add-userspace-stage-2-execute-guard.patch` — the AA-4 state machine, produced
+  with `git format-patch` after `0001` against the same exact tree (author `spike <s@s>`).

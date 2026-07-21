@@ -1,0 +1,3 @@
+aa4guard runtime guard-reject proof — 2026-07-21, N1
+host: 6.18.35-aa4guard; KVM cap STAGE2_EXEC_GUARD attested by Machine::new_guarded (a stock kernel cannot construct a guarded VM)
+fixture sha256: 330c6181052085f5268d648695bfe65e6a105fa2b1ba14e8dc2fe20db4dc7d36

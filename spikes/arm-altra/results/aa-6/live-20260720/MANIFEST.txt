@@ -1,0 +1,13 @@
+AA-6 mini determinism gate — live, 2026-07-20, Ampere Altra N1
+host: 6.18.35-aa4guard (patched KVM_EXIT_PREEMPT), build-id ac576f87, core 60
+mechanism: patched (Preempt), skid_margin 53, --with-targets, 6 payloads x reps 1000 = 6000 records
+floor-check --min-reps 1000:
+  rep-floor PASS (6 inputs x >=1000 reps), replay-identity PASS (6 groups bit-identical
+  state digests), multiplicity PASS (6000 armed overflows delivered exactly once),
+  skid PASS (no overshoot at margin 53 — 53 holds for BARE payloads under patched mech),
+  mechanism-attestation PASS (Preempt).
+  FAIL: weights-present/count-exactness (no AA-1 weights pack; determinism is the gate here),
+        aa6-matrix (needs determinism UNDER fault injection across all classes incl.
+        linux-guest — the larger AA-6 deliverable, not the mini-gate).
+VERDICT: AA-6 mini determinism gate (>=1000-rep bit-identity) DEMONSTRATED on silicon.
+records.jsonl content-addressed on box (run-set.json records_sha256).

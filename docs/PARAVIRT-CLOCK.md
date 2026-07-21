@@ -269,11 +269,24 @@ raw-counter path survives.
   build**, not merely deprioritized — on non-ECV silicon it would read a real, non-work-derived
   `CNTVCT` and instantly break determinism.
 - **Pinned config / no-fallback.** The guest kernel is built without the arch generic-timer
-  clocksource as a selectable source; the page clocksource is the only timekeeper. The generic
-  timer's *interrupt* (the EL1 timer for scheduling) is modeled by the vendor's GIC + generic-
-  timer device model (`docs/ARCH-BOUNDARY.md` §B, ARM row) whose deadlines flow through the same
-  `TimerQueue`/`IdlePlanner` seams — the timer fires deterministically; only the *counter read*
-  is redirected to the page.
+  clocksource as a selectable source; the page clocksource is the only timekeeper. Its virtual
+  and physical clockevent `set_next_event` paths write an absolute page-derived tick deadline to
+  `docs/INTEGRATION.md` §1.3 and never program `CNTV/CNTP_CVAL/TVAL`; the virtual timer remains
+  disabled. The host evaluates that deadline only after an exact-work page publication, then
+  holds dedicated level-triggered PPI 20 high until the guest ACKs before calling the generic
+  event handler. The owned DT places PPI 20 in the architected-timer virtual-interrupt slot and
+  requires `nohlt` polling, because a single vCPU stopped in WFI cannot retire the branches that
+  advance work time. KVM level-info readback proves each line transition rather than treating a
+  successful injection ioctl or the separate pending latch as delivery evidence.
+- **Registration transport.** The owned ARM guest publishes its selected 4 KiB page GPA through
+  `docs/INTEGRATION.md` §1.3's one-shot MMIO register. The natural MMIO exit only records the
+  validated pending GPA; it never imports that exit's skid-tainted PMU count. The first exact
+  arm-early + single-step cadence landing canonically stamps the page, and the guest remains in a
+  bounded deterministic spin until that stamp appears. Any second registration is a guest fault,
+  including a repeat of the same GPA. This is the ARM substitute for x86's post-doorbell RDTSC
+  handshake: non-ECV N1 has no counter-read intercept, so exact forced landing is the only lawful
+  first anchor. The owned build's `2^28`-iteration spin is paired with a host-enforced
+  `Δ <= 100_000_000` retired-branch ceiling, so the first target cannot lawfully outlive the poll.
 
 ### 3.3 Reachability gate — no raw-counter path survives (LL/SC-scan discipline transposed)
 
@@ -286,9 +299,14 @@ for raw counter opcodes:
 - x86: `rdtsc` (`0F 31`), `rdtscp` (`0F 01 F9`).
 
 The scan inherits task-100's enforcement ladder: kernel-config guarantee → static opcode scan →
-**W^X + rescan-on-exec** for any page the guest makes executable at runtime (so a JIT/self-modifying
-guest cannot introduce a counter read the static scan never saw). A guest that can mint executable
-counter-read code the vmm cannot re-scan is out of contract — see §7.
+**W^X + rescan-on-exec** for any page the guest makes executable at runtime. The last rung is a
+required mechanism, not something stock arm64 KVM already supplies: Linux 6.18.35 grants stage-2
+execute internally on an instruction fault and exposes no per-GFN XN/execute-fault UAPI. The
+draft `spikes/arm-altra/host/patches/0002-*` provides default-XN, pre-execute scan approval, and
+write-revokes-execute and is apply+compile verified, but has no live planted proof. Until that
+proof passes, the owned no-runtime-code guest is a cooperative boundary and any JIT/self-modifying ARM
+guest triggers §7's kill condition. `KVM_EXIT_MEMORY_FAULT`, dirty logging, and `userfaultfd` are
+not synchronous pre-execute substitutes.
 
 **The bar is per-vendor, because closure is (§4):**
 
@@ -345,6 +363,50 @@ not interception-based:
   (`docs/ARM-PORT.md:52`, the `HCR_EL2`/`MDCR_EL2` analogue; `tasks/100-arm-vendor-spike-doc.md`
   §5). Determinism on ARM therefore **depends on owning the guest image** in a way x86 does not
   — which is exactly why §7's reachability kill condition is sharper for ARM.
+
+### 4.3 Entropy-closure — the deterministic guest's CRNG
+
+Counter-closure (§4.2) removes one non-modeled input; a deterministic Linux guest has a second,
+validated on N1 silicon at AA-5(c): the kernel CRNG. Same-seed replay is bit-identical in console
+and (under a pinned layout) registers, but full-RAM state diverges in CRNG state alone (`base_crng`
+key, `input_pool`) — 400–700 bytes in 256 MB, a live entropy source the work clock does not model.
+
+The residual decomposes into two problems, only one of which is entropy:
+
+- **Entropy *input*-closure** — the harvest inputs (jitter loop, interrupt-PC mixing, cycle reads)
+  are counter-shaped: reads of non-modeled host state, closable by the same substitution template
+  as §4.2. This is a **contracted guest property**, the entropy analogue of the counter row.
+- **Harvest *schedule*** — how many interrupts are mixed before the reseed workqueue runs — is
+  **not** entropy work. It is the async-deliver-at-a-Moment machinery (the ARM port of the
+  host-plane delivery contract); closing it closes the schedule for *all* kernel state. The CRNG is
+  merely its loudest witness — a hash accumulator that amplifies a one-interrupt schedule
+  difference into a full-key divergence.
+
+**Closure mechanism (the contracted property):** a `HARMONY_DETERMINISTIC_CRNG` config makes the
+CRNG a pure function of the credited seed — key derived from `/chosen/rng-seed`, reseed-from-`input_pool`
+disabled (*not* a deterministic ratchet — *which* consumer sees *which* key is itself
+schedule-dependent), interrupt/jitter mixing compiled out (a live-but-unread pool still dirties the
+digest). **Proof mirrors §3.3's reachability gate:** **0 reachable entropy-mix sites in `vmlinux`**,
+the direct analogue of "0 raw `CNTVCT`." **KASLR** is the same shape: derive `/chosen/kaslr-seed`
+from the campaign seed (substitution, not a `nokaslr` ban) so layout becomes an explored input
+dimension the Reproducer pins.
+
+**Contract consequence:** guest randomness is deterministic-per-Reproducer and unpredictable to
+workload adversaries (a seed-derived stream satisfies TLS — the network adversary lacks the seed).
+Since a Reproducer records full RAM it already holds the CRNG key, so **secrecy from the harness is
+out of contract; Reproducers are secret-bearing artifacts (test workloads only).**
+
+> **Entropy-closure row.** The deterministic guest's CRNG is a pure function of the credited
+> `/chosen/rng-seed`: key seed-derived, reseed and post-seed harvesting compiled out (proof: 0
+> reachable mix sites in `vmlinux`). `/chosen/kaslr-seed` is a modeled input from the campaign seed.
+> Randomness is deterministic-per-Reproducer and unpredictable to workload adversaries; secrecy from
+> the harness is out of contract. Async-event scheduling is closed by the delivery contract, not this
+> row.
+
+Ruled 2026-07-20 (Fable-consulted, Paul-adopted). Build: the seed-pure CRNG + reachability gate
+(`hm-kz9v`); the schedule half is tracked in the delivery lane (`hm-sp8v`), not here. AA-5(c)
+accordingly claims the clock mechanism + entropy input-closure, **not** full-RAM identity — see
+`docs/ARM-ALTRA.md` §AA-5.
 
 ---
 

@@ -239,6 +239,8 @@ pub mod kvm {
     pub const CREATE_VCPU: u64 = 0xAE41;
     /// `KVM_SET_USER_MEMORY_REGION` — `_IOW(KVMIO, 0x46, struct kvm_userspace_memory_region)`.
     pub const SET_USER_MEMORY_REGION: u64 = 0x4020_AE46;
+    /// `KVM_IRQ_LINE` — `_IOW(KVMIO, 0x61, struct kvm_irq_level)`.
+    pub const IRQ_LINE: u64 = 0x4008_AE61;
     /// `KVM_RUN` — `_IO(KVMIO, 0x80)`.
     pub const RUN: u64 = 0xAE80;
     /// `KVM_GET_ONE_REG` — `_IOW(KVMIO, 0xab, struct kvm_one_reg)`. **Note the
@@ -254,12 +256,17 @@ pub mod kvm {
     pub const ARM_VCPU_INIT: u64 = 0x4020_AEAE;
     /// `KVM_ARM_PREFERRED_TARGET` — `_IOR(KVMIO, 0xaf, struct kvm_vcpu_init)`.
     pub const ARM_PREFERRED_TARGET: u64 = 0x8020_AEAF;
+    /// `KVM_ARM_VCPU_PSCI_0_2` feature-bit index for `KVM_ARM_VCPU_INIT`.
+    pub const ARM_VCPU_PSCI_0_2: u32 = 2;
     /// `KVM_ARM_VCPU_PMU_V3` — `kvm_vcpu_init.features[0]` bit index enabling the vPMU
     /// (uapi `asm/kvm.h`). Only the disposable ID-reading vCPU sets it: without it KVM
     /// masks the guest-visible `ID_AA64DFR0_EL1.PMUVer` to 0, hiding the host PMU
     /// version the truth table records (found on harmony-arm day one). The measurement
     /// vCPU keeps it OFF — the guest contract denies the guest a PMU.
     pub const VCPU_FEATURE_PMU_V3: u32 = 3;
+    /// `KVM_ARM_VCPU_HAS_EL2` feature-bit index. The owned single-level guest keeps this off;
+    /// enabling nested virtualization can allocate additional KVM-owned timer PPIs.
+    pub const VCPU_FEATURE_HAS_EL2: u32 = 7;
     /// `KVM_GET_REG_LIST` — `_IOWR(KVMIO, 0xb0, struct kvm_reg_list)`.
     pub const GET_REG_LIST: u64 = 0xC008_AEB0;
     /// `KVM_ENABLE_CAP` — `_IOW(KVMIO, 0xa3, struct kvm_enable_cap)`.
@@ -269,6 +276,13 @@ pub mod kvm {
     /// `KVM_ARCH_FLAG_DETERMINISTIC_INTERCEPTS`, which is set only through this
     /// ioctl — so without it every arm returns `EINVAL`, on the patched kernel.
     pub const ENABLE_CAP: u64 = 0x4068_AEA3;
+    /// `KVM_ARM_STAGE2_EXEC_GUARD` —
+    /// `_IOW(KVMIO, 0xb7, struct kvm_arm_stage2_exec_guard)`.
+    pub const ARM_STAGE2_EXEC_GUARD: u64 = 0x4018_AEB7;
+    /// Approve the exact frozen scan generation for execute/read-only mapping.
+    pub const ARM_STAGE2_EXEC_GUARD_APPROVE_EXEC: u32 = 0;
+    /// Reject the exact frozen scan generation and return it to writable/XN.
+    pub const ARM_STAGE2_EXEC_GUARD_REJECT_EXEC: u32 = 1;
     /// `KVM_CREATE_DEVICE` — `_IOWR(KVMIO, 0xe0, struct kvm_create_device)`.
     pub const CREATE_DEVICE: u64 = 0xC00C_AEE0;
     /// `KVM_SET_DEVICE_ATTR` — `_IOW(KVMIO, 0xe1, struct kvm_device_attr)`.
@@ -336,6 +350,13 @@ pub mod kvm {
     /// encoding; the high 32 bits are the target vCPU's `mpidr` (0 for the spike guest).
     /// These registers are 64-bit (unlike the DIST/REDIST offsets, read 32-bit).
     pub const DEV_ARM_VGIC_GRP_CPU_SYSREGS: u32 = 6;
+    /// `KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO` = **7** — the external input-line state.
+    /// Its `attr` is `mpidr(63:32) | info(31:10) | vINTID(9:0)`; vINTID names a
+    /// 32-interrupt-aligned block. Unlike `GICR_ISPENDR0`, this reports the level set by
+    /// `KVM_IRQ_LINE`, including an owner-mismatch no-op that returned success.
+    pub const DEV_ARM_VGIC_GRP_LEVEL_INFO: u32 = 7;
+    /// The only currently defined level-info selector, in the unshifted `info` namespace.
+    pub const VGIC_LEVEL_INFO_LINE_LEVEL: u64 = 0;
     /// `KVM_DEV_ARM_VGIC_CTRL_INIT`.
     pub const DEV_ARM_VGIC_CTRL_INIT: u64 = 0;
     /// `KVM_GET_DEVICE_ATTR` — `_IOW(KVMIO, 0xe2, struct kvm_device_attr)`, the same
@@ -362,6 +383,11 @@ pub mod kvm {
     /// patched kernel is the one running (§Evidence integrity #4), and its absence
     /// on a stock kernel is a legitimate, recordable "no".
     pub const CAP_ARM_DETERMINISTIC_INTERCEPTS: u64 = 245;
+    /// Capability reserved for the Harmony arm64 stage-2 execute-guard draft.
+    /// Stock 6.18.35 must report this absent. The patch provides a per-GFN
+    /// default-XN, execute-before-userspace-scan, write-revokes-execute state machine;
+    /// merely returning a generic memory fault does not satisfy this capability.
+    pub const CAP_ARM_STAGE2_EXEC_GUARD: u64 = 246;
 
     /// `KVM_EXIT_DEBUG` — a single-step landed (AA-2).
     pub const EXIT_DEBUG: u32 = 4;
@@ -374,6 +400,15 @@ pub mod kvm {
     /// patch draft; a stock kernel can never return it, which is exactly why the
     /// records may attest the mechanism by it.
     pub const EXIT_PREEMPT: u32 = 42;
+    /// `KVM_EXIT_ARM_STAGE2_EXEC_GUARD` (43) — the patched synchronous execute/write
+    /// mediation exit. Its 24-byte union arm is decoded by [`decode_exec_guard_exit`].
+    pub const EXIT_ARM_STAGE2_EXEC_GUARD: u32 = 43;
+    /// The guest attempted to execute a frozen/default-XN page.
+    pub const ARM_STAGE2_EXEC_GUARD_EXIT_EXEC: u64 = 1 << 0;
+    /// The guest attempted to write an approved executable/read-only page.
+    pub const ARM_STAGE2_EXEC_GUARD_EXIT_WRITE: u64 = 1 << 1;
+    /// The write raced another vCPU's active scan and remains blocked.
+    pub const ARM_STAGE2_EXEC_GUARD_EXIT_BLOCKED: u64 = 1 << 2;
 
     /// `KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_CORE` — the prefix of the
     /// core-register ids (`user_pt_regs`), whose `pc` this harness sets.
@@ -386,6 +421,17 @@ pub mod kvm {
     /// `0xF8`, and **`pc` is at `0x100`**. The next field, `sp_el1`, is at `0x110`.
     pub const REG_CORE_PC_OFFSET: u64 = 0x100;
 
+    /// Byte offset of `pstate` within `struct kvm_regs`.
+    pub const REG_CORE_PSTATE_OFFSET: u64 = REG_CORE_PC_OFFSET + 8;
+
+    /// `KVM_REG_ARM_CORE_REG(regs.regs[0])`.
+    pub const REG_CORE_X0: u64 = 0;
+
+    /// Distance between adjacent 64-bit GPR register indices. KVM's arm-core
+    /// register macro divides byte offsets by `sizeof(u32)`, so each `u64` GPR
+    /// advances by two indices, not one.
+    pub const REG_CORE_X_STRIDE: u64 = 8 / 4;
+
     /// `KVM_REG_ARM_CORE_REG(regs.pc)` — the register index, which the macro defines
     /// as the byte offset divided by four: `0x100 / 4 == 0x40`.
     ///
@@ -395,6 +441,9 @@ pub mod kvm {
     /// now *derived* from the offset and pinned by a test, because an off-by-one in a
     /// register index does not fail loudly — it writes a different register.
     pub const REG_CORE_PC: u64 = REG_CORE_PC_OFFSET / 4;
+
+    /// `KVM_REG_ARM_CORE_REG(regs.pstate)`.
+    pub const REG_CORE_PSTATE: u64 = REG_CORE_PSTATE_OFFSET / 4;
     /// The size field of a register id (`KVM_REG_SIZE_MASK`).
     pub const REG_SIZE_MASK: u64 = 0x00F0_0000_0000_0000;
     /// Shift of the size field.
@@ -501,6 +550,220 @@ pub struct KvmRunMmio {
     pub padding: [u8; 3],
 }
 
+/// The 24-byte `KVM_EXIT_ARM_STAGE2_EXEC_GUARD` union arm.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ExecGuardExit {
+    /// One of the execute/write flags defined in [`kvm`].
+    pub flags: u64,
+    /// Page-aligned guest-physical address whose permission transition faulted.
+    pub gpa: u64,
+    /// Nonzero scan generation. Approval/rejection must echo this exact value.
+    pub generation: u64,
+}
+
+/// Non-vacuous execution counts from the stage-2 execute-guard path.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct ExecGuardStats {
+    /// Total exit-43 records consumed by the VMM.
+    pub exits: u64,
+    /// Stable executable pages scanned.
+    pub scans: u64,
+    /// Clean scan generations approved executable/read-only.
+    pub approvals: u64,
+    /// Hazard-bearing scan generations rejected writable/XN.
+    pub rejections: u64,
+    /// Approved pages whose first later write revoked execute before the store.
+    pub write_revocations: u64,
+    /// Writes reported blocked behind an active scan.
+    pub blocked_writes: u64,
+}
+
+/// Bounded, page-specific observations for the AA-4 write/revoke/rescan proof.
+///
+/// The hashes are captured while the vCPU is stopped at synchronous guard exits. A
+/// successful planted proof requires the initial scan and pre-write exit to see the
+/// original page, then a fresh generation to scan the exact expected modified page.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ExecGuardPageAudit {
+    /// Page-aligned guest-physical address selected before first vCPU entry.
+    pub gpa: u64,
+    /// Hash immediately after VM construction, before the page can execute.
+    pub initial_sha256: [u8; 32],
+    /// Number of execute scans observed for this page.
+    pub exec_scans: u64,
+    /// First scan generation (zero until observed).
+    pub first_exec_generation: u64,
+    /// Page hash at the first execute scan.
+    pub first_exec_sha256: [u8; 32],
+    /// Number of execute-revoking writes observed for this page.
+    pub write_revocations: u64,
+    /// Generation carried by the most recent pre-store write exit.
+    pub write_generation: u64,
+    /// Page hash at that pre-store write exit.
+    pub pre_write_sha256: [u8; 32],
+    /// First execute generation observed after a write revocation.
+    pub post_write_exec_generation: u64,
+    /// Page hash at that post-write execute scan.
+    pub post_write_exec_sha256: [u8; 32],
+    /// Successful slot-0 moves to a distinct anonymous userspace backing.
+    pub backing_replacements: u64,
+    /// Target-page hash in the approved old backing immediately before the move.
+    pub pre_replace_sha256: [u8; 32],
+    /// Target-page hash in the copied, not-yet-registered replacement backing.
+    pub replacement_sha256: [u8; 32],
+    /// First target execute generation observed after the backing move.
+    pub post_replace_exec_generation: u64,
+    /// Target-page hash at that post-replacement execute scan.
+    pub post_replace_exec_sha256: [u8; 32],
+    /// Number of deliberately replayed, superseded approval tokens.
+    pub stale_reply_attempts: u64,
+    /// Previously valid generation replayed while the later scan was frozen.
+    pub stale_reply_generation: u64,
+    /// Errno returned for that replay; the contract requires `EINVAL`.
+    pub stale_reply_errno: i32,
+}
+
+/// Linux UAPI `EINVAL`, required when a superseded guard generation is replayed.
+///
+/// This is 22 in the generic errno ABI used by Linux arm64. Keeping the proof
+/// predicate portable lets native tests and Miri exercise the acceptance logic.
+pub const EXEC_GUARD_STALE_ERRNO: i32 = 22;
+
+/// Decide whether a page audit establishes the planted write-before-store + rescan proof.
+///
+/// This predicate is portable and Miri-tested so the Linux-only CLI cannot weaken the
+/// proof by accidentally checking only that *some* write and *some* scan occurred.
+#[must_use]
+pub fn exec_guard_write_proof_holds(
+    target_gpa: u64,
+    expected_initial_sha256: [u8; 32],
+    expected_modified_sha256: [u8; 32],
+    audit: ExecGuardPageAudit,
+    stats: ExecGuardStats,
+) -> bool {
+    let counted_exits = stats
+        .scans
+        .checked_add(stats.write_revocations)
+        .and_then(|n| n.checked_add(stats.blocked_writes));
+
+    audit.gpa == target_gpa
+        && audit.backing_replacements <= 1
+        && audit.exec_scans == 2 + audit.backing_replacements
+        && audit.write_revocations == 1
+        && audit.first_exec_generation != 0
+        && audit.write_generation == audit.first_exec_generation
+        && audit.post_write_exec_generation > audit.write_generation
+        && audit.initial_sha256 == expected_initial_sha256
+        && audit.first_exec_sha256 == expected_initial_sha256
+        && audit.pre_write_sha256 == expected_initial_sha256
+        && audit.post_write_exec_sha256 == expected_modified_sha256
+        && stats.rejections == 0
+        && stats.blocked_writes == 0
+        && stats.scans == stats.approvals
+        && counted_exits == Some(stats.exits)
+}
+
+/// Decide whether the audited rescan rejected one exact, previously valid generation.
+///
+/// The replay is meaningful only after the first generation was approved, a write revoked
+/// it, and a strictly newer generation froze the same page. Merely sending zero or a random
+/// invalid token is not evidence for the anti-replay property.
+#[must_use]
+pub fn exec_guard_stale_generation_proof_holds(audit: ExecGuardPageAudit) -> bool {
+    audit.backing_replacements <= 1
+        && audit.exec_scans == 2 + audit.backing_replacements
+        && audit.first_exec_generation != 0
+        && audit.write_revocations == 1
+        && audit.write_generation == audit.first_exec_generation
+        && audit.post_write_exec_generation > audit.write_generation
+        && audit.stale_reply_attempts == 1
+        && audit.stale_reply_generation == audit.write_generation
+        && audit.stale_reply_generation != audit.post_write_exec_generation
+        && audit.stale_reply_errno == EXEC_GUARD_STALE_ERRNO
+}
+
+/// Decide whether moving slot 0 to a distinct but byte-identical backing invalidated approval.
+///
+/// The old target generation is first approved. While the vCPU is still stopped, userspace
+/// copies RAM into a fresh anonymous mapping and moves the unchanged slot to that new address.
+/// A successful proof requires the same exact page to exit and scan at a newer generation
+/// before the guest's later write can execute against it.
+#[must_use]
+pub fn exec_guard_backing_replacement_proof_holds(
+    expected_sha256: [u8; 32],
+    audit: ExecGuardPageAudit,
+) -> bool {
+    audit.exec_scans == 3
+        && audit.first_exec_generation != 0
+        && audit.backing_replacements == 1
+        && audit.post_replace_exec_generation > audit.first_exec_generation
+        && audit.write_revocations == 1
+        && audit.write_generation == audit.post_replace_exec_generation
+        && audit.post_write_exec_generation > audit.write_generation
+        && audit.initial_sha256 == expected_sha256
+        && audit.first_exec_sha256 == expected_sha256
+        && audit.pre_replace_sha256 == expected_sha256
+        && audit.replacement_sha256 == expected_sha256
+        && audit.post_replace_exec_sha256 == expected_sha256
+}
+
+/// Decode exit 43's 24-byte union arm without introducing a Rust union.
+///
+/// [`KvmRun::mmio`] occupies the same 24 bytes. The first two `u64`s line up with
+/// `phys_addr` and `data`; the final `u64` occupies `len`, `is_write`, and padding.
+/// Reassembling that last word from its native-endian field bytes keeps this pure and
+/// Miri-testable while preserving the native-endian KVM UAPI representation.
+#[must_use]
+pub fn decode_exec_guard_exit(run: &KvmRun) -> Option<ExecGuardExit> {
+    if run.exit_reason != kvm::EXIT_ARM_STAGE2_EXEC_GUARD {
+        return None;
+    }
+    let mut generation = [0_u8; 8];
+    generation[..4].copy_from_slice(&run.mmio.len.to_ne_bytes());
+    generation[4] = run.mmio.is_write;
+    generation[5..].copy_from_slice(&run.mmio.padding);
+    Some(ExecGuardExit {
+        flags: run.mmio.phys_addr,
+        gpa: u64::from_ne_bytes(run.mmio.data),
+        generation: u64::from_ne_bytes(generation),
+    })
+}
+
+/// Borrow one page named by a guarded execute exit from the single guest-RAM slot.
+///
+/// Every arithmetic operation is checked because the GPA is kernel-supplied state and
+/// therefore untrusted at this boundary. A misaligned, below-base, or overrunning page
+/// returns `None`, never a partial page and never a panic.
+#[must_use]
+pub fn exec_guard_page(ram: &[u8], ram_base: u64, gpa: u64) -> Option<&[u8]> {
+    const PAGE_SIZE: usize = 4096;
+    if gpa & (PAGE_SIZE as u64 - 1) != 0 {
+        return None;
+    }
+    let offset = usize::try_from(gpa.checked_sub(ram_base)?).ok()?;
+    let end = offset.checked_add(PAGE_SIZE)?;
+    ram.get(offset..end)
+}
+
+/// Scan a frozen page for guest instructions forbidden by the combined AA-4/AA-5
+/// runtime contract.
+///
+/// Branches and `CNTFRQ_EL0` are allowed. Monitor exclusives and live counter reads
+/// are rejected. The owned Linux image contains audited constant-frequency reads, so
+/// rejecting `CNTFRQ_EL0` here would contradict the static gate rather than strengthen it.
+#[must_use]
+pub fn exec_guard_hazards(gpa: u64, page: &[u8]) -> Vec<crate::scan::Hit> {
+    use crate::scan::{CounterReg, HitKind};
+
+    crate::scan::scan(gpa, page)
+        .into_iter()
+        .filter(|hit| {
+            matches!(hit.kind, HitKind::Exclusive)
+                || matches!(hit.kind, HitKind::CounterRead(reg) if reg != CounterReg::Cntfrq)
+        })
+        .collect()
+}
+
 // -- The vCPU-exit pointer logic, portable and Miri-reachable --
 //
 // The KVM harness ([`machine`]) is Linux-only, so the interpreter — which runs on the
@@ -523,7 +786,13 @@ pub fn decode_kvm_run(run: &KvmRun) -> crate::run::VcpuExit {
     use crate::run::VcpuExit;
     match run.exit_reason {
         kvm::EXIT_MMIO => {
-            let len = (run.mmio.len as usize).min(run.mmio.data.len());
+            let len = run.mmio.len as usize;
+            if len == 0 || len > run.mmio.data.len() {
+                return VcpuExit::MalformedMmio {
+                    addr: run.mmio.phys_addr,
+                    width: run.mmio.len,
+                };
+            }
             VcpuExit::Mmio {
                 addr: run.mmio.phys_addr,
                 data: run.mmio.data[..len].to_vec(),
@@ -581,6 +850,20 @@ pub unsafe fn write_mmio_read(run: *mut KvmRun, data: &[u8]) {
 pub unsafe fn guest_ram<'a>(mem: *const u8, len: usize) -> &'a [u8] {
     // SAFETY: the caller guarantees `len` readable bytes at `mem`, unwritten for the borrow.
     unsafe { core::slice::from_raw_parts(mem, len) }
+}
+
+/// Borrow a uniquely owned guest-RAM allocation as mutable bytes.
+///
+/// Split out of the Linux memslot replacement path so its `from_raw_parts_mut`
+/// provenance and length reasoning are exercised under Miri.
+///
+/// # Safety
+/// `mem` must point at `len` initialized, writable bytes uniquely owned for the
+/// returned borrow's lifetime.
+#[must_use]
+pub unsafe fn guest_ram_mut<'a>(mem: *mut u8, len: usize) -> &'a mut [u8] {
+    // SAFETY: the caller guarantees unique access to `len` writable bytes at `mem`.
+    unsafe { core::slice::from_raw_parts_mut(mem, len) }
 }
 
 /// Read the little-endian 32-bit instruction word at guest-physical `addr` from a borrow of
@@ -1089,6 +1372,10 @@ pub enum Capability {
     /// The 0004-analogue determinism capability (`host/patches/`) is advertised —
     /// the positive probe that the patched kernel is actually running.
     DeterministicIntercepts,
+    /// A Harmony arm64 KVM execute guard is advertised. Stock KVM has no per-GFN XN
+    /// userspace API and resolves instruction faults internally, so absence is the
+    /// expected result until the dedicated AA-4 kernel extension is built and booted.
+    Stage2ExecGuard,
 }
 
 impl Capability {
@@ -1104,6 +1391,7 @@ impl Capability {
             Capability::Vgicv3Creatable => "vgicv3-creatable",
             Capability::WritableIdRegisters => "writable-id-registers",
             Capability::DeterministicIntercepts => "kvm-cap-arm-deterministic-intercepts",
+            Capability::Stage2ExecGuard => "kvm-cap-arm-stage2-exec-guard",
         }
     }
 
@@ -1111,8 +1399,8 @@ impl Capability {
     /// truth-table rows probed on the host (as opposed to the guest ID-register facts the
     /// `ident` payload reads). Every one must be `Present` or the probe exits nonzero; a
     /// row absent or unprobed is a host missing an existential mechanism, not a pass.
-    /// [`Capability::DeterministicIntercepts`] is NOT here — it is the expect-*absent*
-    /// patch marker, reported separately.
+    /// The two KVM patch capabilities are NOT here — both are expect-*absent* markers
+    /// on stock KVM and are reported separately.
     #[must_use]
     pub const fn mandatory_aa0() -> &'static [Capability] {
         &[
@@ -1128,13 +1416,15 @@ impl Capability {
 
     /// Whether `docs/ARM-ALTRA.md` §AA-0 expects this capability **present**.
     ///
-    /// [`Capability::DeterministicIntercepts`] is the one row expected *absent* on a
-    /// stock kernel — it appears only once the patch draft is built and booted
-    /// (AA-3). Absent is therefore a legitimate finding for it and a blocking one
-    /// for the others. What is never legitimate for any of them is *unprobed*.
+    /// The deterministic-preempt and stage-2 execute-guard rows are expected *absent*
+    /// on a stock kernel. Each becomes present only after its dedicated patch is built
+    /// and booted (AA-3 and AA-4 respectively). What is never legitimate is *unprobed*.
     #[must_use]
     pub const fn expect_present(self) -> bool {
-        !matches!(self, Capability::DeterministicIntercepts)
+        !matches!(
+            self,
+            Capability::DeterministicIntercepts | Capability::Stage2ExecGuard
+        )
     }
 }
 
@@ -1539,6 +1829,7 @@ mod imp {
             Capability::DeterministicIntercepts => {
                 probe_vm_capability(kvm::CAP_ARM_DETERMINISTIC_INTERCEPTS)
             }
+            Capability::Stage2ExecGuard => probe_vm_capability(kvm::CAP_ARM_STAGE2_EXEC_GUARD),
         }
     }
 }
@@ -1548,8 +1839,9 @@ pub mod machine;
 
 #[cfg(target_os = "linux")]
 pub use machine::{
-    HostIdRegisters, Machine, Mechanism, MigrationChurner, ParamsPage, PerfCounter, allowed_cores,
-    current_tid, pin_to_core, read_host_id_registers,
+    HostIdRegisters, IdFreezeProof, IdFreezeRow, Machine, Mechanism, MigrationChurner, ParamsPage,
+    PerfCounter, RaceExit, VgicRoundtrip, allowed_cores, current_tid, id_freeze_proof, pin_to_core,
+    read_host_id_registers, vgic_roundtrip_proof,
 };
 
 /// AA-1(a)'s host-side EL0 counter: raw `BR_RETIRED` over THIS thread's userspace
@@ -1852,12 +2144,17 @@ mod tests {
             other => panic!("expected Mmio, got {other:?}"),
         }
 
-        // A too-wide `len` must be clamped to the 8-byte buffer, never read past it.
-        run.mmio.len = 999;
-        if let VcpuExit::Mmio { data, .. } = decode_kvm_run(&run) {
-            assert_eq!(data.len(), 8, "len clamped to the data buffer");
-        } else {
-            panic!("expected Mmio");
+        // A zero/too-wide host length is explicit malformed input, never clamped
+        // into a plausible access that a higher layer could service.
+        for width in [0, 9, 999] {
+            run.mmio.len = width;
+            assert_eq!(
+                decode_kvm_run(&run),
+                VcpuExit::MalformedMmio {
+                    addr: 0x0900_0000,
+                    width,
+                }
+            );
         }
 
         for (reason, want) in [
@@ -1869,6 +2166,219 @@ mod tests {
             run.exit_reason = reason;
             assert_eq!(decode_kvm_run(&run), want);
         }
+    }
+
+    #[test]
+    fn execute_guard_union_decode_preserves_all_three_native_words() {
+        let mut run = blank_kvm_run();
+        run.exit_reason = kvm::EXIT_ARM_STAGE2_EXEC_GUARD;
+        let flags = kvm::ARM_STAGE2_EXEC_GUARD_EXIT_WRITE | kvm::ARM_STAGE2_EXEC_GUARD_EXIT_BLOCKED;
+        let gpa = 0x0000_0000_4123_4000_u64;
+        let generation = 0x8877_6655_4433_2211_u64;
+        let generation_bytes = generation.to_ne_bytes();
+        run.mmio.phys_addr = flags;
+        run.mmio.data = gpa.to_ne_bytes();
+        run.mmio.len = u32::from_ne_bytes(generation_bytes[..4].try_into().unwrap());
+        run.mmio.is_write = generation_bytes[4];
+        run.mmio.padding.copy_from_slice(&generation_bytes[5..]);
+
+        assert_eq!(
+            decode_exec_guard_exit(&run),
+            Some(ExecGuardExit {
+                flags,
+                gpa,
+                generation,
+            })
+        );
+
+        run.exit_reason = kvm::EXIT_MMIO;
+        assert_eq!(decode_exec_guard_exit(&run), None);
+    }
+
+    #[test]
+    fn execute_guard_page_bounds_and_hazard_policy_fail_closed() {
+        let mut ram = vec![0_u8; 8192];
+        let base = 0x4000_0000_u64;
+        assert!(exec_guard_page(&ram, base, base - 4096).is_none());
+        assert!(exec_guard_page(&ram, base, base + 1).is_none());
+        assert!(exec_guard_page(&ram, base, base + 8192).is_none());
+        assert_eq!(
+            exec_guard_page(&ram, base, base + 4096).unwrap().len(),
+            4096
+        );
+
+        // A branch, CNTFRQ read, and LSE CAS are allowed. LDXR and a live CNTVCT read
+        // are rejected, in address order, from the independent raw-byte scan.
+        let words = [
+            0x1400_0000_u32,
+            0xD53B_E000,
+            0xC8A0_7C41,
+            0xC85F_7C41,
+            0xD53B_E040,
+        ];
+        for (i, word) in words.into_iter().enumerate() {
+            ram[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        let hits = exec_guard_hazards(base, &ram[..4096]);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].addr, base + 12);
+        assert_eq!(hits[0].kind, crate::scan::HitKind::Exclusive);
+        assert_eq!(hits[1].addr, base + 16);
+        assert!(matches!(
+            hits[1].kind,
+            crate::scan::HitKind::CounterRead(crate::scan::CounterReg::Cntvct)
+        ));
+    }
+
+    #[test]
+    fn execute_guard_write_proof_requires_pre_store_identity_and_fresh_rescan() {
+        let initial = [0x11; 32];
+        let modified = [0x22; 32];
+        let target = 0x4008_2000;
+        let audit = ExecGuardPageAudit {
+            gpa: target,
+            initial_sha256: initial,
+            exec_scans: 2,
+            first_exec_generation: 7,
+            first_exec_sha256: initial,
+            write_revocations: 1,
+            write_generation: 7,
+            pre_write_sha256: initial,
+            post_write_exec_generation: 11,
+            post_write_exec_sha256: modified,
+            backing_replacements: 0,
+            pre_replace_sha256: [0; 32],
+            replacement_sha256: [0; 32],
+            post_replace_exec_generation: 0,
+            post_replace_exec_sha256: [0; 32],
+            stale_reply_attempts: 1,
+            stale_reply_generation: 7,
+            stale_reply_errno: EXEC_GUARD_STALE_ERRNO,
+        };
+        let stats = ExecGuardStats {
+            exits: 9,
+            scans: 8,
+            approvals: 8,
+            rejections: 0,
+            write_revocations: 1,
+            blocked_writes: 0,
+        };
+        assert!(exec_guard_write_proof_holds(
+            target, initial, modified, audit, stats
+        ));
+
+        let mut bad = audit;
+        bad.pre_write_sha256 = modified;
+        assert!(!exec_guard_write_proof_holds(
+            target, initial, modified, bad, stats
+        ));
+
+        let mut bad = audit;
+        bad.post_write_exec_generation = bad.write_generation;
+        assert!(!exec_guard_write_proof_holds(
+            target, initial, modified, bad, stats
+        ));
+
+        let mut bad = audit;
+        bad.post_write_exec_sha256 = initial;
+        assert!(!exec_guard_write_proof_holds(
+            target, initial, modified, bad, stats
+        ));
+
+        let mut bad = audit;
+        bad.write_revocations = 0;
+        assert!(!exec_guard_write_proof_holds(
+            target, initial, modified, bad, stats
+        ));
+
+        let mut bad_stats = stats;
+        bad_stats.exits = 8;
+        assert!(!exec_guard_write_proof_holds(
+            target, initial, modified, audit, bad_stats
+        ));
+    }
+
+    #[test]
+    fn execute_guard_stale_generation_proof_requires_an_exact_prior_token_einval() {
+        let audit = ExecGuardPageAudit {
+            gpa: 0x4008_2000,
+            initial_sha256: [0x11; 32],
+            exec_scans: 2,
+            first_exec_generation: 7,
+            first_exec_sha256: [0x11; 32],
+            write_revocations: 1,
+            write_generation: 7,
+            pre_write_sha256: [0x11; 32],
+            post_write_exec_generation: 11,
+            post_write_exec_sha256: [0x22; 32],
+            backing_replacements: 0,
+            pre_replace_sha256: [0; 32],
+            replacement_sha256: [0; 32],
+            post_replace_exec_generation: 0,
+            post_replace_exec_sha256: [0; 32],
+            stale_reply_attempts: 1,
+            stale_reply_generation: 7,
+            stale_reply_errno: EXEC_GUARD_STALE_ERRNO,
+        };
+        assert!(exec_guard_stale_generation_proof_holds(audit));
+
+        let mut bad = audit;
+        bad.stale_reply_attempts = 0;
+        assert!(!exec_guard_stale_generation_proof_holds(bad));
+
+        let mut bad = audit;
+        bad.stale_reply_generation = 6;
+        assert!(!exec_guard_stale_generation_proof_holds(bad));
+
+        let mut bad = audit;
+        bad.post_write_exec_generation = bad.stale_reply_generation;
+        assert!(!exec_guard_stale_generation_proof_holds(bad));
+
+        let mut bad = audit;
+        bad.stale_reply_errno = EXEC_GUARD_STALE_ERRNO - 1;
+        assert!(!exec_guard_stale_generation_proof_holds(bad));
+    }
+
+    #[test]
+    fn execute_guard_backing_replacement_proof_requires_an_identical_fresh_rescan() {
+        let expected = [0x11; 32];
+        let audit = ExecGuardPageAudit {
+            gpa: 0x4008_2000,
+            initial_sha256: expected,
+            exec_scans: 3,
+            first_exec_generation: 7,
+            first_exec_sha256: expected,
+            write_revocations: 1,
+            write_generation: 11,
+            pre_write_sha256: expected,
+            post_write_exec_generation: 19,
+            post_write_exec_sha256: [0x22; 32],
+            backing_replacements: 1,
+            pre_replace_sha256: expected,
+            replacement_sha256: expected,
+            post_replace_exec_generation: 11,
+            post_replace_exec_sha256: expected,
+            stale_reply_attempts: 1,
+            stale_reply_generation: 11,
+            stale_reply_errno: EXEC_GUARD_STALE_ERRNO,
+        };
+        assert!(exec_guard_backing_replacement_proof_holds(expected, audit));
+
+        let mut bad = audit;
+        bad.backing_replacements = 0;
+        assert!(!exec_guard_backing_replacement_proof_holds(expected, bad));
+
+        let mut bad = audit;
+        bad.post_replace_exec_generation = bad.first_exec_generation;
+        assert!(!exec_guard_backing_replacement_proof_holds(expected, bad));
+
+        let mut bad = audit;
+        bad.replacement_sha256 = [0x33; 32];
+        assert!(!exec_guard_backing_replacement_proof_holds(expected, bad));
+
+        let mut bad = audit;
+        bad.post_replace_exec_sha256 = [0x33; 32];
+        assert!(!exec_guard_backing_replacement_proof_holds(expected, bad));
     }
 
     #[test]
@@ -1917,6 +2427,15 @@ mod tests {
             digest_state(&std::collections::BTreeMap::new(), slice, empty),
             digest_state(&std::collections::BTreeMap::new(), &buf, empty)
         );
+    }
+
+    #[test]
+    fn guest_ram_mut_borrows_the_unique_allocation() {
+        let mut buf = vec![1u8, 2, 3, 4, 5];
+        // SAFETY: `buf` uniquely owns `len` initialized, writable bytes.
+        let slice = unsafe { guest_ram_mut(buf.as_mut_ptr(), buf.len()) };
+        slice.copy_from_slice(&[5, 4, 3, 2, 1]);
+        assert_eq!(buf, [5, 4, 3, 2, 1]);
     }
 
     #[test]
@@ -2205,6 +2724,7 @@ mod tests {
         assert_eq!(kvm::RUN, io(0x80));
         // struct kvm_userspace_memory_region is 32 bytes; kvm_one_reg 16; kvm_vcpu_init 32.
         assert_eq!(kvm::SET_USER_MEMORY_REGION, iow(0x46, 32));
+        assert_eq!(kvm::IRQ_LINE, iow(0x61, 8));
         // Both ONE_REG ioctls are _IOW: the get form encodes write because userspace
         // writes the descriptor and the kernel fills a pointed-at buffer. Pinning them
         // to their literal ABI numbers so the direction can't drift back to _IOR.
@@ -2213,6 +2733,9 @@ mod tests {
         assert_eq!(kvm::SET_ONE_REG, iow(0xac, 16));
         assert_eq!(kvm::ARM_VCPU_INIT, iow(0xae, 32));
         assert_eq!(kvm::ARM_PREFERRED_TARGET, ior(0xaf, 32));
+        assert_eq!(kvm::ARM_VCPU_PSCI_0_2, 2);
+        assert_eq!(kvm::VCPU_FEATURE_PMU_V3, 3);
+        assert_eq!(kvm::VCPU_FEATURE_HAS_EL2, 7);
         assert_eq!(kvm::GET_REG_LIST, iowr(0xb0, 8));
         // struct kvm_enable_cap is 104 bytes; kvm_create_device 12; kvm_device_attr 24.
         assert_eq!(kvm::ENABLE_CAP, iow(0xa3, 104));
@@ -2225,6 +2748,15 @@ mod tests {
         assert_eq!(kvm::ARM_PREEMPT_EXIT, io(0xe4));
         assert_eq!(kvm::EXIT_PREEMPT, 42);
         assert_eq!(kvm::CAP_ARM_DETERMINISTIC_INTERCEPTS, 245);
+        assert_eq!(kvm::CAP_ARM_STAGE2_EXEC_GUARD, 246);
+        assert_eq!(kvm::EXIT_ARM_STAGE2_EXEC_GUARD, 43);
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD, iow(0xb7, 24));
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD, 0x4018_AEB7);
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD_APPROVE_EXEC, 0);
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD_REJECT_EXEC, 1);
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD_EXIT_EXEC, 1);
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD_EXIT_WRITE, 2);
+        assert_eq!(kvm::ARM_STAGE2_EXEC_GUARD_EXIT_BLOCKED, 4);
 
         // KVM_SET_GUEST_DEBUG is _IOW(0x9b, sizeof(struct kvm_guest_debug)). On arm64 that
         // struct is 0x208 bytes (control+pad = 8, plus a 64×u64 kvm_guest_debug_arch = 512),
@@ -2294,6 +2826,11 @@ mod tests {
         // KVM_REG_ARM_CORE_REG(name) == offsetof(struct kvm_regs, name) / sizeof(u32).
         assert_eq!(kvm::REG_CORE_PC, pc_offset / 4);
         assert_eq!(kvm::REG_CORE_PC, 0x40);
+        assert_eq!(kvm::REG_CORE_X0, 0);
+        assert_eq!(kvm::REG_CORE_X_STRIDE, 2);
+        assert_eq!(kvm::REG_CORE_PSTATE_OFFSET, pstate_offset);
+        assert_eq!(kvm::REG_CORE_PSTATE, pstate_offset / 4);
+        assert_eq!(kvm::REG_CORE_PSTATE, 0x42);
         assert_ne!(
             kvm::REG_CORE_PC,
             sp_el1_offset / 4,
@@ -2407,10 +2944,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_patch_row_is_expected_absent() {
+    fn only_patch_rows_are_expected_absent() {
         // AA-0's expect column: every mandatory row must be present on any usable box;
-        // the determinism cap appears only once the patched kernel boots (AA-3), so it
-        // is the one row expected absent — and it is NOT in the mandatory set.
+        // patch caps appear only once their kernels boot, so they are expected absent
+        // and are NOT in the mandatory stock-host set.
         for cap in Capability::mandatory_aa0() {
             assert!(
                 cap.expect_present(),
@@ -2418,8 +2955,11 @@ mod tests {
                 cap.name()
             );
             assert!(
-                !matches!(cap, Capability::DeterministicIntercepts),
-                "the expect-absent patch marker must not be in the mandatory set"
+                !matches!(
+                    cap,
+                    Capability::DeterministicIntercepts | Capability::Stage2ExecGuard
+                ),
+                "expect-absent patch markers must not be in the mandatory set"
             );
         }
         // The seven host-probeable mandatory rows, exactly.
@@ -2430,6 +2970,7 @@ mod tests {
         assert!(Capability::Vgicv3Creatable.expect_present());
         assert!(Capability::WritableIdRegisters.expect_present());
         assert!(!Capability::DeterministicIntercepts.expect_present());
+        assert!(!Capability::Stage2ExecGuard.expect_present());
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -2445,6 +2986,7 @@ mod tests {
             Capability::Vgicv3Creatable,
             Capability::WritableIdRegisters,
             Capability::DeterministicIntercepts,
+            Capability::Stage2ExecGuard,
         ] {
             assert!(matches!(probe(cap), Err(SysError::Unsupported)));
         }

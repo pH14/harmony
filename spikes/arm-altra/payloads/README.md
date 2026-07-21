@@ -83,6 +83,13 @@ identifiable from measurements — see `../oracle-model/src/lib.rs` §Identifiab
 | `llsc-atomics` | AA-4(a) hazard | `LDXR`/`STXR` increment / trip | reported: STXR retries |
 | `lse-atomics` | AA-4(b) answer | `LDADD` increment / trip | none |
 | `clock-page` | AA-5 | seqlock read of the pvclock page / trip | reported: retries (must be 0) |
+| `aa4-self-modify` | AA-4 level-3 proof fixture | dedicated page changes `mov x0,#1` → `mov x0,#2`, then executes again | no measurement window; VMM audits pre-store and rescan hashes |
+
+The first nine are the oracle/model set. `aa4-self-modify` is deliberately outside
+`ALL_PAYLOADS`: it measures no branch count and exists only to make the execute-guard's
+write-before-modification and rescan transitions non-vacuous. Its target occupies one complete,
+page-aligned executable page; the host proof pins both instruction encodings and both full-page
+hashes.
 
 `straight-line` and `branch-dense` (zero ambiguity) pin `window_offset` from two
 densities; `exception-abort` yields entry+eret; `svc` minus `exception-abort`
@@ -109,7 +116,7 @@ those branches, which is silicon's alone.
 
 ```sh
 # targets: rustup target add aarch64-unknown-none
-cargo build --release                        # nine payload ELFs
+cargo build --release                        # nine oracle ELFs + the AA-4 proof fixture
 ./smoke.sh                                    # boot each under TCG, diff structure, propagate RC
 ```
 

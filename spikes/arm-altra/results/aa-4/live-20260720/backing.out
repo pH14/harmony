@@ -1,0 +1,2 @@
+AA4_GUARD_BACKING image_sha256=bc7bdd99780c1e020c9307a4309ebbc2471094b87eaece4909544563d48dd2a8 control_scans=1 control_first_gen=4 control_last_gen=4 backing_scans=2 backing_first_gen=4 backing_last_gen=7 control_reused_approval=true backing_forced_rescan=true
+AA4_GUARD_BACKING PASS: moving slot 0 to a distinct byte-identical backing forced a fresh scan (gen 4 -> 7); content unchanged, approval not reused across the move

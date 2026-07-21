@@ -1,0 +1,16 @@
+ok       dev-kvm: expected present, found present
+ok       perf-raw-0x21-pinned: expected present, found present
+ok       kvm-cap-set-guest-debug: expected present, found present
+ok       br-retired-pmceid1: expected present, found present
+ok       host-overflow-delivers: expected present, found present
+ok       vgicv3-creatable: expected present, found present
+ok       writable-id-registers: expected present, found present
+RULED    kvm-cap-arm-deterministic-intercepts: expected absent, found present
+RULED    kvm-cap-arm-stage2-exec-guard: expected absent, found present
+ok       ecv: expected absent, found absent
+ok       lse: expected present, found present
+ok       sve: expected absent, found absent
+ok       nested-virt: expected absent, found absent
+ok       pmuver: expected 0x4, found 0x4
+ok       kvm-mode: expected vhe, found vhe
+truth-table.json written to /home/ubuntu/harmony/spikes/arm-altra/results/aa-0/live-20260720/patched-aa4guard/truth-table.json: 15 rows, every deviation confirmed or ruled

@@ -1,0 +1,14 @@
+AA-4 W^X + rescan-on-exec live proof — 2026-07-20, Ampere Altra N1
+host kernel: 6.18.35-aa4guard (patch 0001 KVM_EXIT_PREEMPT + 0002 stage-2 execute guard,
+             cap KVM_CAP_ARM_STAGE2_EXEC_GUARD=246 / exit 43), build-id ac576f87...
+patch 0002 sha256: b51a75f6daad7ad8c8f50e2384bb170660acf429dabc2e72058b2771705736ad
+core: 60 (isolated), perf_event_paranoid=-1
+
+reject proof   (llsc-atomics, 2 planted exclusives): PASS — scanned + rejected pre-execute
+neg control    (lse-atomics, clean LSE)            : APPROVED + ran (guard is selective)
+write proof    (aa4-self-modify, page-aligned)     : PASS — approve -> write-revoke -> rescan(newer gen) -> stale-gen EINVAL
+payload hashes:
+  llsc-atomics    13cd6475184545de8ce2546e628805ad95b8a71a803dbe34f1cef22d6301e40c
+  lse-atomics     26bf064eea39a5f166f0d7f1d666c60e9d9ba2cbb57bcf353341a27c4e4375b4
+  aa4-self-modify e45a2f6d319a73b28ea4ae7e3d5c45955b62829f24232d5763a3326ca2300d14
+remaining gates: notifier-replacement, two-vCPU scan/write race, backing-replacement (unit predicate committed)

@@ -1,0 +1,8 @@
+captured=2026-07-20T13:53:03Z
+uname=6.8.0-134-generic
+cmdline=BOOT_IMAGE=/boot/vmlinuz-6.8.0-134-generic root=/dev/mapper/vgroot-lvroot ro nvme_core.multipath=0 cma=128M initcall_blacklist=sysfb_init module_blacklist=ipmi_ssif,hpilo,hpwdt
+grub_default=GRUB_DEFAULT=0
+/boot/vmlinuz
+/boot/vmlinuz-6.8.0-134-generic
+/boot/vmlinuz-6.8.0-136-generic
+/boot/vmlinuz.old

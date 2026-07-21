@@ -32,12 +32,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use super::{KvmRun, PerfEventAttr, SysError, br_retired_attr, kvm};
+use sha2::{Digest, Sha256};
+
+use super::{
+    ExecGuardExit, ExecGuardPageAudit, ExecGuardStats, KvmRun, PerfEventAttr, SysError,
+    br_retired_attr, kvm,
+};
+use crate::linux_console::{LinuxClockeventState, LinuxPvclockVcpu, PvclockWrite};
 use crate::run::{RunError, StepVcpu, Vcpu, VcpuExit, WorkCounter};
 
 /// Guest RAM base — the QEMU `virt` / Altra map the payload runtime is linked for
 /// (`payloads/linker.ld`: params page at `0x4000_0000`, image at `+512 KiB`).
-pub const RAM_BASE: u64 = 0x4000_0000;
+pub const RAM_BASE: u64 = crate::linux_boot::RAM_BASE;
 
 /// How much guest RAM the payloads need: the image loads 512 KiB in and its whole
 /// footprint (code + rodata + data + bss + `__stack_top`, `payloads/linker.ld`) plus
@@ -61,6 +67,26 @@ pub const RAM_BASE: u64 = 0x4000_0000;
 /// change in the AA-1(c) disposition. If AA-5's Linux guest (not yet built) needs more,
 /// it takes its own larger slot; nothing in the bare-metal payload path exceeds this.
 pub const RAM_SIZE: usize = 4 << 20;
+
+/// Reserved digest-record id for the VM-owned Linux pvclock registration.
+///
+/// KVM register ids always carry a real architecture in their high byte; all ones is outside
+/// that namespace. The insertion still fails closed on a collision so a future ABI extension
+/// cannot silently alias device state with an architectural register.
+const LINUX_PVCLOCK_DIGEST_STATE_ID: u64 = u64::MAX;
+const LINUX_PVCLOCK_DIGEST_STATE_TAG: &[u8] = b"harmony-pvclock-v1";
+/// Reserved digest-record id for the userspace-owned ARM clockevent input state.
+const LINUX_CLOCKEVENT_DIGEST_STATE_ID: u64 = u64::MAX - 1;
+const LINUX_CLOCKEVENT_DIGEST_STATE_TAG: &[u8] = b"harmony-clockevent-v1";
+const KVM_ARM_IRQ_TYPE_PPI: u32 = 2;
+const KVM_ARM_IRQ_TYPE_SHIFT: u32 = 24;
+const HARMONY_CLOCKEVENT_IRQ: u32 =
+    (KVM_ARM_IRQ_TYPE_PPI << KVM_ARM_IRQ_TYPE_SHIFT) | crate::linux_boot::HARMONY_CLOCKEVENT_PPI;
+const HARMONY_CLOCKEVENT_LINE_MASK: u32 = 1 << crate::linux_boot::HARMONY_CLOCKEVENT_PPI;
+/// vCPU0 MPIDR 0 | `VGIC_LEVEL_INFO_LINE_LEVEL` 0 | vINTID block base 0.
+const HARMONY_CLOCKEVENT_LEVEL_INFO_ATTR: u64 = kvm::VGIC_LEVEL_INFO_LINE_LEVEL;
+const _: () = assert!(HARMONY_CLOCKEVENT_IRQ == 0x0200_0014);
+const _: () = assert!(HARMONY_CLOCKEVENT_LEVEL_INFO_ATTR == 0);
 
 /// The signal used for the stock overflow kick. `SIGUSR1` rather than `SIGIO`: the
 /// handler must not be one the runtime installs for anything else, and the only
@@ -140,6 +166,27 @@ struct KvmUserspaceMemoryRegion {
     memory_size: u64,
     userspace_addr: u64,
 }
+
+/// `struct kvm_irq_level` for `KVM_IRQ_LINE`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KvmIrqLevel {
+    irq: u32,
+    level: u32,
+}
+const _: () = assert!(core::mem::size_of::<KvmIrqLevel>() == 8);
+
+/// `struct kvm_arm_stage2_exec_guard`, the exact-generation VM-ioctl response.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KvmArmStage2ExecGuard {
+    gpa: u64,
+    generation: u64,
+    action: u32,
+    flags: u32,
+}
+const _: () = assert!(core::mem::size_of::<KvmArmStage2ExecGuard>() == 24);
+const _: () = assert!(super::EXEC_GUARD_STALE_ERRNO == libc::EINVAL);
 
 /// `struct kvm_vcpu_init`.
 #[repr(C)]
@@ -241,6 +288,92 @@ fn err(call: &'static str) -> SysError {
     }
 }
 
+fn map_guest_ram(len: usize) -> Result<*mut u8, SysError> {
+    // SAFETY: a fresh anonymous private mapping; `len` is a VMM-owned board constant.
+    let mem = unsafe {
+        libc::mmap(
+            core::ptr::null_mut(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+            -1,
+            0,
+        )
+    };
+    if mem == libc::MAP_FAILED {
+        return Err(err("mmap(guest RAM)"));
+    }
+    Ok(mem.cast::<u8>())
+}
+
+/// EL1h with DAIF masked — the guest-entry PSTATE the bare-payload boot uses.
+const PSTATE_EL1H_DAIF: u64 = 0x3c5;
+
+/// Set one arm64 core register on an arbitrary vCPU fd (the [`Machine`] method targets only
+/// vCPU 0; the two-vCPU race proof also sets the writer vCPU).
+fn set_core_reg_on(vcpu_fd: libc::c_int, index: u64, value: u64) -> Result<(), SysError> {
+    let one = KvmOneReg {
+        id: kvm::REG_ARM64_CORE_U64 | index,
+        addr: (&raw const value) as u64,
+    };
+    // SAFETY: `vcpu_fd` is valid; `one.addr` points at a live u64 on this frame, which is
+    // exactly what KVM_SET_ONE_REG's contract requires.
+    if unsafe { libc::ioctl(vcpu_fd, kvm::SET_ONE_REG as libc::c_ulong, &raw const one) } < 0 {
+        return Err(err("ioctl(KVM_SET_ONE_REG, core)"));
+    }
+    Ok(())
+}
+
+/// The decoded outcome of one two-vCPU-race `KVM_RUN`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RaceExit {
+    /// The guard froze a page for a scan (an execute fault awaiting approval).
+    GuardExec { gpa: u64, generation: u64 },
+    /// A write revoked execute and exited before the store (page not frozen for a scan).
+    GuardWrite { gpa: u64, generation: u64 },
+    /// A write BLOCKED behind a concurrent frozen scan — the race's proof outcome.
+    GuardBlocked { gpa: u64, generation: u64 },
+    /// Any other exit (MMIO, error, or unexpected).
+    Other(String),
+}
+
+/// One `KVM_RUN` of `vcpu_fd`, decoding its exit into a [`RaceExit`] without servicing it.
+fn race_run_and_decode(vcpu_fd: libc::c_int, run: *mut KvmRun) -> Result<RaceExit, SysError> {
+    // SAFETY: `vcpu_fd` is valid; KVM_RUN takes no argument and returns 0 or -1.
+    if unsafe { libc::ioctl(vcpu_fd, kvm::RUN as libc::c_ulong, 0_u64) } < 0 {
+        return Err(err("ioctl(KVM_RUN, race)"));
+    }
+    // SAFETY: `run` is a live `MAP_SHARED` kvm_run mapping; the vCPU has stopped, so snapshot
+    // it once and decode through the portable seam.
+    let snapshot = unsafe { core::ptr::read_volatile(run) };
+    if let Some(exit) = super::decode_exec_guard_exit(&snapshot) {
+        let write = kvm::ARM_STAGE2_EXEC_GUARD_EXIT_WRITE;
+        let blocked = kvm::ARM_STAGE2_EXEC_GUARD_EXIT_BLOCKED;
+        return Ok(if exit.flags == kvm::ARM_STAGE2_EXEC_GUARD_EXIT_EXEC {
+            RaceExit::GuardExec {
+                gpa: exit.gpa,
+                generation: exit.generation,
+            }
+        } else if exit.flags == write {
+            RaceExit::GuardWrite {
+                gpa: exit.gpa,
+                generation: exit.generation,
+            }
+        } else if exit.flags == (write | blocked) {
+            RaceExit::GuardBlocked {
+                gpa: exit.gpa,
+                generation: exit.generation,
+            }
+        } else {
+            RaceExit::Other(format!("guard flags {:#x} at {:#x}", exit.flags, exit.gpa))
+        });
+    }
+    Ok(RaceExit::Other(format!(
+        "{:?}",
+        super::decode_kvm_run(&snapshot)
+    )))
+}
+
 /// Adapt a seam failure into the run loop's error type. The loop never turns a
 /// failed syscall into a record with a plausible zero in it.
 fn seam(context: &'static str, e: SysError) -> RunError {
@@ -337,10 +470,27 @@ pub struct MigrationChurner {
 }
 
 impl MigrationChurner {
-    /// Start churning `tid`'s affinity across `cores` (which must be non-empty and in range,
-    /// as [`allowed_cores`] guarantees) until dropped or [`MigrationChurner::stop`]ped.
-    #[must_use]
-    pub fn start(tid: libc::pid_t, cores: Vec<u32>) -> MigrationChurner {
+    /// Start churning `tid`'s affinity across `cores` until dropped or
+    /// [`MigrationChurner::stop`]ped.
+    ///
+    /// # Errors
+    /// [`SysError::Protocol`] on an empty core list (the modulo below would panic) or any
+    /// core at/past `CPU_SETSIZE` (libc's `CPU_SET` panics rather than erroring). Callers
+    /// normally pass [`allowed_cores`] output, but library code must not panic on a caller
+    /// contract violation.
+    pub fn start(tid: libc::pid_t, cores: Vec<u32>) -> Result<MigrationChurner, SysError> {
+        if cores.is_empty() {
+            return Err(SysError::Protocol(
+                "migration churner needs a non-empty core list".to_owned(),
+            ));
+        }
+        let cpu_setsize = core::mem::size_of::<libc::cpu_set_t>() * 8;
+        if let Some(bad) = cores.iter().find(|&&c| (c as usize) >= cpu_setsize) {
+            return Err(SysError::Protocol(format!(
+                "churner core {bad} is at or past CPU_SETSIZE ({cpu_setsize}): out of range \
+                 for an affinity mask"
+            )));
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let moves = Arc::new(AtomicU64::new(0));
         let (stop_t, moves_t) = (Arc::clone(&stop), Arc::clone(&moves));
@@ -385,11 +535,11 @@ impl MigrationChurner {
                 std::thread::sleep(std::time::Duration::from_micros(200));
             }
         });
-        MigrationChurner {
+        Ok(MigrationChurner {
             stop,
             moves,
             handle: Some(handle),
-        }
+        })
     }
 
     /// How many affinity moves the churner has successfully issued so far.
@@ -506,9 +656,66 @@ pub struct Machine {
     run_size: usize,
     mem: *mut u8,
     mem_size: usize,
+    /// VM-lifetime one-shot pvclock registration. `None` for bare payloads and before the
+    /// owned Linux guest's validated MMIO write.
+    linux_pvclock_gpa: Option<u64>,
+    /// `Some` only for the owned Linux board. The external level is VM state that KVM's
+    /// register dump does not necessarily expose, so it is retained and digest-bound here.
+    linux_clockevent: Option<LinuxClockeventState>,
+    /// Present only for the guarded constructors. Counts every hidden synchronous
+    /// guard transition so a live proof cannot pass without exercising the mechanism.
+    exec_guard: Option<ExecGuardStats>,
+    /// Optional one-page trace used by the planted self-modification proof. It is
+    /// configured before the first vCPU entry and remains fixed for the VM lifetime.
+    exec_guard_page_audit: Option<ExecGuardPageAudit>,
+    /// Proof-only target on whose post-write scan one superseded generation is replayed.
+    exec_guard_stale_probe_gpa: Option<u64>,
+    /// The generation of the most recent execute-scan the guard serviced (0 before any).
+    /// Used by the notifier-replacement proof to show a memslot update forced a fresh scan
+    /// at a strictly newer generation.
+    exec_guard_last_scan_generation: u64,
+    /// The second vCPU used only by the two-vCPU scan/write race proof: its fd and its own
+    /// `kvm_run` mapping. `-1`/null until [`Machine::race_create_writer`] creates it.
+    race_writer_fd: i32,
+    race_writer_run: *mut KvmRun,
+    race_writer_run_size: usize,
+    /// Build the VM WITHOUT an in-kernel vGIC. Only the two-vCPU race proof sets this: its
+    /// MMU-off vCPUs use no interrupt controller, and skipping the vGIC's `CTRL_INIT` (which
+    /// finalises the vCPU count to one) is what lets the writer vCPU be created.
+    skip_vgic: bool,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables it. See
     /// [`DEFAULT_WATCHDOG_SECS`].
     watchdog_secs: u64,
+}
+
+/// Bound transparent guard exits inside one [`Vcpu::run`] call. A guest that endlessly
+/// rewrites and re-executes pages must surface as a failure instead of hiding an unbounded
+/// exit loop below the caller's own exit budget.
+const MAX_EXEC_GUARD_EXITS_PER_RUN: u64 = 1_000_000;
+
+enum GuestBoot<'a> {
+    Payload {
+        image: &'a crate::elf::Elf,
+        params: &'a ParamsPage,
+    },
+    Linux {
+        image: &'a [u8],
+        initramfs: &'a [u8],
+        bootargs: &'a str,
+    },
+}
+
+impl GuestBoot<'_> {
+    fn ram_size(&self) -> usize {
+        match self {
+            Self::Payload { .. } => RAM_SIZE,
+            Self::Linux { .. } => crate::linux_boot::RAM_SIZE,
+        }
+    }
+
+    fn needs_psci_0_2(&self) -> bool {
+        matches!(self, Self::Linux { .. })
+    }
 }
 
 impl Machine {
@@ -526,7 +733,82 @@ impl Machine {
     /// [`SysError`] if any ioctl or mapping failed. Nothing is half-built: a failure
     /// closes what it opened.
     pub fn new(image: &crate::elf::Elf, params: &ParamsPage) -> Result<Machine, SysError> {
+        Self::new_for(GuestBoot::Payload { image, params }, false, false)
+    }
+
+    /// Create a bare-payload VM with the AA-4 stage-2 execute guard enabled before
+    /// vCPU creation. Used by the planted clean/exclusive runtime proof.
+    ///
+    /// # Errors
+    /// [`SysError`] if the patched capability is absent, cannot be enabled, or construction fails.
+    pub fn new_guarded(image: &crate::elf::Elf, params: &ParamsPage) -> Result<Machine, SysError> {
+        Self::new_for(GuestBoot::Payload { image, params }, true, false)
+    }
+
+    /// Create a guarded bare-payload VM with NO in-kernel vGIC, for the two-vCPU scan/write
+    /// race: skipping the vGIC's `CTRL_INIT` leaves the vCPU count un-finalised so a second
+    /// (writer) vCPU can be created. The race's MMU-off vCPUs use no interrupt controller.
+    ///
+    /// # Errors
+    /// [`SysError`] if the patched guard capability is absent or construction fails.
+    pub fn new_race_guarded(
+        image: &crate::elf::Elf,
+        params: &ParamsPage,
+    ) -> Result<Machine, SysError> {
+        Self::new_for(GuestBoot::Payload { image, params }, true, true)
+    }
+
+    /// Create the AA-5(c) Linux board, validate and load its flat Image,
+    /// initramfs, and generated DTB, then establish the arm64 Linux entry state.
+    ///
+    /// This constructor supplies boot plumbing only. The page remains zero until the guest's
+    /// one-shot registration is followed by an exact-work landing, so callers cannot treat a
+    /// successful construction as AA-5 certification.
+    ///
+    /// # Errors
+    /// [`SysError`] if an artifact is malformed or any KVM operation fails.
+    pub fn new_linux(image: &[u8], initramfs: &[u8], bootargs: &str) -> Result<Machine, SysError> {
+        Self::new_for(
+            GuestBoot::Linux {
+                image,
+                initramfs,
+                bootargs,
+            },
+            false,
+            false,
+        )
+    }
+
+    /// Create the owned Linux board with default-XN execute mediation enabled before
+    /// vCPU creation. Guard exits are scanned and serviced transparently by [`Machine::run`].
+    ///
+    /// # Errors
+    /// [`SysError`] if the patched capability is absent, cannot be enabled, or construction fails.
+    pub fn new_linux_guarded(
+        image: &[u8],
+        initramfs: &[u8],
+        bootargs: &str,
+    ) -> Result<Machine, SysError> {
+        Self::new_for(
+            GuestBoot::Linux {
+                image,
+                initramfs,
+                bootargs,
+            },
+            true,
+            false,
+        )
+    }
+
+    fn new_for(
+        boot: GuestBoot<'_>,
+        exec_guard: bool,
+        skip_vgic: bool,
+    ) -> Result<Machine, SysError> {
         let kvm_fd = open_kvm()?;
+        let linux_clockevent = boot
+            .needs_psci_0_2()
+            .then_some(LinuxClockeventState::default());
         let mut m = Machine {
             kvm_fd,
             vm_fd: -1,
@@ -536,9 +818,19 @@ impl Machine {
             run_size: 0,
             mem: core::ptr::null_mut(),
             mem_size: 0,
+            linux_pvclock_gpa: None,
+            linux_clockevent,
+            exec_guard: exec_guard.then_some(ExecGuardStats::default()),
+            exec_guard_page_audit: None,
+            exec_guard_stale_probe_gpa: None,
+            exec_guard_last_scan_generation: 0,
+            race_writer_fd: -1,
+            race_writer_run: core::ptr::null_mut(),
+            race_writer_run_size: 0,
+            skip_vgic,
             watchdog_secs: DEFAULT_WATCHDOG_SECS,
         };
-        m.build(image, params)?;
+        m.build(boot)?;
         Ok(m)
     }
 
@@ -604,7 +896,8 @@ impl Machine {
 
     /// The build sequence, factored out so [`Machine`]'s `Drop` cleans up a partial
     /// construction rather than leaking fds on the error path.
-    fn build(&mut self, image: &crate::elf::Elf, params: &ParamsPage) -> Result<(), SysError> {
+    fn build(&mut self, boot: GuestBoot<'_>) -> Result<(), SysError> {
+        let needs_psci_0_2 = boot.needs_psci_0_2();
         // SAFETY: `kvm_fd` is a valid /dev/kvm descriptor. KVM_CREATE_VM takes a
         // machine type (0 = default) and returns a VM fd.
         self.vm_fd = unsafe { libc::ioctl(self.kvm_fd, kvm::CREATE_VM as libc::c_ulong, 0_u64) };
@@ -612,30 +905,27 @@ impl Machine {
             return Err(err("ioctl(KVM_CREATE_VM)"));
         }
 
-        // Guest RAM: one anonymous mapping, one memory slot.
-        // SAFETY: a fresh anonymous private mapping; no pointer is derived from
-        // untrusted data and the length is our own constant.
-        let mem = unsafe {
-            libc::mmap(
-                core::ptr::null_mut(),
-                RAM_SIZE,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
-                -1,
-                0,
-            )
-        };
-        if mem == libc::MAP_FAILED {
-            return Err(err("mmap(guest RAM)"));
+        // The kernel contract requires the guard opt-in before any vCPU exists.
+        // Enabling it here also makes the VMM's controlled boundary explicit: this
+        // board has one anonymous private slot and no assigned/DMA-capable device.
+        if self.exec_guard.is_some() {
+            self.enable_stage2_exec_guard()?;
         }
-        self.mem = mem.cast::<u8>();
-        self.mem_size = RAM_SIZE;
+
+        let ram_size = boot.ram_size();
+
+        // Guest RAM: one anonymous mapping, one memory slot.
+        self.mem = map_guest_ram(ram_size)?;
+        self.mem_size = ram_size;
+
+        let memory_size = u64::try_from(ram_size)
+            .map_err(|_| SysError::Protocol("guest RAM size does not fit u64".into()))?;
 
         let region = KvmUserspaceMemoryRegion {
             slot: 0,
             flags: 0,
             guest_phys_addr: RAM_BASE,
-            memory_size: RAM_SIZE as u64,
+            memory_size,
             userspace_addr: self.mem as u64,
         };
         // SAFETY: `vm_fd` is valid and `region` is a fully initialised
@@ -704,6 +994,22 @@ impl Machine {
         {
             return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET)"));
         }
+        let forbidden_timer_owners =
+            (1 << kvm::VCPU_FEATURE_PMU_V3) | (1 << kvm::VCPU_FEATURE_HAS_EL2);
+        if init.features[0] & forbidden_timer_owners != 0 {
+            return Err(SysError::Protocol(format!(
+                "KVM preferred target unexpectedly enables PMU/nested feature bits {:#x}; \
+                 dedicated PPI 20 ownership is no longer proven",
+                init.features[0] & forbidden_timer_owners
+            )));
+        }
+        // The generated Linux DTB advertises PSCI 0.2 over HVC. Without this
+        // feature bit KVM exposes only legacy PSCI 0.1, so standardized calls
+        // such as SYSTEM_OFF/RESET are reported unsupported. Preserve the
+        // historical bare-payload init bitmap byte-for-byte; only Linux opts in.
+        if needs_psci_0_2 {
+            init.features[0] |= 1 << kvm::ARM_VCPU_PSCI_0_2;
+        }
         // SAFETY: `vcpu_fd` is valid; `init` is fully initialised by the call above.
         if unsafe {
             libc::ioctl(
@@ -719,14 +1025,35 @@ impl Machine {
         // The in-kernel vGICv3. The payload runtime programs the GIC distributor at
         // 0x0800_0000 before it prints a byte; with no vGIC those accesses are MMIO
         // exits to userspace, which the measurement loop refuses as non-console — so
-        // NO payload boots without this. Created after VCPU_INIT (the vGIC needs the
-        // vCPU to exist) and before the guest runs.
-        self.create_vgic()?;
+        // NO booting payload runs without this. Created after VCPU_INIT (the vGIC needs
+        // the vCPU to exist) and before the guest runs. The two-vCPU race skips it: its
+        // MMU-off vCPUs never touch the GIC, and the vGIC's CTRL_INIT would finalise the
+        // vCPU count to one, blocking the writer vCPU.
+        if !self.skip_vgic {
+            self.create_vgic()?;
+        }
 
-        self.load_image(image)?;
-        self.write_params(params);
-        self.publish_pvclock_page();
-        self.set_pc(image.entry())?;
+        match boot {
+            GuestBoot::Payload { image, params } => {
+                self.load_image(image)?;
+                self.write_params(params);
+                self.publish_pvclock_page();
+                self.set_pc(image.entry())?;
+            }
+            GuestBoot::Linux {
+                image,
+                initramfs,
+                bootargs,
+            } => {
+                // SAFETY: `self.mem` is the unique writable `ram_size`-byte mmap
+                // established above, and the vCPU has not run yet.
+                let ram = unsafe { core::slice::from_raw_parts_mut(self.mem, self.mem_size) };
+                let loaded = crate::linux_boot::load(image, initramfs, bootargs, ram)
+                    .map_err(|e| SysError::Protocol(format!("Linux boot layout: {e}")))?;
+                self.publish_pvclock_page();
+                self.set_linux_entry(loaded.entry_gpa, loaded.dtb_gpa)?;
+            }
+        }
 
         // The KVM_RUN watchdog handler — installed here so every Machine that can enter
         // the guest can also be pulled back out of a wedge. Orthogonal to the counter's
@@ -839,6 +1166,613 @@ impl Machine {
         Ok(())
     }
 
+    /// Enable the AA-4 execute guard before vCPU creation, refusing an absent marker
+    /// rather than letting an unknown enable-cap failure masquerade as patched coverage.
+    fn enable_stage2_exec_guard(&self) -> Result<(), SysError> {
+        // SAFETY: `vm_fd` is valid and KVM_CHECK_EXTENSION takes the scalar cap number.
+        let present = unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::CHECK_EXTENSION as libc::c_ulong,
+                kvm::CAP_ARM_STAGE2_EXEC_GUARD,
+            )
+        };
+        if present < 0 {
+            return Err(err("ioctl(KVM_CHECK_EXTENSION, ARM_STAGE2_EXEC_GUARD)"));
+        }
+        if present == 0 {
+            return Err(SysError::Protocol(
+                "the AA-4 stage-2 execute guard was requested but the running kernel does not \
+                 advertise KVM_CAP_ARM_STAGE2_EXEC_GUARD"
+                    .into(),
+            ));
+        }
+
+        let cap = KvmEnableCap {
+            cap: kvm::CAP_ARM_STAGE2_EXEC_GUARD as u32,
+            ..Default::default()
+        };
+        // SAFETY: `vm_fd` is valid; `cap` is fully initialized and no vCPU exists yet.
+        if unsafe { libc::ioctl(self.vm_fd, kvm::ENABLE_CAP as libc::c_ulong, &raw const cap) } < 0
+        {
+            return Err(err("ioctl(KVM_ENABLE_CAP, ARM_STAGE2_EXEC_GUARD)"));
+        }
+        Ok(())
+    }
+
+    /// Counts proving which execute-guard transitions this VM actually exercised.
+    #[must_use]
+    pub fn exec_guard_stats(&self) -> Option<ExecGuardStats> {
+        self.exec_guard
+    }
+
+    /// Select one guarded RAM page for bounded write/rescan audit before first entry.
+    ///
+    /// # Errors
+    /// [`SysError::Protocol`] if this is not a guarded VM, any guard exit already
+    /// occurred, or `gpa` is not one complete page in the single RAM slot.
+    pub fn audit_exec_guard_page(&mut self, gpa: u64) -> Result<(), SysError> {
+        let Some(stats) = self.exec_guard else {
+            return Err(SysError::Protocol(
+                "cannot audit an execute-guard page on an unguarded VM".into(),
+            ));
+        };
+        if stats.exits != 0 {
+            return Err(SysError::Protocol(
+                "execute-guard page audit must be selected before first vCPU entry".into(),
+            ));
+        }
+
+        // SAFETY: construction completed, the vCPU has never entered, and this machine
+        // exclusively owns the complete live RAM mapping.
+        let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
+        let page = super::exec_guard_page(ram, RAM_BASE, gpa).ok_or_else(|| {
+            SysError::Protocol(format!(
+                "execute-guard audit page {gpa:#x} is not one aligned page inside [{:#x}, {:#x})",
+                RAM_BASE,
+                RAM_BASE.saturating_add(self.mem_size as u64)
+            ))
+        })?;
+        self.exec_guard_page_audit = Some(ExecGuardPageAudit {
+            gpa,
+            initial_sha256: Sha256::digest(page).into(),
+            exec_scans: 0,
+            first_exec_generation: 0,
+            first_exec_sha256: [0; 32],
+            write_revocations: 0,
+            write_generation: 0,
+            pre_write_sha256: [0; 32],
+            post_write_exec_generation: 0,
+            post_write_exec_sha256: [0; 32],
+            backing_replacements: 0,
+            pre_replace_sha256: [0; 32],
+            replacement_sha256: [0; 32],
+            post_replace_exec_generation: 0,
+            post_replace_exec_sha256: [0; 32],
+            stale_reply_attempts: 0,
+            stale_reply_generation: 0,
+            stale_reply_errno: 0,
+        });
+        Ok(())
+    }
+
+    /// Arm one deliberate replay of the audited page's first approved generation.
+    ///
+    /// The replay occurs only while the same page is frozen for its post-write scan;
+    /// `EINVAL` is required before the exact current generation is approved normally.
+    /// This is a planted proof hook, not part of production guard mediation.
+    ///
+    /// # Errors
+    /// [`SysError::Protocol`] unless `gpa` is the page selected by
+    /// [`Machine::audit_exec_guard_page`] and no guard exit has occurred yet.
+    pub fn probe_stale_exec_guard_generation(&mut self, gpa: u64) -> Result<(), SysError> {
+        if !matches!(self.exec_guard, Some(stats) if stats.exits == 0) {
+            return Err(SysError::Protocol(
+                "stale-generation probe must be armed on a guarded VM before first vCPU entry"
+                    .into(),
+            ));
+        }
+        if !matches!(self.exec_guard_page_audit, Some(audit) if audit.gpa == gpa) {
+            return Err(SysError::Protocol(format!(
+                "stale-generation probe page {gpa:#x} is not the selected guard audit page"
+            )));
+        }
+        self.exec_guard_stale_probe_gpa = Some(gpa);
+        Ok(())
+    }
+
+    /// Page-specific observations configured by [`Machine::audit_exec_guard_page`].
+    #[must_use]
+    pub fn exec_guard_page_audit(&self) -> Option<ExecGuardPageAudit> {
+        self.exec_guard_page_audit
+    }
+
+    /// The generation of the most recent execute-scan the guard serviced (0 before any).
+    #[must_use]
+    pub fn exec_guard_last_scan_generation(&self) -> u64 {
+        self.exec_guard_last_scan_generation
+    }
+
+    /// Re-establish RAM slot 0 (same GPA, size, and anonymous backing) to fire KVM's mmu
+    /// notifier — the invalidation a live memslot update causes — clearing the guard's
+    /// stage-2 execute approvals. Guest RAM survives (the backing mapping is untouched); only
+    /// the KVM slot and its approvals are torn down and rebuilt, so the next execute of an
+    /// already-approved page must re-scan at a fresh generation.
+    ///
+    /// # Errors
+    /// [`SysError`] if either the delete or the re-add ioctl fails, or on an unguarded VM.
+    pub fn notifier_replace_slot0(&mut self) -> Result<(), SysError> {
+        if self.exec_guard.is_none() {
+            return Err(SysError::Protocol(
+                "notifier-replacement needs the stage-2 execute guard".into(),
+            ));
+        }
+        let memory_size = self.mem_size as u64;
+        // Delete slot 0 (memory_size 0), then re-add it with the identical backing.
+        let delete = KvmUserspaceMemoryRegion {
+            slot: 0,
+            flags: 0,
+            guest_phys_addr: RAM_BASE,
+            memory_size: 0,
+            userspace_addr: self.mem as u64,
+        };
+        // SAFETY: `vm_fd` is valid; `delete` is a fully initialised memory-region struct.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::SET_USER_MEMORY_REGION as libc::c_ulong,
+                &raw const delete,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_SET_USER_MEMORY_REGION delete)"));
+        }
+        let add = KvmUserspaceMemoryRegion {
+            slot: 0,
+            flags: 0,
+            guest_phys_addr: RAM_BASE,
+            memory_size,
+            userspace_addr: self.mem as u64,
+        };
+        // SAFETY: `vm_fd` is valid; `add` reinstates the identical mapping.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::SET_USER_MEMORY_REGION as libc::c_ulong,
+                &raw const add,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_SET_USER_MEMORY_REGION re-add)"));
+        }
+        Ok(())
+    }
+
+    /// Move RAM slot 0 to a DISTINCT anonymous backing whose contents are byte-identical to
+    /// the current one. Unlike [`Machine::notifier_replace_slot0`] (which reinstates the same
+    /// backing), this proves the guard re-scans even when the page content is unchanged — the
+    /// approval is keyed to the mapping, not to a content hash. The old backing is unmapped.
+    ///
+    /// # Errors
+    /// [`SysError`] if the fresh mapping or either ioctl fails, or on an unguarded VM.
+    pub fn backing_replace_slot0(&mut self) -> Result<(), SysError> {
+        if self.exec_guard.is_none() {
+            return Err(SysError::Protocol(
+                "backing-replacement needs the stage-2 execute guard".into(),
+            ));
+        }
+        let len = self.mem_size;
+        let fresh = map_guest_ram(len)?;
+        // SAFETY: `self.mem` and `fresh` are both live, uniquely-owned, `len`-byte mappings
+        // that do not overlap (distinct anonymous mmaps); copy the full guest RAM verbatim.
+        unsafe { core::ptr::copy_nonoverlapping(self.mem, fresh, len) };
+
+        let memory_size = len as u64;
+        let delete = KvmUserspaceMemoryRegion {
+            slot: 0,
+            flags: 0,
+            guest_phys_addr: RAM_BASE,
+            memory_size: 0,
+            userspace_addr: self.mem as u64,
+        };
+        // SAFETY: `vm_fd` is valid; `delete` is a fully initialised memory-region struct.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::SET_USER_MEMORY_REGION as libc::c_ulong,
+                &raw const delete,
+            )
+        } < 0
+        {
+            let e = err("ioctl(KVM_SET_USER_MEMORY_REGION delete)");
+            // SAFETY: `fresh` is a live `len`-byte mapping owned here; nothing else aliases it.
+            unsafe { libc::munmap(fresh.cast::<libc::c_void>(), len) };
+            return Err(e);
+        }
+        let add = KvmUserspaceMemoryRegion {
+            slot: 0,
+            flags: 0,
+            guest_phys_addr: RAM_BASE,
+            memory_size,
+            userspace_addr: fresh as u64,
+        };
+        // SAFETY: `vm_fd` is valid; `add` points slot 0 at the fresh identical backing.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::SET_USER_MEMORY_REGION as libc::c_ulong,
+                &raw const add,
+            )
+        } < 0
+        {
+            let e = err("ioctl(KVM_SET_USER_MEMORY_REGION re-add fresh backing)");
+            // SAFETY: `fresh` is a live `len`-byte mapping owned here; nothing else aliases it.
+            unsafe { libc::munmap(fresh.cast::<libc::c_void>(), len) };
+            return Err(e);
+        }
+        // The move succeeded: free the old backing and adopt the new one.
+        // SAFETY: the old `self.mem` mapping is no longer referenced by the slot; this machine
+        // owns it and nothing else aliases it.
+        unsafe { libc::munmap(self.mem.cast::<libc::c_void>(), len) };
+        self.mem = fresh;
+        Ok(())
+    }
+
+    // ========================================================================
+    // AA-4 two-vCPU scan/write race proof. A SECOND vCPU (MMU off, entered at a
+    // tiny writer routine) stores to a page a FIRST vCPU has frozen for a scan;
+    // the guard must block that write behind the pending scan. Additive: no
+    // change to `Vcpu::run` or the guard service path.
+    // ========================================================================
+
+    /// Aim vCPU 0 at `target_gpa` with the MMU off (its reset default, since it has not run
+    /// the payload boot). Its first instruction fetch faults into the guard, freezing the
+    /// target page for a scan — the race's pending-scan side.
+    ///
+    /// # Errors
+    /// [`SysError`] if a register write fails.
+    pub fn race_arm_vcpu0(&mut self, target_gpa: u64) -> Result<(), SysError> {
+        self.set_core_reg(kvm::REG_CORE_PC, target_gpa)?;
+        self.set_core_reg(kvm::REG_CORE_PSTATE, PSTATE_EL1H_DAIF)
+    }
+
+    /// Create the second (writer) vCPU: MMU off, entered at `writer_gpa` with `x1 = target_gpa`
+    /// and `w2 = value`, so it stores `value` to the target GPA. The store transits stage-2, so
+    /// the execute guard sees it even with the writer's stage-1 disabled.
+    ///
+    /// # Errors
+    /// [`SysError`] if the vCPU, its `kvm_run` mapping, its init, or a register write fails.
+    /// A failure here IS the finding when KVM refuses a second vCPU on the guarded VM.
+    pub fn race_create_writer(
+        &mut self,
+        writer_gpa: u64,
+        target_gpa: u64,
+        value: u32,
+    ) -> Result<(), SysError> {
+        // SAFETY: `vm_fd` is valid; KVM_CREATE_VCPU takes a vcpu index.
+        let fd = unsafe { libc::ioctl(self.vm_fd, kvm::CREATE_VCPU as libc::c_ulong, 1_u64) };
+        if fd < 0 {
+            return Err(err("ioctl(KVM_CREATE_VCPU, writer)"));
+        }
+        self.race_writer_fd = fd as libc::c_int;
+
+        // SAFETY: `kvm_fd` is valid; KVM_GET_VCPU_MMAP_SIZE takes no argument.
+        let run_size =
+            unsafe { libc::ioctl(self.kvm_fd, kvm::GET_VCPU_MMAP_SIZE as libc::c_ulong, 0_u64) };
+        if run_size < core::mem::size_of::<KvmRun>() as libc::c_int {
+            return Err(err("ioctl(KVM_GET_VCPU_MMAP_SIZE, writer)"));
+        }
+        // SAFETY: `run_size` bytes shared with KVM at the writer vCPU fd, offset 0.
+        let run = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                run_size as usize,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                self.race_writer_fd,
+                0,
+            )
+        };
+        if run == libc::MAP_FAILED {
+            return Err(err("mmap(kvm_run, writer)"));
+        }
+        self.race_writer_run = run.cast::<KvmRun>();
+        self.race_writer_run_size = run_size as usize;
+
+        let mut init = KvmVcpuInit::default();
+        // SAFETY: `vm_fd` is valid; KVM_ARM_PREFERRED_TARGET fills `init`.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::ARM_PREFERRED_TARGET as libc::c_ulong,
+                &raw mut init,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET, writer)"));
+        }
+        // SAFETY: `race_writer_fd` is valid; `init` is fully initialised above.
+        if unsafe {
+            libc::ioctl(
+                self.race_writer_fd,
+                kvm::ARM_VCPU_INIT as libc::c_ulong,
+                &raw const init,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_ARM_VCPU_INIT, writer)"));
+        }
+
+        set_core_reg_on(self.race_writer_fd, kvm::REG_CORE_PC, writer_gpa)?;
+        set_core_reg_on(
+            self.race_writer_fd,
+            kvm::REG_CORE_X0 + kvm::REG_CORE_X_STRIDE, // x1 = target GPA
+            target_gpa,
+        )?;
+        set_core_reg_on(
+            self.race_writer_fd,
+            kvm::REG_CORE_X0 + 2 * kvm::REG_CORE_X_STRIDE, // x2 (w2) = store value
+            u64::from(value),
+        )?;
+        set_core_reg_on(self.race_writer_fd, kvm::REG_CORE_PSTATE, PSTATE_EL1H_DAIF)
+    }
+
+    /// One `KVM_RUN` of vCPU 0, decoding the exit for the race proof (no servicing).
+    ///
+    /// # Errors
+    /// [`SysError`] if the `KVM_RUN` ioctl fails.
+    pub fn race_run_vcpu0(&mut self) -> Result<RaceExit, SysError> {
+        race_run_and_decode(self.vcpu_fd, self.run)
+    }
+
+    /// One `KVM_RUN` of the writer vCPU, decoding the exit for the race proof.
+    ///
+    /// # Errors
+    /// [`SysError`] if the writer vCPU is absent or the `KVM_RUN` ioctl fails.
+    pub fn race_run_writer(&mut self) -> Result<RaceExit, SysError> {
+        if self.race_writer_fd < 0 {
+            return Err(SysError::Protocol("no race writer vCPU created".into()));
+        }
+        race_run_and_decode(self.race_writer_fd, self.race_writer_run)
+    }
+
+    /// Scan the frozen page at `gpa` and reply APPROVE for `generation` — the clean-page half
+    /// of guard servicing, exposed so the race proof can clear the writer's own code-page scan
+    /// (and, at the end, vCPU 0's frozen target scan) without going through [`Vcpu::run`].
+    ///
+    /// # Errors
+    /// [`SysError`] if the page is outside RAM, carries a hazard (so cannot be approved), or
+    /// the reply ioctl fails.
+    pub fn race_scan_and_approve(&mut self, gpa: u64, generation: u64) -> Result<(), SysError> {
+        // SAFETY: the vCPU that faulted is stopped at the synchronous guard exit and this
+        // machine owns the whole live mapping; the page is frozen by the kernel for the scan.
+        let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
+        let page = super::exec_guard_page(ram, RAM_BASE, gpa).ok_or_else(|| {
+            SysError::Protocol(format!("race approve page {gpa:#x} is outside guest RAM"))
+        })?;
+        if !super::exec_guard_hazards(gpa, page).is_empty() {
+            return Err(SysError::Protocol(format!(
+                "race approve page {gpa:#x} carries a hazard and cannot be approved"
+            )));
+        }
+        self.exec_guard_reply_generation(gpa, generation, kvm::ARM_STAGE2_EXEC_GUARD_APPROVE_EXEC)
+    }
+
+    fn exec_guard_reply_generation(
+        &self,
+        gpa: u64,
+        generation: u64,
+        action: u32,
+    ) -> Result<(), SysError> {
+        let reply = KvmArmStage2ExecGuard {
+            gpa,
+            generation,
+            action,
+            flags: 0,
+        };
+        // SAFETY: `vm_fd` is valid; `reply` is the fully initialized 24-byte UAPI struct.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::ARM_STAGE2_EXEC_GUARD as libc::c_ulong,
+                &raw const reply,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_ARM_STAGE2_EXEC_GUARD)"));
+        }
+        Ok(())
+    }
+
+    fn exec_guard_reply(&self, exit: ExecGuardExit, action: u32) -> Result<(), RunError> {
+        self.exec_guard_reply_generation(exit.gpa, exit.generation, action)
+            .map_err(|e| seam("ioctl(KVM_ARM_STAGE2_EXEC_GUARD)", e))
+    }
+
+    /// Service one synchronous execute-guard exit while the vCPU is stopped.
+    ///
+    /// The frozen page is borrowed only for the scan. A clean page is approved for
+    /// execute/read-only; a hazardous page is rejected first, then surfaced as a hard
+    /// error so no caller can resume it and mistake rejection for successful execution.
+    fn service_exec_guard(&mut self, exit: ExecGuardExit) -> Result<(), RunError> {
+        let Some(stats) = self.exec_guard.as_mut() else {
+            return Err(RunError::UnexpectedExit(kvm::EXIT_ARM_STAGE2_EXEC_GUARD));
+        };
+        stats.exits = stats.exits.saturating_add(1);
+
+        let known = kvm::ARM_STAGE2_EXEC_GUARD_EXIT_EXEC
+            | kvm::ARM_STAGE2_EXEC_GUARD_EXIT_WRITE
+            | kvm::ARM_STAGE2_EXEC_GUARD_EXIT_BLOCKED;
+        let is_exec = exit.flags == kvm::ARM_STAGE2_EXEC_GUARD_EXIT_EXEC;
+        let is_write = exit.flags == kvm::ARM_STAGE2_EXEC_GUARD_EXIT_WRITE;
+        let is_blocked = exit.flags
+            == (kvm::ARM_STAGE2_EXEC_GUARD_EXIT_WRITE | kvm::ARM_STAGE2_EXEC_GUARD_EXIT_BLOCKED);
+        if exit.flags & !known != 0 || !(is_exec || is_write || is_blocked) {
+            return Err(RunError::Seam {
+                context: "decode KVM_EXIT_ARM_STAGE2_EXEC_GUARD",
+                message: format!("invalid execute-guard flags {:#x}", exit.flags),
+            });
+        }
+        if exit.generation == 0 || exit.gpa & 0xfff != 0 {
+            return Err(RunError::Seam {
+                context: "validate KVM_EXIT_ARM_STAGE2_EXEC_GUARD",
+                message: format!(
+                    "kernel supplied gpa {:#x}, generation {} (page alignment and nonzero \
+                     generation are mandatory)",
+                    exit.gpa, exit.generation
+                ),
+            });
+        }
+
+        if is_exec {
+            stats.scans = stats.scans.saturating_add(1);
+            self.exec_guard_last_scan_generation = exit.generation;
+            // SAFETY: the vCPU is stopped at the synchronous exit and this machine owns the
+            // entire live mapping. The bounded page helper rejects every out-of-slot GPA.
+            let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
+            let page =
+                super::exec_guard_page(ram, RAM_BASE, exit.gpa).ok_or_else(|| RunError::Seam {
+                    context: "scan KVM_EXIT_ARM_STAGE2_EXEC_GUARD page",
+                    message: format!(
+                        "page {:#x} is outside the single [{:#x}, {:#x}) RAM slot",
+                        exit.gpa,
+                        RAM_BASE,
+                        RAM_BASE.saturating_add(self.mem_size as u64)
+                    ),
+                })?;
+            let page_sha256: [u8; 32] = Sha256::digest(page).into();
+            let stale_generation = if let Some(audit) = self
+                .exec_guard_page_audit
+                .as_mut()
+                .filter(|audit| audit.gpa == exit.gpa)
+            {
+                audit.exec_scans = audit.exec_scans.saturating_add(1);
+                if audit.first_exec_generation == 0 {
+                    audit.first_exec_generation = exit.generation;
+                    audit.first_exec_sha256 = page_sha256;
+                }
+                if audit.write_revocations > 0 && audit.post_write_exec_generation == 0 {
+                    audit.post_write_exec_generation = exit.generation;
+                    audit.post_write_exec_sha256 = page_sha256;
+                    Some(audit.write_generation)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if self.exec_guard_stale_probe_gpa == Some(exit.gpa)
+                && let Some(stale_generation) = stale_generation
+            {
+                if stale_generation == 0 || stale_generation == exit.generation {
+                    return Err(RunError::Seam {
+                        context: "plant stale execute-guard generation",
+                        message: format!(
+                            "prior generation {stale_generation} is not a nonzero predecessor of \
+                             current generation {}",
+                            exit.generation
+                        ),
+                    });
+                }
+                let stale_errno = match self.exec_guard_reply_generation(
+                    exit.gpa,
+                    stale_generation,
+                    kvm::ARM_STAGE2_EXEC_GUARD_APPROVE_EXEC,
+                ) {
+                    Err(SysError::Errno { errno, .. }) if errno == libc::EINVAL => errno,
+                    Err(e) => {
+                        return Err(seam("replay stale KVM_ARM_STAGE2_EXEC_GUARD generation", e));
+                    }
+                    Ok(()) => {
+                        return Err(RunError::Seam {
+                            context: "replay stale KVM_ARM_STAGE2_EXEC_GUARD generation",
+                            message: format!(
+                                "kernel accepted superseded generation {stale_generation} while \
+                                 page {:#x} was frozen for generation {}",
+                                exit.gpa, exit.generation
+                            ),
+                        });
+                    }
+                };
+                let Some(audit) = self.exec_guard_page_audit.as_mut() else {
+                    return Err(RunError::Seam {
+                        context: "record stale execute-guard generation",
+                        message: "configured audit disappeared".into(),
+                    });
+                };
+                audit.stale_reply_attempts = audit.stale_reply_attempts.saturating_add(1);
+                audit.stale_reply_generation = stale_generation;
+                audit.stale_reply_errno = stale_errno;
+            }
+            let hazards = super::exec_guard_hazards(exit.gpa, page);
+            let action = if hazards.is_empty() {
+                kvm::ARM_STAGE2_EXEC_GUARD_APPROVE_EXEC
+            } else {
+                kvm::ARM_STAGE2_EXEC_GUARD_REJECT_EXEC
+            };
+            self.exec_guard_reply(exit, action)?;
+            let Some(stats) = self.exec_guard.as_mut() else {
+                return Err(RunError::UnexpectedExit(kvm::EXIT_ARM_STAGE2_EXEC_GUARD));
+            };
+            if hazards.is_empty() {
+                stats.approvals = stats.approvals.saturating_add(1);
+                return Ok(());
+            }
+
+            stats.rejections = stats.rejections.saturating_add(1);
+            let first: Vec<String> = hazards
+                .iter()
+                .take(8)
+                .map(|hit| format!("{:#x}:{:?}", hit.addr, hit.kind))
+                .collect();
+            let exclusive_hazards = hazards
+                .iter()
+                .filter(|hit| matches!(hit.kind, crate::scan::HitKind::Exclusive))
+                .count();
+            return Err(RunError::ExecGuardRejected {
+                gpa: exit.gpa,
+                generation: exit.generation,
+                hazards: hazards.len(),
+                exclusive_hazards,
+                live_counter_hazards: hazards.len() - exclusive_hazards,
+                summary: first.join(", "),
+            });
+        }
+
+        if is_blocked {
+            stats.blocked_writes = stats.blocked_writes.saturating_add(1);
+            return Err(RunError::Seam {
+                context: "service blocked execute-guard write",
+                message: format!(
+                    "single-vCPU board reported a write blocked behind scan generation {} at \
+                     {:#x}; there is no second vCPU that can own that scan",
+                    exit.generation, exit.gpa
+                ),
+            });
+        }
+
+        // The kernel has already changed approved -> dirty/XN, synchronously unmapped
+        // the old mapping, and exited before the store. No response ioctl is required.
+        if matches!(self.exec_guard_page_audit, Some(audit) if audit.gpa == exit.gpa) {
+            // SAFETY: the vCPU is stopped before the faulting store retries, and this
+            // machine exclusively owns the complete live RAM mapping.
+            let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
+            let page =
+                super::exec_guard_page(ram, RAM_BASE, exit.gpa).ok_or_else(|| RunError::Seam {
+                    context: "audit KVM_EXIT_ARM_STAGE2_EXEC_GUARD write page",
+                    message: format!("page {:#x} left the single RAM slot", exit.gpa),
+                })?;
+            let page_sha256: [u8; 32] = Sha256::digest(page).into();
+            if let Some(audit) = self.exec_guard_page_audit.as_mut() {
+                audit.write_revocations = audit.write_revocations.saturating_add(1);
+                audit.write_generation = exit.generation;
+                audit.pre_write_sha256 = page_sha256;
+            }
+        }
+        stats.write_revocations = stats.write_revocations.saturating_add(1);
+        Ok(())
+    }
+
     /// Copy the image's loadable segments into guest RAM at their link addresses.
     ///
     /// The bounds-checked copy itself lives in [`crate::elf::Elf::load_into`], which
@@ -867,17 +1801,16 @@ impl Machine {
         }
     }
 
-    /// Publish a **managed** work-derived clock page (`docs/PARAVIRT-CLOCK.md` ABI 1)
-    /// at `PVCLOCK_GPA`, so an AA-5 guest reads `CLOCKPAGE mode=managed`.
+    /// Publish the managed **bootstrap placeholder** (`docs/PARAVIRT-CLOCK.md` ABI 1)
+    /// at `PVCLOCK_GPA`, so bare AA-5 payloads read `CLOCKPAGE mode=managed-static`.
     ///
     /// Without this the page reads as zeroed RAM, the guest falls back to publishing
     /// its own static page, and reports `self-seeded` — which AA-5's acceptance forbids
     /// (`payloads/runtime/src/pvclock.rs`). This is the *minimum* the harness owes AA-5:
-    /// a valid, materialized, deterministic page. The full work-derived refresh (the
-    /// value advancing with `work`) is `hm-8h8`'s design, which AA-5 validates; a static
-    /// materialized page is deterministic across same-seed reps and is what the
-    /// pre-silicon apparatus needs to exercise the managed-vs-self-seeded attestation.
-    /// The page is published for every stage — non-AA-5 payloads simply do not read it.
+    /// a valid, materialized, deterministic page. Bare payload runs retain that historical
+    /// static attestation. The Linux executor overwrites it canonically, with
+    /// `FLAG_WORK_DERIVED` set and the actual `CNTFRQ_EL0`, after its guest-only perf counter
+    /// establishes the work-zero anchor and before the first KVM entry.
     fn publish_pvclock_page(&mut self) {
         // The page bytes are built by the shared, Miri-tested layout in oracle-model. A
         // materialized STATIC placeholder — `work_derived = false` — with V-time and
@@ -898,24 +1831,23 @@ impl Machine {
 
     /// Set the vCPU's `PC` to the image entry point.
     fn set_pc(&mut self, pc: u64) -> Result<(), SysError> {
-        let value: u64 = pc;
-        let one = KvmOneReg {
-            id: kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC,
-            addr: (&raw const value) as u64,
-        };
-        // SAFETY: `vcpu_fd` is valid; `one.addr` points at a live u64 on this frame,
-        // which is exactly what KVM_SET_ONE_REG's contract requires.
-        if unsafe {
-            libc::ioctl(
-                self.vcpu_fd,
-                kvm::SET_ONE_REG as libc::c_ulong,
-                &raw const one,
-            )
-        } < 0
-        {
-            return Err(err("ioctl(KVM_SET_ONE_REG, pc)"));
+        self.set_core_reg(kvm::REG_CORE_PC, pc)
+    }
+
+    /// Establish the register state required by the arm64 Linux boot protocol:
+    /// enter the Image at EL1h with interrupts masked, pass the DTB in `x0`, and
+    /// clear the three reserved argument registers.
+    fn set_linux_entry(&mut self, entry_gpa: u64, dtb_gpa: u64) -> Result<(), SysError> {
+        self.set_pc(entry_gpa)?;
+        self.set_core_reg(kvm::REG_CORE_X0, dtb_gpa)?;
+        for gpr in 1..=3 {
+            self.set_core_reg(kvm::REG_CORE_X0 + gpr * kvm::REG_CORE_X_STRIDE, 0)?;
         }
-        Ok(())
+        self.set_core_reg(kvm::REG_CORE_PSTATE, PSTATE_EL1H_DAIF)
+    }
+
+    fn set_core_reg(&mut self, index: u64, value: u64) -> Result<(), SysError> {
+        set_core_reg_on(self.vcpu_fd, index, value)
     }
 
     /// The vCPU fd, for the counter's patched-mechanism arming.
@@ -954,10 +1886,22 @@ impl Drop for Machine {
             if !self.run.is_null() {
                 libc::munmap(self.run.cast::<libc::c_void>(), self.run_size);
             }
+            if !self.race_writer_run.is_null() {
+                libc::munmap(
+                    self.race_writer_run.cast::<libc::c_void>(),
+                    self.race_writer_run_size,
+                );
+            }
             if !self.mem.is_null() {
                 libc::munmap(self.mem.cast::<libc::c_void>(), self.mem_size);
             }
-            for fd in [self.vgic_fd, self.vcpu_fd, self.vm_fd, self.kvm_fd] {
+            for fd in [
+                self.vgic_fd,
+                self.race_writer_fd,
+                self.vcpu_fd,
+                self.vm_fd,
+                self.kvm_fd,
+            ] {
                 if fd >= 0 {
                     libc::close(fd);
                 }
@@ -975,6 +1919,7 @@ impl Vcpu for Machine {
     /// its mechanism honestly.
     fn run(&mut self) -> Result<VcpuExit, RunError> {
         use std::sync::atomic::Ordering;
+        let mut exec_guard_exits = 0_u64;
         loop {
             // A stock overflow can be DELIVERED — its SIGUSR1 handled, setting
             // PERF_SOURCED_KICK — in the narrow window AFTER a prior KVM_RUN already returned
@@ -1038,6 +1983,20 @@ impl Vcpu for Machine {
             // SAFETY: `self.run` is a live MAP_SHARED mapping of at least
             // size_of::<KvmRun>() bytes (checked at construction).
             let snapshot = unsafe { core::ptr::read_volatile(self.run) };
+            if let Some(exit) = super::decode_exec_guard_exit(&snapshot) {
+                exec_guard_exits = exec_guard_exits.saturating_add(1);
+                if exec_guard_exits > MAX_EXEC_GUARD_EXITS_PER_RUN {
+                    return Err(RunError::Seam {
+                        context: "service KVM_EXIT_ARM_STAGE2_EXEC_GUARD",
+                        message: format!(
+                            "more than {MAX_EXEC_GUARD_EXITS_PER_RUN} guard exits occurred \
+                             without one caller-visible exit"
+                        ),
+                    });
+                }
+                self.service_exec_guard(exit)?;
+                continue;
+            }
             return Ok(super::decode_kvm_run(&snapshot));
         }
     }
@@ -1058,14 +2017,15 @@ impl Vcpu for Machine {
     }
 
     /// A digest of the landed state: every architectural register the kernel will
-    /// hand over, plus the whole of guest RAM.
+    /// hand over, VM-owned pvclock registration state, and the whole of guest RAM.
     ///
     /// This is what AA-3's replay-identity and AA-6's ≥1,000-rep bit-identity floors
     /// are *about*, and it is computed here rather than left empty — a rep floor
     /// that counts records without ever comparing their digests would be vacuous on
     /// the axis it exists for, so there must be a real digest to compare.
     ///
-    /// Registers are hashed in **sorted id order** (a `BTreeMap`, never a `HashMap`):
+    /// Registers and the reserved device-state record are hashed in **sorted id order** (a
+    /// `BTreeMap`, never a `HashMap`):
     /// iteration order must not reach a hashed byte. Conventions rule 4.
     fn state_digest(&mut self) -> Result<String, RunError> {
         let (regs, vgic) = self.registers_and_vgic()?;
@@ -1165,9 +2125,9 @@ impl StepVcpu for Machine {
             .map_err(|e| seam("ioctl(KVM_GET_ONE_REG, VBAR_EL1)", e))
     }
 
-    /// The registers-only digest AA-2 stamps on every step but the last: the vCPU
-    /// registers (and the in-kernel vGIC state) [`Vcpu::state_digest`] reads, hashed
-    /// **without** the 4 MiB guest-RAM slice. `state_digest` faults in and hashes the
+    /// The registers-only digest AA-2 stamps on every step but the last: the vCPU registers,
+    /// VM-owned pvclock registration, and in-kernel vGIC state [`Vcpu::state_digest`] reads,
+    /// hashed **without** the 4 MiB guest-RAM slice. `state_digest` faults in and hashes the
     /// whole slot every call, so calling it per single step is infeasible — the whole
     /// reason `RAM_SIZE` was shrunk in the AA-1(c) disposition. This is the cheap
     /// per-step replay key; only the run's final step pays the full-RAM cost, catching
@@ -1178,15 +2138,332 @@ impl StepVcpu for Machine {
     }
 }
 
-/// The seam-read pair [`Machine::registers_and_vgic`] returns: every architectural register
-/// (id → bytes, sorted) and the in-kernel vGIC injection state. Named so the register/vGIC
-/// read type has one home (and the tuple-of-collections does not trip `clippy::type_complexity`
-/// on the `cfg(target_os = "linux")` box seam).
+impl LinuxPvclockVcpu for Machine {
+    fn linux_pvclock_gpa(&self) -> Option<u64> {
+        self.linux_pvclock_gpa
+    }
+
+    fn register_linux_pvclock_gpa(&mut self, gpa: u64) -> Result<(), RunError> {
+        if let Some(registered) = self.linux_pvclock_gpa {
+            return Err(RunError::Seam {
+                context: "register the Linux pvclock page",
+                message: format!("one-shot already pinned to {registered:#x}; rejected {gpa:#x}"),
+            });
+        }
+        // Validation precedes mutation so an invalid guest value cannot consume the VM-lifetime
+        // one-shot even if this trait method is called outside the ordinary MMIO dispatcher.
+        crate::linux_console::linux_pvclock_page_range(gpa, RAM_BASE, self.mem_size)?;
+        self.linux_pvclock_gpa = Some(gpa);
+        Ok(())
+    }
+
+    fn publish_linux_pvclock(
+        &mut self,
+        vns: u64,
+        guest_clock: u64,
+        guest_clock_hz: u64,
+        write: PvclockWrite,
+    ) -> Result<(), RunError> {
+        let gpa = self.linux_pvclock_gpa.ok_or_else(|| RunError::Seam {
+            context: "publish the Linux pvclock page",
+            message: "no VM-owned pvclock registration exists".into(),
+        })?;
+        let page_range =
+            crate::linux_console::linux_pvclock_page_range(gpa, RAM_BASE, self.mem_size)?;
+
+        // SAFETY: `self.mem` is the unique live mapping of exactly `self.mem_size` bytes and
+        // this method is called only after a KVM exit, while the sole vCPU is stopped. The
+        // pure range validator bounds the complete page before either shared stamping function
+        // runs.
+        let ram = unsafe { core::slice::from_raw_parts_mut(self.mem, self.mem_size) };
+        let page = ram.get_mut(page_range).ok_or_else(|| RunError::Seam {
+            context: "bound the Linux pvclock page after validation",
+            message: "validated pvclock page disappeared from guest RAM".into(),
+        })?;
+        match write {
+            PvclockWrite::Canonical => {
+                vtime::pvclock::stamp_canonical(page, vns, guest_clock, guest_clock_hz);
+            }
+            PvclockWrite::Refresh => {
+                vtime::pvclock::stamp(page, vns, guest_clock, guest_clock_hz);
+            }
+        }
+
+        let fields = vtime::pvclock::read(page).ok_or_else(|| RunError::Seam {
+            context: "read back the Linux pvclock page",
+            message: "stamping did not leave a stable ABI-v1 page".into(),
+        })?;
+        if fields.vns != vns
+            || fields.guest_clock != guest_clock
+            || fields.guest_clock_hz != guest_clock_hz
+            || fields.flags != vtime::pvclock::PVCLOCK_FLAGS_V1
+            || fields.vcpu_index != 0
+        {
+            return Err(RunError::Seam {
+                context: "read back the Linux pvclock page",
+                message: format!(
+                    "published ({vns}, {guest_clock}, {guest_clock_hz}) but read back \
+                     ({}, {}, {}, flags {:#x}, vcpu {})",
+                    fields.vns,
+                    fields.guest_clock,
+                    fields.guest_clock_hz,
+                    fields.flags,
+                    fields.vcpu_index
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn linux_clockevent_state(&self) -> LinuxClockeventState {
+        self.linux_clockevent.unwrap_or_default()
+    }
+
+    fn program_linux_clockevent(&mut self, deadline_ticks: u64) -> Result<(), RunError> {
+        let state = self.linux_clockevent.ok_or_else(|| RunError::Seam {
+            context: "program the Linux deterministic clockevent",
+            message: "the VM is not the owned Linux board".into(),
+        })?;
+        if state.irq_asserted {
+            return Err(RunError::Seam {
+                context: "program the Linux deterministic clockevent",
+                message: "guest replaced its deadline while PPI 20 was still asserted".into(),
+            });
+        }
+        self.linux_clockevent
+            .as_mut()
+            .ok_or_else(|| RunError::Seam {
+                context: "program the Linux deterministic clockevent",
+                message: "Linux clockevent state disappeared".into(),
+            })?
+            .deadline_ticks = Some(deadline_ticks);
+        Ok(())
+    }
+
+    fn disarm_linux_clockevent(&mut self) -> Result<(), RunError> {
+        let state = self.linux_clockevent.ok_or_else(|| RunError::Seam {
+            context: "disarm the Linux deterministic clockevent",
+            message: "the VM is not the owned Linux board".into(),
+        })?;
+        if state.irq_asserted {
+            self.set_linux_clockevent_irq(false)?;
+            if self.linux_clockevent_line_asserted()? {
+                return Err(RunError::Seam {
+                    context: "disarm the Linux deterministic clockevent",
+                    message: "vGIC PPI 20 input line remained high after deassertion".into(),
+                });
+            }
+        }
+        let state = self
+            .linux_clockevent
+            .as_mut()
+            .ok_or_else(|| RunError::Seam {
+                context: "disarm the Linux deterministic clockevent",
+                message: "Linux clockevent state disappeared".into(),
+            })?;
+        state.deadline_ticks = None;
+        state.irq_asserted = false;
+        Ok(())
+    }
+
+    fn acknowledge_linux_clockevent(&mut self) -> Result<(), RunError> {
+        let state = self.linux_clockevent.ok_or_else(|| RunError::Seam {
+            context: "acknowledge the Linux deterministic clockevent",
+            message: "the VM is not the owned Linux board".into(),
+        })?;
+        if !state.irq_asserted {
+            return Err(RunError::Seam {
+                context: "acknowledge the Linux deterministic clockevent",
+                message: "guest ACK arrived while PPI 20 was low".into(),
+            });
+        }
+        let acknowledgements =
+            state
+                .acknowledgements
+                .checked_add(1)
+                .ok_or_else(|| RunError::Seam {
+                    context: "acknowledge the Linux deterministic clockevent",
+                    message: "acknowledgement counter overflow".into(),
+                })?;
+        self.set_linux_clockevent_irq(false)?;
+        if self.linux_clockevent_line_asserted()? {
+            return Err(RunError::Seam {
+                context: "acknowledge the Linux deterministic clockevent",
+                message: "vGIC PPI 20 input line remained high after ACK deassertion".into(),
+            });
+        }
+        let state = self
+            .linux_clockevent
+            .as_mut()
+            .ok_or_else(|| RunError::Seam {
+                context: "acknowledge the Linux deterministic clockevent",
+                message: "Linux clockevent state disappeared".into(),
+            })?;
+        state.irq_asserted = false;
+        state.acknowledgements = acknowledgements;
+        Ok(())
+    }
+
+    fn fire_due_linux_clockevent(&mut self, now_ticks: u64) -> Result<Option<u64>, RunError> {
+        let state = self.linux_clockevent.ok_or_else(|| RunError::Seam {
+            context: "assert the Linux deterministic clockevent",
+            message: "the VM is not the owned Linux board".into(),
+        })?;
+        let Some(deadline) = state.deadline_ticks else {
+            return Ok(None);
+        };
+        if now_ticks < deadline {
+            return Ok(None);
+        }
+        if state.irq_asserted {
+            return Err(RunError::Seam {
+                context: "assert the Linux deterministic clockevent",
+                message: "a due deadline found PPI 20 already asserted".into(),
+            });
+        }
+        let assertions = state
+            .assertions
+            .checked_add(1)
+            .ok_or_else(|| RunError::Seam {
+                context: "assert the Linux deterministic clockevent",
+                message: "assertion counter overflow".into(),
+            })?;
+        if self.linux_clockevent_line_asserted()? {
+            return Err(RunError::Seam {
+                context: "assert the Linux deterministic clockevent",
+                message: "vGIC reports PPI 20 input high before userspace raises its line".into(),
+            });
+        }
+
+        self.set_linux_clockevent_irq(true)?;
+        // Mutate immediately after the successful ioctl. Even if readback fails, retained state
+        // still truthfully records that userspace drove the external line high.
+        let state = self
+            .linux_clockevent
+            .as_mut()
+            .ok_or_else(|| RunError::Seam {
+                context: "assert the Linux deterministic clockevent",
+                message: "Linux clockevent state disappeared".into(),
+            })?;
+        state.deadline_ticks = None;
+        state.irq_asserted = true;
+        state.assertions = assertions;
+
+        if !self.linux_clockevent_line_asserted()? {
+            return Err(RunError::Seam {
+                context: "verify the Linux deterministic clockevent assertion",
+                message: "KVM_IRQ_LINE succeeded but vGIC PPI 20 input stayed low".into(),
+            });
+        }
+        Ok(Some(now_ticks - deadline))
+    }
+}
+
+/// The seam-read pair [`Machine::registers_and_vgic`] returns: every architectural register plus
+/// VM-owned digest-bound device state (id → bytes, sorted), and the in-kernel vGIC injection
+/// state. Named so the state/vGIC read type has one home (and the tuple-of-collections does not
+/// trip `clippy::type_complexity` on the `cfg(target_os = "linux")` box seam).
 type RegsAndVgic = (BTreeMap<u64, Vec<u8>>, Vec<u8>);
 
 impl Machine {
+    fn set_linux_clockevent_irq(&self, asserted: bool) -> Result<(), RunError> {
+        let irq = KvmIrqLevel {
+            irq: HARMONY_CLOCKEVENT_IRQ,
+            level: u32::from(asserted),
+        };
+        // SAFETY: `vm_fd` is live and `irq` is the exact fixed-width kvm_irq_level value KVM
+        // reads synchronously. The encoded target is vCPU 0's dedicated PPI INTID 20.
+        if unsafe { libc::ioctl(self.vm_fd, kvm::IRQ_LINE as libc::c_ulong, &raw const irq) } < 0 {
+            return Err(seam(
+                "ioctl(KVM_IRQ_LINE, Harmony PPI 20)",
+                err("ioctl(KVM_IRQ_LINE)"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn linux_clockevent_line_asserted(&self) -> Result<bool, RunError> {
+        // `KVM_IRQ_LINE` changes `irq->line_level`; GICR_ISPENDR0's userspace accessor
+        // reports the distinct pending latch and can remain zero for a valid level assertion.
+        // LEVEL_INFO therefore both verifies delivery and catches KVM's owner-mismatch no-op.
+        let levels = self
+            .vgic_reg(
+                kvm::DEV_ARM_VGIC_GRP_LEVEL_INFO,
+                HARMONY_CLOCKEVENT_LEVEL_INFO_ATTR,
+            )
+            .map_err(|error| seam("read back vGIC PPI 20 input-line level", error))?;
+        Ok(levels & HARMONY_CLOCKEVENT_LINE_MASK != 0)
+    }
+
+    /// Borrow the guest RAM mapping between exits (diagnostic surface for the AA-5
+    /// RAM-divergence dump; the vCPU must be stopped).
+    #[must_use]
+    pub fn guest_ram_bytes(&self) -> &[u8] {
+        // SAFETY: `self.mem` is a live mapping of `self.mem_size` bytes and the vCPU is
+        // stopped between exits, so nothing else writes it; the borrow is the portable,
+        // Miri-exercised `super::guest_ram`.
+        unsafe { super::guest_ram(self.mem, self.mem_size) }
+    }
+
+    /// Read the guest-visible constant generic-counter frequency (`CNTFRQ_EL0`).
+    ///
+    /// The AA-5 page carries this exact value and the owned kernel fails closed on a mismatch;
+    /// no host-frequency guess or DT constant is accepted. KVM exposes no `CNTFRQ_EL0`
+    /// one-reg (verified against the pinned 6.18.35 sysreg table on-box, 2026-07-20 — a
+    /// `KVM_GET_ONE_REG` of encoding (3,3,14,0,0) is ENOENT on 6.8 and 6.18 alike): the
+    /// guest observes the host's own frequency, which EL0 reads directly.
+    pub fn linux_cntfrq_hz(&self) -> Result<u64, SysError> {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let hz: u64;
+            // SAFETY: CNTFRQ_EL0 is architecturally EL0-readable (Linux leaves EL0 counter
+            // access enabled on the host); the read has no side effects.
+            unsafe { core::arch::asm!("mrs {hz}, cntfrq_el0", hz = out(reg) hz) };
+            if hz == 0 {
+                return Err(SysError::Protocol(
+                    "host CNTFRQ_EL0 reads 0 — no usable guest counter frequency".to_owned(),
+                ));
+            }
+            Ok(hz)
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            Err(SysError::Protocol(
+                "guest CNTFRQ_EL0 is the host counter frequency, readable only on aarch64"
+                    .to_owned(),
+            ))
+        }
+    }
+
+    /// A registers-only digest that EXCLUDES the vGIC injection state, isolating core
+    /// architectural register identity from the host-IRQ-timing-dependent vGIC state
+    /// (hm-of6t F12). If this matches same-seed while [`StepVcpu::regs_digest`] (which
+    /// folds in the vGIC) does not, the register divergence is the vGIC — the disclosed
+    /// interrupt-timing residual — not the core registers.
+    pub fn core_regs_digest(&self) -> Result<String, RunError> {
+        let (regs, _vgic) = self.registers_and_vgic()?;
+        Ok(super::digest_regs_only(&regs, &[]))
+    }
+
+    /// A per-register text dump (`<kvm-reg-id>=<hex value>` per line, plus `vgic_len`),
+    /// for attributing a same-seed register divergence to the specific register(s)
+    /// (hm-of6t F12). Diagnostic only; env-gated in `linux-boot`.
+    pub fn regs_dump_text(&self) -> Result<String, RunError> {
+        let (regs, vgic) = self.registers_and_vgic()?;
+        let mut out = String::new();
+        for (id, value) in &regs {
+            out.push_str(&format!(
+                "{id:#018x}={}\n",
+                crate::evidence::hex_lower(value)
+            ));
+        }
+        out.push_str(&format!("vgic_len={}\n", vgic.len()));
+        Ok(out)
+    }
+
     /// Read every architectural register (`KVM_GET_REG_LIST` + `KVM_GET_ONE_REG`, in
-    /// sorted id order) and the in-kernel vGIC injection state — the two seam-read inputs
+    /// sorted id order), add any VM-owned pvclock registration, and read the in-kernel vGIC
+    /// injection state — the seam-read inputs
     /// shared by [`Vcpu::state_digest`] (which adds guest RAM) and [`StepVcpu::regs_digest`]
     /// (which does not). Factored out so the register/vGIC read discipline has one home.
     fn registers_and_vgic(&self) -> Result<RegsAndVgic, RunError> {
@@ -1199,6 +2476,46 @@ impl Machine {
                 .read_reg(id)
                 .map_err(|e| seam("ioctl(KVM_GET_ONE_REG)", e))?;
             regs.insert(id, value);
+        }
+        if let Some(gpa) = self.linux_pvclock_gpa {
+            let mut encoded = Vec::with_capacity(
+                LINUX_PVCLOCK_DIGEST_STATE_TAG.len() + core::mem::size_of::<u64>(),
+            );
+            encoded.extend_from_slice(LINUX_PVCLOCK_DIGEST_STATE_TAG);
+            encoded.extend_from_slice(&gpa.to_le_bytes());
+            if regs
+                .insert(LINUX_PVCLOCK_DIGEST_STATE_ID, encoded)
+                .is_some()
+            {
+                return Err(RunError::Seam {
+                    context: "bind the Linux pvclock registration into the state digest",
+                    message: format!(
+                        "reserved state id {LINUX_PVCLOCK_DIGEST_STATE_ID:#x} collides with a KVM register"
+                    ),
+                });
+            }
+        }
+        if let Some(state) = self.linux_clockevent {
+            let mut encoded = Vec::with_capacity(
+                LINUX_CLOCKEVENT_DIGEST_STATE_TAG.len() + 2 + 3 * core::mem::size_of::<u64>(),
+            );
+            encoded.extend_from_slice(LINUX_CLOCKEVENT_DIGEST_STATE_TAG);
+            encoded.push(u8::from(state.deadline_ticks.is_some()));
+            encoded.extend_from_slice(&state.deadline_ticks.unwrap_or(0).to_le_bytes());
+            encoded.push(u8::from(state.irq_asserted));
+            encoded.extend_from_slice(&state.assertions.to_le_bytes());
+            encoded.extend_from_slice(&state.acknowledgements.to_le_bytes());
+            if regs
+                .insert(LINUX_CLOCKEVENT_DIGEST_STATE_ID, encoded)
+                .is_some()
+            {
+                return Err(RunError::Seam {
+                    context: "bind the Linux clockevent into the state digest",
+                    message: format!(
+                        "reserved state id {LINUX_CLOCKEVENT_DIGEST_STATE_ID:#x} collides with a KVM register"
+                    ),
+                });
+            }
         }
         let vgic = self
             .vgic_state()
@@ -1426,21 +2743,21 @@ impl Machine {
         Ok(value)
     }
 
-    /// Read one 32-bit vGIC save-register through `KVM_GET_DEVICE_ATTR`.
+    /// Read one 32-bit vGIC device attribute through `KVM_GET_DEVICE_ATTR`.
     ///
-    /// The DIST/REDIST accessors write the register value into the buffer the attr's
-    /// `addr` points at. `attr` = mpidr(63:32) | offset(31:0); mpidr is 0 for the
-    /// single-affinity spike guest.
-    fn vgic_reg(&self, group: u32, offset: u64) -> Result<u32, SysError> {
+    /// The DIST/REDIST and LEVEL_INFO accessors write a 32-bit value into the buffer the
+    /// attribute's `addr` points at. DIST/REDIST encode `mpidr(63:32) | offset(31:0)`;
+    /// LEVEL_INFO encodes `mpidr(63:32) | info(31:10) | vINTID(9:0)`.
+    fn vgic_reg(&self, group: u32, attr: u64) -> Result<u32, SysError> {
         let mut value: u32 = 0;
         let da = KvmDeviceAttr {
             flags: 0,
             group,
-            attr: offset,
+            attr,
             addr: (&raw mut value) as u64,
         };
         // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u32 on this frame,
-        // which is what KVM_GET_DEVICE_ATTR's DIST/REDIST accessor writes.
+        // which is what KVM_GET_DEVICE_ATTR's 32-bit vGIC accessors write.
         if unsafe {
             libc::ioctl(
                 self.vgic_fd,
@@ -2215,4 +3532,519 @@ fn read_host_id_registers_on_vcpu(
         id_aa64pfr0: read(kvm::REG_ID_AA64PFR0_EL1, "GET_ONE_REG(ID_AA64PFR0_EL1)")?,
         pmu_v3_enabled,
     })
+}
+
+// ============================================================================
+// AA-6(a) ID-register-freeze enforcement proof (standalone; own VM/vCPU, like
+// `probe_writable_id_registers`). Additive: it touches no `Machine`, run-loop,
+// or W^X code.
+// ============================================================================
+
+/// One register's freeze result in the AA-6(a) enforcement truth-table.
+#[derive(Clone, Copy, Debug)]
+pub struct IdFreezeRow {
+    /// Register name (e.g. `ID_AA64ISAR0_EL1`).
+    pub name: &'static str,
+    /// The host-presented value before the freeze.
+    pub host_value: u64,
+    /// The below-host value installed via `KVM_SET_ONE_REG`.
+    pub frozen_value: u64,
+    /// The nibble (feature field) that was reduced.
+    pub field_shift: u32,
+    /// The value read back after the SET — what the guest's `mrs` observes (KVM
+    /// emulates EL1 ID reads from exactly this).
+    pub read_back: u64,
+    /// The freeze held: `read_back == frozen_value` and the field is strictly below host.
+    pub enforced: bool,
+}
+
+/// The AA-6(a) ID-register-freeze enforcement result.
+#[derive(Clone, Debug)]
+pub struct IdFreezeProof {
+    /// One row per `ID_AA64*` register that carries a reducible feature.
+    pub rows: Vec<IdFreezeRow>,
+    /// A vCPU created WITHOUT `KVM_ARM_VCPU_PMU_V3` reads `ID_AA64DFR0_EL1.PMUVer` as 0 —
+    /// KVM denies the guest its own PMU (the guest contract). The enforcement row for the
+    /// counter/PMU surface.
+    pub pmu_denied_without_feature: bool,
+    /// `ID_AA64DFR0_EL1.PMUVer` a PMU-enabled disposable vCPU sees (the sanitised host PMU
+    /// version), for contrast with the denied read.
+    pub host_pmuver: u64,
+}
+
+/// Install a below-host reduced value in the first reducible feature field of `reg` and
+/// confirm the guest-visible read-back holds it. `None` when the register carries no
+/// reducible field (nothing to freeze).
+#[cfg(target_os = "linux")]
+fn install_id_freeze_field(
+    vcpu_fd: libc::c_int,
+    reg: u64,
+    name: &'static str,
+    skip_low_nibbles: u32,
+) -> Result<Option<IdFreezeRow>, SysError> {
+    let mut host_value: u64 = 0;
+    let get = KvmOneReg {
+        id: reg,
+        addr: (&raw mut host_value) as u64,
+    };
+    // SAFETY: `vcpu_fd` is valid; `get.addr` points at a live u64 the kernel writes.
+    if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get) } < 0 {
+        return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64* freeze)"));
+    }
+    for nibble in skip_low_nibbles..16u32 {
+        let shift = nibble * 4;
+        let field = (host_value >> shift) & 0xF;
+        if field == 0 || field == 0xF {
+            continue;
+        }
+        let frozen = (host_value & !(0xFu64 << shift)) | ((field - 1) << shift);
+        let set = KvmOneReg {
+            id: reg,
+            addr: (&raw const frozen) as u64,
+        };
+        // SAFETY: `vcpu_fd` is valid; `set.addr` points at a live u64 the kernel reads.
+        let rc = unsafe { libc::ioctl(vcpu_fd, kvm::SET_ONE_REG as libc::c_ulong, &raw const set) };
+        if rc < 0 {
+            let e = errno();
+            if e == libc::EINVAL || e == libc::EPERM || e == libc::ENOENT {
+                continue;
+            }
+            return Err(err("ioctl(KVM_SET_ONE_REG, ID_AA64* freeze)"));
+        }
+        let mut read_back: u64 = 0;
+        let get2 = KvmOneReg {
+            id: reg,
+            addr: (&raw mut read_back) as u64,
+        };
+        // SAFETY: `vcpu_fd` is valid; `get2.addr` points at a live u64 the kernel writes.
+        if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get2) } < 0 {
+            return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64* freeze readback)"));
+        }
+        if read_back == frozen {
+            return Ok(Some(IdFreezeRow {
+                name,
+                host_value,
+                frozen_value: frozen,
+                field_shift: shift,
+                read_back,
+                enforced: true,
+            }));
+        }
+        // Accepted but clamped back to host — not a real freeze; try the next field.
+    }
+    Ok(None)
+}
+
+/// Prove AA-6(a) ID-register freeze enforcement on a disposable VM+vCPU.
+///
+/// Installs a shrunk (below-host) synthetic model across the `ID_AA64*` surface and confirms
+/// each frozen value survives read-back — the value a guest's EL1 `mrs` observes, since KVM
+/// emulates ID reads from the vCPU's stored register. Also confirms the PMU is denied to a
+/// vCPU without `KVM_ARM_VCPU_PMU_V3` (guest PMU reads mask to 0).
+///
+/// # Errors
+/// [`SysError`] if a VM/vCPU could not be created/initialised or a register access failed.
+#[cfg(target_os = "linux")]
+pub fn id_freeze_proof() -> Result<IdFreezeProof, SysError> {
+    let kvm_fd = open_kvm()?;
+    // SAFETY: valid /dev/kvm fd; KVM_CREATE_VM returns a VM fd.
+    let vm_fd = unsafe { libc::ioctl(kvm_fd, kvm::CREATE_VM as libc::c_ulong, 0_u64) };
+    if vm_fd < 0 {
+        let e = err("ioctl(KVM_CREATE_VM)");
+        // SAFETY: `kvm_fd` is valid and owned here.
+        unsafe { libc::close(kvm_fd) };
+        return Err(e);
+    }
+    let out = id_freeze_proof_on_vm(vm_fd);
+    // SAFETY: both descriptors are valid and owned here.
+    unsafe {
+        libc::close(vm_fd);
+        libc::close(kvm_fd);
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn id_freeze_proof_on_vm(vm_fd: libc::c_int) -> Result<IdFreezeProof, SysError> {
+    // SAFETY: `vm_fd` is valid; KVM_CREATE_VCPU takes a vcpu index and returns a fd.
+    let vcpu_fd = unsafe { libc::ioctl(vm_fd, kvm::CREATE_VCPU as libc::c_ulong, 0_u64) };
+    if vcpu_fd < 0 {
+        return Err(err("ioctl(KVM_CREATE_VCPU)"));
+    }
+    let out = id_freeze_proof_on_vcpu(vm_fd, vcpu_fd);
+    // SAFETY: `vcpu_fd` is valid and owned here.
+    unsafe { libc::close(vcpu_fd) };
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn id_freeze_proof_on_vcpu(
+    vm_fd: libc::c_int,
+    vcpu_fd: libc::c_int,
+) -> Result<IdFreezeProof, SysError> {
+    // A featureless vCPU (NO PMU): the guest contract denies the guest its own PMU.
+    let mut init = KvmVcpuInit::default();
+    // SAFETY: `vm_fd` is valid; KVM_ARM_PREFERRED_TARGET fills `init`.
+    if unsafe {
+        libc::ioctl(
+            vm_fd,
+            kvm::ARM_PREFERRED_TARGET as libc::c_ulong,
+            &raw mut init,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET)"));
+    }
+    // SAFETY: `vcpu_fd` is valid; `init` is fully initialised above.
+    if unsafe {
+        libc::ioctl(
+            vcpu_fd,
+            kvm::ARM_VCPU_INIT as libc::c_ulong,
+            &raw const init,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
+    }
+
+    // Same surface as the writable-ID probe; PFR0's low four nibbles are EL0..3 support
+    // (lowering them breaks the VM), so they are skipped.
+    let relevant: &[(u64, u32, &str)] = &[
+        (kvm::REG_ID_AA64PFR0_EL1, 4, "ID_AA64PFR0_EL1"),
+        (kvm::REG_ID_AA64PFR1_EL1, 0, "ID_AA64PFR1_EL1"),
+        (kvm::REG_ID_AA64ISAR0_EL1, 0, "ID_AA64ISAR0_EL1"),
+        (kvm::REG_ID_AA64ISAR1_EL1, 0, "ID_AA64ISAR1_EL1"),
+        (kvm::REG_ID_AA64ISAR2_EL1, 0, "ID_AA64ISAR2_EL1"),
+        (kvm::REG_ID_AA64MMFR0_EL1, 0, "ID_AA64MMFR0_EL1"),
+        (kvm::REG_ID_AA64MMFR1_EL1, 0, "ID_AA64MMFR1_EL1"),
+        (kvm::REG_ID_AA64MMFR2_EL1, 0, "ID_AA64MMFR2_EL1"),
+        (kvm::REG_ID_AA64DFR0_EL1, 0, "ID_AA64DFR0_EL1"),
+        (kvm::REG_ID_AA64DFR1_EL1, 0, "ID_AA64DFR1_EL1"),
+    ];
+    let mut rows = Vec::new();
+    for &(reg, skip, name) in relevant {
+        if let Some(row) = install_id_freeze_field(vcpu_fd, reg, name, skip)? {
+            rows.push(row);
+        }
+    }
+
+    // PMU denial: this featureless vCPU reads ID_AA64DFR0_EL1.PMUVer (bits [11:8]) as 0.
+    let mut dfr0: u64 = 0;
+    let get = KvmOneReg {
+        id: kvm::REG_ID_AA64DFR0_EL1,
+        addr: (&raw mut dfr0) as u64,
+    };
+    // SAFETY: `vcpu_fd` is valid; `get.addr` points at a live u64 the kernel writes.
+    if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get) } < 0 {
+        return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64DFR0_EL1 PMUVer)"));
+    }
+    let pmu_denied_without_feature = (dfr0 >> 8) & 0xF == 0;
+
+    // For contrast: the sanitised host PMU version through a PMU-enabled vCPU.
+    let host = read_host_id_registers()?;
+    let host_pmuver = (host.id_aa64dfr0 >> 8) & 0xF;
+
+    Ok(IdFreezeProof {
+        rows,
+        pmu_denied_without_feature,
+        host_pmuver,
+    })
+}
+
+// ============================================================================
+// AA-6(b) vGIC save/restore round-trip proof (standalone; own VM/vCPU/vGIC).
+// Additive: it touches no `Machine`, run-loop, or W^X code.
+// ============================================================================
+
+/// The redistributor SGI-frame private-interrupt (SGI/PPI, IDs 0–31) registers whose values
+/// carry a guest's injection state — enable, pending, active, group, config, priority. Saved
+/// and restored through `KVM_DEV_ARM_VGIC_GRP_REDIST_REGS`, whose GET/SET give absolute
+/// migration-grade access (not the write-1-to-set MMIO semantics). Offsets are RD_base
+/// relative; the SGI frame is one 64 KiB frame past RD_base.
+#[cfg(target_os = "linux")]
+const VGIC_REDIST_PRIVATE_REGS: &[(u64, &str)] = &[
+    (0x1_0000 + 0x0080, "GICR_IGROUPR0"),
+    (0x1_0000 + 0x0D00, "GICR_IGRPMODR0"),
+    (0x1_0000 + 0x0100, "GICR_ISENABLER0"),
+    (0x1_0000 + 0x0200, "GICR_ISPENDR0"),
+    (0x1_0000 + 0x0300, "GICR_ISACTIVER0"),
+    (0x1_0000 + 0x0C00, "GICR_ICFGR0"),
+    (0x1_0000 + 0x0C04, "GICR_ICFGR1"),
+    (0x1_0000 + 0x0400, "GICR_IPRIORITYR0"),
+    (0x1_0000 + 0x0404, "GICR_IPRIORITYR1"),
+    (0x1_0000 + 0x0408, "GICR_IPRIORITYR2"),
+    (0x1_0000 + 0x040C, "GICR_IPRIORITYR3"),
+    (0x1_0000 + 0x0410, "GICR_IPRIORITYR4"),
+    (0x1_0000 + 0x0414, "GICR_IPRIORITYR5"),
+    (0x1_0000 + 0x0418, "GICR_IPRIORITYR6"),
+    (0x1_0000 + 0x041C, "GICR_IPRIORITYR7"),
+];
+
+/// The private-interrupt ID the round-trip injects (a PPI, matching AA-5's dedicated
+/// clockevent PPI 20). Its ISENABLER0/ISPENDR0 bit distinguishes an injected state from a
+/// fresh vGIC's quiescent default.
+#[cfg(target_os = "linux")]
+const VGIC_ROUNDTRIP_INTID: u32 = 20;
+
+/// The AA-6(b) vGIC save/restore round-trip result.
+#[derive(Clone, Debug)]
+pub struct VgicRoundtrip {
+    /// The injected private interrupt (enabled + pending on machine A).
+    pub injected_intid: u32,
+    /// Register labels saved, in order (parallel to the value vectors).
+    pub labels: Vec<&'static str>,
+    /// Machine A's saved private-IRQ register values.
+    pub saved: Vec<u32>,
+    /// A fresh machine B's values BEFORE restore.
+    pub fresh_before: Vec<u32>,
+    /// Machine B's values AFTER restoring A's save.
+    pub fresh_after: Vec<u32>,
+    /// Negative control: the fresh vGIC differed from the injected save before restore (so a
+    /// match after restore is transfer, not coincidence).
+    pub negative_control_differs: bool,
+    /// The round-trip held: B after restore is byte-identical to A's save.
+    pub roundtrip_identical: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn vgic_device_get(vgic_fd: libc::c_int, group: u32, attr: u64) -> Result<u32, SysError> {
+    let mut value: u32 = 0;
+    let da = KvmDeviceAttr {
+        flags: 0,
+        group,
+        attr,
+        addr: (&raw mut value) as u64,
+    };
+    // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u32 the GET accessor writes.
+    if unsafe {
+        libc::ioctl(
+            vgic_fd,
+            kvm::GET_DEVICE_ATTR as libc::c_ulong,
+            &raw const da,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_GET_DEVICE_ATTR, vGIC redist reg)"));
+    }
+    Ok(value)
+}
+
+#[cfg(target_os = "linux")]
+fn vgic_device_set(
+    vgic_fd: libc::c_int,
+    group: u32,
+    attr: u64,
+    value: u32,
+) -> Result<(), SysError> {
+    let da = KvmDeviceAttr {
+        flags: 0,
+        group,
+        attr,
+        addr: (&raw const value) as u64,
+    };
+    // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u32 the SET accessor reads.
+    if unsafe {
+        libc::ioctl(
+            vgic_fd,
+            kvm::SET_DEVICE_ATTR as libc::c_ulong,
+            &raw const da,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_SET_DEVICE_ATTR, vGIC redist reg)"));
+    }
+    Ok(())
+}
+
+/// Build a disposable VM + single vCPU + initialised in-kernel vGICv3, run `f(vgic_fd)`, and
+/// tear all three fds down on every path. Mirrors [`Machine::create_vgic`]'s ioctl sequence
+/// without touching `Machine`.
+#[cfg(target_os = "linux")]
+fn with_vm_vcpu_vgic<T>(f: impl FnOnce(libc::c_int) -> Result<T, SysError>) -> Result<T, SysError> {
+    let kvm_fd = open_kvm()?;
+    // SAFETY: valid /dev/kvm fd; KVM_CREATE_VM returns a VM fd.
+    let vm_fd = unsafe { libc::ioctl(kvm_fd, kvm::CREATE_VM as libc::c_ulong, 0_u64) };
+    if vm_fd < 0 {
+        let e = err("ioctl(KVM_CREATE_VM)");
+        // SAFETY: `kvm_fd` is valid and owned here.
+        unsafe { libc::close(kvm_fd) };
+        return Err(e);
+    }
+    let body = || -> Result<T, SysError> {
+        // SAFETY: `vm_fd` is valid; KVM_CREATE_VCPU takes a vcpu index and returns a fd.
+        let vcpu_fd = unsafe { libc::ioctl(vm_fd, kvm::CREATE_VCPU as libc::c_ulong, 0_u64) };
+        if vcpu_fd < 0 {
+            return Err(err("ioctl(KVM_CREATE_VCPU)"));
+        }
+        let inner = || -> Result<T, SysError> {
+            // The vCPU must be initialised before the vGIC's CTRL_INIT.
+            let mut init = KvmVcpuInit::default();
+            // SAFETY: `vm_fd` is valid; KVM_ARM_PREFERRED_TARGET fills `init`.
+            if unsafe {
+                libc::ioctl(
+                    vm_fd,
+                    kvm::ARM_PREFERRED_TARGET as libc::c_ulong,
+                    &raw mut init,
+                )
+            } < 0
+            {
+                return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET)"));
+            }
+            // SAFETY: `vcpu_fd` is valid; `init` is fully initialised above.
+            if unsafe {
+                libc::ioctl(
+                    vcpu_fd,
+                    kvm::ARM_VCPU_INIT as libc::c_ulong,
+                    &raw const init,
+                )
+            } < 0
+            {
+                return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
+            }
+
+            let mut dev = KvmCreateDevice {
+                type_: kvm::DEV_TYPE_ARM_VGIC_V3,
+                fd: 0,
+                flags: 0,
+            };
+            // SAFETY: `vm_fd` is valid; KVM_CREATE_DEVICE fills `dev.fd`.
+            if unsafe { libc::ioctl(vm_fd, kvm::CREATE_DEVICE as libc::c_ulong, &raw mut dev) } < 0
+            {
+                return Err(err("ioctl(KVM_CREATE_DEVICE, vGICv3)"));
+            }
+            let vgic_fd = dev.fd as libc::c_int;
+            let with_vgic = || -> Result<T, SysError> {
+                let dist = kvm::GICD_BASE;
+                let redist = kvm::GICR_BASE;
+                let set_addr = |attr: u64, value: &u64| -> Result<(), SysError> {
+                    let da = KvmDeviceAttr {
+                        flags: 0,
+                        group: kvm::DEV_ARM_VGIC_GRP_ADDR,
+                        attr,
+                        addr: (value as *const u64) as u64,
+                    };
+                    // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u64 the ADDR
+                    // group reads.
+                    if unsafe {
+                        libc::ioctl(
+                            vgic_fd,
+                            kvm::SET_DEVICE_ATTR as libc::c_ulong,
+                            &raw const da,
+                        )
+                    } < 0
+                    {
+                        return Err(err("ioctl(KVM_SET_DEVICE_ATTR, vGIC addr)"));
+                    }
+                    Ok(())
+                };
+                set_addr(kvm::VGIC_V3_ADDR_TYPE_DIST, &dist)?;
+                set_addr(kvm::VGIC_V3_ADDR_TYPE_REDIST, &redist)?;
+                let ctrl = KvmDeviceAttr {
+                    flags: 0,
+                    group: kvm::DEV_ARM_VGIC_GRP_CTRL,
+                    attr: kvm::DEV_ARM_VGIC_CTRL_INIT,
+                    addr: 0,
+                };
+                // SAFETY: `vgic_fd` is valid; the CTRL/INIT attr takes no address argument.
+                if unsafe {
+                    libc::ioctl(
+                        vgic_fd,
+                        kvm::SET_DEVICE_ATTR as libc::c_ulong,
+                        &raw const ctrl,
+                    )
+                } < 0
+                {
+                    return Err(err("ioctl(KVM_DEV_ARM_VGIC_CTRL_INIT)"));
+                }
+                f(vgic_fd)
+            };
+            let out = with_vgic();
+            // SAFETY: `vgic_fd` is valid and owned here.
+            unsafe { libc::close(vgic_fd) };
+            out
+        };
+        let out = inner();
+        // SAFETY: `vcpu_fd` is valid and owned here.
+        unsafe { libc::close(vcpu_fd) };
+        out
+    };
+    let out = body();
+    // SAFETY: both descriptors are valid and owned here.
+    unsafe {
+        libc::close(vm_fd);
+        libc::close(kvm_fd);
+    }
+    out
+}
+
+/// Read the private-IRQ register bank from a vGIC in fixed order.
+#[cfg(target_os = "linux")]
+fn vgic_save_private(vgic_fd: libc::c_int) -> Result<Vec<u32>, SysError> {
+    VGIC_REDIST_PRIVATE_REGS
+        .iter()
+        .map(|&(off, _)| vgic_device_get(vgic_fd, kvm::DEV_ARM_VGIC_GRP_REDIST_REGS, off))
+        .collect()
+}
+
+/// Prove AA-6(b) vGIC injection state round-trips through save/restore.
+///
+/// Machine A enables + sets pending on PPI [`VGIC_ROUNDTRIP_INTID`] and its private-IRQ bank
+/// is saved. A fresh machine B is read (negative control: it differs), the save is restored
+/// into it, and B is read again — a bit-identical match proves save→restore fidelity.
+///
+/// # Errors
+/// [`SysError`] on any VM/vCPU/vGIC construction or device-attribute access failure.
+#[cfg(target_os = "linux")]
+pub fn vgic_roundtrip_proof() -> Result<VgicRoundtrip, SysError> {
+    let intid = VGIC_ROUNDTRIP_INTID;
+    let bit = 1u32 << intid; // PPI 20 is in the first 32-bit private-IRQ word.
+    let g = kvm::DEV_ARM_VGIC_GRP_REDIST_REGS;
+    let en = 0x1_0000 + 0x0100u64; // GICR_ISENABLER0
+    let pend = 0x1_0000 + 0x0200u64; // GICR_ISPENDR0
+
+    // Machine A: inject (enable + pending on the PPI), then save the private-IRQ bank.
+    let saved = with_vm_vcpu_vgic(|vgic_fd| {
+        let cur_en = vgic_device_get(vgic_fd, g, en)?;
+        vgic_device_set(vgic_fd, g, en, cur_en | bit)?;
+        let cur_pend = vgic_device_get(vgic_fd, g, pend)?;
+        vgic_device_set(vgic_fd, g, pend, cur_pend | bit)?;
+        vgic_save_private(vgic_fd)
+    })?;
+
+    // Machine B: read fresh, restore A's save, read again.
+    let (fresh_before, fresh_after) = with_vm_vcpu_vgic(|vgic_fd| {
+        let before = vgic_save_private(vgic_fd)?;
+        for (&(off, _), &value) in VGIC_REDIST_PRIVATE_REGS.iter().zip(saved.iter()) {
+            vgic_device_set(vgic_fd, g, off, value)?;
+        }
+        let after = vgic_save_private(vgic_fd)?;
+        Ok((before, after))
+    })?;
+
+    Ok(VgicRoundtrip {
+        injected_intid: intid,
+        labels: VGIC_REDIST_PRIVATE_REGS.iter().map(|&(_, l)| l).collect(),
+        negative_control_differs: fresh_before != saved,
+        roundtrip_identical: fresh_after == saved,
+        saved,
+        fresh_before,
+        fresh_after,
+    })
+}
+
+#[cfg(test)]
+mod churner_validation_tests {
+    use super::*;
+
+    #[test]
+    fn churner_refuses_an_empty_core_list() {
+        assert!(MigrationChurner::start(current_tid(), Vec::new()).is_err());
+    }
+
+    #[test]
+    fn churner_refuses_an_out_of_range_core() {
+        let cpu_setsize = core::mem::size_of::<libc::cpu_set_t>() * 8;
+        let cores = vec![0, u32::try_from(cpu_setsize).expect("CPU_SETSIZE fits u32")];
+        assert!(MigrationChurner::start(current_tid(), cores).is_err());
+    }
 }

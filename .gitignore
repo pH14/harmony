@@ -6,6 +6,12 @@
 *.img
 *.bin
 !consonance/acceptance-suite/golden/*.bin
+# AA-5(c) console transcripts are retained checker inputs: aa5-identity-check.py
+# recomputes each console sha256 from console.bin, so a fresh checkout must carry
+# them for the same-seed identity evidence to self-verify (hm-of6t F12). ~5 KiB
+# ASCII each; consistency with the committed stdout hashes is what the checker gates.
+!spikes/arm-altra/results/aa-5/live-20260720/**/console.bin
+!spikes/arm-altra/results/aa-5/live-20260721/**/console.bin
 /.claude/skills/pr-review-workspace/
 .agent-prompt.md
 .env
@@ -50,3 +56,4 @@ spikes/*
 # wins). Build artifacts are re-ignored by the spike's own .gitignore.
 !spikes/amd-epyc
 !spikes/amd-epyc/**
+spikes/arm-altra/payloads/fixtures/*.elf

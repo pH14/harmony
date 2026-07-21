@@ -1,5 +1,47 @@
 # harmony-linux/linux — implementation notes
 
+## hm-9r1 — AA-5(c) ARM guest and the static AA-4 LSE-only image gate
+
+The owned ARM artifact is no longer a generic kernel plus BusyBox. The pinned
+Linux 6.18.35 build applies `0002` (work-derived pvclock) and `0003` (the
+LSE-only contract), while `arm64-config-fragment` requires
+`ARM64_USE_LSE_ATOMICS`, `ARM64_LSE_ATOMICS`, and
+`HARMONY_ARM_LSE_ONLY`. The patch selects the LSE implementations directly,
+replaces the reservation-monitor cmpwait hint with ordinary polling, and uses
+`LDADDAL` plus ordinary polling for the early linear-map rendezvous. `FUTEX` is
+off because the one-process owned init does not use it; this removes the
+special user-memory LL/SC helpers rather than leaving unreachable fallback
+bodies in the image.
+
+Userspace is a small freestanding `arm64-init.c`, linked without libc,
+compiler runtime, shell, or BusyBox. It uses raw AArch64 syscalls to mount
+sysfs, requires `harmony-arm-pvclock` as the selected clocksource, prints the
+two fixed AA-5 markers, and then retires deterministic branches for the next
+exact publication. It is compiled with `-march=armv8.1-a+lse` and
+`-mno-outline-atomics`; `BINFMT_SCRIPT`, procfs, and futex are absent from the
+owned kernel config.
+
+Publication is fail-closed. `aa4-exclusive-scan.py` walks every raw ELF
+executable-section word of `vmlinux`, `vdso.so.dbg`, and the exact init ELF and
+rejects the LL/SC family. Its decoder treats LSE CASP correctly rather than confusing
+CASP's broad encoding class with LDXP/STXP, pins both sides with real-word
+self-tests, and cross-checks every word that `objdump` renders as an instruction.
+The kernel build compiles a planted two-word LDXR/STXR ELF whose first exclusive
+is hidden from disassembly by an AArch64 data mapping symbol; the independent
+byte scan must still reject it with exactly two hits. The exact final config was
+cross-built from the checksum-pinned source: kernel, vDSO, and init all scan
+clean, and the independent AA-5 scan still reports zero live counter reads
+(five constant `CNTFRQ_EL0` reads are allowed).
+
+This closes the static artifact half of AA-4 levels 1–2 for the owned image. It
+does not claim the live W^X rescan-on-exec path, the stage-2 planted-exclusive
+backstop, a native pinned-N1 build, or an AA-5 runtime result. The draft arm64 KVM
+execute-guard extension now applies and compiles, but the first two claims remain blocked on
+its non-vacuous planted live proof; compile evidence does not close them.
+The shared `atomic_ll_sc.h` include remains because upstream's LSE header
+uses its 128-bit helper type, but the direct-LSE macros emit none of those
+inline bodies and the raw final-artifact scan is the proof.
+
 ## Task 48 — `runc` *actually* runs the Postgres OCI container (no `unshare` shim)
 
 ### What landed (the money-shot, and the overturn of task 38's load-bearing finding)

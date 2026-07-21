@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# verify.sh — apply + build + assert gate for the arm64 KVM_EXIT_PREEMPT draft patch
-# (harmony task 109). Untested-on-silicon: this proves "applies + compiles", nothing more.
+# verify.sh — apply + build + assert gate for the Harmony arm64 KVM patch series.
+# Untested-on-silicon: this proves "applies + compiles", nothing more.
 #
 # Every step's exit status reaches this script's exit status (set -euo pipefail; no `|| true`
 # on any gate step). A "done" print is never treated as success — the PASS line at the bottom
@@ -14,23 +14,32 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTAINER="${ARMK_CONTAINER:-armk}"
 KERNEL_DIR="/work/linux-6.18.35"
 PRISTINE_TAG="v6.18.35-pristine"
-PATCH_NAME="0001-KVM-arm64-add-KVM_EXIT_PREEMPT-in-kernel-force-exit-.patch"
-PATCH_HOST_PATH="${SCRIPT_DIR}/patches/${PATCH_NAME}"
-PATCH_CONTAINER_PATH="/tmp/verify-${PATCH_NAME}"
+PATCH_NAMES=(
+	"0001-KVM-arm64-add-KVM_EXIT_PREEMPT-in-kernel-force-exit-.patch"
+	"0002-KVM-arm64-add-userspace-stage-2-execute-guard.patch"
+)
+PATCH_CONTAINER_PATHS=()
 BUILD_LOG_CONTAINER="/tmp/verify-build.log"
 BUILD_LOG_HOST="$(mktemp -t verify-build-log.XXXXXX)"
 
 trap 'rm -f "${BUILD_LOG_HOST}"' EXIT
 
-echo "==> [0/6] preflight: container reachable, patch file present"
-if [[ ! -f "${PATCH_HOST_PATH}" ]]; then
-	echo "FAIL: patch not found at ${PATCH_HOST_PATH}" >&2
-	exit 1
-fi
+echo "==> [0/6] preflight: container reachable, patch files present"
+for patch_name in "${PATCH_NAMES[@]}"; do
+	patch_host_path="${SCRIPT_DIR}/patches/${patch_name}"
+	if [[ ! -f "${patch_host_path}" ]]; then
+		echo "FAIL: patch not found at ${patch_host_path}" >&2
+		exit 1
+	fi
+	PATCH_CONTAINER_PATHS+=("/tmp/verify-${patch_name}")
+done
 docker exec "${CONTAINER}" true
 
-echo "==> [1/6] copying patch into ${CONTAINER}:${PATCH_CONTAINER_PATH}"
-docker cp "${PATCH_HOST_PATH}" "${CONTAINER}:${PATCH_CONTAINER_PATH}"
+echo "==> [1/6] copying patch series into ${CONTAINER}"
+for i in "${!PATCH_NAMES[@]}"; do
+	docker cp "${SCRIPT_DIR}/patches/${PATCH_NAMES[$i]}" \
+		"${CONTAINER}:${PATCH_CONTAINER_PATHS[$i]}"
+done
 
 echo "==> [2/6] resetting ${KERNEL_DIR} to pristine ${PRISTINE_TAG}"
 docker exec -i "${CONTAINER}" bash -s -- "${KERNEL_DIR}" "${PRISTINE_TAG}" <<'EOF'
@@ -42,13 +51,13 @@ git am --abort >/dev/null 2>&1 || true
 git reset --hard "${PRISTINE_TAG}"
 EOF
 
-echo "==> [3/6] git am the patch (must apply clean onto pristine ${PRISTINE_TAG})"
-docker exec -i "${CONTAINER}" bash -s -- "${KERNEL_DIR}" "${PATCH_CONTAINER_PATH}" <<'EOF'
+echo "==> [3/6] git am the series (must apply clean onto pristine ${PRISTINE_TAG})"
+docker exec -i "${CONTAINER}" bash -s -- "${KERNEL_DIR}" "${PATCH_CONTAINER_PATHS[@]}" <<'EOF'
 set -euo pipefail
 KERNEL_DIR="$1"
-PATCH="$2"
+shift
 cd "${KERNEL_DIR}"
-git -c user.name=spike -c user.email=s@s am "${PATCH}"
+git -c user.name=spike -c user.email=s@s am "$@"
 EOF
 
 echo "==> [4/6] configuring (defconfig; KVM/VIRTUALIZATION on; DEBUG_INFO_BTF + DEBUG_INFO off)"
@@ -99,6 +108,10 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # FAIL. Disassembling to a file first removes the producer process from the equation.
 objdump -d arch/arm64/kvm/arm.o         > /tmp/verify-arm.dis
 objdump -d arch/arm64/kvm/handle_exit.o > /tmp/verify-handle_exit.dis
+objdump -dr arch/arm64/kvm/mmu.o        > /tmp/verify-mmu.dis
+objdump -dr --disassemble=kvm_arm_stage2_exec_guard_apply \
+	arch/arm64/kvm/mmu.o                 > /tmp/verify-exec-guard-apply.dis
+nm arch/arm64/kvm/mmu.o                 > /tmp/verify-mmu.nm
 
 # (a) KVM_ARM_PREEMPT_EXIT ioctl number -- _IO(KVMIO, 0xe4) == (0xAE << 8) | 0xe4 == 0xaee4 --
 #     dispatched as a literal compare in kvm_arch_vcpu_ioctl's switch, compiled into arm.o.
@@ -123,7 +136,34 @@ grep -Eq 'cmp[[:space:]]+w[0-9]+, #0xf5' /tmp/verify-arm.dis \
 grep -Eq 'mov[[:space:]]+w[0-9]+, #0x2a[[:space:]]+// #42' /tmp/verify-handle_exit.dis \
 	|| fail "KVM_EXIT_PREEMPT (42 / 0x2a) literal not found in handle_exit.o"
 
-echo "    all 4 compiled-object assertions passed (0xaee4, 0xf5, bit-11 x2, 0x2a/#42)"
+# (e) The execute-guard capability (246 / 0xf6) and response ioctl
+#     _IOW(KVMIO, 0xb7, 24) == 0x4018aeb7 are dispatched by arm.o.
+grep -Eq 'cmp[[:space:]]+w[0-9]+, #0xf6' /tmp/verify-arm.dis \
+	|| fail "cap 246 (0xf6) dispatch not found in arm.o's enable_cap switch"
+grep -Eq 'mov[[:space:]]+w[0-9]+, #0xaeb7' /tmp/verify-arm.dis \
+	|| fail "ioctl low half 0xaeb7 not found in arm.o"
+grep -Eq 'movk[[:space:]]+w[0-9]+, #0x4018, lsl #16' /tmp/verify-arm.dis \
+	|| fail "ioctl high half 0x4018 not found in arm.o"
+
+# (f) The page-state implementation and exit are linked into mmu.o. The named apply
+#     entry point must exist; the object must test flag bit 12, emit exit reason 43,
+#     serialize under the MMU write lock, load XArray generation state, synchronously
+#     unmap stage-2 mappings, and clear state ranges for notifier/memslot invalidation.
+grep -q ' T kvm_arm_stage2_exec_guard_apply$' /tmp/verify-mmu.nm \
+	|| fail "kvm_arm_stage2_exec_guard_apply not exported by mmu.o"
+grep -Eq '(tbz|tbnz)[[:space:]]+w[0-9]+, #(0xc|12),' /tmp/verify-mmu.dis \
+	|| fail "bit-12 (KVM_ARCH_FLAG_STAGE2_EXEC_GUARD) test not found in mmu.o"
+grep -Eq 'mov[[:space:]]+w[0-9]+, #0x2b[[:space:]]+// #43' /tmp/verify-mmu.dis \
+	|| fail "KVM_EXIT_ARM_STAGE2_EXEC_GUARD (43 / 0x2b) not found in mmu.o"
+grep -Eq 'bl[[:space:]]+[[:xdigit:]]+[[:space:]]+<__unmap_stage2_range>' \
+	/tmp/verify-exec-guard-apply.dis \
+	|| fail "direct __unmap_stage2_range call not found in execute-guard apply path"
+for relocation in _raw_write_lock xa_load xas_find xas_store; do
+	grep -q "R_AARCH64_CALL26[[:space:]]${relocation}" /tmp/verify-mmu.dis \
+		|| fail "${relocation} call not found in mmu.o"
+done
+
+echo "    all compiled-object assertions passed (AA-3 force-exit + AA-4 execute guard)"
 EOF
 
 echo "PASS"

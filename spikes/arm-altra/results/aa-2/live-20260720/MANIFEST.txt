@@ -1,0 +1,12 @@
+AA-2 single-step exactness — live validation, 2026-07-20, Ampere Altra N1
+host kernel: 6.18.35-aa4guard, build-id ac576f87 (single-step is stock KVM guest-debug;
+             mechanism=stock/SignalKick, no overflow armed)
+core 60 isolated, perf_event_paranoid=-1
+
+aa2-full-001: 16 samples (8 payloads x reps 2), smoke scale, 170330 step records
+  floor-check: debug-evidence PASS (full step matrix, every transition class, 1 insn/step,
+               BR_RETIRED delta consistent per class), replay-identity PASS (85165 groups
+               bit-identical), step-totality/well-formed/totality/mechanism/pinning PASS.
+  Only FAILs: weights-present + count-exactness — no AA-1 weights pack passed this session;
+  AA-2 STEP records are count-exempt, so this does not bind the single-step verdict.
+records.jsonl kept on box (content-addressed by run-set.json records_sha256).
