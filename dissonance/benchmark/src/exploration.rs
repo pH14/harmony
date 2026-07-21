@@ -41,7 +41,17 @@ pub enum ExplorationConfig {
     /// The attribution column: the task-84-era default (v1) selector.
     /// Separates "the archive helps at all" from "the tested selector's
     /// improvements transfer". Not part of the pass condition.
+    ///
+    /// The maze gate (task 134) runs this as its **subject**: the simple
+    /// archive-guided selector under test, scored against the two permanent
+    /// controls.
     SelectorV1,
+    /// Task 84's ruled diagnostic control, permanent from the maze gate
+    /// (task 134) on: the full snapshot/materialization machinery runs, but
+    /// the selector never exploits an admitted Entry (always-explore). It
+    /// separates "the archive machinery is behavior-neutral" from "novelty
+    /// steering helps"; never part of a pass condition.
+    FrontierOff,
 }
 
 impl ExplorationConfig {
@@ -51,6 +61,7 @@ impl ExplorationConfig {
             ExplorationConfig::Signal => "signal",
             ExplorationConfig::PureRandom => "pure-random baseline",
             ExplorationConfig::SelectorV1 => "selector v1 (attribution)",
+            ExplorationConfig::FrontierOff => "frontier-off (diagnostic)",
         }
     }
 }
@@ -363,116 +374,26 @@ impl ExplorationReport {
                     seed: log.seed,
                 });
             }
-            // Every log must carry the dense 0..branch_budget sequence the
-            // manifest requires: a truncated / padded / gapped log scored
-            // as-is would silently compare unequal budgets.
-            let dense_mismatch = log
-                .events
-                .iter()
-                .enumerate()
-                .find(|(i, e)| e.branch != *i as u64)
-                .map(|(i, _)| i as u64);
-            if log.events.len() as u64 != budget || dense_mismatch.is_some() {
-                return Err(ExplorationError::BadBranchSequence {
-                    config: log.config,
-                    seed: log.seed,
-                    want: budget,
-                    got: log.events.len() as u64,
-                    at: dense_mismatch.unwrap_or_else(|| (log.events.len() as u64).min(budget)),
-                });
-            }
+            dense_check(log, budget)?;
         }
 
-        // Deduplicate identical (config, seed) reruns; reject divergent ones
-        // (the task-69 conflicting-trial discipline).
-        let mut by_key: BTreeMap<(ExplorationConfig, u64), &ExplorationLog> = BTreeMap::new();
-        for log in logs {
-            match by_key.entry((log.config, log.seed)) {
-                std::collections::btree_map::Entry::Vacant(v) => {
-                    v.insert(log);
-                }
-                std::collections::btree_map::Entry::Occupied(o) => {
-                    if o.get().events != log.events {
-                        return Err(ExplorationError::ConflictingTrial {
-                            config: log.config,
-                            seed: log.seed,
-                        });
-                    }
-                }
-            }
-        }
-
+        let by_key = dedupe_trials(logs)?;
         let mut configs = Vec::new();
         for config in [
             ExplorationConfig::Signal,
             ExplorationConfig::PureRandom,
             ExplorationConfig::SelectorV1,
+            ExplorationConfig::FrontierOff,
         ] {
-            let runs: Vec<&&ExplorationLog> = by_key
-                .iter()
-                .filter(|((c, _), _)| *c == config)
-                .map(|(_, l)| l)
-                .collect();
-            if runs.is_empty() {
-                continue;
-            }
-            let seeds = runs.len() as u64;
-            if seeds < MIN_SEEDS {
-                return Err(ExplorationError::TooFewSeeds {
-                    config,
-                    got: seeds,
-                    need: MIN_SEEDS,
-                });
-            }
-            let mut cells: Vec<u64> = runs.iter().map(|l| l.distinct_cells_at(budget)).collect();
-            let mut depths: Vec<u64> = runs.iter().map(|l| l.depth_at(budget)).collect();
-            cells.sort_unstable();
-            depths.sort_unstable();
-            // ≥ MIN_SEEDS ≥ 2 samples, so median/quartiles are Some (the
-            // expect is statically justified by the floor above).
-            let cells_median = median(&cells).expect("seed floor guarantees samples");
-            let cells_quartiles = quartiles(&cells).expect("seed floor guarantees samples");
-            let depth_median = median(&depths).expect("seed floor guarantees samples");
-            let depth_quartiles = quartiles(&depths).expect("seed floor guarantees samples");
-            configs.push(ConfigSummary {
-                config,
-                seeds,
-                cells,
-                depths,
-                cells_median,
-                cells_quartiles,
-                depth_median,
-                depth_quartiles,
-            });
+            configs.extend(summarize_config(&by_key, config, budget)?);
         }
 
         let find = |c: ExplorationConfig| configs.iter().find(|s| s.config == c);
         let signal = find(ExplorationConfig::Signal);
         let baseline = find(ExplorationConfig::PureRandom);
 
-        let strict = |s: &ConfigSummary, b: &ConfigSummary, cells: bool| -> StrictBeats {
-            let (sm, sq, bm, bq) = if cells {
-                (
-                    s.cells_median,
-                    s.cells_quartiles,
-                    b.cells_median,
-                    b.cells_quartiles,
-                )
-            } else {
-                (
-                    s.depth_median,
-                    s.depth_quartiles,
-                    b.depth_median,
-                    b.depth_quartiles,
-                )
-            };
-            StrictBeats {
-                median_greater: sm > bm,
-                iqr_disjoint: sq.0 > bq.2, // q1(signal) > q3(baseline)
-            }
-        };
-        let cells_beats = signal.zip(baseline).map(|(s, b)| strict(s, b, true));
-        let depth_beats = signal.zip(baseline).map(|(s, b)| strict(s, b, false));
+        let cells_beats = signal.zip(baseline).map(|(s, b)| strict_beats(s, b, true));
+        let depth_beats = signal.zip(baseline).map(|(s, b)| strict_beats(s, b, false));
         // Round-9 P1: "live" means MOVEMENT — a guest frozen on its initial
         // gameplay cell still touches exactly one cell every branch, so the
         // bar is strictly more than one distinct cell at the median, not
@@ -482,31 +403,8 @@ impl ExplorationReport {
         // Pooled STADS for the signal configuration: one branch = one sample,
         // logs folded in (config, seed) order, the running Good–Turing
         // stopping rule checked per sample (the task-69 shape).
-        let stads = signal.map(|_| {
-            let mut acc = SpeciesAccumulator::new();
-            let mut stop_at_sample = None;
-            let mut sample = 0u64;
-            for ((c, _), log) in &by_key {
-                if *c != ExplorationConfig::Signal {
-                    continue;
-                }
-                for e in log.events.iter().filter(|e| e.branch < budget) {
-                    acc.observe_branch(e.touched.iter().map(|cell| cell.to_be_bytes().to_vec()));
-                    sample += 1;
-                    if stop_at_sample.is_none()
-                        && acc.stats().individuals > 0
-                        && acc.stats().discovery_below(stop_eps.0, stop_eps.1)
-                    {
-                        stop_at_sample = Some(sample);
-                    }
-                }
-            }
-            ExplorationStads {
-                stats: acc.stats(),
-                curve: acc.curve().to_vec(),
-                stop_at_sample,
-            }
-        });
+        let stads =
+            signal.map(|_| pooled_stads(&by_key, ExplorationConfig::Signal, budget, stop_eps));
 
         // The ROM gate comes BEFORE any win-condition evaluation (task 86's
         // "gates SKIP loudly" rule): a ROM-less run has no comparable game
@@ -730,6 +628,157 @@ impl ExplorationReport {
             }
         }
         md
+    }
+}
+
+/// Every log must carry the dense `0..budget` branch sequence its manifest
+/// requires: a truncated / padded / gapped log scored as-is would silently
+/// compare unequal budgets — loud error instead. Shared by the SMB and maze
+/// gate reports.
+pub(crate) fn dense_check(log: &ExplorationLog, budget: u64) -> Result<(), ExplorationError> {
+    let dense_mismatch = log
+        .events
+        .iter()
+        .enumerate()
+        .find(|(i, e)| e.branch != *i as u64)
+        .map(|(i, _)| i as u64);
+    if log.events.len() as u64 != budget || dense_mismatch.is_some() {
+        return Err(ExplorationError::BadBranchSequence {
+            config: log.config,
+            seed: log.seed,
+            want: budget,
+            got: log.events.len() as u64,
+            at: dense_mismatch.unwrap_or_else(|| (log.events.len() as u64).min(budget)),
+        });
+    }
+    Ok(())
+}
+
+/// Deduplicate identical `(config, seed)` reruns; reject divergent ones (the
+/// task-69 conflicting-trial discipline — never render a report over
+/// non-reproducible data).
+pub(crate) fn dedupe_trials(
+    logs: &[ExplorationLog],
+) -> Result<BTreeMap<(ExplorationConfig, u64), &ExplorationLog>, ExplorationError> {
+    let mut by_key: BTreeMap<(ExplorationConfig, u64), &ExplorationLog> = BTreeMap::new();
+    for log in logs {
+        match by_key.entry((log.config, log.seed)) {
+            std::collections::btree_map::Entry::Vacant(v) => {
+                v.insert(log);
+            }
+            std::collections::btree_map::Entry::Occupied(o) => {
+                if o.get().events != log.events {
+                    return Err(ExplorationError::ConflictingTrial {
+                        config: log.config,
+                        seed: log.seed,
+                    });
+                }
+            }
+        }
+    }
+    Ok(by_key)
+}
+
+/// Summarize one configuration's deduped logs at `budget`: `Ok(None)` when the
+/// configuration is absent, the seed floor enforced when present.
+pub(crate) fn summarize_config(
+    by_key: &BTreeMap<(ExplorationConfig, u64), &ExplorationLog>,
+    config: ExplorationConfig,
+    budget: u64,
+) -> Result<Option<ConfigSummary>, ExplorationError> {
+    let runs: Vec<&&ExplorationLog> = by_key
+        .iter()
+        .filter(|((c, _), _)| *c == config)
+        .map(|(_, l)| l)
+        .collect();
+    if runs.is_empty() {
+        return Ok(None);
+    }
+    let seeds = runs.len() as u64;
+    if seeds < MIN_SEEDS {
+        return Err(ExplorationError::TooFewSeeds {
+            config,
+            got: seeds,
+            need: MIN_SEEDS,
+        });
+    }
+    let mut cells: Vec<u64> = runs.iter().map(|l| l.distinct_cells_at(budget)).collect();
+    let mut depths: Vec<u64> = runs.iter().map(|l| l.depth_at(budget)).collect();
+    cells.sort_unstable();
+    depths.sort_unstable();
+    // ≥ MIN_SEEDS ≥ 2 samples, so median/quartiles are Some (the expect is
+    // statically justified by the floor above).
+    let cells_median = median(&cells).expect("seed floor guarantees samples");
+    let cells_quartiles = quartiles(&cells).expect("seed floor guarantees samples");
+    let depth_median = median(&depths).expect("seed floor guarantees samples");
+    let depth_quartiles = quartiles(&depths).expect("seed floor guarantees samples");
+    Ok(Some(ConfigSummary {
+        config,
+        seeds,
+        cells,
+        depths,
+        cells_median,
+        cells_quartiles,
+        depth_median,
+        depth_quartiles,
+    }))
+}
+
+/// One strict subject-vs-baseline comparison on cells (`true`) or depth
+/// (`false`): greater median AND non-overlapping IQRs, exact rationals.
+pub(crate) fn strict_beats(s: &ConfigSummary, b: &ConfigSummary, cells: bool) -> StrictBeats {
+    let (sm, sq, bm, bq) = if cells {
+        (
+            s.cells_median,
+            s.cells_quartiles,
+            b.cells_median,
+            b.cells_quartiles,
+        )
+    } else {
+        (
+            s.depth_median,
+            s.depth_quartiles,
+            b.depth_median,
+            b.depth_quartiles,
+        )
+    };
+    StrictBeats {
+        median_greater: sm > bm,
+        iqr_disjoint: sq.0 > bq.2, // q1(subject) > q3(baseline)
+    }
+}
+
+/// Pool one configuration's discovery events into the STADS instrumentation:
+/// one branch = one sample, logs folded in `(config, seed)` order, the running
+/// Good–Turing stopping rule checked per sample.
+pub(crate) fn pooled_stads(
+    by_key: &BTreeMap<(ExplorationConfig, u64), &ExplorationLog>,
+    config: ExplorationConfig,
+    budget: u64,
+    stop_eps: (u64, u64),
+) -> ExplorationStads {
+    let mut acc = SpeciesAccumulator::new();
+    let mut stop_at_sample = None;
+    let mut sample = 0u64;
+    for ((c, _), log) in by_key {
+        if *c != config {
+            continue;
+        }
+        for e in log.events.iter().filter(|e| e.branch < budget) {
+            acc.observe_branch(e.touched.iter().map(|cell| cell.to_be_bytes().to_vec()));
+            sample += 1;
+            if stop_at_sample.is_none()
+                && acc.stats().individuals > 0
+                && acc.stats().discovery_below(stop_eps.0, stop_eps.1)
+            {
+                stop_at_sample = Some(sample);
+            }
+        }
+    }
+    ExplorationStads {
+        stats: acc.stats(),
+        curve: acc.curve().to_vec(),
+        stop_at_sample,
     }
 }
 
