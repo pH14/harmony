@@ -2865,4 +2865,189 @@ mod tests {
         assert_eq!(cells, vec![smb_cell_key(1, 0, 2, 3)]);
         assert_eq!(depth, 5);
     }
+
+    /// The `GameToyMachine::capture` stamping is pinned coordinate-by-coordinate:
+    /// each window's six events land at `branch_vtime + w*12` plus offsets
+    /// `0..=5`, carry the play-agent's wire reg-ids and ops, and the FRAME clock
+    /// is exactly `w*12`. Flipping any `+`/`*` in the stamping (or replacing the
+    /// whole body) moves an event off a pinned coordinate and fails here — the
+    /// portable stand-in for reading the seal on the box.
+    #[test]
+    fn capture_stamps_each_window_at_base_plus_w_times_twelve() {
+        let m = GameToyMachine::new();
+        let cap = m.capture();
+        // A fresh toy has an empty ancestor prefix: exactly 16 windows × 6
+        // events, none dropped, duplicated, or collapsed to a stub vec.
+        assert_eq!(cap.len(), 16 * 6, "16 windows of 6 events, no prefix");
+        // The per-window event shape, in emission order.
+        let regs = [
+            reg::GAME_MODE,
+            reg::WORLD,
+            reg::LEVEL,
+            reg::X_BUCKET,
+            reg::DEPTH,
+            reg::FRAME,
+        ];
+        // DEPTH is the only `state_max` register (op 1); the rest are `set` (op 0).
+        let ops = [0u8, 0, 0, 0, 1, 0];
+        for w in 0..16u64 {
+            let at0 = TOY_BASE_VTIME + w * 12;
+            for (i, (at, id, payload)) in cap[w as usize * 6..w as usize * 6 + 6].iter().enumerate()
+            {
+                assert_eq!(*at, at0 + i as u64, "window {w} event {i} vtime");
+                assert_eq!(
+                    *id,
+                    (2u32 << 24) | regs[i] as u32,
+                    "window {w} event {i} reg id"
+                );
+                assert_eq!(payload[0], ops[i], "window {w} event {i} op byte");
+            }
+            // The FRAME clock is `w*12` (pins the value-side `* 12`).
+            let frame = &cap[w as usize * 6 + 5].2;
+            assert_eq!(
+                u64::from_le_bytes(frame[1..9].try_into().unwrap()),
+                w * 12,
+                "window {w} FRAME clock"
+            );
+            // GAME_MODE is always gameplay (1) — a fixed emission through the wire codec.
+            let mode = &cap[w as usize * 6].2;
+            assert_eq!(
+                u64::from_le_bytes(mode[1..9].try_into().unwrap()),
+                1,
+                "window {w} GAME_MODE value"
+            );
+        }
+    }
+
+    /// `run` terminals are exact: with no deadline the toy goes quiescent
+    /// `16*12` V-time past its start; with a deadline it advances to and reports
+    /// that moment. A body-replacement or an `16*12`→`16/12` lands a different
+    /// terminal and fails here.
+    #[test]
+    fn run_terminal_and_deadline_are_exact() {
+        // No deadline: quiescent at base + 192 (the `16 * 12` window budget).
+        let mut m = GameToyMachine::new();
+        let quiescent = m
+            .run(
+                &StopConditions {
+                    deadline: None,
+                    on: StopMask::NONE,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            quiescent,
+            StopReason::Quiescent {
+                vtime: Moment(TOY_BASE_VTIME + 16 * 12),
+            }
+        );
+
+        // A future deadline: advance to it and report Deadline at that moment.
+        let mut m = GameToyMachine::new();
+        let deadline = m
+            .run(
+                &StopConditions {
+                    deadline: Some(Moment(5_000)),
+                    on: StopMask::NONE,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            deadline,
+            StopReason::Deadline {
+                vtime: Moment(5_000),
+            }
+        );
+    }
+
+    /// `snapshot` assigns strictly increasing ids (`+= 1`, never `*=`/`-=`) and
+    /// seals the capture prefix half-open at the snapshot vtime (`at <= vt`),
+    /// counting exactly the events at or before it.
+    #[test]
+    fn snapshot_ids_increment_and_seal_is_bounded_at_vtime() {
+        let mut m = GameToyMachine::new();
+        // Fresh: vtime is the base; only window-0's GAME_MODE lands at exactly
+        // the base, so the half-open seal admits exactly one event.
+        let (id0, cut0) = m.snapshot().unwrap();
+        assert_eq!(id0, explorer::SnapId(1));
+        assert_eq!(cut0.at, Moment(TOY_BASE_VTIME));
+        assert_eq!(cut0.sdk_events, 1, "only base+0 is <= the base vtime");
+
+        // A second seal at the same state gets the NEXT id — `*= 1` would stall
+        // at 1, `-= 1` would fall to 0.
+        let (id1, _) = m.snapshot().unwrap();
+        assert_eq!(id1, explorer::SnapId(2));
+
+        // Advance one window's worth of stamps into range, then re-seal: window
+        // 0's events at base..=base+5 are all <= base+5 while window 1 (base+12)
+        // is not — exactly six admitted. Flipping `<=` to `>` would instead
+        // admit the 90 events strictly after the cut.
+        let _ = m
+            .run(
+                &StopConditions {
+                    deadline: Some(Moment(TOY_BASE_VTIME + 5)),
+                    on: StopMask::NONE,
+                },
+                None,
+            )
+            .unwrap();
+        let (id2, cut2) = m.snapshot().unwrap();
+        assert_eq!(id2, explorer::SnapId(3));
+        assert_eq!(cut2.at, Moment(TOY_BASE_VTIME + 5));
+        assert_eq!(
+            cut2.sdk_events, 6,
+            "window-0's six events are all <= base+5"
+        );
+    }
+
+    /// `replay` restores the snapshotted vtime, branch point, and capture
+    /// prefix, and rejects an unknown snapshot loudly. The whole-body `Ok(())`
+    /// mutant leaves the machine wherever it was and never errors — every
+    /// assertion below refutes it.
+    #[test]
+    fn replay_restores_state_and_rejects_unknown_snapshots() {
+        let mut m = GameToyMachine::new();
+        // Seal the base moment.
+        let (snap_base, _) = m.snapshot().unwrap();
+        // Advance vtime, then seal a later, distinct snapshot.
+        let _ = m
+            .run(
+                &StopConditions {
+                    deadline: Some(Moment(TOY_BASE_VTIME + 100)),
+                    on: StopMask::NONE,
+                },
+                None,
+            )
+            .unwrap();
+        let (snap_late, _) = m.snapshot().unwrap();
+
+        // Load the late snapshot: branch point + vtime move to base+100 and its
+        // multi-event sealed prefix is restored.
+        m.replay(snap_late).unwrap();
+        assert_eq!(m.vtime, TOY_BASE_VTIME + 100);
+        assert_eq!(m.branch_vtime, TOY_BASE_VTIME + 100);
+        assert!(
+            m.prefix.len() >= 6,
+            "the late seal restored a multi-event prefix, got {}",
+            m.prefix.len()
+        );
+
+        // Replay the base snapshot: every field returns to the base state.
+        m.replay(snap_base).unwrap();
+        assert_eq!(m.vtime, TOY_BASE_VTIME);
+        assert_eq!(m.branch_vtime, TOY_BASE_VTIME);
+        assert_eq!(
+            m.prefix.len(),
+            1,
+            "the base seal admitted exactly one event"
+        );
+
+        // An unknown snapshot is a loud error, never a silent success.
+        assert!(matches!(
+            m.replay(explorer::SnapId(999)),
+            Err(MachineError::UnknownSnapshot(999)),
+        ));
+    }
 }
