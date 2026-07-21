@@ -1098,19 +1098,24 @@ impl<M: Machine> DifferentialCampaign<M> {
     ) -> Result<Normalized, CampaignError> {
         match self.config.ingress {
             Ingress::Binary => {
-                // Keep every catalog tuple; skip the first `inherited` firing
-                // tuples (the inherited ancestor prefix), keep the rest.
+                // The parent cut counts capture POSITIONS (ordinals) — the
+                // catalog tuple at position 0 included (the server stamps it as
+                // `vmm.sdk_events().len()`). So skip the inherited prefix by
+                // position: keep the catalog declaration unconditionally (the
+                // child re-declares its own schema, never inherits it) and keep
+                // every non-catalog firing at or past the inherited-position
+                // boundary. Counting firings alone would keep the catalog for
+                // free AND skip `inherited` firings, over-skipping by the catalog
+                // count and dropping the first firing that should survive (F2).
                 let mut kept: Vec<(sdk_events::Moment, u32, Vec<u8>)> = Vec::new();
-                let mut firings_seen: u64 = 0;
-                for (m, id, bytes) in raw {
+                for (pos, (m, id, bytes)) in raw.iter().enumerate() {
                     if *id == CATALOG_EVENT_ID {
                         kept.push((sdk_events::Moment(*m), *id, bytes.clone()));
                         continue;
                     }
-                    if firings_seen >= inherited {
+                    if (pos as u64) >= inherited {
                         kept.push((sdk_events::Moment(*m), *id, bytes.clone()));
                     }
-                    firings_seen += 1;
                 }
                 Ok(decode_binary(&kept)?)
             }
@@ -1886,6 +1891,67 @@ mod tests {
             }
         }
         assert!(checked_child, "a mid-run fork child was exercised");
+    }
+
+    /// F2 regression (tribunal #134): a real-guest rollout's SDK capture leads
+    /// with a catalog tuple (`event_id 0`), and the server stamps the parent
+    /// cut's `sdk_events` over the WHOLE capture vector — the catalog tuple
+    /// counted as one position (`control.rs`: `vmm.sdk_events().len()`).
+    /// `decode_child_suffix` must therefore skip the inherited prefix by ORDINAL
+    /// POSITION (the catalog occupies one), not by firing-only count; otherwise
+    /// it keeps the catalog "for free" AND skips that many firings, over-skipping
+    /// by the catalog count and dropping the first firing that should survive.
+    ///
+    /// The toy machines never emit a catalog, so this only bites a real guest —
+    /// which is why it went unseen until now (the judge's PLAUSIBLE residual).
+    #[test]
+    fn child_suffix_keeps_the_first_firing_below_a_catalog_bearing_cut() {
+        let (_dir, camp) = campaign(simple_program(4), config(8, u64::MAX), 7);
+        let decl = sdk_events::encode_v2_declaration(&[sdk_events::DeclaredPoint {
+            namespace: NS_STATE,
+            local: 1,
+            name: "r1".into(),
+            classification: sdk_events::Classification::State,
+            value_shape: Some(sdk_events::ValueShape::U64),
+            base_op: Some(UpdateOp::Set),
+            expectation: None,
+        }])
+        .expect("valid v2 declaration");
+        let id = ((NS_STATE as u32) << 24) | 1;
+        let firing = |value: u64| {
+            let mut b = vec![0u8]; // op byte: Set
+            b.extend_from_slice(&value.to_le_bytes());
+            b
+        };
+        // A child rollout's raw capture, real-guest shape: catalog at position 0,
+        // the restored ancestor firing at position 1, then the child's own two
+        // firings at positions 2 and 3.
+        let raw = vec![
+            (0u64, CATALOG_EVENT_ID, decl),
+            (10u64, id, firing(100)), // pos 1: inherited ancestor firing
+            (20u64, id, firing(200)), // pos 2: FIRST child firing — must survive
+            (30u64, id, firing(300)), // pos 3: second child firing
+        ];
+        // The parent seal counted 2 capture positions — the catalog (pos 0) and
+        // the one inherited firing (pos 1) — so the server-stamped cut is 2.
+        let inherited = 2;
+        let normalized = camp.decode_child_suffix(&raw, inherited).expect("decodes");
+        let values: Vec<u64> = normalized
+            .events
+            .iter()
+            .map(|e| match &e.payload {
+                sdk_events::Payload::State { value, .. } => *value,
+                other => panic!("unexpected payload {other:?}"),
+            })
+            .collect();
+        // The one inherited firing (100) is dropped; BOTH child firings survive.
+        // The bug skipped the catalog for free and then 2 FIRINGS, dropping the
+        // first child firing (200) and leaving only [300].
+        assert_eq!(
+            values,
+            vec![200, 300],
+            "the first child firing below a catalog-bearing cut must survive"
+        );
     }
 
     /// A genesis-rooted multi-op campaign: after every step, every
