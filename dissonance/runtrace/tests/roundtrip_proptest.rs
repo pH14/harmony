@@ -13,7 +13,6 @@
 mod common;
 
 use common::{MarkerSensor, arb_run_trace};
-use explorer::Sensor;
 use proptest::prelude::*;
 use runtrace::{Retain, TraceStore, decode, encode};
 

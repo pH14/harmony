@@ -8,8 +8,7 @@
 use std::collections::BTreeMap;
 
 use explorer::{
-    ChannelId, CoverageView, Feature, FeatureId, GuestEvent, Moment, Record, Reproducer, RunTrace,
-    Sensor, StopReason, StreamId, Value,
+    CoverageView, GuestEvent, Moment, Record, Reproducer, RunTrace, StopReason, StreamId, Value,
 };
 use proptest::collection::{btree_map, vec};
 use proptest::prelude::*;
@@ -19,16 +18,21 @@ use proptest::prelude::*;
 /// count as the feature id. A **pure function of the trace's records**, so it
 /// re-derives identically over a reloaded trace — exactly the "a new Sensor over
 /// recorded runs" replay-plane property, in miniature.
+/// A test-local `(channel, id)` pair (the explorer's compat `Feature`
+/// vocabulary retired with the legacy spine, task 132 M3; re-derivation
+/// stability needs only a stable pair type).
+pub type Feature = (u16, u64);
+
 pub struct MarkerSensor {
     pub marker: Vec<u8>,
-    pub channel: ChannelId,
+    pub channel: u16,
 }
 
 impl MarkerSensor {
     pub fn new(marker: &[u8]) -> Self {
         MarkerSensor {
             marker: marker.to_vec(),
-            channel: ChannelId(1),
+            channel: 1,
         }
     }
 }
@@ -37,20 +41,14 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-impl Sensor for MarkerSensor {
-    fn observe(&self, t: &RunTrace) -> Vec<(Moment, Feature)> {
+impl MarkerSensor {
+    pub fn observe(&self, t: &RunTrace) -> Vec<(Moment, Feature)> {
         let mut out = Vec::new();
         let mut hits = 0u64;
         for (at, rec) in &t.records {
             if contains(&rec.line, &self.marker) {
                 hits += 1;
-                out.push((
-                    *at,
-                    Feature {
-                        channel: self.channel,
-                        id: FeatureId(hits),
-                    },
-                ));
+                out.push((*at, (self.channel, hits)));
             }
         }
         out

@@ -46,10 +46,10 @@ use benchmark::report::{BranchEvent, CampaignLog, Configuration, FindRecord};
 use benchmark::trigger::{self, FaultKind, Perturbation, Scenario};
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::{
-    AdapterEnv, CellFn, EvidenceCut, FeatureSet, Machine, MachineError, Moment, Prng, Record,
-    Reproducer, RunTrace, Sensor, SnapId, StopConditions, StopMask, StopReason, StreamId,
+    AdapterEnv, EvidenceCut, Machine, MachineError, Moment, Prng, Record, Reproducer, RunTrace,
+    SnapId, StopConditions, StopMask, StopReason, StreamId,
 };
-use logtmpl::{CellFnV1, LogSensor};
+use logtmpl::{CellFnV1, FeatureSet, LogSensor};
 
 /// The base V-time the benchmark toy guest is quiescent at when snapshotted —
 /// mirrors `crate::planted::BASE_VTIME` and the manifest's window anchors.

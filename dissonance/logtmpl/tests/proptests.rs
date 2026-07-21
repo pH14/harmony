@@ -9,8 +9,9 @@
 //! which is `pub(crate)` (the internality ruling) and so not reachable from an
 //! integration test. `cargo nextest` runs both, so gate 4 is fully covered.
 
-use explorer::{CellFn, ChannelId, Feature, FeatureId, FeatureSet, Moment};
+use explorer::Moment;
 use logtmpl::{CellConfig, CellFnV1, decode_cell_key, encode_cell_key};
+use logtmpl::{ChannelId, Feature, FeatureId, FeatureSet};
 use proptest::prelude::*;
 
 proptest! {

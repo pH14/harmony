@@ -37,8 +37,15 @@ pub(crate) struct Program {
 }
 
 /// A pure, deterministic machine whose SDK trajectory is a function of the
-/// branch env's seed alone — same `(base, env)` ⇒ identical trajectory,
-/// identical cuts, identical hashes.
+/// branch base and the env's seed — same `(base, env)` ⇒ identical
+/// trajectory, identical cuts, identical hashes.
+///
+/// **Lineage-aware** (task 132): a snapshot captures the emitted prefix, and
+/// a `branch` off it restores that prefix into the child (the production
+/// machine restores the ancestor SDK prefix, so counts are CUMULATIVE
+/// through the lineage). A child program's own emits must land at or after
+/// the branch moment (test-authoring discipline, mirroring the physical cut
+/// contract).
 pub(crate) struct ScriptedMachine {
     program: Rc<dyn Fn(u64) -> Program>,
     regs: Vec<(u32, UpdateOp)>,
@@ -48,7 +55,8 @@ pub(crate) struct ScriptedMachine {
     cursor: usize,
     clock: u64,
     recorded: Reproducer,
-    snaps: BTreeMap<u64, (u64, u64)>, // snap id -> (moment, included count)
+    /// snap id -> (moment, included count, emitted prefix).
+    snaps: BTreeMap<u64, (u64, u64, Vec<Emit>)>,
     next_snap: u64,
 }
 
@@ -113,13 +121,29 @@ impl ScriptedMachine {
 }
 
 impl Machine for ScriptedMachine {
-    fn branch(&mut self, _snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
+        // Restore the snapshot's emitted prefix (the ancestor SDK prefix a
+        // production branch restores into the child), then append the
+        // child's own script at BRANCH-RELATIVE moments (offset by the
+        // branch point, so a child's own events land at or after it — the
+        // physical cut contract). An unknown snap restores nothing (the
+        // pre-lineage toy behavior, kept for direct-drive unit tests); a
+        // genesis snap has moment 0, so genesis scripts read as absolute.
+        let (moment, included, prefix) =
+            self.snaps
+                .get(&snap.0)
+                .cloned()
+                .unwrap_or((0, 0, Vec::new()));
         self.seed = Self::seed_of(env);
         let prog = (self.program)(self.seed);
-        self.emits = prog.emits;
-        self.terminal = prog.terminal;
-        self.cursor = 0;
-        self.clock = 0;
+        self.clock = moment;
+        self.cursor = included as usize;
+        self.emits = prefix;
+        self.emits.extend(prog.emits.into_iter().map(|e| Emit {
+            at: moment + e.at,
+            ..e
+        }));
+        self.terminal = moment + prog.terminal;
         self.recorded = env.clone();
         Ok(())
     }
@@ -128,12 +152,14 @@ impl Machine for ScriptedMachine {
         // Restore to the sealed moment (verbatim); the campaign tests never
         // diverge a replay, so reset the cursor to the snapshot's included
         // count.
-        let (_, included) = self
+        let (moment, included, prefix) = self
             .snaps
             .get(&snap.0)
-            .copied()
+            .cloned()
             .ok_or(MachineError::UnknownSnapshot(snap.0))?;
+        self.clock = moment;
         self.cursor = included as usize;
+        self.emits = prefix;
         Ok(())
     }
 
@@ -182,7 +208,8 @@ impl Machine for ScriptedMachine {
         let id = self.next_snap;
         self.next_snap += 1;
         let included = self.included_at(self.clock);
-        self.snaps.insert(id, (self.clock, included));
+        let prefix: Vec<Emit> = self.emits.iter().take(included as usize).cloned().collect();
+        self.snaps.insert(id, (self.clock, included, prefix));
         Ok((
             SnapId(id),
             EvidenceCut {
@@ -275,6 +302,7 @@ pub(crate) fn config(cap: usize, budget: u64) -> CampaignConfig {
         ingress: Ingress::Binary,
         retention: RetentionProfile::Full,
         evidence_budget: None,
+        ..CampaignConfig::default()
     }
 }
 
@@ -380,6 +408,8 @@ pub(crate) fn seal_evidence(
             sdk_events: 1,
         },
         normalized: n,
+        parent_cut: None,
+        sealable_moments: Vec::new(),
     };
     let batch = EvidenceBatchId::digest(&ev.canonical_bytes());
     (batch, ev)

@@ -182,6 +182,7 @@ dependencies = [
  "logtmpl",
  "proptest",
  "resolution",
+ "revision-coordinator",
  "runtrace",
  "sdk-events",
  "serde",

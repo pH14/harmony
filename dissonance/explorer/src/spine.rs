@@ -1,46 +1,43 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **search-plane trait spine** (task 64) — the Wave-5 keystone contract.
+//! The **surviving search-plane vocabulary and control traits**.
 //!
-//! Every later search/scoring task implements a trait defined here, in the
-//! consumer (conventions rule 2): signals (tasks 65/67) implement [`Sensor`] and
-//! [`CellFn`], the matcher DSL (task 66) adapts record types via [`Matchable`],
-//! search policies (task 70) implement [`Selector`], entropy tactics (tasks
-//! 71/72) implement [`Tactic`], and oracles (task 75) implement [`Oracle`]. The
-//! engine composes them; the behavior-equivalence defaults live in
-//! `defaults.rs`.
+//! Task 64 minted this spine; task 132 M3 physically deleted its legacy
+//! compat half (`Archive::admit`, `Sensor`, `CellFn`, `Feature`,
+//! `FeatureId`, `FeatureSet`, `ChannelId`, `Fork`) — the Differential
+//! observation plane owns production observation/cell currency
+//! (`docs/DISSONANCE-STRATEGY.md`, "Fate of the current spine interfaces").
+//! What remains are the durable seams:
 //!
-//! ## The organizing split (docs/EXPLORATION.md)
-//!
-//! - **Live plane** — touches the guest at branch speed: the
-//!   [`Machine`](crate::Machine) and the [`Tactic`] (the inner loop's
-//!   decision-answering policy). Only these cost VM time.
-//! - **Replay plane** — pure or folded functions of a serialized run:
-//!   [`Sensor`], [`CellFn`], [`Oracle`] (pure per run) and [`Archive`],
-//!   [`Selector`] (stateful folds over the run sequence).
+//! - **Control interfaces**: [`Tactic`] (open-loop, single-pass answering
+//!   policy) and [`Selector`] (entry choice) — the live-plane boundaries the
+//!   strategy keeps;
+//! - **[`Oracle`]**: the pure completed-run judgment boundary (its
+//!   [`RunTrace`] carrier remains the compatibility currency for the
+//!   scrape/trace consumers until `RunTrace` is versioned into the
+//!   ledger-backed evidence view);
+//! - **[`Matchable`]**: the matcher-DSL record adapter (task 66);
+//! - the **archive read model**: [`Frontier`], [`FrontierEntry`],
+//!   [`ExemplarRef`], [`VirtualExemplar`], [`CellKey`], [`Reward`] — the
+//!   selector-facing materialized view the two-barrier campaign maintains;
+//! - the **evidence vocabulary**: [`Moment`], [`EvidenceCut`], [`RunTrace`],
+//!   [`Record`], [`StreamId`], [`GuestEvent`], [`CoverageView`], [`Value`],
+//!   [`Bug`], [`DecisionPoint`].
 //!
 //! ## The load-bearing invariants
 //!
 //! 1. **Open-loop `Tactic`.** [`Tactic::decide`] receives only the tactic's own
 //!    state, the [`DecisionPoint`], and its PRNG — structurally, there is no
-//!    parameter through which live `Sensor`/`Archive` output could reach a
-//!    decision. Intra-run steering is recovered by checkpointing (seal, then
-//!    fuzz from the snapshot), never by live feedback.
-//! 2. **Timeline admission.** [`Archive::admit`] walks the run's sealable
-//!    timeline and admits a [`VirtualExemplar`] at every novel `(cell, Moment)`;
-//!    one run contributes many exemplars, and the archive is bounded by
-//!    **distinct cells**, not runs.
-//! 3. **Parent-rooted exemplars.** A [`VirtualExemplar`] is `(parent SnapId,
-//!    seed, tail-complete suffix, at)`; materialization is `branch(parent)` +
-//!    replay the suffix + seal — never a genesis replay. The genesis-complete
-//!    [`Bug::env`] folds the suffix chain via
+//!    parameter through which live observation could reach a decision.
+//! 2. **Parent-rooted exemplars.** A [`VirtualExemplar`] is `(parent SnapId,
+//!    seed, tail-complete suffix, cut)`; materialization is `branch(parent)` +
+//!    replay the suffix + seal — never a genesis replay. A genesis-complete
+//!    reproducer folds the suffix chain via
 //!    [`EnvCodec::compose`](crate::EnvCodec::compose) (the task-93 ruling).
-//! 4. **Eviction is reproducibility-safe.** Dropping any seal/snapshot never
+//! 3. **Eviction is reproducibility-safe.** Dropping any seal/snapshot never
 //!    changes what a later run reproduces (an evicted state re-materializes from
 //!    genesis, identically); retention is a pure performance knob.
-//! 5. **Search-loop blindness.** [`Selector`] and [`Archive`] see opaque
-//!    [`CellKey`]s and [`Reward`]s — no fault types, no signal channels, no
-//!    `CellFn` meaning. Later faults and signals grow the seams and never touch
-//!    the search policy.
+//! 4. **Search-loop blindness.** [`Selector`]s see opaque [`CellKey`]s and
+//!    [`Reward`]s — no fault types, no observation meaning.
 
 use std::collections::BTreeMap;
 
@@ -103,90 +100,6 @@ pub struct EvidenceCut {
 pub struct CoverageView {
     /// The raw coverage map bytes (edge-indexed hit counts).
     pub map: Vec<u8>,
-}
-
-/// A stable channel identifier: which signal tier/plugin a [`Feature`] came
-/// from (scrape / link / instrument, then per-plugin). Channel numbering is a
-/// campaign convention; the spine only requires stability.
-#[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
-)]
-pub struct ChannelId(pub u16);
-
-/// A stable feature identifier within a channel. Fixed-vocabulary sensors emit
-/// stable ids directly; open-vocabulary signals (log templates, LSH) are
-/// clustered by a codebook **internal to their plugin** — the codebook never
-/// leaks into this crate.
-#[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
-)]
-pub struct FeatureId(pub u64);
-
-/// One observed signal: a stable `(channel, id)` pair. What a feature *means*
-/// is defined by the plugin that emitted it; the search loop never learns.
-#[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
-)]
-pub struct Feature {
-    /// The signal channel this feature belongs to.
-    pub channel: ChannelId,
-    /// The stable feature identity within the channel.
-    pub id: FeatureId,
-}
-
-/// The features live at a given [`Moment`] — the point-in-time slice a
-/// [`CellFn`] keys. Deterministically ordered (a `BTreeSet` underneath), so no
-/// iteration order can reach a [`CellKey`].
-#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
-pub struct FeatureSet {
-    features: std::collections::BTreeSet<Feature>,
-}
-
-impl FeatureSet {
-    /// An empty slice.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// The slice holding exactly one feature.
-    pub fn singleton(f: Feature) -> Self {
-        let mut features = std::collections::BTreeSet::new();
-        features.insert(f);
-        Self { features }
-    }
-
-    /// Insert a feature; returns whether it was newly present.
-    pub fn insert(&mut self, f: Feature) -> bool {
-        self.features.insert(f)
-    }
-
-    /// Whether the slice holds `f`.
-    pub fn contains(&self, f: &Feature) -> bool {
-        self.features.contains(f)
-    }
-
-    /// The features, in their canonical (sorted) order.
-    pub fn iter(&self) -> impl Iterator<Item = &Feature> {
-        self.features.iter()
-    }
-
-    /// The number of features in the slice.
-    pub fn len(&self) -> usize {
-        self.features.len()
-    }
-
-    /// Whether the slice is empty.
-    pub fn is_empty(&self) -> bool {
-        self.features.is_empty()
-    }
-}
-
-impl FromIterator<Feature> for FeatureSet {
-    fn from_iter<I: IntoIterator<Item = Feature>>(iter: I) -> Self {
-        Self {
-            features: iter.into_iter().collect(),
-        }
-    }
 }
 
 /// A cell key: opaque bytes to the search loop, `Ord` for BTree keying. What a
@@ -317,26 +230,6 @@ pub struct Bug {
     /// A stable digest of the stop reason, for dedup across the many
     /// environments that reach the same bug.
     pub fingerprint: [u8; 32],
-}
-
-/// One sealable point a run passed, captured **live** by the engine: the
-/// parent-rooted exemplar material plus the signal view as of that point. The
-/// replay plane cannot mint these itself — slicing the run's `env` at a moment
-/// is schema-aware ([`EnvCodec`](crate::EnvCodec) territory) and the suffix is
-/// emitted by the machine at the fork — so the engine hands them to
-/// [`Archive::admit`] alongside the [`RunTrace`].
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct Fork {
-    /// The parent-rooted exemplar for this sealable point.
-    pub exemplar: VirtualExemplar,
-    /// The **genesis-complete** environment reaching `exemplar.at` (the suffix
-    /// chain already folded via `compose`). Opaque to the archive; stored so a
-    /// later mutation or bug rebase keys from the right origin, and so an
-    /// evicted seal re-materializes from genesis.
-    pub env: Reproducer,
-    /// The coverage view as of this point, when the backing exposes one (the
-    /// toy machine does; a shmem-backed production map may only be terminal).
-    pub coverage: Option<CoverageView>,
 }
 
 /// The outer-loop score signal: what a run's admission was worth. Opaque to the
@@ -530,30 +423,18 @@ impl Frontier {
     pub fn occupy(&mut self, cell: CellKey, r: ExemplarRef) -> Option<ExemplarRef> {
         self.cells.insert(cell, r)
     }
+
+    /// Every claimed cell with its current occupant, in canonical cell order
+    /// (the occupancy-reconciliation read; a claim may name an evicted ref —
+    /// see the type docs).
+    pub fn claims(&self) -> impl Iterator<Item = (&CellKey, ExemplarRef)> {
+        self.cells.iter().map(|(c, r)| (c, *r))
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Replay-plane traits — pure per run
 // ---------------------------------------------------------------------------
-
-/// Raw-observable → timestamped features. One [`RunTrace`] yields a **stream**,
-/// not a terminal set: a run passes through many interesting states, and each
-/// feature is stamped with the moment it was observed. Pure: same trace, same
-/// stream.
-pub trait Sensor {
-    /// Derive the timestamped feature stream of one run.
-    fn observe(&self, t: &RunTrace) -> Vec<(Moment, Feature)>;
-}
-
-/// Point-in-time feature slice → cell key. **The one campaign-defined stage**;
-/// everything downstream ([`Archive`], [`Selector`]) is generic and never
-/// learns what a cell means. Iterated hardest of the whole pipeline (the cell
-/// abstraction is the hard problem), which is why it is isolated to one pure
-/// trait.
-pub trait CellFn {
-    /// Key the slice of features live at `at` into an opaque cell.
-    fn key(&self, at: Moment, feats: &FeatureSet) -> CellKey;
-}
 
 /// A trace oracle: a pure verdict over a finished run (crash,
 /// always-assertion, Elle-over-history). Re-running a **new** oracle over
@@ -568,45 +449,6 @@ pub trait Oracle {
 // ---------------------------------------------------------------------------
 // Replay-plane folds — stateful across the run sequence
 // ---------------------------------------------------------------------------
-
-/// The Go-Explore/MAP-Elites frontier fold: cells, best-per-cell exemplars,
-/// reproducibility-safe eviction. Generic — sees opaque [`CellKey`]s and
-/// [`Reproducer`]s, never fault types or signal meaning (invariant 5).
-pub trait Archive {
-    /// Admit along the **whole timeline**: walk the run's sealable points and
-    /// admit a [`VirtualExemplar`] at every novel `(cell, Moment)` — one run
-    /// contributes many exemplars. Admission consults
-    /// [`admissible`](Archive::admissible); best-per-cell domination decides
-    /// replacement. Returns the run's [`Reward`].
-    ///
-    /// `forks` is the live-captured sealable-point material (the spec's
-    /// parameter lists may vary where the semantics hold): the suffix at a
-    /// moment is emitted by the machine at the fork and the chain fold is
-    /// schema-aware, so the replay plane cannot reconstruct either from `t`
-    /// alone. `cells` keys the per-moment feature slices; `sensors` derive
-    /// timeline features from the trace's (task 65+/73+) event and record
-    /// streams.
-    fn admit(
-        &mut self,
-        t: &RunTrace,
-        forks: &[Fork],
-        cells: &dyn CellFn,
-        sensors: &[Box<dyn Sensor>],
-    ) -> Reward;
-
-    /// Whether a sealable point at `at` may be admitted. Injected at
-    /// construction; **default always-true**. If task 63 rules RESTRICTED, its
-    /// `sealable(Moment)` plugs in here — with zero spine change.
-    fn admissible(&self, at: Moment) -> bool;
-
-    /// Enforce the retention policy (best-per-cell trimming, seal-cost GC).
-    /// Must be **reproducibility-safe** (invariant 4): evicting never changes
-    /// what a later run reproduces, only what it costs.
-    fn evict(&mut self);
-
-    /// The current frontier.
-    fn frontier(&self) -> &Frontier;
-}
 
 /// The outer-loop policy: which exemplar to branch from next. Generic — never
 /// sees cell meaning, only the opaque frontier and rewards (invariant 5).
@@ -779,6 +621,11 @@ mod tests {
         assert_eq!(f.occupy(vec![7], r1), Some(r0));
         assert_eq!(f.occupant(&vec![7]), Some(r1));
 
+        // The claims iterator yields every claimed cell with its CURRENT
+        // occupant, in canonical order (the reconciliation read).
+        let claims: Vec<(Vec<u8>, ExemplarRef)> = f.claims().map(|(c, r)| (c.clone(), r)).collect();
+        assert_eq!(claims, vec![(vec![7], r1)]);
+
         // One cell, two entries: entries can exceed cells only through
         // domination history, never through admission (the archive claims at
         // least one fresh cell per admitted entry).
@@ -842,36 +689,5 @@ mod tests {
         let mut back: Frontier = serde_json::from_str(&json).expect("de");
         assert_eq!(f, back);
         assert_eq!(back.insert(e(4)), ExemplarRef(4), "next id survives serde");
-    }
-
-    /// `FeatureSet` is canonically ordered and deduplicated.
-    #[test]
-    fn feature_set_is_canonical() {
-        let f1 = Feature {
-            channel: ChannelId(0),
-            id: FeatureId(9),
-        };
-        let f2 = Feature {
-            channel: ChannelId(0),
-            id: FeatureId(1),
-        };
-        let mut s = FeatureSet::new();
-        assert!(s.insert(f1));
-        assert!(s.insert(f2));
-        assert!(!s.insert(f1), "duplicates are refused");
-        assert_eq!(s.len(), 2);
-        assert!(!s.is_empty(), "a filled slice is not empty");
-        assert!(s.contains(&f1));
-        assert!(
-            !s.contains(&Feature {
-                channel: ChannelId(9),
-                id: FeatureId(9),
-            }),
-            "absent features are not contained"
-        );
-        let order: Vec<u64> = s.iter().map(|f| f.id.0).collect();
-        assert_eq!(order, vec![1, 9], "iteration is sorted, not insertion");
-        assert_eq!(FeatureSet::singleton(f1).len(), 1);
-        assert!(FeatureSet::new().is_empty());
     }
 }

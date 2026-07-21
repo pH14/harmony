@@ -33,9 +33,12 @@ use std::collections::BTreeSet;
 
 use benchmark::exploration::{DiscoveryEvent, ExplorationConfig, ExplorationLog};
 use explorer::{
-    EnvCodec, Machine, MachineError, Moment, Prng, Reproducer, RunTrace, StopConditions, StopMask,
-    StopReason,
+    CampaignError, CellKey, DeclineTactic, DifferentialCampaign, EnvCodec, EvidenceCut,
+    EvidenceLedger, ExploreExploitSelector, GenesisSelector, Ingress, Machine, MachineError,
+    Moment, Nomination, ObservationCells, ObservationMap, ReducedValue, Reproducer,
+    RetentionProfile, RunTrace, Selector, StopConditions, StopMask, StopReason,
 };
+use revision_coordinator::{CampaignConfigId, Coordinator, MemLedger};
 use sdk_events::{NS_STATE, Normalized, ObservationId, Payload, SdkEvent};
 
 /// Local mirrors of the play-agent's state-register catalog
@@ -51,6 +54,8 @@ pub mod reg {
     pub const LEVEL: u64 = 3;
     /// Bucketed absolute X.
     pub const X_BUCKET: u64 = 4;
+    /// Current power-up state (a `set` register; not a cell-key input).
+    pub const POWERUP: u64 = 5;
     /// Furthest `(world, level)` ordinal (a `state_max` register).
     pub const DEPTH: u64 = 6;
     /// The frame clock (task 87's film addresses frames by it; ignored by the
@@ -113,6 +118,16 @@ pub struct GameCampaignConfig {
     /// guest RAM (`boxrun::GUEST_RAM_LEN`), so the bound the validator checks
     /// is the bound the VM was built with, single-sourced.
     pub guest_ram_len: u64,
+    /// The two-barrier controller's per-step materialization cap (task 132):
+    /// at most this many provisional candidates replay to a held seal per
+    /// branch. Each replay costs a real rollout on the box, so the cap is
+    /// deliberately small.
+    pub candidate_cap: usize,
+    /// The controller's total materialization-replay budget across the
+    /// campaign (task 132). SelectorV1 needs admitted Entries to exploit;
+    /// PureRandom never reads the archive, but the budget applies uniformly
+    /// so both configurations run the identical two-barrier protocol.
+    pub replay_budget: u64,
 }
 
 impl GameCampaignConfig {
@@ -131,6 +146,8 @@ impl GameCampaignConfig {
             require_snapshot_point: false,
             trace_dir: None,
             guest_ram_len: DEFAULT_GUEST_RAM_LEN,
+            candidate_cap: 2,
+            replay_budget: 64,
         }
     }
 }
@@ -254,6 +271,11 @@ pub enum GameCampaignError {
     /// campaign that silently produced un-rekeyable output.
     #[error("deep-reproducer retention failed: {0}")]
     Retention(String),
+    /// The two-barrier Differential controller failed (coordinator, evidence
+    /// ledger, codec, or materialized-view failure) — loud, never absorbed
+    /// (task 132).
+    #[error("differential campaign: {0}")]
+    Campaign(#[from] CampaignError),
 }
 
 /// The deepest branch's retained reproducer pointer (round-8 P1): which
@@ -527,23 +549,265 @@ pub fn smb_completed_frames(events: &[SdkEvent]) -> u64 {
     completed
 }
 
-/// A novelty-frontier entry for the SelectorV1 configuration.
-struct Exemplar {
-    env: Reproducer,
+/// The binary-wire catalog marker event id (mirror of the sdk-events wire
+/// constant; the conventions mirror-type pattern — a raw tuple with this id
+/// is the schema declaration, not a firing).
+const CATALOG_EVENT_ID: u32 = 0;
+
+/// The SMB workload's base-operation resolution table (task 132): each
+/// play-agent state register the campaign reduces, with its declared base
+/// update operation. The host owns the workload contract already (the
+/// mirrored [`reg`] catalog); this states it as data for the explicit
+/// instrumentation declaration.
+fn smb_resolution() -> Vec<(ObservationId, sdk_events::UpdateOp)> {
+    use sdk_events::UpdateOp;
+    let point = |local: u64| ObservationId::Point {
+        namespace: NS_STATE,
+        local: local as u32,
+    };
+    vec![
+        (point(reg::GAME_MODE), UpdateOp::Set),
+        (point(reg::WORLD), UpdateOp::Set),
+        (point(reg::LEVEL), UpdateOp::Set),
+        (point(reg::X_BUCKET), UpdateOp::Set),
+        (point(reg::POWERUP), UpdateOp::Set),
+        (point(reg::DEPTH), UpdateOp::Max),
+        (point(reg::FRAME), UpdateOp::Set),
+        (point(reg::BILLBOARD_GPA), UpdateOp::Set),
+        (point(reg::BILLBOARD_LEN), UpdateOp::Set),
+    ]
 }
 
-/// Drive one game campaign against `machine` under `config`. Seals the base
-/// at the play-agent's `setup_complete` snapshot point (billboard primed +
-/// published, ROM running), then per branch: mint a pure seeded env
-/// (PureRandom) or exploit a novel exemplar (SelectorV1), run to the
-/// deadline, fold the SDK state events into cells + depth, and log the
-/// branch's terminal `state_hash`. The deepest branch's reproducer is
-/// retained ([`GameCampaignConfig::trace_dir`], round-8 P1) and the setup
+/// The SMB workload's **explicit instrumentation declaration** for a guest
+/// with NO catalog of its own (the portable toys): a wire-v2 catalog
+/// resolving each register in [`smb_resolution`]. The strategy forbids
+/// silently blessing v1 firings with reducers ("the first Differential
+/// vertical cannot silently bless inference from v1 events") and sanctions
+/// exactly this — "an equally explicit workload instrumentation
+/// declaration" — as the alternative to a guest wire-v2 rebuild.
+fn smb_instrumentation_catalog() -> Vec<u8> {
+    use sdk_events::{Classification, DeclaredPoint, ValueShape};
+    let points: Vec<DeclaredPoint> = smb_resolution()
+        .into_iter()
+        .filter_map(|(id, op)| match id {
+            ObservationId::Point { namespace, local } => Some(DeclaredPoint {
+                namespace,
+                local,
+                name: format!("smb_reg_{local}"),
+                classification: Classification::State,
+                value_shape: Some(ValueShape::U64),
+                base_op: Some(op),
+                expectation: None,
+            }),
+            _ => None,
+        })
+        .collect();
+    // Statically infallible: a fixed, well-formed catalog literal.
+    sdk_events::encode_v2_declaration(&points)
+        .expect("the SMB instrumentation catalog is well-formed")
+}
+
+/// A [`Machine`] adapter carrying the SMB instrumentation declaration
+/// (task 132): every drained capture resolves the play-agent's state
+/// registers to their declared base operations, so the normalized evidence
+/// is reducible by the Differential relations. A guest that declared its own
+/// (wire-v1) catalog has that declaration **upgraded in place**
+/// ([`sdk_events::resolve_v1_declaration`] — the guest's declared points,
+/// expectations, and names are preserved through the decoder's own parsing);
+/// a guest with no catalog (the portable toys) has the standalone
+/// declaration prepended. Everything else delegates.
+struct DeclaredMachine<M> {
+    inner: M,
+    catalog: Vec<u8>,
+    /// Whether [`sdk_events`](Self::sdk_events) prepends the standalone catalog
+    /// (the inner guest declared none — the portable toys) rather than upgrading
+    /// one in place. Learned from the inner capture on the first `sdk_events`
+    /// (the setup drain, before any campaign seal) and used by
+    /// [`snapshot`](Self::snapshot) to stamp the cut catalog-inclusive without
+    /// re-draining a possibly-stateful inner capture. Catalog presence is a fixed
+    /// property of the guest (declared once at setup, or never), so the learned
+    /// value holds for every later seal.
+    prepends_catalog: Option<bool>,
+}
+
+impl<M: Machine> DeclaredMachine<M> {
+    fn new(inner: M) -> Self {
+        DeclaredMachine {
+            inner,
+            catalog: smb_instrumentation_catalog(),
+            prepends_catalog: None,
+        }
+    }
+}
+
+impl<M: Machine> Machine for DeclaredMachine<M> {
+    fn branch(&mut self, snap: explorer::SnapId, env: &Reproducer) -> Result<(), MachineError> {
+        self.inner.branch(snap, env)
+    }
+    fn replay(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
+        self.inner.replay(snap)
+    }
+    fn run(
+        &mut self,
+        until: &StopConditions,
+        resolve: Option<&explorer::Answer>,
+    ) -> Result<StopReason, MachineError> {
+        self.inner.run(until, resolve)
+    }
+    fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
+        let (id, mut cut) = self.inner.snapshot()?;
+        // The seal cut is an SDK-vector ORDINAL count, and `sdk_events` prepends
+        // the standalone catalog at position 0 for a guest that declared none
+        // (the portable toys) — shifting every firing one ordinal and adding a
+        // schema tuple the cut must count. Stamp the cut catalog-inclusive here
+        // so the seal coordinate matches the capture this wrapper actually emits.
+        // It then agrees with a real guest, whose server-stamped cut
+        // (`vmm.sdk_events().len()`, control.rs) already counts its own catalog —
+        // so BOTH shapes reach the explorer as catalog-inclusive ordinals and
+        // `decode_child_suffix`'s ordinal skip is correct for both. Without this
+        // the cut stays firing-only while the capture is catalog-bearing, and the
+        // ordinal skip retains one inherited firing per child (tribunal V1). An
+        // inner that declares its own catalog is upgraded in place (no ordinal
+        // added), so its cut needs no bump.
+        //
+        // `prepends_catalog` is learned on the setup drain (`sdk_events`), which
+        // always precedes the first campaign seal; the pre-drain base seal in
+        // `seal_base` is dropped, so an unlearned (None) cut there never reaches a
+        // child as `parent_cut`.
+        if self.prepends_catalog == Some(true) {
+            cut.sdk_events += 1;
+        }
+        Ok((id, cut))
+    }
+    fn drop_snap(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
+        self.inner.drop_snap(snap)
+    }
+    fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+        self.inner.hash()
+    }
+    fn coverage(&self) -> &[u8] {
+        self.inner.coverage()
+    }
+    fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+        self.inner.recorded_env()
+    }
+    fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+        let mut out = self.inner.sdk_events()?;
+        match out.iter_mut().find(|(_, id, _)| *id == CATALOG_EVENT_ID) {
+            // The guest declared its own catalog: upgrade it in place with
+            // the resolution table (a malformed guest catalog is the same
+            // transport-class failure a malformed capture is). No ordinal is
+            // added, so the delegated seal cut already counts it.
+            Some((_, _, bytes)) => {
+                self.prepends_catalog = Some(false);
+                *bytes =
+                    sdk_events::resolve_v1_declaration(bytes, &smb_resolution()).map_err(|e| {
+                        MachineError::Transport(format!(
+                            "guest catalog failed to upgrade to the instrumentation \
+                             declaration: {e}"
+                        ))
+                    })?;
+            }
+            // No guest catalog (the portable toys): prepend the standalone
+            // declaration at position 0. `snapshot` records this so the seal cut
+            // counts the added ordinal (tribunal V1).
+            None => {
+                self.prepends_catalog = Some(true);
+                out.insert(0, (0u64, CATALOG_EVENT_ID, self.catalog.clone()));
+            }
+        }
+        Ok(out)
+    }
+    fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
+        self.inner.console()
+    }
+}
+
+/// The quiet-arm [`EnvCodec`] the routed campaign hands the two-barrier
+/// controller (task 132): `seeded`/`compose` delegate to the production
+/// codec; `mutate` is the [`quiet_mutate`] reseed-only move — the controller
+/// structurally cannot mint a host-plane fault on exploit. A fault-carrying
+/// exemplar maps onto the codec's fail-closed
+/// [`UnsupportedComposition`](explorer::EnvCodecError::UnsupportedComposition)
+/// class (a standing-fault-carrying input is literally its documented case).
+struct QuietCodec {
+    inner: Box<dyn EnvCodec>,
+    /// The reseed-Moment window `quiet_mutate` places its marker inside.
+    window: u64,
+}
+
+impl EnvCodec for QuietCodec {
+    fn seeded(&self, seed: u64) -> Reproducer {
+        self.inner.seeded(seed)
+    }
+
+    fn mutate(&self, base: &Reproducer, salt: u64) -> Result<Reproducer, explorer::EnvCodecError> {
+        quiet_mutate(base, salt, self.window).map_err(|e| match e {
+            GameCampaignError::QuietEnvCarriesFaults { .. } => {
+                explorer::EnvCodecError::UnsupportedComposition
+            }
+            // A malformed exemplar blob (the untrusted-input class).
+            _ => explorer::EnvCodecError::Malformed(0),
+        })
+    }
+
+    fn compose(
+        &self,
+        base: &Reproducer,
+        branch_local: &Reproducer,
+    ) -> Result<Reproducer, explorer::EnvCodecError> {
+        self.inner.compose(base, branch_local)
+    }
+}
+
+/// The SMB cell projection over the reduced observation map (task 132): the
+/// same `(game mode, world, level, x-bucket)` tuple [`smb_cells`] keys, read
+/// off the independently-reduced registers at the evaluation point's cut. A
+/// state with no `X_BUCKET` observation yet keys to the empty cell (the
+/// shared pre-progress state, exactly like [`smb_cells`] minting no key
+/// before the first X write).
+pub struct SmbObservationCells;
+
+impl ObservationCells for SmbObservationCells {
+    fn key(&self, _cut: EvidenceCut, obs: &ObservationMap) -> CellKey {
+        let get = |reg: u64| match obs.get(&ObservationId::Point {
+            namespace: NS_STATE,
+            local: reg as u32,
+        }) {
+            Some(ReducedValue::Scalar(v)) => Some(*v),
+            _ => None,
+        };
+        match get(reg::X_BUCKET) {
+            None => Vec::new(),
+            Some(x) => smb_cell_key(
+                get(reg::GAME_MODE).unwrap_or(0),
+                get(reg::WORLD).unwrap_or(0),
+                get(reg::LEVEL).unwrap_or(0),
+                x,
+            )
+            .to_le_bytes()
+            .to_vec(),
+        }
+    }
+}
+
+/// Drive one game campaign against `machine` under `config`, **end-to-end
+/// through the two-barrier [`DifferentialCampaign`] controller** (task 132,
+/// `hm-e6q`). Seals the base at the play-agent's `setup_complete` snapshot
+/// point (billboard primed + published, ROM running), then hands the machine
+/// to the controller: per branch, one two-barrier step — the selector picks
+/// genesis (PureRandom) or a retained Entry (SelectorV1 exploit, via the
+/// quiet reseed-only mutate), the rollout's normalized SDK evidence commits
+/// through the Revision coordinator, provisional cells nominate budgeted
+/// materialization replay, and occupancy admits at the actual `sealed_at`.
+/// The per-branch log (cells touched, depth, terminal `state_hash`) is
+/// derived from the committed evidence batches; the deepest branch's
+/// reproducer is retained ([`GameCampaignConfig::trace_dir`]) and the setup
 /// prefix's billboard window surfaced — film's inputs, from campaign output
 /// alone.
 pub fn run_game_campaign<M: Machine>(
-    machine: &mut M,
-    codec: &dyn EnvCodec,
+    machine: M,
+    codec: Box<dyn EnvCodec>,
     cfg: &GameCampaignConfig,
     config: ExplorationConfig,
 ) -> Result<GameCampaignOutcome, GameCampaignError> {
@@ -551,14 +815,19 @@ pub fn run_game_campaign<M: Machine>(
         return Err(GameCampaignError::SignalUnavailable);
     }
 
-    let (base, base_vtime) = seal_base(machine, cfg)?;
+    // The workload's explicit instrumentation declaration rides every SDK
+    // capture from here on (task 132): the schema that resolves the
+    // play-agent's state registers to their base operations.
+    let mut machine = DeclaredMachine::new(machine);
+
+    let (base, base_vtime) = seal_base(&mut machine, cfg)?;
     // Drain the SETUP prefix's SDK capture: the billboard gpa/len registers
     // were published before the seal, so they ride this capture, not any
     // branch's — surface them for film (round-8 P1). Also keeps setup events
     // out of branch 0's trace. The window is VALIDATED at registration (task
     // 103 finding 2): a published-but-unusable window is a loud refusal here,
     // on both paths, never a silent fall back to "no billboard".
-    let setup_events = drain_events(machine)?;
+    let setup_events = drain_events(&mut machine)?;
     let billboard = billboard_window_of(&setup_events.events, cfg.guest_ram_len)?;
     // Round-9 P1: on the box (`require_snapshot_point`) the billboard is
     // M0's unconditional film seam — a setup prefix that never published a
@@ -569,6 +838,9 @@ pub fn run_game_campaign<M: Machine>(
     if cfg.require_snapshot_point && billboard.is_none() {
         return Err(GameCampaignError::BillboardMissing);
     }
+    // The controller snapshots its own genesis from this same stopped state;
+    // the seal_base handle would only duplicate it.
+    machine.drop_snap(base)?;
 
     let until = StopConditions {
         deadline: cfg
@@ -580,9 +852,67 @@ pub fn run_game_campaign<M: Machine>(
         on: StopMask::NONE,
     };
 
-    let mut prng = Prng::new(cfg.campaign_seed);
-    let mut seen: BTreeSet<u64> = BTreeSet::new();
-    let mut frontier: Vec<Exemplar> = Vec::new();
+    // The search policies, mapped onto the controller's seams: PureRandom is
+    // the always-explore selector; SelectorV1 is the explore/exploit shape
+    // over the controller's retained Entries.
+    let selector: Box<dyn Selector> = match config {
+        ExplorationConfig::PureRandom => Box::new(GenesisSelector::new()),
+        ExplorationConfig::SelectorV1 => {
+            Box::new(ExploreExploitSelector::new().with_explore_period(cfg.explore_period))
+        }
+        // Refused above; structurally unreachable, kept total.
+        ExplorationConfig::Signal => return Err(GameCampaignError::SignalUnavailable),
+    };
+    let quiet = QuietCodec {
+        inner: codec,
+        window: cfg.deadline_delta.unwrap_or(TOY_RESEED_WINDOW),
+    };
+    // The durable evidence ledger: beside the retained traces when a trace
+    // directory is configured, else a campaign-lifetime scratch file.
+    let scratch;
+    let evidence_path = match &cfg.trace_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| GameCampaignError::Retention(e.to_string()))?;
+            dir.join("evidence.log")
+        }
+        None => {
+            scratch =
+                tempfile::tempdir().map_err(|e| GameCampaignError::Retention(e.to_string()))?;
+            scratch.path().join("evidence.log")
+        }
+    };
+    let ledger = EvidenceLedger::open(&evidence_path).map_err(CampaignError::from)?;
+    let coordinator = Coordinator::genesis(
+        Box::new(MemLedger::new()),
+        CampaignConfigId::digest(&cfg.campaign_seed.to_le_bytes()),
+    )
+    .map_err(CampaignError::from)?;
+    let mut camp = DifferentialCampaign::new(
+        machine,
+        Box::new(quiet),
+        Box::new(DeclineTactic::new()),
+        selector,
+        Box::new(SmbObservationCells),
+        ledger,
+        coordinator,
+        explorer::CampaignConfig {
+            candidate_cap: cfg.candidate_cap,
+            replay_budget: cfg.replay_budget,
+            ingress: Ingress::Binary,
+            retention: RetentionProfile::Full,
+            evidence_budget: None,
+            // The quiet game rollout surfaces no mid-run snapshot points —
+            // nomination coordinates come from the rollout's own SDK-event
+            // moments (the configured-evidence-cut source).
+            nominate: Nomination::EventMoments,
+            // The per-branch determinism artifact the 25/25 gate compares.
+            hash_rollouts: true,
+        },
+        cfg.campaign_seed,
+    )?;
+    camp.set_stop_conditions(until);
+
     let mut events = Vec::new();
     // The deepest branch's (depth, branch, trace), tracked from branch 0
     // (round-8 P1 / hm-5sv retention discipline); strictly-greater keeps the
@@ -597,75 +927,56 @@ pub fn run_game_campaign<M: Machine>(
     };
 
     for branch in 0..cfg.max_branches {
-        let step = branch + 1;
-        let exploit = config == ExplorationConfig::SelectorV1
-            && !frontier.is_empty()
-            && !step.is_multiple_of(cfg.explore_period);
-        let env = if exploit {
-            let pick = (prng.next_u64() % frontier.len() as u64) as usize;
-            // The QUIET-ARM exploit move (round-6 P1): reseed the entropy
-            // stream at a salt-derived Moment — never `codec.mutate`, whose
-            // contract inserts a host-plane fault override.
-            quiet_mutate(
-                &frontier[pick].env,
-                prng.next_u64(),
-                cfg.deadline_delta.unwrap_or(TOY_RESEED_WINDOW),
-            )?
-        } else {
-            codec.seeded(prng.next_u64())
-        };
-
-        machine.branch(base, &env)?;
-        let stop = machine.run(&until, None)?;
+        let report = camp.step()?;
+        // The branch's committed evidence batch — the durable authority the
+        // per-branch log derives from.
+        let batch = camp
+            .coordinator()
+            .committed_inputs()
+            .into_iter()
+            .find(|(rev, _, _)| *rev == report.rollout_revision)
+            .map(|(_, _, b)| b)
+            .ok_or_else(|| {
+                GameCampaignError::Retention("rollout revision has no committed batch".into())
+            })?;
+        let ev =
+            camp.ledger().get(&batch).cloned().ok_or_else(|| {
+                GameCampaignError::Retention("committed batch not in ledger".into())
+            })?;
         // Round-8 P1: in box mode the play-agent never exits — a rollout that
         // ended anywhere but its deadline DIED (crash/halt mid-rollout) and
         // must fail the campaign loudly, never be hashed and recorded like an
         // ordinary sample (the determinism gate could "pass" over
         // identically-crashed runs). The toy's natural terminal is Quiescent.
-        if cfg.require_snapshot_point && !matches!(stop, StopReason::Deadline { .. }) {
+        if cfg.require_snapshot_point && !matches!(ev.terminal, StopReason::Deadline { .. }) {
             return Err(GameCampaignError::RolloutDied {
                 branch,
-                stop: format!("{stop:?}"),
+                stop: format!("{:?}", ev.terminal),
             });
         }
-        // The rollout's own work evidence, read off the terminal before the
-        // stop is moved into the trace: how far the guest's clock actually
-        // advanced past the base. A `deadline_delta` of 0 (or a deadline the
-        // base already meets) lands here as a zero span.
-        let vtime_span = stop.vtime().0.saturating_sub(base_vtime);
-        let state_hash = machine.hash()?;
-        // Round-9 P1: the retained trace carries the RECORDED environment —
-        // genesis-complete, every decision actually drawn, keyed from the
-        // branch origin — never the pre-run proposal `env` (whose adapter
-        // coords are all-zero, so same-seed runs under different deadlines
-        // would collide on TraceId and the sidecar could not reconstruct the
-        // actual timeline; the R1 discipline).
-        let recorded_env = machine.recorded_env()?;
-        let normalized = drain_events(machine)?;
-        let (touched, depth) = smb_cells(&normalized.events);
-        let completed_frames = smb_completed_frames(&normalized.events);
+        // The rollout's own work evidence: how far the guest's clock advanced
+        // past this branch's own start (the sealed base for a genesis branch,
+        // the exploited Entry's cut for a child — its suffix is its work).
+        let branch_start = ev.parent_cut.map(|c| c.at.0).unwrap_or(base_vtime);
+        let vtime_span = ev.terminal.vtime().0.saturating_sub(branch_start);
+        // Statically infallible: `hash_rollouts` is set in the controller
+        // config above, so every report carries the terminal hash.
+        let state_hash = report.state_hash.expect("hash_rollouts is configured");
+        let (touched, depth) = smb_cells(&ev.normalized.events);
+        let completed_frames = smb_completed_frames(&ev.normalized.events);
+        // Round-9 P1: the retained trace carries the batch's RECORDED,
+        // genesis-complete environment — never a pre-run proposal (the R1
+        // discipline).
         let trace = RunTrace {
-            terminal: stop,
-            env: recorded_env,
+            terminal: ev.terminal.clone(),
+            env: ev.env.clone(),
             coverage: None,
-            events: crate::sdk_compat::guest_events_of(&normalized),
+            events: crate::sdk_compat::guest_events_of(&ev.normalized),
             records: Vec::new(),
         };
         work.branches += 1;
         work.min_vtime_span = work.min_vtime_span.min(vtime_span);
         work.min_completed_frames = work.min_completed_frames.min(completed_frames);
-
-        // SelectorV1's thin novelty archive: admit an exemplar iff the branch
-        // claimed a fresh cell.
-        let mut novel = false;
-        for &c in &touched {
-            if seen.insert(c) {
-                novel = true;
-            }
-        }
-        if novel && config == ExplorationConfig::SelectorV1 {
-            frontier.push(Exemplar { env });
-        }
 
         if deepest.as_ref().is_none_or(|(d, _, _)| depth > *d) {
             deepest = Some((depth, branch, trace));
@@ -677,8 +988,6 @@ pub fn run_game_campaign<M: Machine>(
             state_hash: hex(&state_hash),
         });
     }
-
-    machine.drop_snap(base)?;
 
     // Retain the deep reproducer (env sidecar + full journal — the REG_FRAME
     // moments film derives its shot list from ride the journal's events).
@@ -1003,7 +1312,15 @@ fn hex(h: &[u8; 32]) -> String {
 pub struct GameToyMachine {
     current: Reproducer,
     vtime: u64,
-    snaps: std::collections::BTreeMap<u64, (u64, Reproducer)>,
+    /// The branch point's V-time (the toy's own emissions are stamped
+    /// relative to it, so cuts stay coherent through the lineage).
+    branch_vtime: u64,
+    /// The restored ancestor SDK prefix (the production machine restores it
+    /// into a branched child, so counts are CUMULATIVE — task 132).
+    prefix: Vec<(u64, u32, Vec<u8>)>,
+    /// snap id -> (vtime, env, captured prefix).
+    #[allow(clippy::type_complexity)] // not order-observable: a plain snap table
+    snaps: std::collections::BTreeMap<u64, (u64, Reproducer, Vec<(u64, u32, Vec<u8>)>)>,
     next_snap: u64,
 }
 
@@ -1028,9 +1345,36 @@ impl GameToyMachine {
         GameToyMachine {
             current: explorer::SpecEnvCodec.seeded(0),
             vtime: TOY_BASE_VTIME,
+            branch_vtime: TOY_BASE_VTIME,
+            prefix: Vec::new(),
             snaps: std::collections::BTreeMap::new(),
             next_snap: 1,
         }
+    }
+
+    /// The current-branch capture: the restored ancestor prefix plus the
+    /// toy's own per-window emissions, stamped relative to the branch point
+    /// (one tuple emission per window + the depth max register + the frame
+    /// clock — the play-agent's per-window shape, over the real wire
+    /// layout).
+    fn capture(&self) -> Vec<(u64, u32, Vec<u8>)> {
+        let mut out = self.prefix.clone();
+        for (w, world, level, xb, best) in self.windows() {
+            let at = self.branch_vtime + w * 12;
+            let (id, p) = state_event(reg::GAME_MODE, 0, 1);
+            out.push((at, id, p));
+            let (id, p) = state_event(reg::WORLD, 0, world);
+            out.push((at + 1, id, p));
+            let (id, p) = state_event(reg::LEVEL, 0, level);
+            out.push((at + 2, id, p));
+            let (id, p) = state_event(reg::X_BUCKET, 0, xb);
+            out.push((at + 3, id, p));
+            let (id, p) = state_event(reg::DEPTH, 1, best);
+            out.push((at + 4, id, p));
+            let (id, p) = state_event(reg::FRAME, 0, w * 12);
+            out.push((at + 5, id, p));
+        }
+        out
     }
 
     /// The simulated per-window SMB observations for the current env:
@@ -1047,7 +1391,7 @@ impl GameToyMachine {
                 })
             })
             .unwrap_or(0);
-        let mut p = Prng::new(seed);
+        let mut p = explorer::Prng::new(seed);
         let mut x = 40u64;
         let (mut world, mut level) = (0u64, 0u64);
         let mut best = 0u64;
@@ -1089,47 +1433,72 @@ fn state_event(reg: u64, op: u8, value: u64) -> (u32, Vec<u8>) {
 
 impl Machine for GameToyMachine {
     fn branch(&mut self, snap: explorer::SnapId, env: &Reproducer) -> Result<(), MachineError> {
-        let Some((vt, _)) = self.snaps.get(&snap.0) else {
+        let Some((vt, _, prefix)) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
         explorer::AdapterEnv::decode(env)?;
         self.vtime = *vt;
+        self.branch_vtime = *vt;
+        self.prefix = prefix.clone();
         self.current = env.clone();
         Ok(())
     }
 
     fn replay(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
-        let Some((vt, env)) = self.snaps.get(&snap.0) else {
+        let Some((vt, env, prefix)) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
         self.vtime = *vt;
+        self.branch_vtime = *vt;
+        self.prefix = prefix.clone();
         self.current = env.clone();
         Ok(())
     }
 
     fn run(
         &mut self,
-        _until: &StopConditions,
+        until: &StopConditions,
         _resolve: Option<&explorer::Answer>,
     ) -> Result<StopReason, MachineError> {
-        let terminal = self.vtime.saturating_add(16 * 12);
-        self.vtime = terminal;
-        Ok(StopReason::Quiescent {
-            vtime: explorer::Moment(terminal),
-        })
+        // The play-agent never exits on its own: a configured deadline is the
+        // rollout terminal; without one the toy goes quiescent after its 16
+        // windows.
+        match until.deadline {
+            Some(d) => {
+                self.vtime = self.vtime.max(d.0);
+                Ok(StopReason::Deadline {
+                    vtime: explorer::Moment(self.vtime),
+                })
+            }
+            None => {
+                let terminal = self.vtime.saturating_add(16 * 12);
+                self.vtime = terminal;
+                Ok(StopReason::Quiescent {
+                    vtime: explorer::Moment(terminal),
+                })
+            }
+        }
     }
 
     fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
         let id = self.next_snap;
         self.next_snap += 1;
-        self.snaps.insert(id, (self.vtime, self.current.clone()));
-        // The toy stamps its cut from the same state its seal records (task
-        // 127); it models no SDK capture, so the prefix is 0.
+        // The cut is stamped from the same state the seal records (task 127):
+        // the capture prefix at or before the seal moment, CUMULATIVE through
+        // the restored ancestor prefix (task 132).
+        let vt = self.vtime;
+        let sealed: Vec<(u64, u32, Vec<u8>)> = self
+            .capture()
+            .into_iter()
+            .filter(|(at, _, _)| *at <= vt)
+            .collect();
+        let included = sealed.len() as u64;
+        self.snaps.insert(id, (vt, self.current.clone(), sealed));
         Ok((
             explorer::SnapId(id),
             explorer::EvidenceCut {
-                at: explorer::Moment(self.vtime),
-                sdk_events: 0,
+                at: explorer::Moment(vt),
+                sdk_events: included,
             },
         ))
     }
@@ -1159,25 +1528,9 @@ impl Machine for GameToyMachine {
     }
 
     fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
-        // One tuple emission per window (set ops) + the depth max register —
-        // the play-agent's per-window shape, over the real wire layout.
-        let mut out = Vec::new();
-        for (w, world, level, xb, best) in self.windows() {
-            let at = TOY_BASE_VTIME + w * 12;
-            let (id, p) = state_event(reg::GAME_MODE, 0, 1);
-            out.push((at, id, p));
-            let (id, p) = state_event(reg::WORLD, 0, world);
-            out.push((at + 1, id, p));
-            let (id, p) = state_event(reg::LEVEL, 0, level);
-            out.push((at + 2, id, p));
-            let (id, p) = state_event(reg::X_BUCKET, 0, xb);
-            out.push((at + 3, id, p));
-            let (id, p) = state_event(reg::DEPTH, 1, best);
-            out.push((at + 4, id, p));
-            let (id, p) = state_event(reg::FRAME, 0, w * 12);
-            out.push((at + 5, id, p));
-        }
-        Ok(out)
+        // The cumulative capture: the restored ancestor prefix plus this
+        // branch's own emissions (the production contract, task 132).
+        Ok(self.capture())
     }
 }
 
@@ -1185,6 +1538,329 @@ impl Machine for GameToyMachine {
 mod tests {
     use super::*;
     use explorer::SpecEnvCodec;
+
+    /// The instrumentation declaration is a real, decodable wire-v2 catalog
+    /// that resolves EVERY register in the resolution table to reducible
+    /// state under its declared op (task 132; kills the catalog/resolution
+    /// stub mutants — a fake catalog or an empty table fails here, not just
+    /// on the box).
+    #[test]
+    fn instrumentation_catalog_resolves_every_register() {
+        use sdk_events::UpdateOp;
+        let table = smb_resolution();
+        assert!(
+            table.len() >= 8,
+            "the resolution table covers the play-agent register set"
+        );
+        let n = sdk_events::decode_binary(&[(
+            sdk_events::Moment(0),
+            0, // the catalog marker event id
+            smb_instrumentation_catalog(),
+        )])
+        .expect("the standalone declaration decodes");
+        for (id, op) in &table {
+            let entry = n.schema.entry(id).expect("every register is declared");
+            assert!(
+                entry.is_reducible_state(),
+                "register {id:?} must be reducible state"
+            );
+            assert_eq!(entry.base_op, Some(*op), "register {id:?} keeps its op");
+        }
+        // The specific ops the workload contract pins: DEPTH is the one Max
+        // register; the tuple/billboard registers are Set.
+        let point = |local: u64| ObservationId::Point {
+            namespace: NS_STATE,
+            local: local as u32,
+        };
+        let op_of = |local: u64| {
+            table
+                .iter()
+                .find(|(id, _)| *id == point(local))
+                .map(|(_, op)| *op)
+        };
+        assert_eq!(op_of(reg::DEPTH), Some(UpdateOp::Max));
+        assert_eq!(op_of(reg::X_BUCKET), Some(UpdateOp::Set));
+        assert_eq!(op_of(reg::POWERUP), Some(UpdateOp::Set));
+    }
+
+    /// A guest-declared v1 catalog is upgraded IN PLACE (never doubled): the
+    /// wrapped capture carries exactly one catalog tuple whose schema
+    /// resolves the registers (the box round-1 smoke finding as a portable
+    /// pin).
+    #[test]
+    fn declared_machine_upgrades_a_guest_catalog_in_place() {
+        // A machine whose capture carries its own v1 catalog + one firing.
+        // The counters prove the wrapper CALLS the inner machine (delegation,
+        // not a stub).
+        #[derive(Default)]
+        struct V1Guest {
+            replays: u32,
+            drops: u32,
+        }
+        impl Machine for V1Guest {
+            fn branch(
+                &mut self,
+                _s: explorer::SnapId,
+                _e: &Reproducer,
+            ) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn replay(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                self.replays += 1;
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                _u: &StopConditions,
+                _r: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                Ok(StopReason::Quiescent { vtime: Moment(1) })
+            }
+            fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
+                Ok((explorer::SnapId(1), EvidenceCut::default()))
+            }
+            fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                self.drops += 1;
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([7u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[3]
+            }
+            fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
+                Ok(vec![(9, b"line".to_vec())])
+            }
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+                Ok(SpecEnvCodec.seeded(0))
+            }
+            fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+                // A v1 catalog declaring only X_BUCKET, then one firing.
+                let v1 = {
+                    // magic "SDKC" + version 1 + count 1 + (kind, id, name).
+                    let mut b = Vec::new();
+                    b.extend_from_slice(&u32::from_le_bytes(*b"SDKC").to_le_bytes());
+                    b.push(1); // SDK_WIRE_VERSION v1
+                    b.extend_from_slice(&1u32.to_le_bytes());
+                    b.push(4); // kind byte: KIND_STATE (guest wire v1)
+                    b.extend_from_slice(&(reg::X_BUCKET as u32).to_le_bytes());
+                    b.extend_from_slice(&(1u16).to_le_bytes());
+                    b.push(b'x');
+                    b
+                };
+                let (id, p) = state_event(reg::X_BUCKET, 0, 3);
+                Ok(vec![(0, CATALOG_EVENT_ID, v1), (1, id, p)])
+            }
+        }
+        let mut m = DeclaredMachine::new(V1Guest::default());
+        let out = m.sdk_events().expect("capture");
+        let catalogs = out
+            .iter()
+            .filter(|(_, id, _)| *id == CATALOG_EVENT_ID)
+            .count();
+        assert_eq!(catalogs, 1, "the guest catalog is upgraded, never doubled");
+        let n = crate::sdk_compat::decode_sdk(&out).expect("upgraded capture decodes");
+        let x = ObservationId::Point {
+            namespace: NS_STATE,
+            local: reg::X_BUCKET as u32,
+        };
+        assert!(
+            n.schema.entry(&x).expect("declared").is_reducible_state(),
+            "the upgraded declaration resolves the register"
+        );
+        // Delegation is verbatim (kills the delegation stub mutants).
+        assert_eq!(m.hash().expect("hash"), [7u8; 32]);
+        assert_eq!(m.coverage(), &[3]);
+        assert_eq!(
+            m.console().expect("console delegates"),
+            vec![(9u64, b"line".to_vec())]
+        );
+        m.replay(explorer::SnapId(1)).expect("replay delegates");
+        m.drop_snap(explorer::SnapId(1)).expect("drop delegates");
+        assert_eq!(
+            (m.inner.replays, m.inner.drops),
+            (1, 1),
+            "the wrapper reached the inner machine"
+        );
+    }
+
+    /// Tribunal V1 regression — the **prepended-catalog toy** shape. A guest that
+    /// declared no catalog (the portable toys) has `DeclaredMachine` prepend the
+    /// standalone catalog at position 0, so its capture is catalog-bearing. The
+    /// seal cut is an SDK-vector ORDINAL count, so it must count that catalog —
+    /// otherwise it stays firing-only while the capture is catalog-bearing, and
+    /// `decode_child_suffix`'s ordinal skip retains one inherited firing on every
+    /// child with a nonzero inherited prefix (invisible to the determinism gate:
+    /// deterministic, self-consistent, wrong cells/lineage). Pins the cut↔capture
+    /// coordinate agreement at the `DeclaredMachine` choke point.
+    #[test]
+    fn declared_machine_stamps_a_catalog_inclusive_cut_for_a_no_catalog_guest() {
+        // A no-catalog toy: two firings, a firing-only inner seal cut of 2.
+        struct NoCatalogToy;
+        impl Machine for NoCatalogToy {
+            fn branch(
+                &mut self,
+                _s: explorer::SnapId,
+                _e: &Reproducer,
+            ) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn replay(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                _u: &StopConditions,
+                _r: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                Ok(StopReason::Quiescent { vtime: Moment(30) })
+            }
+            fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
+                // Firing-only cut: two firings sealed, the toy counts no catalog
+                // of its own (it emits none).
+                Ok((
+                    explorer::SnapId(1),
+                    EvidenceCut {
+                        at: Moment(30),
+                        sdk_events: 2,
+                    },
+                ))
+            }
+            fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([0u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[]
+            }
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+                Ok(SpecEnvCodec.seeded(0))
+            }
+            fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+                // Two firings at moments 10 and 20, NO catalog of its own.
+                let (id, p1) = state_event(reg::WORLD, 0, 1);
+                let (_id, p2) = state_event(reg::WORLD, 0, 2);
+                Ok(vec![(10, id, p1), (20, id, p2)])
+            }
+        }
+        let mut m = DeclaredMachine::new(NoCatalogToy);
+        // The setup drain (the real flow drains before the first campaign seal)
+        // teaches the wrapper it prepends a catalog.
+        let capture = m.sdk_events().expect("capture");
+        assert_eq!(
+            capture[0].1, CATALOG_EVENT_ID,
+            "the standalone catalog is prepended at position 0"
+        );
+        assert_eq!(capture.len(), 3, "catalog + two firings");
+        // The seal cut counts the prepended catalog: 3 SDK-vector ordinals
+        // (catalog + 2 firings), NOT the inner's firing-only 2. Before the V1 fix
+        // this stamped 2, so a child inheriting it over the ordinal skip retained
+        // the second inherited firing.
+        let (_snap, cut) = m.snapshot().expect("seal");
+        assert_eq!(
+            cut.sdk_events, 3,
+            "the seal cut is catalog-inclusive, matching the catalog-bearing capture"
+        );
+        // The invariant the two coordinates must satisfy: the cut equals the
+        // capture's ordinal length (every position is at/before the seal moment).
+        assert_eq!(cut.sdk_events, capture.len() as u64);
+    }
+
+    /// The quiet codec's exploit-mutate maps the two refusal classes onto the
+    /// codec's typed errors: a fault-carrying exemplar is the fail-closed
+    /// UnsupportedComposition; junk bytes are the malformed-blob class.
+    #[test]
+    fn quiet_codec_maps_refusals_onto_codec_errors() {
+        let quiet = QuietCodec {
+            inner: Box::new(SpecEnvCodec),
+            window: 1_000,
+        };
+        // A fault-carrying env (one host action) is refused as unsupported.
+        let decoded = explorer::AdapterEnv::decode(&SpecEnvCodec.seeded(1)).expect("decodes");
+        let spec = environment::EnvSpec::Recorded {
+            seed: decoded.spec.seed(),
+            policy: decoded.spec.policy().clone(),
+            overrides: decoded.spec.overrides().clone(),
+            standing: Vec::new(),
+            reseeds: std::collections::BTreeMap::new(),
+        };
+        // Splice a host fault in via the environment vocabulary.
+        let mut with_fault = explorer::AdapterEnv {
+            base_offset: decoded.base_offset,
+            pos: decoded.pos,
+            spec,
+        };
+        if let environment::EnvSpec::Recorded { overrides, .. } = &mut with_fault.spec {
+            overrides.insert(
+                1,
+                environment::Action::Host(environment::HostFault::InjectInterrupt { vector: 32 }),
+            );
+        }
+        assert!(matches!(
+            quiet.mutate(&with_fault.encode(), 7),
+            Err(explorer::EnvCodecError::UnsupportedComposition)
+        ));
+        // Junk bytes are the malformed-blob class.
+        let junk = Reproducer {
+            blob_version: 1,
+            bytes: vec![0xFF; 4],
+        };
+        assert!(matches!(
+            quiet.mutate(&junk, 7),
+            Err(explorer::EnvCodecError::Malformed(_))
+        ));
+        // A clean env mutates to a reseed-only variant (no faults minted).
+        let out = quiet
+            .mutate(&SpecEnvCodec.seeded(3), 7)
+            .expect("clean env mutates");
+        let d = explorer::AdapterEnv::decode(&out).expect("decodes");
+        assert!(d.spec.host_faults().next().is_none());
+        assert!(!d.spec.reseeds().is_empty());
+    }
+
+    /// `SmbObservationCells` keys the `(mode, world, level, x-bucket)` tuple
+    /// off the reduced map: no `X_BUCKET` ⇒ the empty (pre-progress) cell;
+    /// missing tuple registers default to 0; non-scalar values are ignored
+    /// (kills the reduced-value match-arm mutants portably).
+    #[test]
+    fn smb_observation_cells_key_the_reduced_tuple() {
+        use explorer::{ObservationMap, ReducedValue};
+        let cells = SmbObservationCells;
+        let cut = EvidenceCut::default();
+        let point = |local: u64| ObservationId::Point {
+            namespace: NS_STATE,
+            local: local as u32,
+        };
+        // Pre-X state: the empty cell.
+        let mut obs = ObservationMap::new();
+        obs.insert(point(reg::GAME_MODE), ReducedValue::Scalar(1));
+        assert!(cells.key(cut, &obs).is_empty());
+        // The full tuple packs exactly smb_cell_key.
+        obs.insert(point(reg::WORLD), ReducedValue::Scalar(2));
+        obs.insert(point(reg::LEVEL), ReducedValue::Scalar(3));
+        obs.insert(point(reg::X_BUCKET), ReducedValue::Scalar(7));
+        assert_eq!(
+            cells.key(cut, &obs),
+            smb_cell_key(1, 2, 3, 7).to_le_bytes().to_vec()
+        );
+        // Missing mode/world/level default to 0 (x alone still mints a cell).
+        let mut only_x = ObservationMap::new();
+        only_x.insert(point(reg::X_BUCKET), ReducedValue::Scalar(7));
+        assert_eq!(
+            cells.key(cut, &only_x),
+            smb_cell_key(0, 0, 0, 7).to_le_bytes().to_vec()
+        );
+        // A non-scalar (accumulated) value never reaches the tuple.
+        let mut acc = ObservationMap::new();
+        acc.insert(
+            point(reg::X_BUCKET),
+            ReducedValue::Accumulated([7].into_iter().collect()),
+        );
+        assert!(cells.key(cut, &acc).is_empty());
+    }
 
     /// The branch budget the in-memory smoke campaigns below drive
     /// ([`GameCampaignConfig::smoke`]'s `max_branches`), **shrunk to 8 under Miri**
@@ -1281,7 +1957,16 @@ mod tests {
         fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
             let id = self.next_snap;
             self.next_snap += 1;
-            Ok((explorer::SnapId(id), explorer::EvidenceCut::default()))
+            // The cut is stamped from the stopped state (task 127). BoxGuest
+            // models per-rollout (run-local) captures, so the cumulative
+            // prefix base is 0.
+            Ok((
+                explorer::SnapId(id),
+                explorer::EvidenceCut {
+                    at: Moment(self.vtime),
+                    sdk_events: 0,
+                },
+            ))
         }
         fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
             Ok(())
@@ -1336,9 +2021,14 @@ mod tests {
         }
     }
 
-    fn run_box(guest: &mut BoxGuest, cfg: &GameCampaignConfig) -> GameCampaignOutcome {
-        run_game_campaign(guest, &SpecEnvCodec, cfg, ExplorationConfig::PureRandom)
-            .expect("the box-shaped guest campaigns cleanly")
+    fn run_box(guest: BoxGuest, cfg: &GameCampaignConfig) -> GameCampaignOutcome {
+        run_game_campaign(
+            guest,
+            Box::new(SpecEnvCodec),
+            cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .expect("the box-shaped guest campaigns cleanly")
     }
 
     /// Task 103 finding 1b — **the vacuous determinism PASS**. Each fixture is
@@ -1347,10 +2037,18 @@ mod tests {
     /// empty), and each must now be refused by the gate before any banner —
     /// whatever `--repeat` says.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn the_determinism_gate_refuses_a_run_that_did_no_work() {
         // (a) `--max-branches 0`: the gate would compare two empty state_hash
         //     sequences and find them identical.
-        let outcome = run_box(&mut BoxGuest::healthy(), &box_cfg(0, Some(2_000_000_000)));
+        let outcome = run_box(BoxGuest::healthy(), &box_cfg(0, Some(2_000_000_000)));
         assert!(outcome.log.events.is_empty());
         assert_eq!(outcome.vacuity(), Some(Vacuity::NoBranches));
         assert_eq!(
@@ -1361,11 +2059,11 @@ mod tests {
 
         // (b) `--deadline-delta 0`: the rollout's deadline is already met at the
         //     base, so every branch hashes the sealed base itself.
-        let mut guest = BoxGuest {
+        let guest = BoxGuest {
             rollout_span: 0,
             ..BoxGuest::healthy()
         };
-        let outcome = run_box(&mut guest, &box_cfg(8, Some(0)));
+        let outcome = run_box(guest, &box_cfg(8, Some(0)));
         assert_eq!(outcome.log.events.len(), 8, "the branches DID run…");
         assert_eq!(
             outcome.vacuity(),
@@ -1379,12 +2077,12 @@ mod tests {
 
         // (c) The budget that sneaks past a positivity check: V-time advances,
         //     but the guest emits nothing at all — not one frame.
-        let mut guest = BoxGuest {
+        let guest = BoxGuest {
             frame_markers: 0,
             rollout_span: 1,
             ..BoxGuest::healthy()
         };
-        let outcome = run_box(&mut guest, &box_cfg(8, Some(1)));
+        let outcome = run_box(guest, &box_cfg(8, Some(1)));
         assert_eq!(
             outcome.vacuity(),
             Some(Vacuity::NoFrames),
@@ -1401,12 +2099,12 @@ mod tests {
         //      exactly ONE observation — and zero frames executed. Counting
         //      observations would have called that one frame and let 25
         //      identical repetitions of it print DETERMINISM PASS.
-        let mut guest = BoxGuest {
+        let guest = BoxGuest {
             frame_markers: 1,
             rollout_span: 1_000,
             ..BoxGuest::healthy()
         };
-        let outcome = run_box(&mut guest, &box_cfg(8, Some(1_000)));
+        let outcome = run_box(guest, &box_cfg(8, Some(1_000)));
         assert_eq!(
             outcome.work.min_completed_frames, 0,
             "one pre-run marker announces a frame; it does not run one"
@@ -1423,19 +2121,19 @@ mod tests {
 
         // …and TWO markers prove the first frame's body completed (the loop came
         // back around to announce the next) — the boundary the guard turns on.
-        let mut guest = BoxGuest {
+        let guest = BoxGuest {
             frame_markers: 2,
             rollout_span: 1_000,
             ..BoxGuest::healthy()
         };
-        let outcome = run_box(&mut guest, &box_cfg(8, Some(1_000)));
+        let outcome = run_box(guest, &box_cfg(8, Some(1_000)));
         assert_eq!(outcome.work.min_completed_frames, 1);
         assert_eq!(outcome.vacuity(), None, "one completed frame is real work");
 
         // (d) One hollow rollout among busy ones still sinks the gate: the
         //     evidence is the WEAKEST rollout, never the total.
-        let mut guest = BoxGuest::healthy();
-        let outcome = run_box(&mut guest, &box_cfg(8, Some(2_000_000_000)));
+        let guest = BoxGuest::healthy();
+        let outcome = run_box(guest, &box_cfg(8, Some(2_000_000_000)));
         assert_eq!(outcome.vacuity(), None);
         let hollowed = GameCampaignOutcome {
             work: WorkEvidence {
@@ -1480,9 +2178,17 @@ mod tests {
     /// markers ⇒ 119 frame bodies actually executed (the last announced frame
     /// is cut off by the deadline, exactly as on the box).
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn a_real_campaign_carries_its_work_evidence() {
-        let mut guest = BoxGuest::healthy();
-        let outcome = run_box(&mut guest, &box_cfg(4, Some(2_000_000_000)));
+        let guest = BoxGuest::healthy();
+        let outcome = run_box(guest, &box_cfg(4, Some(2_000_000_000)));
         assert_eq!(
             outcome.work,
             WorkEvidence {
@@ -1525,16 +2231,25 @@ mod tests {
     /// film would read nothing, or the wrong bytes. Each must fail the campaign
     /// loudly, before a single rollout runs.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign (the valid-billboard cases seal a base and run \
+                  rollouts); its durable evidence ledger (task 132) opens a real file even for \
+                  `trace_dir: None` (a campaign-lifetime scratch tempdir), which Miri isolation \
+                  forbids. Campaign logic is covered by the portable nextest suite; Miri still \
+                  guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn a_malformed_billboard_refuses_the_campaign() {
         let ram = GameCampaignConfig::smoke(0).guest_ram_len;
         let refuses = |billboard: Option<(u64, u64)>| -> GameCampaignError {
-            let mut guest = BoxGuest {
+            let guest = BoxGuest {
                 billboard,
                 ..BoxGuest::healthy()
             };
             run_game_campaign(
-                &mut guest,
-                &SpecEnvCodec,
+                guest,
+                Box::new(SpecEnvCodec),
                 &box_cfg(8, Some(2_000_000_000)),
                 ExplorationConfig::PureRandom,
             )
@@ -1559,12 +2274,12 @@ mod tests {
             GameCampaignError::BillboardMalformed { .. }
         ));
         // …and exactly a header's worth is the boundary film accepts.
-        let mut guest = BoxGuest {
+        let guest = BoxGuest {
             billboard: Some((0x04e0_0000, BILLBOARD_MIN_LEN)),
             ..BoxGuest::healthy()
         };
         assert_eq!(
-            run_box(&mut guest, &box_cfg(2, Some(2_000_000_000))).billboard,
+            run_box(guest, &box_cfg(2, Some(2_000_000_000))).billboard,
             Some((0x04e0_0000, BILLBOARD_MIN_LEN))
         );
         // Null gpa: guest-physical 0 is never a pinned billboard.
@@ -1583,12 +2298,12 @@ mod tests {
             GameCampaignError::BillboardMalformed { .. }
         ));
         // …and the last byte inside RAM is fine (the boundary is inclusive-end).
-        let mut guest = BoxGuest {
+        let guest = BoxGuest {
             billboard: Some((ram - 4_096, 4_096)),
             ..BoxGuest::healthy()
         };
         assert_eq!(
-            run_box(&mut guest, &box_cfg(2, Some(2_000_000_000))).billboard,
+            run_box(guest, &box_cfg(2, Some(2_000_000_000))).billboard,
             Some((ram - 4_096, 4_096))
         );
 
@@ -1674,12 +2389,12 @@ mod tests {
     }
 
     fn run_outcome(config: ExplorationConfig, seed: u64) -> GameCampaignOutcome {
-        let mut m = GameToyMachine::new();
+        let m = GameToyMachine::new();
         let cfg = GameCampaignConfig {
             max_branches: SMOKE_BRANCHES,
             ..GameCampaignConfig::smoke(seed)
         };
-        run_game_campaign(&mut m, &SpecEnvCodec, &cfg, config).unwrap()
+        run_game_campaign(m, Box::new(SpecEnvCodec), &cfg, config).unwrap()
     }
 
     /// Round-8 P1: the deepest branch is tracked from branch 0 and, with a
@@ -1709,13 +2424,18 @@ mod tests {
 
         // With retention: the store carries the env sidecar + journal.
         let dir = tempfile::tempdir().unwrap();
-        let mut m = GameToyMachine::new();
+        let m = GameToyMachine::new();
         let cfg = GameCampaignConfig {
             trace_dir: Some(dir.path().to_path_buf()),
             ..GameCampaignConfig::smoke(42)
         };
-        let outcome =
-            run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom).unwrap();
+        let outcome = run_game_campaign(
+            m,
+            Box::new(SpecEnvCodec),
+            &cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .unwrap();
         let id = outcome
             .deep
             .unwrap()
@@ -1744,6 +2464,14 @@ mod tests {
     /// Round-8 P1: a box-mode rollout that ends anywhere but its deadline is
     /// a loud RolloutDied — never recorded as an ordinary sample.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn a_dying_rollout_fails_the_box_campaign_loudly() {
         /// Seals at a snapshot point, then every rollout crashes (the
         /// retro_serialize-fails-on-frame-1 shape).
@@ -1822,7 +2550,7 @@ mod tests {
                 Ok(Vec::new())
             }
         }
-        let mut m = SealsThenCrashes {
+        let m = SealsThenCrashes {
             sealed: false,
             vtime: 1_000,
             next_snap: 1,
@@ -1833,8 +2561,13 @@ mod tests {
             require_snapshot_point: true,
             ..GameCampaignConfig::smoke(7)
         };
-        let err = run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom)
-            .unwrap_err();
+        let err = run_game_campaign(
+            m,
+            Box::new(SpecEnvCodec),
+            &cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .unwrap_err();
         assert!(
             matches!(err, GameCampaignError::RolloutDied { branch: 0, .. }),
             "expected RolloutDied on the first crashed rollout, got {err:?}"
@@ -1907,7 +2640,7 @@ mod tests {
                 Ok(SpecEnvCodec.seeded(0))
             }
         }
-        let mut m = SealsNoBillboard {
+        let m = SealsNoBillboard {
             sealed: false,
             vtime: 1_000,
             next_snap: 1,
@@ -1916,8 +2649,13 @@ mod tests {
             require_snapshot_point: true,
             ..GameCampaignConfig::smoke(7)
         };
-        let err = run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom)
-            .unwrap_err();
+        let err = run_game_campaign(
+            m,
+            Box::new(SpecEnvCodec),
+            &cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .unwrap_err();
         assert!(
             matches!(err, GameCampaignError::BillboardMissing),
             "expected BillboardMissing, got {err:?}"
@@ -1986,16 +2724,21 @@ mod tests {
                 trace_dir: Some(dir.path().to_path_buf()),
                 ..GameCampaignConfig::smoke(7)
             };
-            let mut m = SaltedRecording {
+            let m = SaltedRecording {
                 inner: GameToyMachine::new(),
                 salt,
             };
-            run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom)
-                .expect("campaign runs")
-                .deep
-                .expect("deep branch tracked")
-                .trace_id
-                .expect("retention configured")
+            run_game_campaign(
+                m,
+                Box::new(SpecEnvCodec),
+                &cfg,
+                ExplorationConfig::PureRandom,
+            )
+            .expect("campaign runs")
+            .deep
+            .expect("deep branch tracked")
+            .trace_id
+            .expect("retention configured")
         };
         assert_ne!(
             deep_id(1),
@@ -2042,6 +2785,14 @@ mod tests {
     /// bit-identical, including every branch's state_hash — the portable
     /// stand-in for the box 25/25 determinism gate.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn campaign_replays_bit_identically() {
         for config in [ExplorationConfig::PureRandom, ExplorationConfig::SelectorV1] {
             let a = run(config, 7);
@@ -2053,6 +2804,14 @@ mod tests {
 
     /// Different campaign seeds explore different branches.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn distinct_seeds_diverge() {
         assert_ne!(
             run(ExplorationConfig::PureRandom, 1),
@@ -2063,6 +2822,14 @@ mod tests {
     /// The tuple key flows end-to-end: cells are non-empty, keyed on the
     /// gameplay tuple, and depth tracks the toy's level-ups.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn cells_and_depth_flow_from_sdk_events() {
         let log = run(ExplorationConfig::PureRandom, 42);
         let total: BTreeSet<u64> = log.events.iter().flat_map(|e| e.touched.clone()).collect();
@@ -2199,13 +2966,18 @@ mod tests {
     /// — never a sealed dead base and a zero-cell campaign.
     #[test]
     fn a_dead_agent_never_seals_a_base_in_box_mode() {
-        let mut m = CrashedAgentMachine::new();
+        let m = CrashedAgentMachine::new();
         let cfg = GameCampaignConfig {
             require_snapshot_point: true,
             ..GameCampaignConfig::smoke(1)
         };
-        let err = run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom)
-            .unwrap_err();
+        let err = run_game_campaign(
+            m,
+            Box::new(SpecEnvCodec),
+            &cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .unwrap_err();
         assert!(
             matches!(err, GameCampaignError::SetupNotReached { .. }),
             "expected the workload gate, got {err:?}"
@@ -2215,10 +2987,10 @@ mod tests {
     /// The Signal configuration is refused until a selector artifact exists.
     #[test]
     fn signal_is_refused_loudly() {
-        let mut m = GameToyMachine::new();
+        let m = GameToyMachine::new();
         let err = run_game_campaign(
-            &mut m,
-            &SpecEnvCodec,
+            m,
+            Box::new(SpecEnvCodec),
             &GameCampaignConfig::smoke(1),
             ExplorationConfig::Signal,
         )
@@ -2229,6 +3001,14 @@ mod tests {
     /// SelectorV1 exploits (mutated exemplars) while PureRandom never does —
     /// their branch streams diverge under the same campaign seed.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn selector_v1_and_pure_random_diverge() {
         let a = run(ExplorationConfig::PureRandom, 7);
         let b = run(ExplorationConfig::SelectorV1, 7);
@@ -2271,5 +3051,190 @@ mod tests {
         let (cells, depth) = smb_cells(&feats);
         assert_eq!(cells, vec![smb_cell_key(1, 0, 2, 3)]);
         assert_eq!(depth, 5);
+    }
+
+    /// The `GameToyMachine::capture` stamping is pinned coordinate-by-coordinate:
+    /// each window's six events land at `branch_vtime + w*12` plus offsets
+    /// `0..=5`, carry the play-agent's wire reg-ids and ops, and the FRAME clock
+    /// is exactly `w*12`. Flipping any `+`/`*` in the stamping (or replacing the
+    /// whole body) moves an event off a pinned coordinate and fails here — the
+    /// portable stand-in for reading the seal on the box.
+    #[test]
+    fn capture_stamps_each_window_at_base_plus_w_times_twelve() {
+        let m = GameToyMachine::new();
+        let cap = m.capture();
+        // A fresh toy has an empty ancestor prefix: exactly 16 windows × 6
+        // events, none dropped, duplicated, or collapsed to a stub vec.
+        assert_eq!(cap.len(), 16 * 6, "16 windows of 6 events, no prefix");
+        // The per-window event shape, in emission order.
+        let regs = [
+            reg::GAME_MODE,
+            reg::WORLD,
+            reg::LEVEL,
+            reg::X_BUCKET,
+            reg::DEPTH,
+            reg::FRAME,
+        ];
+        // DEPTH is the only `state_max` register (op 1); the rest are `set` (op 0).
+        let ops = [0u8, 0, 0, 0, 1, 0];
+        for w in 0..16u64 {
+            let at0 = TOY_BASE_VTIME + w * 12;
+            for (i, (at, id, payload)) in cap[w as usize * 6..w as usize * 6 + 6].iter().enumerate()
+            {
+                assert_eq!(*at, at0 + i as u64, "window {w} event {i} vtime");
+                assert_eq!(
+                    *id,
+                    (2u32 << 24) | regs[i] as u32,
+                    "window {w} event {i} reg id"
+                );
+                assert_eq!(payload[0], ops[i], "window {w} event {i} op byte");
+            }
+            // The FRAME clock is `w*12` (pins the value-side `* 12`).
+            let frame = &cap[w as usize * 6 + 5].2;
+            assert_eq!(
+                u64::from_le_bytes(frame[1..9].try_into().unwrap()),
+                w * 12,
+                "window {w} FRAME clock"
+            );
+            // GAME_MODE is always gameplay (1) — a fixed emission through the wire codec.
+            let mode = &cap[w as usize * 6].2;
+            assert_eq!(
+                u64::from_le_bytes(mode[1..9].try_into().unwrap()),
+                1,
+                "window {w} GAME_MODE value"
+            );
+        }
+    }
+
+    /// `run` terminals are exact: with no deadline the toy goes quiescent
+    /// `16*12` V-time past its start; with a deadline it advances to and reports
+    /// that moment. A body-replacement or an `16*12`→`16/12` lands a different
+    /// terminal and fails here.
+    #[test]
+    fn run_terminal_and_deadline_are_exact() {
+        // No deadline: quiescent at base + 192 (the `16 * 12` window budget).
+        let mut m = GameToyMachine::new();
+        let quiescent = m
+            .run(
+                &StopConditions {
+                    deadline: None,
+                    on: StopMask::NONE,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            quiescent,
+            StopReason::Quiescent {
+                vtime: Moment(TOY_BASE_VTIME + 16 * 12),
+            }
+        );
+
+        // A future deadline: advance to it and report Deadline at that moment.
+        let mut m = GameToyMachine::new();
+        let deadline = m
+            .run(
+                &StopConditions {
+                    deadline: Some(Moment(5_000)),
+                    on: StopMask::NONE,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            deadline,
+            StopReason::Deadline {
+                vtime: Moment(5_000),
+            }
+        );
+    }
+
+    /// `snapshot` assigns strictly increasing ids (`+= 1`, never `*=`/`-=`) and
+    /// seals the capture prefix half-open at the snapshot vtime (`at <= vt`),
+    /// counting exactly the events at or before it.
+    #[test]
+    fn snapshot_ids_increment_and_seal_is_bounded_at_vtime() {
+        let mut m = GameToyMachine::new();
+        // Fresh: vtime is the base; only window-0's GAME_MODE lands at exactly
+        // the base, so the half-open seal admits exactly one event.
+        let (id0, cut0) = m.snapshot().unwrap();
+        assert_eq!(id0, explorer::SnapId(1));
+        assert_eq!(cut0.at, Moment(TOY_BASE_VTIME));
+        assert_eq!(cut0.sdk_events, 1, "only base+0 is <= the base vtime");
+
+        // A second seal at the same state gets the NEXT id — `*= 1` would stall
+        // at 1, `-= 1` would fall to 0.
+        let (id1, _) = m.snapshot().unwrap();
+        assert_eq!(id1, explorer::SnapId(2));
+
+        // Advance one window's worth of stamps into range, then re-seal: window
+        // 0's events at base..=base+5 are all <= base+5 while window 1 (base+12)
+        // is not — exactly six admitted. Flipping `<=` to `>` would instead
+        // admit the 90 events strictly after the cut.
+        let _ = m
+            .run(
+                &StopConditions {
+                    deadline: Some(Moment(TOY_BASE_VTIME + 5)),
+                    on: StopMask::NONE,
+                },
+                None,
+            )
+            .unwrap();
+        let (id2, cut2) = m.snapshot().unwrap();
+        assert_eq!(id2, explorer::SnapId(3));
+        assert_eq!(cut2.at, Moment(TOY_BASE_VTIME + 5));
+        assert_eq!(
+            cut2.sdk_events, 6,
+            "window-0's six events are all <= base+5"
+        );
+    }
+
+    /// `replay` restores the snapshotted vtime, branch point, and capture
+    /// prefix, and rejects an unknown snapshot loudly. The whole-body `Ok(())`
+    /// mutant leaves the machine wherever it was and never errors — every
+    /// assertion below refutes it.
+    #[test]
+    fn replay_restores_state_and_rejects_unknown_snapshots() {
+        let mut m = GameToyMachine::new();
+        // Seal the base moment.
+        let (snap_base, _) = m.snapshot().unwrap();
+        // Advance vtime, then seal a later, distinct snapshot.
+        let _ = m
+            .run(
+                &StopConditions {
+                    deadline: Some(Moment(TOY_BASE_VTIME + 100)),
+                    on: StopMask::NONE,
+                },
+                None,
+            )
+            .unwrap();
+        let (snap_late, _) = m.snapshot().unwrap();
+
+        // Load the late snapshot: branch point + vtime move to base+100 and its
+        // multi-event sealed prefix is restored.
+        m.replay(snap_late).unwrap();
+        assert_eq!(m.vtime, TOY_BASE_VTIME + 100);
+        assert_eq!(m.branch_vtime, TOY_BASE_VTIME + 100);
+        assert!(
+            m.prefix.len() >= 6,
+            "the late seal restored a multi-event prefix, got {}",
+            m.prefix.len()
+        );
+
+        // Replay the base snapshot: every field returns to the base state.
+        m.replay(snap_base).unwrap();
+        assert_eq!(m.vtime, TOY_BASE_VTIME);
+        assert_eq!(m.branch_vtime, TOY_BASE_VTIME);
+        assert_eq!(
+            m.prefix.len(),
+            1,
+            "the base seal admitted exactly one event"
+        );
+
+        // An unknown snapshot is a loud error, never a silent success.
+        assert!(matches!(
+            m.replay(explorer::SnapId(999)),
+            Err(MachineError::UnknownSnapshot(999)),
+        ));
     }
 }

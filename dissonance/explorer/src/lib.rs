@@ -1,46 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! # explorer — the coverage-guided exploration engine and the search-plane spine
+//! # explorer — the two-barrier Differential campaign engine and its seams
 //!
 //! `explorer` is **all of dissonance policy**: the brain that drives a
-//! deterministic guest through many environments to find bugs. Task 12 built the
-//! engine; task 64 decomposed its god-object `Strategy` into the **search-plane
-//! trait spine** (`spine.rs`) every later signal/search/oracle task
-//! implements, and generalized its AFL-shaped corpus into a cell [`Archive`].
+//! deterministic guest through many environments to find bugs. The production
+//! search loop is the two-barrier [`DifferentialCampaign`] (task 130/132): the
+//! imperative, seeded controller that owns the crash-safe evidence append,
+//! drives the Revision coordinator's probe barriers, schedules budgeted
+//! materialization replay, and admits archive occupancy only at an actual
+//! seal — with observations/cells/occupancy materialized by the production
+//! Differential relations, and direct recomputation kept as the parity
+//! ORACLE. Task 132 M3 physically deleted the legacy engine
+//! (`Explorer::step`) and the compat spine (`Archive::admit`, `Sensor`,
+//! `Feature`, `FeatureSet`, `CoverageArchive`, `IdentityCells`).
+//!
 //! Mutation lives **here**, never in the wire (the AFL lesson): the engine
 //! ferries an opaque, versioned [`Reproducer`] blob and mutates it only through
 //! the [`EnvCodec`] seam, so the schema (dissonance task 24) stays owned by the
 //! catalog and the wire stays fixed independently of it.
 //!
-//! ## The two loops
-//!
-//! - **Rollout (inner, [`Explorer::rollout`]):** drive ONE run forward —
-//!   `run` ⇄ `run(resolve)` — answering each surfaced [`StopReason::Decision`]
-//!   via the **open-loop [`Tactic`]** and capturing every sealable
-//!   [`StopReason::SnapshotPoint`] as parent-rooted [`VirtualExemplar`]
-//!   material. Ends at a terminal [`StopReason`].
-//! - **Search loop (outer, [`Explorer::step`]):** across runs — the
-//!   [`Selector`] picks a frontier exemplar (or genesis), the engine
-//!   materializes it and mints the next [`Reproducer`] through the codec, runs
-//!   one rollout, folds the run into the [`Archive`] (timeline admission),
-//!   and judges it with the [`Oracle`]. One search-loop step = one rollout.
-//!
-//! (These are the loop pair `docs/EXPLORATION.md` also describes; the
-//! temporal-axis term of art "timeline admission" is a distinct concept and
-//! stays.)
-//!
 //! ## The seams (defined locally, conventions rule 2)
 //!
-//! The engine codes against a [`Machine`]/[`MachineFactory`] driver seam and an
-//! [`EnvCodec`] minting seam (`seam.rs`), and composes the search-plane
-//! traits of `spine.rs` — [`Sensor`], [`CellFn`], [`Oracle`], [`Archive`],
-//! [`Selector`], [`Tactic`], [`Matchable`] — whose behavior-equivalence default
-//! implementations live in `defaults.rs`. In production the [`mod@adapter`]
-//! module's [`SocketMachine`] implements [`Machine`] over a `control-proto`
-//! client stream (against vmm-core's control-transport server, task 58) and
-//! [`SpecEnvCodec`] binds [`EnvCodec`] to the `environment` crate's real
-//! reproducer codec per the task-93 ruling; in tests an in-crate deterministic
-//! **toy machine** does both — so the same engine and the same determinism
-//! gate run both sides unchanged.
+//! The controller codes against a [`Machine`]/[`MachineFactory`] driver seam
+//! and an [`EnvCodec`] minting seam (`seam.rs`), and composes the surviving
+//! control-plane traits of `spine.rs` — [`Tactic`] (open-loop, single-pass),
+//! [`Selector`] (entry choice), [`Oracle`] (completed-run judgment),
+//! [`Matchable`] (the DSL adapter) — whose default policies live in
+//! `defaults.rs`. In production the [`mod@adapter`] module's [`SocketMachine`]
+//! implements [`Machine`] over a `control-proto` client stream (against
+//! vmm-core's control-transport server, task 58) and [`SpecEnvCodec`] binds
+//! [`EnvCodec`] to the `environment` crate's real reproducer codec per the
+//! task-93 ruling.
 //!
 //! ## Determinism discipline
 //!
@@ -48,26 +37,26 @@
 //! iteration order, or floating point. The frontier is a `Vec` + `BTreeMap`,
 //! every policy draw comes from a caller-seeded [`Prng`], and the [`Bug`]
 //! fingerprint is a `sha2` digest of the stop reason — so the same
-//! `(campaign seed, machine)` yields a bit-identical exploration trace and an
+//! `(campaign seed, machine)` yields a bit-identical campaign and an
 //! identical admitted frontier.
 //!
 //! ## Module layout
 //!
 //! `error.rs` (the [`MachineError`] enum) · `seam.rs` (the [`Machine`],
-//! [`MachineFactory`], and [`EnvCodec`] traits) · `spine.rs` (the search-plane
-//! vocabulary + traits — the task-64 contract) · `defaults.rs` (the
-//! behavior-equivalence default implementations) · `engine.rs` ([`Explorer`],
-//! [`Composition`], [`RunOutcome`]) · `materialize.rs` (the task-68 lazy
-//! materialization engine: [`Materializer`], the lineage table, and the
-//! spanning-ancestor retention pool — [`SealBudget`]) · `prng.rs` (the public
-//! xorshift64\* generator the policies draw from) · [`mod@adapter`] (the R2
-//! socket adapter: [`SocketMachine`], [`SpecEnvCodec`], and the [`AdapterEnv`]
-//! blob — task 58).
+//! [`MachineFactory`], and [`EnvCodec`] traits) · `spine.rs` (the surviving
+//! search-plane vocabulary + control traits) · `defaults.rs` (the default
+//! policies) · `campaign.rs` (the [`DifferentialCampaign`] controller) ·
+//! `evidence.rs`/`ledger.rs`/`retention.rs`/`occurrence.rs` (the evidence
+//! plane) · `materialize.rs` (the task-68 lazy materialization engine:
+//! [`Materializer`], the lineage table, and the spanning-ancestor retention
+//! pool — [`SealBudget`]) · `prng.rs` (the public xorshift64\* generator the
+//! policies draw from) · [`mod@adapter`] (the R2 socket adapter:
+//! [`SocketMachine`], [`SpecEnvCodec`], and the [`AdapterEnv`] blob — task
+//! 58).
 
 pub mod adapter;
 mod campaign;
 mod defaults;
-mod engine;
 mod error;
 mod evidence;
 mod ledger;
@@ -90,17 +79,13 @@ pub(crate) fn sdk_moment_to_spine(m: sdk_events::Moment) -> Moment {
 
 pub use adapter::{ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, client_caps};
 pub use campaign::{
-    CampaignConfig, CampaignError, DifferentialCampaign, Ingress, Occupied, StepReport,
+    CampaignConfig, CampaignError, DifferentialCampaign, Ingress, Nomination, Occupied, StepReport,
 };
-pub use defaults::{
-    COVERAGE_CHANNEL, CoverageArchive, DeclineTactic, ExploreExploitSelector, GenesisSelector,
-    IdentityCells, TerminalOracle,
-};
-pub use engine::{Composition, Explorer, RunOutcome};
+pub use defaults::{DeclineTactic, ExploreExploitSelector, GenesisSelector, TerminalOracle};
 pub use error::{EnvCodecError, MachineError};
 pub use evidence::{
     CompletedRunEvidence, DefaultObservationCells, EvidenceRole, ObservationCells, ObservationMap,
-    ReducedValue, RunId, reduce_at_cut,
+    ReducedValue, RunId, compose_observations_at, reduce_at_cut,
 };
 pub use ledger::{EvidenceLedger, LedgerError, PayloadRef, TraceStore};
 pub use materialize::{Lineage, Materialization, Materializer, SealBudget};
@@ -116,10 +101,9 @@ pub use retention::{
 };
 pub use seam::{EnvCodec, Machine, MachineFactory};
 pub use spine::{
-    Archive, Bug, CellFn, CellKey, ChannelId, CoverageView, DecisionPoint, EvidenceCut,
-    ExemplarRef, Feature, FeatureId, FeatureSet, Fork, Frontier, FrontierEntry, GuestEvent,
-    Matchable, Moment, Oracle, Record, Reward, RunTrace, Selector, Sensor, StreamId, Tactic, Value,
-    VirtualExemplar,
+    Bug, CellKey, CoverageView, DecisionPoint, EvidenceCut, ExemplarRef, Frontier, FrontierEntry,
+    GuestEvent, Matchable, Moment, Oracle, Record, Reward, RunTrace, Selector, StreamId, Tactic,
+    Value, VirtualExemplar,
 };
 
 use serde::{Deserialize, Serialize};
@@ -127,8 +111,9 @@ use serde::{Deserialize, Serialize};
 /// An ephemeral, pool-wide handle to a captured machine state (a snapshot). It
 /// is a transient resource handle — **never** part of a portable reproducer
 /// artifact (that is the [`Reproducer`]); the only stable, always-reproducible
-/// base is the genesis snapshot from [`Explorer::new`]. The control plane mints
-/// these on `snapshot` and frees them on `drop` (pool GC).
+/// base is the genesis snapshot the campaign takes at construction. The
+/// control plane mints these on `snapshot` and frees them on `drop` (pool
+/// GC).
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
 )]

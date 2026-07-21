@@ -8,7 +8,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::{K3S, POSTGRES, derive, log_lines, timeline_cell_keys, trace};
-use explorer::{Matchable, Moment, Sensor, Value};
+use explorer::{Matchable, Moment, Value};
 use logtmpl::{CellFnV1, LogSensor, TEMPLATE_CHANNEL};
 
 // --- Gate 2: stable species set --------------------------------------------
@@ -54,7 +54,7 @@ fn assert_reload_transparent(fixture: &str) {
     let first = trace(&lines[..split].join("\n"));
     let second = trace(&lines[split..].join("\n"));
 
-    let ids_of = |stream: Vec<(Moment, explorer::Feature)>| -> Vec<u64> {
+    let ids_of = |stream: Vec<(Moment, logtmpl::Feature)>| -> Vec<u64> {
         stream.into_iter().map(|(_, f)| f.id.0).collect()
     };
 

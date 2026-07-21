@@ -94,7 +94,7 @@ mod wire;
 
 // The normalized SDK ingress boundary (hm-bbx.1).
 pub use antithesis::decode_antithesis;
-pub use binary::{DeclaredPoint, decode_binary, encode_v2_declaration};
+pub use binary::{DeclaredPoint, decode_binary, encode_v2_declaration, resolve_v1_declaration};
 pub use error::SdkError;
 pub use event::{AssertType, Normalized, Payload, SdkEvent, SiteId, StreamCommitment};
 pub use moment::Moment;

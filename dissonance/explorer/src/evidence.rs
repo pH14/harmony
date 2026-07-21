@@ -142,9 +142,8 @@ pub fn reduce_at_cut(events: &[SdkEvent], schema: &SdkSchema, included: u64) -> 
 /// from the complete materialized observation map to one opaque [`CellKey`]. This
 /// is the `CellFn` role the strategy keeps — evaluated on the complete projected
 /// observations at the actual `sealed_at`, over independently-reduced
-/// observations rather than a packed feature set. (The spine's legacy
-/// [`CellFn`](crate::CellFn) over a `FeatureSet` is retained for the log-template
-/// consumer; this is the Differential-plane projection.)
+/// observations rather than a packed feature set (the legacy `FeatureSet`
+/// spine retired in task 132 M3; this is the one production cell projection).
 pub trait ObservationCells {
     /// Key the observation map true at `cut` into an opaque cell.
     fn key(&self, cut: EvidenceCut, obs: &ObservationMap) -> CellKey;
@@ -179,7 +178,7 @@ impl ObservationCells for DefaultObservationCells {
 /// Canonically encode an observation identity into a cell key (domain-tagged so
 /// the three variants can never alias, length-prefixed so no two strings run
 /// together).
-fn encode_observation_id(out: &mut Vec<u8>, id: &ObservationId) {
+pub(crate) fn encode_observation_id(out: &mut Vec<u8>, id: &ObservationId) {
     match id {
         ObservationId::Point { namespace, local } => {
             out.push(0x01);
@@ -196,6 +195,39 @@ fn encode_observation_id(out: &mut Vec<u8>, id: &ObservationId) {
             out.extend_from_slice(&(s.len() as u64).to_le_bytes());
             out.extend_from_slice(s.as_bytes());
         }
+    }
+}
+
+/// Decode one canonically encoded observation identity (the exact inverse of
+/// [`encode_observation_id`]). Total: `None` on any malformed encoding, never
+/// a panic — the production caller feeds only its own encoder's output, so a
+/// `None` there is an internal-invariant break the caller surfaces loudly.
+pub(crate) fn decode_observation_id(bytes: &[u8]) -> Option<ObservationId> {
+    let (&tag, rest) = bytes.split_first()?;
+    match tag {
+        0x01 => {
+            let (&namespace, rest) = rest.split_first()?;
+            let local = u32::from_le_bytes(rest.try_into().ok()?);
+            Some(ObservationId::Point { namespace, local })
+        }
+        0x02 | 0x03 => {
+            if rest.len() < 8 {
+                return None;
+            }
+            let (len, s) = rest.split_at(8);
+            // Statically infallible: split_at(8) yields exactly 8 bytes.
+            let len = u64::from_le_bytes(len.try_into().expect("8-byte slice"));
+            if s.len() as u64 != len {
+                return None;
+            }
+            let s = String::from_utf8(s.to_vec()).ok()?;
+            Some(if tag == 0x02 {
+                ObservationId::Property(s)
+            } else {
+                ObservationId::Lifecycle(s)
+            })
+        }
+        _ => None,
     }
 }
 
@@ -252,6 +284,18 @@ pub struct CompletedRunEvidence {
     pub cut: EvidenceCut,
     /// The normalized SDK evidence (schema + ordered events + commitment).
     pub normalized: Normalized,
+    /// The branch-point cut on the parent rollout's evidence vector (`None`
+    /// for a genesis-rooted run): the lineage authority for prefix
+    /// composition. A branch child's `normalized` carries only its own
+    /// suffix; positions are cumulative from `parent_cut.count` (task 132).
+    #[serde(default)]
+    pub parent_cut: Option<EvidenceCut>,
+    /// The sealable-point moments this rollout observed, in observation
+    /// order — the provisional-cut nomination coordinates, persisted so a
+    /// restart re-stages the exact same relation inputs (task 132). Empty
+    /// for a seal batch.
+    #[serde(default)]
+    pub sealable_moments: Vec<u64>,
 }
 
 impl CompletedRunEvidence {
@@ -285,6 +329,69 @@ impl CompletedRunEvidence {
     pub fn at(&self) -> Moment {
         self.cut.at
     }
+}
+
+/// The **lineage-composed** reduced observation map at `included` (a
+/// cumulative position count): the ancestor evidence segments through their
+/// fork cuts, root-first, plus this batch's own suffix — reduced under this
+/// batch's schema. This is the direct-recomputation ORACLE for the
+/// production Differential relations ("direct recomputation is an oracle,
+/// not a second backend"), and the retention fold's cell authority.
+///
+/// The chain walks `rollout.parent` through the ledger's **rollout** batches
+/// (a seal batch's `parent` is the rollout it seals, whose own `parent_cut`
+/// continues the chain). A collected (GC'd) ancestor contributes nothing —
+/// composition proceeds over the retained prefix (the retention rules keep
+/// live-Entry lineage collectible only behind a covering checkpoint).
+pub fn compose_observations_at(
+    ledger: &crate::ledger::EvidenceLedger,
+    ev: &CompletedRunEvidence,
+    included: u64,
+) -> ObservationMap {
+    // Collect ancestor segments child-first: (segment events, start, upper).
+    // Positions are explicit — `start` is each batch's own cumulative base
+    // (its `parent_cut` count) — because the composed prefix may begin above
+    // zero: a pre-campaign (setup) prefix restored into the genesis base is
+    // inherited machine state that belongs to no rollout batch, so cumulative
+    // position and vector index differ by the root's start.
+    let mut segments: Vec<(Vec<SdkEvent>, u64, u64)> = Vec::new();
+    let mut parent = ev.rollout.parent;
+    let mut upper = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+    while let Some(issue) = parent {
+        let Some(anc) = ledger
+            .batch_ids()
+            .filter_map(|id| ledger.get(id))
+            .find(|b| b.role == EvidenceRole::Rollout && b.rollout.issue == issue)
+        else {
+            break; // collected or foreign ancestor: compose the retained prefix
+        };
+        let start = anc.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+        segments.push((anc.normalized.events.clone(), start, upper));
+        parent = anc.rollout.parent;
+        upper = start;
+    }
+    // Assemble the position-filtered prefix root-first: each ancestor's own
+    // events at cumulative positions `start + i`, truncated at its child's
+    // fork count, then this batch's own suffix — keeping exactly the
+    // positions `< included` (the half-open cut is by cumulative position).
+    let mut events: Vec<SdkEvent> = Vec::new();
+    for (seg, start, upper) in segments.into_iter().rev() {
+        for (i, e) in seg.into_iter().enumerate() {
+            let pos = start + i as u64;
+            if pos < upper && pos < included {
+                events.push(e);
+            }
+        }
+    }
+    let own_start = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+    for (i, e) in ev.normalized.events.iter().enumerate() {
+        let pos = own_start + i as u64;
+        if pos < included {
+            events.push(e.clone());
+        }
+    }
+    let filtered = events.len() as u64;
+    reduce_at_cut(&events, &ev.normalized.schema, filtered)
 }
 
 #[cfg(test)]
@@ -348,6 +455,124 @@ mod tests {
             namespace: NS_STATE,
             local: 7,
         }
+    }
+
+    /// The lineage composition truncates an ancestor at its child's fork
+    /// count HALF-OPEN (`pos < upper`): the parent's event AT the fork count
+    /// is excluded even when the queried cut extends past it (kills the
+    /// `<`→`<=` truncation mutant directly).
+    #[test]
+    fn compose_excludes_the_parent_event_at_the_fork_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut led =
+            crate::ledger::EvidenceLedger::open(&dir.path().join("evidence.log")).expect("open");
+        // Parent (issue 1, genesis-rooted): accumulate reg 2 fires 5 then 7.
+        let parent_norm = normalized(UpdateOp::Accumulate, &[5, 7]);
+        let parent = CompletedRunEvidence {
+            rollout: RunId {
+                issue: 1,
+                parent: None,
+            },
+            role: EvidenceRole::Rollout,
+            terminal: StopReason::Quiescent { vtime: Moment(20) },
+            env: Reproducer {
+                blob_version: 1,
+                bytes: vec![1],
+            },
+            cut: EvidenceCut {
+                at: Moment(20),
+                sdk_events: 2,
+            },
+            normalized: parent_norm,
+            parent_cut: None,
+            sealable_moments: vec![],
+        };
+        // Child (issue 2) forked at (moment 10, count 1): its own suffix is
+        // one firing (9) at cumulative position 1.
+        let child_norm = normalized(UpdateOp::Accumulate, &[9]);
+        let child = CompletedRunEvidence {
+            rollout: RunId {
+                issue: 2,
+                parent: Some(1),
+            },
+            role: EvidenceRole::Rollout,
+            terminal: StopReason::Quiescent { vtime: Moment(30) },
+            env: Reproducer {
+                blob_version: 1,
+                bytes: vec![2],
+            },
+            cut: EvidenceCut {
+                at: Moment(30),
+                sdk_events: 2,
+            },
+            normalized: child_norm,
+            parent_cut: Some(EvidenceCut {
+                at: Moment(10),
+                sdk_events: 1,
+            }),
+            sealable_moments: vec![],
+        };
+        led.append(&parent).expect("parent appends");
+        led.append(&child).expect("child appends");
+        // Composed at included = 2 (past the fork): parent pos 0 (5) + child
+        // pos 1 (9). The parent's pos-1 firing (7) sits AT the fork count and
+        // is excluded — half-open, even though 1 < included.
+        let obs = compose_observations_at(&led, &child, 2);
+        let want: BTreeSet<u64> = [5, 9].into_iter().collect();
+        assert_eq!(obs.get(&reg7()), Some(&ReducedValue::Accumulated(want)));
+        // And the cut itself is half-open on BOTH bounds: at included = 0
+        // nothing participates — not even the ancestor event at position 0.
+        assert!(
+            compose_observations_at(&led, &child, 0).is_empty(),
+            "included = 0 composes the empty prefix"
+        );
+        // At included = 1 exactly the ancestor's first event participates.
+        let one: BTreeSet<u64> = [5].into_iter().collect();
+        assert_eq!(
+            compose_observations_at(&led, &child, 1).get(&reg7()),
+            Some(&ReducedValue::Accumulated(one))
+        );
+    }
+
+    /// The canonical observation-identity encoding round-trips through its
+    /// decoder for all three variants, and malformed bytes decode to `None`
+    /// (kills the decoder's match-arm/length mutants).
+    #[test]
+    fn observation_id_encoding_round_trips() {
+        let ids = [
+            ObservationId::Point {
+                namespace: NS_STATE,
+                local: 0x00AB_CDEF,
+            },
+            ObservationId::Property("prop".into()),
+            ObservationId::Lifecycle("setup_complete".into()),
+            ObservationId::Property(String::new()),
+        ];
+        for id in &ids {
+            let mut bytes = Vec::new();
+            encode_observation_id(&mut bytes, id);
+            assert_eq!(
+                decode_observation_id(&bytes).as_ref(),
+                Some(id),
+                "round-trip for {id:?}"
+            );
+        }
+        // Distinct variants never alias (domain tags).
+        let mut a = Vec::new();
+        encode_observation_id(&mut a, &ObservationId::Property("x".into()));
+        let mut b = Vec::new();
+        encode_observation_id(&mut b, &ObservationId::Lifecycle("x".into()));
+        assert_ne!(a, b);
+        // Malformed inputs are total Nones: empty, bad tag, truncated point,
+        // bad length prefix, trailing junk.
+        assert_eq!(decode_observation_id(&[]), None);
+        assert_eq!(decode_observation_id(&[0x09, 1, 2]), None);
+        assert_eq!(decode_observation_id(&[0x01, 2]), None);
+        assert_eq!(decode_observation_id(&[0x02, 5, 0, 0, 0, 0, 0, 0, 0]), None);
+        let mut long = Vec::new();
+        encode_observation_id(&mut long, &ObservationId::Property("x".into()));
+        long.push(0);
+        assert_eq!(decode_observation_id(&long), None, "trailing junk refused");
     }
 
     /// `set` keeps the latest value in the prefix; the cut is half-open by the

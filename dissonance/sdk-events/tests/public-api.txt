@@ -195,3 +195,4 @@ pub const sdk_events::NS_STATE: u8
 pub fn sdk_events::decode_antithesis(&[(sdk_events::Moment, alloc::vec::Vec<u8>)]) -> core::result::Result<sdk_events::Normalized, sdk_events::SdkError>
 pub fn sdk_events::decode_binary(&[(sdk_events::Moment, u32, alloc::vec::Vec<u8>)]) -> core::result::Result<sdk_events::Normalized, sdk_events::SdkError>
 pub fn sdk_events::encode_v2_declaration(&[sdk_events::DeclaredPoint]) -> core::result::Result<alloc::vec::Vec<u8>, sdk_events::SdkError>
+pub fn sdk_events::resolve_v1_declaration(&[u8], &[(sdk_events::ObservationId, sdk_events::UpdateOp)]) -> core::result::Result<alloc::vec::Vec<u8>, sdk_events::SdkError>

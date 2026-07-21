@@ -512,6 +512,12 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         // The billboard-range bound (task 103 finding 2), from the RAM this
         // composition root actually boots the guest with.
         guest_ram_len: GUEST_RAM_LEN as u64,
+        // The two-barrier controller's materialization knobs (task 132): a
+        // small per-step cap — each materialized candidate replays a real
+        // rollout on the box — and a campaign budget of one replay per
+        // branch on average.
+        candidate_cap: 2,
+        replay_budget: args.game.max_branches,
     };
     let repeat = args.repeat.max(1);
     let mut first: Option<campaign_runner::gamecampaign::GameCampaignOutcome> = None;
@@ -558,7 +564,17 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
             }
             _ => {}
         }
-        let rep_cfg = cfg.clone();
+        let mut rep_cfg = cfg.clone();
+        // Repetitions must be INDEPENDENT for the determinism gate: each gets
+        // its own trace/evidence directory (a shared durable evidence ledger
+        // would seed repetition N's archive with repetition N-1's committed
+        // assignments — resumption, not repetition; task 132). The retained
+        // deep trace is content-addressed, so identical reps still yield the
+        // identical trace_id.
+        rep_cfg.trace_dir = cfg
+            .trace_dir
+            .as_ref()
+            .map(|d| d.join(format!("rep-{}", rep + 1)));
         let initial = boot_env();
         println!(
             "[campaign-runner] game box: campaign {}/{repeat} (config={:?}, {} branches, {} ns per \
@@ -570,8 +586,8 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
             boot_us / 1_000,
         );
         let (served, client) = run_session(&mut server, move |stream| {
-            let mut machine = SocketMachine::connect(stream, initial)?;
-            run_game_campaign(&mut machine, &SpecEnvCodec, &rep_cfg, config)
+            let machine = SocketMachine::connect(stream, initial)?;
+            run_game_campaign(machine, Box::new(SpecEnvCodec), &rep_cfg, config)
                 .map_err(|e| explorer::MachineError::Transport(e.to_string()))
         });
         let outcome = match client {

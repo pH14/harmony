@@ -40,11 +40,18 @@
 //! cell committed at an earlier seal (`hm-mcx`).
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
-use revision_coordinator::{Completion, CoordError, Coordinator, Revision, TerminalRecord};
+use revision_coordinator::{
+    Completion, CoordError, Coordinator, CutRow, EntryCommitRow, EvidenceRows, LineageRow,
+    PointRow, ReduceOp, ReducedRow, Revision, SealRow, StateEventRow, TerminalRecord,
+};
 
 use crate::error::MachineError;
-use crate::evidence::{CompletedRunEvidence, EvidenceRole, ObservationCells, RunId};
+use crate::evidence::{
+    CompletedRunEvidence, EvidenceRole, ObservationCells, ObservationMap, ReducedValue, RunId,
+    decode_observation_id, encode_observation_id,
+};
 use crate::ledger::{EvidenceLedger, LedgerError};
 use crate::materialize::Materializer;
 use crate::occurrence::{AbsenceLedger, OccurrenceCounterexample};
@@ -59,7 +66,7 @@ use crate::spine::{
     Selector, Tactic, VirtualExemplar,
 };
 use crate::{Answer, Reproducer, SnapId, StopConditions, StopMask, StopReason};
-use sdk_events::{Normalized, SdkError, decode_antithesis, decode_binary};
+use sdk_events::{Normalized, SdkError, UpdateOp, decode_antithesis, decode_binary};
 
 /// The binary-wire catalog marker event id (`hm-bbx.1`): a raw tuple whose id is
 /// this is the schema declaration, not a firing. Inherited through lineage on a
@@ -103,6 +110,31 @@ pub struct CampaignConfig {
     /// **loudly** ([`LedgerError::Exhausted`]) — host disk pressure never
     /// silently changes the retention policy.
     pub evidence_budget: Option<u64>,
+    /// Where a rollout's provisional-cut nomination coordinates come from
+    /// (default: machine-surfaced snapshot points).
+    pub nominate: Nomination,
+    /// Whether each rollout's terminal machine state is hashed into its
+    /// [`StepReport`] (`state_hash`) — the per-branch determinism artifact a
+    /// campaign gate compares. Hash-neutral to the search itself (nothing
+    /// reads it); off by default (a full state hash costs real time on a
+    /// live backend).
+    pub hash_rollouts: bool,
+}
+
+/// Where a rollout's provisional-cut nomination coordinates come from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Nomination {
+    /// The machine-surfaced [`StopReason::SnapshotPoint`]s the sealable
+    /// predicate admits (the default; a cooperating workload with explicit
+    /// checkpoint boundaries).
+    #[default]
+    SnapshotPoints,
+    /// The distinct `Moment`s of the rollout's own SDK events (filtered by
+    /// the sealable predicate): the configured-evidence-cut source for a
+    /// workload that surfaces no mid-run snapshot points (e.g. a quiet-arm
+    /// game rollout under a deadline, whose only machine snapshot point is
+    /// its setup seal).
+    EventMoments,
 }
 
 impl Default for CampaignConfig {
@@ -113,6 +145,8 @@ impl Default for CampaignConfig {
             ingress: Ingress::Binary,
             retention: RetentionProfile::Full,
             evidence_budget: None,
+            nominate: Nomination::SnapshotPoints,
+            hash_rollouts: false,
         }
     }
 }
@@ -143,6 +177,24 @@ pub enum CampaignError {
     /// silent policy change).
     #[error("retention: {0}")]
     Retention(#[from] RetentionError),
+    /// The materialized Differential view is missing a row the controller
+    /// committed inputs for — an internal-invariant break in the production
+    /// relations, surfaced loudly rather than absorbed (task 132).
+    #[error("materialized view missing {what} for rollout {rollout}")]
+    ViewIncomplete {
+        /// Which row class was missing ("cut cell", "seal cell").
+        what: &'static str,
+        /// The rollout whose row was expected.
+        rollout: u64,
+    },
+    /// The operational archive and the Differential occupancy view disagree
+    /// — a divergence between the production backend and the controller's
+    /// mirror, surfaced loudly (the recompute-parity discipline, task 132).
+    #[error("occupancy divergence: {detail}")]
+    OccupancyDivergence {
+        /// What diverged.
+        detail: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +310,10 @@ pub struct StepReport {
     pub counterexamples: Vec<OccurrenceCounterexample>,
     /// Whether the step explored fresh (genesis) rather than exploiting.
     pub explored: bool,
+    /// The rollout's terminal machine state hash, when
+    /// [`CampaignConfig::hash_rollouts`] is set (the per-branch determinism
+    /// artifact); `None` otherwise.
+    pub state_hash: Option<[u8; 32]>,
 }
 
 /// The two-barrier Differential campaign controller (module doc). Owns the
@@ -268,13 +324,26 @@ pub struct DifferentialCampaign<M: Machine> {
     codec: Box<dyn EnvCodec>,
     tactic: Box<dyn Tactic>,
     selector: Box<dyn Selector>,
-    cells: Box<dyn ObservationCells>,
+    cells: Rc<dyn ObservationCells>,
     occupancy: Occupancy,
+    /// The sealed rollout issue behind each live Entry (`ExemplarRef.0` →
+    /// rollout issue): the lineage parent a child branched off this Entry
+    /// records. Rebuilt from the committed assignments on restart.
+    entry_rollout: BTreeMap<u64, u64>,
+    /// The Differential entry key behind each live Entry (`ExemplarRef.0` →
+    /// the seal proposal's issue): the occupancy-authority reconciliation
+    /// key. Rebuilt from the committed assignments on restart.
+    entry_key: BTreeMap<u64, u64>,
     mat: Materializer,
     ledger: EvidenceLedger,
     coordinator: Coordinator,
     rng: Prng,
     genesis: SnapId,
+    /// The genesis seal's server-stamped cut: a genesis-rooted branch
+    /// inherits the machine's pre-campaign SDK prefix (e.g. a workload's
+    /// setup events), so its cumulative positions start here — the branch
+    /// base cut for `parent == None` rollouts (task 132).
+    genesis_cut: EvidenceCut,
     until: StopConditions,
     config: CampaignConfig,
     /// The remaining materialization-replay budget (charged per materialized
@@ -309,12 +378,37 @@ impl<M: Machine> DifferentialCampaign<M> {
         selector: Box<dyn Selector>,
         cells: Box<dyn ObservationCells>,
         mut ledger: EvidenceLedger,
-        coordinator: Coordinator,
+        mut coordinator: Coordinator,
         config: CampaignConfig,
         seed: u64,
     ) -> Result<Self, CampaignError> {
+        let cells: Rc<dyn ObservationCells> = Rc::from(cells);
         let views = RetentionViews::rebuild(config.retention, cells.as_ref(), &ledger)?;
         ledger.set_budget(config.evidence_budget);
+        // Install the campaign's cell projection as the production
+        // relations' projection (before any drain): the Differential graph
+        // evaluates exactly this `ObservationCells` at every point, over the
+        // decoded reduced-observation pairs.
+        let proj_cells = Rc::clone(&cells);
+        coordinator.set_cell_projection(Rc::new(move |cut: CutRow, pairs: &[_]| {
+            let map = decode_reduced_pairs(pairs);
+            let cut = EvidenceCut {
+                at: Moment(cut.moment),
+                sdk_events: cut.count,
+            };
+            proj_cells.key(cut, &map)
+        }))?;
+        // Recovery re-staging: restart replays committed ledger inputs (the
+        // durable evidence batches), never a live arrangement. A committed
+        // batch absent from this evidence ledger contributes no relation
+        // rows (a foreign coordinator's input), exactly as it contributes
+        // nothing to the rebuilt retention views.
+        for (_rev, proposal, batch) in coordinator.committed_inputs() {
+            if let Some(ev) = ledger.get(&batch) {
+                let rows = evidence_rows(ev);
+                coordinator.stage_evidence(proposal, rows)?;
+            }
+        }
         let (genesis, genesis_cut) = machine.snapshot()?;
         // Restore the operational archive from the committed Entry cell
         // assignments, so the live occupancy and the committed record stay in
@@ -322,6 +416,8 @@ impl<M: Machine> DifferentialCampaign<M> {
         // genesis-complete reproducer and cut; its snapshot is ephemeral by
         // design and re-materializes from genesis on first exploit.
         let mut occupancy = Occupancy::new();
+        let mut entry_rollout = BTreeMap::new();
+        let mut entry_key = BTreeMap::new();
         for a in &views.assignments {
             let entry = FrontierEntry {
                 exemplar: VirtualExemplar {
@@ -340,6 +436,12 @@ impl<M: Machine> DifferentialCampaign<M> {
                 matches!(admitted, Occupied::Fresh(_)),
                 "assignments hold one entry per cell"
             );
+            if let Occupied::Fresh(r) = admitted {
+                // A seal batch's RunId is (seal issue, parent = the sealed
+                // rollout) — the lineage identities a child branch records.
+                entry_rollout.insert(r.0, a.rollout.parent.unwrap_or(a.rollout.issue));
+                entry_key.insert(r.0, a.rollout.issue);
+            }
         }
         Ok(Self {
             machine,
@@ -348,11 +450,14 @@ impl<M: Machine> DifferentialCampaign<M> {
             selector,
             cells,
             occupancy,
+            entry_rollout,
+            entry_key,
             mat: Materializer::new(genesis, genesis_cut.at),
             ledger,
             coordinator,
             rng: Prng::new(seed),
             genesis,
+            genesis_cut,
             until: StopConditions {
                 deadline: None,
                 on: StopMask::ALL,
@@ -422,14 +527,34 @@ impl<M: Machine> DifferentialCampaign<M> {
         let (branch_env, minted) = self.mint_env(choice, &base_env)?;
 
         let rollout = self.run_rollout(base_snap, &base_env, &branch_env, parent_cut)?;
+        // The per-branch determinism artifact, taken at the rollout terminal
+        // (before any materialization replay disturbs the machine).
+        let state_hash = if self.config.hash_rollouts {
+            Some(self.machine.hash()?)
+        } else {
+            None
+        };
+        // The lineage parent is the SEALED ROLLOUT behind the chosen Entry —
+        // the rollout whose evidence prefix this child inherits.
+        let parent_issue = match choice {
+            None => None,
+            Some(r) => Some(
+                self.entry_rollout
+                    .get(&r.0)
+                    .copied()
+                    .ok_or(MachineError::UnknownExemplar(r.0))?,
+            ),
+        };
         let rollout_id = RunId {
             issue: p1.proposal.get(),
-            parent: choice.map(|r| r.0),
+            parent: parent_issue,
         };
-        // The completed-rollout cut is the observed terminal: the full SDK prefix.
+        // The completed-rollout cut is the observed terminal: the full
+        // cumulative SDK prefix (inherited ancestor prefix + own suffix).
+        let start = parent_cut.map(|c| c.sdk_events).unwrap_or(0);
         let observed_cut = EvidenceCut {
             at: rollout.stop.vtime(),
-            sdk_events: rollout.normalized.events.len() as u64,
+            sdk_events: start + rollout.normalized.events.len() as u64,
         };
         let evidence = CompletedRunEvidence {
             rollout: rollout_id,
@@ -438,10 +563,15 @@ impl<M: Machine> DifferentialCampaign<M> {
             env: rollout.genesis_env.clone(),
             cut: observed_cut,
             normalized: rollout.normalized.clone(),
+            parent_cut,
+            sealable_moments: rollout.sealable_moments.iter().map(|m| m.0).collect(),
         };
 
-        // Durably append BEFORE commit, then submit the batch identity for commit.
+        // Durably append BEFORE commit, stage the typed relation rows, then
+        // submit the batch identity for commit.
         let batch1 = self.ledger.append(&evidence)?;
+        self.coordinator
+            .stage_evidence(p1.proposal, evidence_rows(&evidence))?;
         self.coordinator.complete(Completion {
             proposal: p1.proposal,
             batch: batch1,
@@ -455,14 +585,17 @@ impl<M: Machine> DifferentialCampaign<M> {
         // counts and counterexample dedup are monotone).
         let fold = self
             .views
-            .fold_batch(self.cells.as_ref(), batch1, &evidence);
+            .fold_batch(self.cells.as_ref(), &self.ledger, batch1, &evidence);
 
         // ---- Barrier 1: read only after the probe frontier passes. ----
         let view1 = self.coordinator.probe_drive(p1.revision)?;
         debug_assert!(view1.frontier >= p1.revision, "barrier 1 passed");
+        let views1 = self.coordinator.materialized(view1.frontier)?;
 
-        // Provisional transitions (non-authoritative) → dedupe / order / cap.
-        let candidates = self.provisional_candidates(&evidence, &rollout);
+        // Provisional transitions from the MATERIALIZED cut cells (the
+        // production relations, not a recompute) → dedupe / order / cap.
+        let candidates =
+            self.provisional_candidates(&views1, rollout_id.issue, start, &evidence, &rollout)?;
 
         // ---- Cohort B: materialize the capped candidates, occupancy at barrier 2. ----
         let mut report = StepReport {
@@ -471,9 +604,11 @@ impl<M: Machine> DifferentialCampaign<M> {
             admitted: Vec::new(),
             counterexamples: fold.new_counterexamples,
             explored,
+            state_hash,
         };
         if !candidates.is_empty() {
             let cohort_b = self.coordinator.open_cohort()?;
+            let mut pending: Vec<PendingSeal> = Vec::new();
             let mut last_rev = Revision::ZERO;
             for cand in candidates {
                 if self.replay_left == 0 {
@@ -481,11 +616,21 @@ impl<M: Machine> DifferentialCampaign<M> {
                 }
                 self.replay_left -= 1; // charge the replay budget
 
-                let p2 = self.coordinator.assign(cohort_b)?;
-                // Materialize: replay to the candidate moment, holding the seal;
-                // the machine stamps the AUTHORITATIVE cut with the seal.
+                // Materialize BEFORE reserving the revision slot: replay to
+                // the candidate moment, holding the seal; the machine stamps
+                // the AUTHORITATIVE cut with the seal. A candidate whose
+                // state disappears before a valid seal is not returnable and
+                // is DROPPED (the strategy's disappearing-state rule) — and
+                // because no slot was reserved for it, dropping it can never
+                // hold the frontier open. Any other machine failure aborts
+                // the step loudly as ever.
                 let (seal, actual_cut) =
-                    self.materialize_candidate(base_snap, &branch_env, cand.at)?;
+                    match self.materialize_candidate(base_snap, &branch_env, cand.at) {
+                        Ok(sealed) => sealed,
+                        Err(CampaignError::Machine(MachineError::NotSealable(_))) => continue,
+                        Err(e) => return Err(e),
+                    };
+                let p2 = self.coordinator.assign(cohort_b)?;
                 let seal_evidence = CompletedRunEvidence {
                     rollout: RunId {
                         issue: p2.proposal.get(),
@@ -498,8 +643,12 @@ impl<M: Machine> DifferentialCampaign<M> {
                     env: rollout.genesis_env.clone(),
                     cut: actual_cut,
                     normalized: rollout.normalized.clone(),
+                    parent_cut,
+                    sealable_moments: Vec::new(),
                 };
                 let batch2 = self.ledger.append(&seal_evidence)?;
+                self.coordinator
+                    .stage_evidence(p2.proposal, evidence_rows(&seal_evidence))?;
                 self.coordinator.complete(Completion {
                     proposal: p2.proposal,
                     batch: batch2,
@@ -510,57 +659,136 @@ impl<M: Machine> DifferentialCampaign<M> {
                 // Fold the committed seal batch into the retention views: the
                 // committed assignment (record 3) updates by the identical
                 // best-Entry-per-cell rule the operational occupancy applies
-                // below, so the two can never drift.
-                let fold2 = self
-                    .views
-                    .fold_batch(self.cells.as_ref(), batch2, &seal_evidence);
-
-                // Barrier 2: the CellFn at the ACTUAL sealed_at + occupancy.
-                let obs = seal_evidence.observations_at_cut();
-                let cell = self.cells.key(actual_cut, &obs);
-                let quality = actual_cut.at.0; // progress depth (configured metric)
-                let exemplar = VirtualExemplar {
-                    parent: base_snap,
-                    seed: minted,
-                    suffix: rollout.env.clone(),
-                    cut: actual_cut,
-                };
-                let entry = FrontierEntry {
-                    exemplar,
-                    env: rollout.genesis_env.clone(),
-                    reward: Reward { new_cells: 1 },
-                };
-                let outcome = self.occupancy.admit(entry, cell, quality);
-                debug_assert_eq!(
-                    fold2.admitted,
-                    !matches!(outcome, Occupied::Rejected),
-                    "the committed assignment and the operational occupancy apply one rule"
+                // after barrier 2, so the two can never drift.
+                let fold2 = self.views.fold_batch(
+                    self.cells.as_ref(),
+                    &self.ledger,
+                    batch2,
+                    &seal_evidence,
                 );
-                match outcome {
-                    Occupied::Fresh(r) => {
-                        self.register_seal(r, seal, base_snap, &rollout.env, actual_cut)?;
-                        report.admitted.push(r);
-                    }
-                    Occupied::Dominated { entry, evicted } => {
-                        self.register_seal(entry, seal, base_snap, &rollout.env, actual_cut)?;
-                        self.drop_entry_seal(evicted)?;
-                        report.admitted.push(entry);
-                    }
-                    Occupied::Rejected => {
-                        // A provisional transition that lost occupancy never
-                        // occupies the archive; drop its temporary seal.
-                        self.machine.drop_snap(seal)?;
-                    }
-                }
+                pending.push(PendingSeal {
+                    entry: p2.proposal.get(),
+                    seal,
+                    cut: actual_cut,
+                    fold_admitted: fold2.admitted,
+                });
             }
             self.coordinator.close_cohort(cohort_b)?;
             if last_rev != Revision::ZERO {
+                // ---- Barrier 2: the cell at the ACTUAL sealed_at and the
+                // occupancy, read from the materialized views only after the
+                // probe frontier passes. ----
                 let view2 = self.coordinator.probe_drive(last_rev)?;
                 debug_assert!(view2.frontier >= last_rev, "barrier 2 passed");
+                let views2 = self.coordinator.materialized(view2.frontier)?;
+                for p in pending {
+                    let cell = views2
+                        .cell_at(rollout_id.issue, PointRow::Seal(p.entry))
+                        .ok_or(CampaignError::ViewIncomplete {
+                            what: "seal cell",
+                            rollout: rollout_id.issue,
+                        })?
+                        .clone();
+                    let quality = p.cut.at.0; // progress depth (configured metric)
+                    let exemplar = VirtualExemplar {
+                        parent: base_snap,
+                        seed: minted,
+                        suffix: rollout.env.clone(),
+                        cut: p.cut,
+                    };
+                    let entry = FrontierEntry {
+                        exemplar,
+                        env: rollout.genesis_env.clone(),
+                        reward: Reward { new_cells: 1 },
+                    };
+                    let outcome = self.occupancy.admit(entry, cell, quality);
+                    debug_assert_eq!(
+                        p.fold_admitted,
+                        !matches!(outcome, Occupied::Rejected),
+                        "the committed assignment and the operational occupancy apply one rule"
+                    );
+                    match outcome {
+                        Occupied::Fresh(r) => {
+                            self.entry_rollout.insert(r.0, rollout_id.issue);
+                            self.entry_key.insert(r.0, p.entry);
+                            self.register_seal(r, p.seal, base_snap, &rollout.env, p.cut)?;
+                            report.admitted.push(r);
+                        }
+                        Occupied::Dominated { entry, evicted } => {
+                            self.entry_rollout.insert(entry.0, rollout_id.issue);
+                            self.entry_key.insert(entry.0, p.entry);
+                            self.register_seal(entry, p.seal, base_snap, &rollout.env, p.cut)?;
+                            self.drop_entry_seal(evicted)?;
+                            self.entry_rollout.remove(&evicted.0);
+                            self.entry_key.remove(&evicted.0);
+                            report.admitted.push(entry);
+                        }
+                        Occupied::Rejected => {
+                            // A provisional transition that lost occupancy never
+                            // occupies the archive; drop its temporary seal.
+                            self.machine.drop_snap(p.seal)?;
+                        }
+                    }
+                }
+                // The Differential occupancy view is the authority; the
+                // operational mirror must agree exactly.
+                self.check_occupancy(&views2)?;
             }
         }
 
         Ok(report)
+    }
+
+    /// Reconcile the operational archive against the materialized occupancy
+    /// view: every occupied cell agrees on its occupant. A mismatch is a
+    /// loud [`CampaignError::OccupancyDivergence`], never absorbed.
+    fn check_occupancy(
+        &self,
+        views: &revision_coordinator::MaterializedViews,
+    ) -> Result<(), CampaignError> {
+        let claims = self.occupancy.frontier().occupied_cells();
+        if views.occupancy.len() != claims {
+            let hex =
+                |b: &[u8]| -> String { b.iter().take(24).map(|x| format!("{x:02x}")).collect() };
+            let view_side: Vec<String> = views
+                .occupancy
+                .iter()
+                .map(|(c, e)| format!("{}=>{e}", hex(c)))
+                .collect();
+            let mirror_side: Vec<String> = self
+                .occupancy
+                .frontier()
+                .claims()
+                .map(|(c, r)| {
+                    let key = self.entry_key.get(&r.0).copied();
+                    format!("{}=>{key:?}", hex(c))
+                })
+                .collect();
+            return Err(CampaignError::OccupancyDivergence {
+                detail: format!(
+                    "{} materialized cells vs {} mirror claims; view [{}]; mirror [{}]",
+                    views.occupancy.len(),
+                    claims,
+                    view_side.join(", "),
+                    mirror_side.join(", ")
+                ),
+            });
+        }
+        for (cell, entry) in &views.occupancy {
+            let occupant = self
+                .occupancy
+                .frontier()
+                .occupant(cell)
+                .and_then(|r| self.entry_key.get(&r.0).copied());
+            if occupant != Some(*entry) {
+                return Err(CampaignError::OccupancyDivergence {
+                    detail: format!(
+                        "cell occupant disagrees: view entry {entry}, mirror {occupant:?}"
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     // -- The retention/GC surface (`hm-5sv`) --------------------------------
@@ -699,7 +927,10 @@ impl<M: Machine> DifferentialCampaign<M> {
         choice: Option<ExemplarRef>,
     ) -> Result<(SnapId, Option<Reproducer>, Option<EvidenceCut>, bool), CampaignError> {
         match choice {
-            None => Ok((self.genesis, None, None, true)),
+            // Genesis explores inherit the machine's pre-campaign prefix
+            // through the genesis cut (its count is the cumulative position
+            // base; a machine with no pre-campaign SDK prefix stamps 0).
+            None => Ok((self.genesis, None, Some(self.genesis_cut), true)),
             Some(r) => {
                 let (entry_env, parent_cut) = match self.occupancy.frontier().get(r) {
                     Some(entry) => (entry.env.clone(), entry.exemplar.cut),
@@ -768,6 +999,16 @@ struct Candidate {
     cell: CellKey,
 }
 
+/// One materialized candidate awaiting its barrier-2 admission: the entry key
+/// (its seal proposal's issue), the held seal, its authoritative cut, and the
+/// retention fold's admission verdict (asserted against the mirror's).
+struct PendingSeal {
+    entry: u64,
+    seal: SnapId,
+    cut: EvidenceCut,
+    fold_admitted: bool,
+}
+
 impl<M: Machine> DifferentialCampaign<M> {
     /// Drive one open-loop rollout from `base_snap` under `branch_env`, capturing
     /// the terminal, the branch-local and genesis-complete reproducers, the
@@ -822,6 +1063,22 @@ impl<M: Machine> DifferentialCampaign<M> {
         let raw = self.machine.sdk_events()?;
         let inherited = parent_cut.map(|c| c.sdk_events).unwrap_or(0);
         let normalized = self.decode_child_suffix(&raw, inherited)?;
+        // The nomination coordinates: machine-surfaced snapshot points (the
+        // default), or — for a workload that surfaces none mid-run — the
+        // distinct sealable moments of the rollout's own SDK events.
+        let sealable_moments = match self.config.nominate {
+            Nomination::SnapshotPoints => sealable_moments,
+            Nomination::EventMoments => {
+                let mut distinct = std::collections::BTreeSet::new();
+                for e in &normalized.events {
+                    let m = Moment(e.moment.0);
+                    if self.mat.sealable_at(m) {
+                        distinct.insert(m);
+                    }
+                }
+                distinct.into_iter().collect()
+            }
+        };
         Ok(Rollout {
             stop,
             env,
@@ -841,19 +1098,24 @@ impl<M: Machine> DifferentialCampaign<M> {
     ) -> Result<Normalized, CampaignError> {
         match self.config.ingress {
             Ingress::Binary => {
-                // Keep every catalog tuple; skip the first `inherited` firing
-                // tuples (the inherited ancestor prefix), keep the rest.
+                // The parent cut counts capture POSITIONS (ordinals) — the
+                // catalog tuple at position 0 included (the server stamps it as
+                // `vmm.sdk_events().len()`). So skip the inherited prefix by
+                // position: keep the catalog declaration unconditionally (the
+                // child re-declares its own schema, never inherits it) and keep
+                // every non-catalog firing at or past the inherited-position
+                // boundary. Counting firings alone would keep the catalog for
+                // free AND skip `inherited` firings, over-skipping by the catalog
+                // count and dropping the first firing that should survive (F2).
                 let mut kept: Vec<(sdk_events::Moment, u32, Vec<u8>)> = Vec::new();
-                let mut firings_seen: u64 = 0;
-                for (m, id, bytes) in raw {
+                for (pos, (m, id, bytes)) in raw.iter().enumerate() {
                     if *id == CATALOG_EVENT_ID {
                         kept.push((sdk_events::Moment(*m), *id, bytes.clone()));
                         continue;
                     }
-                    if firings_seen >= inherited {
+                    if (pos as u64) >= inherited {
                         kept.push((sdk_events::Moment(*m), *id, bytes.clone()));
                     }
-                    firings_seen += 1;
                 }
                 Ok(decode_binary(&kept)?)
             }
@@ -869,39 +1131,45 @@ impl<M: Machine> DifferentialCampaign<M> {
         }
     }
 
-    /// Compute the provisional observation/cell transitions from the committed
-    /// evidence at the rollout's sealable-point moments (non-authoritative
-    /// nomination coordinates), then **dedupe by cell**, **order by coordinate**,
-    /// and apply the **candidate cap**. A candidate is a moment whose reduced cell
-    /// is not already occupied — it nominates a materialization replay, and can
-    /// never itself occupy the archive.
+    /// Read the provisional observation/cell transitions from the
+    /// **materialized** cut cells at the rollout's sealable-point moments
+    /// (non-authoritative nomination coordinates), then **dedupe by cell**,
+    /// **order by coordinate**, and apply the **candidate cap**. A candidate
+    /// is a moment whose materialized cell is not already occupied — it
+    /// nominates a materialization replay, and can never itself occupy the
+    /// archive.
     fn provisional_candidates(
         &self,
+        views: &revision_coordinator::MaterializedViews,
+        rollout_issue: u64,
+        start: u64,
         evidence: &CompletedRunEvidence,
         rollout: &Rollout,
-    ) -> Vec<Candidate> {
+    ) -> Result<Vec<Candidate>, CampaignError> {
         // Dedupe by cell (first observing moment wins), ordered by (moment) via a
         // BTreeMap keyed on the ordering coordinate.
         let mut by_cell: BTreeMap<CellKey, Moment> = BTreeMap::new();
         for &at in &rollout.sealable_moments {
             // The provisional included-count is moment-approximate (non-authoritative):
-            // the SDK firings emitted at or before this sealable moment.
+            // the cumulative prefix through the SDK firings emitted at or
+            // before this sealable moment.
             let included = evidence
                 .normalized
                 .events
                 .iter()
                 .filter(|e| e.moment.0 <= at.0)
                 .count() as u64;
-            let cut = EvidenceCut {
-                at,
-                sdk_events: included,
-            };
-            let obs = evidence.observations_at(included);
-            let cell = self.cells.key(cut, &obs);
+            let count = start + included;
+            let cell = views.cell_at(rollout_issue, PointRow::Cut(count)).ok_or(
+                CampaignError::ViewIncomplete {
+                    what: "cut cell",
+                    rollout: rollout_issue,
+                },
+            )?;
             // Only a fresh cell (not already occupied) is an interesting
             // transition worth replaying to seal.
-            if self.occupancy.frontier().occupant(&cell).is_none() {
-                by_cell.entry(cell).or_insert(at);
+            if self.occupancy.frontier().occupant(cell).is_none() {
+                by_cell.entry(cell.clone()).or_insert(at);
             }
         }
         // Order candidates by their observed moment (their explicit evidence
@@ -912,7 +1180,7 @@ impl<M: Machine> DifferentialCampaign<M> {
             .collect();
         ordered.sort_by_key(|c| (c.at.0, c.cell.clone()));
         ordered.truncate(self.config.candidate_cap);
-        ordered
+        Ok(ordered)
     }
 
     /// Materialize one provisional candidate: replay the same rollout env from
@@ -968,6 +1236,132 @@ fn terminal_record(ev: &CompletedRunEvidence) -> TerminalRecord {
     TerminalRecord {
         moment: ev.cut.at.0,
         work: ev.normalized.events.len() as u64,
+    }
+}
+
+/// The coordinator's payload-blind reduce op for a normalized base op.
+fn reduce_op(op: UpdateOp) -> ReduceOp {
+    match op {
+        UpdateOp::Set => ReduceOp::Set,
+        UpdateOp::Max => ReduceOp::Max,
+        UpdateOp::Min => ReduceOp::Min,
+        UpdateOp::Accumulate => ReduceOp::Accumulate,
+    }
+}
+
+/// Decode the materialized reduced-observation pairs back into the typed
+/// [`ObservationMap`] the campaign's [`ObservationCells`] consumes. Total:
+/// an undecodable identity (impossible for keys minted by
+/// [`evidence_rows`]'s own encoder) is skipped under a debug assertion
+/// rather than panicking inside a dataflow operator.
+fn decode_reduced_pairs(pairs: &[(Vec<u8>, ReducedRow)]) -> ObservationMap {
+    let mut map = ObservationMap::new();
+    for (key, red) in pairs {
+        let Some(id) = decode_observation_id(key) else {
+            debug_assert!(false, "undecodable observation key {key:?}");
+            continue;
+        };
+        let val = match red {
+            ReducedRow::Scalar(v) => ReducedValue::Scalar(*v),
+            ReducedRow::Accumulated(vs) => ReducedValue::Accumulated(vs.iter().copied().collect()),
+        };
+        map.insert(id, val);
+    }
+    map
+}
+
+/// The typed relation rows one committed evidence batch contributes to the
+/// production Differential relations — a pure function of the batch, so a
+/// restart re-stages byte-identical inputs from the durable ledger alone.
+///
+/// A ROLLOUT batch contributes its lineage edge, its schema's reducible
+/// declarations, its own suffix state events at **cumulative** positions,
+/// and its provisional cuts (dedup by count, first moment wins). A SEAL
+/// batch attaches to the SEALED rollout (`rollout.parent`) and contributes
+/// only the seal point and the committed Entry offer (its events are the
+/// rollout's, already in the graph).
+pub(crate) fn evidence_rows(ev: &CompletedRunEvidence) -> EvidenceRows {
+    let start = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+    match ev.role {
+        EvidenceRole::Rollout => {
+            let mut declares = Vec::new();
+            for entry in ev.normalized.schema.entries() {
+                if !entry.is_reducible_state() {
+                    continue;
+                }
+                let Some(op) = entry.base_op else { continue };
+                let mut key = Vec::new();
+                encode_observation_id(&mut key, &entry.id);
+                declares.push((key, reduce_op(op)));
+            }
+            let mut events = Vec::new();
+            for (i, e) in ev.normalized.events.iter().enumerate() {
+                let sdk_events::Payload::State { value, .. } = &e.payload else {
+                    continue;
+                };
+                let Some(se) = ev.normalized.schema.entry(&e.id) else {
+                    continue;
+                };
+                if !se.is_reducible_state() {
+                    continue;
+                }
+                let mut key = Vec::new();
+                encode_observation_id(&mut key, &e.id);
+                events.push(StateEventRow {
+                    pos: start + i as u64,
+                    moment: e.moment.0,
+                    obs: key,
+                    value: *value,
+                });
+            }
+            let mut obs_cuts = Vec::new();
+            let mut seen = std::collections::BTreeSet::new();
+            for &m in &ev.sealable_moments {
+                let included = ev
+                    .normalized
+                    .events
+                    .iter()
+                    .filter(|e| e.moment.0 <= m)
+                    .count() as u64;
+                let count = start + included;
+                if seen.insert(count) {
+                    obs_cuts.push(CutRow { moment: m, count });
+                }
+            }
+            EvidenceRows {
+                rollout: ev.rollout.issue,
+                lineage: ev.rollout.parent.map(|parent| LineageRow {
+                    parent,
+                    cut: CutRow {
+                        moment: ev.parent_cut.map(|c| c.at.0).unwrap_or(0),
+                        count: start,
+                    },
+                }),
+                declares,
+                events,
+                obs_cuts,
+                seal: None,
+                entry: None,
+            }
+        }
+        EvidenceRole::Seal => EvidenceRows {
+            rollout: ev.rollout.parent.unwrap_or(ev.rollout.issue),
+            lineage: None,
+            declares: Vec::new(),
+            events: Vec::new(),
+            obs_cuts: Vec::new(),
+            seal: Some(SealRow {
+                seal: ev.rollout.issue,
+                cut: CutRow {
+                    moment: ev.cut.at.0,
+                    count: ev.cut.sdk_events,
+                },
+            }),
+            entry: Some(EntryCommitRow {
+                entry: ev.rollout.issue,
+                quality: ev.cut.at.0,
+            }),
+        },
     }
 }
 
@@ -1245,6 +1639,427 @@ mod tests {
             let _ = obs; // pure recomputation, no panic
         }
         assert_eq!(led.len(), ids.len());
+    }
+
+    // -- The M1 differential parity gate (task 132): direct recomputation is
+    // the ORACLE for the production relations. After every barrier-passed
+    // step, every materialized view (observations, cells, occupancy) must
+    // equal the pure lineage-composed recomputation over the durable ledger.
+
+    /// Recompute every view from the ledger alone and assert view-for-view
+    /// equality with the coordinator's materialized views at the visible
+    /// frontier.
+    fn assert_view_parity(camp: &DifferentialCampaign<ScriptedMachine>) {
+        let frontier = camp.coordinator().visible_frontier();
+        if frontier == Revision::ZERO {
+            return;
+        }
+        let views = camp
+            .coordinator()
+            .materialized(frontier)
+            .expect("frontier-passed views are readable");
+        let ledger = camp.ledger();
+        let cells = DefaultObservationCells::new();
+
+        // Encode a recomputed observation map into the coordinator's pair
+        // shape (the byte-level currency both sides share).
+        let encode_pairs = |obs: &ObservationMap| -> Vec<(Vec<u8>, ReducedRow)> {
+            obs.iter()
+                .map(|(id, val)| {
+                    let mut key = Vec::new();
+                    encode_observation_id(&mut key, id);
+                    let red = match val {
+                        ReducedValue::Scalar(v) => ReducedRow::Scalar(*v),
+                        ReducedValue::Accumulated(s) => {
+                            ReducedRow::Accumulated(s.iter().copied().collect())
+                        }
+                    };
+                    (key, red)
+                })
+                .collect()
+        };
+
+        let view_pairs = |rollout: u64, point: PointRow| -> Vec<(Vec<u8>, ReducedRow)> {
+            views
+                .observations
+                .iter()
+                .filter(|((r, p, _), _)| *r == rollout && *p == point)
+                .map(|((_, _, k), red)| (k.clone(), red.clone()))
+                .collect()
+        };
+
+        let mut expected_occ: BTreeMap<CellKey, (u64, u64)> = BTreeMap::new();
+        for id in ledger.batch_ids() {
+            let ev = ledger.get(id).expect("retained");
+            match ev.role {
+                EvidenceRole::Rollout => {
+                    // Every provisional cut: recompute observations + cell.
+                    let start = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+                    let mut seen = std::collections::BTreeSet::new();
+                    for &m in &ev.sealable_moments {
+                        let included = ev
+                            .normalized
+                            .events
+                            .iter()
+                            .filter(|e| e.moment.0 <= m)
+                            .count() as u64;
+                        let count = start + included;
+                        if !seen.insert(count) {
+                            continue;
+                        }
+                        let obs = crate::evidence::compose_observations_at(ledger, ev, count);
+                        assert_eq!(
+                            view_pairs(ev.rollout.issue, PointRow::Cut(count)),
+                            encode_pairs(&obs),
+                            "cut observations diverge (rollout {}, count {count})",
+                            ev.rollout.issue
+                        );
+                        let cut = EvidenceCut {
+                            at: Moment(m),
+                            sdk_events: count,
+                        };
+                        assert_eq!(
+                            views.cell_at(ev.rollout.issue, PointRow::Cut(count)),
+                            Some(&cells.key(cut, &obs)),
+                            "cut cell diverges (rollout {}, count {count})",
+                            ev.rollout.issue
+                        );
+                    }
+                }
+                EvidenceRole::Seal => {
+                    let rollout = ev.rollout.parent.expect("a seal names its rollout");
+                    let point = PointRow::Seal(ev.rollout.issue);
+                    let obs =
+                        crate::evidence::compose_observations_at(ledger, ev, ev.cut.sdk_events);
+                    assert_eq!(
+                        view_pairs(rollout, point),
+                        encode_pairs(&obs),
+                        "seal observations diverge (seal {})",
+                        ev.rollout.issue
+                    );
+                    let cell = cells.key(ev.cut, &obs);
+                    assert_eq!(
+                        views.cell_at(rollout, point),
+                        Some(&cell),
+                        "seal cell diverges (seal {})",
+                        ev.rollout.issue
+                    );
+                    // Recomputed occupancy: best (quality desc, entry asc).
+                    let quality = ev.cut.at.0;
+                    let entry = ev.rollout.issue;
+                    expected_occ
+                        .entry(cell)
+                        .and_modify(|(bq, be)| {
+                            if quality > *bq || (quality == *bq && entry < *be) {
+                                *bq = quality;
+                                *be = entry;
+                            }
+                        })
+                        .or_insert((quality, entry));
+                }
+            }
+        }
+        let expected_occ: Vec<(CellKey, u64)> = expected_occ
+            .into_iter()
+            .map(|(cell, (_q, e))| (cell, e))
+            .collect();
+        assert_eq!(views.occupancy, expected_occ, "occupancy diverges");
+    }
+
+    /// The occupancy reconciliation is live: the REAL views pass, a
+    /// tampered occupancy view fails with the typed divergence (kills the
+    /// `check_occupancy -> Ok(())` stub).
+    #[test]
+    fn occupancy_reconciliation_rejects_a_tampered_view() {
+        let (_dir, mut camp) = campaign(simple_program(4), config(8, u64::MAX), 7);
+        camp.step().expect("step");
+        let frontier = camp.coordinator().visible_frontier();
+        let views = camp.coordinator().materialized(frontier).expect("readable");
+        camp.check_occupancy(&views).expect("the real views agree");
+        let mut tampered = views.clone();
+        tampered.occupancy.push((b"no-such-cell".to_vec(), 999));
+        assert!(matches!(
+            camp.check_occupancy(&tampered),
+            Err(CampaignError::OccupancyDivergence { .. })
+        ));
+        let mut wrong_entry = views;
+        if let Some(first) = wrong_entry.occupancy.first_mut() {
+            first.1 += 1;
+            assert!(matches!(
+                camp.check_occupancy(&wrong_entry),
+                Err(CampaignError::OccupancyDivergence { .. })
+            ));
+        }
+    }
+
+    /// The lineage-composed recompute EXCLUDES a parent's post-fork
+    /// accumulate value (the half-open fork truncation, `pos < upper`), and
+    /// a child batch's observed cut is the parent count PLUS its suffix
+    /// length (the cumulative-position arithmetic).
+    #[test]
+    fn lineage_cut_arithmetic_and_fork_truncation_are_exact() {
+        use crate::defaults::ExploreExploitSelector;
+        let program: Rc<dyn Fn(u64) -> Program> = Rc::new(|seed| Program {
+            emits: vec![
+                Emit {
+                    at: 10,
+                    reg: 2,
+                    value: seed % 5,
+                },
+                Emit {
+                    at: 20,
+                    reg: 2,
+                    value: 100 + seed % 5,
+                },
+            ],
+            terminal: 30,
+        });
+        let (_dir, led) = ledger();
+        let machine = ScriptedMachine::new(vec![(2, UpdateOp::Accumulate)], program);
+        let mut camp = DifferentialCampaign::new(
+            machine,
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            // Explore period 3: steps 1..2 exploit once an entry exists.
+            Box::new(ExploreExploitSelector::new().with_explore_period(3)),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            // Cap 1: only the FIRST provisional candidate (the shallower
+            // seal) is materialized, so the exploited entry's fork cut lies
+            // strictly below the parent's persisted extent — the parent has
+            // a post-fork accumulate value to exclude.
+            config(1, u64::MAX),
+            13,
+        )
+        .expect("new");
+        for _ in 0..6 {
+            camp.step().expect("step");
+        }
+        let ledger = camp.ledger();
+        let mut checked_child = false;
+        for id in ledger.batch_ids() {
+            let ev = ledger.get(id).expect("retained");
+            if ev.role != EvidenceRole::Rollout {
+                continue;
+            }
+            let start = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+            // The cumulative-cut arithmetic: observed cut = start + suffix.
+            assert_eq!(
+                ev.cut.sdk_events,
+                start + ev.normalized.events.len() as u64,
+                "cumulative observed cut"
+            );
+            let Some(parent_issue) = ev.rollout.parent else {
+                continue;
+            };
+            // A real branch child below a mid-run fork: the parent's
+            // post-fork accumulate values must NOT reach the child's map.
+            let parent = ledger
+                .batch_ids()
+                .filter_map(|i| ledger.get(i))
+                .find(|b| b.role == EvidenceRole::Rollout && b.rollout.issue == parent_issue)
+                .expect("parent rollout batch");
+            let parent_start = parent.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+            let parent_extent = parent_start + parent.normalized.events.len() as u64;
+            if start >= parent_extent {
+                continue; // forked at the parent's extent: nothing excluded
+            }
+            checked_child = true;
+            let excluded_value = {
+                let idx = (start - parent_start) as usize;
+                match &parent.normalized.events[idx].payload {
+                    sdk_events::Payload::State { value, .. } => *value,
+                    other => panic!("unexpected payload {other:?}"),
+                }
+            };
+            let obs = crate::evidence::compose_observations_at(ledger, ev, start);
+            let reg2 = sdk_events::ObservationId::Point {
+                namespace: sdk_events::NS_STATE,
+                local: 2,
+            };
+            if let Some(crate::evidence::ReducedValue::Accumulated(set)) = obs.get(&reg2) {
+                assert!(
+                    !set.contains(&excluded_value)
+                        || parent.normalized.events[..(start - parent_start) as usize]
+                            .iter()
+                            .any(|e| matches!(&e.payload,
+                                sdk_events::Payload::State { value, .. } if *value == excluded_value)),
+                    "the parent's post-fork value {excluded_value} leaked into the \
+                     child's inherited prefix"
+                );
+            }
+        }
+        assert!(checked_child, "a mid-run fork child was exercised");
+    }
+
+    /// F2 regression (tribunal #134): a real-guest rollout's SDK capture leads
+    /// with a catalog tuple (`event_id 0`), and the server stamps the parent
+    /// cut's `sdk_events` over the WHOLE capture vector — the catalog tuple
+    /// counted as one position (`control.rs`: `vmm.sdk_events().len()`).
+    /// `decode_child_suffix` must therefore skip the inherited prefix by ORDINAL
+    /// POSITION (the catalog occupies one), not by firing-only count; otherwise
+    /// it keeps the catalog "for free" AND skips that many firings, over-skipping
+    /// by the catalog count and dropping the first firing that should survive.
+    ///
+    /// This is the catalog-inclusive-cut shape: a real guest, whose
+    /// server-stamped cut counts its own catalog, and the portable game campaign,
+    /// whose `DeclaredMachine` wrapper prepends a catalog AND stamps its seal cut
+    /// catalog-inclusive to match (tribunal V1). The complementary machine-side
+    /// pin — that the wrapper produces this coordinate for a no-catalog toy — is
+    /// `campaign-runner`'s `declared_machine_stamps_a_catalog_inclusive_cut_for_a_no_catalog_guest`.
+    #[test]
+    fn child_suffix_keeps_the_first_firing_below_a_catalog_bearing_cut() {
+        let (_dir, camp) = campaign(simple_program(4), config(8, u64::MAX), 7);
+        let decl = sdk_events::encode_v2_declaration(&[sdk_events::DeclaredPoint {
+            namespace: NS_STATE,
+            local: 1,
+            name: "r1".into(),
+            classification: sdk_events::Classification::State,
+            value_shape: Some(sdk_events::ValueShape::U64),
+            base_op: Some(UpdateOp::Set),
+            expectation: None,
+        }])
+        .expect("valid v2 declaration");
+        let id = ((NS_STATE as u32) << 24) | 1;
+        let firing = |value: u64| {
+            let mut b = vec![0u8]; // op byte: Set
+            b.extend_from_slice(&value.to_le_bytes());
+            b
+        };
+        // A child rollout's raw capture, real-guest shape: catalog at position 0,
+        // the restored ancestor firing at position 1, then the child's own two
+        // firings at positions 2 and 3.
+        let raw = vec![
+            (0u64, CATALOG_EVENT_ID, decl),
+            (10u64, id, firing(100)), // pos 1: inherited ancestor firing
+            (20u64, id, firing(200)), // pos 2: FIRST child firing — must survive
+            (30u64, id, firing(300)), // pos 3: second child firing
+        ];
+        // The parent seal counted 2 capture positions — the catalog (pos 0) and
+        // the one inherited firing (pos 1) — so the server-stamped cut is 2.
+        let inherited = 2;
+        let normalized = camp.decode_child_suffix(&raw, inherited).expect("decodes");
+        let values: Vec<u64> = normalized
+            .events
+            .iter()
+            .map(|e| match &e.payload {
+                sdk_events::Payload::State { value, .. } => *value,
+                other => panic!("unexpected payload {other:?}"),
+            })
+            .collect();
+        // The one inherited firing (100) is dropped; BOTH child firings survive.
+        // The bug skipped the catalog for free and then 2 FIRINGS, dropping the
+        // first child firing (200) and leaving only [300].
+        assert_eq!(
+            values,
+            vec![200, 300],
+            "the first child firing below a catalog-bearing cut must survive"
+        );
+    }
+
+    /// A genesis-rooted multi-op campaign: after every step, every
+    /// materialized view equals the direct recomputation (the M1 gate).
+    #[test]
+    fn materialized_views_match_direct_recomputation() {
+        let program: Rc<dyn Fn(u64) -> Program> = Rc::new(|seed| Program {
+            emits: vec![
+                Emit {
+                    at: 10,
+                    reg: 1,
+                    value: seed % 3,
+                },
+                Emit {
+                    at: 20,
+                    reg: 2,
+                    value: seed % 5,
+                },
+                Emit {
+                    at: 30,
+                    reg: 3,
+                    value: seed % 7,
+                },
+            ],
+            terminal: 40,
+        });
+        let (_dir, led) = ledger();
+        let machine = ScriptedMachine::new(
+            vec![
+                (1, UpdateOp::Set),
+                (2, UpdateOp::Accumulate),
+                (3, UpdateOp::Max),
+            ],
+            program,
+        );
+        let mut camp = DifferentialCampaign::new(
+            machine,
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            Box::new(GenesisSelector::new()),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            config(8, u64::MAX),
+            11,
+        )
+        .expect("new");
+        for _ in 0..6 {
+            camp.step().expect("step");
+            assert_view_parity(&camp);
+        }
+        assert!(camp.occupied() > 0, "the gate is not vacuous");
+    }
+
+    /// An exploit campaign with real branch lineage: children inherit the
+    /// ancestor evidence prefix, and the materialized views still equal the
+    /// lineage-composed recomputation after every step.
+    #[test]
+    fn lineage_views_match_direct_recomputation() {
+        use crate::defaults::ExploreExploitSelector;
+        let program: Rc<dyn Fn(u64) -> Program> = Rc::new(|seed| Program {
+            emits: vec![
+                Emit {
+                    at: 10,
+                    reg: 1,
+                    value: seed % 4,
+                },
+                Emit {
+                    at: 20,
+                    reg: 2,
+                    value: seed % 3,
+                },
+            ],
+            terminal: 30,
+        });
+        let (_dir, led) = ledger();
+        let machine =
+            ScriptedMachine::new(vec![(1, UpdateOp::Set), (2, UpdateOp::Accumulate)], program);
+        let mut camp = DifferentialCampaign::new(
+            machine,
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            Box::new(ExploreExploitSelector::new()),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            config(8, u64::MAX),
+            5,
+        )
+        .expect("new");
+        let mut exploited = false;
+        for _ in 0..8 {
+            let report = camp.step().expect("step");
+            exploited |= !report.explored;
+            assert_view_parity(&camp);
+        }
+        assert!(exploited, "the lineage path was exercised");
+        assert!(
+            camp.ledger()
+                .batch_ids()
+                .filter_map(|id| camp.ledger().get(id))
+                .any(|ev| ev.role == EvidenceRole::Rollout && ev.rollout.parent.is_some()),
+            "a branch child committed lineage evidence"
+        );
     }
 
     /// The occurrence oracle and absence view flow through the controller over the

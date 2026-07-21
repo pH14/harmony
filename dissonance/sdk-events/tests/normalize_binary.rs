@@ -8,7 +8,7 @@ use sdk_events::Moment;
 use sdk_events::{
     Classification, DeclaredPoint, Expectation, NS_ASSERT, NS_BUGGIFY, NS_LIFECYCLE, NS_STATE,
     ObservationId, Payload, SdkError, SourceFormat, UpdateOp, ValueShape, decode_binary,
-    encode_v2_declaration,
+    encode_v2_declaration, resolve_v1_declaration,
 };
 
 // --- wire-byte builders (mirror `harmony-linux/sdk/src/wire.rs`; the canonical v1 side) ---
@@ -1195,4 +1195,67 @@ proptest! {
             encode_v2_declaration(&shuffled).unwrap(),
         );
     }
+}
+
+// --- the v1→v2 instrumentation-declaration upgrade (task 132, hm-e6q) ---
+
+/// `resolve_v1_declaration` upgrades exactly the NAMED identities to
+/// reducible state, preserves occurrence points (with their expectations)
+/// untouched, and the output is a real, decodable v2 catalog — never a stub.
+#[test]
+fn resolve_v1_upgrades_exactly_the_named_registers() {
+    // Two v1 state points + one reachable occurrence point.
+    let v1 = v1_catalog(&[
+        (4, 1, "a"),      // KIND_STATE
+        (4, 2, "b"),      // KIND_STATE
+        (2, 9, "marker"), // KIND_REACHABLE
+    ]);
+    let a = ObservationId::Point {
+        namespace: NS_STATE,
+        local: 1,
+    };
+    let b = ObservationId::Point {
+        namespace: NS_STATE,
+        local: 2,
+    };
+    // Resolving BOTH state points (v2 cannot express unresolved state, so an
+    // upgraded catalog must cover every declared state register).
+    let upgraded = resolve_v1_declaration(
+        &v1,
+        &[(a.clone(), UpdateOp::Set), (b.clone(), UpdateOp::Max)],
+    )
+    .expect("upgrades");
+    let n = decode_binary(&[(Moment(0), 0, upgraded)]).expect("v2 decodes");
+    let ea = n.schema.entry(&a).expect("a declared");
+    assert!(ea.is_reducible_state());
+    assert_eq!(ea.base_op, Some(UpdateOp::Set));
+    assert_eq!(ea.name.as_deref(), Some("a"), "the guest's name survives");
+    let eb = n.schema.entry(&b).expect("b declared");
+    assert!(eb.is_reducible_state());
+    assert_eq!(eb.base_op, Some(UpdateOp::Max), "each identity gets ITS op");
+    // The occurrence point carries over with its classification intact.
+    let marker = n
+        .schema
+        .entry(&ObservationId::Point {
+            namespace: NS_ASSERT,
+            local: 9,
+        })
+        .expect("marker declared");
+    assert_eq!(marker.classification, Classification::Occurrence);
+    assert!(!marker.is_reducible_state());
+}
+
+/// A declared v1 state register NOT covered by the resolution table fails
+/// loudly (wire v2 cannot express unresolved state) — never silently
+/// dropped or blessed.
+#[test]
+fn resolve_v1_refuses_an_uncovered_state_register() {
+    let v1 = v1_catalog(&[(4, 1, "a"), (4, 2, "b")]);
+    let a = ObservationId::Point {
+        namespace: NS_STATE,
+        local: 1,
+    };
+    let err =
+        resolve_v1_declaration(&v1, &[(a, UpdateOp::Set)]).expect_err("register b is unresolved");
+    let _ = err; // typed error, not a panic
 }

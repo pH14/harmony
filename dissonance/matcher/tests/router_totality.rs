@@ -9,7 +9,8 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::{arb_faults, arb_records, arb_signal_set, matching_moments, ref_match, trace};
-use explorer::{ChannelId, Oracle, Sensor};
+use explorer::Oracle;
+use matcher::ChannelId;
 use matcher::stub::{FaultMoments, OwnedRecords};
 use matcher::{MatchOracle, MatchSensor, Role};
 use proptest::prelude::*;
@@ -39,7 +40,7 @@ proptest! {
         let t = trace();
 
         // Drive through the spine trait objects (the real integration surface).
-        let feats = Sensor::observe(&sensor, &t);
+        let feats = sensor.observe(&t);
         let sfired = sensor.fired(&t);
         let ofired = oracle.fired(&t);
         let verdicts = oracle.verdicts(&t);

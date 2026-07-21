@@ -851,8 +851,8 @@ fn run_game_mock(args: GameArgs) -> ExitCode {
         args.max_branches,
         cfg.deadline_delta,
     );
-    let mut machine = GameToyMachine::new();
-    match run_game_campaign(&mut machine, &SpecEnvCodec, &cfg, config) {
+    let machine = GameToyMachine::new();
+    match run_game_campaign(machine, Box::new(SpecEnvCodec), &cfg, config) {
         Ok(outcome) => {
             // The same vacuity guard the box gate applies (task 103 finding
             // 1b): a campaign that did no work must not be appended to a logs

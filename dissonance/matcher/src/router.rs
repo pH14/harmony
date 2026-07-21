@@ -24,7 +24,7 @@
 //!
 //! **Channel allocation is the campaign's, not the router's.** The base is a
 //! [`MatchSensor::new`] parameter; by convention channel 0 is coverage's
-//! (`explorer::COVERAGE_CHANNEL`), so the base must be `>= 1` — otherwise a
+//! (the historical coverage channel), so the base must be `>= 1` — otherwise a
 //! matcher `Feature{channel:0, id:1}` would be indistinguishable from a coverage
 //! edge and the archive would dedup them together (the round-2 P1 fix). The
 //! sensor occupies `[base, base + signal_count)`; a later channel plugin (task
@@ -44,7 +44,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use explorer::{Bug, ChannelId, Feature, FeatureId, Matchable, Moment, Oracle, RunTrace, Sensor};
+use explorer::{Bug, Matchable, Moment, Oracle, RunTrace};
+
+use crate::feature::{ChannelId, Feature, FeatureId};
 use sha2::{Digest, Sha256};
 
 use crate::error::MatchError;
@@ -187,7 +189,7 @@ impl<S: ChannelSource, C: ContextSource> MatchSensor<S, C> {
     /// Channel allocation is the campaign's to decide, not the router's: the
     /// matcher's signals occupy `[base, base + signal_count)` in the spine
     /// `Feature` channel space. By convention **channel 0 is coverage's**
-    /// (`explorer::COVERAGE_CHANNEL`), so `base` must be `>= 1` — otherwise a
+    /// (the historical coverage channel), so `base` must be `>= 1` — otherwise a
     /// matcher feature would be indistinguishable from a coverage edge and the
     /// archive would dedup them together. A later channel plugin (task 74's OTel
     /// spans) allocates its own base above this range (see
@@ -381,8 +383,11 @@ impl<S: ChannelSource, C: ContextSource> MatchSensor<S, C> {
     }
 }
 
-impl<S: ChannelSource, C: ContextSource> Sensor for MatchSensor<S, C> {
-    fn observe(&self, t: &RunTrace) -> Vec<(Moment, Feature)> {
+impl<S: ChannelSource, C: ContextSource> MatchSensor<S, C> {
+    /// The timestamped feature stream of one run (an inherent fold since task
+    /// 132 M3 retired the compat `Sensor` trait; identical to
+    /// [`features`](Self::features)).
+    pub fn observe(&self, t: &RunTrace) -> Vec<(Moment, Feature)> {
         self.features(t)
     }
 }
@@ -493,7 +498,10 @@ impl<S: ChannelSource, C: ContextSource> Oracle for MatchOracle<S, C> {
 mod tests {
     use super::*;
     use crate::stub::{FaultMoments, OwnedRecords, RecordRec};
-    use explorer::{COVERAGE_CHANNEL, Moment, Reproducer, StopReason, Value};
+    use explorer::{Moment, Reproducer, StopReason, Value};
+
+    /// The historical coverage channel (channel 0) the base convention avoids.
+    const COVERAGE_CHANNEL: ChannelId = ChannelId(0);
 
     /// A minimal valid channel base for tests (channel 0 is coverage's).
     const BASE: ChannelId = ChannelId(1);

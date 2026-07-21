@@ -13,7 +13,6 @@
 mod common;
 
 use common::MarkerSensor;
-use explorer::Sensor;
 use runtrace::{decode, encode};
 
 const MOCK: &str = concat!(
