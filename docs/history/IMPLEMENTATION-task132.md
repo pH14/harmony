@@ -200,6 +200,26 @@ RESULTS (2026-07-18, box `hetzner`, patched-KVM window, leased core 2, commit
   deterministic half passed identically, the render half refused the
   relative core path loudly.)
 
+RE-CERTIFICATION (2026-07-21, box `hetzner`, patched-KVM window, leased core 2,
+final head `0280ec5f` — the tribunal VERIFY-event **V1** fix). V1 corrected the
+`DeclaredMachine` seal cut to be catalog-inclusive, which changes the portable
+game path's evidence **cells/lineage** (it drops the previously-retained stray
+inherited firing). Because the box evidence above predates the fix, the gate was
+re-fired on the fixed head:
+
+- **Smoke-fire-once** (4 branches, `--repeat 2`): PASS — 2/2 record→replay
+  bit-identical on real KVM (`SMOKE_EXIT=0`).
+- **Determinism gate**: `game box DETERMINISM PASS: 25/25 identical per-branch
+  state_hash sequences (gate floor 25)` — PureRandom seed 1, 8 branches, 2 s of
+  V-time per rollout, full two-barrier path. Work evidence: weakest rollout
+  2 000 000 064 ns / 4 977 COMPLETED frames. Billboard `gpa=0x4e00000 len=15838`.
+- **The fix is surgical**: the deep reproducer of the deepest branch is trace
+  `b6946502…e1d2` (branch 4, depth 1) — **byte-identical to the pre-fix run
+  above**. The guest execution and its frame journal are unchanged; only the
+  SDK-cut/cell accounting moved. So the **film gate is unaffected** (it renders
+  from the guest frame journal, not the SDK cut), and the 2026-07-18 film cert
+  stands without re-run.
+
 ## M3 — Legacy spine retired (physically removed)
 
 - **explorer**: `engine.rs` (`Explorer`/`Composition`/`RunOutcome` — the
