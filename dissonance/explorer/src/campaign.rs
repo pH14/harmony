@@ -624,12 +624,30 @@ impl<M: Machine> DifferentialCampaign<M> {
                 // because no slot was reserved for it, dropping it can never
                 // hold the frontier open. Any other machine failure aborts
                 // the step loudly as ever.
-                let (seal, actual_cut) =
+                let (seal, actual_cut, seal_delta) =
                     match self.materialize_candidate(base_snap, &branch_env, cand.at) {
                         Ok(sealed) => sealed,
                         Err(CampaignError::Machine(MachineError::NotSealable(_))) => continue,
                         Err(e) => return Err(e),
                     };
+                // The **seal-consistent** genesis-complete env (task 133 / PR
+                // #134 finding F3). The frontier entry's env must be the
+                // genesis-complete reproducer reaching the SEAL — `exemplar.cut`
+                // — not the rollout terminal. `rollout.genesis_env` is positioned
+                // at the terminal (`recorded_env` folded at the last stop), so an
+                // exploit child's delta — recorded off THIS seal, keyed from the
+                // seal — fails `compose`'s adjacency check (`d.base_offset ==
+                // b.pos`) against a terminal-positioned base and aborts
+                // `NonAdjacentChain` on the first exploit. The seal owns the
+                // coordinate (mirroring the task-132 `DeclaredMachine` seal cut):
+                // fold the base's genesis-complete env with the branch-local
+                // delta the machine recorded AT the seal, exactly as
+                // `run_rollout` folds the terminal delta into `genesis_env`. A
+                // malformed fold aborts the step loudly (`EnvCodec`), never a bug.
+                let seal_genesis_env = match &base_env {
+                    None => seal_delta,
+                    Some(base) => self.codec.compose(base, &seal_delta)?,
+                };
                 let p2 = self.coordinator.assign(cohort_b)?;
                 let seal_evidence = CompletedRunEvidence {
                     rollout: RunId {
@@ -640,7 +658,7 @@ impl<M: Machine> DifferentialCampaign<M> {
                     terminal: StopReason::Quiescent {
                         vtime: actual_cut.at,
                     },
-                    env: rollout.genesis_env.clone(),
+                    env: seal_genesis_env.clone(),
                     cut: actual_cut,
                     normalized: rollout.normalized.clone(),
                     parent_cut,
@@ -671,6 +689,7 @@ impl<M: Machine> DifferentialCampaign<M> {
                     seal,
                     cut: actual_cut,
                     fold_admitted: fold2.admitted,
+                    seal_genesis_env,
                 });
             }
             self.coordinator.close_cohort(cohort_b)?;
@@ -698,7 +717,10 @@ impl<M: Machine> DifferentialCampaign<M> {
                     };
                     let entry = FrontierEntry {
                         exemplar,
-                        env: rollout.genesis_env.clone(),
+                        // Seal-consistent (task 133): the env reaches
+                        // `exemplar.cut` (the seal), so an exploit child's delta
+                        // composes adjacently against it.
+                        env: p.seal_genesis_env.clone(),
                         reward: Reward { new_cells: 1 },
                     };
                     let outcome = self.occupancy.admit(entry, cell, quality);
@@ -1000,13 +1022,17 @@ struct Candidate {
 }
 
 /// One materialized candidate awaiting its barrier-2 admission: the entry key
-/// (its seal proposal's issue), the held seal, its authoritative cut, and the
-/// retention fold's admission verdict (asserted against the mirror's).
+/// (its seal proposal's issue), the held seal, its authoritative cut, the
+/// retention fold's admission verdict (asserted against the mirror's), and the
+/// **seal-consistent** genesis-complete env reaching the seal (task 133) — the
+/// reproducer the admitted [`FrontierEntry`] carries, so an exploit child
+/// composes adjacently against it.
 struct PendingSeal {
     entry: u64,
     seal: SnapId,
     cut: EvidenceCut,
     fold_admitted: bool,
+    seal_genesis_env: Reproducer,
 }
 
 impl<M: Machine> DifferentialCampaign<M> {
@@ -1188,25 +1214,36 @@ impl<M: Machine> DifferentialCampaign<M> {
     /// moment, then snapshot — holding the temporary seal and capturing the
     /// **authoritative** server-stamped cut with it. The replay charges the
     /// campaign budget (charged by the caller).
+    ///
+    /// Also returns the machine's **branch-local delta recorded at the seal**
+    /// (task 133): the tail-complete reproducer from `base_snap` to the seal,
+    /// keyed from the branch origin. The caller folds it with the base's
+    /// genesis-complete env to obtain the seal-consistent env the frontier
+    /// entry carries — so an exploit child, whose own delta is likewise keyed
+    /// from this seal, composes adjacently against the entry.
     fn materialize_candidate(
         &mut self,
         base_snap: SnapId,
         branch_env: &Reproducer,
         at: Moment,
-    ) -> Result<(SnapId, EvidenceCut), CampaignError> {
+    ) -> Result<(SnapId, EvidenceCut, Reproducer), CampaignError> {
         self.machine.branch(base_snap, branch_env)?;
         let until = StopConditions {
             deadline: Some(at),
             on: StopMask::ALL,
         };
         // Advance to the first valid sealable point at or after `at`. Under a
-        // deadline the machine surfaces the snapshot point; seal there.
+        // deadline the machine surfaces the snapshot point; seal there. The
+        // branch-local delta is read from the machine at the sealed state
+        // (`recorded_env`, keyed from the branch origin) — before any later
+        // machine op disturbs it.
         loop {
             let stop = self.machine.run(&until, None)?;
             match stop {
                 StopReason::SnapshotPoint { vtime } if vtime.0 >= at.0 => {
                     let (seal, cut) = self.machine.snapshot()?;
-                    return Ok((seal, cut));
+                    let delta = self.machine.recorded_env()?;
+                    return Ok((seal, cut, delta));
                 }
                 StopReason::SnapshotPoint { .. } => continue,
                 StopReason::Decision { .. } => {
@@ -1219,7 +1256,8 @@ impl<M: Machine> DifferentialCampaign<M> {
                 // disappeared before a valid seal and is not admissible.
                 terminal if terminal.vtime().0 >= at.0 && !terminal.is_bug() => {
                     let (seal, cut) = self.machine.snapshot()?;
-                    return Ok((seal, cut));
+                    let delta = self.machine.recorded_env()?;
+                    return Ok((seal, cut, delta));
                 }
                 terminal => {
                     return Err(MachineError::NotSealable(terminal.vtime().0).into());

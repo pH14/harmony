@@ -179,14 +179,17 @@ jobs:
       #   - the benchmark campaigns keep budgets sized against the find index each
       #     one actually needs (bug 3 first fires at branch 19/33, bug 1 at
       #     202/255).
-      # ELEVEN tests are `#[cfg_attr(miri, ignore)]`d. ONE is `dual_config_runs_and_
+      # TWELVE tests are `#[cfg_attr(miri, ignore)]`d. ONE is `dual_config_runs_and_
       # is_deterministic_twice`, four full 2048-branch campaigns (~27 min interpreted,
       # 80% of the pre-shrink run) whose find assertion is budget-coupled in BOTH
       # configurations, so it cannot be cut without turning vacuous. Its rationale
       # string names the cheaper Miri-run siblings that keep its family covered.
-      # The other TEN are filesystem tests Miri's isolation forbids: two pre-existing
-      # tempdir/TraceStore retention tests, plus EIGHT game/box campaign tests that
-      # task 132 (hm-e6q) moved behind the filesystem boundary. Routing the game
+      # The other ELEVEN are filesystem tests Miri's isolation forbids: two pre-existing
+      # tempdir/TraceStore retention tests, plus NINE game/box campaign tests behind
+      # the filesystem boundary — the EIGHT task 132 (hm-e6q) moved there, plus the
+      # task-133 (hm-0paj) `selector_v1_exploit_composes_under_seal_anchored_coordinate`
+      # F3 regression, which likewise drives `run_game_campaign` (the durable evidence
+      # ledger opens a real file even for `trace_dir: None`). Routing the game
       # campaign through the production two-barrier controller gave it a durable
       # evidence ledger that opens a real file even for `trace_dir: None` (a
       # campaign-lifetime scratch tempdir), so every test that seals a base and runs
@@ -198,8 +201,10 @@ jobs:
       # Miri, and the crate's one `unsafe` stays guarded by the map_memory test below.
       #
       # Budget (task 104, measured; re-measured task 132): the command below now
-      # runs in ~6 min REAL wall on an uncontended M-class Mac — 85 passed, 0 failed,
-      # 11 ignored — down from task 104's 11 min 46 s, because the eight game/box
+      # runs in ~6 min REAL wall on an uncontended M-class Mac — 86 passed, 0 failed,
+      # 12 ignored (task 133 added a trivial pure-logic passing test + one
+      # filesystem-boundary ignored test; the interpreted budget is unchanged) —
+      # down from task 104's 11 min 46 s, because the eight game/box
       # campaign tests task 132 moved behind the filesystem boundary (see above) no
       # longer run interpreted. NOTE when re-measuring: libtest printed "finished in
       # 677.91s" for that run — under Miri WITHOUT -Zmiri-disable-isolation that line
@@ -226,8 +231,8 @@ jobs:
           }
           res=$(echo "$out" | grep -o "^test result: ok\. [0-9][0-9]* passed; [0-9][0-9]* failed; [0-9][0-9]* ignored")
           ign=$(echo "$res" | sed -n 's/.*failed; \([0-9][0-9]*\) ignored.*/\1/p')
-          [ "${ign:-999}" -le 11 ] || {
-            echo "MIRI TAIL RE-GATED: $ign tests are ignored under Miri, expected at most 11 (dual_config_runs_and_is_deterministic_twice + 2 pre-existing tempdir/TraceStore tests + the 8 game/box campaign tests task 132 moved behind the filesystem boundary). Raising this bound means a new rationale string per test AND a re-measured budget above — not a bigger number here."
+          [ "${ign:-999}" -le 12 ] || {
+            echo "MIRI TAIL RE-GATED: $ign tests are ignored under Miri, expected at most 12 (dual_config_runs_and_is_deterministic_twice + 2 pre-existing tempdir/TraceStore tests + the 8 game/box campaign tests task 132 moved behind the filesystem boundary + the task-133 selector_v1_exploit_composes_under_seal_anchored_coordinate F3 regression, likewise a run_game_campaign test the durable evidence ledger keeps behind the filesystem boundary). Raising this bound means a new rationale string per test AND a re-measured budget above — not a bigger number here."
             exit 1
           }
           # …and a PASSED FLOOR, because the ignored bound alone does not close the
@@ -238,13 +243,13 @@ jobs:
           # this task restored silently stops running. Only a floor on what actually
           # RAN can see that.
           #
-          # 85 is today's count (96 lib tests − the 11 ignored). This floor RATCHETS
+          # 86 is today's count (98 lib tests − the 12 ignored). This floor RATCHETS
           # UP: when tests are added to the crate, raise it to the new passing count
           # in the same PR. It is never LOWERED without a rationale string on the
           # test that left and a re-measured budget above — "the number went down"
           # is the failure this guard exists to report, not a reason to edit it.
           pass=$(echo "$res" | sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p')
-          [ "${pass:-0}" -ge 85 ] || {
-            echo "MIRI SUITE SHRANK: only $pass tests ran under Miri, floor is 85. A test was deleted or moved behind #[cfg(not(miri))] — which, unlike #[cfg_attr(miri, ignore)], never reaches the summary at all. Restore it, or justify its removal and ratchet the floor in the same PR."
+          [ "${pass:-0}" -ge 86 ] || {
+            echo "MIRI SUITE SHRANK: only $pass tests ran under Miri, floor is 86. A test was deleted or moved behind #[cfg(not(miri))] — which, unlike #[cfg_attr(miri, ignore)], never reaches the summary at all. Restore it, or justify its removal and ratchet the floor in the same PR."
             exit 1
           }
