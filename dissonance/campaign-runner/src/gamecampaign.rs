@@ -1537,7 +1537,7 @@ impl Machine for GameToyMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use explorer::SpecEnvCodec;
+    use explorer::{EnvCodecError, SpecEnvCodec};
 
     /// The instrumentation declaration is a real, decodable wire-v2 catalog
     /// that resolves EVERY register in the resolution table to reducible
@@ -2395,6 +2395,196 @@ mod tests {
             ..GameCampaignConfig::smoke(seed)
         };
         run_game_campaign(m, Box::new(SpecEnvCodec), &cfg, config).unwrap()
+    }
+
+    // ---- task 133 / PR #134 finding F3: the SelectorV1 exploit-path coordinate ----
+
+    /// A [`Machine`] adapter that re-anchors `recorded_env` at the **seal** it
+    /// branched from — `base_offset = branch seal Moment`, `pos = current stop` —
+    /// exactly as the real [`SocketMachine`](explorer::SocketMachine) does over
+    /// real KVM. The portable toys ([`GameToyMachine`]) instead **echo** the
+    /// branch env verbatim, so their `recorded_env.base_offset` is always the
+    /// `mutate` output's `base.pos` and the `compose` adjacency check
+    /// (`d.base_offset == b.pos`) holds trivially — which is precisely why the
+    /// existing portable SelectorV1 tests never exercised the seal-vs-terminal
+    /// coordinate the box produces, and F3 went unseen until a real-KVM exploit.
+    ///
+    /// Wrapping the toy in this adapter reproduces the box coordinate **portably**:
+    /// on an EXPLOIT step the child delta is keyed from the seal, so a
+    /// terminal-positioned frontier env (the pre-fix bug) fails `NonAdjacentChain`
+    /// on the first exploit, and the seal-consistent env (the task-133 fix)
+    /// composes cleanly.
+    ///
+    /// The adapter is **behavior-neutral**: `GameToyMachine`'s trajectory is a
+    /// pure function of the env SPEC (seed + reseed markers), never the blob
+    /// COORDINATE (`base_offset`/`pos`) — `branch` ignores those fields — so
+    /// re-anchoring the coordinate changes only what the adjacency check sees,
+    /// never the guest behavior, cells, or hashes.
+    struct SealAnchor<M> {
+        inner: M,
+        /// snap id -> server-stamped seal `Moment` (the branch origin a later
+        /// `branch`/`replay` off this snapshot roots its timeline at).
+        snap_at: std::collections::BTreeMap<u64, u64>,
+        branch_offset: u64,
+        pos: u64,
+    }
+
+    impl<M: Machine> SealAnchor<M> {
+        fn new(inner: M) -> Self {
+            SealAnchor {
+                inner,
+                snap_at: std::collections::BTreeMap::new(),
+                branch_offset: 0,
+                pos: 0,
+            }
+        }
+    }
+
+    impl<M: Machine> Machine for SealAnchor<M> {
+        fn branch(&mut self, snap: explorer::SnapId, env: &Reproducer) -> Result<(), MachineError> {
+            self.inner.branch(snap, env)?;
+            self.branch_offset = self.snap_at.get(&snap.0).copied().unwrap_or(0);
+            self.pos = self.branch_offset;
+            Ok(())
+        }
+        fn replay(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
+            self.inner.replay(snap)?;
+            self.branch_offset = self.snap_at.get(&snap.0).copied().unwrap_or(0);
+            self.pos = self.branch_offset;
+            Ok(())
+        }
+        fn run(
+            &mut self,
+            until: &StopConditions,
+            resolve: Option<&explorer::Answer>,
+        ) -> Result<StopReason, MachineError> {
+            let stop = self.inner.run(until, resolve)?;
+            self.pos = stop.vtime().0;
+            Ok(stop)
+        }
+        fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
+            let (id, cut) = self.inner.snapshot()?;
+            self.snap_at.insert(id.0, cut.at.0);
+            Ok((id, cut))
+        }
+        fn drop_snap(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
+            self.inner.drop_snap(snap)
+        }
+        fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+            self.inner.hash()
+        }
+        fn coverage(&self) -> &[u8] {
+            self.inner.coverage()
+        }
+        fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+            // Re-anchor at the seal (task 133): the delta keeps its spec but is
+            // keyed from the branch seal Moment, the coordinate the real KVM
+            // adapter produces.
+            let decoded = explorer::AdapterEnv::decode(&self.inner.recorded_env()?)?;
+            Ok(explorer::AdapterEnv {
+                base_offset: self.branch_offset,
+                pos: self.pos,
+                spec: decoded.spec,
+            }
+            .encode())
+        }
+        fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+            self.inner.sdk_events()
+        }
+        fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
+            self.inner.console()
+        }
+    }
+
+    fn run_seal_anchored(config: ExplorationConfig, seed: u64) -> GameCampaignOutcome {
+        let m = SealAnchor::new(GameToyMachine::new());
+        let cfg = GameCampaignConfig {
+            max_branches: SMOKE_BRANCHES,
+            ..GameCampaignConfig::smoke(seed)
+        };
+        run_game_campaign(m, Box::new(SpecEnvCodec), &cfg, config)
+            .expect("the seal-anchored campaign runs to completion (no NonAdjacentChain abort)")
+    }
+
+    /// The task-133 regression: under the box's seal-anchored `recorded_env`
+    /// coordinate (seal ≠ terminal — the misaligned shape every existing
+    /// portable test misses), a SelectorV1 EXPLOIT step composes the child delta
+    /// against the exemplar's seal instead of aborting.
+    ///
+    /// Pre-fix — `FrontierEntry.env` positioned at the rollout **terminal** while
+    /// `exemplar.cut` names the earlier seal — this `run_game_campaign` returns
+    /// `Err(CampaignError::EnvCodec(NonAdjacentChain))` on the FIRST exploit, so
+    /// `run_seal_anchored` panics at its `.expect`. Post-fix (the entry carries a
+    /// seal-consistent env) the campaign runs to completion, and — the portable
+    /// stand-in for the box record→replay `state_hash` gate — replays
+    /// bit-identically under the same seed.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
+    fn selector_v1_exploit_composes_under_seal_anchored_coordinate() {
+        // Runs to completion: the first exploit composes its child delta against
+        // the exemplar's seal instead of aborting NonAdjacentChain.
+        let a = run_seal_anchored(ExplorationConfig::SelectorV1, 7);
+        // Deterministic: same seed ⇒ bit-identical outcome (record → replay).
+        let b = run_seal_anchored(ExplorationConfig::SelectorV1, 7);
+        assert_eq!(
+            a, b,
+            "the seal-anchored SelectorV1 campaign replays bit-identically"
+        );
+        // Not vacuous: SelectorV1 genuinely EXPLOITED (its branch stream diverges
+        // from blind PureRandom under the identical seal-anchored coordinate — an
+        // all-explore run would compose trivially and prove nothing).
+        let pure = run_seal_anchored(ExplorationConfig::PureRandom, 7);
+        assert_ne!(
+            a.log.events, pure.log.events,
+            "SelectorV1 must exploit (mutated exemplars), not equal blind seed search"
+        );
+    }
+
+    /// The adjacency check the task-133 fix relies on stays **fail-closed**. The
+    /// fix makes the frontier env seal-consistent so an ADJACENT exploit delta
+    /// composes; it must not — and does not — weaken the check for a genuinely
+    /// non-adjacent delta. A gap (delta origin past the base's capture) and an
+    /// overlap (delta origin behind it) are both still refused `NonAdjacentChain`,
+    /// never silently mis-composed; the exactly-adjacent pair composes.
+    #[test]
+    fn non_adjacent_delta_still_aborts() {
+        // Build an adapter blob with an arbitrary (base_offset, pos) over a valid
+        // v1 spec — the exact coordinate the compose adjacency check reads.
+        let blob = |base_offset: u64, pos: u64| -> Reproducer {
+            let spec = explorer::AdapterEnv::decode(&SpecEnvCodec.seeded(1))
+                .expect("seeded blob decodes")
+                .spec;
+            explorer::AdapterEnv {
+                base_offset,
+                pos,
+                spec,
+            }
+            .encode()
+        };
+        // A base captured at pos = 100.
+        let base = blob(0, 100);
+        // Gap: the delta's origin (150) is AFTER the base's capture point (100) —
+        // it would splice a base prefix that never produced this tail.
+        assert!(matches!(
+            SpecEnvCodec.compose(&base, &blob(150, 200)),
+            Err(EnvCodecError::NonAdjacentChain(_))
+        ));
+        // Overlap: the delta's origin (50) is BEFORE the base's capture point —
+        // it would discard base state the tail assumed.
+        assert!(matches!(
+            SpecEnvCodec.compose(&base, &blob(50, 200)),
+            Err(EnvCodecError::NonAdjacentChain(_))
+        ));
+        // Exactly adjacent (delta origin == base capture): the fix's happy path
+        // composes cleanly.
+        assert!(SpecEnvCodec.compose(&base, &blob(100, 200)).is_ok());
     }
 
     /// Round-8 P1: the deepest branch is tracked from branch 0 and, with a
