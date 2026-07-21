@@ -47,12 +47,22 @@ SDK, and compatibility library.
 
 ## Rebaseline result
 
-On 2026-07-18, `make -C harmony-linux test-linux` passed in the pinned
-`linux/amd64` Debian build container
-`sha256:475844e1d00c30c8c247706e8887379d3b503e036844e827749285625239c7e0`.
-The gate completed two clean builds, compared them byte-for-byte, and then booted
-the result under QEMU through `GUEST_READY` with exit status 0. The generated
+On 2026-07-20, `make -C harmony-linux test-linux` passed on the determinism box
+(native x86_64) inside the pinned Debian build container
+`sha256:475844e1d00c30c8c247706e8887379d3b503e036844e827749285625239c7e0`
+(gcc 14.2.0-19). The gate completed two clean builds, compared them byte-for-byte,
+and then booted the result under QEMU through `GUEST_READY` with exit status 0.
+The full run transcript is `linux/rebaseline-2026-07-20.txt`.
+
+This rerun closes review finding F1: `linux/clean-artifacts.sh` now also removes
+`$BUILD_ROOT/libvoidstar-build`, so `libvoidstar.so` is compiled from source in
+*both* reproducibility legs (transcript: two compiler invocations, zero cached
+reuse) instead of the second leg silently reusing the first leg's cached library.
+The `bzImage` digest is unchanged — the kernel is untouched by the driver-adjacent
+fixes, and the box-native build reproduces the earlier digest byte-for-byte — while
+`initramfs.cpio.gz` changes because the unspecced `HARMONY_DEVICE_PATH` override was
+removed from `libvoidstar` (finding F12), altering the packed library. The generated
 `linux/MANIFEST.sha256` records:
 
 - `bzImage`: `91b092c56b18df883d3289bafa536e12ab5227dc94235500f6f634c9e2d89c7b`
-- `initramfs.cpio.gz`: `8edee7b9098c83e8b04d975811eb2c62266a1bcba46d9ee09f1bba6113ae4e2d`
+- `initramfs.cpio.gz`: `7218d705ba8e856518f7e8754e9ede92d9cbd7db79c64f5c9ce1334e4612a652`
