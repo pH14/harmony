@@ -364,6 +364,50 @@ not interception-based:
   §5). Determinism on ARM therefore **depends on owning the guest image** in a way x86 does not
   — which is exactly why §7's reachability kill condition is sharper for ARM.
 
+### 4.3 Entropy-closure — the deterministic guest's CRNG
+
+Counter-closure (§4.2) removes one non-modeled input; a deterministic Linux guest has a second,
+validated on N1 silicon at AA-5(c): the kernel CRNG. Same-seed replay is bit-identical in console
+and (under a pinned layout) registers, but full-RAM state diverges in CRNG state alone (`base_crng`
+key, `input_pool`) — 400–700 bytes in 256 MB, a live entropy source the work clock does not model.
+
+The residual decomposes into two problems, only one of which is entropy:
+
+- **Entropy *input*-closure** — the harvest inputs (jitter loop, interrupt-PC mixing, cycle reads)
+  are counter-shaped: reads of non-modeled host state, closable by the same substitution template
+  as §4.2. This is a **contracted guest property**, the entropy analogue of the counter row.
+- **Harvest *schedule*** — how many interrupts are mixed before the reseed workqueue runs — is
+  **not** entropy work. It is the async-deliver-at-a-Moment machinery (the ARM port of the
+  host-plane delivery contract); closing it closes the schedule for *all* kernel state. The CRNG is
+  merely its loudest witness — a hash accumulator that amplifies a one-interrupt schedule
+  difference into a full-key divergence.
+
+**Closure mechanism (the contracted property):** a `HARMONY_DETERMINISTIC_CRNG` config makes the
+CRNG a pure function of the credited seed — key derived from `/chosen/rng-seed`, reseed-from-`input_pool`
+disabled (*not* a deterministic ratchet — *which* consumer sees *which* key is itself
+schedule-dependent), interrupt/jitter mixing compiled out (a live-but-unread pool still dirties the
+digest). **Proof mirrors §3.3's reachability gate:** **0 reachable entropy-mix sites in `vmlinux`**,
+the direct analogue of "0 raw `CNTVCT`." **KASLR** is the same shape: derive `/chosen/kaslr-seed`
+from the campaign seed (substitution, not a `nokaslr` ban) so layout becomes an explored input
+dimension the Reproducer pins.
+
+**Contract consequence:** guest randomness is deterministic-per-Reproducer and unpredictable to
+workload adversaries (a seed-derived stream satisfies TLS — the network adversary lacks the seed).
+Since a Reproducer records full RAM it already holds the CRNG key, so **secrecy from the harness is
+out of contract; Reproducers are secret-bearing artifacts (test workloads only).**
+
+> **Entropy-closure row.** The deterministic guest's CRNG is a pure function of the credited
+> `/chosen/rng-seed`: key seed-derived, reseed and post-seed harvesting compiled out (proof: 0
+> reachable mix sites in `vmlinux`). `/chosen/kaslr-seed` is a modeled input from the campaign seed.
+> Randomness is deterministic-per-Reproducer and unpredictable to workload adversaries; secrecy from
+> the harness is out of contract. Async-event scheduling is closed by the delivery contract, not this
+> row.
+
+Ruled 2026-07-20 (Fable-consulted, Paul-adopted). Build: the seed-pure CRNG + reachability gate
+(`hm-kz9v`); the schedule half is tracked in the delivery lane (`hm-sp8v`), not here. AA-5(c)
+accordingly claims the clock mechanism + entropy input-closure, **not** full-RAM identity — see
+`docs/ARM-ALTRA.md` §AA-5.
+
 ---
 
 ## 5. Migration path — `VClock::tsc()` arithmetic onto page fields, and the rename ride-along
