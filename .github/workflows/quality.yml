@@ -546,7 +546,7 @@ jobs:
       - name: public-api snapshot tests
         run: |
           cargo test \
-            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p environment -p control-proto -p explorer -p sdk-events -p flow -p matcher -p runtrace -p campaign-runner -p tactics-regime -p logtmpl -p resolution -p acceptance-suite \
+            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p environment -p control-proto -p explorer -p sdk-events -p flow -p matcher -p runtrace -p campaign-runner -p maze -p tactics-regime -p logtmpl -p resolution -p acceptance-suite \
             --test public_api -- --ignored --nocapture
           # revision-coordinator's snapshot test is NOT #[ignore]d (tasks/121,
           # PR #124 F12: it also gates the plain nextest suite), so it runs
