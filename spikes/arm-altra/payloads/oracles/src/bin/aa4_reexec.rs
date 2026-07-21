@@ -28,8 +28,8 @@ extern "C" fn payload_main() -> ! {
     payload::start(NAME);
     // The harness resolves the target/writer pages from the ELF symbols; these prints are
     // diagnostics derived from the same addresses (and keep the writer page linked in).
-    let target = aa4_reexec_target as usize as u64;
-    let writer = aa4_reexec_writer as usize as u64;
+    let target = aa4_reexec_target as *const () as usize as u64;
+    let writer = aa4_reexec_writer as *const () as usize as u64;
     println!("AA4 target={target:#x} writer={writer:#x}");
 
     // SAFETY: the target is a self-contained `mov x0, #1; ret` on its own page.
