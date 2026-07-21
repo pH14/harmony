@@ -146,9 +146,10 @@ cells vs 4 mirror claims`, and the immediately following identical invocation
 passed clean. The divergence check is the loud surface for exactly this class;
 diagnostics (both-side cell dumps via `Frontier::claims`) are now armed. If it
 recurs in any gate the run fails loudly and the dump identifies the drifting
-side. It did not recur in <N-runs — see gate evidence below>. This should be
+side. It did not recur across the 27 box repetitions below — the 25/25 determinism
+gate (25 fresh-boot reps) plus the smoke-fire-once (2 reps). This should be
 treated as an unexplained nondeterminism signal until root-caused, per the
-divergence-is-P0 discipline.
+divergence-is-P0 discipline (tracked as `hm-4vms`).
 
 ### Box gate evidence (determinism 25/25 + film)
 

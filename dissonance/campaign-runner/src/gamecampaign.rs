@@ -619,6 +619,15 @@ fn smb_instrumentation_catalog() -> Vec<u8> {
 struct DeclaredMachine<M> {
     inner: M,
     catalog: Vec<u8>,
+    /// Whether [`sdk_events`](Self::sdk_events) prepends the standalone catalog
+    /// (the inner guest declared none — the portable toys) rather than upgrading
+    /// one in place. Learned from the inner capture on the first `sdk_events`
+    /// (the setup drain, before any campaign seal) and used by
+    /// [`snapshot`](Self::snapshot) to stamp the cut catalog-inclusive without
+    /// re-draining a possibly-stateful inner capture. Catalog presence is a fixed
+    /// property of the guest (declared once at setup, or never), so the learned
+    /// value holds for every later seal.
+    prepends_catalog: Option<bool>,
 }
 
 impl<M: Machine> DeclaredMachine<M> {
@@ -626,6 +635,7 @@ impl<M: Machine> DeclaredMachine<M> {
         DeclaredMachine {
             inner,
             catalog: smb_instrumentation_catalog(),
+            prepends_catalog: None,
         }
     }
 }
@@ -645,7 +655,29 @@ impl<M: Machine> Machine for DeclaredMachine<M> {
         self.inner.run(until, resolve)
     }
     fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
-        self.inner.snapshot()
+        let (id, mut cut) = self.inner.snapshot()?;
+        // The seal cut is an SDK-vector ORDINAL count, and `sdk_events` prepends
+        // the standalone catalog at position 0 for a guest that declared none
+        // (the portable toys) — shifting every firing one ordinal and adding a
+        // schema tuple the cut must count. Stamp the cut catalog-inclusive here
+        // so the seal coordinate matches the capture this wrapper actually emits.
+        // It then agrees with a real guest, whose server-stamped cut
+        // (`vmm.sdk_events().len()`, control.rs) already counts its own catalog —
+        // so BOTH shapes reach the explorer as catalog-inclusive ordinals and
+        // `decode_child_suffix`'s ordinal skip is correct for both. Without this
+        // the cut stays firing-only while the capture is catalog-bearing, and the
+        // ordinal skip retains one inherited firing per child (tribunal V1). An
+        // inner that declares its own catalog is upgraded in place (no ordinal
+        // added), so its cut needs no bump.
+        //
+        // `prepends_catalog` is learned on the setup drain (`sdk_events`), which
+        // always precedes the first campaign seal; the pre-drain base seal in
+        // `seal_base` is dropped, so an unlearned (None) cut there never reaches a
+        // child as `parent_cut`.
+        if self.prepends_catalog == Some(true) {
+            cut.sdk_events += 1;
+        }
+        Ok((id, cut))
     }
     fn drop_snap(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
         self.inner.drop_snap(snap)
@@ -664,8 +696,10 @@ impl<M: Machine> Machine for DeclaredMachine<M> {
         match out.iter_mut().find(|(_, id, _)| *id == CATALOG_EVENT_ID) {
             // The guest declared its own catalog: upgrade it in place with
             // the resolution table (a malformed guest catalog is the same
-            // transport-class failure a malformed capture is).
+            // transport-class failure a malformed capture is). No ordinal is
+            // added, so the delegated seal cut already counts it.
             Some((_, _, bytes)) => {
+                self.prepends_catalog = Some(false);
                 *bytes =
                     sdk_events::resolve_v1_declaration(bytes, &smb_resolution()).map_err(|e| {
                         MachineError::Transport(format!(
@@ -675,8 +709,12 @@ impl<M: Machine> Machine for DeclaredMachine<M> {
                     })?;
             }
             // No guest catalog (the portable toys): prepend the standalone
-            // declaration.
-            None => out.insert(0, (0u64, CATALOG_EVENT_ID, self.catalog.clone())),
+            // declaration at position 0. `snapshot` records this so the seal cut
+            // counts the added ordinal (tribunal V1).
+            None => {
+                self.prepends_catalog = Some(true);
+                out.insert(0, (0u64, CATALOG_EVENT_ID, self.catalog.clone()));
+            }
         }
         Ok(out)
     }
@@ -1645,6 +1683,90 @@ mod tests {
             (1, 1),
             "the wrapper reached the inner machine"
         );
+    }
+
+    /// Tribunal V1 regression — the **prepended-catalog toy** shape. A guest that
+    /// declared no catalog (the portable toys) has `DeclaredMachine` prepend the
+    /// standalone catalog at position 0, so its capture is catalog-bearing. The
+    /// seal cut is an SDK-vector ORDINAL count, so it must count that catalog —
+    /// otherwise it stays firing-only while the capture is catalog-bearing, and
+    /// `decode_child_suffix`'s ordinal skip retains one inherited firing on every
+    /// child with a nonzero inherited prefix (invisible to the determinism gate:
+    /// deterministic, self-consistent, wrong cells/lineage). Pins the cut↔capture
+    /// coordinate agreement at the `DeclaredMachine` choke point.
+    #[test]
+    fn declared_machine_stamps_a_catalog_inclusive_cut_for_a_no_catalog_guest() {
+        // A no-catalog toy: two firings, a firing-only inner seal cut of 2.
+        struct NoCatalogToy;
+        impl Machine for NoCatalogToy {
+            fn branch(
+                &mut self,
+                _s: explorer::SnapId,
+                _e: &Reproducer,
+            ) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn replay(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                _u: &StopConditions,
+                _r: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                Ok(StopReason::Quiescent { vtime: Moment(30) })
+            }
+            fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
+                // Firing-only cut: two firings sealed, the toy counts no catalog
+                // of its own (it emits none).
+                Ok((
+                    explorer::SnapId(1),
+                    EvidenceCut {
+                        at: Moment(30),
+                        sdk_events: 2,
+                    },
+                ))
+            }
+            fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([0u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[]
+            }
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+                Ok(SpecEnvCodec.seeded(0))
+            }
+            fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+                // Two firings at moments 10 and 20, NO catalog of its own.
+                let (id, p1) = state_event(reg::WORLD, 0, 1);
+                let (_id, p2) = state_event(reg::WORLD, 0, 2);
+                Ok(vec![(10, id, p1), (20, id, p2)])
+            }
+        }
+        let mut m = DeclaredMachine::new(NoCatalogToy);
+        // The setup drain (the real flow drains before the first campaign seal)
+        // teaches the wrapper it prepends a catalog.
+        let capture = m.sdk_events().expect("capture");
+        assert_eq!(
+            capture[0].1, CATALOG_EVENT_ID,
+            "the standalone catalog is prepended at position 0"
+        );
+        assert_eq!(capture.len(), 3, "catalog + two firings");
+        // The seal cut counts the prepended catalog: 3 SDK-vector ordinals
+        // (catalog + 2 firings), NOT the inner's firing-only 2. Before the V1 fix
+        // this stamped 2, so a child inheriting it over the ordinal skip retained
+        // the second inherited firing.
+        let (_snap, cut) = m.snapshot().expect("seal");
+        assert_eq!(
+            cut.sdk_events, 3,
+            "the seal cut is catalog-inclusive, matching the catalog-bearing capture"
+        );
+        // The invariant the two coordinates must satisfy: the cut equals the
+        // capture's ordinal length (every position is at/before the seal moment).
+        assert_eq!(cut.sdk_events, capture.len() as u64);
     }
 
     /// The quiet codec's exploit-mutate maps the two refusal classes onto the

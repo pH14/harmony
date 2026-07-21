@@ -1902,8 +1902,12 @@ mod tests {
     /// it keeps the catalog "for free" AND skips that many firings, over-skipping
     /// by the catalog count and dropping the first firing that should survive.
     ///
-    /// The toy machines never emit a catalog, so this only bites a real guest —
-    /// which is why it went unseen until now (the judge's PLAUSIBLE residual).
+    /// This is the catalog-inclusive-cut shape: a real guest, whose
+    /// server-stamped cut counts its own catalog, and the portable game campaign,
+    /// whose `DeclaredMachine` wrapper prepends a catalog AND stamps its seal cut
+    /// catalog-inclusive to match (tribunal V1). The complementary machine-side
+    /// pin — that the wrapper produces this coordinate for a no-catalog toy — is
+    /// `campaign-runner`'s `declared_machine_stamps_a_catalog_inclusive_cut_for_a_no_catalog_guest`.
     #[test]
     fn child_suffix_keeps_the_first_firing_below_a_catalog_bearing_cut() {
         let (_dir, camp) = campaign(simple_program(4), config(8, u64::MAX), 7);
