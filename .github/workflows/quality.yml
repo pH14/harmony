@@ -417,10 +417,20 @@ jobs:
   # even though full-tree mutation is too slow for per-PR CI. Config (test tool,
   # timeouts, main.rs exclusion) lives in mutants.toml. Skipped on pushes to
   # main, where there is no diff to compare against.
+  #
+  # Sharded 4-way: a single-job run was killed by hosted-runner preemption at
+  # ~59 min twice in a row on a 274-mutant diff (hm-4w7q) — each shard tests a
+  # deterministic quarter of the mutant list so every leg finishes well inside
+  # the preemption window. Raising the runner lifetime itself is tracked
+  # separately (hm-y53x).
   mutants:
-    name: mutants
+    name: mutants (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -438,7 +448,7 @@ jobs:
       - name: Compute PR diff
         run: git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
       - name: cargo mutants --in-diff
-        run: cargo mutants --no-shuffle --in-diff pr.diff
+        run: cargo mutants --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4
       # harmony-linux/sdk is out-of-workspace (its own manifest), so the root run above
       # never mutates it even when the PR diff touches its files — leaving the SDK
       # harness (assert/buggify/state hooks + wire encode) ungated. Mutate its
@@ -447,12 +457,12 @@ jobs:
       # the PR's changed harmony-linux/sdk lines; its own `.cargo/mutants.toml` (if any)
       # auto-discovers, else the run is config-free.
       - name: cargo mutants --in-diff (harmony-linux/sdk, out-of-workspace manifest)
-        run: cargo mutants --manifest-path harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff
+        run: cargo mutants --manifest-path harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4
       # harmony-linux/flow-agent (task 61) is out-of-workspace too — mutate its diffed lines
       # on its own manifest so the flow-agent brain (answer→policy / enforcement plan
       # / decider) is gated like harmony-linux/sdk, not left ungated by the root run.
       - name: cargo mutants --in-diff (harmony-linux/flow-agent, out-of-workspace manifest)
-        run: cargo mutants --manifest-path harmony-linux/flow-agent/Cargo.toml --no-shuffle --in-diff pr.diff
+        run: cargo mutants --manifest-path harmony-linux/flow-agent/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4
 
   # Gating (quality-f): formal proofs on saturating/bounded integer arithmetic
   # via Kani (bounded model checking). The `#[cfg(kani)]` harnesses in
