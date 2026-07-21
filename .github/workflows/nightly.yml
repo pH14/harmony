@@ -179,21 +179,32 @@ jobs:
       #   - the benchmark campaigns keep budgets sized against the find index each
       #     one actually needs (bug 3 first fires at branch 19/33, bug 1 at
       #     202/255).
-      # ONE test is `#[cfg_attr(miri, ignore)]`d — `dual_config_runs_and_is_
-      # deterministic_twice`, four full 2048-branch campaigns (~27 min interpreted,
+      # ELEVEN tests are `#[cfg_attr(miri, ignore)]`d. ONE is `dual_config_runs_and_
+      # is_deterministic_twice`, four full 2048-branch campaigns (~27 min interpreted,
       # 80% of the pre-shrink run) whose find assertion is budget-coupled in BOTH
       # configurations, so it cannot be cut without turning vacuous. Its rationale
       # string names the cheaper Miri-run siblings that keep its family covered.
-      # (The other 2 ignored are the pre-existing tempdir/TraceStore tests Miri's
-      # filesystem isolation forbids.)
+      # The other TEN are filesystem tests Miri's isolation forbids: two pre-existing
+      # tempdir/TraceStore retention tests, plus EIGHT game/box campaign tests that
+      # task 132 (hm-e6q) moved behind the filesystem boundary. Routing the game
+      # campaign through the production two-barrier controller gave it a durable
+      # evidence ledger that opens a real file even for `trace_dir: None` (a
+      # campaign-lifetime scratch tempdir), so every test that seals a base and runs
+      # rollouts now does a `mkdir`/`open` Miri cannot execute under isolation. This
+      # DOES cost the game campaigns their Miri run (PR #105's shrink of them to 8
+      # branches is now moot — they no longer run interpreted at all); their claims
+      # stay covered by the portable nextest suite. The benchmark and planted-bug
+      # campaign loops (which use no durable ledger) still run the search path under
+      # Miri, and the crate's one `unsafe` stays guarded by the map_memory test below.
       #
-      # Budget (task 104, measured): the exact command below runs in 11 min 46 s
-      # REAL wall on an uncontended M-class Mac — 84 passed, 0 failed, 3 ignored —
-      # against ~2 h 24 min for the same suite pre-shrink. NOTE when re-measuring:
-      # libtest printed "finished in 1312.67s" for that 706-second run — under Miri
-      # WITHOUT -Zmiri-disable-isolation that line is the interpreter's VIRTUAL
-      # clock (~1.9x real here), so time the command externally, as the vmm-core
-      # job's comment also records. The box is ~1.12x the Mac (PR #99's
+      # Budget (task 104, measured; re-measured task 132): the command below now
+      # runs in ~6 min REAL wall on an uncontended M-class Mac — 84 passed, 0 failed,
+      # 11 ignored — down from task 104's 11 min 46 s, because the eight game/box
+      # campaign tests task 132 moved behind the filesystem boundary (see above) no
+      # longer run interpreted. NOTE when re-measuring: libtest printed "finished in
+      # 677.91s" for that run — under Miri WITHOUT -Zmiri-disable-isolation that line
+      # is the interpreter's VIRTUAL clock (~1.9x real here), so time the command
+      # externally, as the vmm-core job's comment also records. The box is ~1.12x the Mac (PR #99's
       # hypercall-doorbell comparison), i.e. ~13 min quiet-hour, which is what this
       # job's ceiling below is re-derived from. campaign-runner stays the LAST step (PR
       # #99): it is still this job's longest pole, and a blowout here must not skip
@@ -215,8 +226,8 @@ jobs:
           }
           res=$(echo "$out" | grep -o "^test result: ok\. [0-9][0-9]* passed; [0-9][0-9]* failed; [0-9][0-9]* ignored")
           ign=$(echo "$res" | sed -n 's/.*failed; \([0-9][0-9]*\) ignored.*/\1/p')
-          [ "${ign:-999}" -le 3 ] || {
-            echo "MIRI TAIL RE-GATED: $ign tests are ignored under Miri, expected at most 3 (task 104: dual_config_runs_and_is_deterministic_twice + the 2 filesystem tests). Raising this bound means a new rationale string per test AND a re-measured budget above — not a bigger number here."
+          [ "${ign:-999}" -le 11 ] || {
+            echo "MIRI TAIL RE-GATED: $ign tests are ignored under Miri, expected at most 11 (dual_config_runs_and_is_deterministic_twice + 2 pre-existing tempdir/TraceStore tests + the 8 game/box campaign tests task 132 moved behind the filesystem boundary). Raising this bound means a new rationale string per test AND a re-measured budget above — not a bigger number here."
             exit 1
           }
           # …and a PASSED FLOOR, because the ignored bound alone does not close the
@@ -227,7 +238,7 @@ jobs:
           # this task restored silently stops running. Only a floor on what actually
           # RAN can see that.
           #
-          # 84 is today's count (87 lib tests − the 3 ignored). This floor RATCHETS
+          # 84 is today's count (95 lib tests − the 11 ignored). This floor RATCHETS
           # UP: when tests are added to the crate, raise it to the new passing count
           # in the same PR. It is never LOWERED without a rationale string on the
           # test that left and a re-measured budget above — "the number went down"

@@ -1915,6 +1915,14 @@ mod tests {
     /// empty), and each must now be refused by the gate before any banner —
     /// whatever `--repeat` says.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn the_determinism_gate_refuses_a_run_that_did_no_work() {
         // (a) `--max-branches 0`: the gate would compare two empty state_hash
         //     sequences and find them identical.
@@ -2048,6 +2056,14 @@ mod tests {
     /// markers ⇒ 119 frame bodies actually executed (the last announced frame
     /// is cut off by the deadline, exactly as on the box).
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn a_real_campaign_carries_its_work_evidence() {
         let guest = BoxGuest::healthy();
         let outcome = run_box(guest, &box_cfg(4, Some(2_000_000_000)));
@@ -2093,6 +2109,15 @@ mod tests {
     /// film would read nothing, or the wrong bytes. Each must fail the campaign
     /// loudly, before a single rollout runs.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign (the valid-billboard cases seal a base and run \
+                  rollouts); its durable evidence ledger (task 132) opens a real file even for \
+                  `trace_dir: None` (a campaign-lifetime scratch tempdir), which Miri isolation \
+                  forbids. Campaign logic is covered by the portable nextest suite; Miri still \
+                  guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn a_malformed_billboard_refuses_the_campaign() {
         let ram = GameCampaignConfig::smoke(0).guest_ram_len;
         let refuses = |billboard: Option<(u64, u64)>| -> GameCampaignError {
@@ -2317,6 +2342,14 @@ mod tests {
     /// Round-8 P1: a box-mode rollout that ends anywhere but its deadline is
     /// a loud RolloutDied — never recorded as an ordinary sample.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn a_dying_rollout_fails_the_box_campaign_loudly() {
         /// Seals at a snapshot point, then every rollout crashes (the
         /// retro_serialize-fails-on-frame-1 shape).
@@ -2630,6 +2663,14 @@ mod tests {
     /// bit-identical, including every branch's state_hash — the portable
     /// stand-in for the box 25/25 determinism gate.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn campaign_replays_bit_identically() {
         for config in [ExplorationConfig::PureRandom, ExplorationConfig::SelectorV1] {
             let a = run(config, 7);
@@ -2641,6 +2682,14 @@ mod tests {
 
     /// Different campaign seeds explore different branches.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn distinct_seeds_diverge() {
         assert_ne!(
             run(ExplorationConfig::PureRandom, 1),
@@ -2651,6 +2700,14 @@ mod tests {
     /// The tuple key flows end-to-end: cells are non-empty, keyed on the
     /// gameplay tuple, and depth tracks the toy's level-ups.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn cells_and_depth_flow_from_sdk_events() {
         let log = run(ExplorationConfig::PureRandom, 42);
         let total: BTreeSet<u64> = log.events.iter().flat_map(|e| e.touched.clone()).collect();
@@ -2822,6 +2879,14 @@ mod tests {
     /// SelectorV1 exploits (mutated exemplars) while PureRandom never does —
     /// their branch streams diverge under the same campaign seed.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "runs a full game campaign; its durable evidence ledger (task 132) opens a \
+                  real file even for `trace_dir: None` (a campaign-lifetime scratch tempdir), \
+                  which Miri isolation forbids. Campaign logic is covered by the portable \
+                  nextest suite; Miri still guards the crate's only unsafe via \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit."
+    )]
     fn selector_v1_and_pure_random_diverge() {
         let a = run(ExplorationConfig::PureRandom, 7);
         let b = run(ExplorationConfig::SelectorV1, 7);
