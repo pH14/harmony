@@ -1,0 +1,2 @@
+AA4_GUARD_REJECT PASS image_sha256=330c6181052085f5268d648695bfe65e6a105fa2b1ba14e8dc2fe20db4dc7d36 gpa=0x40081000 generation=1 hazards=2 exclusives=2 live_counters=0 pc_before=0x40081000 pc_after=0x40081000 exits=1 scans=1 approvals=0 rejections=1 summary=0x40081000:Exclusive, 0x40081004:Exclusive
+AA-4 remains open: this proves pre-execute planted rejection; write-before-modification, stale-generation, notifier replacement, and two-vCPU scan/write races remain live gates
