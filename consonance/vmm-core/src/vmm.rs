@@ -48,16 +48,16 @@ pub enum TerminalReason {
 }
 
 /// Guest-physical address of the fixed hypercall **request** page. Mirrors
-/// `vmcall_transport::REQ_GPA`.
+/// `hypercall_doorbell::REQ_GPA`.
 const REQ_GPA: usize = 0x0000_E000;
 /// Guest-physical address of the fixed hypercall **response** page. Mirrors
-/// `vmcall_transport::RESP_GPA`.
+/// `hypercall_doorbell::RESP_GPA`.
 const RESP_GPA: usize = 0x0000_F000;
 /// The hypercall shared-page size (one frame per page). Mirrors
-/// `vmcall_transport::PAGE_SIZE` == `hypercall_proto::MAX_FRAME`.
+/// `hypercall_doorbell::PAGE_SIZE` == `hypercall_proto::MAX_FRAME`.
 const HC_PAGE: usize = 4096;
 
-// The SDK event-id wire layout (task 73), mirrored from `guest/sdk/src/wire.rs`
+// The SDK event-id wire layout (task 73), mirrored from `harmony-linux/sdk/src/wire.rs`
 // (the canonical source). The doorbell needs only enough to route a stop: the
 // namespace (top 8 bits of `event_id`) and the assert disposition byte.
 const SDK_NS_SHIFT: u32 = 24;

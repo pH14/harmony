@@ -53,7 +53,7 @@ open question) and a go/no-go verdict for the vtime architecture.
   `vm-memory` (optional). **`unsafe` is granted** for KVM/perf FFI and guest-memory
   mapping, each block with a `// SAFETY:` comment; the no-panic and no-float disciplines
   still apply to measurement logic.
-- Two tiny deterministic guest workloads (flat binaries or reuse of `guest/payloads/`
+- Two tiny deterministic guest workloads (flat binaries or reuse of `consonance/acceptance-suite/payloads/`
   pieces — your choice): one **branch-dense** (≈1 counted event/instruction) and one
   **branch-sparse** (long stretches with few conditional branches), each with a
   **statically known** total conditional-branch count to a defined stop point. At least

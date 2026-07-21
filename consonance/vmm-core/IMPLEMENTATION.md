@@ -20,9 +20,9 @@ The only change in this crate is a new box-only test,
 `runc run` banner present + the task-38 `unshare` markers absent + `runc run` rc 0), gate
 r2 (deterministic-twice: bit-identical serial + `state_hash`), gate r3 (seed-sensitivity).
 The full narrative, the image plumbing (`runc-init.sh`, `rdinit=/runc-init`), and the
-foreman box-run instructions live in **`guest/linux/IMPLEMENTATION.md`**. `devices.rs`,
+foreman box-run instructions live in **`harmony-linux/linux/IMPLEMENTATION.md`**. `devices.rs`,
 the CPU/MSR contract, and the `state_hash` schema are untouched, so M1/M2/P6 + the
-det-corpus goldens are byte-unchanged.
+acceptance-suite goldens are byte-unchanged.
 ## Task 52 — deterministic HLT-resume (the event-driven V-time clock, completed)
 
 Before this task the run loop could advance V-time **only by executing**, so a guest that
@@ -160,7 +160,7 @@ The change is strictly **additive on the idle-`HLT` path**:
   stay terminal. The only runs whose behavior changes are the ones that previously **died** at an
   idle-`HLT` (real `runc`) — the whole point.
 
-Verified on the Mac-testable goldens: det-corpus O2/O3 conformance + `unison` state-hash tests
+Verified on the Mac-testable goldens: acceptance-suite O2/O3 conformance + `unison` state-hash tests
 are unchanged; the 250 pre-existing `vmm-core` tests pass untouched. The box goldens
 (M1/M2/P6, minimal-boot, bare/OCI Postgres `state_hash`) are byte-identical by the argument above
 and are confirmed by the foreman box run (below).
@@ -220,7 +220,7 @@ task/48 branch — **not** on this branch's base, so it must be merged/checked o
 Setup (`/root/ht42` checked out `task/hlt-resume` **plus** task 48's runc image bits):
 
 ```sh
-make -C guest fetch && make -C guest/linux docker-image
+make -C harmony-linux fetch && make -C harmony-linux/linux docker-image
 ```
 
 Run r2 (deterministic-twice — the money-shot), then r1 (runs+streams) and r3 (seed-sensitivity),
@@ -239,8 +239,8 @@ shim), `GUEST_READY`, clean terminal — where before task 52 it died `runc_laun
 runc_rc=None, terminal=Hlt`. Deterministic-twice: **bit-identical serial + `state_hash`**, and
 seed-sensitive (UUIDs/timestamps differ across seeds). `Vmm::idle_landings()` is non-empty
 (the runc handshake genuinely idled) and identical across the two same-seed runs. Capture the
-equal digests + a sample UUID/timestamp into `guest/linux/IMPLEMENTATION.md` (task-52 evidence),
-and confirm the stock-`1396736` revert. **No-regression box re-run:** M1/M2/P6 + det-corpus +
+equal digests + a sample UUID/timestamp into `harmony-linux/linux/IMPLEMENTATION.md` (task-52 evidence),
+and confirm the stock-`1396736` revert. **No-regression box re-run:** M1/M2/P6 + acceptance-suite +
 minimal-boot + bare/OCI Postgres `state_hash` byte-unchanged (additive, per the argument above).
 
 ## Task 40 — single-node branching demo (the multiverse from one snapshot)
@@ -253,7 +253,7 @@ task-12 explorer — that one snapshot forks into many **reproducible** and
 `live_postgres.rs` / `live_snapshot_branch.rs`). **No `src/` change** — it composes
 the existing public API (`SnapshotEngine`, `Vmm::{save_vm_state, restore_snapshot,
 reseed_entropy, state_hash, state_components}`), adds no dependency, and does not touch
-`devices.rs` / the contract / the `state_hash` schema, so M1/M2/P6 + the det-corpus
+`devices.rs` / the contract / the `state_hash` schema, so M1/M2/P6 + the acceptance-suite
 goldens are byte-unchanged.
 
 **The demo.** Boot the task-37 Postgres image on the patched backend; seal a quiescent
@@ -401,16 +401,16 @@ Run via `run-patched-ht40.sh` (mirrors `run-patched.sh`): coordinate (abort if
 `kvm.ko`/`kvm-intel.ko`, run pinned to **core 4**, and **always revert to stock on
 exit** with a verified `lsmod | grep '^kvm ' == 1396736`. Every run above reverted OK.
 
-## Task 37 — bare-Postgres workload (box gates only here; image lives in `guest/linux/`)
+## Task 37 — bare-Postgres workload (box gates only here; image lives in `harmony-linux/linux/`)
 
 Task 37 boots a real PostgreSQL 17 in the guest and proves it runs **bit-identically
 twice** on the patched backend. The image build + the full determinism closure are in
-**`guest/linux/IMPLEMENTATION.md`**; the only change in this crate is a new box-only
+**`harmony-linux/linux/IMPLEMENTATION.md`**; the only change in this crate is a new box-only
 test, `tests/live_postgres.rs` (`#[cfg(target_os = "linux")]` + `#[ignore]`, like
 `live_linux_boot.rs`): gate 1 (postgres runs + streams the workload to `ttyS0`) and
 gate 2 (deterministic-twice: bit-identical serial + `state_hash`). No `src/` change —
 `devices.rs`, the CPU/MSR contract, and the `state_hash` schema are untouched, so
-M1/M2/P6 + the det-corpus goldens are byte-unchanged. The test's `DEFAULT_CMDLINE`
+M1/M2/P6 + the acceptance-suite goldens are byte-unchanged. The test's `DEFAULT_CMDLINE`
 mirrors `live_linux_boot`'s with two task-37 deltas (each documented in that file):
 `random.trust_cpu=off` is **dropped** (under deterministic V-time the CRNG can only
 seed from the trapped+seeded RDRAND/RDSEED, else postgres' blocking `getrandom` hangs)
@@ -419,12 +419,12 @@ and `reboot=t` → **`reboot=t,force`** (a plain poweroff strands in the kernel'
 Gate 2 also boots twice **in one process, dropping run A's `Vmm` before run B**, so only
 one `perf_event` work counter is open at a time (two would multiplex and skid V-time).
 
-## Task 36 — guest-kernel rebase (cmdline only here; config lives in `guest/linux/`)
+## Task 36 — guest-kernel rebase (cmdline only here; config lives in `harmony-linux/linux/`)
 
 Task 36 rebased the guest kernel from `tinyconfig` to a Kata-class container-host config
 (cgroup-v2/overlayfs/ext4/loop/brd/namespaces for tasks 37/38), keeping `config-fragment` as
 the determinism overlay. The full rationale, provenance, capability audit, and box digests
-are in **`guest/linux/IMPLEMENTATION.md`**. The only change in this crate is the box gate's
+are in **`harmony-linux/linux/IMPLEMENTATION.md`**. The only change in this crate is the box gate's
 `DEFAULT_CMDLINE` (`tests/live_linux_boot.rs`): it gained the runtime determinism params the
 Kata base needs — `random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable` — each
 a no-op against the overlay's *build* symbols, present belt-and-suspenders because Kata's base
@@ -493,7 +493,7 @@ process inside `consonance`.
 
 ### Box evidence (`ssh <det-box>`, i9-9900K / det-cfl-v1, CPU-pinned)
 
-The committed `guest/linux` artifacts build bit-for-bit to the committed
+The committed `harmony-linux/linux` artifacts build bit-for-bit to the committed
 `MANIFEST.sha256` (`bzImage d797c47e…`, `initramfs.cpio.gz f0bb7c0d…`). On the stock
 `KvmBackend`, `tests/live_linux_boot.rs::a_linux_boots_to_userspace_stock` boots them to:
 
@@ -512,7 +512,7 @@ confirming the guest image is good and the boot path is the VMM's.
 
 ### Phase A vs `GUEST_READY` — the remaining gap is interrupt delivery (Phase B)
 
-The task's gate-3 string is `GUEST_READY`, printed by `guest/linux/init.sh` via
+The task's gate-3 string is `GUEST_READY`, printed by `harmony-linux/linux/init.sh` via
 `echo GUEST_READY` (a **userspace** console write). The boot reaches `/init` but does
 **not** emit it, because userspace console output requires the 8250 **TX path**, which
 needs an interrupt — and this VMM delivers **none**. Diagnosis (box, definitive):
@@ -969,7 +969,7 @@ The 3-patch series (`consonance/vmm-backend/kvm-patches/patches/`) **`git am`-ap
 - **Box-only M1 + M2** are `#[cfg(target_os = "linux")]` **+ `#[ignore]`** — out of
   the default `nextest`/coverage lane, so they can **never vacuously pass green**
   (gate-honesty fix, review round 3). Default CI shows them *not-run*. Run them
-  explicitly on the box (`-- --ignored`, the M1/M2 step builds `guest/payloads`
+  explicitly on the box (`-- --ignored`, the M1/M2 step builds `consonance/acceptance-suite/payloads`
   first); there, every precondition that blocks a real boot — no `/dev/kvm`, an
   unbuilt payload, or a §1.1 host-baseline mismatch — is a **loud panic (FAILURE)**,
   never an early-return `Ok`. **As of contract-v3 (task 11, below) the i9-9900K box
@@ -1143,7 +1143,7 @@ host-baseline mismatch is a **loud panic (test FAILURE)**, not a skip-as-pass: u
 (the `host_assert_report` diagnostic passed; the three M1/M2 tests fail-loud with the
 full per-assertion report). **With this re-baseline (`det-cfl-v1`) the host now matches,
 so M1/M2 PASS** — foreman-run on the 9900K after building the guest payloads
-(`cd guest/payloads && cargo build --release`):
+(`cd consonance/acceptance-suite/payloads && cargo build --release`):
 
 ```
 $ taskset -c 1 cargo test -p vmm-core --test live_m1_m2 -- --ignored m1_hello m2_hello m2_compute
@@ -1271,7 +1271,7 @@ on via `[dev-dependencies] vmm-backend = { features = ["mock"] }`. So a plain
 **every test target** drives `Vmm` over the scripted `MockBackend` with no
 `/dev/kvm`: a queue of `Exit`s replays a `hello`-shaped serial+exit sequence
 (`tests/event_loop.rs`), and the same `boot()` / event-loop code runs against the
-real `KvmBackend` on the box. This is the `vmcall-transport` loopback pattern applied
+real `KvmBackend` on the box. This is the `hypercall-doorbell` loopback pattern applied
 to the backend seam.
 
 ## Contract ingestion mechanism
@@ -1305,7 +1305,7 @@ guest effect; `CPUID` needs no `unsafe` on x86-64). All three sit behind a
 `hostassert::report()` returns the skipped/passing outcome and `enforce()` is a
 no-op, so `boot`/loader/event-loop/`state_blob` pointer-and-bounds logic is
 exercised against the mock — exactly the surface the `unsafe ⇒ Miri` rule targets
-(the `vmcall-transport` precedent). `cargo +nightly miri test -p vmm-core` is clean.
+(the `hypercall-doorbell` precedent). `cargo +nightly miri test -p vmm-core` is clean.
 
 **`bringup::compose` — the `map_memory` seam under Miri (review rounds 3 → 5).** The
 `unsafe map_memory` *call* is reached only by the `#[ignore]`d live KVM tests (never
@@ -1460,7 +1460,7 @@ unkillable** and excluded in `.cargo/mutants.toml` `exclude_re` (same precedent 
   `public-api` jobs of `.github/workflows/quality.yml` and in `.githooks/pre-push`
   `MIRI_CRATES`.
 - The box M1/M2 gates are `#[ignore]`d (out of the default lane) and need the
-  payloads built first: `cd guest/payloads && cargo build --release` (target
+  payloads built first: `cd consonance/acceptance-suite/payloads && cargo build --release` (target
   `x86_64-unknown-none`), then `taskset -c 1 cargo test -p vmm-core --test
   live_m1_m2 -- --ignored --test-threads=1`. A missing `/dev/kvm`, an unbuilt
   payload, or a §1.1 host-baseline mismatch is a **loud panic (test FAILURE)** —
@@ -1470,8 +1470,8 @@ unkillable** and excluded in `.cargo/mutants.toml` `exclude_re` (same precedent 
 ## Task 28 — corpus box-integration: the C1 corpus runs on the patched backend
 
 The third piece that makes the conformance corpus run on the box: the **report
-channel** (the one new ABI), the VMM-backed `det-corpus` `Machine`, the O2
-report-stream goldens, and the box O1/O2 gate. Composes #48 (the `det-corpus`
+channel** (the one new ABI), the VMM-backed `acceptance-suite` `Machine`, the O2
+report-stream goldens, and the box O1/O2 gate. Composes #48 (the `acceptance-suite`
 oracle runner) + #49 (the C1 payloads) + #45 (`PatchedKvmBackend` + V-time/RNG).
 
 ### What landed
@@ -1496,7 +1496,7 @@ oracle runner) + #49 (the C1 payloads) + #45 (`PatchedKvmBackend` + V-time/RNG).
   `corpus::observable_digest_of`, so a host tool can recompute an O2 golden from a
   captured stream.
   - **O1 folds the report stream in (PR #51 review fix).** `CorpusMachine::state_hash`
-    (the unison `Machine` hash that `det-corpus` O1 compares) is
+    (the unison `Machine` hash that `acceptance-suite` O1 compares) is
     `sha256(Vmm::state_hash ‖ Vmm::observable_digest)`, so a same-seed run that
     diverges **only** in `REPORT_PORT` values **fails O1** instead of passing
     falsely. The fold lives only in the corpus adapter — `Vmm::state_hash` stays
@@ -1509,20 +1509,20 @@ oracle runner) + #49 (the C1 payloads) + #45 (`PatchedKvmBackend` + V-time/RNG).
   call → `Halted` (overriding `observable_digest` to the report-stream digest);
   generic over the backend, so the stream-digest + `Machine`-contract logic is
   mock-tested on macOS (`src/corpus.rs` tests + `tests/corpus_oracle_mock.rs`,
-  which drives the real `det-corpus` runner over a scripted `MockBackend` bridge).
+  which drives the real `acceptance-suite` runner over a scripted `MockBackend` bridge).
   The box-only `boot_patched_payload` (`cfg(linux)`) builds it via
   `boot_selected(Patched, …)`. `unison` was promoted from a dev- to a regular
   dependency (the adapter is now library code).
-- **Payload `report()` is live (`guest/payloads/common/src/report.rs`).** Emits the
+- **Payload `report()` is live (`consonance/acceptance-suite/payloads/common/src/report.rs`).** Emits the
   two `OUT 0x0CA2` writes; under stock QEMU (no device at the port) the writes are
   discarded, so the Part-A serial gate is **byte-identical** (verified:
   `run-tests.sh` passes both runs). The payloads' `report(..)` call sites (#49) are
   unchanged — this just gives them a live transport on the box.
 - **O2 goldens + manifest.** `docs/corpus-manifest.toml` declares `"conformance"` +
-  `golden = "guest/golden/<name>.digest"` on the **six** C1 payloads that run to a
+  `golden = "consonance/acceptance-suite/golden/<name>.digest"` on the **six** C1 payloads that run to a
   clean isa-debug-exit PASS on vmm-core's current event loop (insn-rdtsc, insn-rng,
   insn-cpuid, insn-rdpmc, msr-allowed, msr-denied — trapped instructions / MSR
-  dispositions / in-guest faults only). `det-corpus validate` passes (10 items,
+  dispositions / in-guest faults only). `acceptance-suite validate` passes (10 items,
   round-trips, the 6 goldens present). The six `.digest` files now carry the
   **foreman-captured box digests** (all 6 O1 PASS + blessed on the patched box at
   `72c7cd9`, reverted to stock — see "Foreman-captured box goldens" below); the
@@ -1543,7 +1543,7 @@ oracle runner) + #49 (the C1 payloads) + #45 (`PatchedKvmBackend` + V-time/RNG).
       vmm-core models MONITOR/MWAIT (alongside V-time timers + IRQ injection).
 - **The box gate (`tests/box_corpus.rs`, `cfg(linux)` + `#[ignore]`d).** For every
   **conformance** manifest item, drives the VMM-backed `CorpusMachine` and asserts
-  **O1** (`det_corpus::check_determinism`) + **O2** (`observable_digest` == golden,
+  **O1** (`acceptance_suite::check_determinism`) + **O2** (`observable_digest` == golden,
   on a probe that also checks no run-error and a clean `DebugExit { code: 0 }`
   terminal), then re-runs the whole sweep and asserts an identical aggregate
   (**deterministic twice**). The O2-deferred items are logged and skipped (never run
@@ -1615,7 +1615,7 @@ intermittent part is a component of the architectural `Vmm::state_hash`.
 The box localizer (`c1_corpus_o1_repeat_diagnostic`, run by the foreman, reverted to
 stock after) was **dispositive**: across all completed `insn-rdtsc` runs the **direct
 pair** was byte-identical every time — `CorpusMachine::state_hash` MATCH, `work` MATCH,
-`Vmm::state_hash` MATCH, `observable_digest` MATCH — yet `det_corpus::check_determinism`
+`Vmm::state_hash` MATCH, `observable_digest` MATCH — yet `acceptance_suite::check_determinism`
 FAILed every run. So the machine **is** deterministic; the failure appears only through
 `compare_runs`' access pattern.
 
@@ -1669,7 +1669,7 @@ are complete, and the six foreman-captured digests are committed (below).
 ### Foreman-captured box goldens (`72c7cd9`, patched → reverted to stock)
 
 All six conformance items passed O1 and were blessed on the determinism box after the
-perf-counter coexistence fix; the digests below are committed to `guest/golden/<name>.digest`
+perf-counter coexistence fix; the digests below are committed to `consonance/acceptance-suite/golden/<name>.digest`
 (replacing the `PENDING-BOX-CAPTURE` sentinels). These are **foreman-captured box evidence**
 (this worker has no box access).
 
@@ -1704,18 +1704,18 @@ gate stands); fixed here before merge:
   `step(); step(); run()` and asserts the prepare count is 1).
 - **P2-2 — O2 conformance oracle compares `observable_digest`, not `state_hash`.** The
   committed `.digest` goldens are `observable_digest` values (and the box gate compares
-  `observable_digest`), but `det_corpus::check_conformance` compared `state_hash`, so the
-  generic `det-corpus run` would have mis-compared O2. Reconciled by making
+  `observable_digest`), but `acceptance_suite::check_conformance` compared `state_hash`, so the
+  generic `acceptance-suite run` would have mis-compared O2. Reconciled by making
   `check_conformance` compare `observable_digest` — which **degrades to `state_hash`** for
   a machine that doesn't override it (the toy goldens are unaffected) and is the
   report-stream digest for the VMM bridge, so the generic runner and the box gate now
   compare the **same** quantity (and it matches the manifest header's stated "O2:
-  observable_digest == golden"). det-corpus tests updated to capture goldens via
+  observable_digest == golden"). acceptance-suite tests updated to capture goldens via
   `observable_digest` (`o2_conformance.rs`, `report.rs`); `check_conformance`'s public
   signature is unchanged.
 
-Re-verified after both fixes (Mac): vmm-core build/nextest (126)/clippy/fmt; det-corpus
-build/nextest (42)/clippy/fmt; `det-corpus validate` (10 items, round-trips, goldens
+Re-verified after both fixes (Mac): vmm-core build/nextest (126)/clippy/fmt; acceptance-suite
+build/nextest (42)/clippy/fmt; `acceptance-suite validate` (10 items, round-trips, goldens
 present). No box round needed (the gate passed and neither fix touches the corpus
 `run()` path).
 
@@ -1729,7 +1729,7 @@ present). No box round needed (the gate passed and neither fix touches the corpu
   `run_to_rejects_a_rewind_below_current_work`.
 - **[P2] The box gate resolves the O2 golden via the manifest.** `box_corpus` now reads
   (and blesses) each golden at the path from `docs/corpus-manifest.toml`'s `golden` field
-  (`golden_path(item)`), not a hardcoded `guest/golden/<name>.digest`, so the gate and the
+  (`golden_path(item)`), not a hardcoded `consonance/acceptance-suite/golden/<name>.digest`, so the gate and the
   manifest cannot drift to different files.
 - **[P3] Contract `[ports]` table nests correctly.** `docs/cpu-msr-contract.toml`'s
   REPORT_PORT row was `[[port.entry]]` (a separate top-level array, leaving the documented
@@ -1737,15 +1737,15 @@ present). No box round needed (the gate passed and neither fix touches the corpu
   §6 canonical serializer never reads `[ports]` (`contract_hash_matches_committed_registry`
   + the golden canonical-form test stay green).
 
-Re-verified (Mac): vmm-core nextest (127) + det-corpus nextest (42) = 169 pass; clippy
-`-D warnings` clean; fmt clean; `det-corpus validate` ok; `contract_hash` unchanged.
+Re-verified (Mac): vmm-core nextest (127) + acceptance-suite nextest (42) = 169 pass; clippy
+`-D warnings` clean; fmt clean; `acceptance-suite validate` ok; `contract_hash` unchanged.
 
 ### Box capture + run (foreman, on the patched box)
 
 The O2 goldens and the O1/O2 evidence are **box-only**; capture then verify:
 
 ```sh
-cd guest/payloads && cargo build --release            # build the C1 payloads
+cd consonance/acceptance-suite/payloads && cargo build --release            # build the C1 payloads
 cd ../..
 # 0a. N-run localizer for the two failing payloads (insn-rdtsc / insn-rng): per run,
 #     CorpusMachine::state_hash A/B + work + Vmm::state_hash + observable_digest +
@@ -1758,7 +1758,7 @@ taskset -c 2 cargo test -p vmm-core --test box_corpus c1_corpus_o1_diagnostic \
 # 1. capture the report-stream goldens (skips any item that fails O1):
 DETCORPUS_BLESS=1 taskset -c 2 cargo test -p vmm-core --test box_corpus \
     c1_corpus_o1_o2_on_the_patched_backend -- --ignored --nocapture
-git diff guest/golden/*.digest                        # review, then commit
+git diff consonance/acceptance-suite/golden/*.digest                        # review, then commit
 # 2. verify the gate (O1+O2, deterministic twice):
 taskset -c 2 cargo test -p vmm-core --test box_corpus \
     c1_corpus_o1_o2_on_the_patched_backend -- --ignored --nocapture
@@ -1770,7 +1770,7 @@ Then **revert the box to stock KVM**. Paste the step-2 output here (the
 > **Box evidence — CAPTURED (`72c7cd9`, patched → reverted to stock).** The foreman
 > ran the bless on the box after the perf-counter fix: **all 6 conformance items passed
 > O1 and blessed cleanly** (the 4 timer/IRQ payloads correctly O2-deferred). The six
-> digests are committed to `guest/golden/` (table above), replacing the sentinels. The
+> digests are committed to `consonance/acceptance-suite/golden/` (table above), replacing the sentinels. The
 > foreman then runs the **official** non-`BLESS` deterministic-twice O1/O2 gate against
 > the committed goldens before merge (proxy patched modules at
 > `<box>/kvm-spike/deb612/.../kvm{,-intel}.ko`). This worker has no box access, so all box
@@ -1779,13 +1779,13 @@ Then **revert the box to stock KVM**. Paste the step-2 output here (the
 ### Deviations considered & rejected; limitations
 
 - **O2 reads `observable_digest`, not `state_hash` (so it does NOT use
-  `det_corpus::check_conformance`).** `check_conformance` digests `state_hash`
+  `acceptance_suite::check_conformance`).** `check_conformance` digests `state_hash`
   (the full V-time/RAM/entropy state) — correct for the design-doc's O2, but the
   task pins the **report stream** (the guest's *deliberate* conformance output),
   which is the stable, meaningful signal (`state_hash` is brittle to RAM layout /
-  rebuilds). So `box_corpus` runs O1 via the `det-corpus` runner and does O2 itself
-  against `observable_digest`. `det-corpus` is **unaffected** (no library change);
-  the toy `det-corpus run` over the example manifest is untouched.
+  rebuilds). So `box_corpus` runs O1 via the `acceptance-suite` runner and does O2 itself
+  against `observable_digest`. `acceptance-suite` is **unaffected** (no library change);
+  the toy `acceptance-suite run` over the example manifest is untouched.
 - **`run_to` runs to terminal (no intra-run work-targeting).** A C1 payload always
   runs to a terminal, and stopping the vCPU at an arbitrary work count needs the
   `run_until` deadline path (a later phase). So O1 compares `state_hash` at the
@@ -1793,7 +1793,7 @@ Then **revert the box to stock KVM**. Paste the step-2 output here (the
   P6. `work()` is `0`/`1`; the box gate runs **O1 + O2** (the spec's gate). O3 is
   **not** run on the VMM bridge: with `work() == 1`, the RNG-payload work-stability
   clause would be vacuous, so claiming O3 here would be misleading. O3 stays
-  exercised by `det-corpus`'s toy self-tests (real intra-run work counter); a
+  exercised by `acceptance-suite`'s toy self-tests (real intra-run work counter); a
   meaningful VMM-bridge O3 waits on `run_until`. Documented in `src/corpus.rs`.
 - **A failed run is captured, not panicked, inside the bridge.** `run_to` stores
   the `VmmError` (`run_error()`) and returns `Halted` so a deterministic *failure*
@@ -1809,7 +1809,7 @@ Then **revert the box to stock KVM**. Paste the step-2 output here (the
   on the box (`UPDATE_PUBLIC_API=1 cargo test -p vmm-core --test public_api --
   --ignored`) if the hand-edit drifts from `cargo public-api`'s exact rendering.
 - **Mac gates green:** `build` / `nextest` (105 pass, 2 box-only skipped) /
-  `clippy -D warnings` / `fmt` for `vmm-core` + `det-corpus`; `cargo deny` ok; the
+  `clippy -D warnings` / `fmt` for `vmm-core` + `acceptance-suite`; `cargo deny` ok; the
   QEMU Part-A shape gate green (both runs byte-identical); `contract_hash`
   unchanged. The live box O1/O2 run is box-only (evidence pending above).
 
@@ -1990,7 +1990,7 @@ Clean `Hlt` poweroff (was `Shutdown`/panic), bounded budget, no contract violati
 
 ```sh
 # on ssh <det-box>, stock KVM, CPU-pinned (det-cfl-v1 host); build the guest image first
-make -C guest fetch && make -C guest/linux image
+make -C harmony-linux fetch && make -C harmony-linux/linux image
 taskset -c 1 cargo test -p vmm-core --test live_linux_boot -- --ignored --nocapture \
     --test-threads=1 gate3_linux_guest_ready_and_clean_poweroff
 ```
@@ -2063,7 +2063,7 @@ and the i8042 stall on the box, then reverted to stock cleanly.
 
 ## Task 34 — deterministic Linux boot (Phase C): same seed ⇒ bit-identical to GUEST_READY
 
-The headline milestone: two same-seed boots of the real `guest/linux` bzImage + initramfs on the
+The headline milestone: two same-seed boots of the real `harmony-linux/linux` bzImage + initramfs on the
 **patched** backend now produce **bit-identical** serial (including `GUEST_READY` + clean poweroff)
 and `state_hash`. The serial IRQ (task 33) adds no nondeterminism, so determinism held *by
 construction* once the patched boot **completed** — the only blocker was that it didn't complete in
@@ -2167,7 +2167,7 @@ prior test that *encoded* the bug (`thri_ignored_…`) is corrected to assert th
   (`p6_rdtsc_rng_are_deterministic_and_vtime_backed`, `p6_snapshot_restore_resumes_both_clocks_exactly`)
   — the V-time/RNG determinism + snapshot-clock-resume the milestone sits on, untouched (the change
   is orthogonal to V-time/RNG/snapshot).
-- **det-corpus O1/O2 — PASS on the box (patched):** `box_corpus::c1_corpus_o1_o2_on_the_patched_backend`
+- **acceptance-suite O1/O2 — PASS on the box (patched):** `box_corpus::c1_corpus_o1_o2_on_the_patched_backend`
   → `test result: ok. 1 passed (276.72s)` — 6 conformance items O1+O2 green, deterministic twice
   (4 timer/IRQ items O2-deferred as before), aggregate `edbed419…`. Every item's digest is
   **bit-identical across runs and matches the committed task-28 goldens** (`insn-rdtsc 1065ab4c…`,
@@ -2581,7 +2581,7 @@ when `wire_snapshot_hashing()` is on). The VMST chunk was missed by rounds 2–3
 so with snapshot-hashing ON a `save → restore → save` still diverged through the VMST chunk even though the
 VCPU chunk was canonical (**PR #12 round 4** — codex/GPT-5.5). *Cheap + correct + golden-safe:* every
 live-`KVM_GET` value already reports `type = 0` for unusable segments, so masking is a no-op for every
-existing golden (M1/M2/det-corpus all still green — `det_corpus_o2_digest_matches_the_observable_golden`
+existing golden (M1/M2/acceptance-suite all still green — `acceptance_suite_o2_digest_matches_the_observable_golden`
 unmoved); the segment **distinguishing** test keys on `cs.base` (a usable segment's base), unaffected.
 Pinned by `vmst_chunk_masks_an_unusable_segments_type` (snapshot_branch.rs — two VMs differing only in an
 unusable segment's raw `type` hash identically **with the VMST chunk wired**; verified to FAIL without the
@@ -2649,8 +2649,8 @@ forces exactly the **cap-free** bits the box's KVM accepts: `NMI_PENDING | SHADO
 `KVM_GET_VCPU_EVENTS` reports `flags = 0x0D = NMI_PENDING|SHADOW|SMM` — direct proof these SET). `TRIPLE_FAULT`
 stays gated on active (with the cap off there is **no** triple-fault sub-record to leak, so this is complete
 here); `PAYLOAD` stays gated on `exception_has_payload`; `SIPI` stays gated (SET-only). *Golden-safe:* the
-**`state_hash` still uses `canonical_events`** (active-only), so no hashed byte and no M1/M2/det-corpus golden
-moves (verified — `det_corpus_o2` observable golden unmoved); on a fresh box target the restored state is
+**`state_hash` still uses `canonical_events`** (active-only), so no hashed byte and no M1/M2/acceptance-suite golden
+moves (verified — `acceptance_suite_o2` observable golden unmoved); on a fresh box target the restored state is
 byte-identical (gate 2's `66b4d4b4…` is unchanged). Pinned by
 `events_for_restore_clears_stale_target_state_regardless_of_freshness` — it models `KVM_SET_VCPU_EVENTS`
 semantics, pre-loads a stale vCPU, and proves the restore clears the cap-free sub-records + equals a
@@ -2781,7 +2781,7 @@ distinguishing (`a != b` for a changed input). Canonicalizing a *deterministic* 
 leaves every same-seed pair equal and every distinguishing pair (which uses active fields) unequal, so
 **no pinned value moves**; the non-Linux M1/M2/corpus paths are byte-identical (all-zero events). The
 change therefore satisfies the spec's "re-bless goldens only if a non-Linux path's hash changes — it
-should not." Verified on Mac: `vmm-core` (245), `unison`/`det-corpus` determinism (92) all green; and
+should not." Verified on Mac: `vmm-core` (245), `unison`/`acceptance-suite` determinism (92) all green; and
 **on the box** the full-hash gate 2 (below) now passes with `live == restored` bit-for-bit.
 
 ## Gates
@@ -2873,7 +2873,7 @@ must read `1396736`; check `lsmod` **first** to coordinate with task 38 — neve
 patched run is live):
 
 ```sh
-make -C guest fetch && make -C guest/linux postgres-image
+make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image
 # load patched kvm.ko/kvm-intel.ko, then (core 4):
 taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapshot \
     -- --ignored --nocapture --test-threads=1 --exact <gateN_...>
@@ -2893,7 +2893,7 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 >   (With the `encode_segment`/`encode_events` canonicalization of the two don't-care fields above; before
 >   it, the sole `state_hash` delta was the inert `events` residuals — segments matched at the terminal,
 >   and the `vtim:last-intercept`/`vtim:work-raw` pair is diagnostic-only, not in the hash.) The Mac
->   determinism suites (`unison`/`det-corpus`, 92) confirm the canonicalization preserves determinism.
+>   determinism suites (`unison`/`acceptance-suite`, 92) confirm the canonicalization preserves determinism.
 >   Re-run with the **PR-#12 clean-continuation assertions** (the milestone gate now requires both the live
 >   and each restored continuation to be `internally_consistent` — `final_row=true GUEST_READY=true
 >   step_error=None`, observed for all three): still **`live = restored` full-hash match**, `test result:
@@ -2957,7 +2957,7 @@ trait in `vmm-backend` (task 47 there); this crate only decides *when* to preemp
   → plain `run()`. This gating is what makes the path **strictly additive**:
   M1/M2/P6/corpus/multiboot (no LAPIC) and stock KVM (live-work clock, natural-exit
   timer — Phase B.1) never take it, so their `state_hash`/goldens are byte-for-byte
-  unchanged (confirmed: vmm-core 227/227, det-corpus + unison 92/92).
+  unchanged (confirmed: vmm-core 227/227, acceptance-suite + unison 92/92).
 - **`on_deadline(reached)`** advances the skid-free last-intercept anchor
   (`last_intercept_work = reached`) — a deterministic V-time intercept, like an RDTSC
   trap — and marks V-time synchronized, so the next `step`'s `service_pending_irqs` sees
@@ -3155,7 +3155,7 @@ it. The existing `load_pins_every_computed_value` (8 MiB guest) still asserts `e
 unchanged.
 
 No public API change (`build_boot_params` and the new `E820_RESERVED` / `LAPIC_MMIO_PAGE` consts are
-private). The foreman should update `guest/linux/IMPLEMENTATION.md` / the LAPIC-timer docs to state
+private). The foreman should update `harmony-linux/linux/IMPLEMENTATION.md` / the LAPIC-timer docs to state
 the xAPIC page is reserved + MMIO-routed (outside this worktree's directory scope).
 
 ### Review round 1 — image placement must not land in the reserved hole (codex finding 1, BLOCKING)
@@ -3931,7 +3931,7 @@ the `ControlServer`-driven-via-`handle()` box-harness pattern.
   - `src/control.rs` — the taint guard: `timeline_tainted` + `tainted_snaps`, the
     `exec` run loop, the `RecordedEnv` mint, the taint-carrying snapshot reply.
   - `tests/live_exec_improvisation.rs` — the box gate (2 + 3).
-- **`guest/linux`** — `exec-init.sh` (a root shell on ttyS0) + `build-exec-image.sh`
+- **`harmony-linux/linux`** — `exec-init.sh` (a root shell on ttyS0) + `build-exec-image.sh`
   + the `exec-image` Makefile target: the exec-capable image gate 2's *output* half
   talks to.
 
@@ -4064,7 +4064,7 @@ Ran on the determinism box once the task-69 M2 campaign completed and released i
 (stock KVM `1396736` verified before and after every run; each gate held a
 `scripts/box-window.sh` lease in a long-lived driver, CPU-pinned to the leased core,
 patched KVM only inside the window, reverted + verified on a fresh connection).
-Built with `make -C guest/linux exec-image` (the r3 self-contained target) +
+Built with `make -C harmony-linux/linux exec-image` (the r3 self-contained target) +
 `postgres-image`; test binaries pre-compiled outside the window.
 
 - **Smoke** (fire-once channel probe): `exec 'echo HELLO-SMOKE-42' ok=true
@@ -4101,11 +4101,11 @@ against a shell-less image and announces it does NOT satisfy gate 2.
 ```text
 # on ssh <det-box>, LOADED patched KVM, CPU-pinned (det-cfl-v1 host); lease a core:
 # Full gate 2 + gate 3 — the exec-capable image (strict is forced):
-make -C guest fetch && make -C guest/linux exec-image
+make -C harmony-linux fetch && make -C harmony-linux/linux exec-image
 INITRAMFS=initramfs-exec.cpio.gz taskset -c <core> \
   cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
 # Guard half only, against the real Postgres workload (does NOT satisfy gate 2):
-make -C guest/linux postgres-image
+make -C harmony-linux/linux postgres-image
 EXEC_TAINT_ONLY=1 taskset -c <core> \
   cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
 # ALWAYS revert KVM to stock 1396736 + verify on a fresh ssh after any patched run.
@@ -4303,9 +4303,9 @@ in-workspace integration binaries (`event_loop`, `corpus_oracle_mock`,
 from the Miri job — is already closed (nightly.yml has a `snapshot-store --lib` step
 with `-Zmiri-disable-isolation`). Sweeping the workspace for real `unsafe` *code* (not
 doc/string mentions): the only crate with genuine `unsafe` not in the Miri job is
-`guest/payloads/*` — freestanding `#![no_std]` bare-metal binaries whose `unsafe` is
+`consonance/acceptance-suite/payloads/*` — freestanding `#![no_std]` bare-metal binaries whose `unsafe` is
 inline `asm!` (`rdtsc`/`hlt`/`sti`), which Miri cannot interpret at all (same class as
-the `vmcall-transport` asm doorbell and the flow-agent FFI the workflow already
+the `hypercall-doorbell` asm doorbell and the flow-agent FFI the workflow already
 excludes). No genuine gap; no bead filed.
 
 **The slow tail (`hm-d8o`) — landed in round 2.** Closing the abort meant the vmm-core
@@ -4317,7 +4317,7 @@ review, blocking). Fixed on both sides, deliberately:
 - **Own job.** `nightly.yml` now runs the vmm-core command in its own `miri-vmm-core`
   job with its own measured budget, parallel to the remaining crates' `miri` job
   (which keeps the 90-min ceiling and loses its longest pole; its worst remaining
-  step is vmcall-transport, ~13 min on the box per run history).
+  step is hypercall-doorbell, ~13 min on the box per run history).
 - **Tail shrink**, `cfg(miri)`-keyed, native runs byte-for-byte unchanged. A per-test
   profile of the full lib run (`--report-time`) showed the tail is sha256-dominated
   (the `MEM`-chunk/state-hash and per-page store hashing scale with test RAM):
@@ -4357,7 +4357,7 @@ across `vmm-core` + `snapshot-store`, native tallies unchanged by the shrink) /
 `clippy -D warnings` / `fmt` / `deny` green on Mac. The exact nightly.yml vmm-core
 Miri command passes end-to-end on `nightly-2026-06-16`, exit 0, **33 min 48 s real
 wall** (uncontended M-class Mac; pre-shrink baseline ~92 min real — the round-2
-budget bug; the CI box is ~1.12× slower per the vmcall-transport comparison, 13 min
+budget bug; the CI box is ~1.12× slower per the hypercall-doorbell comparison, 13 min
 box vs 11.6 min Mac). **Box-confirmed twice** (2026-07-13 dispatches on the task branch): the
 `miri-vmm-core` job succeeded in **49 min 38 s** (run 29226001494) and **47 min
 46 s** (run 29236400380), both while co-running with the sibling `miri` job on the

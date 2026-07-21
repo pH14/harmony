@@ -25,7 +25,7 @@
 //! by a sentinel `echo`. That needs a **root shell reading ttyS0** in the guest at
 //! the snapshot point. The stock Postgres workload image drives postgres and does
 //! not read the serial, so gate 2's *output* half needs the **exec-capable** image
-//! variant (`guest/linux/exec-init.sh`; build `make -C guest/linux exec-image`,
+//! variant (`harmony-linux/linux/exec-init.sh`; build `make -C harmony-linux/linux exec-image`,
 //! `INITRAMFS=initramfs-exec.cpio.gz`). The **determinism** half of gate 2 (the
 //! original timeline is unaffected) and *all* of gate 3 (the taint guard) hold
 //! against **any** image — `exec` taints and the guard fires regardless of whether
@@ -44,11 +44,11 @@
 //! stock **1396736** + verify after any patched run.
 //! ```text
 //! # Full gate 2 + gate 3 (the exec-capable image — strict is forced):
-//! make -C guest fetch && make -C guest/linux exec-image
+//! make -C harmony-linux fetch && make -C harmony-linux/linux exec-image
 //! INITRAMFS=initramfs-exec.cpio.gz taskset -c <core> \
 //!   cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
 //! # Guard half only, against the real Postgres workload (does NOT satisfy gate 2):
-//! make -C guest/linux postgres-image
+//! make -C harmony-linux/linux postgres-image
 //! EXEC_TAINT_ONLY=1 taskset -c <core> \
 //!   cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
 //! ```
@@ -90,16 +90,16 @@ fn repo_root() -> std::path::PathBuf {
 
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in guest/build or guest/linux — build it first on the \
-         box: `make -C guest fetch && make -C guest/linux postgres-image` (or `exec-image`)."
+        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
+         box: `make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image` (or `exec-image`)."
     );
 }
 
@@ -379,7 +379,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
             !output.is_empty() && ok,
             "gate 2: exec `{cmd}` produced no output / did not complete against image \
              `{initramfs_name}` — a root shell must be reading ttyS0 (build the exec-capable image: \
-             `make -C guest/linux exec-image`, INITRAMFS=initramfs-exec.cpio.gz). To run ONLY the \
+             `make -C harmony-linux/linux exec-image`, INITRAMFS=initramfs-exec.cpio.gz). To run ONLY the \
              taint-guard half against a shell-less image, set EXEC_TAINT_ONLY=1 (this does NOT \
              satisfy gate 2's 'capture non-empty output')."
         );

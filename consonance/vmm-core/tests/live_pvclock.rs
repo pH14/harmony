@@ -18,14 +18,14 @@
 //!   CPU-pinned per `docs/BOX-PINNING.md`:
 //!   `taskset -c 2 cargo test -p vmm-core --release --test live_pvclock -- --ignored --test-threads=1`
 //! - **Kernel image**: the task-110 pvclock build —
-//!   `make -C guest fetch && make -C guest/linux kernel` (applies the kernel
+//!   `make -C harmony-linux fetch && make -C harmony-linux/linux kernel` (applies the kernel
 //!   diff under `patches/`, runs the armed counter-opcode scan). Pinned
-//!   against `guest/linux/MANIFEST.sha256` (regenerate + commit via
-//!   `guest/linux/run-tests.sh` after the first box build); override
+//!   against `harmony-linux/linux/MANIFEST.sha256` (regenerate + commit via
+//!   `harmony-linux/linux/run-tests.sh` after the first box build); override
 //!   deliberately with `BZIMAGE_SHA256=<hex>` (hm-xdp: never a bare path).
 //! - **Initramfs images**: minimal `initramfs.cpio.gz` (MANIFEST-pinned),
 //!   Postgres `initramfs-postgres.cpio.gz` (const-pinned, the task-78-proven
-//!   build), exec `initramfs-exec.cpio.gz` (`make -C guest/linux exec-image`;
+//!   build), exec `initramfs-exec.cpio.gz` (`make -C harmony-linux/linux exec-image`;
 //!   supply `INITRAMFS_EXEC_SHA256=<hex>` — no committed pin yet).
 //! - **Knobs**: `PVCLOCK_DELTA_WORK` (Δ, default
 //!   [`vmm_core::vmm::PVCLOCK_DEFAULT_DELTA_WORK`]), `BOOT_CMDLINE` (base
@@ -103,16 +103,16 @@ fn require_host_baseline() {
 
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in guest/build or guest/linux — build it on the box \
-         first (`make -C guest fetch && make -C guest/linux kernel` + the image target; see the \
+        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it on the box \
+         first (`make -C harmony-linux fetch && make -C harmony-linux/linux kernel` + the image target; see the \
          Environment section of this file)."
     );
 }
@@ -128,14 +128,15 @@ fn verify_pin(name: &str, bytes: &[u8], expected_sha256: &str) {
         observed, expected_sha256,
         "guest artifact `{name}` does not match its pinned content hash (hm-xdp: gates \
          reference images BY HASH, never a mutable path). Rebuild the pinned artifact, \
-         regenerate+commit guest/linux/MANIFEST.sha256, or override DELIBERATELY via the \
+         regenerate+commit harmony-linux/linux/MANIFEST.sha256, or override DELIBERATELY via the \
          *_SHA256 env vars."
     );
 }
 
-/// The committed `guest/linux/MANIFEST.sha256` pin for `name`, if present.
+/// The committed `harmony-linux/linux/MANIFEST.sha256` pin for `name`, if present.
 fn manifest_pin(name: &str) -> Option<String> {
-    let manifest = std::fs::read_to_string(repo_root().join("guest/linux/MANIFEST.sha256")).ok()?;
+    let manifest =
+        std::fs::read_to_string(repo_root().join("harmony-linux/linux/MANIFEST.sha256")).ok()?;
     manifest.lines().find_map(|l| {
         let mut it = l.split_whitespace();
         let hash = it.next()?;
@@ -152,8 +153,8 @@ fn pinned_artifact(name: &str, var: &str) -> Vec<u8> {
         .or_else(|| manifest_pin(name))
         .unwrap_or_else(|| {
             panic!(
-                "no content pin for `{name}`: not in guest/linux/MANIFEST.sha256 and {var} not \
-                 set. After the first box build, run guest/linux/run-tests.sh to regenerate the \
+                "no content pin for `{name}`: not in harmony-linux/linux/MANIFEST.sha256 and {var} not \
+                 set. After the first box build, run harmony-linux/linux/run-tests.sh to regenerate the \
                  MANIFEST and commit it — or supply {var}=<sha256> deliberately. Observed hash \
                  of the staged file (verify before trusting!): {}",
                 sha256_hex(&bytes)
@@ -746,7 +747,7 @@ fn g3_busy_wait_on_page_time_terminates_within_delta() {
 
     // The busy-wait: `pvclock-spin` mmaps the clock page and spins on it for 2
     // virtual seconds, making NO syscalls and taking NO counter traps inside the
-    // loop (guest/linux/pvclock-spin.c).
+    // loop (harmony-linux/linux/pvclock-spin.c).
     //
     // The obvious shell version — `while [ $(date +%s) -lt N ]` — is NOT a test
     // of this mechanism (cross-model r5 P1). Every `date` is a syscall, and this
@@ -1018,7 +1019,7 @@ fn n4_perf_rdtsc_exit_rate_page_off_vs_page_on() {
 }
 
 /// Steady-state exit rates over a bounded Postgres window (the workload half
-/// of the §6 numbers; the full det-corpus + campaign smoke runs via the
+/// of the §6 numbers; the full acceptance-suite + campaign smoke runs via the
 /// existing box_corpus / campaign-runner tooling — see IMPLEMENTATION.md).
 #[test]
 #[ignore = "box-only (see g0); long — run after g0/g1; needs initramfs-postgres.cpio.gz"]

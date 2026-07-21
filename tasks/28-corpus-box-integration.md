@@ -1,11 +1,11 @@
-# Task 28 — corpus box-integration: run the C1 corpus on the patched backend (det-corpus Machine + report channel + O2 goldens)
+# Task 28 — corpus box-integration: run the C1 corpus on the patched backend (acceptance-suite Machine + report channel + O2 goldens)
 
 Read `tasks/00-CONVENTIONS.md`, `docs/DETERMINISM-CORPUS.md`, then the merged pieces this composes:
-`consonance/det-corpus/` (#48, the O1/O2/O3 oracle runner over a `unison::Machine`), `guest/payloads/`
+`consonance/acceptance-suite/` (#48, the O1/O2/O3 oracle runner over a `unison::Machine`), `consonance/acceptance-suite/payloads/`
 (#49, the C1 instruction-sweep payloads — shape-gated under QEMU, `report()` currently a no-op),
 and `consonance/vmm-backend/src/patched_kvm.rs` + `consonance/vmm-core/` (#45, the PatchedKvmBackend
 + deterministic RDTSC/RNG, proven by P6). This is the **third piece** that makes the conformance
-corpus *run on the 9900K*: a `det-corpus` `Machine` backed by the VMM running a payload, a **report
+corpus *run on the 9900K*: a `acceptance-suite` `Machine` backed by the VMM running a payload, a **report
 channel** for the trap-dependent values, the O2 digest goldens captured through it, and the box
 O1/O2 gate.
 
@@ -35,7 +35,7 @@ report stream gets its **own dedicated port**, distinct from the doorbell:
 
 ## Part 2 — un-no-op the payloads' `report()`
 
-`guest/payloads/common/src/report.rs`: make `report(u64)` emit the two `OUT 0x0CA2` writes on the
+`consonance/acceptance-suite/payloads/common/src/report.rs`: make `report(u64)` emit the two `OUT 0x0CA2` writes on the
 real lane (still a no-op under QEMU shape-testing, which has no host capturing the port — keep the
 Part-A serial gate byte-identical). The payloads already call `report(..)` at the right points
 (#49) — this just gives those calls a live transport on the box.
@@ -56,14 +56,14 @@ Provide a `unison::Machine` backed by the VMM running a payload through `boot_se
 ## Part 4 — O2 digest goldens + manifest
 
 Run each conformance-bearing payload on the box (patched modules loaded), capture its
-`observable_digest` (the report-stream digest), and commit it under `guest/golden/` as the **64-hex
+`observable_digest` (the report-stream digest), and commit it under `consonance/acceptance-suite/golden/` as the **64-hex
 O2 golden**. Then re-add `"conformance"` to those items' `oracles` in `docs/corpus-manifest.toml`
-(#49 omitted it pending these goldens) with the `golden = ...` digest path. `det-corpus validate`
-must still pass; `det-corpus run` must now exercise O2.
+(#49 omitted it pending these goldens) with the `golden = ...` digest path. `acceptance-suite validate`
+must still pass; `acceptance-suite run` must now exercise O2.
 
 ## Part 5 — the box gate (the proof point)
 
-On the box (patched modules loaded, `taskset` pinned, then **reverted to stock**): `det-corpus run`
+On the box (patched modules loaded, `taskset` pinned, then **reverted to stock**): `acceptance-suite run`
 over the C1 manifest with the VMM-backed `Machine` must report **O1 (determinism) + O2 (conformance)
 PASS for every item, deterministic-twice** (identical aggregate across two runs). Paste the run into
 `IMPLEMENTATION.md`. This is the gate the whole task exists for; foreman re-runs it on the box at
@@ -72,7 +72,7 @@ review (the proxy patched modules are at `<box>/kvm-spike/deb612/.../kvm{,-intel
 ## Gates
 
 Mac: `build`/`nextest`/`clippy -D warnings`/`fmt` for `vmm-core` (the Machine bridge + report-port
-dispatch, mock-tested) + `det-corpus` (unaffected) + the QEMU shape gate still green (report is a
+dispatch, mock-tested) + `acceptance-suite` (unaffected) + the QEMU shape gate still green (report is a
 no-op there). `contract_hash` unchanged (the report port carries no hashed input). The **live box
 O1/O2 run is box-only** (evidence in IMPLEMENTATION.md). Cross-model pass — this is the
 determinism/conformance corpus actually running, so the bar is high.
@@ -80,6 +80,6 @@ determinism/conformance corpus actually running, so the bar is high.
 ## Deliverables
 
 The `REPORT_PORT` ABI (vmm-core dispatch + INTEGRATION.md + contract row, hash-unchanged); the live
-`report()` on the box lane; the VMM-backed `det-corpus` `Machine` with report-stream
+`report()` on the box lane; the VMM-backed `acceptance-suite` `Machine` with report-stream
 `observable_digest`; the O2 digest goldens + re-enabled `conformance` in the manifest; the **box
 O1/O2 deterministic-twice proof** in IMPLEMENTATION.md. Box left on stock KVM.

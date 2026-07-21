@@ -74,7 +74,7 @@ continuation. Share **one read-only base image** across N materialized views (IN
    baseline (and beating the full-`memcpy` baseline).
 3. **N VMs share one RO base:** materialize N independent CoW views from one base, run/branch each,
    quote store sharing stats (pages stored once store-wide).
-4. **vm_state round-trips** and now drives `state_hash`; M1/M2/P6 + det-corpus goldens byte-identical
+4. **vm_state round-trips** and now drives `state_hash`; M1/M2/P6 + acceptance-suite goldens byte-identical
    (or re-baselined in one audited step with digests). Standard gates green incl. **mutants** (pin the
    adapter field set + restore logic with exact-value tests), **Miri** (the granted `unsafe`, via the
    in-process seam), **public-api** (refresh on the box for the `cfg(linux)` surface).

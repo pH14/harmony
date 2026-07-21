@@ -97,7 +97,7 @@ pub trait Subject {
     /// [`Subject::state_hash`], which folds in latent state such as a
     /// seed-derived entropy stream.
     ///
-    /// The `det-corpus` O3 seed-sensitivity oracle compares this, never
+    /// The `acceptance-suite` O3 seed-sensitivity oracle compares this, never
     /// `state_hash`: a payload that consumes RNG without branching on it must
     /// keep an identical work count across seeds while its *observable output*
     /// diverges — yet its `state_hash` would diverge regardless via the latent

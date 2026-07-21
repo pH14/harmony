@@ -6,12 +6,12 @@
 > exactly the ones Linux writes during early boot.
 
 Read `tasks/00-CONVENTIONS.md`, `tasks/18-instruction-sweep.md`, `docs/cpu-msr-contract.toml`, and
-`guest/payloads/README.md` first.
+`consonance/acceptance-suite/payloads/README.md` first.
 
 ## Why
 
 Today the `msr-allowed` payload round-trips only **4 of ~43** allow-stateful MSR indices
-(`MSR_ROUNDTRIP_SAFE` in `guest/payloads/contract-data/src/lib.rs` = `SYSENTER_CS 0x174`,
+(`MSR_ROUNDTRIP_SAFE` in `consonance/acceptance-suite/payloads/contract-data/src/lib.rs` = `SYSENTER_CS 0x174`,
 `STAR 0xc0000081`, `FS_BASE 0xc0000100`, `KERNEL_GS_BASE 0xc0000102`). The contract's
 **allow-stateful** set is much larger and includes the MSRs Linux configures on the boot path:
 `EFER 0xc0000080`, `LSTAR 0xc0000082`, `CSTAR 0xc0000083`, `SYSCALL_MASK 0xc0000084`,
@@ -21,7 +21,7 @@ these reads-back-what-was-written **per the contract** before task 30's kernel r
 class of "Linux boot mysteriously diverged" failures into a cheap, isolated unit of coverage.
 
 (The instruction sweep's other gaps — 39 uniform-`#UD`/host-absent/permit-native instructions — are
-**deliberately and documentedly** omitted in `guest/payloads/README.md` and stay omitted. This task
+**deliberately and documentedly** omitted in `consonance/acceptance-suite/payloads/README.md` and stay omitted. This task
 is **only** the allow-stateful MSR completeness gap.)
 
 ## Scope
@@ -54,7 +54,7 @@ is **only** the allow-stateful MSR completeness gap.)
    silently cover a subset. No index in the contract's allow-stateful set is unswept.
 2. **Round-trip correctness.** For every swept MSR, write→read-back→assert-equal passes (on the box,
    patched/stock as the contract row requires); a mismatch or an unexpected `#GP` is a loud failure.
-3. **O2 golden.** The `msr-allowed` observable digest golden (`guest/golden/msr-allowed.digest`) is
+3. **O2 golden.** The `msr-allowed` observable digest golden (`consonance/acceptance-suite/golden/msr-allowed.digest`) is
    re-blessed on the box to include the expanded report stream; the box gate
    (`consonance/vmm-core/tests/box_corpus.rs`, item `msr-allowed`) passes against it.
 4. **No contract change.** This task does **not** alter `cpu-msr-contract.toml` or its `§6` hash — it
@@ -68,5 +68,5 @@ is **only** the allow-stateful MSR completeness gap.)
 The 39 documented instruction omissions (stay omitted); exhaustive default-deny MSR enumeration
 (the 1043-index space — the 11-sample stays representative; deny shares one `#GP` disposition);
 changing the contract or its hash; box-only "write-is-ignored" deny semantics (already covered).
-Touch only `guest/payloads/msr-allowed`, `guest/payloads/contract-data`, and the relevant golden +
+Touch only `consonance/acceptance-suite/payloads/msr-allowed`, `consonance/acceptance-suite/payloads/contract-data`, and the relevant golden +
 its box-gate assertion — not the VMM crates.

@@ -1,0 +1,44 @@
+# Independent cargo workspace for bare-metal test payloads (task 04 Part A).
+# Deliberately NOT part of the repo root workspace (root Cargo.toml excludes
+# consonance/acceptance-suite): these crates build for x86_64-unknown-none with a custom linker
+# script and their own profile settings.
+[workspace]
+resolver = "2"
+members = [
+    "common",
+    "compute-core",
+    "contract-data",
+    "hello",
+    "compute",
+    "clocks",
+    "interrupts",
+    "features",
+    "insn-rdtsc",
+    "insn-rng",
+    "insn-cpuid",
+    "insn-rdpmc",
+    "insn-hlt",
+    "insn-mwait",
+    "msr-allowed",
+    "msr-denied",
+    "irq-landing",
+    "irq-landing-rng",
+    "pit-pic-stub",
+    "sdk-demo",
+]
+
+[workspace.package]
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+# codegen-units = 1 keeps each crate a single object file, which guarantees the
+# linker pulls in common's global_asm! boot shim (multiboot header + _start)
+# whenever any common symbol is referenced.
+[profile.release]
+codegen-units = 1
+opt-level = 2
+panic = "abort"
+
+[profile.dev]
+codegen-units = 1
+panic = "abort"

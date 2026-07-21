@@ -1,0 +1,44 @@
+[package]
+name = "acceptance-suite"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Determinism/conformance oracle runner and acceptance workload manifest"
+
+[features]
+default = ["cli"]
+# The `acceptance-suite` binary and its deps; disable for a clap-free library
+# (e.g. embedding the oracles in another harness).
+cli = ["dep:clap", "dep:serde_json"]
+
+[[bin]]
+name = "acceptance-suite"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[dependencies]
+# Integration layer: this crate binds the generic divergence bisector to the
+# determinism oracles, so it depends on `unison` by design (DETERMINISM-CORPUS.md
+# — not a wave-1 sibling, so conventions rule 2 "no sibling deps" does not apply).
+unison = { path = "../unison", version = "0.1.0" }
+# Serialize the JSON report and the (de)serialized manifest DTO.
+serde = { version = "1", features = ["derive"] }
+# Manifest format. `toml` is OUTSIDE the conventions rule-5 whitelist; requested
+# ask-by-comment in the PR. Rationale: the manifest is a reviewable golden-style
+# artifact alongside docs/cpu-msr-contract.toml, and DETERMINISM-CORPUS.md names
+# it docs/corpus-manifest.toml. (The fallback, had the integrator declined the
+# dep, was a JSON manifest parsed with the whitelisted serde_json.)
+toml = "0.8"
+# JSON report writer (bin only).
+serde_json = { version = "1", optional = true }
+# CLI (bins only, per the whitelist).
+clap = { version = "4", features = ["derive"], optional = true }
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"
+serde_json = "1"
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The **internal binary Event wire** decoder, normalized into [`Normalized`].
 //!
-//! `guest/sdk`'s byte-deterministic Event wire (`docs/LAYERS.md` §R-L3 item 5)
+//! `harmony-linux/sdk`'s byte-deterministic Event wire (`docs/LAYERS.md` §R-L3 item 5)
 //! stays the internal surface for bare-metal payloads and guest-resident agents.
 //! This module decodes both catalog versions:
 //!
@@ -70,7 +70,7 @@ pub struct DeclaredPoint {
 /// `(namespace, local)`, never in the caller's incidental order. The caller may
 /// have collected them from a `HashMap` or any unordered source, and the persisted
 /// `original_declaration` bytes must not carry that host-order nondeterminism
-/// (conventions rule 4). The canonical guest-side encoder is a future `guest/sdk`
+/// (conventions rule 4). The canonical guest-side encoder is a future `harmony-linux/sdk`
 /// deliverable; this host-side encoder exists so declarations round-trip and so
 /// fixtures/tools can build them.
 pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkError> {
@@ -559,7 +559,7 @@ fn classify_v1_kind(
     Option<AssertType>,
 ) {
     match kind {
-        // `always` is special on this wire: `guest/sdk` emits only violations, so a
+        // `always` is special on this wire: `harmony-linux/sdk` emits only violations, so a
         // *passing* always assertion produces no event at all. Marking it must-hit
         // would make a correct run look like an unsatisfied absence expectation, so
         // an always point carries no expectation — only its failure is observable.

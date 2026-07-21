@@ -44,7 +44,7 @@ and `docs/RESEARCH.md` / `docs/ROADMAP.md` (Go-runtime entropy note) first.
    stack** → bit-identical serial + `state_hash`. Quote both equal digests.
 3. **Blame boundary documented:** note in `IMPLEMENTATION.md` that 37 (bare) isolates the DB surface and
    this task adds only the container surface — so a future divergence localizes to a layer.
-4. **No regression** (M1/M2/P6 + det-corpus); standard gates green (mutants/Miri/public-api where
+4. **No regression** (M1/M2/P6 + acceptance-suite); standard gates green (mutants/Miri/public-api where
    touched). **Box hygiene:** revert to stock KVM after; verify `lsmod`.
 
 ## Non-goals

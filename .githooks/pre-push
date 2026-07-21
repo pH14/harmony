@@ -22,7 +22,7 @@ fi
 # Crates containing `unsafe` that must run clean under Miri (review-bar rule,
 # AGENTS.md / pr-review skill). Add every new `unsafe` crate here and in the
 # workflow's miri job.
-MIRI_CRATES=(vmcall-transport vm-state vmm-backend vmm-core)
+MIRI_CRATES=(hypercall-doorbell vm-state vmm-backend vmm-core)
 PINNED_NIGHTLY="nightly-2026-06-16"
 # Match the quality.yml miri job: the transport models hardware GPAs as integers and
 # round-trips them to pointers by design, so silence the benign int→ptr-cast warning.

@@ -20,10 +20,10 @@
 //! adversity, and only then, the supervisor detects the impossible state and
 //! aborts with a distinctive crash; otherwise it reaches the workload's ordinary
 //! terminal. This mirrors the box bug's *finder-visible* contract exactly (see
-//! `guest/linux/campaign-init.sh`): the campaign never learns the trigger — it
+//! `harmony-linux/linux/campaign-init.sh`): the campaign never learns the trigger — it
 //! searches `(gpa, mask, Moment)` schedules until one crashes.
 //!
-//! ## Terminal convention (mirrors the box, `guest/linux/campaign-init.sh`)
+//! ## Terminal convention (mirrors the box, `harmony-linux/linux/campaign-init.sh`)
 //!
 //! A guest process cannot reach the isa-debug-exit port on the kata-derived
 //! container kernel (no `CONFIG_X86_IOPL_IOPERM` / `CONFIG_DEVPORT`), so the

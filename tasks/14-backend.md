@@ -621,7 +621,7 @@ the `kvm_run` `mmap`. Only the **ioctl/mmap syscalls themselves** are genuinely 
 can't execute them); the **pointer/region bookkeeping** around them (slot tracking, the
 alignment/overlap/bounds checks `map_memory` enforces, offset math into the mapped `kvm_run`) is
 ordinary Rust that Miri **must** cover — excluding it wholesale would put the only pointer-unsafe
-logic outside the UB gate, defeating the rule's intent. **Required (the `vmcall-transport` pattern):**
+logic outside the UB gate, defeating the rule's intent. **Required (the `hypercall-doorbell` pattern):**
 factor that bookkeeping into a `cfg`-agnostic, Miri-driveable seam (a helper exercised by a loopback/
 fake that performs no syscall), and gate **only** the raw ioctl/mmap call with `#[cfg(not(miri))]`.
 `cargo +nightly miri test -p vmm-backend` must run **clean** over the trait / `Exit` / `VcpuState` /

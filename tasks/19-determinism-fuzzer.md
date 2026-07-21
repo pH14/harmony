@@ -25,7 +25,7 @@ the whitelist — note it ask-by-comment in the PR (it is the standard cargo-fuz
 
 C2 is the generated/fuzzed corpus. A fuzzer here is an **input generator that feeds the
 oracles** — it defines no new property. The checks are the existing oracles: O1 determinism
-(`unison::compare_runs` / `bisect_divergence`) and O3 seed-sensitivity (`det-corpus`, task
+(`unison::compare_runs` / `bisect_divergence`) and O3 seed-sensitivity (`acceptance-suite`, task
 17). Two tiers, split because a KVM run is microseconds-of-ioctls, not the nanoseconds libFuzzer
 wants:
 
@@ -53,8 +53,8 @@ Three libFuzzer targets in `fuzz/fuzz_targets/`:
    assert no panic and that the store's documented invariants hold (no OOB, COW/delta-resolution
    invariants, read-back consistency). Do **not** invent an uncontracted delta codec against a
    private surface — drive only the public API.
-3. **`toy_determinism`** *(deps: `unison` + `det-corpus` — task 17; lands after 17).*
-   `Arbitrary` → a generated toy program + seed → `det-corpus::check_determinism` (O1) over
+3. **`toy_determinism`** *(deps: `unison` + `acceptance-suite` — task 17; lands after 17).*
+   `Arbitrary` → a generated toy program + seed → `acceptance-suite::check_determinism` (O1) over
    `ToyFactory` must return `passed: true`, and `check_seed_sensitivity` (O3) over a
    control-flow-stable RNG program must hold. A failure is a fuzzer find = a real determinism
    bug in the generated-program model or the harness.

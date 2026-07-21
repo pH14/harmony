@@ -44,7 +44,7 @@
 //! supervisor's crash-channel self-test), so the planted bug cannot signal a
 //! distinct `Crash{Panic}`. Instead the workload's `/init` maps the outcome to
 //! **two distinct guest terminals the kernel itself produces**
-//! (`guest/linux/campaign-init.sh`): the bug reboots (`reboot -f` →
+//! (`harmony-linux/linux/campaign-init.sh`): the bug reboots (`reboot -f` →
 //! `Crash{Shutdown}`) while a clean run halts (`halt -f` → `Quiescent`). So the
 //! oracle keys on the terminal **class**: **any [`Crash`](StopReason::Crash) or
 //! [`Assertion`](StopReason::Assertion) is the bug; a [`Quiescent`](StopReason::Quiescent)

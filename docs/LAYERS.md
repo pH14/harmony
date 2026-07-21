@@ -33,7 +33,7 @@ interface**, and it works faults-off.
 | **L1 exploration** | the generic Explorer control loop plus Differential-materialized observations, cells, and archive view, over the **supply** vocabulary (Entropy, Payload) | current `dissonance/explorer`; target `explorer` + `sdk-events` + Differential plane (`hm-bbx`, not implemented) | **yes — by construction** (see R-L1 evidence) |
 | **L2 perturbation** | the fault vocabulary + enforcement: fault classes, `HostFault`, flow, tactic arms | `dissonance/environment` (fault tier), `flow`, `tactics-regime` | opt-in per campaign; `FaultPolicy::none()` is the opt-out |
 | **L3 judgment** | properties, oracles, triage, resolution | current `sdk-events`/`matcher`; target Explorer oracles + Differential reporting + Resolution | yes (crash/property oracles need no fault) |
-| **cross-cutting** | the app-facing SDK surface (the Antithesis SDK, adopted) over per-guest-world transports | external MIT SDKs and current internal `guest/sdk`; `/dev/harmony` adapter remains target work | yes |
+| **cross-cutting** | the app-facing SDK surface (the Antithesis SDK, adopted) over per-guest-world transports | external MIT SDKs and current internal `harmony-linux/sdk`; `/dev/harmony` adapter remains target work | yes |
 
 ## Rulings
 
@@ -159,7 +159,7 @@ cell. It belongs to Differential archive occupancy, not to a source schema or ad
    workload ever materializes: `mknod` the device at `$ANTITHESIS_OUTPUT_DIR/sdk.jsonl` —
    packaging, not architecture.
 
-5. **The existing `guest/sdk` `no_std` crate demotes to internal wire plumbing.** Its
+5. **The existing `harmony-linux/sdk` `no_std` crate demotes to internal wire plumbing.** Its
    byte-deterministic Event wire stays for the bare-metal corpus payloads and guest-resident
    agents (merged, box-gated code); application traffic uses the Antithesis JSON over the
    device. `sdk-events` owns both decoders and normalizes both formats into persisted `SdkSchema`
@@ -189,15 +189,15 @@ adds no cell policy to the guest. Task 43's naming convention holds: the driver 
 Task 43 already specs the move and the consonance-workload audit; it remains the vehicle. Two
 amendments, ruled 2026-07-06:
 
-1. **`guest/payloads` + `guest/golden` do NOT move into `harmony-linux/`** — they move to
+1. **`consonance/acceptance-suite/payloads` + `consonance/acceptance-suite/golden` do NOT move into `harmony-linux/`** — they move to
    consonance's test surface. Rationale: they are the C1 determinism corpus — bare-metal,
    not Linux, and validation of the *engine*, not part of any swappable guest world. This
    *strengthens* task 43's own principle: a `harmony-<env>` is one of many possible guest
    worlds; the conformance corpus is not swappable, so it cannot live inside one. (Task 43's
    Deliverable A currently says "keep internal layout: payloads/ linux/ golden/ …" — superseded
    on this point.)
-2. **Task 43's surface list predates tasks 61/73** and must extend to `guest/flow-agent`
-   (→ `harmony-linux/`, it is the exemplar guest-world artifact) and `guest/sdk`
+2. **Task 43's surface list predates tasks 61/73** and must extend to `harmony-linux/flow-agent`
+   (→ `harmony-linux/`, it is the exemplar guest-world artifact) and `harmony-linux/sdk`
    (→ demoted to internal wire plumbing per R-L3 item 5); the `/dev/harmony` driver and the
    `libvoidstar.so` shim (R-L3 items 2–3) are **new** harmony-linux deliverables.
 

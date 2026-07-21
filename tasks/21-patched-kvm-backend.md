@@ -82,7 +82,7 @@ as `Box<dyn Backend>`. The one place a concrete backend is named. Nothing else b
 
 ## P6 — Acceptance: box determinism integration test
 
-A bare-metal payload (extend `guest/payloads/`, or a vmm-core integration test) that:
+A bare-metal payload (extend `consonance/acceptance-suite/payloads/`, or a vmm-core integration test) that:
 - reads RDTSC/RDTSCP repeatedly → **strictly monotonic**, deltas match the V-time formula, never a
   raw host TSC; RDTSCP `aux` == contract value;
 - reads RDRAND/RDSEED → values **== the contract PRNG stream** for the seed, CF set per contract;

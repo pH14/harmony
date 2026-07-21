@@ -4,10 +4,10 @@
 
 ## Problem
 
-The det-corpus insn-cpuid golden on main is stale — two independent observations:
+The acceptance-suite insn-cpuid golden on main is stale — two independent observations:
 1. The nested-x86 spike found it stale (2026-07-10; evidence on `spike/nested-x86`,
    `spikes/nested-x86/` results + README).
-2. The task-110 box window (2026-07-15, hm-rk5 notes) hit it again: det-corpus **O2
+2. The task-110 box window (2026-07-15, hm-rk5 notes) hit it again: acceptance-suite **O2
    insn-cpuid FAILS on the box — the digest is DETERMINISTIC run-to-run (identical) but
    != the committed golden**. insn-rdtsc O2 and insn-rng O2 both PASS. The pvclock branch
    touched no golden/CPUID path, so this predates it.
@@ -35,7 +35,7 @@ The det-corpus insn-cpuid golden on main is stale — two independent observatio
 
 - A PR on this task's branch: the regenerated golden + provenance, plus the leaf-level
   diff summary in the PR body. Portable gates green (the golden's consuming tests pass
-  locally where runnable); the box det-corpus O2 insn-cpuid gate green with the new
+  locally where runnable); the box acceptance-suite O2 insn-cpuid gate green with the new
   golden (include the run evidence).
 - `bd` note on `hm-zc2` linking the PR; if the root cause IS the hm-xdp image family,
   say so on `hm-xdp`/`hm-2nt` too.

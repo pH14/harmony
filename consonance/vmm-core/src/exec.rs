@@ -36,7 +36,7 @@
 //!
 //! The marker is `HXEC-<nonce>-` — plain printable ASCII (`HXEC` == "harmony
 //! exec"), salted with a per-call `nonce` so two different `exec`s cannot alias.
-//! **It must stay printable.** The exec-capable image (`guest/linux/exec-init.sh`)
+//! **It must stay printable.** The exec-capable image (`harmony-linux/linux/exec-init.sh`)
 //! hands the console to an *interactive* `busybox ash` with line editing
 //! (`CONFIG_FEATURE_EDITING=y`, on by defconfig), and a line editor treats control
 //! bytes as editing keystrokes rather than input — e.g. `^A` (SOH, `0x01`) is
@@ -65,7 +65,7 @@
 //!   library code must never OOM on untrusted output (conventions rule 4).
 //! - **Non-echoing / cooked-mode shells.** The scheme assumes the shell echoes the
 //!   executed `echo`'s output onto the same serial line. A shell configured
-//!   otherwise would time out. The box guest image (`guest/linux/`) provides a
+//!   otherwise would time out. The box guest image (`harmony-linux/linux/`) provides a
 //!   root shell on the serial console for exactly this reason.
 
 /// The marker's fixed, **plain-printable** prefix (`HXEC` == "harmony exec"). Kept

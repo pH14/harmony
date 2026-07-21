@@ -50,7 +50,7 @@ recorded "not-answerable-on-this-part" is a valid ladder input.
   workaround-**off** probe that deliberately reproduces the overcount. AE-0 records the
   standing core-assignment table (housekeeping / measurement / guest cores + sibling map).
 - **Pre-build fold-in (`hm-8v4`).** The parameterized exactness-hammer (work-clock event,
-  PMI/overflow accounting, skid measurement, reusing the x86 det-corpus oracle payloads —
+  PMI/overflow accounting, skid measurement, reusing the x86 acceptance-suite oracle payloads —
   same ISA) and the `svm.c` force-exit 0004-analogue DRAFT are `hm-8v4`'s scope; they fold
   into AE-1 (hammer self-test against Intel `0x1c4` first, then the `ex_ret_brn_tkn`
   encoding swap-in) and AE-3 (`svm.c` hook compiling against the pinned kernel). Claim/land

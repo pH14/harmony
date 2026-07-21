@@ -1,0 +1,46 @@
+# Vendored Kata Containers guest-kernel config fragments
+
+These are the **upstream Kata Containers guest-kernel config fragments**, vendored
+verbatim. They are the container-host *base* the guest kernel is built from (task 36);
+`harmony-linux/linux/config-fragment` is then merged on top as the **determinism overlay** and
+wins every conflict. See `harmony-linux/linux/IMPLEMENTATION.md` for the rebase rationale.
+
+## Pin
+
+- Project:  kata-containers/kata-containers
+- Release:  3.32.0  (published 2026-06-22)
+- Commit:   337b6002681479fb6a605ca8a7a1138e81b6098c
+- Upstream: tools/packaging/kernel/configs/fragments/{common,x86_64}/*.conf
+- kata_config_version: 198
+- Targets Linux **v6.18.35** (Kata `versions.yaml` `assets.kernel.version` at this tag) —
+  the *exact* kernel pinned in `harmony-linux/linux/versions.lock`. The config and the kernel
+  source are version-matched by construction.
+
+## What is vendored (and why exactly these files)
+
+`build-kernel.sh` reproduces Kata's own selection for `-a x86_64` with no extra flags
+(no confidential-guest / GPU / debug / build-type fragments):
+
+- `common/*.conf`  — every common fragment **not** carrying a `!x86_64` arch-exclusion
+  tag (none of the 27 are excluded for x86_64; verified against Kata's
+  `grep -e !x86_64 ... -L` selection logic).
+- `x86_64/*.conf`  — every arch fragment (the `confidential/`, `snp/`, `tdx/`
+  sub-directories are not `*.conf` and are not pulled in).
+
+27 common + 13 x86_64 = 40 files. No symbol is redefined with a conflicting value across
+the set (Kata's build asserts this; re-verified at vendor time).
+
+aggregate-sha256 (sorted `sha256(common/*.conf x86_64/*.conf)` then hashed):
+  03ef74331466efde8347903051bfaf0e17fa45b8e01e7f17f20ba97ff4ecf525
+
+## Re-fetch / verify recipe
+
+```sh
+TAG=3.32.0
+B="https://raw.githubusercontent.com/kata-containers/kata-containers/$TAG/tools/packaging/kernel/configs/fragments"
+for f in common/*.conf x86_64/*.conf; do curl -fsS "$B/$f" -o "harmony-linux/linux/kata/$f"; done
+# (the common/x86_64 file lists are the ones already present here)
+```
+
+The files are byte-identical to upstream; a reviewer can diff `harmony-linux/linux/kata/` against
+the Kata tree at the commit above.

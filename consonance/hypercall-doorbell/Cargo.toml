@@ -1,0 +1,23 @@
+[package]
+name = "hypercall-doorbell"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# `hypercall-proto` is depended on deliberately (rule-2 exception, see IMPLEMENTATION.md):
+# this crate exists to implement that crate's `Transport` so a `Client<VmcallTransport>`
+# composes. Pull only the guest-side, no_std items in the library build.
+[dependencies]
+# Explicit `version` (not a bare path) so `cargo deny`'s wildcard ban is satisfied.
+hypercall-proto = { path = "../hypercall-proto", version = "0.1.0", default-features = false, features = ["guest"] }
+
+# The host `Dispatcher` + reference services drive the loopback gate, but must NOT leak into
+# the library build (their `host` feature implies `std`). As a dev-dependency under the v2
+# resolver, the `host` feature is unified only into the `cargo test` graph, never into
+# `cargo build --target x86_64-unknown-none`, so the library stays no_std.
+[dev-dependencies]
+hypercall-proto = { path = "../hypercall-proto", version = "0.1.0", features = ["host"] }
+proptest = "1"
+
+[lints]
+workspace = true

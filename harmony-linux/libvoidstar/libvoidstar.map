@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+HARMONY_VOIDSTAR_1.0 {
+    global:
+        fuzz_json_data;
+        fuzz_get_random;
+        fuzz_flush;
+        init_coverage_module;
+        notify_coverage;
+        __sanitizer_cov_trace_pc_guard_init;
+        __sanitizer_cov_trace_pc_guard_internal;
+        __sanitizer_cov_trace_pc_guard;
+    local: *;
+};

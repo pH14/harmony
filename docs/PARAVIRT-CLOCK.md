@@ -472,7 +472,7 @@ and the N-4 perf deltas.
   page's sizing rationale is "a work-derived kvmclock-shaped page would remove RDTSC exits from
   the hot path." Measure, page-off vs page-on: RDTSC exit rate per virtual second (target: hot-
   path reads → ~0, replaced by one refresh exit per Δ window), boot-to-userspace wall ratio,
-  det-corpus + a postgres campaign smoke throughput, and the resulting exits/virtual-second
+  acceptance-suite + a postgres campaign smoke throughput, and the resulting exits/virtual-second
   delta. Report as ppm-style ratios like the other N-4 memos.
 
 ---

@@ -29,8 +29,8 @@ built Postgres workload image). Pin per `docs/BOX-PINNING.md`; always revert KVM
 
 Surface list (frontier waiver of hard rule 1):
 
-- `guest/` — the two new planted-bug payloads + init wiring, beside task 60's (follow
-  `guest/linux/pg-init.sh` workload-init conventions).
+- `harmony-linux/` — the two new planted-bug payloads + init wiring, beside task 60's (follow
+  `harmony-linux/linux/pg-init.sh` workload-init conventions).
 - `dissonance/benchmark/` — **new crate**: the benchmark manifest (bugs, trigger thresholds,
   serial markers), the correlation statistics, and report generation. Pure logic; whitelist-only
   deps — the correlation statistics are hand-rolled (rank/Spearman math over integers), no

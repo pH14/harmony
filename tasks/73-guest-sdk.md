@@ -18,17 +18,17 @@ tier — and the Phase H roadmap row), `docs/DISSONANCE.md` ("The guest control 
 SDK — and "The control transport"), `tasks/64-explorer-spine-refactor.md` (`RunTrace`, `Feature`,
 the `Archive`'s checkpoint-candidate admission), `tasks/01-hypercall-proto.md` +
 `consonance/hypercall-proto/src/lib.rs` (`ServiceId::Event = 4`, `event_emit`, `EventSink`),
-`tasks/10-vmcall-transport.md` + `tasks/20-io-doorbell.md` + `consonance/vmcall-transport/src/lib.rs`
+`tasks/10-hypercall-doorbell.md` + `tasks/20-io-doorbell.md` + `consonance/hypercall-doorbell/src/lib.rs`
 (the guest doorbell, `DOORBELL_PORT = 0x0CA1`, the `LoopbackHost` test seam),
 `tasks/61-net-vertical.md` (the in-guest agent precedent; `ServiceId::Net = 5` is reserved by it),
 `dissonance/environment/src/` (`catalog.rs` — `DecisionClass`, supply vs fault classes;
 `seeded.rs` — the domain-separated supply/fault PRNG streams; `policy.rs` — `FaultPolicy`),
-`guest/payloads/` (the no_std guest workspace conventions).
+`consonance/acceptance-suite/payloads/` (the no_std guest workspace conventions).
 
 ## Environment
 
 Portable-logic surface (macOS + Linux, laptop-gated): the SDK crate itself (no_std, loopback-tested
-against `hypercall_proto::Dispatcher` exactly as `vmcall-transport` is), the `dissonance/link`
+against `hypercall_proto::Dispatcher` exactly as `hypercall-doorbell` is), the `dissonance/link`
 decode/catalog/sensor crate, the additive `dissonance/environment` and `hypercall-proto` changes —
 all mock-testable with no `/dev/kvm`. **Box-only:** baking the SDK-instrumented demo guest into an
 image and the three live gates (patched KVM). Pin per `docs/BOX-PINNING.md`; always revert KVM to
@@ -36,8 +36,8 @@ stock **1396736** and verify after any patched run.
 
 Surface list (frontier waiver of hard rule 1):
 
-- **`guest/sdk/`** (new; `harmony-linux/sdk/` if task 43 has landed) — the SDK crate; plus a small
-  SDK-instrumented demo payload under `guest/payloads/` and its image/Makefile wiring.
+- **`harmony-linux/sdk/`** (new; `harmony-linux/sdk/` if task 43 has landed) — the SDK crate; plus a small
+  SDK-instrumented demo payload under `consonance/acceptance-suite/payloads/` and its image/Makefile wiring.
 - **`dissonance/link`** (new) — the link-tier plugin: event decode, the assertion catalog +
   never-fired report, the link `Sensor`, the `AlwaysViolation` oracle.
 - **`dissonance/explorer`** — only filling the task-64 `GuestEvent` vocab stub (coordinate with 64).
@@ -63,7 +63,7 @@ the scrape-first acquisition order stands: this is Tier 2, a channel for code yo
 displacement of the 65/66/67 scrape channel.
 
 **Form: a Rust `no_std` crate**, generic over `hypercall_proto::Transport`. Justification: the
-guest tier is already Rust (`guest/payloads` is a no_std workspace; `vmcall-transport` is the
+guest tier is already Rust (`consonance/acceptance-suite/payloads` is a no_std workspace; `hypercall-doorbell` is the
 purpose-built no_std guest shim, so `Client<VmcallTransport>` composes with zero new transport
 code), and the first code-we-own consumers (the demo payload here; task 69's seeded-bug workload)
 are Rust. A C-ABI header shim for foreign workloads is deferred (non-goal); Linux-userspace page
@@ -71,7 +71,7 @@ mapping follows the task-61 flow-agent convention when it lands.
 
 ## What to build
 
-1. **The SDK verbs** (`guest/sdk`): `init(transport, catalog)` registers the **declared point set**
+1. **The SDK verbs** (`harmony-linux/sdk`): `init(transport, catalog)` registers the **declared point set**
    at startup (one Emit; each point = stable id + name + kind); `assert_always(cond, point)` /
    `assert_sometimes(cond, point)` / `assert_reachable(point)` / `assert_unreachable(point)`;
    IJON-style numeric registers `state_max(reg, v)` / `state_set(reg, v)`; lifecycle
@@ -123,7 +123,7 @@ mapping follows the task-61 flow-agent convention when it lands.
 ## Acceptance gates
 
 1. **Standard suite** green on every touched crate (macOS + Linux); the SDK crate builds for
-   `x86_64-unknown-none` (the no_std proof, per the vmcall-transport gate).
+   `x86_64-unknown-none` (the no_std proof, per the hypercall-doorbell gate).
 2. **Portable decode + catalog proptests (≥256)** over synthetic event streams: decode never
    panics; the catalog fold books declared/fired correctly; a sometimes hit yields the right
    `(Moment, Feature)` and is admitted as a checkpoint candidate by the spine `Archive` on the toy;

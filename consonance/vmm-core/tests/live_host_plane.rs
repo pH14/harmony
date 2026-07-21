@@ -15,7 +15,7 @@
 //! Run on `ssh <det-box>` with the LOADED patched KVM modules + the built Postgres
 //! image, CPU-pinned per `docs/BOX-PINNING.md` (lease a core via `box-window.sh`):
 //! ```text
-//! make -C guest fetch && make -C guest/linux postgres-image     # or copy a prebuilt image
+//! make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image     # or copy a prebuilt image
 //! taskset -c <core> cargo test -p vmm-core --release --test live_host_plane -- --ignored --nocapture
 //! ```
 //! Tunable via env (defaults below): `HP_M1_OFF` / `HP_M2_OFF` (V-time ns past the
@@ -50,16 +50,16 @@ fn repo_root() -> std::path::PathBuf {
 
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in guest/build or guest/linux — build it first on the \
-         box: `make -C guest fetch && make -C guest/linux postgres-image`."
+        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
+         box: `make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image`."
     );
 }
 

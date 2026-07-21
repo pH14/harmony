@@ -20,7 +20,7 @@ in task 20** from the v0 `VMCALL` doorbell to a **port-I/O doorbell** so the cha
 
 **Fixed ABI constants** (an `OUT` cannot carry a pointer, so the doorbell carries none — the
 two frame pages live at fixed GPAs the contract reserves and the VMM maps; pinned in
-`consonance/vmcall-transport`):
+`consonance/hypercall-doorbell`):
 
 - `DOORBELL_PORT = 0x0CA1` — the magic 16-bit I/O port the guest rings (`> 0xFF`, so addressed
   through `DX`). Chosen clear of the legacy ISA/PCI port map (PIT `0x40`–`0x43`, PIC, PS/2,
@@ -66,7 +66,7 @@ nothing and would couple the frozen contract to a transport detail. (The contrac
 covers only the `VMCALL` *instruction*'s disposition under the determinism backend; see
 `CPU-MSR-CONTRACT.md` §4.)
 
-**Guest shim:** `consonance/vmcall-transport` implements the task-01 `Transport` over this
+**Guest shim:** `consonance/hypercall-doorbell` implements the task-01 `Transport` over this
 doorbell (the package/type keep their `vmcall` names to avoid churn; the mechanism is port-I/O).
 `RealIoDoorbell` emits the single `OUT`; the `IoDoorbell` seam lets the whole round-trip be
 unit-tested over a mock with no KVM. A `Client<VmcallTransport>` composes with the task-01
@@ -85,7 +85,7 @@ interrupts at planned V-times, after which the guest pulls data via a normal hyp
 
 The determinism/conformance corpus (`docs/DETERMINISM-CORPUS.md`) needs the C1 payloads to report
 their **trap-dependent values** — the V-time TSC reads, the seeded RNG words, the frozen CPUID/MSR
-values, the retired-instruction counts — to the host oracle (`det-corpus` O2). The serial lane
+values, the retired-instruction counts — to the host oracle (`acceptance-suite` O2). The serial lane
 can't carry them (a raw TSC/IRQ count in the banner would perturb the byte stream and break the
 Part-A shape gate), and the doorbell above **owns `0x0CA1`** — so the report stream gets its **own
 dedicated port**, distinct from the doorbell.
@@ -106,7 +106,7 @@ dedicated port**, distinct from the doorbell.
   that never touches the port leaves the stream empty).
 - **Stock QEMU shape-testing.** QEMU has no device at `0x0CA2`, so it **discards** the writes (no
   `#GP`, nothing on serial) — the Part-A serial gate stays byte-identical; only the box, where
-  `vmm-core` captures the port, sees the values. The guest shim is `guest/payloads/common::report`;
+  `vmm-core` captures the port, sees the values. The guest shim is `consonance/acceptance-suite/payloads/common::report`;
   the host side is `vmm-core`'s `Exit::Io` dispatch + `Vmm::observable_digest`.
 - **Determinism note (confirmed):** like the doorbell constants, `REPORT_PORT` is a transport/
   observability ABI constant that carries **no per-host or hidden-µarch input**, so it is **not** a
@@ -276,7 +276,7 @@ which vmm-core serializes and must contain at least:
 
 | Seam | Delegated side (frozen) | vmm-core side (later) |
 |---|---|---|
-| Hypercalls | `hypercall-proto::{Client, Transport}` (guest), `Dispatcher`/`Service` (host) | port-I/O **doorbell** handler implementing §1 (`Exit::Io` on `DOORBELL_PORT`, stock-KVM `KVM_EXIT_IO`); guest shim `consonance/vmcall-transport`. Patched-backend `VMCALL` variant via `Exit::Hypercall` (task 21) |
+| Hypercalls | `hypercall-proto::{Client, Transport}` (guest), `Dispatcher`/`Service` (host) | port-I/O **doorbell** handler implementing §1 (`Exit::Io` on `DOORBELL_PORT`, stock-KVM `KVM_EXIT_IO`); guest shim `consonance/hypercall-doorbell`. Patched-backend `VMCALL` variant via `Exit::Hypercall` (task 21) |
 | Time | `vtime::{VClock, TimerQueue, InjectionPlanner, CpuBackend}` | perf_event retired-branch counter (guest-only), PMI → exit; `KVM_GUESTDBG_SINGLESTEP`; §2 inversion |
 | Memory/snapshots | `snapshot-store::{Store, builders, Mapping}` | KVM dirty-log harvest → `DeltaBuilder`; `materialize()` → memslot swap; `vm_state` blob per §4 |
 | Determinism testing | `unison::{Subject, SubjectFactory}` | adapter: `spawn(seed)` = restore base snapshot + seed services; `run_to` = planner stop; `state_hash` = canonical hash of materialized memory + `vm_state` |

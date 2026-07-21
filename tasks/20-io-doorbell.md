@@ -1,6 +1,6 @@
 # Task 20 — hypercall doorbell on stock KVM: `VMCALL` → port-IO/MMIO
 
-Read `tasks/00-CONVENTIONS.md` first. Touch `consonance/vmcall-transport/` (the transport crate)
+Read `tasks/00-CONVENTIONS.md` first. Touch `consonance/hypercall-doorbell/` (the transport crate)
 plus the two doc surfaces below. This reworks the **hypercall doorbell** so the host↔guest
 hypercall channel works on **stock KVM with no kernel patch** — replacing the `VMCALL` doorbell
 (which stock KVM services in-kernel and does **not** surface to userspace for a custom magic
@@ -15,7 +15,7 @@ number) with a port-`OUT`/`IN` (→ `KVM_EXIT_IO`) or MMIO (→ `KVM_EXIT_MMIO`)
 
 ## Current state (task 10, merged)
 
-`consonance/vmcall-transport/src/lib.rs` is built around `VMCALL`: `VMCALL_MAGIC = 0x3150_4348`
+`consonance/hypercall-doorbell/src/lib.rs` is built around `VMCALL`: `VMCALL_MAGIC = 0x3150_4348`
 in `RAX`, request-page GPA in `RBX`, response-page GPA in `RCX`, host returns response-frame
 length in `RAX`. The `VmExit` trait (`unsafe fn vmcall(magic, req_gpa, resp_gpa) -> u64`) is the
 seam over the privileged instruction; `VmcallTransport::exchange(req, resp) -> usize` does the
@@ -64,10 +64,10 @@ the round-trip is unit-testable on macOS.
 ## Gates
 
 ```sh
-cargo build  -p vmcall-transport --all-features
-cargo nextest run -p vmcall-transport --all-features      # incl. the loopback round-trip over the mock doorbell
-cargo clippy -p vmcall-transport --all-features --all-targets -- -D warnings
-cargo fmt    -p vmcall-transport -- --check
+cargo build  -p hypercall-doorbell --all-features
+cargo nextest run -p hypercall-doorbell --all-features      # incl. the loopback round-trip over the mock doorbell
+cargo clippy -p hypercall-doorbell --all-features --all-targets -- -D warnings
+cargo fmt    -p hypercall-doorbell -- --check
 ```
 - The loopback test must round-trip a request/response over the new doorbell primitive (mock),
   exercising the bounds checks (oversize request → `RequestTooLarge`; host-reject → `HostRejected`;
@@ -78,7 +78,7 @@ cargo fmt    -p vmcall-transport -- --check
 
 ## Deliverables
 
-Reworked `vmcall-transport` (likely worth renaming the crate to `io-transport` or similar when
+Reworked `hypercall-doorbell` (likely worth renaming the crate to `io-transport` or similar when
 convenient — but **not** in this task; keep the package name to avoid churn, just update the prose).
 Updated INTEGRATION.md §1 + the contract VMCALL row. `IMPLEMENTATION.md` documenting the chosen
 mechanism (port-IO vs MMIO + why), the finalized ABI, and the `Exit::Hypercall` disposition.

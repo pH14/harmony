@@ -19,9 +19,9 @@
   `pivot_root` (containerd **NoPivotRoot** drop-in) → **node-IP** off the pod CIDR (10.0.0.2).
 - **Files changed:** `consonance/vmm-core/src/linux_loader.rs`; `docs/cpu-msr-contract.toml` +
   `consonance/vmm-core/src/contract/{mod.rs,testdata/canonical-v4.txt}` + `docs/CPU-MSR-CONTRACT.md`
-  (ARAT/v4); `guest/linux/k3s-init.sh`; `consonance/vmm-backend/src/kvm_sys.rs` +
+  (ARAT/v4); `harmony-linux/linux/k3s-init.sh`; `consonance/vmm-backend/src/kvm_sys.rs` +
   `consonance/vmm-core/src/vmm.rs` (MTF/0005 wiring + cleanup); guest build inputs under
-  `guest/linux/`; `consonance/vmm-backend/kvm-patches/patches/0005-*`.
+  `harmony-linux/linux/`; `consonance/vmm-backend/kvm-patches/patches/0005-*`.
 - **0005 (MTF) kernel patch — exact locations on the box:**
   - Repo (provenance): `consonance/vmm-backend/kvm-patches/patches/0005-KVM-VMX-MTF-deterministic-single-step.patch`
     + `0005-NOTES.md`.
@@ -73,7 +73,7 @@ work already done on the box; the run died at a terminal idle-HLT (step 98078). 
      `CLOCK_EVT_FEAT_C3STOP` + raises the lapic clockevent rating to 150 so it's adopted over the
      PIT. Regenerated golden `testdata/canonical-v4.txt` + `contract_hash`. ARAT alone did NOT fix
      it — the **MADT is the load-bearing change**; the two compose.
-2. **kubelet cAdvisor rootfs** (`guest/linux/k3s-init.sh`) — cAdvisor can't stat the initramfs
+2. **kubelet cAdvisor rootfs** (`harmony-linux/linux/k3s-init.sh`) — cAdvisor can't stat the initramfs
    ramfs root (`device "rootfs"`) → `failed to get rootfs info` aborts ContainerManager. Mount
    **tmpfs** on `/var/lib/kubelet` + `/var/lib/rancher/k3s/agent/containerd` before k3s starts
    (cAdvisor recognizes tmpfs via statfs); the pre-staged airgap images/manifests stay on the root.
@@ -96,19 +96,19 @@ work already done on the box; the run died at a terminal idle-HLT (step 98078). 
 - `consonance/vmm-core/src/linux_loader.rs` — ACPI MADT + `boot_params.acpi_rsdp_addr`.
 - `docs/cpu-msr-contract.toml`, `consonance/vmm-core/src/contract/{mod.rs,testdata/canonical-v4.txt}`,
   `docs/CPU-MSR-CONTRACT.md` — ARAT, contract v4 (regenerated golden + hash).
-- `guest/linux/k3s-init.sh` — tmpfs data dirs, veth node interface, NoPivotRoot drop-in, node IP.
+- `harmony-linux/linux/k3s-init.sh` — tmpfs data dirs, veth node interface, NoPivotRoot drop-in, node IP.
 - `consonance/vmm-backend/src/kvm_sys.rs`, `consonance/vmm-core/src/vmm.rs` — MTF/0005 wiring
   (preserved from STEP 0) + cleanup of unused imports / diagnostic scaffolding.
 - `consonance/vmm-backend/kvm-patches/patches/0005-*.patch` + `0005-NOTES.md` — the captured 0005
   MTF kernel delta (provenance only; productionizing 0005 is out of scope, see Non-goals).
-- Guest build inputs: `guest/linux/{config-fragment,build-kernel.sh,build-k3s-image.sh,…}` (SMP
+- Guest build inputs: `harmony-linux/linux/{config-fragment,build-kernel.sh,build-k3s-image.sh,…}` (SMP
   kernel + k3s rootfs), preserved from STEP 0.
 
 ## How the integrator re-runs the gates (box-only)
 On the determinism box, in `/root/ht49` (or a fresh checkout of this branch + a rebuilt guest
 image and the 0005-patched KVM module — see `kvm-patches/`):
 ```
-# guest image must already be built (guest/build/{bzImage,initramfs-k3s.cpio.gz})
+# guest image must already be built (harmony-linux/build/{bzImage,initramfs-k3s.cpio.gz})
 /root/run-patched-ht49.sh 1200 cargo test -p vmm-core --test live_k3s_postgres -- \
     --ignored --nocapture --test-threads=1 k1_k3s_cluster_postgres_client_streams_patched
 /root/run-patched-ht49.sh 2400 cargo test -p vmm-core --test live_k3s_postgres -- \

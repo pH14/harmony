@@ -27,7 +27,7 @@ pub enum SourceFormat {
     /// The app-facing Antithesis SDK JSON, decoded from `/dev/harmony` device
     /// traffic (`docs/LAYERS.md` §R-L3 items 1–4).
     AntithesisJson,
-    /// The internal binary Event wire, version 1 (`guest/sdk`). Its catalog does
+    /// The internal binary Event wire, version 1 (`harmony-linux/sdk`). Its catalog does
     /// not declare value shape or a fixed base operation, so state points are
     /// unresolved until a v2 declaration resolves them.
     BinaryV1,

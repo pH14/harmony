@@ -105,7 +105,7 @@ the **one-reproducer constraint** — it drives the billboard design), `docs/EXP
 `quiet` tactic arm, rows E/F), `tasks/84-exploration-gate.md` (the gate this re-runs — its
 definitions of budget, baseline, and report are inherited, not restated), `tasks/70-selector-bandit.md`
 (whose output this tests), `tasks/87-film.md` (the billboard's consumer),
-`guest/flow-agent/` (the guest-agent pattern), `guest/linux/pg-init.sh` (workload-init
+`harmony-linux/flow-agent/` (the guest-agent pattern), `harmony-linux/linux/pg-init.sh` (workload-init
 conventions), `dissonance/link/src/sensor.rs` (`LinkSensor`, `LINK_STATE_CHANNEL`),
 `dissonance/explorer/src/stads.rs` (discovery-curve estimator).
 
@@ -135,13 +135,13 @@ as bedrock.
 
 Surface list (frontier waiver of hard rule 1):
 
-- `guest/play-agent/` — the new workload agent (beside `guest/flow-agent/`), plus its
-  `guest/linux/` init wiring per the task-60 workload-init conventions.
+- `harmony-linux/play-agent/` — the new workload agent (beside `harmony-linux/flow-agent/`), plus its
+  `harmony-linux/linux/` init wiring per the task-60 workload-init conventions.
 - `dissonance/benchmark` — extend (do **not** fork) with the SMB report configuration; the
   measures (distinct cells, depth, medians + IQR, STADS) are task 84's, reused.
 - `consonance/vmm-core` — campaign manifest/config wiring only; the campaign path through the
   composed engine is task 84's, reused.
-- `dissonance/explorer`, `dissonance/link`, `guest/sdk`: **read-only.** A spine defect this
+- `dissonance/explorer`, `dissonance/link`, `harmony-linux/sdk`: **read-only.** A spine defect this
   surfaces is a finding to escalate, not a change to smuggle in.
 
 **`unsafe` grant (named):** the libretro C-ABI FFI seam in `play-agent`, and the
@@ -172,7 +172,7 @@ RNG, the core's scheduling, everything is a pure function of the campaign seed b
 everything in the guest is. No emulator savestates are ever used — the archive is the only
 state currency, and a "checkpoint at World 1-2 with a mushroom" is just an admitted cell.
 
-## The play-agent (`guest/play-agent/`)
+## The play-agent (`harmony-linux/play-agent/`)
 
 A single supervised process: a minimal headless libretro frontend linking the pinned core.
 Null audio/video callbacks, unthrottled — it calls `retro_run` in a loop as fast as the box

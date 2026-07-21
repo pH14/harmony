@@ -43,7 +43,7 @@ execution / skid), §5.3 (Interrupts)**; `docs/CPU-MSR-CONTRACT.md` (the PIT 1.1
 + the consistency chain); `tasks/47-deterministic-preemption-timer.md` + `tasks/52-deterministic-hlt-resume.md`
 and their `IMPLEMENTATION.md` notes; `consonance/vmm-core/src/vmm.rs` (`preemption_deadline`, `on_hlt`/
 `idle_action`, `resume_idle`); `consonance/lapic/src/device.rs` (the existing timer-device model to mirror);
-`guest/linux/IMPLEMENTATION.md` (task 37's "no clock-event device" finding + the runc deadlock).
+`harmony-linux/linux/IMPLEMENTATION.md` (task 37's "no clock-event device" finding + the runc deadlock).
 
 ## The change
 
@@ -96,7 +96,7 @@ handling (arm early + single-step) — it's the documented state-of-the-art and 
 4. **Deliberate re-baseline:** any tick changes the boot, so the **Linux goldens re-base** —
    `live_linux_boot`, `live_postgres`, `live_postgres_docker`, `live_branching_demo`: re-run each
    **deterministic-twice** on the box and record the new `state_hash`/serial goldens (quote the equal
-   digests). **M1/M2/P6 + the det-corpus goldens are NON-Linux and MUST stay byte-identical.** Revert KVM
+   digests). **M1/M2/P6 + the acceptance-suite goldens are NON-Linux and MUST stay byte-identical.** Revert KVM
    to stock `1396736` + verify after every patched run.
 
 ## Non-goals
@@ -114,5 +114,5 @@ Reuse the task-48 box setup (`/root/ht42`, built image). On a `task/hlt-resume`-
 -- --ignored --nocapture --test-threads=1 r2_…` (then r1/r3), plus the re-baseline runs of
 `live_linux_boot`/`live_postgres`/`live_postgres_docker`. Always reverts to stock `1396736` via the trap.
 Capture all evidence (runc GUEST_READY + det-twice digests, the boot-log clockevent line, the sleep-returns
-corollary, and the re-baselined golden hashes) into `guest/linux/IMPLEMENTATION.md` + `vmm-core/IMPLEMENTATION.md`,
+corollary, and the re-baselined golden hashes) into `harmony-linux/linux/IMPLEMENTATION.md` + `vmm-core/IMPLEMENTATION.md`,
 **citing Deterland**.

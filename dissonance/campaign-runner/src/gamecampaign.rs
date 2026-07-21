@@ -39,7 +39,7 @@ use explorer::{
 use sdk_events::{NS_STATE, Normalized, ObservationId, Payload, SdkEvent};
 
 /// Local mirrors of the play-agent's state-register catalog
-/// (`guest/play-agent/src/regs.rs` — the guest crates sit outside this
+/// (`harmony-linux/play-agent/src/regs.rs` — the guest crates sit outside this
 /// workspace, so the ids are mirrored here with the same values; the
 /// conventions mirror-type pattern).
 pub mod reg {
@@ -487,7 +487,7 @@ pub fn smb_cells(events: &[SdkEvent]) -> (Vec<u64>, u64) {
 ///
 /// **Transitions of `REG_FRAME`, not observations of it.** The play-agent
 /// writes the frame register *before* running the frame body
-/// (`guest/play-agent/src/agent.rs`: `state_set(REG_FRAME, frame)` then
+/// (`harmony-linux/play-agent/src/agent.rs`: `state_set(REG_FRAME, frame)` then
 /// `core.run_frame`), because film addresses that frame's billboard by that
 /// Moment and must see the frame's bytes at it. So a lone `REG_FRAME`
 /// observation proves only that the guest wrote a marker and then the deadline

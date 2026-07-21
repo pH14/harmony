@@ -78,7 +78,7 @@ the `VClock` formula) is decided on **measurement, not speculation**:
 ## The seam
 
 The project already has the pieces — this promotes them into one boundary:
-`vmcall-transport::VmExit` (guest-side abstraction of the `vmcall` instruction),
+`hypercall-doorbell::VmExit` (guest-side abstraction of the `vmcall` instruction),
 `vtime::CpuBackend`, and INTEGRATION.md §3's "vmm-core owns the `KVM_RUN` loop" /§5 inversion
 seam.
 

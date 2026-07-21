@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `det-corpus` oracles over the VMM-backed [`vmm_core::corpus::CorpusMachine`],
+//! `acceptance-suite` oracles over the VMM-backed [`vmm_core::corpus::CorpusMachine`],
 //! driven by a scripted `MockBackend` — every platform, no `/dev/kvm` (corpus
 //! box-integration, task 28).
 //!
 //! This is the macOS-runnable companion to the box-only `box_corpus` gate: it
-//! wires the **same** `det-corpus` oracle runner (`check_determinism`,
+//! wires the **same** `acceptance-suite` oracle runner (`check_determinism`,
 //! `check_conformance`) to the **same** `CorpusMachine` bridge, just over a
 //! scripted backend instead of the live patched KVM. So the cross-crate
 //! integration — that the bridge satisfies the `unison::Subject`/`SubjectFactory`
-//! contracts the `det-corpus` generics demand, and that O1 (state_hash) and the
+//! contracts the `acceptance-suite` generics demand, and that O1 (state_hash) and the
 //! O2 observable digest behave as the corpus expects — is type-checked and gated
 //! on every platform; only the live-KVM values are box-only.
 
-use det_corpus::{check_conformance, check_determinism};
+use acceptance_suite::{check_conformance, check_determinism};
 use unison::SubjectFactory;
 use vmm_backend::{Backend, CpuidModel, Exit, MockBackend, MsrFilter, X86, X86Exit, X86Policy};
 use vmm_core::corpus::{CorpusMachine, observable_digest_of};
@@ -74,7 +74,7 @@ impl SubjectFactory for MockCorpusFactory {
 /// The **boxed** factory — `type M = CorpusMachine<Box<dyn Backend<A = X86>>>` — mirrors
 /// `box_corpus`'s `PatchedPayloadFactory` exactly (it spawns
 /// `CorpusMachine<Box<dyn Backend<A = X86>>>` from `boot_patched_payload`), so this
-/// type-checks that generic plumbing + `det-corpus` over it on every platform.
+/// type-checks that generic plumbing + `acceptance-suite` over it on every platform.
 struct BoxedMockFactory {
     name: String,
     values: Vec<u64>,
@@ -96,9 +96,9 @@ impl SubjectFactory for BoxedMockFactory {
 }
 
 #[test]
-fn det_corpus_o1_over_the_boxed_bridge_compiles_and_passes() {
+fn acceptance_suite_o1_over_the_boxed_bridge_compiles_and_passes() {
     // Exercises `CorpusMachine<Box<dyn Backend<A = X86>>>` (the box runner's exact type)
-    // through the real det-corpus runner — the generic plumbing box_corpus relies
+    // through the real acceptance-suite runner — the generic plumbing box_corpus relies
     // on, verified with no /dev/kvm.
     let f = BoxedMockFactory {
         name: "insn-cpuid".to_string(),
@@ -109,8 +109,8 @@ fn det_corpus_o1_over_the_boxed_bridge_compiles_and_passes() {
 }
 
 #[test]
-fn det_corpus_o1_passes_over_the_vmm_bridge() {
-    // O1 (determinism) via the real det-corpus runner: two runs at one seed must
+fn acceptance_suite_o1_passes_over_the_vmm_bridge() {
+    // O1 (determinism) via the real acceptance-suite runner: two runs at one seed must
     // be bit-identical. This is exactly the call `box_corpus` makes on the box.
     let f = MockCorpusFactory {
         name: "insn-rdtsc".to_string(),
@@ -122,7 +122,7 @@ fn det_corpus_o1_passes_over_the_vmm_bridge() {
 }
 
 #[test]
-fn det_corpus_o2_digest_matches_the_observable_golden() {
+fn acceptance_suite_o2_digest_matches_the_observable_golden() {
     // O2 (conformance), corpus box-integration semantics: the run's
     // observable_digest (report stream + serial) is the golden. Recompute the
     // expected digest independently from the known stream + banner and confirm
@@ -150,7 +150,7 @@ fn det_corpus_o2_digest_matches_the_observable_golden() {
         "the bridge's observable_digest must equal the recomputed report+serial digest"
     );
 
-    // And det-corpus's check_conformance is a Fail (not a panic) on a digest that
+    // And acceptance-suite's check_conformance is a Fail (not a panic) on a digest that
     // is NOT the golden — the negative direction the box gate relies on. (O2 here
     // uses the corpus runner's hex-golden compare against state_hash; the
     // box-integration O2 instead pins observable_digest, but this confirms the

@@ -48,7 +48,7 @@ interrupt fires identically — so determinism is preserved.
 3. **Branching from a live snapshot (box):** re-run task 40's matrix but seal `S` at a **mid-Postgres** point
    (not boot-entry) — each seeded fork reproducible (gate 1) and ≥1 divergent (gate 2). This is the capability
    40 documented as missing.
-4. **No regression:** quiescent snapshots still work; M1/M2/P6/det-corpus + Linux-boot goldens byte-identical;
+4. **No regression:** quiescent snapshots still work; M1/M2/P6/acceptance-suite + Linux-boot goldens byte-identical;
    standard gates green (mutants — pin the new event fields with exact-value tests; Miri any new `unsafe`;
    public-api refresh on the box). Revert patched KVM to stock after; verify `lsmod` == 1396736.
 

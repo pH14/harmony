@@ -110,7 +110,7 @@ const TYPE_OF_LOADER_UNDEFINED: u8 = 0xFF;
 /// Top of the low-memory usable E820 region (640 KiB); the `0xA0000..0x100000`
 /// hole (legacy VGA/BIOS) is left unmapped so the kernel never uses it.
 const LOW_RAM_TOP: u64 = 0x000A_0000;
-/// The hypercall-doorbell REQ/RESP pages (task 73): `vmcall-transport`'s
+/// The hypercall-doorbell REQ/RESP pages (task 73): `hypercall-doorbell`'s
 /// `REQ_GPA` = `0xE000` and `RESP_GPA` = `0xF000` — two 4 KiB pages the guest SDK
 /// stages its request/response frames in. They fall inside the usable low-RAM
 /// span, so the E820 map **reserves** `[0xE000, 0x10000)` (splitting entry 0):

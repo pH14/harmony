@@ -9,7 +9,7 @@
 > **Environment:** box-only for the determinism gate (patched KVM per [[box-patched-kvm-ops]]); rootfs +
 > image build are Linux-only.
 
-Read `tasks/00-CONVENTIONS.md`, `tasks/36-guest-kernel-container-config.md`, `guest/linux/init.sh` +
+Read `tasks/00-CONVENTIONS.md`, `tasks/36-guest-kernel-container-config.md`, `harmony-linux/linux/init.sh` +
 `build-initramfs.sh`, and `consonance/vmm-core/IMPLEMENTATION.md` (Task 34) first.
 
 ## Build
@@ -53,7 +53,7 @@ Read `tasks/00-CONVENTIONS.md`, `tasks/36-guest-kernel-container-config.md`, `gu
    stdout/stderr + query results appear on `ttyS0`; clean poweroff. Quote the serial.
 2. **Deterministic-twice (box, patched, the milestone):** two same-seed runs → **bit-identical** serial
    (incl. query output) + `state_hash`. Quote both equal digests.
-3. **No regression:** M1/M2/P6 + det-corpus goldens byte-identical; standard gates green
+3. **No regression:** M1/M2/P6 + acceptance-suite goldens byte-identical; standard gates green
    (mutants/Miri/public-api where touched).
 4. **Box hygiene:** revert to stock KVM after; verify `lsmod`.
 

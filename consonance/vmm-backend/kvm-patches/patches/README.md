@@ -60,7 +60,7 @@ was proven on:
 Verified: the five-patch series is `git am`-clean on a fresh `linux-6.18.35`
 checkout, reproduces the built tree byte-for-byte, and the out-of-tree modules
 build cleanly (vermagic `6.18.35-…`). Per-file sha256 are pinned in
-`guest/linux/versions.lock` (`KVM_PATCH_000x_SHA256`). `scripts/apply_patch.py`
+`harmony-linux/linux/versions.lock` (`KVM_PATCH_000x_SHA256`). `scripts/apply_patch.py`
 reproduces the 0001-0003 edits by string anchor; `scripts/apply_patch_612.py`
 ports them to the Debian 6.12.90 source for the loadable proxy build
 (`../BUILD.md` Part 2).

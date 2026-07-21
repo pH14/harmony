@@ -10,7 +10,7 @@ server CPU modeled on Skylake-SP (GenuineIntel, family 6, model 0x55, stepping 4
 every leak-vector feature stripped per the default-deny rule. It deliberately does **not**
 bit-match any shipping part: the validity criterion is (a) architecturally self-consistent
 per the Intel SDM and (b) boots the task-04 pinned guest (linux 6.18.35, tinyconfig +
-`guest/linux/config-fragment`). The model is a config artifact: its canonical serialization
+`harmony-linux/linux/config-fragment`). The model is a config artifact: its canonical serialization
 is hashed into the determinism gate and any value change bumps the version (contract §6).
 Antithesis likewise emulates one fixed Skylake-based model; rr records-and-replays every
 leaf — both establish that a frozen full-leaf model, never host inheritance, is the proven

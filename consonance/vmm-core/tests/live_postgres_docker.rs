@@ -5,10 +5,10 @@
 //! step 3 of 3, the credibility money-shot: an off-the-shelf `docker run
 //! --network none postgres` runs **deterministically** in the guest.
 //!
-//! These boot the **Postgres-in-Docker workload image** (`guest/build/bzImage` —
+//! These boot the **Postgres-in-Docker workload image** (`harmony-linux/build/bzImage` —
 //! the task-36 container-class kernel, unchanged — plus
-//! `guest/build/initramfs-docker.cpio.gz`, built by
-//! `guest/linux/build-docker-image.sh`) via
+//! `harmony-linux/build/initramfs-docker.cpio.gz`, built by
+//! `harmony-linux/linux/build-docker-image.sh`) via
 //! [`vmm_core::vendor::x86::bringup::boot_linux_selected`]. The guest `/init`
 //! (`docker-init.sh`) brings up cgroup-v2 and runs the **official postgres OCI
 //! image** as a real container — `unshare`d mount/uts/ipc/net/pid namespaces +
@@ -18,7 +18,7 @@
 //! + the loop's stdout/stderr stream to `ttyS0`.
 //!
 //! **Why unshare, not runc/dockerd (the load-bearing finding — see
-//! `guest/linux/IMPLEMENTATION.md`).** Under consonance's single-vCPU / V-time
+//! `harmony-linux/linux/IMPLEMENTATION.md`).** Under consonance's single-vCPU / V-time
 //! model, V-time advances only when the guest executes RDTSC/RDMSR(IA32_TSC); any
 //! busy-wait without RDTSC freezes V-time → the tick never fires → deadlock.
 //! **dockerd** busy-spins on gRPC (frozen at "containerd successfully booted");
@@ -84,7 +84,7 @@
 //! wall-clock-bounded — e.g.:
 //!
 //! ```sh
-//! make -C guest fetch && make -C guest/linux docker-image    # build the image
+//! make -C harmony-linux fetch && make -C harmony-linux/linux docker-image    # build the image
 //! # load patched kvm.ko/kvm-intel.ko, then:
 //! taskset -c 2 timeout 3000 cargo test -p vmm-core --test live_postgres_docker \
 //!     -- --ignored --nocapture --test-threads=1 p2_docker_postgres_deterministic_twice_patched
@@ -158,21 +158,21 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
-/// Read a built guest artifact, trying `guest/build/<name>` then `guest/linux/<name>`.
+/// Read a built guest artifact, trying `harmony-linux/build/<name>` then `harmony-linux/linux/<name>`.
 /// Panics loudly (with the build command) if absent — these `#[ignore]`d gates run
 /// only on the box, where the image is built first.
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in guest/build or guest/linux — build it first on the \
-         box: `make -C guest fetch && make -C guest/linux docker-image`."
+        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
+         box: `make -C harmony-linux fetch && make -C harmony-linux/linux docker-image`."
     );
 }
 
