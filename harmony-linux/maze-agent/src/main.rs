@@ -154,7 +154,11 @@ mod real {
     pub fn run(args: &Args) -> Result<(), String> {
         let spec = spec_of(args);
         // The spec line rides the boot serial so the box report can
-        // cross-check the guest's manifest against the host's.
+        // cross-check the guest's manifest against the host's — printed by
+        // the AGENT (it owns the spec defaults), so the readiness marker must
+        // come after it: the agent prints MAZE_READY itself, and the init
+        // script's pre-exec marker is MAZE_LAUNCH (driving boot to
+        // MAZE_READY thus guarantees the spec line is already on the serial).
         println!(
             "MAZE_SPEC: w={} l={} doors={} seed={:#x} reachable={}",
             spec.width(),
@@ -163,6 +167,7 @@ mod real {
             spec.maze_seed,
             maze::reachable_cells(&spec)
         );
+        println!("MAZE_READY: maze-agent up");
 
         let transport = doorbell::open()?;
         let mut sdk = harmony_sdk::Sdk::init(transport, regs::CATALOG)

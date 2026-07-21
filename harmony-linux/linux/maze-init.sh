@@ -28,12 +28,12 @@ $BB mount -t tmpfs tmpfs /tmp
 $BB chmod 1777 /tmp
 $BB chmod 0666 /dev/console
 
-# The pre-launch marker the box harness can drive boot to before handing the
-# run to the campaign (the base seal itself is the agent's setup_complete
-# SnapshotPoint, after the start tile's X/Y registers are published). The
-# agent prints its MAZE_SPEC line at startup — the manifest cross-check the
-# offline report reads off the serial.
-echo "MAZE_READY: launching maze-agent"
+# The agent prints its MAZE_SPEC line and then the MAZE_READY marker itself
+# (it owns the spec defaults), so a boot driven to MAZE_READY always has the
+# spec line on the serial already — this pre-exec marker is deliberately NOT
+# the readiness marker. The base seal itself is the agent's setup_complete
+# SnapshotPoint, after the start tile's X/Y registers are published.
+echo "MAZE_LAUNCH: launching maze-agent"
 /opt/harmony/maze-agent
 rc=$?
 echo "MAZE_EXIT: maze-agent exited rc=$rc"
