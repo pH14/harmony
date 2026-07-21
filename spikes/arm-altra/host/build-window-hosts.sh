@@ -36,7 +36,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
 mkdir -p ~/kernel && cd ~/kernel
 if [[ ! -f linux-${KERNEL_VERSION}.tar.xz ]]; then
   # The pinned tarball the guest-kernel build already fetched and verified.
-  cp ~/harmony/guest/dl/linux-${KERNEL_VERSION}.tar.xz .
+  cp ~/harmony/harmony-linux/dl/linux-${KERNEL_VERSION}.tar.xz .
 fi
 echo "$KERNEL_SHA256  linux-${KERNEL_VERSION}.tar.xz" | sha256sum -c -
 echo "$P1_SHA256  $P1" | sha256sum -c -
