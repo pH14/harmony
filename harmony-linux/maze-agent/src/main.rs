@@ -79,8 +79,9 @@ struct Args {
     /// unpaced walk crams ~62k steps into the smallest stoppable rollout —
     /// flooding the SDK capture and quantizing every deadline to 62k-step
     /// multiples (measured, task 134 M1). Pacing spreads ~50 steps over one
-    /// quantum, the campaign's design point.
-    #[arg(long, default_value_t = 60_000)]
+    /// quantum, the campaign's design point (box-calibrated: pace 60k ⇒ 173
+    /// steps/quantum, so 200k ⇒ ~52).
+    #[arg(long, default_value_t = 200_000)]
     pace: u64,
     /// Portable smoke: walk with a local xorshift entropy stream and print
     /// progress — no doorbell, no hypervisor.
