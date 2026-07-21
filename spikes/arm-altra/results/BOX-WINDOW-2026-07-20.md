@@ -38,28 +38,31 @@ New **additive** subcommands (own VM/vCPU/vGIC; no run-loop/W^X touch), both **P
 - **F3-GUARD-BUDGET** — guard exits charged to the guard-write `--max-exits` budget
   (caller-side; write proof re-run PASS, no regression).
 
-## AA-4 concurrency — landed (2 of 3 gates)
+## AA-4 concurrency — ALL THREE gates landed, PASS on N1
 
-Both use the new `aa4-reexec` payload (execute a clean page, marker, execute the SAME
-unchanged page again) with a self-verifying negative control; additive Machine methods, core
-run loop and W^X service path untouched:
+Additive Machine methods; the core run loop and W^X service path are untouched. The first
+two use the `aa4-reexec` payload with a self-verifying negative control:
 
-- **`aa4-guard-notifier`** — notifier-replacement, **PASS** on N1. A memslot update
-  (delete + re-add slot 0, same backing) fires the mmu-notifier and forces the guard to
-  re-scan an already-approved page (target gen 4→7); without it the page reuses its approval.
-  (`results/aa-4/live-20260720/notifier.out`.)
-- **`aa4-guard-backing`** — backing-replacement, **PASS** on N1. Moving slot 0 to a
-  **distinct byte-identical** backing forces a re-scan (gen 4→7) — the approval is keyed to
-  the mapping, not a content hash. (`results/aa-4/live-20260720/backing.out`.)
+- **`aa4-guard-notifier`** — a memslot update (delete + re-add slot 0, same backing) fires
+  the mmu-notifier and forces a re-scan of an already-approved page (target gen 4→7); without
+  it the page reuses its approval. (`notifier.out`.)
+- **`aa4-guard-backing`** — moving slot 0 to a **distinct byte-identical** backing forces a
+  re-scan — the approval is keyed to the mapping, not a content hash. (`backing.out`.)
+- **`aa4-guard-race`** — two-vCPU scan/write race. A writer vCPU's store to a page frozen for
+  another vCPU's scan is **BLOCKED**; once that scan is approved the same store revokes
+  execute (WRITE), not blocked. Both vCPUs run MMU-off on a guarded VM built without a vGIC
+  (its `CTRL_INIT` finalises the vCPU count to one — KVM returned EBUSY otherwise; the race
+  vCPUs use no interrupt controller). (`race.out`.)
 
-## Still needing dedicated builds
+## Still needing a dedicated build (deferred to a post-window hm-idb follow-up)
 
-- **AA-6 full injection matrix** — needs a `LinuxGuest` armed+delivered run-set record
-  (injecting into the running guest and emitting a record); the bare-payload mini-gate is
-  already DEMONSTRATED above. Touches the run/boot path.
-- **AA-4 two-vCPU scan/write race** — needs a 2-vCPU guarded machine (the harness is
-  single-vCPU throughout); the guard's `is_blocked` path already handles the write-blocked-
-  behind-a-concurrent-scan case, but exercising it live requires the second vCPU.
+- **AA-6 full injection matrix** — the `aa6-matrix` floor requires a `LinuxGuest`
+  armed+delivered run-set record: the Linux guest run under the AA-3 armed-overflow landing
+  mechanism, emitting a `RunRecord`. That reaches into the default `linux_boot`/`run` path and
+  the bare-payload-only record machinery — not an additive, injection-off-byte-identical hook
+  — so per the determinism-core guardrail it is deferred rather than risked in the window. The
+  bare-payload mini-gate is DEMONSTRATED above; the ID-freeze and vGIC round-trip contract
+  halves of AA-6 are PASS.
 
 ## Host kernels built this window (`host/build-window-hosts.sh`)
 
