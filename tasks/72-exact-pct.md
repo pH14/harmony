@@ -27,7 +27,7 @@ Selector/bandit reward machinery), `dissonance/environment/src/host.rs` (`HostFa
 Surface list (frontier waiver of hard rule 1): `dissonance/tactics-pct/` (one new crate, branch
 `task/tactics-pct`; may depend on `dissonance/explorer`, `dissonance/environment`,
 `dissonance/tactics-regime`, and `dissonance/selector-bandit` per the task-64 plugin pattern)
-and `guest/` (the planted-bug payloads this task owns — bug (v), depth-2 ordering, and bug (iv),
+and `harmony-linux/` (the planted-bug payloads this task owns — bug (v), depth-2 ordering, and bug (iv),
 partition-duration, gate 6 — plus init/manifest wiring per task 69's benchmark conventions). The
 census fold, placement sampler, guarantee arithmetic, and arm implementations are pure logic,
 macOS + Linux, mock-testable. The proof gates are **box-only** (patched KVM; tasks 58 + 59

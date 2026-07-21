@@ -290,7 +290,7 @@ or L1 is unstable in ways that survive two independent rebuilds → classify RED
 
 **Question:** Is the nested work clock exact?
 
-This is the highest-value stage; do it before any campaign workloads. Use the det-corpus /
+This is the highest-value stage; do it before any campaign workloads. Use the acceptance-suite /
 contract payloads with analytically known branch counts, plus the existing planner
 (`run_until_overflow` / `single_step`) against randomized targets.
 
@@ -385,7 +385,7 @@ supported mechanism actually enforces that condition and is itself probeable at 
 **Question:** Does the whole system hold its determinism claim as a guest, under a hostile
 host?
 
-Method: run the existing same-seed `state_hash` gates (det-corpus workload; postgres pair;
+Method: run the existing same-seed `state_hash` gates (acceptance-suite workload; postgres pair;
 the standard live gates) entirely nested:
 
 1. **solo baseline** — same-seed twice, bit-identical `state_hash`, console, and event
@@ -464,7 +464,7 @@ the standard corpus. Every sample accounted for.
 ### N-4 — performance envelope + exit-budget memo
 
 Characterization, after correctness — not part of the feasibility claim. Measure nested vs
-bare metal on the same box: wall-clock ratios for boot-to-userspace, det-corpus workloads,
+bare metal on the same box: wall-clock ratios for boot-to-userspace, acceptance-suite workloads,
 a postgres campaign smoke; per-exit-reason counts and costs from the existing exit-count
 machinery; RDTSC exit rate per virtual second; snapshot capture/restore/branch and dirty-log
 capture (the task-95 benches) nested. Deliverable: a short memo with ppm-style ratios and a

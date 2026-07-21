@@ -8,7 +8,7 @@
 > genuinely idles mid-operation** (its create→exec handshake blocks both the parent in `waitpid` and
 > the Go container-init on a futex/exec-fifo at the same instant → kernel idle task → `HLT`), so the VM
 > dies before the container comes up — proven by the task-48 box gate (`runc_launched=true`,
-> `runc_rc=None`, `terminal=Hlt`; see PR #23 + `guest/linux/IMPLEMENTATION.md` task-48 note).
+> `runc_rc=None`, `terminal=Hlt`; see PR #23 + `harmony-linux/linux/IMPLEMENTATION.md` task-48 note).
 >
 > **The principle this task restores:** the run loop is a **discrete-event loop** — always advance
 > V-time *to the next scheduled event*, reaching it **by executing** when there is runnable work
@@ -31,7 +31,7 @@ Read first: `tasks/00-CONVENTIONS.md`, `tasks/47-deterministic-preemption-timer.
 `run_until` machinery + the B≡A counter invariant this must preserve), `consonance/vmm-core/src/vmm.rs`
 (`step()` exit dispatch ~1336–1358, `preemption_deadline()` ~1834, `on_deadline()`), the `VClock`
 (`work_for_vns` / the vns↔work axes), `consonance/lapic/src/lib.rs` (`next_timer_deadline()` — the
-deadline `D`), and `tasks/48-runc-postgres.md` + `guest/linux/IMPLEMENTATION.md` (the finding).
+deadline `D`), and `tasks/48-runc-postgres.md` + `harmony-linux/linux/IMPLEMENTATION.md` (the finding).
 
 ## The change
 
@@ -91,7 +91,7 @@ identical vector. The idle period becomes a **deterministic constant**, never a 
      over execution); overdue ⇒ zero-jump-fire; no-timer/`IF==0` ⇒ terminal. Test against an
      **independent** reference model of "elapsed = execution + idle", not a mirror of the impl.
    - Kani candidate: the clock arithmetic saturates (no wrap; a far-future `D` clamps).
-2. **No regression (byte-identical):** M1/M2/P6, the det-corpus goldens, and the minimal-boot +
+2. **No regression (byte-identical):** M1/M2/P6, the acceptance-suite goldens, and the minimal-boot +
    bare/OCI Postgres `state_hash`es are **byte-unchanged** (the change is strictly additive on the
    idle-HLT path; every existing terminal is `IF==0`/no-timer and stays terminal). Standard gates green
    (build/test/clippy `-D`/fmt/deny/coverage/mutants/public-api); `unsafe` ⇒ Miri.
@@ -114,7 +114,7 @@ is kept for comparison, not a substitute for this gate.
 ## Box-run (foreman, after merge)
 
 Reuse the task-48 setup: `/root/ht42` checked out `task/hlt-resume` + built image
-(`make -C guest fetch && make -C guest/linux docker-image`), then
+(`make -C harmony-linux fetch && make -C harmony-linux/linux docker-image`), then
 `/root/run-patched-ht42.sh 5400 cargo test -p vmm-core --test live_runc_postgres -- --ignored
 --nocapture --test-threads=1 r2_runc_postgres_deterministic_twice_patched` (then r1/r3). Always reverts
-to stock `1396736` via the EXIT trap. Capture the evidence into `guest/linux/IMPLEMENTATION.md`.
+to stock `1396736` via the EXIT trap. Capture the evidence into `harmony-linux/linux/IMPLEMENTATION.md`.

@@ -3,7 +3,7 @@
 //! `#[ignore]`**, on `ssh <det-box>`, CPU-pinned per `docs/BOX-PINNING.md`).
 //!
 //! **Phase A — Linux runs in consonance (THE milestone).**
-//! [`a_linux_boots_to_userspace_stock`] boots the committed `guest/linux/bzImage` +
+//! [`a_linux_boots_to_userspace_stock`] boots the committed `harmony-linux/linux/bzImage` +
 //! `initramfs.cpio.gz` (Linux 6.18.35 + busybox 1.38.0) via
 //! [`vmm_core::vendor::x86::bringup::boot_linux_selected`] over the **stock** `KvmBackend` (with
 //! V-time wired for the emulate-vtime TSC MSRs), drives the event loop under a
@@ -40,7 +40,7 @@
 //! Run on the box (build the guest image first), CPU-pinned and wall-clock-bounded:
 //!
 //! ```sh
-//! make -C guest fetch && make -C guest/linux image     # build bzImage + initramfs
+//! make -C harmony-linux fetch && make -C harmony-linux/linux image     # build bzImage + initramfs
 //! taskset -c 1 timeout 180 cargo test -p vmm-core --test live_linux_boot \
 //!     -- --ignored --nocapture --test-threads=1
 //! ```
@@ -97,7 +97,7 @@ const WALL_BUDGET: Duration = Duration::from_secs(150);
 /// initialized, unpacked the initramfs, reached userspace). This is the milestone
 /// the stock gate asserts.
 const REACHED_USERSPACE: &[u8] = b"Run /init as init process";
-/// The string `guest/linux/init.sh` prints once userspace announces readiness.
+/// The string `harmony-linux/linux/init.sh` prints once userspace announces readiness.
 /// Reaching this additionally requires **userspace console output**, i.e. the
 /// serial-TX path — which the Phase B timer/IRQ delivery (`KvmBackend::inject`)
 /// drains. Reported but not asserted by the stock current-capability gate; the
@@ -110,13 +110,13 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
-/// Read a built guest artifact, trying `guest/build/<name>` (the build output)
-/// then `guest/linux/<name>`. Panics loudly (with the build command) if absent —
+/// Read a built guest artifact, trying `harmony-linux/build/<name>` (the build output)
+/// then `harmony-linux/linux/<name>`. Panics loudly (with the build command) if absent —
 /// these `#[ignore]`d gates run only on the box, where the image is built first.
 fn require_artifact(name: &str) -> Vec<u8> {
     let candidates = [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ];
     for p in &candidates {
         if let Ok(bytes) = std::fs::read(p) {
@@ -124,8 +124,8 @@ fn require_artifact(name: &str) -> Vec<u8> {
         }
     }
     panic!(
-        "guest artifact `{name}` not found in guest/build or guest/linux — build it first on the \
-         box: `make -C guest fetch && make -C guest/linux image`."
+        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
+         box: `make -C harmony-linux fetch && make -C harmony-linux/linux image`."
     );
 }
 
@@ -172,7 +172,7 @@ struct BootOutcome {
     steps: u64,
     /// `true` if the kernel handed control to the userspace init process.
     reached_userspace: bool,
-    /// `true` if `guest/linux/init.sh` announced `GUEST_READY` (needs serial TX).
+    /// `true` if `harmony-linux/linux/init.sh` announced `GUEST_READY` (needs serial TX).
     guest_ready: bool,
     /// `Some` if a `step()` returned an error (a VMM contract violation / backend
     /// error) — the run did **not** stop on a clean guest terminal.
@@ -258,7 +258,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> bool {
 
 // --- Phase A: Linux runs in consonance (achieved) ---------------------------
 
-/// **Phase A — Linux runs in consonance.** Boot the committed `guest/linux`
+/// **Phase A — Linux runs in consonance.** Boot the committed `harmony-linux/linux`
 /// bzImage + busybox initramfs on the stock `KvmBackend` (with V-time wired, since
 /// the contract makes the TSC MSRs emulate-vtime and Linux reads them early), and
 /// assert the achieved end-state honestly: the kernel **reaches userspace `/init`**

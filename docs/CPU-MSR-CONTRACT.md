@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | contract-version | 4 |
-| reference kernel | Linux **v6.18.35** — equals `guest/linux/versions.lock` `KERNEL_VERSION=6.18.35` (tarball sha256 `f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236`); all `arch/x86/kvm/x86.c` and `arch/x86/include/asm/msr-index.h` citations are to that tag |
+| reference kernel | Linux **v6.18.35** — equals `harmony-linux/linux/versions.lock` `KERNEL_VERSION=6.18.35` (tarball sha256 `f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236`); all `arch/x86/kvm/x86.c` and `arch/x86/include/asm/msr-index.h` citations are to that tag |
 | baseline microarchitecture | **`det-cfl-v1`** — Coffee Lake-S client (Intel Core i9-9900K, `06_9e_0c`, microcode `0xf8`); the named baseline of the frozen CPUID model (§2). The host-specific values are derived from and cited to the box dump under `docs/fragments/cfl-baseline/` |
 | contract hash | `contract_hash` = SHA-256 of the canonical serialized form, computed per §6 from the assembled tables — never hand-written into this document |
 
@@ -228,7 +228,7 @@ surfaces above are exactly that trait's enumerated, fail-closed backend-dependen
 
 **Patched-KVM patch series — five patches (`consonance/vmm-backend/kvm-patches/`).** The
 out-of-tree patch is `git am`-clean on the pinned `linux-6.18.35` (KERNEL_VERSION in
-`guest/linux/versions.lock`) and gated, in all five, on the single per-VM opt-in cap
+`harmony-linux/linux/versions.lock`) and gated, in all five, on the single per-VM opt-in cap
 `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` (default-off ⇒ byte-identical stock behavior):
 
 - **0001** — `KVM_EXIT_DETERMINISM` (reason 41) userspace-exit ABI + `kvm_run.determinism`
@@ -462,7 +462,7 @@ because the §1.1 host-assert refuses to run unless the live box matches them. I
 does **not** bit-match the shipping 9900K's full leaf set (the feature/cache/brand surface is
 synthetic, default-deny stripped): the validity criterion is (a) architecturally
 self-consistent per the Intel SDM, (b) the host-forced cells match the box, and (c) it boots
-the task-04 pinned guest (linux 6.18.35, tinyconfig + `guest/linux/config-fragment`). The
+the task-04 pinned guest (linux 6.18.35, tinyconfig + `harmony-linux/linux/config-fragment`). The
 model is a config artifact: its canonical serialization is hashed into the determinism gate
 and any value change bumps the version (§6, Versioning & hashing).
 Antithesis likewise emulates one fixed Skylake-based model; rr records-and-replays every
@@ -672,7 +672,7 @@ exactly as the union of:
   `msrs_to_save_base`, `msrs_to_save_pmu`, `emulated_msrs_all`, and
   `msr_based_features_all_except_vmx`, plus the VMX feature-MSR probe range
   `KVM_FIRST_EMULATED_VMX_MSR..KVM_LAST_EMULATED_VMX_MSR` (0x480–0x491, x86.h:94–95).
-  v6.18.35 is the tag task 04 pins; cross-checked against `guest/linux/versions.lock`
+  v6.18.35 is the tag task 04 pins; cross-checked against `harmony-linux/linux/versions.lock`
   (`KERNEL_VERSION=6.18.35`) — they agree;
 - **(b)** every MSR named in INTEGRATION.md §7; and
 - **(c)** the classes below, each expanded by the stated, mechanically checkable match
@@ -792,7 +792,7 @@ per §7: the task-04 guest kernel is built without PV-clock support.
 Class `kvm-exposed` covers the synthetic MSRs that KVM itself manufactures and advertises
 through `KVM_GET_MSR_INDEX_LIST` — reference-set clause (a), the `emulated_msrs_all` array
 in `arch/x86/kvm/x86.c` at v6.18.35 (lines 394–461; the pin agrees with
-`guest/linux/versions.lock`, KERNEL_VERSION=6.18.35). Match rule: every `HV_X64_MSR_*`
+`harmony-linux/linux/versions.lock`, KERNEL_VERSION=6.18.35). Match rule: every `HV_X64_MSR_*`
 name in that array's `CONFIG_KVM_HYPERV` block (x86.c:398–416) plus every `MSR_KVM_*`
 PV-feature MSR in the array (x86.c:418–419, 459), excluding entries already disposed in
 sibling fragments — the kvmclock fragment owns `MSR_KVM_WALL_CLOCK`/`MSR_KVM_SYSTEM_TIME`
@@ -943,7 +943,7 @@ unset and hides MWAIT so `intel_pstate`/`intel_idle` never bind. The RAPL energy
 are denied as a family: they are a proven physical side channel (Platypus) and
 monotonically reveal real work and real time done by the host. Class match rule (all
 kernel citations at Linux tag v6.18.35, cross-checked against
-`guest/linux/versions.lock` KERNEL_VERSION=6.18.35): the union of (a) exact names
+`harmony-linux/linux/versions.lock` KERNEL_VERSION=6.18.35): the union of (a) exact names
 {`MSR_IA32_APERF`, `MSR_IA32_MPERF`, `MSR_IA32_PERF_CTL`, `MSR_IA32_PERF_STATUS`,
 `MSR_PLATFORM_INFO`, `MSR_PM_ENABLE`, `MSR_IA32_TEMPERATURE_TARGET`,
 `MSR_IA32_ENERGY_PERF_BIAS`, `MSR_CORE_PERF_LIMIT_REASONS`}; (b) prefixes
@@ -976,7 +976,7 @@ v6.18.35.
 | MSR_PKG_CST_CONFIG_CONTROL | 0xe2 | deny-gp | deny-gp | §7 Power/frequency: package C-state limit/demotion config — host idle policy is real-time state, and a guest write would change real host idle behavior; guest has no C-states (MWAIT hidden, HLT idle-skips per INTEGRATION.md §3) | msr-index.h:118; SDM Vol.4 model-specific MSR table |
 | MSR_IA32_MPERF | 0xe7 | deny-gp | deny-gp | §7 Power/frequency: named verbatim in §7 — MPERF reference-cycle counter; APERF/MPERF ratio reveals real host frequency/utilization and reads are serializing on real counters; #GP not zero — Linux probes via rdmsr_safe only when CPUID.6:ECX[0]=1 (hidden) | msr-index.h:960; SDM Vol.3B 15.2; SDM Vol.4 Table 2-2; INTEGRATION.md §7 (Power/frequency) |
 | MSR_IA32_APERF | 0xe8 | deny-gp | deny-gp | §7 Power/frequency: named verbatim in §7 — APERF actual-cycle counter; same canonical frequency/utilization side door as MPERF | msr-index.h:961; SDM Vol.3B 15.2; SDM Vol.4 Table 2-2; INTEGRATION.md §7 (Power/frequency) |
-| MSR_IA32_PERF_STATUS | 0x198 | deny-gp | deny-gp | §7 Power/frequency: current P-state/voltage — real host frequency readout; pinned guest config leaves CONFIG_CPU_FREQ unset so no guest cpufreq driver issues unchecked reads | msr-index.h:950; SDM Vol.3B ch.15; SDM Vol.4 Table 2-2; guest/linux/config-fragment (CONFIG_CPU_FREQ unset) |
+| MSR_IA32_PERF_STATUS | 0x198 | deny-gp | deny-gp | §7 Power/frequency: current P-state/voltage — real host frequency readout; pinned guest config leaves CONFIG_CPU_FREQ unset so no guest cpufreq driver issues unchecked reads | msr-index.h:950; SDM Vol.3B ch.15; SDM Vol.4 Table 2-2; harmony-linux/linux/config-fragment (CONFIG_CPU_FREQ unset) |
 | MSR_IA32_PERF_CTL | 0x199 | deny-gp | deny-gp | §7 Power/frequency: P-state request — a guest write would change the real host clock, perturbing the V-time instrument itself | msr-index.h:951; SDM Vol.3B ch.15; SDM Vol.4 Table 2-2 |
 | MSR_IA32_THERM_CONTROL | 0x19a | deny-gp | deny-gp | §7 Power/frequency: software clock-modulation duty cycle — guest write would throttle the real clock; read reflects host throttle policy | msr-index.h:963; SDM Vol.3B 15.8.3 |
 | MSR_IA32_THERM_INTERRUPT | 0x19b | deny-gp | deny-gp | §7 Power/frequency: thermal interrupt thresholds keyed to real die temperature — both directions tie guest state to host physics | msr-index.h:964; SDM Vol.3B 15.8.2 |
@@ -1351,12 +1351,12 @@ write is safe **iff** the guest never reaches an unguarded `native_wrmsrq(MSR_IA
 Two facts of the pinned task-04 build make that hold, and the contract **binds** them
 (violating either is a contract defect, re-triaged per §1):
 1. **No microcode in the kernel config.** The pinned config is `tinyconfig`
-   (allnoconfig + tiny.config) plus `guest/linux/config-fragment`, and neither selects
+   (allnoconfig + tiny.config) plus `harmony-linux/linux/config-fragment`, and neither selects
    `CONFIG_MICROCODE` — so the in-kernel early/late microcode loader is not compiled in at
    all, and `load_ucode_bsp()`/`microcode_init()` do not exist in the image. (This supersedes
    the earlier worry that `CONFIG_MICROCODE` is unconditionally `def_bool y`: it is *not* set
-   under the pinned tinyconfig base, verified against the merged `guest/linux/config-fragment`.)
-2. **No microcode blob in the initramfs.** The task-04 `guest/linux/build-initramfs.sh`
+   under the pinned tinyconfig base, verified against the merged `harmony-linux/linux/config-fragment`.)
+2. **No microcode blob in the initramfs.** The task-04 `harmony-linux/linux/build-initramfs.sh`
    spec packs exactly `dir /dev /proc /sys /bin`, `file /bin/busybox`, and `file /init` — it
    contains **no `kernel/x86/microcode/GenuineIntel.bin` cpio entry**, so even a
    built-in loader (were one ever enabled) would find no update blob.
@@ -1496,7 +1496,7 @@ not TSC-deadline mode. The task-04 guest kernel drops `CONFIG_X86_X2APIC` as def
 
 ### 3.13 Class `arch-stateful` — architectural guest-writable state
 
-The `arch-stateful` class is the architecturally guest-writable CPU state with no time, entropy, or host-hardware content: its determinism story is capture-and-restore — every `allow-stateful` value below is serialized into the `vm_state` blob per INTEGRATION.md §4 ("vCPU: ... relevant MSRs") — rather than value synthesis, and every deny below follows the §1 mechanism (MSR-filter trap to userspace via `KVM_CAP_X86_USER_SPACE_MSR`/`KVM_MSR_EXIT_REASON_FILTER`, logged with MSR index and RIP, then #GP injected — `deny-ignore-write` likewise logs loudly before dropping). Class membership is mechanically checkable as the union of: (i) the exact names `MSR_EFER`, `MSR_STAR`, `MSR_LSTAR`, `MSR_CSTAR`, `MSR_SYSCALL_MASK` (IA32_FMASK), `MSR_IA32_SYSENTER_CS/ESP/EIP`, `MSR_FS_BASE`, `MSR_GS_BASE`, `MSR_KERNEL_GS_BASE`, `MSR_IA32_CR_PAT` (IA32_PAT), and `MSR_TSC_AUX` in `arch/x86/include/asm/msr-index.h` at v6.18.35 (`MSR_TSC_AUX` matches the rule but is disposed in the TSC-plumbing fragment because of its RDTSCP coupling — not duplicated here); (ii) the non-time, non-speculation, non-PT, non-debug members of `arch/x86/kvm/x86.c:msrs_to_save_base` (x86.c:331–356) — the SYSENTER/SYSCALL block, IA32_PAT, `MSR_VM_HSAVE_PA`, `MSR_IA32_BNDCFGS`, `MSR_IA32_XFD/XFD_ERR/XSS`, and the CET block; `IA32_TSC`, `MSR_TSC_AUX`, `MSR_IA32_FEAT_CTL`, `MSR_IA32_SPEC_CTRL`, `MSR_IA32_TSX_CTRL`, `MSR_IA32_RTIT_*`, `MSR_IA32_UMWAIT_CONTROL`, `MSR_IA32_DEBUGCTLMSR`, and the LASTBRANCH/LASTINT MSRs in that same array belong to sibling fragments; (iii) from `emulated_msrs_all` (x86.c:394–460): `MSR_IA32_MISC_ENABLE`, the `MSR_IA32_MCG_*` trio, `MSR_IA32_SMBASE`, `MSR_MISC_FEATURES_ENABLES`, `MSR_K7_HWCR`; and (iv) two ranges expanded by stated match rules — machine-check banks via `MSR_IA32_MCx_CTL(x) = 0x400+4x` and `MSR_IA32_MCx_CTL2(x) = 0x280+x` (msr-index.h:580, 589) for the frozen bank count, and MTRRs via every name matching `MSR_MTRRfix*` or `MSR_MTRRdefType` (msr-index.h:382–393) plus the variable-range pairs `MTRRphysBase_MSR(n)/MTRRphysMask_MSR(n) = 0x200+2n/0x201+2n` (n=0..7, the eight pairs enumerated by `MSR_MTRRcap` VCNT below) and the capability register `MSR_MTRRcap` (0xfe); and (v) two CPUID-implied MSRs the frozen model advertises and the guest therefore reads — `MSR_IA32_APICBASE` (0x1b, implied by CPUID.1:EDX[9] APIC) and `MSR_MTRRcap` (0xfe, implied by CPUID.1:EDX[12] MTRR) — both added at this revision to close the gate-5 contradictions GPT-5.5's review identified (a CPUID-advertised feature whose MSR had no row). The reference tag v6.18.35 was cross-checked against `guest/linux/versions.lock` (`KERNEL_VERSION=6.18.35`) — they agree. Dispositions use the §3 vocabulary verbatim, one token per direction; `x86.c` and `msr-index.h` citations below are to those two files at v6.18.35, and `SDM` is the Intel Software Developer's Manual.
+The `arch-stateful` class is the architecturally guest-writable CPU state with no time, entropy, or host-hardware content: its determinism story is capture-and-restore — every `allow-stateful` value below is serialized into the `vm_state` blob per INTEGRATION.md §4 ("vCPU: ... relevant MSRs") — rather than value synthesis, and every deny below follows the §1 mechanism (MSR-filter trap to userspace via `KVM_CAP_X86_USER_SPACE_MSR`/`KVM_MSR_EXIT_REASON_FILTER`, logged with MSR index and RIP, then #GP injected — `deny-ignore-write` likewise logs loudly before dropping). Class membership is mechanically checkable as the union of: (i) the exact names `MSR_EFER`, `MSR_STAR`, `MSR_LSTAR`, `MSR_CSTAR`, `MSR_SYSCALL_MASK` (IA32_FMASK), `MSR_IA32_SYSENTER_CS/ESP/EIP`, `MSR_FS_BASE`, `MSR_GS_BASE`, `MSR_KERNEL_GS_BASE`, `MSR_IA32_CR_PAT` (IA32_PAT), and `MSR_TSC_AUX` in `arch/x86/include/asm/msr-index.h` at v6.18.35 (`MSR_TSC_AUX` matches the rule but is disposed in the TSC-plumbing fragment because of its RDTSCP coupling — not duplicated here); (ii) the non-time, non-speculation, non-PT, non-debug members of `arch/x86/kvm/x86.c:msrs_to_save_base` (x86.c:331–356) — the SYSENTER/SYSCALL block, IA32_PAT, `MSR_VM_HSAVE_PA`, `MSR_IA32_BNDCFGS`, `MSR_IA32_XFD/XFD_ERR/XSS`, and the CET block; `IA32_TSC`, `MSR_TSC_AUX`, `MSR_IA32_FEAT_CTL`, `MSR_IA32_SPEC_CTRL`, `MSR_IA32_TSX_CTRL`, `MSR_IA32_RTIT_*`, `MSR_IA32_UMWAIT_CONTROL`, `MSR_IA32_DEBUGCTLMSR`, and the LASTBRANCH/LASTINT MSRs in that same array belong to sibling fragments; (iii) from `emulated_msrs_all` (x86.c:394–460): `MSR_IA32_MISC_ENABLE`, the `MSR_IA32_MCG_*` trio, `MSR_IA32_SMBASE`, `MSR_MISC_FEATURES_ENABLES`, `MSR_K7_HWCR`; and (iv) two ranges expanded by stated match rules — machine-check banks via `MSR_IA32_MCx_CTL(x) = 0x400+4x` and `MSR_IA32_MCx_CTL2(x) = 0x280+x` (msr-index.h:580, 589) for the frozen bank count, and MTRRs via every name matching `MSR_MTRRfix*` or `MSR_MTRRdefType` (msr-index.h:382–393) plus the variable-range pairs `MTRRphysBase_MSR(n)/MTRRphysMask_MSR(n) = 0x200+2n/0x201+2n` (n=0..7, the eight pairs enumerated by `MSR_MTRRcap` VCNT below) and the capability register `MSR_MTRRcap` (0xfe); and (v) two CPUID-implied MSRs the frozen model advertises and the guest therefore reads — `MSR_IA32_APICBASE` (0x1b, implied by CPUID.1:EDX[9] APIC) and `MSR_MTRRcap` (0xfe, implied by CPUID.1:EDX[12] MTRR) — both added at this revision to close the gate-5 contradictions GPT-5.5's review identified (a CPUID-advertised feature whose MSR had no row). The reference tag v6.18.35 was cross-checked against `harmony-linux/linux/versions.lock` (`KERNEL_VERSION=6.18.35`) — they agree. Dispositions use the §3 vocabulary verbatim, one token per direction; `x86.c` and `msr-index.h` citations below are to those two files at v6.18.35, and `SDM` is the Intel Software Developer's Manual.
 
 | MSR | Index | Read | Write | Rationale | Citation |
 |---|---|---|---|---|---|
@@ -1830,7 +1830,7 @@ below is either routed to `TimerQueue`/V-time-backed userspace emulation or made
 unreachable; **none is ever backed by a host clock** (`ktime_get()`, host hrtimers, host
 TSC, host CMOS). The split-irqchip/in-kernel-LAPIC path is rejected for exactly this reason
 (§3.12): its timer runs on host hrtimers. The reference for "what time sources the pinned
-guest can touch" is the task-04 kernel config (`guest/linux/config-fragment`) plus the x86
+guest can touch" is the task-04 kernel config (`harmony-linux/linux/config-fragment`) plus the x86
 architectural device set.
 
 **Device table.** Column grammar: `| Device | Port / MMIO | Read | Write | Result | Rationale | Citation |`.

@@ -21,7 +21,7 @@ Phase I row); `docs/DISSONANCE.md` (the `Event` service, guest planes, enforceme
 discipline); `tasks/64-explorer-spine-refactor.md` (`Matchable`/`Sensor`/`Record` — the traits you
 implement) plus `tasks/65/66/73-*.md` as landed; `consonance/hypercall-proto/src/lib.rs`
 (`ServiceId::Event`, `event_emit`, `MAX_PAYLOAD`); `tasks/61-net-vertical.md` (the guest-agent
-precedent) and `tasks/29-telemetry-console.md` (the std-only-server precedent); `guest/linux/`
+precedent) and `tasks/29-telemetry-console.md` (the std-only-server precedent); `harmony-linux/linux/`
 (`runc-init.sh`, `build-initramfs.sh` — the image conventions).
 
 ## Environment
@@ -34,8 +34,8 @@ revert KVM to stock **1396736** and verify after any patched run.
 
 Surface list (frontier waiver of hard rule 1): `dissonance/otel/` (new crate; depends on
 `dissonance/explorer` for the spine traits — the sanctioned plugin-crate exception to rule 2 per
-task 64, call it out in `IMPLEMENTATION.md`); `guest/otel-bridge/` (new; lives under the root
-workspace's existing `guest` exclude, so no root-file edit); `guest/linux/` (init-script + image
+task 64, call it out in `IMPLEMENTATION.md`); `harmony-linux/otel-bridge/` (new; lives under the root
+workspace's existing `guest` exclude, so no root-file edit); `harmony-linux/linux/` (init-script + image
 additions per the existing `build-*.sh` conventions); `consonance/vmm-core/tests/live_otel_channel.rs`
 (box harness only — **no production vmm-core changes**). If task 43 has landed by dispatch, read
 `guest/` as `harmony-linux/`.
@@ -47,7 +47,7 @@ already-instrumented workload emits a structured causal record with **zero recom
 `OTEL_EXPORTER_OTLP_ENDPOINT` at the bridge and it flows. The load-bearing insight (Mallory's):
 **spans' parent/child + link edges ARE the happens-before graph.**
 
-## The guest bridge (`guest/otel-bridge`)
+## The guest bridge (`harmony-linux/otel-bridge`)
 
 A static Linux binary baked into the workload initramfs, started by the init script before the
 workload (guest-resident code — Linux-only per the task-61 precedent; note it in the PR).

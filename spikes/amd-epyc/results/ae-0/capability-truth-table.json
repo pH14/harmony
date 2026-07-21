@@ -1,0 +1,45 @@
+{
+  "schema": "amd-epyc-ae0-capability-v1",
+  "cpuid_vendor": "AuthenticAMD",
+  "max_extended_leaf": "0x80000020",
+  "cpuid1_eax_signature": "0x00870f10",
+  "family_base": 15,
+  "family_ext": 8,
+  "model_base": 1,
+  "model_ext": 7,
+  "stepping": 0,
+  "rdrand": true,
+  "rdseed": true,
+  "svm_supported": true,
+  "rdtscp": true,
+  "invariant_tsc": true,
+  "svm": {
+    "revision": 1, "nasid": 32768, "features_edx": "0x0013bcff",
+    "nested_paging": true,
+    "lbr_virt": true,
+    "svm_lock": true,
+    "nrip_save": true,
+    "tsc_rate_msr": true,
+    "vmcb_clean": true,
+    "flush_by_asid": true,
+    "decode_assists": true,
+    "pause_filter": true,
+    "pause_filter_threshold": true,
+    "avic": true,
+    "v_vmsave_vmload": true,
+    "vgif": true
+  },
+  "pmu": {
+    "leaf_present": false, "perfmon_v2": false, "model": "legacy-per-counter-PERF_CTL/CTR"
+  },
+  "single_step_surface": {
+    "rflags_tf": true, "debugctl_btf": true, "dr_breakpoints": 4,
+    "note": "BTF/TF/DR architectural on AMD64; #DB-under-SVM behavior is the AE-2 empirical question"
+  },
+  "ex_ret_brn_tkn_openable": {
+    "event": "0xc4",
+    "opened": true, "count": 1000005, "non_multiplexed": true, "read_ok": true
+  },
+  "trivial_overflow_delivers_sample": {"opened": true, "mmap": true, "samples": 20, "delivered": true},
+  "probe": "done"
+}

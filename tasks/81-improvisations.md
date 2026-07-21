@@ -16,7 +16,7 @@ Read first: `tasks/00-CONVENTIONS.md`, `docs/RESOLUTION.md` ("The search-surface
 "Improvisations"), `docs/DISSONANCE.md` ("The control transport (verbs)" — the no-bare-`restore`
 / fail-loud ethos this extends), `consonance/vmm-core/src/snapshot.rs` (the lineage the taint bit
 rides), the serial-console path in `consonance/vmm-core` (task 33 wired serial + IRQ),
-`guest/linux/` image config (a serial shell must exist for `exec` to talk to).
+`harmony-linux/linux/` image config (a serial shell must exist for `exec` to talk to).
 
 ## Environment
 
@@ -27,7 +27,7 @@ KVM, det-cfl-v1, Postgres image). Pin per `docs/BOX-PINNING.md`; always revert K
 
 Surface list (frontier waiver of hard rule 1): `consonance/vmm-core` (serial input injection,
 exec session, taint bit on snapshot lineage), `dissonance/control-proto` (the `exec` verb +
-`ControlError::Tainted` + a `tainted` flag where snapshots surface), `guest/linux/` (image
+`ControlError::Tainted` + a `tainted` flag where snapshots surface), `harmony-linux/linux/` (image
 config: a root shell on the serial console — note the `MANIFEST.sha256` implications and record
 them; coordinate with the task-90 hashed-input ruling).
 

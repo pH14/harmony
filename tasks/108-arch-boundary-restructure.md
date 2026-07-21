@@ -83,7 +83,7 @@ touch it.
   expected.
 - **public-api snapshots** regenerated for touched crates that have them — the API *will*
   change; the snapshot diff is the reviewable record of exactly how.
-- det-corpus / determinism suites for the touched crates (the state-hash stability check).
+- acceptance-suite / determinism suites for the touched crates (the state-hash stability check).
 
 ## Environment
 

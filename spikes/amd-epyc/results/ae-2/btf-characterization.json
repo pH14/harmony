@@ -1,0 +1,8 @@
+[
+  {"kind":"singlestep","mode":"btf","payload":"nop_sled","k":64,"db_exits":0,"oracle_instr":64,"oracle_taken":0,"oracle_used":0,"guest_tf_kept":1,"hlt_ok":1,"exact":1},
+  {"kind":"singlestep","mode":"btf","payload":"loop","k":64,"db_exits":0,"oracle_instr":129,"oracle_taken":63,"oracle_used":63,"guest_tf_kept":1,"hlt_ok":1,"exact":0},
+  {"kind":"singlestep","mode":"btf","payload":"jmp_chain","k":64,"db_exits":0,"oracle_instr":64,"oracle_taken":64,"oracle_used":64,"guest_tf_kept":1,"hlt_ok":1,"exact":0},
+  {"kind":"singlestep","mode":"btf","payload":"sti_shadow","k":64,"db_exits":0,"oracle_instr":3,"oracle_taken":0,"oracle_used":0,"guest_tf_kept":1,"hlt_ok":1,"exact":1},
+  {"kind":"singlestep","mode":"btf","payload":"movss_shadow","k":64,"db_exits":0,"oracle_instr":3,"oracle_taken":0,"oracle_used":0,"guest_tf_kept":1,"hlt_ok":1,"exact":1},
+  {"kind":"end","mode":"btf","rc":1}
+]

@@ -113,6 +113,9 @@ pub enum CheckId {
     RecordsSha256,
     /// The sample ids are exactly `0..attempted`, each present once.
     Totality,
+    /// For single-step evidence: every one of the `planned` samples is represented
+    /// (a dropped planned sample cannot hide behind densely-renumbered step records).
+    StepTotality,
     /// Every armed overflow was delivered exactly once.
     Multiplicity,
     /// The manifest carries measured weights (else counts cannot be checked).
@@ -178,6 +181,7 @@ impl CheckId {
             CheckId::WellFormed => "well-formed",
             CheckId::RecordsSha256 => "records-sha256",
             CheckId::Totality => "totality",
+            CheckId::StepTotality => "step-totality",
             CheckId::Multiplicity => "multiplicity",
             CheckId::WeightsPresent => "weights-present",
             CheckId::CountExactness => "count-exactness",
@@ -359,6 +363,7 @@ fn run_stage_checks(
     check_well_formed(run_set, records, out);
     check_records_sha256(run_set, records_bytes, out);
     check_totality(run_set, records, out);
+    check_step_totality(run_set, records, out);
     check_multiplicity(run_set, records, out);
     check_weights_and_counts(run_set, records, out);
     check_skid(run_set, records, out);
@@ -625,26 +630,48 @@ fn check_aggregation(
         }
     }
 
-    // Pinning is the PMU/skid measurement environment: two sets pinned to DIFFERENT cores (or
-    // under different governors) are a different measurement, not one summed population, so
-    // NORMAL sets must share one pinning posture. The ONE exception is AA-1's sanctioned
-    // migration probe, which runs UNPINNED by design — so it is exempt, while every other set
-    // (AA-1's ordinary condition sets included) is held to the first non-probe set's posture.
-    // Comparing against a non-probe reference (not simply the first set) is what stops a probe
-    // that happens to sort first from letting the normal sets diverge. Outside AA-1 there is no
-    // probe, so this reduces to "all sets share pinning".
+    // Pinning is the PMU/skid measurement environment. Two sets under different GOVERNORS, or
+    // one pinned and one not, are a different measurement, so NORMAL sets must share that
+    // posture. The CORE, however, is treated differently by stage:
+    //
+    // - Outside AA-1: normal sets must share ONE pinned core (the strict serial posture).
+    // - AA-1 (Paul's 2026-07-17 parallel ruling): shards may pin to DIFFERENT cores. Altra has
+    //   no SMT, so a tuple on its own dedicated core still satisfies the pinning discipline even
+    //   with every sibling core busy; and BR_RETIRED is a PER-CORE, frequency-independent V-time
+    //   count (AA-1(b)), so a per-shard core cannot hide a count change — a real divergence
+    //   surfaces as count != oracle (count-exactness, graded per set) or as a solo != co-tenant
+    //   state_digest (host/aa1c-determinism-check.py), both elsewhere. Running the matrix
+    //   concurrently across cores IS the co-tenant determinism stress test, so per-core shards
+    //   are the intended posture, not a violation. The weights/perf/environment/mechanism/images
+    //   comparison above still binds, so a count change cannot hide behind a compensating
+    //   constants-pack difference either.
+    //
+    // The ONE unpinned exception (the migration probe) is filtered out first, and the reference
+    // is a non-probe set so a probe sorting first cannot let the normal sets diverge.
     if let Some(reference) = loaded
         .iter()
         .map(|(rs, _, _)| rs)
         .find(|rs| !rs.pinning.migration_probe)
     {
         for (rs, _, _) in loaded {
-            if !rs.pinning.migration_probe && rs.pinning != reference.pinning {
+            if rs.pinning.migration_probe {
+                continue;
+            }
+            // Per-shard cores are permitted at EVERY stage (Paul's 2026-07-17 ruling extended to
+            // AA-3..AA-6): on a no-SMT box a tuple owns its physical core even with every sibling
+            // busy, and BR_RETIRED is per-core V-time, so sharding the matrix across cores is the
+            // intended posture. Only the pinned flag and governor must match (the skid/PMU
+            // measurement environment); AA-3's skid is EXACT (0) so per-core cannot move it, and
+            // count changes still surface as count!=oracle or a solo!=cotenant digest. The
+            // weights/perf/environment/mechanism/images comparison above still binds.
+            let posture_ok = rs.pinning.pinned == reference.pinning.pinned
+                && rs.pinning.governor == reference.pinning.governor;
+            if !posture_ok {
                 problems.push(format!(
                     "run-set {} pins to a different posture (pinned {:?}, core {:?}, governor {}) \
                      than the aggregate ({} — pinned {:?}, core {:?}, governor {}): normal sets \
-                     must share ONE pinned core and governor; only AA-1's migration probe may \
-                     run unpinned",
+                     must share the pinned flag and governor (per-shard cores are permitted); only \
+                     AA-1's migration probe may run unpinned",
                     rs.run_set_id,
                     rs.pinning.pinned,
                     rs.pinning.core,
@@ -1070,6 +1097,9 @@ fn check_well_formed(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outc
     if run_set.perf.sample_period == Some(0) {
         problems.push("perf.sample_period is 0 (schema minimum is 1)".to_string());
     }
+    if run_set.planned == 0 {
+        problems.push("planned is 0 (schema minimum is 1)".to_string());
+    }
 
     // Every record's condition is non-empty, and its state_digest is present (schema
     // `minLength: 1`). The digest matters even for armed/stepped records that also carry a
@@ -1099,6 +1129,25 @@ fn check_well_formed(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outc
                  single-step OR an armed landing, never both",
                 r.sample_id
             ));
+        }
+        // A step record's window count is EXEMPT from the oracle (a bounded AA-2 run may never
+        // reach MARK_END, so its count is not the oracle's — check_counts skips it), but its
+        // window endpoints must still be self-consistent: `measured_taken == work_end -
+        // work_begin`, with `work_end >= work_begin`. Non-step records get this identity from
+        // check_counts (which also grades them against the oracle); a step record gets it here,
+        // so exempting it from the oracle never lets a self-contradictory window through.
+        if r.step.is_some() {
+            match r.work_end.checked_sub(r.work_begin) {
+                Some(delta) if delta == r.measured_taken => {}
+                Some(delta) => problems.push(format!(
+                    "record {}: step-record measured_taken {} != work_end - work_begin ({delta})",
+                    r.sample_id, r.measured_taken
+                )),
+                None => problems.push(format!(
+                    "record {}: step-record work_end {} is before work_begin {} (negative window)",
+                    r.sample_id, r.work_end, r.work_begin
+                )),
+            }
         }
     }
 
@@ -1215,6 +1264,93 @@ fn check_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome
     out.push(fail(CheckId::Totality, problems.join("; ")));
 }
 
+/// Single-step totality: every PLANNED sample is represented in the step records.
+///
+/// In single-step mode one planned sample emits many step records, so the harness
+/// densely renumbers `sample_id` (making record-level [`check_totality`] pass over
+/// `0..attempted`) — which, on its own, would let a run that dropped a later planned
+/// sample after earlier ones emitted steps present a contiguous, complete-looking
+/// manifest. This check closes that with `planned_sample_id`, copied from the pre-execution plan
+/// into every emitted step and never renumbered. The distinct ids must be exactly `0..planned`.
+/// Duplicating one run's `step_index == 0` record while omitting another plan entry therefore
+/// remains a visible missing id instead of satisfying a count.
+///
+/// Runs off required schema-v4 `run_set.planned`. Non-step run-sets are unaffected
+/// (no step records → the check does not apply).
+fn check_step_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    let planned_ids: BTreeSet<u64> = records
+        .iter()
+        .filter_map(|r| r.step.as_ref().map(|s| s.planned_sample_id))
+        .collect();
+    let any_steps = records.iter().any(|r| r.step.is_some());
+    if !any_steps {
+        // Not a single-step run-set — record-level totality already covers it.
+        return;
+    }
+    let planned = run_set.planned;
+    if planned == 0 {
+        out.push(fail(
+            CheckId::StepTotality,
+            "manifest planned is 0 — a step run that intended no sample measures nothing",
+        ));
+        return;
+    }
+
+    // Compute the missing cardinality arithmetically. `planned` is untrusted
+    // manifest input; collecting `0..planned` would hang or exhaust memory for
+    // values such as u64::MAX. The preview walk stops after eight gaps and is
+    // therefore bounded by the number of present ids plus eight.
+    let in_range_seen = planned_ids.iter().filter(|id| **id < planned).count() as u64;
+    let missing_count = planned.saturating_sub(in_range_seen);
+    let mut missing_preview = Vec::new();
+    if missing_count > 0 {
+        for id in 0..planned {
+            if !planned_ids.contains(&id) {
+                missing_preview.push(id);
+                if missing_preview.len() == 8 {
+                    break;
+                }
+            }
+        }
+    }
+    let out_of_range: Vec<u64> = planned_ids
+        .iter()
+        .copied()
+        .filter(|id| *id >= planned)
+        .collect();
+
+    if missing_count == 0 && out_of_range.is_empty() {
+        out.push(pass(
+            CheckId::StepTotality,
+            format!(
+                "all {planned} planned sample id(s) 0..{planned} represented in the step records"
+            ),
+        ));
+        return;
+    }
+
+    let mut problems = Vec::new();
+    if missing_count > 0 {
+        problems.push(format!(
+            "{missing_count} missing planned sample id(s) {}",
+            preview_of(&missing_preview, missing_count)
+        ));
+    }
+    if !out_of_range.is_empty() {
+        problems.push(format!(
+            "planned sample ids outside 0..{planned}: {}",
+            preview(out_of_range.into_iter())
+        ));
+    }
+    out.push(fail(
+        CheckId::StepTotality,
+        format!(
+            "{} (dense record renumbering or duplicate step-zero rows cannot mask a dropped plan entry)",
+            problems.join("; ")
+        ),
+    ));
+}
+
 fn check_multiplicity(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
     let mut lost: Vec<u64> = Vec::new();
     let mut duplicated: Vec<u64> = Vec::new();
@@ -1311,11 +1447,26 @@ fn check_weights_and_counts(run_set: &RunSet, records: &[RunRecord], out: &mut V
         CheckId::WeightsPresent,
         "the manifest carries measured weights",
     ));
-    check_counts(&weights, records, out);
+    check_counts(&weights, records, run_set.stage, out);
 }
 
-fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>) {
+fn check_counts(weights: &Weights, records: &[RunRecord], stage: Stage, out: &mut Vec<Outcome>) {
     let mut problems: Vec<String> = Vec::new();
+    // AA-3-only: `wfi-idle` is EXEMPT from the window-count oracle (foreman ruling 2026-07-17).
+    // Its WFI is resumed by a timer whose firing shifts under the exact landing's slow single-
+    // step, so its retired-branch count comes back short and varying — a REAL-TIME (non-work-
+    // derived) time dependency that is AA-5's paravirt-clock domain, not an AA-3 force-exit
+    // mechanism failure (the landing itself is exact for `wfi-idle` too). AA-3 grades count
+    // exactness on the seven deterministic-count payloads; `wfi-idle`'s window self-consistency
+    // (`measured_taken == work_end - work_begin`, above) is still enforced. Recorded as an
+    // AA-5-domain finding in the spike report. This exemption is AA-3-specific: at AA-1
+    // `wfi-idle` counts exactly (free-run) and binds.
+    let mut wfi_exempt: usize = 0;
+    // How many records were actually graded against the oracle (non-step records). AA-2 step
+    // records are exempt (see below), so the verdict says how many it graded vs skipped rather
+    // than claiming to have checked records it deliberately did not.
+    let mut graded: usize = 0;
+    let stepped = records.iter().filter(|r| r.step.is_some()).count();
 
     // Memoize the oracle by `(payload, scale, seed)`. `expected` iterates the FULL
     // scale (for branch-dense, `2 * trips` PRNG steps at 1e8 = 2×10⁸ per call), and
@@ -1331,6 +1482,18 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
     let mut oracle_trips: u64 = 0;
 
     for r in records {
+        // AA-2 single-step records are EXEMPT from the window-count oracle. A bounded stepped
+        // run (stopped at `--max-steps` before MARK_END — how the llsc livelock is bounded)
+        // never closes its window, so its count is not the oracle's; and a step record's
+        // acceptance is check_debug_evidence / check_replay_identity, not the window-count
+        // oracle. Grading it here would reject a legitimately bounded run. Its window
+        // endpoints' self-consistency (`measured_taken == work_end - work_begin`) is still
+        // enforced — by check_well_formed, on every step record.
+        if r.step.is_some() {
+            continue;
+        }
+        graded += 1;
+
         // Recompute the measured count from the two window endpoints, and fail the
         // record's own `measured_taken` if it disagrees.
         match r.work_end.checked_sub(r.work_begin) {
@@ -1347,6 +1510,13 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
 
         // The oracle is only defined for payloads that have a counting window.
         if !r.payload.has_window() {
+            continue;
+        }
+
+        // AA-3 `wfi-idle` exemption (see the top of this fn): skip the oracle comparison, its
+        // self-consistency already checked above. Never at AA-1 (there it binds).
+        if stage == Stage::Aa3 && r.payload == Payload::WfiIdle {
+            wfi_exempt += 1;
             continue;
         }
 
@@ -1400,7 +1570,7 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
             )),
             Some(predicted) if predicted != r.measured_taken => problems.push(format!(
                 "sample {}: payload {} scale {} seed {}: oracle predicts {predicted} \
-                 taken branches but the record measured {}",
+                 branch-instruction events but the record measured {}",
                 r.sample_id,
                 r.payload.name(),
                 r.scale.name(),
@@ -1411,13 +1581,26 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
         }
     }
 
+    let wfi_note = if wfi_exempt > 0 {
+        format!(
+            "; {wfi_exempt} AA-3 wfi-idle record(s) exempt — its timer resume is real-time \
+             (non-work-derived), AA-5's paravirt-clock domain, not an AA-3 mechanism failure"
+        )
+    } else {
+        String::new()
+    };
     verdict(
         CheckId::CountExactness,
         &problems,
-        format!(
-            "all {} records match the oracle and are self-consistent",
-            records.len()
-        ),
+        if stepped == 0 {
+            format!("all {graded} records match the oracle and are self-consistent{wfi_note}")
+        } else {
+            format!(
+                "all {graded} counting record(s) match the oracle and are self-consistent \
+                 ({stepped} AA-2 step record(s) exempt — graded by debug-evidence/replay-identity)\
+                 {wfi_note}"
+            )
+        },
         out,
     );
 }
@@ -2055,7 +2238,7 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
 }
 
 /// The key a repetition is *the same run* under: same payload, scale, seed,
-/// condition, the same target **delta** (armed runs), and the same **step moment**
+/// condition, the same target **delta** (armed runs), and the same **step index**
 /// (stepped AA-2 runs).
 ///
 /// The delta is `target - work_begin`, NOT the absolute target. The plan reuses one
@@ -2067,19 +2250,15 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
 /// record where `target < work_begin` (a negative delta) is caught separately by
 /// [`check_replay_identity`].
 ///
-/// The step moment (`pc_before`, transition) is what makes an AA-2 stepped record a
-/// distinct experiment: two step points of the SAME input — an `SVC` exception entry and
-/// its `ERET` — share payload/scale/seed/condition and carry no target, so without it they
-/// group together and their necessarily-different `step_digest`s read as false divergence.
-/// Keying by the step moment groups each point with its own repetitions instead.
-type RepKey = (
-    String,
-    String,
-    u64,
-    String,
-    Option<i128>,
-    Option<(u64, StepTransition)>,
-);
+/// The **step index** (position within the stepped run) is what makes an AA-2 stepped record a
+/// distinct experiment: a whole stepped run has MANY step records under one
+/// payload/scale/seed/condition, each a different step with its own `step_digest`, so without it
+/// they all group together and read as a false divergence. Keying by `step_index` compares step N
+/// of one rep to step N of another instead — so a loop that revisits one `pc_before` across
+/// iterations (each a different state) is not false divergence, and a rep with fewer steps
+/// surfaces as a missing position. (`pc_before`/transition cannot do this: a loop body revisits
+/// one `pc_before` many times with different state, which would false-diverge.)
+type RepKey = (String, String, u64, String, Option<i128>, Option<u64>);
 
 fn rep_key(r: &RunRecord) -> RepKey {
     (
@@ -2090,7 +2269,7 @@ fn rep_key(r: &RunRecord) -> RepKey {
         r.overflow
             .as_ref()
             .map(|o| i128::from(o.target) - i128::from(r.work_begin)),
-        r.step.as_ref().map(|s| (s.pc_before, s.transition)),
+        r.step.as_ref().map(|s| s.step_index),
     )
 }
 
@@ -2226,12 +2405,37 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
     }
 
     let mut compared = 0usize;
+    let mut llsc_hazard: Vec<String> = Vec::new();
     for (key, digests) in &groups {
         let reps: usize = digests.values().map(Vec::len).sum();
         if reps < 2 {
             continue;
         }
         compared += 1;
+        // Two payloads carry a KNOWN non-mechanism non-determinism that AA-3's force-exit test
+        // must not fail on (both recorded here, never silently absorbed):
+        //  - llsc-atomics — the §4 LL/SC hazard (a host IRQ between LDXR/STXR clears the monitor;
+        //    spontaneous on harmony-arm, AA1-F2). Present at AA-1 AND AA-3: both run the current
+        //    payload BEFORE AA-4's LSE-only contract closes it. AA-4's ladder is what makes it
+        //    bind; here it is AA-4's threat datum.
+        //  - wfi-idle at AA-3 — its WFI is resumed by a timer whose firing shifts under the exact
+        //    landing's slow single-step, a real-time (non-work-derived) dependency that is AA-5's
+        //    paravirt-clock domain (foreman ruling 2026-07-17; also count-exempt at AA-3).
+        // Every OTHER payload binds, and both bind once AA-4/AA-5 close their hazards.
+        let carved = (matches!(stage, Stage::Aa1 | Stage::Aa3)
+            && key.0 == Payload::LlscAtomics.name())
+            || (stage == Stage::Aa3 && key.0 == Payload::WfiIdle.name());
+        if carved && digests.len() > 1 {
+            llsc_hazard.push(format!(
+                "{} scale {} seed {}: {} reps over {} distinct digests",
+                key.0,
+                key.1,
+                key.2,
+                reps,
+                digests.len()
+            ));
+            continue;
+        }
         if digests.len() > 1 {
             // Name the diverging samples: one representative id per distinct digest,
             // in sorted-digest order, so the detail is reproducible.
@@ -2263,6 +2467,17 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
         out.push(fail(CheckId::ReplayIdentity, join_problems(&problems)));
         return;
     }
+    // The llsc hazard note rides the PASS detail so the measured divergence is on the
+    // face of the verdict (it is AA-4's threat-model datum), never silently absorbed.
+    let llsc_note = if llsc_hazard.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; non-mechanism divergence observed and recorded (llsc §4 hazard = AA-4 input; \
+             wfi-idle timer = AA-5 paravirt-clock domain): {}",
+            llsc_hazard.join("; ")
+        )
+    };
 
     // AA-5 acceptance is TWO bit-identical mechanisms: a work-derived clock-page run AND a
     // Linux-guest boot, each replayed same-seed. BOTH classes must be present AND repeated — a
@@ -2428,7 +2643,9 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
     } else {
         out.push(pass(
             CheckId::ReplayIdentity,
-            format!("{compared} repeated group(s) landed on bit-identical state digests"),
+            format!(
+                "{compared} repeated group(s) landed on bit-identical state digests{llsc_note}"
+            ),
         ));
     }
 }
@@ -2534,7 +2751,7 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
         // not the transfer. So `delta == 1` is forced only where the architecture
         // guarantees a retired branch; the exception/WFI/injection classes are where AA-2
         // *measures* the weight (e.g. ERET's is unknown by construction), bounded only by
-        // "a single step retires at most one taken branch".
+        // "a single step retires at most one branch instruction".
         match s.transition {
             StepTransition::Sequential => {
                 if s.br_retired_delta != 0 {
@@ -2562,6 +2779,30 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
                 "sample {}: a taken branch must increment BR_RETIRED by exactly 1, but delta is {}",
                 r.sample_id, s.br_retired_delta
             )),
+            // A NOT-taken branch fell through to PC+4 but the branch INSTRUCTION still retired: on
+            // N1 BR_RETIRED counts branch instructions taken AND not-taken (AA1-F1), so the delta
+            // is exactly 1 — unlike a `Sequential` non-branch (delta 0). And, having fallen
+            // through, it must land at EXACTLY PC+4 (a fixed 4-byte instruction), or it did not
+            // fall through at all. Both bind: delta 1 keeps it off the sequential rule, PC+4 keeps
+            // it off the taken-branch (which lands on the target).
+            StepTransition::NotTakenBranch => {
+                if s.br_retired_delta != 1 {
+                    bad.push(format!(
+                        "sample {}: a not-taken branch retired the branch instruction, so \
+                         BR_RETIRED must increment by exactly 1 (AA1-F1), but delta is {}",
+                        r.sample_id, s.br_retired_delta
+                    ));
+                }
+                if s.pc_after != s.pc_before.wrapping_add(4) {
+                    bad.push(format!(
+                        "sample {}: a not-taken branch fell through, so it must land at PC+4 \
+                         ({:#x}), but landed at {:#x} — a not-taken branch does not transfer",
+                        r.sample_id,
+                        s.pc_before.wrapping_add(4),
+                        s.pc_after
+                    ));
+                }
+            }
             // A single-stepped LL/SC exclusive (`LDXR`/`STXR`) is a load or a store, not a
             // taken branch, so BR_RETIRED must NOT move. (The retry is a separate `CBNZ`,
             // stepped and classified as a TakenBranch in its own right.) Grouping it with
@@ -2599,8 +2840,8 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
     if !missing.is_empty() {
         bad.push(format!(
             "the AA-2 step matrix is incomplete: no step covers {missing:?} — the stage requires \
-             stepping every transition class (sequential, taken branch, exception entry, ERET, \
-             WFI, injection), not merely a nonempty subset"
+             stepping every transition class (sequential, taken branch, not-taken branch, \
+             exception entry, ERET, WFI, injection, LL/SC exclusive), not merely a nonempty subset"
         ));
     }
 
@@ -2633,6 +2874,7 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
 const REQUIRED_AA2_TRANSITIONS: &[StepTransition] = &[
     StepTransition::Sequential,
     StepTransition::TakenBranch,
+    StepTransition::NotTakenBranch,
     StepTransition::ExceptionEntry,
     StepTransition::ExceptionReturn,
     StepTransition::Wfi,
@@ -3239,6 +3481,7 @@ mod tests {
             weights: Some(Weights::measured(0, 0, 0, 0, 2)),
             skid_margin: Some(64),
             attempted: 1,
+            planned: 1,
             records_file: "records.jsonl".into(),
             records_sha256: "0".repeat(64),
         }
@@ -3262,6 +3505,19 @@ mod tests {
         let mut out = Vec::new();
         check_schema_version(&rs, &mut out);
         assert_eq!(status(&out, CheckId::SchemaVersion), Some(Status::Fail));
+    }
+
+    #[test]
+    fn schema_v4_manifest_without_planned_is_rejected_during_load() {
+        let mut value = serde_json::to_value(a_run_set()).expect("serializable run-set");
+        value
+            .as_object_mut()
+            .expect("run-set serializes as an object")
+            .remove("planned");
+        assert!(
+            serde_json::from_value::<RunSet>(value).is_err(),
+            "schema-v4 planned is required by both JSON Schema and the Rust wire type"
+        );
     }
 
     #[test]
@@ -3977,17 +4233,18 @@ mod tests {
             "same core + governor → comparable"
         );
 
-        // A different pinned core → refused: the PMU/skid measurement environment moved, so
-        // two half-floors are not one floor of one measurement.
+        // A different pinned core → PERMITTED at every stage (Paul's ruling extended to
+        // AA-3..AA-6): per-shard cores are the intended sharded posture, so two shards on
+        // different cores aggregate.
         let mut c = pair();
         c[1].0.pinning.core = Some(3);
         assert_eq!(
             status(&aggregate(&c, &floors).outcomes, CheckId::Aggregation),
-            Some(Status::Fail),
-            "AA-3 sets pinned to different cores must not be summed"
+            Some(Status::Pass),
+            "AA-3 shards on different cores are one sharded measurement"
         );
 
-        // A different governor → refused for the same reason.
+        // A different governor → still refused (the measurement environment moved).
         let mut g = pair();
         g[1].0.pinning.governor = "schedutil".into();
         assert_eq!(
@@ -3995,17 +4252,27 @@ mod tests {
             Some(Status::Fail)
         );
 
-        // At AA-1, ONLY the migration probe (unpinned by design) may differ. Two NORMAL AA-1
-        // condition sets on different cores are still a different measurement → refused.
+        // At AA-1 (Paul's 2026-07-17 parallel ruling), normal sets may pin to DIFFERENT cores:
+        // on a no-SMT box each shard owns its physical core, and BR_RETIRED is per-core V-time,
+        // so sharding the matrix across cores is the intended (and co-tenant-stress) posture, not
+        // a violation. Two normal AA-1 sets on different cores therefore AGGREGATE.
         let mut a1 = [
-            a_loaded_set(Stage::Aa1, "a", "pinned-solo", &"a".repeat(64), 2),
+            a_loaded_set(Stage::Aa1, "a", "co-tenant-other-core", &"a".repeat(64), 2),
             a_loaded_set(Stage::Aa1, "b", "co-tenant-other-core", &"b".repeat(64), 2),
         ];
         a1[1].0.pinning.core = Some(3);
         assert_eq!(
             status(&aggregate(&a1, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Pass),
+            "AA-1 shards on different cores are one sharded measurement — the parallel ruling"
+        );
+        // But a different GOVERNOR still moves the measurement environment → refused, even at AA-1.
+        let mut a1g = a1;
+        a1g[1].0.pinning.governor = "schedutil".into();
+        assert_eq!(
+            status(&aggregate(&a1g, &floors).outcomes, CheckId::Aggregation),
             Some(Status::Fail),
-            "normal AA-1 sets on different cores are not one measurement — only the probe is exempt"
+            "AA-1 permits per-shard cores but not a different governor"
         );
 
         // The migration probe, unpinned, aggregates fine beside the pinned condition set —
@@ -4033,14 +4300,17 @@ mod tests {
         probe_first[0].0.pinning.pinned = false;
         probe_first[0].0.pinning.core = None;
         probe_first[0].0.pinning.migration_probe = true;
-        probe_first[2].0.pinning.core = Some(3); // a normal set on a different core
+        // A normal set diverging in GOVERNOR (AA-1 permits per-shard cores, but not a different
+        // governor) — the reference is the first NON-probe set, so the probe sorting first must
+        // not let this slip.
+        probe_first[2].0.pinning.governor = "schedutil".into();
         assert_eq!(
             status(
                 &aggregate(&probe_first, &floors).outcomes,
                 CheckId::Aggregation
             ),
             Some(Status::Fail),
-            "a probe sorting first must not let the normal sets diverge in posture"
+            "a probe sorting first must not let the normal sets diverge in posture (governor)"
         );
     }
 
@@ -4685,12 +4955,16 @@ mod tests {
     }
 
     /// A record carrying one stepped measurement. A real single step lands on a Debug exit and
-    /// arms no overflow, so the helper sets both (matching what the harness would emit).
+    /// arms no overflow, so the helper sets both (matching what the harness would emit). The
+    /// `step_index` is set to the record id — these debug-evidence tests key on the class, not on
+    /// replay grouping, so any distinct index is fine.
     fn a_step(id: u64, pc_after: u64, delta: u64, transition: StepTransition) -> RunRecord {
         let mut r = a_record(id);
         r.exit_reason = ExitReason::Debug;
         r.overflow = None;
         r.step = Some(StepRecord {
+            planned_sample_id: 0,
+            step_index: id,
             pc_before: 0x8000,
             pc_after,
             insn_retired: 1,
@@ -4701,7 +4975,10 @@ mod tests {
         r
     }
 
-    /// One valid step of each required transition class — a complete AA-2 matrix.
+    /// One valid step of each required transition class — a complete AA-2 matrix. NotTakenBranch
+    /// is appended last so the other classes keep their historical indices (tests below mutate
+    /// `m[3]`/`m[6]`). A not-taken branch fell through to PC+4 (`0x8000 + 4`) but retired the
+    /// branch instruction (delta 1).
     fn full_step_matrix() -> Vec<RunRecord> {
         vec![
             a_step(0, 0x8004, 0, StepTransition::Sequential),
@@ -4711,7 +4988,94 @@ mod tests {
             a_step(4, 0xC000, 0, StepTransition::Wfi),
             a_step(5, 0xD000, 0, StepTransition::Injection),
             a_step(6, 0xE000, 0, StepTransition::LlscExclusive),
+            a_step(7, 0x8004, 1, StepTransition::NotTakenBranch),
         ]
+    }
+
+    /// Step records for `samples` planned samples, each stepped `steps_each` times with a
+    /// stable `planned_sample_id` plus a `step_index` that resets to 0 at every planned sample.
+    fn stepped_run(samples: u64, steps_each: u64) -> Vec<RunRecord> {
+        let mut recs = Vec::new();
+        let mut id = 0u64;
+        for planned_sample_id in 0..samples {
+            for step_index in 0..steps_each {
+                let mut r = a_step(id, 0x8004 + id, 0, StepTransition::Sequential);
+                let step = r.step.as_mut().unwrap();
+                step.planned_sample_id = planned_sample_id;
+                step.step_index = step_index;
+                recs.push(r);
+                id += 1;
+            }
+        }
+        recs
+    }
+
+    #[test]
+    fn step_totality_detects_a_dropped_planned_sample() {
+        // Two planned samples, each stepped three times.
+        let recs = stepped_run(2, 3);
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa2;
+
+        // planned == 2, both samples represented → PASS.
+        rs.planned = 2;
+        let mut out = Vec::new();
+        check_step_totality(&rs, &recs, &mut out);
+        assert_eq!(status(&out, CheckId::StepTotality), Some(Status::Pass));
+
+        // The exact bounced-J2 attack: duplicate planned run 0's identity over run 1 while
+        // retaining two step_index==0 rows. Counting first steps still equals planned and would
+        // pass; distinct stable ids expose planned id 1 as missing.
+        let mut forged = recs.clone();
+        for record in &mut forged {
+            if let Some(step) = record.step.as_mut() {
+                step.planned_sample_id = 0;
+            }
+        }
+        assert_eq!(
+            forged
+                .iter()
+                .filter(|r| r.step.as_ref().is_some_and(|s| s.step_index == 0))
+                .count(),
+            2,
+            "the old step-zero count is forged to equal planned"
+        );
+        let mut out = Vec::new();
+        check_step_totality(&rs, &forged, &mut out);
+        assert_eq!(
+            status(&out, CheckId::StepTotality),
+            Some(Status::Fail),
+            "duplicating one planned identity cannot conceal a different dropped plan entry"
+        );
+
+        // planned == 3 but only two planned samples produced steps: the third was dropped after
+        // the first two emitted steps — the exact certifiable-incomplete case. Must FAIL, from the
+        // records alone, without leaning on the harness exit code.
+        rs.planned = 3;
+        let mut out = Vec::new();
+        check_step_totality(&rs, &recs, &mut out);
+        assert_eq!(
+            status(&out, CheckId::StepTotality),
+            Some(Status::Fail),
+            "a run that dropped a planned sample after earlier ones emitted steps must not pass"
+        );
+
+        // An attacker-controlled huge plan count fails in bounded work instead of
+        // allocating or walking the entire 0..planned range.
+        rs.planned = u64::MAX;
+        let mut out = Vec::new();
+        check_step_totality(&rs, &recs, &mut out);
+        assert_eq!(status(&out, CheckId::StepTotality), Some(Status::Fail));
+
+        // Non-step evidence: the check does not apply — no spurious outcome.
+        let normal = vec![a_record(0), a_record(1)];
+        let mut out = Vec::new();
+        check_step_totality(&rs, &normal, &mut out);
+        assert_eq!(
+            status(&out, CheckId::StepTotality),
+            None,
+            "an ordinary (non-step) run-set gets no step-totality outcome"
+        );
     }
 
     #[test]
@@ -4825,6 +5189,43 @@ mod tests {
             "a single-stepped LDXR/STXR is not a taken branch; delta 1 is invalid"
         );
 
+        // (g) a NOT-taken branch retired the branch instruction (AA1-F1), so BR_RETIRED must move
+        // by exactly 1 — a delta of 0 (as if it were a non-branch Sequential step) is rejected.
+        let mut m = full_step_matrix();
+        m[7] = a_step(7, 0x8004, 0, StepTransition::NotTakenBranch);
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &m, &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::Fail),
+            "a not-taken branch still retires the branch; delta 0 is invalid"
+        );
+
+        // (h) a not-taken branch that did NOT land at PC+4 did not fall through — rejected. (Its
+        // pc_before is 0x8000, so PC+4 is 0x8004; a jump to 0x9000 is a transfer, not a fall.)
+        let mut m = full_step_matrix();
+        m[7] = a_step(7, 0x9000, 1, StepTransition::NotTakenBranch);
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &m, &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::Fail),
+            "a not-taken branch must land at PC+4; a transfer off it is invalid"
+        );
+
+        // (i) the converse of (g): a NON-branch Sequential step at PC+4 must have delta 0 — a
+        // delta of 1 (as if a branch had retired) is the miss the not-taken/sequential split
+        // exists to catch, and is rejected. The full matrix is otherwise valid.
+        let mut m = full_step_matrix();
+        m[0] = a_step(0, 0x8004, 1, StepTransition::Sequential);
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &m, &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::Fail),
+            "a non-branch sequential step at PC+4 must not move BR_RETIRED; delta 1 is invalid"
+        );
+
         // The check does not fire outside AA-2.
         let mut out = Vec::new();
         check_debug_evidence(Stage::Aa3, &[a_record(0)], &mut out);
@@ -4838,6 +5239,10 @@ mod tests {
             let mut r = a_record_seeded(id, seed);
             r.overflow = None; // a stepped record is not armed (they are mutually exclusive)
             r.step = Some(StepRecord {
+                planned_sample_id: id,
+                // Both reps are step 0 of their run, so they share a RepKey and are compared to
+                // each other (the seed disambiguates distinct inputs).
+                step_index: 0,
                 pc_before: 0x8000,
                 pc_after: 0x8004,
                 insn_retired: 1,
@@ -4865,6 +5270,10 @@ mod tests {
             let mut r = a_record_seeded(id, 7);
             r.overflow = None; // a stepped record is not armed (they are mutually exclusive)
             r.step = Some(StepRecord {
+                planned_sample_id: id,
+                // Both reps are step 0 of their run, so they share a RepKey and are compared to
+                // each other (the seed disambiguates distinct inputs).
+                step_index: 0,
                 pc_before: 0x8000,
                 pc_after: 0x8004,
                 insn_retired: 1,
@@ -4894,15 +5303,19 @@ mod tests {
     }
 
     #[test]
-    fn two_step_moments_of_one_input_are_not_false_divergence() {
-        // Two DIFFERENT step points of the same input — an SVC exception entry and its ERET —
-        // share (payload, scale, seed, condition) and carry no target. Without the step moment
-        // in the RepKey they group together and their necessarily-different step_digests read
-        // as false divergence. With it, each point groups with its OWN repetitions and, when
-        // each is individually replay-identical, the check passes.
-        let step_at = |id: u64, pc: u64, tr: StepTransition, digest: &str| {
+    fn two_step_positions_of_one_input_are_not_false_divergence() {
+        // A whole stepped run has MANY steps under one (payload, scale, seed, condition), each
+        // carrying no target and its OWN step_digest. Without the step_index in the RepKey they
+        // all group together and their necessarily-different digests read as false divergence.
+        // With it, step N groups only with step N of the other rep, and — when each position is
+        // individually replay-identical — the check passes. Modelled as two runs, each stepping
+        // [step 0 = exception entry, step 1 = ERET].
+        let step_at = |id: u64, step_index: u64, pc: u64, tr: StepTransition, digest: &str| {
             let mut r = a_record_seeded(id, 7); // same seed for all four
+            r.overflow = None; // a stepped record is not armed, so comparison_digest is step_digest
             r.step = Some(StepRecord {
+                planned_sample_id: id,
+                step_index,
                 pc_before: pc,
                 pc_after: pc + 4,
                 insn_retired: 1,
@@ -4912,21 +5325,48 @@ mod tests {
             });
             r
         };
-        // Point A (exception entry) repeated twice, point B (ERET) repeated twice; each
-        // point's two reps are bit-identical, the two points differ.
+        // Run A and run B each step position 0 (exception entry) then position 1 (ERET); each
+        // position's two reps are bit-identical, the two positions differ.
         let records = [
-            step_at(0, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
-            step_at(1, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
-            step_at(2, 0x2000, StepTransition::ExceptionReturn, "sha256:eret"),
-            step_at(3, 0x2000, StepTransition::ExceptionReturn, "sha256:eret"),
+            step_at(0, 0, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
+            step_at(1, 0, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
+            step_at(2, 1, 0x2000, StepTransition::ExceptionReturn, "sha256:eret"),
+            step_at(3, 1, 0x2000, StepTransition::ExceptionReturn, "sha256:eret"),
         ];
         let mut out = Vec::new();
         check_replay_identity(Stage::Aa2, &records, &mut out);
         assert_eq!(
             status(&out, CheckId::ReplayIdentity),
             Some(Status::Pass),
-            "two distinct step moments of one input, each individually replay-identical, are \
+            "two distinct step positions of one input, each individually replay-identical, are \
              not divergence"
+        );
+        // The same two positions, but position 1 (ERET) DIVERGES across the two reps: a real
+        // divergence, caught — the step_index key does not hide it.
+        let diverged = [
+            step_at(0, 0, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
+            step_at(1, 0, 0x1000, StepTransition::ExceptionEntry, "sha256:entry"),
+            step_at(
+                2,
+                1,
+                0x2000,
+                StepTransition::ExceptionReturn,
+                "sha256:eret-a",
+            ),
+            step_at(
+                3,
+                1,
+                0x2000,
+                StepTransition::ExceptionReturn,
+                "sha256:eret-b",
+            ),
+        ];
+        let mut out = Vec::new();
+        check_replay_identity(Stage::Aa2, &diverged, &mut out);
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::Fail),
+            "step 1 diverging across reps is a real divergence the step_index key still catches"
         );
     }
 
@@ -4938,6 +5378,8 @@ mod tests {
         let stepped = |id: u64, seed: u64| {
             let mut r = a_record_seeded(id, seed);
             r.step = Some(StepRecord {
+                planned_sample_id: id,
+                step_index: 0,
                 pc_before: 0x8000,
                 pc_after: 0x8004,
                 insn_retired: 1,
@@ -5273,6 +5715,8 @@ mod tests {
         // divergent landed digests went unchecked, so it is rejected as malformed.
         let mut r = a_record(0); // a_record carries an armed, delivered overflow
         r.step = Some(StepRecord {
+            planned_sample_id: 0,
+            step_index: 0,
             pc_before: 0x8000,
             pc_after: 0x8004,
             insn_retired: 1,
@@ -5418,7 +5862,12 @@ mod tests {
         let mut r = a_record(0);
         r.work_end = r.work_begin + r.measured_taken + 1; // endpoints now disagree
         let mut out = Vec::new();
-        check_counts(&Weights::measured(0, 0, 0, 0, 2), &[r], &mut out);
+        check_counts(
+            &Weights::measured(0, 0, 0, 0, 2),
+            &[r],
+            Stage::Aa1,
+            &mut out,
+        );
         assert_eq!(status(&out, CheckId::CountExactness), Some(Status::Fail));
     }
 
@@ -5435,7 +5884,7 @@ mod tests {
         r.measured_taken = u64::MAX;
         let huge = Weights::measured(u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX);
         let mut out = Vec::new();
-        check_counts(&huge, &[r], &mut out);
+        check_counts(&huge, &[r], Stage::Aa1, &mut out);
         assert_eq!(
             status(&out, CheckId::CountExactness),
             Some(Status::Fail),

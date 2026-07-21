@@ -24,7 +24,7 @@ CMD1_EXIT=0
     Finished `dev` profile [unoptimized + debuginfo] target(s)
 CMD2_EXIT=0
 
-### CMD3: cargo clippy --manifest-path guest/flow-agent/Cargo.toml --all-features --all-targets -- -D warnings
+### CMD3: cargo clippy --manifest-path harmony-linux/flow-agent/Cargo.toml --all-features --all-targets -- -D warnings
     Finished `dev` profile [unoptimized + debuginfo] target(s)
 CMD3_EXIT=0
 ```
@@ -49,8 +49,8 @@ Confirmed: `lsmod` `kvm` size = **1396736** (stock), `kvm_intel` users = 0,
 |---|---|---|
 | `consonance/hypercall-proto` | `ServiceId::Net = 5` + `net_decide` (op 1) wire seam; guest `Client::net_decide`; host reference `NetDecider`/`NetFlowPoint` | portable (build/test/clippy/fmt/deny) |
 | `consonance/vmm-core` | host `Net` doorbell arm: decode → `Environment::decide` → record → encode; `NetChannel` + `enable_net` + `net_decisions` | portable + **box** |
-| `guest/flow-agent` (new, own workspace) | the agent: brain (answer→policy, enforcement plan, decider seam) + Linux doorbell/enforce bin | portable + **box** |
-| `guest/linux/{k3s-init.sh,build-k3s-image.sh}`, `guest/flow-agent/build-static.sh` | bake + start the agent in the k3s pod→pod workload | **box** |
+| `harmony-linux/flow-agent` (new, own workspace) | the agent: brain (answer→policy, enforcement plan, decider seam) + Linux doorbell/enforce bin | portable + **box** |
+| `harmony-linux/linux/{k3s-init.sh,build-k3s-image.sh}`, `harmony-linux/flow-agent/build-static.sh` | bake + start the agent in the k3s pod→pod workload | **box** |
 | `docs/INTEGRATION.md` | §1.2 ServiceId registry: `Net = 5` documented | — |
 
 Commits (branch `task/net-vertical`, off `main`): hypercall-proto service · vmm-core
@@ -178,7 +178,7 @@ What that corrects in task-51's abstractions:
   `net_doorbell_decides_records_and_replays` (a fresh materialize reproduces the
   identical answer at the identical `Moment`) and `net_doorbell_rejects_malformed_requests`.
   clippy/fmt/deny clean.
-- `guest/flow-agent` (own workspace): **11 tests** (8 lib + 3 decider integration:
+- `harmony-linux/flow-agent` (own workspace): **11 tests** (8 lib + 3 decider integration:
   the `HostFlowDecider` round-trip against the reference `NetDecider` over a
   loopback `Dispatcher`, plus fail-closed-to-nominal on missing service / supply
   answer). clippy/fmt/deny clean. Bin smoke: `flow-agent … --assume-nominal
@@ -194,7 +194,7 @@ lease out reverts to stock KVM `1396736` and prints `REVERT OK`.
 Build the image with the agent baked in:
 
 ```sh
-FLOW_AGENT_BIN="$(guest/flow-agent/build-static.sh)" sudo guest/linux/build-k3s-image.sh
+FLOW_AGENT_BIN="$(harmony-linux/flow-agent/build-static.sh)" sudo harmony-linux/linux/build-k3s-image.sh
 # gate B additionally needs `nft` + `tc` binaries baked into the image (the agent
 # installs forward-hook nft rules / a flow-filtered tc qdisc on cni0).
 ```
@@ -245,11 +245,11 @@ enforcement + `state_hash` determinism.
 ## `unsafe` and the Miri review bar (review question (a))
 
 **Did task 61 add `unsafe`? Yes — in exactly one place, and NOT in
-`vmcall-transport`.** `consonance/vmcall-transport` is **untouched** by this task
-(`git diff main..HEAD -- consonance/vmcall-transport` is empty); its existing
+`hypercall-doorbell`.** `consonance/hypercall-doorbell` is **untouched** by this task
+(`git diff main..HEAD -- consonance/hypercall-doorbell` is empty); its existing
 `asm!` doorbell + pointer logic keep their own Miri setup. `hypercall-proto` and
 `vmm-core` add **no** `unsafe` (the `Net` service is pure byte handling). The only
-new `unsafe` is in **`guest/flow-agent/src/main.rs`** — four FFI blocks:
+new `unsafe` is in **`harmony-linux/flow-agent/src/main.rs`** — four FFI blocks:
 `clock_gettime` (self-check), and the doorbell module's `mmap(/dev/mem)`,
 `iopl(3)`, and `VmcallTransport::with_doorbell`. The flow-agent **library**
 (`src/lib.rs`, the whole brain) is `unsafe`-free.
@@ -262,13 +262,13 @@ new `unsafe` is in **`guest/flow-agent/src/main.rs`** — four FFI blocks:
    `aarch64-apple-darwin` dev host, where **none of it compiles** — the non-Linux
    stubs are used instead.
 2. **It is pure privileged FFI Miri cannot execute by construction** — `mmap` of
-   `/dev/mem`, `iopl`, `clock_gettime`. This is the *same seam* `vmcall-transport`
+   `/dev/mem`, `iopl`, `clock_gettime`. This is the *same seam* `hypercall-doorbell`
    uses for its `asm!` doorbell (`#[cfg(not(miri))]`-excluded, driven by a loopback
    in its own Miri suite). There is **no `unsafe` pointer arithmetic or bounds
    logic in task-61 code** to check: `map_page` `mmap`s a page and hands the raw
    pointer straight to `VmcallTransport::with_doorbell`; the load-bearing
    pointer/bounds safety (the attacker-controlled response-length checks in
-   `VmcallTransport::exchange`) lives in `vmcall-transport` and is already
+   `VmcallTransport::exchange`) lives in `hypercall-doorbell` and is already
    Miri-covered there.
 
 **Miri was run** on the flow-agent regardless — `cargo +nightly miri test --lib

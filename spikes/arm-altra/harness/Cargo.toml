@@ -34,3 +34,7 @@ path = "src/bin/arm_spike.rs"
 [[bin]]
 name = "arm-scan"
 path = "src/bin/arm_scan.rs"
+
+[[bin]]
+name = "arm-el0-count"
+path = "src/bin/arm_el0_count.rs"

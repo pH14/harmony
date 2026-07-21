@@ -277,7 +277,7 @@ impl Subject for ToyMachine {
         // state, or the halted flag. A domain tag distinct from `state_hash`'s
         // so the two digests can never collide for the same underlying bytes.
         // This is the seed-INDEPENDENT view a pure payload must keep stable and
-        // an RNG-consuming payload must vary (det-corpus O3).
+        // an RNG-consuming payload must vary (acceptance-suite O3).
         let mut h = Sha256::new();
         h.update(b"unison-toy-observable-v1");
         h.update((self.out_log.len() as u64).to_le_bytes());

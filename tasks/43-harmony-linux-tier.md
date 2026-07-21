@@ -1,5 +1,11 @@
 # Task 43 — `harmony-linux`: name the guest-environment tier (`guest/` → `harmony-linux/`) + audit consonance for workload assumptions
 
+> **R-L4 execution amendment (2026-07-18):** `payloads/` and `golden/` carve out to
+> `consonance/acceptance-suite/`; they do not move into `harmony-linux`. The same
+> window carries the glossary renames (`det-corpus` → `acceptance-suite`, its enum
+> → `OracleKind`, `vmcall-transport` → `hypercall-doorbell`) and R-L3's
+> `/dev/harmony` + clean-room `libvoidstar.so` environment deliverables.
+
 > **STRUCTURAL + AUDIT · land atomically · aims for zero runtime-behavior change.** Like the
 > rename (task 90) this is a tree-wide path move that conflicts with any branch touching `guest/`,
 > so land it as one PR when the `guest/`-touching queue is clear. Unlike task 90 it also carries a
@@ -52,17 +58,17 @@ failure mode):
   (`["consonance/*", "dissonance/*"]`) is **unchanged** — `guest/` was never a member, only an
   exclude. Do **not** add `harmony-linux/*` to members (custom targets/linker — it must stay an
   excluded sub-workspace).
-- **`.gitignore`**: `/guest/build`, `/guest/dl`, `!guest/golden/*.bin` → `harmony-linux/…`.
-- **`.github/workflows/quality.yml`**: the `cargo deny --manifest-path guest/payloads/Cargo.toml`
+- **`.gitignore`**: `/harmony-linux/build`, `/harmony-linux/dl`, `!consonance/acceptance-suite/golden/*.bin` → `harmony-linux/…`.
+- **`.github/workflows/quality.yml`**: the `cargo deny --manifest-path consonance/acceptance-suite/payloads/Cargo.toml`
   step (~line 64) and its comment (~line 59).
-- **`deny.toml`**: the comment referencing `guest/payloads` (~line 39).
-- **`AGENTS.md`**: the `guest/linux/init.sh` / `guest/linux/MANIFEST.sha256` references (~line 80).
-- **Makefile entry points**: every `make -C guest …` invocation in docs/READMEs becomes
+- **`deny.toml`**: the comment referencing `consonance/acceptance-suite/payloads` (~line 39).
+- **`AGENTS.md`**: the `harmony-linux/linux/init.sh` / `harmony-linux/linux/MANIFEST.sha256` references (~line 80).
+- **Makefile entry points**: every `make -C harmony-linux …` invocation in docs/READMEs becomes
   `make -C harmony-linux …`.
-- **`consonance/det-corpus`**: default/example paths `guest/payloads/*.bin`, `guest/golden/*.digest`
+- **`consonance/acceptance-suite`**: default/example paths `consonance/acceptance-suite/payloads/*.bin`, `consonance/acceptance-suite/golden/*.digest`
   in `corpus-manifest.example.toml`, `src/manifest.rs`, `src/oracle.rs` (doc), and the `tests/`
   fixtures → repath. (These are default strings + test fixtures; behavior-neutral. See F3.)
-- **`consonance/vmm-core`**: the `guest/payloads` build steps and `guest/linux` artifact paths in
+- **`consonance/vmm-core`**: the `consonance/acceptance-suite/payloads` build steps and `harmony-linux/linux` artifact paths in
   the live tests (`tests/live_*.rs`) and `IMPLEMENTATION.md`; the `Cargo.toml` comment. (See F1/F2.)
 - **`docs/`** (~15 files) and **`tasks/`** (~15 files): update live references. Historical task
   specs may keep `guest/` **only** where they are a record of past work — prefer a clean sweep,
@@ -84,6 +90,11 @@ Two acceptable resolutions, pick one and document it:
 Do **not** rename the string without (2). `GUEST_BUILD_ROOT` the env-var name and the
 `hypervizor-guest-build` *default* are different things — changing the default changes the hash.
 
+**Execution resolution:** option 2. The built-in character driver necessarily changes
+`bzImage`, and shipping `libvoidstar.so` changes the initramfs, so this task already has a
+mandatory rebaseline. The stale path and Kbuild identity are cleaned up in that same event;
+`run-tests.sh` must reproduce the new manifest twice.
+
 ## Deliverable B — audit: consonance must not assume its workload
 
 **Principle under test:** consonance's contract is over the **machine** — CPUID/MSR/TSC/LAPIC/PIT/
@@ -96,9 +107,10 @@ Produce **`docs/CONSONANCE-WORKLOAD-AUDIT.md`** classifying every workload coupl
 with note). Seed findings (grep-confirmed today — re-verify and extend):
 
 - **F1 — headline, substrate-violation: the Linux bzImage loader lives inside the substrate.**
-  `consonance/vmm-core/src/linux_loader.rs` (~1239 LOC) parses the Linux `setup_header` and lays
+  `consonance/vmm-core/src/vendor/x86/linux_loader.rs` parses the Linux `setup_header` and lays
   down `boot_params` / page tables / GDT; it is wired into `bringup.rs` (image autodetect +
-  `boot_linux`), `lib.rs` (`pub mod linux_loader`), and `vmm.rs` (`LinuxLoad` error variant).
+  `boot_linux`) and `vendor/x86/mod.rs` (`pub mod linux_loader`); the engine wraps the
+  typed failure opaquely as `VmmError::VendorBoot`.
   Turning *a Linux kernel image* into initial memory + entry state is a **harmony-linux** concern.
   The substrate's job is "place these opaque segments at these GPAs, set initial vCPU state, run."
   **Action:** file a follow-up task to introduce a workload-agnostic `load_image(segments,
@@ -112,7 +124,7 @@ with note). Seed findings (grep-confirmed today — re-verify and extend):
   box-only, so harm is low today. **Action:** repath their `guest/` artifact references now;
   note in the audit that long-term they belong to `harmony-linux/` (depending on consonance as a
   normal dependency). Optional follow-up task.
-- **F3 — consumer-coupling, acceptable: `det-corpus` default paths.** `det-corpus` legitimately
+- **F3 — consumer-coupling, acceptable: `acceptance-suite` default paths.** `acceptance-suite` legitimately
   *consumes* guest artifacts as a determinism corpus; the coupling is only default-path strings +
   fixtures. **Action:** repath (Deliverable A). A consumer depending on harmony-linux's artifacts
   is fine; flag only that the *defaults* assume the Linux layout (a future multi-environment
@@ -123,7 +135,7 @@ with note). Seed findings (grep-confirmed today — re-verify and extend):
   an **opaque** guest; "a real Linux guest" is the **harmony-linux** instantiation (the motivating
   first target), not part of the substrate's contract. Add the `harmony-<env>` naming convention here.
 - **F5 — note, not a violation: the guest-cooperation ABI is correctly OS-agnostic.** Confirm
-  `hypercall-proto` / `vmcall-transport` / `pv-net` / the `Environment` `decide` seam assume *a*
+  `hypercall-proto` / `hypercall-doorbell` / `pv-net` / the `Environment` `decide` seam assume *a*
   cooperating guest (hypercalls + optional SDK) but **not which OS**. If any Linux-specific
   assumption leaks into the wire types or the fault catalog's *generic* parts, that is a finding;
   otherwise record it as confirmed-clean (this is the substrate/guest ABI, intentionally
@@ -145,9 +157,10 @@ The audit may add findings beyond these five; F1–F5 are the floor, not the cei
 ## Acceptance gates
 
 1. Full standard suite green **after** the move: `build` / `nextest` / `clippy -D warnings` / `fmt`
-   / `deny` (incl. the `--manifest-path harmony-linux/payloads/Cargo.toml` deny step) / miri /
+   / `deny` (incl. the `--manifest-path consonance/acceptance-suite/payloads/Cargo.toml` deny step) / miri /
    coverage / mutants / public-api — all with the new paths.
-2. `make -C harmony-linux test-payloads` (macOS + Linux) and `test-linux` (Linux/box) pass; the
+2. `make -C consonance/acceptance-suite test-payloads` (macOS + Linux) and
+   `make -C harmony-linux test-linux` (Linux/box) pass; the
    committed `MANIFEST.sha256` reproduces twice (determinism-neutrality of the move proven).
 3. **No stragglers**: `git grep -nI 'guest/'` returns only intentional historical references
    (a CHANGELOG-style note, a deliberately-stale build-root string documented per the landmine) —

@@ -56,7 +56,7 @@ one narrow, explicitly-directed exception — see "Deviations" below).
    `:441`/`:1481` citations), plus a one-line pointer in `docs/ROADMAP.md`.
 10. **Task 90 close-out.** *Document-as-deliberately-stale.* A close-out note at the top of
     `tasks/90-rename-harmony.md` records the ~95%-done state and the ruling; comments at
-    `guest/linux/lib-build.sh:48,59,60` point back to it. **The `hypervizor` strings themselves
+    `harmony-linux/linux/lib-build.sh:48,59,60` point back to it. **The `hypervizor` strings themselves
     are untouched.**
 
 ## Newcomer path-test (acceptance gate 3)
@@ -83,10 +83,10 @@ completeness) are explicitly ruled rather than ambiguous.**
 
 ## Deviations considered and rejected
 
-- **Leaving `guest/linux/lib-build.sh` untouched, gate 4 taken literally.** The task spec's
+- **Leaving `harmony-linux/linux/lib-build.sh` untouched, gate 4 taken literally.** The task spec's
   acceptance gate 4 says `git diff --stat` should show `docs/`, `tasks/`, `.claude/` only. The
   user's follow-up message (which supplied both rulings) explicitly directed comments at
-  `guest/linux/lib-build.sh:48,59,60` as part of ruling C10's deliverable. Comment-only,
+  `harmony-linux/linux/lib-build.sh:48,59,60` as part of ruling C10's deliverable. Comment-only,
   no hashed string touched (`hypervizor` is unchanged byte-for-byte) — this is the one
   intentional exception to gate 4, made on explicit instruction rather than by inference.
   Flagging it here rather than silently expanding scope.

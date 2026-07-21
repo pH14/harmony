@@ -15,7 +15,7 @@
 
 ## Why
 
-`consonance/vmcall-transport` (task 10, merged) is the first crate with raw-pointer `unsafe`:
+`consonance/hypercall-doorbell` (task 10, merged) is the first crate with raw-pointer `unsafe`:
 it materializes guest pages from raw `u64` GPAs (`*mut u8`) and copies bytes bounded by a
 **host-controlled** length. Its behavioral coverage is strong (512-case proptests over
 arbitrary `rax`/response bytes, the load-bearing `u64`-before-`as usize` bound check), but
@@ -36,7 +36,7 @@ time. This task makes that enforcement explicit and automatic without GHA.
 
 - Pin a **nightly** toolchain for Miri (`rust-toolchain`-style or documented), add the
   component (`rustup component add miri`).
-- `cargo +nightly miri test -p vmcall-transport` must pass on the **asm-free loopback
+- `cargo +nightly miri test -p hypercall-doorbell` must pass on the **asm-free loopback
   suite**. The real-`asm!` `RealVmcall` path is `#[cfg(...)]`-excluded under Miri (Miri
   rejects inline asm) — document this exclusion honestly.
 - Miri is ~10–100× slower than native: cut proptest cases under it (e.g.
@@ -79,7 +79,7 @@ GitHub Actions runner on the determinism box** (self-hosted runners consume *no*
 
 ## Acceptance gates
 
-- `cargo +nightly miri test -p vmcall-transport` passes (loopback suite, reduced cases).
+- `cargo +nightly miri test -p hypercall-doorbell` passes (loopback suite, reduced cases).
 - The injected-UB non-vacuity check is documented (Miri caught it).
 - `quality.yml` is `runs-on: self-hosted` with a Miri job added; the `ci.slice`
   (`AllowedCPUs=5-7,13-15`) unit + setup script are committed, so the runner is
@@ -91,7 +91,7 @@ GitHub Actions runner on the determinism box** (self-hosted runners consume *no*
 
 ## Scope / conventions
 
-- Stays in `consonance/vmcall-transport/` (Cargo.toml dev-config + the `cfg(miri)` case
+- Stays in `consonance/hypercall-doorbell/` (Cargo.toml dev-config + the `cfg(miri)` case
   reduction), `.githooks/`, `scripts/`, `tasks/00-CONVENTIONS.md` (if a new rule is added),
   `AGENTS.md`, `.claude/skills/pr-review/`, and `.github/workflows/quality.yml` (the paused
   note). No determinism/behavioral change to the crate itself.

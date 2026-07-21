@@ -147,6 +147,107 @@ fn accept_aa6_gate_is_accepted() {
 }
 
 #[test]
+fn accept_aa2_steps_is_accepted() {
+    // A real AA-2 shape: the full single-step transition matrix, each class stepped twice
+    // bit-identically. No floors apply — AA-2 defines no armed-overflow floor and is not the
+    // AA-6 rep gate — so with no floors requested it is a clean stage acceptance: every step is
+    // a valid single step, the matrix is complete, and each step-moment replayed identically.
+    let report = check("accept-aa2-steps", no_floors());
+    assert!(
+        report.passed(),
+        "the AA-2 step-matrix fixture was rejected: {:?}",
+        report.failed()
+    );
+    assert_eq!(
+        report.status_of(CheckId::DebugEvidence),
+        Some(Status::Pass),
+        "the full step matrix must PASS debug-evidence"
+    );
+    assert_eq!(
+        report.status_of(CheckId::ReplayIdentity),
+        Some(Status::Pass),
+        "each stepped step-moment replayed bit-identically"
+    );
+    assert_eq!(report.exit_code(), 0);
+}
+
+#[test]
+fn accept_aa2_bounded_is_accepted() {
+    // A BOUNDED AA-2 run: the full step matrix, but cut short at --max-steps before MARK_END, so
+    // every record's window is 0/0/0 — NOT the oracle's count. count-exactness must EXEMPT step
+    // records (a step record is graded by debug-evidence/replay-identity, never the window-count
+    // oracle), or a legitimately bounded run — the one --max-steps exists to produce, e.g. the
+    // llsc livelock — would be wrongly rejected.
+    let report = check("accept-aa2-bounded", no_floors());
+    assert!(
+        report.passed(),
+        "the bounded AA-2 fixture was rejected: {:?}",
+        report.failed()
+    );
+    assert_eq!(
+        report.status_of(CheckId::CountExactness),
+        Some(Status::Pass),
+        "step records are exempt from the window-count oracle, so count-exactness still passes"
+    );
+    assert_eq!(
+        report.status_of(CheckId::DebugEvidence),
+        Some(Status::Pass),
+        "the full step matrix still validates as AA-2 evidence"
+    );
+    assert_eq!(
+        report.status_of(CheckId::ReplayIdentity),
+        Some(Status::Pass),
+        "each stepped step-moment still replayed bit-identically"
+    );
+    assert_eq!(report.status_of(CheckId::WellFormed), Some(Status::Pass));
+    assert_eq!(report.exit_code(), 0);
+}
+
+#[test]
+fn reject_aa2_step_skips_an_instruction() {
+    // A sequential step that advanced by 8, not 4 — a skipped instruction, the miss AA-2 hunts.
+    assert_single_failure(
+        "reject-aa2-step-skips-insn",
+        no_floors(),
+        CheckId::DebugEvidence,
+    );
+}
+
+#[test]
+fn reject_aa2_step_doubled() {
+    // A step that retired two instructions, not the exactly one single-stepping requires.
+    assert_single_failure(
+        "reject-aa2-step-doubled",
+        no_floors(),
+        CheckId::DebugEvidence,
+    );
+}
+
+#[test]
+fn reject_aa2_taken_branch_did_not_retire_a_branch() {
+    // A taken branch whose BR_RETIRED did not move — the opcode's class and the measured
+    // counter disagree, which is exactly the AA-2 finding the checker surfaces.
+    assert_single_failure(
+        "reject-aa2-taken-branch-no-branch",
+        no_floors(),
+        CheckId::DebugEvidence,
+    );
+}
+
+#[test]
+fn reject_aa2_dropped_planned_sample() {
+    // A step run-set that claims more planned samples than its step records represent — a
+    // planned sample dropped after earlier ones emitted steps. Dense sample_id renumbering
+    // makes record-level totality pass, but step-totality catches the drop from the records
+    // alone (J2: the checker must reject incomplete step evidence standalone).
+    assert_single_failure(
+        "reject-aa2-dropped-planned-sample",
+        no_floors(),
+        CheckId::StepTotality,
+    );
+}
+
+#[test]
 fn reject_aa6_rep_floor_counts_per_input_not_total() {
     // The evasion the per-input floor closes: eight DISTINCT inputs, one rep each. The
     // total (8) meets a floor of 2, but no input is repeated even twice — which a
@@ -260,6 +361,34 @@ fn accept_aa1_skid_is_accepted_positive_skid_and_all() {
         report.failed()
     );
     assert_eq!(report.exit_code(), 0);
+}
+
+#[test]
+fn accept_aa1_llsc_hazard_is_recorded_not_failed() {
+    // AA1-F2 (harmony-arm): same-seed llsc-atomics repetitions may legitimately land
+    // on different digests at AA-1 — a host IRQ between LDXR and STXR clears the
+    // monitor and adds a reported retry. The divergence is the §4 hazard datum, and
+    // the verdict must RECORD it on the face of the pass, never fail it — and never
+    // extend the exemption to any other payload or later stage (fixture 17 pins that).
+    let report = check("accept-aa1-llsc-hazard", no_floors());
+    // Counting-mode AA-1 evidence is a sub-experiment: the stage's armed-overflow
+    // floor correctly reads NOT-REQUESTED (never a full pass). The assertion here is
+    // that NOTHING FAILS — the divergence is recorded, not rejected.
+    assert!(
+        report.failed().is_empty(),
+        "the AA-1 llsc hazard fixture was rejected: {:?}",
+        report.failed()
+    );
+    let detail = report
+        .outcomes
+        .iter()
+        .find(|o| o.id == CheckId::ReplayIdentity)
+        .map(|o| o.detail.clone())
+        .unwrap_or_default();
+    assert!(
+        detail.contains("llsc §4 hazard"),
+        "the measured llsc divergence must be on the face of the verdict, got: {detail}"
+    );
 }
 
 #[test]

@@ -49,7 +49,7 @@ rule 2 — see "Dependencies, grants, and the rule-2/rule-5 exceptions").
 The milestone (BRINGUP "stretch into determinism"):
 
 - **M1 — boots & prints.** Flat-load the task-04 `hello` payload, run it on `KvmBackend`, and
-  reproduce `guest/golden/hello.txt` byte-for-byte over the emulated serial port, then exit
+  reproduce `consonance/acceptance-suite/golden/hello.txt` byte-for-byte over the emulated serial port, then exit
   clean (a clean isa-debug-exit `PASS`).
 - **M2 — deterministic twice.** Drive `hello` **and** `compute` through the `unison`
   `Machine`/`MachineFactory` adapter; the canonical `state_hash` over **all observable state**
@@ -62,7 +62,7 @@ a working stock-KVM deterministic VMM (see the `prior-art-det-hypervisors` memor
 
 ## The entry contract (task 04 — replicate QEMU `-kernel`)
 
-Verified against `guest/payloads/common/src/boot.s` and `guest/payloads/linker.ld`. The loader
+Verified against `consonance/acceptance-suite/payloads/common/src/boot.s` and `consonance/acceptance-suite/payloads/linker.ld`. The loader
 must reproduce exactly this handoff (BRINGUP "The entry contract"):
 
 | What | Value |
@@ -74,7 +74,7 @@ must reproduce exactly this handoff (BRINGUP "The entry contract"):
 | GPRs | `EAX = 0x2BADB002` (the Multiboot **bootloader** magic the loader passes at entry — **not** `0x1BADB002`, which is the *header* magic embedded in the image, value `MB_MAGIC` in `boot.s`); `EBX` → a **minimal Multiboot info struct** in guest RAM (the shim doesn't read it, but set a valid non-null pointer into mapped RAM); `EFLAGS = 0x0000_0002` (reserved bit 1 set, **`IF = 0`**). Other GPRs `0`. |
 | Console | polled **8250 UART, port `0x3F8`** (115200 8N1). Guest spins on LSR (`0x3FD`) for THR-empty, then writes bytes to THR (`0x3F8`). |
 | Halt/exit | write `u8` to port **`0xF4`** (isa-debug-exit): `0` = PASS, `1` = FAIL; falls back to a `hlt` loop if absent. |
-| Oracle | `guest/golden/<name>.txt` — byte-exact expected serial output. |
+| Oracle | `consonance/acceptance-suite/golden/<name>.txt` — byte-exact expected serial output. |
 
 The shim itself enables PAE/long-mode and loads a 64-bit GDT *after* entry (`boot.s`), so the
 host only nails the **Multiboot 32-bit-PM handoff** — nothing more. (Header magic in `boot.s` is
@@ -492,7 +492,7 @@ The event loop, loader, entry state, UART, and contract policy are exercised wit
   `vmm-core` supplies, and the test asserts that value (so a transport/dispatch bug that resolves
   the wrong exit is caught, not masked).
 
-This is the `vmcall-transport` loopback pattern (task 10) applied to the backend seam: the
+This is the `hypercall-doorbell` loopback pattern (task 10) applied to the backend seam: the
 deterministic logic is factored above the privileged primitive so it runs under `cargo test` on
 every host. The mock lives in `#[cfg(test)]` / `tests/`; it is **not** a `pub` part of the crate.
 
@@ -564,7 +564,7 @@ vmm-core` must run **clean**, and `vmm-core` must be added to the `miri` job's c
 backing, and `MockBackend`'s `map_memory` performs no unsafe operation. Miri then exercises the
 **pointer / lifetime / bounds logic** of the loader, event loop, and `state_blob` against the mock —
 exactly the surface the rule targets. Document the exclusion and why it is sound in
-`IMPLEMENTATION.md` (the `vmcall-transport` precedent).
+`IMPLEMENTATION.md` (the `hypercall-doorbell` precedent).
 
 **Pure-logic unit/property tests (run on the Mac, against `MockBackend` — no `/dev/kvm`):**
 
@@ -613,7 +613,7 @@ per `docs/BOX-PINNING.md`, against the real `KvmBackend`):**
 9. **M1 — boots & prints.** `boot(KvmBackend::new(), hello_image, ram_len)` — a **bare** backend;
    `boot` installs the `contract` policy through `set_cpuid`/`set_msr_filter` (never a
    policy-carrying constructor, which would bypass the trait seam) — then `run()`:
-   `RunResult.serial` equals `guest/golden/hello.txt` **byte-for-byte**, **and**
+   `RunResult.serial` equals `consonance/acceptance-suite/golden/hello.txt` **byte-for-byte**, **and**
    `reason == TerminalReason::DebugExit { code: 0 }` — explicitly **not** `Hlt` and **not** a
    non-zero code (a payload can print `PASS` then exit non-clean; the terminal reason is checked,
    not just the serial).
@@ -622,7 +622,7 @@ per `docs/BOX-PINNING.md`, against the real `KvmBackend`):**
     `Vmm::state_hash` and whose `run_to`/`work` run the payload to terminal (work-counting /
     `run_to(target)` bisection is a later-phase concern — see open questions). For **both** `hello`
     and `compute`: run twice and assert the two `state_hash`es are identical **and** the two serial
-    captures are identical; `compute`'s serial also equals `guest/golden/compute.txt`. The hash is
+    captures are identical; `compute`'s serial also equals `consonance/acceptance-suite/golden/compute.txt`. The hash is
     taken over all observable state (memory ‖ `VcpuState` ‖ serial ‖ device/terminal), so an
     output-only divergence still breaks it.
 11. **Fail-fast host check.** The live tests detect a host without `/dev/kvm` / not Intel-VMX and

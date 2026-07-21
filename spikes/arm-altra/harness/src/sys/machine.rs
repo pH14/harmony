@@ -33,16 +33,34 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::{KvmRun, PerfEventAttr, SysError, br_retired_attr, kvm};
-use crate::run::{RunError, Vcpu, VcpuExit, WorkCounter};
+use crate::run::{RunError, StepVcpu, Vcpu, VcpuExit, WorkCounter};
 
 /// Guest RAM base — the QEMU `virt` / Altra map the payload runtime is linked for
 /// (`payloads/linker.ld`: params page at `0x4000_0000`, image at `+512 KiB`).
 pub const RAM_BASE: u64 = 0x4000_0000;
 
-/// How much guest RAM the payloads need: the image loads 512 KiB in and carries a
-/// 64 KiB stack, so 64 MiB is generous and lets the whole slot be hashed cheaply
-/// for the state digest.
-pub const RAM_SIZE: usize = 64 << 20;
+/// How much guest RAM the payloads need: the image loads 512 KiB in and its whole
+/// footprint (code + rodata + data + bss + `__stack_top`, `payloads/linker.ld`) plus
+/// the two harness pages live under ~1.5 MiB, so 4 MiB is an 8× margin.
+///
+/// This was `64 << 20` in the offline apparatus, whose comment assumed the slot could
+/// be "hashed cheaply" for the state digest. AA-1(c) on real N1 measured that wrong:
+/// `state_digest` reads the **whole** slot every sample, and faulting-in + hashing 64
+/// MiB of freshly-`mmap`ed anonymous memory is ~0.45 s/sample — memory-bound, so
+/// hardware SHA-256 codegen (`target-cpu=native`) did not move it. At 10⁶ armed
+/// overflows that is ~5 days on one pinned core, and the aggregation rule forbids
+/// spreading the four contamination conditions across cores. Shrinking the slot is the
+/// only effective lever, and it is **evidence-preserving**: the 60+ MiB tail is
+/// provably always-zero (no payload touches it — the ELF loader fails closed with
+/// `RangeNotMapped` on any segment past the slot, and a guest write past the mapping
+/// faults rather than corrupting silently), so hashing it adds no divergence-detection
+/// power. The digest still covers every byte of guest state a payload can reach; only
+/// its length (and thus its hex value) changes, and digests are compared only WITHIN a
+/// run-set (replay identity), never across run-sets or against a golden. No measured
+/// count, overflow, or skid is affected. Recorded as a SPIKE(arm-altra) apparatus
+/// change in the AA-1(c) disposition. If AA-5's Linux guest (not yet built) needs more,
+/// it takes its own larger slot; nothing in the bare-metal payload path exceeds this.
+pub const RAM_SIZE: usize = 4 << 20;
 
 /// The signal used for the stock overflow kick. `SIGUSR1` rather than `SIGIO`: the
 /// handler must not be one the runtime installs for anything else, and the only
@@ -177,6 +195,39 @@ struct KvmDeviceAttr {
     attr: u64,
     addr: u64,
 }
+
+/// The arm64 `struct kvm_guest_debug_arch`: the hardware breakpoint/watchpoint control and
+/// value registers. AA-2's single-step arms `SINGLESTEP` only, so this stays all-zero (no
+/// hardware breakpoints programmed) — but it MUST be present and correctly sized, because it is
+/// what makes `struct kvm_guest_debug` 0x208 bytes on arm64, and the ioctl number encodes that
+/// size (`KVM_ARM_MAX_DBG_REGS == 16`, `arch/arm64/include/uapi/asm/kvm.h`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct KvmGuestDebugArch {
+    dbg_bcr: [u64; 16],
+    dbg_bvr: [u64; 16],
+    dbg_wcr: [u64; 16],
+    dbg_wvr: [u64; 16],
+}
+
+/// `struct kvm_guest_debug` (arm64): `control` + `pad` + the arch breakpoint block.
+///
+/// 0x208 bytes on arm64, which the `KVM_SET_GUEST_DEBUG` ioctl number encodes — pinned by
+/// [`tests::kvm_guest_debug_is_the_arm64_abi_size`].
+#[repr(C)]
+#[derive(Default)]
+struct KvmGuestDebug {
+    control: u32,
+    pad: u32,
+    arch: KvmGuestDebugArch,
+}
+
+// The arm64 ABI sizes, pinned at compile time: `kvm_guest_debug_arch` is 64×u64 = 0x200, and
+// `kvm_guest_debug` (control + pad + arch) is 0x208 — the size the `KVM_SET_GUEST_DEBUG` ioctl
+// number encodes (`super::kvm::SET_GUEST_DEBUG == _IOW(0x9b, 0x208)`). A struct-shuffle that
+// broke either would send a differently-numbered ioctl the kernel does not recognise.
+const _: () = assert!(core::mem::size_of::<KvmGuestDebugArch>() == 0x200);
+const _: () = assert!(core::mem::size_of::<KvmGuestDebug>() == 0x208);
 
 fn errno() -> i32 {
     // SAFETY: `__errno_location` returns a valid pointer to this thread's errno.
@@ -1017,10 +1068,131 @@ impl Vcpu for Machine {
     /// Registers are hashed in **sorted id order** (a `BTreeMap`, never a `HashMap`):
     /// iteration order must not reach a hashed byte. Conventions rule 4.
     fn state_digest(&mut self) -> Result<String, RunError> {
+        let (regs, vgic) = self.registers_and_vgic()?;
+
+        // SAFETY: `self.mem` is a live mapping of `self.mem_size` bytes and the vCPU
+        // is not running (we are between exits), so nothing else writes it. The borrow is the
+        // portable, Miri-exercised `super::guest_ram`; the hashing and sorted-order discipline
+        // are the portable, Miri-tested `digest_state`.
+        let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
+        let digest = super::digest_state(&regs, ram, &vgic);
+
+        // Diagnostic (env-gated, off by default): when replay-identity flags a divergent
+        // landing, `AA3_DUMP_REGS=1` emits the regs-only and RAM sub-digests plus every
+        // (id -> value) pair for THIS landing to stderr, tagged with the full digest. Diffing
+        // two divergent reps' dumps isolates whether the divergence is a register (which one)
+        // or guest RAM — the difference between a measurement artifact and a real anomaly.
+        if std::env::var_os("AA3_DUMP_REGS").is_some() {
+            let regs_only = super::digest_regs_only(&regs, &vgic);
+            let ram_digest = super::digest_state(&BTreeMap::new(), ram, &[]);
+            eprintln!("AA3REGS digest={digest} regs_only={regs_only} ram={ram_digest}");
+            for (id, val) in &regs {
+                let hexval: String = val.iter().map(|b| format!("{b:02x}")).collect();
+                eprintln!("AA3REGS   id={id:#018x} val={hexval}");
+            }
+        }
+
+        Ok(digest)
+    }
+}
+
+impl StepVcpu for Machine {
+    /// Arm `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP` once (no hardware breakpoints), so
+    /// every subsequent `KVM_RUN` returns `KVM_EXIT_DEBUG` after a single guest instruction.
+    fn arm_single_step(&mut self) -> Result<(), RunError> {
+        let dbg = KvmGuestDebug {
+            control: kvm::GUESTDBG_SINGLESTEP_CONTROL,
+            pad: 0,
+            arch: KvmGuestDebugArch::default(),
+        };
+        // SAFETY: `vcpu_fd` is valid; `dbg` is a fully-initialised kvm_guest_debug on this
+        // frame, exactly the shape (and arm64 size) KVM_SET_GUEST_DEBUG reads.
+        if unsafe {
+            libc::ioctl(
+                self.vcpu_fd,
+                kvm::SET_GUEST_DEBUG as libc::c_ulong,
+                &raw const dbg,
+            )
+        } < 0
+        {
+            return Err(seam(
+                "ioctl(KVM_SET_GUEST_DEBUG, single-step)",
+                err("ioctl(KVM_SET_GUEST_DEBUG)"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Disarm guest single-step: `KVM_SET_GUEST_DEBUG` with an all-zero `kvm_guest_debug`
+    /// (control 0 = debug disabled, no `KVM_GUESTDBG_ENABLE`), returning the vCPU to ordinary
+    /// `KVM_RUN` execution. AA-3's exact-landing loop steps `BR_RETIRED` up to the target, then
+    /// disarms here before resuming the guest to `MARK_END`.
+    fn disarm_single_step(&mut self) -> Result<(), RunError> {
+        let dbg = KvmGuestDebug::default();
+        // SAFETY: `vcpu_fd` is valid; `dbg` is a fully-initialised kvm_guest_debug (control 0 =
+        // debug disabled), exactly the shape (and arm64 size) KVM_SET_GUEST_DEBUG reads.
+        if unsafe {
+            libc::ioctl(
+                self.vcpu_fd,
+                kvm::SET_GUEST_DEBUG as libc::c_ulong,
+                &raw const dbg,
+            )
+        } < 0
+        {
+            return Err(seam(
+                "ioctl(KVM_SET_GUEST_DEBUG, disarm)",
+                err("ioctl(KVM_SET_GUEST_DEBUG)"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn pc(&mut self) -> Result<u64, RunError> {
+        self.get_one_reg_u64(kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC)
+            .map_err(|e| seam("ioctl(KVM_GET_ONE_REG, pc)", e))
+    }
+
+    fn opcode_at(&mut self, addr: u64) -> Result<Option<u32>, RunError> {
+        // SAFETY: `self.mem` is a live mapping of `self.mem_size` bytes and the vCPU is stopped
+        // between exits, so nothing else writes it. The borrow and the bounded 4-byte decode
+        // are the portable, Miri-exercised `super::guest_ram` / `super::guest_word`.
+        let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
+        Ok(super::guest_word(ram, RAM_BASE, addr))
+    }
+
+    fn vbar(&mut self) -> Result<u64, RunError> {
+        self.get_one_reg_u64(kvm::REG_VBAR_EL1)
+            .map_err(|e| seam("ioctl(KVM_GET_ONE_REG, VBAR_EL1)", e))
+    }
+
+    /// The registers-only digest AA-2 stamps on every step but the last: the vCPU
+    /// registers (and the in-kernel vGIC state) [`Vcpu::state_digest`] reads, hashed
+    /// **without** the 4 MiB guest-RAM slice. `state_digest` faults in and hashes the
+    /// whole slot every call, so calling it per single step is infeasible — the whole
+    /// reason `RAM_SIZE` was shrunk in the AA-1(c) disposition. This is the cheap
+    /// per-step replay key; only the run's final step pays the full-RAM cost, catching
+    /// memory divergence across the stepped window end-to-end.
+    fn regs_digest(&mut self) -> Result<String, RunError> {
+        let (regs, vgic) = self.registers_and_vgic()?;
+        Ok(super::digest_regs_only(&regs, &vgic))
+    }
+}
+
+/// The seam-read pair [`Machine::registers_and_vgic`] returns: every architectural register
+/// (id → bytes, sorted) and the in-kernel vGIC injection state. Named so the register/vGIC
+/// read type has one home (and the tuple-of-collections does not trip `clippy::type_complexity`
+/// on the `cfg(target_os = "linux")` box seam).
+type RegsAndVgic = (BTreeMap<u64, Vec<u8>>, Vec<u8>);
+
+impl Machine {
+    /// Read every architectural register (`KVM_GET_REG_LIST` + `KVM_GET_ONE_REG`, in
+    /// sorted id order) and the in-kernel vGIC injection state — the two seam-read inputs
+    /// shared by [`Vcpu::state_digest`] (which adds guest RAM) and [`StepVcpu::regs_digest`]
+    /// (which does not). Factored out so the register/vGIC read discipline has one home.
+    fn registers_and_vgic(&self) -> Result<RegsAndVgic, RunError> {
         let ids = self
             .reg_list()
             .map_err(|e| seam("ioctl(KVM_GET_REG_LIST)", e))?;
-
         let mut regs: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
         for id in ids {
             let value = self
@@ -1028,21 +1200,74 @@ impl Vcpu for Machine {
                 .map_err(|e| seam("ioctl(KVM_GET_ONE_REG)", e))?;
             regs.insert(id, value);
         }
-
         let vgic = self
             .vgic_state()
             .map_err(|e| seam("ioctl(KVM_GET_DEVICE_ATTR, vGIC)", e))?;
-
-        // SAFETY: `self.mem` is a live mapping of `self.mem_size` bytes and the vCPU
-        // is not running (we are between exits), so nothing else writes it. The borrow is the
-        // portable, Miri-exercised `super::guest_ram`; the hashing and sorted-order discipline
-        // are the portable, Miri-tested `digest_state`.
-        let ram = unsafe { super::guest_ram(self.mem, self.mem_size) };
-        Ok(super::digest_state(&regs, ram, &vgic))
+        Ok((regs, vgic))
     }
-}
 
-impl Machine {
+    /// Read a 64-bit register (`KVM_GET_ONE_REG` into a `u64`) — the core `pc`, a system
+    /// register like `VBAR_EL1`, sized by the caller's id.
+    fn get_one_reg_u64(&self, id: u64) -> Result<u64, SysError> {
+        let mut value: u64 = 0;
+        let one = KvmOneReg {
+            id,
+            addr: (&raw mut value) as u64,
+        };
+        // SAFETY: `vcpu_fd` is valid; `one.addr` points at a live u64 the kernel writes.
+        if unsafe {
+            libc::ioctl(
+                self.vcpu_fd,
+                kvm::GET_ONE_REG as libc::c_ulong,
+                &raw const one,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_GET_ONE_REG)"));
+        }
+        Ok(value)
+    }
+
+    /// Do one single step: read `PC` + `BR_RETIRED`, one `KVM_RUN` (expecting
+    /// `KVM_EXIT_DEBUG`), read `PC` + `BR_RETIRED` again — returning `(pc_before, pc_after,
+    /// br_retired_delta)`. `insn_retired` is 1 by construction of a single step; the box
+    /// confirms it against the oracle (that is the AA-2 measurement).
+    ///
+    /// The single-step primitive for a caller stepping instructions that do NOT touch the
+    /// console: a non-`Debug` exit (an MMIO console access, a mechanism kick) is refused here.
+    /// [`crate::run::step_run`] is the full run loop that also services the console; this is
+    /// the direct primitive the plan (`AA2-BUILD.md`) names.
+    ///
+    /// # Errors
+    /// [`RunError`] if a register/counter read failed, the exit was not `KVM_EXIT_DEBUG`, or
+    /// `BR_RETIRED` went backwards across the step.
+    pub fn step_once(
+        &mut self,
+        counter: &mut impl WorkCounter,
+    ) -> Result<(u64, u64, u64), RunError> {
+        let pc_before = self.pc()?;
+        let work_before = counter.read()?;
+        match Vcpu::run(self)? {
+            VcpuExit::Debug => {}
+            other => {
+                return Err(RunError::Seam {
+                    context: "step_once expected KVM_EXIT_DEBUG",
+                    message: format!("got a non-debug exit: {other:?}"),
+                });
+            }
+        }
+        let pc_after = self.pc()?;
+        let work_after = counter.read()?;
+        let delta =
+            work_after
+                .checked_sub(work_before)
+                .ok_or(RunError::StepCounterWentBackwards {
+                    before: work_before,
+                    after: work_after,
+                })?;
+        Ok((pc_before, pc_after, delta))
+    }
+
     /// Dump the in-kernel vGIC's injection-relevant registers via
     /// `KVM_GET_DEVICE_ATTR`, reading **both** the redistributor (private interrupts)
     /// and the distributor (SPIs).
@@ -1754,15 +1979,31 @@ fn probe_writable_id_registers_on_vcpu(
         (kvm::REG_ID_AA64DFR0_EL1, 0, "ID_AA64DFR0_EL1"),
         (kvm::REG_ID_AA64DFR1_EL1, 0, "ID_AA64DFR1_EL1"),
     ];
-    for &(reg, skip, _name) in relevant {
+    // Per-register stderr diagnostics: the row's evidence stays the bool, but an
+    // `absent` verdict over a 10-register conjunction is undiagnosable without knowing
+    // WHICH register refused (day-one lesson: harmony-arm's 6.8 kernel failed the row
+    // and the probe could not say where). Diagnostics go to stderr, never into the
+    // truth table — the table records what the probe concluded, not its trace.
+    let mut all_writable = true;
+    for &(reg, skip, name) in relevant {
         // `Some(false)` = this register HAS reducible feature fields but none is writable — the
         // surface AA-6 needs is not fully writable, so the row is FALSE. `Some(true)` (writable)
         // and `None` (nothing to freeze here) both pass this register.
-        if reduce_and_readback_id_field(vcpu_fd, reg, skip)? == Some(false) {
-            return Ok(false);
+        match reduce_and_readback_id_field(vcpu_fd, reg, skip)? {
+            Some(true) => {
+                eprintln!("writable-id-registers: {name}: writable (reduced + read back)")
+            }
+            Some(false) => {
+                eprintln!(
+                    "writable-id-registers: {name}: FROZEN (has reducible fields, none accepted \
+                     a reduced write that read back)"
+                );
+                all_writable = false;
+            }
+            None => eprintln!("writable-id-registers: {name}: no reducible field (does not gate)"),
         }
     }
-    Ok(true)
+    Ok(all_writable)
 }
 
 /// Try to reduce ONE feature nibble of an `ID_AA64*` register by 1, write it, and READ IT
@@ -1857,6 +2098,10 @@ pub struct HostIdRegisters {
     pub id_aa64dfr0: u64,
     /// `ID_AA64PFR0_EL1` (SVE in bits[35:32]).
     pub id_aa64pfr0: u64,
+    /// Whether the reading vCPU was initialised with `KVM_ARM_VCPU_PMU_V3`. When
+    /// `false`, `id_aa64dfr0`'s PMUVer field is KVM's featureless-vCPU mask (0), not
+    /// the host PMU version — the truth-table raw must say which read happened.
+    pub pmu_v3_enabled: bool,
 }
 
 /// Read [`HostIdRegisters`] from a fresh, disposable VM + vCPU.
@@ -1911,16 +2156,40 @@ fn read_host_id_registers_on_vcpu(
     {
         return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET)"));
     }
-    // SAFETY: `vcpu_fd` is valid; `init` is fully initialised by the call above.
-    if unsafe {
+    // Init WITH the vPMU feature, falling back to a plain init if the host refuses it.
+    //
+    // KVM masks the guest-visible `ID_AA64DFR0_EL1.PMUVer` to 0 on a vCPU created
+    // without `KVM_ARM_VCPU_PMU_V3` — the first real box (harmony-arm, N1 r3p1,
+    // Ubuntu 6.8) reported `pmuver = 0x0` through a featureless vCPU while its host
+    // PMU is plainly PMUv3 (the perf rows count). The truth-table row is about the
+    // PMU behind the work-clock bet, so the read must go through a PMU-enabled vCPU
+    // to see the sanitised host value. The MEASUREMENT vCPU (`Machine`) deliberately
+    // keeps the feature off — the guest contract denies the guest its own PMU; only
+    // this disposable ID-reading vCPU differs. If the host cannot init a PMU-enabled
+    // vCPU at all, the plain-init value (PMUVer masked to 0) is the honest fallback,
+    // and `pmu_v3_enabled: false` records which read happened.
+    let mut pmu_init = init;
+    pmu_init.features[0] |= 1 << kvm::VCPU_FEATURE_PMU_V3;
+    // SAFETY: `vcpu_fd` is valid; `pmu_init` is fully initialised above.
+    let pmu_v3_enabled = unsafe {
         libc::ioctl(
             vcpu_fd,
             kvm::ARM_VCPU_INIT as libc::c_ulong,
-            &raw const init,
+            &raw const pmu_init,
         )
-    } < 0
-    {
-        return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
+    } >= 0;
+    if !pmu_v3_enabled {
+        // SAFETY: `vcpu_fd` is valid; `init` is fully initialised by the call above.
+        if unsafe {
+            libc::ioctl(
+                vcpu_fd,
+                kvm::ARM_VCPU_INIT as libc::c_ulong,
+                &raw const init,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
+        }
     }
 
     let read = |id: u64, call: &'static str| -> Result<u64, SysError> {
@@ -1944,5 +2213,6 @@ fn read_host_id_registers_on_vcpu(
         id_aa64mmfr2: read(kvm::REG_ID_AA64MMFR2_EL1, "GET_ONE_REG(ID_AA64MMFR2_EL1)")?,
         id_aa64dfr0: read(kvm::REG_ID_AA64DFR0_EL1, "GET_ONE_REG(ID_AA64DFR0_EL1)")?,
         id_aa64pfr0: read(kvm::REG_ID_AA64PFR0_EL1, "GET_ONE_REG(ID_AA64PFR0_EL1)")?,
+        pmu_v3_enabled,
     })
 }

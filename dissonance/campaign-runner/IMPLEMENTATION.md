@@ -256,7 +256,7 @@ seeded bugs before investing in search cleverness"). Depends on tasks **58** (th
 
 ## Surface (and why it merges cleanly after 59)
 
-Task 60's changes are confined to **`dissonance/conductor/` + `guest/`** — vmm-core, explorer,
+Task 60's changes are confined to **`dissonance/conductor/` + `harmony-linux/`** — vmm-core, explorer,
 environment, and control-proto are **untouched**. The campaign stages its host-fault schedule
 entirely through the *existing* `Machine::branch` env (an `EnvSpec` carrying `Action::Host`
 overrides): task-59's server decodes that env, stages each fault, and applies it between instructions
@@ -269,9 +269,9 @@ no new verb.
 | `dissonance/conductor/src/campaign.rs` (**new**) | `run_campaign` + `CampaignOracle` + `mint_fault_env` + `verify_campaign` | the campaign loop, the workload-aware crash oracle mapping, the seeded fault-schedule minter, the N/N gate |
 | `dissonance/conductor/src/planted.rs` (**new**) | `ToyPlantedMachine` + `Trigger` | the portable planted-bug guest (a controllable `Machine`) the campaign is proven against |
 | `dissonance/conductor/src/main.rs` | `campaign {mock,box}` subcommands; `boxrun` refactor | the demo/milestone bin; `boot_server` factored out so the sweep and campaign box paths boot identically |
-| `guest/linux/campaign-super.c` (**new**) | the supervised process with the planted bug + the isa-debug-exit crash channel | the box workload's added buggy component |
-| `guest/linux/campaign-init.sh` (**new**) | the `/init`: postgres workload → the supervisor | seals the base at `CAMPAIGN_READY`, runs the fault-sensitive loop |
-| `guest/linux/build-campaign-image.sh` (**new**) + Makefile `campaign-image` | builds `initramfs-campaign.cpio.gz` | `build-postgres-image.sh` + the static `campaign-super` + the campaign `/init` |
+| `harmony-linux/linux/campaign-super.c` (**new**) | the supervised process with the planted bug + the isa-debug-exit crash channel | the box workload's added buggy component |
+| `harmony-linux/linux/campaign-init.sh` (**new**) | the `/init`: postgres workload → the supervisor | seals the base at `CAMPAIGN_READY`, runs the fault-sensitive loop |
+| `harmony-linux/linux/build-campaign-image.sh` (**new**) + Makefile `campaign-image` | builds `initramfs-campaign.cpio.gz` | `build-postgres-image.sh` + the static `campaign-super` + the campaign `/init` |
 
 ## The planted bug (exact trigger, both guests)
 
@@ -289,7 +289,7 @@ impossible**: the kata-derived container kernel has **no `CONFIG_X86_IOPL_IOPERM
 `CONFIG_DEVPORT`**, so a guest *process* cannot reach an I/O port at all — `campaign-super`'s boot
 self-test reports `CAMPAIGN_IOPERM: FAILED`, `CAMPAIGN_IOPL: FAILED`, `CAMPAIGN_DEVPORT: FAILED`. So
 the distinctive terminal is the **terminal path itself**, using what the guest *kernel* can produce
-(`guest/linux/campaign-init.sh`):
+(`harmony-linux/linux/campaign-init.sh`):
 
 - **bug** (supervisor exits non-zero) → `reboot -f` → triple-fault → `KVM_EXIT_SHUTDOWN` →
   **`Crash{Shutdown}`** — the reportable bug;
@@ -381,7 +381,7 @@ the last release):
 ```sh
 # 1. Build the image (root, on the box / a linux-amd64 container). The kernel is
 #    the shared task-36 bzImage (no kernel change); only the initramfs is built.
-make -C guest fetch && make -C guest/linux campaign-image     # → guest/build/initramfs-campaign.cpio.gz
+make -C harmony-linux fetch && make -C harmony-linux/linux campaign-image     # → harmony-linux/build/initramfs-campaign.cpio.gz
 # 2. Bring-up (once per image): read the ledger gpa AND the loop span. campaign-init.sh
 #    exports CAMPAIGN_DEBUG=1, so the boot serial prints `CAMPAIGN_LEDGER_GPA: canary=0x…`;
 #    a --max-branches 1 run's nominal control prints Quiescent@<t>, so the loop span is
@@ -745,7 +745,7 @@ Runs 2/3 (HOPS=4, identical results — deterministic), leased core 2 via
   compatibility surface live.
 
 Runbook (foreman re-run): `/root/harmony-t78` on the box (branch pushed via
-`ssh://hetzner/root/harmony-t78`, guest/build symlinked to harmony-pr44's
+`ssh://hetzner/root/harmony-t78`, harmony-linux/build symlinked to harmony-pr44's
 image), driver `/root/task78/gate.sh` (acquires the box-window lease, re-pins
 it to the long-lived driver PID — the command-substitution PPID gotcha —
 runs `HOPS=4 taskset -c $CORE timeout 7200 cargo test --release -p conductor
@@ -1127,7 +1127,7 @@ The fixture now describes a real run.
 
 ### 3. The start script could exceed `max_frames` while settling
 
-(`guest/play-agent/src/start.rs` — see that crate's IMPLEMENTATION.md.) The settle loop ran
+(`harmony-linux/play-agent/src/start.rs` — see that crate's IMPLEMENTATION.md.) The settle loop ran
 `settle_frames` unconditionally after the first gameplay observation, so a late observation
 overran the bound the script advertises, and `frames` could in principle overflow. The settle
 is now spent from the same budget: a script that cannot fit it is `BadScript` before the
@@ -1362,7 +1362,7 @@ The UNSAFE-ONLY slice is replaced by the full `-p conductor --lib` step, kept **
 the `miri` job (PR #99's ordering: it is still the job's longest pole, and a blowout here
 must not skip the small crates above it). The job ceiling is re-derived on PR #99's own
 pattern rather than left where it was: 11 min 46 s Mac ⇒ ~13 min box (the ~1.12× factor from
-PR #99's vmcall-transport comparison), new quiet-hour sum ≈ 48 + 13 ≈ 61 min, ×2.5 ⇒
+PR #99's hypercall-doorbell comparison), new quiet-hour sum ≈ 48 + 13 ≈ 61 min, ×2.5 ⇒
 **`timeout-minutes: 155`** (the old 120 was 2.5× the old 48-minute sum, which had no
 conductor step in it).
 

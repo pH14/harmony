@@ -38,7 +38,7 @@
 //! revert KVM to stock:
 //!
 //! ```sh
-//! cd guest/payloads && cargo build --release && cd ../..
+//! cd consonance/acceptance-suite/payloads && cargo build --release && cd ../..
 //! # load patched KVM per consonance/vmm-backend/kvm-patches/BUILD.md, then:
 //! taskset -c 2 timeout 150 cargo test -p vmm-core --test live_preemption \
 //!     -- --ignored --nocapture --test-threads=1
@@ -79,12 +79,12 @@ fn repo_root() -> PathBuf {
 /// The built payload ELF for `name`, or a loud panic with the build command.
 fn payload_elf(name: &str) -> Vec<u8> {
     let p = repo_root()
-        .join("guest/payloads/target/x86_64-unknown-none/release")
+        .join("consonance/acceptance-suite/payloads/target/x86_64-unknown-none/release")
         .join(name);
     std::fs::read(&p).unwrap_or_else(|e| {
         panic!(
             "{name} payload not built ({e}) at {} — build it on the box first: \
-             `cd guest/payloads && cargo build --release` (target x86_64-unknown-none).",
+             `cd consonance/acceptance-suite/payloads && cargo build --release` (target x86_64-unknown-none).",
             p.display()
         )
     })

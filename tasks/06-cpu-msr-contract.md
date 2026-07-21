@@ -8,8 +8,8 @@ research-and-writing task: no crate, no cargo gates.
 
 Runs on: macOS or Linux. Requires: the repo (docs/PLAN.md, docs/RESEARCH.md, docs/INTEGRATION.md,
 the merged crates) and web access for primary sources (Intel SDM, Linux KVM API docs, rr).
-**Depends on task 04 being merged**: the kernel pin (`guest/linux/versions.lock`) and the
-kernel config (`guest/linux/config-fragment`) are inputs to the reference set and the
+**Depends on task 04 being merged**: the kernel pin (`harmony-linux/linux/versions.lock`) and the
+kernel config (`harmony-linux/linux/config-fragment`) are inputs to the reference set and the
 boot-critical baseline — do not start before they are on main.
 Does not require: `/dev/kvm`, the determinism box, QEMU, root.
 
@@ -75,7 +75,7 @@ with it.
        `KVM_GET_MSR_FEATURE_INDEX_LIST` as listed in `arch/x86/kvm/x86.c` at Linux tag
        **v6.18.35** from kernel.org — `msrs_to_save_*`, `emulated_msrs_all`, and the
        msr-based-features arrays at that tag. (v6.18.35 is the version task 04 pins;
-       cross-check `guest/linux/versions.lock` once task 04 has merged — if the two ever
+       cross-check `harmony-linux/linux/versions.lock` once task 04 has merged — if the two ever
        disagree, versions.lock wins and you flag a `[question]`.);
    (b) every MSR named in INTEGRATION.md §7;
    (c) the named classes below, each expanded by a **stated match rule** against

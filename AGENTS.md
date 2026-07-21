@@ -87,8 +87,8 @@ Harmony is licensed **AGPL-3.0-or-later** (see `LICENSE`); every crate carries
 `license = "AGPL-3.0-or-later"` and every first-party source file carries an
 `SPDX-License-Identifier: AGPL-3.0-or-later` header — `//` for Rust, `#` (after the
 shebang) for shell and Python. New first-party files must carry it. The lone exception
-is `guest/linux/init.sh`, which is baked verbatim into the determinism-hashed initramfs
-(`guest/linux/MANIFEST.sha256`); a header line would change that golden, so it carries
+is `harmony-linux/linux/init.sh`, which is baked verbatim into the determinism-hashed initramfs
+(`harmony-linux/linux/MANIFEST.sha256`); a header line would change that golden, so it carries
 no inline header and is covered by the repo `LICENSE`. The patch series under
 `consonance/vmm-backend/kvm-patches/patches/` are GPLv2 Linux-kernel diffs and keep their
 own headers. `cargo deny check licenses` gates dependency compatibility (only

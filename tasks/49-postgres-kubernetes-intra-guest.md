@@ -20,7 +20,7 @@
 
 Read `tasks/00-CONVENTIONS.md`, `tasks/47-deterministic-preemption-timer.md` +
 `consonance/vmm-core/IMPLEMENTATION.md` (the preemption primitive + its gate-3 frontier notes), task 48
-(runc+Postgres), and `guest/linux/` (the image-build + workload path: `build-postgres-image.sh`,
+(runc+Postgres), and `harmony-linux/linux/` (the image-build + workload path: `build-postgres-image.sh`,
 `pg-init.sh`, the task-42 UUID/time workload) before writing anything.
 
 ## Topology (what to build)
@@ -77,7 +77,7 @@ discovery). k0s/microk8s are acceptable if you justify the choice in `IMPLEMENTA
 4. **Deterministic-twice:** two same-seed patched runs are **bit-identical** — serial (incl. the
    streamed UUIDs/timestamps) **and** `state_hash`. Quote the equal digests + a sample UUID/timestamp.
 5. **Seed-sensitivity:** a different seed yields different UUIDs / interleaving (quote both).
-6. **No regression:** M1/M2/P6 + det-corpus + unison goldens byte-identical; standard gates green;
+6. **No regression:** M1/M2/P6 + acceptance-suite + unison goldens byte-identical; standard gates green;
    revert KVM to stock `1396736` + verify.
 
 **If the Go-heavy k8s stack surfaces a genuinely NEW blocker beyond preemption** (something the task-47

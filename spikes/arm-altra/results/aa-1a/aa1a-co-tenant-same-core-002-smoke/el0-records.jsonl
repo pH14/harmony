@@ -1,0 +1,5 @@
+{"sample_id":0,"class":"straight-line","scale":"smoke","seed":18157726123883287543,"trips":1000,"rep":0,"count":1014,"accumulator":13749731977890418597,"time_enabled":24520,"time_running":24520}
+{"sample_id":1,"class":"branch-dense","scale":"smoke","seed":16369348538226379880,"trips":1000,"rep":0,"count":8013,"accumulator":17490,"time_enabled":16120,"time_running":16120}
+{"sample_id":2,"class":"el0-syscall","scale":"smoke","seed":2822214579904430031,"trips":1000,"rep":0,"count":1013,"accumulator":1000,"time_enabled":162680,"time_running":162680}
+{"sample_id":3,"class":"el0-signal","scale":"smoke","seed":12418988111616073705,"trips":200,"rep":0,"count":414,"accumulator":200,"time_enabled":330480,"time_running":330480}
+{"sample_id":4,"class":"el0-pagefault","scale":"smoke","seed":11721418447299047143,"trips":200,"rep":0,"count":414,"accumulator":200,"time_enabled":314960,"time_running":314960}

@@ -63,7 +63,7 @@
    (deterministic SMP is a potential edge over Antithesis; see REVIEW-2026-07).
 10. **Task 90 close-out posture.** Task 90 is ~95% executed but marked fully pending; its real
     stragglers are `hypervizor` strings in **hashed build inputs**
-    (`guest/linux/lib-build.sh:48,59,60` — the task-43 landmine: changing them invalidates
+    (`harmony-linux/linux/lib-build.sh:48,59,60` — the task-43 landmine: changing them invalidates
     `MANIFEST.sha256`). Ruling: document-as-deliberately-stale (recommended; a comment at each
     site + a task-90 close-out note) or schedule a rebaseline PR. Update `tasks/90-*.md` to
     reflect what is actually done either way. **Do not touch the strings in this task.**

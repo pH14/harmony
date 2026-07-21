@@ -76,7 +76,7 @@ was worked through:
 7. **Microcode 0x79 (#7) decided.** Converted the open `[question]` into a binding: the
    deny-gp write is boot-safe because the pinned tinyconfig+fragment does **not** set
    `CONFIG_MICROCODE` and the task-04 initramfs spec carries **no** `kernel/x86/microcode/`
-   cpio entry (verified in `guest/linux/build-initramfs.sh`). The contract binds the task-04
+   cpio entry (verified in `harmony-linux/linux/build-initramfs.sh`). The contract binds the task-04
    image manifest accordingly. Exposing the hypervisor bit was rejected (it reopens the
    kvmclock probe vector).
 

@@ -1,0 +1,8 @@
+[
+  {"kind":"singlestep","mode":"tf","payload":"nop_sled","k":64,"db_exits":64,"oracle_instr":64,"oracle_taken":0,"oracle_used":64,"guest_tf_kept":0,"hlt_ok":1,"exact":1},
+  {"kind":"singlestep","mode":"tf","payload":"loop","k":64,"db_exits":129,"oracle_instr":129,"oracle_taken":63,"oracle_used":129,"guest_tf_kept":0,"hlt_ok":1,"exact":1},
+  {"kind":"singlestep","mode":"tf","payload":"jmp_chain","k":64,"db_exits":64,"oracle_instr":64,"oracle_taken":64,"oracle_used":64,"guest_tf_kept":0,"hlt_ok":1,"exact":1},
+  {"kind":"singlestep","mode":"tf","payload":"sti_shadow","k":64,"db_exits":3,"oracle_instr":3,"oracle_taken":0,"oracle_used":3,"guest_tf_kept":0,"hlt_ok":1,"exact":1},
+  {"kind":"singlestep","mode":"tf","payload":"movss_shadow","k":64,"db_exits":2,"oracle_instr":3,"oracle_taken":0,"oracle_used":3,"guest_tf_kept":0,"hlt_ok":1,"exact":0},
+  {"kind":"end","mode":"tf","rc":1}
+]

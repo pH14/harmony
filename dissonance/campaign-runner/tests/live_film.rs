@@ -43,7 +43,7 @@
 //! `HARMONY_SMB_ROM` for the render half):
 //!
 //! ```sh
-//! HARMONY_SMB_CORE=guest/build/fceumm_libretro.so \
+//! HARMONY_SMB_CORE=harmony-linux/build/fceumm_libretro.so \
 //! HARMONY_SMB_ROM=/root/roms/smb.nes \
 //! FILM_OUT_DIR=/root/t86-film \
 //! taskset -c <leased core> timeout 7200 cargo test -p campaign-runner --test live_film \
@@ -108,8 +108,8 @@ fn repo_root() -> std::path::PathBuf {
 
 fn artifact(name: &str) -> Option<Vec<u8>> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return Some(bytes);
@@ -162,9 +162,10 @@ fn boot_game_server() -> ControlServer<Box<dyn Backend<A = X86>>> {
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run on the determinism box (patched KVM loaded)"
     );
-    let kernel = artifact(&env_or("KERNEL", "bzImage")).expect("bzImage under guest/build");
-    let initramfs = artifact(&env_or("INITRAMFS", "initramfs-game.cpio.gz"))
-        .expect("initramfs-game.cpio.gz under guest/build (make -C guest game-image)");
+    let kernel = artifact(&env_or("KERNEL", "bzImage")).expect("bzImage under harmony-linux/build");
+    let initramfs = artifact(&env_or("INITRAMFS", "initramfs-game.cpio.gz")).expect(
+        "initramfs-game.cpio.gz under harmony-linux/build (make -C harmony-linux game-image)",
+    );
     let marker = env_or("READY_MARKER", "GAME_READY");
     let mut live = boot_linux_selected(
         BackendKind::Patched,

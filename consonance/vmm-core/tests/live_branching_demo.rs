@@ -75,9 +75,9 @@
 //!
 //! ## Gate honesty (why `#[ignore]`)
 //!
-//! Needs real + patched KVM, the built Postgres image (`guest/build/bzImage` +
-//! `guest/build/initramfs-postgres.cpio.gz`, via
-//! `guest/linux/build-postgres-image.sh`), and the `det-cfl-v1` host — none in the
+//! Needs real + patched KVM, the built Postgres image (`harmony-linux/build/bzImage` +
+//! `harmony-linux/build/initramfs-postgres.cpio.gz`, via
+//! `harmony-linux/linux/build-postgres-image.sh`), and the `det-cfl-v1` host — none in the
 //! default `cargo nextest` lane — so it is `#[ignore]`d (like `live_postgres.rs` /
 //! `live_snapshot_branch.rs`); default CI shows it not-run, never a vacuous green.
 //! Every missing precondition is a **loud panic**, never an early-return `Ok`. macOS
@@ -85,7 +85,7 @@
 //! portably by `tests/snapshot_branch.rs` and the `src/snapshot.rs` unit tests.
 //!
 //! ```sh
-//! make -C guest fetch && make -C guest/linux postgres-image       # build the image
+//! make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image       # build the image
 //! # load patched kvm.ko/kvm-intel.ko, then (core 4 per the box briefing):
 //! taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_branching_demo \
 //!     -- --ignored --nocapture --test-threads=1
@@ -150,21 +150,21 @@ fn repo_root() -> std::path::PathBuf {
         .join("..")
 }
 
-/// Read a built guest artifact (`guest/build/<name>` then `guest/linux/<name>`).
+/// Read a built guest artifact (`harmony-linux/build/<name>` then `harmony-linux/linux/<name>`).
 /// Panics loudly (with the build command) if absent — this `#[ignore]`d gate runs
 /// only on the box, where the image is built first.
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in guest/build or guest/linux — build it first on the \
-         box: `make -C guest fetch && make -C guest/linux postgres-image`."
+        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
+         box: `make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image`."
     );
 }
 

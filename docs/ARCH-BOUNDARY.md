@@ -46,7 +46,7 @@ data exists.
 
 Bottom line up front: a fresh file-level audit (2026-07-02, five-zone sweep of consonance +
 dissonance + guest) shows **~85% of the tree is already arch-blind** — including the vtime
-planner, the snapshot store, the control protocol/server, unison/det-corpus, hypercall-proto,
+planner, the snapshot store, the control protocol/server, unison/acceptance-suite, hypercall-proto,
 and the entire dissonance layer. The x86 coupling is concentrated, not smeared: the
 `vmm-backend` value-type vocabulary, five nameable modules of `vmm-core`, the `lapic` crate,
 and the guest payloads. The restructure is therefore **promoting an implicit boundary into a
@@ -75,13 +75,14 @@ seam may branch on which ISA is in use.
 
 - **`consonance/vtime`** — `CpuBackend` (`planner.rs`: `work()` / `run_until_overflow()` /
   `single_step()` over a monotonic, 0-or-1-per-instruction `u64` counter) is exactly as valid
-  for ARM `BR_RETIRED` (taken branches) as for Intel conditional branches. ARM-PORT.md's claim
+  for ARM `BR_RETIRED` (all executed branch instructions, AA1-F1) as for Intel conditional
+  branches. ARM-PORT.md's claim
   that this trait "already models the one hard hardware seam correctly" is **verified**.
   `PlannerConfig::skid_margin` is a re-measured *value*, not structure. `VClock::tsc()`
   (`clock.rs`) is structurally a generic Hz-scaled counter mapping unchanged to
   `CNTVCT`/`CNTFRQ`; the leak is the field *name* only. `SimCpu` validates an ARM backend
   unchanged (re-parameterize density/max_skid).
-- **`unison`, `det-corpus`** — abstract over `Machine` (`run_to`/`work`/`state_hash`); no
+- **`unison`, `acceptance-suite`** — abstract over `Machine` (`run_to`/`work`/`state_hash`); no
   register knowledge. The x86 coupling point is the `Machine` impl over `Vmm`
   (`vmm-core/src/corpus.rs`), which is the intended seam.
 - **`hypercall-proto`** — byte-framed, code-pinned little-endian, no register ABI on the wire.
@@ -118,7 +119,7 @@ seam may branch on which ISA is in use.
    *seam shape* is already perfect: pure V-time-ns in (`mmio_read/write(.., now_vns)`,
    `advance_to(now_vns)`), deadlines + deliverable vectors out; zero crate dependency on vtime
    or vice versa — the vmm run loop joins them. A GIC model drops into the identical shape.
-4. **Guest side.** `vmcall-transport`'s arch surface is one ~20-line
+4. **Guest side.** `hypercall-doorbell`'s arch surface is one ~20-line
    `#[cfg(target_arch = "x86_64")]` `IoDoorbell::ring` impl (`out dx, eax`); ARM is `hvc` or an
    MMIO store behind the same trait — but note the *host* dispatch consequence: on arm64 a
    doorbell surfaces as `KVM_EXIT_MMIO`/hypercall-class, not `KVM_EXIT_IO`, so "which exit is
@@ -267,7 +268,45 @@ that slip.
 - **The spike still gates one trait decision.** ARM's PMU-overflow-to-exit path (no MTF; PMI
   delivery differs; the N1-lineage missed-PMI-on-migration bug in ARM-PORT.md §evidence) may
   pressure `run_until_overflow`'s late-only-stop contract. Design the trait now; **freeze it
-  only with spike data in hand.**
+  only with spike data in hand.** — **RESULTS RETAINED; certification pending.**
+
+## AA-3 trait-freeze memo (certificate voided 2026-07-18; results retained)
+
+AA-3 ran the patched-KVM (`-aa3preempt`) force-exit +
+`run_until_overflow` + `single_step` exact landing at **1,010,800 armed deadlines** on the
+Ampere Altra (Neoverse N1), sharded 76-wide, aggregate `floor-check` **PASS (1371 checks)**,
+solo-vs-co-tenant determinism **MATCH** (evidence: `spikes/arm-altra/results/aa-3/exact-evidence/`,
+disposition: `docs/ARM-ALTRA.md` §AA-3). Verification later found the campaign did not invoke
+the comparator and the original comparator accepted intersections. Full-join recomputation over
+the retained records still MATCHed 5,700/5,700 keys with zero divergences, so the physical findings
+below are retained and the mechanism is presumed sound; however, the GO certificate and trait
+freeze are **void** until the repaired apparatus completes re-verification:
+
+- **`run_until_overflow`'s late-only-stop contract HOLDS on N1 — no `Arch`-trait change forced.**
+  The armed overflow is late-only: the in-kernel `Preempt` fires at or after the armed point,
+  never before. On arm64 the vCPU also exits on *any* host IRQ, so spurious exits *below* the
+  armed point do occur — but they are distinguished by the work counter (`work < arm_point`)
+  and re-armed, never mistaken for the overflow. Across all 1.01M armed landings, multiplicity
+  held at exactly **one delivery** each: the N1 missed-PMI-on-migration hazard did **not**
+  manifest in the pinned (non-migrating) configuration the deterministic contract requires.
+- **The step primitive is `KVM_GUESTDBG_SINGLESTEP`, not MTF** (AA-2). `run_until_overflow`
+  stops late (below target by the arm-early margin), then `single_step` walks `BR_RETIRED`
+  forward to the exact target. The two-level `Exit<A>` already carries `Preempt` as an
+  arch-exit; the ARM PMU path fits the *designed* trait without a new method.
+- **One contract CLARIFICATION the freeze must carry (AA3-F1), not a trait change.** ARM's work
+  clock is `BR_RETIRED` — branch **instructions** (AA1-F1) — so it ticks only on branches and a
+  branchless run is a `PC`-**plateau**: a `Moment` named by a work count is a `PC`-*interval*,
+  not a point. The exact landing must therefore land at the **canonical representative** of that
+  interval — the *first* instruction at which `work == target` (immediately after the target-th
+  retiring branch) — which the single-step-up loop reaches from any start strictly below the
+  target. The realization is a measured `LANDING_HEADROOM` added to the measured `skid_margin`
+  so the `Preempt` fires strictly below the target with room to reach the canonical `PC`; an
+  async stop *at* the target (BR-exact but PC-arbitrary) is refused fail-closed. Any backend
+  whose work clock is a subset-of-instructions counter (branches, not all-retired) inherits this
+  plateau property and must define its landing canonically; a per-retired-instruction counter
+  does not. This is a documented property of the `work()`/`run_until_overflow()` contract, not a
+  new trait shape. **This is a retained measured conclusion, not a current freeze authorization;
+  §D and the `Arch`/`CpuBackend` trait remain designed-but-unfrozen pending re-verification.**
 
 ## Pre-build ruling (Paul, 2026-07-13) — build-first; the spike gates trust, not construction
 

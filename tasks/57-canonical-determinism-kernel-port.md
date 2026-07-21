@@ -36,7 +36,7 @@
    pinned kernel, not just the box-proxy.
 3. **Series + lockfiles.** Add 0005 to the canonical patch series; update
    `docs/CPU-MSR-CONTRACT.md` (now 5 patches; the `KVM_ARM_MTF_STEP`/`KVM_EXIT_DET_STEP`
-   ABI), `guest/linux/versions.lock` / any patch-hash manifest. Keep the box-proxy build
+   ABI), `harmony-linux/linux/versions.lock` / any patch-hash manifest. Keep the box-proxy build
    reproducible too.
 
 ## Box-safety (CRITICAL)

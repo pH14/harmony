@@ -14,8 +14,8 @@ task is the **boot path** that connects them.
 ## Goal
 
 Boot the committed-by-manifest Linux guest — **Linux 6.18.35 + static busybox 1.38.0 initramfs**
-(`guest/linux/`, deterministic config: no KASLR/SMP/dynticks/HW-RNG) — inside `consonance`'s VMM,
-run its userspace `/init`, and observe **`GUEST_READY`** on the serial console (`guest/linux/init.sh`
+(`harmony-linux/linux/`, deterministic config: no KASLR/SMP/dynticks/HW-RNG) — inside `consonance`'s VMM,
+run its userspace `/init`, and observe **`GUEST_READY`** on the serial console (`harmony-linux/linux/init.sh`
 prints it, then powers off). First on **stock KVM** (prove the boot), then **bit-identically twice**
 on the patched backend (prove determinism).
 
@@ -80,7 +80,7 @@ Hand control to the kernel's **64-bit entry** directly — the Firecracker / clo
 2. **Loader is total over untrusted bytes.** Property/fuzz the loader on arbitrary/truncated image
    bytes: never panics, never OOB; a non-`HdrS`/short image is a clean `LinuxLoadError`. (mac-testable)
 3. **Phase A — live boot gate (box-only, `#[ignore]`, Linux/KVM).** Boot the real
-   `guest/linux/bzImage` + `initramfs.cpio.gz` on **stock KVM**; assert the serial capture contains
+   `harmony-linux/linux/bzImage` + `initramfs.cpio.gz` on **stock KVM**; assert the serial capture contains
    **`GUEST_READY`** and the guest powers off cleanly (no triple-fault/hang within a bounded
    wall-clock + V-time budget). This gate IS the milestone. Document the box run command (mirrors
    `box_corpus.rs`).
@@ -97,5 +97,5 @@ virtio / a block device (initramfs-only rootfs — no disk needed); networking (
 ACPI beyond what `poweroff` needs; snapshot/restore of a *running Linux* (a later milestone — Phase A
 proves boot, not mid-Linux snapshotting); a full device model. Do not emulate the 16-bit real-mode
 bzImage setup path (integrator chose direct 64-bit). Keep the kernel artifacts as-built by
-`guest/linux/` — do not re-tune the kernel config here (if a missing `CONFIG_*` blocks boot, raise it
+`harmony-linux/linux/` — do not re-tune the kernel config here (if a missing `CONFIG_*` blocks boot, raise it
 to the integrator rather than editing the config silently).

@@ -12,17 +12,18 @@
 //!
 //! # The model
 //!
-//! V-time on ARM counts `BR_RETIRED` (raw event `0x21`) = retired **taken**
-//! branches (`docs/ARM-PORT.md`, `docs/ARM-ALTRA.md` §2 — the binding statement of
-//! the event's semantics; nothing here invents it). Each payload runs a hand-written
+//! V-time on ARM counts `BR_RETIRED` (raw event `0x21`) = every architecturally
+//! executed branch instruction, taken or not (N1 finding AA1-F1;
+//! `docs/ARM-PORT.md`, `docs/ARM-ALTRA.md` §2). This is an ARM-only binding; the x86
+//! clock is unchanged. Each payload runs a hand-written
 //! asm body bracketed by two MMIO console stores, so the counting window contains
 //! *exactly* that body — no compiler-generated code, no UART poll loop, no boot
 //! code (see `payloads/README.md` §The counting window). Within a body every branch
 //! instruction is explicit, so the count decomposes as
 //!
 //! ```text
-//! measured = certain_taken                    // exactly derived, below
-//!          + reported_taken                   // branches the payload counts and reports
+//! measured = certain_branches                 // every executed branch instruction
+//!          + reported_taken                   // legacy field: retry-branch executions
 //!          + w_entry * exception_entries      // <- unknown weights: MEASURED on
 //!          + w_eret  * exception_returns      //    silicon by stage AA-1, never
 //!          + w_svc   * svc_instructions       //    assumed here
@@ -645,7 +646,35 @@ pub struct Expectation {
     /// Trips the payload was asked to run.
     pub trips: u64,
     /// Taken branches derived exactly, with no unknowns and no runtime input.
+    ///
+    /// Since finding AA1-F1 (harmony-arm, 2026-07-17) this is **not** the count
+    /// base: N1's `BR_RETIRED` (0x21) counts branch instructions architecturally
+    /// executed, taken or not — see [`Expectation::certain_branches`]. The taken
+    /// decomposition stays because it is the accumulator's mirror image: taken +
+    /// accumulator-contributing = all predicates, which is what makes the
+    /// accumulator a machine-checkable witness that the executed predicates were
+    /// the modeled ones.
     pub certain_taken: u64,
+    /// Branch instructions **architecturally executed** in the window — the count
+    /// base for N1's `BR_RETIRED` per finding AA1-F1 (measured: branch-dense =
+    /// exactly `8×trips + const`, seed-invariant; straight-line = `trips + const`
+    /// — each branch instruction retires once per execution regardless of
+    /// direction). Derived exactly from the window bodies:
+    ///
+    /// - straight-line / svc / exception-abort / wfi-idle / lse-atomics: the one
+    ///   `B.cond` back-edge executes `trips` times → `trips`;
+    /// - branch-dense: 7 predicates + the back-edge, each once per trip → `8×trips`;
+    /// - llsc-atomics: `CBNZ` executes once per store attempt (`trips` + reported
+    ///   retries — the reported term adds ONE `CBNZ` execution per retry, same as
+    ///   under the taken model) + the back-edge → `2×trips` (+ reported);
+    /// - clock-page: `TBNZ` + recheck `B.NE` + back-edge, once each on the
+    ///   quiescent path → `3×trips`. Quiescence is by construction (the harness
+    ///   can only refresh the page at an exit; the window contains none), and the
+    ///   payload reports any retry — a nonzero report falsifies quiescence and no
+    ///   constant offset will fit, which is the correct alarm (a retry's branch
+    ///   cost here depends on WHICH check tripped, so it is deliberately not
+    ///   modeled as a linear reported term).
+    pub certain_branches: u64,
     /// Exception entries executed in the window.
     pub exception_entries: u64,
     /// `ERET`s executed in the window.
@@ -699,7 +728,7 @@ impl Expectation {
     /// It still never panics — `checked_*` returns `None`, it does not abort.
     #[must_use]
     pub fn total(&self, w: &Weights, reported_taken: u64) -> Option<u64> {
-        self.certain_taken
+        self.certain_branches
             .checked_add(reported_taken)?
             .checked_add(w.exception_entry.checked_mul(self.exception_entries)?)?
             .checked_add(w.exception_return.checked_mul(self.exception_returns)?)?
@@ -982,6 +1011,10 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
         seed,
         trips,
         certain_taken: back_edges,
+        // The single-back-edge default (AA1-F1 semantics: the B.cond executes
+        // `trips` times — `trips−1` taken + 1 final not-taken). Multi-branch
+        // windows override below.
+        certain_branches: trips,
         exception_entries: 0,
         exception_returns: 0,
         svc_instructions: 0,
@@ -999,6 +1032,7 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
         // with a by-construction count).
         Payload::Ident | Payload::LinuxGuest => {
             e.certain_taken = 0;
+            e.certain_branches = 0;
         }
         Payload::StraightLine => {
             e.inline_branch_seq = seq::STRAIGHT_LINE;
@@ -1013,6 +1047,8 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
                 data_taken = data_taken.saturating_add(branch_dense_trip_taken(rng.next_u64()));
             }
             e.certain_taken = back_edges.saturating_add(data_taken);
+            // 7 predicates + the back-edge, each executed once per trip.
+            e.certain_branches = trips.saturating_mul(8);
             e.inline_branch_seq = seq::BRANCH_DENSE;
             e.inline_branch_conds = seq::BRANCH_DENSE_CONDS;
             e.inline_branch_targets = seq::BRANCH_DENSE_TARGETS;
@@ -1046,6 +1082,9 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
         }
         Payload::LlscAtomics => {
             e.has_reported_term = true;
+            // CBNZ once per store attempt + the back-edge; each reported retry
+            // adds one CBNZ execution (the linear reported term).
+            e.certain_branches = trips.saturating_mul(2);
             e.inline_branch_seq = seq::LLSC_ATOMICS;
             e.inline_branch_conds = seq::LLSC_ATOMICS_CONDS;
             e.inline_branch_targets = seq::LLSC_ATOMICS_TARGETS;
@@ -1058,6 +1097,9 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
             e.inline_branch_operands = seq::LSE_ATOMICS_OPERANDS;
         }
         Payload::ClockPage => {
+            // TBNZ + recheck B.NE + back-edge per quiescent trip; a nonzero
+            // reported retry falsifies quiescence (see the field doc).
+            e.certain_branches = trips.saturating_mul(3);
             e.has_reported_term = true;
             e.inline_branch_seq = seq::CLOCK_PAGE;
             e.inline_branch_conds = seq::CLOCK_PAGE_CONDS;
@@ -1170,8 +1212,8 @@ pub fn solve(observations: &[Observation]) -> Result<Solved, SolveError> {
     let wf = find(Payload::WfiIdle)?;
 
     // The two zero-ambiguity classes each yield the window offset directly.
-    let off_sl = i128::from(sl.measured) - i128::from(sl.expectation.certain_taken);
-    let off_bd = i128::from(bd.measured) - i128::from(bd.expectation.certain_taken);
+    let off_sl = i128::from(sl.measured) - i128::from(sl.expectation.certain_branches);
+    let off_bd = i128::from(bd.measured) - i128::from(bd.expectation.certain_branches);
     if off_sl != off_bd {
         return Err(SolveError::InconsistentOffset {
             straight_line: off_sl,
@@ -1185,7 +1227,7 @@ pub fn solve(observations: &[Observation]) -> Result<Solved, SolveError> {
     if n_ex == 0 {
         return Err(SolveError::UnequalTrips);
     }
-    let pair = i128::from(ex.measured) - i128::from(ex.expectation.certain_taken) - offset;
+    let pair = i128::from(ex.measured) - i128::from(ex.expectation.certain_branches) - offset;
     let pair_per = exact_div(pair, n_ex, Ambiguity::ExceptionEntry)?;
     if pair_per < 0 {
         return Err(SolveError::NegativeWeight {
@@ -1199,7 +1241,7 @@ pub fn solve(observations: &[Observation]) -> Result<Solved, SolveError> {
         return Err(SolveError::UnequalTrips);
     }
     let w_svc = exact_div(
-        i128::from(sv.measured) - i128::from(sv.expectation.certain_taken) - offset,
+        i128::from(sv.measured) - i128::from(sv.expectation.certain_branches) - offset,
         n_ex,
         Ambiguity::SvcInstruction,
     )? - pair_per;
@@ -1215,7 +1257,7 @@ pub fn solve(observations: &[Observation]) -> Result<Solved, SolveError> {
         return Err(SolveError::UnequalTrips);
     }
     let w_wfi = exact_div(
-        i128::from(wf.measured) - i128::from(wf.expectation.certain_taken) - offset,
+        i128::from(wf.measured) - i128::from(wf.expectation.certain_branches) - offset,
         n_wf,
         Ambiguity::WfiInstruction,
     )? - pair_per;
@@ -1390,6 +1432,10 @@ mod tests {
         let e = expected(Payload::StraightLine, Scale::Smoke, DEFAULT_SEED);
         assert_eq!(e.trips, 1_000);
         assert_eq!(e.certain_taken, 999);
+        assert_eq!(
+            e.certain_branches, 1_000,
+            "the back-edge executes trips times (AA1-F1)"
+        );
         assert_eq!(e.exception_entries, 0);
         assert_eq!(e.inline_branch_seq, seq::STRAIGHT_LINE);
     }
@@ -1417,6 +1463,11 @@ mod tests {
             }
         }
         assert_eq!(e.certain_taken, 999 + taken);
+        assert_eq!(
+            e.certain_branches, 8_000,
+            "8 branch instructions per trip, seed-invariant (AA1-F1: measured 8*trips+14 \
+             exactly at 1e6/1e7/1e8 on harmony-arm)"
+        );
         // Sanity: with ~7 branches per trip and roughly half taken, the count must
         // land in a plausible band — a model that silently degenerated to zero or
         // to "all taken" fails here.
@@ -1482,6 +1533,8 @@ mod tests {
         let s = expected(Payload::Svc, Scale::Smoke, DEFAULT_SEED);
         let x = expected(Payload::ExceptionAbort, Scale::Smoke, DEFAULT_SEED);
         assert_eq!(s.certain_taken, x.certain_taken);
+        assert_eq!(s.certain_branches, x.certain_branches);
+        assert_eq!(s.certain_branches, 1_000);
         assert_eq!(s.exception_entries, x.exception_entries);
         assert_eq!(s.exception_returns, x.exception_returns);
         assert_eq!(s.svc_instructions, 1_000);
@@ -1493,6 +1546,7 @@ mod tests {
         let e = expected(Payload::Ident, Scale::Smoke, DEFAULT_SEED);
         assert!(!Payload::Ident.has_window());
         assert_eq!(e.certain_taken, 0);
+        assert_eq!(e.certain_branches, 0);
         assert_eq!(e.trips, 0);
         assert!(e.inline_branch_seq.is_empty());
     }

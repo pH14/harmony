@@ -2,7 +2,7 @@
 //! Pure-logic event-loop gates (no `/dev/kvm`): drive [`vmm_core::vmm::Vmm`]
 //! against the scripted [`vmm_backend::MockBackend`] and assert the serial
 //! capture, terminal reason, default-deny behavior, and `state_hash`
-//! purity/coverage. This is the `vmcall-transport` loopback pattern applied to the
+//! purity/coverage. This is the `hypercall-doorbell` loopback pattern applied to the
 //! backend seam (tasks/15 §"Mock-backend testing").
 
 use vmm_backend::{

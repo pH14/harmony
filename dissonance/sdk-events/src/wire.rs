@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The SDK event wire convention, **mirrored** from the guest SDK crate
-//! (`guest/sdk/src/wire.rs`, the canonical source of truth). The link tier is the
-//! host-side reader of code the guest emits, so — exactly as `vmcall-transport`
+//! (`harmony-linux/sdk/src/wire.rs`, the canonical source of truth). The link tier is the
+//! host-side reader of code the guest emits, so — exactly as `hypercall-doorbell`
 //! privately mirrors `hypercall-proto`'s frame magic (conventions rule 2, the
 //! guest/host protocol pattern) — these constants restate the guest's format and
 //! the decode goldens in `tests/decode.rs` pin byte-for-byte agreement with the
-//! bytes the SDK actually emits (`guest/sdk/tests/loopback.rs` pins the guest
+//! bytes the SDK actually emits (`harmony-linux/sdk/tests/loopback.rs` pins the guest
 //! side); if the two ever drift, a golden breaks on one side or the other.
 //!
 //! Event-id layout: the top 8 bits are a namespace, the low 24 bits a local id.
@@ -30,7 +30,7 @@ pub(crate) const SDK_WIRE_VERSION: u8 = 1;
 /// The four enumerated bytes use the `V2_*` constants below; `*_NONE` (255) marks
 /// an absent shape/op/expectation. This host-side format is decoded by
 /// [`crate::decode_binary`] and encoded by [`crate::encode_v2_declaration`]; the
-/// canonical guest-side encoder is a future `guest/sdk` deliverable (out of this
+/// canonical guest-side encoder is a future `harmony-linux/sdk` deliverable (out of this
 /// task's surface).
 pub(crate) const SDK_WIRE_VERSION_V2: u8 = 2;
 

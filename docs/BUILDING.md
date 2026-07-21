@@ -82,7 +82,7 @@ cargo build -p hypercall-proto --no-default-features --features guest \
   script); no GNU-only flags to `sed`/`stat`/etc.; `shellcheck` clean.
 
 ```sh
-make -C guest test-payloads
+make -C consonance/acceptance-suite test-payloads
 ```
 
 **Part B — Linux kernel + initramfs.** Requires Linux. On macOS, run it in a linux/amd64
@@ -91,11 +91,11 @@ container (Docker Desktop, OrbStack, or colima all work):
 ```sh
 docker run --rm -it --platform linux/amd64 -v "$PWD":/work -w /work debian:stable bash
 # inside: apt-get update && apt-get install -y <the Linux dep list above>
-make -C guest fetch        # downloads to guest/dl/, hash-verified; network needed once
-make -C guest test-linux   # boot gate + reproducibility gate
+make -C harmony-linux fetch        # downloads to harmony-linux/dl/, hash-verified; network needed once
+make -C harmony-linux test-linux   # boot gate + reproducibility gate
 ```
 
-`make -C guest test` runs Part A everywhere and Part B only when on Linux; on macOS it must
+`make -C harmony-linux test` runs Part A everywhere and Part B only when on Linux; on macOS it must
 fail fast for Part B with a clear "run this in a container" message, never skip silently.
 
 ## Worker orchestration
@@ -118,7 +118,7 @@ latest message".
 
 ## Hygiene
 
-- Network access: crates.io, plus the hash-pinned downloads in `guest/dl/` (task 04 only).
+- Network access: crates.io, plus the hash-pinned downloads in `harmony-linux/dl/` (task 04 only).
   Nothing else.
 - Install no global tools beyond this document; if you need one, say so in your PR
   description instead of installing it.

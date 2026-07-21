@@ -19,7 +19,7 @@ license = "AGPL-3.0-or-later"
 
 # codegen-units = 1 keeps each crate a single object file, which guarantees the
 # linker pulls in the runtime's global_asm! boot shim (_start + vectors) whenever
-# any runtime symbol is referenced. Same reasoning as guest/payloads.
+# any runtime symbol is referenced. Same reasoning as consonance/acceptance-suite/payloads.
 [profile.release]
 codegen-units = 1
 opt-level = 2

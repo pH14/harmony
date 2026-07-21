@@ -13,7 +13,7 @@
 #
 # Requirements on the box (all preexisting, hash-verified during the run):
 #   /root/kvm-spike/deb612/...      patched 6.12.90 kvm modules
-#   /root/harmony-pr44/guest/build  pinned L2 postgres pair
+#   /root/harmony-pr44/harmony-linux/build  pinned L2 postgres pair
 #   /boot/vmlinuz-6.12.90+deb13.1   L1 kernel (= box kernel)
 #   rust toolchain, qemu-system-x86_64, busybox (static)
 set -euo pipefail
@@ -25,7 +25,7 @@ mkdir -p "$WORK"
 
 echo "=== N5 [1/4] build gates + payloads (source: $SRC)"
 cd "$SRC"
-( cd guest/payloads && cargo build --release )
+( cd consonance/acceptance-suite/payloads && cargo build --release )
 BINS=$(cargo test --no-run -p vmm-core --test live_determinism --test n3_repeat_gate \
         --message-format=json 2>/dev/null \
         | grep -o '"executable":"[^"]*"' | cut -d'"' -f4 | sort -u)

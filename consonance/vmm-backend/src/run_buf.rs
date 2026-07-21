@@ -6,7 +6,7 @@
 //! the run loop can read a PIO `OUT` value out of the data buffer and write an
 //! `IN` value back; in tests and under Miri it wraps a fake `alloc_zeroed` page
 //! so **all the offset math is exercised with no syscall** (the
-//! `vmcall-transport` precedent, `tasks/00-CONVENTIONS.md` / `AGENTS.md`).
+//! `hypercall-doorbell` precedent, `tasks/00-CONVENTIONS.md` / `AGENTS.md`).
 //!
 //! Both accessors bound-check `offset + len <= len` **before** any pointer
 //! arithmetic or copy. That check is the load-bearing safety property: no offset,
@@ -24,7 +24,7 @@ use crate::error::{BackendError, Result};
 ///
 /// Held as a raw pointer (never a `&mut [u8]` field) because on the box the
 /// kernel writes the page out-of-band across `KVM_RUN`, exactly as
-/// `vmcall-transport` holds its shared pages: a reference live across that write
+/// `hypercall-doorbell` holds its shared pages: a reference live across that write
 /// would be aliasing UB.
 pub(crate) struct RunBuf {
     ptr: *mut u8,
@@ -79,7 +79,7 @@ mod tests {
     //! **Miri** gate (`cargo +nightly miri test -p vmm-backend`) scrutinizes it
     //! for UB with no syscall. The page is a raw `alloc_zeroed` allocation
     //! reached only through its pointer (the production shape: raw RAM, not a
-    //! `Box` — mirrors `vmcall-transport`'s `Page`), so the seam is clean under
+    //! `Box` — mirrors `hypercall-doorbell`'s `Page`), so the seam is clean under
     //! the default Stacked-Borrows model.
 
     use super::*;

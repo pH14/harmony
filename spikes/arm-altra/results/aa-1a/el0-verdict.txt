@@ -1,0 +1,15 @@
+work clock binding: arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)
+el0-check aa1a-pinned-solo-002+aa1a-co-tenant-other-core-002+aa1a-co-tenant-same-core-002+aa1a-memory-pressure-002
+  [PASS] aggregation: 4 distinct, comparable run-set(s)
+  [PASS] well-formed: 4 set(s) well-formed
+  [PASS] totality: 1800 record(s), every attempt present
+  [PASS] scheduling: every record pinned-scheduled for its whole window
+  [PASS] perf-config: raw 0x21, pinned, kernel-excluded, user+host-included, counting mode
+  [PASS] accumulator: 1800 record(s) match the predicted accumulator
+  [PASS] replay-identity: 180 repeated case(s), every repetition bit-identical
+  [PASS] oracle-exactness: el0-pagefault: count = 2·trips +14 exactly over 3 magnitude(s); el0-signal: count = 2·trips +14 exactly over 3 magnitude(s); el0-syscall: count = 1·trips +13 exactly over 3 magnitude(s); branch-dense: offset +13 over 360 record(s); straight-line: offset +14 over 360 record(s)
+  [PASS] scale-coverage: 5 class(es) cover the 1e6/1e7/1e8 differential
+  [PASS] coverage-matrix: the 5×4 class×condition matrix is complete: ["straight-line", "branch-dense", "el0-syscall", "el0-signal", "el0-pagefault"] under ["pinned-solo", "co-tenant-other-core", "co-tenant-same-core", "memory-pressure"]
+  [PASS] rep-floor: every case repeated ≥ 40 time(s), meets the floor of 10
+  [PASS] case-floor: every (class, scale) meets the distinct-case floor of 3
+RESULT: PASS (12 checks)

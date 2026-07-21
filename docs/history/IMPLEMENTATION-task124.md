@@ -10,7 +10,7 @@ The `public-api` job installed the pinned nightly toolchain but **never installe
 When the binary is absent, each test takes its loud-skip branch and returns 0 (see any
 `tests/public_api.rs`: the `no such command` / `is not installed` stderr match → `return`
 instead of `panic!`). So the gate reported **green-by-skipping**, not green-by-checking,
-for all 21 workspace crates + `revision-coordinator` + `guest/sdk` ever since **#118**
+for all 21 workspace crates + `revision-coordinator` + `harmony-linux/sdk` ever since **#118**
 moved the job off the pre-provisioned self-hosted box (where the tool existed) onto hosted
 runners.
 
@@ -64,9 +64,9 @@ slipped through the sleeping gate.)
 | tactics-regime | MATCH |
 | logtmpl | MATCH |
 | resolution | MATCH |
-| det-corpus | MATCH |
+| acceptance-suite | MATCH |
 | revision-coordinator | MATCH (its test is not `#[ignore]`d; also gates the plain nextest suite) |
-| harmony-sdk (`guest/sdk`, out-of-workspace) | MATCH (0 `cfg(linux)` sites) |
+| harmony-sdk (`harmony-linux/sdk`, out-of-workspace) | MATCH (0 `cfg(linux)` sites) |
 
 ### `cfg(linux)` crates — audited on the determinism box
 

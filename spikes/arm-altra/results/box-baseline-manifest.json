@@ -1,0 +1,48 @@
+{
+  "box": "harmony-arm",
+  "captured_utc": "2026-07-17T14:23:53Z",
+  "firmware": {
+    "bios_release_date": "01/16/2025",
+    "bios_version": "1.74"
+  },
+  "kernel": {
+    "arch": "aarch64",
+    "boot_image": "/boot/vmlinuz-6.8.0-134-generic",
+    "boot_image_sha256": "6ec862ae1d4ae54f90ef1d01cfded4c873ed1c9838ef2ef20bab82cf8a0ac694",
+    "cmdline": "BOOT_IMAGE=/boot/vmlinuz-6.8.0-134-generic root=/dev/mapper/vgroot-lvroot ro nvme_core.multipath=0 cma=128M initcall_blacklist=sysfb_init module_blacklist=ipmi_ssif,hpilo,hpwdt",
+    "kvm": "built-in (CONFIG_KVM=y, stock Ubuntu; no kvm.ko)",
+    "kvm_arm_mode": "UNREADABLE: No such file or directory",
+    "release": "6.8.0-134-generic",
+    "version": "#134-Ubuntu SMP PREEMPT_DYNAMIC Fri Jun 26 18:28:11 UTC 2026"
+  },
+  "provisioning_applied_2026_07_17": {
+    "apt_installed": [
+      "build-essential",
+      "git",
+      "curl",
+      "pkg-config",
+      "libssl-dev"
+    ],
+    "kvm_group": "user ubuntu added to group kvm",
+    "note": "captured AFTER Paul's day-one provisioning; the restore target includes these",
+    "rustup": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "services_touched": []
+  },
+  "runtime_posture": {
+    "dmesg_restrict": "1",
+    "governors": {
+      "ondemand": "0-79"
+    },
+    "isolated": "",
+    "nohz_full": "",
+    "perf_event_paranoid": "-1",
+    "perf_event_paranoid_note": "set to -1 at provisioning (2026-07-17, runtime sysctl, not persisted); re-set after any reboot"
+  },
+  "soc": {
+    "core_count_online": "0-79",
+    "midr_el1": "0x00000000413fd0c1",
+    "processor_version": "Ampere(R) Altra(R) Processor",
+    "product": "ProLiant RL300 Gen11",
+    "smt": "notimplemented"
+  }
+}

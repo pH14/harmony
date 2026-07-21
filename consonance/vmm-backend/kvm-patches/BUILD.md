@@ -25,7 +25,7 @@ Secure Boot / kernel lockdown (`/sys/kernel/security/lockdown = [none]`,
 
 ```sh
 # 1. Fetch + verify the pinned source (sha256 matches docs/CPU-MSR-CONTRACT.md
-#    and guest/linux/versions.lock).
+#    and harmony-linux/linux/versions.lock).
 cd ~/kvm-spike
 curl -fsSL -o linux-6.18.35.tar.xz \
   https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.35.tar.xz

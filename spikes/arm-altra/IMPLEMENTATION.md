@@ -7,7 +7,7 @@ on silicon** — apparatus for the `docs/ARM-ALTRA.md` spike, not the spike.
 
 The four directories + READMEs the task specifies, all under `spikes/arm-altra/`:
 
-- **`oracle-model/`** — the analytical taken-branch oracle, shared `no_std`/`std`
+- **`oracle-model/`** — the analytical ARM branch-instruction oracle, shared `no_std`/`std`
   between the payloads and the host harness. Single definition of every payload
   parameter and every expected count; the four ambiguity weights (exception
   entry/return, SVC, WFI) are unknowns with no `Default`, solved from an
@@ -681,12 +681,12 @@ Four P1/P2 fixes plus one ruled doc-only change. The Miri finding stays adjudica
   co-tenant-same-core, memory-pressure (`docs/ARM-ALTRA.md` §AA-1) — before the summed floor
   means anything (`check_aa1_condition_matrix`). `check_run_sets` now loads then delegates to a
   unit-testable `aggregate`.
-- **AA-2 did not validate `br_retired_delta`.** The step check verified the PC advanced and one
+- **AA-2 did not validate `br_retired_delta` (pre-AA1-F1 model).** The step check verified the PC advanced and one
   instruction retired, but a `StepRecord` with `br_retired_delta: 99` passed — the branch delta
   was never examined, so the gate proved nothing about the counter's per-branch behaviour. It
-  now ties the delta to the branch outcome: a step that lands at `pc + 4` fell through (delta 0),
-  anywhere else took a branch (delta 1); anything else fails. (This is the whole point of AA-2:
-  BR_RETIRED counts a taken branch exactly once and nothing else.)
+  then tied the delta to the branch outcome: a step that lands at `pc + 4` fell through (delta 0),
+  anywhere else took a branch (delta 1). AA1-F1 later superseded that inference: a not-taken
+  branch is now an explicit class with delta 1, while only an ordinary non-branch has delta 0.
 - **ELF load-segment parsing was fail-open (P2).** r8 fixed `executable_ranges`, but
   `load_segments` (the guest-RAM loader's source) still `filter_map`ped — a truncated `PT_LOAD`
   was silently dropped and the payload booted as a partial image. `load_segments` now returns
@@ -900,7 +900,7 @@ keep fortifying the checker ahead of the box is still pending; the loop continue
   `pc_before + 4`, which is exactly the skip/double AA-2 exists to detect.
 - **LL/SC single-steps must reject a BR_RETIRED delta of 1.** The `LlscExclusive` class was
   grouped with the exception/WFI/injection classes and admitted a delta of 1. A
-  single-stepped `LDXR`/`STXR` is a load or store, not a taken branch, so BR_RETIRED must
+  single-stepped `LDXR`/`STXR` is a load or store, not a branch instruction, so BR_RETIRED must
   not move (the retry is a separate `CBNZ`, stepped and classed as a TakenBranch). It now
   requires delta 0, like Sequential.
 - **Extend the vGIC digest to all injection-relevant state.** The redistributor/distributor
@@ -1436,3 +1436,31 @@ opcode-checked window scan, TCG smoke, kernel-patch format/parse.
 - **The container prereq for the patch gate** (`host/verify.sh`) is a native-aarch64
   Linux builder with the pinned tree; `host/BUILD.md` §0 documents the one-time
   setup. The gate was run green on such a builder during development.
+
+## Verification rework (hm-tn6, 2026-07-18)
+
+The prior AA-3 GO certificate and trait freeze were voided after verification found two
+apparatus defects: the campaign scripts did not invoke their determinism comparators, and the
+comparators accepted intersection-only comparisons. The physical results are retained and the
+mechanism is presumed sound, but certification remains pending re-verification.
+
+- Recomputed both comparisons as full joins over retained raw records, verifying each manifest's
+  attempted count and records sha256 first. AA-1(c) joined 3,200/3,200 keys; AA-3 joined
+  5,700/5,700 keys with equal repetition multiplicity. Both were bit-identical, with no
+  missing/extra keys or divergence. The committed JSON and transcript record exact cardinality.
+- Wired both comparators into the campaign success path. A shard success marker now requires the
+  corresponding full-join MATCH; invalid, partial, duplicate, or divergent evidence cannot write
+  it. Python negative controls pin missing keys, duplicate overwrites/sample IDs, cross-input tuple
+  collisions, repetition mismatches, tampered hashes, and P0 divergence.
+- Bumped new evidence to schema v4. Every step carries the plan's stable
+  `planned_sample_id`; the checker requires exact distinct coverage of `0..planned`. This closes
+  the bounced J2 attack in which duplicated `step_index == 0` rows concealed a dropped plan entry.
+  Historical v3 evidence remains retained but is not re-certified as v4.
+- Re-landed the AA1-F1 not-taken-branch class and step-position replay key with pinned tests,
+  including the exact J2 forgery. New AA-2 runs default to a finite 12,000-step budget (explicit
+  `--max-steps 0` remains the opt-in unbounded mode), and exact landing now checked-adds the skid
+  margin and headroom before subtraction.
+- Replayed `el0-check` over the four retained `-002` run-sets and made that exact union a CI gate.
+  Checker/comparator output self-declares the ARM clock binding: raw `0x21` counts every
+  architecturally executed branch instruction, taken or not (AA1-F1). This is ARM-only; x86's
+  retired-conditional-branch clock is unchanged.

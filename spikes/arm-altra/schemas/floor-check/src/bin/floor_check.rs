@@ -12,6 +12,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use arm_harness::evidence::ARM64_WORK_CLOCK_BINDING;
 use clap::Parser;
 use floor_check::{Floors, Status, check_run_sets};
 
@@ -82,6 +83,7 @@ fn main() -> ExitCode {
     // stdout: the per-check summary — clean, deterministic, capture-friendly. The DETAIL
     // is printed too, so the exact floor a disposition rests on ("meets the floor of N")
     // is on the face of the retained verdict, never only in a status word.
+    println!("work clock binding: {ARM64_WORK_CLOCK_BINDING}");
     println!(
         "floor-check {} stage={}",
         report.run_set_id,

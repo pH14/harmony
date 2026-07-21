@@ -88,7 +88,7 @@ mechanism crate to a musical name.
 | `dissonance/logtmpl` | **`log-templates`** | Double-clipped abbreviation; spell it out |
 | `dissonance/matcher` | **`signals`** | The product concept is *declared signals* (`SignalSet`/`SignalDecl`/`Role`); matching is the mechanism inside |
 | `dissonance/tactics-regime` | **`tactics`** | Named for one implementation strategy, not the role; future portfolio arms land in this crate |
-| `dissonance/flow` | **keep** | The deliberate exception: it anchors an already-consistent cluster (`DecisionClass::NetFlow`, `FlowPolicy`, `FlowEvent`, `guest/flow-agent`) |
+| `dissonance/flow` | **keep** | The deliberate exception: it anchors an already-consistent cluster (`DecisionClass::NetFlow`, `FlowPolicy`, `FlowEvent`, `harmony-linux/flow-agent`) |
 
 ## Required separations
 

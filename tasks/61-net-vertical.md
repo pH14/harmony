@@ -7,7 +7,7 @@
 > no body (its own docs defer the proxy shell), and today's real-Linux path traverses **zero**
 > hypercall seams (`docs/REVIEW-2026-07.md` gap #3). This task builds the vertical:
 > a `Net` hypercall service (host side), an in-guest **flow agent** (the first real consumer of
-> `vmcall-transport`), and enforcement on the CNI — proving one guest-plane fault decided by the
+> `hypercall-doorbell`), and enforcement on the CNI — proving one guest-plane fault decided by the
 > host, enforced in the guest, recorded, and replayed bit-identically.
 >
 > Depends on **task 58** (server + recorded-env plumbing). Independent of 59/60 — can run in
@@ -20,8 +20,8 @@ decision…"), `tasks/50-net-fault-boundary.md` (the `NetFlow` catalog + `net_de
 `tasks/51-flow.md` (the FlowEngine brain + the deliberately-deferred proxy shell),
 `dissonance/environment/src/catalog.rs` (`NetFlow`, `FlowEvent`, the flow-policy faults),
 `consonance/hypercall-proto/src/lib.rs` (`ServiceId`, framing),
-`consonance/vmcall-transport/src/lib.rs` (the guest-side doorbell — unused until now),
-`guest/linux/k3s-init.sh` + `runc-init.sh` (CNI/netns layout the agent must live in).
+`consonance/hypercall-doorbell/src/lib.rs` (the guest-side doorbell — unused until now),
+`harmony-linux/linux/k3s-init.sh` + `runc-init.sh` (CNI/netns layout the agent must live in).
 
 ## Environment
 
@@ -41,7 +41,7 @@ rule does not apply to guest-resident code, note this in the PR). End-to-end pro
 2. **Guest: the flow agent.** A static binary baked into the workload initramfs, started by the
    init script: intercepts new flows on the intra-guest CNI (the task-51 design: iptables
    REDIRECT to a central L4 proxy; a simpler nftables-verdict prototype is acceptable if the
-   redirect proves heavy — document the choice), asks `net_decide` over `vmcall-transport`, and
+   redirect proves heavy — document the choice), asks `net_decide` over `hypercall-doorbell`, and
    enforces the answer with in-guest mechanisms per the catalog table: `NetLatency` → netem
    delay in **V-time-backed** guest time, `NetLoss` → seeded drop, `NetThrottle` → tbf,
    `NetReset` → RST, partitions → standing nftables rule. Embed `dissonance/flow`'s engine as

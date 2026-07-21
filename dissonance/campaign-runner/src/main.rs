@@ -50,7 +50,7 @@ use vmm_core::vendor::x86::bringup::BackendKind;
 /// determinism claim rides on. One constant per vendor; every box mode selects
 /// the x86-64 bundle today (the sole vendor).
 struct VendorBootConfig {
-    /// Kernel image filename under guest/build (or guest/linux).
+    /// Kernel image filename under harmony-linux/build (or harmony-linux/linux).
     kernel_image: &'static str,
     /// The determinism kernel command line (identical to the branching demo).
     #[cfg_attr(
@@ -313,7 +313,7 @@ struct BenchBoxArgs {
     /// for the box (see docs/history/IMPLEMENTATION-task69-m2.md's runbook).
     #[arg(long)]
     calibration: Option<PathBuf>,
-    /// Kernel image filename under guest/build (or guest/linux).
+    /// Kernel image filename under harmony-linux/build (or harmony-linux/linux).
     #[arg(long, default_value = X86_64_BOOT.kernel_image)]
     kernel: String,
     /// The bug's initramfs (default the fault-timing campaign image; override
@@ -418,7 +418,7 @@ struct GameBoxArgs {
     /// `--repeat 25`.
     #[arg(long, default_value_t = 1, value_parser = parse_positive_usize)]
     repeat: usize,
-    /// Kernel image filename under guest/build (or guest/linux).
+    /// Kernel image filename under harmony-linux/build (or harmony-linux/linux).
     #[arg(long, default_value = X86_64_BOOT.kernel_image)]
     kernel: String,
     /// Initramfs filename — defaults to the task-86 game image.
@@ -518,10 +518,10 @@ struct BoxArgs {
     /// Must be > 0: a zero-V-time branch runs no workload past the base.
     #[arg(long, default_value_t = 5_000_000_000, value_parser = parse_positive_u64)]
     deadline_delta: u64,
-    /// Kernel image filename under guest/build (or guest/linux).
+    /// Kernel image filename under harmony-linux/build (or harmony-linux/linux).
     #[arg(long, default_value = X86_64_BOOT.kernel_image)]
     kernel: String,
-    /// Initramfs filename under guest/build (or guest/linux). Defaults to the
+    /// Initramfs filename under harmony-linux/build (or harmony-linux/linux). Defaults to the
     /// bare-Postgres image; point at `initramfs-docker.cpio.gz` to reuse the
     /// runc-Postgres image already staged on the box.
     #[arg(long, default_value = "initramfs-postgres.cpio.gz")]
@@ -554,7 +554,7 @@ struct BoxArgs {
 /// The search space is deliberately CLI-tunable: the box operator (the foreman)
 /// narrows `--gpa-*` once the planted supervisor's ledger guest-physical address
 /// is pinned (read via `/proc/self/pagemap` during a bring-up boot — see
-/// `guest/linux/campaign-init.sh`), keeping the naive search inside the box
+/// `harmony-linux/linux/campaign-init.sh`), keeping the naive search inside the box
 /// lease. The defaults are a broad, page-strided sweep — a genuine "no knowledge
 /// of the trigger" search that completes only once the space is scoped.
 #[derive(Parser)]
@@ -594,7 +594,7 @@ struct CampaignBoxArgs {
     /// far deadline.
     #[arg(long, default_value_t = 1_000_000, value_parser = parse_u64_flexible)]
     window_hi: u64,
-    /// Kernel image filename under guest/build (or guest/linux).
+    /// Kernel image filename under harmony-linux/build (or harmony-linux/linux).
     #[arg(long, default_value = X86_64_BOOT.kernel_image)]
     kernel: String,
     /// Initramfs filename — defaults to the planted-bug campaign image.
@@ -907,7 +907,7 @@ fn run_game_box(args: GameBoxArgs) -> ExitCode {
 fn run_game_box(_args: GameBoxArgs) -> ExitCode {
     eprintln!(
         "[campaign-runner] game box mode needs Linux + patched KVM + the built game image (make -C \
-         guest/linux game-image, HARMONY_SMB_ROM set) — see docs/BOX-PINNING.md. This is not a \
+         harmony-linux/linux game-image, HARMONY_SMB_ROM set) — see docs/BOX-PINNING.md. This is not a \
          Linux host."
     );
     ExitCode::FAILURE

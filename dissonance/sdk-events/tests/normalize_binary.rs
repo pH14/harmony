@@ -11,7 +11,7 @@ use sdk_events::{
     encode_v2_declaration, resolve_v1_declaration,
 };
 
-// --- wire-byte builders (mirror `guest/sdk/src/wire.rs`; the canonical v1 side) ---
+// --- wire-byte builders (mirror `harmony-linux/sdk/src/wire.rs`; the canonical v1 side) ---
 
 const CATALOG_MAGIC: u32 = u32::from_le_bytes(*b"SDKC");
 
@@ -834,7 +834,7 @@ fn v1_assert_violation_firing_reports_a_false_condition() {
             condition: Some(false)
         }
     );
-    // An `always` point carries NO expectation on this wire: `guest/sdk` emits only
+    // An `always` point carries NO expectation on this wire: `harmony-linux/sdk` emits only
     // violations, so a passing always produces no event and must not read as an
     // unsatisfied must-hit.
     let id = ObservationId::Point {
