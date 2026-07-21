@@ -1358,9 +1358,9 @@ ARMv8.1; Altra/Neoverse N1 is ARMv8.2), so an LSE-only guest is buildable on the
   every other payload — including `lse-atomics` — CLEAN, exiting non-zero to reject. The AA-5
   owned-image build now also applies the direct-LSE kernel patch and requires `vmlinux`, the vDSO,
   and the freestanding init to scan CLEAN; a planted LDXR/STXR ELF must be rejected with exactly
-  two hits. This completes the static build gate. Wiring the same primitive into a live W^X
-  rescan-on-exec path remains open.
-- **Level 3 — stage-2 execute guard. DRAFT KVM EXTENSION BUILT; BLOCKED ON LIVE PROOF.** Stock
+  two hits. This completes the static build gate. The same primitive wired into a live W^X
+  rescan-on-exec path is the Level-3 guard below — now proven live on N1.
+- **Level 3 — stage-2 execute guard. PROVEN ON N1, 2026-07-20** (`results/aa-4/live-20260720/`). Stock
   Linux 6.18.35 arm64 KVM recognizes an instruction fault but adds
   `KVM_PGTABLE_PROT_X` inside `user_mem_abort()` and resumes; it exposes no userspace per-GFN XN
   attribute and no execute-fault exit. `KVM_SET_MEMORY_ATTRIBUTES` is x86-only here and defines
@@ -1377,15 +1377,26 @@ ARMv8.1; Altra/Neoverse N1 is ARMv8.2), so an LSE-only guest is buildable on the
   `aa4-guard-write` pins a page-aligned self-modifier and requires the original page hash at first
   scan and the pre-store write exit, then deliberately replays that first approved generation
   while the exact expected modified page is frozen at a fresh generation. The old token must
-  return `EINVAL` before the exact current token is approved. The fixture passes TCG
-  liveness/protocol twice; all guard paths remain unrun. Until
-  the patched kernel is booted and retained evidence proves first execute, approve/reject,
-  stale-token rejection, racing writes, exit-before-modification, and backing replacement, this
-  is not level-3 evidence. An unmapped-GPA abort, `BRK`, or post-execution dirty scan is not a
-  substitute.
+  return `EINVAL` before the exact current token is approved. The fixture passed TCG
+  liveness/protocol twice pre-silicon; on 2026-07-20 the full guard ran on real N1 under host
+  `6.18.35-aa4guard` (patches 0001+0002, build-id `ac576f87…`, cap
+  `KVM_CAP_ARM_STAGE2_EXEC_GUARD=246`, exit 43, core 60 isolated). Retained evidence
+  (`results/aa-4/live-20260720/`) proves on silicon: pre-execute rejection of a hazardous page
+  (1 scan → 1 rejection, PC unchanged); selective approval of a clean LSE page (ran to an MMIO
+  exit — the guard is not blanket-reject); exit-before-modification with revoke-execute, exact-page
+  rescan at a newer generation, and a replayed stale-generation approval rejected with `EINVAL`;
+  memslot-notifier-replacement forced rescan; distinct-backing-move forced rescan (the approval is
+  keyed to the mapping, not a content hash); and the two-vCPU scan/write race (a write behind a
+  concurrent pending scan is blocked). Each concurrency gate carries a self-verifying negative
+  control. This is now level-3 evidence. (An unmapped-GPA abort, `BRK`, or post-execution dirty
+  scan would not have been a substitute — none of these gates rely on one.) The live run also
+  surfaced a real W^X contract implication: the guard scans whole executable *pages*, so guest
+  text and any exclusive-bearing rodata must be page-separated (payload `.rodata` is now
+  page-aligned), mirroring the guest kernel's `STRICT_KERNEL_RWX`.
 
-**CURRENT RULING: cooperative residual risk on stock KVM. The stronger mechanically-unreachable
-ruling remains conditional on booting the draft execute-guard patch and passing its planted proof.**
+**CURRENT RULING: cooperative residual on *stock* KVM; the stronger mechanically-unreachable
+property now holds on the patched `6.18.35-aa4guard` host — the execute-guard was booted and
+passed its planted reject / write / race / invalidation proofs on N1 (2026-07-20).**
 - *Static owned image — unreachable at publication.* The guest ships LSE-only (Level 1), and the
   opcode scan (the completed static half of Level 2) fails closed if any exclusive survives in
   the kernel, vDSO, or init artifact: outline-atomics fallback, hand assembly, or a stray kernel
@@ -1395,21 +1406,23 @@ ruling remains conditional on booting the draft execute-guard patch and passing 
   produced after the static scan — a guest JIT or self-modifying page emitting `LDXR`/`STXR` —
   can execute on stock KVM without a userspace-visible permission transition. The owned guest
   disables modules, BPF JIT, kprobes, ftrace, livepatch, and other known code-generation paths,
-  so this is outside its cooperative contract; it is nevertheless not mechanically closed until
-  the execute-guard capability exists and is exercised.
+  so this is outside its cooperative contract. The execute-guard capability that mechanically
+  closes it now exists and was exercised on N1 (2026-07-20): on the `aa4guard` host (patch 0002)
+  this residual is mechanically closed; on stock KVM (no patch 0002) it remains a
+  cooperative-contract residual.
 - *Non-residual: the single-step livelock (AA-2).* A measurement-time hazard (single-step clears
   the monitor), not a runtime one; the LSE-only ban removes every exclusive there is to
   single-step, so it cannot arise in a shipped guest.
 
-**Disposition: AA-4 CHARACTERIZED; static owned-image gate complete; current ruling is
-cooperative residual on stock KVM.** (a) and (b) are demonstrated at scale on real N1. For (c),
-Level 1 and Level 2's static artifact half are built and cross-verified against the owned
-kernel/vDSO/init. The arm64 KVM execute-guard draft now applies and compiles and its VMM scan/reply
-path is built, but live W^X rescan-on-exec and Level 3 still require the non-vacuous planted
-reject/write/race/invalidation proofs on the pinned host. Native publication on the pinned N1 is
-also still required.
+**Disposition: AA-4 CHARACTERIZED; static owned-image gate complete; Level 3 execute-guard now
+proven live on N1; residual on *stock* KVM is cooperative.** (a) and (b) are demonstrated at scale
+on real N1. For (c), Level 1 and Level 2's static artifact half are built and cross-verified against
+the owned kernel/vDSO/init, and the Level-3 arm64 KVM execute-guard (patch 0002) was booted on the
+pinned host and passed the non-vacuous planted reject/write/race/invalidation proofs on N1,
+2026-07-20 (`results/aa-4/live-20260720/`) — so live W^X rescan-on-exec is no longer open. Native
+publication of the owned image on the pinned N1 remains the standing follow-up.
 
-### AA-5 — the paravirt work-derived clock: (a)+(b) DEMONSTRATED; (c) executor + guest build substrate built
+### AA-5 — the paravirt work-derived clock: (a)+(b) DEMONSTRATED; (c) boot + clock mechanism PROVEN on N1 (full-RAM entropy residual open)
 
 The centerpiece. Evidence in `results/aa-5/` and the AA-3 records.
 
@@ -1420,8 +1433,9 @@ same-seed reps** (replay-identity PASS after the AA3-F1 canonical-landing fix) a
 solo-vs-co-tenant. Those retained payload runs used a *static* placeholder
 (`FLAG_WORK_DERIVED` clear — the plumbing, not a live refresh), so their clock value was
 trivially wall-clock-invariant; they are not retroactively claimed as a live-refresh result.
-The Linux executor now has the `hm-8h8` value-advancing path pre-silicon: it stamps from the
-skid-free exact-work anchor, not from natural-exit live counts, but has not run on the N1. The
+The Linux executor's `hm-8h8` value-advancing path stamps from the skid-free exact-work anchor,
+not from natural-exit live counts, and ran on N1 in the 2026-07-20 boot
+(`results/aa-5/live-20260720/`), where same-seed console and register digests held bit-identical. The
 retained digest **excludes** the live host-time counters (`is_host_time_register`), verified in AA-3
 where `CNTPCT_EL0`/`KVM_REG_ARM_TIMER_CNT` varied 240/240 on a passing payload while replay
 held — wall-clock never reaches a compared digest.
@@ -1438,7 +1452,7 @@ the vDSO and cross-verification reports zero live counter reads (constant `CNTFR
 remain allowed). Remaining, kernel-dependent: the EL0
 `CNTVCT_EL0`-read-undefs-under-`CNTKCTL_EL1` live test and `CNTHCTL_EL2` posture.
 
-**(c) The Linux smoke — executor + guest clockevent substrate built; live proof remains.** The
+**(c) The Linux smoke — boot + clock mechanism PROVEN on N1, 2026-07-20 (`results/aa-5/live-20260720/`); full-RAM state identity has a characterized kernel-CRNG entropy residual.** The
 harness now has a portable-tested, arm64-Linux-cross-clippy-clean boot substrate: a total flat
 Image loader with bounded Image/initramfs placement, deterministic generated DTB, Linux EL1h
 entry (`x0=DTB`, reserved args zero), Linux-only PSCI 0.2 vCPU opt-in, the existing in-kernel
@@ -1463,19 +1477,33 @@ replay digest. Reading `GICR_ISPENDR0` would be vacuous here: KVM's level inject
 line-level bitmap, not necessarily the userspace-visible pending latch. The DT requires the
 generic `nohlt` poll loop because work time cannot advance while the sole vCPU sleeps in WFI.
 
-The path remains deliberately labelled **NON-CERTIFYING**: the console marker alone does not prove its
-producer and this path has not run on the Altra. The marker is
-latched at its UART exit but accepted only after the next exact refresh publishes; the owned init
-spins after READY so a lost/late Preempt cannot pass with a stale page merely because userspace
-printed the expected bytes.
+The path was deliberately designed to be **non-vacuous**: the console marker alone does not prove
+its producer, so the marker is latched at its UART exit but accepted only after the next exact
+refresh publishes; the owned init spins after READY so a lost/late Preempt cannot pass with a stale
+page merely because userspace printed the expected bytes. On 2026-07-20 this path ran on the Altra
+N1 (`results/aa-5/live-20260720/`, host `6.18.35-aa3preempt` = stock + patch 0001, per-run
+mechanism attestation with a stock-host control failing closed): the guest boots to userspace and
+steady state (`HARMONY_AA5_CLOCKSOURCE_OK`, no RCU stall), same-seed **console** and **register**
+digests are bit-identical, the counter is fully page-routed (0 raw `cntvct` in `vmlinux`), and EL0
+raw-counter access is closed (`EL0_CNTVCT_PAGE_OK`). Same-seed **full-RAM** state identity is **not**
+achieved: a characterized kernel-CRNG entropy residual (`base_crng`/`input_pool` reseed *content*
+varies — 400–700 differing bytes in 256 MB, console and registers unaffected, divergence unstable
+run-to-run) remains — a subsystem distinct from the clock, tracked as the entropy-closure contract
+row (`docs/PARAVIRT-CLOCK.md` §4.3). The register-digest identity is **nokaslr-conditional**: the
+pinned image is `RANDOMIZE_BASE=off`, so kernel VAs are stable run-to-run; a KASLR build would
+diverge register digests by construction (tribunal F1-REG). AA-5(c) therefore claims the work-clock
+plus counter/input closure and architectural (console + register) determinism, **not** full-RAM
+identity.
 
 The exact landing also inherits AA-4's LSE-only precondition: single-stepping through an
 `LDXR`/`STXR` sequence clears its monitor and can add retries or livelock. The arm64 recipe now
 patches the kernel to direct LSE, removes the unused futex LL/SC helpers from the config, replaces
 BusyBox with a freestanding LSE-only init, and scan-gates the exact kernel/vDSO/init artifacts.
-`linux-boot` still accepts a trusted hash pin rather than re-proving that property at load time,
-and the live W^X rescan-on-exec + stage-2 backstop remain open, so this is still pre-silicon
-substrate rather than a complete AA-4/AA-5 certification.
+`linux-boot` still accepts a trusted hash pin rather than re-proving that property at load time.
+The live W^X rescan-on-exec + stage-2 backstop are **no longer open** — proven live on N1 at AA-4
+(`results/aa-4/live-20260720/`) — but full AA-5(c) state identity still awaits entropy closure, so
+the 2026-07-20 runs are on-silicon spike evidence for the clock and W^X mechanisms rather than a
+standing AA-4/AA-5 GO certification.
 
 The tree now has a native Linux/aarch64 build recipe for the pinned kernel and a freestanding
 syscall-only rootfs. Its v6.18.35 patches route the four shared physical/virtual counter accessors
@@ -1483,26 +1511,32 @@ syscall-only rootfs. Its v6.18.35 patches route the four shared physical/virtual
 page, disable the vDSO fast path and EL0 counter access, name the selected source
 `harmony-arm-pvclock`, emit kernel atomics directly as LSE, and refuse Image publication unless
 the counter and LL/SC scans accept both vmlinux and the vDSO; the exact init ELF must pass the
-LL/SC scan before packing. The checksum-pinned source/config cross-build is clean, but this is
-**not native box-built evidence**: no resulting Image/initramfs is present on the Altra yet.
+LL/SC scan before packing. The checksum-pinned source/config cross-build is clean, and on
+2026-07-20 the native `build-arm64-kernel.sh` recipe was run on the Altra N1 — its overlapping-patch
+idempotency hardened on-box (`results/aa-5/live-20260720/` finding #2) — producing the guest `Image`
+(sha256 `980b7982…`) and initramfs (`604733be…`) recorded in `MANIFEST.txt`, which then booted to
+steady state. Native **publication** of the owned image as a standing pinned asset remains the
+follow-up.
 
 The prior timer-domain gap is now closed in the pre-silicon substrate. Upstream's virtual
 clockevent programmed `CNTV_CVAL` against KVM's live architected counter; the owned kernel now
 keeps that timer disabled and exports only work-clock deadlines. The hardened raw executable-ELF
 scanner rejects linked `vmlinux`/vDSO publication if any CNTV/CNTP CVAL/TVAL program survives and
 has a planted mapping-symbol negative control. The exact Linux 6.18.35 Image build passes that
-gate with zero timer programs. AA-5 remains open for the real pinned-N1 run proving userspace
-steady state and same-seed console+state identity. That live substrate also hosts AA-4 level-3's
-planted-exclusive proof.
+gate with zero timer programs. On 2026-07-20 the pinned-N1 run happened: userspace steady state and
+same-seed **console + register** identity PASS (register identity nokaslr-conditional); full-RAM
+state identity remains open behind the kernel-CRNG entropy residual. That same live substrate hosted
+AA-4 level-3's planted-exclusive proof (`results/aa-4/live-20260720/`).
 
-**Disposition: AA-5 PARTIAL — (a) payload determinism and (b) the closure premise + scanner are
-demonstrated on real N1; (c) has pre-silicon executor/build substrate but no box-built asset or
-live guest proof**. The guest-registered exact-work page refresher is built but unexecuted;
-completion remains blocked on the pvclock-enabled native box build, live deterministic
-timer/event evidence, AA-4's missing KVM execute-guard patch plus live proof, and live N1
-bring-up. The AA-5 guest remains the natural workload for the eventual planted proof and AA-6's
-guest-side gates. The work clock, exact landing, force-exit, and static counter closure are
-independently demonstrated; the AA-4 runtime execute guard is explicitly not.
+**Disposition: AA-5 — (a) payload determinism and (b) the closure premise + scanner demonstrated on
+real N1; (c) boot + clock mechanism proven on N1 (2026-07-20), full-RAM state identity open behind
+the kernel-CRNG entropy residual**. The guest-registered exact-work page refresher was executed on
+the pinned N1 (native box build + live bring-up), and AA-4's KVM execute-guard patch was booted and
+passed its live proof — the items this disposition previously listed as blocking are now cleared.
+What remains for full AA-5(c) state identity is the entropy-closure contract row (a deterministic
+guest CRNG), a subsystem distinct from the clock. The AA-5 guest remains the natural workload for
+AA-6's guest-side gates. The work clock, exact landing, force-exit, static counter closure, and —
+new on 2026-07-20 — the AA-4 runtime execute guard are now all demonstrated on N1.
 
 ### AA-6 — the freezable-CPU contract + vGIC round-trip + mini determinism gate: SCOPED
 

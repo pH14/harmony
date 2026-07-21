@@ -14,15 +14,22 @@ run (a stock-host control fails closed at mechanism attestation — see
 |------|--------|
 | Boot to userspace + steady state (`HARMONY_AA5_CLOCKSOURCE_OK`, `…READY`, no RCU stall) | **PASS** (`smoke/`, `seed3-*`) |
 | Same-seed **console** bit-identical | **PASS** (identical sha256 across runs) |
-| Same-seed **register** digest bit-identical | **PASS** (`regs_only` matches; `diag-*`) |
+| Same-seed **register** digest bit-identical (nokaslr build — see note) | **PASS** (`regs_only` matches; `diag-*`) |
 | AA-5(b) EL0 `CNTVCT` closure | **PASS after fix** (`el0probe-fixed/`: `EL0_CNTVCT_PAGE_OK`) |
 | Counter-opcode closure (0 raw `cntvct` in `vmlinux`) | **PASS** |
 | Same-seed **full-RAM state** digest bit-identical | **RESIDUAL** — kernel CRNG entropy (below) |
 
+> **Register-identity is nokaslr-conditional.** The pinned image is built `RANDOMIZE_BASE=off`
+> (`build-arm64-kernel.sh` asserts it off), so kernel virtual addresses are stable run-to-run and
+> the `regs_only` digest is bit-identical. A KASLR build would diverge register digests by
+> construction — kernel VAs differ per boot — so this row is an identity claim under the
+> deterministic nokaslr image, not under KASLR (tribunal F1-REG; see the entropy-closure ruling and
+> `docs/PARAVIRT-CLOCK.md` §4.3).
+
 The paravirt-clock **mechanism** is proven: architectural execution is deterministic
-(console + registers bit-identical), the counter is fully page-routed, and EL0 raw
-counter access is closed. The one gap to full-state identity is a **kernel-CRNG
-entropy residual**, a subsystem distinct from the clock.
+(console + registers bit-identical, the latter under the nokaslr image above), the counter is
+fully page-routed, and EL0 raw counter access is closed. The one gap to full-state identity is a
+**kernel-CRNG entropy residual**, a subsystem distinct from the clock.
 
 ## Findings fixed this session (all committed on `task/arm-aa5c-guest-linux`)
 
