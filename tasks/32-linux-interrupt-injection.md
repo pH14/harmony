@@ -65,14 +65,14 @@ the box live test observes **`GUEST_READY`** followed by a **clean poweroff**. T
 1. **Injection unit-tested under Miri** (mock/synthetic `kvm_run`): the ready/not-ready branch, the
    `KVM_INTERRUPT` queue, the `request_interrupt_window` + `KVM_EXIT_IRQ_WINDOW_OPEN` retry, and the
    vcpu-state round-trip of the interrupt fields — exercised under the interpreter, 0 UB.
-2. **Phase B.1 — `GUEST_READY` (box-only, stock, `#[ignore]`):** the real `guest/linux` bzImage +
+2. **Phase B.1 — `GUEST_READY` (box-only, stock, `#[ignore]`):** the real `harmony-linux/linux` bzImage +
    initramfs boots; serial contains **`GUEST_READY`** and the guest powers off cleanly within a
    bounded V-time + wall-clock budget; no contract violation. (This replaces task 30's userspace-
    reached gate as the real milestone gate.)
 3. **Phase B.2 — deterministic-twice (box-only, patched):** identical serial + `state_hash` across
    two same-seed boots. (Deferred-OK if B.1 lands first as its own PR, but required to call the
    GUEST_READY milestone *done*.)
-4. **No determinism / contract regression:** M1/M2/P6 and the det-corpus goldens unchanged
+4. **No determinism / contract regression:** M1/M2/P6 and the acceptance-suite goldens unchanged
    (injection is `Option`/Linux-path-gated like task 30's device wiring; `state_hash` for non-Linux
    paths byte-identical). Standard gates green incl. **mutants** (pin the timer-expiry / injectability
    arithmetic with exact-value tests) and **public-api** (refresh on the box for the `cfg(linux)`

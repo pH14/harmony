@@ -43,7 +43,7 @@ Keep the **stock** `GUEST_READY` path (task 33 gate3) green — don't regress it
 ## Phase 2 — the determinism gate
 
 `c_linux_boot_deterministic_twice_patched` (already written in `live_linux_boot.rs`) passes on the box:
-boot the real `guest/linux` bzImage + initramfs **twice** on the **patched** backend at the same seed
+boot the real `harmony-linux/linux` bzImage + initramfs **twice** on the **patched** backend at the same seed
 and assert **bit-identical**:
 - the full serial capture (including the `GUEST_READY` line and the clean poweroff), and
 - the terminal `state_hash`.
@@ -58,7 +58,7 @@ IRQ (#60). Run it per [[box-patched-kvm-ops]] (load patched modules, bound with 
 2. **Deterministic-twice (box-only, patched, the milestone gate):** `c_linux_boot_deterministic_twice_patched`
    passes — identical serial (incl. `GUEST_READY`) + `state_hash` across two same-seed patched boots.
    Quote both digests (equal) in the PR. **This is the headline — same seed ⇒ bit-identical Linux.**
-3. **No regression:** the stock `GUEST_READY` gate (task 33 gate3), M1/M2/P6, and the det-corpus
+3. **No regression:** the stock `GUEST_READY` gate (task 33 gate3), M1/M2/P6, and the acceptance-suite
    goldens are unchanged (any new device wiring is Linux-path-gated; `state_hash` for non-Linux paths
    byte-identical). Standard gates green incl. **mutants** (pin any new device/state logic with
    exact-value tests) + **Miri** (any new `unsafe`) + **public-api** (refresh **on the box** for the

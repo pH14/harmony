@@ -357,7 +357,7 @@ production restructure.
 
 - **Hardware-arrival gate.** Nothing below runs until the Epyc box is racked and reachable.
   Until then the only permitted work is offline: payload/oracle construction (reusing the x86
-  det-corpus payloads — same ISA), the single-step characterization harness, the `svm.c` patch
+  acceptance-suite payloads — same ISA), the single-step characterization harness, the `svm.c` patch
   draft, and the contract vendor-column skeleton — all under `spikes/amd-epyc/`, all clearly
   untested-on-silicon. (A rented AMD box may substitute for arrival per §6, as an explicit
   recorded decision, never silently.)
@@ -481,7 +481,7 @@ All under `spikes/amd-epyc/`:
 2. **Payloads + oracles** (`payloads/`) — the x86 oracle payloads with analytically known
    taken-branch and instruction counts, per class (straight-line, branch-dense, syscall,
    exception, `iret`, interrupt-shadow (`STI`/`MOV SS`), HLT/idle, locked-instruction — the
-   SpecLockMap probe class). Reuses the existing det-corpus/contract payloads (same ISA) where
+   SpecLockMap probe class). Reuses the existing acceptance-suite/contract payloads (same ISA) where
    they already carry analytical oracles; new-by-purpose only for the AMD-specific probe classes.
 3. **Harness** (`harness/`) — the minimal KVM harness (single vCPU, pinned, ioctl-level, SVM);
    the single-step characterization driver (BTF/TF/`#DB`); run orchestration.
@@ -821,7 +821,7 @@ measurement: it depends on nothing AE-1 doesn't, and can be characterized in par
 (the BTF/TF characterization driver is buildable before silicon). Nothing (contract work,
 single-step characterization, nested thinking, rented-AMD excursions) may displace the AE-1
 work-clock measurement. Before hardware arrives, the only work is offline apparatus: the oracle
-payloads (mostly reused from the x86 det-corpus — same ISA), the single-step characterization
+payloads (mostly reused from the x86 acceptance-suite — same ISA), the single-step characterization
 harness, the `svm.c` patch draft, and the floor-checker schemas — built so that arrival day is
 spent measuring, not scaffolding.
 </content>

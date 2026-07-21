@@ -148,7 +148,7 @@ Stock `KvmBackend` **cannot intercept** RDTSC/RDTSCP/RDRAND/RDSEED — they exec
 This crate grants `unsafe` for two Linux-only purposes (rule #7): (1) `KVM_SET_USER_MEMORY_REGION`
 registration in `map_memory`, and (2) `mmap`-ing `kvm_run` in `new`. Per the `unsafe ⇒ Miri` rule,
 the pointer/region bookkeeping around those syscalls must stay under the UB gate. Following the
-`vmcall-transport` precedent:
+`hypercall-doorbell` precedent:
 
 - **The pointer-unsafe logic lives in portable seams**, each driven under Miri by an
   `alloc_zeroed`/synthetic buffer with **no syscall** (`#[cfg(test)] mod tests`):
@@ -168,7 +168,7 @@ the pointer/region bookkeeping around those syscalls must stay under the UB gate
   `KVM_RUN` / `KVM_X86_SET_MSR_FILTER` / `KVM_GET/SET_SREGS2` / `KVM_GET_XSAVE2` / `KVM_SET_XSAVE`
   ioctls (the `mmap_kvm_run` / `raw_*` seams), each with a `#[cfg(miri)]` error-returning stub. Miri
   can't execute a syscall; **nothing else is excluded** — the `kvm_run` decode is now Miri-covered
-  via the synthetic-struct tests (this is the analogue of `vmcall-transport`'s real `vmcall` asm
+  via the synthetic-struct tests (this is the analogue of `hypercall-doorbell`'s real `vmcall` asm
   being the one un-Miri-able primitive).
 - The CI `miri` job runs on the self-hosted Linux box, where `KvmBackend` *compiles* under Miri (its
   syscalls stubbed) and its **pure `decode_*`/`apply_*` tests run** (the live `kvm_smoke` tests stay
@@ -538,7 +538,7 @@ gates" below for exact commands.
    spurious-`EINTR`/missed-kick shows up.)
 2. **B ≡ A:** the backend counter and vmm-core's V-time counter read identical work on a
    deterministic run (`run_until` lands at exactly the deadline on A's axis).
-3. **Count-neutrality live:** M1/M2/P6/det-corpus/unison goldens byte-identical with the
+3. **Count-neutrality live:** M1/M2/P6/acceptance-suite/unison goldens byte-identical with the
    `run_until` path present (it is additive; the `run()`/HLT-warp path is untouched).
 
 ### Acceptance gates (box; run verbatim, then **revert KVM to stock + verify**)
@@ -650,7 +650,7 @@ deterministically tolerable.**
 - Phase C (patched, deterministic-twice): both boots reach `GUEST_READY`, identical
   serial (6528 B) + `state_hash 4f926e01…c6aa` — a real Linux boot is bit-identical
   twice with preemption wired in.
-- Off-box (macOS): vmm-backend 34/34, vmm-core 227/227, det-corpus+unison 92/92,
+- Off-box (macOS): vmm-backend 34/34, vmm-core 227/227, acceptance-suite+unison 92/92,
   cross-clippy/fmt/deny clean, Miri `run_until` 6/6.
 
 **Gate 3 — runc + Postgres OCI, deterministic-twice: the documented frontier.** This
@@ -1308,7 +1308,7 @@ kvm_intel; lsmod | grep '^kvm '`). Then:
 - `Cargo.toml` (this crate) — replaced `[lints] workspace = true` with explicit `[lints.clippy] all
   = deny` + `[lints.rust] unexpected_cfgs = check-cfg('cfg(kani)')`, because Cargo cannot combine
   workspace lints with a crate-local `[lints.rust]` table (mirrors `vtime`/`lapic`).
-- **For the foreman:** `guest/linux/IMPLEMENTATION.md` / the LAPIC-timer docs should be updated to
+- **For the foreman:** `harmony-linux/linux/IMPLEMENTATION.md` / the LAPIC-timer docs should be updated to
   state the xAPIC page is reserved + MMIO-routed (out of this worktree's directory scope).
 
 ### Review round 1 fixes (box r1/r2/r3 PASSED — state_hash `3035e5c5…` bit-identical to the proven impl)
@@ -1413,7 +1413,7 @@ unbounded 28207). The in-kernel force-exit fired on every preemption (36/36) and
 ### Known limitations / foreman follow-up
 
 - **The heavy `live_runc_postgres` r1/r2/r3 headline was not run here** — it needs the ~160 MiB
-  runc + Postgres OCI payload (not in this branch's `guest/payloads`). It exercises the **same**
+  runc + Postgres OCI payload (not in this branch's `consonance/acceptance-suite/payloads`). It exercises the **same**
   `run_until` → force-exit path proven above. Foreman: build the runc/Postgres image, load the
   0004 module + task-54 routing, run the trio deterministic-twice, and confirm **zero
   `PastDeadline`** in the logs (contrast: task 54 showed exactly one 28207-branch overshoot).

@@ -1,0 +1,43 @@
+pub mod acceptance_suite
+pub enum acceptance_suite::CorpusKind
+pub acceptance_suite::CorpusKind::FuzzSeed
+pub acceptance_suite::CorpusKind::Micro
+pub acceptance_suite::CorpusKind::Workload
+pub enum acceptance_suite::OracleKind
+pub acceptance_suite::OracleKind::Conformance
+pub acceptance_suite::OracleKind::Determinism
+pub acceptance_suite::OracleKind::SeedSensitivity
+pub acceptance_suite::OracleKind::SeedSensitivity::rng_consuming: bool
+impl serde_core::ser::Serialize for acceptance_suite::OracleKind
+pub fn acceptance_suite::OracleKind::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+pub struct acceptance_suite::CorpusItem
+pub acceptance_suite::CorpusItem::golden: core::option::Option<alloc::string::String>
+pub acceptance_suite::CorpusItem::kind: acceptance_suite::CorpusKind
+pub acceptance_suite::CorpusItem::name: alloc::string::String
+pub acceptance_suite::CorpusItem::oracles: alloc::vec::Vec<acceptance_suite::OracleKind>
+pub acceptance_suite::CorpusItem::source: alloc::string::String
+pub struct acceptance_suite::ItemReport
+pub acceptance_suite::ItemReport::name: alloc::string::String
+pub acceptance_suite::ItemReport::results: alloc::vec::Vec<acceptance_suite::OracleResult>
+impl acceptance_suite::ItemReport
+pub fn acceptance_suite::ItemReport::passed(&self) -> bool
+pub struct acceptance_suite::ManifestError(_)
+pub struct acceptance_suite::OracleResult
+pub acceptance_suite::OracleResult::detail: alloc::string::String
+pub acceptance_suite::OracleResult::divergence: core::option::Option<unison::DivergencePoint>
+pub acceptance_suite::OracleResult::oracle: acceptance_suite::OracleKind
+pub acceptance_suite::OracleResult::passed: bool
+pub struct acceptance_suite::RunConfig
+pub acceptance_suite::RunConfig::checkpoint_every: u64
+pub acceptance_suite::RunConfig::limit: u64
+pub acceptance_suite::RunConfig::seed: u64
+pub acceptance_suite::RunConfig::seed_b: u64
+pub const acceptance_suite::TOY_MIN_WORK: u64
+pub fn acceptance_suite::check_conformance<F: unison::SubjectFactory>(&F, u64, u64, &str) -> core::result::Result<acceptance_suite::OracleResult, unison::SubjectError>
+pub fn acceptance_suite::check_determinism<F: unison::SubjectFactory>(&F, u64, u64, u64) -> core::result::Result<acceptance_suite::OracleResult, unison::SubjectError>
+pub fn acceptance_suite::check_seed_sensitivity<F: unison::SubjectFactory>(&F, u64, u64, u64, bool) -> core::result::Result<acceptance_suite::OracleResult, unison::SubjectError>
+pub fn acceptance_suite::load_manifest(&str) -> core::result::Result<alloc::vec::Vec<acceptance_suite::CorpusItem>, acceptance_suite::ManifestError>
+pub fn acceptance_suite::run_item<F, G>(&acceptance_suite::CorpusItem, &F, &acceptance_suite::RunConfig, G) -> core::result::Result<acceptance_suite::ItemReport, unison::SubjectError> where F: unison::SubjectFactory, G: core::ops::function::Fn(&str) -> core::option::Option<alloc::string::String>
+pub fn acceptance_suite::to_manifest(&[acceptance_suite::CorpusItem]) -> alloc::string::String
+pub fn acceptance_suite::toy_factory(&str) -> unison::toy::ToyFactory
+pub fn acceptance_suite::validate(&[acceptance_suite::CorpusItem]) -> core::result::Result<(), acceptance_suite::ManifestError>

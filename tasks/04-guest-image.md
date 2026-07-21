@@ -1,5 +1,8 @@
 # Task 04 — `guest/`: bare-metal test payloads + reproducible minimal Linux guest
 
+> **Historical path note:** task 43 later split this task's artifacts between
+> `consonance/acceptance-suite/{payloads,golden}` and `harmony-linux/linux`.
+
 Read `tasks/00-CONVENTIONS.md` first. Touch only `guest/`. This task is **not** part of the
 cargo workspace (`guest/` is excluded); it has its own build entry points and gates.
 
@@ -25,7 +28,7 @@ testable under stock QEMU, which is exactly what this task delivers. QEMU is onl
 environment here — payload output must therefore be **timing-independent** (QEMU's timing
 differs run to run; our hypervisor's won't, but the goldens must pass under both).
 
-## Part A — bare-metal payloads (`guest/payloads/`)
+## Part A — bare-metal payloads (`consonance/acceptance-suite/payloads/`)
 
 ### Boot & I/O contract (normative)
 
@@ -45,9 +48,9 @@ differs run to run; our hypervisor's won't, but the goldens must pass under both
 
 Implementation: Rust `#![no_std]` with target `x86_64-unknown-none` plus a small assembly
 shim (`global_asm!` or a `.s` file) for the Multiboot header and the 32→64-bit climb, linked
-with a custom linker script at 1 MiB. Crate-per-payload with a shared `guest/payloads/common`
+with a custom linker script at 1 MiB. Crate-per-payload with a shared `consonance/acceptance-suite/payloads/common`
 library crate (UART, exit, the shim) — all inside an independent cargo workspace at
-`guest/payloads/Cargo.toml`. `unsafe` is unavoidable here and permitted throughout; keep it
+`consonance/acceptance-suite/payloads/Cargo.toml`. `unsafe` is unavoidable here and permitted throughout; keep it
 in `common` where possible.
 
 ### Payloads
@@ -84,19 +87,20 @@ in `common` where possible.
 
 ### Part A gates
 
-`guest/payloads/run-tests.sh` (also wired into `guest/Makefile` as `make test-payloads`):
+`consonance/acceptance-suite/payloads/run-tests.sh` (also wired into
+`consonance/acceptance-suite/Makefile` as `make test-payloads`):
 builds all payloads, then for each: runs
 `qemu-system-x86_64 -m 256 -nographic -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 -serial mon:stdio -kernel <payload>`
 with a 60 s timeout, captures serial output, asserts (a) QEMU exit code corresponds to
-payload code 0, (b) output matches `guest/golden/<name>.txt` **exactly** (byte equality).
+payload code 0, (b) output matches `consonance/acceptance-suite/golden/<name>.txt` **exactly** (byte equality).
 Goldens are committed. Run the whole suite twice in the gate script — under TCG the two runs
 must already produce identical output (that's what timing-independence means).
 
-## Part B — minimal Linux guest (`guest/linux/`)
+## Part B — minimal Linux guest (`harmony-linux/linux/`)
 
 - `make kernel`: download a pinned kernel (pick the latest LTS **at task start and commit
-  the pin immediately** — exact version + sha256 in `guest/linux/versions.lock`; verify the
-  hash before building), build `bzImage` with `guest/linux/config-fragment` applied on top
+  the pin immediately** — exact version + sha256 in `harmony-linux/linux/versions.lock`; verify the
+  hash before building), build `bzImage` with `harmony-linux/linux/config-fragment` applied on top
   of `make tinyconfig`.
 - Config fragment (starting point — comment each line with rationale): 64BIT=y, !SMP,
   PRINTK=y + 8250 serial console, !RANDOM_TRUST_CPU (no RDRAND seeding — entropy must come
@@ -124,15 +128,15 @@ must already produce identical output (that's what timing-independence means).
    assert `GUEST_READY` appears within 120 s and QEMU exits.
 2. Reproducibility test: `make clean-artifacts && make image` twice (without re-downloading);
    `sha256sum` of `bzImage` and `initramfs.cpio.gz` identical across the two builds; emit
-   `guest/linux/MANIFEST.sha256`.
+   `harmony-linux/linux/MANIFEST.sha256`.
 
 ## Acceptance gates (whole task)
 
-`make -C guest test` runs Part A everywhere, and Part B when the host is Linux; on a
+`make -C harmony-linux test` runs Part A everywhere, and Part B when the host is Linux; on a
 non-Linux host it must fail fast for Part B with a clear "run this in a linux/amd64
 container — see docs/BUILDING.md" message, never skip silently. CI-friendly: no network
-access needed after `make -C guest fetch` (downloads to `guest/dl/`, hash-checked). Document
-host-package prerequisites (qemu, flex, bison, libelf-dev, bc, cpio…) in `guest/README.md`,
+access needed after `make -C harmony-linux fetch` (downloads to `harmony-linux/dl/`, hash-checked). Document
+host-package prerequisites (qemu, flex, bison, libelf-dev, bc, cpio…) in `harmony-linux/README.md`,
 plus exact instructions to add a new payload. Shell scripts pass `shellcheck`.
 
 ## Non-goals

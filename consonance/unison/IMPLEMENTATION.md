@@ -77,12 +77,12 @@
   can take a dependency-lean `default-features = false`. The CLI smoke test
   requires the feature enabled (default and `--all-features` both qualify).
 
-## `Machine::observable_digest` (added for det-corpus / O3, task 17)
+## `Machine::observable_digest` (added for acceptance-suite / O3, task 17)
 
 `Machine` gained `observable_digest() -> [u8; 32]`: a digest of only the
 guest-**observable output** (the toy `out_log`; serial + event capture for the
 real VMM), distinct from `state_hash`, which folds in latent state such as the
-seed-derived entropy stream. The det-corpus O3 seed-sensitivity oracle must
+seed-derived entropy stream. The acceptance-suite O3 seed-sensitivity oracle must
 compare this, not `state_hash` (which would diverge across seeds via the latent
 PRNG even for a seed-pure payload, making O3 unsound).
 

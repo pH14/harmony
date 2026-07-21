@@ -8,7 +8,7 @@
 > *properly* — portable seams, full gates, the determinism argument written down — not to re-derive it.
 
 Read `tasks/00-CONVENTIONS.md`, `tasks/47-deterministic-preemption-timer.md` (the `run_until`
-mechanism this extends), `tasks/30-*` / `guest/linux/IMPLEMENTATION.md` (the Linux boot + `linux_loader`),
+mechanism this extends), `tasks/30-*` / `harmony-linux/linux/IMPLEMENTATION.md` (the Linux boot + `linux_loader`),
 `docs/CPU-MSR-CONTRACT.md` §6 (CPUID 0x15 → the LAPIC-timer V-time rate), and the memory
 `lapic-page-hole-unblocks-vtime` first.
 
@@ -111,7 +111,7 @@ Beyond the standard suite (build/clippy/fmt/test on macOS + Linux):
 - **Re-key HLT-resume:** task 52 / PR #27's idle-HLT-resume targets the LAPIC timer deadline (its
   original keying, before task 53 re-pointed it at the vPIT). Land it against the LAPIC path; it
   composes with this task (47 preempts spins + the fallback; 52 wakes idle HLTs).
-- Update `guest/linux/IMPLEMENTATION.md` / the LAPIC-timer docs to state the xAPIC page is reserved +
+- Update `harmony-linux/linux/IMPLEMENTATION.md` / the LAPIC-timer docs to state the xAPIC page is reserved +
   MMIO-routed (write positively — what it IS).
 
 ## Non-goals

@@ -13,7 +13,7 @@ KERNEL_URL=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.35.tar.xz
 KERNEL_SHA256=f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236
 ```
 
-Same pin as `guest/linux/versions.lock` (`KERNEL_SHA256`) — this is the same canonical release
+Same pin as `harmony-linux/linux/versions.lock` (`KERNEL_SHA256`) — this is the same canonical release
 line the x86 determinism patches (`consonance/vmm-backend/kvm-patches/`) target, so the two
 series describe the same base tree.
 

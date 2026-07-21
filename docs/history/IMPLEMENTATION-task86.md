@@ -9,7 +9,7 @@ the gate *machinery* is built and committed; only its Signal input is absent.
 
 ## What was built, where
 
-- **`guest/play-agent/`** (new crate, standalone workspace): the weighted
+- **`harmony-linux/play-agent/`** (new crate, standalone workspace): the weighted
   chord input policy (one entropy byte per `W`-frame window, weights sum to
   exactly 256), the SMBDIS-verified RAM-map decode, the billboard writer
   byte-matched to film's merged `HBBD` v1 layout (golden-pinned), the
@@ -17,12 +17,12 @@ the gate *machinery* is built and committed; only its Signal input is absent.
   `pack_state`'s 16-bit bound), the per-frame agent loop over a mock-core
   seam, and the Linux glue (dlopen'd FCEUmm FFI, hugetlb+pagemap+mlock
   billboard pinning, the flow-agent doorbell). See its `IMPLEMENTATION.md`.
-- **`guest/linux/`**: `versions.lock` pins libretro-fceumm `0d610d9a` by
+- **`harmony-linux/linux/`**: `versions.lock` pins libretro-fceumm `0d610d9a` by
   tarball sha256; `fetch.sh` fetches it (the ROM is **never** fetched);
   `build-game-image.sh` builds core + agent, copies their ldd closure, bakes
   the user-supplied `HARMONY_SMB_ROM` (sha256 recorded in-image and echoed) or
   SKIPs loudly, packs the reproducible `initramfs-game.cpio.gz`, and exports
-  `guest/build/fceumm_libretro.so` — the **same** artifact film's renderer
+  `harmony-linux/build/fceumm_libretro.so` — the **same** artifact film's renderer
   dlopens (the shared pin, 1:1 by construction); `game-init.sh` reserves the
   billboard hugepage and maps agent failure to the `reboot -f` crash terminal;
   `game-image` Makefile targets.
@@ -80,7 +80,7 @@ the gate *machinery* is built and committed; only its Signal input is absent.
    commit: every explicit header (490/601 files) is or-later, zero
    only-versioned; GPL-2.0-or-later upgrades to GPL-3, which AGPL-3 §13
    permits combining with. Rationale + audit recorded in `versions.lock`
-   (`FCEUMM_LICENSE=`) and `guest/play-agent/IMPLEMENTATION.md`. Mesen
+   (`FCEUMM_LICENSE=`) and `harmony-linux/play-agent/IMPLEMENTATION.md`. Mesen
    (GPL-3, clean) is the recorded fallback if FCEUmm fails technically on the
    box; keeping the core out of the shipped artifact is the last resort.
 6. **Register numbering** is play-agent-local (ids 1–9 + points 1–2, the
@@ -89,7 +89,7 @@ the gate *machinery* is built and committed; only its Signal input is absent.
 
 ## Portable gates (all green, macOS + Linux-target cross-check)
 
-- `guest/play-agent`: 36 tests (fixed-tape chord decode, per-register RAM
+- `harmony-linux/play-agent`: 36 tests (fixed-tape chord decode, per-register RAM
   fixtures, billboard round-trip vs film's canonical bytes + hard golden,
   once-per-window emission, markers-fire-once, ≥256-case proptests), clippy
   `-D warnings` on host and `x86_64-unknown-linux-gnu` (compiles the FFI),
@@ -233,15 +233,15 @@ construction. Box was reachable at hand-off (`ssh hetzner` OK 2026-07-09).
 the documented stock size (1396736) nor idle. Other work was live on the box;
 I did not touch KVM. Verify stock per `docs/BOX-PINNING.md` before/after any
 run, and pin builds to a leased core (the image build uses `-j$(nproc)` —
-scope it: `taskset -c <lease> make -C guest game-image`).
+scope it: `taskset -c <lease> make -C harmony-linux game-image`).
 
 ```sh
 # 0. provision (box, leased core; needs the branch checked out there)
-make -C guest fetch                                  # pulls the pinned FCEUmm tarball
-taskset -c <core> make -C guest kernel               # if bzImage not already built
-HARMONY_SMB_ROM=/path/to/smb.nes taskset -c <core> make -C guest game-image
-#   -> guest/build/initramfs-game.cpio.gz  (ROM sha256 echoed — record it)
-#   -> guest/build/fceumm_libretro.so    (the SAME pin film's renderer dlopens)
+make -C harmony-linux fetch                                  # pulls the pinned FCEUmm tarball
+taskset -c <core> make -C harmony-linux kernel               # if bzImage not already built
+HARMONY_SMB_ROM=/path/to/smb.nes taskset -c <core> make -C harmony-linux game-image
+#   -> harmony-linux/build/initramfs-game.cpio.gz  (ROM sha256 echoed — record it)
+#   -> harmony-linux/build/fceumm_libretro.so    (the SAME pin film's renderer dlopens)
 # ROM-independent smoke (can run before the ROM lands): unset HARMONY_SMB_ROM,
 # build, boot — the guest must print GAME_SKIP and halt (Quiescent).
 
@@ -302,7 +302,7 @@ cargo run -p benchmark --bin exploration-report -- \
 #    reproducer (billboard gpa/len ride the trace's REG_BILLBOARD_* events;
 #    REG_FRAME every vblank is the shot list), then render per
 #    dissonance/film/IMPLEMENTATION.md "The box gate" with
-#    HARMONY_SMB_CORE=guest/build/fceumm_libretro.so HARMONY_SMB_ROM=<rom>:
+#    HARMONY_SMB_CORE=harmony-linux/build/fceumm_libretro.so HARMONY_SMB_ROM=<rom>:
 #    (a) core loads in the box guest (step 1 proves it — retro_load_game ok);
 #    (b) one real unserialize+retro_run validates film's env_cb assumption;
 #    (c) a >=300-frame clip renders; (d) render-determinism (same bundle
@@ -329,7 +329,7 @@ a gate constant).
 - **`kvm_intel` size anomaly on the box** (417792, 6 users, 2026-07-09) —
   flagged for the foreman's next box session; not investigated further from
   here (active co-tenants).
-- No spine defects surfaced; `explorer`/`link`/`guest/sdk` untouched
+- No spine defects surfaced; `explorer`/`link`/`harmony-linux/sdk` untouched
   (read-only surface respected). One pre-existing seam note the explorer pass
   confirmed: `Explorer::progression_step` does not drain `sdk_events()` into
   `RunTrace.events` (engine.rs builds `events: Vec::new()`) — irrelevant to

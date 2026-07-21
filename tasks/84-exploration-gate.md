@@ -45,7 +45,7 @@ the one-reproducer constraint), `docs/EXPLORATION.md` (the `quiet` tactic arm, "
 problems", roadmap rows E/F), `tasks/60-first-campaign-planted-bug.md` (the campaign + guest-init
 pattern this extends), `tasks/69-signal-bug-correlation.md` (the trial discipline and report
 format this mirrors), `tasks/70-selector-bandit.md` (the task this is the on-ramp for),
-`guest/payloads/sdk-demo/src/main.rs` (the SDK-instrumented-payload pattern grown up here),
+`consonance/acceptance-suite/payloads/sdk-demo/src/main.rs` (the SDK-instrumented-payload pattern grown up here),
 `dissonance/explorer/src/adapter.rs` (`SocketMachine`, `SpecEnvCodec`),
 `dissonance/explorer/src/engine.rs` (`Explorer`), `dissonance/link/src/sensor.rs` (`LinkSensor`,
 `LINK_STATE_CHANNEL`), `dissonance/explorer/src/stads.rs` (the discovery-curve estimator reused
@@ -61,8 +61,8 @@ any patched run (see Box-safety).
 
 Surface list (frontier waiver of hard rule 1):
 
-- `guest/` — the new **maze game** workload payload + init wiring, beside the `sdk-demo` and
-  task-60 planted-bug patterns (follow `guest/linux/pg-init.sh` workload-init conventions). SDK
+- `harmony-linux/` — the new **maze game** workload payload + init wiring, beside the `sdk-demo` and
+  task-60 planted-bug patterns (follow `harmony-linux/linux/pg-init.sh` workload-init conventions). SDK
   state registers report position; input decisions are drawn from the seeded entropy stream
   (`Sdk::entropy_fill`, the project's single guest-random source). **Zero fault vocabulary** —
   no buggify site, no `assert_*` violation is required for this gate (an `assert_reachable` at a
@@ -80,7 +80,7 @@ Surface list (frontier waiver of hard rule 1):
   cumulative distinct cells, depth reached, per-branch terminal `state_hash`) that
   `dissonance/benchmark` analyzes offline. A `--baseline` flag selects the control configuration
   (below).
-- `dissonance/explorer`, `dissonance/link`, `guest/sdk` (`harmony-sdk`): **read-only** — composed
+- `dissonance/explorer`, `dissonance/link`, `harmony-linux/sdk` (`harmony-sdk`): **read-only** — composed
   and reused, never modified. This gate is the composed engine's first real-hardware exercise; if
   it surfaces a spine defect, that is a **finding to escalate**, not a spine change to smuggle
   into this task's surface.

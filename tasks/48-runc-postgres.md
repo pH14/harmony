@@ -17,7 +17,7 @@
 Read `tasks/00-CONVENTIONS.md`, `tasks/47-deterministic-preemption-timer.md` +
 `consonance/vmm-core/IMPLEMENTATION.md` (the preemption primitive + its gate-3 notes), `tasks/38-*`
 (the OCI Postgres image + the `unshare` workaround this replaces), `tasks/42-postgres-workload-uuid-time.md`
-(the workload), and `guest/linux/{build-postgres-image.sh,pg-container-run.sh,pg-init.sh}` first.
+(the workload), and `harmony-linux/linux/{build-postgres-image.sh,pg-container-run.sh,pg-init.sh}` first.
 
 ## Why — the workaround exists only because preemption didn't
 
@@ -60,7 +60,7 @@ progress happens. **This task uses the real `runc`** — the precise thing the w
 2. **Deterministic-twice:** two same-seed patched runs are **bit-identical** — serial (incl. the UUIDs +
    timestamps) **and** `state_hash`. Quote the equal digests + a sample UUID/timestamp.
 3. **Seed-sensitivity:** a different seed ⇒ different UUIDs/interleaving (quote both).
-4. **No regression:** M1/M2/P6 + det-corpus + unison goldens byte-identical; standard gates green;
+4. **No regression:** M1/M2/P6 + acceptance-suite + unison goldens byte-identical; standard gates green;
    revert KVM to stock `1396736` + verify.
 
 **If the Go runtime surfaces a genuinely NEW blocker beyond preemption** (a syscall the backend doesn't

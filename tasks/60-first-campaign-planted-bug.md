@@ -14,7 +14,7 @@
 Read first: `tasks/00-CONVENTIONS.md`, `tasks/58-close-the-loop.md`,
 `tasks/59-host-plane-enforcement.md`, `dissonance/explorer/src/engine.rs` (the outer loop +
 `Bug`), `tasks/42-postgres-workload-uuid-time.md` (the entropy-consuming workload pattern),
-`guest/linux/pg-init.sh` (workload-init conventions).
+`harmony-linux/linux/pg-init.sh` (workload-init conventions).
 
 ## The planted bug
 

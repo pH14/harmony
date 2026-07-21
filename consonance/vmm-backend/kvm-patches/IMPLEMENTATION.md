@@ -51,7 +51,7 @@ The 5-patch series `git am`-applies clean onto pristine `v6.18.35` **and
 reproduces the built tree byte-for-byte** (`git diff` empty vs the build commit).
 Modules build with no warnings: vermagic `6.18.35-g83a4bb005323`, `kvm.ko`
 2471344 B, `kvm-intel.ko` 670816 B (+1296 B vs the 0001-0004 build = the MTF
-arm/exit path). Per-file patch sha256 pinned in `guest/linux/versions.lock`
+arm/exit path). Per-file patch sha256 pinned in `harmony-linux/linux/versions.lock`
 (`KVM_PATCH_000x_SHA256`). See `BUILD.md` Part 1.
 
 **Live determinism re-validation (6.12.90 proxy, the documented Part-2 path).**
@@ -74,7 +74,7 @@ Box reverted to stock and **verified `kvm 1396736` on a fresh ssh**. NB the
 harness's own trap-revert can be cut short when the ssh session drops on `pkill`
 during teardown — always re-verify stock on a fresh connection and force-revert
 (`rmmod kvm_intel kvm; modprobe kvm kvm_intel`) if it shows the patched size
-(1400832). `guest/payloads` must be rebuilt (`cargo build --release`, target
+(1400832). `consonance/acceptance-suite/payloads` must be rebuilt (`cargo build --release`, target
 `x86_64-unknown-none`) after any box re-ship — a wiped payload fails the gate loudly.
 
 **On "validate on the canonical kernel, not just the box-proxy" (task §2).** This

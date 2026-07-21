@@ -1,8 +1,8 @@
 # Task 18 — instruction-sweep payloads (C1 corpus)
 
-Read `tasks/00-CONVENTIONS.md` and `guest/README.md` (the Part-A payload pipeline) first, then
-`docs/DETERMINISM-CORPUS.md` (§C1). Touch only `guest/payloads/` (new payloads + their entries
-in `payloads/Cargo.toml` and `payloads/run-tests.sh`), `guest/golden/`, and append the new
+Read `tasks/00-CONVENTIONS.md` and `harmony-linux/README.md` (the Part-A payload pipeline) first, then
+`docs/DETERMINISM-CORPUS.md` (§C1). Touch only `consonance/acceptance-suite/payloads/` (new payloads + their entries
+in `payloads/Cargo.toml` and `payloads/run-tests.sh`), `consonance/acceptance-suite/golden/`, and append the new
 items to `docs/corpus-manifest.toml`.
 
 ## Environment
@@ -18,11 +18,11 @@ output) and their determinism/conformance goldens are captured on the box and co
 C1 is the deterministic, exhaustive corpus: **one tiny bare-metal payload per trapped
 instruction / MSR class we've identified** (docs/RESEARCH.md §3.5; `docs/cpu-msr-contract.toml`; R1).
 Each exercises its instruction many times and at boundaries, emits only protocol-valid,
-timing-independent lines (`guest/README.md` Part-A rules), and registers as a `Micro` corpus
-item so `det-corpus` (task 17) can drive O1/O2/O3 over it. These are the cheapest, highest-signal
+timing-independent lines (`harmony-linux/README.md` Part-A rules), and registers as a `Micro` corpus
+item so `acceptance-suite` (task 17) can drive O1/O2/O3 over it. These are the cheapest, highest-signal
 items and the seed corpus for the fuzzer (task 19).
 
-Follow the documented "Adding a new payload" flow exactly (`guest/README.md`). Reuse `common`
+Follow the documented "Adding a new payload" flow exactly (`harmony-linux/README.md`). Reuse `common`
 for the boot shim and `common::payload::{start, ok, pass, fail}`; put anything reusable
 (e.g. a hypercall "report u64" helper) in `common`.
 
@@ -68,20 +68,20 @@ Notes:
 
 ## Acceptance gates
 
-Beyond the standard payload gates (`guest/README.md` Part-A: builds, runs **twice**
-byte-identically under QEMU, golden committed, `make -C guest test-payloads` green):
+Beyond the standard payload gates (`harmony-linux/README.md` Part-A: builds, runs **twice**
+byte-identically under QEMU, golden committed, `make -C consonance/acceptance-suite test-payloads` green):
 
 1. **Coverage of the trap surface**: every row above has a payload; a checklist in
-   `guest/payloads/README` (or this task's `IMPLEMENTATION.md`) maps each trapped
+   `consonance/acceptance-suite/payloads/README` (or this task's `IMPLEMENTATION.md`) maps each trapped
    instruction/MSR class in `docs/cpu-msr-contract.toml` to its payload, and names any
    deliberately-omitted item with a reason. Silent gaps are the failure mode to avoid.
 2. **Manifest registration**: each payload is appended to `docs/corpus-manifest.toml` as a
    `Micro` item with its `oracles` (Determinism always; Conformance with a `golden`;
-   SeedSensitivity with the O3 tag above) — and `det-corpus validate` (task 17) passes.
+   SeedSensitivity with the O3 tag above) — and `acceptance-suite validate` (task 17) passes.
 3. **Conformance derivation**: `insn-cpuid` and `msr-allowed` expected values trace to the
    committed contract (generated or test-asserted equal), not hand-entered constants.
 4. **Box determinism gate** (when the VMM can load payloads): each payload passes O1
-   (`det-corpus check_determinism`) on the patched-KVM backend; `irq-landing` passes across
+   (`acceptance-suite check_determinism`) on the patched-KVM backend; `irq-landing` passes across
    its full deadline sweep. Capture and commit goldens from the box; record the box commit
    in `IMPLEMENTATION.md`.
 5. **Shape gate on Mac**: trap-dependent payloads (RDTSC/RNG/timer) that can't produce a

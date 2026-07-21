@@ -220,7 +220,7 @@ VM isn't being dropped (OOM risk) → investigate/kill+revert; (b) `progress.log
    `rmmod kvm_intel kvm; modprobe kvm; modprobe kvm_intel` and verify 1396736 on
    a FRESH ssh (never `pkill -f` — self-matches the wrapper argv).
 2. **Bugs 2 (order) & 3 (uuid):** their guest sources exist
-   (`guest/linux/order-super.c`, `uuid-super.c`) but need the same realistic
+   (`harmony-linux/linux/order-super.c`, `uuid-super.c`) but need the same realistic
    bug-agnostic operational logging campaign-super got, plus
    `build-order-image.sh`/`build-uuid-image.sh` + `order-init.sh`/`uuid-init.sh`
    (model on `build-campaign-image.sh`/`campaign-init.sh`; markers
@@ -341,8 +341,8 @@ boxrun.rs):**
   and bug-1 gate-2 validity is re-confirmed on the new binary.
 - Box reverted to stock cleanly after every run.
 - **Invocation gotcha:** `--initramfs` takes the BARE name (`initramfs-campaign.cpio.gz`);
-  `artifact()` (boxrun.rs) prepends `guest/build/`. Passing a full path double-prefixes →
-  "guest image missing". Image + bzImage live in `~/harmony-t69m2/guest/build/`.
+  `artifact()` (boxrun.rs) prepends `harmony-linux/build/`. Passing a full path double-prefixes →
+  "guest image missing". Image + bzImage live in `~/harmony-t69m2/harmony-linux/build/`.
 
 **NEXT:** unified clean relaunch of the bug-1 suite (both configs, same 1bcfc6c binary),
 then prep bugs 2 & 3 in parallel, then report + GO/NO-GO. The signal<baseline-on-bug-1
@@ -364,7 +364,7 @@ above, items 2 & 3):**
 1. MONITOR the bug-1 relaunch to `ORCH DONE`; verify determinism.log has no P0-DIVERGENCE;
    scp `*.json` back, commit under `campaign-data/bug1/`.
 2. BUGS 2 (order) & 3 (uuid): add the same bug-agnostic operational logging to
-   `guest/linux/order-super.c` / `uuid-super.c`; write build + init scripts (model on
+   `harmony-linux/linux/order-super.c` / `uuid-super.c`; write build + init scripts (model on
    `build-campaign-image.sh`/`campaign-init.sh`; markers `ORDER_READY`/`UUID_READY`); build
    images; calibrate triggers on the box; **gate-2 validity run each** (large deadline → real
    `Crash` + 25/25) BEFORE the suite; then run 20×2 campaigns each (clone the orchestrator,
@@ -405,11 +405,11 @@ above, items 2 & 3):**
   terminal-agnostic), so NO box behaviour changes.
 - Portable gates green: benchmark 29/29, conductor benchcampaign 12/12.
 
-**IMAGES BUILT on the box (2026-07-07):** `~/harmony-t69m2/guest/build/initramfs-order.cpio.gz` +
+**IMAGES BUILT on the box (2026-07-07):** `~/harmony-t69m2/harmony-linux/build/initramfs-order.cpio.gz` +
 `initramfs-uuid.cpio.gz` (~38M each), built with `taskset -c 4,12` (OFF the campaign cores).
-order-super/uuid-super compiled clean. The 6 guest/linux files were scp'd to the box worktree
+order-super/uuid-super compiled clean. The 6 harmony-linux/linux files were scp'd to the box worktree
 (overwriting the pre-logging order/uuid sources — campaign doesn't use them). Postgres debs +
-busybox tarball already cached in `guest/dl/`.
+busybox tarball already cached in `harmony-linux/dl/`.
 
 **ORCHESTRATORS created (`campaign-data/run-bug2-campaign.sh`, `run-bug3-campaign.sh`):** clones of
 run-bug1-campaign.sh swapping `--bug`/`--initramfs`/`--ready-marker`/OUT/names; DEADLINE=50000
@@ -706,7 +706,7 @@ iteration. **Next session:**
   + the guest source). Results land in `~/t69m2-results/`. Box worktree `~/harmony-t69m2` @ 1bcfc6c
   (Rust unchanged); guest sources scp'd per build. `~/box-window.sh` = CORES=(2 1 3), untouched.
 - Guest build: `taskset -c 4,12 ./build-order-image.sh` (or uuid) off the campaign cores. Order/uuid
-  images live in `~/harmony-t69m2/guest/build/`.
+  images live in `~/harmony-t69m2/harmony-linux/build/`.
 
 ### COMMITS THIS SESSION (branch task/signal-bug-correlation, all pushed)
 fd6dc2f guest prep · 8bf0d44 orchestrators+NOTES · bae7040 bug-2 0/512 finding · 81f8f4a bug-2/3

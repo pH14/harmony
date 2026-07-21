@@ -12,8 +12,8 @@
 > **Environment:** box-only for the determinism gate (patched KVM); pin per `docs/BOX-PINNING.md` (task 41
 > owns core 4 — use **core 2**). Self-serve box gates via git (rsync blocked, git works).
 
-Read `tasks/00-CONVENTIONS.md`, `tasks/37-bare-postgres-deterministic.md`, `guest/linux/build-postgres-image.sh`
-(the `workload.sql` generator), `guest/linux/pg-init.sh`, and the two gates
+Read `tasks/00-CONVENTIONS.md`, `tasks/37-bare-postgres-deterministic.md`, `harmony-linux/linux/build-postgres-image.sh`
+(the `workload.sql` generator), `harmony-linux/linux/pg-init.sh`, and the two gates
 `consonance/vmm-core/tests/live_postgres.rs` + `live_postgres_docker.rs` first.
 
 ## Change the workload
@@ -57,7 +57,7 @@ The old `FINAL_ROW = "row|20|407|20|3010"` literal no longer holds. Replace with
    **deterministic-twice** (serial + `state_hash`). Quote the equal digests + a sample UUID/timestamp.
 2. **Box, OCI (38 path):** same, in the container.
 3. **Seed-sensitivity:** different seed ⇒ different UUIDs (quote both).
-4. **No regression:** M1/M2/P6 + det-corpus goldens byte-identical; standard gates green; revert KVM to stock.
+4. **No regression:** M1/M2/P6 + acceptance-suite goldens byte-identical; standard gates green; revert KVM to stock.
 
 ## Non-goals
 

@@ -27,7 +27,7 @@ unset and hides MWAIT so `intel_pstate`/`intel_idle` never bind. The RAPL energy
 are denied as a family: they are a proven physical side channel (Platypus) and
 monotonically reveal real work and real time done by the host. Class match rule (all
 kernel citations at Linux tag v6.18.35, cross-checked against
-`guest/linux/versions.lock` KERNEL_VERSION=6.18.35): the union of (a) exact names
+`harmony-linux/linux/versions.lock` KERNEL_VERSION=6.18.35): the union of (a) exact names
 {`MSR_IA32_APERF`, `MSR_IA32_MPERF`, `MSR_IA32_PERF_CTL`, `MSR_IA32_PERF_STATUS`,
 `MSR_PLATFORM_INFO`, `MSR_PM_ENABLE`, `MSR_IA32_TEMPERATURE_TARGET`,
 `MSR_IA32_ENERGY_PERF_BIAS`, `MSR_CORE_PERF_LIMIT_REASONS`}; (b) prefixes
@@ -62,7 +62,7 @@ v6.18.35.
 | MSR_PKG_CST_CONFIG_CONTROL | 0xe2 | deny-gp | deny-gp | §7 Power/frequency: package C-state limit/demotion config — host idle policy is real-time state, and a guest write would change real host idle behavior; guest has no C-states (MWAIT hidden, HLT idle-skips per INTEGRATION.md §3) | msr-index.h:118; SDM Vol.4 model-specific MSR table |
 | MSR_IA32_MPERF | 0xe7 | deny-gp | deny-gp | §7 Power/frequency: named verbatim in §7 — MPERF reference-cycle counter; APERF/MPERF ratio reveals real host frequency/utilization and reads are serializing on real counters; #GP not zero — Linux probes via rdmsr_safe only when CPUID.6:ECX[0]=1 (hidden) | msr-index.h:960; SDM Vol.3B 15.2; SDM Vol.4 Table 2-2; INTEGRATION.md §7 (Power/frequency) |
 | MSR_IA32_APERF | 0xe8 | deny-gp | deny-gp | §7 Power/frequency: named verbatim in §7 — APERF actual-cycle counter; same canonical frequency/utilization side door as MPERF | msr-index.h:961; SDM Vol.3B 15.2; SDM Vol.4 Table 2-2; INTEGRATION.md §7 (Power/frequency) |
-| MSR_IA32_PERF_STATUS | 0x198 | deny-gp | deny-gp | §7 Power/frequency: current P-state/voltage — real host frequency readout; pinned guest config leaves CONFIG_CPU_FREQ unset so no guest cpufreq driver issues unchecked reads | msr-index.h:950; SDM Vol.3B ch.15; SDM Vol.4 Table 2-2; guest/linux/config-fragment (CONFIG_CPU_FREQ unset) |
+| MSR_IA32_PERF_STATUS | 0x198 | deny-gp | deny-gp | §7 Power/frequency: current P-state/voltage — real host frequency readout; pinned guest config leaves CONFIG_CPU_FREQ unset so no guest cpufreq driver issues unchecked reads | msr-index.h:950; SDM Vol.3B ch.15; SDM Vol.4 Table 2-2; harmony-linux/linux/config-fragment (CONFIG_CPU_FREQ unset) |
 | MSR_IA32_PERF_CTL | 0x199 | deny-gp | deny-gp | §7 Power/frequency: P-state request — a guest write would change the real host clock, perturbing the V-time instrument itself | msr-index.h:951; SDM Vol.3B ch.15; SDM Vol.4 Table 2-2 |
 | MSR_IA32_THERM_CONTROL | 0x19a | deny-gp | deny-gp | §7 Power/frequency: software clock-modulation duty cycle — guest write would throttle the real clock; read reflects host throttle policy | msr-index.h:963; SDM Vol.3B 15.8.3 |
 | MSR_IA32_THERM_INTERRUPT | 0x19b | deny-gp | deny-gp | §7 Power/frequency: thermal interrupt thresholds keyed to real die temperature — both directions tie guest state to host physics | msr-index.h:964; SDM Vol.3B 15.8.2 |

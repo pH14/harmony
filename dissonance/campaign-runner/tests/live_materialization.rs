@@ -41,8 +41,8 @@
 //! (bead `hm-xdp`; the new-image path is `hm-2nt`) pins the gate to the PR-44
 //! pair by content hash and FAILS CLOSED on any future drift, quoting the
 //! expected-vs-found sha256, rather than silently mis-probing. Stage the pinned
-//! build (e.g. from the box's `/root/harmony-pr44/guest/build`) and verify with
-//! `sha256sum guest/build/{bzImage,initramfs-postgres.cpio.gz}` against the
+//! build (e.g. from the box's `/root/harmony-pr44/harmony-linux/build`) and verify with
+//! `sha256sum harmony-linux/build/{bzImage,initramfs-postgres.cpio.gz}` against the
 //! `PINNED_*` constants below, or run a DIFFERENT build deliberately via
 //! `INITRAMFS=<name> INITRAMFS_SHA256=<hex>` (+ `BZIMAGE_SHA256=<hex>` /
 //! `KERNEL=<name>` for the kernel).
@@ -50,7 +50,7 @@
 //! Knobs: `HOPS` (default 4 — the PR-44-proven count; `HOPS=3` measures no hop
 //! draw on the pinned image, see the `cfg_hops` note), `HOP_DELTA_VNS` (default 2 000 000),
 //! `TAIL_DELTA_VNS` (default 1 000 000), `CHAIN_SEED`, `READY_MARKER`,
-//! `KERNEL`/`INITRAMFS` (filenames under `guest/build` or `guest/linux`) with
+//! `KERNEL`/`INITRAMFS` (filenames under `harmony-linux/build` or `harmony-linux/linux`) with
 //! the `BZIMAGE_SHA256`/`INITRAMFS_SHA256` pins above.
 //!
 //! **Box-safety (CRITICAL).** Stock KVM = 1396736; ALWAYS leave the box on
@@ -134,8 +134,8 @@ fn repo_root() -> std::path::PathBuf {
 
 fn artifact(name: &str) -> Option<Vec<u8>> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return Some(bytes);
@@ -149,8 +149,8 @@ fn artifact(name: &str) -> Option<Vec<u8>> {
 fn require_artifact(name: &str) -> Vec<u8> {
     artifact(name).unwrap_or_else(|| {
         panic!(
-            "guest artifact `{name}` not found in guest/build or guest/linux — build it on the \
-             box (`make -C guest fetch && make -C guest/linux postgres-image`) or point \
+            "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it on the \
+             box (`make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image`) or point \
              KERNEL/INITRAMFS at staged files"
         )
     })

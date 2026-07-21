@@ -1,9 +1,11 @@
 /target
-/guest/build
-/guest/dl
+/harmony-linux/build
+/harmony-linux/dl
+/harmony-linux/libvoidstar/build
+/consonance/acceptance-suite/payloads/target
 *.img
 *.bin
-!guest/golden/*.bin
+!consonance/acceptance-suite/golden/*.bin
 /.claude/skills/pr-review-workspace/
 .agent-prompt.md
 .env

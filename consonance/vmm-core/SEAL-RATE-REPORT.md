@@ -193,7 +193,7 @@ Reading:
 
 ```sh
 # On the box, in a checkout of this branch (task/validate-arbitrary-vtime-seal):
-make -C guest fetch && make -C guest/linux postgres-image      # if the image isn't built
+make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image      # if the image isn't built
 # load the patched kvm.ko / kvm-intel.ko for the running kernel, then (core 2 — the standing
 # frontier-gate core; serialize with any other frontier gate):
 taskset -c 2 timeout 7200 cargo test -p vmm-core --test seal_rate_sweep \

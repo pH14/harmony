@@ -7,7 +7,7 @@ together answer "is the deterministic engine itself correct?"
 
 It is a design doc in the mold of `R-BACKEND.md` / `R1-DEVICE-MODEL.md`: it fixes the frame
 and the dependency gates, and sequences a backlog. Tasks 17–18 are specced now
-(`tasks/17-det-corpus-harness.md`, `tasks/18-instruction-sweep.md`); 19–20 and the
+(`tasks/17-acceptance-suite-harness.md`, `tasks/18-instruction-sweep.md`); 19–20 and the
 Linux-guest workloads are outlined here with their gates and will be specced when unblocked.
 
 ## The frame: two orthogonal axes
@@ -27,7 +27,7 @@ Crucially, **the hardest oracle already exists.** `unison` is a generic divergen
 bisector over a `Machine` trait (`compare_runs` / `bisect_divergence`, work-count localized).
 This component is the *domain layer* on top of it: it knows about CPU instructions, the frozen
 contract, goldens, and the real VMM. `unison` stays domain-free (its non-goals forbid VMM
-integration); `det-corpus` is where that knowledge lives.
+integration); `acceptance-suite` is where that knowledge lives.
 
 ## Oracles — the four properties
 
@@ -220,14 +220,14 @@ guest; external/fault-injected networking is deliberately deferred.
 
 ## Deliverable structure
 
-- **`consonance/det-corpus/`** *(task 17)* — host-side oracle runner. Generic over `unison::Subject`/
+- **`consonance/acceptance-suite/`** *(task 17)* — host-side oracle runner. Generic over `unison::Subject`/
   `SubjectFactory`; defines the corpus manifest, the O1–O3 oracle runners, the conformance
   differ, and the JSON report. Pure-logic, Mac-testable with `ToyMachine`; pointed at
   `vmm-core::Vmm<B>` at integration. Composes `unison` (this is integration-class, so the
   "no sibling deps" rule of wave-1 parallel crates doesn't apply — it's the layer that *binds*).
-- **`guest/payloads/`** *(task 18)* — the C1 micro-payloads, via the documented "add a payload"
-  flow; goldens in `guest/golden/`.
-- **`guest/workloads/postgres/` + k3s tier** *(tasks 36–38, 48, 49 — delivered)* — the C3a
+- **`consonance/acceptance-suite/payloads/`** *(task 18)* — the C1 micro-payloads, via the documented "add a payload"
+  flow; goldens in `consonance/acceptance-suite/golden/`.
+- **`harmony-linux/linux/` Postgres + k3s tier** *(tasks 36–38, 48, 49 — delivered)* — the C3a
   real workload: bare Postgres escalating through runc to a single-node k3s cluster, all against
   guest-RAM-backed ext4. Supersedes the struck task 20 (SQLite-over-`Block`).
 - **Tasks 22 and 20 are struck** (host `BLOCK_WRITE` device + the SQLite-over-`Block` workload
@@ -246,7 +246,7 @@ guest; external/fault-injected networking is deliberately deferred.
 
 | # | Task | Class | Depends on | Output |
 |---|------|-------|-----------|--------|
-| 17 | `det-corpus` harness (oracle runner + manifest) | **delegable-now** (generic over `Machine`, ToyMachine-tested) | unison (merged) | runner crate + manifest schema + JSON report |
+| 17 | `acceptance-suite` harness (oracle runner + manifest) | **delegable-now** (generic over `Machine`, ToyMachine-tested) | unison (merged) | runner crate + manifest schema + JSON report |
 | 18 | Instruction-sweep payloads (C1) | **delegable-now** (Part A) + box for goldens | task 04 pipeline, contract 06, lapic 13, R1 | one payload per trapped insn/MSR + goldens + conformance table |
 | 19 | Determinism fuzzer (C2) | partly delegable (fast tier, Mac); box for real-KVM tier | 17, 18 (seed corpus), `arbitrary` | `cargo-fuzz` targets + corpus + CI wiring |
 | 22 | ~~Writable `Block` device~~ | **struck** (task 62) | — | superseded by guest-RAM-backed ext4 (tasks 36–38) |

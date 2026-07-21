@@ -47,7 +47,7 @@
 //! to `taskset -c 2` (the standing frontier-gate core, `docs/BOX-PINNING.md`).
 //!
 //! ```sh
-//! make -C guest fetch && make -C guest/linux postgres-image     # build the image
+//! make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image     # build the image
 //! # load patched kvm.ko/kvm-intel.ko, then (core 2, serialize with other frontier gates):
 //! taskset -c 2 timeout 7200 cargo test -p vmm-core --test seal_rate_sweep \
 //!     -- --ignored --nocapture --test-threads=1
@@ -114,16 +114,16 @@ fn repo_root() -> std::path::PathBuf {
 
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in guest/build or guest/linux — build it first on the \
-         box: `make -C guest fetch && make -C guest/linux postgres-image`."
+        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
+         box: `make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image`."
     );
 }
 

@@ -34,7 +34,7 @@ revert KVM to stock **1396736** + verify. Dispatch split (foreman): **worker A**
 (delegable); **worker B** = explorer probe mechanism + guest payload + box gates (frontier).
 
 Surface list (frontier waiver of hard rule 1): `dissonance/explorer` (probe mechanism +
-fingerprint minting — portable); the campaign/conductor bin (task 58/60's); `guest/` (the
+fingerprint minting — portable); the campaign/conductor bin (task 58/60's); `harmony-linux/` (the
 bug-(vi) payload + task-69 manifest wiring per 69's extension conventions, plus the Postgres
 image's transaction driver). `dissonance/oracle-elle` is single-crate work under the standard
 rules, depending only on `dissonance/explorer` (the task-64 plugin pattern: interfaces live in

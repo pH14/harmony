@@ -50,11 +50,11 @@ fn n3_repeat_gate() {
     );
 
     let payload_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../guest/payloads/target/x86_64-unknown-none/release")
+        .join("../../consonance/acceptance-suite/payloads/target/x86_64-unknown-none/release")
         .join(&item);
     let payload = std::fs::read(&payload_path).unwrap_or_else(|e| {
         panic!(
-            "payload `{item}` not built ({e}) at {} — `cd guest/payloads && cargo build --release`",
+            "payload `{item}` not built ({e}) at {} — `cd consonance/acceptance-suite/payloads && cargo build --release`",
             payload_path.display()
         )
     });

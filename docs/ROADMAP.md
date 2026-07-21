@@ -151,9 +151,10 @@ Differential plane (`hm-bbx`), not the task-70 selector. The literature and the 
 - **Task 92 — multi-CPU/backend characterization registry** (probe → select → validate),
   fixing the one-box bus factor on the single destructive `det-cfl-v1` baseline. Deferred behind
   Wave 4.
-- **Task 43 — `guest/` → `harmony-linux/` tier.** Deferred; now tracked as `hm-ciz` (the R-L4
-  restructure, `docs/LAYERS.md` §R-L4, with task 43 as the vehicle) — **P3, after the ARM merge**.
-  `harmony-kubernetes` (a higher guest layer) waits on this landing first.
+- **Task 43 — `guest/` → `harmony-linux/` tier.** Complete as `hm-ciz`: the R-L4 carve-out,
+  glossary renames, `/dev/harmony`, and compatibility library landed together. The workload
+  audit defers loader extraction to task 44 and its remaining adapter moves to `hm-hza`.
+  `harmony-kubernetes` (a higher guest layer) can now build on this landing.
 - **Real multi-vCPU** — deferred, not foreclosed; see the single-vCPU ruling below.
 
 ## Ruling: single-vCPU is the v1 contract
@@ -168,12 +169,10 @@ Recorded verbatim in `docs/DISSONANCE.md` and as a `docs/CPU-MSR-CONTRACT.md` ma
 
 ## Ruling: task 90 close-out posture
 
-Task 90 (the harmony/consonance/dissonance/unison rename) is ~95% executed but its task file
-still reads as fully pending. Its real stragglers are the `hypervizor` strings in **hashed**
-build inputs (`guest/linux/lib-build.sh:48,59,60` — the task-43 landmine: changing them
-invalidates `MANIFEST.sha256`). **Integrator ruling (task 62): document-as-deliberately-stale.**
-A comment sits at each site plus a close-out note in `tasks/90-rename-harmony.md`; the strings
-themselves are untouched by this task.
+Task 90 (the harmony/consonance/dissonance/unison rename) left `hypervizor` only in hashed
+build inputs, under a document-as-deliberately-stale ruling until a rebaseline was otherwise
+required. Task 43 adds a kernel driver and image library, so it folds that cleanup into its
+mandatory twice-reproducible manifest rebaseline rather than creating an extra hash event.
 
 ## Cross-cutting references
 

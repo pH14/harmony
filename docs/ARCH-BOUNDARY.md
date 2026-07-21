@@ -46,7 +46,7 @@ data exists.
 
 Bottom line up front: a fresh file-level audit (2026-07-02, five-zone sweep of consonance +
 dissonance + guest) shows **~85% of the tree is already arch-blind** — including the vtime
-planner, the snapshot store, the control protocol/server, unison/det-corpus, hypercall-proto,
+planner, the snapshot store, the control protocol/server, unison/acceptance-suite, hypercall-proto,
 and the entire dissonance layer. The x86 coupling is concentrated, not smeared: the
 `vmm-backend` value-type vocabulary, five nameable modules of `vmm-core`, the `lapic` crate,
 and the guest payloads. The restructure is therefore **promoting an implicit boundary into a
@@ -82,7 +82,7 @@ seam may branch on which ISA is in use.
   (`clock.rs`) is structurally a generic Hz-scaled counter mapping unchanged to
   `CNTVCT`/`CNTFRQ`; the leak is the field *name* only. `SimCpu` validates an ARM backend
   unchanged (re-parameterize density/max_skid).
-- **`unison`, `det-corpus`** — abstract over `Machine` (`run_to`/`work`/`state_hash`); no
+- **`unison`, `acceptance-suite`** — abstract over `Machine` (`run_to`/`work`/`state_hash`); no
   register knowledge. The x86 coupling point is the `Machine` impl over `Vmm`
   (`vmm-core/src/corpus.rs`), which is the intended seam.
 - **`hypercall-proto`** — byte-framed, code-pinned little-endian, no register ABI on the wire.
@@ -119,7 +119,7 @@ seam may branch on which ISA is in use.
    *seam shape* is already perfect: pure V-time-ns in (`mmio_read/write(.., now_vns)`,
    `advance_to(now_vns)`), deadlines + deliverable vectors out; zero crate dependency on vtime
    or vice versa — the vmm run loop joins them. A GIC model drops into the identical shape.
-4. **Guest side.** `vmcall-transport`'s arch surface is one ~20-line
+4. **Guest side.** `hypercall-doorbell`'s arch surface is one ~20-line
    `#[cfg(target_arch = "x86_64")]` `IoDoorbell::ring` impl (`out dx, eax`); ARM is `hvc` or an
    MMIO store behind the same trait — but note the *host* dispatch consequence: on arm64 a
    doorbell surfaces as `KVM_EXIT_MMIO`/hypercall-class, not `KVM_EXIT_IO`, so "which exit is

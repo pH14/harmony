@@ -18,7 +18,7 @@ use vmm_backend::{
 /// Proptest case count: full per the convention natively, cut to 16 under Miri
 /// (the interpreter is ~10–100× slower) with failure-persistence disabled
 /// (its default path resolution uses `getcwd`, which Miri's fs isolation
-/// rejects). Mirrors `vmcall-transport`'s `config` helper.
+/// rejects). Mirrors `hypercall-doorbell`'s `config` helper.
 fn cases(native: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { native });
     if cfg!(miri) {

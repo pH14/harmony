@@ -43,7 +43,7 @@ task-95 gates). What remains is THIS gate.
 
 A PR: the gate restoration + pin enforcement (+ the image rebuild recipe if hm-2nt's
 path is taken — reproducible, hash-pinned, provenance documented like
-`guest/golden/insn-cpuid.provenance.md`), box run evidence in the PR body, `bd` notes on
+`consonance/acceptance-suite/golden/insn-cpuid.provenance.md`), box run evidence in the PR body, `bd` notes on
 both beads. Close-or-split disposition for `hm-xdp`/`hm-2nt` stated explicitly.
 
 ## Ground rules

@@ -187,7 +187,7 @@ Differential epic (`hm-bbx`).
   `RolloutLocalSourceOrdinal` (same-source order only). A shared machine-event
   ordinal — needed for cross-source predicates — is a downstream concern.
 - **The wire-v2 encoder is host-side.** The canonical guest-side v2 encoder is a
-  future `guest/sdk` deliverable (out of this task's surface); `wire.rs` and the
+  future `harmony-linux/sdk` deliverable (out of this task's surface); `wire.rs` and the
   `tests/*` goldens pin the host format so a later guest encoder must agree.
 - **Downstream (`hm-bbx.4`)** consumes `Normalized` to build Differential
   relations, reducers, cells, and archive occupancy. Temporal reduction of `set` /

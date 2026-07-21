@@ -85,7 +85,7 @@ pub(crate) const IA32_TSC_ADJUST: u32 = 0x3b;
 
 /// The hypercall **doorbell** port (task 73 / INTEGRATION.md §1): an `OUT` here
 /// is a cooperating guest SDK ringing a hypercall. Mirrors
-/// `vmcall_transport::DOORBELL_PORT` (conventions rule 2 — the guest/host
+/// `hypercall_doorbell::DOORBELL_PORT` (conventions rule 2 — the guest/host
 /// protocol pattern; deliberately distinct from the task-04 report channel at
 /// `0x0CA2`). Serviced only when an SDK channel is wired ([`Vmm::enable_sdk`]);
 /// otherwise an `OUT 0x0CA1` stays the default-deny contract violation, so every

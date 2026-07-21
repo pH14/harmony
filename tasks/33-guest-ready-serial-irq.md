@@ -72,7 +72,7 @@ Implement what Phase 1 identifies. The expected shape (now **in scope** per the 
    is the headline.** Quote the serial line in the PR.
 3. **Deterministic-twice (box-only, patched):** identical serial + `state_hash` across two same-seed
    boots (gate 4 / Phase B.2).
-4. **No regression:** M1/M2/P6 + det-corpus goldens byte-identical (serial IRQ is Linux-path-gated);
+4. **No regression:** M1/M2/P6 + acceptance-suite goldens byte-identical (serial IRQ is Linux-path-gated);
    standard gates green incl. **mutants** (pin the 8250 IRQ-raise / `IIR`/`IER` logic with exact-value
    tests) + **Miri** (any new `unsafe`) + **public-api** (refresh on the box for `cfg(linux)`).
 

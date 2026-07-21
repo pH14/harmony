@@ -40,7 +40,7 @@ fails loud instead of silently using the wrong contract.
 2. Probe→select is deterministic and **fails loud** on an unrecognized host (tested with a
    synthetic/mocked CPUID signature).
 3. On the box (9900K): probe selects `det-cfl-v1`, the §1.1 host-assert passes, and M1/M2 + the
-   det-corpus box gate are byte-identical to today (no determinism regression from the refactor).
+   acceptance-suite box gate are byte-identical to today (no determinism regression from the refactor).
 4. Standard gates green; `contract_hash` for the box host unchanged (the refactor is a re-org,
    not a re-baseline).
 

@@ -4,9 +4,9 @@
 //! CPU-pinned per `docs/BOX-PINNING.md`). Task 37 — consonance workload stream,
 //! step 2 of 3.
 //!
-//! These boot the **Postgres workload image** (`guest/build/bzImage` — the task-36
-//! container-class kernel, unchanged — plus `guest/build/initramfs-postgres.cpio.gz`,
-//! built by `guest/linux/build-postgres-image.sh`) via
+//! These boot the **Postgres workload image** (`harmony-linux/build/bzImage` — the task-36
+//! container-class kernel, unchanged — plus `harmony-linux/build/initramfs-postgres.cpio.gz`,
+//! built by `harmony-linux/linux/build-postgres-image.sh`) via
 //! [`vmm_core::vendor::x86::bringup::boot_linux_selected`]. The guest `/init` (`pg-init.sh`)
 //! loop-mounts a RAM-backed ext4 holding a pre-`initdb`'d cluster, starts a real
 //! PostgreSQL 17 server, and drives a fixed insert/select workload loop whose
@@ -39,7 +39,7 @@
 //! `pg_strong_random` cancel keys, *random UUIDs and wall-clock timestamps* — runs
 //! bit-for-bit identically because every nondeterminism source (TSC, RNG, fork
 //! order, timers, the clock) is determinized from below by the patched backend +
-//! V-time. See `guest/linux/IMPLEMENTATION.md` for the determinism closure.
+//! V-time. See `harmony-linux/linux/IMPLEMENTATION.md` for the determinism closure.
 //!
 //! **Gate 3 — seed-sensitivity ([`p3_postgres_seed_sensitivity_patched`]).** A run
 //! at a *different* seed produces *different* UUIDs — proving they are genuinely
@@ -60,7 +60,7 @@
 //! the patched modules loaded, CPU-pinned and wall-clock-bounded — e.g.:
 //!
 //! ```sh
-//! make -C guest fetch && make -C guest/linux postgres-image    # build the image
+//! make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image    # build the image
 //! # load patched kvm.ko/kvm-intel.ko, then:
 //! taskset -c 2 timeout 1500 cargo test -p vmm-core --test live_postgres \
 //!     -- --ignored --nocapture --test-threads=1 p2_postgres_deterministic_twice_patched
@@ -133,21 +133,21 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
-/// Read a built guest artifact, trying `guest/build/<name>` then `guest/linux/<name>`.
+/// Read a built guest artifact, trying `harmony-linux/build/<name>` then `harmony-linux/linux/<name>`.
 /// Panics loudly (with the build command) if absent — these `#[ignore]`d gates run
 /// only on the box, where the image is built first.
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("guest/build").join(name),
-        repo_root().join("guest/linux").join(name),
+        repo_root().join("harmony-linux/build").join(name),
+        repo_root().join("harmony-linux/linux").join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in guest/build or guest/linux — build it first on the \
-         box: `make -C guest fetch && make -C guest/linux postgres-image`."
+        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
+         box: `make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image`."
     );
 }
 

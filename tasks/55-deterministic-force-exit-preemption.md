@@ -71,7 +71,7 @@ Spike it on the 6.12.90 box-proxy build (live), then port to the pinned `linux-6
    `Ok(exit)` fallback is gone; portable unit/property tests assert the fail-closed disposition (the box `LiveCpu`
    never reaches it in normal operation).
 5. **Contract + lockfiles.** `docs/CPU-MSR-CONTRACT.md` patch series → 4 patches; the new cap + `KVM_EXIT_PREEMPT`
-   reason documented; `guest/linux/versions.lock` / any patch-hash manifest updated. Stock-revert invariant intact
+   reason documented; `harmony-linux/linux/versions.lock` / any patch-hash manifest updated. Stock-revert invariant intact
    ([[box-patched-kvm-ops]]).
 6. **No determinism regressions.** The existing M1/M2 host-assert + determinism gates still pass on the 0004 module.
 

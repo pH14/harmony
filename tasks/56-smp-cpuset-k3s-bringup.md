@@ -13,19 +13,19 @@ The #34 deterministic-preemption bug is FIXED. Patch **0005** (MTF single-step:
 (box-proven: `live_k3s_postgres` passed the old step-155932 `SkidExceeded`, `step_error=None`).
 k3s (`live_k3s_postgres`, gate `k1_k3s_cluster_postgres_client_streams_patched`) was then
 pushed past three guest-env layers:
-- **networking** — `guest/linux/k3s-init.sh`: default route via `lo` + `--node-ip=10.42.0.2`
+- **networking** — `harmony-linux/linux/k3s-init.sh`: default route via `lo` + `--node-ip=10.42.0.2`
 - **cgroups** — added `cpuset` to the subtree_control loop
 - **cpuset needs SMP** — rebuilt the guest kernel `CONFIG_SMP=y` + `maxcpus=1` (dropped
   `nosmp`); held the determinism levers down (CPU_FREQ stays off via
   `# CONFIG_SCHED_MC_PRIO is not set`, which otherwise selects the cpufreq stack). All
   determinism build-asserts pass.
 
-Uncommitted box changes: `guest/linux/k3s-init.sh`, `guest/linux/config-fragment`,
-`guest/linux/build-kernel.sh`, `consonance/vmm-core/tests/live_k3s_postgres.rs` (cmdline),
+Uncommitted box changes: `harmony-linux/linux/k3s-init.sh`, `harmony-linux/linux/config-fragment`,
+`harmony-linux/linux/build-kernel.sh`, `consonance/vmm-core/tests/live_k3s_postgres.rs` (cmdline),
 `consonance/vmm-backend/src/kvm_sys.rs` (MTF). The **0005 kernel patch** lives in the deb612
 build tree (`/root/kvm-spike/deb612/hdr/.../linux-headers-6.12.90+deb13.1-{amd64,common}/`);
 the built module is `$B/kvm.ko` (loaded by `/root/run-patched-ht49.sh`). The SMP bzImage is
-`guest/build/bzImage`. Decision log: `~/workspace/harmony-autonomous-decisions.md` (read the
+`harmony-linux/build/bzImage`. Decision log: `~/workspace/harmony-autonomous-decisions.md` (read the
 2026-06-29/30 entries). Run with: `/root/run-patched-ht49.sh <timeout> cargo test -p vmm-core
 --test live_k3s_postgres -- --ignored --nocapture --test-threads=1
 k1_k3s_cluster_postgres_client_streams_patched`.

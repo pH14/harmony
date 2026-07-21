@@ -31,8 +31,8 @@ clocksource: Switched to clocksource harmony-pvclock          ← selected, not 
 | **N-4 perf** (kill condition 3) | **PASS (≈25×)** | RDTSC-exit-rate reduction over the actual Postgres workload (boot excluded) — see below; far above the 2× "worth it" threshold |
 | **G2** page-stamp == RDTSC-trap-oracle at refresh Moments | **PASS** (re-validated r18 at full strength) | **4843 oracle checks — EVERY synchronized registered boundary** (r18: was a step%1000 sample of 5) + terminal, 4096 refreshes, **deliberate-fault detected** (the gate can fail) |
 | **G3** busy-wait liveness within Δ | **PASS** (re-validated r20, baseline-inclusive) | syscall-free `pvclock-spin` completed (`PVSPIN_DONE`); 2182 refreshes, **1921 (88%) forced by the Δ deadline**, max anchor gap = Δ exactly — now measured **including the first interval** (pre-clear baseline → first spin refresh, r20) |
-| **det-corpus O1** (run-vs-run determinism, page-off) | **PASS** (all payloads) | insn-rdtsc / insn-rng / insn-cpuid all deterministic same-seed on the patched backend — the page-off path my task must not regress is intact |
-| **det-corpus O2** (conformance-to-golden) | insn-rdtsc ✓, insn-rng ✓, **insn-cpuid ✗ (pre-existing)** | the insn-cpuid digest is *deterministic* (identical run-to-run) but ≠ its committed golden — a CPUID conformance-golden drift (microcode/golden staleness). **My branch touches no golden/CPUID/corpus file** (diff is `consonance` + `docs` + `guest/linux` only), and pvclock touches no CPUID, so this is orthogonal to the page — flagged for the foreman to reconcile against main, NOT a pvclock regression |
+| **acceptance-suite O1** (run-vs-run determinism, page-off) | **PASS** (all payloads) | insn-rdtsc / insn-rng / insn-cpuid all deterministic same-seed on the patched backend — the page-off path my task must not regress is intact |
+| **acceptance-suite O2** (conformance-to-golden) | insn-rdtsc ✓, insn-rng ✓, **insn-cpuid ✗ (pre-existing)** | the insn-cpuid digest is *deterministic* (identical run-to-run) but ≠ its committed golden — a CPUID conformance-golden drift (microcode/golden staleness). **My branch touches no golden/CPUID/corpus file** (diff is `consonance` + `docs` + `harmony-linux/linux` only), and pvclock touches no CPUID, so this is orthogonal to the page — flagged for the foreman to reconcile against main, NOT a pvclock regression |
 
 **Kill condition 3 (perf) — PASSES: the x86 RDTSC-exit-rate reduction over the
 actual Postgres workload is ≈25×, far above the 2× "worth it" threshold.**
@@ -115,7 +115,7 @@ wording is amended in this PR per the ruling.
 
 **Review round 3 folded in** (cross-model r3: 5 P1 + 2 P2 with foreman
 dispositions): (a) **licensing** — the clocksource ships as a **kernel diff**
-(`guest/linux/patches/0001-x86-harmony-pvclock-work-derived-clocksource.patch`;
+(`harmony-linux/linux/patches/0001-x86-harmony-pvclock-work-derived-clocksource.patch`;
 the standalone `.c` and the anchor-applier are gone; `patches/README.md`
 states the GPL-2.0 kernel-diff exception and the regeneration workflow;
 `build-kernel.sh` applies the diff with a reverse-dry-run idempotence guard).
@@ -206,7 +206,7 @@ always ≤ the armed target). `first_advance_seen` is gone. (c) **G3 was vacuous
 syscall was a V-time intercept refreshing the page *for free*: the loop would
 terminate with the forced refresh deleted, and the constant intercepts could
 even hold the attribution count at zero. G3 now runs
-`guest/linux/pvclock-spin.c`, which mmaps the page through `/dev/mem` and spins
+`harmony-linux/linux/pvclock-spin.c`, which mmaps the page through `/dev/mem` and spins
 on seqlock reads with **no syscalls and no counter traps in the loop** — so the
 only thing that can advance its clock is the host's Δ refresh. Freeze the page
 and it hangs; that is the gate. (d) **LAPIC MMIO hole (P2)** — `map_memory`
@@ -571,11 +571,11 @@ G3 needed the box; the other gates' r8–r19 results stand.
 **Review round 21 folded in — FINAL DISPATCHED SET** (cross-model r21: 0 P1, 4 P2;
 portable-only — no kernel/clock behavior change, no box KVM window; same stop-rule
 as PR #108). (a) **Scan before publish (P2).** `build-kernel.sh` installed the
-bzImage to the canonical `guest/build/bzImage` BEFORE the counter-opcode scan, so a
+bzImage to the canonical `harmony-linux/build/bzImage` BEFORE the counter-opcode scan, so a
 scan failure (`set -e` abort) left the REJECTED artifact at the path
 campaign-runner consumes. The scan now runs on `$KOBJ/vmlinux` and must pass
 *before* the install; a failed scan aborts before publish. Proven locally by the
-new `guest/linux/test-publish-gate.sh` — it plants a **real** rejection (an
+new `harmony-linux/linux/test-publish-gate.sh` — it plants a **real** rejection (an
 un-allowlisted `rdtsc`), drives the **real** scan (which rejects it), and asserts
 the `scan && install` gate publishes nothing on failure (Linux+binutils, no kernel
 build, no KVM window; **ran green on the box**). (b) **Refuse
@@ -646,7 +646,7 @@ reviews those rulings.
    fault-policy precedent; un-offered blobs are byte-for-byte unchanged).
 5. **Guest kernel clocksource** — the kernel's first source change, shipped
    as a **kernel diff** (r3 licensing form):
-   `guest/linux/patches/0001-x86-harmony-pvclock-work-derived-clocksource.patch`
+   `harmony-linux/linux/patches/0001-x86-harmony-pvclock-work-derived-clocksource.patch`
    (new file + Kconfig + Makefile hunks generated against the pristine
    pinned tree; `patches/README.md` states the GPL-2.0 kernel-diff exception
    and the regeneration workflow; applied by `build-kernel.sh` with a
@@ -669,7 +669,7 @@ reviews those rulings.
    **Compiles and boots proven portably**: the full linux/amd64 container
    build produces bzImage and passes the reproducibility + QEMU-boot gates
    (`run-tests.sh`), whose regenerated `MANIFEST.sha256` is committed.
-6. **Reachability gate, x86 half** — `guest/linux/scan-counter-opcodes.sh`
+6. **Reachability gate, x86 half** — `harmony-linux/linux/scan-counter-opcodes.sh`
    wired into `build-kernel.sh`: symbol-attributed objdump scan for
    rdtsc/rdtscp vs the reviewed `rdtsc-allowlist.txt`, accounting **per
    function AND per instruction count** (a new read inside an
@@ -818,7 +818,7 @@ Doc and code agree at ABI freeze.
      often enough to satisfy `max_gap ≤ Δ` with the forced-refresh mechanism
      deleted. Every other gate (G1/G2/perf) still runs the documented default Δ,
      which is what the kill-condition-3 perf numbers must be judged at.
-  2. **A syscall-free guest** (r5): `guest/linux/pvclock-spin.c`, not a shell
+  2. **A syscall-free guest** (r5): `harmony-linux/linux/pvclock-spin.c`, not a shell
      `date` loop. This kernel's syscall entry reads the TSC (kstack
      randomization — `do_syscall_64` is in the allowlist), so a shell loop's
      every `date` was a V-time intercept that refreshed the page *for free*. The
@@ -859,13 +859,13 @@ Doc and code agree at ABI freeze.
 
 All from the repo on the box, pinned per `docs/BOX-PINNING.md`:
 
-1. `make -C guest fetch && make -C guest/linux kernel`
+1. `make -C harmony-linux fetch && make -C harmony-linux/linux kernel`
    → expected green against the committed baseline AND the committed
    `MANIFEST.sha256` (both produced portably in the container). If the box
    toolchain differs: an inlined-count drift fails the armed scan
    (re-review + commit the delta) and a byte drift fails the manifest pin
    (rebuild + re-commit from the box) — both loud, neither silent.
-   (`make -C guest/linux exec-image` for G3; note its sha256 for
+   (`make -C harmony-linux/linux exec-image` for G3; note its sha256 for
    `INITRAMFS_EXEC_SHA256`. Since r5 that image also carries the static
    `/bin/pvclock-spin` and a `/dev/mem` node — G3's syscall-free busy-wait — so
    it MUST be rebuilt, not reused from an earlier window. Verified portably: the
@@ -877,7 +877,7 @@ All from the repo on the box, pinned per `docs/BOX-PINNING.md`:
 3. G1, G2, G3, perf (in that order; G3 needs `INITRAMFS_EXEC_SHA256`):
    same invocation with `g1_`/`g2_`/`g3_`/`n4_perf_` filters. Kill condition 3
    is judged from the `[REPORT]` ratio lines — the perf tests never assert it.
-4. det-corpus + campaign smoke (the remaining §6 items): `box_corpus.rs` as
+4. acceptance-suite + campaign smoke (the remaining §6 items): `box_corpus.rs` as
    usual (M1/M2 payloads never touch the page — expect unchanged), and a
    short campaign-runner Postgres smoke with the page-on kernel via the
    existing campaign tooling, throughput reported ppm-style vs a page-off run.
@@ -887,7 +887,7 @@ All from the repo on the box, pinned per `docs/BOX-PINNING.md`:
 - Surface touched (frontier list): `consonance/vtime` (new module),
   `consonance/hypercall-proto` (new service id + client verb + reference
   service), `consonance/vmm-core` (engine + vendor/x86 doorbell gate + control
-  server + tests), `guest/linux` (patch machinery, config, scan gate),
+  server + tests), `harmony-linux/linux` (patch machinery, config, scan gate),
   `docs/INTEGRATION.md` §1.2 (service table row), `docs/PARAVIRT-CLOCK.md`
   §§1/2/3.1 (the ruling-mandated amendments — doc and code agree at freeze).
   `vm-state` needed no change (108 had already renamed the mirror).
@@ -900,5 +900,5 @@ All from the repo on the box, pinned per `docs/BOX-PINNING.md`:
   `pvclock_unregistered_guest_is_guest_identical_and_differs_only_in_pvck`
   pins the guest-side half of that claim (guest-observably identical; blobs
   differ by exactly the configuration chunk); existing goldens (toy
-  det-corpus, box O2 digests) are untouched by construction (state_hash is
+  acceptance-suite, box O2 digests) are untouched by construction (state_hash is
   not in O2; O1 is run-vs-run).
