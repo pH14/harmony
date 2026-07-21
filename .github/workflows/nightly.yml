@@ -198,7 +198,7 @@ jobs:
       # Miri, and the crate's one `unsafe` stays guarded by the map_memory test below.
       #
       # Budget (task 104, measured; re-measured task 132): the command below now
-      # runs in ~6 min REAL wall on an uncontended M-class Mac — 84 passed, 0 failed,
+      # runs in ~6 min REAL wall on an uncontended M-class Mac — 85 passed, 0 failed,
       # 11 ignored — down from task 104's 11 min 46 s, because the eight game/box
       # campaign tests task 132 moved behind the filesystem boundary (see above) no
       # longer run interpreted. NOTE when re-measuring: libtest printed "finished in
@@ -238,13 +238,13 @@ jobs:
           # this task restored silently stops running. Only a floor on what actually
           # RAN can see that.
           #
-          # 84 is today's count (95 lib tests − the 11 ignored). This floor RATCHETS
+          # 85 is today's count (96 lib tests − the 11 ignored). This floor RATCHETS
           # UP: when tests are added to the crate, raise it to the new passing count
           # in the same PR. It is never LOWERED without a rationale string on the
           # test that left and a re-measured budget above — "the number went down"
           # is the failure this guard exists to report, not a reason to edit it.
           pass=$(echo "$res" | sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p')
-          [ "${pass:-0}" -ge 84 ] || {
-            echo "MIRI SUITE SHRANK: only $pass tests ran under Miri, floor is 84. A test was deleted or moved behind #[cfg(not(miri))] — which, unlike #[cfg_attr(miri, ignore)], never reaches the summary at all. Restore it, or justify its removal and ratchet the floor in the same PR."
+          [ "${pass:-0}" -ge 85 ] || {
+            echo "MIRI SUITE SHRANK: only $pass tests ran under Miri, floor is 85. A test was deleted or moved behind #[cfg(not(miri))] — which, unlike #[cfg_attr(miri, ignore)], never reaches the summary at all. Restore it, or justify its removal and ratchet the floor in the same PR."
             exit 1
           }
