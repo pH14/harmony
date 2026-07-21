@@ -41,6 +41,8 @@ SUMMARY_KEYS = [
     "clockevent_acks",
     "clockevent_max_lateness_ticks",
     "state_digest",
+    "regs_digest",
+    "core_regs_digest",
 ]
 
 
@@ -72,9 +74,11 @@ def load_run(run_dir: Path):
             raise SystemExit(f"FAIL: {run_dir}: console lacks {marker.decode()}")
     # A sha256 is exactly 64 hex digits; require the full width (F5). The old
     # `{16,}` accepted a truncated digest, which would weaken the cross-run
-    # comparison below to a 16-nibble prefix.
-    if not re.fullmatch(r"(sha256:)?[0-9a-f]{64}", fields["state_digest"]):
-        raise SystemExit(f"FAIL: {run_dir}: malformed state_digest")
+    # comparison below to a 16-nibble prefix. The registers-only digest
+    # (hm-of6t F12) is held to the same width.
+    for digest_key in ("state_digest", "regs_digest", "core_regs_digest"):
+        if not re.fullmatch(r"(sha256:)?[0-9a-f]{64}", fields[digest_key]):
+            raise SystemExit(f"FAIL: {run_dir}: malformed {digest_key}")
     return fields, recomputed, console
 
 

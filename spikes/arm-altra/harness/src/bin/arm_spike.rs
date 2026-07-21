@@ -919,7 +919,7 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
     use arm_harness::linux_console::{
         LinuxConsoleConfig, LinuxWorkClockConfig, run_until_ready_work_clock,
     };
-    use arm_harness::run::Vcpu as _;
+    use arm_harness::run::{StepVcpu as _, Vcpu as _};
     use arm_harness::sys::{Machine, Mechanism, PerfCounter, pin_to_core};
     use sha2::{Digest, Sha256};
 
@@ -985,12 +985,37 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
     let state_digest = machine
         .state_digest()
         .map_err(|e| format!("digest final machine state: {e}"))?;
+    // A registers-only (+ vGIC) digest of the SAME landed state, emitted alongside the
+    // full state digest (hm-of6t F12). The full state digest carries the kernel-CRNG
+    // entropy residual and diverges same-seed; the registers-only digest isolates
+    // architectural register identity, which holds bit-identical on the pinned nokaslr
+    // image — so the register-identity claim rests on the pinned build itself, not a
+    // separate diag build. `digest_regs_only` can never collide with the full digest.
+    let regs_digest = machine
+        .regs_digest()
+        .map_err(|e| format!("digest final register state: {e}"))?;
+    // Core registers only (excludes the vGIC injection state): isolates architectural
+    // register identity so the same-seed gate can attribute a regs_digest divergence to
+    // the host-IRQ-timing vGIC vs the core registers (hm-of6t F12).
+    let core_regs_digest = machine
+        .core_regs_digest()
+        .map_err(|e| format!("digest final core register state: {e}"))?;
 
     // Diagnostic (env-gated, off by default): when the same-seed gate flags a RAM-only
     // divergence, `AA5_DUMP_RAM=<path>` writes the final guest RAM so two runs' dumps can
     // be byte-diffed and mapped through System.map to the diverging kernel object.
     if let Some(path) = std::env::var_os("AA5_DUMP_RAM") {
         std::fs::write(&path, machine.guest_ram_bytes())
+            .map_err(|e| format!("write {}: {e}", std::path::Path::new(&path).display()))?;
+    }
+    // Diagnostic (env-gated): `AA5_DUMP_REGS=<path>` writes the per-register dump so two
+    // same-seed runs can be diffed to attribute a regs_digest divergence to the exact
+    // register(s) — hm-of6t F12 register-residual attribution.
+    if let Some(path) = std::env::var_os("AA5_DUMP_REGS") {
+        let dump = machine
+            .regs_dump_text()
+            .map_err(|e| format!("dump registers: {e}"))?;
+        std::fs::write(&path, dump)
             .map_err(|e| format!("write {}: {e}", std::path::Path::new(&path).display()))?;
     }
 
@@ -1021,7 +1046,7 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
          clockevent_assertions={} clockevent_acks={} clockevent_max_lateness_ticks={} \
          exec_guard_enabled={} exec_guard_exits={} exec_guard_scans={} exec_guard_approvals={} \
          exec_guard_rejections={} exec_guard_write_revocations={} exec_guard_blocked_writes={} \
-         state_digest={} transcript={}",
+         state_digest={} regs_digest={} core_regs_digest={} transcript={}",
         result.boot.exits,
         result.boot.console.len(),
         console_sha256,
@@ -1043,6 +1068,8 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
         guard.write_revocations,
         guard.blocked_writes,
         state_digest,
+        regs_digest,
+        core_regs_digest,
         opts.console_out.display()
     );
     println!(

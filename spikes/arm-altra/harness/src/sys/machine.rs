@@ -2435,6 +2435,32 @@ impl Machine {
         }
     }
 
+    /// A registers-only digest that EXCLUDES the vGIC injection state, isolating core
+    /// architectural register identity from the host-IRQ-timing-dependent vGIC state
+    /// (hm-of6t F12). If this matches same-seed while [`StepVcpu::regs_digest`] (which
+    /// folds in the vGIC) does not, the register divergence is the vGIC — the disclosed
+    /// interrupt-timing residual — not the core registers.
+    pub fn core_regs_digest(&self) -> Result<String, RunError> {
+        let (regs, _vgic) = self.registers_and_vgic()?;
+        Ok(super::digest_regs_only(&regs, &[]))
+    }
+
+    /// A per-register text dump (`<kvm-reg-id>=<hex value>` per line, plus `vgic_len`),
+    /// for attributing a same-seed register divergence to the specific register(s)
+    /// (hm-of6t F12). Diagnostic only; env-gated in `linux-boot`.
+    pub fn regs_dump_text(&self) -> Result<String, RunError> {
+        let (regs, vgic) = self.registers_and_vgic()?;
+        let mut out = String::new();
+        for (id, value) in &regs {
+            out.push_str(&format!(
+                "{id:#018x}={}\n",
+                crate::evidence::hex_lower(value)
+            ));
+        }
+        out.push_str(&format!("vgic_len={}\n", vgic.len()));
+        Ok(out)
+    }
+
     /// Read every architectural register (`KVM_GET_REG_LIST` + `KVM_GET_ONE_REG`, in
     /// sorted id order), add any VM-owned pvclock registration, and read the in-kernel vGIC
     /// injection state — the seam-read inputs
