@@ -57,3 +57,20 @@ not to a content hash:
 - **backing** (move to distinct identical backing): `backing_scans=2`, generation **4 → 7**.
 
 `backing_forced_rescan=true`, `control_reused_approval=true`.
+
+## AA-4 concurrency: two-vCPU scan/write race — PASS (`race.out`)
+
+`aa4-guard-race`. Two MMU-off vCPUs on a guarded VM built WITHOUT a vGIC (its `CTRL_INIT`
+would finalise the vCPU count to one — KVM returned EBUSY on a second vCPU otherwise; the
+race vCPUs use no interrupt controller). vCPU 0's PC is the target page (its fetch freezes it
+for a scan); the writer vCPU (entered directly, MMU off) stores to the target GPA — the store
+transits stage-2, so the guard sees it despite stage-1 being off. Deterministic,
+single-threaded interleaving:
+
+- **race** (target left frozen for vCPU 0's scan): the writer's store is **BLOCKED**
+  (`GuardBlocked` at 0x40082000).
+- **control** (vCPU 0's scan approved first): the same store instead revokes execute
+  (`GuardWrite` at 0x40082000) — not blocked.
+
+`blocked_when_frozen=true`, `write_when_approved=true`: the guard correctly blocks a write
+behind a concurrent pending scan. **All three AA-4 concurrency gates now hold on N1.**
