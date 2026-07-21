@@ -324,6 +324,7 @@ pub fn campaign_runner::mazecampaign::goal_id() -> sdk_events::schema::Observati
 pub fn campaign_runner::mazecampaign::maze_cell_key(u64, u64) -> u64
 pub fn campaign_runner::mazecampaign::maze_cells(&[sdk_events::event::SdkEvent]) -> (alloc::vec::Vec<u64>, u64, u64)
 pub fn campaign_runner::mazecampaign::run_maze_campaign<M: explorer::seam::Machine>(M, alloc::boxed::Box<dyn explorer::seam::EnvCodec>, &campaign_runner::mazecampaign::MazeCampaignConfig, benchmark::exploration::ExplorationConfig) -> core::result::Result<campaign_runner::mazecampaign::MazeCampaignOutcome, campaign_runner::mazecampaign::MazeCampaignError>
+pub fn campaign_runner::mazecampaign::serial_maze_spec(&[u8]) -> core::option::Option<maze::MazeSpec>
 pub mod campaign_runner::mock
 pub struct campaign_runner::mock::CountedWork(_)
 impl vmm_core::work::WorkSource for campaign_runner::mock::CountedWork

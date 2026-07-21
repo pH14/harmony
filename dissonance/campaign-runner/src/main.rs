@@ -32,6 +32,7 @@ use campaign_runner::campaign::{
     CampaignConfig, CampaignReport, render_campaign_table, run_campaign, verify_campaign,
 };
 use campaign_runner::gamecampaign::{GameCampaignConfig, GameToyMachine, run_game_campaign};
+use campaign_runner::mazecampaign::{MazeCampaignConfig, MazeToyMachine, run_maze_campaign};
 use campaign_runner::planted::{ToyPlantedMachine, Trigger};
 use campaign_runner::record::{
     RecordConfig, RecordReport, render_record_table, run_recording, verify_record,
@@ -275,6 +276,11 @@ enum Mode {
     /// faults, entropy-only search).
     #[command(subcommand)]
     Game(GameMode),
+    /// The task-134 maze-workload exploration campaign (quiet arm — the first
+    /// cooperative Differential gate: wire-v2 X/Y state through the
+    /// two-barrier controller, archive-guided vs the two permanent controls).
+    #[command(subcommand)]
+    Maze(MazeMode),
 }
 
 /// Task 69 M2 box benchmark-campaign arguments.
@@ -427,6 +433,101 @@ struct GameBoxArgs {
     /// The serial marker the boot is driven to before the campaign attaches
     /// (the base itself seals at the agent's setup_complete snapshot point).
     #[arg(long, default_value = "GAME_READY")]
+    ready_marker: String,
+}
+
+/// The two maze-campaign paths (task 134): the portable toy walking the real
+/// shared maze logic, and the box campaign against the maze image.
+#[derive(Subcommand)]
+enum MazeMode {
+    /// Portable toy maze machine (no /dev/kvm) — the M0 evidence-path smoke.
+    Mock(MazeArgs),
+    /// Box-only: the maze image on patched KVM. `--repeat 25` reruns the
+    /// identical campaign and enforces the per-branch state_hash determinism
+    /// gate.
+    Box(MazeBoxArgs),
+}
+
+/// Shared maze-campaign knobs (both modes).
+#[derive(Parser)]
+struct MazeArgs {
+    /// The configuration: `selector-v1` (the archive-guided subject),
+    /// `pure-random` (the pass/fail control — frontier held empty), or
+    /// `frontier-off` (the diagnostic control — machinery on, never
+    /// exploits). `signal` is refused (no advanced-selector artifact exists).
+    #[arg(long, default_value = "pure-random")]
+    config: String,
+    /// Branch budget (identical across configurations — task 84's ruling).
+    #[arg(long, default_value_t = 48, value_parser = parse_positive_u64)]
+    max_branches: u64,
+    /// The campaign stream seed; the whole campaign is a pure function of it.
+    #[arg(long, default_value_t = 0x0134_5F5C_0770_0001)]
+    campaign_seed: u64,
+    /// SelectorV1 only: every Nth step explores fresh from genesis.
+    #[arg(long, default_value_t = 4, value_parser = parse_positive_u64)]
+    explore_period: u64,
+    /// Walk steps per rollout (the toy's natural terminal; the box rollout is
+    /// deadline-bounded and this only sizes the manifest record).
+    #[arg(long, default_value_t = 48, value_parser = parse_positive_u64)]
+    steps_per_rollout: u64,
+    /// Maze corridor width (must match the guest image's agent spec).
+    #[arg(long, default_value_t = 4)]
+    width: u32,
+    /// Maze corridor levels.
+    #[arg(long, default_value_t = 6)]
+    levels: u32,
+    /// Maze doors per junction.
+    #[arg(long, default_value_t = 4)]
+    doors: u32,
+    /// The maze seed (fixes the correct doors; not the campaign seed).
+    #[arg(long, default_value_t = 0x6d61_7a65)]
+    maze_seed: u64,
+    /// The two-barrier per-step materialization cap (zeroed internally for
+    /// pure-random).
+    #[arg(long, default_value_t = 2)]
+    candidate_cap: usize,
+    /// The campaign-total materialization-replay budget (zeroed internally
+    /// for pure-random).
+    #[arg(long, default_value_t = 96)]
+    replay_budget: u64,
+    /// Append the campaign's ExplorationLog (JSON array) here — the input the
+    /// offline maze report renders.
+    #[arg(long)]
+    logs_out: Option<PathBuf>,
+    /// Record the deepest branch's reproducer (canonical env + full journal)
+    /// into this task-65 trace-store directory, and keep the durable evidence
+    /// ledger beside it — the hm-5sv day-one retention discipline.
+    #[arg(long)]
+    trace_out: Option<PathBuf>,
+}
+
+/// Box-maze arguments: the image/marker knobs plus the rollout deadline and
+/// the determinism-gate repeat count.
+#[derive(Parser)]
+struct MazeBoxArgs {
+    #[command(flatten)]
+    maze: MazeArgs,
+    /// V-time (ns) each rollout runs past its branch point before its
+    /// deadline (the maze agent never exits on its own).
+    #[arg(long, default_value_t = 2_000_000_000, value_parser = parse_positive_u64)]
+    deadline_delta: u64,
+    /// V-time (ns) allowed for the agent to reach its `setup_complete`
+    /// snapshot point past the MAZE_READY marker.
+    #[arg(long, default_value_t = 30_000_000_000, value_parser = parse_positive_u64)]
+    setup_deadline_delta: u64,
+    /// Rerun the identical campaign this many times (fresh boot each) and
+    /// require bit-identical logs — the determinism gate is `--repeat 25`.
+    #[arg(long, default_value_t = 1, value_parser = parse_positive_usize)]
+    repeat: usize,
+    /// Kernel image filename under harmony-linux/build (or harmony-linux/linux).
+    #[arg(long, default_value = X86_64_BOOT.kernel_image)]
+    kernel: String,
+    /// Initramfs filename — defaults to the task-134 maze image.
+    #[arg(long, default_value = "initramfs-maze.cpio.gz")]
+    initramfs: String,
+    /// The serial marker the boot is driven to before the campaign attaches
+    /// (the base itself seals at the agent's setup_complete snapshot point).
+    #[arg(long, default_value = "MAZE_READY")]
     ready_marker: String,
 }
 
@@ -685,6 +786,8 @@ fn main() -> ExitCode {
         Mode::BenchCampaign(args) => run_benchcampaign_box(args),
         Mode::Game(GameMode::Mock(args)) => run_game_mock(args),
         Mode::Game(GameMode::Box(args)) => run_game_box(args),
+        Mode::Maze(MazeMode::Mock(args)) => run_maze_mock(args),
+        Mode::Maze(MazeMode::Box(args)) => run_maze_box(args),
     }
 }
 
@@ -895,6 +998,212 @@ fn print_game_artifacts(outcome: &campaign_runner::gamecampaign::GameCampaignOut
     if let Some((gpa, len)) = outcome.billboard {
         println!("[campaign-runner] billboard window: gpa={gpa:#x} len={len}");
     }
+}
+
+/// Parse the maze-campaign configuration name. `signal` parses (so the CLI
+/// can refuse it with the real error) but is refused by the driver.
+fn parse_maze_config(s: &str) -> Result<benchmark::ExplorationConfig, String> {
+    match s {
+        "pure-random" => Ok(benchmark::ExplorationConfig::PureRandom),
+        "selector-v1" => Ok(benchmark::ExplorationConfig::SelectorV1),
+        "frontier-off" => Ok(benchmark::ExplorationConfig::FrontierOff),
+        "signal" => Ok(benchmark::ExplorationConfig::Signal),
+        other => Err(format!(
+            "unknown maze configuration {other:?} (expected pure-random | selector-v1 | \
+             frontier-off)"
+        )),
+    }
+}
+
+/// The maze campaign config shared by both modes (the box mode then overrides
+/// the seal/deadline knobs).
+fn maze_cfg(args: &MazeArgs) -> MazeCampaignConfig {
+    MazeCampaignConfig {
+        campaign_seed: args.campaign_seed,
+        spec: maze::MazeSpec {
+            width: args.width,
+            levels: args.levels,
+            doors: args.doors,
+            maze_seed: args.maze_seed,
+        },
+        max_branches: args.max_branches,
+        steps_per_rollout: args.steps_per_rollout as u32,
+        explore_period: args.explore_period,
+        candidate_cap: args.candidate_cap,
+        replay_budget: args.replay_budget,
+        trace_dir: args.trace_out.clone(),
+        ..MazeCampaignConfig::smoke(args.campaign_seed)
+    }
+}
+
+/// The maze gate manifest for a run under `cfg` (recorded beside appended
+/// logs so the offline report checks comparability, the game pattern).
+fn maze_manifest(
+    cfg: &MazeCampaignConfig,
+    deadline_delta: Option<u64>,
+) -> benchmark::MazeGateManifest {
+    benchmark::MazeGateManifest {
+        workload: "maze".to_string(),
+        width: cfg.spec.width(),
+        levels: cfg.spec.levels(),
+        doors: cfg.spec.doors(),
+        maze_seed: cfg.spec.maze_seed,
+        reachable_cells: maze::reachable_cells(&cfg.spec),
+        steps_per_rollout: cfg.steps_per_rollout,
+        deadline_delta,
+        branch_budget: cfg.max_branches,
+        explore_period: cfg.explore_period,
+        candidate_cap: cfg.candidate_cap,
+        replay_budget: cfg.replay_budget,
+    }
+}
+
+/// Summarize a finished maze campaign and (optionally) append its log +
+/// manifest (the finish_game shape over the maze manifest).
+fn finish_maze(
+    outcome: &campaign_runner::mazecampaign::MazeCampaignOutcome,
+    logs: Option<&PathBuf>,
+    manifest: &benchmark::MazeGateManifest,
+) -> ExitCode {
+    let log = &outcome.log;
+    println!(
+        "[campaign-runner] maze campaign done: config={:?} seed={:#x} branches={} \
+         distinct_cells={} depth={} goal_hits={} open_expectations={}",
+        log.config,
+        log.seed,
+        log.events.len(),
+        log.distinct_cells_at(u64::MAX),
+        log.depth_at(u64::MAX),
+        outcome.goal_hits,
+        outcome.open_expectations,
+    );
+    if let Some(deep) = &outcome.deep {
+        match &deep.trace_id {
+            Some(id) => println!(
+                "[campaign-runner] deep reproducer: branch {} depth {} -> trace {id}",
+                deep.branch, deep.depth
+            ),
+            None => println!(
+                "[campaign-runner] deep branch: {} depth {} (no --trace-out; NOT retained)",
+                deep.branch, deep.depth
+            ),
+        }
+    }
+    let Some(path) = logs else {
+        return ExitCode::SUCCESS;
+    };
+    let mut logs_vec: Vec<benchmark::ExplorationLog> = match std::fs::read_to_string(path) {
+        Ok(raw) => match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "[campaign-runner] {} exists but is not an ExplorationLog array: {e}",
+                    path.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+        Err(_) => Vec::new(),
+    };
+    logs_vec.push(log.clone());
+    let rendered = match serde_json::to_string_pretty(&logs_vec) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[campaign-runner] failed to serialize logs: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = std::fs::write(path, rendered) {
+        eprintln!("[campaign-runner] failed to write {}: {e}", path.display());
+        return ExitCode::FAILURE;
+    }
+    // The manifest rides beside the logs; a pre-existing one must MATCH (the
+    // manifest-drift discipline — mixed budgets/mazes are not comparable).
+    let mpath = path.with_extension("manifest.json");
+    match std::fs::read_to_string(&mpath) {
+        Ok(raw) => match serde_json::from_str::<benchmark::MazeGateManifest>(&raw) {
+            Ok(prior) if prior == *manifest => {}
+            Ok(_) => {
+                eprintln!(
+                    "[campaign-runner] {} disagrees with this run's manifest — appending logs \
+                     under a drifted manifest would mix incomparable campaigns; use a fresh \
+                     --logs-out.",
+                    mpath.display()
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(e) => {
+                eprintln!(
+                    "[campaign-runner] {} exists but is not a MazeGateManifest: {e}",
+                    mpath.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+        Err(_) => {
+            let rendered = match serde_json::to_string_pretty(manifest) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[campaign-runner] failed to serialize the manifest: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if let Err(e) = std::fs::write(&mpath, rendered) {
+                eprintln!("[campaign-runner] failed to write {}: {e}", mpath.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    println!("[campaign-runner] appended the log to {}", path.display());
+    ExitCode::SUCCESS
+}
+
+/// The portable maze campaign: the toy machine walking the real shared maze
+/// logic through the real wire-decode → SdkEvent → cell path (no /dev/kvm).
+fn run_maze_mock(args: MazeArgs) -> ExitCode {
+    let config = match parse_maze_config(&args.config) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[campaign-runner] {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cfg = maze_cfg(&args);
+    let manifest = maze_manifest(&cfg, None);
+    let machine = MazeToyMachine::new(cfg.spec, cfg.steps_per_rollout);
+    match run_maze_campaign(machine, Box::new(SpecEnvCodec), &cfg, config) {
+        Ok(outcome) => {
+            if let Some(vacuity) = outcome.vacuity() {
+                eprintln!(
+                    "[campaign-runner] maze mock VACUOUS RUN — refusing to report it: {vacuity}\n\
+                     [campaign-runner] evidence: {:?}",
+                    outcome.work
+                );
+                return ExitCode::FAILURE;
+            }
+            finish_maze(&outcome, args.logs_out.as_ref(), &manifest)
+        }
+        Err(e) => {
+            eprintln!("[campaign-runner] maze mock campaign failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The box maze campaign (task 134 M1/M2). Linux-only; refuses loudly
+/// elsewhere.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn run_maze_box(args: MazeBoxArgs) -> ExitCode {
+    boxrun::run_maze(args)
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+fn run_maze_box(_args: MazeBoxArgs) -> ExitCode {
+    eprintln!(
+        "[campaign-runner] maze box mode needs Linux + patched KVM + the built maze image (make -C \
+         harmony-linux/linux maze-image) — see docs/BOX-PINNING.md. This is not a Linux host."
+    );
+    ExitCode::FAILURE
 }
 
 /// The box game campaign (task 86 M0). Linux-only; refuses loudly elsewhere.

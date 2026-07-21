@@ -566,6 +566,58 @@ fn seal_base<M: Machine>(
     }
 }
 
+/// Extract the booted image's maze spec from its boot serial: the last
+/// `MAZE_SPEC: w=<w> l=<l> doors=<d> seed=<hex> …` line the maze agent prints
+/// before `MAZE_READY`. The box driver cross-checks this **fact** against the
+/// operator's spec flags and refuses a mismatch — logs from a different maze
+/// are not comparable (the ROM content-hash discipline, transplanted).
+pub fn serial_maze_spec(serial: &[u8]) -> Option<MazeSpec> {
+    const TAG: &[u8] = b"MAZE_SPEC:";
+    let mut found = None;
+    let mut from = 0;
+    while from + TAG.len() <= serial.len() {
+        let Some(at) = serial[from..]
+            .windows(TAG.len())
+            .position(|w| w == TAG)
+            .map(|p| from + p)
+        else {
+            break;
+        };
+        let line_end = serial[at..]
+            .iter()
+            .position(|b| *b == b'\n')
+            .map(|p| at + p)
+            .unwrap_or(serial.len());
+        if let Ok(line) = std::str::from_utf8(&serial[at + TAG.len()..line_end]) {
+            let field = |key: &str| -> Option<&str> {
+                line.split_whitespace()
+                    .find_map(|tok| tok.strip_prefix(key).and_then(|v| v.strip_prefix('=')))
+            };
+            let parse_u32 = |v: &str| v.parse::<u32>().ok();
+            let parse_seed = |v: &str| {
+                v.strip_prefix("0x")
+                    .and_then(|h| u64::from_str_radix(h, 16).ok())
+                    .or_else(|| v.parse::<u64>().ok())
+            };
+            if let (Some(w), Some(l), Some(d), Some(seed)) = (
+                field("w").and_then(parse_u32),
+                field("l").and_then(parse_u32),
+                field("doors").and_then(parse_u32),
+                field("seed").and_then(parse_seed),
+            ) {
+                found = Some(MazeSpec {
+                    width: w,
+                    levels: l,
+                    doors: d,
+                    maze_seed: seed,
+                });
+            }
+        }
+        from = at + TAG.len();
+    }
+    found
+}
+
 /// Lowercase hex of a state hash (the log's determinism witness).
 fn hex(h: &[u8; 32]) -> String {
     let mut s = String::with_capacity(64);
@@ -1203,6 +1255,33 @@ mod tests {
                 assert!(seen.insert(maze_cell_key(x, y)));
             }
         }
+    }
+
+    /// The serial MAZE_SPEC cross-check parses the agent's line (last one
+    /// wins) and refuses garbage.
+    #[test]
+    fn serial_maze_spec_parses_the_agent_line() {
+        let serial = b"boot noise\nMAZE_SPEC: w=4 l=6 doors=4 seed=0x6d617a65 reachable=25\nMAZE_READY: launching maze-agent\n";
+        assert_eq!(
+            serial_maze_spec(serial),
+            Some(MazeSpec {
+                width: 4,
+                levels: 6,
+                doors: 4,
+                maze_seed: 0x6d61_7a65,
+            })
+        );
+        // The last line wins (a re-exec re-prints it).
+        let twice = b"MAZE_SPEC: w=2 l=2 doors=2 seed=1\nMAZE_SPEC: w=3 l=5 doors=4 seed=7\n";
+        assert_eq!(
+            serial_maze_spec(twice).map(|s| (s.width, s.levels, s.doors, s.maze_seed)),
+            Some((3, 5, 4, 7))
+        );
+        assert_eq!(serial_maze_spec(b"no marker here"), None);
+        assert_eq!(
+            serial_maze_spec(b"MAZE_SPEC: w=x l=6 doors=4 seed=1\n"),
+            None
+        );
     }
 
     /// The Signal configuration is refused loudly — the maze gate's subject

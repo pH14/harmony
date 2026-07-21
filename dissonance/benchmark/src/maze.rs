@@ -59,8 +59,16 @@ pub struct MazeGateManifest {
     /// (`maze::reachable_cells`) — the documented frontier the baseline must
     /// demonstrably stay below.
     pub reachable_cells: u64,
-    /// Walk steps per rollout (the rollout's natural terminal).
+    /// Walk steps per rollout (the portable toy's natural terminal; a live
+    /// guest walks until its V-time deadline).
     pub steps_per_rollout: u32,
+    /// The per-rollout V-time deadline (ns past the branch point) every
+    /// configuration ran with — part of the budget: logs measured under
+    /// different rollout durations are not comparable, so a change across
+    /// appends is manifest drift. `None` = the portable toy's natural
+    /// terminals.
+    #[serde(default)]
+    pub deadline_delta: Option<u64>,
     /// The fixed branch budget every configuration runs at (identical across
     /// configurations — task 84's ruling).
     pub branch_budget: u64,
@@ -257,6 +265,20 @@ impl MazeGateReport {
             "- Branch budget (identical for every configuration): {}; {} walk steps/rollout",
             m.branch_budget, m.steps_per_rollout
         );
+        match m.deadline_delta {
+            Some(d) => {
+                let _ = writeln!(
+                    md,
+                    "- Rollout deadline (V-time ns past the branch point): {d}"
+                );
+            }
+            None => {
+                let _ = writeln!(
+                    md,
+                    "- Rollout deadline: none (portable toy — natural terminals)"
+                );
+            }
+        }
         let _ = writeln!(
             md,
             "- Subject: archive-guided selector v1 (explore period {}); candidate cap {}, \
@@ -391,6 +413,7 @@ mod tests {
             maze_seed: 0x6d61_7a65,
             reachable_cells: 43,
             steps_per_rollout: 48,
+            deadline_delta: None,
             branch_budget: 8,
             explore_period: 3,
             candidate_cap: 2,

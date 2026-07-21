@@ -40,11 +40,13 @@ use vmm_core::vendor::x86::bringup::boot_linux_selected;
 use vmm_core::vmm::{PVCLOCK_DEFAULT_DELTA_WORK, Step, Vmm};
 
 use campaign_runner::gamecampaign::{GameCampaignConfig, run_game_campaign};
+use campaign_runner::mazecampaign::{run_maze_campaign, serial_maze_spec};
 
 use super::{
-    ArmThroughput, BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, X86_64_BOOT, ab_report,
-    finish, finish_campaign, finish_game, finish_recording, parse_game_config, parse_retain,
-    print_game_artifacts, pvclock_cmdline, render_sweep_throughput, require_page_on_active, seeds,
+    ArmThroughput, BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, MazeBoxArgs, X86_64_BOOT,
+    ab_report, finish, finish_campaign, finish_game, finish_maze, finish_recording, maze_cfg,
+    maze_manifest, parse_game_config, parse_maze_config, parse_retain, print_game_artifacts,
+    pvclock_cmdline, render_sweep_throughput, require_page_on_active, seeds,
 };
 
 /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
@@ -687,6 +689,158 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         Some(args.deadline_delta),
     );
     finish_game(&outcome.log, args.game.logs_out.as_ref(), &manifest)
+}
+
+/// The box maze campaign (task 134 M1/M2): the maze image on patched KVM
+/// through the two-barrier controller — the run_game shape minus the
+/// ROM/billboard machinery, plus the MAZE_SPEC serial cross-check.
+pub fn run_maze(args: MazeBoxArgs) -> ExitCode {
+    let config = match parse_maze_config(&args.maze.config) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[campaign-runner] {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cfg = campaign_runner::mazecampaign::MazeCampaignConfig {
+        deadline_delta: Some(args.deadline_delta),
+        setup_deadline_delta: args.setup_deadline_delta,
+        snapshot_retry_step: 1_000_000,
+        snapshot_max_attempts: 100_000,
+        // The box workload gate: no setup_complete ⇒ a dead maze agent ⇒
+        // loud failure, never a sealed dead base — and a rollout ending
+        // anywhere but its deadline DIED.
+        require_snapshot_point: true,
+        ..maze_cfg(&args.maze)
+    };
+    let repeat = args.repeat.max(1);
+    let mut first: Option<campaign_runner::mazecampaign::MazeCampaignOutcome> = None;
+    for rep in 0..repeat {
+        // A fresh, identically-seeded boot per repetition: the determinism
+        // claim is over the whole boot → seal → campaign pipeline.
+        let (mut server, boot_us, serial) =
+            match boot_server(&args.kernel, &args.initramfs, &args.ready_marker, false) {
+                Ok(s) => s,
+                Err(code) => return code,
+            };
+        // The maze-spec discipline (the ROM content-hash check, transplanted):
+        // the operator's spec flags are a claim; the booted agent's MAZE_SPEC
+        // serial line is the fact. Logs from a different maze are not
+        // comparable — refuse a mismatch on every boot.
+        match serial_maze_spec(&serial) {
+            Some(fact) if fact != cfg.spec => {
+                eprintln!(
+                    "[campaign-runner] maze box: spec mismatch — flags say {:?} but the booted \
+                     image reports {fact:?}; rebuild the image or fix the flags.",
+                    cfg.spec
+                );
+                return ExitCode::FAILURE;
+            }
+            None => {
+                eprintln!(
+                    "[campaign-runner] maze box: the booted image printed no MAZE_SPEC line \
+                     before {} — a dead or foreign agent; refusing to campaign against it.",
+                    args.ready_marker
+                );
+                return ExitCode::FAILURE;
+            }
+            Some(_) => {}
+        }
+        let mut rep_cfg = cfg.clone();
+        // Repetitions must be INDEPENDENT for the determinism gate: each gets
+        // its own trace/evidence directory (a shared durable ledger would
+        // seed repetition N's archive with N-1's committed assignments —
+        // resumption, not repetition).
+        rep_cfg.trace_dir = cfg
+            .trace_dir
+            .as_ref()
+            .map(|d| d.join(format!("rep-{}", rep + 1)));
+        let initial = boot_env();
+        println!(
+            "[campaign-runner] maze box: campaign {}/{repeat} (config={:?}, {} branches, {} ns per \
+             rollout; boot-to-ready {} ms)…",
+            rep + 1,
+            config,
+            rep_cfg.max_branches,
+            args.deadline_delta,
+            boot_us / 1_000,
+        );
+        let (served, client) = run_session(&mut server, move |stream| {
+            let machine = SocketMachine::connect(stream, initial)?;
+            run_maze_campaign(machine, Box::new(SpecEnvCodec), &rep_cfg, config)
+                .map_err(|e| explorer::MachineError::Transport(e.to_string()))
+        });
+        let outcome = match client {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("[campaign-runner] maze box: campaign failed: {e}");
+                if let Err(se) = served {
+                    eprintln!("[campaign-runner] maze box: server session ended with: {se}");
+                }
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(se) = served {
+            eprintln!("[campaign-runner] maze box: server session ended with a fatal error: {se}");
+            return ExitCode::FAILURE;
+        }
+        match &first {
+            None => first = Some(outcome),
+            Some(f) => {
+                if *f != outcome {
+                    let at = f
+                        .log
+                        .events
+                        .iter()
+                        .zip(&outcome.log.events)
+                        .position(|(a, b)| a != b)
+                        .map_or_else(
+                            || "event count/artifacts".to_string(),
+                            |i| format!("branch {i}"),
+                        );
+                    eprintln!(
+                        "[campaign-runner] maze box DETERMINISM FAILED: repetition {}/{repeat} \
+                         diverged from the first at {at}.",
+                        rep + 1
+                    );
+                    return ExitCode::FAILURE;
+                }
+                println!(
+                    "[campaign-runner] maze box: repetition {}/{repeat} bit-identical to the first.",
+                    rep + 1
+                );
+            }
+        }
+    }
+    let outcome = first.expect("repeat >= 1 always produces a first outcome");
+    // The vacuity guard before any banner: bit-identical repetitions of a
+    // campaign that did no work are still bit-identical.
+    if let Some(vacuity) = outcome.vacuity() {
+        eprintln!(
+            "[campaign-runner] maze box VACUOUS RUN — refusing the determinism gate: {vacuity}\n\
+             [campaign-runner] evidence: {:?}",
+            outcome.work
+        );
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "[campaign-runner] maze box work evidence: {} branches, weakest rollout {} ns of V-time / \
+         {} walk steps.",
+        outcome.work.branches, outcome.work.min_vtime_span, outcome.work.min_steps
+    );
+    if repeat >= 25 {
+        println!(
+            "[campaign-runner] maze box DETERMINISM PASS: {repeat}/{repeat} identical per-branch \
+             state_hash sequences (gate floor 25)."
+        );
+    } else if repeat > 1 {
+        println!(
+            "[campaign-runner] maze box determinism smoke: {repeat}/{repeat} identical — BELOW \
+             the 25-run gate floor, NOT the determinism gate."
+        );
+    }
+    let manifest = maze_manifest(&cfg, Some(args.deadline_delta));
+    finish_maze(&outcome, args.maze.logs_out.as_ref(), &manifest)
 }
 
 pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
