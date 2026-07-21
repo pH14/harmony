@@ -1675,8 +1675,8 @@ fn aa4_guard_race(opts: Aa4GuardNotifierOpts) -> Result<(), String> {
             scale_index: 0,
             seed: 0xAA04_5241_4345_0000,
         };
-        let mut m = Machine::new_guarded(&image, &params)
-            .map_err(|e| format!("construct guarded machine: {e}"))?;
+        let mut m = Machine::new_race_guarded(&image, &params)
+            .map_err(|e| format!("construct race (no-vGIC) guarded machine: {e}"))?;
         m.set_watchdog_secs(opts.watchdog_secs);
         m.race_arm_vcpu0(target)
             .map_err(|e| format!("arm vCPU 0 at the target: {e}"))?;

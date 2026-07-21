@@ -679,6 +679,10 @@ pub struct Machine {
     race_writer_fd: i32,
     race_writer_run: *mut KvmRun,
     race_writer_run_size: usize,
+    /// Build the VM WITHOUT an in-kernel vGIC. Only the two-vCPU race proof sets this: its
+    /// MMU-off vCPUs use no interrupt controller, and skipping the vGIC's `CTRL_INIT` (which
+    /// finalises the vCPU count to one) is what lets the writer vCPU be created.
+    skip_vgic: bool,
     /// Per-`KVM_RUN` watchdog budget in seconds; 0 disables it. See
     /// [`DEFAULT_WATCHDOG_SECS`].
     watchdog_secs: u64,
@@ -729,7 +733,7 @@ impl Machine {
     /// [`SysError`] if any ioctl or mapping failed. Nothing is half-built: a failure
     /// closes what it opened.
     pub fn new(image: &crate::elf::Elf, params: &ParamsPage) -> Result<Machine, SysError> {
-        Self::new_for(GuestBoot::Payload { image, params }, false)
+        Self::new_for(GuestBoot::Payload { image, params }, false, false)
     }
 
     /// Create a bare-payload VM with the AA-4 stage-2 execute guard enabled before
@@ -738,7 +742,20 @@ impl Machine {
     /// # Errors
     /// [`SysError`] if the patched capability is absent, cannot be enabled, or construction fails.
     pub fn new_guarded(image: &crate::elf::Elf, params: &ParamsPage) -> Result<Machine, SysError> {
-        Self::new_for(GuestBoot::Payload { image, params }, true)
+        Self::new_for(GuestBoot::Payload { image, params }, true, false)
+    }
+
+    /// Create a guarded bare-payload VM with NO in-kernel vGIC, for the two-vCPU scan/write
+    /// race: skipping the vGIC's `CTRL_INIT` leaves the vCPU count un-finalised so a second
+    /// (writer) vCPU can be created. The race's MMU-off vCPUs use no interrupt controller.
+    ///
+    /// # Errors
+    /// [`SysError`] if the patched guard capability is absent or construction fails.
+    pub fn new_race_guarded(
+        image: &crate::elf::Elf,
+        params: &ParamsPage,
+    ) -> Result<Machine, SysError> {
+        Self::new_for(GuestBoot::Payload { image, params }, true, true)
     }
 
     /// Create the AA-5(c) Linux board, validate and load its flat Image,
@@ -757,6 +774,7 @@ impl Machine {
                 initramfs,
                 bootargs,
             },
+            false,
             false,
         )
     }
@@ -778,10 +796,15 @@ impl Machine {
                 bootargs,
             },
             true,
+            false,
         )
     }
 
-    fn new_for(boot: GuestBoot<'_>, exec_guard: bool) -> Result<Machine, SysError> {
+    fn new_for(
+        boot: GuestBoot<'_>,
+        exec_guard: bool,
+        skip_vgic: bool,
+    ) -> Result<Machine, SysError> {
         let kvm_fd = open_kvm()?;
         let linux_clockevent = boot
             .needs_psci_0_2()
@@ -804,6 +827,7 @@ impl Machine {
             race_writer_fd: -1,
             race_writer_run: core::ptr::null_mut(),
             race_writer_run_size: 0,
+            skip_vgic,
             watchdog_secs: DEFAULT_WATCHDOG_SECS,
         };
         m.build(boot)?;
@@ -1001,9 +1025,13 @@ impl Machine {
         // The in-kernel vGICv3. The payload runtime programs the GIC distributor at
         // 0x0800_0000 before it prints a byte; with no vGIC those accesses are MMIO
         // exits to userspace, which the measurement loop refuses as non-console — so
-        // NO payload boots without this. Created after VCPU_INIT (the vGIC needs the
-        // vCPU to exist) and before the guest runs.
-        self.create_vgic()?;
+        // NO booting payload runs without this. Created after VCPU_INIT (the vGIC needs
+        // the vCPU to exist) and before the guest runs. The two-vCPU race skips it: its
+        // MMU-off vCPUs never touch the GIC, and the vGIC's CTRL_INIT would finalise the
+        // vCPU count to one, blocking the writer vCPU.
+        if !self.skip_vgic {
+            self.create_vgic()?;
+        }
 
         match boot {
             GuestBoot::Payload { image, params } => {
