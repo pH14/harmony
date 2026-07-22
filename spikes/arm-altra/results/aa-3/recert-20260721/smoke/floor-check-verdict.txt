@@ -1,0 +1,24 @@
+work clock binding: arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)
+floor-check aa3-recert-smoke stage=aa3
+  [PASS] aggregation: one stage, distinct run-sets, one constants pack + measurement environment
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 35a3a35747708e33178bc32f24e9649ca6ea4494d0aac5d2cb9ada0dd34af6bd matches the manifest
+  [PASS] totality: all 3500 attempted samples present exactly once
+  [PASS] multiplicity: all 3500 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 3500 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 60
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 1750 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 1750 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] armed-overflow-floor: 3500 armed overflows meets the floor of 1000 [SUB-NORMATIVE]
+  [PASS] case-coverage: 1750 distinct armed target/seed case(s) meets the --min-cases floor of 500
+RESULT: PASS (21 checks)
