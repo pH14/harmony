@@ -1,0 +1,1374 @@
+work clock binding: arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)
+floor-check aggregate[aa3-sweep-10-s0 + aa3-sweep-10-s1 + aa3-sweep-10-s2 + aa3-sweep-10-s3 + aa3-sweep-10-s4 + aa3-sweep-10-s5 + aa3-sweep-10-s6 + aa3-sweep-10-s7 + aa3-sweep-10-s8 + aa3-sweep-10-s9 + aa3-sweep-10-s10 + aa3-sweep-10-s11 + aa3-sweep-10-s12 + aa3-sweep-10-s13 + aa3-sweep-10-s14 + aa3-sweep-10-s15 + aa3-sweep-10-s16 + aa3-sweep-10-s17 + aa3-sweep-10-s18 + aa3-sweep-10-s19 + aa3-sweep-10-s20 + aa3-sweep-10-s21 + aa3-sweep-10-s22 + aa3-sweep-10-s23 + aa3-sweep-10-s24 + aa3-sweep-10-s25 + aa3-sweep-10-s26 + aa3-sweep-10-s27 + aa3-sweep-10-s28 + aa3-sweep-10-s29 + aa3-sweep-10-s30 + aa3-sweep-10-s31 + aa3-sweep-10-s32 + aa3-sweep-10-s33 + aa3-sweep-10-s34 + aa3-sweep-10-s35 + aa3-sweep-10-s36 + aa3-sweep-10-s37 + aa3-sweep-10-s38 + aa3-sweep-10-s39 + aa3-sweep-10-s40 + aa3-sweep-10-s41 + aa3-sweep-10-s42 + aa3-sweep-10-s43 + aa3-sweep-10-s44 + aa3-sweep-10-s45 + aa3-sweep-10-s46 + aa3-sweep-10-s47 + aa3-sweep-10-s48 + aa3-sweep-10-s49 + aa3-sweep-10-s50 + aa3-sweep-10-s51 + aa3-sweep-10-s52 + aa3-sweep-10-s53 + aa3-sweep-10-s54 + aa3-sweep-10-s55 + aa3-sweep-10-s56 + aa3-sweep-10-s57 + aa3-sweep-10-s58 + aa3-sweep-10-s59 + aa3-sweep-10-s60 + aa3-sweep-10-s61 + aa3-sweep-10-s62 + aa3-sweep-10-s63 + aa3-sweep-10-s64 + aa3-sweep-10-s65 + aa3-sweep-10-s66 + aa3-sweep-10-s67 + aa3-sweep-10-s68 + aa3-sweep-10-s69 + aa3-sweep-10-s70 + aa3-sweep-10-s71 + aa3-sweep-10-s72 + aa3-sweep-10-s73 + aa3-sweep-10-s74 + aa3-sweep-10-s75] stage=aa3
+  [PASS] aggregation: one stage, distinct run-sets, one constants pack + measurement environment
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 4f7eb2614043af93cec29a8430269cbe055e8c0357acbfe7c0c9a318ace571c8 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 4
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 7a26b20d255a5c777705cafad6bd1cf0382a36c323783a2c33d8c13b6bc2f259 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 5
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 9896ffc22e214f1334e3128191986ac1a543d606beeb200de0dcced97b90f37a matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 6
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 11310ffd0d322af50c140a9fe920db678e236c4645ed6cf4db9eee055c0faf5b matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 7
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 e5663e73ab66e72fc37ee4c0917305cf583e3fc3dfcb624ac51eee7d5af93a00 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 8
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 c0cade2b6de274c338c812f992f57b13cdf90db5dbdc0bb348070b8e29c2ac2f matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 9
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 c47a4789eb5ec2e93ed10888b1f2f2d383c01a995e83c8f0e41f1feb1d4a91c4 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 10
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 564d3452bbb4bccda211a40bb209de995f51d185b130e4183a4ec704e0e764a6 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 11
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 2046b1b87c2ab9a014efb6aae0bed63b7f2cecd2ecd76b7ad70c6c32e2cb5727 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 12
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 11041b17261f6521da3a27206beac81c20ecc9df363ed4039811f2d7c1f6e885 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 13
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 283cddabb848901b2546403efb5f99ee552eca3dd86b2263715c44251b882c6c matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 14
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 176ee79892a9576ddaadcfa7a9b76a198550f35a3af03969061fc41f3c83d2cf matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 15
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 2ea6a05535e3af79948367f8eb0f08b12b9d4002e552ba4e9740f4a95a719710 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 16
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 7d5fbca03054d7f9dfb55ec22c6e62d0e38c7d2634c26e7b1edb01e102f9c8dd matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 17
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 52159be730eccd5fbe153212c86a6b0e376a208957d4197616be668f43cba42f matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 18
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 17c5ec2e12d037655099a3e984fff657fd4cd4abf706f6edb3edb04b480a5b1b matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 19
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 8263f8b01f0dc0cb036c95ebdb9267109ba41cd0ac97c22ab389664996eb4ab8 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 20
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 4aa03cf714935f95a7b44fcc3a4649084c36c51e7efa716783d2352f5f581cdb matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 21
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 42b909afccb373ae6b348b64a8b798969e2971aa27d34bbef6d533e1eb578194 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 22
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 9f698164c8a0c03f47f675569b26cc2f4d38da2def9974a15d53eb3074c019f9 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 23
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 cf3c717564c2a03de7453160402b61df47966bdef0e47549c8bf6ca9fd489528 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 24
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 457be38b310349cbf72a6ea1bd07c378e3eb51f69a3445f00f4dd7b17a9fc9db matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 25
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 14cb2d89668282e709654c8f809e279d72a1c171166a5b74882e49b42acc1379 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 26
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 19bed0dcc8547018047f0b5859e3dc97f78722d9e0f55a4471ab6c708559a592 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 27
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 979bec829c75b2d379d23213adec5b988ac628624b01d646094b5588fa586005 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 28
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 fdca1c5cda6f076419df0498dc773ca2414194c2641e2ee41eced813eec34a37 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 29
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 b1bff2fc3eceeff6c2404c9e29ebc17d5c8cb9c3c8572400c14cd502bf650af4 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 30
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 3dbe008686a0612ea6e8a697918414253022b92fa48717628579035aeaa32fb5 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 31
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 ee65f98ce8d64dc8892c4b0d3c08f019629bf461096e9a6fefd17d2f00ac84cf matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 32
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 7a4f0d8e2eba7fc4e860b52c6d24350a3de207b8bc28587bd0eb2d244f2bb500 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 33
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 ba08c7805d23ecd56b06169f2f212f6981685816252c49cdb3c7610b3014f342 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 34
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 794cf033f13bc5c727145f52f1f1cc3f1e17a4b162f0ea45d6e4151ec540a4fe matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 35
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 0aff4324339e94e62978a8febdc6a026110c78559dc4f39273dd7cf546b4f2f9 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 36
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 d5d715629410338913e55b0dbbf500fce2359913c65a5e9ddafac3cc9aae476b matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 37
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 12ae196f0feb148db1fded79d5713b79b4aa365b89b7f88c4649512007007ff8 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 38
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 4e93d516630ee0e2bfb912a79d0046c31d32a0211d2380a09ae3833f747aa1e1 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 39
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 8e020ee33d5f1e11706f31a39220129f225737bc7622a0c3d7569db7ddb476c9 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 40
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 e24fe55df7f48116217d5fea5ac25ab9f55938ea40695f4b82e1a99b250feb55 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 41
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 8baba83d1fb2a6f2110957093c677dfb94eb8bdae0f125993a8c7455c71c9ccc matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 42
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 1063ac2ab5dd0d7d7e582fa01eb7fb63bf9661c8c46126d7e1b449a155d51c2a matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 43
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 96499b72d456aeb856becda9f2c3d8d8c9e0775b37a3fc2af1fc8cbef94f1892 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 44
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 c5d3e189b972c361ac40fecb064ff2262a4f0cf2550753a29550afe6c5b80e8c matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 45
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 339a24d472f7651024c9e4b95365b5b8da2aa0d53cf3aa7726b63d9758d38687 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 46
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 8c59e2e3d12cc07217b4036fb62068e18be2b1636d83f6461c2170b0137d7414 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 47
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 6f2d4d22ac054b2b2d872cc93022790d68eb2fbce3d7830c3885f9cefd67ee63 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 48
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 9fa305dee05bc2ee545ab36d216e9175070e0a5a77cbe0559b9ee6372d3ca2aa matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 49
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 404642a7e26edd3605a3d57fd1bf4ad923b6dba6796c4950a49a8209fd25ea8f matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 50
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 81c63d9caaaa5f05dd1696e5224c0c50330aac86485554a8a815868722c8d461 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 51
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 dd6a0af7b85a41a1e4b2227560dc2d8cc6feb1f72de3fd4e3a4d7d63d502901b matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 52
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 d74fe9c7adeda6784cd59c9c98956e2b1535237eaad3669c220e021f26713a09 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 53
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 0209801be9172765d9b2fb31b62fb06f79cc3c4ca9ad5bece077eda88d488398 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 54
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 46c02b8b850c18179e0df4f1b0248470eb12bda8d65a7bfa4cbd2966234492df matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 55
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 73df2db65c10b1c94b479d8a008ba3238d79a31c7237a0d39e222bbeb1886b3b matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 56
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 ce21311946bf2479618728e5c8584e2f95fcea27758c0ee2fcaa41ed352d4a44 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 57
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 e788b7210b1eb6d250b77036d55764f8b2fccc66a1f25f139ff986fff7097181 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 58
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 16af2f72ede336ad5dc61cd22a95752ff4c1a50dfa6d4572a812a1d54543c196 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 59
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 86fd4195d40cbb88765e17976daab65e844060eefe4c98c199470d94c52eba00 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 60
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 86f98142c39ad6df0a7787dacaa7d0596dcee387084b6fec05c5912f46cd9fb0 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 61
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 c2171982135df4b02b852209d99612ad25abc210a306502d72214ac3c4fc29da matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 62
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 f667ab9cf67fd9e18ced509a0aed19517c49a914bd2d1f3e75c28131768e8df4 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 63
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 dcb550e3072c8a283767fe2725367efaefe07ff0ce408f96f2526539169da006 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 64
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 7a7aab923c8103faa40a24da258ceb23761eb53cd6bdafe69dc5a701f39748ac matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 65
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 0dc3ca4a641209ce010a7d06408363e10149ac37938e13db0d97bb65680626b9 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 66
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 2fdc98ae64511a22215067f92f24566775628dac0f71f0c9d867c0c5c99f3271 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 67
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 842d451226e75ffa75ddc87346cbdda688da0722f721d058a7376e5c0faa71cd matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 68
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 9eea837357a535245160fe8ca86fef2a00afa565f249effad0ca225459513974 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 69
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 47f4443a62a05a42acce79faa47847e492abccc22a17934fd3edba420e9f4d4f matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 70
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 b76ed8a3c52220442846107e01487fa7251ca123c6732cabaa9b62604b3f08de matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 71
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 7eb09ab77ac8a5eaac696a2d4fd669fed818e4ac759255baf00a4a2076a7de21 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 72
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 9ff3aeb9281be2827fa01b4e826f4845283d4d3a47a365c47eb675d5b79cb813 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 73
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 55a82299dde0904f486a93f62884f2e809d8714f5109406ba183d5f1e0c9443e matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 74
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 6fa756e97e1d633c67f55b36b35594ce34429baeba57f94723dbed7700ea70d8 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 75
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 cc26799ecea91b82f2579db53cd35fa06d5244f293c940ba4a6676395ac99e92 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 76
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 170b3d451b86fb944af7a9abb76cde0efb589d2eaabb01e230009570cd7a8871 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 77
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 cd305b0aecb0fedd3a5661242eabdf03ea6d1fc6f5633383b8b18b4485300579 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 78
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 352c58c1d780910fe10d638e1b3b241a3734d2b3bdaf9df7c701d159872df751 matches the manifest
+  [PASS] totality: all 13300 attempted samples present exactly once
+  [PASS] multiplicity: all 13300 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 13300 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin and exact (AA-3)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 79
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6650 armed-landing group(s) each replayed on bit-identical state digests
+  [PASS] condition-consistency: every record's condition matches the manifest's (co-tenant-other-core)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6650 distinct input(s), each repeated at least 2 times (floor 2)
+  [PASS] armed-overflow-floor: 1010800 armed overflows meets the floor of 1000000
+  [PASS] case-coverage: 505400 distinct armed target/seed case(s) meets the --min-cases floor of 500000
+RESULT: PASS (1371 checks)
