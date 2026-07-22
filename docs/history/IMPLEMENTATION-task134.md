@@ -205,7 +205,14 @@ point) and is **bit-identical** — at `1e7`, the config the box run used.
 PureRandom ≡ FrontierOff work evidence *on the box* (identical span/steps) —
 the machinery-neutrality tripwire holds live under the rolling deadline.
 
-### `@3e7` — the open boundary (escalated to Paul, `hm-qcpp`)
+### `@3e7` — RESOLVED: Paul ruled Option (a) (Fable-decided, 2026-07-22)
+
+**Disposition:** accept `@1e7` as the M2 acceptance; the `@3e7` overshoot does
+**not** block M2 and gets its own bug bead — `hm-zwhi` (P2, *"exact-arrival arm
+misses staged Moments on pvclock guests when the rollout leg spans a
+clock-refresh boundary"*), discovered-from `hm-qcpp`, related to `hm-x1ss`
+(design home) and `hm-sp8v` (the ARM `arm_arrival` port, which must inherit the
+finding). Mechanism + evidence below.
 
 `SV1 @3e7` fails **not on vacuity** (the fix works) but with `run overshot staged
 Moment 237012404 (now at V-time 244341956); schedule unsatisfiable` — the
@@ -242,8 +249,35 @@ therefore needs the **rollout run itself to marker-clamp staged reseeds** (stop
 at each, drain, continue — what `materialize_candidate` already does for the
 seal) — a **determinism-core** change (`run_rollout` + the reseed schedule),
 squarely in `hm-x1ss` (schedule-closure) territory, **out of the `hm-qcpp`
-maze-vertical mandate**. The alternative is to accept that the per-branch rolling
-deadline is correct for `delta ≲ one quantum` — the regime M1 already
-constrains deltas to — and treat `@3e7` (multi-quantum, a *headroom* diagnostic
-made moot by rolling deadlines) as out-of-regime. **Paul's ruling** (packet on
-PR #137, kept DRAFT).
+maze-vertical mandate** — now tracked as `hm-zwhi`. Note the discriminator that
+makes this a *bug*, not a law: `#138` (`hm-esfd`) re-materialized **multi-quantum**
+candidate-seal legs with mid-leg reseed markers drained **bit-identically** on
+the 2s game path, so "multi-quantum ⇒ overshoot" is false in general; the failing
+ingredient is the maze being a **pvclock guest** (the 10 416 667 ns quantum is
+its pvclock refresh grid) — see `hm-zwhi` for the concrete `arm_arrival` suspect.
+
+### `@1e7` load-bearing de-risk (Fable's condition, BLOCKING — PASSED)
+
+Fable flagged one silent-failure hole: `@1e7` could be green because the exploit
+reseeds were never staged (making the SelectorV1 "exploits" entropy-identical to
+the controls — a vacuity the span guard cannot see). Closed by a **read-only
+audit** of the box evidence ledger (public `EvidenceLedger` + `AdapterEnv` read
+APIs; not part of the fix): **every** admitted SelectorV1 exploit rollout (11/11,
+identical rep-1 ≡ rep-2) carries reseed markers **drained at exact Moments
+strictly inside `(branch_origin, branch_origin + 1e7]`** (e.g. issue 3: origin
+119 386 579 → drained 122 687 466; issue 21: origin 140 518 768 → drained
+140 563 395 / 143 864 282 / …). The controls carry **zero** exploit reseeds
+(PureRandom 8 / FrontierOff 16 genesis-only rollouts, floor marker only). So the
+exploits genuinely reseed mid-rollout and differ from the controls — `@1e7`
+green is fully load-bearing.
+
+### NEW doctrine — the maze-supported delta regime (Option-(a) consequence)
+
+Accepting `@1e7` **narrows** the maze-supported regime to **`deadline_delta ≲ one
+pvclock quantum`** (~10 416 667 ns). This is a genuine narrowing, recorded
+honestly: M1's doctrine was "rollout deadlines must be grid **multiples**"
+(plural quanta allowed); `hm-zwhi` shows multi-quantum legs overshoot staged
+reseeds on this pvclock guest, so under Option (a) the maze regime is one quantum
+until `hm-zwhi` lands. A **loud maze-driver rejection** of `deadline_delta`
+beyond ~one quantum is a sensible guard (a follow-up under `hm-zwhi` — noted, not
+built here).
