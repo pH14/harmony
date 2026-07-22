@@ -1,9 +1,11 @@
-# Task 134 — the cooperative maze gate: implementation record (M0 + M1)
+# Task 134 — the cooperative maze gate: implementation record (M0 + M1 + M2)
 
-**Bead:** `hm-cs5` (binding). **Branch:** `task/cooperative-maze-gate`. **Status:**
-M0 complete (portable), M1 complete to the ruled boundary (live smoke green on the
-unblocked arm), **M2 blocked on the open `hm-esfd` ruling** for its subject and
-diagnostic arms — the same split shape as task 133's deliverable 3.
+**Bead:** `hm-cs5` (binding); M2 fix bead `hm-qcpp`. **Branch:**
+`task/cooperative-maze-gate`. **Status:** M0 complete (portable), M1 complete to
+the ruled boundary (live smoke green on the unblocked arm), **M2 unblocked** —
+`hm-esfd` merged (#138, Option-C marker-clamped candidate seal) and the residual
+static-deadline vacuity it exposed (`hm-qcpp`) fixed here with per-branch rolling
+deadlines. See "The M2 record" below.
 
 ## What was built
 
@@ -51,8 +53,9 @@ diagnostic arms — the same split shape as task 133's deliverable 3.
 `maze` 7 tests · `benchmark` 52 · `campaign-runner` 232 (incl. the 5 maze
 integration gates: two-barrier evidence path end-to-end with a persisted
 nonempty ledger; same-seed ⇒ bit-identical outcomes for all three configs;
-frontier-off ≡ pure-random on the toy (the machinery-neutrality tripwire);
-archive-guided strictly out-reaching both controls on depth AND cells over 5
+frontier-off ≡ pure-random on the toy (the machinery-neutrality tripwire —
+now also under a live-shaped rolling deadline, M2 below);
+archive-guided strictly out-reaching both controls on depth AND cells over 20
 seeds with only it reaching the goal; retained-Entry restoration from a
 reopened ledger with collection refused under the Full profile). clippy
 `-D warnings` (host + `x86_64-unknown-linux-gnu` cross-target), fmt, deny,
@@ -154,3 +157,75 @@ are all on the branch; portable analogs of every step are green.
 4. **Workload-side pacing** over changing the shared pvclock/boot plumbing:
    no consonance or boot_server change; the pace is part of the workload
    manifest (rides `MAZE_SPEC` on the serial).
+
+## The M2 record (`hm-qcpp`; box `hetzner`, lease `maze-qcpp`, core 2, patched-KVM, 2026-07-22)
+
+`hm-esfd` merged (#138, Option-C marker-clamped candidate seal) unblocked the
+SelectorV1 subject + FrontierOff diagnostic arms — but exposed a residual
+**static-deadline × Option-C** vacuity (`hm-qcpp`): the rollout deadline was one
+campaign-wide **absolute** Moment (`base_vtime + deadline_delta`); under Option-C
+a candidate seals onto its planted marker, whose window `== deadline_delta`, so a
+candidate can seal *at* the deadline. An exploit off it starts at-or-past its own
+deadline → `run()` deadline-stops immediately → span 0 → the vacuity guard
+(correctly) refuses the arm.
+
+**Fix — per-branch rolling deadlines.** Each rollout runs
+`branch_origin_moment + deadline_delta` (its own span budget from its own branch
+point). Entirely in the maze layer's `MazeDeclaredMachine` wrapper: it learns
+each snapshot's seal Moment, records the origin at each `branch`/`replay`, and
+imposes `origin + delta` **only** on the quiet-arm rollout (the run carrying no
+deadline — every seal / probe / setup run names an explicit `Some` deadline and
+is forwarded verbatim). The campaign `until` now carries `deadline: None`. No
+Option-C / reseed / `compose` / `materialize_candidate` / `seal_base` change; the
+diff is two files under `dissonance/campaign-runner/`. Neutrality holds because
+the deadline keys off the branch **origin** — the genesis-only controls stay at
+`base_vtime + delta`; only SelectorV1 exploits (non-genesis origins) change.
+
+Runbook: bundle-transfer the branch (`git bundle` + scp + clone; push is
+classifier-blocked), reuse the M1 maze image verbatim (guest unchanged — source
+parity verified byte-for-byte), rebuild only `campaign-runner`. Hold the
+box-window lease in **one long-lived process** start→finish (box-window PPID
+landmine: acquire as a *direct child*, never in a `$(...)` subshell, or the lease
+is swept mid-run). Smoke-fire-once, then the arms, then release (reverts to stock
+1396736 — verified).
+
+### Box results (all arms `--repeat 2`)
+
+| Arm | Config | Exit | `--repeat 2` | Weakest rollout span / steps |
+|---|---|---|---|---|
+| smoke | SelectorV1 4b @1e7 | 0 | — | 10 372 040 ns / 52 |
+| **SV1 @1e7** | SelectorV1 16b @1e7 | **0** | **bit-identical** | **10 073 185 ns / 50** |
+| SV1 @3e7 | SelectorV1 16b @3e7 | **1** | — | overshoot (see below) |
+| PureRandom | PureRandom 8b @1e7 | 0 | bit-identical | 10 416 667 ns / 52 |
+| FrontierOff | FrontierOff 16b @1e7 | 0 | bit-identical | 10 416 667 ns / 52 |
+
+The SelectorV1 arm the vacuity guard refused pre-fix now **completes,
+non-vacuous** (weakest rollout advances a full `deadline_delta` past its branch
+point) and is **bit-identical** — at `1e7`, the config the box run used.
+PureRandom ≡ FrontierOff work evidence *on the box* (identical span/steps) —
+the machinery-neutrality tripwire holds live under the rolling deadline.
+
+### `@3e7` — the open boundary (escalated to Paul, `hm-qcpp`)
+
+`SV1 @3e7` fails **not on vacuity** (the fix works) but with `run overshot staged
+Moment 237012404 (now at V-time 244341956); schedule unsatisfiable` — the
+`hm-esfd` second-blocker (overshoot poison) class, but on the **rollout run**
+rather than the candidate seal. Mechanism: an exploit env's `quiet_mutate` reseed
+marker is planted at an **arbitrary** offset in `[1, window]` with
+`window == deadline_delta`. At `1e7` the window is ≈ one pvclock intercept
+quantum (measured 10 416 667 ns), so the marker always sits inside the single
+grid step the rollout stops at, and is drained there. At `3e7` the rolling window
+spans ~3 quanta, so a marker can land in a **later** quantum at a non-grid Moment;
+the rollout run (`StopMask::NONE`, single deadline) crosses it without an
+exact-arrival stop and the server rejects the schedule. Pre-fix `@3e7` avoided
+this only by *truncating* exploits below their markers (the very vacuity being
+fixed). The rolling deadline is thus **correct and safe for `delta ≲ one
+quantum`** (the M1 finding already constrains deltas to grid multiples); `@3e7`
+is a multi-quantum, out-of-regime config whose original purpose — a *headroom*
+diagnostic — is moot under rolling deadlines (headroom is never used).
+
+Resolving `@3e7` needs one of the reserved fallback directions (bound the marker
+window to within one intercept quantum, decoupled from `deadline_delta`; or
+nominate only post-marker candidates) or a determinism-core marker-clamp of the
+rollout run — **Paul's ruling**, not a worker improvisation (the `hm-qcpp`
+mandate). Distinct from `hm-x1ss` (the schedule-closure root cause) but adjacent.
