@@ -2,7 +2,7 @@
 # linux/amd64 container (docs/BUILDING.md). The heavy lifting lives in the
 # *.sh scripts next to this Makefile.
 
-.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image exec-image postgres-image campaign-image docker-image k3s-image game-image test test-linux clean-artifacts
+.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image exec-image postgres-image campaign-image docker-image k3s-image game-image maze-image test test-linux clean-artifacts
 
 kernel:
 	./build-kernel.sh
@@ -60,6 +60,13 @@ k3s-image:
 # shared task-87 renderer core harmony-linux/build/fceumm_libretro.so.
 game-image:
 	./build-game-image.sh
+
+# Task 134 maze workload initramfs: static busybox + the static-musl maze
+# agent (harmony-linux/maze-agent — the deterministic gauntlet walk over X/Y
+# state registers). No ROM, no root needed. Produces
+# harmony-linux/build/initramfs-maze.cpio.gz.
+maze-image:
+	./build-maze-image.sh
 
 test:
 	./run-tests.sh

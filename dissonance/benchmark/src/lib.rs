@@ -32,6 +32,7 @@
 
 pub mod exploration;
 pub mod manifest;
+pub mod maze;
 pub mod report;
 pub mod stats;
 pub mod trigger;
@@ -41,6 +42,7 @@ pub use exploration::{
     GameManifest, Verdict,
 };
 pub use manifest::{Benchmark, BugClass, BugId, BugSpec, CrashKind, TriggerParams};
+pub use maze::{MazeGateManifest, MazeGateReport};
 pub use report::{
     BranchEvent, CampaignLog, Configuration, CorrelationReport, ReportError, Ruling,
     TrajectoryMeasure,

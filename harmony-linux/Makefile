@@ -30,7 +30,7 @@ endif
 fetch:
 	scripts/fetch.sh
 
-kernel initramfs image arm64-kernel arm64-initramfs arm64-image postgres-image campaign-image docker-image game-image:
+kernel initramfs image arm64-kernel arm64-initramfs arm64-image postgres-image campaign-image docker-image game-image maze-image:
 ifeq ($(UNAME_S),Linux)
 	$(MAKE) -C linux $@
 else

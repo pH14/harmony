@@ -202,6 +202,17 @@ pub enum GameCampaignError {
          (task 69 M2 NO-GO); M0 runs PureRandom / SelectorV1 only"
     )]
     SignalUnavailable,
+    /// A configuration that exists for another gate (e.g. the maze gate's
+    /// frontier-off control, task 134) was requested of the SMB campaign,
+    /// whose ruled M0 configurations are PureRandom / SelectorV1 only.
+    #[error(
+        "the {config} configuration is not a ruled SMB game-campaign configuration \
+         (M0 runs PureRandom / SelectorV1 only)"
+    )]
+    ConfigUnavailable {
+        /// The refused configuration's label.
+        config: &'static str,
+    },
     /// The guest never surfaced its `setup_complete` snapshot point — a dead
     /// play-agent (bad core/ROM provisioning, hugetlb, `/dev/mem`), whose
     /// terminal reached us instead. Refused loudly: sealing a dead base would
@@ -784,10 +795,12 @@ impl<M: Machine> Machine for DeclaredMachine<M> {
 /// exemplar maps onto the codec's fail-closed
 /// [`UnsupportedComposition`](explorer::EnvCodecError::UnsupportedComposition)
 /// class (a standing-fault-carrying input is literally its documented case).
-struct QuietCodec {
-    inner: Box<dyn EnvCodec>,
+/// Crate-visible: the maze campaign (task 134) composes the identical
+/// quiet-arm codec around its own production codec.
+pub(crate) struct QuietCodec {
+    pub(crate) inner: Box<dyn EnvCodec>,
     /// The reseed-Moment window `quiet_mutate` places its marker inside.
-    window: u64,
+    pub(crate) window: u64,
 }
 
 impl EnvCodec for QuietCodec {
@@ -926,6 +939,14 @@ pub fn run_game_campaign<M: Machine>(
         }
         // Refused above; structurally unreachable, kept total.
         ExplorationConfig::Signal => return Err(GameCampaignError::SignalUnavailable),
+        // The maze gate's diagnostic control (task 134): not a ruled SMB M0
+        // configuration — running it here would silently mint a fourth SMB
+        // column nobody ruled. Refused loudly.
+        ExplorationConfig::FrontierOff => {
+            return Err(GameCampaignError::ConfigUnavailable {
+                config: "frontier-off",
+            });
+        }
     };
     let quiet = QuietCodec {
         inner: codec,

@@ -1,0 +1,25 @@
+pub mod maze
+pub struct maze::MazeSpec
+pub maze::MazeSpec::doors: u32
+pub maze::MazeSpec::levels: u32
+pub maze::MazeSpec::maze_seed: u64
+pub maze::MazeSpec::width: u32
+impl maze::MazeSpec
+pub fn maze::MazeSpec::correct_door(&self, u32) -> u32
+pub fn maze::MazeSpec::doors(&self) -> u32
+pub fn maze::MazeSpec::levels(&self) -> u32
+pub fn maze::MazeSpec::small() -> Self
+pub fn maze::MazeSpec::width(&self) -> u32
+pub struct maze::MazeState
+pub maze::MazeState::goal: bool
+pub maze::MazeState::level: u32
+pub maze::MazeState::x: u32
+impl maze::MazeState
+pub fn maze::MazeState::absorbed(&self) -> bool
+pub fn maze::MazeState::start() -> Self
+pub fn maze::MazeState::x_register(&self) -> u64
+pub fn maze::MazeState::y_register(&self) -> u64
+pub fn maze::oracle_bytes(&maze::MazeSpec) -> alloc::vec::Vec<u8>
+pub fn maze::reachable_cells(&maze::MazeSpec) -> u64
+pub fn maze::step(&maze::MazeSpec, maze::MazeState, u8) -> maze::MazeState
+pub fn maze::walk(&maze::MazeSpec, maze::MazeState, &[u8]) -> alloc::vec::Vec<maze::MazeState>

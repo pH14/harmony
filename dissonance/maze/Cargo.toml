@@ -1,0 +1,14 @@
+[package]
+name = "maze"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Task 134: the deterministic maze benchmark workload — a pure-integer gauntlet grid (corridor levels + guarded junctions, absorbing dead ends) whose walk is a function of a caller-supplied entropy stream. Shared by the portable maze machine (campaign-runner) and the maze guest agent (harmony-linux)"
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1"
