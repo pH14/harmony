@@ -224,8 +224,26 @@ quantum`** (the M1 finding already constrains deltas to grid multiples); `@3e7`
 is a multi-quantum, out-of-regime config whose original purpose — a *headroom*
 diagnostic — is moot under rolling deadlines (headroom is never used).
 
-Resolving `@3e7` needs one of the reserved fallback directions (bound the marker
-window to within one intercept quantum, decoupled from `deadline_delta`; or
-nominate only post-marker candidates) or a determinism-core marker-clamp of the
-rollout run — **Paul's ruling**, not a worker improvisation (the `hm-qcpp`
-mandate). Distinct from `hm-x1ss` (the schedule-closure root cause) but adjacent.
+**Box decision-evidence (2026-07-22, lease `maze-qcpp-3e7`, reverted to stock +
+verified).** Same 16b `--repeat 2` SelectorV1 arm at `3e7`:
+
+| Variant | Result |
+|---|---|
+| as-configured (`window == deadline_delta`) | EXIT 1 — `overshot staged Moment 237012404` |
+| option-B (marker window bounded to one quantum) | EXIT 1 — `overshot staged Moment 191224419` |
+
+**Option-B (bounding the marker window) does NOT fix `@3e7`** — it only moves the
+overshoot to an earlier marker. The overshoot is *not* a marker-placement
+problem: a multi-quantum rollout run (`StopMask::NONE`, single deadline) crosses
+**any** staged reseed marker in its path without an exact-arrival stop, wherever
+in the window it sits. `@1e7` works only because its deadline lands within one
+grid step, so the marker drains at the single deadline stop. Fixing `@3e7`
+therefore needs the **rollout run itself to marker-clamp staged reseeds** (stop
+at each, drain, continue — what `materialize_candidate` already does for the
+seal) — a **determinism-core** change (`run_rollout` + the reseed schedule),
+squarely in `hm-x1ss` (schedule-closure) territory, **out of the `hm-qcpp`
+maze-vertical mandate**. The alternative is to accept that the per-branch rolling
+deadline is correct for `delta ≲ one quantum` — the regime M1 already
+constrains deltas to — and treat `@3e7` (multi-quantum, a *headroom* diagnostic
+made moot by rolling deadlines) as out-of-regime. **Paul's ruling** (packet on
+PR #137, kept DRAFT).
