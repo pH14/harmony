@@ -1174,7 +1174,7 @@ exit 0**, and the retained v3 checker transcript remains evidence of the physica
 the v4 checker deliberately refuses to re-certify that older shape. Every new step run emits
 schema v4 and self-certifies plan totality from its records.
 
-### AA-3 — deterministic force-exit (0004-analogue) + exact landing: certification pending
+### AA-3 — deterministic force-exit (0004-analogue) + exact landing: GO (regenerated-pin basis, Paul-ruled 2026-07-22)
 
 Started per the foreman's "continue straight to AA-3, keep the box saturated" directive
 (overlapped with the AA-2 refinement). The draft patch
@@ -1268,13 +1268,16 @@ skid exceeded margin+headroom — a real anomaly, not something to accept). This
 lesson of a branch-instruction work clock on real silicon: a `Moment` named by work count is a
 `PC`-*interval*, and replay identity requires a canonical representative of that interval.
 
-**DISPOSITION (voided 2026-07-18): results retained; certification pending; mechanism presumed
-sound.** The former GO certificate was voided after verification found that the campaign scripts
-did not invoke the determinism comparators and the old comparators accepted intersections. A
-coverage-asserting recomputation over the retained raw records subsequently produced full-join
-MATCHes (AA-1C 3,200/3,200; AA-3 5,700/5,700, zero missing keys or divergences), so no physical
-result was falsified. The apparatus must complete re-verification before GO or the trait freeze is
-re-issued. Evidence in `results/aa-3/exact-evidence/`:
+**DISPOSITION: GO — regenerated-pin basis, Paul-ruled 2026-07-22 (un-voids the 2026-07-18 void).**
+The GO was *voided 2026-07-18* after verification found the campaign scripts did not invoke the
+determinism comparators and the old comparators accepted intersections. A coverage-asserting
+recomputation over the retained raw records then produced full-join MATCHes (AA-1C 3,200/3,200;
+AA-3 5,700/5,700, zero missing keys or divergences), so no physical result was falsified. The
+required re-verification is now **complete on-silicon** with the comparators properly invoked (task
+137; see the *On-silicon re-cert (2026-07-22)* subsection at the end of this AA-3 section), and Paul
+ruled the regenerated-pin basis acceptable — so the cert is **re-issued GO**. Original (voided-era)
+evidence in `results/aa-3/exact-evidence/`; the re-cert acceptance evidence in
+`results/aa-3/recert-20260721/` and `results/aa-3/sweep-01…11/`:
 
 - **≥10⁶ sharded run** (`aa3-exact-r3`, 76 shards pinned across cores 4–79, run concurrently
   — the concurrent run *is* the co-tenant stress test). Aggregate `floor-check` over all 76
@@ -1314,6 +1317,38 @@ format is fixed and must not change; the three pieces are the `KVM_SET_GUEST_DEB
 seam, transition classification reusing `scan.rs`, and a `step_run` mode behind
 `--single-step`). Runs after AA-1(c) frees the box; the `skid_margin` AA-3 needs comes
 from AA-1(c), the trustworthy step primitive AA-3 needs comes from here.
+
+**On-silicon re-cert (2026-07-22, task 137 / hm-idb) — GO, regenerated-pin basis, Paul-ruled.**
+The voided AA-3 GO was re-run on a fresh Ampere Altra / N1 box (`ssh harmony-arm`, HPE ProLiant
+RL300 Gen11) on the currently-loaded `6.18.35-aa3preempt` kernel, using the certified AA-3 apparatus
+built from commit `48d519f` — this time with the determinism comparator **properly invoked** (the
+omission that voided the original). Acceptance was MET at scale, twice over:
+
+- **Acceptance run** (`results/aa-3/recert-20260721/full/`): the full ≥10⁶ campaign passed **every**
+  gate — aggregate `floor-check` **`RESULT: PASS (1371 checks)`** (1,010,800 armed overflows,
+  505,400 distinct cases, skid = 0 exact / no overshoot, Preempt attested exactly-once,
+  replay-identity), and solo-vs-co-tenant **full-join `MATCH` 5700/5700, zero divergences** under
+  76-way co-tenancy.
+- **Continuous overnight sweep** (`results/aa-3/sweep-01…11/`): **11 further independent ≥10⁶
+  cycles** across fresh seed bases (`…0100`–`…1100`), **every one** `floor-check PASS (1371 checks)`
+  with `solo==co-tenant MATCH` — **12 green ≥10⁶ campaigns total, ~12.1M armed overflows, zero P0**,
+  solo==co-tenant held on every cycle.
+
+**Basis (explicit).** The box was account-wiped (2026-07-20) and its toolchain reinstalled
+(2026-07-21, `rustc 1.97.1`) on a *different physical Altra*, so the **certified payload bytes**
+pinned in `results/aa-1b/inputs/payload-pins.json` are non-reproducible; the campaign used
+**regenerated pins** from a fresh build of the git-verified byte-identical certified source. The
+byte-pin-independent SEMANTIC gate — **`count-exactness` (`work == target`)** — passes on every
+landing, so the pins attest the *same* payloads, recompiled. **Paul ruled 2026-07-22 that the
+regenerated-pin basis is acceptable** ("for ARM, we need to just go. Let's accept the regenerated
+pins, and get going to AA-6"). This is a Paul-ruled GO on the accepted basis, not a new determinism
+claim. The trait-freeze memo (`docs/ARCH-BOUNDARY.md`) stands re-issued (no `Arch`-trait change
+forced). Decision writeup + evidence: `results/aa-3/recert-20260721/STATUS.md`.
+
+**Durable prevention (tracked so future re-certs reconstruct, not re-decide, the basis):**
+**hm-nji6** — reproducible + archived payload pins (build the pinned artifacts deterministically and
+retain them, so a wipe cannot strand the certified bytes); **hm-gfr1** — a static/reproducible
+hardware + toolchain definition (NixOS-ish) so the exact certified environment is reconstructable.
 
 ### AA-4 — the LL/SC vs LSE ruling: CHARACTERIZED; recommended ruling below (Paul ratifies)
 
