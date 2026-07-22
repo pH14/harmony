@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The fixture generator.
 //!
-//! Thirty-one checked-in run-sets: twenty-four the checker must reject (one per failure
-//! mode) and seven it must accept (a patched AA-3 landing run, an AA-1 counting run, an
+//! Thirty-three checked-in run-sets: twenty-five the checker must reject (one per failure
+//! mode) and eight it must accept (a patched AA-3 landing run, an AA-1 counting run, an
 //! AA-1(c) early/late skid-distribution run, an AA-1 LL/SC-hazard run, an AA-6 same-input
-//! gate, an AA-2 single-step transition matrix, and an AA-2 BOUNDED (`--max-steps`) matrix
+//! gate, an AA-6 CARVE gate (llsc/wfi diverge but are recorded, contract classes bind), an
+//! AA-2 single-step transition matrix, and an AA-2 BOUNDED (`--max-steps`) matrix
 //! whose step records' window counts are exempt from the oracle). They are **generated from
 //! the oracle model**, not hand
 //! written: the accept fixture's counts are the exact values
@@ -430,6 +431,66 @@ fn accept_aa6_gate() -> Fixture {
     fixture("accept-aa6-gate", &run_set, &records)
 }
 
+/// `AA6_REPS` repetitions of one payload's input that DIVERGE — same [`RepKey`], but a distinct
+/// `state_digest`/`landed_digest` per rep — modelling a class whose same-seed execution is NOT
+/// bit-identical (`llsc-atomics`'s §4 spurious-STXR hazard, or a broken contract class).
+fn aa6_diverging_reps_of(payload: Payload, first_id: u64) -> Vec<RunRecord> {
+    (0..AA6_REPS)
+        .map(|k| {
+            let mut r = generate_record(first_id + k, payload, ExitReason::Preempt);
+            let name = payload.name();
+            if let Some(o) = r.overflow.as_mut() {
+                o.landed_digest =
+                    format!("sha256:{}", synth_sha256(&format!("aa6-landed-{name}-{k}")));
+            }
+            r.state_digest = format!("sha256:{}", synth_sha256(&format!("aa6-final-{name}-{k}")));
+            r
+        })
+        .collect()
+}
+
+/// The AA-6 CARVE accept fixture: the full injected matrix where the two carved classes
+/// (`llsc-atomics` — AA-4's banned counter-example — and `wfi-idle` — AA-5's timer domain)
+/// DIVERGE across reps, while every deterministic contract class (incl. `lse-atomics` and the
+/// LinuxGuest) replays bit-identically. This must still PASS: the divergence is RECORDED as the
+/// AA-4/AA-5 threat datum, never a gate failure, and the contract classes bind.
+fn accept_aa6_carve() -> Fixture {
+    let mut records = Vec::new();
+    for &p in WINDOWED.iter().chain(std::iter::once(&Payload::LinuxGuest)) {
+        let first = records.len() as u64;
+        if matches!(p, Payload::LlscAtomics | Payload::WfiIdle) {
+            records.extend(aa6_diverging_reps_of(p, first));
+        } else {
+            records.extend(aa6_reps_of(p, first));
+        }
+    }
+    let run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
+    fixture("accept-aa6-carve", &run_set, &records)
+}
+
+/// The AA-6 CONTRACT-DIVERGENCE reject fixture: the full injected matrix where a DETERMINISTIC
+/// contract class — `lse-atomics`, the LSE-only form AA-4's ruling rests on — diverges across
+/// reps. This must FAIL replay-identity: the AA-6 carve is ONLY for the banned/timer classes, so
+/// a contract class that is not bit-identical is a real determinism failure, not a recorded
+/// datum. (`llsc-atomics`/`wfi-idle` also diverge here, and are correctly carved — proving the
+/// carve does not swallow a contract-class failure.)
+fn reject_aa6_contract_divergence() -> Fixture {
+    let mut records = Vec::new();
+    for &p in WINDOWED.iter().chain(std::iter::once(&Payload::LinuxGuest)) {
+        let first = records.len() as u64;
+        if matches!(
+            p,
+            Payload::LseAtomics | Payload::LlscAtomics | Payload::WfiIdle
+        ) {
+            records.extend(aa6_diverging_reps_of(p, first));
+        } else {
+            records.extend(aa6_reps_of(p, first));
+        }
+    }
+    let run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
+    fixture("reject-aa6-contract-divergence", &run_set, &records)
+}
+
 /// The AA-2 step matrix: one row per transition class, each `(transition, pc_before, pc_after,
 /// br_retired_delta)`. The values satisfy `check_debug_evidence`'s per-class rules — a
 /// sequential step lands at exactly `pc_before + 4` with delta 0, a taken branch moves
@@ -582,9 +643,11 @@ pub fn all_fixtures() -> Vec<Fixture> {
         accept_counting(),
         accept_aa1_skid(),
         accept_aa6_gate(),
+        accept_aa6_carve(),
         accept_aa2_steps(),
         accept_aa2_bounded(),
         reject_aa6_rep_floor(),
+        reject_aa6_contract_divergence(),
     ];
 
     // 1. reject-short-count — a valid but small run-set. The checker rejects it
@@ -945,13 +1008,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_thirty_one_fixtures_with_unique_names() {
+    fn there_are_thirty_three_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 31);
+        assert_eq!(fixtures.len(), 33);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 31, "fixture names must be unique");
+        assert_eq!(names.len(), 33, "fixture names must be unique");
     }
 
     #[test]

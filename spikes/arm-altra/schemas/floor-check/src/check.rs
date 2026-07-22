@@ -1534,9 +1534,12 @@ fn check_counts(weights: &Weights, records: &[RunRecord], stage: Stage, out: &mu
             continue;
         }
 
-        // AA-3 `wfi-idle` exemption (see the top of this fn): skip the oracle comparison, its
-        // self-consistency already checked above. Never at AA-1 (there it binds).
-        if stage == Stage::Aa3 && r.payload == Payload::WfiIdle {
+        // `wfi-idle` count exemption at AA-3 AND AA-6 (see the top of this fn): skip the oracle
+        // comparison, its self-consistency already checked above. Its WFI is resumed by a timer
+        // whose firing shifts under the exact landing's slow single-step — a real-time
+        // (non-work-derived) dependency in AA-5's paravirt-clock domain, the same reason it is
+        // carved from replay-identity. Never at AA-1 (there it free-runs and binds).
+        if matches!(stage, Stage::Aa3 | Stage::Aa6) && r.payload == Payload::WfiIdle {
             wfi_exempt += 1;
             continue;
         }
@@ -2433,19 +2436,26 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
             continue;
         }
         compared += 1;
-        // Two payloads carry a KNOWN non-mechanism non-determinism that AA-3's force-exit test
-        // must not fail on (both recorded here, never silently absorbed):
+        // Two payloads carry a KNOWN non-mechanism non-determinism that the force-exit and
+        // mini-gate tests must not fail on (both recorded here, never silently absorbed):
         //  - llsc-atomics — the §4 LL/SC hazard (a host IRQ between LDXR/STXR clears the monitor;
-        //    spontaneous on harmony-arm, AA1-F2). Present at AA-1 AND AA-3: both run the current
-        //    payload BEFORE AA-4's LSE-only contract closes it. AA-4's ladder is what makes it
-        //    bind; here it is AA-4's threat datum.
-        //  - wfi-idle at AA-3 — its WFI is resumed by a timer whose firing shifts under the exact
-        //    landing's slow single-step, a real-time (non-work-derived) dependency that is AA-5's
-        //    paravirt-clock domain (foreman ruling 2026-07-17; also count-exempt at AA-3).
-        // Every OTHER payload binds, and both bind once AA-4/AA-5 close their hazards.
-        let carved = (matches!(stage, Stage::Aa1 | Stage::Aa3)
+        //    spontaneous on harmony-arm, AA1-F2). Present at AA-1, AA-3 AND AA-6. At AA-6 this is
+        //    load-bearing DOCTRINE, not a workaround: AA-6(c) exercises "the LSE-only contract"
+        //    (docs/ARM-ALTRA.md §AA-6), and AA-4 already RULED LL/SC mechanically-excluded from the
+        //    guest — so `llsc-atomics` is the BANNED form kept as the counter-example (its ±2
+        //    retired-branch divergence is why the ban exists, AA-4(a)), NOT a member of the
+        //    deterministic contract. Requiring the banned form to replay would contradict the very
+        //    contract the gate exercises. `lse-atomics` — the CONTRACT form — is in the matrix and
+        //    MUST replay bit-identically. The divergence is recorded as AA-4's threat datum.
+        //  - wfi-idle at AA-3 AND AA-6 — its WFI is resumed by a timer whose firing shifts under
+        //    the exact landing's slow single-step, a real-time (non-work-derived) dependency that
+        //    is AA-5's paravirt-clock domain (the BARE payload does not use the paravirt page; that
+        //    closure is the owned Linux guest's). Foreman ruling 2026-07-17; also count-exempt.
+        // Every OTHER payload binds — straight-line, branch-dense, svc, exception-abort,
+        // clock-page, lse-atomics, and (AA-6) the LinuxGuest — and must replay bit-identically.
+        let carved = (matches!(stage, Stage::Aa1 | Stage::Aa3 | Stage::Aa6)
             && key.0 == Payload::LlscAtomics.name())
-            || (stage == Stage::Aa3 && key.0 == Payload::WfiIdle.name());
+            || (matches!(stage, Stage::Aa3 | Stage::Aa6) && key.0 == Payload::WfiIdle.name());
         if carved && digests.len() > 1 {
             llsc_hazard.push(format!(
                 "{} scale {} seed {}: {} reps over {} distinct digests",
