@@ -1,0 +1,9 @@
+AA-6 solo == co-tenant determinism cross-check (Paul P0 rule) — N1 aa3preempt 2026-07-21
+The gate bare matrix (aa6-bare-full, core 60) ran CONCURRENT with the 1000-boot Linux loop
+(core 61) = a co-tenant stress test. Solo reference (aa6-bare-solo-ref, idle box, same seed 1):
+  6 of 7 deterministic classes: solo state_digest == co-tenant state_digest (MATCH) --
+    branch-dense, clock-page, exception-abort, lse-atomics, straight-line, svc.
+  llsc-atomics: MISMATCH -- the intrinsic spurious-STXR §4 hazard (diverges even solo-vs-solo,
+    AA1-F2); CARVED, the AA-4 threat datum, NOT a P0 violation.
+VERDICT: co-tenancy perturbs no deterministic guest state (BR_RETIRED is per-core, freq-independent).
+No P0. Consistent with the gate replay-identity (llsc carved).
