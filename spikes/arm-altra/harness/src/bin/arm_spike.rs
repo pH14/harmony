@@ -190,6 +190,29 @@ struct LinuxBootOpts {
     /// Requires the patched capability; clean pages are scanned/approved transparently.
     #[arg(long)]
     stage2_exec_guard: bool,
+    /// AA-6: the unwired PPI INTID to inject at a seeded Moment during the boot (never the
+    /// clockevent's PPI 20). Requires `--inject-at-work`. Absent = the AA-5(c) negative control
+    /// (byte-identical boot). The injection sets a deterministic vGIC pending bit carried in the
+    /// register+vGIC digest.
+    #[arg(long = "inject-ppi")]
+    inject_ppi: Option<u32>,
+    /// AA-6: the seeded-random work Moment (the first exact refresh landing at or after this
+    /// asserts the injected PPI). Requires `--inject-ppi`.
+    #[arg(long = "inject-at-work")]
+    inject_at_work: Option<u64>,
+    /// AA-6: emit a `LinuxGuest` armed+delivered `RunRecord` (JSON) for the injected boot to this
+    /// path, for the mini-gate matrix. The state digest is the register+vGIC digest (the AA-5(c)
+    /// identity carrier).
+    #[arg(long = "aa6-record")]
+    aa6_record: Option<PathBuf>,
+    /// AA-6: the seed the emitted `LinuxGuest` record carries (its replay-group key, with
+    /// `--inject-at-work`). Keep it and `--inject-at-work` constant across the ≥1000 reps so they
+    /// form one same-seed group.
+    #[arg(long, default_value_t = 0x5EED_5EED_5EED_5EED)]
+    seed: u64,
+    /// AA-6: the experimental condition the emitted `LinuxGuest` record carries.
+    #[arg(long, default_value = "pinned-solo")]
+    condition: String,
 }
 
 /// `arm-spike aa4-guard-reject`'s planted runtime proof inputs.
@@ -975,6 +998,17 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
             skid_margin: opts.skid_margin,
             guest_clock_hz,
         },
+        // AA-6 injection into the boot: `Some` when the operator supplies `--inject-ppi` +
+        // `--inject-at-work` (the AA-6 LinuxGuest gate); `None` is the AA-5(c) negative control,
+        // byte-identical.
+        opts.inject_ppi
+            .zip(opts.inject_at_work)
+            .map(
+                |(intid, target_work)| arm_harness::linux_console::LinuxInjection {
+                    intid,
+                    target_work,
+                },
+            ),
     )
     .map_err(|e| format!("boot Linux: {e}"))?;
     let guard = machine.exec_guard_stats();
@@ -1009,6 +1043,61 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
     let core_regs_digest = machine
         .core_regs_digest()
         .map_err(|e| format!("digest final core register state: {e}"))?;
+
+    // AA-6 LinuxGuest record emission (the mini-gate matrix's 9th class). A `LinuxGuest` armed+
+    // delivered RunRecord whose overflow landed at the injected Moment and whose `state_digest`
+    // is the register+vGIC digest (the AA-5(c) identity carrier — full-RAM has the CRNG residual).
+    // The window fields are 0: `LinuxGuest` has no counting window (the oracle expects 0), so
+    // count-exactness reads 0 == 0 while the injected work Moment lives in the overflow target.
+    if let Some(record_path) = &opts.aa6_record {
+        let injected_at = result.injected_at_work.ok_or_else(|| {
+            "aa6-record was requested but no injection fired during the boot — supply \
+             --inject-ppi and a small enough --inject-at-work that it lands before the boot's \
+             success gate"
+                .to_string()
+        })?;
+        let landed_digest = result.injected_landed_digest.clone().ok_or_else(|| {
+            "aa6-record: injection fired but no landed digest was captured".to_string()
+        })?;
+        let record = arm_harness::evidence::RunRecord {
+            sample_id: 0,
+            payload: oracle_model::Payload::LinuxGuest,
+            scale: Scale::Smoke,
+            seed: opts.seed,
+            trips: oracle_model::trips(oracle_model::Payload::LinuxGuest, Scale::Smoke),
+            condition: opts.condition.clone(),
+            work_begin: 0,
+            work_end: 0,
+            measured_taken: 0,
+            reported_taken: 0,
+            exit_reason: arm_harness::evidence::ExitReason::Preempt,
+            overflow: Some(arm_harness::evidence::OverflowRecord {
+                armed: true,
+                deliveries: 1,
+                advisory_exits: 0,
+                target: injected_at,
+                landed: injected_at,
+                skid: 0,
+                landed_digest,
+            }),
+            step: None,
+            // The AA-5(c) identity carrier (register+vGIC): full-RAM state has the characterized
+            // kernel-CRNG entropy residual, so the LinuxGuest replay digest is register+vGIC.
+            state_digest: result.final_regs_digest.clone(),
+            params_mode: "managed".into(),
+            clockpage_mode: Some("work-derived".into()),
+            payload_status: 0,
+        };
+        let line = serde_json::to_string(&record)
+            .map_err(|e| format!("serialize the AA-6 LinuxGuest record: {e}"))?;
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(record_path)
+            .map_err(|e| format!("open {}: {e}", record_path.display()))?;
+        writeln!(f, "{line}").map_err(|e| format!("append {}: {e}", record_path.display()))?;
+    }
 
     // Diagnostic (env-gated, off by default): when the same-seed gate flags a RAM-only
     // divergence, `AA5_DUMP_RAM=<path>` writes the final guest RAM so two runs' dumps can

@@ -76,6 +76,24 @@ pub struct LinuxWorkClockConfig {
     pub guest_clock_hz: u64,
 }
 
+/// AA-6 injection into the Linux boot (hm-zx3z). `None` — passed to
+/// [`run_until_ready_work_clock`] — is the **negative control**: the boot is byte-identical to
+/// AA-5(c) (no extra `KVM_IRQ_LINE`, no digest perturbation). When `Some`, the first exact
+/// refresh landing at or after `target_work` asserts the (unwired) PPI `intid` — a deterministic
+/// vGIC pending bit carried in the register+vGIC digest — **without** touching the clockevent
+/// (PPI 20) assert/ACK accounting, so the boot's success gate is unaffected. Same seed ⇒ same
+/// `target_work` ⇒ same injection landing ⇒ bit-identical register+vGIC digest (the AA-5(c)
+/// identity carrier; full-RAM identity has the characterized CRNG residual).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LinuxInjection {
+    /// The seeded-random work Moment the injection is due at (the first exact refresh landing at
+    /// or after this fires it). Keep it small enough to land before the boot's success gate.
+    pub target_work: u64,
+    /// The unwired PPI INTID to assert — NOT the clockevent's PPI 20 (whose assert/ACK the boot
+    /// accounts), so the injection is a pure deterministic pending bit in the guest's vGIC.
+    pub intid: u32,
+}
+
 /// Linux boot result plus the non-vacuous work-clock refresh evidence observed in-process.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LinuxWorkClockResult {
@@ -95,6 +113,15 @@ pub struct LinuxWorkClockResult {
     pub clockevent_acknowledgements: u64,
     /// Largest exact-tick lateness of a clockevent assertion.
     pub clockevent_max_lateness_ticks: u64,
+    /// AA-6: the exact work Moment the injection fired at (the first refresh landing ≥ the seeded
+    /// `target_work`), or `None` if no injection was configured or it never became due.
+    pub injected_at_work: Option<u64>,
+    /// AA-6: the register+vGIC digest AT the injection Moment (the LinuxGuest landed digest — the
+    /// AA-5(c) identity carrier). `None` when nothing was injected.
+    pub injected_landed_digest: Option<String>,
+    /// AA-6: the register+vGIC digest at the success landing (the LinuxGuest sentinel digest AA-6
+    /// replay identity compares — register+vGIC, since full-RAM has the CRNG residual).
+    pub final_regs_digest: String,
 }
 
 /// VM-owned state for the deterministic, level-triggered Harmony clockevent.
@@ -691,6 +718,7 @@ pub fn run_until_ready_work_clock(
     counter: &mut impl WorkCounter,
     console_config: &LinuxConsoleConfig,
     clock_config: LinuxWorkClockConfig,
+    injection: Option<LinuxInjection>,
 ) -> Result<LinuxWorkClockResult, LinuxConsoleError> {
     validate_config(console_config)?;
     if clock_config.refresh_delta_work == 0 {
@@ -735,6 +763,9 @@ pub fn run_until_ready_work_clock(
     let mut advisory_exits = 0_u64;
     let mut clockevent_max_lateness_ticks = 0_u64;
     let mut ready_published = false;
+    // AA-6 injection state (all `None`/inert when `injection` is `None` — the OFF path).
+    let mut injected_at_work: Option<u64> = None;
+    let mut injected_landed_digest: Option<String> = None;
 
     let mut mmio = LinuxWorkMmio::new(console_config);
     let mut exits = 0_u64;
@@ -791,6 +822,20 @@ pub fn run_until_ready_work_clock(
                     }
                     ExactPreemptOutcome::Landed { run_exits, .. } => {
                         exits += run_exits;
+                        // AA-6 injection at a seeded Moment — NON-ADDITIVE. When `injection` is
+                        // `None` this executes nothing, so the boot is byte-identical to AA-5(c);
+                        // the digest, the exit count, and the clockevent accounting are unchanged.
+                        // When `Some`, the FIRST exact landing at or after the seeded `target_work`
+                        // asserts the unwired PPI (a deterministic vGIC pending bit) and stamps the
+                        // register+vGIC digest at that Moment — the LinuxGuest landed digest.
+                        if let Some(inj) = injection
+                            && injected_at_work.is_none()
+                            && target >= inj.target_work
+                        {
+                            vcpu.inject_ppi(inj.intid, true)?;
+                            injected_at_work = Some(target);
+                            injected_landed_digest = Some(vcpu.regs_digest()?);
+                        }
                         if let Some(registration_gpa) = vcpu.linux_pvclock_gpa() {
                             let write = if publications == 0 {
                                 PvclockWrite::Canonical
@@ -836,6 +881,12 @@ pub fn run_until_ready_work_clock(
                                 && clockevent.assertions == clockevent.acknowledgements
                                 && !clockevent.irq_asserted
                             {
+                                // The success landing is an exact Moment (the vCPU is stopped), so
+                                // the register+vGIC digest here is the LinuxGuest AA-6 sentinel
+                                // digest AA-6 replay identity compares. If an injection was
+                                // configured but never became due, that is a mis-scheduled gate,
+                                // not a pass — the caller checks `injected_at_work.is_some()`.
+                                let final_regs_digest = vcpu.regs_digest()?;
                                 return Ok(LinuxWorkClockResult {
                                     boot: LinuxConsoleResult {
                                         console: mmio.console.console,
@@ -848,6 +899,9 @@ pub fn run_until_ready_work_clock(
                                     clockevent_assertions: clockevent.assertions,
                                     clockevent_acknowledgements: clockevent.acknowledgements,
                                     clockevent_max_lateness_ticks,
+                                    injected_at_work,
+                                    injected_landed_digest,
+                                    final_regs_digest,
                                 });
                             }
 
@@ -1592,8 +1646,8 @@ mod tests {
                 resumes: 0,
                 rearms: 0,
             };
-            let error =
-                run_until_ready_work_clock(&mut vcpu, &mut counter, &console, clock).unwrap_err();
+            let error = run_until_ready_work_clock(&mut vcpu, &mut counter, &console, clock, None)
+                .unwrap_err();
             assert!(
                 matches!(
                     (&error, expected),
@@ -1621,6 +1675,7 @@ mod tests {
                     skid_margin: 1,
                     guest_clock_hz: 50_000_000,
                 },
+                None,
             ),
             Err(LinuxConsoleError::NonzeroInitialWork { work: 1 })
         ));
@@ -1643,6 +1698,7 @@ mod tests {
                     skid_margin: 1,
                     guest_clock_hz: 50_000_000,
                 },
+                None,
             ),
             Err(LinuxConsoleError::PreexistingPvclockRegistration { gpa: PVCLOCK_GPA })
         ));
@@ -1678,6 +1734,7 @@ mod tests {
                 skid_margin: 1,
                 guest_clock_hz: 50_000_000,
             },
+            None,
         )
         .unwrap();
 
@@ -1727,6 +1784,7 @@ mod tests {
                 skid_margin: 1,
                 guest_clock_hz: 50_000_000,
             },
+            None,
         )
         .unwrap();
 
@@ -1760,6 +1818,97 @@ mod tests {
     }
 
     #[test]
+    fn injection_off_path_leaves_the_linux_boot_byte_identical_the_negative_control() {
+        // The AA-6 determinism-core guardrail (`docs/ARM-ALTRA.md` §AA-6): the Linux-boot
+        // injection hook must be NON-ADDITIVE. Build the identical successful boot twice — once
+        // with `injection: None`, once with `Some` — and confirm OFF issues ZERO injections and
+        // its boot result is byte-identical to ON's (the injection only adds the injected-Moment
+        // fields; the console, exits, publications, refresh cadence are unchanged).
+        let build = || {
+            let mut exits = VecDeque::from([
+                pvclock_register(PVCLOCK_GPA),
+                clockevent_deadline(1),
+                VcpuExit::Preempt,
+                VcpuExit::Preempt,
+            ]);
+            for byte in b"READY" {
+                exits.push_back(mmio(PL011_DR_OFFSET, &[*byte], true));
+                exits.push_back(VcpuExit::Debug);
+            }
+            append_ack_rearm_and_landing(&mut exits, 100);
+            let vcpu = scripted_clock_vcpu(exits, 0xa5);
+            let counter = ScriptedCounter {
+                reads: VecDeque::from([0, 3, 18, 19, 20, 21, 22, 23, 41, 42, 43, 44, 45, 46]),
+                armed: Vec::new(),
+                resumes: 0,
+                rearms: 0,
+            };
+            (vcpu, counter)
+        };
+        let clock = LinuxWorkClockConfig {
+            refresh_delta_work: 23,
+            skid_margin: 1,
+            guest_clock_hz: 50_000_000,
+        };
+
+        // OFF — the negative control.
+        let (mut vcpu_off, mut counter_off) = build();
+        let off = run_until_ready_work_clock(
+            &mut vcpu_off,
+            &mut counter_off,
+            &config(b"READY"),
+            clock,
+            None,
+        )
+        .unwrap();
+        assert!(
+            vcpu_off.injections.is_empty(),
+            "the OFF path issues ZERO injections — got {:?}",
+            vcpu_off.injections
+        );
+        assert_eq!(off.injected_at_work, None);
+        assert_eq!(off.injected_landed_digest, None);
+
+        // ON — inject the unwired PPI 22 at the first landing (target 23 ≥ seeded Moment 1).
+        let (mut vcpu_on, mut counter_on) = build();
+        let on = run_until_ready_work_clock(
+            &mut vcpu_on,
+            &mut counter_on,
+            &config(b"READY"),
+            clock,
+            Some(LinuxInjection {
+                target_work: 1,
+                intid: 22,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            vcpu_on.injections,
+            [(22, true)],
+            "the ON path asserts the unwired PPI exactly once, at the first landing"
+        );
+        assert_eq!(on.injected_at_work, Some(23));
+
+        // The boot OUTCOME is byte-identical: same console, exits, publications, cadence. The
+        // injection is additive ONLY in the injected-Moment fields.
+        assert_eq!(
+            off.boot, on.boot,
+            "the injection must not perturb the boot transcript/exits"
+        );
+        assert_eq!(off.publications, on.publications);
+        assert_eq!(off.last_refresh_work, on.last_refresh_work);
+        assert_eq!(off.max_refresh_gap_work, on.max_refresh_gap_work);
+        assert_eq!(off.clockevent_assertions, on.clockevent_assertions);
+        assert_eq!(
+            off.clockevent_acknowledgements,
+            on.clockevent_acknowledgements
+        );
+        assert_eq!(off.final_regs_digest, on.final_regs_digest);
+        // The clockevent (PPI 20) accounting is untouched by the PPI-22 injection.
+        assert_eq!(vcpu_off.irq_levels, vcpu_on.irq_levels);
+    }
+
+    #[test]
     fn work_clock_latches_an_early_marker_but_waits_for_exact_refresh() {
         let mut exits = VecDeque::from([
             pvclock_register(PVCLOCK_GPA),
@@ -1787,6 +1936,7 @@ mod tests {
                 skid_margin: 1,
                 guest_clock_hz: 50_000_000,
             },
+            None,
         )
         .unwrap();
         assert_eq!(result.boot.console, b"R");
@@ -1835,6 +1985,7 @@ mod tests {
                 skid_margin: 1,
                 guest_clock_hz: 50_000_000,
             },
+            None,
         )
         .unwrap();
 
@@ -1897,6 +2048,7 @@ mod tests {
                 skid_margin: 1,
                 guest_clock_hz: 50_000_000,
             },
+            None,
         )
         .unwrap();
 
