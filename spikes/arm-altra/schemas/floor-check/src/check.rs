@@ -2922,7 +2922,15 @@ fn required_aa6_classes() -> Vec<Payload> {
     let mut classes: Vec<Payload> = ALL_PAYLOADS
         .iter()
         .copied()
-        .filter(|p| p.has_window())
+        // `wfi-idle` is EXCLUDED from the exact-landing injection matrix (measured on N1
+        // aa3preempt, 2026-07-21): its WFI stalls the `BR_RETIRED` work counter (no branch
+        // retires while the vCPU is halted), so the exact-landing single-step cannot progress
+        // through it — the overflow is LOST (4 of 6 probe samples had deliveries==0) and the
+        // real-time timer that resumes the WFI makes the landed state diverge same-seed. This is
+        // the same physics that excludes wfi-idle from AA-3's exact landing; its WFI-class
+        // determinism is AA-5's paravirt-clock domain and is exercised by the owned LinuxGuest
+        // (which routes time through the work-derived page), not by a bare exact-landing sample.
+        .filter(|p| p.has_window() && *p != Payload::WfiIdle)
         .collect();
     classes.push(Payload::LinuxGuest);
     classes
