@@ -2138,11 +2138,19 @@ impl StepVcpu for Machine {
     }
 
     fn inject_ppi(&mut self, intid: u32, asserted: bool) -> Result<(), RunError> {
-        // AA-6 injection at the exact landed `Moment`. Encode the target as vCPU 0's PPI
-        // `intid` and drive `KVM_IRQ_LINE`. The spike injects the harness's dedicated UNOWNED
-        // PPI 20 line — never the architected timer's KVM-owned PPI 27, whose injection KVM
-        // silently drops — so the assertion sets a deterministic pending bit in the in-kernel
-        // vGIC that is folded into the compared state digest (AA-6 replay identity).
+        // AA-6 injection at the exact landed `Moment`. Two writes, both to the guest's UNOWNED
+        // PPI `intid` (the spike uses PPI 20 / 22 — never the architected timer's KVM-owned PPI
+        // 27, whose injection KVM silently drops):
+        //
+        // 1. `KVM_IRQ_LINE` asserts the input LINE level (verified below for the owned line).
+        // 2. `GICR_ISPENDR0.intid` sets the PENDING latch via the absolute device-attribute
+        //    write (the same one `vgic_roundtrip` uses). This is load-bearing for a NON-VACUOUS
+        //    gate: `vgic_state` (the digest reader) hashes `GICR_ISPENDR0`, and KVM's level
+        //    injection changes the input-line bitmap but NOT the userspace pending latch (the
+        //    AA-5(c)-documented behaviour), so WITHOUT this the injected event would not reach
+        //    the compared digest and injected records would be indistinguishable from
+        //    un-injected ones. Setting the pending latch is a deterministic, digest-visible
+        //    injection of a pending interrupt at the exact Moment.
         let irq = KvmIrqLevel {
             irq: (KVM_ARM_IRQ_TYPE_PPI << KVM_ARM_IRQ_TYPE_SHIFT) | intid,
             level: u32::from(asserted),
@@ -2170,6 +2178,26 @@ impl StepVcpu for Machine {
                     ),
                 });
             }
+        }
+        // Set (or clear) the pending latch in GICR_ISPENDR0 so the injection is carried in the
+        // hashed vGIC state. SGI/PPI (INTID 0–31) live in the first redistributor private word.
+        if intid < 32 && self.vgic_fd >= 0 {
+            const GICR_ISPENDR0: u64 = 0x1_0000 + 0x0200;
+            let bit = 1u32 << intid;
+            let cur = vgic_device_get(
+                self.vgic_fd,
+                kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+                GICR_ISPENDR0,
+            )
+            .map_err(|e| seam("read GICR_ISPENDR0 for AA-6 injection", e))?;
+            let next = if asserted { cur | bit } else { cur & !bit };
+            vgic_device_set(
+                self.vgic_fd,
+                kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+                GICR_ISPENDR0,
+                next,
+            )
+            .map_err(|e| seam("set GICR_ISPENDR0 pending for AA-6 injection", e))?;
         }
         Ok(())
     }
