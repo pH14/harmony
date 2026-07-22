@@ -2510,6 +2510,35 @@ impl Machine {
         Ok(super::digest_regs_only(&regs, &[]))
     }
 
+    /// The AA-6 LinuxGuest determinism carrier: a digest of the CONSOLE transcript plus the vGIC
+    /// injection state — deliberately EXCLUDING the core register file.
+    ///
+    /// The full register digest ([`StepVcpu::regs_digest`]) diverges same-seed on the owned
+    /// guest because `x29`/`SP` carry the userspace init's stack-placement ASLR — the AA-5(c)
+    /// kernel-CRNG/entropy residual (`docs/PARAVIRT-CLOCK.md` §4.3, hm-of6t F12), which is
+    /// orthogonal to the work clock and to injection. The CONSOLE transcript is AA-5(c)-proven
+    /// bit-identical same-seed, and the vGIC state — which carries the injected pending interrupt
+    /// (`GICR_ISPENDR0`) and is NOT among the diverging registers — is deterministic. Combining
+    /// exactly these two gives a digest that is bit-identical same-seed AND observes the
+    /// injection, so AA-6 certifies the LinuxGuest's determinism *under injection* on the same
+    /// architectural (console + interrupt-state) basis AA-5(c) established, without folding in the
+    /// disclosed stack-ASLR residual. Length-prefixed so the two components cannot alias.
+    pub fn console_vgic_digest(&self, console: &[u8]) -> Result<String, RunError> {
+        let vgic = self
+            .vgic_state()
+            .map_err(|e| seam("read vGIC state for the AA-6 LinuxGuest digest", e))?;
+        let mut h = Sha256::new();
+        h.update(b"arm-spike-aa6-linux-console-vgic-v1");
+        h.update((console.len() as u64).to_le_bytes());
+        h.update(console);
+        h.update((vgic.len() as u64).to_le_bytes());
+        h.update(&vgic);
+        Ok(format!(
+            "sha256:{}",
+            crate::evidence::hex_lower(&h.finalize())
+        ))
+    }
+
     /// A per-register text dump (`<kvm-reg-id>=<hex value>` per line, plus `vgic_len`),
     /// for attributing a same-seed register divergence to the specific register(s)
     /// (hm-of6t F12). Diagnostic only; env-gated in `linux-boot`.

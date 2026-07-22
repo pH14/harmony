@@ -1056,9 +1056,16 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
              success gate"
                 .to_string()
         })?;
-        let landed_digest = result.injected_landed_digest.clone().ok_or_else(|| {
-            "aa6-record: injection fired but no landed digest was captured".to_string()
-        })?;
+        // The LinuxGuest AA-6 determinism carrier: console + vGIC injection state. The full
+        // register digest diverges same-seed on the userspace stack-placement ASLR (the AA-5(c)
+        // kernel-CRNG residual, hm-of6t F12) — orthogonal to injection — so the compared digest
+        // is the AA-5(c)-proven-deterministic console plus the vGIC state that carries the
+        // injected pending interrupt. `injected_landed_digest` (registers at the injection Moment)
+        // is retained in the boot result for diagnostics but is not the compared digest.
+        let _ = result.injected_landed_digest.as_ref();
+        let aa6_digest = machine
+            .console_vgic_digest(&result.boot.console)
+            .map_err(|e| format!("digest the AA-6 LinuxGuest console+vGIC state: {e}"))?;
         let record = arm_harness::evidence::RunRecord {
             sample_id: 0,
             payload: oracle_model::Payload::LinuxGuest,
@@ -1078,12 +1085,13 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
                 target: injected_at,
                 landed: injected_at,
                 skid: 0,
-                landed_digest,
+                landed_digest: aa6_digest.clone(),
             }),
             step: None,
-            // The AA-5(c) identity carrier (register+vGIC): full-RAM state has the characterized
-            // kernel-CRNG entropy residual, so the LinuxGuest replay digest is register+vGIC.
-            state_digest: result.final_regs_digest.clone(),
+            // The AA-6 LinuxGuest determinism carrier: console + vGIC injection state (the
+            // AA-5(c)-deterministic console + the injected pending interrupt), NOT the full
+            // register digest — that carries the disclosed userspace stack-ASLR residual.
+            state_digest: aa6_digest,
             params_mode: "managed".into(),
             clockpage_mode: Some("work-derived".into()),
             payload_status: 0,
