@@ -3577,6 +3577,42 @@ fn read_host_id_registers_on_vcpu(
 // or W^X code.
 // ============================================================================
 
+/// The tri-state outcome of installing a below-host freeze on one `ID_AA64*` register
+/// (the id-freeze tri-state, hm-l1wy F9). Distinguishing the three is the whole point:
+/// a register with **no reducible field** has nothing to freeze and does not gate
+/// enforcement, whereas a **reducible-but-clamped** register is a real enforcement
+/// failure — KVM rejected or silently clamped the below-host SET, so the guest would see
+/// the host feature. Collapsing the two (as an `Option<row>` that returns `None` for both)
+/// would let an un-freezable, guest-visible register masquerade as "nothing to enforce."
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdFreezeStatus {
+    /// A reducible feature field was installed strictly below host and the guest-visible
+    /// read-back holds it — the freeze is enforced.
+    FrozenBelowHost,
+    /// The register HAS at least one reducible feature field, but no below-host SET took
+    /// (every one rejected or silently clamped back to the host value) — an un-freezable
+    /// register that reaches guest state. This is the AA-6 stop condition when the field is
+    /// guest-visible; it must carry a recorded enforcement disposition (e.g. `HCR_EL2.TID3`
+    /// trap-emulation), never be silently accepted.
+    ReducibleButClamped,
+    /// The register carries no reducible feature field at all (every nibble is absent (`0`)
+    /// or not-implemented (`0xF`) — nothing the probe can lower), so there is nothing to
+    /// freeze and the register does not gate enforcement.
+    NoReducibleField,
+}
+
+impl IdFreezeStatus {
+    /// The stable kebab-case token for the enforcement truth-table JSON (and the checker).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IdFreezeStatus::FrozenBelowHost => "frozen-below-host",
+            IdFreezeStatus::ReducibleButClamped => "reducible-but-clamped",
+            IdFreezeStatus::NoReducibleField => "no-reducible-field",
+        }
+    }
+}
+
 /// One register's freeze result in the AA-6(a) enforcement truth-table.
 #[derive(Clone, Copy, Debug)]
 pub struct IdFreezeRow {
@@ -3584,14 +3620,18 @@ pub struct IdFreezeRow {
     pub name: &'static str,
     /// The host-presented value before the freeze.
     pub host_value: u64,
-    /// The below-host value installed via `KVM_SET_ONE_REG`.
+    /// The below-host value installed via `KVM_SET_ONE_REG` (equals `host_value` when nothing
+    /// was installed — the `ReducibleButClamped`/`NoReducibleField` cases).
     pub frozen_value: u64,
-    /// The nibble (feature field) that was reduced.
+    /// The nibble (feature field) that was reduced (`0` when nothing was installed).
     pub field_shift: u32,
     /// The value read back after the SET — what the guest's `mrs` observes (KVM
-    /// emulates EL1 ID reads from exactly this).
+    /// emulates EL1 ID reads from exactly this). Equals `host_value` when nothing was installed.
     pub read_back: u64,
-    /// The freeze held: `read_back == frozen_value` and the field is strictly below host.
+    /// The tri-state freeze outcome (F9). `enforced` is the `FrozenBelowHost` shorthand.
+    pub status: IdFreezeStatus,
+    /// The freeze held: `status == IdFreezeStatus::FrozenBelowHost` (`read_back == frozen_value`,
+    /// the field strictly below host).
     pub enforced: bool,
 }
 
@@ -3610,15 +3650,20 @@ pub struct IdFreezeProof {
 }
 
 /// Install a below-host reduced value in the first reducible feature field of `reg` and
-/// confirm the guest-visible read-back holds it. `None` when the register carries no
-/// reducible field (nothing to freeze).
+/// confirm the guest-visible read-back holds it, returning the F9 tri-state row.
+///
+/// Always returns a row (a complete enforcement truth-table entry per register): the field
+/// was frozen below host ([`IdFreezeStatus::FrozenBelowHost`]), the register has reducible
+/// fields but none took ([`IdFreezeStatus::ReducibleButClamped`] — the un-freezable-but-
+/// guest-visible case that must not be silently dropped), or it carries no reducible field
+/// ([`IdFreezeStatus::NoReducibleField`] — nothing to freeze).
 #[cfg(target_os = "linux")]
 fn install_id_freeze_field(
     vcpu_fd: libc::c_int,
     reg: u64,
     name: &'static str,
     skip_low_nibbles: u32,
-) -> Result<Option<IdFreezeRow>, SysError> {
+) -> Result<IdFreezeRow, SysError> {
     let mut host_value: u64 = 0;
     let get = KvmOneReg {
         id: reg,
@@ -3628,12 +3673,14 @@ fn install_id_freeze_field(
     if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get) } < 0 {
         return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64* freeze)"));
     }
+    let mut had_candidate = false;
     for nibble in skip_low_nibbles..16u32 {
         let shift = nibble * 4;
         let field = (host_value >> shift) & 0xF;
         if field == 0 || field == 0xF {
             continue;
         }
+        had_candidate = true;
         let frozen = (host_value & !(0xFu64 << shift)) | ((field - 1) << shift);
         let set = KvmOneReg {
             id: reg,
@@ -3658,18 +3705,35 @@ fn install_id_freeze_field(
             return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64* freeze readback)"));
         }
         if read_back == frozen {
-            return Ok(Some(IdFreezeRow {
+            return Ok(IdFreezeRow {
                 name,
                 host_value,
                 frozen_value: frozen,
                 field_shift: shift,
                 read_back,
+                status: IdFreezeStatus::FrozenBelowHost,
                 enforced: true,
-            }));
+            });
         }
         // Accepted but clamped back to host — not a real freeze; try the next field.
     }
-    Ok(None)
+    // No field could be frozen below host. `ReducibleButClamped` if there WERE reducible
+    // candidates (the freeze failed — a guest-visible feature the contract cannot lower on
+    // this kernel), `NoReducibleField` if the register carries no reducible feature at all.
+    let status = if had_candidate {
+        IdFreezeStatus::ReducibleButClamped
+    } else {
+        IdFreezeStatus::NoReducibleField
+    };
+    Ok(IdFreezeRow {
+        name,
+        host_value,
+        frozen_value: host_value,
+        field_shift: 0,
+        read_back: host_value,
+        status,
+        enforced: false,
+    })
 }
 
 /// Prove AA-6(a) ID-register freeze enforcement on a disposable VM+vCPU.
@@ -3758,11 +3822,13 @@ fn id_freeze_proof_on_vcpu(
         (kvm::REG_ID_AA64DFR0_EL1, 0, "ID_AA64DFR0_EL1"),
         (kvm::REG_ID_AA64DFR1_EL1, 0, "ID_AA64DFR1_EL1"),
     ];
+    // Every register gets a row (the complete enforcement truth-table): a `FrozenBelowHost`
+    // enforcement, a `ReducibleButClamped` un-freezable-but-guest-visible finding, or a
+    // `NoReducibleField` "nothing to freeze". Filtering to only the frozen ones (the old
+    // `Option` shape) hid exactly the F9 distinction the truth-table must record.
     let mut rows = Vec::new();
     for &(reg, skip, name) in relevant {
-        if let Some(row) = install_id_freeze_field(vcpu_fd, reg, name, skip)? {
-            rows.push(row);
-        }
+        rows.push(install_id_freeze_field(vcpu_fd, reg, name, skip)?);
     }
 
     // PMU denial: this featureless vCPU reads ID_AA64DFR0_EL1.PMUVer (bits [11:8]) as 0.
@@ -3793,29 +3859,293 @@ fn id_freeze_proof_on_vcpu(
 // Additive: it touches no `Machine`, run-loop, or W^X code.
 // ============================================================================
 
-/// The redistributor SGI-frame private-interrupt (SGI/PPI, IDs 0–31) registers whose values
-/// carry a guest's injection state — enable, pending, active, group, config, priority. Saved
-/// and restored through `KVM_DEV_ARM_VGIC_GRP_REDIST_REGS`, whose GET/SET give absolute
-/// migration-grade access (not the write-1-to-set MMIO semantics). Offsets are RD_base
-/// relative; the SGI frame is one 64 KiB frame past RD_base.
+/// One register in the AA-6(b) vGIC save/restore round-trip (F8). The round-trip extends
+/// beyond the 15 redistributor SGI/PPI registers to the **distributor** (SPI injection state),
+/// the **CPU interface** (ICC_PMR/IGRPEN and the active-priority/config registers that decide
+/// HOW a pending interrupt is delivered — the 64-bit `CPU_SYSREGS` group), and the
+/// **external input-line** level (`LEVEL_INFO`). Every group KVM exposes for migration is
+/// exercised, so the userspace-GIC-vs-in-kernel-vGIC decision input (§AA-6(b)) is measured over
+/// the whole injection-relevant surface, not just the private-IRQ frame.
+///
+/// `restorable == false` marks a read-only witness register (e.g. `GICD_TYPER`, `ICC_SRE_EL1`):
+/// it is saved and compared (it is identical on two fresh vGICs by construction, so it cannot
+/// hide a divergence) but not written on restore, since a `SET` of a read-only attribute would
+/// fail. `width64` selects the 64-bit `CPU_SYSREGS` accessor over the 32-bit DIST/REDIST/
+/// LEVEL_INFO one.
 #[cfg(target_os = "linux")]
-const VGIC_REDIST_PRIVATE_REGS: &[(u64, &str)] = &[
-    (0x1_0000 + 0x0080, "GICR_IGROUPR0"),
-    (0x1_0000 + 0x0D00, "GICR_IGRPMODR0"),
-    (0x1_0000 + 0x0100, "GICR_ISENABLER0"),
-    (0x1_0000 + 0x0200, "GICR_ISPENDR0"),
-    (0x1_0000 + 0x0300, "GICR_ISACTIVER0"),
-    (0x1_0000 + 0x0C00, "GICR_ICFGR0"),
-    (0x1_0000 + 0x0C04, "GICR_ICFGR1"),
-    (0x1_0000 + 0x0400, "GICR_IPRIORITYR0"),
-    (0x1_0000 + 0x0404, "GICR_IPRIORITYR1"),
-    (0x1_0000 + 0x0408, "GICR_IPRIORITYR2"),
-    (0x1_0000 + 0x040C, "GICR_IPRIORITYR3"),
-    (0x1_0000 + 0x0410, "GICR_IPRIORITYR4"),
-    (0x1_0000 + 0x0414, "GICR_IPRIORITYR5"),
-    (0x1_0000 + 0x0418, "GICR_IPRIORITYR6"),
-    (0x1_0000 + 0x041C, "GICR_IPRIORITYR7"),
+#[derive(Clone, Copy)]
+struct VgicReg {
+    group: u32,
+    attr: u64,
+    width64: bool,
+    restorable: bool,
+    label: &'static str,
+}
+
+/// The full round-trip register set across all four injection-state groups (F8). Offsets and
+/// encodings mirror [`Machine::vgic_state`] (the digest reader), so the round-trip covers exactly
+/// the state AA-6 replay identity compares. SGI frame = RD_base + 0x1_0000; distributor SPI
+/// words cover IDs 32+; CPU-interface attrs are `(op0,op1,crn,crm,op2)` encodings (mpidr 0);
+/// LEVEL_INFO block 0 is the input-line bitmap for IRQs 0–31.
+#[cfg(target_os = "linux")]
+const VGIC_ROUNDTRIP_REGS: &[VgicReg] = &[
+    // --- Redistributor private (SGI/PPI 0–31) — the original 15, all restorable. ---
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0080,
+        width64: false,
+        restorable: true,
+        label: "GICR_IGROUPR0",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0D00,
+        width64: false,
+        restorable: true,
+        label: "GICR_IGRPMODR0",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0100,
+        width64: false,
+        restorable: true,
+        label: "GICR_ISENABLER0",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0200,
+        width64: false,
+        restorable: true,
+        label: "GICR_ISPENDR0",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0300,
+        width64: false,
+        restorable: true,
+        label: "GICR_ISACTIVER0",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0C00,
+        width64: false,
+        restorable: true,
+        label: "GICR_ICFGR0",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0C04,
+        width64: false,
+        restorable: true,
+        label: "GICR_ICFGR1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0400,
+        width64: false,
+        restorable: true,
+        label: "GICR_IPRIORITYR0",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0404,
+        width64: false,
+        restorable: true,
+        label: "GICR_IPRIORITYR1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0408,
+        width64: false,
+        restorable: true,
+        label: "GICR_IPRIORITYR2",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x040C,
+        width64: false,
+        restorable: true,
+        label: "GICR_IPRIORITYR3",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0410,
+        width64: false,
+        restorable: true,
+        label: "GICR_IPRIORITYR4",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0414,
+        width64: false,
+        restorable: true,
+        label: "GICR_IPRIORITYR5",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x0418,
+        width64: false,
+        restorable: true,
+        label: "GICR_IPRIORITYR6",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_REDIST_REGS,
+        attr: 0x1_0000 + 0x041C,
+        width64: false,
+        restorable: true,
+        label: "GICR_IPRIORITYR7",
+    },
+    // --- Distributor (SPI 32+) injection state (F8). GICD_CTLR restorable; TYPER read-only. ---
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_DIST_REGS,
+        attr: 0x0000,
+        width64: false,
+        restorable: true,
+        label: "GICD_CTLR",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_DIST_REGS,
+        attr: 0x0004,
+        width64: false,
+        restorable: false,
+        label: "GICD_TYPER",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_DIST_REGS,
+        attr: 0x0084,
+        width64: false,
+        restorable: true,
+        label: "GICD_IGROUPR1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_DIST_REGS,
+        attr: 0x0104,
+        width64: false,
+        restorable: true,
+        label: "GICD_ISENABLER1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_DIST_REGS,
+        attr: 0x0204,
+        width64: false,
+        restorable: true,
+        label: "GICD_ISPENDR1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_DIST_REGS,
+        attr: 0x0304,
+        width64: false,
+        restorable: true,
+        label: "GICD_ISACTIVER1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_DIST_REGS,
+        attr: 0x0C08,
+        width64: false,
+        restorable: true,
+        label: "GICD_ICFGR2",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_DIST_REGS,
+        attr: 0x0420,
+        width64: false,
+        restorable: true,
+        label: "GICD_IPRIORITYR32",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_DIST_REGS,
+        attr: 0x6100,
+        width64: false,
+        restorable: true,
+        label: "GICD_IROUTER32_LO",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_DIST_REGS,
+        attr: 0x6104,
+        width64: false,
+        restorable: true,
+        label: "GICD_IROUTER32_HI",
+    },
+    // --- CPU interface (ICC_* system registers, 64-bit CPU_SYSREGS) (F8). SRE/CTLR read-only. ---
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+        attr: icc(3, 0, 4, 6, 0),
+        width64: true,
+        restorable: true,
+        label: "ICC_PMR_EL1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+        attr: icc(3, 0, 12, 8, 3),
+        width64: true,
+        restorable: true,
+        label: "ICC_BPR0_EL1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+        attr: icc(3, 0, 12, 8, 4),
+        width64: true,
+        restorable: true,
+        label: "ICC_AP0R0_EL1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+        attr: icc(3, 0, 12, 9, 0),
+        width64: true,
+        restorable: true,
+        label: "ICC_AP1R0_EL1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+        attr: icc(3, 0, 12, 12, 3),
+        width64: true,
+        restorable: true,
+        label: "ICC_BPR1_EL1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+        attr: icc(3, 0, 12, 12, 4),
+        width64: true,
+        restorable: false,
+        label: "ICC_CTLR_EL1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+        attr: icc(3, 0, 12, 12, 5),
+        width64: true,
+        restorable: false,
+        label: "ICC_SRE_EL1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+        attr: icc(3, 0, 12, 12, 6),
+        width64: true,
+        restorable: true,
+        label: "ICC_IGRPEN0_EL1",
+    },
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+        attr: icc(3, 0, 12, 12, 7),
+        width64: true,
+        restorable: true,
+        label: "ICC_IGRPEN1_EL1",
+    },
+    // --- External input-line level (LEVEL_INFO block 0, IRQs 0–31) (F8). ---
+    VgicReg {
+        group: kvm::DEV_ARM_VGIC_GRP_LEVEL_INFO,
+        attr: kvm::VGIC_LEVEL_INFO_LINE_LEVEL,
+        width64: false,
+        restorable: true,
+        label: "LEVEL_INFO0",
+    },
 ];
+
+/// The CPU-interface attribute encoding (`op0,op1,crn,crm,op2`, mpidr 0) — same as
+/// [`Machine::vgic_state`]'s local `icc`.
+#[cfg(target_os = "linux")]
+const fn icc(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64 {
+    (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2
+}
 
 /// The private-interrupt ID the round-trip injects (a PPI, matching AA-5's dedicated
 /// clockevent PPI 20). Its ISENABLER0/ISPENDR0 bit distinguishes an injected state from a
@@ -3823,19 +4153,43 @@ const VGIC_REDIST_PRIVATE_REGS: &[(u64, &str)] = &[
 #[cfg(target_os = "linux")]
 const VGIC_ROUNDTRIP_INTID: u32 = 20;
 
-/// The AA-6(b) vGIC save/restore round-trip result.
+/// The SPI the round-trip injects into the distributor (F8) — the first SPI, ID 32, whose
+/// enable/pending live in `GICD_*1` (word 1, bit 0).
+#[cfg(target_os = "linux")]
+const VGIC_ROUNDTRIP_SPI: u32 = 32;
+
+/// The stable group token for the truth-table JSON.
+#[cfg(target_os = "linux")]
+fn vgic_group_name(group: u32) -> &'static str {
+    match group {
+        kvm::DEV_ARM_VGIC_GRP_REDIST_REGS => "redist",
+        kvm::DEV_ARM_VGIC_GRP_DIST_REGS => "dist",
+        kvm::DEV_ARM_VGIC_GRP_CPU_SYSREGS => "cpu-interface",
+        kvm::DEV_ARM_VGIC_GRP_LEVEL_INFO => "external-line",
+        _ => "unknown",
+    }
+}
+
+/// The AA-6(b) vGIC save/restore round-trip result (F8: extended across all four groups).
 #[derive(Clone, Debug)]
 pub struct VgicRoundtrip {
     /// The injected private interrupt (enabled + pending on machine A).
     pub injected_intid: u32,
+    /// The injected SPI (distributor injection state, F8).
+    pub injected_spi: u32,
     /// Register labels saved, in order (parallel to the value vectors).
     pub labels: Vec<&'static str>,
-    /// Machine A's saved private-IRQ register values.
-    pub saved: Vec<u32>,
+    /// The vGIC group each register belongs to (parallel to `labels`): redist / dist /
+    /// cpu-interface / external-line.
+    pub groups: Vec<&'static str>,
+    /// Machine A's saved register values (u64 holds both the 32-bit and 64-bit groups).
+    pub saved: Vec<u64>,
     /// A fresh machine B's values BEFORE restore.
-    pub fresh_before: Vec<u32>,
+    pub fresh_before: Vec<u64>,
     /// Machine B's values AFTER restoring A's save.
-    pub fresh_after: Vec<u32>,
+    pub fresh_after: Vec<u64>,
+    /// The distinct vGIC groups the round-trip exercised (for the verdict summary).
+    pub groups_covered: Vec<&'static str>,
     /// Negative control: the fresh vGIC differed from the injected save before restore (so a
     /// match after restore is transfer, not coincidence).
     pub negative_control_differs: bool,
@@ -3891,6 +4245,78 @@ fn vgic_device_set(
         return Err(err("ioctl(KVM_SET_DEVICE_ATTR, vGIC redist reg)"));
     }
     Ok(())
+}
+
+/// Read a 64-bit vGIC device attribute (the `CPU_SYSREGS` group) via `KVM_GET_DEVICE_ATTR`.
+#[cfg(target_os = "linux")]
+fn vgic_device_get64(vgic_fd: libc::c_int, group: u32, attr: u64) -> Result<u64, SysError> {
+    let mut value: u64 = 0;
+    let da = KvmDeviceAttr {
+        flags: 0,
+        group,
+        attr,
+        addr: (&raw mut value) as u64,
+    };
+    // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u64 the GET accessor writes.
+    if unsafe {
+        libc::ioctl(
+            vgic_fd,
+            kvm::GET_DEVICE_ATTR as libc::c_ulong,
+            &raw const da,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_GET_DEVICE_ATTR, vGIC CPU sysreg)"));
+    }
+    Ok(value)
+}
+
+/// Write a 64-bit vGIC device attribute (the `CPU_SYSREGS` group) via `KVM_SET_DEVICE_ATTR`.
+#[cfg(target_os = "linux")]
+fn vgic_device_set64(
+    vgic_fd: libc::c_int,
+    group: u32,
+    attr: u64,
+    value: u64,
+) -> Result<(), SysError> {
+    let da = KvmDeviceAttr {
+        flags: 0,
+        group,
+        attr,
+        addr: (&raw const value) as u64,
+    };
+    // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u64 the SET accessor reads.
+    if unsafe {
+        libc::ioctl(
+            vgic_fd,
+            kvm::SET_DEVICE_ATTR as libc::c_ulong,
+            &raw const da,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_SET_DEVICE_ATTR, vGIC CPU sysreg)"));
+    }
+    Ok(())
+}
+
+/// Read one round-trip register (dispatching on width) into a `u64`.
+#[cfg(target_os = "linux")]
+fn vgic_read_reg(vgic_fd: libc::c_int, reg: &VgicReg) -> Result<u64, SysError> {
+    if reg.width64 {
+        vgic_device_get64(vgic_fd, reg.group, reg.attr)
+    } else {
+        vgic_device_get(vgic_fd, reg.group, reg.attr).map(u64::from)
+    }
+}
+
+/// Write one restorable round-trip register (dispatching on width).
+#[cfg(target_os = "linux")]
+fn vgic_write_reg(vgic_fd: libc::c_int, reg: &VgicReg, value: u64) -> Result<(), SysError> {
+    if reg.width64 {
+        vgic_device_set64(vgic_fd, reg.group, reg.attr, value)
+    } else {
+        vgic_device_set(vgic_fd, reg.group, reg.attr, value as u32)
+    }
 }
 
 /// Build a disposable VM + single vCPU + initialised in-kernel vGICv3, run `f(vgic_fd)`, and
@@ -4014,53 +4440,113 @@ fn with_vm_vcpu_vgic<T>(f: impl FnOnce(libc::c_int) -> Result<T, SysError>) -> R
     out
 }
 
-/// Read the private-IRQ register bank from a vGIC in fixed order.
+/// Read the full round-trip register set (all four groups) in fixed order.
 #[cfg(target_os = "linux")]
-fn vgic_save_private(vgic_fd: libc::c_int) -> Result<Vec<u32>, SysError> {
-    VGIC_REDIST_PRIVATE_REGS
+fn vgic_save_all(vgic_fd: libc::c_int) -> Result<Vec<u64>, SysError> {
+    VGIC_ROUNDTRIP_REGS
         .iter()
-        .map(|&(off, _)| vgic_device_get(vgic_fd, kvm::DEV_ARM_VGIC_GRP_REDIST_REGS, off))
+        .map(|reg| vgic_read_reg(vgic_fd, reg))
         .collect()
 }
 
-/// Prove AA-6(b) vGIC injection state round-trips through save/restore.
+/// Inject a distinctive state into every vGIC group so the save differs from a fresh vGIC's
+/// quiescent default across the whole surface (redist PPI, distributor SPI, CPU-interface
+/// priority/enable, and the external input line). Each write goes to a `restorable` register,
+/// so the round-trip's restore reconstructs exactly what the injection set.
+#[cfg(target_os = "linux")]
+fn vgic_inject_all(vgic_fd: libc::c_int) -> Result<(), SysError> {
+    let redist = kvm::DEV_ARM_VGIC_GRP_REDIST_REGS;
+    let dist = kvm::DEV_ARM_VGIC_GRP_DIST_REGS;
+    let cpu = kvm::DEV_ARM_VGIC_GRP_CPU_SYSREGS;
+    let level = kvm::DEV_ARM_VGIC_GRP_LEVEL_INFO;
+
+    // Redistributor: enable + pending on PPI 20 (bit 20 of the first private word).
+    let ppi_bit = 1u32 << VGIC_ROUNDTRIP_INTID;
+    let r_en = 0x1_0000 + 0x0100u64;
+    let r_pend = 0x1_0000 + 0x0200u64;
+    let cur = vgic_device_get(vgic_fd, redist, r_en)?;
+    vgic_device_set(vgic_fd, redist, r_en, cur | ppi_bit)?;
+    let cur = vgic_device_get(vgic_fd, redist, r_pend)?;
+    vgic_device_set(vgic_fd, redist, r_pend, cur | ppi_bit)?;
+
+    // Distributor: enable + pending on SPI 32 (bit 0 of word 1) + enable the distributor so the
+    // SPI state is live, not just latched.
+    let spi_bit = 1u32 << (VGIC_ROUNDTRIP_SPI % 32);
+    let d_en = 0x0104u64; // GICD_ISENABLER1
+    let d_pend = 0x0204u64; // GICD_ISPENDR1
+    let cur = vgic_device_get(vgic_fd, dist, d_en)?;
+    vgic_device_set(vgic_fd, dist, d_en, cur | spi_bit)?;
+    let cur = vgic_device_get(vgic_fd, dist, d_pend)?;
+    vgic_device_set(vgic_fd, dist, d_pend, cur | spi_bit)?;
+    let ctlr = vgic_device_get(vgic_fd, dist, 0x0000)?;
+    vgic_device_set(vgic_fd, dist, 0x0000, ctlr | 0x2)?; // EnableGrp1NS
+
+    // CPU interface: a distinctive priority mask + group-1 enable (64-bit CPU_SYSREGS).
+    vgic_device_set64(vgic_fd, cpu, icc(3, 0, 4, 6, 0), 0xF0)?; // ICC_PMR_EL1
+    vgic_device_set64(vgic_fd, cpu, icc(3, 0, 12, 12, 7), 0x1)?; // ICC_IGRPEN1_EL1
+
+    // External input line: assert the PPI 20 input-line level (block-0 bitmap, bit 20).
+    let cur = vgic_device_get(vgic_fd, level, kvm::VGIC_LEVEL_INFO_LINE_LEVEL)?;
+    vgic_device_set(
+        vgic_fd,
+        level,
+        kvm::VGIC_LEVEL_INFO_LINE_LEVEL,
+        cur | ppi_bit,
+    )?;
+    Ok(())
+}
+
+/// Prove AA-6(b) vGIC injection state round-trips through save/restore across ALL FOUR groups
+/// (F8): redistributor private IRQs, distributor SPIs, the CPU interface (ICC_PMR/IGRPEN and
+/// the active-priority/config registers), and the external input-line level.
 ///
-/// Machine A enables + sets pending on PPI [`VGIC_ROUNDTRIP_INTID`] and its private-IRQ bank
-/// is saved. A fresh machine B is read (negative control: it differs), the save is restored
-/// into it, and B is read again — a bit-identical match proves save→restore fidelity.
+/// Machine A injects a distinctive state into every group and its full register set is saved.
+/// A fresh machine B is read (negative control: it differs), A's save is restored into it, and
+/// B is read again — a bit-identical match across every group proves save→restore fidelity, the
+/// measured input to the userspace-GIC-vs-in-kernel-vGIC decision (§AA-6(b)).
 ///
 /// # Errors
 /// [`SysError`] on any VM/vCPU/vGIC construction or device-attribute access failure.
 #[cfg(target_os = "linux")]
 pub fn vgic_roundtrip_proof() -> Result<VgicRoundtrip, SysError> {
-    let intid = VGIC_ROUNDTRIP_INTID;
-    let bit = 1u32 << intid; // PPI 20 is in the first 32-bit private-IRQ word.
-    let g = kvm::DEV_ARM_VGIC_GRP_REDIST_REGS;
-    let en = 0x1_0000 + 0x0100u64; // GICR_ISENABLER0
-    let pend = 0x1_0000 + 0x0200u64; // GICR_ISPENDR0
-
-    // Machine A: inject (enable + pending on the PPI), then save the private-IRQ bank.
+    // Machine A: inject across all groups, then save the full register set.
     let saved = with_vm_vcpu_vgic(|vgic_fd| {
-        let cur_en = vgic_device_get(vgic_fd, g, en)?;
-        vgic_device_set(vgic_fd, g, en, cur_en | bit)?;
-        let cur_pend = vgic_device_get(vgic_fd, g, pend)?;
-        vgic_device_set(vgic_fd, g, pend, cur_pend | bit)?;
-        vgic_save_private(vgic_fd)
+        vgic_inject_all(vgic_fd)?;
+        vgic_save_all(vgic_fd)
     })?;
 
-    // Machine B: read fresh, restore A's save, read again.
+    // Machine B: read fresh (negative control), restore A's save (restorable regs only), read
+    // again. Read-only witnesses (TYPER, SRE, CTLR) are identical on two fresh vGICs, so leaving
+    // them un-restored cannot mask a divergence in an injected register.
     let (fresh_before, fresh_after) = with_vm_vcpu_vgic(|vgic_fd| {
-        let before = vgic_save_private(vgic_fd)?;
-        for (&(off, _), &value) in VGIC_REDIST_PRIVATE_REGS.iter().zip(saved.iter()) {
-            vgic_device_set(vgic_fd, g, off, value)?;
+        let before = vgic_save_all(vgic_fd)?;
+        for (reg, &value) in VGIC_ROUNDTRIP_REGS.iter().zip(saved.iter()) {
+            if reg.restorable {
+                vgic_write_reg(vgic_fd, reg, value)?;
+            }
         }
-        let after = vgic_save_private(vgic_fd)?;
+        let after = vgic_save_all(vgic_fd)?;
         Ok((before, after))
     })?;
 
+    // The distinct groups exercised, in a stable order (for the verdict summary).
+    let mut groups_covered: Vec<&'static str> = Vec::new();
+    for reg in VGIC_ROUNDTRIP_REGS {
+        let name = vgic_group_name(reg.group);
+        if !groups_covered.contains(&name) {
+            groups_covered.push(name);
+        }
+    }
+
     Ok(VgicRoundtrip {
-        injected_intid: intid,
-        labels: VGIC_REDIST_PRIVATE_REGS.iter().map(|&(_, l)| l).collect(),
+        injected_intid: VGIC_ROUNDTRIP_INTID,
+        injected_spi: VGIC_ROUNDTRIP_SPI,
+        labels: VGIC_ROUNDTRIP_REGS.iter().map(|r| r.label).collect(),
+        groups: VGIC_ROUNDTRIP_REGS
+            .iter()
+            .map(|r| vgic_group_name(r.group))
+            .collect(),
+        groups_covered,
         negative_control_differs: fresh_before != saved,
         roundtrip_identical: fresh_after == saved,
         saved,

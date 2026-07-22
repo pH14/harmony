@@ -1785,15 +1785,35 @@ fn id_freeze(out: PathBuf) -> Result<(), String> {
 
     let proof = sys::id_freeze_proof().map_err(|e| format!("run the ID-freeze proof: {e}"))?;
     if proof.rows.is_empty() {
-        return Err("no ID_AA64* register carried a reducible feature to freeze".to_string());
+        return Err("no ID_AA64* register was probed".to_string());
     }
-    let all_enforced = proof.rows.iter().all(|r| {
+    // F9 tri-state: the freeze is fully enforced iff NO register is `reducible-but-clamped`
+    // (an un-freezable, guest-visible feature). `no-reducible-field` registers do not gate
+    // (nothing to freeze); `frozen-below-host` are the installed freezes.
+    let clamped: Vec<&str> = proof
+        .rows
+        .iter()
+        .filter(|r| r.status == sys::IdFreezeStatus::ReducibleButClamped)
+        .map(|r| r.name)
+        .collect();
+    // A defensive re-check of the enforced rows: below host, read-back holds.
+    let frozen_ok = proof.rows.iter().all(|r| {
+        if r.status != sys::IdFreezeStatus::FrozenBelowHost {
+            return true;
+        }
         let f = (r.frozen_value >> r.field_shift) & 0xF;
         let h = (r.host_value >> r.field_shift) & 0xF;
         r.enforced && r.read_back == r.frozen_value && f < h
     });
+    let frozen_count = proof
+        .rows
+        .iter()
+        .filter(|r| r.status == sys::IdFreezeStatus::FrozenBelowHost)
+        .count();
+    let all_enforced = clamped.is_empty() && frozen_ok && frozen_count > 0;
 
-    // Machine-readable enforcement truth-table (stable JSON, sorted-order fields).
+    // Machine-readable enforcement truth-table (stable JSON, sorted-order fields). Every row
+    // carries its F9 tri-state `status`, so an un-freezable register is recorded, not hidden.
     let mut json = String::new();
     json.push_str("{\n  \"check\": \"aa6-id-register-freeze\",\n");
     let _ = writeln!(
@@ -1802,15 +1822,25 @@ fn id_freeze(out: PathBuf) -> Result<(), String> {
         proof.pmu_denied_without_feature
     );
     let _ = writeln!(json, "  \"host_pmuver\": {},", proof.host_pmuver);
-    let _ = writeln!(json, "  \"all_enforced\": {},", all_enforced);
+    let _ = writeln!(json, "  \"frozen_below_host\": {frozen_count},");
+    let _ = writeln!(json, "  \"reducible_but_clamped\": {},", clamped.len());
+    let _ = writeln!(json, "  \"all_enforced\": {all_enforced},");
     json.push_str("  \"rows\": [\n");
     for (i, r) in proof.rows.iter().enumerate() {
         let comma = if i + 1 < proof.rows.len() { "," } else { "" };
         let _ = writeln!(
             json,
             "    {{\"name\": \"{}\", \"field_shift\": {}, \"host_value\": \"{:#018x}\", \
-             \"frozen_value\": \"{:#018x}\", \"read_back\": \"{:#018x}\", \"enforced\": {}}}{}",
-            r.name, r.field_shift, r.host_value, r.frozen_value, r.read_back, r.enforced, comma
+             \"frozen_value\": \"{:#018x}\", \"read_back\": \"{:#018x}\", \"status\": \"{}\", \
+             \"enforced\": {}}}{}",
+            r.name,
+            r.field_shift,
+            r.host_value,
+            r.frozen_value,
+            r.read_back,
+            r.status.as_str(),
+            r.enforced,
+            comma
         );
     }
     json.push_str("  ]\n}\n");
@@ -1818,15 +1848,25 @@ fn id_freeze(out: PathBuf) -> Result<(), String> {
 
     for r in &proof.rows {
         println!(
-            "ID_FREEZE {} field_shift={} host={:#018x} frozen={:#018x} read_back={:#018x} enforced={}",
-            r.name, r.field_shift, r.host_value, r.frozen_value, r.read_back, r.enforced
+            "ID_FREEZE {} field_shift={} host={:#018x} frozen={:#018x} read_back={:#018x} \
+             status={} enforced={}",
+            r.name,
+            r.field_shift,
+            r.host_value,
+            r.frozen_value,
+            r.read_back,
+            r.status.as_str(),
+            r.enforced
         );
     }
     println!(
-        "ID_FREEZE pmu_denied_without_feature={} host_pmuver={} rows={} all_enforced={} out={}",
+        "ID_FREEZE pmu_denied_without_feature={} host_pmuver={} rows={} frozen_below_host={} \
+         reducible_but_clamped={} all_enforced={} out={}",
         proof.pmu_denied_without_feature,
         proof.host_pmuver,
         proof.rows.len(),
+        frozen_count,
+        clamped.len(),
         all_enforced,
         out.display()
     );
@@ -1834,9 +1874,11 @@ fn id_freeze(out: PathBuf) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "ID-register freeze NOT fully enforced: all_enforced={} pmu_denied={} — the guest \
-             would see an unfrozen field or its own PMU",
-            all_enforced, proof.pmu_denied_without_feature
+            "ID-register freeze NOT fully enforced: all_enforced={all_enforced} \
+             reducible_but_clamped={:?} pmu_denied={} — a guest-visible feature could not be \
+             frozen (record its enforcement disposition, e.g. HCR_EL2.TID3 trap-emulation) or \
+             the PMU is not denied",
+            clamped, proof.pmu_denied_without_feature
         ))
     }
 }
@@ -1857,6 +1899,16 @@ fn vgic_roundtrip(out: PathBuf) -> Result<(), String> {
     let mut json = String::new();
     json.push_str("{\n  \"check\": \"aa6-vgic-save-restore-roundtrip\",\n");
     let _ = writeln!(json, "  \"injected_intid\": {},", rt.injected_intid);
+    let _ = writeln!(json, "  \"injected_spi\": {},", rt.injected_spi);
+    let _ = writeln!(
+        json,
+        "  \"groups_covered\": [{}],",
+        rt.groups_covered
+            .iter()
+            .map(|g| format!("\"{g}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let _ = writeln!(
         json,
         "  \"negative_control_differs\": {},",
@@ -1872,18 +1924,20 @@ fn vgic_roundtrip(out: PathBuf) -> Result<(), String> {
         let comma = if i + 1 < rt.labels.len() { "," } else { "" };
         let _ = writeln!(
             json,
-            "    {{\"reg\": \"{}\", \"saved\": \"{:#010x}\", \"fresh_before\": \"{:#010x}\", \
-             \"fresh_after\": \"{:#010x}\"}}{}",
-            label, rt.saved[i], rt.fresh_before[i], rt.fresh_after[i], comma
+            "    {{\"reg\": \"{}\", \"group\": \"{}\", \"saved\": \"{:#018x}\", \
+             \"fresh_before\": \"{:#018x}\", \"fresh_after\": \"{:#018x}\"}}{}",
+            label, rt.groups[i], rt.saved[i], rt.fresh_before[i], rt.fresh_after[i], comma
         );
     }
     json.push_str("  ]\n}\n");
     std::fs::write(&out, &json).map_err(|e| format!("write {}: {e}", out.display()))?;
 
     println!(
-        "VGIC_ROUNDTRIP injected_intid={} negative_control_differs={} roundtrip_identical={} \
-         registers={} out={}",
+        "VGIC_ROUNDTRIP injected_intid={} injected_spi={} groups_covered={:?} \
+         negative_control_differs={} roundtrip_identical={} registers={} out={}",
         rt.injected_intid,
+        rt.injected_spi,
+        rt.groups_covered,
         rt.negative_control_differs,
         rt.roundtrip_identical,
         rt.labels.len(),
