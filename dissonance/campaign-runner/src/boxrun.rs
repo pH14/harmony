@@ -518,6 +518,11 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         // branch on average.
         candidate_cap: 2,
         replay_budget: args.game.max_branches,
+        // The task-136 blocking sub-gate: on the box every admitted entry
+        // must re-materialize bit-identically from its ledger env alone, so
+        // a retry-forward seal's extra live legs are proven state-neutral.
+        // Part of the outcome, so `--repeat` also compares the reseal hashes.
+        verify_reseal: true,
     };
     let repeat = args.repeat.max(1);
     let mut first: Option<campaign_runner::gamecampaign::GameCampaignOutcome> = None;
@@ -656,6 +661,22 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
          COMPLETED frames.",
         outcome.work.branches, outcome.work.min_vtime_span, outcome.work.min_completed_frames
     );
+    // Task-136 reseal-identity evidence (hm-esfd): each admitted entry
+    // re-materialized bit-identically from its ledger env alone, with its
+    // recorded reseed markers all at-or-below the seal (asserted in the
+    // campaign; a violation failed the run before this line).
+    println!(
+        "[campaign-runner] game box reseal evidence: {} entries re-materialized bit-identically; \
+         {} NotQuiescent seal refusals hit by the task-136 run-forward (dropped candidates included).",
+        outcome.reseals.len(),
+        outcome.seal_retries
+    );
+    for r in &outcome.reseals {
+        println!(
+            "[campaign-runner]   reseal entry={} sealed_at={} markers={:?} state_hash={}",
+            r.entry, r.sealed_at, r.markers, r.state_hash
+        );
+    }
     if let Some(banner) = verdict.banner() {
         println!("{banner}");
     }

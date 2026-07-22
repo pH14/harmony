@@ -58,6 +58,23 @@ pub(crate) struct ScriptedMachine {
     /// snap id -> (moment, included count, emitted prefix).
     snaps: BTreeMap<u64, (u64, u64, Vec<Emit>)>,
     next_snap: u64,
+    /// Half-open clock windows `[lo, hi)` at which a `snapshot` is refused
+    /// [`MachineError::NotQuiescent`] — the toy's mid-exit model (a
+    /// reseed-shifted RNG draw in flight at the boundary, task 136).
+    non_quiescent: Vec<(u64, u64)>,
+    /// The env's staged-schedule `Moment`s, **relative to the branch origin**
+    /// (the toy analog of a marker-carrying reproducer): re-anchored at each
+    /// `branch` into [`staged_abs`](Self::staged_abs), exactly as the
+    /// production adapter re-anchors blob-frame keys.
+    markers: Vec<u64>,
+    /// The absolute staged `Moment`s of the current branch. A `snapshot` while
+    /// any lies ahead of the clock is refused `NotQuiescent` (the production
+    /// `SnapshotWhileArmed`, collapsed at the adapter); a Moment at-or-behind
+    /// the clock has drained (the server drains exactly at each `Moment`).
+    staged_abs: Vec<u64>,
+    /// Every `run` deadline observed, in order — lets a test pin the
+    /// marker-clamped leg schedule (and the zero-probe re-materialization).
+    pub(crate) deadlines_seen: Vec<Option<u64>>,
 }
 
 impl ScriptedMachine {
@@ -76,7 +93,26 @@ impl ScriptedMachine {
             },
             snaps: BTreeMap::new(),
             next_snap: 1,
+            non_quiescent: Vec::new(),
+            markers: Vec::new(),
+            staged_abs: Vec::new(),
+            deadlines_seen: Vec::new(),
         }
+    }
+
+    /// Refuse snapshots [`MachineError::NotQuiescent`] while the clock sits in
+    /// any half-open `[lo, hi)` window (the task-136 mid-exit model).
+    pub(crate) fn with_non_quiescent(mut self, windows: Vec<(u64, u64)>) -> Self {
+        self.non_quiescent = windows;
+        self
+    }
+
+    /// Stage `markers` (relative to the branch origin) on every `branch` —
+    /// the toy analog of a marker-carrying env. Pair with a codec whose
+    /// `staged_moments` reports the same keys.
+    pub(crate) fn with_markers(mut self, markers: Vec<u64>) -> Self {
+        self.markers = markers;
+        self
     }
 
     fn catalog(&self) -> Vec<u8> {
@@ -145,6 +181,9 @@ impl Machine for ScriptedMachine {
         }));
         self.terminal = moment + prog.terminal;
         self.recorded = env.clone();
+        // Re-anchor the env's staged Moments at the branch origin (the
+        // production adapter's wire conversion), staging them for this branch.
+        self.staged_abs = self.markers.iter().map(|&m| moment + m).collect();
         Ok(())
     }
 
@@ -160,6 +199,10 @@ impl Machine for ScriptedMachine {
         self.clock = moment;
         self.cursor = included as usize;
         self.emits = prefix;
+        // A seal only ever exists fully drained (snapshot refuses while any
+        // staged Moment lies ahead), so the verbatim restore has nothing
+        // staged.
+        self.staged_abs.clear();
         Ok(())
     }
 
@@ -168,6 +211,7 @@ impl Machine for ScriptedMachine {
         until: &StopConditions,
         _resolve: Option<&Answer>,
     ) -> Result<StopReason, MachineError> {
+        self.deadlines_seen.push(until.deadline.map(|d| d.0));
         match until.deadline {
             // Materialize replay: advance to the sealable point at the deadline.
             Some(d) => {
@@ -179,6 +223,12 @@ impl Machine for ScriptedMachine {
                     self.clock = d.0;
                     self.cursor += 1;
                     Ok(StopReason::SnapshotPoint { vtime: Moment(d.0) })
+                } else if d.0 < self.terminal {
+                    // A mid-run deadline lands exactly (the server's armed
+                    // `run_until` stops between instructions at the deadline
+                    // — the exact-arrival model the marker clamp rides on).
+                    self.clock = d.0;
+                    Ok(StopReason::Deadline { vtime: Moment(d.0) })
                 } else {
                     self.clock = self.terminal.max(d.0);
                     Ok(StopReason::Quiescent {
@@ -205,6 +255,18 @@ impl Machine for ScriptedMachine {
     }
 
     fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
+        // The production seal contract, collapsed as the adapter does: a
+        // staged Moment still ahead (`SnapshotWhileArmed`) or a scripted
+        // mid-exit window (`NotQuiescent`) both refuse the seal with
+        // [`MachineError::NotQuiescent`].
+        if self.staged_abs.iter().any(|&m| m > self.clock)
+            || self
+                .non_quiescent
+                .iter()
+                .any(|&(lo, hi)| self.clock >= lo && self.clock < hi)
+        {
+            return Err(MachineError::NotQuiescent);
+        }
         let id = self.next_snap;
         self.next_snap += 1;
         let included = self.included_at(self.clock);
@@ -293,6 +355,38 @@ impl EnvCodec for ToyCodec {
     }
 }
 
+/// The toy codec of a marker-carrying reproducer (task 136): every env
+/// declares the same staged-schedule keys, mirroring a
+/// [`ScriptedMachine::with_markers`] machine built with the identical list —
+/// exactly the production invariant (the adapter's codec and server stage from
+/// the same blob).
+pub(crate) struct MarkerCodec {
+    pub(crate) markers: Vec<u64>,
+}
+
+impl EnvCodec for MarkerCodec {
+    fn seeded(&self, seed: u64) -> Reproducer {
+        ToyCodec.seeded(seed)
+    }
+    fn mutate(
+        &self,
+        base: &Reproducer,
+        salt: u64,
+    ) -> Result<Reproducer, crate::error::EnvCodecError> {
+        ToyCodec.mutate(base, salt)
+    }
+    fn compose(
+        &self,
+        base: &Reproducer,
+        branch_local: &Reproducer,
+    ) -> Result<Reproducer, crate::error::EnvCodecError> {
+        ToyCodec.compose(base, branch_local)
+    }
+    fn staged_moments(&self, _env: &Reproducer) -> Result<Vec<u64>, crate::error::EnvCodecError> {
+        Ok(self.markers.clone())
+    }
+}
+
 // ---- builders ----
 
 pub(crate) fn config(cap: usize, budget: u64) -> CampaignConfig {
@@ -352,9 +446,22 @@ pub(crate) fn campaign_over(
     led: EvidenceLedger,
 ) -> DifferentialCampaign<ScriptedMachine> {
     let machine = ScriptedMachine::new(vec![(1, UpdateOp::Set)], program);
+    campaign_with(machine, Box::new(ToyCodec), cfg, seed, led)
+}
+
+/// Like [`campaign_over`], but over an explicit machine and codec — the
+/// task-136 SealAnchor regressions pair a non-quiescent / marker-staging
+/// [`ScriptedMachine`] with its matching codec.
+pub(crate) fn campaign_with(
+    machine: ScriptedMachine,
+    codec: Box<dyn EnvCodec>,
+    cfg: CampaignConfig,
+    seed: u64,
+    led: EvidenceLedger,
+) -> DifferentialCampaign<ScriptedMachine> {
     DifferentialCampaign::new(
         machine,
-        Box::new(ToyCodec),
+        codec,
         Box::new(DeclineTactic::new()),
         Box::new(GenesisSelector::new()),
         Box::new(DefaultObservationCells::new()),

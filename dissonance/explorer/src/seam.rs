@@ -160,4 +160,25 @@ pub trait EnvCodec {
         base: &Reproducer,
         branch_local: &Reproducer,
     ) -> Result<Reproducer, EnvCodecError>;
+
+    /// The **staged-schedule `Moment`s** of `env`, keyed **relative to the
+    /// blob's origin**: every strictly-positive reseed-marker key plus every
+    /// strictly-positive host-plane fault-override key — exactly the Moments a
+    /// [`Machine::branch`] with this env stages for the server's exact-arrival
+    /// drain (the origin marker itself is the branch reseed, applied at
+    /// restore, never staged ahead). Ascending and deduplicated.
+    ///
+    /// The candidate seal's marker-clamped run-forward (task 136 / hm-esfd)
+    /// reads these so each replay deadline lands exactly **on** the next
+    /// staged Moment — the server's own exact-arrival machinery then stops
+    /// between instructions there and drains it — instead of free-running
+    /// past it into an unsatisfiable (poisoned) schedule.
+    ///
+    /// **Default: empty** — a codec whose envs carry no staged schedule (the
+    /// toy codec) has nothing to clamp to, and the run-forward degrades to
+    /// plain fixed-step retry legs.
+    fn staged_moments(&self, env: &Reproducer) -> Result<Vec<u64>, EnvCodecError> {
+        let _ = env;
+        Ok(Vec::new())
+    }
 }

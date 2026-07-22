@@ -449,6 +449,30 @@ impl crate::EnvCodec for SpecEnvCodec {
         }
         .encode())
     }
+
+    fn staged_moments(&self, env: &Reproducer) -> Result<Vec<u64>, EnvCodecError> {
+        let d = Self::require(env)?;
+        // The blob-frame keys the server stages when this env is branched
+        // (mirroring `rebase_to_wire` + the server's staging contract): every
+        // reseed marker and every host-plane fault override strictly beyond
+        // the origin. The rel-0 reseed is the branch reseed itself (applied
+        // at restore, never staged ahead) and guest-plane overrides answer
+        // decisions (never staged in the fault schedule), so both are
+        // excluded. `BTreeSet` merges the two tables ascending + deduped.
+        let mut staged: std::collections::BTreeSet<u64> = d
+            .spec
+            .reseeds()
+            .keys()
+            .copied()
+            .filter(|&m| m > 0)
+            .collect();
+        for (&m, action) in d.spec.overrides() {
+            if m > 0 && matches!(action, Action::Host(_)) {
+                staged.insert(m);
+            }
+        }
+        Ok(staged.into_iter().collect())
+    }
 }
 
 /// Map the underlying `environment` codec's [`EnvError`](environment::EnvError)
@@ -2223,6 +2247,57 @@ mod tests {
             vec![(200, 0xAA), (240, 0xBB)],
             "the wire carries ABSOLUTE marker Moments (origin + relative)"
         );
+    }
+
+    /// `staged_moments` reports exactly the blob-frame Moments the server
+    /// stages when this env is branched (task 136): reseed markers and
+    /// host-plane fault overrides strictly beyond the origin — the rel-0
+    /// branch reseed and guest-plane decision answers are excluded, and a
+    /// shared Moment is deduplicated. A malformed blob is a typed error.
+    #[test]
+    fn staged_moments_reports_reseeds_and_host_faults_beyond_the_origin() {
+        let mut overrides = BTreeMap::new();
+        overrides.insert(0, Action::Host(HostFault::InjectInterrupt { vector: 32 }));
+        overrides.insert(30, Action::Host(HostFault::InjectInterrupt { vector: 32 }));
+        overrides.insert(45, Action::Guest(environment::Answer::Nominal));
+        // 40 is both a reseed marker and a host fault: staged once.
+        overrides.insert(40, Action::Host(HostFault::InjectInterrupt { vector: 33 }));
+        let spec = EnvSpec::Recorded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+            overrides,
+            standing: Vec::new(),
+            reseeds: [(0, 0xAA), (40, 0xBB), (90, 0xCC)].into_iter().collect(),
+        };
+        let env = AdapterEnv {
+            base_offset: 200,
+            pos: 260,
+            spec,
+        }
+        .encode();
+        assert_eq!(
+            SpecEnvCodec.staged_moments(&env).unwrap(),
+            vec![30, 40, 90],
+            "host faults + reseed markers beyond the origin, ascending, deduped"
+        );
+
+        // A pure-seeded env stages nothing.
+        assert_eq!(
+            SpecEnvCodec
+                .staged_moments(&SpecEnvCodec.seeded(7))
+                .unwrap(),
+            Vec::<u64>::new()
+        );
+
+        // Untrusted bytes: a malformed blob is a typed error, never a panic.
+        let junk = Reproducer {
+            blob_version: ADAPTER_BLOB_VERSION,
+            bytes: vec![0xFF; 12],
+        };
+        assert!(matches!(
+            SpecEnvCodec.staged_moments(&junk),
+            Err(EnvCodecError::Malformed(_))
+        ));
     }
 
     /// The PR #62 round-2 blocking fix: slicing a marker-carrying base at a
