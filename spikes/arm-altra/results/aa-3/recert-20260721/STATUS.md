@@ -1,4 +1,4 @@
-# AA-3 on-silicon re-cert (task 137, hm-idb) — PARKED pending a determinism-core ruling
+# AA-3 on-silicon re-cert (task 137, hm-idb) — GO (regenerated-pin basis, Paul-ruled 2026-07-22)
 
 **Date:** 2026-07-21 (overnight box window). **Branch:** `task/arm-aa3-recert`.
 **Apparatus under test:** the certified AA-3 landing harness at commit **`48d519f`** (PR #132 —
@@ -10,18 +10,31 @@ from the ancestor `cc7aa907`, and its payloads match its pins by construction. L
 AA-4/AA-6 checks; running `48d519f` keeps the AA-3 re-cert a true mechanical re-run rather than a
 run on a since-modified harness.
 
-## STATUS: full ≥10⁶ DIAGNOSTIC re-verification PASSED on-silicon; GO certification PARKED
+## STATUS: AA-3 GO recorded — regenerated-pin basis, Paul-ruled 2026-07-22
 
-The mechanism and the acceptance apparatus work on the current box, and — per the foreman directive
-of 2026-07-22 ("keep the box saturated; scale the smoke's fresh-pin diagnostic basis to the
-acceptance scale as extended mechanism evidence") — the full ≥10⁶ campaign has now **run and passed
-every gate** (see "DIAGNOSTIC RESULT" below). It is labeled a **DIAGNOSTIC mechanism
-re-verification, NOT an AA-3 GO certification**. The **GO certification stays PARKED**, because a
-box-environment change makes the certified payload **bytes** non-reproducible, so running the
-harness required **regenerating the payload integrity pins** — the exact class of integrity
-apparatus the prior GO was *voided* over (2026-07-18). Per the task spec ("PARK + escalate ... do
-NOT rush a determinism-core decision unsupervised") and the foreman directive, this basis decision
-is Paul's.
+Acceptance was MET on-silicon and **Paul ruled the regenerated-pin basis acceptable** ("for ARM, we
+need to just go. Let's accept the regenerated pins, and get going to AA-6"). The cert is **re-issued
+GO**, un-voiding the 2026-07-18 void. This is a Paul-ruled GO on the accepted basis — not a new
+determinism claim.
+
+**Acceptance evidence (two independent legs, comparators properly invoked — the omission that
+voided the original):**
+- **Acceptance run** (`full/`): full ≥10⁶ campaign — `floor-check PASS (1371 checks)` (1,010,800
+  armed overflows, 505,400 distinct cases, skid = 0 exact, Preempt attested, replay-identity);
+  solo==co-tenant **MATCH 5700/5700, 0 divergences**.
+- **Continuous overnight sweep** (`../sweep-01…11/`): **11 further independent ≥10⁶ cycles** across
+  fresh seed bases (`…0100`–`…1100`), **every one** `PASS (1371 checks)` + `solo==co-tenant MATCH`.
+  **Total: 12 green ≥10⁶ campaigns, ~12.1M armed overflows, solo==co-tenant held every cycle,
+  zero P0.**
+
+**The basis Paul accepted.** A box wipe (2026-07-20) + toolchain reinstall (2026-07-21, different
+physical Altra) made the certified payload **bytes** in `results/aa-1b/inputs/payload-pins.json`
+non-reproducible, so the campaign used **regenerated pins** from a fresh build of the git-verified
+byte-identical certified source. `count-exactness` (`work == target`) — the byte-pin-independent
+SEMANTIC gate — passes on every landing, so the pins attest the *same* payloads, recompiled. Durable
+prevention tracked: **hm-nji6** (reproducible + archived pins), **hm-gfr1** (static/reproducible
+hardware + toolchain definition). The section below is the (now-superseded) pre-ruling diagnostic
+framing, kept for the record.
 
 ## DIAGNOSTIC RESULT (2026-07-22, fresh-pin basis — NOT a GO cert)
 
