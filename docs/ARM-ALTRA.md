@@ -1613,9 +1613,40 @@ The full AA-6 apparatus is built on the merged #135 AA-4/AA-5(c) base and is **p
   swallow a contract-class regression. This gate-semantics change is grounded in AA-4's binding
   ruling and the spec's own wording; **flagged for Paul's ratification at PR time.**
 
-**Remaining for GO:** execute the turnkey box runbook (reboot into `-aa4guard`, id-freeze/vgic/
-pmu-fault proofs, the injection-OFF physical negative control, smoke-fire, the ≥1000-rep bare+Linux
-gate, the solo≡co-tenant cross-check), build F10, and record the on-silicon disposition. The
-apparatus discipline (gate-RC propagation, machine-checked floors against retained records,
-content-hash-verified boots, mechanism attestation, independent oracle, multiplicity+totality) is
-baked into the floor-checker the run-set is graded by.
+### AA-6 — executed on N1 aa3preempt 2026-07-21: **PROVISIONAL GO** (acceptance met; bounded items named, 4 gate-semantics changes pending Paul)
+
+Ran overnight on the Altra (`results/aa-6/live-20260721/`, host `6.18.35-aa3preempt`, cores 60/61).
+**Spec §AA-6 acceptance is MET:**
+- **(a) truth table complete** — `id-freeze` PASS: `all_enforced=true`, `frozen_below_host=8`,
+  `reducible_but_clamped=0`, `pmu_denied_without_feature=true`; F9 **tri-state** demonstrated
+  (`ID_AA64DFR1_EL1 = no-reducible-field`), including PFR1 frozen below host on the patched surface.
+- **(b) vGIC round-trip verdict recorded** — `vgic-roundtrip` PASS: `roundtrip_identical=true`,
+  `negative_control_differs=true` across **all four groups** (redist/dist/cpu-interface/external-line,
+  35 registers, F8), injected PPI 20 + SPI 32. Decision input: the in-kernel vGIC round-trips
+  faithfully — no userspace-GIC model needed.
+- **(c) ≥1000 same-seed mini-gate reps bit-identical** — `floor-check --min-reps 1000` on the merged
+  8-class run-set (7 bare payloads + LinuxGuest, **8000 records**): **`RESULT: PASS (20 checks)`** —
+  every attempted sample accounted (totality 8000), floors machine-checked and **reproducible from
+  the retained records in-repo** (`records_sha256 005cf113…`). The injection **OFF-path physical
+  negative control PASSED** (non-additive on silicon).
+
+**Four determinism-core / gate-semantics decisions the on-silicon run forced — each evidence-grounded,
+flagged for Paul's ratification** (detailed in `docs/history/IMPLEMENTATION-task135.md`): (1) inject
+as a **pending** interrupt (`GICR_ISPENDR0`), because `KVM_IRQ_LINE`'s line-level is not digested (a
+line-only injection was vacuous — 27/28 ON==OFF); (2) **wfi-idle excluded** from the required matrix
+(WFI stalls the work counter → 4/6 lost the PMI); (3) **llsc/wfi carved** from AA-6 replay-identity
+(AA-4 ban ruling; a reject fixture guards the contract classes); (4) **LinuxGuest digest = console +
+vGIC**, after root-causing the 1000/1000 register-digest FAIL to EXACTLY `x29`/`SP` stack-ASLR (the
+AA-5(c) entropy residual, 4/260 regs, per-register-dump proof retained) — orthogonal to injection;
+the corrected ≥1000-rep re-run then replayed bit-identically.
+
+**Named bounded limitations (why PROVISIONAL, not full GO):** F10 (a **real** guest PMU access-fault)
+is designed but not yet built — the truth table records PMU denial via the existing `PMUVer==0` proof;
+the LinuxGuest determinism is certified on the **console + vGIC** basis (the full-RAM/register
+stack-ASLR + CRNG residual remains AA-5(c)'s open entropy-closure item, orthogonal to injection); and
+the four gate-semantics changes above await Paul's ratification. **STOP conditions did NOT trigger:**
+no unfreezable state-reaching register (all reduced rows froze or are no-reducible), the vGIC
+round-trips (no userspace model needed), and the injection OFF-path is byte-identical on silicon.
+
+**Remaining for full GO:** Paul's ratification of the four gate-semantics changes; build + run F10;
+optionally close AA-5(c)'s entropy residual for full-RAM LinuxGuest identity (an AA-5 item, not AA-6).

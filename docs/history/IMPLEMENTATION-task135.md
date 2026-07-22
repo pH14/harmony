@@ -45,12 +45,17 @@ decisions, each grounded in on-N1 evidence and flagged here for Paul's ratificat
    diverging registers) — a digest that is genuinely same-seed bit-identical AND observes the
    injection, certifying LinuxGuest determinism *under injection* on the same architectural basis
    AA-5(c) established, without hiding the stack-ASLR residual (which remains AA-5(c)'s open item).
-   **Verification: re-running the ≥1000-rep gate with this digest is the proof it is genuinely
-   bit-identical (a 2-boot smoke already matches); if the ≥1000-rep re-run diverges, it is PARKED as
-   a real determinism failure, not shipped.**
+   **VERIFIED: the ≥1000-rep gate re-ran with this digest and the LinuxGuest replays bit-identically
+   across all 1000 reps** — so the change exposes genuine determinism, it does not hide a failure.
 
-The retained FAILED floor-check and the register-divergence proof are committed alongside the
-passing evidence — the failure is part of the record, not discarded.
+**Gate result (N1 aa3preempt, `results/aa-6/live-20260721/`): `floor-check --min-reps 1000` on the
+merged 8-class run-set (7 bare payloads + LinuxGuest, 8000 records) → `RESULT: PASS (20 checks)`** —
+totality 8000, multiplicity 8000 exactly-once, count-exactness, replay-identity (8 groups
+bit-identical; llsc carved+recorded), aa6-matrix, rep-floor ≥1000, records-sha256, image-pins,
+mechanism-attestation, skid, perf-config all PASS. **Reproducible from the retained records in-repo**
+(re-checked on the laptop, `records_sha256 005cf113…`). The bare matrix (core 60) and the Linux loop
+(core 61) ran co-tenant and stayed deterministic. The retained FAILED pre-fix floor-check and the
+register-divergence proof are committed alongside — the failure is part of the record, not discarded.
 
 ## What this delivers
 
