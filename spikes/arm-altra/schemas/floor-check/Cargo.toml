@@ -36,3 +36,7 @@ path = "src/bin/gen_fixtures.rs"
 [[bin]]
 name = "el0-check"
 path = "src/bin/el0_check.rs"
+
+[[bin]]
+name = "aa6-merge"
+path = "src/bin/aa6_merge.rs"
