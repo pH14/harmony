@@ -352,6 +352,13 @@ struct RunOpts {
     /// Draw seeded-random target deltas over 1..=100000 (AA-3).
     #[arg(long)]
     with_targets: bool,
+    /// AA-6: inject the given PPI INTID at each exact landed `Moment` (the seeded-random target).
+    /// Absent = the NEGATIVE CONTROL: the default AA-3/AA-5 deterministic path is byte-identical
+    /// (no `KVM_IRQ_LINE` is issued, the state digest is the pre-hook value). The spike injects
+    /// the harness's dedicated unowned line, PPI **20** (never the KVM-owned architected-timer
+    /// PPI 27). Only meaningful with a patched-mechanism armed run (`--with-targets --skid-margin`).
+    #[arg(long = "inject-ppi")]
+    inject_ppi: Option<u32>,
     /// Payload class(es) to EXCLUDE from the plan (by name, repeatable). At AA-3 the exact
     /// landing passes `--exclude-payload wfi-idle`: its WFI is resumed by a real-time timer that
     /// shifts under the slow single-step, so under the exact landing it loses PMIs and exits
@@ -845,6 +852,8 @@ struct RunArgs {
     single_step: bool,
     max_steps: u64,
     watchdog_secs: u64,
+    /// AA-6 injection config (`--inject-ppi`), or `None` for the byte-identical negative control.
+    inject: Option<arm_harness::run::InjectionConfig>,
 }
 
 /// A payload ELF loaded from the payload directory, hashed and verified against its
@@ -2227,6 +2236,8 @@ fn execute(args: RunArgs) -> Result<(), String> {
                     condition: s.condition.clone(),
                     target_delta: None,
                     migration_probe: None,
+                    // AA-2 single-step never injects (no armed landing to inject at).
+                    inject: None,
                 };
                 step_run(&mut machine, &mut counter, &spec, args.max_steps)
                     .map_err(|e| e.to_string())
@@ -2246,6 +2257,9 @@ fn execute(args: RunArgs) -> Result<(), String> {
                     condition: s.condition.clone(),
                     target_delta: s.target_delta,
                     migration_probe: migration_probe.clone(),
+                    // AA-6 injection is config-gated (`--inject-ppi`). `None` is the negative
+                    // control: the default AA-3/AA-5 path is byte-identical (no `KVM_IRQ_LINE`).
+                    inject: args.inject,
                 };
                 // AA-3 exact landing rides the patched mechanism WITH a measured skid margin:
                 // `run_sample_exact` re-arms the overflow `skid_margin` events below the target,
@@ -2486,6 +2500,9 @@ fn run() -> Result<(), String> {
                 single_step: opts.single_step || matches!(opts.stage, StageArg::Aa2),
                 max_steps: opts.max_steps,
                 watchdog_secs: opts.watchdog_secs,
+                inject: opts
+                    .inject_ppi
+                    .map(|intid| arm_harness::run::InjectionConfig { intid }),
             })
         }
         Command::LinuxBoot(opts) => linux_boot(*opts),

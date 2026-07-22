@@ -926,6 +926,7 @@ mod tests {
         publications: Vec<(u64, u64, u64, u64, PvclockWrite)>,
         clockevent: LinuxClockeventState,
         irq_levels: Vec<bool>,
+        injections: Vec<(u32, bool)>,
     }
 
     impl Vcpu for ScriptedClockVcpu {
@@ -968,6 +969,11 @@ mod tests {
 
         fn regs_digest(&mut self) -> Result<String, RunError> {
             Ok("unused".into())
+        }
+
+        fn inject_ppi(&mut self, intid: u32, asserted: bool) -> Result<(), RunError> {
+            self.injections.push((intid, asserted));
+            Ok(())
         }
     }
 
@@ -1157,6 +1163,7 @@ mod tests {
             publications: Vec::new(),
             clockevent: LinuxClockeventState::default(),
             irq_levels: Vec::new(),
+            injections: Vec::new(),
         }
     }
 

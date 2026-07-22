@@ -2136,6 +2136,43 @@ impl StepVcpu for Machine {
         let (regs, vgic) = self.registers_and_vgic()?;
         Ok(super::digest_regs_only(&regs, &vgic))
     }
+
+    fn inject_ppi(&mut self, intid: u32, asserted: bool) -> Result<(), RunError> {
+        // AA-6 injection at the exact landed `Moment`. Encode the target as vCPU 0's PPI
+        // `intid` and drive `KVM_IRQ_LINE`. The spike injects the harness's dedicated UNOWNED
+        // PPI 20 line — never the architected timer's KVM-owned PPI 27, whose injection KVM
+        // silently drops — so the assertion sets a deterministic pending bit in the in-kernel
+        // vGIC that is folded into the compared state digest (AA-6 replay identity).
+        let irq = KvmIrqLevel {
+            irq: (KVM_ARM_IRQ_TYPE_PPI << KVM_ARM_IRQ_TYPE_SHIFT) | intid,
+            level: u32::from(asserted),
+        };
+        // SAFETY: `vm_fd` is live and `irq` is the exact fixed-width kvm_irq_level value KVM
+        // reads synchronously; the encoded target is vCPU 0's PPI `intid`.
+        if unsafe { libc::ioctl(self.vm_fd, kvm::IRQ_LINE as libc::c_ulong, &raw const irq) } < 0 {
+            return Err(seam(
+                "ioctl(KVM_IRQ_LINE, AA-6 PPI injection)",
+                err("ioctl(KVM_IRQ_LINE)"),
+            ));
+        }
+        // For the owned line, verify the injection actually took: `KVM_IRQ_LINE` changes the
+        // vGIC input-line level, and an owner-mismatch injection returns success while dropping
+        // the interrupt. A dropped injection is a finding, not a silent pass (§Evidence
+        // integrity: mechanism attestation).
+        if intid == crate::linux_boot::HARMONY_CLOCKEVENT_PPI {
+            let observed = self.linux_clockevent_line_asserted()?;
+            if observed != asserted {
+                return Err(RunError::Seam {
+                    context: "verify AA-6 PPI 20 injection took",
+                    message: format!(
+                        "KVM_IRQ_LINE reported success but the vGIC input line level is \
+                         {observed}, expected {asserted} — the injection was dropped"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 impl LinuxPvclockVcpu for Machine {
