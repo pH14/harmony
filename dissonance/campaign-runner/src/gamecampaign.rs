@@ -3136,6 +3136,28 @@ mod tests {
         assert_eq!(distinct.len(), 256, "mutations must actually vary");
     }
 
+    /// Task 136: the quiet codec FORWARDS `staged_moments` to the production
+    /// codec, so the candidate seal's marker-clamped run-forward sees exactly
+    /// the reseed Moments `quiet_mutate` plants — inheriting the trait
+    /// default (empty) would silently degrade the clamp to fixed-step legs
+    /// and reintroduce the hm-esfd overshoot poison on the live campaign.
+    #[test]
+    fn quiet_codec_forwards_staged_moments_to_the_production_codec() {
+        let codec = QuietCodec {
+            inner: Box::new(SpecEnvCodec),
+            window: 1_000,
+        };
+        let salt = 0x5A17u64;
+        let env = quiet_mutate(&SpecEnvCodec.seeded(42), salt, 1_000).unwrap();
+        let staged = codec.staged_moments(&env).unwrap();
+        assert_eq!(
+            staged,
+            vec![1 + salt % 1_000],
+            "the planted reseed Moment is what the clamp must land on \
+             (the rel-0 floor marker is the branch reseed, never staged ahead)"
+        );
+    }
+
     /// Defense in depth: an exemplar that already carries fault vocabulary
     /// (impossible in a quiet campaign; a defect if seen) is refused loudly,
     /// so faults can never propagate through the frontier.
