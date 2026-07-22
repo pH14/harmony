@@ -5,6 +5,53 @@ Bead **hm-zx3z** (scope) + **hm-l1wy** (proof-completeness F8/F9/F10), parent **
 Binding spec: `docs/ARM-ALTRA.md` §AA-6. Branch `task/arm-aa6-injection`, built on the merged
 #135 AA-4/AA-5(c) apparatus. This is the write-up + review record + the turnkey box runbook.
 
+## ⚠️ ON-SILICON EXECUTION (N1 `6.18.35-aa3preempt`, 2026-07-21) — determinism-core changes for Paul's ratification
+
+Executed on the Altra box overnight. **(a) id-freeze and (b) vGIC round-trip PASS on real N1**
+(F9 tri-state: `frozen_below_host=8`, `reducible_but_clamped=0`; F8: `roundtrip_identical` across
+all four groups). The **(c) injection OFF-path physical negative control PASSES** — injection-OFF
+replay-identity is bit-identical, so the run-core hook is **non-additive on silicon** (no STOP).
+
+Getting (c) to a *non-vacuous* and *correct* gate required **four determinism-core / gate-semantics
+decisions, each grounded in on-N1 evidence and flagged here for Paul's ratification** (none is a
+"make it green" move — each is the evidence forcing the design):
+
+1. **Inject as a PENDING interrupt (`GICR_ISPENDR0`), not just the input line.** On N1, `KVM_IRQ_LINE`
+   sets the input-line level but NOT the userspace pending latch (`ISPENDR0`) — which is what the
+   digest reads — so the first ON smoke had 27/28 ON digests IDENTICAL to OFF (a **vacuous** gate).
+   The injection now also sets `ISPENDR0.intid` (the absolute device-attr write `vgic_roundtrip`
+   uses): ON then differs from OFF at every tuple and stays deterministic. Non-vacuity fix.
+2. **`wfi-idle` excluded from the required injection matrix.** Measured: under exact-landing
+   injection wfi-idle LOSES the overflow (4/6 probe samples `deliveries==0` — its WFI stalls the
+   `BR_RETIRED` work counter, so the single-step cannot progress through it) and diverges same-seed
+   via its real-time timer. Same physics that excludes it from AA-3. Its WFI-class determinism is
+   AA-5's paravirt-clock domain, exercised by the LinuxGuest.
+3. **`llsc-atomics` / `wfi-idle` carved from AA-6 replay-identity** (divergence recorded, not
+   failed) — AA-4 ruled LL/SC mechanically-excluded, so `llsc-atomics` is the banned counter-example
+   (`lse-atomics`, the contract form, must and does replay bit-identically). A
+   `reject-aa6-contract-divergence` fixture proves the carve can't swallow a contract-class failure.
+4. **The LinuxGuest compared digest is `console + vGIC`, not the full register digest.** The
+   mini-gate first FAILED replay-identity: linux-guest 1000 same-seed reps → 1000 different register
+   digests (`aa6-floorcheck-regsdigest-FAIL.txt`, retained). **This is NOT the injection hook and NOT
+   a Moment difference** (all 1000 reps use the same seed → the same Moment, target 10 000 000). A
+   direct per-register dump diff of two same-seed boots (`linuxguest-regs-divergence.{txt,diff}`,
+   retained) proves **EXACTLY 4 of 260 registers differ**: `x29`(FP) and `SP` — the userspace init's
+   **stack-placement ASLR** (the AA-5(c) kernel-CRNG/entropy residual, hm-of6t F12, `docs/PARAVIRT-
+   CLOCK.md` §4.3) — plus `CNTPCT`/`TIMER_CNT` (host-time, already digest-excluded). Every other
+   register — all work-clock, exact-landing, injection, and execution state — is bit-identical. The
+   full register digest therefore folds in a disclosed entropy residual orthogonal to injection. The
+   fix (`Machine::console_vgic_digest`) compares the **console** (AA-5(c)-proven bit-identical) plus
+   the **vGIC state** (which carries the injected pending bit, deterministic, and is NOT among the 4
+   diverging registers) — a digest that is genuinely same-seed bit-identical AND observes the
+   injection, certifying LinuxGuest determinism *under injection* on the same architectural basis
+   AA-5(c) established, without hiding the stack-ASLR residual (which remains AA-5(c)'s open item).
+   **Verification: re-running the ≥1000-rep gate with this digest is the proof it is genuinely
+   bit-identical (a 2-boot smoke already matches); if the ≥1000-rep re-run diverges, it is PARKED as
+   a real determinism failure, not shipped.**
+
+The retained FAILED floor-check and the register-divergence proof are committed alongside the
+passing evidence — the failure is part of the record, not discarded.
+
 ## What this delivers
 
 AA-6 needs three things (spec §AA-6): (a) the ID-register freeze + enforcement truth table with
