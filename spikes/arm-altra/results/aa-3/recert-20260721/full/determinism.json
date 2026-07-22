@@ -1,6 +1,3 @@
-work clock binding: arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)
-full join: solo 5700 keys/11400 included records; co-tenant 5700 keys/11400 included records; shared 5700; solo-only 0; co-tenant-only 0; multiplicity mismatches 0
-MATCH: all 5700 tuples joined on both sides with equal repetition counts and bit-identical exact-landing + final-state digests.
 {
   "cotenant_only_examples": [],
   "cotenant_tuples": 5700,
