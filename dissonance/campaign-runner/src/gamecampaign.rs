@@ -758,6 +758,16 @@ impl EnvCodec for QuietCodec {
     ) -> Result<Reproducer, explorer::EnvCodecError> {
         self.inner.compose(base, branch_local)
     }
+
+    fn staged_moments(&self, env: &Reproducer) -> Result<Vec<u64>, explorer::EnvCodecError> {
+        // Forward to the production codec (task 136): the quiet arm's exploit
+        // envs are exactly the marker-carrying reproducers whose staged
+        // Moments the candidate seal's marker-clamped run-forward must land
+        // on — inheriting the trait default (empty) here would silently
+        // degrade the clamp to fixed-step legs and reintroduce the hm-esfd
+        // overshoot poison on the live campaign.
+        self.inner.staged_moments(env)
+    }
 }
 
 /// The SMB cell projection over the reduced observation map (task 132): the

@@ -73,6 +73,20 @@ use sdk_events::{Normalized, SdkError, UpdateOp, decode_antithesis, decode_binar
 /// branch child, never re-appended as child firing evidence.
 pub(crate) const CATALOG_EVENT_ID: u32 = 0;
 
+/// How much V-time each candidate-seal retry leg advances past the last stop
+/// before re-attempting the seal (task 136 / hm-esfd): the "run a little
+/// further and retry" of the `ControlServer::run` seal contract, mirroring the
+/// base-seal loop's box step (`campaign_runner::boxrun::SNAPSHOT_RETRY`).
+const SEAL_RETRY_STEP: u64 = 1_000_000;
+
+/// How many failed candidate-seal attempts before the candidate is dropped
+/// like a disappearing state ([`MachineError::NotSealable`]) — never a
+/// campaign abort. Bounds the advance past the last drained marker at
+/// `SEAL_RETRY_ATTEMPTS × SEAL_RETRY_STEP` of V-time (plus natural-boundary
+/// skid), keeping "wait a beat, then snap" a beat: a never-quiescent
+/// candidate costs one bounded replay, not the campaign.
+const SEAL_RETRY_ATTEMPTS: u32 = 64;
+
 /// Which ingress format the controller decodes a rollout's raw SDK capture with.
 /// The internal binary Event wire (the shape [`Machine::sdk_events`] returns) is
 /// the default; Antithesis JSON is available for the app-facing surface.
@@ -619,17 +633,26 @@ impl<M: Machine> DifferentialCampaign<M> {
                 // Materialize BEFORE reserving the revision slot: replay to
                 // the candidate moment, holding the seal; the machine stamps
                 // the AUTHORITATIVE cut with the seal. A candidate whose
-                // state disappears before a valid seal is not returnable and
-                // is DROPPED (the strategy's disappearing-state rule) — and
-                // because no slot was reserved for it, dropping it can never
-                // hold the frontier open. Any other machine failure aborts
-                // the step loudly as ever.
-                let (seal, actual_cut, seal_delta) =
-                    match self.materialize_candidate(base_snap, &branch_env, cand.at) {
-                        Ok(sealed) => sealed,
-                        Err(CampaignError::Machine(MachineError::NotSealable(_))) => continue,
-                        Err(e) => return Err(e),
-                    };
+                // state disappears before a valid seal — or that never
+                // reaches a quiescent boundary within the bounded run-forward
+                // (task 136) — is not returnable and is DROPPED (the
+                // strategy's disappearing-state rule) — and because no slot
+                // was reserved for it, dropping it can never hold the
+                // frontier open. Any other machine failure aborts the step
+                // loudly as ever. The branch origin (the base's seal moment —
+                // exactly what the adapter re-anchors the env's staged
+                // Moments at) rides along for the marker clamp.
+                let branch_origin = parent_cut.map_or(Moment(0), |c| c.at);
+                let (seal, actual_cut, seal_delta) = match self.materialize_candidate(
+                    base_snap,
+                    &branch_env,
+                    cand.at,
+                    branch_origin,
+                ) {
+                    Ok(sealed) => sealed,
+                    Err(CampaignError::Machine(MachineError::NotSealable(_))) => continue,
+                    Err(e) => return Err(e),
+                };
                 // The **seal-consistent** genesis-complete env (task 133 / PR
                 // #134 finding F3). The frontier entry's env must be the
                 // genesis-complete reproducer reaching the SEAL — `exemplar.cut`
@@ -1215,53 +1238,122 @@ impl<M: Machine> DifferentialCampaign<M> {
     /// **authoritative** server-stamped cut with it. The replay charges the
     /// campaign budget (charged by the caller).
     ///
+    /// **Marker-clamped run-forward (task 136 / hm-esfd, Option C).** The seal
+    /// may land *past* the candidate moment, at the first **fully-drained
+    /// quiescent boundary** ("wait a beat, then snap"):
+    ///
+    /// - A [`MachineError::NotQuiescent`] seal refusal (the guest mid-exit at
+    ///   the boundary — a reseed-shifted RNG draw; the server's
+    ///   `SnapshotWhileArmed` collapses to the same variant at the adapter)
+    ///   retries the seal a bounded number of times, running
+    ///   [`SEAL_RETRY_STEP`] further per attempt — exactly the `ControlServer::
+    ///   run` "caller runs a little further and retries" contract the base
+    ///   seal (`seal_base`) has always followed.
+    /// - Every replay deadline is **clamped to the next staged `Moment`** of
+    ///   the branch env ([`EnvCodec::staged_moments`], re-anchored at `origin`
+    ///   exactly as the adapter's wire conversion does): while any staged
+    ///   reseed marker / host fault lies ahead, the server rejects *every*
+    ///   seal, and an unclamped leg whose deadline sits *below* the staged
+    ///   Moment never arms the exact-arrival machinery — the opportunistic
+    ///   stop can then overshoot the Moment and poison the schedule
+    ///   (`ScheduleUnsatisfiable`, hm-esfd's second blocker). A deadline
+    ///   landing exactly **on** the Moment arms it (`m <= deadline`), the run
+    ///   stops between instructions there and drains it — the server's own
+    ///   reseed-aware machinery does all the work; this stays a client-side
+    ///   change.
+    /// - On attempt-cap exhaustion the candidate is **dropped** like a
+    ///   disappearing state ([`MachineError::NotSealable`]) — never a
+    ///   campaign abort.
+    ///
     /// Also returns the machine's **branch-local delta recorded at the seal**
     /// (task 133): the tail-complete reproducer from `base_snap` to the seal,
     /// keyed from the branch origin. The caller folds it with the base's
     /// genesis-complete env to obtain the seal-consistent env the frontier
     /// entry carries — so an exploit child, whose own delta is likewise keyed
-    /// from this seal, composes adjacently against the entry.
+    /// from this seal, composes adjacently against the entry. Because a seal
+    /// only ever succeeds once **both** staged schedules have drained, the
+    /// delta carries every marker at-or-below `sealed_at` and none beyond —
+    /// which is what lets the task-68 re-materialization (`run(deadline =
+    /// sealed_at)`, zero probes) replay it bit-identically from the ledger
+    /// env alone.
     fn materialize_candidate(
         &mut self,
         base_snap: SnapId,
         branch_env: &Reproducer,
         at: Moment,
+        origin: Moment,
     ) -> Result<(SnapId, EvidenceCut, Reproducer), CampaignError> {
         self.machine.branch(base_snap, branch_env)?;
-        let until = StopConditions {
-            deadline: Some(at),
-            on: StopMask::ALL,
-        };
+        // The env's staged-schedule Moments beyond the branch origin, in the
+        // absolute frame the server drains them in (`origin + relative`, the
+        // adapter's own re-anchoring). The add cannot overflow past a
+        // successful `branch` — the adapter refused exactly this rebase
+        // before any wire traffic — so saturation is defensively unreachable.
+        let staged: Vec<u64> = self
+            .codec
+            .staged_moments(branch_env)?
+            .into_iter()
+            .map(|rel| origin.0.saturating_add(rel))
+            .collect();
+        let next_staged = |vt: u64| staged.iter().copied().find(|&m| m > vt);
         // Advance to the first valid sealable point at or after `at`. Under a
         // deadline the machine surfaces the snapshot point; seal there. The
-        // branch-local delta is read from the machine at the sealed state
+        // first leg already jumps to the next staged Moment when one lies
+        // beyond `at`: no seal can succeed below it, and Moments at-or-below
+        // the leg deadline are armed and drained exactly in-run either way.
+        // The branch-local delta is read from the machine at the sealed state
         // (`recorded_env`, keyed from the branch origin) — before any later
         // machine op disturbs it.
+        let mut until = StopConditions {
+            deadline: Some(Moment(next_staged(at.0).unwrap_or(at.0))),
+            on: StopMask::ALL,
+        };
+        let mut attempts_left = SEAL_RETRY_ATTEMPTS;
         loop {
             let stop = self.machine.run(&until, None)?;
-            match stop {
-                StopReason::SnapshotPoint { vtime } if vtime.0 >= at.0 => {
-                    let (seal, cut) = self.machine.snapshot()?;
-                    let delta = self.machine.recorded_env()?;
-                    return Ok((seal, cut, delta));
-                }
+            let vt = match stop {
+                StopReason::SnapshotPoint { vtime } if vtime.0 >= at.0 => vtime,
                 StopReason::SnapshotPoint { .. } => continue,
                 StopReason::Decision { .. } => {
                     // A decision under the replay: answer with the recorded env's
                     // seed (decline) so the pinned replay reaches the seal.
                     continue;
                 }
-                // A terminal at or past the deadline: seal at the quiescent
-                // terminal if it is at/after the candidate moment, else the state
-                // disappeared before a valid seal and is not admissible.
-                terminal if terminal.vtime().0 >= at.0 && !terminal.is_bug() => {
-                    let (seal, cut) = self.machine.snapshot()?;
-                    let delta = self.machine.recorded_env()?;
-                    return Ok((seal, cut, delta));
-                }
+                // A stop at or past the candidate moment that is not a bug — a
+                // deadline leg or a quiescent terminal — is a seal-attempt
+                // point; else the state disappeared before a valid seal and is
+                // not admissible.
+                terminal if terminal.vtime().0 >= at.0 && !terminal.is_bug() => terminal.vtime(),
                 terminal => {
                     return Err(MachineError::NotSealable(terminal.vtime().0).into());
                 }
+            };
+            // While a staged Moment still lies ahead the server rejects every
+            // seal (both schedules must drain first), so attempting one is
+            // pointless and a fixed-step leg risks the overshoot poison: run
+            // exactly TO the next staged Moment instead (the clamp — its
+            // deadline arms the exact-arrival drain). Drain legs are bounded
+            // by the env's marker count and charge no attempt.
+            if let Some(m) = next_staged(vt.0) {
+                until.deadline = Some(Moment(m));
+                continue;
+            }
+            match self.machine.snapshot() {
+                Ok((seal, cut)) => {
+                    let delta = self.machine.recorded_env()?;
+                    return Ok((seal, cut, delta));
+                }
+                // Mid-exit at the boundary: run a little further and retry,
+                // bounded. On cap exhaustion the candidate is dropped like a
+                // disappearing state — never a campaign abort.
+                Err(MachineError::NotQuiescent) => {
+                    if attempts_left == 0 {
+                        return Err(MachineError::NotSealable(vt.0).into());
+                    }
+                    attempts_left -= 1;
+                    until.deadline = Some(Moment(vt.0.saturating_add(SEAL_RETRY_STEP)));
+                }
+                Err(e) => return Err(e.into()),
             }
         }
     }
@@ -1410,8 +1502,8 @@ mod tests {
     use crate::evidence::DefaultObservationCells;
     use crate::spine::EvidenceCut;
     use crate::testkit::{
-        Emit, Program, ScriptedMachine, ToyCodec, campaign, config, coordinator, ledger,
-        simple_program,
+        Emit, MarkerCodec, Program, ScriptedMachine, ToyCodec, campaign, campaign_with, config,
+        coordinator, ledger, simple_program,
     };
     use revision_coordinator::EvidenceBatchId;
     use sdk_events::{NS_STATE, ObservationId, UpdateOp};
@@ -1466,6 +1558,191 @@ mod tests {
         // A different seed produces a different trajectory (the machine is not
         // trivially constant), so the gate is not vacuous.
         assert_ne!(observable(1), observable(2));
+    }
+
+    /// The blocking task-136 identity sub-gate, toy tier: evict the entry's
+    /// seal and re-materialize it **from its ledger env alone** — one direct
+    /// `run(deadline = sealed_at)`, zero probes (the task-68/78 shape) — and
+    /// require the bit-identical state back. `Materializer::materialize`
+    /// itself refuses any drift loudly (`MaterializeDivergence` /
+    /// `CutDivergence`); the hash pin and the deadline log are the belt and
+    /// suspenders.
+    fn assert_rematerializes_identically(camp: &mut DifferentialCampaign<ScriptedMachine>) {
+        let (r, entry) = camp.frontier().iter().next().expect("one admitted entry");
+        let sealed_at = entry.exemplar.cut.at;
+        let hash_at_seal = camp.machine.hash().expect("hash");
+        let DifferentialCampaign {
+            machine,
+            mat,
+            codec,
+            occupancy,
+            ..
+        } = camp;
+        mat.evict_seal(machine, r)
+            .expect("evict")
+            .expect("the admitted entry held a live seal");
+        machine.deadlines_seen.clear();
+        let (_seal, ran) = mat
+            .materialize(machine, codec.as_ref(), occupancy.frontier(), r)
+            .expect("re-materializes from the ledger env alone");
+        assert!(ran.is_some(), "a real replay ran, not a seal-cache hit");
+        assert_eq!(
+            machine.deadlines_seen,
+            vec![Some(sealed_at.0)],
+            "zero probes: exactly one direct run at the sealed moment"
+        );
+        assert_eq!(
+            machine.hash().expect("hash"),
+            hash_at_seal,
+            "the re-materialized state is bit-identical to the retry-forward seal"
+        );
+    }
+
+    /// SealAnchor regression (task 136 / hm-esfd, primary blocker): the
+    /// nominated moment is **non-quiescent** (a reseed-shifted RNG draw in
+    /// flight at the boundary). Option C: the seal advances off the nominated
+    /// moment to the first quiescent boundary the bounded run-forward reaches
+    /// — the campaign completes instead of aborting — and the entry
+    /// re-materializes bit-identically from its ledger env alone.
+    #[test]
+    fn non_quiescent_nomination_seals_with_advance_and_rematerializes() {
+        let observable = |seed: u64| {
+            let machine = ScriptedMachine::new(vec![(1, UpdateOp::Set)], simple_program(4))
+                .with_non_quiescent(vec![(10, 12)]);
+            let (_dir, led) = ledger();
+            let mut camp =
+                campaign_with(machine, Box::new(ToyCodec), config(8, u64::MAX), seed, led);
+            let report = camp
+                .step()
+                .expect("the step completes despite the non-quiescent nomination");
+            assert_eq!(report.candidates, 1, "the emit's fresh cell is nominated");
+            assert_eq!(
+                report.admitted.len(),
+                1,
+                "the candidate sealed with advance"
+            );
+            let (_, entry) = camp.frontier().iter().next().expect("one entry");
+            assert!(
+                entry.exemplar.cut.at.0 > 10,
+                "the seal advanced off the nominated moment 10 (got {})",
+                entry.exemplar.cut.at.0
+            );
+            let frontier: Vec<(u64, u64, Vec<u8>)> = camp
+                .frontier()
+                .iter()
+                .map(|(_, e)| {
+                    (
+                        e.exemplar.cut.at.0,
+                        e.exemplar.cut.sdk_events,
+                        e.env.bytes.clone(),
+                    )
+                })
+                .collect();
+            (camp, frontier)
+        };
+        let (mut camp, frontier) = observable(7);
+        assert_rematerializes_identically(&mut camp);
+        // Same seed ⇒ byte-identical campaign artifacts: the advance is part
+        // of the deterministic trajectory, not a wall-clock retry.
+        assert_eq!(frontier, observable(7).1);
+    }
+
+    /// SealAnchor regression (task 136 / hm-esfd, second blocker): a staged
+    /// reseed marker sits **beyond** the candidate moment. No seal can succeed
+    /// below the marker (the server rejects while either schedule is armed),
+    /// and an unclamped retry leg would overshoot it into a poisoned schedule
+    /// — the clamp lands the leg deadline exactly ON the marker (arming the
+    /// exact-arrival drain) and seals at the first fully-drained boundary.
+    #[test]
+    fn staged_marker_beyond_candidate_seals_past_the_drained_marker() {
+        let program: Rc<dyn Fn(u64) -> Program> = Rc::new(|seed| Program {
+            emits: vec![Emit {
+                at: 10,
+                reg: 1,
+                value: seed % 4,
+            }],
+            terminal: 40,
+        });
+        let observable = |seed: u64| {
+            let machine = ScriptedMachine::new(vec![(1, UpdateOp::Set)], Rc::clone(&program))
+                .with_markers(vec![25]);
+            let (_dir, led) = ledger();
+            let mut camp = campaign_with(
+                machine,
+                Box::new(MarkerCodec { markers: vec![25] }),
+                config(8, u64::MAX),
+                seed,
+                led,
+            );
+            let report = camp
+                .step()
+                .expect("the step completes past the staged marker");
+            assert_eq!(
+                report.admitted.len(),
+                1,
+                "the candidate sealed with advance"
+            );
+            let (_, entry) = camp.frontier().iter().next().expect("one entry");
+            assert_eq!(
+                entry.exemplar.cut.at.0, 25,
+                "sealed exactly at the drained marker (the first fully-drained boundary)"
+            );
+            assert_eq!(
+                entry.exemplar.cut.sdk_events, 1,
+                "the firing below the marker is included in the cut"
+            );
+            // The clamp is what ran: a leg landed exactly ON the marker, and
+            // no leg ever ran with the doomed candidate-moment deadline (no
+            // seal can succeed below a staged Moment).
+            assert!(camp.machine.deadlines_seen.contains(&Some(25)));
+            assert!(!camp.machine.deadlines_seen.contains(&Some(10)));
+            let frontier: Vec<(u64, u64, Vec<u8>)> = camp
+                .frontier()
+                .iter()
+                .map(|(_, e)| {
+                    (
+                        e.exemplar.cut.at.0,
+                        e.exemplar.cut.sdk_events,
+                        e.env.bytes.clone(),
+                    )
+                })
+                .collect();
+            (camp, frontier)
+        };
+        let (mut camp, frontier) = observable(7);
+        assert_rematerializes_identically(&mut camp);
+        assert_eq!(frontier, observable(7).1);
+    }
+
+    /// SealAnchor regression (task 136 / hm-esfd, bounded-attempts posture): a
+    /// candidate that never reaches a quiescent boundary is dropped after the
+    /// attempt cap like a disappearing state — the campaign is NOT aborted and
+    /// keeps stepping.
+    #[test]
+    fn never_quiescent_candidate_is_dropped_after_the_cap_without_abort() {
+        let machine = ScriptedMachine::new(vec![(1, UpdateOp::Set)], simple_program(4))
+            .with_non_quiescent(vec![(5, u64::MAX)]);
+        let (_dir, led) = ledger();
+        let mut camp = campaign_with(machine, Box::new(ToyCodec), config(8, u64::MAX), 7, led);
+        let report = camp.step().expect("the campaign is not aborted");
+        assert_eq!(report.candidates, 1, "the candidate was nominated");
+        assert!(
+            report.admitted.is_empty(),
+            "but dropped after the bounded run-forward"
+        );
+        assert_eq!(camp.occupied(), 0, "nothing occupies the archive");
+        // The run-forward was bounded: the nomination leg plus exactly
+        // SEAL_RETRY_ATTEMPTS retry legs carried a deadline.
+        let deadline_legs = camp
+            .machine
+            .deadlines_seen
+            .iter()
+            .filter(|d| d.is_some())
+            .count();
+        assert_eq!(deadline_legs, 1 + SEAL_RETRY_ATTEMPTS as usize);
+        // The campaign is alive: the next step runs the full protocol again.
+        let report2 = camp.step().expect("the campaign keeps stepping");
+        assert!(report2.rollout_revision.get() > report.rollout_revision.get());
     }
 
     /// A provisional transition never occupies the archive on its own — only an
