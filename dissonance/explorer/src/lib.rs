@@ -79,7 +79,8 @@ pub(crate) fn sdk_moment_to_spine(m: sdk_events::Moment) -> Moment {
 
 pub use adapter::{ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, client_caps};
 pub use campaign::{
-    CampaignConfig, CampaignError, DifferentialCampaign, Ingress, Nomination, Occupied, StepReport,
+    CampaignConfig, CampaignError, DifferentialCampaign, Ingress, Nomination, Occupied,
+    ResealCheck, StepReport,
 };
 pub use defaults::{DeclineTactic, ExploreExploitSelector, GenesisSelector, TerminalOracle};
 pub use error::{EnvCodecError, MachineError};

@@ -108,6 +108,10 @@ pub campaign_runner::gamecampaign::GameCampaignError::BillboardMissing
 pub campaign_runner::gamecampaign::GameCampaignError::Campaign(explorer::campaign::CampaignError)
 pub campaign_runner::gamecampaign::GameCampaignError::Machine(explorer::error::MachineError)
 pub campaign_runner::gamecampaign::GameCampaignError::MalformedExemplar(alloc::string::String)
+pub campaign_runner::gamecampaign::GameCampaignError::MarkerBeyondSeal
+pub campaign_runner::gamecampaign::GameCampaignError::MarkerBeyondSeal::entry: u64
+pub campaign_runner::gamecampaign::GameCampaignError::MarkerBeyondSeal::marker: u64
+pub campaign_runner::gamecampaign::GameCampaignError::MarkerBeyondSeal::sealed_at: u64
 pub campaign_runner::gamecampaign::GameCampaignError::QuietEnvCarriesFaults
 pub campaign_runner::gamecampaign::GameCampaignError::QuietEnvCarriesFaults::what: &'static str
 pub campaign_runner::gamecampaign::GameCampaignError::Retention(alloc::string::String)
@@ -147,12 +151,15 @@ pub campaign_runner::gamecampaign::GameCampaignConfig::setup_deadline_delta: u64
 pub campaign_runner::gamecampaign::GameCampaignConfig::snapshot_max_attempts: usize
 pub campaign_runner::gamecampaign::GameCampaignConfig::snapshot_retry_step: u64
 pub campaign_runner::gamecampaign::GameCampaignConfig::trace_dir: core::option::Option<std::path::PathBuf>
+pub campaign_runner::gamecampaign::GameCampaignConfig::verify_reseal: bool
 impl campaign_runner::gamecampaign::GameCampaignConfig
 pub fn campaign_runner::gamecampaign::GameCampaignConfig::smoke(u64) -> Self
 pub struct campaign_runner::gamecampaign::GameCampaignOutcome
 pub campaign_runner::gamecampaign::GameCampaignOutcome::billboard: core::option::Option<(u64, u64)>
 pub campaign_runner::gamecampaign::GameCampaignOutcome::deep: core::option::Option<campaign_runner::gamecampaign::DeepReproducer>
 pub campaign_runner::gamecampaign::GameCampaignOutcome::log: benchmark::exploration::ExplorationLog
+pub campaign_runner::gamecampaign::GameCampaignOutcome::reseals: alloc::vec::Vec<campaign_runner::gamecampaign::ResealEvidence>
+pub campaign_runner::gamecampaign::GameCampaignOutcome::seal_retries: u64
 pub campaign_runner::gamecampaign::GameCampaignOutcome::work: campaign_runner::gamecampaign::WorkEvidence
 impl campaign_runner::gamecampaign::GameCampaignOutcome
 pub fn campaign_runner::gamecampaign::GameCampaignOutcome::vacuity(&self) -> core::option::Option<campaign_runner::gamecampaign::Vacuity>
@@ -171,6 +178,11 @@ pub fn campaign_runner::gamecampaign::GameToyMachine::replay(&mut self, explorer
 pub fn campaign_runner::gamecampaign::GameToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
 pub fn campaign_runner::gamecampaign::GameToyMachine::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
 pub fn campaign_runner::gamecampaign::GameToyMachine::snapshot(&mut self) -> core::result::Result<(explorer::SnapId, explorer::spine::EvidenceCut), explorer::error::MachineError>
+pub struct campaign_runner::gamecampaign::ResealEvidence
+pub campaign_runner::gamecampaign::ResealEvidence::entry: u64
+pub campaign_runner::gamecampaign::ResealEvidence::markers: alloc::vec::Vec<u64>
+pub campaign_runner::gamecampaign::ResealEvidence::sealed_at: u64
+pub campaign_runner::gamecampaign::ResealEvidence::state_hash: alloc::string::String
 pub struct campaign_runner::gamecampaign::SmbObservationCells
 impl explorer::evidence::ObservationCells for campaign_runner::gamecampaign::SmbObservationCells
 pub fn campaign_runner::gamecampaign::SmbObservationCells::key(&self, explorer::spine::EvidenceCut, &explorer::evidence::ObservationMap) -> explorer::spine::CellKey

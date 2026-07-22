@@ -128,6 +128,13 @@ pub struct GameCampaignConfig {
     /// PureRandom never reads the archive, but the budget applies uniformly
     /// so both configurations run the identical two-barrier protocol.
     pub replay_budget: u64,
+    /// Run the task-136 **blocking reseal-identity sub-gate** after the
+    /// campaign: every admitted entry is evicted and re-materialized from its
+    /// ledger env alone (one direct `run(deadline = sealed_at)`, zero probes)
+    /// and must come back with the bit-identical machine state hash — and its
+    /// recorded env's reseed markers must all sit at-or-below the seal. Costs
+    /// one real replay per frontier entry; `true` on the box path.
+    pub verify_reseal: bool,
 }
 
 impl GameCampaignConfig {
@@ -148,6 +155,7 @@ impl GameCampaignConfig {
             guest_ram_len: DEFAULT_GUEST_RAM_LEN,
             candidate_cap: 2,
             replay_budget: 64,
+            verify_reseal: false,
         }
     }
 }
@@ -222,6 +230,23 @@ pub enum GameCampaignError {
     /// An exemplar env failed to decode — a malformed blob in the frontier.
     #[error("quiet-arm exemplar env failed to decode: {0}")]
     MalformedExemplar(String),
+    /// The task-136 reseal sub-gate found a reseed marker **beyond** an
+    /// entry's seal in its recorded env — impossible if the seal honored the
+    /// fully-drained contract (the server rejects a seal while either
+    /// schedule is staged), so this is a determinism/recording violation to
+    /// escalate, never to absorb.
+    #[error(
+        "task-136 reseal sub-gate: entry {entry} carries a reseed marker at {marker} beyond \
+         its seal {sealed_at} — the recorded env does not match the fully-drained seal contract"
+    )]
+    MarkerBeyondSeal {
+        /// The frontier entry.
+        entry: u64,
+        /// The offending absolute marker Moment.
+        marker: u64,
+        /// The entry's seal moment.
+        sealed_at: u64,
+    },
     /// The box setup prefix never published a valid billboard `(gpa, len)`
     /// window (round-9 P1): the billboard is M0's unconditional film seam, so
     /// a campaign with no window has nothing film can consume — refused
@@ -308,6 +333,33 @@ pub struct GameCampaignOutcome {
     pub billboard: Option<(u64, u64)>,
     /// Proof this campaign actually ran a workload (task 103 finding 1).
     pub work: WorkEvidence,
+    /// The task-136 reseal-identity records, one per admitted entry, when
+    /// [`GameCampaignConfig::verify_reseal`] ran the sub-gate (deterministic
+    /// frontier order — part of the outcome, so a `--repeat` determinism gate
+    /// also requires the reseal hashes bit-identical across fresh boots).
+    pub reseals: Vec<ResealEvidence>,
+    /// Total `NotQuiescent` seal refusals the campaign's candidate
+    /// materializations absorbed via the task-136 run-forward — evidence the
+    /// mechanism engaged (a cascade that never needed it reports 0).
+    pub seal_retries: u64,
+}
+
+/// One task-136 reseal-identity record ([`GameCampaignOutcome::reseals`]).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ResealEvidence {
+    /// The frontier entry verified.
+    pub entry: u64,
+    /// Its server-stamped seal moment.
+    pub sealed_at: u64,
+    /// The **absolute** reseed-marker Moments the entry's recorded suffix env
+    /// carries (blob `base_offset + relative key`) — every one at-or-below
+    /// [`sealed_at`](Self::sealed_at) by the sub-gate's own assertion (a
+    /// drained marker rides the ledger env at its exact Moment; none may sit
+    /// beyond the seal). Empty for an env the production codec cannot decode
+    /// (the toy tier).
+    pub markers: Vec<u64>,
+    /// Hex of the machine state hash at the (re-)materialized seal.
+    pub state_hash: String,
 }
 
 /// What a campaign has to show for itself: how many branches it rolled out,
@@ -935,9 +987,13 @@ pub fn run_game_campaign<M: Machine>(
         min_vtime_span: u64::MAX,
         min_completed_frames: u64::MAX,
     };
+    // Task-136 evidence: total NotQuiescent refusals the candidate-seal
+    // run-forward absorbed across the campaign.
+    let mut seal_retries = 0u64;
 
     for branch in 0..cfg.max_branches {
         let report = camp.step()?;
+        seal_retries += report.seal_retries;
         // The branch's committed evidence batch — the durable authority the
         // per-branch log derives from.
         let batch = camp
@@ -999,6 +1055,52 @@ pub fn run_game_campaign<M: Machine>(
         });
     }
 
+    // ---- The task-136 blocking sub-gate (hm-esfd): reseal identity. ----
+    // Every admitted entry must re-materialize bit-identically from its
+    // ledger env alone (`verify_reseal_identity`: evict → one direct
+    // `run(deadline = sealed_at)` → seal → identical state hash, loudly
+    // refused otherwise), and its recorded env's reseed markers must all sit
+    // at-or-below the seal (a drained marker rides the ledger env at its
+    // exact Moment; a seal is only possible fully drained).
+    let reseals = if cfg.verify_reseal {
+        let checks = camp.verify_reseal_identity()?;
+        let mut out = Vec::with_capacity(checks.len());
+        for c in checks {
+            // The suffix env's markers, re-anchored absolute (blob
+            // `base_offset + relative key`, the adapter's own frame).
+            let markers: Vec<u64> = match camp
+                .frontier()
+                .get(c.entry)
+                .map(|e| explorer::AdapterEnv::decode(&e.exemplar.suffix))
+            {
+                Some(Ok(d)) => d
+                    .spec
+                    .reseeds()
+                    .keys()
+                    .map(|&rel| d.base_offset.saturating_add(rel))
+                    .collect(),
+                // A codec-opaque env (the toy tier) reports no markers.
+                _ => Vec::new(),
+            };
+            if let Some(&m) = markers.iter().find(|&&m| m > c.sealed_at) {
+                return Err(GameCampaignError::MarkerBeyondSeal {
+                    entry: c.entry.0,
+                    marker: m,
+                    sealed_at: c.sealed_at,
+                });
+            }
+            out.push(ResealEvidence {
+                entry: c.entry.0,
+                sealed_at: c.sealed_at,
+                markers,
+                state_hash: hex(&c.state_hash),
+            });
+        }
+        out
+    } else {
+        Vec::new()
+    };
+
     // Retain the deep reproducer (env sidecar + full journal — the REG_FRAME
     // moments film derives its shot list from ride the journal's events).
     let deep = match deepest {
@@ -1040,6 +1142,8 @@ pub fn run_game_campaign<M: Machine>(
         } else {
             work
         },
+        reseals,
+        seal_retries,
     })
 }
 
@@ -1328,10 +1432,30 @@ pub struct GameToyMachine {
     /// The restored ancestor SDK prefix (the production machine restores it
     /// into a branched child, so counts are CUMULATIVE — task 132).
     prefix: Vec<(u64, u32, Vec<u8>)>,
-    /// snap id -> (vtime, env, captured prefix).
-    #[allow(clippy::type_complexity)] // not order-observable: a plain snap table
-    snaps: std::collections::BTreeMap<u64, (u64, Reproducer, Vec<(u64, u32, Vec<u8>)>)>,
+    /// snap id -> the captured state (a plain snap table).
+    snaps: std::collections::BTreeMap<u64, ToySnap>,
     next_snap: u64,
+}
+
+/// One toy snapshot: the seal coordinate plus BOTH restore contexts — the
+/// cumulative sealed capture a **child `branch`** restores (task 132), and the
+/// branch context at capture a **verbatim `replay`** restores (the production
+/// adapter's `SnapMeta.branch_offset` contract: replay restores the *origin*
+/// the recording was keyed from, never the snapshot's own V-time — restoring
+/// `vtime` as the branch point is exactly the silent mis-key the adapter doc
+/// warns about, and it breaks the task-136 reseal identity on the toy).
+#[derive(Clone)]
+struct ToySnap {
+    /// The capture V-time (the seal moment).
+    at: u64,
+    /// The env active at capture.
+    env: Reproducer,
+    /// The cumulative sealed capture (what a child branch restores).
+    sealed: Vec<(u64, u32, Vec<u8>)>,
+    /// The branch origin at capture (what a verbatim replay restores).
+    branch_vtime: u64,
+    /// The restored ancestor prefix at capture (replay's prefix).
+    branch_prefix: Vec<(u64, u32, Vec<u8>)>,
 }
 
 /// The toy's quiescent boot V-time.
@@ -1387,20 +1511,29 @@ impl GameToyMachine {
         out
     }
 
-    /// The simulated per-window SMB observations for the current env:
-    /// `(window, world, level, x_bucket, depth_ordinal)`. The behavior folds
-    /// the env's **reseed-marker table** into the effective seed (a crude
-    /// stand-in for "fresh entropy after the marker"), so the quiet mutator's
-    /// exploit branches genuinely diverge on the toy exactly as a reseeded
-    /// guest would.
-    fn windows(&self) -> Vec<(u64, u64, u64, u64, u64)> {
-        let seed = explorer::AdapterEnv::decode(&self.current)
+    /// The behavior-determining effective seed of the current env: its seed
+    /// folded with the **reseed-marker table** (a crude stand-in for "fresh
+    /// entropy after the marker"). A pure function of the env's *spec
+    /// content* — never its blob coordinate metadata — shared by
+    /// [`windows`](Self::windows) and [`Machine::hash`], so the toy's state
+    /// hash covers exactly what determines its behavior.
+    fn effective_seed(&self) -> u64 {
+        explorer::AdapterEnv::decode(&self.current)
             .map(|d| {
                 d.spec.reseeds().iter().fold(d.spec.seed(), |acc, (at, s)| {
                     acc ^ s.rotate_left((*at % 63) as u32)
                 })
             })
-            .unwrap_or(0);
+            .unwrap_or(0)
+    }
+
+    /// The simulated per-window SMB observations for the current env:
+    /// `(window, world, level, x_bucket, depth_ordinal)`. The behavior folds
+    /// the env's **reseed-marker table** into the effective seed, so the
+    /// quiet mutator's exploit branches genuinely diverge on the toy exactly
+    /// as a reseeded guest would.
+    fn windows(&self) -> Vec<(u64, u64, u64, u64, u64)> {
+        let seed = self.effective_seed();
         let mut p = explorer::Prng::new(seed);
         let mut x = 40u64;
         let (mut world, mut level) = (0u64, 0u64);
@@ -1443,25 +1576,29 @@ fn state_event(reg: u64, op: u8, value: u64) -> (u32, Vec<u8>) {
 
 impl Machine for GameToyMachine {
     fn branch(&mut self, snap: explorer::SnapId, env: &Reproducer) -> Result<(), MachineError> {
-        let Some((vt, _, prefix)) = self.snaps.get(&snap.0) else {
+        let Some(s) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
         explorer::AdapterEnv::decode(env)?;
-        self.vtime = *vt;
-        self.branch_vtime = *vt;
-        self.prefix = prefix.clone();
+        self.vtime = s.at;
+        self.branch_vtime = s.at;
+        self.prefix = s.sealed.clone();
         self.current = env.clone();
         Ok(())
     }
 
     fn replay(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
-        let Some((vt, env, prefix)) = self.snaps.get(&snap.0) else {
+        // Verbatim restore of the SAME rollout: the branch context reverts to
+        // what was active at capture (`branch_vtime`/`branch_prefix`) — the
+        // adapter's `SnapMeta.branch_offset` contract — never the snapshot's
+        // own V-time as a fresh branch point.
+        let Some(s) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
-        self.vtime = *vt;
-        self.branch_vtime = *vt;
-        self.prefix = prefix.clone();
-        self.current = env.clone();
+        self.vtime = s.at;
+        self.branch_vtime = s.branch_vtime;
+        self.prefix = s.branch_prefix.clone();
+        self.current = s.env.clone();
         Ok(())
     }
 
@@ -1503,7 +1640,16 @@ impl Machine for GameToyMachine {
             .filter(|(at, _, _)| *at <= vt)
             .collect();
         let included = sealed.len() as u64;
-        self.snaps.insert(id, (vt, self.current.clone(), sealed));
+        self.snaps.insert(
+            id,
+            ToySnap {
+                at: vt,
+                env: self.current.clone(),
+                sealed,
+                branch_vtime: self.branch_vtime,
+                branch_prefix: self.prefix.clone(),
+            },
+        );
         Ok((
             explorer::SnapId(id),
             explorer::EvidenceCut {
@@ -1522,10 +1668,25 @@ impl Machine for GameToyMachine {
 
     fn hash(&mut self) -> Result<[u8; 32], MachineError> {
         use sha2::{Digest, Sha256};
+        // The toy's OBSERVABLE state: the clock, the branch context (origin +
+        // restored prefix), and the env's behavior-determining spec content
+        // (the effective windows seed) — never the env blob's coordinate
+        // metadata. The real machine's hash is over guest state, independent
+        // of the blob; hashing raw blob bytes would flunk the task-136 reseal
+        // identity on a legitimately re-anchored (recorded-vs-proposed)
+        // coordinate whose state is bit-identical.
         let mut h = Sha256::new();
-        h.update(b"campaign-runner.gametoy.state_hash.v1");
-        h.update((self.current.bytes.len() as u64).to_le_bytes());
-        h.update(&self.current.bytes);
+        h.update(b"campaign-runner.gametoy.state_hash.v2");
+        h.update(self.vtime.to_le_bytes());
+        h.update(self.branch_vtime.to_le_bytes());
+        h.update((self.prefix.len() as u64).to_le_bytes());
+        for (at, id, bytes) in &self.prefix {
+            h.update(at.to_le_bytes());
+            h.update(id.to_le_bytes());
+            h.update((bytes.len() as u64).to_le_bytes());
+            h.update(bytes);
+        }
+        h.update(self.effective_seed().to_le_bytes());
         Ok(h.finalize().into())
     }
 
@@ -2516,6 +2677,54 @@ mod tests {
             .expect("the seal-anchored campaign runs to completion (no NonAdjacentChain abort)")
     }
 
+    /// Task 136: `verify_reseal` runs the blocking identity sub-gate over the
+    /// toy campaign — every admitted entry re-materializes from its ledger env
+    /// alone with the identical machine hash, its recorded markers all sit
+    /// at-or-below its seal, and the whole outcome (reseal records included)
+    /// is bit-identical across identically-seeded campaigns.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "run_game_campaign opens a scratch evidence ledger (fs)"
+    )]
+    fn verify_reseal_runs_the_identity_sub_gate_portably() {
+        let outcome = |seed: u64| {
+            let m = SealAnchor::new(GameToyMachine::new());
+            let cfg = GameCampaignConfig {
+                max_branches: SMOKE_BRANCHES,
+                verify_reseal: true,
+                ..GameCampaignConfig::smoke(seed)
+            };
+            run_game_campaign(
+                m,
+                Box::new(SpecEnvCodec),
+                &cfg,
+                ExplorationConfig::SelectorV1,
+            )
+            .expect("the sub-gate passes on the toy")
+        };
+        let o = outcome(7);
+        assert!(
+            !o.reseals.is_empty(),
+            "SelectorV1 admits entries, so the sub-gate checked at least one"
+        );
+        for r in &o.reseals {
+            assert!(
+                r.markers.iter().all(|&m| m <= r.sealed_at),
+                "entry {} carries a marker beyond its seal ({:?} vs {})",
+                r.entry,
+                r.markers,
+                r.sealed_at
+            );
+        }
+        assert!(
+            o.reseals.iter().any(|r| !r.markers.is_empty()),
+            "quiet-mutated exploit entries carry reseed markers — the marker \
+             evidence must not be vacuously empty"
+        );
+        assert_eq!(o, outcome(7), "the reseal records are deterministic");
+    }
+
     /// The task-133 regression: under the box's seal-anchored `recorded_env`
     /// coordinate (seal ≠ terminal — the misaligned shape every existing
     /// portable test misses), a SelectorV1 EXPLOIT step composes the child delta
@@ -3411,8 +3620,13 @@ mod tests {
         );
     }
 
-    /// `replay` restores the snapshotted vtime, branch point, and capture
-    /// prefix, and rejects an unknown snapshot loudly. The whole-body `Ok(())`
+    /// `replay` restores the snapshotted vtime plus the **branch context at
+    /// capture** — the origin the recording was keyed from, never the
+    /// snapshot's own V-time as a fresh branch point (the production
+    /// adapter's `SnapMeta.branch_offset` contract; restoring `vtime` as the
+    /// origin is the silent mis-key its doc warns about, corrected on the toy
+    /// by task 136) — while a child `branch` restores the cumulative sealed
+    /// capture. Rejects an unknown snapshot loudly. The whole-body `Ok(())`
     /// mutant leaves the machine wherever it was and never errors — every
     /// assertion below refutes it.
     #[test]
@@ -3420,7 +3634,7 @@ mod tests {
         let mut m = GameToyMachine::new();
         // Seal the base moment.
         let (snap_base, _) = m.snapshot().unwrap();
-        // Advance vtime, then seal a later, distinct snapshot.
+        // Advance vtime, then seal a later, distinct snapshot mid-rollout.
         let _ = m
             .run(
                 &StopConditions {
@@ -3432,14 +3646,28 @@ mod tests {
             .unwrap();
         let (snap_late, _) = m.snapshot().unwrap();
 
-        // Load the late snapshot: branch point + vtime move to base+100 and its
-        // multi-event sealed prefix is restored.
+        // Verbatim replay of the late snapshot: vtime is the capture moment,
+        // but the branch context reverts to what was ACTIVE at capture — the
+        // boot origin (this machine never branched), not the seal moment.
         m.replay(snap_late).unwrap();
         assert_eq!(m.vtime, TOY_BASE_VTIME + 100);
+        assert_eq!(
+            m.branch_vtime, TOY_BASE_VTIME,
+            "replay restores the branch ORIGIN at capture, never the seal moment"
+        );
+        assert!(
+            m.prefix.is_empty(),
+            "the boot rollout had no restored ancestor prefix at capture"
+        );
+
+        // A child BRANCH off the same snapshot restores the cumulative sealed
+        // capture as its inherited prefix, keyed at the seal (task 132).
+        m.branch(snap_late, &explorer::SpecEnvCodec.seeded(9))
+            .unwrap();
         assert_eq!(m.branch_vtime, TOY_BASE_VTIME + 100);
         assert!(
             m.prefix.len() >= 6,
-            "the late seal restored a multi-event prefix, got {}",
+            "the child inherits the late seal's multi-event capture, got {}",
             m.prefix.len()
         );
 
@@ -3447,10 +3675,9 @@ mod tests {
         m.replay(snap_base).unwrap();
         assert_eq!(m.vtime, TOY_BASE_VTIME);
         assert_eq!(m.branch_vtime, TOY_BASE_VTIME);
-        assert_eq!(
-            m.prefix.len(),
-            1,
-            "the base seal admitted exactly one event"
+        assert!(
+            m.prefix.is_empty(),
+            "nothing was restored before the base seal"
         );
 
         // An unknown snapshot is a loud error, never a silent success.

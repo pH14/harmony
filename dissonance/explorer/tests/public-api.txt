@@ -27,6 +27,7 @@ impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
 pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Reproducer, &explorer::Reproducer) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Reproducer, u64) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Reproducer
+pub fn explorer::adapter::SpecEnvCodec::staged_moments(&self, &explorer::Reproducer) -> core::result::Result<alloc::vec::Vec<u64>, explorer::EnvCodecError>
 pub const explorer::adapter::ADAPTER_BLOB_VERSION: u16
 pub fn explorer::adapter::client_caps() -> control_proto::types::Caps
 pub mod explorer::stads
@@ -69,6 +70,9 @@ pub explorer::CampaignError::Ledger(explorer::LedgerError)
 pub explorer::CampaignError::Machine(explorer::MachineError)
 pub explorer::CampaignError::OccupancyDivergence
 pub explorer::CampaignError::OccupancyDivergence::detail: alloc::string::String
+pub explorer::CampaignError::ResealDivergence
+pub explorer::CampaignError::ResealDivergence::at: u64
+pub explorer::CampaignError::ResealDivergence::entry: u64
 pub explorer::CampaignError::Retention(explorer::RetentionError)
 pub explorer::CampaignError::ViewIncomplete
 pub explorer::CampaignError::ViewIncomplete::rollout: u64
@@ -307,6 +311,7 @@ pub fn explorer::DifferentialCampaign<M>::occupied(&self) -> usize
 pub fn explorer::DifferentialCampaign<M>::retention_report(&self) -> explorer::RetentionReport
 pub fn explorer::DifferentialCampaign<M>::set_stop_conditions(&mut self, explorer::StopConditions)
 pub fn explorer::DifferentialCampaign<M>::step(&mut self) -> core::result::Result<explorer::StepReport, explorer::CampaignError>
+pub fn explorer::DifferentialCampaign<M>::verify_reseal_identity(&mut self) -> core::result::Result<alloc::vec::Vec<explorer::ResealCheck>, explorer::CampaignError>
 pub fn explorer::DifferentialCampaign<M>::views(&self) -> &explorer::RetentionViews
 pub struct explorer::EvidenceCut
 pub explorer::EvidenceCut::at: explorer::Moment
@@ -442,6 +447,10 @@ pub explorer::Record::stream: explorer::StreamId
 pub struct explorer::Reproducer
 pub explorer::Reproducer::blob_version: u16
 pub explorer::Reproducer::bytes: alloc::vec::Vec<u8>
+pub struct explorer::ResealCheck
+pub explorer::ResealCheck::entry: explorer::ExemplarRef
+pub explorer::ResealCheck::sealed_at: u64
+pub explorer::ResealCheck::state_hash: [u8; 32]
 pub struct explorer::RetentionCheckpoint
 pub explorer::RetentionCheckpoint::views: explorer::RetentionViews
 impl explorer::RetentionCheckpoint
@@ -501,12 +510,14 @@ impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
 pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Reproducer, &explorer::Reproducer) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Reproducer, u64) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Reproducer
+pub fn explorer::adapter::SpecEnvCodec::staged_moments(&self, &explorer::Reproducer) -> core::result::Result<alloc::vec::Vec<u64>, explorer::EnvCodecError>
 pub struct explorer::StepReport
 pub explorer::StepReport::admitted: alloc::vec::Vec<explorer::ExemplarRef>
 pub explorer::StepReport::candidates: usize
 pub explorer::StepReport::counterexamples: alloc::vec::Vec<explorer::OccurrenceCounterexample>
 pub explorer::StepReport::explored: bool
 pub explorer::StepReport::rollout_revision: revision_coordinator::ids::Revision
+pub explorer::StepReport::seal_retries: u64
 pub explorer::StepReport::state_hash: core::option::Option<[u8; 32]>
 pub struct explorer::StopConditions
 pub explorer::StopConditions::deadline: core::option::Option<explorer::Moment>
@@ -555,10 +566,12 @@ pub trait explorer::EnvCodec
 pub fn explorer::EnvCodec::compose(&self, &explorer::Reproducer, &explorer::Reproducer) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
 pub fn explorer::EnvCodec::mutate(&self, &explorer::Reproducer, u64) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
 pub fn explorer::EnvCodec::seeded(&self, u64) -> explorer::Reproducer
+pub fn explorer::EnvCodec::staged_moments(&self, &explorer::Reproducer) -> core::result::Result<alloc::vec::Vec<u64>, explorer::EnvCodecError>
 impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
 pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Reproducer, &explorer::Reproducer) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Reproducer, u64) -> core::result::Result<explorer::Reproducer, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Reproducer
+pub fn explorer::adapter::SpecEnvCodec::staged_moments(&self, &explorer::Reproducer) -> core::result::Result<alloc::vec::Vec<u64>, explorer::EnvCodecError>
 pub trait explorer::Machine
 pub fn explorer::Machine::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::Machine::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::MachineError>

@@ -201,6 +201,19 @@ pub enum CampaignError {
         /// The rollout whose row was expected.
         rollout: u64,
     },
+    /// The task-136 blocking sub-gate failed: an entry's from-ledger
+    /// re-materialization (`run(deadline = sealed_at)`, zero probes) landed
+    /// at the right coordinate but a **different machine state hash** than
+    /// the live seal — the retry-forward's extra deadline legs perturbed
+    /// state the ledger env does not record. A determinism violation to
+    /// escalate (the env-rider fallback needs a ruling), never to absorb.
+    #[error("reseal identity: entry {entry} re-materialized at {at} with a diverged state hash")]
+    ResealDivergence {
+        /// The frontier entry that failed the identity check.
+        entry: u64,
+        /// The entry's sealed moment.
+        at: u64,
+    },
     /// The operational archive and the Differential occupancy view disagree
     /// — a divergence between the production backend and the controller's
     /// mirror, surfaced loudly (the recompute-parity discipline, task 132).
@@ -328,6 +341,26 @@ pub struct StepReport {
     /// [`CampaignConfig::hash_rollouts`] is set (the per-branch determinism
     /// artifact); `None` otherwise.
     pub state_hash: Option<[u8; 32]>,
+    /// How many `NotQuiescent` seal refusals this step's candidate
+    /// materializations absorbed via the bounded run-forward (task 136 /
+    /// hm-esfd) — direct evidence the "wait a beat, then snap" mechanism
+    /// engaged, not merely that nothing needed it.
+    pub seal_retries: u64,
+}
+
+/// One task-136 reseal-identity check
+/// ([`DifferentialCampaign::verify_reseal_identity`]): the frontier entry, its
+/// server-stamped seal moment, and the machine state hash at the seal — equal
+/// before eviction and after the from-ledger re-materialization by the
+/// check's own assertion.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ResealCheck {
+    /// The frontier entry checked.
+    pub entry: ExemplarRef,
+    /// The entry's server-stamped seal moment.
+    pub sealed_at: u64,
+    /// The machine state hash at the (re-)materialized seal.
+    pub state_hash: [u8; 32],
 }
 
 /// The two-barrier Differential campaign controller (module doc). Owns the
@@ -619,6 +652,7 @@ impl<M: Machine> DifferentialCampaign<M> {
             counterexamples: fold.new_counterexamples,
             explored,
             state_hash,
+            seal_retries: 0,
         };
         if !candidates.is_empty() {
             let cohort_b = self.coordinator.open_cohort()?;
@@ -643,7 +677,7 @@ impl<M: Machine> DifferentialCampaign<M> {
                 // exactly what the adapter re-anchors the env's staged
                 // Moments at) rides along for the marker clamp.
                 let branch_origin = parent_cut.map_or(Moment(0), |c| c.at);
-                let (seal, actual_cut, seal_delta) = match self.materialize_candidate(
+                let (seal, actual_cut, seal_delta, retries) = match self.materialize_candidate(
                     base_snap,
                     &branch_env,
                     cand.at,
@@ -653,6 +687,7 @@ impl<M: Machine> DifferentialCampaign<M> {
                     Err(CampaignError::Machine(MachineError::NotSealable(_))) => continue,
                     Err(e) => return Err(e),
                 };
+                report.seal_retries += retries;
                 // The **seal-consistent** genesis-complete env (task 133 / PR
                 // #134 finding F3). The frontier entry's env must be the
                 // genesis-complete reproducer reaching the SEAL — `exemplar.cut`
@@ -1035,6 +1070,68 @@ impl<M: Machine> DifferentialCampaign<M> {
         self.mat.evict_seal(&mut self.machine, r)?;
         Ok(())
     }
+
+    /// The task-136 **blocking sub-gate driver**: for every admitted frontier
+    /// entry, pin the machine state hash at its live seal (verbatim
+    /// `replay`), evict the seal, re-materialize it **from the ledger env
+    /// alone** — the task-68 zero-probe replay: one `branch` + one
+    /// `run(deadline = sealed_at)` + seal, with
+    /// [`MachineError::MaterializeDivergence`]/[`MachineError::CutDivergence`]
+    /// refusing any coordinate drift — and require the bit-identical state
+    /// hash back ([`CampaignError::ResealDivergence`] otherwise, loudly).
+    ///
+    /// This is the one open determinism surface of the marker-clamped
+    /// run-forward (hm-esfd): a retry-forward seal's *live* history contains
+    /// failed probes and extra deadline legs the ledger env does not record;
+    /// if those legs perturbed real state, the reproducer would not
+    /// reproduce. Entries iterate in deterministic frontier order, so the
+    /// returned records are themselves a determinism artifact a `--repeat`
+    /// gate can compare across identically-seeded campaigns.
+    pub fn verify_reseal_identity(&mut self) -> Result<Vec<ResealCheck>, CampaignError> {
+        let refs: Vec<ExemplarRef> = self.occupancy.frontier().iter().map(|(r, _)| r).collect();
+        let mut out = Vec::with_capacity(refs.len());
+        for r in refs {
+            // A live seal (materializing if the entry's was already evicted),
+            // then the pre-image: the sealed state's hash via verbatim replay.
+            let (seal, _) = self.mat.materialize(
+                &mut self.machine,
+                self.codec.as_ref(),
+                self.occupancy.frontier(),
+                r,
+            )?;
+            self.machine.replay(seal)?;
+            let before = self.machine.hash()?;
+            let sealed_at = self
+                .occupancy
+                .frontier()
+                .get(r)
+                .map(|e| e.exemplar.cut.at.0)
+                .ok_or(MachineError::UnknownExemplar(r.0))?;
+            // Evict, then re-materialize from the ledger env alone. The
+            // replay leaves the machine at the fresh seal — hash there.
+            self.mat.evict_seal(&mut self.machine, r)?;
+            let (_seal, ran) = self.mat.materialize(
+                &mut self.machine,
+                self.codec.as_ref(),
+                self.occupancy.frontier(),
+                r,
+            )?;
+            debug_assert!(ran.is_some(), "the seal was just evicted");
+            let after = self.machine.hash()?;
+            if before != after {
+                return Err(CampaignError::ResealDivergence {
+                    entry: r.0,
+                    at: sealed_at,
+                });
+            }
+            out.push(ResealCheck {
+                entry: r,
+                sealed_at,
+                state_hash: after,
+            });
+        }
+        Ok(out)
+    }
 }
 
 /// One provisional transition nominated for materialization replay: the moment
@@ -1276,13 +1373,17 @@ impl<M: Machine> DifferentialCampaign<M> {
     /// which is what lets the task-68 re-materialization (`run(deadline =
     /// sealed_at)`, zero probes) replay it bit-identically from the ledger
     /// env alone.
+    ///
+    /// Returns the seal handle, its stamped cut, the branch-local delta, and
+    /// the number of `NotQuiescent` refusals the run-forward absorbed (the
+    /// [`StepReport::seal_retries`] evidence).
     fn materialize_candidate(
         &mut self,
         base_snap: SnapId,
         branch_env: &Reproducer,
         at: Moment,
         origin: Moment,
-    ) -> Result<(SnapId, EvidenceCut, Reproducer), CampaignError> {
+    ) -> Result<(SnapId, EvidenceCut, Reproducer, u64), CampaignError> {
         self.machine.branch(base_snap, branch_env)?;
         // The env's staged-schedule Moments beyond the branch origin, in the
         // absolute frame the server drains them in (`origin + relative`, the
@@ -1341,7 +1442,8 @@ impl<M: Machine> DifferentialCampaign<M> {
             match self.machine.snapshot() {
                 Ok((seal, cut)) => {
                     let delta = self.machine.recorded_env()?;
-                    return Ok((seal, cut, delta));
+                    let retries = u64::from(SEAL_RETRY_ATTEMPTS - attempts_left);
+                    return Ok((seal, cut, delta, retries));
                 }
                 // Mid-exit at the boundary: run a little further and retry,
                 // bounded. On cap exhaustion the candidate is dropped like a
