@@ -9,8 +9,8 @@
 
 use benchmark::exploration::ExplorationConfig;
 use campaign_runner::mazecampaign::{
-    MazeCampaignConfig, MazeCampaignOutcome, MazeDeclaredMachine, MazeObservationCells,
-    MazeToyMachine, run_maze_campaign,
+    MAZE_TOY_STEP, MazeCampaignConfig, MazeCampaignOutcome, MazeDeclaredMachine,
+    MazeObservationCells, MazeToyMachine, run_maze_campaign,
 };
 use explorer::{
     DeclineTactic, DifferentialCampaign, EvidenceLedger, GenesisSelector, Machine, SpecEnvCodec,
@@ -108,14 +108,22 @@ fn frontier_off_log_equals_pure_random_log() {
     assert_eq!(pure.work, off.work);
 }
 
-/// The portable control comparison (the gate's shape at reduced scale): over
-/// a handful of seeds, the archive-guided configuration reaches strictly
-/// deeper than both permanent controls and is the only one to reach the
-/// goal. The full ≥20-seed strict-IQR gate is the box campaign (M2); this
-/// pins the mechanism portably.
+/// The portable control comparison (the gate's shape at reduced scale): over a
+/// batch of seeds, the archive-guided configuration reaches strictly deeper and
+/// wider than both permanent controls and is the only one to reach the goal.
+/// The full strict-IQR gate is the box campaign (M2); this pins the mechanism
+/// portably.
+///
+/// Scale note (`hm-esfd` / PR #138): the Option-C marker-clamped candidate seal
+/// shifted where the toy's Entries seal, which re-shaped the per-seed archive
+/// dynamics — a 5-seed window (the pre-#138 proxy) no longer separates on depth
+/// or lands a goal seed. The property is unchanged and holds robustly; the
+/// proxy widens to the 20-seed batch the doc always named to re-clear the strict
+/// inequalities. (The `hm-qcpp` rolling deadline is inert here: this arm is the
+/// natural-terminal toy path, `deadline_delta == None`.)
 #[test]
 fn archive_guided_outreaches_both_controls() {
-    let seeds = [101u64, 102, 103, 104, 105];
+    let seeds: Vec<u64> = (101..=120).collect();
     let depth = |config: ExplorationConfig| -> (u64, u64, u64) {
         // (total depth, total distinct cells, goal seeds) across the seeds.
         let mut total_depth = 0;
@@ -224,5 +232,71 @@ fn restored_entries_resume_the_archive() {
     assert_eq!(
         format!("{:?}", restored.views().assignments),
         live_assignments
+    );
+}
+
+/// The rolling deadline end-to-end (`hm-qcpp`): a live-shaped SelectorV1
+/// campaign (`deadline_delta` set — the box path's shape) is non-vacuous and
+/// gives EVERY branch a full span past its own origin. The load-bearing
+/// assertion is `min_steps == steps_per_rollout`: under a single campaign-wide
+/// absolute deadline an exploit branching off a mid-walk-sealed Entry would run
+/// a *truncated* walk (fewer steps, down to a zero-span vacuous rollout when the
+/// Entry sealed at the deadline). Full steps for every branch — genesis and
+/// exploit alike — can only hold when each rollout's deadline is measured from
+/// its own branch origin. Bit-identical across reruns (the determinism bar).
+#[test]
+fn rolling_deadline_clears_exploit_vacuity() {
+    const STEPS: u32 = 24;
+    let delta = u64::from(STEPS) * MAZE_TOY_STEP;
+    let mut cfg = MazeCampaignConfig::smoke(7);
+    cfg.steps_per_rollout = STEPS;
+    cfg.deadline_delta = Some(delta);
+
+    let out = run(&cfg, ExplorationConfig::SelectorV1);
+    assert!(
+        out.vacuity().is_none(),
+        "rolling deadline: no vacuous rollout ({:?})",
+        out.vacuity()
+    );
+    // Every rollout advanced exactly `delta` past its own branch point and
+    // walked its full step budget — including exploits off late-sealed Entries,
+    // which a single campaign-wide deadline would starve.
+    assert_eq!(
+        out.work.min_vtime_span, delta,
+        "every rollout gets a full rolling span past its own origin"
+    );
+    assert_eq!(
+        out.work.min_steps,
+        u64::from(STEPS),
+        "no exploit rollout was truncated: every branch walked its full budget"
+    );
+    assert_eq!(out.work.branches, cfg.max_branches);
+    assert!(
+        out.log.events.iter().any(|e| !e.touched.is_empty()),
+        "the campaign explored real cells"
+    );
+
+    // Same seed/config ⇒ bit-identical outcome (determinism, live-shaped).
+    assert_eq!(out, run(&cfg, ExplorationConfig::SelectorV1));
+}
+
+/// Machinery-neutrality survives a live-shaped deadline (the `hm-qcpp` fix did
+/// not perturb it): FrontierOff and PureRandom both branch only from genesis,
+/// so both get the identical `base + delta` rolling deadline on every branch
+/// and produce the identical log and work evidence. A frontier-relative
+/// deadline would have diverged them — FrontierOff's frontier grows while
+/// PureRandom's stays empty — which is exactly why the deadline keys off the
+/// branch *origin*, not the frontier.
+#[test]
+fn frontier_off_equals_pure_random_under_a_rolling_deadline() {
+    let mut cfg = MazeCampaignConfig::smoke(21);
+    cfg.deadline_delta = Some(u64::from(cfg.steps_per_rollout) * MAZE_TOY_STEP);
+    let pure = run(&cfg, ExplorationConfig::PureRandom);
+    let off = run(&cfg, ExplorationConfig::FrontierOff);
+    assert_eq!(pure.log.events, off.log.events);
+    assert_eq!(pure.work, off.work);
+    assert!(
+        pure.vacuity().is_none() && off.vacuity().is_none(),
+        "both controls did real, non-vacuous work under the deadline"
     );
 }

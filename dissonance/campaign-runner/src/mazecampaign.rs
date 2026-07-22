@@ -424,24 +424,52 @@ pub struct MazeDeclaredMachine<M> {
     /// setup drain, before any campaign seal; catalog presence is a fixed
     /// property of the guest).
     prepends_catalog: Option<bool>,
+    /// The per-branch **rolling-deadline** span budget (`deadline_delta`): each
+    /// rollout runs exactly this much V-time past its *own* branch origin,
+    /// rather than the leftover of a single campaign-wide absolute deadline —
+    /// so an exploit branching off a late-sealed Entry gets a full span budget
+    /// instead of a truncated (or zero-span, vacuous) one (`hm-qcpp`). The
+    /// quiet-arm rollout is exactly the run whose stop conditions carry **no**
+    /// deadline (`until.deadline == None`); every seal / probe / setup run
+    /// names an explicit `Some` deadline and is forwarded verbatim, so the
+    /// Option-C candidate-seal machinery is untouched. `None` = no rolling (the
+    /// portable toy's natural terminal; a campaign with no live V-time bound).
+    rolling_delta: Option<u64>,
+    /// Each live snapshot's seal `Moment`, learned from `snapshot`'s
+    /// server-stamped cut — the origin lookup when a rollout branches onto it.
+    /// Kept bounded: an entry is dropped with its snapshot handle.
+    snap_moments: BTreeMap<explorer::SnapId, u64>,
+    /// The origin `Moment` of the most recent `branch`/`replay`: the point the
+    /// next rolling-deadline rollout measures its span from.
+    current_origin: Option<u64>,
 }
 
 impl<M: Machine> MazeDeclaredMachine<M> {
-    /// Wrap `inner` with the maze instrumentation declaration.
+    /// Wrap `inner` with the maze instrumentation declaration. Rolling
+    /// deadlines are off until the driver sets [`Self::rolling_delta`] (a
+    /// same-module assignment; the box path sets it to the live
+    /// `deadline_delta`, the toy leaves it `None`).
     pub fn new(inner: M) -> Self {
         MazeDeclaredMachine {
             inner,
             catalog: maze_instrumentation_catalog(),
             prepends_catalog: None,
+            rolling_delta: None,
+            snap_moments: BTreeMap::new(),
+            current_origin: None,
         }
     }
 }
 
 impl<M: Machine> Machine for MazeDeclaredMachine<M> {
     fn branch(&mut self, snap: explorer::SnapId, env: &Reproducer) -> Result<(), MachineError> {
+        // This branch's origin is the target snapshot's seal Moment — the point
+        // the rolling deadline will measure the rollout's span from.
+        self.current_origin = self.snap_moments.get(&snap).copied();
         self.inner.branch(snap, env)
     }
     fn replay(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
+        self.current_origin = self.snap_moments.get(&snap).copied();
         self.inner.replay(snap)
     }
     fn run(
@@ -449,10 +477,30 @@ impl<M: Machine> Machine for MazeDeclaredMachine<M> {
         until: &StopConditions,
         resolve: Option<&explorer::Answer>,
     ) -> Result<StopReason, MachineError> {
+        // The quiet-arm rollout carries no deadline of its own (`None`); impose
+        // this branch's rolling deadline — `origin + delta` — so every rollout
+        // gets a full span budget past its own branch point (`hm-qcpp`). A run
+        // that names an explicit deadline is a seal replay / probe / setup leg
+        // (the Option-C candidate-seal machinery names candidate Moments) and
+        // is forwarded verbatim, never re-anchored.
+        if let (Some(delta), None, Some(origin)) =
+            (self.rolling_delta, until.deadline, self.current_origin)
+        {
+            let rolling = StopConditions {
+                deadline: Some(Moment(origin.saturating_add(delta))),
+                on: until.on,
+            };
+            return self.inner.run(&rolling, resolve);
+        }
         self.inner.run(until, resolve)
     }
     fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
         let (id, mut cut) = self.inner.snapshot()?;
+        // Learn this seal's origin Moment for a later branch onto it (the
+        // rolling deadline's anchor), from the server-stamped cut — before the
+        // catalog ordinal bump below, which shifts the event COUNT, never the
+        // Moment.
+        self.snap_moments.insert(id, cut.at.0);
         // The seal cut is an SDK-vector ORDINAL count; prepending the
         // standalone catalog at position 0 shifts every firing one ordinal
         // and adds a schema tuple the cut must count (the task-132
@@ -465,6 +513,8 @@ impl<M: Machine> Machine for MazeDeclaredMachine<M> {
         Ok((id, cut))
     }
     fn drop_snap(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
+        // The handle is gone; its origin can never be branched onto again.
+        self.snap_moments.remove(&snap);
         self.inner.drop_snap(snap)
     }
     fn hash(&mut self) -> Result<[u8; 32], MachineError> {
@@ -663,8 +713,12 @@ pub fn run_maze_campaign<M: Machine>(
     };
 
     // The workload's explicit wire-v2 instrumentation declaration rides every
-    // SDK capture from here on.
+    // SDK capture from here on. The rolling deadline (`deadline_delta`) rides
+    // it too: the wrapper measures each rollout's span from its own branch
+    // origin, so an exploit off a late-sealed Entry is never starved to a
+    // zero span (`hm-qcpp`). `None` (the toy) leaves the natural terminal.
     let mut machine = MazeDeclaredMachine::new(machine);
+    machine.rolling_delta = cfg.deadline_delta;
 
     let (base, base_vtime) = seal_base(&mut machine, cfg)?;
     // The setup drain: learns the catalog mode (upgrade-in-place vs prepend)
@@ -676,12 +730,15 @@ pub fn run_maze_campaign<M: Machine>(
     machine.drop_snap(base)?;
 
     let until = StopConditions {
-        deadline: cfg
-            .deadline_delta
-            .map(|d| Moment(base_vtime.saturating_add(d))),
+        // No campaign-wide absolute deadline: the wrapper imposes each rollout's
+        // deadline as `branch_origin + deadline_delta` (the rolling deadline),
+        // so a candidate that seals at or past one fixed campaign deadline can
+        // no longer starve its exploit children to a zero span (`hm-qcpp`). The
+        // toy (`rolling_delta == None`) keeps its natural terminal here.
+        deadline: None,
         // Quiet arm: no decisions surface, no assertion stops a run (the goal
-        // marker is a reachable HIT); the deadline or the guest's natural
-        // terminal bounds the rollout.
+        // marker is a reachable HIT); the rolling deadline or the guest's
+        // natural terminal bounds the rollout.
         on: StopMask::NONE,
     };
 
@@ -1299,5 +1356,87 @@ mod tests {
             ),
             Err(MazeCampaignError::SignalUnavailable)
         ));
+    }
+
+    /// The rolling deadline (`hm-qcpp`): with `rolling_delta` set, a no-deadline
+    /// rollout run is imposed a deadline of `origin + delta` measured from *its
+    /// own* branch point — so an exploit branching off a late-sealed Entry runs
+    /// a full span past that late origin, not the leftover of one campaign-wide
+    /// absolute deadline. A run that names an explicit deadline (a seal replay
+    /// / probe) is forwarded verbatim — the Option-C seal machinery is untouched.
+    #[test]
+    fn rolling_deadline_measures_span_from_each_branch_origin() {
+        const DELTA: u64 = 200;
+        let mut m = MazeDeclaredMachine::new(MazeToyMachine::new(MazeSpec::small(), 12));
+        m.rolling_delta = Some(DELTA);
+        let env = explorer::SpecEnvCodec.seeded(0);
+        let quiet = StopConditions {
+            deadline: None,
+            on: StopMask::NONE,
+        };
+
+        // Seal a base at boot; a genesis rollout runs DELTA past it.
+        let (base, base_cut) = m.snapshot().expect("seal base");
+        assert_eq!(base_cut.at.0, TOY_BASE_VTIME);
+        m.branch(base, &env).expect("branch genesis");
+        let stop = m.run(&quiet, None).expect("genesis rollout");
+        assert_eq!(
+            stop.vtime().0,
+            TOY_BASE_VTIME + DELTA,
+            "genesis rollout runs delta past the base origin"
+        );
+
+        // Seal an Entry at a LATE moment (well past a base+delta deadline), then
+        // branch onto it as an exploit would: the rollout runs DELTA past the
+        // LATE origin, not the base's fixed deadline (the hm-qcpp fix).
+        let late = TOY_BASE_VTIME + 10 * DELTA;
+        m.run(
+            &StopConditions {
+                deadline: Some(Moment(late)),
+                on: StopMask::NONE,
+            },
+            None,
+        )
+        .expect("advance to a late point");
+        let (entry, entry_cut) = m.snapshot().expect("seal late entry");
+        assert_eq!(entry_cut.at.0, late);
+        m.branch(entry, &env).expect("branch exploit");
+        let stop = m.run(&quiet, None).expect("exploit rollout");
+        assert_eq!(
+            stop.vtime().0,
+            late + DELTA,
+            "exploit rollout runs delta past ITS late origin (never a zero span)"
+        );
+
+        // A run that names an explicit deadline is a seal replay / probe: it is
+        // forwarded verbatim, never re-anchored to origin + delta.
+        m.branch(entry, &env).expect("branch");
+        let stop = m
+            .run(
+                &StopConditions {
+                    deadline: Some(Moment(late + 5)),
+                    on: StopMask::NONE,
+                },
+                None,
+            )
+            .expect("seal replay");
+        assert_eq!(
+            stop.vtime().0,
+            late + 5,
+            "an explicit deadline (seal replay) is forwarded verbatim"
+        );
+
+        // Rolling off (the toy default): a no-deadline run keeps the natural
+        // terminal — the wrapper imposes nothing.
+        let mut plain = MazeDeclaredMachine::new(MazeToyMachine::new(MazeSpec::small(), 12));
+        let (b, _) = plain.snapshot().expect("seal");
+        plain.branch(b, &env).expect("branch");
+        assert!(
+            matches!(
+                plain.run(&quiet, None).expect("run"),
+                StopReason::Quiescent { .. }
+            ),
+            "rolling off ⇒ the natural terminal, no imposed deadline"
+        );
     }
 }
