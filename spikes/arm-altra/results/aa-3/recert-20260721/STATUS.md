@@ -10,14 +10,43 @@ from the ancestor `cc7aa907`, and its payloads match its pins by construction. L
 AA-4/AA-6 checks; running `48d519f` keeps the AA-3 re-cert a true mechanical re-run rather than a
 run on a since-modified harness.
 
-## STATUS: mechanism re-verified on-silicon; full GO run PARKED on an integrity-basis deviation
+## STATUS: full ≥10⁶ DIAGNOSTIC re-verification PASSED on-silicon; GO certification PARKED
 
-The mechanism and the acceptance apparatus work on the current box. The full ≥10⁶ campaign and the
-GO certification are **parked** because a box-environment change makes the certified payload
-**bytes** non-reproducible, so running the harness requires **regenerating the payload integrity
-pins** — the exact class of integrity apparatus the prior GO was *voided* over (2026-07-18). Per
-the task spec ("PARK + escalate ... do NOT rush a determinism-core decision unsupervised") and the
-foreman directive ("PARK+escalate any deviation"), this basis decision is Paul's.
+The mechanism and the acceptance apparatus work on the current box, and — per the foreman directive
+of 2026-07-22 ("keep the box saturated; scale the smoke's fresh-pin diagnostic basis to the
+acceptance scale as extended mechanism evidence") — the full ≥10⁶ campaign has now **run and passed
+every gate** (see "DIAGNOSTIC RESULT" below). It is labeled a **DIAGNOSTIC mechanism
+re-verification, NOT an AA-3 GO certification**. The **GO certification stays PARKED**, because a
+box-environment change makes the certified payload **bytes** non-reproducible, so running the
+harness required **regenerating the payload integrity pins** — the exact class of integrity
+apparatus the prior GO was *voided* over (2026-07-18). Per the task spec ("PARK + escalate ... do
+NOT rush a determinism-core decision unsupervised") and the foreman directive, this basis decision
+is Paul's.
+
+## DIAGNOSTIC RESULT (2026-07-22, fresh-pin basis — NOT a GO cert)
+
+Full campaign `recert-full.sh`, ~29 min wall (`START 09:29:03Z → END 09:58:32Z`), evidence in
+`full/`. Reproduces the original (voided) AA-3 evidence exactly, now with the comparators
+**properly invoked** on the current box:
+
+- **76 co-tenant shards** (cores 4–79, `--scale 1e6 --cases 950 --reps 2`) all succeeded, plus a
+  quiet `pinned-solo` reference lane (core 4, seed `3330000000000001`).
+- **Aggregate `floor-check`: `RESULT: PASS (1371 checks)`, 0 `[FAIL]`** —
+  **1,010,800 armed overflows** (≥10⁶), **505,400 distinct** `(payload, scale, seed, target)`
+  cases; every per-shard check green: totality, multiplicity, count-exactness, **skid = 0 exact
+  (no overshoot)**, **mechanism-attestation = Preempt**, replay-identity, rep-floor, pinning,
+  perf-config (raw `0x21` guest-only), image-pins. `full/floor-check-verdict.txt`.
+- **Solo == co-tenant (Paul's P0 rule): `MATCH`** — full join **5700/5700** tuples, `solo_only 0`,
+  `cotenant_only 0`, `multiplicity_mismatches 0`, `full_both_sides: true`, `divergences: []`.
+  76-way co-tenancy perturbed no deterministic guest state. `full/determinism.json`.
+- **No P0**: no overshoot, no non-deterministic PMI-to-exit, solo == co-tenant.
+- Raw records (1,024,100 lines total) stay on the box; the committed trail is the 77 run-set
+  manifests (`full/manifests/`, each with its `records_sha256`) + the two verdicts + `full/run.log`.
+
+**What this does and does not establish.** It establishes, on real N1 silicon, that the patched
+force-exit mechanism lands `work == target` exactly (zero overshoot) with the Preempt exit attested
+exactly-once and bit-identical replay, and that co-tenancy does not perturb it — the AA-3 physics.
+It does **not** establish the AA-3 GO, which turns on the pin-basis question below (Paul's).
 
 ## Verified GREEN (no judgment call needed)
 

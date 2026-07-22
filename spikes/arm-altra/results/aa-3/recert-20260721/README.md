@@ -12,7 +12,10 @@ fresh-pin diagnostic basis to the ≥10⁶ acceptance scale as extended mechanis
   `host/aa3-exact-shard.sh` semantics at 48d519f; adapted only for the post-wipe box:
   current kernel pins, box-local regenerated payload pins, on-silicon environment, sudo/KVM).
 - `inputs/` — on-silicon environment + host-kernel + box-local (regenerated) payload pins.
-- `full/` — the ≥10⁶ diagnostic verdicts (comparator + aggregate floor-check), added on landing.
+- `full/` — the ≥10⁶ diagnostic run (2026-07-22): **`floor-check` PASS (1371 checks)** —
+  1,010,800 armed overflows, 505,400 distinct cases, skid=0 exact, Preempt attested; **solo==co-tenant
+  `MATCH` 5700/5700, 0 divergences**. `floor-check-verdict.txt`, `determinism.json`, `run.log`,
+  `manifests/` (77 run-set manifests = the integrity trail; raw 1,024,100 records stay on the box).
 
 Basis (both smoke and full): payloads rebuilt from the git-verified byte-identical certified
 source (`48d519f`); pins regenerated because a fresh toolchain (reinstalled 2026-07-21) + build

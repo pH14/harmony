@@ -1315,6 +1315,22 @@ seam, transition classification reusing `scan.rs`, and a `step_run` mode behind
 `--single-step`). Runs after AA-1(c) frees the box; the `skid_margin` AA-3 needs comes
 from AA-1(c), the trustworthy step primitive AA-3 needs comes from here.
 
+**On-silicon re-cert (2026-07-22, task 137 / hm-idb) — DIAGNOSTIC PASS at acceptance scale; GO
+still PARKED.** The voided AA-3 GO was re-run on a fresh Ampere Altra / N1 box (`ssh harmony-arm`,
+HPE ProLiant RL300 Gen11) on the currently-loaded `6.18.35-aa3preempt` kernel, using the certified
+AA-3 apparatus built from commit `48d519f` — this time with the determinism comparator **properly
+invoked** (the omission that voided the original). The full ≥10⁶ campaign passed **every** gate:
+aggregate `floor-check` **`RESULT: PASS (1371 checks)`** (1,010,800 armed overflows, 505,400
+distinct cases, skid = 0 exact / no overshoot, Preempt attested exactly-once, replay-identity), and
+solo-vs-co-tenant **full-join `MATCH` 5700/5700, zero divergences** under 76-way co-tenancy — no P0.
+**However the GO / trait-freeze re-issue is NOT yet certified**: the box was account-wiped
+(2026-07-20) and its toolchain reinstalled (2026-07-21), so the **certified payload bytes** pinned
+in `results/aa-1b/inputs/payload-pins.json` are non-reproducible and the run used **regenerated
+pins** from a fresh build of the byte-identical certified source (with `count-exactness` as the
+semantic guarantee). Whether that fresh-pin basis is acceptable to un-void an integrity-voided GO is
+**Paul's ruling** (escalated; do not self-certify). Evidence + the decision writeup:
+`results/aa-3/recert-20260721/` (`STATUS.md`, `full/`).
+
 ### AA-4 — the LL/SC vs LSE ruling: CHARACTERIZED; recommended ruling below (Paul ratifies)
 
 Per the foreman's directive (2026-07-17): produce the LL/SC characterization + recommended
