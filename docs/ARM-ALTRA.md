@@ -1575,3 +1575,47 @@ footing:
 **Disposition: AA-6 SCOPED — its determinism-digest substrate (register+vGIC digest, rep-floor)
 exists and was exercised at 10⁶ scale by AA-3; the freezable-CPU contract enforcement and the
 vGIC save/restore round-trip are the remaining build, best done alongside the AA-5(c) guest.**
+
+### AA-6 — apparatus COMPLETE + portably validated; on-silicon run is the turnkey remaining step (task 135, hm-zx3z / hm-l1wy F8/F9/F10, 2026-07-21)
+
+The full AA-6 apparatus is built on the merged #135 AA-4/AA-5(c) base and is **portably green**
+(build + nextest + clippy native & aarch64-linux + fmt + the floor-checker's fixture suite). Write-up
++ turnkey box runbook: `docs/history/IMPLEMENTATION-task135.md`. Branch `task/arm-aa6-injection`.
+
+- **The run-core injection hook (hm-zx3z) is non-additive by construction.** Both the bare-payload
+  `run_sample_exact` path and the AA-5(c) `run_until_ready_work_clock` boot path gained a
+  config-gated injection (`Option<InjectionConfig>` / `Option<LinuxInjection>`, drawn-but-applied-
+  only-when-`Some`, mirroring `migration_probe`). Two committed portable **negative controls** prove
+  the OFF path is byte-identical: the identical scripted landing / boot with injection `None` vs
+  `Some` produces records byte-identical except the post-injection sentinel digest. On the box the
+  same is checked physically (an injection-OFF bare matrix must reproduce the retained AA-3
+  `landed_digest`s bit-for-bit).
+- **(a) F9 done — id-freeze tri-state**: `install_id_freeze_field` now records every `ID_AA64*`
+  register as `FrozenBelowHost` / `ReducibleButClamped` (the un-freezable-but-guest-visible stop
+  condition, which must carry an `HCR_EL2.TID3` trap-emulation disposition) / `NoReducibleField`
+  (does not gate). **F10 designed/box-buildable** — a real guest PMU access-fault via a
+  single-step-to-sync-vector proof (reusing AA-2's classifier); the truth table records PMU denial
+  via the existing PMUVer=0 proof today. This is the one open proof-completeness item.
+- **(b) F8 done — vGIC round-trip** extended across all four injection-state groups (redistributor,
+  distributor SPI, CPU interface `ICC_PMR`/`IGRPEN` via new 64-bit `CPU_SYSREGS` get/set, external
+  input-line `LEVEL_INFO`), with per-group injection and the fresh-vGIC negative control.
+- **(c) The mini gate** — `run … --inject-ppi 20 --reps 1000` (bare 8 classes) + `linux-boot
+  --inject-ppi 22 --inject-at-work M --aa6-record` ×1000 (LinuxGuest) → `aa6-merge` → `floor-check
+  --min-reps 1000`. Validated end-to-end portably: the merged run-set floor-checks **RESULT: PASS
+  (20 checks)** — `aa6-matrix` (all 9 classes injected incl. LinuxGuest), `replay-identity`,
+  `count-exactness`, `image-pins`, `rep-floor` all PASS.
+- **RULING for Paul (llsc/wfi carve at AA-6).** The gate exercises "the LSE-only contract" (§AA-6),
+  and AA-4 ruled LL/SC mechanically-excluded — so the floor-checker carves `llsc-atomics` (the
+  **banned** counter-example, its ±2-branch divergence is AA-4(a)'s reason for the ban) and
+  `wfi-idle` (AA-5's timer domain) from AA-6 replay-identity, **recording** the divergence in the
+  verdict, while `lse-atomics` (the contract form) + every other class incl. the LinuxGuest must
+  replay bit-identically. A `reject-aa6-contract-divergence` fixture proves the carve does not
+  swallow a contract-class regression. This gate-semantics change is grounded in AA-4's binding
+  ruling and the spec's own wording; **flagged for Paul's ratification at PR time.**
+
+**Remaining for GO:** execute the turnkey box runbook (reboot into `-aa4guard`, id-freeze/vgic/
+pmu-fault proofs, the injection-OFF physical negative control, smoke-fire, the ≥1000-rep bare+Linux
+gate, the solo≡co-tenant cross-check), build F10, and record the on-silicon disposition. The
+apparatus discipline (gate-RC propagation, machine-checked floors against retained records,
+content-hash-verified boots, mechanism attestation, independent oracle, multiplicity+totality) is
+baked into the floor-checker the run-set is graded by.
