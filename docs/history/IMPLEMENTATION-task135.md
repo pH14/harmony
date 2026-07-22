@@ -126,9 +126,21 @@ must reproduce the retained AA-3 `landed_digest`s bit-for-bit (§Box runbook ste
   — PC in the sync vector slot, not `pc+4` with a value — is the real fault proof. This reuses the
   existing `StepVcpu`/`scan.rs`/classifier; the blob + a `pmu-fault` subcommand are the only new
   pieces, and the actual undef is N1 behaviour (box-only), so it is built and native-gated like
-  AA-2's step path, then validated on the box. **Status: the enforcement truth table records PMU
-  denial today (PMUVer=0, from the existing proof); the real-fault upgrade is the one open
-  proof-completeness item, bounded and box-buildable.**
+  AA-2's step path, then validated on the box. **Status (2026-07-21): PARKED per the foreman's
+  park-if-balloons directive.** Concrete assessment on the box: the `pmu_access` payload cleanly
+  mirrors `exception_abort.s` (set `VBAR_EL1`, `mrs` a PMU sysreg, catch the UNDEF in the sync
+  vector, read `ESR_EL1.EC`, report DENIED), **but** a rigorous harness-side proof — where the
+  harness *observes* the fault rather than trusting the payload's exit code — needs new plumbing:
+  the guest catches the UNDEF **internally** (EL1→EL1 via its own `VBAR`, no exit to userspace), so
+  the harness must either capture the payload console (which `run_sample` does not expose for a bare
+  payload) or drive it under single-step and classify the vector-slot landing — new code beyond the
+  payload itself, and it would run unsupervised overnight. The §AA-6 acceptance is already met via
+  the recorded `PMUVer==0` denial (the enforcement truth-table's PMU row), so per the foreman's
+  explicit ruling (`F10 designed-not-built is an acceptable outcome; do NOT over-build`) F10 stays
+  **designed, not built**. Resumption path: build `pmu_access.s`/`.rs` (the pattern above) + a
+  `pmu-fault` subcommand that drives it under AA-2 single-step and asserts the step lands in the
+  sync vector with `ESR_EL1.EC ∈ {0x00 UNKNOWN, 0x18 trapped}` — the harness observing the fault
+  directly, not the payload's self-report.
 
 ## (b) vGIC round-trip — F8 done
 
