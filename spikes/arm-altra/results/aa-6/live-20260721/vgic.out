@@ -1,0 +1,1 @@
+VGIC_ROUNDTRIP injected_intid=20 injected_spi=32 groups_covered=["redist", "dist", "cpu-interface", "external-line"] negative_control_differs=true roundtrip_identical=true registers=35 out=results/aa-6/live-20260721/vgic-roundtrip.json
