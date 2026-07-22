@@ -667,7 +667,7 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
     // campaign; a violation failed the run before this line).
     println!(
         "[campaign-runner] game box reseal evidence: {} entries re-materialized bit-identically; \
-         {} NotQuiescent seal retries absorbed by the task-136 run-forward.",
+         {} NotQuiescent seal refusals hit by the task-136 run-forward (dropped candidates included).",
         outcome.reseals.len(),
         outcome.seal_retries
     );

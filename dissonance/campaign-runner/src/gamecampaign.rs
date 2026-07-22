@@ -339,8 +339,10 @@ pub struct GameCampaignOutcome {
     /// also requires the reseal hashes bit-identical across fresh boots).
     pub reseals: Vec<ResealEvidence>,
     /// Total `NotQuiescent` seal refusals the campaign's candidate
-    /// materializations absorbed via the task-136 run-forward — evidence the
-    /// mechanism engaged (a cascade that never needed it reports 0).
+    /// materializations hit under the task-136 run-forward — evidence the
+    /// mechanism engaged (a cascade that never needed it reports 0). Includes
+    /// the refusals burned by candidates dropped at the attempt cap
+    /// (T136-J2(c): a drop must not report as zero).
     pub seal_retries: u64,
 }
 
@@ -988,7 +990,7 @@ pub fn run_game_campaign<M: Machine>(
         min_completed_frames: u64::MAX,
     };
     // Task-136 evidence: total NotQuiescent refusals the candidate-seal
-    // run-forward absorbed across the campaign.
+    // run-forward hit across the campaign (dropped candidates included).
     let mut seal_retries = 0u64;
 
     for branch in 0..cfg.max_branches {

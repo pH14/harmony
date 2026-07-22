@@ -342,9 +342,11 @@ pub struct StepReport {
     /// artifact); `None` otherwise.
     pub state_hash: Option<[u8; 32]>,
     /// How many `NotQuiescent` seal refusals this step's candidate
-    /// materializations absorbed via the bounded run-forward (task 136 /
+    /// materializations hit under the bounded run-forward (task 136 /
     /// hm-esfd) — direct evidence the "wait a beat, then snap" mechanism
-    /// engaged, not merely that nothing needed it.
+    /// engaged, not merely that nothing needed it. Counts **every** refusal,
+    /// including the `1 + SEAL_RETRY_ATTEMPTS` burned by a candidate dropped
+    /// at the cap (T136-J2(c): a drop must not report as zero).
     pub seal_retries: u64,
 }
 
@@ -677,17 +679,21 @@ impl<M: Machine> DifferentialCampaign<M> {
                 // exactly what the adapter re-anchors the env's staged
                 // Moments at) rides along for the marker clamp.
                 let branch_origin = parent_cut.map_or(Moment(0), |c| c.at);
-                let (seal, actual_cut, seal_delta, retries) = match self.materialize_candidate(
+                // The retry counter is an OUT-PARAM so a candidate dropped at
+                // the attempt cap still reports the refusals it burned — the
+                // drop path returns `Err(NotSealable)` and a return-value
+                // count would vanish with it (tribunal T136-J2(c)).
+                let (seal, actual_cut, seal_delta) = match self.materialize_candidate(
                     base_snap,
                     &branch_env,
                     cand.at,
                     branch_origin,
+                    &mut report.seal_retries,
                 ) {
                     Ok(sealed) => sealed,
                     Err(CampaignError::Machine(MachineError::NotSealable(_))) => continue,
                     Err(e) => return Err(e),
                 };
-                report.seal_retries += retries;
                 // The **seal-consistent** genesis-complete env (task 133 / PR
                 // #134 finding F3). The frontier entry's env must be the
                 // genesis-complete reproducer reaching the SEAL — `exemplar.cut`
@@ -1374,16 +1380,20 @@ impl<M: Machine> DifferentialCampaign<M> {
     /// sealed_at)`, zero probes) replay it bit-identically from the ledger
     /// env alone.
     ///
-    /// Returns the seal handle, its stamped cut, the branch-local delta, and
-    /// the number of `NotQuiescent` refusals the run-forward absorbed (the
-    /// [`StepReport::seal_retries`] evidence).
+    /// Returns the seal handle, its stamped cut, and the branch-local delta.
+    /// `retries` (the [`StepReport::seal_retries`] evidence) is incremented on
+    /// **every** `NotQuiescent` refusal — an out-param rather than a return
+    /// value so a candidate dropped at the attempt cap still reports the
+    /// `1 + SEAL_RETRY_ATTEMPTS` refusals it burned (the `Err` path would
+    /// discard a returned count — tribunal T136-J2(c)).
     fn materialize_candidate(
         &mut self,
         base_snap: SnapId,
         branch_env: &Reproducer,
         at: Moment,
         origin: Moment,
-    ) -> Result<(SnapId, EvidenceCut, Reproducer, u64), CampaignError> {
+        retries: &mut u64,
+    ) -> Result<(SnapId, EvidenceCut, Reproducer), CampaignError> {
         self.machine.branch(base_snap, branch_env)?;
         // The env's staged-schedule Moments beyond the branch origin, in the
         // absolute frame the server drains them in (`origin + relative`, the
@@ -1442,13 +1452,14 @@ impl<M: Machine> DifferentialCampaign<M> {
             match self.machine.snapshot() {
                 Ok((seal, cut)) => {
                     let delta = self.machine.recorded_env()?;
-                    let retries = u64::from(SEAL_RETRY_ATTEMPTS - attempts_left);
-                    return Ok((seal, cut, delta, retries));
+                    return Ok((seal, cut, delta));
                 }
                 // Mid-exit at the boundary: run a little further and retry,
                 // bounded. On cap exhaustion the candidate is dropped like a
-                // disappearing state — never a campaign abort.
+                // disappearing state — never a campaign abort. Every refusal
+                // counts, including the final one that drops the candidate.
                 Err(MachineError::NotQuiescent) => {
+                    *retries += 1;
                     if attempts_left == 0 {
                         return Err(MachineError::NotSealable(vt.0).into());
                     }
@@ -1842,6 +1853,10 @@ mod tests {
             .filter(|d| d.is_some())
             .count();
         assert_eq!(deadline_legs, 1 + SEAL_RETRY_ATTEMPTS as usize);
+        // The dropped candidate's refusals are REPORTED, not vanished with the
+        // drop (T136-J2(c)): one per attempted seal — the initial refusal plus
+        // one per retry leg.
+        assert_eq!(report.seal_retries, 1 + u64::from(SEAL_RETRY_ATTEMPTS));
         // The campaign is alive: the next step runs the full protocol again.
         let report2 = camp.step().expect("the campaign keeps stepping");
         assert!(report2.rollout_revision.get() > report.rollout_revision.get());
