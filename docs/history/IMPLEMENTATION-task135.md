@@ -5,7 +5,17 @@ Bead **hm-zx3z** (scope) + **hm-l1wy** (proof-completeness F8/F9/F10), parent **
 Binding spec: `docs/ARM-ALTRA.md` §AA-6. Branch `task/arm-aa6-injection`, built on the merged
 #135 AA-4/AA-5(c) apparatus. This is the write-up + review record + the turnkey box runbook.
 
-## ⚠️ ON-SILICON EXECUTION (N1 `6.18.35-aa3preempt`, 2026-07-21) — determinism-core changes for Paul's ratification
+## ⚠️ ON-SILICON EXECUTION (N1 `6.18.35-aa3preempt`, 2026-07-21) — determinism-core changes **RATIFIED (Paul, 2026-07-22)**
+
+> **RATIFIED — Paul, 2026-07-22 (Fable second-opinion confirmed).** All four gate-semantics changes
+> below are accepted **as-is** (the injection-hook code is unchanged); Fable independently re-derived
+> the on-N1 evidence and verified the config-gated non-additive OFF-path property. Verbatim: *"go?
+> AA-6 do the thing."* Change **#4** carries a **named condition** on the PROVISIONAL→full-GO upgrade:
+> the ≥1000-rep **masked-register-digest** lane (bead **hm-3bwm**) — the full LinuxGuest register file
+> minus exactly `{x29, SP}` — confirming the console+vGIC narrowing is exactly-and-only the disclosed
+> AA-5(c) stack-ASLR residual. Non-blocking follow-ups: **hm-3bwm** (the named condition), **hm-oh3v**
+> (injection attestation in `check_aa6_matrix`), **hm-fiqo** (`injected_landed_digest` emission),
+> **hm-7yno** (WFI enforcement disposition).
 
 Executed on the Altra box overnight. **(a) id-freeze and (b) vGIC round-trip PASS on real N1**
 (F9 tri-state: `frozen_below_host=8`, `reducible_but_clamped=0`; F8: `roundtrip_identical` across
@@ -21,6 +31,10 @@ decisions, each grounded in on-N1 evidence and flagged here for Paul's ratificat
    digest reads — so the first ON smoke had 27/28 ON digests IDENTICAL to OFF (a **vacuous** gate).
    The injection now also sets `ISPENDR0.intid` (the absolute device-attr write `vgic_roundtrip`
    uses): ON then differs from OFF at every tuple and stays deterministic. Non-vacuity fix.
+   *Pending-vs-taken framing:* the compared digests exercise a **PENDING latched** interrupt (the
+   `ISPENDR0` bit in the vGIC state); **taken-interrupt** determinism — the guest entering the IRQ
+   vector and running the handler deterministically — is exercised separately by the clockevent/PPI
+   lane (AA-5(c)'s boot PPI-20 assert/ACK accounting).
 2. **`wfi-idle` excluded from the required injection matrix.** Measured: under exact-landing
    injection wfi-idle LOSES the overflow (4/6 probe samples `deliveries==0` — its WFI stalls the
    `BR_RETIRED` work counter, so the single-step cannot progress through it) and diverges same-seed
@@ -102,8 +116,13 @@ pattern:
   — the identical successful boot with `None` vs `Some` yields byte-identical console/exits/
   publications/cadence; the injection is additive only in the injected-Moment fields.
 
-On the box the same property is checked physically: a bare-payload matrix run with injection **OFF**
-must reproduce the retained AA-3 `landed_digest`s bit-for-bit (§Box runbook step 4).
+On silicon the compatible physical facts are checked (§Box runbook step 4): the injection-**OFF** bare
+matrix replays **run-to-run bit-identically**, and an **ON** run's **pre-injection** `landed_digest`s
+equal the OFF run's — so the hook adds nothing before the injection Moment. The **cross-build
+byte-non-additivity** claim itself rests on the two portable controls above (the stronger instrument);
+the pre-wipe AA-3 `landed_digest` pins are **not** the instrument — they are not byte-reproducible on
+the rebuilt host (the aa3-recert pins landmine: toolchain-codegen + build-path drift, disjoint
+scales/seeds), so "OFF reproduces the retained AA-3 landed_digests bit-for-bit" could not have run.
 
 ## (a) ID freeze + enforcement truth table — F9 done, F10 designed/box-buildable
 
@@ -221,9 +240,12 @@ needs. Pin per `docs/BOX-PINNING.md` (measurement cores; SMT n/a on N1). Bundle-
    `groups_covered` = redist/dist/cpu-interface/external-line; mark any kernel-refused restore
    register `restorable:false` and re-run). **F10**: build + run the `pmu-fault` proof (§(a)).
 4. **OFF-path physical negative control**: run the bare matrix with injection **OFF**
-   (`run --stage aa6 --with-targets --skid-margin 53` *without* `--inject-ppi`) and confirm the
-   `landed_digest`s reproduce the retained AA-3 records bit-for-bit — the hook is non-additive on
-   real silicon.
+   (`run --stage aa6 --with-targets --skid-margin 53` *without* `--inject-ppi`) and confirm (i) the
+   OFF matrix replays **run-to-run bit-identically** and (ii) an ON run's **pre-injection**
+   `landed_digest`s equal the OFF run's — the hook is non-additive before the injection Moment on real
+   silicon. Do **not** gate on reproducing the pre-wipe AA-3 `landed_digest` pins: they are not
+   byte-reproducible on a rebuilt host (the aa3-recert pins landmine), and the cross-build byte-
+   identity instrument is the portable negative controls, not those pins.
 5. **Smoke-fire once** the exact ≥1000-rep configuration at smoke scale/few reps before the spend
    (both the bare matrix and one Linux boot), and floor-check that smoke.
 6. **(c) the gate**: bare matrix `run --stage aa6 --with-targets --skid-margin 53 --inject-ppi 20
@@ -259,7 +281,8 @@ needs. Pin per `docs/BOX-PINNING.md` (measurement cores; SMT n/a on N1). Bundle-
   PMU denial via the existing PMUVer=0 proof today. This is the one open proof-completeness item.
 - The `LinuxGuest` AA-6 record certifies **register+vGIC** determinism (the CRNG full-RAM residual
   is AA-5(c)'s open item, orthogonal to injection).
-- The llsc/wfi AA-6 carve is a **gate-semantics change** awaiting Paul's ratification (see above).
+- The llsc/wfi AA-6 carve is a **gate-semantics change**, **RATIFIED (Paul, 2026-07-22)** — see the
+  top ratification banner (change #3).
 - The whole apparatus is **portably validated**; the on-silicon run is the bounded remaining step
   (this runbook), analogous to how AA-2/AA-3 apparatus was built offline then box-validated.
 

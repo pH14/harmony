@@ -1587,9 +1587,14 @@ The full AA-6 apparatus is built on the merged #135 AA-4/AA-5(c) base and is **p
   config-gated injection (`Option<InjectionConfig>` / `Option<LinuxInjection>`, drawn-but-applied-
   only-when-`Some`, mirroring `migration_probe`). Two committed portable **negative controls** prove
   the OFF path is byte-identical: the identical scripted landing / boot with injection `None` vs
-  `Some` produces records byte-identical except the post-injection sentinel digest. On the box the
-  same is checked physically (an injection-OFF bare matrix must reproduce the retained AA-3
-  `landed_digest`s bit-for-bit).
+  `Some` produces records byte-identical except the post-injection sentinel digest — these portable
+  controls are the instrument for the **cross-build byte-non-additivity** claim (the stronger
+  instrument). On silicon the N1 run confirms the two physical facts available there: the
+  injection-OFF path replays **run-to-run bit-identically**, and an **ON** run's **pre-injection**
+  `landed_digest`s equal the OFF run's — the hook adds nothing before the injection Moment. (Byte-
+  identity is **not** asserted against the retained pre-wipe AA-3 `landed_digest` pins: those are not
+  byte-reproducible on the rebuilt host — the aa3-recert pins landmine, toolchain-codegen + build-path
+  drift — and the scales/seeds are disjoint; that check could not have run.)
 - **(a) F9 done — id-freeze tri-state**: `install_id_freeze_field` now records every `ID_AA64*`
   register as `FrozenBelowHost` / `ReducibleButClamped` (the un-freezable-but-guest-visible stop
   condition, which must carry an `HCR_EL2.TID3` trap-emulation disposition) / `NoReducibleField`
@@ -1628,7 +1633,10 @@ Ran overnight on the Altra (`results/aa-6/live-20260721/`, host `6.18.35-aa3pree
   8-class run-set (7 bare payloads + LinuxGuest, **8000 records**): **`RESULT: PASS (20 checks)`** —
   every attempted sample accounted (totality 8000), floors machine-checked and **reproducible from
   the retained records in-repo** (`records_sha256 005cf113…`). The injection **OFF-path physical
-  negative control PASSED** (non-additive on silicon).
+  negative control PASSED**: the OFF path replays run-to-run bit-identically and an ON run's
+  pre-injection `landed_digest`s equal OFF's on N1 (the hook adds nothing before the injection
+  Moment). The cross-build byte-non-additivity claim itself rests on the portable negative controls
+  (the stronger instrument), not on reproducing the pre-wipe AA-3 payload pins.
 
 **Four determinism-core / gate-semantics decisions the on-silicon run forced — each evidence-grounded,
 flagged for Paul's ratification** (detailed in `docs/history/IMPLEMENTATION-task135.md`): (1) inject
@@ -1638,7 +1646,11 @@ line-only injection was vacuous — 27/28 ON==OFF); (2) **wfi-idle excluded** fr
 (AA-4 ban ruling; a reject fixture guards the contract classes); (4) **LinuxGuest digest = console +
 vGIC**, after root-causing the 1000/1000 register-digest FAIL to EXACTLY `x29`/`SP` stack-ASLR (the
 AA-5(c) entropy residual, 4/260 regs, per-register-dump proof retained) — orthogonal to injection;
-the corrected ≥1000-rep re-run then replayed bit-identically.
+the corrected ≥1000-rep re-run then replayed bit-identically. **Pending-vs-taken framing:** the
+compared digests exercise a **PENDING latched** interrupt (the `ISPENDR0` bit in the vGIC state);
+**taken-interrupt** determinism — the guest entering the IRQ vector and running the handler
+deterministically — is exercised separately by the clockevent/PPI lane (AA-5(c)'s boot PPI-20
+assert/ACK accounting).
 
 **Named bounded limitations (why PROVISIONAL, not full GO):** F10 (a **real** guest PMU access-fault)
 is designed but not yet built — the truth table records PMU denial via the existing `PMUVer==0` proof;
@@ -1648,5 +1660,48 @@ the four gate-semantics changes above await Paul's ratification. **STOP conditio
 no unfreezable state-reaching register (all reduced rows froze or are no-reducible), the vGIC
 round-trips (no userspace model needed), and the injection OFF-path is byte-identical on silicon.
 
-**Remaining for full GO:** Paul's ratification of the four gate-semantics changes; build + run F10;
-optionally close AA-5(c)'s entropy residual for full-RAM LinuxGuest identity (an AA-5 item, not AA-6).
+**Remaining for full GO:** the four gate-semantics changes are **RATIFIED** (see the next section);
+the sole named provisional→full-GO condition is the masked-register-digest lane (bead **hm-3bwm**).
+Non-blocking: build + run F10 (hm-l1wy); optionally close AA-5(c)'s entropy residual for full-RAM
+LinuxGuest identity (an AA-5 item, not AA-6).
+
+### AA-6 — RATIFIED (Paul, 2026-07-22, Fable second-opinion confirmed): 4 gate-semantics changes accepted → full AA-0..AA-6 ARM GO
+
+Paul ratified all four on-N1 determinism-core / gate-semantics changes — his lean plus Fable's
+**independent** second opinion (Fable re-derived the on-N1 evidence and independently verified the
+config-gated **non-additive OFF-path** property). Verbatim: *"go? AA-6 do the thing."* The four are
+accepted **as-is**; the injection-hook code is unchanged.
+
+1. **PENDING-latch injection (`GICR_ISPENDR0`)** — RATIFIED. The line level is not digested, so a
+   line-only injection was vacuous; the pending latch is observable + deterministic.
+2. **`wfi-idle` excluded from the required injection matrix** — RATIFIED. WFI stalls `BR_RETIRED`;
+   its determinism is AA-5's paravirt-clock domain. (Enforcement disposition follow-up: **hm-7yno**.)
+3. **`llsc`/`wfi` carved from replay-identity (recorded, not failed)** — RATIFIED. AA-4's binding
+   LL/SC ban; the `reject-aa6-contract-divergence` fixture guards the contract classes.
+4. **LinuxGuest compared digest = `console + vGIC`** — RATIFIED, with a **named condition**: the
+   ≥1000-rep **masked-register-digest** lane (bead **hm-3bwm**) — compare the full LinuxGuest register
+   file minus exactly `{x29, SP}` (host-time `CNTPCT`/`TIMER_CNT` already excluded) — must confirm at
+   gate scale that the console+vGIC narrowing is *exactly-and-only* the disclosed AA-5(c) stack-ASLR
+   residual (4/260 regs), not masking an injection-path register divergence. **This lane is the named
+   condition on the PROVISIONAL→full-GO upgrade.** The ratification stands; the lane confirms #4 at
+   scale. (Free companion evidence — the injection-Moment register witness — lands via **hm-fiqo**.)
+
+**Corrected on-silicon non-additivity claim (Fable's wording fix).** The committed N1 evidence proves
+(i) the injection-**OFF** path replays **run-to-run bit-identically**, and (ii) an **ON** run's
+**pre-injection** `landed_digest`s equal the OFF run's — the hook adds nothing before the injection
+Moment, on silicon. The **cross-build byte-non-additivity** claim rests on the two **portable**
+negative controls (`injection_off_path_*`), the stronger instrument; it does **not** rest on "OFF
+reproduces the retained AA-3 `landed_digest`s bit-for-bit" — that comparison could not have run
+(disjoint scales/seeds, and the pre-wipe AA-3 payload pins are not byte-reproducible on the rebuilt
+host per the aa3-recert pins landmine).
+
+**Pending-vs-taken framing.** The compared digests exercise a **PENDING latched** interrupt (the
+`ISPENDR0` bit in the vGIC state); **taken-interrupt** determinism (the guest entering the IRQ vector
+and running the handler deterministically) is exercised separately by the clockevent/PPI lane
+(AA-5(c)'s boot PPI-20 assert/ACK accounting).
+
+**Disposition: AA-6 GO** — full AA-0..AA-6 ARM re-cert complete pending the foreman's verify + merge
+of PR #139. The provisional→full-GO upgrade is gated only on the **hm-3bwm** masked-register-digest
+lane. Non-blocking follow-ups: F10 real-PMU-access-fault hardening (**hm-l1wy**), injection
+attestation in `check_aa6_matrix` (**hm-oh3v**), `injected_landed_digest` emission (**hm-fiqo**),
+WFI enforcement disposition (**hm-7yno**).
