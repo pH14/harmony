@@ -190,6 +190,29 @@ struct LinuxBootOpts {
     /// Requires the patched capability; clean pages are scanned/approved transparently.
     #[arg(long)]
     stage2_exec_guard: bool,
+    /// AA-6: the unwired PPI INTID to inject at a seeded Moment during the boot (never the
+    /// clockevent's PPI 20). Requires `--inject-at-work`. Absent = the AA-5(c) negative control
+    /// (byte-identical boot). The injection sets a deterministic vGIC pending bit carried in the
+    /// register+vGIC digest.
+    #[arg(long = "inject-ppi")]
+    inject_ppi: Option<u32>,
+    /// AA-6: the seeded-random work Moment (the first exact refresh landing at or after this
+    /// asserts the injected PPI). Requires `--inject-ppi`.
+    #[arg(long = "inject-at-work")]
+    inject_at_work: Option<u64>,
+    /// AA-6: emit a `LinuxGuest` armed+delivered `RunRecord` (JSON) for the injected boot to this
+    /// path, for the mini-gate matrix. The state digest is the register+vGIC digest (the AA-5(c)
+    /// identity carrier).
+    #[arg(long = "aa6-record")]
+    aa6_record: Option<PathBuf>,
+    /// AA-6: the seed the emitted `LinuxGuest` record carries (its replay-group key, with
+    /// `--inject-at-work`). Keep it and `--inject-at-work` constant across the ≥1000 reps so they
+    /// form one same-seed group.
+    #[arg(long, default_value_t = 0x5EED_5EED_5EED_5EED)]
+    seed: u64,
+    /// AA-6: the experimental condition the emitted `LinuxGuest` record carries.
+    #[arg(long, default_value = "pinned-solo")]
+    condition: String,
 }
 
 /// `arm-spike aa4-guard-reject`'s planted runtime proof inputs.
@@ -352,6 +375,13 @@ struct RunOpts {
     /// Draw seeded-random target deltas over 1..=100000 (AA-3).
     #[arg(long)]
     with_targets: bool,
+    /// AA-6: inject the given PPI INTID at each exact landed `Moment` (the seeded-random target).
+    /// Absent = the NEGATIVE CONTROL: the default AA-3/AA-5 deterministic path is byte-identical
+    /// (no `KVM_IRQ_LINE` is issued, the state digest is the pre-hook value). The spike injects
+    /// the harness's dedicated unowned line, PPI **20** (never the KVM-owned architected-timer
+    /// PPI 27). Only meaningful with a patched-mechanism armed run (`--with-targets --skid-margin`).
+    #[arg(long = "inject-ppi")]
+    inject_ppi: Option<u32>,
     /// Payload class(es) to EXCLUDE from the plan (by name, repeatable). At AA-3 the exact
     /// landing passes `--exclude-payload wfi-idle`: its WFI is resumed by a real-time timer that
     /// shifts under the slow single-step, so under the exact landing it loses PMIs and exits
@@ -845,6 +875,8 @@ struct RunArgs {
     single_step: bool,
     max_steps: u64,
     watchdog_secs: u64,
+    /// AA-6 injection config (`--inject-ppi`), or `None` for the byte-identical negative control.
+    inject: Option<arm_harness::run::InjectionConfig>,
 }
 
 /// A payload ELF loaded from the payload directory, hashed and verified against its
@@ -966,6 +998,17 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
             skid_margin: opts.skid_margin,
             guest_clock_hz,
         },
+        // AA-6 injection into the boot: `Some` when the operator supplies `--inject-ppi` +
+        // `--inject-at-work` (the AA-6 LinuxGuest gate); `None` is the AA-5(c) negative control,
+        // byte-identical.
+        opts.inject_ppi
+            .zip(opts.inject_at_work)
+            .map(
+                |(intid, target_work)| arm_harness::linux_console::LinuxInjection {
+                    intid,
+                    target_work,
+                },
+            ),
     )
     .map_err(|e| format!("boot Linux: {e}"))?;
     let guard = machine.exec_guard_stats();
@@ -1000,6 +1043,69 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
     let core_regs_digest = machine
         .core_regs_digest()
         .map_err(|e| format!("digest final core register state: {e}"))?;
+
+    // AA-6 LinuxGuest record emission (the mini-gate matrix's 9th class). A `LinuxGuest` armed+
+    // delivered RunRecord whose overflow landed at the injected Moment and whose `state_digest`
+    // is the register+vGIC digest (the AA-5(c) identity carrier — full-RAM has the CRNG residual).
+    // The window fields are 0: `LinuxGuest` has no counting window (the oracle expects 0), so
+    // count-exactness reads 0 == 0 while the injected work Moment lives in the overflow target.
+    if let Some(record_path) = &opts.aa6_record {
+        let injected_at = result.injected_at_work.ok_or_else(|| {
+            "aa6-record was requested but no injection fired during the boot — supply \
+             --inject-ppi and a small enough --inject-at-work that it lands before the boot's \
+             success gate"
+                .to_string()
+        })?;
+        // The LinuxGuest AA-6 determinism carrier: console + vGIC injection state. The full
+        // register digest diverges same-seed on the userspace stack-placement ASLR (the AA-5(c)
+        // kernel-CRNG residual, hm-of6t F12) — orthogonal to injection — so the compared digest
+        // is the AA-5(c)-proven-deterministic console plus the vGIC state that carries the
+        // injected pending interrupt. `injected_landed_digest` (registers at the injection Moment)
+        // is retained in the boot result for diagnostics but is not the compared digest.
+        let _ = result.injected_landed_digest.as_ref();
+        let aa6_digest = machine
+            .console_vgic_digest(&result.boot.console)
+            .map_err(|e| format!("digest the AA-6 LinuxGuest console+vGIC state: {e}"))?;
+        let record = arm_harness::evidence::RunRecord {
+            sample_id: 0,
+            payload: oracle_model::Payload::LinuxGuest,
+            scale: Scale::Smoke,
+            seed: opts.seed,
+            trips: oracle_model::trips(oracle_model::Payload::LinuxGuest, Scale::Smoke),
+            condition: opts.condition.clone(),
+            work_begin: 0,
+            work_end: 0,
+            measured_taken: 0,
+            reported_taken: 0,
+            exit_reason: arm_harness::evidence::ExitReason::Preempt,
+            overflow: Some(arm_harness::evidence::OverflowRecord {
+                armed: true,
+                deliveries: 1,
+                advisory_exits: 0,
+                target: injected_at,
+                landed: injected_at,
+                skid: 0,
+                landed_digest: aa6_digest.clone(),
+            }),
+            step: None,
+            // The AA-6 LinuxGuest determinism carrier: console + vGIC injection state (the
+            // AA-5(c)-deterministic console + the injected pending interrupt), NOT the full
+            // register digest — that carries the disclosed userspace stack-ASLR residual.
+            state_digest: aa6_digest,
+            params_mode: "managed".into(),
+            clockpage_mode: Some("work-derived".into()),
+            payload_status: 0,
+        };
+        let line = serde_json::to_string(&record)
+            .map_err(|e| format!("serialize the AA-6 LinuxGuest record: {e}"))?;
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(record_path)
+            .map_err(|e| format!("open {}: {e}", record_path.display()))?;
+        writeln!(f, "{line}").map_err(|e| format!("append {}: {e}", record_path.display()))?;
+    }
 
     // Diagnostic (env-gated, off by default): when the same-seed gate flags a RAM-only
     // divergence, `AA5_DUMP_RAM=<path>` writes the final guest RAM so two runs' dumps can
@@ -1776,15 +1882,35 @@ fn id_freeze(out: PathBuf) -> Result<(), String> {
 
     let proof = sys::id_freeze_proof().map_err(|e| format!("run the ID-freeze proof: {e}"))?;
     if proof.rows.is_empty() {
-        return Err("no ID_AA64* register carried a reducible feature to freeze".to_string());
+        return Err("no ID_AA64* register was probed".to_string());
     }
-    let all_enforced = proof.rows.iter().all(|r| {
+    // F9 tri-state: the freeze is fully enforced iff NO register is `reducible-but-clamped`
+    // (an un-freezable, guest-visible feature). `no-reducible-field` registers do not gate
+    // (nothing to freeze); `frozen-below-host` are the installed freezes.
+    let clamped: Vec<&str> = proof
+        .rows
+        .iter()
+        .filter(|r| r.status == sys::IdFreezeStatus::ReducibleButClamped)
+        .map(|r| r.name)
+        .collect();
+    // A defensive re-check of the enforced rows: below host, read-back holds.
+    let frozen_ok = proof.rows.iter().all(|r| {
+        if r.status != sys::IdFreezeStatus::FrozenBelowHost {
+            return true;
+        }
         let f = (r.frozen_value >> r.field_shift) & 0xF;
         let h = (r.host_value >> r.field_shift) & 0xF;
         r.enforced && r.read_back == r.frozen_value && f < h
     });
+    let frozen_count = proof
+        .rows
+        .iter()
+        .filter(|r| r.status == sys::IdFreezeStatus::FrozenBelowHost)
+        .count();
+    let all_enforced = clamped.is_empty() && frozen_ok && frozen_count > 0;
 
-    // Machine-readable enforcement truth-table (stable JSON, sorted-order fields).
+    // Machine-readable enforcement truth-table (stable JSON, sorted-order fields). Every row
+    // carries its F9 tri-state `status`, so an un-freezable register is recorded, not hidden.
     let mut json = String::new();
     json.push_str("{\n  \"check\": \"aa6-id-register-freeze\",\n");
     let _ = writeln!(
@@ -1793,15 +1919,25 @@ fn id_freeze(out: PathBuf) -> Result<(), String> {
         proof.pmu_denied_without_feature
     );
     let _ = writeln!(json, "  \"host_pmuver\": {},", proof.host_pmuver);
-    let _ = writeln!(json, "  \"all_enforced\": {},", all_enforced);
+    let _ = writeln!(json, "  \"frozen_below_host\": {frozen_count},");
+    let _ = writeln!(json, "  \"reducible_but_clamped\": {},", clamped.len());
+    let _ = writeln!(json, "  \"all_enforced\": {all_enforced},");
     json.push_str("  \"rows\": [\n");
     for (i, r) in proof.rows.iter().enumerate() {
         let comma = if i + 1 < proof.rows.len() { "," } else { "" };
         let _ = writeln!(
             json,
             "    {{\"name\": \"{}\", \"field_shift\": {}, \"host_value\": \"{:#018x}\", \
-             \"frozen_value\": \"{:#018x}\", \"read_back\": \"{:#018x}\", \"enforced\": {}}}{}",
-            r.name, r.field_shift, r.host_value, r.frozen_value, r.read_back, r.enforced, comma
+             \"frozen_value\": \"{:#018x}\", \"read_back\": \"{:#018x}\", \"status\": \"{}\", \
+             \"enforced\": {}}}{}",
+            r.name,
+            r.field_shift,
+            r.host_value,
+            r.frozen_value,
+            r.read_back,
+            r.status.as_str(),
+            r.enforced,
+            comma
         );
     }
     json.push_str("  ]\n}\n");
@@ -1809,15 +1945,25 @@ fn id_freeze(out: PathBuf) -> Result<(), String> {
 
     for r in &proof.rows {
         println!(
-            "ID_FREEZE {} field_shift={} host={:#018x} frozen={:#018x} read_back={:#018x} enforced={}",
-            r.name, r.field_shift, r.host_value, r.frozen_value, r.read_back, r.enforced
+            "ID_FREEZE {} field_shift={} host={:#018x} frozen={:#018x} read_back={:#018x} \
+             status={} enforced={}",
+            r.name,
+            r.field_shift,
+            r.host_value,
+            r.frozen_value,
+            r.read_back,
+            r.status.as_str(),
+            r.enforced
         );
     }
     println!(
-        "ID_FREEZE pmu_denied_without_feature={} host_pmuver={} rows={} all_enforced={} out={}",
+        "ID_FREEZE pmu_denied_without_feature={} host_pmuver={} rows={} frozen_below_host={} \
+         reducible_but_clamped={} all_enforced={} out={}",
         proof.pmu_denied_without_feature,
         proof.host_pmuver,
         proof.rows.len(),
+        frozen_count,
+        clamped.len(),
         all_enforced,
         out.display()
     );
@@ -1825,9 +1971,11 @@ fn id_freeze(out: PathBuf) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "ID-register freeze NOT fully enforced: all_enforced={} pmu_denied={} — the guest \
-             would see an unfrozen field or its own PMU",
-            all_enforced, proof.pmu_denied_without_feature
+            "ID-register freeze NOT fully enforced: all_enforced={all_enforced} \
+             reducible_but_clamped={:?} pmu_denied={} — a guest-visible feature could not be \
+             frozen (record its enforcement disposition, e.g. HCR_EL2.TID3 trap-emulation) or \
+             the PMU is not denied",
+            clamped, proof.pmu_denied_without_feature
         ))
     }
 }
@@ -1848,6 +1996,16 @@ fn vgic_roundtrip(out: PathBuf) -> Result<(), String> {
     let mut json = String::new();
     json.push_str("{\n  \"check\": \"aa6-vgic-save-restore-roundtrip\",\n");
     let _ = writeln!(json, "  \"injected_intid\": {},", rt.injected_intid);
+    let _ = writeln!(json, "  \"injected_spi\": {},", rt.injected_spi);
+    let _ = writeln!(
+        json,
+        "  \"groups_covered\": [{}],",
+        rt.groups_covered
+            .iter()
+            .map(|g| format!("\"{g}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let _ = writeln!(
         json,
         "  \"negative_control_differs\": {},",
@@ -1863,18 +2021,20 @@ fn vgic_roundtrip(out: PathBuf) -> Result<(), String> {
         let comma = if i + 1 < rt.labels.len() { "," } else { "" };
         let _ = writeln!(
             json,
-            "    {{\"reg\": \"{}\", \"saved\": \"{:#010x}\", \"fresh_before\": \"{:#010x}\", \
-             \"fresh_after\": \"{:#010x}\"}}{}",
-            label, rt.saved[i], rt.fresh_before[i], rt.fresh_after[i], comma
+            "    {{\"reg\": \"{}\", \"group\": \"{}\", \"saved\": \"{:#018x}\", \
+             \"fresh_before\": \"{:#018x}\", \"fresh_after\": \"{:#018x}\"}}{}",
+            label, rt.groups[i], rt.saved[i], rt.fresh_before[i], rt.fresh_after[i], comma
         );
     }
     json.push_str("  ]\n}\n");
     std::fs::write(&out, &json).map_err(|e| format!("write {}: {e}", out.display()))?;
 
     println!(
-        "VGIC_ROUNDTRIP injected_intid={} negative_control_differs={} roundtrip_identical={} \
-         registers={} out={}",
+        "VGIC_ROUNDTRIP injected_intid={} injected_spi={} groups_covered={:?} \
+         negative_control_differs={} roundtrip_identical={} registers={} out={}",
         rt.injected_intid,
+        rt.injected_spi,
+        rt.groups_covered,
         rt.negative_control_differs,
         rt.roundtrip_identical,
         rt.labels.len(),
@@ -2227,6 +2387,8 @@ fn execute(args: RunArgs) -> Result<(), String> {
                     condition: s.condition.clone(),
                     target_delta: None,
                     migration_probe: None,
+                    // AA-2 single-step never injects (no armed landing to inject at).
+                    inject: None,
                 };
                 step_run(&mut machine, &mut counter, &spec, args.max_steps)
                     .map_err(|e| e.to_string())
@@ -2246,6 +2408,9 @@ fn execute(args: RunArgs) -> Result<(), String> {
                     condition: s.condition.clone(),
                     target_delta: s.target_delta,
                     migration_probe: migration_probe.clone(),
+                    // AA-6 injection is config-gated (`--inject-ppi`). `None` is the negative
+                    // control: the default AA-3/AA-5 path is byte-identical (no `KVM_IRQ_LINE`).
+                    inject: args.inject,
                 };
                 // AA-3 exact landing rides the patched mechanism WITH a measured skid margin:
                 // `run_sample_exact` re-arms the overflow `skid_margin` events below the target,
@@ -2486,6 +2651,9 @@ fn run() -> Result<(), String> {
                 single_step: opts.single_step || matches!(opts.stage, StageArg::Aa2),
                 max_steps: opts.max_steps,
                 watchdog_secs: opts.watchdog_secs,
+                inject: opts
+                    .inject_ppi
+                    .map(|intid| arm_harness::run::InjectionConfig { intid }),
             })
         }
         Command::LinuxBoot(opts) => linux_boot(*opts),

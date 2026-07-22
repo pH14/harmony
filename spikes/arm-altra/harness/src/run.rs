@@ -663,6 +663,26 @@ where
     })
 }
 
+/// AA-6 event-injection config: assert an interrupt at the landed `Moment`.
+///
+/// `SampleSpec::inject` (and the Linux boot loop's injection config) is `Option<InjectionConfig>`
+/// with `None` the **negative control**: the default deterministic path is BYTE-IDENTICAL with
+/// injection off. The hook is *non-additive* — when `inject` is `None` the code below never
+/// calls [`StepVcpu::inject_ppi`], so no `KVM_IRQ_LINE` is issued, no extra exit is consumed, and
+/// the record's `state_digest`/`landed_digest` is the pre-hook value bit-for-bit. This is the
+/// "flag-the-run-loop" rule of `docs/ARM-ALTRA.md` §AA-6: the injection hook may touch the run
+/// core only if the OFF path reproduces the pre-hook `state_hash`.
+#[derive(Clone, Copy, Debug)]
+pub struct InjectionConfig {
+    /// The private-peripheral-interrupt (PPI) INTID asserted at the landed `Moment`. The spike
+    /// injects the harness's dedicated **unowned** line (PPI 20 — never the architected timer's
+    /// KVM-owned PPI 27, whose injection KVM silently drops), so the assertion sets a
+    /// deterministic pending bit in the in-kernel vGIC that is folded into the compared state
+    /// digest — the axis AA-6's replay identity certifies. Same seed ⇒ same landed `Moment` ⇒
+    /// same injection ⇒ bit-identical digest.
+    pub intid: u32,
+}
+
 /// What one sample is asked to be: which payload, at what scale and seed, and — if
 /// this is an overflow run — how far past the window's opening to arm the deadline.
 #[derive(Clone, Debug)]
@@ -687,6 +707,13 @@ pub struct SampleSpec {
     /// sample's armed interval — not one that merely happened during the sample. `None`
     /// outside the migration probe.
     pub migration_probe: Option<ArmedMigrationProbe>,
+    /// The AA-6 injection config, or `None` (the negative control — the default path,
+    /// byte-identical). When `Some`, [`run_sample_exact`] asserts the configured PPI at the
+    /// exact landed `Moment`, after the AA-3 landing digest is taken, so the injection's effect
+    /// is carried in the record's *sentinel* `state_digest` (what AA-6's replay identity
+    /// compares) while `landed_digest` keeps its pre-injection AA-3 meaning. See
+    /// [`InjectionConfig`].
+    pub inject: Option<InjectionConfig>,
 }
 
 /// Reads the migration churner's live move counter so [`run_sample`] can attest an affinity
@@ -1325,6 +1352,18 @@ pub fn run_sample_exact(
                         deliveries += 1;
                         landed = Some(target);
                         landed_digest = Some(vcpu.state_digest()?);
+                        // AA-6 injection — non-additive. The event is asserted HERE, at the exact
+                        // landed `Moment`, AFTER `landed_digest` is taken (so that digest keeps its
+                        // AA-3 pre-injection meaning) and BEFORE the guest resumes to the sentinel
+                        // (so the injection's effect — a deterministic vGIC pending bit, or the
+                        // guest's handling of it — is carried in the record's sentinel
+                        // `state_digest`, which is what AA-6's replay identity compares). When
+                        // `spec.inject` is `None` this `if let` executes nothing: no `KVM_IRQ_LINE`,
+                        // no extra exit, no extra seam read — the OFF path is byte-identical to the
+                        // pre-hook run and its digest is unchanged.
+                        if let Some(injection) = &spec.inject {
+                            vcpu.inject_ppi(injection.intid, true)?;
+                        }
                     }
                 }
             }
@@ -1583,6 +1622,19 @@ pub trait StepVcpu: Vcpu {
     /// # Errors
     /// [`RunError::Seam`] if the register/vGIC state could not be read.
     fn regs_digest(&mut self) -> Result<String, RunError>;
+
+    /// AA-6 injection: assert (`asserted == true`) or deassert a private-peripheral-interrupt
+    /// line at the guest via `KVM_IRQ_LINE`. Called **only** at a landed `Moment` and **only**
+    /// when the sample's [`SampleSpec::inject`] is `Some` — the negative-control OFF path never
+    /// reaches this call, so the default deterministic run issues no `KVM_IRQ_LINE` and its
+    /// digest is byte-identical to the pre-hook value. The real seam ([`crate::sys::Machine`])
+    /// encodes the target as vCPU 0's PPI `intid` and verifies the vGIC input-line level; the
+    /// scripted test double records the call so the hook's presence/absence is itself testable.
+    ///
+    /// # Errors
+    /// [`RunError::Seam`] if the `KVM_IRQ_LINE` ioctl failed (or, on the real seam, the vGIC
+    /// input line did not reflect the assertion — a dropped injection is a finding, not a pass).
+    fn inject_ppi(&mut self, intid: u32, asserted: bool) -> Result<(), RunError>;
 }
 
 /// One measured single step, buffered until the run's window count and final state are known
@@ -2045,6 +2097,7 @@ mod tests {
             condition: "pinned-solo".into(),
             target_delta,
             migration_probe: None,
+            inject: None,
         }
     }
 
@@ -2781,6 +2834,10 @@ mod tests {
         digest: String,
         armed: bool,
         last_read_reply: Option<Vec<u8>>,
+        /// Every `inject_ppi` the loop issued, in order — how the OFF-path negative control
+        /// asserts the injection hook is non-additive (zero calls when `inject` is `None`) and
+        /// the ON path asserts exactly one assertion at the landed Moment.
+        injections: Vec<(u32, bool)>,
     }
 
     impl Vcpu for ScriptedStepVcpu {
@@ -2856,6 +2913,19 @@ mod tests {
             // (registers-only) step's digest from the full-payload final one.
             Ok(self.regs_digest.clone())
         }
+        fn inject_ppi(&mut self, intid: u32, asserted: bool) -> Result<(), RunError> {
+            self.injections.push((intid, asserted));
+            // Model the real seam's effect: an asserted PPI sets a deterministic vGIC pending
+            // bit that `digest_state` folds into the guest's state digest. Mutating the
+            // full-payload digest here (NOT `regs_digest`, which is only the per-step key) lets
+            // the OFF-path negative control observe that the SENTINEL `state_digest` — taken
+            // after injection — shifts under injection, while the pre-injection `landed_digest`
+            // (taken before this call) keeps its AA-3 value.
+            if asserted {
+                self.digest = format!("{}+ppi{intid}", self.digest);
+            }
+            Ok(())
+        }
     }
 
     /// The counter half of the shared cell (see [`ScriptedStepVcpu`]).
@@ -2913,6 +2983,7 @@ mod tests {
             digest: "sha256:final".into(),
             armed: false,
             last_read_reply: None,
+            injections: Vec::new(),
         };
         let mut counter = ScriptedStepCounter { value: cell };
         step_run(&mut vcpu, &mut counter, &spec(None), max_steps)
@@ -2926,6 +2997,102 @@ mod tests {
         script.extend(body);
         script.extend(exit_epilogue());
         drive_script(counter_start, script, 0)
+    }
+
+    /// Drive [`run_sample_exact`] to ONE exact landing under the given injection config, and
+    /// return the assembled record plus the injections the loop issued. This is the substrate
+    /// for the AA-6 OFF-path negative control: the SAME script with `inject: None` vs `Some`
+    /// must land identically and differ ONLY by the injection's effect on the post-landing
+    /// sentinel digest.
+    ///
+    /// The seam is scripted so `service_exact_preempt` lands in one step: with `begin = 100`,
+    /// `target_delta = 18`, and `skid_margin = 0`, `exact_arm_delta(18, 0) = 2`, so
+    /// `arm_point = 102` and `target = 118`. The scripted counter therefore reads `100`
+    /// (MARK_BEGIN) → `102` (the `Preempt`, in `[arm_point, target)`) → `118` (after one step, ==
+    /// target) → `118` (MARK_END). The single scripted `Step` is what walks `BR_RETIRED` up to
+    /// the target; the vCPU's own shared cell is unused (the `WorkCounter` is the scripted one).
+    fn drive_exact_landing(inject: Option<InjectionConfig>) -> (RunRecord, Vec<(u32, bool)>) {
+        let mut script = boot_prologue();
+        script.push(Scripted::Preempt);
+        script.push(Scripted::Step {
+            pc_after: STEP_PC + 4,
+            opcode: 0xD503_201F,
+            delta: 0,
+        });
+        script.extend(exit_epilogue());
+        let cell = Rc::new(Cell::new(0));
+        let mut vcpu = ScriptedStepVcpu {
+            exits: script.into(),
+            pc: STEP_PC,
+            last_opcode: None,
+            vbar: STEP_VBAR,
+            counter: Rc::clone(&cell),
+            regs_digest: "sha256:regs".into(),
+            digest: "sha256:final".into(),
+            armed: false,
+            last_read_reply: None,
+            injections: Vec::new(),
+        };
+        let mut counter = ScriptedCounter::new(&[100, 102, 118, 118]);
+        let mut s = spec(Some(18));
+        s.inject = inject;
+        let rec = run_sample_exact(&mut vcpu, &mut counter, &s, 0).expect("an exact landing");
+        (rec, vcpu.injections.clone())
+    }
+
+    #[test]
+    fn injection_off_path_is_byte_identical_the_negative_control() {
+        // The determinism-core guardrail (`docs/ARM-ALTRA.md` §AA-6): the injection hook must be
+        // NON-ADDITIVE — a build with the hook present but `inject: None` reproduces the pre-hook
+        // record bit-for-bit. OFF issues no injection at all.
+        let (off, inj_off) = drive_exact_landing(None);
+        assert!(
+            inj_off.is_empty(),
+            "the OFF path must issue ZERO injections (no KVM_IRQ_LINE) — got {inj_off:?}",
+        );
+        // OFF: the AA-3 landing digest and the sentinel digest are both the pre-hook value.
+        assert_eq!(
+            off.overflow.as_ref().expect("armed").landed_digest,
+            "sha256:final",
+            "the AA-3 landed_digest is the pre-hook value on the OFF path",
+        );
+        assert_eq!(
+            off.state_digest, "sha256:final",
+            "the OFF sentinel state_digest is the pre-hook value",
+        );
+
+        // ON: exactly one assertion at the landed Moment; the AA-3 landed_digest is UNCHANGED
+        // (the injection fires after it, preserving its pre-injection meaning), and only the
+        // post-injection SENTINEL state_digest — the digest AA-6 replay identity compares —
+        // shifts to reflect the deterministic injected event.
+        let (on, inj_on) = drive_exact_landing(Some(InjectionConfig { intid: 20 }));
+        assert_eq!(
+            inj_on,
+            vec![(20, true)],
+            "the ON path asserts the configured PPI exactly once, at the landed Moment",
+        );
+        assert_eq!(
+            on.overflow.as_ref().expect("armed").landed_digest,
+            "sha256:final",
+            "the ON path leaves the AA-3 landed_digest byte-identical to OFF (injection is after it)",
+        );
+        assert_eq!(
+            on.state_digest, "sha256:final+ppi20",
+            "the injection is observable ONLY in the post-injection sentinel digest",
+        );
+
+        // Byte-identity: the OFF and ON records are identical after normalizing the single field
+        // the injection is supposed to change (the sentinel `state_digest`). Nothing else — not
+        // the count, the landing, the multiplicity, the landed_digest — differs.
+        let mut off_v = serde_json::to_value(&off).expect("serializable record");
+        let mut on_v = serde_json::to_value(&on).expect("serializable record");
+        off_v["state_digest"] = serde_json::Value::String("X".into());
+        on_v["state_digest"] = serde_json::Value::String("X".into());
+        assert_eq!(
+            off_v, on_v,
+            "OFF and ON records differ ONLY in the post-injection sentinel state_digest — the \
+             injection hook is non-additive to everything else the record attests",
+        );
     }
 
     /// One step of the given opcode landing at `pc_after` with a `BR_RETIRED` delta, driven to
@@ -3313,6 +3480,7 @@ mod tests {
             digest: "sha256:final".into(),
             armed: false,
             last_read_reply: None,
+            injections: Vec::new(),
         };
         let mut counter = ScriptedStepCounter { value: cell };
         let records = step_run(&mut vcpu, &mut counter, &llsc, 8).expect("a bounded llsc run");

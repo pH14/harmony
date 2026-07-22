@@ -1,0 +1,104 @@
+{
+  "schema_version": 4,
+  "stage": "aa6",
+  "run_set_id": "aa6-on-smoke2",
+  "environment": {
+    "midr": 1094701249,
+    "soc": "Ampere(R) Altra(R) Processor (HPE ProLiant RL300 Gen11)",
+    "firmware": {
+      "bios_release_date": "05/23/2024",
+      "bios_version": "1.70"
+    },
+    "host_kernel": "6.18.35-aa3preempt",
+    "kvm_mode": "vhe"
+  },
+  "mechanism": {
+    "kvm_patched": true,
+    "host_kernel_sha256": "8e451458beb4a58475c82be816e66de4e1ab66ac2f852cd2314536b125282a3f",
+    "expected_exit_reason": "preempt",
+    "patch_marker_observed": true
+  },
+  "images": [
+    {
+      "path": "/home/ubuntu/kernel/linux-6.18.35-aa3preempt/vmlinux",
+      "sha256": "8e451458beb4a58475c82be816e66de4e1ab66ac2f852cd2314536b125282a3f",
+      "md5": null,
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/target/aarch64-unknown-none/release/branch-dense",
+      "sha256": "0e3ca8fcfdd6a5e3c0099c0aa9ad7d06907bf84a5688be9efe625ccdeab9a690",
+      "md5": null,
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/target/aarch64-unknown-none/release/clock-page",
+      "sha256": "f7f6ebafabe4242a46bd998eb39218ce4784813e04e7eaf94056eb6b64b95342",
+      "md5": null,
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/target/aarch64-unknown-none/release/exception-abort",
+      "sha256": "9d0ee67ca9b89b15a7120bd2f8fa5149bf5a4bb020412d45f71c89d6aa156211",
+      "md5": null,
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/target/aarch64-unknown-none/release/llsc-atomics",
+      "sha256": "13cd6475184545de8ce2546e628805ad95b8a71a803dbe34f1cef22d6301e40c",
+      "md5": null,
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/target/aarch64-unknown-none/release/lse-atomics",
+      "sha256": "26bf064eea39a5f166f0d7f1d666c60e9d9ba2cbb57bcf353341a27c4e4375b4",
+      "md5": null,
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/target/aarch64-unknown-none/release/straight-line",
+      "sha256": "a08700abaaf88436ca3b0cc43fc2d32b4f0de1caa673bedaeb3eb5a3a730fdc1",
+      "md5": null,
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/target/aarch64-unknown-none/release/svc",
+      "sha256": "5920f12ea8db4cca616c0477b55f013f0543ac3cd8c27ecf1aee73d0bcc44bd9",
+      "md5": null,
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/target/aarch64-unknown-none/release/wfi-idle",
+      "sha256": "d07d0ad038e5c124b673da2afd1c4a5ac2598ad98759d38b8a28437ace528936",
+      "md5": null,
+      "verified_before_boot": true
+    }
+  ],
+  "perf": {
+    "raw_event": 33,
+    "exclude_host": true,
+    "exclude_guest": false,
+    "exclude_hv": false,
+    "pinned": true,
+    "sample_period": null
+  },
+  "pinning": {
+    "pinned": true,
+    "core": 60,
+    "governor": "performance",
+    "migration_probe": false
+  },
+  "condition": "pinned-solo",
+  "weights": {
+    "exception_entry": 1,
+    "exception_return": 0,
+    "svc_instruction": 0,
+    "wfi_instruction": 0,
+    "window_offset": 0
+  },
+  "skid_margin": 53,
+  "attempted": 56,
+  "planned": 56,
+  "records_file": "records.jsonl",
+  "records_sha256": "7755751b856b694773b2787925aaeaca0440c05535a3359095b5c220ae26e653"
+}

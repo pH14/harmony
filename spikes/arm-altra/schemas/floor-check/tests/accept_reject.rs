@@ -147,6 +147,57 @@ fn accept_aa6_gate_is_accepted() {
 }
 
 #[test]
+fn accept_aa6_carve_is_accepted() {
+    // The AA-6 carve: llsc-atomics (AA-4's banned counter-example) and wfi-idle (AA-5's timer
+    // domain) DIVERGE across reps, while every deterministic contract class — incl. lse-atomics
+    // and the LinuxGuest — replays bit-identically. This must PASS: the divergence is recorded as
+    // the AA-4/AA-5 threat datum, and the contract classes bind.
+    let floors = Floors {
+        min_armed_overflows: Some(4),
+        min_reps: Some(4),
+        min_cases: None,
+        sub_normative: true,
+    };
+    let report = check("accept-aa6-carve", floors);
+    assert_eq!(
+        report.status_of(CheckId::ReplayIdentity),
+        Some(Status::Pass),
+        "the carved classes' divergence must be recorded, not failed: {:?}",
+        report.failed()
+    );
+    assert_eq!(
+        report.status_of(CheckId::Aa6Matrix),
+        Some(Status::Pass),
+        "every class (incl. the carved ones and the LinuxGuest) is injected"
+    );
+    assert!(
+        report.passed(),
+        "the AA-6 carve fixture was rejected: {:?}",
+        report.failed()
+    );
+    assert_eq!(report.exit_code(), 0);
+}
+
+#[test]
+fn reject_aa6_contract_class_divergence() {
+    // The AA-6 carve is ONLY for the banned (llsc) / timer (wfi) classes. A DETERMINISTIC
+    // contract class — lse-atomics, the LSE-only form AA-4's ruling rests on — that diverges
+    // same-seed is a real determinism failure, so replay-identity must FAIL. This proves the
+    // carve does not swallow a contract-class regression.
+    let floors = Floors {
+        min_armed_overflows: Some(4),
+        min_reps: Some(4),
+        min_cases: None,
+        sub_normative: true,
+    };
+    assert_single_failure(
+        "reject-aa6-contract-divergence",
+        floors,
+        CheckId::ReplayIdentity,
+    );
+}
+
+#[test]
 fn accept_aa2_steps_is_accepted() {
     // A real AA-2 shape: the full single-step transition matrix, each class stepped twice
     // bit-identically. No floors apply — AA-2 defines no armed-overflow floor and is not the
