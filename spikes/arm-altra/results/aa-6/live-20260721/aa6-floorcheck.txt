@@ -1,0 +1,23 @@
+work clock binding: arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)
+floor-check aa6-bare-full stage=aa6
+  [PASS] aggregation: one stage, distinct run-sets, one constants pack + measurement environment
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 005cf11344594c09a1153a5326c6df07ad02533c723e3c879accdf1f28e07fcb matches the manifest
+  [PASS] totality: all 8000 attempted samples present exactly once
+  [PASS] multiplicity: all 8000 armed overflows delivered exactly once
+  [PASS] weights-present: the manifest carries measured weights
+  [PASS] count-exactness: all 8000 records match the oracle and are self-consistent
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin (Aa6)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 11 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 60
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 8 repeated group(s) landed on bit-identical state digests; non-mechanism divergence observed and recorded (llsc §4 hazard = AA-4 input; wfi-idle timer = AA-5 paravirt-clock domain): llsc-atomics scale smoke seed 13833565160122170005: 1000 reps over 4 distinct digests
+  [PASS] aa6-matrix: all 8 required classes have an injected (armed, delivered) record in the AA-6 determinism matrix (payloads + the AA-5 Linux guest)
+  [PASS] condition-consistency: every record's condition matches the manifest's (pinned-solo)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 8 distinct input(s), each repeated at least 1000 times (floor 1000)
+RESULT: PASS (20 checks)
