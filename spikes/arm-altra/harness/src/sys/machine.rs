@@ -2137,6 +2137,15 @@ impl StepVcpu for Machine {
         Ok(super::digest_regs_only(&regs, &vgic))
     }
 
+    fn masked_regs_digest(&mut self) -> Result<String, RunError> {
+        // The AA-6 masked-register digest (hm-3bwm): the full register file MINUS exactly
+        // {x29, SP} and the host-time counters. Register-file identity only — the vGIC is
+        // passed empty (`&[]`, as `core_regs_digest` does) so a masked-digest divergence is
+        // unambiguously a register, the axis the named condition turns on.
+        let (regs, _vgic) = self.registers_and_vgic()?;
+        Ok(super::digest_regs_masked(&regs, &[]))
+    }
+
     fn inject_ppi(&mut self, intid: u32, asserted: bool) -> Result<(), RunError> {
         // AA-6 injection at the exact landed `Moment`. Two writes, both to the guest's UNOWNED
         // PPI `intid` (the spike uses PPI 20 / 22 — never the architected timer's KVM-owned PPI

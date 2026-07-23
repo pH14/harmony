@@ -1735,8 +1735,36 @@ host per the aa3-recert pins landmine).
 and running the handler deterministically) is exercised separately by the clockevent/PPI lane
 (AA-5(c)'s boot PPI-20 assert/ACK accounting).
 
-**Disposition: AA-6 GO** — full AA-0..AA-6 ARM re-cert complete pending the foreman's verify + merge
+**Disposition: AA-6 PROVISIONAL GO** (upgrade condition: the hm-3bwm masked-register-digest lane on
+silicon) — full AA-0..AA-6 ARM re-cert complete pending the foreman's verify + merge
 of PR #139. The provisional→full-GO upgrade is gated only on the **hm-3bwm** masked-register-digest
 lane. Non-blocking follow-ups: F10 real-PMU-access-fault hardening (**hm-l1wy**), injection
 attestation in `check_aa6_matrix` (**hm-oh3v**), `injected_landed_digest` emission (**hm-fiqo**),
 WFI enforcement disposition (**hm-7yno**).
+
+### AA-6 masked-register-digest lane (hm-3bwm / task 138): apparatus COMPLETE + portably validated; ≥1000-rep on-silicon run PENDING (ARM box spun down)
+
+The named condition on the AA-6 LinuxGuest PROVISIONAL→full-GO upgrade — prove at gate scale that
+change #4's `console + vGIC` narrowing is *exactly-and-only* the disclosed AA-5(c) stack-ASLR residual
+{x29, SP}, not masking an injection-path register divergence — has its apparatus **built and portably
+green**; the on-silicon ≥1000-rep lane is the single turnkey step remaining, deferred because the ARM
+box is spun down. **The condition is OPEN — not met.**
+
+- **Masked-register digest** (`sys::digest_regs_masked`, domain tag `arm-spike-regs-masked-v1`): the
+  full LinuxGuest register file MINUS **exactly** {x29, SP} (`is_masked_general_register`, pinned to the
+  on-N1 dump ids `0x…003A`/`0x…003E`), host-time `CNTPCT`/`TIMER_CNT` already excluded. The mask is a
+  **closed list of two** — widening it is a spec violation, not a fix. Register-file identity only (vGIC
+  passed empty), so a divergence is unambiguously a register. Portable unit tests pin the mask
+  (`masked_general_registers_are_exactly_x29_and_sp`) and a known-register-file→known-digest vector
+  (`masked_digest_excludes_exactly_x29_and_sp_over_a_known_register_file`).
+- **Injection-Moment witness** (hm-fiqo): `injected_landed_digest` is now the masked digest at the
+  injection Moment — emitted (no longer discarded) in the `linux-boot` summary line, alongside
+  `masked_regs_digest` and the **enumerated** exclusion set (`masked_excluded_gprs` by full id +
+  `masked_excluded_host_time` by name — exclusions stated, not implied). The record's `state_digest`
+  stays `console + vGIC` (change #4 untouched).
+- **Turnkey box lane** (one command when an ARM window reopens): smoke-fire ~20 reps, then ≥1000, then
+  the checker — full runbook in `spikes/arm-altra/results/aa-6/masked-digest/RUNBOOK.md`
+  (`host/aa6-masked-digest-lane.sh` + `host/aa6-masked-digest-check.py`), same injection config as the
+  merged PR #139 matrix (`--inject-ppi 22 --inject-at-work 1 --seed 1`). **Disposition on the eventual
+  run:** all-identical ⇒ condition MET (foreman escalates the upgrade to Paul); any divergence outside
+  {x29, SP} ⇒ P0-class STOP (commit evidence, PARK, escalate — never widen the mask).
