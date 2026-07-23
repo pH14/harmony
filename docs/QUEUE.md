@@ -44,10 +44,6 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
   `cut.sdk_events == raw.len()` before decoding (closes the C1 below-baseline hole) +
   prefix commitment via `Normalized.commitment` (closes V3) + doc overclaim fix; four
   required regression tests incl. honest-host-still-admitted.
-- **Telemetry deflake follow-ups** (tasks/147, `hm-3r2k`+`hm-gfi2`+`hm-gnxr`): Sonnet 5
-  worker spawned 2026-07-23 midday on `task/telemetry-deflake-followups` — `data: `
-  wait anchor, helper inline-or-generalize (inline unless a second caller exists),
-  IMPLEMENTATION.md trim.
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -91,6 +87,13 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **Telemetry deflake follow-ups MERGED** (tasks/147, PR #149,
+  `hm-3r2k`/`hm-gfi2`/`hm-gnxr`, 2026-07-23 afternoon — full 5-seat tribunal, zero P1s
+  at discovery, merged with parks): `data: ` wait anchor (500× stress 0-fail), helper
+  inlined (no second caller), doc trim. One P2 park `hm-38kv`: the new wait loop is
+  unbounded/non-accumulating (hang-on-regression, split-marker hang, premature-exit
+  flake — judge-reproduced) + zero positive keepalive-skip coverage; one bounded
+  cumulative wait closes the family. Test-code only.
 - **Seal run-forward suffix capture MERGED** (tasks/144, PR #147, `hm-aqf0`, 2026-07-23
   midday — full bounded pipeline: 5-seat discovery (F1 CONFIRMED P1: advanced-seal
   suffix invisible to descendant recomputation; judge-repro'd past two test maskings) →
