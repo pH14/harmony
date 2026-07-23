@@ -410,12 +410,45 @@ fn serve_recording(stream: &mut TcpStream, opts: &Arc<ServerOptions>) -> io::Res
     stream.flush()
 }
 
-/// The SSE handler: subscribe, then forward `data: <ndjson>\n\n` frames until the
-/// client disconnects or the server stops.
+/// The SSE handler: **subscribe before announcing the stream**, then forward
+/// `data: <ndjson>\n\n` frames until the client disconnects or the server stops.
+///
+/// The `hub.subscribe()` **must** precede the response header, not follow it. A
+/// client treats receipt of the header as "the stream is open" and only then
+/// begins emitting events; if the header were flushed first and the subscribe ran
+/// second, the pump could [`EventHub::publish`] an event in that window to a
+/// subscriber list that does not yet contain this connection — dropping it on the
+/// floor (published to nobody) rather than merely delivering it late. Registering
+/// first makes "the client can observe the header" imply "the client is
+/// subscribed": the flush is a release that the client's header read acquires, so
+/// the subscribe happens-before any event the client emits in response. That
+/// happens-before is what closes the `streams_events_as_sse_frames` race (see
+/// `IMPLEMENTATION.md`). The reorder changes no wire bytes — the header and every
+/// frame are byte-identical.
 fn serve_events(
     mut stream: TcpStream,
     running: &Arc<AtomicBool>,
     hub: &Arc<EventHub>,
+) -> io::Result<()> {
+    // Register with the hub before a single response byte is written, so the
+    // subscription is live the instant the client can observe the stream.
+    let sub = hub.subscribe();
+    // Bracket the whole streaming lifetime so the unsubscribe runs on every exit
+    // path — including a header-write error, which now happens while subscribed.
+    let result = announce_and_stream(&mut stream, running, &sub);
+    hub.unsubscribe(&sub);
+    result
+}
+
+/// Writes the SSE response header, then streams frames for the lifetime of the
+/// connection. Split out from [`serve_events`] so the subscribe/unsubscribe
+/// bracket there spans the header write too: the subscription is registered
+/// before the header (closing the connect/emit race) yet is still torn down if
+/// the header write itself fails.
+fn announce_and_stream(
+    stream: &mut TcpStream,
+    running: &Arc<AtomicBool>,
+    sub: &Arc<Subscriber>,
 ) -> io::Result<()> {
     let header = "HTTP/1.1 200 OK\r\n\
          Content-Type: text/event-stream\r\n\
@@ -426,11 +459,7 @@ fn serve_events(
     stream.flush()?;
     // Writes should fail fast (not hang) once a client goes away.
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-
-    let sub = hub.subscribe();
-    let result = pump_events_to(&mut stream, running, &sub);
-    hub.unsubscribe(&sub);
-    result
+    pump_events_to(stream, running, sub)
 }
 
 /// Advances the idle-iteration counter and decides whether a keepalive is due.
