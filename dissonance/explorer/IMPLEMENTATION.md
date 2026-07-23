@@ -802,3 +802,119 @@ F3 was refuted (checkpoint coverage + step-atomicity keep a seal and its rollout
 inseparable across GC). **F6/hm-udgn is folded** by the V1 closure (the toy frame
 is now aligned to production). F4/F5 and V3/V4/V5 remain parked as beads per the
 adjudications and are **not** touched here.
+
+## Task 148 — ledger `VERSION` 2→3 for the suffix-only Seal representation (`hm-j7ie`, PR #147 F5 + verify V4)
+
+### The problem this closes
+
+PR #144 (`hm-aqf0`, the F5/V4 finding above) changed the *meaning* of a durable
+**Seal** record — a Seal now serializes the run-forward **suffix + observed cut**
+(`campaign.rs` `seal_suffix` / `parent_cut: Some(observed_cut)`), where a
+pre-144 Seal serialized the full rollout `normalized` + base-branch `parent_cut`
+— **without bumping the ledger `VERSION`** (it stayed `2`). That violates the
+ledger's own doctrine (a header is "rejected against, never silently
+reinterpreted"). Two concrete harms:
+
+- A pre-144 ledger's advanced seals **reopen with historically truncated cells,
+  silently** — the exact `cut.sdk_events > graph rows` silent-wrong the F1/F2
+  fixes fail closed on elsewhere.
+- The seal's **batch-identity preimage** (`CompletedRunEvidence::canonical_bytes`
+  → `EvidenceBatchId`) differs across the upgrade for the same seed (verify V4),
+  so any cross-version identity/commit-conflict comparison is meaningless.
+
+### The ruling (foreman default; flagged for Paul's veto at review)
+
+**Bump `VERSION` 2 → 3 and REFUSE every pre-3 ledger loudly** through the
+existing `LedgerError::UnsupportedVersion` path, whose message now names the
+reason (the suffix-only Seal representation change of task 144 and the
+truncation a silent reinterpretation would cause). No silent fallback, no
+read-old path, no migration. `VERSION` is a **private** const (`ledger.rs`), so
+this is not a public-API change — see the snapshot note below.
+
+### Refuse-vs-accept trade-off (the decision this bead owns — weigh at review)
+
+- **Refuse (chosen).** Fail-closed is this codebase's standing doctrine for a
+  durable-record meaning change with no migration demand. It makes both harms
+  impossible: a v2 seal is *never decoded*, so it can neither resurrect
+  truncated cells nor have its stale identity compared against a v3-computed
+  digest. Cost: an operator holding a pre-144 campaign ledger cannot reopen it
+  with this build — but a campaign ledger is a **per-campaign artifact that
+  predates any integrated deployment**, so there is no installed base to
+  migrate, and the loud refusal names exactly why.
+- **Accept (rejected).** Reading old ledgers would either (a) silently reopen
+  truncated cells — literally the F5 finding — or (b) require a *verified*
+  seal-shape migration (rewrite each v2 Seal's `normalized`/`parent_cut` into
+  the suffix frame, re-deriving `observed_cut`). No migration demand exists
+  today, and building an unverified one to satisfy a hypothetical is more
+  silent-wrong risk than the refusal it replaces. **If a migration is ever
+  wanted it is its own future task**; per the spec this task must not build one.
+
+### Reopen-boundary surfaces checked (spec requirement 4)
+
+Grepped `explorer` + `campaign-runner` for anything that persists or compares the
+ledger-header `VERSION` or an evidence `canonical_bytes`/`EvidenceBatchId` across
+a reopen; none assumes version-2 shapes stay readable:
+
+- **Ledger-header `VERSION`** is confined to `ledger.rs`. Both writers — `open`
+  (fresh-file header) and `compact` (in-place crash-safe rewrite) — stamp the
+  *current* `VERSION`; `compact` only ever runs on an already-open (therefore
+  v3) ledger, so it can never re-emit a stale version. The sole reader is the
+  `open` check (`found != VERSION` → `UnsupportedVersion`). No other module or
+  crate embeds or compares it (`campaign-runner` does not reference it).
+- **Evidence batch identity** (`EvidenceBatchId::digest(&ev.canonical_bytes())`)
+  is **recomputed from each record's own bytes on every replay and append**
+  (`ledger.rs` `apply`/`append`, `testkit.rs`), never persisted-as-a-value and
+  compared across a reopen. The `EvidenceBatchId`s that *are* persisted
+  (tombstone `CollectedBatch.batch`, retention checkpoints) live inside a single
+  ledger version, and a pre-3 file is refused **before any record is decoded**,
+  so no v2 identity is ever read and compared to a v3-computed digest — the V4
+  cross-version-identity class is closed by the refusal, not by a compare.
+- The `canonical_bytes` methods in `retention.rs` (`RetentionViews` /
+  `RetentionCheckpoint` / `RetentionReport`) are a **separate** digest surface
+  (retention-view identity), unaffected by the Seal representation.
+- Out of scope and unchanged: `ADAPTER_BLOB_VERSION`, `EnvSpec::BLOB_VERSION`,
+  `Reproducer::blob_version`, `REPRODUCER_FORMAT_VERSION` — these version
+  independent blob/wire formats, not the ledger header (spec scope fence: no
+  wire-format changes outside the ledger header).
+
+### Acceptance-criterion → test map
+
+- *A version-2 header is refused with the new message* →
+  `ledger::tests::version_two_ledger_is_refused_with_the_suffix_reason`
+  (asserts `UnsupportedVersion { found: 2 }` **and** the Display names `suffix`,
+  `truncated`, `task 144`).
+- *A freshly written ledger reopens cleanly at version 3 (round-trip)* →
+  `ledger::tests::fresh_ledger_is_version_three_and_round_trips` (asserts the
+  on-disk header version byte is `3` and the batch survives reopen).
+- *The existing restart-rebuild suite stays green* →
+  `campaign::tests::restart_rebuilds_canonical_inputs_from_the_ledger`,
+  `ledger::tests::append_survives_reopen`,
+  `ledger::tests::compaction_reclaims_bytes_and_replays_identically` — all pass
+  unchanged. The pre-existing `foreign_version_is_rejected` (v1) also stays green
+  (`1 != 3`).
+- *Within-version determinism untouched* → `explorer`
+  `same_seed_yields_identical_campaign` / `same_seed_yields_identical_retention_artifacts`,
+  and `campaign-runner` `determinism_proptest::branch_run_hash_is_deterministic_and_replay_reproduces_capture`,
+  `campaign_replays_bit_identically`, `maze_campaign::same_seed_and_config_yield_identical_artifacts`,
+  `reseed_fold_proptest::draw_carrying_folds_are_bit_identical` — all green.
+
+### Gates run
+
+`cargo build -p explorer`; `cargo nextest run -p explorer` (147 pass, 1 box-skip)
+and `-p campaign-runner` (179 pass, 1 slow, 1 skip); `cargo clippy -p explorer`
+and `-p campaign-runner --all-features --all-targets -- -D warnings` (exit 0; the
+only output is a **pre-existing** root `clippy.toml` config diagnostic about
+`rand::thread_rng` reachability, not a lint on this change); `cargo fmt --check`.
+`cargo deny` is **N/A** — no dependency change. No `unsafe` added → no Miri
+obligation. Public-API is **unchanged**: `VERSION` is private, and the edit to
+`LedgerError::UnsupportedVersion` touches only its Display string, not the
+variant/field signature `cargo public-api` records — the ignored
+`public_api_matches_snapshot` gate was run on the pinned nightly
+(`nightly-2026-06-16`) and matches `tests/public-api.txt` with no diff.
+
+### Scope fence
+
+`hm-wshf` (accessors — unblocks automatically on this merge), `hm-mmkf` (fold
+routing), `hm-4gaw`, `hm-f82p` are **not** touched. The change is the ledger
+header alone: the `VERSION` const, its module/const/error docs, and the two new
+regression tests.
