@@ -199,29 +199,81 @@ pub enum MachineError {
         /// The re-stamped cut's included SDK-event count.
         got_sdk_events: u64,
     },
-    /// A materialized seal's **captured run-forward suffix** does not reconcile
-    /// with its server-stamped cut (task 144), in the single raw
-    /// capture-position frame (catalog-inclusive) both quantities share: the
-    /// suffix must be exactly the span the stamped `sdk_events` runs past the
-    /// sealed rollout's raw capture length (`captured ==
-    /// stamped.saturating_sub(baseline)`). A short or count-divergent host
-    /// capture would otherwise silently recreate `cut.sdk_events > graph rows`
-    /// — the exact evidence truncation this surface must fail closed on. An
-    /// in-frame host derives capture and stamp from one state, so there is no
-    /// honest trigger; the guard fails a divergent host loudly, mirroring the
-    /// materializer's [`CutDivergence`] discipline rather than admitting a
-    /// truncated seal.
+    /// A materialized seal's **server-stamped cut count does not equal its raw
+    /// capture length** (task 144, count invariant completed by task 146 /
+    /// hm-whoo): the complete honest count invariant is `cut.sdk_events ==
+    /// raw.len()`. The server stamps the SDK capture vector's current prefix
+    /// length from the same stopped state as one atomic observation
+    /// (`control.rs`), so no honest machine returns a record its clock has not
+    /// reached — the stamp equals the raw capture length exactly, and the two are
+    /// compared **directly, before decoding**. This subsumes the earlier
+    /// suffix-length-only check and closes its below-baseline hole: within
+    /// `[0, baseline]` the old check compared a `saturating_sub`-clamped
+    /// expectation that admitted **any** (stamp, capture) pair as long as both
+    /// sat at or below the baseline, so an under-stamp (a captured firing
+    /// silently excluded from the sealed cell) or an over-stamp (inherited rows
+    /// the sealed state never reached silently included) both passed. The length
+    /// comparison also refuses a divergent host that **appends a record past the
+    /// cut moment**: `decode_child_suffix` slices by raw position, so such a
+    /// record stages as a phantom committed suffix row regardless of its `Moment`
+    /// — a moment-derived count would miss it, the length does not. This is the
+    /// exact `cut.sdk_events > graph rows` evidence truncation this surface must
+    /// fail closed on. An in-frame host derives capture and stamp from one state,
+    /// so there is no honest trigger; the guard fails a divergent host loudly,
+    /// mirroring the materializer's [`CutDivergence`] discipline rather than
+    /// admitting a truncated seal. (Same-length prefix content divergence is a
+    /// *distinct* failure — [`SealPrefixDivergence`](Self::SealPrefixDivergence).)
     #[error(
-        "seal suffix capture ({captured} events past rollout capture baseline {baseline}) \
-         does not reconcile with the stamped cut count {stamped}"
+        "seal raw capture length {captured} does not equal the stamped cut count {stamped} \
+         (sealed rollout baseline {baseline})"
     )]
     SealSuffixDivergence {
         /// The sealed rollout's raw capture length (`rollout.raw_len`), the
-        /// catalog-inclusive baseline the stamped cut is measured against.
+        /// catalog-inclusive baseline the run-forward suffix is measured past.
         baseline: u64,
-        /// The decoded run-forward suffix length.
+        /// The seal's actual raw capture length (`machine.sdk_events().len()`);
+        /// the honest count invariant requires it to equal `stamped`.
         captured: u64,
-        /// The server-stamped cut's included SDK-event count.
+        /// The server-stamped cut's included SDK-event count (`cut.sdk_events`).
         stamped: u64,
+    },
+    /// A materialized seal reconciles with its stamped cut by **count** (the
+    /// [`SealSuffixDivergence`](Self::SealSuffixDivergence) invariant held) but
+    /// its **shared prefix** — the span at or below the sealed rollout's raw
+    /// capture baseline — does not reproduce the rollout's committed evidence
+    /// (task 146 / hm-whoo, the content half). The seal batch stages only the
+    /// run-forward suffix and relies on lineage to supply the rollout's
+    /// already-committed prefix; a divergent host whose capture has the **same
+    /// length** but a different prefix would glue that suffix onto a prefix the
+    /// rollout never produced — a hybrid state a count check alone cannot see. The
+    /// seal re-decodes its own prefix the same way the rollout was decoded and
+    /// compares it **structurally** against the rollout's `Normalized` (its
+    /// `PartialEq` covers the schema, every event's `ObservationId`, and the
+    /// stream commitment) — strictly stronger than the commitment digest, which
+    /// is blind to an id/schema swap at identical payload and `Moment` (the
+    /// digest folds only each event's `Moment` and raw bytes). No new hash
+    /// surface. An in-frame honest host re-runs the identical branch, so its
+    /// prefix reproduces the rollout's by construction and there is no honest
+    /// trigger. It constrains only the **shared** prefix — the run-forward suffix
+    /// is the *new* evidence the seal contributes and has nothing to compare
+    /// against — and only when a suffix is actually composed (the seal reached or
+    /// passed the rollout terminal); a strictly-shorter divergent interior
+    /// capture is parked as bead `hm-w1o6` (F3).
+    #[error(
+        "seal prefix (sealed rollout baseline {baseline}) does not reproduce the rollout's \
+         committed evidence"
+    )]
+    SealPrefixDivergence {
+        /// The sealed rollout's raw capture length (`rollout.raw_len`) — the
+        /// shared-prefix span whose evidence is compared.
+        baseline: u64,
+        /// The rollout's committed stream digest
+        /// (`rollout.normalized.commitment.digest`) — a fingerprint of the
+        /// expected prefix. When it equals `got`, the divergence is in event
+        /// identity or schema (which the digest does not cover) and the
+        /// structural comparison is what refused the seal.
+        expected: [u8; 32],
+        /// The seal-decoded prefix's stream digest.
+        got: [u8; 32],
     },
 }

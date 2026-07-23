@@ -331,6 +331,21 @@ struct Rollout {
     sealable_moments: Vec<Moment>,
 }
 
+/// The sealed rollout's reconciliation anchors, threaded from the step loop to
+/// the seal capture so a candidate seal's stamped cut is checked against the
+/// rollout it continues (task 144 + task 146 / hm-whoo).
+struct SealAnchors<'a> {
+    /// The rollout's raw capture length (`rollout.raw_len`), the catalog-inclusive
+    /// baseline the run-forward suffix is measured past.
+    raw_len: usize,
+    /// The rollout's committed normalized evidence (`rollout.normalized`), the
+    /// prefix-content anchor the seal's shared prefix must reproduce structurally.
+    normalized: &'a Normalized,
+    /// The inherited ancestor-prefix position count (`parent_cut.sdk_events`) the
+    /// rollout — and the seal's prefix — are decoded with.
+    inherited: u64,
+}
+
 /// One step's outcome, for reporting and tests.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct StepReport {
@@ -696,7 +711,11 @@ impl<M: Machine> DifferentialCampaign<M> {
                     &branch_env,
                     cand.at,
                     branch_origin,
-                    rollout.raw_len,
+                    SealAnchors {
+                        raw_len: rollout.raw_len,
+                        normalized: &rollout.normalized,
+                        inherited: start,
+                    },
                     &mut report.seal_retries,
                 ) {
                     Ok(sealed) => sealed,
@@ -1432,7 +1451,7 @@ impl<M: Machine> DifferentialCampaign<M> {
         branch_env: &Reproducer,
         at: Moment,
         origin: Moment,
-        rollout_raw_len: usize,
+        anchors: SealAnchors<'_>,
         retries: &mut u64,
     ) -> Result<(SnapId, EvidenceCut, Reproducer, Normalized), CampaignError> {
         self.machine.branch(base_snap, branch_env)?;
@@ -1496,7 +1515,7 @@ impl<M: Machine> DifferentialCampaign<M> {
                     // the held seal best-effort before propagating (V2) — the
                     // aborting step will not, and a leaked handle pins the
                     // backend snapshot (materialize.rs release-first discipline).
-                    return match self.capture_seal_suffix(rollout_raw_len, cut) {
+                    return match self.capture_seal_suffix(&anchors, cut) {
                         Ok((delta, suffix)) => Ok((seal, cut, delta, suffix)),
                         Err(e) => {
                             let _ = self.machine.drop_snap(seal);
@@ -1522,37 +1541,93 @@ impl<M: Machine> DifferentialCampaign<M> {
     }
 
     /// Read the held seal's branch-local delta and **run-forward suffix**, and
-    /// reconcile the suffix against the stamped cut (task 144). Split out of
-    /// [`materialize_candidate`] so its caller can release the seal on any
-    /// failure here (V2) rather than leaking the handle on an aborting step.
+    /// reconcile it against the stamped cut in the two halves the complete
+    /// honest invariant requires (task 144, completed by task 146 / hm-whoo).
+    /// Split out of [`materialize_candidate`] so its caller can release the seal
+    /// on any failure here (V2) rather than leaking the handle on an aborting
+    /// step.
     ///
-    /// The suffix is decoded by skipping the sealed rollout's whole raw capture
-    /// (`rollout_raw_len` raw positions): the seal re-runs the identical branch,
-    /// so its raw prefix through the terminal is byte-identical, leaving exactly
-    /// the advanced span (empty when it did not advance). The reconciliation is
-    /// in ONE frame — both `cut.sdk_events` (the machine's catalog-inclusive raw
-    /// capture-position stamp) and `rollout_raw_len` are raw positions, so
-    /// `cut.sdk_events - rollout_raw_len` is exactly the advanced-span firing
-    /// count; an interior seal (cut at or below the rollout capture) expects an
-    /// empty suffix (`saturating_sub` yields 0). A short or count-divergent
-    /// host capture would recreate `cut.sdk_events > graph rows`, so it is
-    /// refused loudly ([`MachineError::SealSuffixDivergence`]).
+    /// **Count half (hm-whoo C1).** The complete honest count invariant is
+    /// `cut.sdk_events == raw.len()`: the server stamps the SDK capture vector's
+    /// current prefix length from the same stopped state as one atomic
+    /// observation (`control.rs`), so no honest machine returns a record its
+    /// clock has not reached — the stamp equals the raw capture length exactly.
+    /// Compare the two **directly, before decoding**. This subsumes the earlier
+    /// suffix-length-only check and closes its below-baseline hole (within
+    /// `[0, baseline]` the `saturating_sub` expectation clamped to 0 and admitted
+    /// any (stamp, capture) pair at or below the baseline: an under-stamp
+    /// excluded a captured firing, an over-stamp included inherited rows the
+    /// sealed state never reached — both silent wrong evidence). A mismatch is
+    /// [`MachineError::SealSuffixDivergence`]. Comparing the length (not a
+    /// moment-derived count) is essential: `decode_child_suffix` slices by raw
+    /// **position**, so a record appended past the cut moment lands in the
+    /// committed suffix regardless of its `Moment` — a moment-bounded count would
+    /// count it as absent while the decode stages it as a phantom committed row.
+    ///
+    /// **Content half (hm-whoo V3).** When the seal reached or passed the rollout
+    /// terminal (`raw.len() >= rollout_raw_len`, so a run-forward suffix is
+    /// composed), the **shared prefix** it composes onto — decoded the same way
+    /// the rollout was, skipping the `inherited` ancestor positions — must
+    /// reproduce the rollout's committed evidence **structurally**. Compare the
+    /// re-decoded prefix against the rollout's `Normalized` directly
+    /// (`prefix != *rollout.normalized`): `Normalized`'s `PartialEq` covers the
+    /// schema, every event's `ObservationId`, and the stream commitment, so an
+    /// equal-length prefix that swaps a firing's declared register (identical
+    /// payload + `Moment`, so the commitment digest alone is blind to it) is
+    /// still refused. Anchored on the existing `Normalized` — **no new hash
+    /// surface**. Without this the suffix glues onto a prefix the rollout never
+    /// produced (a hybrid state); the refusal is
+    /// [`MachineError::SealPrefixDivergence`]. An interior seal below the terminal
+    /// composes no suffix and needs no prefix re-check (a strictly-shorter
+    /// divergent interior capture is parked as bead `hm-w1o6`, F3).
+    ///
+    /// The suffix itself is decoded by skipping the sealed rollout's whole raw
+    /// capture (`rollout_raw_len` raw positions): the seal re-runs the identical
+    /// branch, so its raw prefix through the terminal is byte-identical, leaving
+    /// exactly the advanced span (empty when it did not advance).
     fn capture_seal_suffix(
         &mut self,
-        rollout_raw_len: usize,
+        anchors: &SealAnchors<'_>,
         cut: EvidenceCut,
     ) -> Result<(Reproducer, Normalized), CampaignError> {
+        let &SealAnchors {
+            raw_len: rollout_raw_len,
+            normalized: rollout_normalized,
+            inherited,
+        } = anchors;
         let delta = self.machine.recorded_env()?;
         let raw = self.machine.sdk_events()?;
-        let suffix = self.decode_child_suffix(&raw, rollout_raw_len as u64)?;
-        let expected = cut.sdk_events.saturating_sub(rollout_raw_len as u64);
-        if suffix.events.len() as u64 != expected {
+        // Count half: the honest stamp is the raw capture vector's length,
+        // stamped atomically from the stopped state (`vmm.sdk_events().len()`,
+        // control.rs). Compare it against the stamp directly, BEFORE decoding —
+        // `decode_child_suffix` slices by raw position, so a record appended
+        // past the cut moment would still stage as a committed suffix row; only
+        // the length comparison (never a moment-derived count) refuses it.
+        if cut.sdk_events != raw.len() as u64 {
             return Err(MachineError::SealSuffixDivergence {
                 baseline: rollout_raw_len as u64,
-                captured: suffix.events.len() as u64,
+                captured: raw.len() as u64,
                 stamped: cut.sdk_events,
             }
             .into());
+        }
+        let suffix = self.decode_child_suffix(&raw, rollout_raw_len as u64)?;
+        // Content half: a composed run-forward suffix inherits the rollout's
+        // committed prefix through lineage, so the seal's own decoded prefix
+        // must reproduce it — compared STRUCTURALLY against the rollout's
+        // `Normalized` (`PartialEq` covers schema, every event's `ObservationId`,
+        // and the commitment), which catches an id/schema swap the commitment
+        // digest alone is blind to. No new hash surface.
+        if raw.len() >= rollout_raw_len {
+            let prefix = self.decode_child_suffix(&raw[..rollout_raw_len], inherited)?;
+            if prefix != *rollout_normalized {
+                return Err(MachineError::SealPrefixDivergence {
+                    baseline: rollout_raw_len as u64,
+                    expected: rollout_normalized.commitment.digest,
+                    got: prefix.commitment.digest,
+                }
+                .into());
+            }
         }
         Ok((delta, suffix))
     }
@@ -2825,17 +2900,49 @@ mod tests {
         assert_view_parity(&camp);
     }
 
+    /// The seal-time divergence a [`RawStampMachine`] injects — the divergent
+    /// host the reconciliation must refuse (all modes carry the
+    /// nondeterministic-host trigger that grades this family P2).
+    #[derive(Clone, Default)]
+    struct SealDivergence {
+        /// Signed offset on the honest raw-capture stamp at the seal (`cut.at >
+        /// 0`); 0 = honest. Positive over-stamps, negative under-stamps — the
+        /// below-baseline C1 holes (task 146 / hm-whoo).
+        stamp_delta: i64,
+        /// Truncate the seal's raw capture to this many leading records (`None`
+        /// = the honest full capture) — a short host capture.
+        capture_len: Option<usize>,
+        /// XOR a value byte of the seal-capture record at this raw index,
+        /// diverging its content at **equal length** so only the prefix
+        /// content comparison can catch it (`None` = honest — the V3 content half).
+        perturb_at: Option<usize>,
+        /// Bump the **event id** of the seal-capture record at this raw index,
+        /// keeping its `Moment` and payload bytes (so the stream commitment
+        /// digest is blind to it — only the STRUCTURAL prefix comparison catches
+        /// the changed `ObservationId`; `None` = honest — the F2 ride-along).
+        swap_id_at: Option<usize>,
+        /// Append one extra record stamped PAST the cut moment to the seal
+        /// capture (`false` = honest). The honest stamp counts only the real
+        /// prefix, so `raw.len()` exceeds it — the literal count invariant
+        /// refuses it where a moment-bounded count (which the record sits beyond)
+        /// would not (the F1 hole).
+        append_future: bool,
+    }
+
     /// A machine that stamps the **literal production cut formula** at the
     /// seal — `inner.sdk_events().len()`, raw capture positions with the
-    /// catalog included (`control.rs`) — plus `extra` events of injected
-    /// divergence (0 = honest). Genesis is left honest so a divergence is
-    /// localized to the seal. `dropped` counts `drop_snap` calls so the V2
-    /// release-on-error discipline is observable. Shared by the two V1
-    /// regressions (PR #147 verify event): an honest production-frame host
-    /// must be accepted, a genuinely divergent one refused loudly.
+    /// catalog included (`control.rs`) — then injects a [`SealDivergence`]
+    /// (default = honest). Genesis is left honest so a divergence is localized
+    /// to the seal (`sealed` gates it on the first `cut.at > 0` stamp, so the
+    /// honest rollout capture is untouched). `dropped` counts `drop_snap` calls
+    /// so the V2 release-on-error discipline is observable. Shared by the V1
+    /// regressions (PR #147 verify event) and the C1/V3 reconciliation completion
+    /// (task 146 / hm-whoo): an honest production-frame host must be accepted, a
+    /// count- or prefix-divergent one refused loudly.
     struct RawStampMachine {
         inner: ScriptedMachine,
-        extra: u64,
+        div: SealDivergence,
+        sealed: bool,
         dropped: std::rc::Rc<std::cell::Cell<usize>>,
     }
     impl Machine for RawStampMachine {
@@ -2855,9 +2962,16 @@ mod tests {
         fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
             let (id, cut) = self.inner.snapshot()?;
             // The honest production stamp is the raw capture-position count,
-            // catalog included; `extra` (0 at genesis) injects a divergence.
-            let honest = self.inner.sdk_events()?.len() as u64;
-            let sdk_events = honest + if cut.at.0 > 0 { self.extra } else { 0 };
+            // catalog included (from the UNPERTURBED inner capture); at a seal
+            // (`cut.at > 0`) the signed `stamp_delta` injects a count divergence
+            // and arms the capture perturbation for the reconciliation read.
+            let honest = self.inner.sdk_events()?.len() as i64;
+            let sdk_events = if cut.at.0 > 0 {
+                self.sealed = true;
+                (honest + self.div.stamp_delta).max(0) as u64
+            } else {
+                honest as u64
+            };
             Ok((
                 id,
                 EvidenceCut {
@@ -2880,18 +2994,52 @@ mod tests {
             self.inner.recorded_env()
         }
         fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
-            self.inner.sdk_events()
+            let mut raw = self.inner.sdk_events()?;
+            // Only the seal read (post-stamp) is perturbed; the honest rollout
+            // capture that mints the committed prefix is left intact.
+            if self.sealed {
+                if let Some(idx) = self.div.perturb_at {
+                    // Flip a value byte at `idx` — same record count and length,
+                    // divergent content, so the prefix content (not the count)
+                    // is the only thing that can catch it.
+                    if let Some((_, _, bytes)) = raw.get_mut(idx)
+                        && let Some(b) = bytes.get_mut(1)
+                    {
+                        *b ^= 0xFF;
+                    }
+                }
+                if let Some(idx) = self.div.swap_id_at {
+                    // Bump the event id — same Moment + payload bytes (commitment
+                    // digest blind), different decoded `ObservationId` (structural
+                    // comparison catches it).
+                    if let Some((_, id, _)) = raw.get_mut(idx) {
+                        *id = id.wrapping_add(1);
+                    }
+                }
+                if self.div.append_future
+                    && let Some((_, id, bytes)) = raw.last().cloned()
+                {
+                    // A record stamped far past the cut moment (`1_000_000` ≫ any
+                    // seal moment here): honest stamp unchanged, `raw.len()` + 1.
+                    raw.push((1_000_000, id, bytes));
+                }
+                if let Some(n) = self.div.capture_len {
+                    raw.truncate(n);
+                }
+            }
+            Ok(raw)
         }
     }
 
-    /// One genesis-explore step over a [`RawStampMachine`]; returns the step
-    /// result and how many `drop_snap` calls it made.
-    fn step_with_raw_stamp(extra: u64) -> (Result<StepReport, CampaignError>, usize) {
+    /// One genesis-explore step over a [`RawStampMachine`] injecting `div`;
+    /// returns the step result and how many `drop_snap` calls it made.
+    fn step_with_seal(div: SealDivergence) -> (Result<StepReport, CampaignError>, usize) {
         let (_dir, led) = ledger();
         let dropped = std::rc::Rc::new(std::cell::Cell::new(0usize));
         let machine = RawStampMachine {
             inner: ScriptedMachine::new(vec![(1, UpdateOp::Set)], simple_program(4)),
-            extra,
+            div,
+            sealed: false,
             dropped: dropped.clone(),
         };
         let mut camp = DifferentialCampaign::new(
@@ -2910,11 +3058,21 @@ mod tests {
         (r, dropped.get())
     }
 
+    /// One genesis-explore step whose seal over/under-stamps the honest raw
+    /// capture by `stamp_delta` (the V1 / C1 count-divergence knob).
+    fn step_with_raw_stamp(extra: u64) -> (Result<StepReport, CampaignError>, usize) {
+        step_with_seal(SealDivergence {
+            stamp_delta: extra as i64,
+            ..SealDivergence::default()
+        })
+    }
+
     /// V1 honest half (PR #147 verify event): a host stamping the exact
     /// production cut formula (`sdk_events().len()`, catalog-inclusive) is
     /// ACCEPTED — the reconciliation is in one frame and never refuses an
     /// honest Binary-ingress host (the frame-crossing bug the verify event
-    /// caught refused exactly this shape).
+    /// caught refused exactly this shape). The C1 count-half completion (task
+    /// 146) must keep this green — it must not reintroduce the V1 false refusal.
     #[test]
     fn an_honest_production_frame_seal_capture_is_accepted() {
         let (report, _dropped) = step_with_raw_stamp(0);
@@ -2923,8 +3081,9 @@ mod tests {
     }
 
     /// V1 divergence half + V2: a host whose seal stamp exceeds its capture by
-    /// one event is refused loudly (`cut.sdk_events > graph rows` fails closed,
-    /// never silently lands), and the held seal is released on the way out
+    /// one event is refused loudly — the complete count invariant `cut.sdk_events
+    /// == raw.len()` fails closed (`captured` is the actual raw capture length,
+    /// short of the stamped cut) — and the held seal is released on the way out
     /// (V2 — the materializer's release-on-error discipline).
     #[test]
     fn a_seal_capture_short_of_its_stamped_cut_is_refused_loudly() {
@@ -2935,7 +3094,7 @@ mod tests {
                 err,
                 CampaignError::Machine(MachineError::SealSuffixDivergence {
                     baseline: 2,
-                    captured: 0,
+                    captured: 2,
                     stamped: 3,
                 })
             ),
@@ -2944,6 +3103,152 @@ mod tests {
         assert!(
             dropped >= 1,
             "the held seal is released on the divergence path (V2), got {dropped} drops"
+        );
+    }
+
+    /// C1 repro — below-baseline **under-stamp** (task 146 / hm-whoo, judge
+    /// repro at 7f7bbda4). The host stamps 1 against its own 2-record capture
+    /// (baseline 2): the seal excludes a captured firing from the committed
+    /// cell. The pre-146 suffix-length check ADMITTED this (both stamp and
+    /// capture sat at or below the baseline, so the `saturating_sub` expectation
+    /// was 0 and the empty suffix matched). The complete count invariant
+    /// `cut.sdk_events (1) == raw.len() (2)` fails closed. Seal released (V2).
+    #[test]
+    fn a_below_baseline_under_stamp_is_refused_loudly() {
+        let (result, dropped) = step_with_seal(SealDivergence {
+            stamp_delta: -1,
+            ..SealDivergence::default()
+        });
+        let err = result.expect_err("a below-baseline under-stamp aborts the step");
+        assert!(
+            matches!(
+                err,
+                CampaignError::Machine(MachineError::SealSuffixDivergence {
+                    baseline: 2,
+                    captured: 2,
+                    stamped: 1,
+                })
+            ),
+            "expected a typed count divergence for the under-stamp, got {err:?}"
+        );
+        assert!(
+            dropped >= 1,
+            "the held seal is released on the under-stamp path (V2), got {dropped} drops"
+        );
+    }
+
+    /// C1 sibling — below-baseline **over-stamp** (task 146 / hm-whoo): the seal
+    /// stamps 2 (at the baseline) against a truncated 1-record capture, so it
+    /// includes an inherited row the sealed state never reached. Stamp ≤ baseline
+    /// but > capture, so the pre-146 check admitted it; the direct count
+    /// comparison `cut.sdk_events (2) == raw.len() (1)` fails closed. Seal
+    /// released (V2).
+    #[test]
+    fn a_below_baseline_over_stamp_is_refused_loudly() {
+        let (result, dropped) = step_with_seal(SealDivergence {
+            capture_len: Some(1),
+            ..SealDivergence::default()
+        });
+        let err = result.expect_err("a below-baseline over-stamp aborts the step");
+        assert!(
+            matches!(
+                err,
+                CampaignError::Machine(MachineError::SealSuffixDivergence {
+                    baseline: 2,
+                    captured: 1,
+                    stamped: 2,
+                })
+            ),
+            "expected a typed count divergence for the over-stamp, got {err:?}"
+        );
+        assert!(
+            dropped >= 1,
+            "the held seal is released on the over-stamp path (V2), got {dropped} drops"
+        );
+    }
+
+    /// V3 content half (task 146 / hm-whoo): a **same-length prefix-divergent**
+    /// capture. The seal capture keeps the honest record count and the honest
+    /// stamp — so the count invariant holds and a count check alone admits it —
+    /// but a value byte of the shared prefix is flipped, so the run-forward
+    /// suffix would compose onto a prefix the rollout never produced (a hybrid
+    /// state). The structural prefix comparison against the rollout's
+    /// `Normalized` refuses it loudly. Seal released (V2).
+    #[test]
+    fn a_same_length_prefix_divergent_capture_is_refused_loudly() {
+        let (result, dropped) = step_with_seal(SealDivergence {
+            perturb_at: Some(1),
+            ..SealDivergence::default()
+        });
+        let err = result.expect_err("a prefix-divergent capture aborts the step");
+        assert!(
+            matches!(
+                err,
+                CampaignError::Machine(MachineError::SealPrefixDivergence { baseline: 2, .. })
+            ),
+            "expected a typed prefix divergence, got {err:?}"
+        );
+        assert!(
+            dropped >= 1,
+            "the held seal is released on the prefix-divergence path (V2), got {dropped} drops"
+        );
+    }
+
+    /// F1 repro (task 146 / hm-whoo, judge-CONFIRMED P1): a divergent host seals
+    /// the honest prefix plus one record stamped **past the cut moment**. A
+    /// moment-bounded count would not count the future record (it sits beyond
+    /// `cut.at`), admitting it — but `decode_child_suffix` slices by raw
+    /// position, so the record stages as a phantom committed suffix row. The
+    /// ruled literal invariant `cut.sdk_events == raw.len()` refuses it (stamp 2
+    /// ≠ raw.len() 3) before decoding. Seal released (V2).
+    #[test]
+    fn an_appended_future_moment_record_is_refused_loudly() {
+        let (result, dropped) = step_with_seal(SealDivergence {
+            append_future: true,
+            ..SealDivergence::default()
+        });
+        let err = result.expect_err("an appended future-Moment record aborts the step");
+        assert!(
+            matches!(
+                err,
+                CampaignError::Machine(MachineError::SealSuffixDivergence {
+                    baseline: 2,
+                    captured: 3,
+                    stamped: 2,
+                })
+            ),
+            "expected a typed count divergence for the appended record, got {err:?}"
+        );
+        assert!(
+            dropped >= 1,
+            "the held seal is released on the append path (V2), got {dropped} drops"
+        );
+    }
+
+    /// F2 content half (task 146 / hm-whoo, judge-CONFIRMED P2 ride-along): an
+    /// equal-length prefix that **swaps a firing's declared register**. The
+    /// payload bytes and `Moment` are identical, so the stream commitment digest
+    /// (which folds only `Moment` + raw bytes) is blind to it; only the
+    /// STRUCTURAL comparison of the re-decoded prefix against the rollout's
+    /// `Normalized` — which covers each event's `ObservationId` — catches the
+    /// changed identity. Seal released (V2).
+    #[test]
+    fn a_prefix_id_swap_is_refused_loudly() {
+        let (result, dropped) = step_with_seal(SealDivergence {
+            swap_id_at: Some(1),
+            ..SealDivergence::default()
+        });
+        let err = result.expect_err("a prefix id-swap aborts the step");
+        assert!(
+            matches!(
+                err,
+                CampaignError::Machine(MachineError::SealPrefixDivergence { baseline: 2, .. })
+            ),
+            "expected a typed prefix divergence for the id-swap, got {err:?}"
+        );
+        assert!(
+            dropped >= 1,
+            "the held seal is released on the id-swap path (V2), got {dropped} drops"
         );
     }
 

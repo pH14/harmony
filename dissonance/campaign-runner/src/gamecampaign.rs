@@ -1723,8 +1723,18 @@ impl Machine for GameToyMachine {
 
     fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
         // The cumulative capture: the restored ancestor prefix plus this
-        // branch's own emissions (the production contract, task 132).
-        Ok(self.capture())
+        // branch's own emissions (the production contract, task 132), **bounded
+        // by the clock** — the production capture vector holds only records the
+        // guest's clock has reached, and `snapshot` stamps that same
+        // `at <= vtime` prefix (task 146 / hm-whoo F1b). A terminal read (the
+        // drain/film path) sits at or past every emission, so it is unchanged;
+        // only an interior seal read is truncated, keeping `sdk_events().len()`
+        // equal to the stamped cut for the count invariant.
+        Ok(self
+            .capture()
+            .into_iter()
+            .filter(|(at, _, _)| *at <= self.vtime)
+            .collect())
     }
 }
 
@@ -2151,14 +2161,35 @@ mod tests {
         fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
             let id = self.next_snap;
             self.next_snap += 1;
-            // The cut is stamped from the stopped state (task 127). BoxGuest
-            // models per-rollout (run-local) captures, so the cumulative
-            // prefix base is 0.
+            // The cut is stamped from the stopped state (task 127) as the length
+            // of the capture vector [`sdk_events`](Self::sdk_events) returns at
+            // this state — exactly what production stamps (`vmm.sdk_events().len()`
+            // measured at the cut, `control.rs`). Task 146 (hm-whoo) completed the
+            // explorer's seal-capture count invariant (`cut.sdk_events ==
+            // raw.len()`); the earlier constant `0` here was the firings-only
+            // frame the task-144 `saturating_sub` tolerated but the literal
+            // invariant refuses — an interior/candidate seal that stamps 0 against
+            // its own multi-record capture is the below-baseline under-stamp it
+            // now catches. The frame drain is clock-bounded (a candidate seal
+            // reconciles it); the setup billboard drain is the whole one-shot
+            // registration (its base seal is dropped, not reconciled).
+            let count = if self.published {
+                // Each announced frame drains three tuples at one Moment
+                // (`base_vtime + f + 1`), bounded by the clock.
+                (0..self.frame_markers)
+                    .filter(|f| self.base_vtime + f < self.vtime)
+                    .count() as u64
+                    * 3
+            } else if self.billboard.is_some() {
+                2
+            } else {
+                0
+            };
             Ok((
                 explorer::SnapId(id),
                 explorer::EvidenceCut {
                     at: Moment(self.vtime),
-                    sdk_events: 0,
+                    sdk_events: count,
                 },
             ))
         }
@@ -2175,7 +2206,10 @@ mod tests {
             Ok(self.env.clone())
         }
         fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
-            // The setup prefix's drain: the billboard registers, once.
+            // The setup prefix's drain: the billboard registers, once. This is the
+            // one-shot setup registration read WHOLE — the base seal it stamps is
+            // dropped (`seal_base`) and never reconciled, so it is not clock-bounded
+            // (and `billboard_window_of` reads by register, not Moment).
             if self.sealed && !self.published {
                 self.published = true;
                 let mut out = Vec::new();
@@ -2189,7 +2223,13 @@ mod tests {
             }
             // A rollout's drain: one state tuple per frame the agent announced,
             // with REG_FRAME written BEFORE that frame's body ran (the agent's
-            // real order — film addresses the billboard by that Moment).
+            // real order — film addresses the billboard by that Moment). Bounded
+            // by the clock (`at <= self.vtime`): the production capture vector
+            // holds only records the guest's clock has reached, and `snapshot`
+            // stamps that same prefix length — the seal-capture count invariant
+            // (task 146 / hm-whoo F1c). This is the drain a candidate seal
+            // reconciles; a terminal read sits at or past every frame, so the
+            // bound is a no-op there.
             let mut out = Vec::new();
             for f in 0..self.frame_markers {
                 let at = self.base_vtime + f + 1;
@@ -2200,6 +2240,7 @@ mod tests {
                 let (id, p) = state_event(reg::FRAME, 0, f);
                 out.push((at, id, p));
             }
+            out.retain(|(at, _, _)| *at <= self.vtime);
             Ok(out)
         }
     }

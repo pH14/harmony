@@ -1479,3 +1479,30 @@ The film gate passes its base `Snapshot` through, and **fails loud if that base 
 freshly-booted guest has run no `exec`, so a tainted base means something improvised on the boot —
 and every filmed timeline would inherit the taint (it never clears downstream), making the whole
 capture off the record. Better to stop than to film an unreproducible timeline.
+
+### Task 146 (hm-whoo) — game/box toys made faithful for the count invariant (cross-surface, blessed)
+
+Task 146's surface is `dissonance/explorer`, but completing that task's ruled
+seal-capture **count invariant** (`cut.sdk_events == raw.len()`, PR #150 tribunal)
+required making two toys here return the clock-bounded capture read their own
+`snapshot` already stamps — the unfaithful party was the toy read, not the invariant.
+The frame correction is the same "the toy had to become faithful first" PR #147
+applied, on the paths that were missed:
+
+- **`GameToyMachine::sdk_events`** returned `capture()` (the whole deterministic
+  play). It now filters `at <= self.vtime`, mirroring its own `snapshot` filter, so
+  `sdk_events().len()` equals the stamped cut at an interior seal. Terminal
+  (drain/film) reads sit at or past every emission — unchanged.
+- **`BoxGuest`** (`#[cfg(test)]` fixture) stamped a constant `sdk_events: 0` while its
+  rollout captured 360 frame-marker firings — itself the below-baseline under-stamp
+  the explorer task closes, admitted only through the hole. Its **per-rollout frame
+  drain** (the one a candidate seal reconciles) is now clock-bounded and `snapshot`
+  stamps that length. Its **setup billboard drain** is left whole: that drain feeds
+  the base seal, which `seal_base` drops (never reconciled), and it is read at
+  `vtime = base_vtime` where the `len` register would otherwise truncate away and
+  break billboard establishment (`billboard_window_of` reads by register, not Moment).
+
+No public API or dependency change; full `-p campaign-runner` nextest green (329
+passed / 2 skipped across both crates). Rationale and the full analysis (including the
+superseded `cut.at`-bounded first attempt) live in
+`dissonance/explorer/IMPLEMENTATION.md` §Task 146.
