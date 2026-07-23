@@ -103,8 +103,13 @@
     "window_offset": 2
   },
   "skid_margin": 64,
+  "injection": {
+    "enabled": true,
+    "inject_ppi": 20,
+    "inject_at_work": null
+  },
   "attempted": 9,
   "planned": 9,
   "records_file": "records.jsonl",
-  "records_sha256": "8e416583f75163c72bf6e82f7afbaa21eb52a996bd1120c20079534d9e5c70c6"
+  "records_sha256": "835bdecba3c6fb80795216af94872333ffda967b6218f7b71d7b26a115498eb6"
 }

@@ -54,8 +54,12 @@ for tool in "$SPIKE" "$IMAGE" "$INITRAMFS"; do
   [ -e "$tool" ] || { echo "FAIL: missing $tool (build the spike / stage the pinned Image+initramfs)"; exit 2; }
 done
 
-# Record the injection config explicitly in the evidence dir (Environment §: the run-set
-# attestation hm-oh3v is separate work, but the config must not be left undocumented).
+# Record the injection config in the evidence dir for provenance. NOTE: this hand-written file is
+# NO LONGER the authority — each rep's harness summary line now STAMPS the injection config it
+# actually executed (`injection_enabled`/`inject_ppi`/`inject_at_work`), and
+# `aa6-masked-digest-check.py` enforces those stamped fields (the same attestation the floor
+# checker's `aa6-matrix` reads from `run-set.json`, bead hm-oh3v). This copy stays as a readable
+# record; a disagreement between it and the stamped per-rep fields would surface as a checker FAIL.
 cat >"$OUT/config.json" <<JSON
 {
   "lane": "aa6-masked-register-digest",

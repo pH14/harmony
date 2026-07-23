@@ -38,7 +38,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Component, Path};
 
-use arm_harness::evidence::{ExitReason, RunRecord, RunSet, SCHEMA_VERSION, Stage, StepTransition};
+use arm_harness::evidence::{
+    ExitReason, InjectionAttestation, RunRecord, RunSet, SCHEMA_VERSION, Stage, StepTransition,
+};
 use arm_harness::sys::BR_RETIRED_RAW;
 use oracle_model::{ALL_PAYLOADS, Expectation, Payload, Scale, Weights, expected, trips};
 
@@ -375,7 +377,7 @@ fn run_stage_checks(
     check_clockpage_mode(run_set, records, out);
     check_replay_identity(run_set.stage, records, out);
     check_debug_evidence(run_set.stage, records, out);
-    check_aa6_matrix(run_set.stage, records, out);
+    check_aa6_matrix(run_set.stage, run_set.injection.as_ref(), records, out);
     check_aa4_contract(run_set.stage, records, out);
     check_condition_consistency(run_set, records, out);
     check_payload_status(records, out);
@@ -1105,6 +1107,20 @@ fn check_well_formed(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outc
     }
     if run_set.planned == 0 {
         problems.push("planned is 0 (schema minimum is 1)".to_string());
+    }
+
+    // The injection attestation, when present, must be internally coherent: an `enabled: true`
+    // names its PPI, and the OFF form names no injection parameters. An incoherent stamp
+    // (`enabled: true` with no ppi, or `enabled: false` still carrying parameters) is a
+    // self-contradictory attestation — caught here so `check_aa6_matrix` reads a coherent stamp.
+    if let Some(inj) = &run_set.injection
+        && !inj.is_coherent()
+    {
+        problems.push(format!(
+            "injection attestation is incoherent: enabled={} but inject_ppi={:?}, \
+             inject_at_work={:?} (enabled must name a ppi; the OFF form names no parameters)",
+            inj.enabled, inj.inject_ppi, inj.inject_at_work
+        ));
     }
 
     // Every record's condition is non-empty, and its state_digest is present (schema
@@ -2945,22 +2961,90 @@ fn required_aa6_classes() -> Vec<Payload> {
 /// The matrix includes the **AA-5 Linux guest** ([`Payload::LinuxGuest`]): no run produces
 /// one pre-silicon, so requiring it keeps AA-6 honestly unfulfilled until arrival day
 /// rather than letting 1,000 reps of the eight bare-metal payloads report a passing AA-6.
-fn check_aa6_matrix(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>) {
+///
+/// # Injection-aware, and fail-closed (bead hm-oh3v)
+///
+/// The counting basis is now the run-set's **injection attestation** ([`RunSet::injection`])
+/// plus the per-record [`RunRecord::injected`] witnesses, not `overflow.armed` alone. An armed
+/// force-exit landing is AA-3's mechanism, not AA-6's injected interrupt, so a checker that read
+/// only `overflow.armed` could not tell an injected AA-6 run-set from a bare AA-3 armed-overflow
+/// matrix — and a config slip that left injection OFF would still read PASS. The four gates below
+/// close that (the PR-98 "structurally unable to fall back and still pass" class):
+///
+/// 1. **Missing stamp ⇒ FAIL, closed.** "Assume bare" is never the default — an AA-6 run-set that
+///    does not attest its injection config cannot be dispositioned on.
+/// 2. **Stamp says OFF ⇒ FAIL.** A byte-identical un-injected boot is a legitimate AA-5(c)
+///    negative control, but it is not AA-6's determinism-under-injection gate.
+/// 3. **ON but nothing fired ⇒ FAIL, with the counts enumerated.** A stamp claiming ON while no
+///    record's `injected` witness is `true` is the config-slip signature the attestation exists
+///    to catch; the two disagree, and the checker says so rather than hiding it.
+/// 4. **Per-class coverage.** Each required class must carry a record that both landed (armed,
+///    delivered) AND fired an injection — the pre-attestation requirement, strengthened by the
+///    fired witness, so a class present only as an un-injected landing does not count.
+fn check_aa6_matrix(
+    stage: Stage,
+    injection: Option<&InjectionAttestation>,
+    records: &[RunRecord],
+    out: &mut Vec<Outcome>,
+) {
     if stage != Stage::Aa6 {
         return;
     }
-    // Coverage is from ARMED, DELIVERED records — the ones that actually INJECTED an event.
-    // AA-6 certifies determinism UNDER injection; a class present only as UNARMED records
-    // injected nothing, so counting payload labels alone let a run supply repeated unarmed
-    // records for the required classes, one armed class, `--min-reps`/`--min-armed-overflows
-    // 1`, and pass without injecting across the matrix. Arming across the matrix is AA-6's
-    // invariant, enforced here rather than by an (undefined) numeric armed floor.
-    let injected: BTreeSet<Payload> = records
+
+    // (1) Fail CLOSED on a missing attestation. Without it an injected AA-6 run-set is
+    // indistinguishable from a bare AA-3 armed-overflow matrix, so "assume bare" is never an
+    // option — a slip that left injection OFF would otherwise read PASS.
+    let Some(att) = injection else {
+        out.push(fail(
+            CheckId::Aa6Matrix,
+            "AA-6 run-set carries no injection attestation: AA-6 certifies determinism UNDER \
+             injection, and an armed force-exit landing is not an injected interrupt, so a \
+             missing stamp cannot be told apart from a bare AA-3 armed-overflow matrix — the \
+             checker fails CLOSED rather than assuming injection ran",
+        ));
+        return;
+    };
+
+    // (2) The stamp says injection was OFF.
+    if !att.enabled {
+        out.push(fail(
+            CheckId::Aa6Matrix,
+            "AA-6 injection attestation is stamped OFF (enabled=false): the run-set injected \
+             nothing, so it is a bare armed-overflow matrix (the AA-5(c) negative control), not \
+             AA-6's determinism-under-injection gate",
+        ));
+        return;
+    }
+
+    // (3) Cross-check the per-record witnesses against the ON stamp. A stamp claiming ON while
+    // no record fired is the config slip the attestation exists to catch — enumerate the counts.
+    let fired = records.iter().filter(|r| r.injected == Some(true)).count();
+    if fired == 0 {
+        let not_fired = records.iter().filter(|r| r.injected == Some(false)).count();
+        let no_witness = records.iter().filter(|r| r.injected.is_none()).count();
+        out.push(fail(
+            CheckId::Aa6Matrix,
+            format!(
+                "AA-6 injection attestation is stamped ON but no record fired an injection: of {} \
+                 record(s), {fired} fired, {not_fired} carry injected=false, {no_witness} carry \
+                 no injected witness — the stamp and the per-record evidence disagree about \
+                 whether injection actually ran",
+                records.len()
+            ),
+        ));
+        return;
+    }
+
+    // (4) Coverage: every required class has a record that both LANDED (armed, delivered) and
+    // FIRED an injection. Keying on the fired witness AND the armed-delivered landing keeps the
+    // pre-attestation requirement and adds the injection witness on top.
+    let covered: BTreeSet<Payload> = records
         .iter()
         .filter(|r| {
-            r.overflow
-                .as_ref()
-                .is_some_and(|o| o.armed && o.deliveries >= 1)
+            r.injected == Some(true)
+                && r.overflow
+                    .as_ref()
+                    .is_some_and(|o| o.armed && o.deliveries >= 1)
         })
         .map(|r| r.payload)
         .collect();
@@ -2968,14 +3052,17 @@ fn check_aa6_matrix(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>)
     let missing: Vec<Payload> = required
         .iter()
         .copied()
-        .filter(|p| !injected.contains(p))
+        .filter(|p| !covered.contains(p))
         .collect();
     if missing.is_empty() {
         out.push(pass(
             CheckId::Aa6Matrix,
             format!(
-                "all {} required classes have an injected (armed, delivered) record in the AA-6 \
-                 determinism matrix (payloads + the AA-5 Linux guest)",
+                "injection attestation ON (ppi {}), and all {} required classes have an injected \
+                 (armed, delivered, fired) record in the AA-6 determinism matrix (payloads + the \
+                 AA-5 Linux guest)",
+                att.inject_ppi
+                    .map_or_else(|| "unspecified".to_string(), |p| p.to_string()),
                 required.len()
             ),
         ));
@@ -2985,9 +3072,9 @@ fn check_aa6_matrix(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>)
             CheckId::Aa6Matrix,
             format!(
                 "AA-6's determinism matrix is incomplete: {} class(es) have no injected (armed, \
-                 delivered) record — {}. AA-6 certifies determinism UNDER injection, so a class \
-                 present only as unarmed records injected nothing; the matrix must be verified \
-                 from what was actually injected, not from payload labels.",
+                 delivered, fired) record — {}. AA-6 certifies determinism UNDER injection, so a \
+                 class present only as an un-injected landing injected nothing; the matrix must \
+                 be verified from what actually fired, not from payload labels.",
                 missing.len(),
                 names.join(", ")
             ),
@@ -3462,11 +3549,21 @@ mod tests {
                 skid: 0,
                 landed_digest: "sha256:aa".into(),
             }),
+            injected: None,
             step: None,
             state_digest: "sha256:00".into(),
             params_mode: "managed".into(),
             clockpage_mode: None,
             payload_status: 0,
+        }
+    }
+
+    /// An armed record that ALSO fired an injection — the AA-6 witness. `a_record` plus
+    /// `injected: Some(true)`, so a matrix built from these passes the injection cross-check.
+    fn an_injected_record(sample_id: u64) -> RunRecord {
+        RunRecord {
+            injected: Some(true),
+            ..a_record(sample_id)
         }
     }
 
@@ -3519,6 +3616,7 @@ mod tests {
             condition: "pinned-solo".into(),
             weights: Some(Weights::measured(0, 0, 0, 0, 2)),
             skid_margin: Some(64),
+            injection: None,
             attempted: 1,
             planned: 1,
             records_file: "records.jsonl".into(),
@@ -5653,35 +5751,113 @@ mod tests {
     #[test]
     fn aa6_matrix_counts_injected_records_not_payload_labels() {
         let required = required_aa6_classes();
-        let full_armed = || -> Vec<RunRecord> {
+        // A full matrix where every required class has an armed, delivered AND fired record.
+        let full_injected = || -> Vec<RunRecord> {
             required
                 .iter()
                 .enumerate()
                 .map(|(i, &p)| {
-                    let mut r = a_record(i as u64); // armed + delivered
+                    let mut r = an_injected_record(i as u64); // armed + delivered + fired
                     r.payload = p;
                     r
                 })
                 .collect()
         };
-        // Every required class has an injected (armed, delivered) record → PASS.
+        let on = InjectionAttestation::on(20, None);
+
+        // Attestation ON + every required class injected → PASS.
         let mut out = Vec::new();
-        check_aa6_matrix(Stage::Aa6, &full_armed(), &mut out);
+        check_aa6_matrix(Stage::Aa6, Some(&on), &full_injected(), &mut out);
         assert_eq!(status(&out, CheckId::Aa6Matrix), Some(Status::Pass));
-        // Make one required class present only as an UNARMED record — it injected nothing.
-        let mut records = full_armed();
+
+        // A class present only as an UNARMED record injected nothing → FAIL (coverage).
+        let mut records = full_injected();
         for r in &mut records {
             if r.payload == Payload::BranchDense {
                 r.overflow = None;
+                r.injected = Some(false);
             }
         }
         let mut out = Vec::new();
-        check_aa6_matrix(Stage::Aa6, &records, &mut out);
+        check_aa6_matrix(Stage::Aa6, Some(&on), &records, &mut out);
         assert_eq!(
             status(&out, CheckId::Aa6Matrix),
             Some(Status::Fail),
-            "a class present only as unarmed records injected nothing across the matrix"
+            "a class present only as an un-injected record injected nothing across the matrix"
         );
+    }
+
+    #[test]
+    fn aa6_matrix_fails_closed_without_an_injection_attestation() {
+        // A full, well-formed AA-6 matrix with NO stamp is indistinguishable from a bare AA-3
+        // armed-overflow matrix, so the checker fails CLOSED rather than assuming injection ran.
+        let required = required_aa6_classes();
+        let records: Vec<RunRecord> = required
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                let mut r = an_injected_record(i as u64);
+                r.payload = p;
+                r
+            })
+            .collect();
+        let mut out = Vec::new();
+        check_aa6_matrix(Stage::Aa6, None, &records, &mut out);
+        assert_eq!(status(&out, CheckId::Aa6Matrix), Some(Status::Fail));
+        assert!(detail(&out, CheckId::Aa6Matrix).contains("no injection attestation"));
+    }
+
+    #[test]
+    fn aa6_matrix_fails_a_stamp_that_says_off() {
+        // Injection stamped OFF: a legitimate AA-5(c) negative control, but not AA-6's gate.
+        let required = required_aa6_classes();
+        // Even with fired records present, an OFF stamp is refused before coverage is examined.
+        let records: Vec<RunRecord> = required
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                let mut r = an_injected_record(i as u64);
+                r.payload = p;
+                r
+            })
+            .collect();
+        let off = InjectionAttestation::off();
+        let mut out = Vec::new();
+        check_aa6_matrix(Stage::Aa6, Some(&off), &records, &mut out);
+        assert_eq!(status(&out, CheckId::Aa6Matrix), Some(Status::Fail));
+        assert!(detail(&out, CheckId::Aa6Matrix).contains("stamped OFF"));
+    }
+
+    #[test]
+    fn aa6_matrix_fails_on_with_no_record_that_fired() {
+        // The config slip: the stamp claims ON, but no record's witness is `true`. The checker
+        // enumerates the counts rather than hiding the disagreement.
+        let required = required_aa6_classes();
+        let records: Vec<RunRecord> = required
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                let mut r = a_record(i as u64); // armed + delivered, but injected: None
+                r.payload = p;
+                r
+            })
+            .collect();
+        let on = InjectionAttestation::on(20, None);
+        let mut out = Vec::new();
+        check_aa6_matrix(Stage::Aa6, Some(&on), &records, &mut out);
+        assert_eq!(status(&out, CheckId::Aa6Matrix), Some(Status::Fail));
+        let d = detail(&out, CheckId::Aa6Matrix);
+        assert!(d.contains("stamped ON but no record fired"), "detail: {d}");
+        // The counts are enumerated: every record carries no witness here.
+        assert!(d.contains(&format!("{} carry no injected witness", records.len())));
+    }
+
+    #[test]
+    fn aa6_matrix_is_inert_off_stage() {
+        // The whole check is AA-6's; a non-AA6 run-set emits no matrix outcome regardless.
+        let mut out = Vec::new();
+        check_aa6_matrix(Stage::Aa3, None, &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::Aa6Matrix), None);
     }
 
     #[test]

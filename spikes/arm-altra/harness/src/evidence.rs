@@ -70,6 +70,14 @@ pub const ARM64_WORK_CLOCK_BINDING: &str = "arm64 BR_RETIRED raw 0x21 = all arch
 /// [`StepTransition::NotTakenBranch`]. These are required wire fields/classes: the stable planned
 /// id makes step totality non-forgeable after record ids are densely renumbered, while the step
 /// position and explicit not-taken class bind replay identity and AA1-F1's all-branch semantics.
+///
+/// v4 also adds the AA-6 injection attestation — [`RunSet::injection`] (the stamped run-set
+/// injection config) and [`RunRecord::injected`] (the per-record fired witness). Both are
+/// **optional additive** fields: a run-set that predates them, or one from a stage that does not
+/// inject, omits them and validates unchanged, so no retained record needs re-pinning. They exist
+/// so the AA-6 matrix checker can tell an injected run-set from a bare AA-3 armed-overflow one (an
+/// armed force-exit landing is not an injected interrupt) and fail closed when the stamp is
+/// missing or says OFF (`schemas/floor-check`, bead hm-oh3v).
 pub const SCHEMA_VERSION: u32 = 4;
 
 /// Which stage produced a run-set.
@@ -373,6 +381,76 @@ pub struct StepRecord {
     pub step_digest: String,
 }
 
+/// The AA-6 injection attestation — the run-set's stamped injection configuration.
+///
+/// Written by the harness from the runtime configuration it **actually executed**, never
+/// echoed from CLI intent (the PR-98 lesson: a claim and its proof travel together). AA-6
+/// certifies determinism *under injection*, but an injected AA-6 run-set and a bare AA-3
+/// armed-overflow matrix are indistinguishable to a checker that reads only `overflow.armed`
+/// — an armed force-exit landing is not an injected interrupt. So a config slip that left
+/// injection OFF would still read PASS. This stamp closes that: the floor checker fails
+/// **closed** on its absence at AA-6, refuses one stamped OFF there, and cross-checks it
+/// against the per-record [`RunRecord::injected`] witnesses (`docs/ARM-ALTRA.md` §Evidence
+/// integrity #4).
+///
+/// The stamp is **optional and additive** ([`RunSet::injection`] is `Option`): stages that
+/// do not inject omit it, and a retained pre-attestation run-set validates unchanged.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InjectionAttestation {
+    /// Whether the run loop configured event injection. `false` is the AA-5(c)
+    /// negative-control posture — a byte-identical, un-injected boot. Legitimate to run, but
+    /// an AA-6 determinism matrix stamped `enabled: false` injected nothing, and the checker
+    /// refuses it.
+    pub enabled: bool,
+    /// The injected PPI INTID (`--inject-ppi`) the run issued via `KVM_IRQ_LINE` — the
+    /// harness's dedicated unowned line, never the architected timer's KVM-owned PPI. `Some`
+    /// iff [`Self::enabled`]; `None` on the OFF negative control.
+    pub inject_ppi: Option<u32>,
+    /// The landing index the injection fires at (`--inject-at-work`), for the LinuxGuest lane
+    /// that injects at ONE seeded Moment. `None` for the bare-payload lane (which injects at
+    /// EVERY exact landing) and `None` on the OFF control — so its presence is not what a
+    /// checker keys ON/OFF on; [`Self::enabled`] is.
+    pub inject_at_work: Option<u64>,
+}
+
+impl InjectionAttestation {
+    /// The injection-ON attestation for a run that issued `intid`, either at a single
+    /// `at_work` landing (the LinuxGuest lane) or at every landing (`None`, the bare lane).
+    #[must_use]
+    pub fn on(intid: u32, at_work: Option<u64>) -> Self {
+        Self {
+            enabled: true,
+            inject_ppi: Some(intid),
+            inject_at_work: at_work,
+        }
+    }
+
+    /// The injection-OFF attestation — the AA-5(c) negative control (no line issued, no
+    /// parameters named).
+    #[must_use]
+    pub fn off() -> Self {
+        Self {
+            enabled: false,
+            inject_ppi: None,
+            inject_at_work: None,
+        }
+    }
+
+    /// Whether the attestation is internally coherent: `enabled` names a PPI, and the OFF
+    /// form names no parameters. An `enabled: true` with no `inject_ppi`, or an `enabled:
+    /// false` that still carries injection parameters, is a self-contradictory stamp the
+    /// well-formed gate refuses.
+    #[must_use]
+    pub fn is_coherent(&self) -> bool {
+        if self.enabled {
+            self.inject_ppi.is_some()
+        } else {
+            self.inject_ppi.is_none() && self.inject_at_work.is_none()
+        }
+    }
+}
+
 /// One attempted sample.
 ///
 /// Every attempted sample gets a record, including ones that failed — §Evidence
@@ -410,6 +488,15 @@ pub struct RunRecord {
     pub exit_reason: ExitReason,
     /// Overflow bookkeeping, when the sample armed one.
     pub overflow: Option<OverflowRecord>,
+    /// Whether an injection **actually fired** for this sample — the non-vacuity witness at
+    /// record granularity, corroborating the run-set's [`RunSet::injection`] stamp.
+    /// `Some(true)` when the run loop asserted the configured PPI at this sample's landing,
+    /// `Some(false)` when injection was configured but did not fire (a dropped injection — a
+    /// finding, not a pass), and `None` for a sample where injection is not a concept (a
+    /// non-injecting stage, or a stepped/counting record). **Optional and additive**: an
+    /// omitted flag serializes to nothing, so retained records keep their pinned bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub injected: Option<bool>,
     /// Single-step measurement, when this sample was a stepped one (AA-2). `None` for
     /// every non-stepped run. The AA-2 floor requires this structured evidence — a
     /// bare `exit_reason: debug` proves nothing — and validates that the step retired
@@ -464,6 +551,14 @@ pub struct RunSet {
     /// The N1 skid margin, measured by AA-1. `None` for the same reason as
     /// [`RunSet::weights`]; a checker cannot bound skid without it and must say so.
     pub skid_margin: Option<u64>,
+    /// The AA-6 injection attestation — the run-set's stamped injection configuration
+    /// ([`InjectionAttestation`]). `None` for stages that do not inject and for any retained
+    /// pre-attestation run-set. An AA-6 run-set MUST carry it: the floor checker fails closed
+    /// on its absence there, because a bare AA-3 armed-overflow matrix is otherwise
+    /// indistinguishable from an injected AA-6 one. **Optional and additive**: an omitted
+    /// stamp serializes to nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub injection: Option<InjectionAttestation>,
     /// How many samples were **attempted**. Every one of them must appear in the
     /// records file. In single-step mode one attempted sample emits MANY step
     /// records, so `attempted` is the STEP count there, not the plan size — see
@@ -514,6 +609,9 @@ pub struct RunSetContext {
     pub weights: Option<Weights>,
     /// The measured skid margin (AA-1). `None` until it exists.
     pub skid_margin: Option<u64>,
+    /// The AA-6 injection attestation ([`InjectionAttestation`]), stamped by the harness from
+    /// the injection configuration it actually executed. `None` for a non-injecting stage.
+    pub injection: Option<InjectionAttestation>,
     /// How many samples were **attempted** — for an ordinary run this is the plan's
     /// length; in single-step mode the caller sets it to the STEP count (one plan
     /// sample emits many step records).
@@ -567,6 +665,7 @@ pub fn assemble_run_set(
         condition: ctx.condition,
         weights: ctx.weights,
         skid_margin: ctx.skid_margin,
+        injection: ctx.injection,
         attempted: ctx.attempted,
         planned: ctx.planned,
         records_file: "records.jsonl".to_string(),
@@ -632,6 +731,7 @@ mod tests {
                 skid: 0,
                 landed_digest: "sha256:aa".into(),
             }),
+            injected: None,
             step: None,
             state_digest: "sha256:00".into(),
             params_mode: "managed".into(),
@@ -681,6 +781,62 @@ mod tests {
     fn hex_is_lowercase_and_zero_padded() {
         assert_eq!(hex_lower(&[0x00, 0x0f, 0xff]), "000fff");
         assert_eq!(hex_lower(&[]), "");
+    }
+
+    #[test]
+    fn injection_attestation_constructors_are_coherent() {
+        let on = InjectionAttestation::on(20, Some(1));
+        assert!(on.enabled && on.inject_ppi == Some(20) && on.inject_at_work == Some(1));
+        assert!(on.is_coherent());
+
+        // The bare-payload lane injects at every landing: ON, ppi named, no single at-work index.
+        let on_every = InjectionAttestation::on(20, None);
+        assert!(on_every.is_coherent());
+
+        let off = InjectionAttestation::off();
+        assert!(!off.enabled && off.inject_ppi.is_none() && off.inject_at_work.is_none());
+        assert!(off.is_coherent());
+
+        // Incoherent stamps: enabled with no ppi, or OFF still carrying parameters.
+        assert!(
+            !InjectionAttestation {
+                enabled: true,
+                inject_ppi: None,
+                inject_at_work: None,
+            }
+            .is_coherent()
+        );
+        assert!(
+            !InjectionAttestation {
+                enabled: false,
+                inject_ppi: Some(20),
+                inject_at_work: None,
+            }
+            .is_coherent()
+        );
+    }
+
+    #[test]
+    fn an_omitted_injection_witness_serializes_to_nothing() {
+        // The additive-compat guarantee: a record whose `injected` is `None` serializes to bytes
+        // that do not mention the field at all, so a retained record predating the attestation
+        // keeps its pinned sha256. Same for a run-set's absent `injection` stamp.
+        let r = a_record(); // injected: None
+        let json = serde_json::to_string(&r).expect("serializable");
+        assert!(
+            !json.contains("injected"),
+            "an absent injection witness must not appear in the record bytes: {json}"
+        );
+
+        // A present witness DOES appear, and round-trips.
+        let injected = RunRecord {
+            injected: Some(true),
+            ..a_record()
+        };
+        let json = serde_json::to_string(&injected).expect("serializable");
+        assert!(json.contains("\"injected\":true"));
+        let back: RunRecord = serde_json::from_str(&json).expect("deserializable");
+        assert_eq!(injected, back);
     }
 
     #[test]

@@ -1063,6 +1063,23 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
     // hm-fiqo: the injection-Moment masked-register witness, emitted (no longer discarded);
     // `none` on the negative-control OFF path where no injection fired.
     let injected_landed_digest = result.injected_landed_digest.as_deref().unwrap_or("none");
+    // The AA-6 injection attestation the boot loop ACTUALLY executed (bead hm-oh3v): the loop
+    // injects iff BOTH `--inject-ppi` and `--inject-at-work` were supplied (`Option::zip`), so
+    // `injection_enabled` reflects the config that ran, and the two parameters are enumerated.
+    // Emitted in the same summary line the masked-digest lane parses, so that lane's checker and
+    // the floor checker's `aa6-matrix` read one stamped injection posture, never two that can
+    // disagree. `injected_landed_digest` (above) is the independent per-rep FIRED witness.
+    let injection_enabled = if opts.inject_ppi.is_some() && opts.inject_at_work.is_some() {
+        "ON"
+    } else {
+        "OFF"
+    };
+    let inject_ppi = opts
+        .inject_ppi
+        .map_or_else(|| "none".to_string(), |p| p.to_string());
+    let inject_at_work = opts
+        .inject_at_work
+        .map_or_else(|| "none".to_string(), |w| w.to_string());
 
     // AA-6 LinuxGuest record emission (the mini-gate matrix's 9th class). A `LinuxGuest` armed+
     // delivered RunRecord whose overflow landed at the injected Moment and whose `state_digest`
@@ -1108,6 +1125,10 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
                 skid: 0,
                 landed_digest: aa6_digest.clone(),
             }),
+            // The injection fired at this Moment — `injected_at` above is `Some`, or this
+            // record would not have been emitted (the `ok_or_else` refusal). The per-record
+            // witness the AA-6 matrix checker cross-checks against the stamped attestation.
+            injected: Some(true),
             step: None,
             // The AA-6 LinuxGuest determinism carrier: console + vGIC injection state (the
             // AA-5(c)-deterministic console + the injected pending interrupt), NOT the full
@@ -1174,7 +1195,8 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
          exec_guard_enabled={} exec_guard_exits={} exec_guard_scans={} exec_guard_approvals={} \
          exec_guard_rejections={} exec_guard_write_revocations={} exec_guard_blocked_writes={} \
          state_digest={} regs_digest={} core_regs_digest={} masked_regs_digest={} \
-         injected_landed_digest={} masked_excluded_gprs={} masked_excluded_host_time={} \
+         injected_landed_digest={} injection_enabled={} inject_ppi={} inject_at_work={} \
+         masked_excluded_gprs={} masked_excluded_host_time={} \
          transcript={}",
         result.boot.exits,
         result.boot.console.len(),
@@ -1201,6 +1223,9 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
         core_regs_digest,
         masked_regs_digest,
         injected_landed_digest,
+        injection_enabled,
+        inject_ppi,
+        inject_at_work,
         masked_excluded_gprs,
         masked_excluded_host_time,
         opts.console_out.display()
@@ -2147,6 +2172,32 @@ fn uniform_period(records: &[arm_harness::evidence::RunRecord]) -> Option<u64> {
     period
 }
 
+/// Stamp the AA-6 injection attestation from the injection config the run loop **actually
+/// executed** (bead hm-oh3v), never echoed from CLI intent.
+///
+/// - Injection configured → `on(intid, None)`: the bare-payload `run` lane injects at every
+///   exact landing, so there is no single `inject_at_work` index (the LinuxGuest lane stamps
+///   its single-Moment attestation in [`linux_boot`]).
+/// - AA-6 with injection OFF → `off()`: the honest actual config, so the matrix checker fails
+///   it with "stamp says OFF" rather than a missing stamp — closing the config-slip hole where
+///   an accidentally-bare AA-6 matrix read PASS.
+/// - Any other stage that did not inject → no stamp: injection is not a concept there.
+///
+/// Portable and pure so it is unit-tested off-box; the `run` loop that calls it is Linux-only
+/// (so off Linux it is unread by construction — there is no `/dev/kvm` to run against).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn injection_attestation(
+    stage: arm_harness::evidence::Stage,
+    inject: Option<&arm_harness::run::InjectionConfig>,
+) -> Option<arm_harness::evidence::InjectionAttestation> {
+    use arm_harness::evidence::{InjectionAttestation, Stage};
+    match inject {
+        Some(cfg) => Some(InjectionAttestation::on(cfg.intid, None)),
+        None if stage == Stage::Aa6 => Some(InjectionAttestation::off()),
+        None => None,
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn execute(args: RunArgs) -> Result<(), String> {
     use arm_harness::evidence::{
@@ -2579,6 +2630,9 @@ fn execute(args: RunArgs) -> Result<(), String> {
             condition: args.condition,
             weights: args.weights,
             skid_margin: args.skid_margin,
+            // Stamp the injection config the loop actually executed — an AA-6 run with
+            // injection OFF is stamped OFF (not omitted), so the matrix checker sees the slip.
+            injection: injection_attestation(args.stage, args.inject.as_ref()),
             attempted,
             planned,
         };
@@ -2786,5 +2840,31 @@ mod tests {
         assert_eq!(opts.core, 9);
         assert_eq!(opts.max_exits, 1_000_000);
         assert_eq!(opts.watchdog_secs, arm_harness::run::DEFAULT_WATCHDOG_SECS);
+    }
+
+    #[test]
+    fn injection_attestation_stamps_actual_config_and_marks_aa6_off_slip() {
+        use arm_harness::evidence::Stage;
+        use arm_harness::run::InjectionConfig;
+
+        // Injection configured → ON, PPI stamped, no single at-work index (bare lane injects at
+        // every landing); the stamp is coherent.
+        let on = injection_attestation(Stage::Aa6, Some(&InjectionConfig { intid: 20 }))
+            .expect("a configured injection is stamped");
+        assert!(on.enabled && on.inject_ppi == Some(20) && on.inject_at_work.is_none());
+        assert!(on.is_coherent());
+
+        // AA-6 with injection OFF → stamped OFF (not omitted), so the matrix checker sees the
+        // slip as "stamp says OFF" rather than a missing stamp.
+        let off = injection_attestation(Stage::Aa6, None).expect("AA-6 always carries a stamp");
+        assert!(!off.enabled && off.inject_ppi.is_none() && off.is_coherent());
+
+        // A stage that does not inject carries no stamp.
+        assert!(injection_attestation(Stage::Aa3, None).is_none());
+        // …but an injecting non-AA6 run still attests its actual config.
+        assert!(
+            injection_attestation(Stage::Aa3, Some(&InjectionConfig { intid: 22 }))
+                .is_some_and(|a| a.enabled && a.inject_ppi == Some(22))
+        );
     }
 }

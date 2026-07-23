@@ -85,6 +85,10 @@
         }
       ]
     },
+    "injected": {
+      "description": "Whether an injection ACTUALLY fired for this sample — the AA-6 non-vacuity witness at record granularity, corroborating the run-set's `injection` attestation (`arm_harness::evidence::RunRecord::injected`). `true` when the configured PPI was asserted at this sample's landing, `false` when injection was configured but did not fire (a dropped injection — a finding), and OMITTED where injection is not a concept (a non-injecting stage, or a stepped/counting record). Optional and additive: an omitted flag serializes to nothing, so retained records keep their pinned bytes.",
+      "type": "boolean"
+    },
     "step": {
       "description": "Single-step measurement, for a stepped AA-2 sample; `null` for every non-stepped run. The AA-2 floor validates this structured evidence (PC advanced, exactly one instruction retired) rather than trusting the `exit_reason: debug` label. Unproduced pre-silicon: the stepping run path is arrival-day.",
       "oneOf": [

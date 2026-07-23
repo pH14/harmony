@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The fixture generator.
 //!
-//! Thirty-three checked-in run-sets: twenty-five the checker must reject (one per failure
-//! mode) and eight it must accept (a patched AA-3 landing run, an AA-1 counting run, an
+//! Thirty-six checked-in run-sets: twenty-eight the checker must reject (one per failure
+//! mode — including the three AA-6 injection-attestation negative controls: an injection-OFF
+//! matrix, a missing stamp, and per-record witnesses inconsistent with the stamp) and eight it
+//! must accept (a patched AA-3 landing run, an AA-1 counting run, an
 //! AA-1(c) early/late skid-distribution run, an AA-1 LL/SC-hazard run, an AA-6 same-input
 //! gate, an AA-6 CARVE gate (llsc/wfi diverge but are recorded, contract classes bind), an
 //! AA-2 single-step transition matrix, and an AA-2 BOUNDED (`--max-steps`) matrix
@@ -30,8 +32,8 @@
 //! produced.
 
 use arm_harness::evidence::{
-    Environment, ExitReason, ImagePin, Mechanism, OverflowRecord, PerfConfig, Pinning, RunRecord,
-    RunSet, SCHEMA_VERSION, Stage, StepRecord, StepTransition, hex_lower,
+    Environment, ExitReason, ImagePin, InjectionAttestation, Mechanism, OverflowRecord, PerfConfig,
+    Pinning, RunRecord, RunSet, SCHEMA_VERSION, Stage, StepRecord, StepTransition, hex_lower,
 };
 use oracle_model::{DEFAULT_SEED, Payload, Scale, Weights, expected};
 use sha2::{Digest, Sha256};
@@ -66,6 +68,10 @@ const SYNTHETIC_SKID_MARGIN: u64 = 64;
 /// deadline `work_begin + SYNTHETIC_PERIOD`, so the manifest's single `sample_period`
 /// is a truthful uniform claim.
 const SYNTHETIC_PERIOD: u64 = 500;
+
+/// The synthetic injected PPI INTID the AA-6 fixtures stamp — the harness's dedicated unowned
+/// line (PPI 20, the bare-payload lane's), so the ON attestation names a plausible parameter.
+const SYNTHETIC_INJECT_PPI: u32 = 20;
 
 /// The eight windowed payload classes, in a stable order. [`Payload::Ident`] is
 /// excluded: it has no counting window, so it is not an armed-overflow sample.
@@ -221,6 +227,8 @@ fn generate_record(sample_id: u64, payload: Payload, exit: ExitReason) -> RunRec
                 synth_sha256(&format!("landed-{sample_id}-{}", payload.name()))
             ),
         }),
+        // Default: not an injection sample. The AA-6 fixtures set this witness explicitly.
+        injected: None,
         // No fixture is a stepped AA-2 run (the run path is arrival-day).
         step: None,
         state_digest: format!(
@@ -287,6 +295,14 @@ fn build_run_set(stage: Stage, mechanism: Mechanism, records: &[RunRecord]) -> R
         condition: "pinned-solo".to_string(),
         weights: Some(synthetic_weights()),
         skid_margin: Some(SYNTHETIC_SKID_MARGIN),
+        // An AA-6 run-set MUST carry the injection attestation (else the matrix checker fails
+        // closed). The default is the ON stamp a real AA-6 injected matrix carries; the
+        // planted-failure fixtures override it (OFF / absent). No other stage injects.
+        injection: if stage == Stage::Aa6 {
+            Some(InjectionAttestation::on(SYNTHETIC_INJECT_PPI, None))
+        } else {
+            None
+        },
         attempted: records.len() as u64,
         planned,
         records_file: "records.jsonl".to_string(),
@@ -411,24 +427,81 @@ fn aa6_reps_of(payload: Payload, first_id: u64) -> Vec<RunRecord> {
                 o.landed_digest = format!("sha256:{}", synth_sha256(&format!("aa6-landed-{name}")));
             }
             r.state_digest = format!("sha256:{}", synth_sha256(&format!("aa6-final-{name}")));
+            // An AA-6 injected rep: the injection fired at this landing (the matrix witness).
+            r.injected = Some(true);
             r
         })
         .collect()
 }
 
-/// The valid AA-6 mini-gate accept fixture: the FULL determinism matrix — every
-/// windowed payload, each repeated [`AA6_REPS`] times bit-identically. A run of one
-/// payload repeated N times would satisfy the per-input rep floor yet fail the matrix
-/// check; a real AA-6 gate covers the whole matrix, and this is that in miniature.
-fn accept_aa6_gate() -> Fixture {
-    // The full matrix: every windowed payload PLUS the AA-5 Linux guest.
+/// The full AA-6 injected determinism matrix: every windowed payload PLUS the AA-5 Linux guest,
+/// each repeated [`AA6_REPS`] times bit-identically, every rep an injected (armed, delivered,
+/// fired) landing. Shared by the accept gate and the injection-attestation reject fixtures, which
+/// mutate ONLY the stamp or the per-record witnesses so their intended failure is isolated.
+fn aa6_full_matrix_records() -> Vec<RunRecord> {
     let mut records = Vec::new();
     for &p in WINDOWED.iter().chain(std::iter::once(&Payload::LinuxGuest)) {
         let first = records.len() as u64;
         records.extend(aa6_reps_of(p, first));
     }
+    records
+}
+
+/// The valid AA-6 mini-gate accept fixture: the FULL determinism matrix — every
+/// windowed payload, each repeated [`AA6_REPS`] times bit-identically. A run of one
+/// payload repeated N times would satisfy the per-input rep floor yet fail the matrix
+/// check; a real AA-6 gate covers the whole matrix, and this is that in miniature. The
+/// manifest carries the ON injection attestation ([`build_run_set`] stamps it for AA-6) and
+/// every record its fired witness, so the injection-aware matrix gate passes.
+fn accept_aa6_gate() -> Fixture {
+    let records = aa6_full_matrix_records();
     let run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
     fixture("accept-aa6-gate", &run_set, &records)
+}
+
+/// The AA-6 injection-OFF reject fixture (bead hm-oh3v negative control): a full, bit-identical
+/// AA-6 matrix whose injection was left OFF — the accidental bare matrix the attestation exists to
+/// catch. Every count / replay / floor check passes; only the matrix's injection gate fails,
+/// because a run stamped `enabled: false` injected nothing (an armed force-exit landing is not an
+/// injected interrupt). The records carry no fired witness, as a genuine un-injected boot would.
+fn reject_aa6_injection_off() -> Fixture {
+    let mut records = aa6_full_matrix_records();
+    for r in &mut records {
+        // A genuine un-injected boot sets no per-record witness (the harness OFF path emits None).
+        r.injected = None;
+    }
+    let mut run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
+    // Stamp the ACTUAL (OFF) config in place of the default ON stamp.
+    run_set.injection = Some(InjectionAttestation::off());
+    // The records changed (witnesses dropped), so re-pin their sha256 to the emitted bytes.
+    run_set.records_sha256 = synth_sha256_of_bytes(records_jsonl(&records).as_bytes());
+    fixture("reject-aa6-injection-off", &run_set, &records)
+}
+
+/// The AA-6 missing-attestation reject fixture: a full injected matrix (the records DID fire)
+/// whose manifest carries NO injection stamp. Fail-closed — a checker cannot tell it from a bare
+/// AA-3 matrix, so the absence itself fails; "assume bare" is never the default.
+fn reject_aa6_missing_attestation() -> Fixture {
+    let records = aa6_full_matrix_records();
+    let mut run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
+    // The harness forgot to stamp the attestation; the checker refuses rather than assuming.
+    run_set.injection = None;
+    fixture("reject-aa6-missing-attestation", &run_set, &records)
+}
+
+/// The AA-6 inconsistent-witness reject fixture: the stamp claims injection ON, but every record's
+/// `injected` witness is `false` — zero fired. The stamp and the per-record evidence disagree
+/// about whether injection ran, and the checker fails with the counts enumerated. The records are
+/// otherwise a clean bit-identical matrix, so the injection cross-check is the sole failure.
+fn reject_aa6_injected_flag_inconsistent() -> Fixture {
+    let mut records = aa6_full_matrix_records();
+    for r in &mut records {
+        // Configured ON (the manifest stamp), but the run reports nothing fired.
+        r.injected = Some(false);
+    }
+    // build_run_set stamps the default ON attestation for AA-6; the witnesses contradict it.
+    let run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
+    fixture("reject-aa6-injected-flag-inconsistent", &run_set, &records)
 }
 
 /// `AA6_REPS` repetitions of one payload's input that DIVERGE — same [`RepKey`], but a distinct
@@ -444,6 +517,9 @@ fn aa6_diverging_reps_of(payload: Payload, first_id: u64) -> Vec<RunRecord> {
                     format!("sha256:{}", synth_sha256(&format!("aa6-landed-{name}-{k}")));
             }
             r.state_digest = format!("sha256:{}", synth_sha256(&format!("aa6-final-{name}-{k}")));
+            // Still an injected rep — the divergence is in the landed state, not in whether the
+            // injection fired (the carve records divergence, it does not skip injection).
+            r.injected = Some(true);
             r
         })
         .collect()
@@ -631,6 +707,11 @@ fn reject_aa6_rep_floor() -> Fixture {
     );
     lg.condition = "pinned-solo".to_string();
     records.push(lg);
+    // Every class is injected, so the matrix + attestation cross-check pass — the per-input rep
+    // floor is left the sole failure (the evasion this fixture isolates).
+    for r in &mut records {
+        r.injected = Some(true);
+    }
     let run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
     fixture("reject-aa6-rep-floor", &run_set, &records)
 }
@@ -648,6 +729,11 @@ pub fn all_fixtures() -> Vec<Fixture> {
         accept_aa2_bounded(),
         reject_aa6_rep_floor(),
         reject_aa6_contract_divergence(),
+        // The AA-6 injection-attestation negative controls (bead hm-oh3v): each drives the
+        // injection-aware matrix gate RED for a distinct reason.
+        reject_aa6_injection_off(),
+        reject_aa6_missing_attestation(),
+        reject_aa6_injected_flag_inconsistent(),
     ];
 
     // 1. reject-short-count — a valid but small run-set. The checker rejects it
@@ -1008,13 +1094,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_thirty_three_fixtures_with_unique_names() {
+    fn there_are_thirty_six_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 33);
+        assert_eq!(fixtures.len(), 36);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 33, "fixture names must be unique");
+        assert_eq!(names.len(), 36, "fixture names must be unique");
     }
 
     #[test]

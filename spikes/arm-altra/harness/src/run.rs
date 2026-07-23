@@ -788,6 +788,11 @@ struct SampleAssembly {
     clockpage_mode: Option<String>,
     reported: Option<u64>,
     overflow: OverflowBookkeeping,
+    /// Whether an injection actually fired for this sample (the per-record witness the AA-6
+    /// attestation cross-checks): `Some(true)` when the configured PPI was asserted at the
+    /// landing, `Some(false)` when injection was configured but no landing let it fire, and
+    /// `None` when this run path does not inject at all (the counting/advisory policy).
+    injected: Option<bool>,
 }
 
 /// Service a PL011 **register read** (the guest polling the flag register before it prints).
@@ -914,6 +919,9 @@ fn assemble_measured_record(
         // rather than borrowing a mechanism it never exercised.
         exit_reason: ov.mechanism_exit.unwrap_or(ExitReason::Mmio),
         overflow,
+        // The per-record injection witness, decided by the run policy (the advisory/counting
+        // policy never injects, so it hands `None`).
+        injected: a.injected,
         // These counting/landing loops measure windows, not steps — never step evidence.
         step: None,
         state_digest,
@@ -1159,6 +1167,10 @@ pub fn run_sample(
                 landed_digest,
                 mechanism_exit,
             },
+            // The advisory/counting policy never asserts an interrupt — injection is not a
+            // concept here, so the record carries no witness (distinct from `Some(false)`,
+            // which would claim injection was configured and failed to fire).
+            injected: None,
         },
     )
 }
@@ -1225,6 +1237,10 @@ pub fn run_sample_exact(
     let mut advisory_exits: u64 = 0;
     let mut landed: Option<u64> = None;
     let mut landed_digest: Option<String> = None;
+    // Whether the configured injection actually fired at a landing (the per-record witness).
+    // Stays `false` on a lost PMI (no landing ⇒ no injection Moment), which is exactly the
+    // `Some(false)` the checker reads as "configured but did not fire".
+    let mut injection_fired = false;
 
     'run: while status.is_none() {
         match vcpu.run()? {
@@ -1363,6 +1379,7 @@ pub fn run_sample_exact(
                         // pre-hook run and its digest is unchanged.
                         if let Some(injection) = &spec.inject {
                             vcpu.inject_ppi(injection.intid, true)?;
+                            injection_fired = true;
                         }
                     }
                 }
@@ -1401,6 +1418,10 @@ pub fn run_sample_exact(
                 // shared assembler records `Mmio`.
                 mechanism_exit: landed.map(|_| ExitReason::Preempt),
             },
+            // The witness: `Some(true/false)` only when injection was CONFIGURED (so the
+            // record attests whether the configured injection fired), `None` when it was not
+            // — the byte-identical AA-5(c) negative control asserts no line and claims nothing.
+            injected: spec.inject.as_ref().map(|_| injection_fired),
         },
     )
 }
@@ -1949,6 +1970,8 @@ pub fn step_run(
             exit_reason: ExitReason::Debug,
             // A stepped record is never an armed landing — they are mutually exclusive.
             overflow: None,
+            // AA-2 single-stepping never injects (no armed landing to inject at).
+            injected: None,
             step: Some(StepRecord {
                 // Stable identity of the PLAN entry that emitted every step in this run. The
                 // caller later renumbers record-level sample ids, but this remains unchanged so
@@ -3081,6 +3104,12 @@ mod tests {
             off.state_digest, "sha256:final",
             "the OFF sentinel state_digest is the pre-hook value",
         );
+        // OFF injection is not a concept: the record carries no `injected` witness at all
+        // (distinct from `Some(false)`, which would claim injection was configured but failed).
+        assert_eq!(
+            off.injected, None,
+            "the un-injected negative control sets no per-record injection witness",
+        );
 
         // ON: exactly one assertion at the landed Moment; the AA-3 landed_digest is UNCHANGED
         // (the injection fires after it, preserving its pre-injection meaning), and only the
@@ -3101,18 +3130,28 @@ mod tests {
             on.state_digest, "sha256:final+ppi20",
             "the injection is observable ONLY in the post-injection sentinel digest",
         );
+        // ON: the record attests that the injection actually fired — the AA-6 non-vacuity witness.
+        assert_eq!(
+            on.injected,
+            Some(true),
+            "the ON path records that the configured injection fired at the landing",
+        );
 
-        // Byte-identity: the OFF and ON records are identical after normalizing the single field
-        // the injection is supposed to change (the sentinel `state_digest`). Nothing else — not
-        // the count, the landing, the multiplicity, the landed_digest — differs.
+        // Byte-identity: the OFF and ON records are identical after normalizing the TWO fields the
+        // injection is supposed to change — the post-injection sentinel `state_digest` (the guest's
+        // handling of the event) and the `injected` witness (the harness's attestation that it
+        // fired). Nothing else — not the count, the landing, the multiplicity, the landed_digest —
+        // differs, so the hook stays non-additive to everything the guest EXECUTION produced.
         let mut off_v = serde_json::to_value(&off).expect("serializable record");
         let mut on_v = serde_json::to_value(&on).expect("serializable record");
         off_v["state_digest"] = serde_json::Value::String("X".into());
         on_v["state_digest"] = serde_json::Value::String("X".into());
+        off_v.as_object_mut().unwrap().remove("injected");
+        on_v.as_object_mut().unwrap().remove("injected");
         assert_eq!(
             off_v, on_v,
-            "OFF and ON records differ ONLY in the post-injection sentinel state_digest — the \
-             injection hook is non-additive to everything else the record attests",
+            "OFF and ON records differ ONLY in the sentinel state_digest and the injected witness \
+             — the injection hook is non-additive to everything else the record attests",
         );
     }
 
