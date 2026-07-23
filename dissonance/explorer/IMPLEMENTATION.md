@@ -1607,6 +1607,84 @@ record whose own `role` (Seal) can never spuriously self-match the ancestor
 lookup's `role == Rollout` clause, and the decoy proves the role check itself
 matters.
 
+## PR #156 discovery fix batch (`ancestor_collected` did not mirror the compose walk)
+
+The discovery tribunal (5 seats + Fable 5 judge) returned `REQUEST_CHANGES`: one
+P1 family, one choke point. `hm-0qpm` was clean (no findings, unchanged by this
+batch). `ancestor_collected` (`campaign.rs`) documented itself as walking
+lineage "exactly as `compose_observations_at` walks it" but did not — four
+judge-confirmed members, fixed as one batch:
+
+- **F1a (CONFIRMED, judge repro).** A child forked **past** its parent
+  rollout's terminal (task 144 advanced seal: rollout terminal at count 10,
+  Seal run-forward to 20, child `parent_cut.sdk_events == 20`) depends on the
+  Seal's suffix — `compose_observations_at`'s own `upper > anc.cut.sdk_events`
+  Seal pickup (`evidence.rs:446-459`). Collecting that Seal left the child
+  mislabeled `FromRetainedEvidence`: the old walk only ever asked "was a
+  Rollout with this issue collected," never "does this hop's fork depend on a
+  Seal's run-forward suffix, and was *that* collected."
+- **F1b (CONFIRMED, judge repro).** `RunId { issue: 7, parent: Some(7) }` is
+  accepted by `EvidenceLedger::append` (content-address + budget only, no
+  lineage validation — `ledger.rs:513-547`); the old walk never terminated on
+  a cyclic `rollout.parent` chain, hanging `retention_report` — a public read
+  API — killed at a 30s timeout by the judge.
+- **F1c (CONFIRMED, direct CI evidence).** The mutants CI shard was **red** on
+  the reviewed head. The prior write-up claimed the timing-out mutant
+  (`ancestor_collected`'s second `==` → `!=`) was green by the same precedent
+  as this crate's `.cargo/mutants.toml` `timeout_multiplier` comment — wrong: a
+  residual exit 3 is a real signal per the hm-y53x decision table, not a
+  claimable precedent, and the timing-out mutant was exactly F1b's loop shape,
+  not an unrelated equivalent-mutant timeout. **That claim is withdrawn** (see
+  the corrected `cargo mutants` result below).
+- **F1d (CONFIRMED, from code).** The tombstone match
+  (`self.ledger.collected().any(|(_, tomb)| tomb.rollout.issue == issue)`) had
+  **no role filter**, while the sibling retained-ancestor lookup required
+  `role == Rollout`. A collected Seal tombstone whose issue collided with an
+  unresolvable ancestor issue was mistaken for a collected Rollout ancestor —
+  the opposite false positive from the original PR's own decoy-Seal test
+  (which only exercised the *retained*-side role filter, not the
+  *tombstone*-side one).
+
+**Fix — rewrite, not a patch.** `ancestor_collected` moved off
+`DifferentialCampaign` onto a new private `AncestryIndex<'a>` (`campaign.rs`),
+built once per `retention_report()` call (closing F2's `O(N²)` ride-along —
+per-hop linear rescans of `batch_ids()`/`collected()` — for free, since the
+rewrite needs random-access lookups anyway): retained Rollout batches indexed
+by issue, retained Seal batches indexed by `(sealed rollout issue,
+cut.sdk_events)` — `compose_observations_at`'s own two lookup keys — plus the
+matching **role-filtered** collected sets for each. `ancestor_collected` now
+walks `rollout.parent` one hop at a time against these indices: a missing
+retained-Rollout lookup falls back to the role-filtered collected-Rollout set
+(F1d); a strict `upper > anc.cut.sdk_events` gate (proved strict, not `>=`, by
+a same-cut non-advanced-seal boundary test) performs compose's own Seal-suffix
+lookup and treats a tombstoned matching Seal as a collected ancestor (F1a); a
+visited-issue set bounds the walk against a cyclic chain, terminating
+conservatively (`false`) on a revisit rather than looping forever (F1b).
+Ledger-ingest lineage validation itself stays out of this fix's fence — parked
+as `hm-wjv1` for the foreman, per the review's fence ruling.
+
+**Five regression tests** (`campaign.rs` test module):
+`retention_report_flags_a_collected_advanced_seal_dependency` (F1a: a
+collected advanced Seal's suffix flips the forked-past-terminal child to
+`RequiresAncestorReplay`),
+`retention_report_ignores_a_collected_seal_at_the_no_gap_boundary` (the
+`>`-not-`>=` boundary: a same-cut, non-advanced seal's collection is
+irrelevant to a child that forked with no gap),
+`retention_report_terminates_on_cyclic_lineage` (F1b: a direct self-cycle and
+a stronger mutual two-issue cycle both terminate at `FromRetainedEvidence`
+instead of hanging), and
+`retention_report_ignores_a_collected_decoy_seal_issue_collision` (F1d: a
+collected Seal's issue colliding with an unresolvable parent issue stays
+`FromRetainedEvidence`, not `RequiresAncestorReplay`). The pre-existing
+`retention_report_flags_a_collected_ancestor` (adapted to the new
+`synthetic_evidence` fixture helper, hoisted out of the test body so all five
+tests share it) is unchanged in intent.
+
+`cargo mutants -p explorer --no-shuffle --in-diff` against the full task diff:
+**11 mutants — 9 caught, 2 unviable, 0 missed, 0 timeout.** (The prior head's
+1-timeout/1-missed/1-missed state is superseded; see the withdrawn F1c claim
+above.)
+
 ## `hm-0qpm` — `observations_at`'s up-to-translation qualifier
 
 Reworded the `observations_at` doc (`evidence.rs`): for a `rollout.parent ==
@@ -1632,22 +1710,25 @@ no behavior change.
 ## Gates run
 
 `cargo build -p explorer --all-features`; `cargo nextest run -p explorer
---all-features` (**160 pass, 1 skip** — the net-new
-`retention_report_flags_a_collected_ancestor` plus the strengthened
-`genesis_rollout_local_reduction_matches_composed_truth`; the skip is the
-nightly-only `public_api` snapshot); `cargo clippy -p explorer --all-features
---all-targets -- -D warnings` (exit 0 — only the pre-existing root
-`clippy.toml` `rand::*` config diagnostics, unrelated); `cargo fmt -p explorer
--- --check` (clean); `cargo deny check` (advisories/bans/licenses/sources ok —
-no dependency change). `cargo +nightly-2026-06-16 test -p explorer --test
-public_api -- --ignored` (green, snapshot matches the regenerated
-`tests/public-api.txt`). `cargo mutants --in-diff <task diff> -p explorer`:
-**7 mutants — 5 caught, 1 unviable, 1 timeout, 0 missed**. The one timeout
-(`ancestor_collected`'s second `==`, mutated to `!=`) is a self-referential
-`find()` cycle — the same loop-mutant/timeout shape this crate's
-`.cargo/mutants.toml` already documents (`timeout_multiplier` comment); it is
-a genuine non-terminating mutant, not a gap. No `unsafe` added → no Miri
-obligation. **No dependency change.**
+--all-features` (**164 pass, 1 skip** — the five `ancestor_collected`
+regression tests (one adapted, four net-new from the PR #156 fix batch) plus
+the strengthened `genesis_rollout_local_reduction_matches_composed_truth`; the
+skip is the nightly-only `public_api` snapshot); `cargo clippy -p explorer
+--all-features --all-targets -- -D warnings` (exit 0 — only the pre-existing
+root `clippy.toml` `rand::*` config diagnostics, unrelated); `cargo fmt -p
+explorer -- --check` (clean); `cargo deny check`
+(advisories/bans/licenses/sources ok — no dependency change). `cargo
++nightly-2026-06-16 test -p explorer --test public_api -- --ignored` (green,
+snapshot matches the regenerated `tests/public-api.txt` — the `AncestryIndex`
+rewrite is a private type, no further public-API drift). `cargo mutants -p
+explorer --no-shuffle --in-diff <task diff>`: **11 mutants — 9 caught, 2
+unviable, 0 missed, 0 timeout.** (Supersedes the prior head's claimed "1
+timeout matching this crate's loop-mutant precedent" — that claim is
+withdrawn per the PR #156 discovery ruling: a residual exit 3 is a real
+signal, and the timing-out mutant was surfacing the F1b cyclic-lineage
+liveness defect, not an equivalent-mutant timeout. The rewrite's
+visited-issue-set fix turns that same mutant into a genuinely caught one.) No
+`unsafe` added → no Miri obligation. **No dependency change.**
 
 **Hash-neutrality:** no hash-path code touched — `retention_report` is a
 read-only projection over the ledger/views (never folded into any hash), and
@@ -1659,10 +1740,13 @@ unchanged.
 ## Scope fence
 
 Touched `dissonance/explorer/src/retention.rs` (the new `Recomputation`
-variant), `dissonance/explorer/src/campaign.rs` (`ancestor_collected` +
-`retention_report`'s report loop + the regression test),
+variant), `dissonance/explorer/src/campaign.rs` (`AncestryIndex` +
+`ancestor_collected` + `retention_report`'s report loop + the five regression
+tests + the shared `synthetic_evidence` fixture helper),
 `dissonance/explorer/src/evidence.rs` (the `observations_at` doc reword + the
 witness assertion), `dissonance/explorer/tests/public-api.txt` (regenerated),
-and this file. Did not touch `collect`, `compose_observations_at`, or fold
-behavior — the compose-across-collected-ancestor behavior itself stays fenced
-to the `hm-4gaw`/`hm-btht` family, per the task spec. No dependency changes.
+and this file. Did not touch `collect`, `compose_observations_at`, ledger
+append/lineage validation (parked as `hm-wjv1`), or fold behavior — the
+compose-across-collected-ancestor behavior itself stays fenced to the
+`hm-4gaw`/`hm-btht` family, per the task spec and the review's fence ruling.
+No dependency changes.
