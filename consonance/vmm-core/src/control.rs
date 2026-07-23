@@ -2456,8 +2456,8 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 8,
-            "task 127 bumped for the seal-bound snapshot reply (over task 69 M2's 7)"
+            caps.protocol_version, 9,
+            "task 140 (hm-zwhi) bumped for the ScheduleMomentUnreachable error tag (over task 127's 8)"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
         assert_eq!(caps.env_version_max, EnvSpec::BLOB_VERSION);
@@ -4696,13 +4696,15 @@ mod tests {
         // `ScheduleUnsatisfiable`; `landing` is the prospective, unreached arrival)
         // — and the guest never executes past the marker. The refusal also LATCHES
         // (F4), preserving its variant + coordinates until a rewind.
+        // No snapshot/restore here (kept Miri-clean): the poison-LATCH half of F4
+        // (re-sent run / perturb / snapshot all re-rejected) needs no rewind. The
+        // rewind-CLEARS half lives in the sibling `…_latch_clears_on_rewind` test,
+        // which reaches `Store::materialize` (tempfile) and is Miri-ignored.
         let ratio = 1_000u64;
         let live = coarse_enforce_vmm(ratio, 1, 7);
         let factory = Box::new(move || Ok(coarse_enforce_vmm(ratio, 1, 7)));
         let mut s = ControlServer::new(live, factory);
         hello(&mut s);
-        // A pristine base for the F4 rewind, sealed before anything is staged.
-        let base = snap(&mut s);
         stage_corrupt(&mut s, 1_500);
         // The typed refusal: the STAGED Moment (1500) and the unreachable next-grid
         // arrival (2000, prospective/unreached — NOT a V-time the run reached).
@@ -4726,8 +4728,8 @@ mod tests {
             "the guest must not free-run past the staged Moment it was told to stop at"
         );
 
-        // F4 — the poison latch is pinned. A re-sent `run` keeps failing with the
-        // SAME variant + coordinates (never a silently-different or cleared state).
+        // F4 (latch half) — the poison latch is pinned. A re-sent `run` keeps failing
+        // with the SAME variant + coordinates (never silently different or cleared).
         assert_eq!(
             run_with_deadline(&mut s, 100_000),
             refused,
@@ -4744,7 +4746,8 @@ mod tests {
             refused,
             "perturb stays poisoned with the original (1500, 2000) coordinates"
         );
-        // `snapshot` is rejected while latched.
+        // `snapshot` is rejected while latched — the poison-latch guard returns before
+        // any seal, so this stays Miri-clean (no `Store` reached).
         assert_eq!(
             s.handle(&Request::Snapshot).unwrap(),
             refused,
@@ -4756,6 +4759,33 @@ mod tests {
             &[0u8; 8],
             "the unreachable marker's fault must not have applied"
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (Replay → ControlServer::restore → Store::materialize → tempfile), which Miri cannot execute under isolation; the arm-refusal + poison-latch pins are Miri-covered by the sibling off_grid_staged_moment_is_refused_at_the_arm_without_overshooting"
+    )]
+    fn off_grid_refusal_latch_clears_on_rewind() {
+        // F4 (rewind half): a `branch`/`replay` rewind clears the arm-site poison
+        // latch, so the session runs cleanly again — the same recovery the crossed-
+        // fault latch has (`schedule_poison_persists_until_a_rewind`). Split from the
+        // sibling because the `Replay` restore leg reaches `tempfile`, unsupported
+        // under the pinned-nightly Miri gate (V2).
+        let ratio = 1_000u64;
+        let live = coarse_enforce_vmm(ratio, 1, 7);
+        let factory = Box::new(move || Ok(coarse_enforce_vmm(ratio, 1, 7)));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        // A pristine base for the rewind, sealed before anything is staged.
+        let base = snap(&mut s);
+        stage_corrupt(&mut s, 1_500);
+        let refused = Err(ControlError::ScheduleMomentUnreachable {
+            moment: 1_500,
+            landing: 2_000,
+        });
+        // Poison the schedule at the arm site.
+        assert_eq!(run_with_deadline(&mut s, 100_000), refused, "arm-site refusal");
         // A rewind (replay of the pristine base) clears the latch — the session runs
         // cleanly again (schedule empty, nothing to arm, so no refusal).
         assert_eq!(
