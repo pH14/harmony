@@ -535,6 +535,115 @@ mod tests {
         String::from_utf8_lossy(&acc).into_owned()
     }
 
+    /// Scans `buf` for the first complete SSE **data** frame, transparently
+    /// skipping any number of leading non-`data:` frames (e.g. a `:
+    /// keepalive\n\n` comment) that are already fully terminated. Returns
+    /// `None` when no complete data frame is present yet — either every frame
+    /// seen so far was a comment, or the buffer ends mid-frame (including
+    /// right after the `data: ` marker, with no terminator) — so the caller
+    /// keeps accumulating instead of mistaking a partial frame for a complete
+    /// one (F1c) or losing bytes that arrive after a terminator split across
+    /// reads (F1b): `buf` is never truncated here, only re-scanned from the
+    /// start on each call.
+    fn extract_data_frame(buf: &[u8]) -> Option<String> {
+        let mut start = 0;
+        loop {
+            let rel = buf[start..].windows(2).position(|w| w == b"\n\n")?;
+            let end = start + rel + 2;
+            let frame = &buf[start..end];
+            if frame.starts_with(b"data: ") {
+                return Some(String::from_utf8_lossy(frame).into_owned());
+            }
+            start = end;
+        }
+    }
+
+    /// Reads cumulatively from `stream` until a complete `data: …\n\n` SSE
+    /// frame arrives, skipping any `: keepalive\n\n` comment frames along the
+    /// way. One bounded attempt budget covers the whole wait — bytes
+    /// accumulate across attempts rather than being discarded between them —
+    /// so a stalled regression fails fast instead of hanging or hot-spinning
+    /// (F1a), and on exhausting the budget this panics with the accumulated
+    /// bytes so a stuck run is diagnosable (hm-3r2k, hm-38kv).
+    fn read_sse_data_frame(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .expect("set timeout");
+        let mut acc = Vec::new();
+        let mut buf = [0u8; 4096];
+        for _ in 0..50 {
+            if let Some(frame) = extract_data_frame(&acc) {
+                return frame;
+            }
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => acc.extend_from_slice(&buf[..n]),
+                Err(ref e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::TimedOut => {}
+                Err(_) => break,
+            }
+        }
+        extract_data_frame(&acc).unwrap_or_else(|| {
+            panic!(
+                "timed out waiting for a complete SSE data frame; accumulated: {:?}",
+                String::from_utf8_lossy(&acc)
+            )
+        })
+    }
+
+    #[test]
+    fn extract_data_frame_finds_an_immediate_frame() {
+        assert_eq!(
+            extract_data_frame(b"data: hello\n\n").as_deref(),
+            Some("data: hello\n\n")
+        );
+    }
+
+    #[test]
+    fn extract_data_frame_skips_a_leading_keepalive() {
+        // F2: deterministically exercises the skip-a-comment-frame path — no
+        // real server, no keepalive cadence, no wall-clock wait.
+        assert_eq!(
+            extract_data_frame(b": keepalive\n\ndata: hello\n\n").as_deref(),
+            Some("data: hello\n\n")
+        );
+    }
+
+    #[test]
+    fn extract_data_frame_skips_several_leading_keepalives() {
+        assert_eq!(
+            extract_data_frame(b": keepalive\n\n: keepalive\n\n: keepalive\n\ndata: x\n\n")
+                .as_deref(),
+            Some("data: x\n\n")
+        );
+    }
+
+    #[test]
+    fn extract_data_frame_waits_on_an_unterminated_marker() {
+        // F1c: the `data: ` marker alone must not read as a complete frame.
+        assert_eq!(extract_data_frame(b"data: "), None);
+        assert_eq!(extract_data_frame(b"data: partial"), None);
+    }
+
+    #[test]
+    fn extract_data_frame_waits_when_only_comments_are_complete() {
+        assert_eq!(extract_data_frame(b": keepalive\n\ndata: partial"), None);
+    }
+
+    #[test]
+    fn extract_data_frame_recombines_a_marker_split_across_reads() {
+        // F1b: a read boundary lands as `: keepalive\n\ndat` — the marker is
+        // split mid-word. The first accumulation has no complete data frame
+        // yet (must return None, not silently drop the `dat` tail); once the
+        // rest arrives and is appended (never replacing prior bytes) the full
+        // frame is found.
+        let mut acc = b": keepalive\n\ndat".to_vec();
+        assert_eq!(extract_data_frame(&acc), None);
+        acc.extend_from_slice(b"a: hello\n\n");
+        assert_eq!(extract_data_frame(&acc).as_deref(), Some("data: hello\n\n"));
+    }
+
     fn ev(seq: u64) -> Event {
         Event::new(seq, seq, seq, EventKind::Inject { vector: 7 })
     }
@@ -696,12 +805,10 @@ mod tests {
         ));
         // Anchor phase 2 on the real event payload marker: a periodic
         // `: keepalive\n\n` comment frame also satisfies a bare "\n\n" wait, so
-        // keep reading past any keepalive-only frame until a genuine `data: `
-        // frame arrives (hm-3r2k).
-        let mut frame = read_until(&mut c, "\n\n");
-        while !frame.contains("data: ") {
-            frame = read_until(&mut c, "\n\n");
-        }
+        // this is one bounded, cumulative wait for a complete `data: …\n\n`
+        // frame — skipping any keepalive frames along the way — rather than a
+        // retry that discards bytes between attempts (hm-3r2k, hm-38kv).
+        let frame = read_sse_data_frame(&mut c);
         assert!(frame.contains("data: "), "SSE data prefix: {frame:?}");
         assert!(frame.contains("\"Console\""));
         assert!(frame.contains("hello"));

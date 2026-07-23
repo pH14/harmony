@@ -230,3 +230,81 @@ folded back into `serve_events`.
 - Portable gates green: build, nextest, clippy (`-D warnings`, exit 0 — the three
   `clippy.toml` `rand::*` "unreachable" notices are pre-existing workspace-config
   warnings, not from this crate), fmt `--check`, `cargo deny check`.
+
+## Bounded, cumulative phase-2 wait (task 149, hm-38kv)
+
+PR #149's adjudication (judge-CONFIRMED, empirical repro) found the hm-3r2k
+retry loop above — `while !frame.contains("data: ") { frame = read_until(&mut
+c, "\n\n"); }` — still had three live defects, all rooted in the same
+structural flaw: each `read_until` call starts a fresh accumulator and the
+outer loop just replaces `frame`, so nothing is preserved across attempts and
+nothing bounds the number of attempts.
+
+- **F1a — unbounded outer loop.** If the server regresses and never emits a
+  `data: ` frame, the `while` has no attempt/deadline budget of its own: with
+  keepalives arriving it retries forever (hangs to the CI job timeout, since
+  there is no per-test timeout configured); on a closed connection
+  `read_until` returns `""` instantly, so the same loop hot-spins (observed:
+  10k iterations in 19ms).
+- **F1b — accumulation lost across attempts.** A single `read()` returning
+  `": keepalive\n\ndat"` already contains a `"\n\n"` (the keepalive's own
+  terminator), so that call returns immediately — discarding the trailing
+  `"dat"`, which was the start of the *next* frame's `"data: "` marker. The
+  bytes are gone; the connection hangs permanently waiting for a marker that
+  will never appear again (empirically confirmed).
+- **F1c — a substring check mistaken for frame completeness.** The outer
+  `while` condition tests `frame.contains("data: ")`, not "does `frame` end in
+  a terminated `data: …\n\n` frame". A read that stops exactly after the
+  `"data: "` marker (before the JSON payload or the terminator arrives)
+  already satisfies that condition, so the loop exits with an incomplete
+  frame and the payload assertions flake.
+
+**Fix: one structural closure, not three patches.** The retry is replaced with
+a pure frame-scanner, `extract_data_frame(buf: &[u8]) -> Option<String>`, plus
+one bounded I/O loop, `read_sse_data_frame`, that accumulates into a single
+buffer across attempts (never resets it) and calls the scanner after every
+read:
+
+- `extract_data_frame` walks `buf` frame-by-frame (each `"\n\n"`-terminated
+  span), skipping any span that isn't `data: `-prefixed (comments/keepalives),
+  and returns the first complete data frame it finds. It returns `None` — not
+  a false match — when the buffer ends mid-frame, whether that's right after
+  `"data: "` (closes F1c) or partway through a comment frame whose terminator
+  hasn't arrived. Because the *caller* owns the accumulator and only appends
+  to it, a marker split across two reads recombines correctly on the next
+  scan instead of being discarded (closes F1b).
+- `read_sse_data_frame` bounds the whole wait to a fixed attempt budget (same
+  200 ms-timeout / 50-attempt shape as the pre-existing `read_until` helper,
+  ≤10 s worst case) covering every attempt, not per-`read_until`-call as
+  before, so a stalled regression fails fast with a panic that prints the
+  accumulated bytes instead of hanging or hot-spinning (closes F1a).
+
+**F2 (folded): deterministic keepalive-skip coverage.** The skip-a-comment-
+frame branch had zero positive coverage — `KEEPALIVE_EVERY(600) ×
+POLL(5 ms) = 3 s` of real idle time is needed before the live server ever
+emits a keepalive, and the test emits its scripted event immediately, so the
+branch never ran in a normal suite. Waiting out 3 s of wall-clock per run to
+force it was rejected (slows the suite by seconds for one branch, and the
+result would still be timing-dependent/flaky under load). Extracting the scan
+into the pure `extract_data_frame` makes the branch trivially and
+deterministically testable against a synthetic byte buffer with no socket, no
+real server, and no wall-clock dependency at all:
+`extract_data_frame_skips_a_leading_keepalive` feeds
+`b": keepalive\n\ndata: hello\n\n"` directly and asserts the keepalive is
+skipped — exercising exactly the branch F2 asked for, in under a millisecond.
+Companion unit tests pin the rest of the scanner's contract directly (immediate
+frame, several stacked keepalives, an unterminated marker, comments-only-so-far,
+and the F1b split-marker recombination) — all pure, all synchronous.
+
+### Verification
+
+- `cargo nextest run -p telemetry --all-features` → 34/34 pass (28 prior + 6
+  new `extract_data_frame` unit tests).
+- Stress (direct test-binary invocation, release profile, no cargo overhead
+  per run): `streams_events_as_sse_frames` looped **500×**, matching PR #149's
+  record — **0 failures**.
+- Portable gates green: build, nextest, clippy (`-D warnings`, exit 0 — same
+  three pre-existing `clippy.toml` `rand::*` notices as before, not from this
+  crate), fmt `--check`, `cargo deny check`.
+- Diff scoped entirely to `consonance/telemetry/src/server.rs`'s `#[cfg(test)]
+  mod tests` — no server, dependency, wire-format, or public-API change.
