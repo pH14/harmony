@@ -309,6 +309,88 @@ fn run_until_returns_deadline_with_requested_value() {
 }
 
 #[test]
+fn late_landing_lands_past_the_requested_deadline() {
+    // Task 142 (hm-40na): a scripted late landing makes `run_until` land PAST the
+    // requested deadline — the guest free-ran to the next natural boundary, the box
+    // @3e7 overshoot the exact-count seam could not clamp. Default behavior (no
+    // scripted landing) is byte-identical exact landing, covered by
+    // `run_until_returns_deadline_with_requested_value` above.
+    let mut m = configured();
+    m.extend_exits([Exit::Common(CommonExit::Deadline { reached: Moment(0) })]);
+    m.push_late_landing(Moment(5000));
+    let e = m.run_until(Moment(4096)).unwrap();
+    assert_eq!(
+        e,
+        Exit::Common(CommonExit::Deadline {
+            reached: Moment(5000)
+        }),
+        "the leg lands at the scripted boundary 5000, PAST the requested 4096"
+    );
+    assert_eq!(m.exit_counts().deadline, 1);
+    assert!(!m.has_pending());
+}
+
+#[test]
+fn late_landings_are_a_fifo_queue_that_drains_to_exact() {
+    // Late landings are consumed one per `Deadline`, in order; once drained,
+    // `run_until` reverts to the exact `reached := deadline` default — determinism:
+    // an explicit, ordered test input, no clock, no randomness.
+    let mut m = configured();
+    m.extend_exits([
+        Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+        Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+        Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+    ]);
+    m.push_late_landing(Moment(11));
+    m.push_late_landing(Moment(22));
+    // First two legs land late, in FIFO order; the third (queue drained) lands exact.
+    assert_eq!(
+        m.run_until(Moment(1)).unwrap(),
+        Exit::Common(CommonExit::Deadline {
+            reached: Moment(11)
+        })
+    );
+    assert_eq!(
+        m.run_until(Moment(2)).unwrap(),
+        Exit::Common(CommonExit::Deadline {
+            reached: Moment(22)
+        })
+    );
+    assert_eq!(
+        m.run_until(Moment(3)).unwrap(),
+        Exit::Common(CommonExit::Deadline { reached: Moment(3) }),
+        "queue drained → exact landing (byte-identical default)"
+    );
+}
+
+#[test]
+fn late_landing_only_affects_run_until_not_run() {
+    // The late landing models the `run_until` overshoot specifically. A scripted
+    // `Deadline` returned via plain `run` (no deadline) is passed verbatim and does
+    // NOT consume a scripted late landing — so it stays available for the next
+    // `run_until`, keeping `run` byte-identical.
+    let mut m = configured();
+    m.extend_exits([
+        Exit::Common(CommonExit::Deadline { reached: Moment(7) }),
+        Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+    ]);
+    m.push_late_landing(Moment(99));
+    // `run` returns the scripted Deadline verbatim (reached:7), late landing untouched.
+    assert_eq!(
+        m.run().unwrap(),
+        Exit::Common(CommonExit::Deadline { reached: Moment(7) }),
+        "run passes the scripted Deadline verbatim, never consuming a late landing"
+    );
+    // The still-queued late landing now applies to the `run_until` leg.
+    assert_eq!(
+        m.run_until(Moment(4)).unwrap(),
+        Exit::Common(CommonExit::Deadline {
+            reached: Moment(99)
+        })
+    );
+}
+
+#[test]
 fn inject_records_events() {
     let mut m = configured();
     m.inject(Injection::Interrupt { vector: 0x20 }).unwrap();

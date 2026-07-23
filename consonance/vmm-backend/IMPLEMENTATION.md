@@ -1453,3 +1453,38 @@ unbounded 28207). The in-kernel force-exit fired on every preemption (36/36) and
   `push_dirty_gfns`; exhausted script ⇒ empty set) so vmm-core's seal wiring is
   portably testable. The mock cannot observe real guest writes, so the set is
   scripted like the exit script.
+
+## Task 142 (hm-40na) — `MockBackend` late-landing capability
+
+`run_until` used to rewrite `reached := deadline` unconditionally, so the mock
+could **never land late** — a scripted `Deadline` always stopped exactly where
+asked. That made the box `@3e7` failure shape (a staged `Moment`'s arrival the
+exact-count seam could not clamp, so the guest free-ran to the next natural
+boundary — overshoot < 1 quantum) unreproducible portably; PR #143's regression
+had to use a ratio-1000 clock fixture as a *proxy* for the overshoot.
+
+- **New scripted knob:** `MockBackend::push_late_landing(reached)` enqueues an
+  absolute landing count. A FIFO queue is consumed **one per scripted
+  `Deadline` returned from `run_until`**; each such leg lands at the scripted
+  `reached` (PAST the requested deadline) instead of at the deadline. Drained
+  queue ⇒ the exact `reached := deadline` default returns. **Mock-only, behind
+  the `mock` feature — no `Backend` trait or production control-path change.**
+- **Default byte-identical:** with nothing scripted the queue is empty and
+  `run_until` is unchanged, so every existing `vmm-core` /
+  `campaign-runner` / `explorer` test (incl. the bit-identical determinism
+  proptests) passes unchanged (verified: 542 + 320 green).
+- **Determinism:** the lateness is an explicit, ordered test input — no clock,
+  no randomness, no wall time. Consumed only in `run_until`'s `Deadline` arm, so
+  plain `run` stays verbatim (`late_landing_only_affects_run_until_not_run`).
+- **No `unsafe`:** the field is a `VecDeque<Moment>`; push/pop only. The
+  unsafe⇒Miri rule is not triggered, and the new mock tests run clean under Miri
+  regardless (`late_landing_*` in `tests/run_loop.rs`).
+- **The regression this unblocks lives in `vmm-core`** (`control.rs`, the
+  `late_landing_*` tests), driving the merged arm-seam guard's failure shape
+  from a genuine late landing. See `vmm-core/IMPLEMENTATION.md` "Task 142" for
+  the **finding**: on the exact contract clock a genuine late landing is refused
+  by the post-step crossed-marker `ScheduleUnsatisfiable`, **not** the arm-seam
+  `ScheduleMomentUnreachable` (which is inert on the fine clock — it catches the
+  vns↔work *round-UP* seam, the ratio-1000 proxy's shape, not the
+  backend-can't-clamp late landing that `@3e7` actually is). That is hm-x1ss
+  input, not cured here.
