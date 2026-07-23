@@ -39,16 +39,18 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- **AA-6 masked-register-digest lane** (tasks/138, `hm-3bwm`, agent-aa6-masked-digest,
-  Opus 4.8 xhigh): the NAMED CONDITION on AA-6 PROVISIONAL→full GO. **Steered 2026-07-22
-  ~20:35: ARM box spun down by Paul — completing the portable half + turnkey runbook only**
-  (PR-#139 apparatus-complete pattern); the ≥1000-rep on-silicon leg fires when an ARM
-  window reopens (`hm-x9f` or a re-lease). Also fixes the misleading "AA-6 GO" disposition
-  headline → PROVISIONAL GO.
-- **Mutants-runner survivability** (tasks/139, `hm-y53x` P1): **worker DONE, PR #141 open**
-  — preemption diagnosis (not timeout: 83/126-min uninterrupted contrast runs),
-  `timeout-minutes: 90`, infra-only retry that never retries a real red. Foreman light-tier
-  read clean; merge on green CI (the PR run is the live proof).
+- **pvclock exact-arrival overshoot fix** (tasks/140, `hm-zwhi` bug,
+  agent-pvclock-exact-arrival, Opus 4.8 xhigh, spawned ~20:55): verify the dropped
+  `arm_arrival`-bool hypothesis with instrumentation first, then marker-clamp the rollout
+  run / make the decline loud; hash-neutral for the @1e7 maze + PR #138 game paths; box
+  leg optional (x86 box, if reachable).
+- **AA-6 injection attestation** (tasks/141, `hm-oh3v`,
+  agent-aa6-injection-attestation, Opus 4.8 xhigh, spawned ~21:09): stamp injection
+  config into run-set.json + per-record fired flag; `check_aa6_matrix` fail-closed on it;
+  planted-failure fixtures; routes the PR-#142 lane through the same attestation.
+- **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
+  apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
+  (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
 - **Out-of-band: GHA-migration residue** (`oob/gha-residue`, pushed): the evacuated
   `ci/gha-migration` work — hosted-runner content-check gates + cargo-deny pin (the two
   unique ci commits), provider-neutral skills (harmony-coordinator/handoff/pr-review/
@@ -60,12 +62,6 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Ready (unblocked; foreman spawns as slots free — 2 of 3 slots in use)
 
-- **AA-6 injection attestation** (`hm-oh3v`, P2, portable): stamp injection config into
-  run-set.json + per-record flag; make check_aa6_matrix REQUIRE it (closes the
-  injection-silently-OFF false-PASS hole). **Next spawn candidate.**
-- **Exact-arrival misses staged Moments on pvclock guests** (`hm-zwhi`, P2 bug, maze @3e7
-  repro): determinism-core; design home `hm-x1ss`; leading suspect is the dropped
-  `arm_arrival` bool after pvclock re-anchor. `hm-sp8v` (ARM port) must inherit.
 - **Box/toolchain reproducibility pair** (`hm-gfr1` static box definition; `hm-nji6`
   payload-pin reproducibility + certified-binary archive) — the aa3-recert-pins landmine
   turned into work items.
@@ -89,6 +85,15 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **AA-6 masked-register-digest apparatus MERGED** (tasks/138, PR #142, 2026-07-22 late
+  eve): closed-list {x29, SP} mask pinned to the on-N1 register dump, fail-closed lane
+  checker with negative controls, `injected_landed_digest` witness (`hm-fiqo` closed),
+  turnkey runbook; AA-6 headline honestly reads PROVISIONAL GO now. On-silicon leg =
+  the parked `hm-3bwm` lane.
+- **Mutants-runner survivability MERGED** (tasks/139, PR #141, `hm-y53x`, 2026-07-22 late
+  eve): preemption diagnosis with contrast-run evidence, `timeout-minutes: 90`, infra-only
+  retry (never retries a real red); live-proven on the PR's own CI. Costed options + the
+  migration un-sharding flag → §Decisions.
 - **AA-3 on-silicon re-cert GO recorded** (PR #140, 2026-07-22): regenerated-pin basis,
   Paul-ruled; 12 green ≥10⁶ campaigns; evidence archived on `task/arm-aa3-recert`
   (origin branch + tag `archive/aa3-recert-evidence`). `hm-idb` (the whole ARM spike
