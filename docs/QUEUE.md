@@ -39,10 +39,8 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- **MockBackend late-landing variant** (tasks/142, `hm-40na`,
-  agent-mockbackend-late-landing, Opus 4.8 xhigh, spawned 2026-07-23 ~00:50): make the
-  @3e7 arm-seam failure shape portably real (mock + tests only) — the portable red for
-  `hm-zwhi` and acceptance material for the `hm-x1ss` schedule-closure decision.
+- (no active workers — 2026-07-23 ~01:50; next spawn from `bd ready` at the coming
+  iteration)
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -80,6 +78,12 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **MockBackend late-landing capability MERGED** (tasks/142, PR #145, `hm-40na`,
+  2026-07-23 ~01:50, tribunal: zero surviving P1s): the genuine @3e7 shape is portably
+  real for the first time; the load-bearing, judge-mutation-CONFIRMED finding — the
+  PR #143 arm-site guard is INERT on the genuine late-landing shape (drain's
+  crossed-marker clause refuses it post-step) — recorded on `hm-x1ss`; F2+F3 mock
+  refinement parked as `hm-j16h`.
 - **pvclock arm-seam fail-closed guard MERGED** (tasks/140, PR #143, 2026-07-23 early —
   full tribunal pipeline: 5-seat discovery → F2+F3+F4 batch → verify (V1 protocol-v9
   bump, V2 Miri split, V3 strategy arm) → Closer re-check): silent staged-Moment
