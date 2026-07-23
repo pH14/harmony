@@ -705,3 +705,65 @@ lets the regression test express the bug on the laptop tier.
   map is state-only, matching the `Rollout` arm). Occurrence/assertion events in
   the advanced span follow the unchanged occurrence path, which — as before —
   runs on rollout batches, not seals; that is outside this truncation's surface.
+
+## PR #147 tribunal round — F1 (P1) + F2 (ride-along)
+
+### F1 — advanced-seal suffix reachable to descendant recomputation
+
+The first fix captured the advanced span correctly for the seal's own cell and
+one **single** step, but stopped one lineage generation short. The seal stages
+its suffix into the live Differential relation under the **sealed rollout's**
+key, so a descendant that forks from the seal (an exploit child, whose
+`parent_cut` is the seal cut and whose lineage parent is the sealed rollout)
+inherits the advanced span through the rollout's cumulative aggregate — the live
+graph is correct. But `compose_observations_at` — the direct-recomputation
+oracle and the retention fold's cell authority — walked ancestors filtering
+`EvidenceRole::Rollout` only, and the advanced positions `[rollout_terminal,
+seal_cut)` live in **no** Rollout batch. So a descendant's ledger-recomputed
+cell dropped the span (`{reg1,reg3}`) while the live view carried it
+(`{reg1,reg2,reg3}`) — the PR's own `assert_view_parity` fails the moment a
+descendant of an advanced seal exists (`ExploreExploitSelector`, campaign-runner's
+live SelectorV1 path, triggers it).
+
+Fix: the ancestor walk now, when a fork reaches **past** an ancestor rollout's
+own terminal (`upper > anc.cut.sdk_events`), also picks up the run-forward
+suffix of the Seal batch that advanced that rollout to the fork
+(`role == Seal && parent == ancestor && cut.sdk_events == upper`), positioned at
+`[anc_terminal, fork)`. Pushed before the ancestor so the root-first reversal
+orders `anc` events then the suffix — contiguous, disjoint cumulative positions
+that mirror exactly how the live relations hand the staged suffix to
+descendants. A collected seal contributes nothing, like any collected ancestor
+(the existing GC tolerance). The seal-composing-**itself** case is untouched
+(there `upper == anc.cut.sdk_events`, not `>`).
+
+Regression: `exploit_child_of_an_advanced_seal_recomputes_to_the_live_view` —
+the judge's repro shape adapted to the codebase (a **≥2-event** advanced span
+with **distinct** registers, so neither the toy-frame off-by-one nor
+value-identical `Set` firings can mask the missing row), an `ExploreExploitSelector`
+exploit step, and `assert_view_parity` as the compose-vs-live oracle. Red before
+the walk change: `cut observations diverge (rollout 3, count 5)`.
+
+### F2 — reconcile the capture against the stamped cut
+
+The seal decode accepted the host's raw capture with no check that it accounts
+for the stamped cut. A short or prefix-divergent capture would silently recreate
+`cut.sdk_events > graph rows` — the precise shape this task fails closed on. The
+snapshot path now reconciles `suffix.len() == cut.sdk_events - terminal_count`
+(via `saturating_sub`, so interior seals whose cut sits at or below the terminal
+expect an empty suffix) and refuses a mismatch with the typed
+`MachineError::SealSuffixDivergence` — the materializer's loud-divergence
+discipline (`cut_divergence_is_loud`, `materialize_divergence_is_loud`). No
+in-tree trigger (both machines derive capture and cut from one state); the guard
+is for a divergent host. Regression:
+`a_seal_capture_short_of_its_stamped_cut_is_refused_loudly` (a wrapper stamping
+the seal cut one event beyond its capture; genesis left honest so the frame
+diverges only at the seal). The two rollout-frame counts the decode + reconcile
+need are grouped into a `RolloutFrame` argument (kept `materialize_candidate`
+within the arg-count lint). New public error variant → `tests/public-api.txt`
+regenerated on the pinned nightly.
+
+### Scope
+
+F3 was refuted (checkpoint coverage + step-atomicity keep a seal and its rollout
+inseparable across GC); F4/F5/F6 are parked as beads per the adjudication and are
+**not** touched here.

@@ -340,7 +340,13 @@ impl CompletedRunEvidence {
 ///
 /// The chain walks `rollout.parent` through the ledger's **rollout** batches
 /// (a seal batch's `parent` is the rollout it seals, whose own `parent_cut`
-/// continues the chain). A collected (GC'd) ancestor contributes nothing —
+/// continues the chain). When a descendant forked from a seal that advanced
+/// **past** its rollout's terminal (task 144), the inherited span
+/// `[rollout_terminal, fork)` lives only in that Seal batch — never in a
+/// Rollout batch — so the walk also picks up the seal's run-forward suffix at
+/// that fork, exactly mirroring how the live Differential relations hand the
+/// staged suffix to descendants through the rollout's cumulative aggregate.
+/// A collected (GC'd) ancestor — rollout or seal — contributes nothing:
 /// composition proceeds over the retained prefix (the retention rules keep
 /// live-Entry lineage collectible only behind a covering checkpoint).
 pub fn compose_observations_at(
@@ -366,6 +372,27 @@ pub fn compose_observations_at(
             break; // collected or foreign ancestor: compose the retained prefix
         };
         let start = anc.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+        // A fork past the ancestor's own terminal (`anc.cut.sdk_events`) can
+        // only be reached through the Seal batch that advanced it to that
+        // fork (task 144): its run-forward suffix fills `[anc_terminal, upper)`,
+        // positions that exist in no Rollout batch. Push it BEFORE the
+        // ancestor so the root-first reversal orders `anc` events then the
+        // suffix (their cumulative positions are contiguous and disjoint). A
+        // missing seal batch (collected) simply contributes nothing, like any
+        // collected ancestor.
+        if upper > anc.cut.sdk_events
+            && let Some(seal) = ledger
+                .batch_ids()
+                .filter_map(|id| ledger.get(id))
+                .find(|b| {
+                    b.role == EvidenceRole::Seal
+                        && b.rollout.parent == Some(issue)
+                        && b.cut.sdk_events == upper
+                })
+        {
+            let seal_start = seal.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+            segments.push((seal.normalized.events.clone(), seal_start, upper));
+        }
         segments.push((anc.normalized.events.clone(), start, upper));
         parent = anc.rollout.parent;
         upper = start;
