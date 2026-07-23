@@ -466,11 +466,20 @@ impl<'a> AncestryIndex<'a> {
             let Some(b) = ledger.get(id) else { continue };
             match b.role {
                 EvidenceRole::Rollout => {
-                    rollouts.insert(b.rollout.issue, b);
+                    // `batch_ids()` iterates `EvidenceBatchId`s in ascending
+                    // order (`BTreeMap`); `or_insert` keeps the FIRST match,
+                    // mirroring `compose_observations_at`'s own `.find()`
+                    // over the same ascending iteration (hm-f82p F1e: a
+                    // duplicate `rollout.issue` across content-distinct
+                    // Rollout batches — accepted by public `append`, no
+                    // lineage validation, hm-wjv1 — must resolve to the
+                    // same batch compose would pick, not "whichever
+                    // inserted last").
+                    rollouts.entry(b.rollout.issue).or_insert(b);
                 }
                 EvidenceRole::Seal => {
                     if let Some(parent) = b.rollout.parent {
-                        seals.insert((parent, b.cut.sdk_events), b);
+                        seals.entry((parent, b.cut.sdk_events)).or_insert(b);
                     }
                 }
             }
@@ -3378,6 +3387,109 @@ mod tests {
              issue must not be mistaken for a collected Rollout ancestor — \
              there is no real Rollout ancestor (retained or collected) to \
              have lost anything"
+        );
+    }
+
+    /// hm-f82p F1e regression (PR #156 verify, judge repro): public `append`
+    /// accepts content-distinct Rollout batches sharing one `rollout.issue`
+    /// (no lineage validation — `hm-wjv1`).
+    /// `compose_observations_at`'s own ancestor lookup is a `.find()` over
+    /// `batch_ids()`'s ascending-`EvidenceBatchId` iteration order — the
+    /// FIRST match wins. `AncestryIndex::build` must resolve a duplicate
+    /// issue the same way: plain `rollouts.insert` (whichever the build
+    /// loop visits LAST — the batch with the *larger* id, since the loop
+    /// itself iterates in that same ascending order — clobbers the map
+    /// entry) picked the opposite batch from compose, so the report's label
+    /// could disagree with the actual recomputable truth. Two duplicates
+    /// resolving to opposite final answers (one reaches a collected
+    /// grandparent, the other is a dead end) makes any last-wins regression
+    /// fail regardless of which literal id happens to sort first.
+    #[test]
+    fn retention_report_resolves_a_duplicate_issue_like_compose_does() {
+        let mut cfg = config(8, u64::MAX);
+        cfg.retention = RetentionProfile::Bounded {
+            working_set_cap: 8,
+            expiry: crate::retention::ExpiryOrder::OldestFirst,
+        };
+        let (_dir, led) = ledger();
+        let mut camp = DifferentialCampaign::new(
+            ScriptedMachine::new(vec![], simple_program(4)),
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            Box::new(GenesisSelector::new()),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            cfg,
+            1,
+        )
+        .expect("new");
+        // Grandparent (issue 100): later collected.
+        let grandparent_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                100,
+                None,
+                10,
+                None,
+            ))
+            .expect("appends the grandparent");
+        // Two content-distinct Rollout batches sharing issue 1 (a duplicate
+        // issue). Dup A resolves further to the grandparent (collected
+        // below); Dup B is a dead end (`parent: None`) — opposite final
+        // answers depending on which one the walk resolves to.
+        let dup_a_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                1,
+                Some(100),
+                20,
+                Some(10),
+            ))
+            .expect("appends duplicate-issue rollout A");
+        let dup_b_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                1,
+                None,
+                21,
+                None,
+            ))
+            .expect("appends duplicate-issue rollout B");
+        let child_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                2,
+                Some(1),
+                30,
+                Some(20),
+            ))
+            .expect("appends the child");
+
+        camp.finalize_evidence().expect("finalize");
+        camp.collect_batch(grandparent_id).expect(
+            "the grandparent is not working-set, not live-referenced, and finalized-covered",
+        );
+
+        // compose_observations_at (and AncestryIndex::build) must resolve
+        // the duplicate to whichever of A/B has the smaller EvidenceBatchId
+        // — the FIRST match in batch_ids()'s ascending iteration order —
+        // regardless of which one that literally is.
+        let expected = if dup_a_id < dup_b_id {
+            Recomputation::RequiresAncestorReplay
+        } else {
+            Recomputation::FromRetainedEvidence
+        };
+        assert_eq!(
+            camp.retention_report().batches[&child_id].recompute_cells,
+            expected,
+            "the duplicate-issue ancestor must resolve to the same batch \
+             compose_observations_at's own ascending-id .find() would pick \
+             — not whichever the index build visited last"
         );
     }
 
