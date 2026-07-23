@@ -1218,6 +1218,13 @@ pre-existing root `clippy.toml` `rand::thread_rng`/`rand::rng`/`rand::random`
 config diagnostics, unrelated to this change); `cargo fmt -p explorer --
 --check` (clean). `cargo deny check` — advisories/bans/licenses/sources all ok
 (no dependency change). No `unsafe` added → no Miri obligation.
+`cargo mutants --no-shuffle --in-diff` against the full PR diff
+(`git diff origin/main...HEAD > pr.diff`, matching the CI `mutants` job's
+invocation): `INFO No mutants to filter`, exit 0 — after the pr153-B/C inline
+fix, the diff contains no code in a cargo-mutants-visitable position (the
+`if` lives inside the `#[error(...)]` attribute's token stream, not a plain
+fn body; the rest of the diff is doc comments and test-only code). **0
+missed**, satisfying the required gate.
 **Hash-neutrality:** neither fix touches the evidence/hash path — `hm-s6cb`
 only rewrites an error `Display` string (never hashed/persisted), and `hm-wshf`
 is docs plus a new self-contained test; no `reduce_at_cut`/`compose_observations_at`
