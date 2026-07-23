@@ -4785,7 +4785,11 @@ mod tests {
             landing: 2_000,
         });
         // Poison the schedule at the arm site.
-        assert_eq!(run_with_deadline(&mut s, 100_000), refused, "arm-site refusal");
+        assert_eq!(
+            run_with_deadline(&mut s, 100_000),
+            refused,
+            "arm-site refusal"
+        );
         // A rewind (replay of the pristine base) clears the latch — the session runs
         // cleanly again (schedule empty, nothing to arm, so no refusal).
         assert_eq!(
