@@ -648,40 +648,11 @@ mod tests {
         assert_eq!(extract_data_frame(&acc).as_deref(), Some("data: hello\n\n"));
     }
 
-    /// A scripted `io::Read` that returns each queued chunk from one `read`
-    /// call, in order, then reports EOF (`Ok(0)`) once exhausted. Lets
-    /// `read_sse_data_frame`'s cross-read accumulation be driven directly,
-    /// with no socket and no wall-clock wait (hm-b5km).
-    struct ScriptedReader {
-        chunks: std::collections::VecDeque<Vec<u8>>,
-    }
-
-    impl ScriptedReader {
-        fn new(chunks: &[&[u8]]) -> Self {
-            ScriptedReader {
-                chunks: chunks.iter().map(|c| c.to_vec()).collect(),
-            }
-        }
-    }
-
-    impl Read for ScriptedReader {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            match self.chunks.pop_front() {
-                Some(chunk) => {
-                    let n = chunk.len();
-                    buf[..n].copy_from_slice(&chunk);
-                    Ok(n)
-                }
-                None => Ok(0),
-            }
-        }
-    }
-
     /// A scripted `io::Read` that never returns EOF and never produces a
     /// `data: ` frame — every call hands back the same `: keepalive\n\n`
     /// comment frame. Drives `read_sse_data_frame`'s retry-budget exhaustion
-    /// path (as opposed to the EOF-break path `ScriptedReader` exercises once
-    /// its chunks run out).
+    /// path (as opposed to the EOF-break path a `Read::chain`'d pair of slices
+    /// exercises once both are consumed).
     struct NeverDataReader;
 
     impl Read for NeverDataReader {
@@ -702,7 +673,7 @@ mod tests {
         // prefix would be lost and the loop would hang/panic on the
         // now-unrecognizable "a: hello\n\n" remainder instead of finding the
         // complete data frame.
-        let mut r = ScriptedReader::new(&[b": keepalive\n\ndat", b"a: hello\n\n"]);
+        let mut r = (b": keepalive\n\ndat" as &[u8]).chain(b"a: hello\n\n" as &[u8]);
         assert_eq!(read_sse_data_frame(&mut r), "data: hello\n\n");
     }
 
@@ -870,6 +841,11 @@ mod tests {
         // scanner. Anchoring on the terminator itself guarantees the whole header
         // is drained before phase 2 starts scanning for the data frame.
         let head = read_until(&mut c, "\r\n\r\n");
+        // `read_until` returns whatever it accumulated even if the needle was
+        // never found (its budget just exhausts) — so the anchor is only
+        // fail-closed if the terminator's presence is itself asserted, not
+        // merely relied on implicitly.
+        assert!(head.contains("\r\n\r\n"), "full header terminator drained");
         assert!(head.contains("text/event-stream"));
         assert!(head.contains("no-cache"));
 

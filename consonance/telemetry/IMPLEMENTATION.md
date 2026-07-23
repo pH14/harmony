@@ -342,12 +342,13 @@ c)` — a bare `io::Read` has no read-timeout notion of its own). Two scripted
 tests drive it directly against a mock reader, no socket, no real server, no
 wall-clock wait:
 
-- `read_sse_data_frame_retains_bytes_across_reads` — a `ScriptedReader`
-  returns `": keepalive\n\ndat"` (a complete keepalive frame plus the start of
-  the *next* frame's `"data: "` marker, split mid-word) on the first read and
-  `"a: hello\n\n"` on the second, and asserts the combined result is the
-  complete `"data: hello\n\n"` frame. If `acc` were cleared between reads, the
-  `"dat"` prefix would be lost and the second read alone (`"a: hello\n\n"`,
+- `read_sse_data_frame_retains_bytes_across_reads` — `(&b": keepalive\n\ndat"[..]).chain(&b"a: hello\n\n"[..])`
+  (std's `Read::chain`, exhausting the first slice before switching to the
+  second) returns `": keepalive\n\ndat"` (a complete keepalive frame plus the
+  start of the *next* frame's `"data: "` marker, split mid-word) on the first
+  read and `"a: hello\n\n"` on the second, and asserts the combined result is
+  the complete `"data: hello\n\n"` frame. If `acc` were cleared between reads,
+  the `"dat"` prefix would be lost and the second read alone (`"a: hello\n\n"`,
   which does not start with `"data: "`) would never be recognized as a data
   frame — directly catching the mutant PR #152 flagged.
 - `read_sse_data_frame_panics_with_accumulated_bytes_on_budget_exhaustion` — a
@@ -366,9 +367,19 @@ framing. `slice::split_inclusive` splits on a predicate over single elements;
 need pairing/lookahead logic no simpler than the existing `windows(2).position`
 loop. Left as-is.
 
+**PR #154 review follow-ups.** A dedicated `ScriptedReader` type (struct +
+constructor + `Read` impl, ~28 LOC) originally drove the cross-read-retention
+test; it had exactly one user and is equivalent to chaining two `&[u8]`
+readers with std's own `Read::chain`, so it was deleted in favor of the
+inline `chain` call above. The phase-1 header-anchor test now also asserts
+`head.contains("\r\n\r\n")` directly (previously only `"text/event-stream"`
+and `"no-cache"` were asserted), so a server regression that omitted the
+terminator would fail fast instead of silently passing once `read_until`'s
+attempt budget exhausts and returns its partial accumulator unconditionally.
+
 ### Verification
 
-- `cargo nextest run -p telemetry --all-features` → 38/38 pass (36 prior + 2
+- `cargo nextest run -p telemetry --all-features` → 36/36 pass (34 prior + 2
   new `read_sse_data_frame` scripted-read tests).
 - Stress (direct release-profile test-binary invocation, no cargo overhead per
   run): `streams_events_as_sse_frames` looped **250×** — **0 failures**
