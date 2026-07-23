@@ -356,7 +356,13 @@ pub struct StepReport {
     /// The Entries admitted to occupancy at their actual `sealed_at` (barrier 2).
     pub admitted: Vec<ExemplarRef>,
     /// Occurrence counterexamples newly found this step (deduped by property
-    /// across the campaign).
+    /// across the campaign). **Rollout-fold only** today: a counterexample first
+    /// seen in a seal's advanced span is folded into the authoritative verdict
+    /// views (`finalized.counterexamples`, the dedup set) but is not echoed
+    /// here — surfacing seal-fold counterexamples in this per-step report is
+    /// parked as `hm-5mx0` (needs a v1-verb test machine to be testable). So
+    /// `finalized.counterexamples` may exceed the sum of what this field
+    /// reported across steps; the views, not this field, are authoritative.
     pub counterexamples: Vec<OccurrenceCounterexample>,
     /// Whether the step explored fresh (genesis) rather than exploiting.
     pub explored: bool,

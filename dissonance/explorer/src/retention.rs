@@ -405,16 +405,25 @@ impl RetentionViews {
             ..FoldOutcome::default()
         };
         self.frontier_issue = self.frontier_issue.max(ev.rollout.issue);
+        // Route this batch's own `normalized.events` (and terminal) through the
+        // verdict folds BEFORE the per-role bookkeeping below — one call serves
+        // both arms because the role dispatch selects only counters and the
+        // cell assignment, never verdict behavior (verdict state and per-role
+        // fields are disjoint). The Rollout arm judges the rollout body; the
+        // Seal arm judges the advanced span `[rollout_terminal, seal_cut)` —
+        // the seal's run-forward suffix, durably captured in `normalized.events`
+        // since PR #147 (task 144). Judging that suffix here is the whole of
+        // hm-mmkf (PR #147 F4): before this the seal batch was durable but
+        // never judged, so a sometimes-hit or an assertion event living ONLY in
+        // the advanced span was a false absence / uncounted counterexample.
+        // Dedup is campaign-wide, so an advanced-span hit counts toward the
+        // SAME occurrence identity as a rollout hit, no rollout-body event is
+        // re-judged (a seal's suffix excludes the rollout's own events post-PR
+        // #150), and a non-advanced seal's empty suffix contributes nothing.
+        self.fold_verdicts(ev, &mut out);
         match ev.role {
             crate::evidence::EvidenceRole::Rollout => {
                 self.finalized.rollouts += 1;
-                for ce in crate::occurrence::OccurrenceOracle::new().judge(ev) {
-                    if self.seen_counterexamples.insert(ce.fingerprint) {
-                        self.finalized.counterexamples += 1;
-                        out.new_counterexamples.push(ce);
-                    }
-                }
-                self.absences.observe(ev);
             }
             crate::evidence::EvidenceRole::Seal => {
                 self.finalized.seals += 1;
@@ -452,6 +461,28 @@ impl RetentionViews {
             }
         }
         out
+    }
+
+    /// Route one batch's own `normalized.events` (and terminal) through the
+    /// occurrence oracle and the finalized absence fold — THE verdict machinery
+    /// both arms of [`fold_batch`](Self::fold_batch) share. The Rollout arm
+    /// judges the rollout body; the Seal arm judges the advanced span (the
+    /// seal's run-forward suffix, task 144 / PR #147). Occurrence
+    /// counterexamples are deduplicated **campaign-wide** by fingerprint (the
+    /// shared `seen_counterexamples` set) — the same oracle keying for both
+    /// arms — so an advanced-span hit counts toward the same
+    /// occurrence identity as a rollout hit and is never double-counted, and
+    /// the absence fold's satisfied counts stay monotone. Sharing one method
+    /// keeps the live step and a restart's [`rebuild`](Self::rebuild)
+    /// bit-identical by construction.
+    fn fold_verdicts(&mut self, ev: &crate::evidence::CompletedRunEvidence, out: &mut FoldOutcome) {
+        for ce in crate::occurrence::OccurrenceOracle::new().judge(ev) {
+            if self.seen_counterexamples.insert(ce.fingerprint) {
+                self.finalized.counterexamples += 1;
+                out.new_counterexamples.push(ce);
+            }
+        }
+        self.absences.observe(ev);
     }
 
     /// The canonical, deterministic bytes of these views — the checkpoint
@@ -1279,6 +1310,337 @@ mod tests {
         )
         .expect_err("reinterpretation ended");
         assert!(matches!(err, RetentionError::ReinterpretationEnded { .. }));
+    }
+
+    // ---- advanced-span verdict-fold gates (hm-mmkf, PR #147 F4) ----
+    //
+    // These build the task-144 shape — a **Seal** batch whose own
+    // `normalized.events` is the run-forward suffix `[rollout_terminal,
+    // seal_cut)` (the advanced span, durably captured since PR #147) — at the
+    // fold surface, exactly as `occurrence.rs` builds oracle inputs. The toy
+    // campaign machine emits only v2 state events and its seals terminate
+    // `Quiescent`, so an advanced-span occurrence/assertion firing is only
+    // reachable by constructing evidence directly (a v1 catalog carries the
+    // verb the absence/occurrence machinery keys on; a v2 catalog declares no
+    // verb, so `AssertType` decodes `None` and neither path fires — the
+    // pre-existing v2 gap, not this task). The verdict folds read
+    // `normalized.events` and the terminal directly (never the cut), so the
+    // exact cut frame is immaterial to these gates.
+
+    use crate::campaign::CATALOG_EVENT_ID;
+    use crate::evidence::{CompletedRunEvidence, EvidenceRole};
+    use crate::occurrence::CounterexampleKind;
+    use crate::spine::Moment;
+    use crate::{Reproducer, StopReason};
+    use sdk_events::{NS_ASSERT, ObservationId, decode_binary};
+
+    /// A v1 SDK catalog declaring the given `(kind, local, name)` assertion
+    /// points. The v1 wire carries an explicit verb, so a firing decodes with
+    /// its `AssertType` populated — the form the absence fold
+    /// ([`satisfies_must_hit`](crate::occurrence)) and the occurrence oracle
+    /// key on (mirrors `occurrence.rs`'s catalog helper).
+    fn v1_assert_catalog(points: &[(u8, u32, &str)]) -> Vec<u8> {
+        let magic = u32::from_le_bytes(*b"SDKC");
+        let mut b = Vec::new();
+        b.extend_from_slice(&magic.to_le_bytes());
+        b.push(1); // wire v1
+        b.extend_from_slice(&(points.len() as u32).to_le_bytes());
+        for (kind, local, name) in points {
+            b.push(*kind);
+            b.extend_from_slice(&local.to_le_bytes());
+            b.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            b.extend_from_slice(name.as_bytes());
+        }
+        b
+    }
+
+    /// An assertion firing record `[disposition u8][detail_len u16]` (empty
+    /// detail) at NS_ASSERT `local`, returned as the `(event id, body)` pair
+    /// `decode_binary` expects. `DISP_HIT = 0`, `DISP_VIOLATION = 1` (the
+    /// `wire` constants, `pub(crate)` to sdk-events so hard-coded here as
+    /// `occurrence.rs` does).
+    fn assert_firing(local: u32, disposition: u8) -> (u32, Vec<u8>) {
+        let id = ((NS_ASSERT as u32) << 24) | local;
+        let mut body = vec![disposition];
+        body.extend_from_slice(&0u16.to_le_bytes());
+        (id, body)
+    }
+
+    /// Build a `CompletedRunEvidence` for a batch whose own decoded evidence is
+    /// `[catalog] + firings` (the child re-declares its schema; the catalog is
+    /// never inherited — `decode_child_suffix`). `firings` are the batch's own
+    /// events (for a Seal, the advanced-span suffix).
+    fn evidence_of(
+        issue: u64,
+        parent: Option<u64>,
+        role: EvidenceRole,
+        terminal_at: u64,
+        catalog: &[u8],
+        firings: &[(u32, Vec<u8>)],
+    ) -> CompletedRunEvidence {
+        // Stamp firings at honest moments for the batch's role: a rollout's own
+        // firings sit in the rollout body (below the terminal 20 these fixtures
+        // use); a seal's firings are the advanced span and sit INSIDE
+        // `[rollout_terminal=20, seal_cut)` (25, ahead of the terminal). The
+        // folds read `normalized.events` + the terminal, never the moment, so
+        // this is fidelity only — but the fixture should not claim an
+        // advanced-span event and then stamp it below the terminal (review F3b).
+        let firing_base = match role {
+            EvidenceRole::Rollout => 10,
+            EvidenceRole::Seal => 25,
+        };
+        let mut raw: Vec<(sdk_events::Moment, u32, Vec<u8>)> =
+            vec![(sdk_events::Moment(0), CATALOG_EVENT_ID, catalog.to_vec())];
+        for (i, (id, body)) in firings.iter().enumerate() {
+            raw.push((
+                sdk_events::Moment(firing_base + i as u64),
+                *id,
+                body.clone(),
+            ));
+        }
+        let normalized = decode_binary(&raw).expect("evidence decodes");
+        CompletedRunEvidence {
+            rollout: RunId { issue, parent },
+            role,
+            terminal: StopReason::Quiescent {
+                vtime: Moment(terminal_at),
+            },
+            env: Reproducer {
+                blob_version: 1,
+                bytes: issue.to_le_bytes().to_vec(),
+            },
+            cut: EvidenceCut {
+                at: Moment(terminal_at),
+                sdk_events: normalized.events.len() as u64,
+            },
+            normalized,
+            parent_cut: parent.map(|_| EvidenceCut {
+                at: Moment(terminal_at),
+                sdk_events: 0,
+            }),
+            sealable_moments: Vec::new(),
+        }
+    }
+
+    /// **Gate 1 — false-absence closure (red before the seal-arm verdict
+    /// fold).** A `sometimes` must-hit that fires ONLY in the advanced span
+    /// (the seal's run-forward suffix, never the rollout body) was reported as
+    /// a false absence because `fold_batch` judged only the Rollout arm. The
+    /// rollout declares the must-hit and never fires it (absence present); the
+    /// seal's suffix fires it. Before the fix the absence stood; after, the
+    /// advanced-span hit satisfies the must-hit and the absence clears.
+    ///
+    /// RED before: with the Seal arm's `fold_verdicts` removed, the final
+    /// `absences().is_empty()` assertion fails (the property stays a false
+    /// absence, satisfied count 0) — the red-before run is quoted in
+    /// `IMPLEMENTATION.md`.
+    #[test]
+    fn advanced_span_sometimes_hit_closes_the_false_absence() {
+        const KIND_SOMETIMES: u8 = 1; // wire::KIND_SOMETIMES
+        const DISP_HIT: u8 = 0; // wire::DISP_HIT
+        let prop = ObservationId::Point {
+            namespace: NS_ASSERT,
+            local: 5,
+        };
+        let (_dir, mut led) = crate::testkit::ledger();
+        let cells = DefaultObservationCells::new();
+        let mut views = RetentionViews::new(RetentionProfile::Full);
+
+        // One `sometimes` must-hit at local 5; both batches re-declare it.
+        let catalog = v1_assert_catalog(&[(KIND_SOMETIMES, 5, "advanced-only")]);
+
+        // Rollout (issue 1): declares the must-hit, NEVER fires it.
+        let rollout = evidence_of(1, None, EvidenceRole::Rollout, 20, &catalog, &[]);
+        let rid = led.append(&rollout).expect("append rollout");
+        views.fold_batch(&cells, &led, rid, &rollout);
+        // Red-before witness: the must-hit is a live false absence.
+        assert_eq!(views.absences.absences().len(), 1, "the must-hit is absent");
+        assert_eq!(views.absences.absences()[0].property, prop);
+        assert_eq!(views.absences.satisfied(&prop), 0);
+
+        // Seal (issue 2, parent = rollout 1): its advanced-span suffix fires
+        // the `sometimes` — a HIT the rollout body never carried.
+        let hit = assert_firing(5, DISP_HIT);
+        let seal = evidence_of(2, Some(1), EvidenceRole::Seal, 30, &catalog, &[hit]);
+        assert_eq!(
+            seal.normalized.events.len(),
+            1,
+            "the seal's suffix is the advanced span alone (one firing)"
+        );
+        let sid = led.append(&seal).expect("append seal");
+        views.fold_batch(&cells, &led, sid, &seal);
+
+        // GREEN after the fix: the advanced-span hit satisfied the must-hit.
+        assert!(
+            views.absences.absences().is_empty(),
+            "the advanced-span sometimes-hit closes the false absence"
+        );
+        // EXACTLY one — the single advanced-span hit is folded exactly once.
+        // `== 1` (not `>= 1`) pins the one inflatable, hash-feeding dimension: a
+        // double Seal-arm fold would count 2 here, and satisfied-counts feed
+        // `canonical_bytes`, so `>= 1` would let a duplicate fold pass silently
+        // (review F3a — occurrence counts are fingerprint-deduped, but absence
+        // satisfied-counts are not).
+        assert_eq!(
+            views.absences.satisfied(&prop),
+            1,
+            "the advanced-span hit is counted exactly once"
+        );
+    }
+
+    /// **Gate 2 — a non-advanced seal contributes nothing to verdicts.** For a
+    /// workload whose seals are all at-terminal (empty suffix), the seal-arm
+    /// verdict fold is a no-op: occurrence counterexamples and absences are
+    /// bit-identical before and after folding the seal (only the seal's own
+    /// records — the seal count and the cell assignment — change). This is the
+    /// hash-neutrality guarantee on workloads with no advanced-span occurrence
+    /// events.
+    #[test]
+    fn non_advanced_seal_leaves_verdicts_identical() {
+        const KIND_SOMETIMES: u8 = 1;
+        const DISP_HIT: u8 = 0;
+        let (_dir, mut led) = crate::testkit::ledger();
+        let cells = DefaultObservationCells::new();
+        let mut views = RetentionViews::new(RetentionProfile::Full);
+
+        // Two must-hits: local 5 fires in the rollout body (satisfied); local 6
+        // never fires (a real, standing absence).
+        let catalog = v1_assert_catalog(&[(KIND_SOMETIMES, 5, "hit"), (KIND_SOMETIMES, 6, "miss")]);
+        let hit = assert_firing(5, DISP_HIT);
+        let rollout = evidence_of(1, None, EvidenceRole::Rollout, 20, &catalog, &[hit]);
+        let rid = led.append(&rollout).expect("append rollout");
+        views.fold_batch(&cells, &led, rid, &rollout);
+
+        // Snapshot the verdict state after the rollout fold.
+        let absences_before = views.absences.clone();
+        let seen_before = views.seen_counterexamples.clone();
+        let ces_before = views.finalized.counterexamples;
+        assert_eq!(absences_before.absences().len(), 1, "local 6 stands absent");
+
+        // A non-advanced seal of that rollout: empty suffix, terminal at the
+        // rollout terminal.
+        let seal = evidence_of(2, Some(1), EvidenceRole::Seal, 20, &catalog, &[]);
+        assert!(
+            seal.normalized.events.is_empty(),
+            "a non-advanced seal has no suffix events"
+        );
+        let seals_before = views.finalized.seals;
+        let sid = led.append(&seal).expect("append seal");
+        views.fold_batch(&cells, &led, sid, &seal);
+
+        // The verdict state is untouched — identical absences, identical
+        // occurrence dedup set, identical counterexample count.
+        assert_eq!(
+            views.absences, absences_before,
+            "a non-advanced seal changes no absence"
+        );
+        assert_eq!(views.seen_counterexamples, seen_before);
+        assert_eq!(views.finalized.counterexamples, ces_before);
+        // Not vacuous: the seal WAS folded (its own count moved).
+        assert_eq!(
+            views.finalized.seals,
+            seals_before + 1,
+            "the seal was genuinely folded"
+        );
+    }
+
+    /// **Gate 3 — no double-judging.** An occurrence counterexample in the
+    /// rollout body is counted exactly once. Two non-vacuous facts at the fold
+    /// surface: (i) a seal whose suffix does not re-carry the rollout event adds
+    /// no new counterexample (the count holds at one), and (ii) even a seal
+    /// whose advanced-span suffix RE-fires the SAME property is fingerprint-
+    /// deduped to the same occurrence identity — never a second counterexample
+    /// (spec test-3's letter, the "same oracle keying" requirement). The
+    /// structural check below is **fixture-level** (the first seal is built with
+    /// an empty suffix, so it holds by construction); the PRODUCTION guarantee
+    /// that a real seal's suffix excludes the rollout body is a capture-slicing
+    /// property owned by the `decode_child_suffix` suite in `campaign.rs`, not
+    /// this fold-level gate.
+    #[test]
+    fn rollout_body_counterexample_is_counted_once() {
+        const KIND_ALWAYS: u8 = 0; // wire::KIND_ALWAYS
+        const DISP_VIOLATION: u8 = 1; // wire::DISP_VIOLATION
+        let (_dir, mut led) = crate::testkit::ledger();
+        let cells = DefaultObservationCells::new();
+        let mut views = RetentionViews::new(RetentionProfile::Full);
+
+        // An `always` point at local 7: a violation is an occurrence
+        // counterexample (AlwaysViolated), and `always` carries no must-hit
+        // expectation, so this is purely the occurrence path.
+        let catalog = v1_assert_catalog(&[(KIND_ALWAYS, 7, "invariant")]);
+        let violation = assert_firing(7, DISP_VIOLATION);
+
+        // Rollout (issue 1): the always-violation fires in the rollout body.
+        let rollout = evidence_of(
+            1,
+            None,
+            EvidenceRole::Rollout,
+            20,
+            &catalog,
+            std::slice::from_ref(&violation),
+        );
+        let rid = led.append(&rollout).expect("append rollout");
+        let fold1 = views.fold_batch(&cells, &led, rid, &rollout);
+        assert_eq!(
+            fold1.new_counterexamples.len(),
+            1,
+            "the rollout body fires once"
+        );
+        assert_eq!(
+            fold1.new_counterexamples[0].kind,
+            CounterexampleKind::AlwaysViolated
+        );
+        assert_eq!(views.finalized.counterexamples, 1);
+
+        // A seal (issue 2, parent 1) built with an EMPTY suffix. The check
+        // below is fixture-level — it confirms the seal we constructed carries
+        // no rollout-body event (it holds by construction); the PRODUCTION
+        // exclusion of the rollout body from a real seal's suffix is gated by
+        // the `decode_child_suffix` suite in `campaign.rs`. This gate exercises
+        // only the FOLD's response to such a suffix.
+        let seal = evidence_of(2, Some(1), EvidenceRole::Seal, 30, &catalog, &[]);
+        assert!(
+            !seal
+                .normalized
+                .events
+                .iter()
+                .any(|e| e.id == violation_property()),
+            "the fixture seal carries no rollout-body event (empty suffix)"
+        );
+        let sid = led.append(&seal).expect("append seal");
+        let fold2 = views.fold_batch(&cells, &led, sid, &seal);
+        assert!(
+            fold2.new_counterexamples.is_empty(),
+            "a seal that did not re-observe the property reports nothing new"
+        );
+        assert_eq!(
+            views.finalized.counterexamples, 1,
+            "the rollout-body counterexample is counted once, not re-counted via the seal"
+        );
+
+        // Dedup guarantee: even a seal whose advanced-span suffix RE-fires the
+        // SAME property counts toward the same occurrence identity — the count
+        // holds at one (the "same oracle keying" requirement).
+        let seal2 = evidence_of(3, Some(1), EvidenceRole::Seal, 40, &catalog, &[violation]);
+        let sid2 = led.append(&seal2).expect("append seal2");
+        let fold3 = views.fold_batch(&cells, &led, sid2, &seal2);
+        assert!(
+            fold3.new_counterexamples.is_empty(),
+            "an advanced-span re-fire of the same property is deduped, not double-counted"
+        );
+        assert_eq!(
+            views.finalized.counterexamples, 1,
+            "campaign-wide fingerprint dedup keeps the count at one across any seal batch"
+        );
+    }
+
+    /// The NS_ASSERT observation id an `always` local-7 firing decodes under —
+    /// the structural anchor Gate 3 checks the seal suffix against.
+    fn violation_property() -> ObservationId {
+        ObservationId::Point {
+            namespace: NS_ASSERT,
+            local: 7,
+        }
     }
 
     proptest! {

@@ -1350,3 +1350,204 @@ call site changed. Ran anyway as part of the full suite:
 Touched only `dissonance/explorer/src/{ledger.rs,evidence.rs,campaign.rs,retention.rs}`
 and this file. No other bead, no redesign of the Seal representation
 (hm-j7ie's ruling stands), no compose-aware accessor rewrite.
+
+---
+
+# tasks/152 — route advanced-span occurrence/assertion events through fold_batch's verdict folds (hm-mmkf, PR #147 F4)
+
+## The bug (fold-side, capture already done)
+
+Since tasks/144 (hm-aqf0) a candidate seal that ran forward past its rollout's
+terminal durably captures the **advanced span** `[rollout_terminal, seal_cut)`
+in the Seal batch's own `normalized.events` (the run-forward suffix), and
+tasks/146/150 hardened that capture. But `RetentionViews::fold_batch` ran the
+`OccurrenceOracle` and the finalized absence fold **only in the Rollout arm**
+(`retention.rs`, ex-`409-417`). A seal's suffix was folded for its **cell
+assignment** (via `compose_observations_at`) but never **judged**: a
+`sometimes`/`reachable` hit or an `always`/`unreachable`/terminal assertion that
+existed ONLY in the advanced span was durable yet invisible to the verdict
+plane — a **false absence** (a must-hit reported never-satisfied though it was
+satisfied in the advanced span), or an uncounted occurrence counterexample.
+PR #147's F4 framed the fix as **pure fold-side**; this change is exactly that.
+
+## The fix
+
+Extracted the Rollout arm's verdict machinery into one private
+`RetentionViews::fold_verdicts(ev, out)` — `OccurrenceOracle::new().judge(ev)`
+with campaign-wide fingerprint dedup into `seen_counterexamples`
+(`finalized.counterexamples` + `FoldOutcome.new_counterexamples`), then
+`self.absences.observe(ev)` — and call it from **both** arms. The Seal arm now
+judges its own `normalized.events` (the advanced span) through the identical
+oracle and absence fold the Rollout arm uses:
+
+- **Same oracle/keying, no new scheme.** Dedup is the shared campaign-wide
+  `seen_counterexamples` set, so an advanced-span hit counts toward the **same**
+  occurrence identity as a rollout hit (a rollout is always folded before its
+  seal — lower issue in both the live step and `rebuild`'s `(issue, batch)`
+  order — so the fingerprint is already seen and never double-counted).
+- **Non-advanced seal contributes nothing.** Its suffix is empty and it
+  terminates `Quiescent`, so `judge` finds nothing and `observe` only
+  re-registers already-declared must-hits (idempotent — `decode_child_suffix`
+  keeps the catalog, so the seal's schema equals the rollout's).
+- **Live == rebuild by construction.** Both paths call the one shared
+  `fold_batch`; the persisted verdict state (`seen_counterexamples`,
+  `finalized.counterexamples`, `absences`) is set-/count-based and
+  order-independent, so `canonical_bytes` stays bit-identical (the
+  `rebuild_from_checkpoint_matches_live_state` contract holds unchanged).
+
+## Why the tests live at the fold surface (not the campaign marker-clamp)
+
+The verdict folds read `ev.normalized.events` and `ev.terminal` **directly**
+(never the cut), so the advanced-span shape is exercised most precisely by
+constructing rollout+seal `CompletedRunEvidence` at the fold surface — exactly
+how `occurrence.rs` builds oracle inputs. This is also the **only** feasible
+surface: the portable toy campaign harness (`testkit::ScriptedMachine`) emits a
+**v2** catalog (which declares an expectation but **no verb**, so a firing
+decodes with `AssertType == None` and neither `satisfies_must_hit` nor the
+occurrence oracle's `Always`/`Unreachable` arms fire — a pre-existing v2 gap,
+out of scope here), emits **only state** events, and its seals always terminate
+`Quiescent`. So an advanced-span occurrence/assertion firing is unreachable
+through the toy machine; the fold-level tests use **v1** catalogs (verb carried)
+to drive the real absence/occurrence machinery, reproducing the task-144
+structure — a Seal batch whose suffix carries an event the rollout terminal
+never captured.
+
+Three gates in `retention.rs` `#[cfg(test)]`:
+
+1. **`advanced_span_sometimes_hit_closes_the_false_absence` (red-before).** A
+   `sometimes` must-hit declared by the rollout and never fired (absence
+   present, satisfied 0), then fired ONLY in the seal's advanced-span suffix.
+   After the fix the absence clears and the satisfied count rises to **exactly
+   1** (`== 1`, review F3a — the one hash-feeding dimension not covered by
+   fingerprint dedup; a double fold counts 2 and this now catches it). **Red-
+   before quote** (restricting `fold_verdicts` to the Rollout arm — the pre-fix
+   behavior; post-F4 the call is hoisted, so this is how the pre-fix state is
+   reproduced):
+   ```
+   FAIL explorer retention::tests::advanced_span_sometimes_hit_closes_the_false_absence
+   panicked at dissonance/explorer/src/retention.rs:1477:
+     the advanced-span sometimes-hit closes the false absence
+   ```
+   Restoring the unconditional call → green.
+2. **`non_advanced_seal_leaves_verdicts_identical`.** With a rollout that
+   satisfies one must-hit (local 5) and leaves another standing absent
+   (local 6), folding a non-advanced (empty-suffix) seal leaves the absence
+   ledger, the `seen_counterexamples` set, and `finalized.counterexamples`
+   **byte-identical** — only `finalized.seals` moves (proof the seal was
+   genuinely folded). This is the hash-neutrality witness on
+   no-advanced-span-event workloads.
+3. **`rollout_body_counterexample_is_counted_once`.** An `always`-violation in
+   the rollout body is counted once; folding a seal whose suffix does not
+   re-carry it reports nothing new, and a second seal whose suffix **re-fires**
+   the same property is fingerprint-deduped to the same identity — the count
+   holds at one across any seal batch (the "same oracle keying" requirement,
+   directly exercised, the non-vacuous heart of this gate). The structural check
+   that the seal carries no rollout-body event is **fixture-level** (the seal is
+   built with an empty suffix); the PRODUCTION guarantee that a real seal's
+   suffix excludes the rollout body is owned by the `decode_child_suffix`
+   capture-slicing suite in `campaign.rs`, not this fold-level gate (review F3d
+   — earlier wording overstated this as "proven, not asserted").
+
+## Judgment call — surfacing seal-fold counterexamples in `StepReport`
+
+I prototyped extending the per-step report (campaign.rs) with the seal fold's
+new counterexamples for symmetry with the rollout fold, then reverted it: it is
+outside F4's "pure fold-side" framing, the authoritative checkpointed verdict
+state is already complete and tested, and the line is **unreachable by the
+portable harness** (v2/state-only/Quiescent-seal, above) → an untestable line
+and a guaranteed `cargo mutants --in-diff` miss. The discovery tribunal **upheld
+this call** at the merge bar (`StepReport.counterexamples` has zero consumers
+outside explorer's own tests; the fix is not inert without it), and parked the
+real surface change as bead **hm-5mx0** (needs a v1-verb test machine to become
+testable). Ride-along F2-doc applied: `StepReport.counterexamples`'s field doc
+now states it carries the **rollout fold only** today, that a seal-found
+counterexample lands in the authoritative views (`finalized.counterexamples`,
+the dedup set) but not this field, and points at hm-5mx0.
+
+## Review response — PR #155 discovery (REQUEST_CHANGES): F1 version boundary + ride-alongs
+
+The discovery tribunal upheld the core (keying sound, red-before genuine,
+judgment call upheld, mutants clean) and returned one **P1** plus ride-alongs.
+Applied in this batch:
+
+- **F1 (P1) — persisted-checkpoint version boundary.** The fold-semantics change
+  reaches the durable `RetentionCheckpoint`: its verdict views now include
+  advanced-span contributions, but a checkpoint written by the pre-PR build
+  carries no marker, and `RetentionViews::rebuild` clones a covering checkpoint
+  verbatim and re-folds only batches **above** its frontier — so a pre-PR **v3**
+  ledger whose checkpoint covers an advanced Seal would reopen silently with the
+  false absence intact, unrecoverable once GC collects the raw Seal. Fixed per
+  the crate's own hm-j7ie precedent: **`ledger.rs` `VERSION` 3 → 4**, with the
+  loud `UnsupportedVersion` refusal now naming the fold-semantics checkpoint
+  change (keeping the `found < VERSION` vs `found > VERSION` message split from
+  PR #153), a new `## Format v4` module-doc section, and the `VERSION`/error
+  docs updated. Version-pinning tests updated: `found: 1/2/3` now refused with
+  the fold-semantics reason (new `version_three_ledger_is_refused_with_the_fold_semantics_reason`
+  pins the exact stale-checkpoint boundary this bump closes), the future-version
+  test moved to `found: 5` and asserts the version-neutral message, and
+  `fresh_ledger_is_version_four_and_round_trips` confirms this build writes/reads
+  4.
+- **F3a (P2 ride) — exact absence-count pin.** Gate 1's `satisfied >= 1` → `== 1`.
+  Validated by fault injection: a doubled Seal-arm fold now fails Gate 1 at the
+  `== 1` assertion (it was suite-green under `>= 1`, the judge's finding).
+- **F3b (P3 ride) — fixture Moment honesty.** `evidence_of` stamps a seal's
+  advanced-span firings inside `[rollout_terminal=20, seal_cut)` (Moment 25),
+  and a rollout's firings in the body (Moment 10), instead of a blanket
+  `Moment(10+i)` that put "advanced-span" events below the terminal. Fidelity
+  only — the folds read `normalized.events` + terminal, never moments.
+- **F3d (P3 ride) — Gate 3 wording.** Dropped "proven, not asserted"; the
+  structural check is fixture-level and the production exclusion is attributed to
+  the `decode_child_suffix` suite (comment + IMPLEMENTATION.md above).
+- **F4 (discretionary) — taken.** The identical `fold_verdicts` call is hoisted
+  above the role match (the dispatch selects only counters/assignment, never
+  verdict behavior); the hm-mmkf explanatory comment rides with the hoisted call.
+- **F5 (discretionary) — not taken.** Consolidating the third `SDKC` v1-catalog
+  fixture into `testkit` would touch `occurrence.rs`'s test surface and broaden
+  the diff beyond this batch; left for the hm-5mx0 infrastructure work (which
+  introduces the shared v1-verb test machine anyway). Noted, not silently
+  dropped.
+- **hm-5mx0 scope untouched** (no v1-verb machine, no `StepReport` surface change),
+  as directed.
+
+## Gates run
+
+`cargo build -p explorer --all-features`; `cargo nextest run -p explorer
+--all-features` (**159 pass, 1 skip** — the 3 fold gates + the net-new
+`version_three_ledger_is_refused_with_the_fold_semantics_reason`; the skip is the
+nightly-only `public_api` snapshot); `cargo clippy -p explorer --all-features
+--all-targets -- -D warnings` (exit 0 — only the pre-existing root `clippy.toml`
+`rand::*` config diagnostics, unrelated); `cargo fmt -p explorer -- --check`
+(clean); `cargo deny check` (advisories/bans/licenses/sources ok — no dependency
+change). `cargo nextest run -p campaign-runner --all-features` (**179 pass** —
+the integration determinism proptests
+`branch_run_hash_is_deterministic_and_replay_reproduces_capture`,
+`draw_carrying_folds_are_bit_identical`, and
+`same_seed_and_config_yield_identical_artifacts` included). `cargo mutants
+--in-diff <working-tree diff> -p explorer --test-tool nextest`: **5 mutants, 5
+caught, 0 missed**. No `unsafe` added → no Miri obligation. **No wire-format,
+no dependency, no public-API change** (`fold_verdicts` is private; `VERSION` is
+private; `fold_batch`/`FoldOutcome`/`StepReport`/`UnsupportedVersion`
+signatures unchanged — the `#[ignore]`d `public_api` snapshot needs no refresh).
+
+**Hash-neutrality / determinism (quoted):**
+`retention::tests::same_seed_yields_identical_retention_artifacts`,
+`campaign::tests::same_seed_yields_identical_campaign`,
+`retention::tests::rebuild_from_checkpoint_matches_live_state`,
+`retention::tests::bounded_working_set_holds_cap_and_determinism` (proptest),
+`retention::tests::absence_view_survives_expiry_and_gc`,
+`retention::tests::finalized_counts_are_exact` — all green, plus the full
+pre-existing suite unchanged (no hash moved on workloads without advanced-span
+occurrence events). The **intended** verdict change on advanced-span workloads
+is the false-absence closure of gate 1. The `VERSION` bump is a durable-format
+boundary, not a hash change to any batch/view — same-seed artifacts within one
+build are byte-identical as before.
+
+## Scope fence
+
+Touched `dissonance/explorer/src/retention.rs` (the fold + its tests),
+`dissonance/explorer/src/ledger.rs` (F1 version boundary + version-pinning
+tests), a one-line field-doc correction in `dissonance/explorer/src/campaign.rs`
+(F2-doc — no code change), and this file. Scope-fenced beads `hm-btht`
+(capture-side evidence coverage), `hm-4gaw`, `hm-f82p`, `hm-w1o6`, and **hm-5mx0**
+(the parked StepReport/e2e surface) untouched; the Seal representation
+(hm-j7ie/hm-aqf0) and the accessor contract (hm-wshf) are unchanged.

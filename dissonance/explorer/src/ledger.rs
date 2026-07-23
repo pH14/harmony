@@ -36,6 +36,26 @@
 //! meaningless. There is no read-old or in-place migration path; if one is ever
 //! wanted it is its own future task, not this format.
 //!
+//! ## Format v4 — advanced-span verdict folds in durable checkpoints (`hm-mmkf`)
+//!
+//! Task 152 (`hm-mmkf`, PR #147 F4) changed the *meaning* of a durable
+//! [`RetentionCheckpoint`]: its verdict views (the occurrence-counterexample
+//! dedup set and count, and the finalized absence ledger) now include a Seal's
+//! **advanced span** — the run-forward suffix's occurrence/assertion events,
+//! which `fold_batch` previously left unjudged. A checkpoint written by a
+//! version-3 build carries no marker distinguishing the old
+//! (advanced-span-blind) verdict views from the new ones, and
+//! [`RetentionViews::rebuild`](crate::RetentionViews::rebuild) trusts a covering
+//! checkpoint verbatim — it re-folds only batches **above** the checkpoint
+//! frontier, never a covered advanced Seal. So a pre-152 ledger whose checkpoint
+//! covers an advanced Seal would reopen with the exact false absence this task
+//! closes still baked in, and once GC collects the raw Seal behind the
+//! checkpoint the loss is unrecoverable. Because the meaning of a durable record
+//! changed, the header bumps to `VERSION = 4` and every pre-4 ledger is
+//! **refused loudly** ([`LedgerError::UnsupportedVersion`]) — the same
+//! no-silent-reinterpretation rule format v3 applied to the task-144 Seal shape.
+//! No read-old, no in-place migration.
+//!
 //! ## TraceStore is referenced backing, not the relational authority
 //!
 //! The strategy is explicit: the `TraceStore` "may remain payload backing for
@@ -74,14 +94,17 @@ use crate::retention::{CollectedBatch, CoverageRef, RetentionCheckpoint, Retenti
 
 /// The ledger file magic and format version — a header a foreign or future file
 /// is rejected against, never silently reinterpreted. Version 2 introduced the
-/// tagged [`LedgerRecord`] frames (`hm-5sv`); version 3 (`hm-j7ie`) marks the
-/// suffix-only Seal representation of task 144, under which a Seal's
-/// `canonical_bytes()` batch-identity preimage differs from a version-2 Seal for
-/// the same seed. Every pre-3 file (version-2 tagged frames, version-1 bare
-/// evidence) is rejected loudly ([`LedgerError::UnsupportedVersion`]) — no
+/// tagged [`LedgerRecord`] frames (`hm-5sv`); version 3 (`hm-j7ie`) marked the
+/// suffix-only Seal representation of task 144; version 4 (`hm-mmkf`) marks the
+/// advanced-span verdict folds — a durable [`RetentionCheckpoint`]'s verdict
+/// views now include a Seal's run-forward-suffix occurrence/assertion events, so
+/// a version-3 checkpoint reopened under this build would carry a stale
+/// (advanced-span-blind) verdict view a covering rebuild never re-judges. Every
+/// pre-4 file (version-3 suffix-only Seals, version-2 tagged frames, version-1
+/// bare evidence) is rejected loudly ([`LedgerError::UnsupportedVersion`]) — no
 /// in-place migration is built.
 const MAGIC: [u8; 4] = *b"HEVL";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 /// The frame header: `len(u32) + payload_digest(32)`. A frame with fewer bytes
 /// than this remaining is a torn tail.
 const FRAME_HEADER: usize = 4 + 32;
@@ -119,24 +142,26 @@ pub enum LedgerError {
         detail: String,
     },
     /// The file was written by an unsupported ledger version — either older or
-    /// newer than this build's `VERSION`. Version 3 (`hm-j7ie`) refuses every
-    /// pre-3 ledger loudly rather than silently reinterpreting a stale Seal
-    /// shape: task 144 changed a Seal record to serialize the run-forward
-    /// suffix + observed cut, so a version-2 seal reopened under the new
-    /// lineage walk would carry historically truncated cells (and no longer
-    /// matches its batch identity for the same seed). A `found` newer than
-    /// `VERSION` (a future build's file) carries no such history and gets a
-    /// version-neutral reason instead — this build simply does not know what
-    /// that version's records mean. No read-old, no forward-compat, and no
-    /// in-place migration path exists in either direction.
+    /// newer than this build's `VERSION`. Version 4 (`hm-mmkf`) refuses every
+    /// pre-4 ledger loudly rather than silently reinterpreting a stale verdict
+    /// view: task 152 folds a Seal's advanced-span occurrence/assertion events
+    /// into the durable [`RetentionCheckpoint`], so a version-3 checkpoint
+    /// covering an advanced Seal would reopen with the false absence this fix
+    /// closes still baked in (a covering rebuild never re-judges the covered
+    /// Seal). A `found` newer than `VERSION` (a future build's file) carries no
+    /// such history and gets a version-neutral reason instead — this build
+    /// simply does not know what that version's records mean. No read-old, no
+    /// forward-compat, and no in-place migration path exists in either
+    /// direction.
     #[error(
         "evidence ledger version {found} unsupported (this build writes {VERSION}): {}",
         if *found < VERSION {
-            "the Seal record representation changed in task 144 — a Seal now serializes \
-             the run-forward suffix + observed cut, not the full rollout normalized + \
-             base-branch parent_cut, so a pre-144 (version < 3) ledger's advanced seals \
-             would reopen with historically truncated cells; old ledgers are refused, not \
-             silently reinterpreted"
+            "the durable checkpoint's verdict semantics changed in hm-mmkf (task 152) — a \
+             Seal's advanced-span occurrence/assertion events now fold into the retention \
+             checkpoint's verdict views, so a pre-4 ledger whose checkpoint covers an \
+             advanced Seal would reopen with the false absence still baked in and the \
+             covered Seal never re-judged; old ledgers are refused, not silently \
+             reinterpreted"
         } else {
             "this file was written by a newer build than this one understands; refused \
              rather than silently reinterpreting a record shape this build has never seen"
@@ -854,10 +879,10 @@ mod tests {
     }
 
     /// A v1 file (or any foreign version) is rejected loudly, never silently
-    /// reinterpreted — and, mirroring `version_two_ledger_is_refused_with_the_suffix_reason`,
-    /// the refusal names *why* (the suffix-only Seal representation change),
-    /// pinning the `found < VERSION` arm across its whole reachable domain
-    /// (`found` = 1 and 2), not just the `found: 1` variant shape.
+    /// reinterpreted — and, mirroring the version-2/3 refusals, the refusal
+    /// names *why* (the current boundary: the hm-mmkf advanced-span verdict-fold
+    /// checkpoint change), pinning the `found < VERSION` arm across its whole
+    /// reachable domain (`found` = 1, 2, and 3), not just one variant shape.
     #[test]
     fn foreign_version_is_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -872,21 +897,20 @@ mod tests {
         assert!(matches!(err, LedgerError::UnsupportedVersion { found: 1 }));
         let msg = err.to_string();
         assert!(
-            msg.contains("suffix") && msg.contains("truncated") && msg.contains("task 144"),
-            "the refusal names the suffix-only representation change: {msg}"
+            msg.contains("checkpoint") && msg.contains("advanced") && msg.contains("hm-mmkf"),
+            "the refusal names the advanced-span verdict-fold checkpoint change: {msg}"
         );
     }
 
-    /// A **version-2** ledger (pre-144 tagged frames, whose Seal records still
-    /// carry the old full-`normalized` + base-branch `parent_cut` shape) is
-    /// refused loudly on reopen — the F5 silent-truncation this task closes — and
-    /// the refusal names *why* (the suffix-only Seal representation change), so an
-    /// operator is never left guessing why an old campaign ledger will not open.
+    /// A **version-2** ledger (pre-144 tagged frames) is refused loudly on
+    /// reopen — pinning the `found: 2` point of the `found < VERSION` arm — with
+    /// the current-boundary reason, so an operator is never left guessing why an
+    /// old campaign ledger will not open.
     #[test]
-    fn version_two_ledger_is_refused_with_the_suffix_reason() {
+    fn version_two_ledger_is_refused_with_the_fold_semantics_reason() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("evidence.log");
-        // A well-formed header at the prior version: valid magic, VERSION == 2.
+        // A well-formed header at a prior version: valid magic, VERSION == 2.
         {
             let mut f = File::create(&path).unwrap();
             f.write_all(&MAGIC).unwrap();
@@ -895,38 +919,67 @@ mod tests {
         }
         let err = EvidenceLedger::open(&path).expect_err("v2 refused");
         assert!(matches!(err, LedgerError::UnsupportedVersion { found: 2 }));
-        // Loud about the reason: the refusal message names the suffix-only
-        // representation change and the truncation it would otherwise cause.
         let msg = err.to_string();
         assert!(
-            msg.contains("suffix") && msg.contains("truncated") && msg.contains("task 144"),
-            "the refusal names the suffix-only representation change: {msg}"
+            msg.contains("checkpoint") && msg.contains("advanced") && msg.contains("hm-mmkf"),
+            "the refusal names the advanced-span verdict-fold checkpoint change: {msg}"
+        );
+    }
+
+    /// A **version-3** ledger (post-144 suffix-only Seals, but written before
+    /// task 152's advanced-span verdict folds) is refused loudly on reopen —
+    /// the exact stale-checkpoint hazard this `VERSION` 3→4 bump exists to close
+    /// (`hm-mmkf` F1). A v3 checkpoint covering an advanced Seal would otherwise
+    /// reopen with the false absence baked in, since a covering rebuild never
+    /// re-judges the covered Seal; the refusal names that reason.
+    #[test]
+    fn version_three_ledger_is_refused_with_the_fold_semantics_reason() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("evidence.log");
+        // A well-formed header at the immediate predecessor: VERSION == 3.
+        {
+            let mut f = File::create(&path).unwrap();
+            f.write_all(&MAGIC).unwrap();
+            f.write_all(&3u32.to_le_bytes()).unwrap();
+            f.sync_data().unwrap();
+        }
+        let err = EvidenceLedger::open(&path).expect_err("v3 refused");
+        assert!(matches!(err, LedgerError::UnsupportedVersion { found: 3 }));
+        // Loud about the reason: the advanced-span verdict-fold checkpoint
+        // change, not the (v3-correct) suffix-only Seal shape.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("checkpoint")
+                && msg.contains("advanced")
+                && msg.contains("re-judged")
+                && msg.contains("hm-mmkf"),
+            "the refusal names the fold-semantics checkpoint change, not truncation: {msg}"
         );
     }
 
     /// A **future** ledger (`found` newer than this build's `VERSION`) is
     /// refused loudly like any other unsupported version, but the refusal must
-    /// not misdiagnose it: this build never wrote a pre-144 ledger of this
-    /// file, so the message must not claim the truncation history that only
-    /// applies to `found < VERSION`. It gets a plain, version-neutral reason
-    /// instead.
+    /// not misdiagnose it: this build never wrote a stale-checkpoint ledger of
+    /// this file, so the message must not claim the fold-semantics history that
+    /// only applies to `found < VERSION`. It gets a plain, version-neutral
+    /// reason instead.
     #[test]
-    fn future_version_is_rejected_without_the_pre_144_claim() {
+    fn future_version_is_rejected_without_the_fold_semantics_claim() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("evidence.log");
-        // A well-formed header from a hypothetical future build: VERSION == 4.
+        // A well-formed header from a hypothetical future build: VERSION == 5.
         {
             let mut f = File::create(&path).unwrap();
             f.write_all(&MAGIC).unwrap();
-            f.write_all(&4u32.to_le_bytes()).unwrap();
+            f.write_all(&5u32.to_le_bytes()).unwrap();
             f.sync_data().unwrap();
         }
-        let err = EvidenceLedger::open(&path).expect_err("v4 refused");
-        assert!(matches!(err, LedgerError::UnsupportedVersion { found: 4 }));
+        let err = EvidenceLedger::open(&path).expect_err("v5 refused");
+        assert!(matches!(err, LedgerError::UnsupportedVersion { found: 5 }));
         let msg = err.to_string();
         assert!(
-            !msg.contains("pre-144") && !msg.contains("truncated") && !msg.contains("task 144"),
-            "a future version must not be misdiagnosed as a pre-144 ledger: {msg}"
+            !msg.contains("hm-mmkf") && !msg.contains("checkpoint") && !msg.contains("advanced"),
+            "a future version must not be misdiagnosed with the pre-4 fold-semantics reason: {msg}"
         );
         assert!(
             msg.contains("newer"),
@@ -934,19 +987,19 @@ mod tests {
         );
     }
 
-    /// A freshly written ledger stamps `VERSION = 3` in its durable header and
+    /// A freshly written ledger stamps `VERSION = 4` in its durable header and
     /// reopens cleanly (round-trip) — the current build both *writes* and *reads*
-    /// version 3, so our own files are never caught by the pre-3 refusal.
+    /// version 4, so our own files are never caught by the pre-4 refusal.
     #[test]
-    fn fresh_ledger_is_version_three_and_round_trips() {
+    fn fresh_ledger_is_version_four_and_round_trips() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("evidence.log");
         let id = {
             let mut led = EvidenceLedger::open(&path).expect("open");
-            led.append(&evidence(0, b"v3")).expect("append")
+            led.append(&evidence(0, b"v4")).expect("append")
         };
-        // The durable header carries version 3, not 2.
-        assert_eq!(VERSION, 3, "this build writes version 3");
+        // The durable header carries version 4, not 3.
+        assert_eq!(VERSION, 4, "this build writes version 4");
         let mut hdr = [0u8; FILE_HEADER as usize];
         File::open(&path)
             .unwrap()
@@ -955,11 +1008,11 @@ mod tests {
         assert_eq!(&hdr[0..4], &MAGIC, "magic");
         assert_eq!(
             u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]),
-            3,
-            "on-disk version byte is 3"
+            4,
+            "on-disk version byte is 4"
         );
-        // …and it reopens cleanly at version 3 (no refusal on our own file).
-        let led = EvidenceLedger::open(&path).expect("reopen at v3");
+        // …and it reopens cleanly at version 4 (no refusal on our own file).
+        let led = EvidenceLedger::open(&path).expect("reopen at v4");
         assert!(led.contains(&id), "the round-tripped batch survives reopen");
     }
 
