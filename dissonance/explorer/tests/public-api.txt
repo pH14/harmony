@@ -132,6 +132,10 @@ pub explorer::MachineError::MaterializeDivergence::exemplar: u64
 pub explorer::MachineError::MaterializeDivergence::landed: u64
 pub explorer::MachineError::NotQuiescent
 pub explorer::MachineError::NotSealable(u64)
+pub explorer::MachineError::SealSuffixDivergence
+pub explorer::MachineError::SealSuffixDivergence::baseline: u64
+pub explorer::MachineError::SealSuffixDivergence::captured: u64
+pub explorer::MachineError::SealSuffixDivergence::stamped: u64
 pub explorer::MachineError::Transport(alloc::string::String)
 pub explorer::MachineError::UnknownExemplar(u64)
 pub explorer::MachineError::UnknownSnapshot(u64)

@@ -318,6 +318,14 @@ struct Rollout {
     /// The normalized SDK evidence of the run (child suffix only — the inherited
     /// ancestor prefix is never re-decoded here).
     normalized: Normalized,
+    /// The length of the run's **raw** SDK capture (catalog + every restored
+    /// ancestor firing + this run's own firings), i.e. the raw-position count
+    /// at the rollout terminal. A candidate seal advanced past this terminal
+    /// (task 144) decodes its suffix by skipping exactly this many raw
+    /// positions — dropping the rollout's whole capture and keeping only the
+    /// advanced span — so the seal batch contributes those events at
+    /// cumulative positions continuing the rollout's, never duplicating them.
+    raw_len: usize,
     /// The sealable-point moments observed during the run (nomination coordinates
     /// for provisional transitions), in observation order.
     sealable_moments: Vec<Moment>,
@@ -683,11 +691,12 @@ impl<M: Machine> DifferentialCampaign<M> {
                 // the attempt cap still reports the refusals it burned — the
                 // drop path returns `Err(NotSealable)` and a return-value
                 // count would vanish with it (tribunal T136-J2(c)).
-                let (seal, actual_cut, seal_delta) = match self.materialize_candidate(
+                let (seal, actual_cut, seal_delta, seal_suffix) = match self.materialize_candidate(
                     base_snap,
                     &branch_env,
                     cand.at,
                     branch_origin,
+                    rollout.raw_len,
                     &mut report.seal_retries,
                 ) {
                     Ok(sealed) => sealed,
@@ -724,8 +733,21 @@ impl<M: Machine> DifferentialCampaign<M> {
                     },
                     env: seal_genesis_env.clone(),
                     cut: actual_cut,
-                    normalized: rollout.normalized.clone(),
-                    parent_cut,
+                    // The seal continues the SEALED ROLLOUT past its terminal
+                    // (task 144 / hm-aqf0): its `normalized` is the run-forward
+                    // suffix and its `parent_cut` is the rollout terminal cut
+                    // (`observed_cut`), NOT the base branch — so lineage
+                    // composition walks the rollout's full events (via
+                    // `rollout.parent = rollout_id.issue`) and then adds this
+                    // suffix at cumulative positions continuing them. Reusing
+                    // `rollout.normalized` with the base branch cut instead
+                    // left the advanced span absent from the graph while the
+                    // seal cut counted it (`cut.sdk_events > graph rows`), the
+                    // silent truncation this fix closes. When the seal did not
+                    // advance past the terminal the suffix is empty and this
+                    // reduces to the prior (correct) terminal-state cell.
+                    normalized: seal_suffix,
+                    parent_cut: Some(observed_cut),
                     sealable_moments: Vec::new(),
                 };
                 let batch2 = self.ledger.append(&seal_evidence)?;
@@ -1213,6 +1235,7 @@ impl<M: Machine> DifferentialCampaign<M> {
         // keep only the catalog + the child's own firings — the ancestor prefix
         // is inherited through lineage, never duplicated as child evidence.
         let raw = self.machine.sdk_events()?;
+        let raw_len = raw.len();
         let inherited = parent_cut.map(|c| c.sdk_events).unwrap_or(0);
         let normalized = self.decode_child_suffix(&raw, inherited)?;
         // The nomination coordinates: machine-surfaced snapshot points (the
@@ -1236,6 +1259,7 @@ impl<M: Machine> DifferentialCampaign<M> {
             env,
             genesis_env,
             normalized,
+            raw_len,
             sealable_moments,
         })
     }
@@ -1380,7 +1404,23 @@ impl<M: Machine> DifferentialCampaign<M> {
     /// sealed_at)`, zero probes) replay it bit-identically from the ledger
     /// env alone.
     ///
-    /// Returns the seal handle, its stamped cut, and the branch-local delta.
+    /// Returns the seal handle, its stamped cut, the branch-local delta, and
+    /// the seal's **run-forward suffix** — the normalized SDK evidence of the
+    /// span the marker clamp advanced the seal PAST the rollout terminal into
+    /// (task 144 / hm-aqf0). Decoded by skipping the rollout's whole raw
+    /// capture (`rollout_raw_len` raw positions), so it holds exactly the
+    /// events beyond the terminal (empty when the seal did not advance past
+    /// it). The caller anchors the seal batch on the rollout terminal cut and
+    /// stages this suffix at cumulative positions continuing the rollout's —
+    /// so the seal cut's `sdk_events` can no longer out-count the graph rows
+    /// (no silent truncation), while the shared prefix is never duplicated.
+    ///
+    /// [`capture_seal_suffix`](Self::capture_seal_suffix) reads and reconciles
+    /// the suffix against the stamped cut in one frame; a failure there (or any
+    /// post-`snapshot()` step) releases the held seal best-effort before
+    /// propagating — the materializer's discipline, since the aborting step
+    /// will not.
+    ///
     /// `retries` (the [`StepReport::seal_retries`] evidence) is incremented on
     /// **every** `NotQuiescent` refusal — an out-param rather than a return
     /// value so a candidate dropped at the attempt cap still reports the
@@ -1392,8 +1432,9 @@ impl<M: Machine> DifferentialCampaign<M> {
         branch_env: &Reproducer,
         at: Moment,
         origin: Moment,
+        rollout_raw_len: usize,
         retries: &mut u64,
-    ) -> Result<(SnapId, EvidenceCut, Reproducer), CampaignError> {
+    ) -> Result<(SnapId, EvidenceCut, Reproducer, Normalized), CampaignError> {
         self.machine.branch(base_snap, branch_env)?;
         // The env's staged-schedule Moments beyond the branch origin, in the
         // absolute frame the server drains them in (`origin + relative`, the
@@ -1451,8 +1492,17 @@ impl<M: Machine> DifferentialCampaign<M> {
             }
             match self.machine.snapshot() {
                 Ok((seal, cut)) => {
-                    let delta = self.machine.recorded_env()?;
-                    return Ok((seal, cut, delta));
+                    // Capture and reconcile the suffix; on ANY failure release
+                    // the held seal best-effort before propagating (V2) — the
+                    // aborting step will not, and a leaked handle pins the
+                    // backend snapshot (materialize.rs release-first discipline).
+                    return match self.capture_seal_suffix(rollout_raw_len, cut) {
+                        Ok((delta, suffix)) => Ok((seal, cut, delta, suffix)),
+                        Err(e) => {
+                            let _ = self.machine.drop_snap(seal);
+                            Err(e)
+                        }
+                    };
                 }
                 // Mid-exit at the boundary: run a little further and retry,
                 // bounded. On cap exhaustion the candidate is dropped like a
@@ -1469,6 +1519,42 @@ impl<M: Machine> DifferentialCampaign<M> {
                 Err(e) => return Err(e.into()),
             }
         }
+    }
+
+    /// Read the held seal's branch-local delta and **run-forward suffix**, and
+    /// reconcile the suffix against the stamped cut (task 144). Split out of
+    /// [`materialize_candidate`] so its caller can release the seal on any
+    /// failure here (V2) rather than leaking the handle on an aborting step.
+    ///
+    /// The suffix is decoded by skipping the sealed rollout's whole raw capture
+    /// (`rollout_raw_len` raw positions): the seal re-runs the identical branch,
+    /// so its raw prefix through the terminal is byte-identical, leaving exactly
+    /// the advanced span (empty when it did not advance). The reconciliation is
+    /// in ONE frame — both `cut.sdk_events` (the machine's catalog-inclusive raw
+    /// capture-position stamp) and `rollout_raw_len` are raw positions, so
+    /// `cut.sdk_events - rollout_raw_len` is exactly the advanced-span firing
+    /// count; an interior seal (cut at or below the rollout capture) expects an
+    /// empty suffix (`saturating_sub` yields 0). A short or count-divergent
+    /// host capture would recreate `cut.sdk_events > graph rows`, so it is
+    /// refused loudly ([`MachineError::SealSuffixDivergence`]).
+    fn capture_seal_suffix(
+        &mut self,
+        rollout_raw_len: usize,
+        cut: EvidenceCut,
+    ) -> Result<(Reproducer, Normalized), CampaignError> {
+        let delta = self.machine.recorded_env()?;
+        let raw = self.machine.sdk_events()?;
+        let suffix = self.decode_child_suffix(&raw, rollout_raw_len as u64)?;
+        let expected = cut.sdk_events.saturating_sub(rollout_raw_len as u64);
+        if suffix.events.len() as u64 != expected {
+            return Err(MachineError::SealSuffixDivergence {
+                baseline: rollout_raw_len as u64,
+                captured: suffix.events.len() as u64,
+                stamped: cut.sdk_events,
+            }
+            .into());
+        }
+        Ok((delta, suffix))
     }
 }
 
@@ -1513,6 +1599,35 @@ fn decode_reduced_pairs(pairs: &[(Vec<u8>, ReducedRow)]) -> ObservationMap {
     map
 }
 
+/// The reducible-state event rows a batch's own `normalized` suffix contributes,
+/// at cumulative positions `start + i` (its `parent_cut` count plus the vector
+/// index). Shared by the ROLLOUT branch (its own suffix from the base branch
+/// cut) and the SEAL branch (its run-forward suffix from the rollout terminal
+/// cut) so both key positions the identical way.
+fn state_event_rows(ev: &CompletedRunEvidence, start: u64) -> Vec<StateEventRow> {
+    let mut events = Vec::new();
+    for (i, e) in ev.normalized.events.iter().enumerate() {
+        let sdk_events::Payload::State { value, .. } = &e.payload else {
+            continue;
+        };
+        let Some(se) = ev.normalized.schema.entry(&e.id) else {
+            continue;
+        };
+        if !se.is_reducible_state() {
+            continue;
+        }
+        let mut key = Vec::new();
+        encode_observation_id(&mut key, &e.id);
+        events.push(StateEventRow {
+            pos: start + i as u64,
+            moment: e.moment.0,
+            obs: key,
+            value: *value,
+        });
+    }
+    events
+}
+
 /// The typed relation rows one committed evidence batch contributes to the
 /// production Differential relations — a pure function of the batch, so a
 /// restart re-stages byte-identical inputs from the durable ledger alone.
@@ -1521,8 +1636,13 @@ fn decode_reduced_pairs(pairs: &[(Vec<u8>, ReducedRow)]) -> ObservationMap {
 /// declarations, its own suffix state events at **cumulative** positions,
 /// and its provisional cuts (dedup by count, first moment wins). A SEAL
 /// batch attaches to the SEALED rollout (`rollout.parent`) and contributes
-/// only the seal point and the committed Entry offer (its events are the
-/// rollout's, already in the graph).
+/// the seal point, the committed Entry offer, and — when the marker-clamped
+/// run-forward advanced the seal PAST the rollout terminal (task 144) — the
+/// **advanced span's** state events at cumulative positions continuing the
+/// rollout's. Its shared prefix is the rollout's own events, already in the
+/// graph, so it is never re-staged (the seal's `normalized` is suffix-only
+/// and its `parent_cut` is the rollout terminal, positioning the suffix at
+/// `start`). A seal that did not advance carries an empty suffix.
 pub(crate) fn evidence_rows(ev: &CompletedRunEvidence) -> EvidenceRows {
     let start = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
     match ev.role {
@@ -1537,26 +1657,7 @@ pub(crate) fn evidence_rows(ev: &CompletedRunEvidence) -> EvidenceRows {
                 encode_observation_id(&mut key, &entry.id);
                 declares.push((key, reduce_op(op)));
             }
-            let mut events = Vec::new();
-            for (i, e) in ev.normalized.events.iter().enumerate() {
-                let sdk_events::Payload::State { value, .. } = &e.payload else {
-                    continue;
-                };
-                let Some(se) = ev.normalized.schema.entry(&e.id) else {
-                    continue;
-                };
-                if !se.is_reducible_state() {
-                    continue;
-                }
-                let mut key = Vec::new();
-                encode_observation_id(&mut key, &e.id);
-                events.push(StateEventRow {
-                    pos: start + i as u64,
-                    moment: e.moment.0,
-                    obs: key,
-                    value: *value,
-                });
-            }
+            let events = state_event_rows(ev, start);
             let mut obs_cuts = Vec::new();
             let mut seen = std::collections::BTreeSet::new();
             for &m in &ev.sealable_moments {
@@ -1591,7 +1692,12 @@ pub(crate) fn evidence_rows(ev: &CompletedRunEvidence) -> EvidenceRows {
             rollout: ev.rollout.parent.unwrap_or(ev.rollout.issue),
             lineage: None,
             declares: Vec::new(),
-            events: Vec::new(),
+            // The advanced span (task 144): the seal's suffix events at
+            // cumulative positions from `start` — the rollout terminal count
+            // (`parent_cut.sdk_events`) — so they continue the rollout's own
+            // events without re-staging the shared prefix. Empty for a seal
+            // that did not advance past the terminal.
+            events: state_event_rows(ev, start),
             obs_cuts: Vec::new(),
             seal: Some(SealRow {
                 seal: ev.rollout.issue,
@@ -1801,8 +1907,9 @@ mod tests {
                 "sealed exactly at the drained marker (the first fully-drained boundary)"
             );
             assert_eq!(
-                entry.exemplar.cut.sdk_events, 1,
-                "the firing below the marker is included in the cut"
+                entry.exemplar.cut.sdk_events, 2,
+                "the catalog and the one firing below the marker are counted \
+                 (catalog-inclusive cut)"
             );
             // The clamp is what ran: a leg landed exactly ON the marker, and
             // no leg ever ran with the doomed candidate-moment deadline (no
@@ -1823,6 +1930,135 @@ mod tests {
             (camp, frontier)
         };
         let (mut camp, frontier) = observable(7);
+        assert_rematerializes_identically(&mut camp);
+        assert_eq!(frontier, observable(7).1);
+    }
+
+    /// Seal-suffix truncation regression (task 144 / hm-aqf0, tribunal
+    /// T136-J5). A staged marker sits BEYOND the rollout terminal, and a
+    /// firing lands in the advanced span the marker clamp seals into. The
+    /// rollout stops at its terminal and never captures that firing, so its
+    /// graph rows end there; the seal cut, stamped past the terminal, counts
+    /// it. Before the fix the seal reused `rollout.normalized` and contributed
+    /// no event rows, so the seal's observation map deterministically OMITTED
+    /// the advanced firing while `cut.sdk_events` claimed it
+    /// (`cut.sdk_events > graph rows` — the silent truncation). The fix
+    /// captures the run-forward suffix into the seal batch: the advanced
+    /// firing reaches BOTH the composed map (the retention/oracle path) and
+    /// the production Differential relations (the DD graph), and they agree.
+    ///
+    /// RED before the seal-composition fix (the advanced `reg2` is absent —
+    /// `obs.get(&reg2)` is `None`); GREEN after (present with its value).
+    #[test]
+    fn advanced_seal_captures_its_run_forward_suffix_into_the_graph() {
+        // reg1 fires 5 at moment 10 (before the terminal); reg2 fires 7 at
+        // moment 25 — PAST the terminal 20, inside the span the marker at 30
+        // clamps the seal forward through. Only reg1 is in the rollout.
+        let program: Rc<dyn Fn(u64) -> Program> = Rc::new(|_seed| Program {
+            emits: vec![
+                Emit {
+                    at: 10,
+                    reg: 1,
+                    value: 5,
+                },
+                Emit {
+                    at: 25,
+                    reg: 2,
+                    value: 7,
+                },
+            ],
+            terminal: 20,
+        });
+        let reg1 = ObservationId::Point {
+            namespace: NS_STATE,
+            local: 1,
+        };
+        let reg2 = ObservationId::Point {
+            namespace: NS_STATE,
+            local: 2,
+        };
+        let observable = |seed: u64| {
+            let machine = ScriptedMachine::new(
+                vec![(1, UpdateOp::Set), (2, UpdateOp::Set)],
+                program.clone(),
+            )
+            .with_markers(vec![30]);
+            let (_dir, led) = ledger();
+            let mut camp = campaign_with(
+                machine,
+                Box::new(MarkerCodec { markers: vec![30] }),
+                config(8, u64::MAX),
+                seed,
+                led,
+            );
+            let report = camp.step().expect("the step completes past the marker");
+            assert_eq!(report.admitted.len(), 1, "the advanced candidate sealed");
+            let (_, entry) = camp.frontier().iter().next().expect("one entry");
+            // The seal advanced past the terminal (20) to the drained marker
+            // (30); its catalog-inclusive cut counts the catalog plus BOTH
+            // firings — one more graph row than the rollout carried.
+            assert_eq!(
+                entry.exemplar.cut.at.0, 30,
+                "sealed at the drained marker past the terminal"
+            );
+            assert_eq!(
+                entry.exemplar.cut.sdk_events, 3,
+                "the cut counts the catalog plus the pre- and post-terminal firings"
+            );
+            let frontier: Vec<(u64, u64, Vec<u8>)> = camp
+                .frontier()
+                .iter()
+                .map(|(_, e)| {
+                    (
+                        e.exemplar.cut.at.0,
+                        e.exemplar.cut.sdk_events,
+                        e.env.bytes.clone(),
+                    )
+                })
+                .collect();
+            (camp, frontier)
+        };
+        let (mut camp, frontier) = observable(7);
+
+        // The seal batch's lineage-composed map at its cut carries the
+        // advanced firing: NO truncation. (RED before the fix: reg2 is None
+        // and the map has one entry while `cut.sdk_events` is 2.)
+        let seal_id = camp
+            .ledger()
+            .batch_ids()
+            .find(|id| {
+                camp.ledger()
+                    .get(id)
+                    .map(|e| e.role == EvidenceRole::Seal)
+                    .unwrap_or(false)
+            })
+            .copied()
+            .expect("the sealed batch");
+        let seal_ev = camp.ledger().get(&seal_id).unwrap();
+        let obs = crate::evidence::compose_observations_at(
+            camp.ledger(),
+            seal_ev,
+            seal_ev.cut.sdk_events,
+        );
+        assert_eq!(
+            obs.get(&reg1),
+            Some(&crate::evidence::ReducedValue::Scalar(5)),
+            "the pre-terminal firing is in the map"
+        );
+        assert_eq!(
+            obs.get(&reg2),
+            Some(&crate::evidence::ReducedValue::Scalar(7)),
+            "the advanced-span firing reaches the map — no silent truncation"
+        );
+
+        // The production Differential relations (the DD graph) agree with the
+        // composed map at every point — so the advanced firing reached the
+        // graph rows too, not just the oracle.
+        assert_view_parity(&camp);
+
+        // The advanced seal re-materializes bit-identically from its ledger
+        // env alone, and the whole trajectory is a determinism artifact (the
+        // fix touches evidence composition, not the RNG/schedule stream).
         assert_rematerializes_identically(&mut camp);
         assert_eq!(frontier, observable(7).1);
     }
@@ -1994,21 +2230,34 @@ mod tests {
         // by the half-open cut, so it did not influence this committed cell.
         let (_r, entry) = camp.frontier().iter().next().expect("one entry");
         assert_eq!(entry.exemplar.cut.at, Moment(10));
-        assert_eq!(entry.exemplar.cut.sdk_events, 1, "only the pre-seal firing");
+        assert_eq!(
+            entry.exemplar.cut.sdk_events, 2,
+            "the catalog and the pre-seal firing (the post-seal 99 is excluded)"
+        );
         // Reduce the committed evidence at the Entry's cut and confirm the cell is
-        // {reg1:5}, never {reg1:99}.
+        // {reg1:5}, never {reg1:99}. The seal's own `normalized` is its
+        // run-forward suffix (task 144) — empty here, since this seal did not
+        // advance past the terminal — so the lineage-composed map (the same
+        // oracle the retention fold and production relations use) is what
+        // reduces the sealed rollout's prefix up to the seal cut; the
+        // half-open included-count cut excludes the post-seal firing.
         let id = camp
             .ledger()
             .batch_ids()
             .find(|id| {
                 camp.ledger()
                     .get(id)
-                    .map(|e| e.cut.at == Moment(10))
+                    .map(|e| e.cut.at == Moment(10) && e.role == EvidenceRole::Seal)
                     .unwrap_or(false)
             })
             .copied()
             .expect("the sealed batch");
-        let obs = camp.ledger().get(&id).unwrap().observations_at_cut();
+        let seal_ev = camp.ledger().get(&id).unwrap();
+        let obs = crate::evidence::compose_observations_at(
+            camp.ledger(),
+            seal_ev,
+            seal_ev.cut.sdk_events,
+        );
         let reg1 = ObservationId::Point {
             namespace: NS_STATE,
             local: 1,
@@ -2491,6 +2740,210 @@ mod tests {
                 .filter_map(|id| camp.ledger().get(id))
                 .any(|ev| ev.role == EvidenceRole::Rollout && ev.rollout.parent.is_some()),
             "a branch child committed lineage evidence"
+        );
+    }
+
+    /// Descendant-recomputation parity for an advanced seal (task 144 / hm-aqf0
+    /// F1, PR #147 tribunal). An exploit CHILD forks from a seal advanced PAST
+    /// its rollout terminal, so the child inherits the advanced span — which
+    /// lives ONLY in the Seal batch, never a Rollout batch. Before the fix,
+    /// `compose_observations_at` walked Rollout ancestors only and silently
+    /// dropped that span, so the child's ledger-recomputed cell diverged from
+    /// the live Differential view (live `{reg1,reg2,reg3}` vs recomputed
+    /// `{reg1,reg3}` — reg2 exists solely in the seal suffix). The walk now
+    /// picks up the seal suffix at the fork, so recomputation matches the live
+    /// graph one lineage generation on.
+    ///
+    /// The span is **≥2 events with distinct registers** so neither the toy
+    /// frame off-by-one (a single advanced event re-captured into the child's
+    /// own suffix) nor value-identical `Set` firings can mask the gap.
+    /// `ExploreExploitSelector` is campaign-runner's live SelectorV1 path, so
+    /// the exploit step is a real configuration.
+    #[test]
+    fn exploit_child_of_an_advanced_seal_recomputes_to_the_live_view() {
+        use crate::defaults::ExploreExploitSelector;
+        let program: Rc<dyn Fn(u64) -> Program> = Rc::new(|_seed| Program {
+            emits: vec![
+                Emit {
+                    at: 10,
+                    reg: 1,
+                    value: 5,
+                },
+                Emit {
+                    at: 22,
+                    reg: 2,
+                    value: 7,
+                },
+                Emit {
+                    at: 25,
+                    reg: 3,
+                    value: 9,
+                },
+            ],
+            terminal: 20,
+        });
+        let machine = ScriptedMachine::new(
+            vec![(1, UpdateOp::Set), (2, UpdateOp::Set), (3, UpdateOp::Set)],
+            program.clone(),
+        )
+        .with_markers(vec![30]);
+        let (_dir, led) = ledger();
+        // `with_explore_period(100)` keeps step 2 an exploit of the step-1
+        // advanced entry (the descendant lineage under test).
+        let mut camp = DifferentialCampaign::new(
+            machine,
+            Box::new(MarkerCodec { markers: vec![30] }),
+            Box::new(DeclineTactic::new()),
+            Box::new(ExploreExploitSelector::new().with_explore_period(100)),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            config(8, u64::MAX),
+            7,
+        )
+        .expect("new");
+        let r1 = camp.step().expect("step 1");
+        assert_eq!(r1.admitted.len(), 1, "the advanced candidate sealed");
+        let r2 = camp.step().expect("step 2");
+        assert!(!r2.explored, "step 2 exploited the advanced entry");
+        // A branch child of the advanced seal committed lineage evidence whose
+        // fork cut sits past the sealed rollout's terminal — the F1 shape.
+        assert!(
+            camp.ledger()
+                .batch_ids()
+                .filter_map(|id| camp.ledger().get(id))
+                .any(|ev| ev.role == EvidenceRole::Rollout
+                    && ev.rollout.parent.is_some()
+                    && ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0) > 1),
+            "an exploit child forked past the sealed rollout's terminal"
+        );
+        // The descendant's every cut cell recomputes from the ledger to
+        // exactly the live Differential view (the parity helper reduces the
+        // whole ledger through `compose_observations_at` and asserts equality
+        // with the materialized views). RED before the walk picked up the seal
+        // suffix: "cut observations diverge (rollout 3, count 5)".
+        assert_view_parity(&camp);
+    }
+
+    /// A machine that stamps the **literal production cut formula** at the
+    /// seal — `inner.sdk_events().len()`, raw capture positions with the
+    /// catalog included (`control.rs`) — plus `extra` events of injected
+    /// divergence (0 = honest). Genesis is left honest so a divergence is
+    /// localized to the seal. `dropped` counts `drop_snap` calls so the V2
+    /// release-on-error discipline is observable. Shared by the two V1
+    /// regressions (PR #147 verify event): an honest production-frame host
+    /// must be accepted, a genuinely divergent one refused loudly.
+    struct RawStampMachine {
+        inner: ScriptedMachine,
+        extra: u64,
+        dropped: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+    impl Machine for RawStampMachine {
+        fn branch(&mut self, s: SnapId, e: &Reproducer) -> Result<(), MachineError> {
+            self.inner.branch(s, e)
+        }
+        fn replay(&mut self, s: SnapId) -> Result<(), MachineError> {
+            self.inner.replay(s)
+        }
+        fn run(
+            &mut self,
+            u: &StopConditions,
+            r: Option<&Answer>,
+        ) -> Result<StopReason, MachineError> {
+            self.inner.run(u, r)
+        }
+        fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
+            let (id, cut) = self.inner.snapshot()?;
+            // The honest production stamp is the raw capture-position count,
+            // catalog included; `extra` (0 at genesis) injects a divergence.
+            let honest = self.inner.sdk_events()?.len() as u64;
+            let sdk_events = honest + if cut.at.0 > 0 { self.extra } else { 0 };
+            Ok((
+                id,
+                EvidenceCut {
+                    at: cut.at,
+                    sdk_events,
+                },
+            ))
+        }
+        fn drop_snap(&mut self, s: SnapId) -> Result<(), MachineError> {
+            self.dropped.set(self.dropped.get() + 1);
+            self.inner.drop_snap(s)
+        }
+        fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+            self.inner.hash()
+        }
+        fn coverage(&self) -> &[u8] {
+            self.inner.coverage()
+        }
+        fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+            self.inner.recorded_env()
+        }
+        fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+            self.inner.sdk_events()
+        }
+    }
+
+    /// One genesis-explore step over a [`RawStampMachine`]; returns the step
+    /// result and how many `drop_snap` calls it made.
+    fn step_with_raw_stamp(extra: u64) -> (Result<StepReport, CampaignError>, usize) {
+        let (_dir, led) = ledger();
+        let dropped = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let machine = RawStampMachine {
+            inner: ScriptedMachine::new(vec![(1, UpdateOp::Set)], simple_program(4)),
+            extra,
+            dropped: dropped.clone(),
+        };
+        let mut camp = DifferentialCampaign::new(
+            machine,
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            Box::new(GenesisSelector::new()),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            config(8, u64::MAX),
+            7,
+        )
+        .expect("new");
+        let r = camp.step();
+        (r, dropped.get())
+    }
+
+    /// V1 honest half (PR #147 verify event): a host stamping the exact
+    /// production cut formula (`sdk_events().len()`, catalog-inclusive) is
+    /// ACCEPTED — the reconciliation is in one frame and never refuses an
+    /// honest Binary-ingress host (the frame-crossing bug the verify event
+    /// caught refused exactly this shape).
+    #[test]
+    fn an_honest_production_frame_seal_capture_is_accepted() {
+        let (report, _dropped) = step_with_raw_stamp(0);
+        let report = report.expect("an honest production-frame stamp is accepted");
+        assert_eq!(report.admitted.len(), 1, "the honest seal is admitted");
+    }
+
+    /// V1 divergence half + V2: a host whose seal stamp exceeds its capture by
+    /// one event is refused loudly (`cut.sdk_events > graph rows` fails closed,
+    /// never silently lands), and the held seal is released on the way out
+    /// (V2 — the materializer's release-on-error discipline).
+    #[test]
+    fn a_seal_capture_short_of_its_stamped_cut_is_refused_loudly() {
+        let (result, dropped) = step_with_raw_stamp(1);
+        let err = result.expect_err("a divergent seal stamp aborts the step");
+        assert!(
+            matches!(
+                err,
+                CampaignError::Machine(MachineError::SealSuffixDivergence {
+                    baseline: 2,
+                    captured: 0,
+                    stamped: 3,
+                })
+            ),
+            "expected a typed seal-suffix divergence, got {err:?}"
+        );
+        assert!(
+            dropped >= 1,
+            "the held seal is released on the divergence path (V2), got {dropped} drops"
         );
     }
 

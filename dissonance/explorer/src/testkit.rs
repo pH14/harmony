@@ -237,8 +237,16 @@ impl Machine for ScriptedMachine {
                 }
             }
             // Rollout: surface each emission's sealable point, then terminate.
+            // An open-loop rollout stops AT its terminal and captures nothing
+            // beyond it — an emit past the terminal is not surfaced here; it
+            // belongs to a later marker-clamped run-forward (a deadline leg),
+            // not the rollout. Modelling the terminal faithfully is what lets
+            // the seal-suffix truncation surface (task 144 / hm-aqf0): the
+            // pre-144 toy surfaced every emit regardless of the terminal, so
+            // the rollout always already carried the advanced span and the
+            // seal cut could never out-count the rollout's graph rows.
             None => {
-                if self.cursor < self.emits.len() {
+                if self.cursor < self.emits.len() && self.emits[self.cursor].at <= self.terminal {
                     self.clock = self.emits[self.cursor].at;
                     self.cursor += 1;
                     Ok(StopReason::SnapshotPoint {
@@ -272,11 +280,20 @@ impl Machine for ScriptedMachine {
         let included = self.included_at(self.clock);
         let prefix: Vec<Emit> = self.emits.iter().take(included as usize).cloned().collect();
         self.snaps.insert(id, (self.clock, included, prefix));
+        // Stamp the cut in the PRODUCTION frame (task 144, folding hm-udgn /
+        // F6): the server stamps `vmm.sdk_events().len()` — raw capture
+        // positions, **catalog included** (`control.rs`) — not a firings-only
+        // count. `sdk_events()` here returns `[catalog] + firings[..cursor]`,
+        // and `cursor == included` at a valid seal, so the honest stamp is
+        // `1 + included` (the one catalog position plus the included firings).
+        // This keeps every cut on ONE frame with the raw-capture lengths the
+        // suffix decode and the seal reconciliation use — the toy's old
+        // firings-only stamp was the sole reason those two frames diverged.
         Ok((
             SnapId(id),
             EvidenceCut {
                 at: Moment(self.clock),
-                sdk_events: included,
+                sdk_events: 1 + included,
             },
         ))
     }
