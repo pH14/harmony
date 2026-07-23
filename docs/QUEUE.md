@@ -39,9 +39,15 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- (no active workers — 2026-07-23 midday; next iteration drafts specs for the
-  seal-reconciliation P2 family (`hm-whoo` count-invariant choke point) and the
-  telemetry deflake pair (`hm-3r2k`+`hm-gfi2`, Sonnet-tier), then spawns)
+- **Seal-capture reconciliation hardening** (tasks/146, `hm-whoo`): Opus 4.8 worker
+  spawned 2026-07-23 midday on `task/seal-capture-reconciliation` — count invariant
+  `cut.sdk_events == raw.len()` before decoding (closes the C1 below-baseline hole) +
+  prefix commitment via `Normalized.commitment` (closes V3) + doc overclaim fix; four
+  required regression tests incl. honest-host-still-admitted.
+- **Telemetry deflake follow-ups** (tasks/147, `hm-3r2k`+`hm-gfi2`+`hm-gnxr`): Sonnet 5
+  worker spawned 2026-07-23 midday on `task/telemetry-deflake-followups` — `data: `
+  wait anchor, helper inline-or-generalize (inline unless a second caller exists),
+  IMPLEMENTATION.md trim.
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -54,13 +60,13 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
   `hm-f2s`/`hm-x9f` (P0, Paul's), CI benchmark `hm-w9s` (P1, Paul's), aarch64 public-api
   gate `hm-4aj`, PR #108 arrival-day validation `hm-f99`, AMD hammer dry-run `hm-8v4`.
 
-## Ready (unblocked; foreman spawns as slots free — 0 of 3 slots in use; ~99 ready)
+## Ready (unblocked; foreman spawns as slots free — 2 of 3 slots in use; ~94 ready)
 
-- **PR #147 park family** (seal-suffix hardening, all P2): `hm-whoo` (now carries the
-  re-check C1 family closure: `cut.sdk_events == raw.len()` count invariant + prefix
-  commitment + doc overclaim), `hm-j7ie` (ledger VERSION 2→3 / refuse-vs-accept —
-  decision-shaped), `hm-mmkf`, `hm-4gaw`, `hm-f82p`. Edge repairs 2026-07-23: `hm-wshf`
-  now blocks on `hm-j7ie`; `hm-zwhi` upgraded to hard-block on `hm-x1ss`.
+- **PR #147 park family remainder** (all P2): `hm-j7ie` (ledger VERSION 2→3 /
+  refuse-vs-accept — decision-shaped; foreman drafts the doctrine-consistent spec next:
+  bump + loud refuse, argued for Paul's veto at PR time), `hm-mmkf`, `hm-4gaw`,
+  `hm-f82p`. Edge repairs 2026-07-23: `hm-wshf` now blocks on `hm-j7ie`; `hm-zwhi`
+  upgraded to hard-block on `hm-x1ss`.
 - **Box/toolchain reproducibility pair** (`hm-gfr1` static box definition; `hm-nji6`
   payload-pin reproducibility + certified-binary archive) — the aa3-recert-pins landmine
   turned into work items.
