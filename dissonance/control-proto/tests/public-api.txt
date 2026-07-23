@@ -35,6 +35,9 @@ pub control_proto::ControlError::ReadTooLarge::cap: u32
 pub control_proto::ControlError::ReadTooLarge::len: u32
 pub control_proto::ControlError::ResolveWithoutDecision
 pub control_proto::ControlError::RestoreFailed
+pub control_proto::ControlError::ScheduleMomentUnreachable
+pub control_proto::ControlError::ScheduleMomentUnreachable::landing: u64
+pub control_proto::ControlError::ScheduleMomentUnreachable::moment: u64
 pub control_proto::ControlError::ScheduleUnsatisfiable
 pub control_proto::ControlError::ScheduleUnsatisfiable::moment: u64
 pub control_proto::ControlError::ScheduleUnsatisfiable::vtime: u64

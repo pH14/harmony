@@ -107,6 +107,7 @@ const CE_PERTURB_RESERVED_VECTOR: u8 = 16;
 const CE_READ_OUT_OF_RANGE: u8 = 17;
 const CE_READ_TOO_LARGE: u8 = 18;
 const CE_TAINTED: u8 = 19;
+const CE_SCHEDULE_MOMENT_UNREACHABLE: u8 = 20;
 
 // ---- ProtocolError discriminants (carried inside CE_PROTOCOL). ----
 const PE_SHORT_FRAME: u8 = 0;
@@ -711,6 +712,11 @@ fn write_control_error(w: &mut Vec<u8>, err: &crate::error::ControlError) {
             put_u64(w, *moment);
             put_u64(w, *vtime);
         }
+        Ce::ScheduleMomentUnreachable { moment, landing } => {
+            w.push(CE_SCHEDULE_MOMENT_UNREACHABLE);
+            put_u64(w, *moment);
+            put_u64(w, *landing);
+        }
         Ce::NotSynchronized => w.push(CE_NOT_SYNCHRONIZED),
         Ce::PerturbReservedVector { vector } => {
             w.push(CE_PERTURB_RESERVED_VECTOR);
@@ -764,6 +770,10 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
         CE_SCHEDULE_UNSATISFIABLE => Ce::ScheduleUnsatisfiable {
             moment: r.u64()?,
             vtime: r.u64()?,
+        },
+        CE_SCHEDULE_MOMENT_UNREACHABLE => Ce::ScheduleMomentUnreachable {
+            moment: r.u64()?,
+            landing: r.u64()?,
         },
         CE_NOT_SYNCHRONIZED => Ce::NotSynchronized,
         CE_PERTURB_RESERVED_VECTOR => Ce::PerturbReservedVector { vector: r.u8()? },

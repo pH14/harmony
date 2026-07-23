@@ -287,17 +287,23 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// reset on each restore so a new future records fresh.
     recorded: EnvSpec,
     /// **Poison latch** for an unsatisfiable schedule (PR #51 round-3). Set to the
-    /// `(Moment, vtime)` of a fault a [`run`](ControlServer::run) executed *past*
-    /// without applying (a crossed `Moment`). While latched, [`run`](ControlServer::run),
-    /// [`perturb`](ControlServer::perturb), and [`snapshot`](ControlServer::snapshot)
-    /// keep failing loud with [`ControlError::ScheduleUnsatisfiable`] — the crossed
-    /// fault can never be applied at its recorded count, so the session must
-    /// **rewind** (`branch`/`replay`, which clears the latch via
+    /// **exact [`ControlError`]** a [`run`](ControlServer::run) failed with when it
+    /// could not satisfy the schedule — either an overshot/crossed `Moment`
+    /// ([`ControlError::ScheduleUnsatisfiable`]) or an arm-site refusal of an
+    /// unreachable staged `Moment` on a pvclock guest
+    /// ([`ControlError::ScheduleMomentUnreachable`], hm-zwhi). While latched,
+    /// [`run`](ControlServer::run), [`perturb`](ControlServer::perturb), and
+    /// [`snapshot`](ControlServer::snapshot) keep failing loud by **re-emitting that
+    /// same error verbatim** (identity + coordinates preserved) — the marker can
+    /// never be satisfied at its recorded count, so the session must **rewind**
+    /// (`branch`/`replay`, which clears the latch via
     /// [`reset_schedule_to_fresh_vm`](ControlServer::reset_schedule_to_fresh_vm))
     /// before it can continue. Without the latch a client that ignored the error and
     /// re-sent `run` would get the crossed fault applied from the past — the exact
-    /// non-reproducing case the error exists to prevent.
-    schedule_poisoned: Option<(environment::Moment, u64)>,
+    /// non-reproducing case the error exists to prevent. Storing the whole error
+    /// (not just `(Moment, vtime)`) is what lets the two poison classes re-emit
+    /// their **own** typed variant on every subsequent request.
+    schedule_poisoned: Option<ControlError>,
     /// The task-73 **SDK channel snapshots**, keyed by wire [`SnapId`]: the
     /// replay-relevant SDK state (seeded stream position + emitted event log)
     /// captured when a snapshot is sealed, so a `branch`/`replay` from a mid-run
@@ -690,8 +696,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     ) -> Result<Reply, ControlError> {
         // A poisoned schedule must be rewound (branch/replay) before it accepts any
         // new fault — staging onto an unsatisfiable schedule is itself unsatisfiable.
-        if let Some((moment, vtime)) = self.schedule_poisoned {
-            return Err(ControlError::ScheduleUnsatisfiable { moment, vtime });
+        // Re-emit the latched error verbatim (its own typed variant + coordinates).
+        if let Some(err) = &self.schedule_poisoned {
+            return Err(err.clone());
         }
         let decoded = environment::HostFault::decode(&fault.0)
             .map_err(|_| ControlError::MalformedEnvironment)?;
@@ -908,8 +915,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// than silently dropping the future (persisting the schedule inside the
     /// snapshot is a semantics change that would need its own ruling).
     fn snapshot(&mut self) -> Result<Result<Reply, ControlError>, ServeError> {
-        if let Some((moment, vtime)) = self.schedule_poisoned {
-            return Ok(Err(ControlError::ScheduleUnsatisfiable { moment, vtime }));
+        if let Some(err) = &self.schedule_poisoned {
+            return Ok(Err(err.clone()));
         }
         if !self.schedule.is_empty() || !self.reseed_schedule.is_empty() {
             return Ok(Err(ControlError::SnapshotWhileArmed));
@@ -1447,11 +1454,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         &mut self,
         until: &control_proto::StopConditions,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
-        // A poisoned schedule keeps rejecting `run` (with the crossed fault's
-        // coordinates) until a `branch`/`replay` rewinds it — never applying the
-        // crossed fault from the past on a re-sent `run` (PR #51 round-3).
-        if let Some((moment, vtime)) = self.schedule_poisoned {
-            return Ok(Err(ControlError::ScheduleUnsatisfiable { moment, vtime }));
+        // A poisoned schedule keeps rejecting `run` (with the latched error's own
+        // variant + coordinates) until a `branch`/`replay` rewinds it — never applying
+        // the crossed fault from the past on a re-sent `run` (PR #51 round-3).
+        if let Some(err) = &self.schedule_poisoned {
+            return Ok(Err(err.clone()));
         }
         loop {
             let (vns, synchronized) = {
@@ -1483,11 +1490,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     (None, None) => break,
                 };
                 if m < vns || !synchronized {
-                    self.schedule_poisoned = Some((m, vns));
-                    return Ok(Err(ControlError::ScheduleUnsatisfiable {
+                    let err = ControlError::ScheduleUnsatisfiable {
                         moment: m,
                         vtime: vns,
-                    }));
+                    };
+                    self.schedule_poisoned = Some(err.clone());
+                    return Ok(Err(err));
                 }
                 let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
                 if is_reseed {
@@ -1612,14 +1620,17 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                             .arrival_vns()
                             .or_else(|| vmm.effective_vns())
                             .unwrap_or(m);
-                        // `landing` is a `u64` (Copy), so the `vmm` borrow of
-                        // `self.vmm` ends here — freeing `&mut self` for the latch,
-                        // exactly as the crossed-marker poison below does.
-                        self.schedule_poisoned = Some((m, landing));
-                        return Ok(Err(ControlError::ScheduleUnsatisfiable {
-                            moment: m,
-                            vtime: landing,
-                        }));
+                        // A DISTINCT typed variant (F3): the guest has NOT executed
+                        // past `m`, so this is not a `ScheduleUnsatisfiable` overshoot
+                        // (whose `vtime` is the REACHED, past-`moment` V-time). `landing`
+                        // is the PROSPECTIVE (unreached) arrival the seam would have
+                        // taken. Latch the exact error so `perturb`/`snapshot`/`run`
+                        // re-emit this same variant + coordinates until a rewind clears
+                        // it. `landing` is `u64` (Copy), so the `vmm` borrow of
+                        // `self.vmm` ends here — freeing `&mut self` for the latch.
+                        let err = ControlError::ScheduleMomentUnreachable { moment: m, landing };
+                        self.schedule_poisoned = Some(err.clone());
+                        return Ok(Err(err));
                     }
                 }
                 None => vmm.clear_arrival(),
@@ -1658,11 +1669,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     .flatten()
                     .min();
                     if let Some(m) = staged {
-                        self.schedule_poisoned = Some((m, vns));
-                        return Ok(Err(ControlError::ScheduleUnsatisfiable {
+                        let err = ControlError::ScheduleUnsatisfiable {
                             moment: m,
                             vtime: vns,
-                        }));
+                        };
+                        self.schedule_poisoned = Some(err.clone());
+                        return Ok(Err(err));
                     }
                     // Gate the assertion on the client `StopMask` (round-7): if the
                     // `ASSERTION` class is not armed, the stop is already consumed
@@ -1708,11 +1720,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     .flatten()
                     .min();
                     if let Some(m) = staged {
-                        self.schedule_poisoned = Some((m, vns));
-                        return Ok(Err(ControlError::ScheduleUnsatisfiable {
+                        let err = ControlError::ScheduleUnsatisfiable {
                             moment: m,
                             vtime: vns,
-                        }));
+                        };
+                        self.schedule_poisoned = Some(err.clone());
+                        return Ok(Err(err));
                     }
                     return Ok(Ok(Reply::Stop(map_terminal(reason, vns))));
                 }
@@ -4580,27 +4593,37 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // hm-zwhi — exact-arrival overshoots an OFF-GRID staged Moment on a
-    // coarse-grained (pvclock-guest) clock.
+    // hm-zwhi — exact-arrival CANNOT stop the guest AT a staged Moment its
+    // stoppable grid does not represent (the vns↔work seam).
     //
-    // The @1e7 maze lane is green because every staged Moment lands ON the
-    // guest's exact-count clock grid; the @3e7 pvclock lane fails because a
-    // reseed marker minted in one frame is OFF the current grid, and the
-    // exact-count arrival seam ([`Vmm::arm_arrival`]) can only stop the guest
-    // AT a grid point. A large `ratio_num` models the pvclock refresh quantum
-    // (each work unit advances V-time by a coarse step), so a Moment between
-    // grid points is unreachable by exact arrival — the run rounds UP to the
-    // next grid point and sails PAST the marker. This is the vns↔work seam the
-    // task names; the leading "arm_arrival silently DECLINES" hypothesis is
-    // refuted below (the arm returns `true`; the overshoot is baked into
-    // `work_for_vns`'s round-UP, not a decline).
+    // These are a PORTABLE MODEL of the seam, NOT a reproduction of the box's
+    // @3e7 mechanism. The model coarsens the *V-time clock* itself (`ratio_num >
+    // 1`, grid `{0, R, 2R, …}`): a Moment between grid points is off the grid, so
+    // `arm_arrival` rounds UP via `work_for_vns` and `arrival_vns() > m` — the arm
+    // ITSELF overshoots. That is the shape the task names ("the overshoot shape at
+    // the vns↔work seam") and what the guard refuses.
+    //
+    // The BOX @3e7 case is NOT this: there the contract clock is exact (1
+    // ns/branch), so a staged `m` is ON the V-time grid and `arrival_vns() == m`
+    // exactly — the guard below never fires on the box. The box overshoot is a
+    // separate, still-unproven mechanism (leading hypothesis: the pvclock-refresh
+    // INTERCEPT grid — a compute-bound guest only stoppable at forced refreshes —
+    // OR a refresh landing clobbering the pending arm; see IMPLEMENTATION.md "Task
+    // 140" and the box runbook, which the faithful `MockBackend` cannot reproduce).
+    // What BOTH share, and what these tests pin, is: `arm_arrival` does NOT
+    // silently decline (the leading hypothesis is refuted — the arm returns `true`,
+    // proven in `arm_arrival_rounds_an_off_grid_moment_up_not_declines`), and the
+    // outcome must be a loud, precisely-attributed refusal, not a silent free-run.
     // -----------------------------------------------------------------------
 
     /// V-time coarse-grid enforcement VM: identical to [`enforce_vmm`] but the
     /// clock advances `ratio_num` ns per work unit, so its V-time grid is
-    /// `{0, ratio_num, 2·ratio_num, …}` — a portable model of a pvclock guest
-    /// whose ~10.4 ms refresh quantum is the grid step. A Moment that is not a
-    /// multiple of `ratio_num` is OFF the grid.
+    /// `{0, ratio_num, 2·ratio_num, …}` — a PORTABLE MODEL of the vns↔work seam
+    /// overshoot (a Moment that is not a multiple of `ratio_num` is off the grid).
+    /// This coarsens the V-TIME CLOCK; the box's own coarseness (a leading
+    /// hypothesis, pending the runbook) is instead the pvclock-refresh intercept
+    /// grid on an otherwise-exact 1 ns/branch clock — a different source the mock
+    /// cannot model. See the block comment above.
     fn coarse_enforce_vmm(ratio_num: u64, deadlines: usize, seed: u64) -> Vmm<MockBackend> {
         let mut exits = vec![
             Exit::Common(CommonExit::Deadline {
@@ -4668,25 +4691,31 @@ mod tests {
         // guest AT the marker; before the fix it armed the grid-ceil, stepped
         // PAST the marker, and only THEN poisoned — free-running the guest past a
         // Moment it was told to stop at (on the box: a whole refresh quantum).
-        // After the fix the run refuses AT the arm site, naming the staged
-        // Moment, and the guest never executes past it.
+        // After the fix the run refuses AT the arm site — with a DISTINCT typed
+        // variant (F3: the guest has NOT overshot, so it is NOT the reached-V-time
+        // `ScheduleUnsatisfiable`; `landing` is the prospective, unreached arrival)
+        // — and the guest never executes past the marker. The refusal also LATCHES
+        // (F4), preserving its variant + coordinates until a rewind.
         let ratio = 1_000u64;
         let live = coarse_enforce_vmm(ratio, 1, 7);
         let factory = Box::new(move || Ok(coarse_enforce_vmm(ratio, 1, 7)));
         let mut s = ControlServer::new(live, factory);
         hello(&mut s);
+        // A pristine base for the F4 rewind, sealed before anything is staged.
+        let base = snap(&mut s);
         stage_corrupt(&mut s, 1_500);
+        // The typed refusal: the STAGED Moment (1500) and the unreachable next-grid
+        // arrival (2000, prospective/unreached — NOT a V-time the run reached).
+        let refused = Err(ControlError::ScheduleMomentUnreachable {
+            moment: 1_500,
+            landing: 2_000,
+        });
         // A run whose deadline is well beyond the marker: the exact-arrival seam,
         // not the deadline, is what must clamp the marker.
-        let reply = run_with_deadline(&mut s, 100_000);
         assert_eq!(
-            reply,
-            Err(ControlError::ScheduleUnsatisfiable {
-                moment: 1_500,
-                vtime: 2_000,
-            }),
-            "the off-grid marker is refused, naming the STAGED Moment (1500) and \
-             the unreachable next grid arrival (2000)"
+            run_with_deadline(&mut s, 100_000),
+            refused,
+            "the off-grid marker is refused with ScheduleMomentUnreachable(1500, 2000)"
         );
         // The fix's whole point: the guest did NOT execute past the marker. Before
         // the fix the arrival stepped to work=2 (effective_vns 2000 > 1500); after,
@@ -4696,11 +4725,47 @@ mod tests {
             Some(0),
             "the guest must not free-run past the staged Moment it was told to stop at"
         );
+
+        // F4 — the poison latch is pinned. A re-sent `run` keeps failing with the
+        // SAME variant + coordinates (never a silently-different or cleared state).
+        assert_eq!(
+            run_with_deadline(&mut s, 100_000),
+            refused,
+            "a re-sent run stays poisoned with the identical refusal"
+        );
+        // `perturb` is rejected with the ORIGINAL refusal's coordinates (not the new
+        // stage's) — staging onto an unsatisfiable schedule is itself unsatisfiable.
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+                at: Moment(9_000),
+            })
+            .unwrap(),
+            refused,
+            "perturb stays poisoned with the original (1500, 2000) coordinates"
+        );
+        // `snapshot` is rejected while latched.
+        assert_eq!(
+            s.handle(&Request::Snapshot).unwrap(),
+            refused,
+            "snapshot stays poisoned while the schedule is unsatisfiable"
+        );
         // The fault never applied (recorded-apply-point integrity).
         assert_eq!(
             &s.vmm().unwrap().guest_memory()[0x40..0x48],
             &[0u8; 8],
             "the unreachable marker's fault must not have applied"
+        );
+        // A rewind (replay of the pristine base) clears the latch — the session runs
+        // cleanly again (schedule empty, nothing to arm, so no refusal).
+        assert_eq!(
+            s.handle(&Request::Replay(base)).unwrap(),
+            Ok(Reply::Unit),
+            "replay of the pristine base clears the poison latch"
+        );
+        assert!(
+            matches!(run_all_res(&mut s), Ok(Reply::Stop(_))),
+            "after the rewind the session runs cleanly"
         );
     }
 
