@@ -87,6 +87,12 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **Ledger VERSION 2→3 MERGED** (tasks/148, PR #151, `hm-j7ie`, 2026-07-23 afternoon —
+  5-seat tribunal, zero P1s, three seats zero findings): pre-144 suffix-only-seal
+  ledgers refused loudly before any record decodes (V4 cross-version-identity class
+  closed by refusal). **Foreman-encoded ruling (bump + loud refuse, no migration)
+  stands flagged for Paul's veto** in the PR record. Parks: `hm-s6cb` (message
+  misdiagnoses future versions). `hm-wshf` (accessor contract) unblocked.
 - **Telemetry deflake follow-ups MERGED** (tasks/147, PR #149,
   `hm-3r2k`/`hm-gfi2`/`hm-gnxr`, 2026-07-23 afternoon — full 5-seat tribunal, zero P1s
   at discovery, merged with parks): `data: ` wait anchor (500× stress 0-fail), helper
