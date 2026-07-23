@@ -308,3 +308,86 @@ and the F1b split-marker recombination) — all pure, all synchronous.
   crate), fmt `--check`, `cargo deny check`.
 - Diff scoped entirely to `consonance/telemetry/src/server.rs`'s `#[cfg(test)]
   mod tests` — no server, dependency, wire-format, or public-API change.
+
+## Scanner hardening: generic `io::Read` + phase-1 anchor (task 151, hm-b5km, hm-8c5m)
+
+PR #152's adjudication parked two follow-ups from the bounded-wait work above.
+
+**hm-8c5m — phase-1 header anchor.** `streams_events_as_sse_frames` waited for
+phase 1 (the response header) with `read_until(&mut c, "text/event-stream")`.
+That token appears mid-header, before the blank-line terminator, so the wait
+could in principle be satisfied with a residual header tail (e.g.
+`Cache-Control: …\r\n\r\n`) still unconsumed ahead of the data-frame scanner —
+closing over that hole given the emit-after-phase-1 ordering (the scripted
+event isn't emitted until phase 1 returns, so the trigger isn't realizable
+today, per the bead's own note, but the anchor should be the actual boundary,
+not a token that happens to precede it). Fixed by anchoring on `"\r\n\r\n"`,
+the real header terminator; both existing `head.contains(...)` assertions
+(`"text/event-stream"`, `"no-cache"`) still hold since the full header is
+still captured.
+
+**hm-b5km — genericize `read_sse_data_frame` over `io::Read`.** The helper
+took `&mut TcpStream` and called `set_read_timeout` on it directly, which
+meant its cross-read accumulation (the fix for F1b above) could only be
+driven through a real socket — no unit test exercised the "acc retained,
+never cleared, across reads" contract in isolation, so a mutant that clears
+`acc` between reads (or drops the `0..50` attempt bound) stayed green on the
+common coalesced-read path, catchable only via adverse interleaving with the
+server's multi-`write_all` frame emission.
+
+Fix: generic over `R: io::Read`; timeout setup moves to the caller (the sole
+production call site, in `streams_events_as_sse_frames`, now calls
+`c.set_read_timeout(...)` itself immediately before `read_sse_data_frame(&mut
+c)` — a bare `io::Read` has no read-timeout notion of its own). Two scripted
+tests drive it directly against a mock reader, no socket, no real server, no
+wall-clock wait:
+
+- `read_sse_data_frame_retains_bytes_across_reads` — `(&b": keepalive\n\ndat"[..]).chain(&b"a: hello\n\n"[..])`
+  (std's `Read::chain`, exhausting the first slice before switching to the
+  second) returns `": keepalive\n\ndat"` (a complete keepalive frame plus the
+  start of the *next* frame's `"data: "` marker, split mid-word) on the first
+  read and `"a: hello\n\n"` on the second, and asserts the combined result is
+  the complete `"data: hello\n\n"` frame. If `acc` were cleared between reads,
+  the `"dat"` prefix would be lost and the second read alone (`"a: hello\n\n"`,
+  which does not start with `"data: "`) would never be recognized as a data
+  frame — directly catching the mutant PR #152 flagged.
+- `read_sse_data_frame_panics_with_accumulated_bytes_on_budget_exhaustion` — a
+  `NeverDataReader` returns the same `": keepalive\n\n"` comment frame from
+  every `read` call, forever (never `Ok(0)`, never a `data: ` frame), so the
+  fixed `0..50` attempt budget is what ends the loop, not an EOF break. The
+  test asserts (`#[should_panic(expected = "keepalive")]`) that this panics
+  with the accumulated bytes visible in the message — pinning both the
+  budget bound itself (drop it and this hangs instead of panicking) and the
+  diagnosability the panic message exists for (hm-3r2k, hm-38kv).
+
+**Rejected: the optional `split_inclusive` reshape (PR #152 F-E).** Considered
+while genericizing, per the bead's "take it only if it stays net-simpler"
+framing. `slice::split_inclusive` splits on a predicate over single elements;
+`"\n\n"` is a two-byte delimiter, so expressing the frame walk with it would
+need pairing/lookahead logic no simpler than the existing `windows(2).position`
+loop. Left as-is.
+
+**PR #154 review follow-ups.** A dedicated `ScriptedReader` type (struct +
+constructor + `Read` impl, ~28 LOC) originally drove the cross-read-retention
+test; it had exactly one user and is equivalent to chaining two `&[u8]`
+readers with std's own `Read::chain`, so it was deleted in favor of the
+inline `chain` call above. The phase-1 header-anchor test now also asserts
+`head.contains("\r\n\r\n")` directly (previously only `"text/event-stream"`
+and `"no-cache"` were asserted), so a server regression that omitted the
+terminator would fail fast instead of silently passing once `read_until`'s
+attempt budget exhausts and returns its partial accumulator unconditionally.
+
+### Verification
+
+- `cargo nextest run -p telemetry --all-features` → 36/36 pass (34 prior + 2
+  new `read_sse_data_frame` scripted-read tests).
+- Stress (direct release-profile test-binary invocation, no cargo overhead per
+  run): `streams_events_as_sse_frames` looped **250×** — **0 failures**
+  (exceeds this task's ≥200× floor).
+- Portable gates green: build, nextest, clippy (`-D warnings`, exit 0 — same
+  pre-existing `clippy.toml` `rand::*` notices as before, not from this
+  crate), fmt `--check`, `cargo deny check` (advisories/bans/licenses/sources
+  all ok).
+- Diff scoped entirely to `consonance/telemetry/src/server.rs`'s
+  `#[cfg(test)] mod tests` — no server, dependency, wire-format, or
+  public-API change.

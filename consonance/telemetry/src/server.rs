@@ -565,10 +565,14 @@ mod tests {
     /// so a stalled regression fails fast instead of hanging or hot-spinning
     /// (F1a), and on exhausting the budget this panics with the accumulated
     /// bytes so a stuck run is diagnosable (hm-3r2k, hm-38kv).
-    fn read_sse_data_frame(stream: &mut TcpStream) -> String {
-        stream
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .expect("set timeout");
+    ///
+    /// Generic over [`io::Read`] rather than tied to [`TcpStream`] so the
+    /// cross-read accumulation and the budget-exhaustion panic are directly
+    /// unit-testable against a scripted reader with no socket, no server, and
+    /// no wall-clock wait (hm-b5km) — the timeout is therefore the caller's
+    /// concern (set on the concrete `TcpStream` before calling in), since a
+    /// bare `io::Read` has no read-timeout notion of its own.
+    fn read_sse_data_frame<R: Read>(stream: &mut R) -> String {
         let mut acc = Vec::new();
         let mut buf = [0u8; 4096];
         for _ in 0..50 {
@@ -642,6 +646,46 @@ mod tests {
         assert_eq!(extract_data_frame(&acc), None);
         acc.extend_from_slice(b"a: hello\n\n");
         assert_eq!(extract_data_frame(&acc).as_deref(), Some("data: hello\n\n"));
+    }
+
+    /// A scripted `io::Read` that never returns EOF and never produces a
+    /// `data: ` frame — every call hands back the same `: keepalive\n\n`
+    /// comment frame. Drives `read_sse_data_frame`'s retry-budget exhaustion
+    /// path (as opposed to the EOF-break path a `Read::chain`'d pair of slices
+    /// exercises once both are consumed).
+    struct NeverDataReader;
+
+    impl Read for NeverDataReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let chunk: &[u8] = b": keepalive\n\n";
+            buf[..chunk.len()].copy_from_slice(chunk);
+            Ok(chunk.len())
+        }
+    }
+
+    #[test]
+    fn read_sse_data_frame_retains_bytes_across_reads() {
+        // Cross-read retention (hm-b5km): a first read returns
+        // ": keepalive\n\ndat" — a complete keepalive frame plus the start of
+        // the *next* frame's "data: " marker, split mid-word — and a second
+        // read supplies the rest, "a: hello\n\n". If `acc` were cleared
+        // between reads (the mutation this test is meant to catch) the "dat"
+        // prefix would be lost and the loop would hang/panic on the
+        // now-unrecognizable "a: hello\n\n" remainder instead of finding the
+        // complete data frame.
+        let mut r = (b": keepalive\n\ndat" as &[u8]).chain(b"a: hello\n\n" as &[u8]);
+        assert_eq!(read_sse_data_frame(&mut r), "data: hello\n\n");
+    }
+
+    #[test]
+    #[should_panic(expected = "keepalive")]
+    fn read_sse_data_frame_panics_with_accumulated_bytes_on_budget_exhaustion() {
+        // Budget exhaustion (hm-b5km): a stream that never emits a `data: `
+        // frame exhausts the fixed attempt budget (never hits the `Ok(0)`
+        // break) and must panic — not hang or hot-spin — with the bytes it
+        // accumulated along the way visible in the panic message.
+        let mut r = NeverDataReader;
+        read_sse_data_frame(&mut r);
     }
 
     fn ev(seq: u64) -> Event {
@@ -789,8 +833,19 @@ mod tests {
         let mut c = TcpStream::connect(server.local_addr()).expect("connect");
         c.write_all(b"GET /events HTTP/1.1\r\nHost: x\r\n\r\n")
             .expect("req");
-        // Read past the SSE response header first.
-        let head = read_until(&mut c, "text/event-stream");
+        // Read past the SSE response header first. Anchored on the full header
+        // terminator ("\r\n\r\n"), not a substring of the header body: waiting on
+        // "text/event-stream" alone is satisfied the instant that token lands,
+        // which can be before the blank line — leaving a residual header tail
+        // (e.g. "Cache-Control: ...\r\n\r\n") unconsumed ahead of the data-frame
+        // scanner. Anchoring on the terminator itself guarantees the whole header
+        // is drained before phase 2 starts scanning for the data frame.
+        let head = read_until(&mut c, "\r\n\r\n");
+        // `read_until` returns whatever it accumulated even if the needle was
+        // never found (its budget just exhausts) — so the anchor is only
+        // fail-closed if the terminator's presence is itself asserted, not
+        // merely relied on implicitly.
+        assert!(head.contains("\r\n\r\n"), "full header terminator drained");
         assert!(head.contains("text/event-stream"));
         assert!(head.contains("no-cache"));
 
@@ -808,6 +863,10 @@ mod tests {
         // this is one bounded, cumulative wait for a complete `data: …\n\n`
         // frame — skipping any keepalive frames along the way — rather than a
         // retry that discards bytes between attempts (hm-3r2k, hm-38kv).
+        // `read_sse_data_frame` is generic over `io::Read` and sets no timeout
+        // of its own (hm-b5km), so the concrete `TcpStream` timeout is set here.
+        c.set_read_timeout(Some(Duration::from_millis(200)))
+            .expect("set timeout");
         let frame = read_sse_data_frame(&mut c);
         assert!(frame.contains("data: "), "SSE data prefix: {frame:?}");
         assert!(frame.contains("\"Console\""));
