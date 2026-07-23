@@ -583,3 +583,125 @@ the committed assignments (same strictly-greater-quality rule; bound by a
 - Working-set admission covers **every** committed batch (rollouts and seals);
   the bounded cap is over batches, not bytes. A byte-denominated working-set
   policy would be a new declared profile variant, not a reinterpretation.
+
+# tasks/144 — seal-past-rollout-terminal event truncation (hm-aqf0, T136-J5)
+
+## The bug
+
+The marker-clamped run-forward (task 136 / PR #138) can seal a candidate
+**past** the rollout terminal, at the first fully-drained quiescent boundary
+beyond a staged marker. The seal's server-stamped cut counts the SDK events
+fired in that advanced span, but the seal batch (a) reused
+`rollout.normalized` — which stops at the terminal — and (b) contributed **no**
+event rows to the graph (`evidence_rows`'s `Seal` arm returned
+`events: Vec::new()`). So the seal cut had `sdk_events > graph rows`: the
+cells/observation map at the seal deterministically **omitted** the advanced
+span, and did so **silently** — the composed-map oracle and the Differential
+relations agreed (both truncated), so no assertion fired.
+
+## Fix — direction (a): capture the run-forward suffix
+
+Chosen because the suffix is already normalized and reachable at the seal site
+(it rides the same recorded env; the spec's stated precondition for (a)). The
+seal now models what it physically is: a **continuation of the sealed rollout
+past its terminal**.
+
+- `materialize_candidate` re-reads the machine's raw SDK capture at the seal
+  and decodes the **suffix** by skipping the rollout's whole raw capture
+  (`rollout.raw_len` raw positions). Because the seal re-runs the identical
+  branch, its raw prefix through the terminal is byte-identical to the
+  rollout's, so this keeps exactly the advanced span (empty if it did not
+  advance). Skipping by the rollout's raw-capture **length** (not a firing
+  count) sidesteps the catalog-position offset that
+  `decode_child_suffix`/`sdk_events` counts already carry.
+- The seal batch is anchored on the **rollout terminal cut** (`observed_cut`)
+  as its `parent_cut`, and carries the suffix as its `normalized`. Lineage
+  composition (`compose_observations_at`) then walks the sealed rollout's full
+  events (via `rollout.parent = rollout_id.issue`) and appends this suffix at
+  cumulative positions continuing them — the shared prefix is contributed once,
+  by the rollout batch, never duplicated.
+- `evidence_rows`'s `Seal` arm stages the suffix state events at those same
+  cumulative positions (extracted into the shared `state_event_rows` helper the
+  `Rollout` arm now also uses), so the Differential graph and the composed
+  oracle carry the advanced span identically.
+
+Result: for an advanced seal the span is **present** in both the graph and the
+oracle; for a non-advanced seal the suffix is empty and the batch reduces to the
+prior (correct) terminal-state cell — bit-for-bit unchanged.
+
+## Why this is hash-neutral
+
+The change touches only evidence/graph composition (what the seal batch records
+and stages), never the RNG or the schedule stream. The existing bit-identical
+proptests confirm it: `explorer::same_seed_yields_identical_campaign`,
+`retention::same_seed_yields_identical_retention_artifacts`, and
+`campaign-runner::determinism_proptest
+branch_run_hash_is_deterministic_and_replay_reproduces_capture` all stay green.
+
+## Recomputability (the hm-efs contract direction)
+
+`evidence_rows` is a pure function of the committed seal batch, and the seal's
+suffix + terminal-anchored `parent_cut` are durable in the ledger, so a restart
+re-stages byte-identical inputs and `compose_observations_at` recomputes the
+seal cell from committed batches alone. The regression test's
+`assert_view_parity` recomputes every seal cell from the ledger and asserts it
+equals the live Differential view — the recomputability check for the advanced
+seal.
+
+## The toy had to become faithful first
+
+The pre-144 `ScriptedMachine` surfaced **every** emit during an open-loop
+rollout regardless of the terminal, so the rollout always already carried the
+advanced span and the truncation could never be expressed portably. The
+`run` no-deadline arm now stops at the terminal and does not capture emits
+past it — the faithful model (a real rollout ends at its terminal). This is
+inert for every pre-existing test: all their programs place every emit at or
+before the terminal, so their trajectories are unchanged. The change is what
+lets the regression test express the bug on the laptop tier.
+
+## Acceptance-criterion → evidence
+
+- **Regression test pinning the truncation shape:**
+  `advanced_seal_captures_its_run_forward_suffix_into_the_graph`. RED before
+  the seal-composition fix (`obs.get(&reg2)` is `None` while the seal cut
+  claims `sdk_events == 2`); GREEN after (the advanced `reg2=7` is present, the
+  graph and oracle agree, the seal re-materializes bit-identically, and the
+  trajectory is same-seed deterministic). Verified red-before by reverting only
+  the seal-evidence changes with the toy faithfulness kept.
+- **`evidence_after_the_seal_cannot_influence_an_earlier_cell`** updated to read
+  the seal cell through the lineage-composed oracle (`compose_observations_at`)
+  instead of the self-contained `observations_at_cut()`. The seal's `normalized`
+  is now its (here empty) suffix — consistent with branch-child rollouts, which
+  already carry suffix-only `normalized` — so `observations_at_cut()` (a
+  suffix-local reduction with no ledger) no longer reflects a seal's composed
+  state; the composed oracle is the correct accessor and the test's invariant
+  (post-seal evidence excluded by the half-open cut) is unchanged.
+- **Full portable gates green** for `explorer` (142 tests) and downstream
+  `campaign-runner` (179 tests): build + nextest + clippy(`-D warnings`) + fmt,
+  plus workspace `cargo deny` (advisories/bans/licenses/sources ok). The two
+  pre-existing `clippy.toml` config warnings (unreachable `rand::*` disallowed
+  paths in crates without `rand`) are on `main` and do not fail the gate.
+
+## Deviations considered and rejected
+
+- **Direction (b) — refuse/drop seals past the terminal.** Rejected: the
+  advanced seal is a legitimate, determinism-verified frontier entry (task 136
+  went to real lengths to *keep* it and re-materialize it bit-identically);
+  dropping it would forfeit reachable coverage. Capture violates no
+  ledger/evidence invariant, so (a) is preferred exactly as the spec directs.
+- **Keeping the full run to the seal in the seal's `normalized`** (parent_cut
+  left at the base branch). Rejected: it double-counts the shared prefix once
+  the graph also stages the seal's events (the graph keys events by rollout, and
+  the rollout batch already staged its prefix), so a suffix-only `normalized`
+  anchored on the rollout terminal is the only representation consistent across
+  both the composed oracle and the Differential relations.
+
+## Scope / known limitations
+
+- Diff is truncation-scoped to `dissonance/explorer/` (campaign seal path +
+  `testkit` + tests). Did **not** take on hm-btht's admission-time reseal/retry
+  capture family or hm-kyy5's genesis-rooted re-materialization.
+- Only **reducible-state** suffix events reach the graph (the cells/observation
+  map is state-only, matching the `Rollout` arm). Occurrence/assertion events in
+  the advanced span follow the unchanged occurrence path, which — as before —
+  runs on rollout batches, not seals; that is outside this truncation's surface.
