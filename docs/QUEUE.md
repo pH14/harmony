@@ -39,10 +39,9 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- **Explorer contract clarifications** (tasks/150, PR #153, `hm-s6cb`+`hm-wshf`):
-  worker done, PR open, 5-seat tribunal seats complete, Fable 5 judge adjudicating —
-  version-refusal message split by found</VERSION vs found>VERSION; accessor docs
-  re-written to record-local semantics (no API drift).
+- **SSE scanner hardening** (tasks/151, `hm-b5km`+`hm-8c5m`): Sonnet 5 worker spawned
+  2026-07-23 late afternoon on `task/sse-scanner-hardening` — genericize the data-frame
+  scanner over io::Read + scripted-read coverage; one-token phase-1 header anchor.
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -86,6 +85,15 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **Explorer contract clarifications MERGED** (tasks/150, PR #153,
+  `hm-s6cb`+`hm-wshf`, 2026-07-23 late afternoon — full bounded pipeline: discovery
+  (2 P1s: false genesis-coincidence doc claim; surviving mutant) → fix (re-key +
+  judge-sanctioned inline killing the mutable target) → verify (new P1: the discovery
+  record's own prescription was mis-keyed on parent_cut; superseded — true key is
+  rollout.parent) → final doc-re-key batch → Closer re-check APPROVE): version refusal
+  no longer misdiagnoses future versions; accessor contract honest for every
+  production record shape. Park: `hm-0qpm` (observations_at up-to-translation
+  qualifier, doc-only).
 - **SSE bounded accumulating wait MERGED** (tasks/149, PR #152, `hm-38kv`, 2026-07-23
   afternoon — 5-seat tribunal, zero P1s, three P1 claims demoted/refuted with judge
   recomputation incl. an independent 500× stress): one structural scanner + bounded
