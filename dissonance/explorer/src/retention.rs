@@ -647,6 +647,12 @@ pub enum Recomputation {
     /// The ordered raw evidence is retained: cells recompute from it directly,
     /// no VM execution.
     FromRetainedEvidence,
+    /// This batch's own raw evidence is retained, but a ledger ancestor
+    /// (walked via `rollout.parent`) was collected: the lineage-composed
+    /// cells at this batch's cut depend on that ancestor's raw evidence, so
+    /// full recomputation still requires materialization replay — of the
+    /// missing ancestor, not this batch itself.
+    RequiresAncestorReplay,
     /// The raw evidence was collected: recomputation requires materialization
     /// replay of the reproducer.
     RequiresReplay,

@@ -1014,6 +1014,35 @@ impl<M: Machine> DifferentialCampaign<M> {
         Ok(self.ledger.compact()?)
     }
 
+    /// Whether a retained batch's ledger ancestry (walked via
+    /// `rollout.parent`, exactly as [`crate::evidence::compose_observations_at`]
+    /// walks it) passes through a collected batch — i.e. whether this
+    /// batch's *own* raw evidence being retained is not enough to recompute
+    /// its true lineage-composed cells, because an ancestor's raw evidence
+    /// is gone.
+    fn ancestor_collected(&self, ev: &CompletedRunEvidence) -> bool {
+        let mut parent = ev.rollout.parent;
+        while let Some(issue) = parent {
+            if self
+                .ledger
+                .collected()
+                .any(|(_, tomb)| tomb.rollout.issue == issue)
+            {
+                return true;
+            }
+            let Some(anc) = self
+                .ledger
+                .batch_ids()
+                .filter_map(|id| self.ledger.get(id))
+                .find(|b| b.role == EvidenceRole::Rollout && b.rollout.issue == issue)
+            else {
+                break; // no retained or collected record for this issue
+            };
+            parent = anc.rollout.parent;
+        }
+        false
+    }
+
     /// The campaign **completeness report**: exactly which raw evidence
     /// remains (per batch, with the coverage each collection cited), which
     /// finalized derivations and committed assignments survive, and whether
@@ -1021,11 +1050,19 @@ impl<M: Machine> DifferentialCampaign<M> {
     pub fn retention_report(&self) -> RetentionReport {
         let mut batches = BTreeMap::new();
         for id in self.ledger.batch_ids() {
+            // `batch_ids()` only enumerates retained batches, so `get` never
+            // misses here.
+            let ev = self.ledger.get(id).expect("retained batch id resolves");
+            let recompute_cells = if self.ancestor_collected(ev) {
+                Recomputation::RequiresAncestorReplay
+            } else {
+                Recomputation::FromRetainedEvidence
+            };
             batches.insert(
                 *id,
                 BatchAvailability {
                     raw: RawAvailability::Retained,
-                    recompute_cells: Recomputation::FromRetainedEvidence,
+                    recompute_cells,
                     in_working_set: self.views.working.contains(id),
                 },
             );
@@ -2776,6 +2813,112 @@ mod tests {
             assert_view_parity(&camp);
         }
         assert!(camp.occupied() > 0, "the gate is not vacuous");
+    }
+
+    /// hm-f82p regression: `retention_report` must not overclaim
+    /// recomputability. A batch whose own raw evidence is retained but whose
+    /// ledger ancestor (walked via `rollout.parent`, one issue at a time —
+    /// exactly how `compose_observations_at` walks it) was collected cannot
+    /// recompute its true lineage-composed cells from retained evidence
+    /// alone: the collected ancestor's contribution is gone. Before the fix
+    /// every retained batch was unconditionally labeled
+    /// `FromRetainedEvidence`, overclaiming recomputability for such a batch;
+    /// this exercises both halves — a fully-retained graph keeps the honest
+    /// label, and collecting the ancestor flips the child's label, never the
+    /// other way around.
+    #[test]
+    fn retention_report_flags_a_collected_ancestor() {
+        fn empty_normalized() -> Normalized {
+            decode_binary(&[]).expect("an empty stream decodes to an empty Normalized")
+        }
+        // Only `rollout`/`cut`/`parent_cut` matter here — `ancestor_collected`
+        // and `retention_report` never read `normalized`/`env` content.
+        fn rollout_evidence(issue: u64, parent: Option<u64>, at: u64) -> CompletedRunEvidence {
+            CompletedRunEvidence {
+                rollout: RunId { issue, parent },
+                role: EvidenceRole::Rollout,
+                terminal: StopReason::Quiescent { vtime: Moment(at) },
+                env: Reproducer {
+                    blob_version: 1,
+                    bytes: vec![issue as u8],
+                },
+                cut: EvidenceCut {
+                    at: Moment(at),
+                    sdk_events: 0,
+                },
+                normalized: empty_normalized(),
+                parent_cut: None,
+                sealable_moments: vec![],
+            }
+        }
+
+        let mut cfg = config(8, u64::MAX);
+        cfg.retention = RetentionProfile::Bounded {
+            working_set_cap: 8,
+            expiry: crate::retention::ExpiryOrder::OldestFirst,
+        };
+        let (_dir, led) = ledger();
+        let mut camp = DifferentialCampaign::new(
+            ScriptedMachine::new(vec![], simple_program(4)),
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            Box::new(GenesisSelector::new()),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            cfg,
+            1,
+        )
+        .expect("new");
+        // Appended directly (bypassing `step()`): a genesis rollout (issue 1)
+        // and a branch child (issue 2, `rollout.parent == Some(1)`) — no
+        // working-set/occupancy machinery involved, so both start fully
+        // retained and uncontested for collection.
+        let parent_id = camp
+            .ledger
+            .append(&rollout_evidence(1, None, 20))
+            .expect("appends the genesis rollout");
+        let child_id = camp
+            .ledger
+            .append(&rollout_evidence(2, Some(1), 30))
+            .expect("appends the branch child");
+
+        let before = camp.retention_report();
+        assert_eq!(
+            before.batches[&parent_id].recompute_cells,
+            Recomputation::FromRetainedEvidence
+        );
+        assert_eq!(
+            before.batches[&child_id].recompute_cells,
+            Recomputation::FromRetainedEvidence,
+            "a fully-retained graph keeps the honest FromRetainedEvidence label"
+        );
+
+        camp.finalize_evidence().expect("finalize");
+        camp.collect_batch(parent_id)
+            .expect("the parent is not working-set, not live-referenced, and finalized-covered");
+
+        let after = camp.retention_report();
+        assert!(
+            matches!(
+                after.batches[&parent_id].raw,
+                RawAvailability::Collected { .. }
+            ),
+            "the collected parent's raw availability reflects the collection"
+        );
+        assert_eq!(
+            after.batches[&parent_id].recompute_cells,
+            Recomputation::RequiresReplay
+        );
+        assert_eq!(after.batches[&child_id].raw, RawAvailability::Retained);
+        assert_eq!(
+            after.batches[&child_id].recompute_cells,
+            Recomputation::RequiresAncestorReplay,
+            "the child's own raw evidence is still retained, but its ledger \
+             ancestor was collected: recomputing the true lineage-composed \
+             cells still needs replay, so it must not claim \
+             FromRetainedEvidence"
+        );
     }
 
     /// An exploit campaign with real branch lineage: children inherit the
