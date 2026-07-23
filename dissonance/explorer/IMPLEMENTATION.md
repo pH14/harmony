@@ -1056,15 +1056,17 @@ to misdiagnose.
 
 **Fix:** kept `UnsupportedVersion` refusing exactly as loudly and early as
 before (same variant, same `found` field, no behavior change to `open`'s
-`found != VERSION` check). Split the rationale tail into a new private
-`version_refusal_reason(found: u32) -> &'static str` helper the `#[error(...)]`
-attribute calls: `found < VERSION` keeps the existing suffix/truncation/task-144
-sentence verbatim; `found >= VERSION` (i.e. `found > VERSION`, since `==` never
-reaches this arm — `open` only routes here on `found != VERSION`) gets a plain,
-version-neutral "newer build than this one understands" sentence with no claim
-about pre-144 history. thiserror supports an arbitrary expression in the
-format-string position, so this stays one `#[error(...)]` attribute, no manual
-`Display` impl.
+`found != VERSION` check). Split the rationale tail into a two-arm `if *found
+< VERSION { .. } else { .. }` expression **inlined directly in the
+`#[error(...)]` format arg**: the `found < VERSION` arm keeps the existing
+suffix/truncation/task-144 sentence verbatim; the `else` arm (reached whenever
+`open`'s `found != VERSION` check routes here and `found` is not less than
+`VERSION`, i.e. `found > VERSION`) gets a plain, version-neutral "newer build
+than this one understands" sentence with no claim about pre-144 history.
+thiserror accepts an arbitrary expression in the format-string position, so
+this stays one `#[error(...)]` attribute, no manual `Display` impl. (First
+attempt factored this into a private `version_refusal_reason` helper function
+— see the PR #153 review fix batch below for why it was inlined instead.)
 
 **Test:** added `ledger::tests::future_version_is_rejected_without_the_pre_144_claim`
 (`found: 4`) alongside the existing `found: 1`/`found: 2` cases — asserts the
@@ -1079,23 +1081,32 @@ verbatim.
 
 `observations_at_cut`/`observations_at` reduce `self.normalized.events` only,
 against a doc claiming the result is "true at this evidence's own cut". True
-for a Rollout batch (`normalized.events` holds the whole run from genesis).
-False for a post-144 (`hm-aqf0`) Seal batch, whose `normalized.events` holds
-only the run-forward suffix past the sealed rollout's terminal — for a seal
-that did **not** advance past that terminal, the suffix is empty, so the
-accessor reports no accumulated state even when the rollout it seals carries
-real state.
+only for a **genesis-rooted** record (`parent_cut == None`, so
+`normalized.events` holds the whole run from genesis). False for **any
+lineage-bearing record** (`parent_cut: Some(..)`) — not just a post-144
+(`hm-aqf0`) Seal batch, whose `normalized.events` holds only the run-forward
+suffix past the sealed rollout's terminal (empty, and so no accumulated
+state reported, for a seal that did not advance past that terminal even when
+the rollout it seals carries real state), but equally a **branch-child
+Rollout** (task 132), whose `normalized` "carries only its own suffix" per
+its own field doc — the first-attempt doc claimed Rollout batches always
+coincide with the true cut view, which is false for every non-genesis
+rollout in a campaign (PR #153 review, pr153-A).
 
 **Direction taken (per spec, alongside the hm-j7ie ruling, not redesigned):**
 re-document + fence, not compose-aware accessors. A single `Evidence` record
 cannot compose (that needs ancestor access — `compose_observations_at`'s job).
 
 **Doc fix:** rewrote both accessors' doc comments to state plainly they return
-the record-LOCAL reduction over `normalized.events` alone, name the Seal-record
-case (empty map for a non-advanced seal of a state-bearing rollout) explicitly,
-and point callers needing the true cut view at `compose_observations_at`. No
-signature change, no behavior change — `reduce_at_cut`'s call sites are
-untouched.
+the record-LOCAL reduction over `normalized.events` alone. The coincidence with
+the true cut view is restricted to **genesis-rooted** records (`parent_cut ==
+None`); **every** lineage-bearing record (`parent_cut: Some(..)`) is
+suffix-local — named explicitly as two distinct shapes: a post-144 Seal batch
+(empty map for a non-advanced seal of a state-bearing rollout) and a
+branch-child Rollout (its `normalized` is only its own suffix past the branch
+point, task 132) — both directed at `compose_observations_at` for the true
+cut view. No signature change, no behavior change — `reduce_at_cut`'s call
+sites are untouched.
 
 **Explicit example (doc-test-shaped, this crate's convention — no crate here
 uses literal rustdoc doctests):** added
@@ -1106,8 +1117,19 @@ count 2) and a Seal of it that did **not** advance past that terminal
 empty) — the textbook "non-advanced seal of a state-bearing rollout" the drift
 names. Asserts `seal.observations_at_cut().is_empty()` (the local, misleading-if-
 undocumented view) against `compose_observations_at(&led, &seal, seal.cut.sdk_events)`
-recovering `Accumulated({5, 7})` (the true view). Both accessor doc comments
-point at this test by name.
+recovering `Accumulated({5, 7})` (the true view). `observations_at_cut`'s doc
+comment points at this test by name.
+
+**Branch-child Rollout divergence (PR #153 review, pr153-A):** the first
+attempt's fork test, `compose_excludes_the_parent_event_at_the_fork_count`,
+already builds a branch-child Rollout (parent `[5, 7]`, child suffix `[9]`,
+`parent_cut` at count 1) but only asserted the composed side. Added one more
+assertion in the same test: `child.observations_at_cut()` reduces to
+`Accumulated({9})` (the child's own suffix alone, missing the inherited `5`),
+against the existing `compose_observations_at(&led, &child, 2)` assertion of
+`Accumulated({5, 9})` — the same local-vs-composed divergence
+`seal_local_reduction_diverges_from_composed_truth` shows for a Seal, now shown
+for a Rollout. `observations_at_cut`'s doc comment cites both tests by name.
 
 **Caller audit (spec-named, both test-only — no production caller exists):**
 - `campaign.rs` `restart_rebuilds_canonical_inputs_from_the_ledger` (the
@@ -1139,6 +1161,53 @@ nightly (`nightly-2026-06-16`, `cargo test -p explorer --test public_api --
 --ignored`) and confirms **zero drift** from `tests/public-api.txt` — expected,
 since a doc-comment-only edit does not change the signatures `cargo
 public-api` records.
+
+## PR #153 review fix batch (discovery, head a850dcf7 — one batch, three items)
+
+The discovery tribunal (5 seats + Fable 5 judge) returned `REQUEST_CHANGES`
+with two P1s and one P2 riding jointly with one of them; everything else in
+the PR (both beads' core mechanism, both caller audits, the divergence test,
+zero public-API drift) was verified conformant. Fixed as one batch:
+
+- **pr153-A (P1, CONFIRMED, 4-seat convergence).** The `observations_at_cut`
+  rustdoc's coincidence claim ("For a Rollout batch ... the local reduction
+  and the true cut view coincide") is false for a **branch-child** Rollout —
+  `campaign.rs:624-639` builds these with `role: EvidenceRole::Rollout`,
+  `parent_cut: Some(..)`, suffix-only `normalized`, exactly the shape this
+  crate's own `parent_cut` field doc and the fork test's fixtures already
+  demonstrate (parent `[5, 7]` / child suffix `[9]`). The redirect sentence was
+  Seal-scoped, so a caller holding a branch-child Rollout — the majority
+  record shape in any campaign with branches — was affirmatively told the
+  local accessor is the true cut: the exact contract drift hm-wshf exists to
+  close, reintroduced for Rollouts. **Fixed** at the doc choke point: the
+  coincidence claim is now restricted to genesis-rooted records (`parent_cut
+  == None`); both lineage-bearing shapes (post-144 Seal, branch-child
+  Rollout — anything with `parent_cut: Some(..)`) are named as suffix-local,
+  directed at `compose_observations_at`. `IMPLEMENTATION.md`'s echo (this
+  file) corrected the same way. Added the recommended ride-in: one assertion
+  in `compose_excludes_the_parent_event_at_the_fork_count` showing
+  `child.observations_at_cut()` (`{9}`, local) diverge from the test's
+  existing `compose_observations_at` assertion (`{5, 9}`, composed) — the same
+  "show it" pattern as the Seal-side test, now for the Rollout side. No
+  accessor redesign, no rename, no API drift — stayed inside the
+  re-document-not-compose direction the judge confirmed is spec-encoded.
+
+- **pr153-B (P1, CONFIRMED, judge-recomputed) + pr153-C (P2, rides jointly
+  with B).** `cargo mutants --no-shuffle --in-diff` found 1 surviving mutant:
+  `ledger.rs:172:14: replace < with <=` inside `version_refusal_reason` — the
+  `found == VERSION` boundary is never exercised by the `found: 1/2/4`
+  regressions (the only input where `<`/`<=` differ), and `version_refusal_reason`
+  was a one-use helper (simplicity finding riding the same fix). Resolved both
+  as one coherent choice, picking the review's option (ii): **inlined the
+  two-arm `if` directly into the `#[error(...)]` format arg and deleted the
+  helper function** (~15 LOC net removed) rather than pinning the boundary
+  with an admittedly-unreachable assertion. This kills the mutant structurally
+  — cargo-mutants mutates ordinary function-body code, not expressions living
+  inside a derive-macro attribute's token stream, so the `<` no longer has a
+  mutable, separately-testable home — and removes the one-use helper in the
+  same stroke. Recomputed: `cargo mutants --no-shuffle --in-diff` against the
+  full PR diff (`git diff origin/main...HEAD`) reports **0 missed** (see Gates
+  run below).
 
 ## Gates run
 

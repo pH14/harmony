@@ -301,19 +301,30 @@ pub struct CompletedRunEvidence {
 impl CompletedRunEvidence {
     /// The reduced observation map over **this record's own `normalized.events`
     /// only** — a record-LOCAL reduction, *not* the lineage-composed truth at
-    /// the evidence's cut. For a Rollout batch (whose `normalized.events` holds
-    /// the entire run from genesis) the local reduction and the true cut view
-    /// coincide. For a post-144 (`hm-aqf0`) **Seal** batch they do not:
-    /// `normalized.events` holds only the run-forward suffix past the sealed
-    /// rollout's terminal, so this returns just that suffix's own reduction —
-    /// the **empty map** for a seal that did not advance past its rollout's
-    /// terminal, even when the rollout it seals carries real accumulated
-    /// state. Callers that need the true cut view over a Seal's full lineage
+    /// the evidence's cut. For a **genesis-rooted** record (`parent_cut ==
+    /// None`, so `normalized.events` holds the entire run from genesis) the
+    /// local reduction and the true cut view coincide. For **every
+    /// lineage-bearing record** (`parent_cut: Some(..)`) they do not:
+    /// `normalized.events` holds only that record's own suffix past the
+    /// branch/seal point, so this returns just that suffix's own reduction,
+    /// never the inherited ancestor state. Two shapes carry `parent_cut:
+    /// Some(..)` and so are both suffix-local, not just the one named below:
+    /// - a post-144 (`hm-aqf0`) **Seal** batch — the **empty map** for a seal
+    ///   that did not advance past its rollout's terminal, even when the
+    ///   rollout it seals carries real accumulated state;
+    /// - a **branch-child Rollout** (task 132) — "a branch child's
+    ///   `normalized` carries only its own suffix; positions are cumulative
+    ///   from `parent_cut.count`" (see the `parent_cut` field doc above), so
+    ///   this misses every ancestor observation the child inherited.
+    ///
+    /// Callers that need the true cut view over either shape's full lineage
     /// (retention's Seal arm, the parity oracle) must use
     /// [`compose_observations_at`] instead; this accessor is for callers that
     /// deliberately want the record-local view (e.g. a no-panic recomputation
-    /// smoke test). See `seal_local_reduction_diverges_from_composed_truth` in
-    /// this module's tests for the local-vs-composed divergence made explicit.
+    /// smoke test). See `seal_local_reduction_diverges_from_composed_truth`
+    /// and `compose_excludes_the_parent_event_at_the_fork_count` in this
+    /// module's tests for the local-vs-composed divergence made explicit for
+    /// both shapes.
     pub fn observations_at_cut(&self) -> ObservationMap {
         reduce_at_cut(
             &self.normalized.events,
@@ -327,10 +338,11 @@ impl CompletedRunEvidence {
     /// scope as [`observations_at_cut`](Self::observations_at_cut), just at a
     /// caller-given position rather than the record's own cut (a provisional
     /// unsealed cut nominates replay from here). Panics never: an out-of-range
-    /// `included` simply includes the whole local prefix. On a post-144 Seal
-    /// batch this reduces the suffix alone and never recovers the sealed
-    /// rollout's inherited state — use [`compose_observations_at`] for the
-    /// lineage-composed view.
+    /// `included` simply includes the whole local prefix. On any
+    /// lineage-bearing record (`parent_cut: Some(..)` — a post-144 Seal batch
+    /// or a branch-child Rollout) this reduces that record's own suffix alone
+    /// and never recovers the inherited ancestor state — use
+    /// [`compose_observations_at`] for the lineage-composed view.
     pub fn observations_at(&self, included: u64) -> ObservationMap {
         reduce_at_cut(&self.normalized.events, &self.normalized.schema, included)
     }
@@ -566,6 +578,18 @@ mod tests {
         let obs = compose_observations_at(&led, &child, 2);
         let want: BTreeSet<u64> = [5, 9].into_iter().collect();
         assert_eq!(obs.get(&reg7()), Some(&ReducedValue::Accumulated(want)));
+        // The accessor contract, made explicit for a branch-child ROLLOUT
+        // (not just a Seal, hm-wshf PR #153 review): the child's own
+        // `observations_at_cut()` sees only its local suffix `[9]`, missing
+        // the inherited parent state `5` that `compose_observations_at`
+        // recovers above. A `parent_cut: Some(..)` Rollout is suffix-local
+        // exactly like a post-144 Seal — never the true cut view.
+        let local: BTreeSet<u64> = [9].into_iter().collect();
+        assert_eq!(
+            child.observations_at_cut().get(&reg7()),
+            Some(&ReducedValue::Accumulated(local)),
+            "a branch child's local reduction sees only its own suffix, not the inherited parent state"
+        );
         // And the cut itself is half-open on BOTH bounds: at included = 0
         // nothing participates — not even the ancestor event at position 0.
         assert!(

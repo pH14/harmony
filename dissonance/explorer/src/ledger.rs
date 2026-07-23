@@ -131,7 +131,16 @@ pub enum LedgerError {
     /// in-place migration path exists in either direction.
     #[error(
         "evidence ledger version {found} unsupported (this build writes {VERSION}): {}",
-        version_refusal_reason(*found)
+        if *found < VERSION {
+            "the Seal record representation changed in task 144 — a Seal now serializes \
+             the run-forward suffix + observed cut, not the full rollout normalized + \
+             base-branch parent_cut, so a pre-144 (version < 3) ledger's advanced seals \
+             would reopen with historically truncated cells; old ledgers are refused, not \
+             silently reinterpreted"
+        } else {
+            "this file was written by a newer build than this one understands; refused \
+             rather than silently reinterpreting a record shape this build has never seen"
+        }
     )]
     UnsupportedVersion {
         /// The version found in the file header.
@@ -160,24 +169,6 @@ pub enum LedgerError {
         /// The declared budget.
         budget: u64,
     },
-}
-
-/// The rationale tail of [`LedgerError::UnsupportedVersion`]'s message. Only a
-/// `found` **older** than `VERSION` has known history (the task-144 suffix-only
-/// Seal change) and gets the suffix/truncation explanation; a `found` **newer**
-/// than `VERSION` is a future build's file this build has never seen the shape
-/// of, so it gets a plain, version-neutral refusal instead of a false claim
-/// that the file at hand predates task 144.
-fn version_refusal_reason(found: u32) -> &'static str {
-    if found < VERSION {
-        "the Seal record representation changed in task 144 — a Seal now serializes the \
-         run-forward suffix + observed cut, not the full rollout normalized + base-branch \
-         parent_cut, so a pre-144 (version < 3) ledger's advanced seals would reopen with \
-         historically truncated cells; old ledgers are refused, not silently reinterpreted"
-    } else {
-        "this file was written by a newer build than this one understands; refused rather \
-         than silently reinterpreting a record shape this build has never seen"
-    }
 }
 
 /// The referenced immutable-payload backing (the `TraceStore` stand-in in this
