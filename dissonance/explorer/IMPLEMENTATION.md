@@ -1038,3 +1038,126 @@ future-`Moment` record (F1, P1) because the decode slices by position, and its
 content half compared only the commitment digest, blind to an id/schema swap (F2,
 P2). This section reflects the corrected fix; the `BoxGuest` faithfulness
 correction (JC2) was UPHELD and stands.
+
+# tasks/150 — explorer contract clarifications: version-refusal message + Seal-record accessor contract (hm-s6cb, hm-wshf)
+
+Two independent, minimal-diff fixes on the surfaces PR #151 (F1) and PR #147
+(V5) left open. No production behavior changes in either — both are
+message/documentation drift closures.
+
+## `hm-s6cb` — the version-refusal message no longer misdiagnoses a future version
+
+`LedgerError::UnsupportedVersion`'s message was one static string claiming
+every refused `found` predates task 144 ("a pre-144 ... ledger's advanced
+seals would reopen with historically truncated cells"). True for `found <
+VERSION` (the only case that existed until now); false for a hypothetical
+`found > VERSION` (a future build's file) — that file has no pre-144 history
+to misdiagnose.
+
+**Fix:** kept `UnsupportedVersion` refusing exactly as loudly and early as
+before (same variant, same `found` field, no behavior change to `open`'s
+`found != VERSION` check). Split the rationale tail into a new private
+`version_refusal_reason(found: u32) -> &'static str` helper the `#[error(...)]`
+attribute calls: `found < VERSION` keeps the existing suffix/truncation/task-144
+sentence verbatim; `found >= VERSION` (i.e. `found > VERSION`, since `==` never
+reaches this arm — `open` only routes here on `found != VERSION`) gets a plain,
+version-neutral "newer build than this one understands" sentence with no claim
+about pre-144 history. thiserror supports an arbitrary expression in the
+format-string position, so this stays one `#[error(...)]` attribute, no manual
+`Display` impl.
+
+**Test:** added `ledger::tests::future_version_is_rejected_without_the_pre_144_claim`
+(`found: 4`) alongside the existing `found: 1`/`found: 2` cases — asserts the
+refusal still fires (`UnsupportedVersion { found: 4 }`) and that its message
+contains neither `pre-144` nor `truncated` nor `task 144`, and does contain
+`newer`. The existing `version_two_ledger_is_refused_with_the_suffix_reason`
+(`found: 2`) is unchanged and still asserts the suffix/truncated/task-144
+wording — confirming the `found < VERSION` arm's text survived the split
+verbatim.
+
+## `hm-wshf` — the accessor docs now state exactly what they return
+
+`observations_at_cut`/`observations_at` reduce `self.normalized.events` only,
+against a doc claiming the result is "true at this evidence's own cut". True
+for a Rollout batch (`normalized.events` holds the whole run from genesis).
+False for a post-144 (`hm-aqf0`) Seal batch, whose `normalized.events` holds
+only the run-forward suffix past the sealed rollout's terminal — for a seal
+that did **not** advance past that terminal, the suffix is empty, so the
+accessor reports no accumulated state even when the rollout it seals carries
+real state.
+
+**Direction taken (per spec, alongside the hm-j7ie ruling, not redesigned):**
+re-document + fence, not compose-aware accessors. A single `Evidence` record
+cannot compose (that needs ancestor access — `compose_observations_at`'s job).
+
+**Doc fix:** rewrote both accessors' doc comments to state plainly they return
+the record-LOCAL reduction over `normalized.events` alone, name the Seal-record
+case (empty map for a non-advanced seal of a state-bearing rollout) explicitly,
+and point callers needing the true cut view at `compose_observations_at`. No
+signature change, no behavior change — `reduce_at_cut`'s call sites are
+untouched.
+
+**Explicit example (doc-test-shaped, this crate's convention — no crate here
+uses literal rustdoc doctests):** added
+`evidence::tests::seal_local_reduction_diverges_from_composed_truth`. Builds a
+genesis-rooted Rollout (reg 7 accumulates `{5, 7}`, terminal at cumulative
+count 2) and a Seal of it that did **not** advance past that terminal
+(`parent_cut` exactly at the rollout's terminal cut, its own `normalized.events`
+empty) — the textbook "non-advanced seal of a state-bearing rollout" the drift
+names. Asserts `seal.observations_at_cut().is_empty()` (the local, misleading-if-
+undocumented view) against `compose_observations_at(&led, &seal, seal.cut.sdk_events)`
+recovering `Accumulated({5, 7})` (the true view). Both accessor doc comments
+point at this test by name.
+
+**Caller audit (spec-named, both test-only — no production caller exists):**
+- `campaign.rs` `restart_rebuilds_canonical_inputs_from_the_ledger` (the
+  no-panic restart check) calls `.observations_at_cut()` over **every** batch
+  in the ledger (Rollout and Seal alike) and discards the result — the point is
+  that recomputation never panics across every batch shape after a restart,
+  not that the value is the true cut. **Wants the local reduction as-is.**
+  Left unchanged except a comment recording the audit finding and pointing at
+  `assert_view_parity` (same file) as the place cut-correctness IS asserted,
+  via `compose_observations_at`.
+- `retention.rs` `assignment_upsert_dominates_by_strict_quality` calls
+  `e2.observations_at_cut()` to independently recompute the cell key
+  `cells.key(e2.cut, &e2.observations_at_cut())` for cross-checking against
+  `fold_batch`'s own (production) key. `e2` is a `testkit::seal_evidence(...)`
+  fixture: `parent_cut: None`, never appended to the test's ledger, so it has
+  no ancestor to compose over — its record-local reduction **is** the true cut
+  view here (there is nothing beyond it to compose). **Wants the local
+  reduction as-is** — migrating it to `compose_observations_at` would be a
+  no-op given this fixture's shape, so left unchanged except a comment
+  recording why.
+- Production Seal-arm code (`retention.rs` `fold_batch`'s `EvidenceRole::Seal`
+  match arm) and the parity oracle already call `compose_observations_at`, not
+  the local accessors — confirmed unchanged, not part of this task's surface.
+
+**Renaming:** not done. The spec allows it (`local_observations_at`, e.g.) but
+does not require it, and states the misleading docs are the defect, not the
+name. Kept the smaller diff; `cargo public-api` was regenerated on the pinned
+nightly (`nightly-2026-06-16`, `cargo test -p explorer --test public_api --
+--ignored`) and confirms **zero drift** from `tests/public-api.txt` — expected,
+since a doc-comment-only edit does not change the signatures `cargo
+public-api` records.
+
+## Gates run
+
+`cargo build -p explorer --all-features`; `cargo nextest run -p explorer
+--all-features` (154 pass, 1 skip — the two new tests included); `cargo clippy
+-p explorer --all-features --all-targets -- -D warnings` (exit 0; only
+pre-existing root `clippy.toml` `rand::thread_rng`/`rand::rng`/`rand::random`
+config diagnostics, unrelated to this change); `cargo fmt -p explorer --
+--check` (clean). `cargo deny check` — advisories/bans/licenses/sources all ok
+(no dependency change). No `unsafe` added → no Miri obligation.
+**Hash-neutrality:** neither fix touches the evidence/hash path — `hm-s6cb`
+only rewrites an error `Display` string (never hashed/persisted), and `hm-wshf`
+is docs plus a new self-contained test; no `reduce_at_cut`/`compose_observations_at`
+call site changed. Ran anyway as part of the full suite:
+`campaign::tests::same_seed_yields_identical_campaign` and
+`retention::tests::same_seed_yields_identical_retention_artifacts` both green.
+
+## Scope fence
+
+Touched only `dissonance/explorer/src/{ledger.rs,evidence.rs,campaign.rs,retention.rs}`
+and this file. No other bead, no redesign of the Seal representation
+(hm-j7ie's ruling stands), no compose-aware accessor rewrite.

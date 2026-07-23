@@ -299,8 +299,21 @@ pub struct CompletedRunEvidence {
 }
 
 impl CompletedRunEvidence {
-    /// The reduced observation map true at this evidence's own cut (the
-    /// convenience the occupancy reduction and the cell projection consume).
+    /// The reduced observation map over **this record's own `normalized.events`
+    /// only** — a record-LOCAL reduction, *not* the lineage-composed truth at
+    /// the evidence's cut. For a Rollout batch (whose `normalized.events` holds
+    /// the entire run from genesis) the local reduction and the true cut view
+    /// coincide. For a post-144 (`hm-aqf0`) **Seal** batch they do not:
+    /// `normalized.events` holds only the run-forward suffix past the sealed
+    /// rollout's terminal, so this returns just that suffix's own reduction —
+    /// the **empty map** for a seal that did not advance past its rollout's
+    /// terminal, even when the rollout it seals carries real accumulated
+    /// state. Callers that need the true cut view over a Seal's full lineage
+    /// (retention's Seal arm, the parity oracle) must use
+    /// [`compose_observations_at`] instead; this accessor is for callers that
+    /// deliberately want the record-local view (e.g. a no-panic recomputation
+    /// smoke test). See `seal_local_reduction_diverges_from_composed_truth` in
+    /// this module's tests for the local-vs-composed divergence made explicit.
     pub fn observations_at_cut(&self) -> ObservationMap {
         reduce_at_cut(
             &self.normalized.events,
@@ -309,9 +322,15 @@ impl CompletedRunEvidence {
         )
     }
 
-    /// The reduced observation map at an arbitrary earlier cut on the same
-    /// evidence (a provisional unsealed cut nominates replay from here). Panics
-    /// never: an out-of-range `included` simply includes the whole prefix.
+    /// The reduced observation map over **this record's own `normalized.events`
+    /// only**, at an arbitrary `included` position — the same record-LOCAL
+    /// scope as [`observations_at_cut`](Self::observations_at_cut), just at a
+    /// caller-given position rather than the record's own cut (a provisional
+    /// unsealed cut nominates replay from here). Panics never: an out-of-range
+    /// `included` simply includes the whole local prefix. On a post-144 Seal
+    /// batch this reduces the suffix alone and never recovers the sealed
+    /// rollout's inherited state — use [`compose_observations_at`] for the
+    /// lineage-composed view.
     pub fn observations_at(&self, included: u64) -> ObservationMap {
         reduce_at_cut(&self.normalized.events, &self.normalized.schema, included)
     }
@@ -558,6 +577,87 @@ mod tests {
         assert_eq!(
             compose_observations_at(&led, &child, 1).get(&reg7()),
             Some(&ReducedValue::Accumulated(one))
+        );
+    }
+
+    /// The accessor contract made explicit (`hm-wshf`): a Seal record's own
+    /// [`observations_at_cut`](CompletedRunEvidence::observations_at_cut)
+    /// reduces `normalized.events` alone — for a seal that did **not**
+    /// advance past its rollout's terminal (task 144), that local vector is
+    /// empty, so the local accessor reports no accumulated state even though
+    /// the rollout it seals carries real state. [`compose_observations_at`]
+    /// walks the sealed rollout's lineage and reports the true accumulated
+    /// value at the same cut. Callers needing the true cut view over a Seal
+    /// must use `compose_observations_at`, never the local accessor.
+    #[test]
+    fn seal_local_reduction_diverges_from_composed_truth() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut led =
+            crate::ledger::EvidenceLedger::open(&dir.path().join("evidence.log")).expect("open");
+        // The sealed rollout (issue 1, genesis-rooted): reg 7 accumulates 5
+        // then 7, terminal at cumulative count 2.
+        let rollout = CompletedRunEvidence {
+            rollout: RunId {
+                issue: 1,
+                parent: None,
+            },
+            role: EvidenceRole::Rollout,
+            terminal: StopReason::Quiescent { vtime: Moment(20) },
+            env: Reproducer {
+                blob_version: 1,
+                bytes: vec![1],
+            },
+            cut: EvidenceCut {
+                at: Moment(20),
+                sdk_events: 2,
+            },
+            normalized: normalized(UpdateOp::Accumulate, &[5, 7]),
+            parent_cut: None,
+            sealable_moments: vec![],
+        };
+        // A seal that did NOT advance past the rollout's terminal (task 144):
+        // its own suffix is empty and its `parent_cut` is exactly the
+        // rollout's terminal cut — a "non-advanced seal of a state-bearing
+        // rollout" (the case the accessor contract drift names).
+        let seal = CompletedRunEvidence {
+            rollout: RunId {
+                issue: 2,
+                parent: Some(1),
+            },
+            role: EvidenceRole::Seal,
+            terminal: StopReason::Quiescent { vtime: Moment(20) },
+            env: Reproducer {
+                blob_version: 1,
+                bytes: vec![2],
+            },
+            cut: EvidenceCut {
+                at: Moment(20),
+                sdk_events: 2,
+            },
+            normalized: normalized(UpdateOp::Accumulate, &[]),
+            parent_cut: Some(EvidenceCut {
+                at: Moment(20),
+                sdk_events: 2,
+            }),
+            sealable_moments: vec![],
+        };
+        led.append(&rollout).expect("rollout appends");
+        led.append(&seal).expect("seal appends");
+        // The record-local accessor sees only the seal's own (empty) suffix:
+        // no accumulated state, even though the sealed rollout carries real
+        // state at this exact cut.
+        assert!(
+            seal.observations_at_cut().is_empty(),
+            "a non-advanced seal's local reduction is the empty suffix, not the rollout's state"
+        );
+        // The lineage-composed accessor walks the sealed rollout and reports
+        // the true accumulated value at the seal's cut.
+        let composed = compose_observations_at(&led, &seal, seal.cut.sdk_events);
+        let want: BTreeSet<u64> = [5, 7].into_iter().collect();
+        assert_eq!(
+            composed.get(&reg7()),
+            Some(&ReducedValue::Accumulated(want)),
+            "compose_observations_at recovers the sealed rollout's true state"
         );
     }
 

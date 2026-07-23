@@ -2390,7 +2390,13 @@ mod tests {
         let led = EvidenceLedger::open(&path).expect("reopen");
         for id in &ids {
             assert!(led.contains(id), "batch replayed from the durable ledger");
-            // …and its reduced observations recompute identically.
+            // …and its reduced observations recompute without panicking. This
+            // deliberately wants the record-LOCAL reduction (hm-wshf audit):
+            // for a Seal batch that's just its own suffix, not the lineage-
+            // composed truth — the point here is no-panic recomputation over
+            // every batch shape, not cut correctness (that's asserted by
+            // `assert_view_parity`'s `compose_observations_at` comparison
+            // below).
             let obs = led.get(id).unwrap().observations_at_cut();
             let _ = obs; // pure recomputation, no panic
         }
