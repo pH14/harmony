@@ -1576,7 +1576,51 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .filter(|&m| until.deadline.is_none_or(|d| m <= d.0));
             match next {
                 Some(m) => {
-                    vmm.arm_arrival(m);
+                    // hm-zwhi: do NOT drop `arm_arrival`'s outcome. On a
+                    // determinism-complete (pvclock) backend the exact-count seam
+                    // must clamp the guest EXACTLY at the staged `Moment`; if it
+                    // cannot, [`step`] free-runs the guest PAST `m` to the next
+                    // natural boundary and only THEN poisons — from a coordinate
+                    // already beyond the marker. Two ways the seam fails to clamp
+                    // `m`, both a schedule-integrity event (never a no-op):
+                    //   1. it DECLINES (`arm_arrival` → `false`: `work_for_vns(m)`
+                    //      maps below the current anchor — a re-anchored clock);
+                    //      [`arrival_vns`](Vmm::arrival_vns) is then `None`. Held
+                    //      defensively: on a consistent clock a future `m` (the
+                    //      drain left it staged because `m > effective_vns`) always
+                    //      maps at-or-above the anchor, so this arm never declines —
+                    //      the task's leading "silent decline" hypothesis is refuted
+                    //      (hm-zwhi verify-first).
+                    //   2. it arms, but the nearest representable arrival lands PAST
+                    //      `m` (`arrival_vns() > m`): `m` is off the guest's
+                    //      exact-count clock grid, so `work_for_vns` rounds UP and
+                    //      the seam can only overshoot (the portable repro of the
+                    //      maze @3e7 shape).
+                    // Refuse loudly HERE — naming the STAGED `Moment` and the
+                    // unreachable landing — before the guest executes past it, and
+                    // latch the poison like any crossed marker. Scoped to
+                    // `can_arm_arrival()`: a backend WITHOUT the exact seam (stock
+                    // KVM / M1 / M2) returns `false` as its ORDINARY task-58
+                    // fallback (run to a natural exit, compare `effective_vns`),
+                    // which must stay a no-op. On every currently-green path the
+                    // contract clock is exact (1 ns/branch), so a staged `m` is on
+                    // the grid and `arrival_vns() == m` — this gate is byte-for-byte
+                    // inert (hash-neutral).
+                    let _armed = vmm.arm_arrival(m);
+                    if vmm.can_arm_arrival() && vmm.arrival_vns().is_none_or(|v| v > m) {
+                        let landing = vmm
+                            .arrival_vns()
+                            .or_else(|| vmm.effective_vns())
+                            .unwrap_or(m);
+                        // `landing` is a `u64` (Copy), so the `vmm` borrow of
+                        // `self.vmm` ends here — freeing `&mut self` for the latch,
+                        // exactly as the crossed-marker poison below does.
+                        self.schedule_poisoned = Some((m, landing));
+                        return Ok(Err(ControlError::ScheduleUnsatisfiable {
+                            moment: m,
+                            vtime: landing,
+                        }));
+                    }
                 }
                 None => vmm.clear_arrival(),
             }
@@ -4532,6 +4576,131 @@ mod tests {
             &s.vmm().unwrap().guest_memory()[0x40..0x48],
             &[0u8; 8],
             "the crossed fault must not have applied"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // hm-zwhi — exact-arrival overshoots an OFF-GRID staged Moment on a
+    // coarse-grained (pvclock-guest) clock.
+    //
+    // The @1e7 maze lane is green because every staged Moment lands ON the
+    // guest's exact-count clock grid; the @3e7 pvclock lane fails because a
+    // reseed marker minted in one frame is OFF the current grid, and the
+    // exact-count arrival seam ([`Vmm::arm_arrival`]) can only stop the guest
+    // AT a grid point. A large `ratio_num` models the pvclock refresh quantum
+    // (each work unit advances V-time by a coarse step), so a Moment between
+    // grid points is unreachable by exact arrival — the run rounds UP to the
+    // next grid point and sails PAST the marker. This is the vns↔work seam the
+    // task names; the leading "arm_arrival silently DECLINES" hypothesis is
+    // refuted below (the arm returns `true`; the overshoot is baked into
+    // `work_for_vns`'s round-UP, not a decline).
+    // -----------------------------------------------------------------------
+
+    /// V-time coarse-grid enforcement VM: identical to [`enforce_vmm`] but the
+    /// clock advances `ratio_num` ns per work unit, so its V-time grid is
+    /// `{0, ratio_num, 2·ratio_num, …}` — a portable model of a pvclock guest
+    /// whose ~10.4 ms refresh quantum is the grid step. A Moment that is not a
+    /// multiple of `ratio_num` is OFF the grid.
+    fn coarse_enforce_vmm(ratio_num: u64, deadlines: usize, seed: u64) -> Vmm<MockBackend> {
+        let mut exits = vec![
+            Exit::Common(CommonExit::Deadline {
+                reached: vmm_backend::Moment(0)
+            });
+            deadlines
+        ];
+        exits.push(Exit::Common(CommonExit::Idle));
+        let mut m = MockBackend::with_exits(exits);
+        m.set_policy(&X86Policy {
+            cpuid: vmm_backend::CpuidModel::default(),
+            msr_filter: vmm_backend::MsrFilter::default(),
+        })
+        .unwrap();
+        let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(
+                vtime::VClockConfig {
+                    ratio_num,
+                    ratio_den: 1,
+                    guest_hz: 2_000_000_000,
+                    guest_base: 0,
+                    vns_base: 0,
+                },
+                Box::new(ScriptedWork::at(0)),
+                seed,
+            )
+            .unwrap(),
+        );
+        v.wire_snapshot_hashing();
+        v.restore_guest_memory(&enforce_image()).unwrap();
+        v
+    }
+
+    #[test]
+    fn arm_arrival_rounds_an_off_grid_moment_up_not_declines() {
+        // VERIFY-FIRST (the task's "verify the hypothesis before any fix"): on a
+        // coarse grid, arming an OFF-GRID Moment does NOT decline. `arm_arrival`
+        // returns `true`, arming at `work_for_vns(m)` — the round-UP work count
+        // whose V-time is the FIRST grid point at-or-after `m`, which strictly
+        // OVERSHOOTS `m`. So the overshoot is the round-up, not a silent decline
+        // (the leading hypothesis is refuted; recorded on hm-zwhi).
+        let ratio = 1_000u64; // 1000 ns / work unit — grid at 0,1000,2000,…
+        let mut v = coarse_enforce_vmm(ratio, 0, 7);
+        let m = 1_500u64; // between grid points 1000 and 2000 — OFF grid
+        assert!(v.can_arm_arrival(), "coarse determinism clock is armable");
+        assert_eq!(v.effective_vns(), Some(0), "fresh VM sits at grid point 0");
+        assert!(
+            v.arm_arrival(m),
+            "arm_arrival must NOT decline an off-grid future Moment — it rounds up"
+        );
+        // The armed arrival's V-time is the grid CEIL of m (2000), strictly > m:
+        // stopping there lands the guest PAST the marker.
+        assert_eq!(
+            v.arrival_vns(),
+            Some(2_000),
+            "the armed arrival lands at the next grid point (2000), overshooting m=1500"
+        );
+    }
+
+    #[test]
+    fn off_grid_staged_moment_is_refused_at_the_arm_without_overshooting() {
+        // The run-loop counterpart: staging a fault at an off-grid Moment on a
+        // coarse (pvclock-shaped) clock. The exact-arrival seam cannot stop the
+        // guest AT the marker; before the fix it armed the grid-ceil, stepped
+        // PAST the marker, and only THEN poisoned — free-running the guest past a
+        // Moment it was told to stop at (on the box: a whole refresh quantum).
+        // After the fix the run refuses AT the arm site, naming the staged
+        // Moment, and the guest never executes past it.
+        let ratio = 1_000u64;
+        let live = coarse_enforce_vmm(ratio, 1, 7);
+        let factory = Box::new(move || Ok(coarse_enforce_vmm(ratio, 1, 7)));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        stage_corrupt(&mut s, 1_500);
+        // A run whose deadline is well beyond the marker: the exact-arrival seam,
+        // not the deadline, is what must clamp the marker.
+        let reply = run_with_deadline(&mut s, 100_000);
+        assert_eq!(
+            reply,
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment: 1_500,
+                vtime: 2_000,
+            }),
+            "the off-grid marker is refused, naming the STAGED Moment (1500) and \
+             the unreachable next grid arrival (2000)"
+        );
+        // The fix's whole point: the guest did NOT execute past the marker. Before
+        // the fix the arrival stepped to work=2 (effective_vns 2000 > 1500); after,
+        // the refusal precedes the step, so the VM still sits at grid point 0.
+        assert_eq!(
+            s.vmm().unwrap().effective_vns(),
+            Some(0),
+            "the guest must not free-run past the staged Moment it was told to stop at"
+        );
+        // The fault never applied (recorded-apply-point integrity).
+        assert_eq!(
+            &s.vmm().unwrap().guest_memory()[0x40..0x48],
+            &[0u8; 8],
+            "the unreachable marker's fault must not have applied"
         );
     }
 
