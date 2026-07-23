@@ -359,12 +359,22 @@ impl CompletedRunEvidence {
     /// `take(included)`), *not* a cumulative position — unlike
     /// [`compose_observations_at`]'s `included`, which IS cumulative. Panics
     /// never: an out-of-range `included` simply includes the whole local
-    /// prefix. Coincidence with the composed truth is keyed by
-    /// `rollout.parent` exactly as for
-    /// [`observations_at_cut`](Self::observations_at_cut): `None` (no ledger
-    /// ancestor) means nothing is omitted; `Some(..)` means this omits
-    /// whatever retained ancestor state precedes this record's own suffix —
-    /// use [`compose_observations_at`] for the lineage-composed view.
+    /// prefix.
+    ///
+    /// For a `rollout.parent == None` record (no ledger ancestor to compose
+    /// through) this coincides with the composed truth only up to the
+    /// cumulative-position translation: `observations_at(k) ==
+    /// compose_observations_at(ledger, self, base + k)`, where `base` is
+    /// this record's own `parent_cut` count (0 when `parent_cut` is `None`).
+    /// Equality at matched raw arguments — `observations_at(k) ==
+    /// compose_observations_at(ledger, self, k)` — holds only when `base` is
+    /// 0 (fixture and legacy pre-132 decodes); a production genesis record's
+    /// `parent_cut` is `Some(genesis_cut)` with a generally nonzero count
+    /// (the `parent_cut` field doc above), so the same untranslated `k`
+    /// diverges between the two. `Some(..)` `rollout.parent` means this also
+    /// omits whatever retained ancestor state precedes this record's own
+    /// suffix, regardless of translation — use [`compose_observations_at`]
+    /// for the lineage-composed view.
     pub fn observations_at(&self, included: u64) -> ObservationMap {
         reduce_at_cut(&self.normalized.events, &self.normalized.schema, included)
     }
@@ -680,6 +690,20 @@ mod tests {
             local, composed,
             "rollout.parent == None: nothing to compose, so local == composed \
              even though parent_cut is Some(..)"
+        );
+        // hm-0qpm witness: coincidence is up to the cumulative-position
+        // translation, not at matched raw arguments. `base` is 3 here, so
+        // `observations_at(1)` (local index 1) matches `compose_observations_at`
+        // only when called with `base + 1 == 4`, not with the same raw `1`.
+        assert_eq!(
+            ev.observations_at(1),
+            compose_observations_at(&led, &ev, base + 1),
+            "observations_at(k) == compose_observations_at(ledger, ev, base + k)"
+        );
+        assert_ne!(
+            ev.observations_at(1),
+            compose_observations_at(&led, &ev, 1),
+            "matched raw arguments diverge once base != 0"
         );
     }
 
