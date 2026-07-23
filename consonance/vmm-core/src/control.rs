@@ -4803,6 +4803,247 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // task 142 (hm-40na) — the GENUINE late-landing mechanism, on the EXACT
+    // contract clock. The coarse-grid tests above are a PROXY: they coarsen the
+    // *V-time clock* (`ratio_num == 1000`) so the ARM itself rounds up
+    // (`arrival_vns() > m`) and the PR #143 arm-seam guard
+    // (`ScheduleMomentUnreachable`) fires. Here the clock is exact
+    // (`ratio_num == 1`, `contract_vclock_config`), so a staged Moment is ON the
+    // grid and `arm_arrival` clamps at it EXACTLY (`arrival_vns() == m`); the
+    // overshoot lives at the BACKEND, via [`MockBackend::push_late_landing`]: the
+    // exact-count seam could not clamp, so `run_until` lands PAST `m` at the next
+    // natural boundary — the faithful @3e7 shape (a real late landing, not a clock
+    // ratio). PR #143's regression could only use the proxy because the mock then
+    // rewrote `reached := deadline` and could never land late (mock.rs:393-399).
+    //
+    // FINDING (this task's output, fed to hm-x1ss — see IMPLEMENTATION.md "Task
+    // 142"). On the exact clock the arm-seam guard is **inert**: a genuine late
+    // landing is NOT refused at the arm (nothing overshoots there —
+    // `arrival_vns() == m`), it is refused **post-step** by the crossed-marker /
+    // unsynchronized drain clause (control.rs:1492) with `ScheduleUnsatisfiable`,
+    // once the guest has physically free-run past the marker. This confirms PR
+    // #143's own IMPLEMENTATION.md ("inert on the box's @3e7 case by design"):
+    // `ScheduleMomentUnreachable` catches the vns↔work *round-UP* seam, NOT the
+    // backend-can't-clamp late landing that @3e7 actually is. The box cure stays
+    // hm-x1ss; this task makes the shape portably reproducible and pins which
+    // guard actually fires.
+    // -----------------------------------------------------------------------
+
+    /// A determinism-complete VM (exact contract clock, `ratio_num == 1`, so
+    /// `arm_arrival` clamps on-grid) whose single scripted arrival leg lands
+    /// **LATE** — the guest free-runs PAST the requested deadline to `land_at`
+    /// (task 142). `ScriptedWork::at(0)` + no LAPIC/pvclock: the ONLY `run_until`
+    /// deadline is the host-fault arrival, so the late landing is unambiguously
+    /// the overshoot of THAT arm. No `wire_lapic` (unlike `enforce_vmm`) keeps the
+    /// leg free of a competing timer deadline.
+    fn late_landing_vmm(land_at: u64) -> Vmm<MockBackend> {
+        let mut m = MockBackend::with_exits(vec![
+            Exit::Common(CommonExit::Deadline {
+                reached: vmm_backend::Moment(0),
+            }),
+            Exit::Common(CommonExit::Idle),
+        ]);
+        // The scripted lateness — an explicit, deterministic test input (no clock,
+        // no randomness): the arrival leg lands at `land_at` instead of its exact
+        // deadline.
+        m.push_late_landing(vmm_backend::Moment(land_at));
+        m.set_policy(&X86Policy {
+            cpuid: vmm_backend::CpuidModel::default(),
+            msr_filter: vmm_backend::MsrFilter::default(),
+        })
+        .unwrap();
+        let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 7).unwrap(),
+        );
+        v.wire_snapshot_hashing();
+        v.restore_guest_memory(&enforce_image()).unwrap();
+        v
+    }
+
+    /// A server over [`late_landing_vmm`] whose factory boots identically-composed
+    /// restore targets, so `branch`/`replay` (the poison recovery) succeed.
+    fn late_landing_server(land_at: u64) -> ControlServer<MockBackend> {
+        ControlServer::new(
+            late_landing_vmm(land_at),
+            Box::new(move || Ok(late_landing_vmm(land_at))),
+        )
+    }
+
+    #[test]
+    fn an_exact_clock_arm_clamps_on_grid_so_the_arm_seam_guard_is_inert() {
+        // VERIFY-FIRST (mirrors `arm_arrival_rounds_an_off_grid_moment_up_not_
+        // declines`, the proxy's dual): on the EXACT contract clock the staged
+        // Moment 1500 is ON the grid, so `arm_arrival` neither declines NOR rounds
+        // up — it clamps EXACTLY at 1500 (`arrival_vns() == m`). Therefore the PR
+        // #143 arm-seam guard (`can_arm_arrival() && arrival_vns() > m`) is
+        // byte-for-byte inert on this clock, and a genuine late landing can only be
+        // caught POST-step. Contrast the proxy: there `arrival_vns() == 2000 > 1500`.
+        let mut v = late_landing_vmm(2_000);
+        let m = 1_500u64; // a whole-ns Moment — ON the 1 ns/branch grid
+        assert!(
+            v.can_arm_arrival(),
+            "the contract clock is a determinism-complete arm"
+        );
+        assert_eq!(v.effective_vns(), Some(0), "a fresh VM sits at count 0");
+        assert!(
+            v.arm_arrival(m),
+            "arm_arrival must not decline an on-grid future Moment"
+        );
+        assert_eq!(
+            v.arrival_vns(),
+            Some(1_500),
+            "the exact clock clamps the arm AT m (1500) — no round-up, so \
+             arrival_vns() > m is false and ScheduleMomentUnreachable can never fire"
+        );
+    }
+
+    #[test]
+    fn a_genuine_late_landing_overshoots_then_is_refused_loud() {
+        // The task's work-item 1, on the GENUINE mechanism. Stage a fault at 1500,
+        // run with a deadline well beyond it (100_000): the exact-arrival seam arms
+        // at 1500 exactly (proven by the sibling above), but the backend cannot
+        // clamp — `run_until` lands LATE at 2000 (the next natural boundary). The
+        // guest has now physically executed PAST the marker, so the run refuses
+        // LOUD — but with `ScheduleUnsatisfiable` at the POST-step drain, NOT the
+        // arm-seam guard (which is inert here; see the section FINDING). The anchor
+        // is pinned to the deterministic deadline target (1500), so `vtime == 1500`.
+        let mut s = late_landing_server(2_000);
+        hello(&mut s);
+        stage_corrupt(&mut s, 1_500);
+        assert_eq!(
+            run_with_deadline(&mut s, 100_000),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment: 1_500,
+                vtime: 1_500,
+            }),
+            "a genuine late landing is refused loud post-step (crossed marker), \
+             NOT at the arm — ScheduleMomentUnreachable is inert on the fine clock"
+        );
+        // The guest PHYSICALLY free-ran past the marker — the thing the ratio-1000
+        // proxy CANNOT express (there the arm-site refusal precedes the step, so the
+        // guest never moves: `effective_vns() == Some(0)`, and it stays synchronized
+        // at grid point 0). Here the leg stepped and landed INEXACTLY: `run_until`
+        // returned reached=2000 ≠ the target 1500, so the VM is UNSYNCHRONIZED — the
+        // observable signature of the overshoot the mock now models.
+        assert_eq!(
+            s.vmm().unwrap().effective_vns(),
+            Some(1_500),
+            "the guest stepped and advanced to the arrival target (proxy stays at 0)"
+        );
+        assert!(
+            !s.vmm().unwrap().is_synchronized(),
+            "the late landing is INEXACT (reached 2000 ≠ target 1500) — the physical \
+             overshoot the proxy's arm-site refusal never lets happen"
+        );
+        // MANUAL-MUTATION note (matching how the coarse tests pin their guards). The
+        // guard that actually catches this genuine shape is the crossed-marker /
+        // unsynchronized drain clause `if m < vns || !synchronized` (control.rs:1492).
+        // MUTATION: delete its `|| !synchronized` disjunct. Then, with the fault
+        // still staged at 1500 and the guest UNSYNCHRONIZED at vns==1500, the drain
+        // no longer poisons (`1500 < 1500` is false) — it falls through to
+        // `apply_host_fault` and applies the fault at count 1500 even though the
+        // guest already executed to 2000: the OLD SILENT OVERSHOOT (a crossed marker
+        // applied from the past). The pre-conditions that mutation would mis-apply
+        // are pinned above (fault staged at 1500, unsynchronized at 1500). The
+        // arm-seam guard (`ScheduleMomentUnreachable`) is inert here: disabling IT
+        // changes nothing — hence PR #143's proxy fixture could not express this red.
+        assert_eq!(
+            &s.vmm().unwrap().guest_memory()[0x40..0x48],
+            &[0u8; 8],
+            "the crossed marker must not have applied (recorded-apply-point integrity)"
+        );
+    }
+
+    #[test]
+    fn a_late_landing_refusal_latches_the_poison() {
+        // The task's work-item 2 — the poison-latch contract under the late-landing
+        // path (the same F4 assertions PR #143 pins for the arm-site refusal, now on
+        // the genuine post-step `ScheduleUnsatisfiable`). No snapshot/restore here so
+        // it stays Miri-clean; the rewind-CLEARS half is the Miri-ignored sibling.
+        let mut s = late_landing_server(2_000);
+        hello(&mut s);
+        stage_corrupt(&mut s, 1_500);
+        let poisoned = Err(ControlError::ScheduleUnsatisfiable {
+            moment: 1_500,
+            vtime: 1_500,
+        });
+        assert_eq!(
+            run_with_deadline(&mut s, 100_000),
+            poisoned,
+            "the genuine late landing poisons the schedule"
+        );
+        // A re-sent run keeps failing with the SAME variant + coordinates (never
+        // silently different, never applying the crossed marker from the past).
+        assert_eq!(
+            run_with_deadline(&mut s, 100_000),
+            poisoned,
+            "a re-sent run stays poisoned with the identical refusal"
+        );
+        // `perturb` onto the poisoned schedule is itself rejected, with the ORIGINAL
+        // coordinates (not the new stage's) — staging onto an unsatisfiable schedule
+        // is unsatisfiable.
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+                at: Moment(9_000),
+            })
+            .unwrap(),
+            poisoned,
+            "perturb stays poisoned with the original (1500, 1500) coordinates"
+        );
+        // `snapshot` is rejected while latched — the poison-latch guard returns
+        // before any seal, so this stays Miri-clean (no `Store` reached).
+        assert_eq!(
+            s.handle(&Request::Snapshot).unwrap(),
+            poisoned,
+            "snapshot stays poisoned while the schedule is unsatisfiable"
+        );
+        assert_eq!(
+            &s.vmm().unwrap().guest_memory()[0x40..0x48],
+            &[0u8; 8],
+            "the crossed marker never applied"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (Replay → ControlServer::restore → Store::materialize → tempfile), which Miri cannot execute under isolation; the refusal + poison-latch pins are Miri-covered by the sibling a_late_landing_refusal_latches_the_poison"
+    )]
+    fn a_late_landing_refusal_latch_clears_on_rewind() {
+        // Work-item 2, rewind half: a `branch`/`replay` rewind clears the
+        // late-landing poison latch, so the session runs cleanly again — the same
+        // recovery the coarse arm-site latch has
+        // (`off_grid_refusal_latch_clears_on_rewind`) and the crossed-fault latch has
+        // (`schedule_poison_persists_until_a_rewind`).
+        let mut s = late_landing_server(2_000);
+        hello(&mut s);
+        let base = snap(&mut s); // a pristine base sealed before anything is staged
+        stage_corrupt(&mut s, 1_500);
+        let poisoned = Err(ControlError::ScheduleUnsatisfiable {
+            moment: 1_500,
+            vtime: 1_500,
+        });
+        assert_eq!(
+            run_with_deadline(&mut s, 100_000),
+            poisoned,
+            "the late landing poisons the schedule"
+        );
+        // The rewind (replay of the pristine base) clears the latch — schedule empty,
+        // nothing to arm, so the session runs cleanly to a terminal stop.
+        assert_eq!(
+            s.handle(&Request::Replay(base)).unwrap(),
+            Ok(Reply::Unit),
+            "replay of the pristine base clears the late-landing poison latch"
+        );
+        assert!(
+            matches!(run_all_res(&mut s), Ok(Reply::Stop(_))),
+            "after the rewind the session runs cleanly"
+        );
+    }
+
     #[test]
     #[cfg_attr(
         miri,

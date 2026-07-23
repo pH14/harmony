@@ -4611,6 +4611,70 @@ portable regression pinning the vns↔work-seam overshoot shape.
   `ScheduleMomentUnreachable(1500, 2000)` (original coordinates), and a `replay` of a
   pristine base clears it (the session then runs cleanly).
 
+## Task 142 (hm-40na) — the genuine late landing, and which guard actually fires
+
+PR #143's F1 residue: its regression could only model the `@3e7` overshoot with a
+**ratio-1000 V-time-clock proxy** because `MockBackend::run_until` rewrote
+`reached := deadline` and could never land late. Task 142 gave the mock a real
+late-landing knob (`MockBackend::push_late_landing`, `vmm-backend`), and this
+section records what driving the guard from a **genuine** late landing on the
+**exact** contract clock (`ratio_num == 1`) actually does — the task's substantive
+output.
+
+**Fixtures + tests (`control.rs`, `control::tests`, all portable + Miri-clean
+except the one restore-reaching latch-clears sibling):**
+
+- `late_landing_vmm` / `late_landing_server` — a determinism-complete VM on the
+  exact contract clock whose single arrival leg lands LATE via the scripted mock.
+  No LAPIC/pvclock, `ScriptedWork::at(0)`: the *only* `run_until` deadline is the
+  host-fault arrival, so the overshoot is unambiguously that arm's.
+- `an_exact_clock_arm_clamps_on_grid_so_the_arm_seam_guard_is_inert` (verify-first,
+  the dual of the proxy's `arm_arrival_rounds_an_off_grid_moment_up_not_declines`):
+  on the fine clock a staged `Moment` is ON the grid, so `arm_arrival` clamps
+  EXACTLY (`arrival_vns() == m`) — it neither declines nor rounds up.
+- `a_genuine_late_landing_overshoots_then_is_refused_loud` — the work-item-1 test.
+- `a_late_landing_refusal_latches_the_poison` + `…_latch_clears_on_rewind` — the
+  work-item-2 poison-latch contract (re-sent run / perturb / snapshot re-rejected;
+  rewind clears), the same F4 shape PR #143 pins, now on the genuine path.
+
+**FINDING (the deliverable's core, fed to hm-x1ss — NOT cured here).** On the exact
+clock a genuine late landing is **not** caught by the merged arm-seam guard
+`ScheduleMomentUnreachable`. Empirically (and now pinned): the arm clamps at `m`
+exactly, the guard's `arrival_vns() > m` is false, so it is **inert**; the guest
+physically free-runs to the scripted boundary (the landing is INEXACT ⇒
+`is_synchronized() == false`), and the run is refused **post-step** by the
+crossed-marker / unsynchronized drain clause (control.rs:1492) with
+`ScheduleUnsatisfiable { moment: 1500, vtime: 1500 }` (the anchor is pinned to the
+deterministic deadline target, so `vtime == m`, not the physical landing). This is
+**exactly** what this file already predicted for the box (F2 / "What the fix does
+and does NOT cure"): `ScheduleMomentUnreachable` catches the vns↔work *round-UP*
+seam (the ratio-1000 proxy's shape), while `@3e7` is the *backend-can't-clamp* late
+landing — a different mechanism the arm-seam guard cannot pre-empt.
+
+- **So work-item 1 as literally written — "drive `ScheduleMomentUnreachable` from a
+  genuine late landing" — is unsatisfiable mock-only.** Making the arm-seam guard
+  fire from a genuine late landing would require a production control-path/`arm`
+  change (e.g. having the arm consult a backend-reported reachable landing) — which
+  the spec's scope guard forbids and routes to hm-x1ss. The task's *achievable*
+  substance (delivered here, confirmed by Paul): the portable late-landing
+  mechanism + tests that pin **which** guard fires and prove the arm-seam guard's
+  inertness, plus the mutation note below. The proxy tests are retained unchanged.
+- **What the genuine late landing expresses that the ratio-1000 proxy cannot:** the
+  guest **physically executing past the marker**. The proxy refuses AT the arm, so
+  the guest never steps (`effective_vns() == 0`, still synchronized); the genuine
+  late landing steps and lands inexactly (`effective_vns()` advanced to the target,
+  `is_synchronized() == false`) — the true `@3e7` shape.
+- **Manual-mutation note (in `a_genuine_late_landing_overshoots_then_is_refused_loud`,
+  matching how the proxy tests pin their guards).** The guard that catches this
+  genuine shape is the `|| !synchronized` disjunct of the drain's crossed-marker
+  clause (control.rs:1492). MUTATION: delete it. Then, with the fault still staged
+  at 1500 and the guest unsynchronized at `vns == 1500`, the drain stops poisoning
+  (`1500 < 1500` is false) and falls through to `apply_host_fault` — applying the
+  fault at a count the guest already executed past (it physically ran to 2000): the
+  OLD SILENT OVERSHOOT. Disabling the arm-seam guard instead changes nothing here
+  (it never fired) — which is precisely why PR #143's proxy fixture could not
+  express this red.
+
 ## Gates (Mac)
 
 `build` / `nextest` (`vmm-core` 537 passed / 4 skipped — includes the two `hm-zwhi`
