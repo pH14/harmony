@@ -1,0 +1,7 @@
+interface:
+  display_name: "Harmony Coordinator (Draft)"
+  short_description: "Evaluate provider-neutral Harmony orchestration"
+  default_prompt: "Use $harmony-coordinator to evaluate one bounded provider-neutral coordinator iteration."
+
+policy:
+  allow_implicit_invocation: false

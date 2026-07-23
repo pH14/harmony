@@ -1,0 +1,7 @@
+interface:
+  display_name: "Harmony Handoff (Draft)"
+  short_description: "Evaluate provider-neutral Harmony handoff"
+  default_prompt: "Use $harmony-handoff to evaluate a provider-neutral coordinator handoff for this work."
+
+policy:
+  allow_implicit_invocation: false

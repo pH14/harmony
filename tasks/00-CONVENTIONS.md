@@ -25,6 +25,13 @@ future KVM bring-up / integration work):
   as ad hoc asides — a reader should be able to tell, from one place, exactly what needs the box
   and what doesn't.
 
+  A task may authorize a short-lived Nimbus machine in that same **Environment** section. The
+  authorization must name the reviewed preset, `dev` or `runner` mode, maximum TTL, live-spend
+  approval, audited purpose/request-ID prefix, and whether the host is merely an execution target
+  or is separately qualified for determinism measurements. Missing fields mean Nimbus is not
+  authorized. Workers invoke `$nimbus` and the thin client only; they never receive cloud
+  credentials, configuration, metadata, or daemon admin authority.
+
 Everything else in this document (hard rules, gates, style, deliverable) applies to both classes;
 "your directory" for a frontier task means its spec's surface list, not a single crate dir.
 

@@ -36,6 +36,14 @@ of this skill is ONE iteration: rebuild the state picture, advance everything on
 schedule the next wakeup. Keep iterations bounded — at most one heavy operation (full
 review or verification) per iteration.
 
+Harmony also has a daemon-backed **Nimbus** capability for explicitly authorized scratch
+machines. Nimbus is not a substitute for the qualified determinism box: a task's Environment
+section must name the preset, mode, maximum TTL, live-spend authorization, and any separate
+hardware/pinning qualification. The foreman and workers use the `$nimbus` skill and thin client
+over Cumulo's owner-private local socket only; no client credential is required. Provider
+credentials, configuration, metadata, admin authority, and daemon-owned cleanup remain outside
+Harmony.
+
 **Statelessness rule:** never rely on remembering pipeline state from earlier iterations.
 Everything is derived fresh each time from GitHub, the box, and the repo. Any fresh
 session running this skill must reach the same conclusions.
@@ -211,6 +219,11 @@ Do all cheap actions; do at most ONE of the starred heavy ones per iteration.
    to an agent that reads the source plan + contracts and opens a docs PR (like 09 / 13 / the bring-up
    plan), which the foreman then reviews and merges.
 
+   When the task Environment explicitly authorizes Nimbus, brief the worker to invoke `$nimbus`,
+   use the named preset and no broader capability, and release/verify the lease before handoff.
+   Missing daemon/authentication, admission refusal, or cleanup ambiguity is an escalation—not
+   permission to inspect configuration, call a provider directly, or switch to direct mode.
+
 ## 4. Escalate instead of acting
 
 PushNotification the user (and say it in your loop report) — do not improvise — when:
@@ -253,3 +266,6 @@ anything escalated, and when you'll wake next.
   Fable 5 reserved for genuinely high-complexity tasks and Sonnet 5 for genuinely
   quick/simple ones; don't spawn more than the concurrency cap; one heavy review op
   per iteration.
+- Never place Nimbus credentials, daemon tokens, configuration, metadata paths, lease IDs, or
+  provider receipts in Harmony source, Beads, GitHub, worker prompts, or durable logs. Stable
+  non-secret request IDs may be derived from the public task identity.
