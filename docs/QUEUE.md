@@ -6,10 +6,10 @@
 > Adopted 2026-07-09 (Paul: "worth a try") to replace prose-trigger sprawl across GitHub
 > issues, task-spec headers, and memory notes.
 
-_Refreshed 2026-07-23 morning (foreman loop): PR #147 (seal-suffix capture) through
-discovery tribunal + verify event — F1 closure VERIFIED, one narrow fix batch (V1+V2)
-dispatched to the worker; Closer-only re-check next. The GHA-residue landing (`hm-nsfl`,
-P1, Paul-directed) is the next spawn._
+_Refreshed 2026-07-23 midday (foreman loop): PR #147 MERGED through the full bounded
+pipeline (discovery → fix → verify → fix → Closer re-check, zero open P1s) and PR #148
+(the tasks/145 residue landing) MERGED light-tier; `hm-aqf0`/`hm-udgn`/`hm-nsfl` closed;
+no active workers — next spawns from `bd ready` at the coming iteration._
 
 Decision-gate safety: before dispatching ready work, the foreman inspects any closed decision
 blocker and requires a recorded GO; it never dispatches in the same iteration that closes that
@@ -39,19 +39,9 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- **Seal run-forward suffix capture** (tasks/144, PR #147, `hm-aqf0`): discovery tribunal
-  REQUEST_CHANGES (F1 CONFIRMED P1: advanced-seal suffix invisible to descendant
-  recomputation) → F1+F2 fix batch → verify event: **F1 closure VERIFIED**, but the F2
-  ride-along introduced V1 (CONFIRMED P1: reconciliation crosses two cut frames, refuses
-  an honest production host). V1+V2 fix batch dispatched 2026-07-23 morning
-  (closure 1 preferred — single stamped frame, folds `hm-udgn`); **Closer-only re-check
-  next**, then merge-or-STOP per the verify discipline. Park family: `hm-f82p` `hm-4gaw`
-  `hm-mmkf` `hm-j7ie` (+V4 appended) `hm-udgn` `hm-whoo` (V3) `hm-wshf` (V5).
-- **GHA-residue landing** (tasks/145, `hm-nsfl`, P1, Paul-directed): worker spawned
-  2026-07-23 late morning (Opus 4.8) on `task/gha-residue-landing` — cherry-pick the two
-  ci commits + evacuation snapshot onto main, keep 4-way mutants sharding AND PR #141
-  timeout+infra-retry, no crate renames (branch predates the `harmony-linux/` naming;
-  bead item (b) discrepancy recorded in the spec), land as a ready PR.
+- (no active workers — 2026-07-23 midday; next iteration drafts specs for the
+  seal-reconciliation P2 family (`hm-whoo` count-invariant choke point) and the
+  telemetry deflake pair (`hm-3r2k`+`hm-gfi2`, Sonnet-tier), then spawns)
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -64,7 +54,13 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
   `hm-f2s`/`hm-x9f` (P0, Paul's), CI benchmark `hm-w9s` (P1, Paul's), aarch64 public-api
   gate `hm-4aj`, PR #108 arrival-day validation `hm-f99`, AMD hammer dry-run `hm-8v4`.
 
-## Ready (unblocked; foreman spawns as slots free — 2 of 3 slots in use)
+## Ready (unblocked; foreman spawns as slots free — 0 of 3 slots in use; ~99 ready)
+
+- **PR #147 park family** (seal-suffix hardening, all P2): `hm-whoo` (now carries the
+  re-check C1 family closure: `cut.sdk_events == raw.len()` count invariant + prefix
+  commitment + doc overclaim), `hm-j7ie` (ledger VERSION 2→3 / refuse-vs-accept —
+  decision-shaped), `hm-mmkf`, `hm-4gaw`, `hm-f82p`. Edge repairs 2026-07-23: `hm-wshf`
+  now blocks on `hm-j7ie`; `hm-zwhi` upgraded to hard-block on `hm-x1ss`.
 - **Box/toolchain reproducibility pair** (`hm-gfr1` static box definition; `hm-nji6`
   payload-pin reproducibility + certified-binary archive) — the aa3-recert-pins landmine
   turned into work items.
@@ -89,6 +85,21 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **Seal run-forward suffix capture MERGED** (tasks/144, PR #147, `hm-aqf0`, 2026-07-23
+  midday — full bounded pipeline: 5-seat discovery (F1 CONFIRMED P1: advanced-seal
+  suffix invisible to descendant recomputation; judge-repro'd past two test maskings) →
+  F1+F2 fix → verify (V1 CONFIRMED P1: F2 ride-along crossed cut frames, refused an
+  honest production host) → V1+V2 fix (one-frame reconciliation, folds `hm-udgn`) →
+  Closer re-check APPROVE): descendant recomputation now sees the advanced span;
+  toy frame aligned to production catalog-inclusive stamps; C1 below-baseline hole
+  appended to `hm-whoo`. `hm-udgn` closed with the merge.
+- **Skills/hygiene/Nimbus residue MERGED** (tasks/145, PR #148, `hm-nsfl`, 2026-07-23
+  midday, light tier): draft-fenced provider-neutral skill twins + Nimbus scratch-machine
+  capability (docs/NIMBUS.md boundary: daemon owns credentials, repo owns none) +
+  docs/CLI.md. The residue's ci commits + secret-hygiene stack verified ALREADY absorbed
+  on main (PR #118 hosted runners, cargo-deny pin, hardened secret-scan.yml) — dropped,
+  not lost. Item-(b) rename discrepancy recorded for Paul in the PR + IMPLEMENTATION
+  record. `oob/gha-residue` + `ci/gha-migration` remain on origin as history.
 - **Telemetry SSE-frame test deflaked MERGED** (tasks/143, PR #146, `hm-ftok`,
   2026-07-23 early): subscribe before announcing the SSE stream; three review parks
   filed (`hm-3r2k`, `hm-gfi2`, `hm-gnxr`).
