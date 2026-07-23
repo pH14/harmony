@@ -175,90 +175,58 @@ condition tests, with one documented equivalent excluded:
   task delivers the crate, the sinks, the bin, and the browser, all driven in
   tests by a scripted `Vec<Event>` with no KVM.
 
-## Deflaking `streams_events_as_sse_frames` (task 143, hm-ftok)
+## Deflaking `streams_events_as_sse_frames` (task 143, hm-ftok; follow-ups task 147, hm-3r2k/hm-gfi2/hm-gnxr)
 
 `server::tests::streams_events_as_sse_frames` panicked once on PR #138's `gates`
-run (1/2089, run `29887364236`, diff-unrelated) and passed on re-run. That run's
-recoverable log now shows the test **PASS** at 0.028s — it is the *passing*
-re-run, so the original panic text is not retrievable from it; the failing
-assertion is unambiguous from the source, `assert!(frame.contains("data: "),
-"SSE data prefix: {frame:?}")` — i.e. the read of the first SSE frame came back
-without a `data:` line (empty), not late-but-present.
+run (run `29887364236`, diff-unrelated) and passed on re-run; the recoverable log
+only shows that passing re-run, so the failing assertion is unambiguous from the
+source alone — `assert!(frame.contains("data: "), "SSE data prefix: {frame:?}")`
+— the read of the first SSE frame came back with no `data:` line, not merely a
+late one. One observed occurrence is evidence the race exists; it supports no
+failure-rate claim.
 
 ### The race (a lost frame, not a slow one)
 
-The test connects, reads the SSE response header (`read_until(…,
-"text/event-stream")`), *then* emits one event through the `LiveSink` and reads
-the frame. The old `serve_events` wrote and flushed the response header **first**
-and called `hub.subscribe()` **second**:
+The old `serve_events` wrote and flushed the response header **before** calling
+`hub.subscribe()`. `EventHub::publish` fans an event out only to the subscribers
+present *at that instant* — there is no replay for a connection that subscribes
+later — so a client whose header read completes before the subscribe runs can
+have its first event published to nobody and dropped: a genuine lost frame, not
+a late one, and no amount of test-side waiting could have recovered it.
 
-```
-serve_events:  write header ─▶ flush ─▶ [ … ] ─▶ hub.subscribe()
-pump thread:                    live.drain() ─▶ hub.publish(ev)   // to CURRENT subscribers
-test thread:   read header ────────────────▶ live.emit(ev)
-```
+The fix (see the `serve_events` rustdoc above) reorders to **subscribe before
+announcing the stream**: `hub.subscribe()` runs before a single response byte is
+written, establishing the missing happens-before (the header flush is a release
+the client's header read acquires, so the subscribe happens-before any event the
+client emits in response). The SSE wire format is unchanged — the header bytes
+and every `data: <ndjson>\n\n` frame are byte-identical to before.
 
-`hub.publish` (`EventHub::publish`) fans an event only to the subscribers present
-*at that instant*; there is no replay for a connection that subscribes later. So
-this interleaving loses the event outright:
+### Was this a real telemetry bug?
 
-1. `serve_events` flushes the header and is then descheduled **before** reaching
-   `hub.subscribe()`.
-2. The client's header read completes, so the test proceeds to `live.emit(ev)`.
-3. The **pump** thread wakes, `live.drain()`s the event, and `hub.publish`es it —
-   but this connection is not subscribed yet, so it is published to nobody and
-   dropped.
-4. `serve_events` finally runs `hub.subscribe()`; `pump_events_to` then drains an
-   empty subscriber queue forever.
-5. The test's `read_until(…, "\n\n")` accumulates no `data:` frame, times out
-   after its bounded attempts, and `frame.contains("data: ")` is `false` → panic.
+It was a genuine losable-event defect in the live SSE path — not a protocol or
+framing bug; no frame was ever split or corrupted, and delivery order was
+preserved — and the in-PR reorder is a proportionate fix for it: a real, if
+narrow, loss window closed at zero wire-format cost.
 
-The window is the gap between the header flush and the subscribe, which is why it
-is rare (≈1/2089) and load-dependent (it needs the pump's drain to land in that
-gap) — but it is a genuine dropped frame, never merely a late one, so no
-amount of waiting in the test could have recovered it.
+### The narrower follow-up race (hm-3r2k) and the helper (hm-gfi2)
 
-### The fix: subscribe before announcing the stream
+The deflake's phase-2 wait (`read_until(&mut c, "\n\n")`) is also satisfiable by
+the periodic `: keepalive\n\n` comment frame — a narrower, load-dependent
+re-opening of the same class of race. `streams_events_as_sse_frames` now loops
+past any frame that doesn't contain `data: ` so the assertion phase only starts
+once a genuine event frame is present.
 
-`serve_events` now calls `hub.subscribe()` **before writing any response byte**,
-with the header write moved into `announce_and_stream` so the
-subscribe/unsubscribe bracket still spans it (and still tears the subscription
-down if the header write itself errors). This establishes the missing
-happens-before: the flush is a release the client's header read acquires, so
-`subscribe` happens-before any event the client emits *in response to seeing the
-header*. Once the client can observe the stream, it is already registered, so a
-subsequently-emitted event is always published to it — delivered within a poll or
-two, never lost. The wait is then deterministic by construction: the test's
-existing state-based `read_until("\n\n")` is now guaranteed to observe the frame
-(no sleep, no retry, no wall-clock — conventions rule 4 holds; the server uses no
-clock).
-
-**Not a bare-retry / not a masked regression.** The change is a server-side
-ordering seam (the kind the spec anticipates with "if the server side needs a
-seam"), not a retry wrapper. The SSE **wire format is byte-identical**: the header
-bytes and every `data: <ndjson>\n\n` frame are unchanged, so the existing
-frame-content assertions in both `streams_events_as_sse_frames` and the
-`server_loopback` integration test are untouched — they now simply cannot flake.
-
-### Was this a real telemetry bug? (spec item 3)
-
-Considered and judged **no** — it is a subscription-ordering defect in the test's
-connect-then-emit choreography, not a protocol/framing bug in normal operation.
-The live SSE lane is lossy **by design** (`SSE_CLIENT_BACKLOG`, the `LiveSink`
-drop-and-count, and "Live is from-subscribe-onward" above): a browser that
-connects mid-run is expected to miss earlier events, and the lossless record is
-`/recording`. No frame is ever split or corrupted, and ordering is preserved. The
-reorder is nonetheless the correct fix — it removes an *unnecessary* loss window
-(events emitted after the client sees the header were droppable for no reason) at
-zero wire-format cost — so it did not warrant a STOP-and-report escalation.
+`announce_and_stream` had exactly one caller; per task 147's decision rule (no
+second caller in-tree ⇒ inline rather than build speculative generality), it is
+folded back into `serve_events`.
 
 ### Verification
 
 - `cargo nextest run -p telemetry --all-features` → 28/28 pass.
-- Stress: `streams_events_as_sse_frames` looped **200×** and the SSE integration
-  test `serves_html_and_streams_a_scripted_run_in_order` looped **100×** — **0
-  failures**.
+- Stress (direct test-binary invocation, no cargo overhead per run):
+  `streams_events_as_sse_frames` looped **500×** and the `server_loopback`
+  integration test `serves_html_and_streams_a_scripted_run_in_order` looped
+  **200×** — both **0 failures** (exceeds PR #146's 200×/100× record).
 - Portable gates green: build, nextest, clippy (`-D warnings`, exit 0 — the three
   `clippy.toml` `rand::*` "unreachable" notices are pre-existing workspace-config
-  warnings, not lint errors and not from this crate), fmt `--check`, and
-  `cargo deny check` (advisories/bans/licenses/sources ok).
+  warnings, not from this crate), fmt `--check`, `cargo deny check`.
