@@ -39,9 +39,10 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- **SSE bounded accumulating wait** (tasks/149, `hm-38kv`): Sonnet 5 worker spawned
-  2026-07-23 mid-afternoon on `task/sse-bounded-wait` — test-only closure of the
-  PR #149 F1 wait-loop family + deterministic keepalive-skip coverage.
+- **Explorer contract clarifications** (tasks/150, PR #153, `hm-s6cb`+`hm-wshf`):
+  worker done, PR open, 5-seat tribunal seats complete, Fable 5 judge adjudicating —
+  version-refusal message split by found</VERSION vs found>VERSION; accessor docs
+  re-written to record-local semantics (no API drift).
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -85,6 +86,12 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **SSE bounded accumulating wait MERGED** (tasks/149, PR #152, `hm-38kv`, 2026-07-23
+  afternoon — 5-seat tribunal, zero P1s, three P1 claims demoted/refuted with judge
+  recomputation incl. an independent 500× stress): one structural scanner + bounded
+  cumulative wait closes the PR #149 F1 wait-loop family; keepalive-skip coverage now
+  synchronous. Parks: `hm-8c5m` (phase-1 header-terminator anchor), `hm-b5km`
+  (genericize the scanner over io::Read + scripted-read tests; folds hm-8c5m).
 - **Seal-capture reconciliation MERGED** (tasks/146, PR #150, `hm-whoo`, 2026-07-23
   mid-afternoon — full pipeline: 5-seat discovery REQUEST_CHANGES (F1 CONFIRMED P1:
   the worker's bounded-by-cut.at form admitted an appended future-Moment record;
