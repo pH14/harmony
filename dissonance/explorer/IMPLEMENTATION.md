@@ -1685,6 +1685,48 @@ tests share it) is unchanged in intent.
 1-timeout/1-missed/1-missed state is superseded; see the withdrawn F1c claim
 above.)
 
+## PR #156 verify fix batch (F1e — `AncestryIndex::build` didn't resolve a duplicate issue like compose does)
+
+The verify tribunal confirmed the F1a-F1d rewrite closed clean (walk mirrors
+compose, mutants genuinely clean, CI green) but found one new P1 the rewrite
+itself introduced: `AncestryIndex::build` (`campaign.rs`) resolved a
+duplicate `rollout.issue` differently from `compose_observations_at`.
+`batch_ids()` iterates `EvidenceBatchId`s in ascending order (`BTreeMap`);
+`compose_observations_at`'s own ancestor lookup is a `.find()` over that same
+order, so the **first** match (by ascending id) wins. The `build` loop used
+plain `rollouts.insert`/`seals.insert`, which — iterating in that same
+ascending order — let each subsequent duplicate clobber the map entry, so
+the **last** match (the batch with the *larger* id) won instead. Public
+`EvidenceLedger::append` accepts content-distinct Rollout (or Seal) batches
+sharing one issue (no lineage validation — `hm-wjv1`), so on that shape the
+index's pick could disagree with compose's actual pick, and the report's
+label could diverge from the true recomputable state.
+
+**Fix (one line each).** `rollouts.entry(b.rollout.issue).or_insert(b)` and
+the symmetric `seals.entry((parent, b.cut.sdk_events)).or_insert(b)` — the
+first insert for a given key wins, matching `batch_ids()`'s ascending
+iteration exactly. The collected sets (`collected_rollouts`,
+`collected_seals`) are membership-keyed `BTreeSet`s, not first/last-sensitive
+maps, so they needed no change.
+
+**New regression**
+(`retention_report_resolves_a_duplicate_issue_like_compose_does`): a
+grandparent (issue 100, later collected) and two content-distinct Rollout
+batches sharing issue 1 — Dup A resolves further to the grandparent, Dup B
+is a dead end (`parent: None`) — give **opposite** final labels depending on
+which one the walk resolves to. The test computes its expected label from
+whichever duplicate's `EvidenceBatchId` actually sorts first (not a
+hardcoded guess), so it fails deterministically under the old last-wins
+behavior regardless of which literal id happens to be smaller. Verified by
+hand: reverting `or_insert` back to `insert` locally reproduces the failure
+(`left: FromRetainedEvidence, right: RequiresAncestorReplay`); restoring the
+fix passes again.
+
+`cargo mutants -p explorer --no-shuffle --in-diff` against the full task
+diff (unchanged from the discovery-batch count — `entry`/`or_insert`
+introduces no new mutable comparison operators): **11 mutants — 9 caught, 2
+unviable, 0 missed, 0 timeout.**
+
 ## `hm-0qpm` — `observations_at`'s up-to-translation qualifier
 
 Reworded the `observations_at` doc (`evidence.rs`): for a `rollout.parent ==
@@ -1710,25 +1752,25 @@ no behavior change.
 ## Gates run
 
 `cargo build -p explorer --all-features`; `cargo nextest run -p explorer
---all-features` (**164 pass, 1 skip** — the five `ancestor_collected`
-regression tests (one adapted, four net-new from the PR #156 fix batch) plus
-the strengthened `genesis_rollout_local_reduction_matches_composed_truth`; the
-skip is the nightly-only `public_api` snapshot); `cargo clippy -p explorer
+--all-features` (**165 pass, 1 skip** — the six `ancestor_collected`
+regression tests (one adapted, five net-new: four from the discovery fix
+batch plus the F1e duplicate-issue regression from the verify fix batch)
+plus the strengthened `genesis_rollout_local_reduction_matches_composed_truth`;
+the skip is the nightly-only `public_api` snapshot); `cargo clippy -p explorer
 --all-features --all-targets -- -D warnings` (exit 0 — only the pre-existing
 root `clippy.toml` `rand::*` config diagnostics, unrelated); `cargo fmt -p
 explorer -- --check` (clean); `cargo deny check`
 (advisories/bans/licenses/sources ok — no dependency change). `cargo
 +nightly-2026-06-16 test -p explorer --test public_api -- --ignored` (green,
-snapshot matches the regenerated `tests/public-api.txt` — the `AncestryIndex`
-rewrite is a private type, no further public-API drift). `cargo mutants -p
-explorer --no-shuffle --in-diff <task diff>`: **11 mutants — 9 caught, 2
-unviable, 0 missed, 0 timeout.** (Supersedes the prior head's claimed "1
-timeout matching this crate's loop-mutant precedent" — that claim is
-withdrawn per the PR #156 discovery ruling: a residual exit 3 is a real
-signal, and the timing-out mutant was surfacing the F1b cyclic-lineage
-liveness defect, not an equivalent-mutant timeout. The rewrite's
-visited-issue-set fix turns that same mutant into a genuinely caught one.) No
-`unsafe` added → no Miri obligation. **No dependency change.**
+snapshot matches the regenerated `tests/public-api.txt` — `AncestryIndex`
+stays a private type through both fix batches, no further public-API drift).
+`cargo mutants -p explorer --no-shuffle --in-diff <task diff>`: **11 mutants
+tested — 9 caught, 2 unviable, 0 missed, 0 timeout.** (Supersedes the
+discovery head's claimed "1 timeout matching this crate's loop-mutant
+precedent" — that claim is withdrawn per the PR #156 discovery ruling: a
+residual exit 3 is a real signal, and the timing-out mutant was surfacing
+the F1b cyclic-lineage liveness defect, not an equivalent-mutant timeout.)
+No `unsafe` added → no Miri obligation. **No dependency change.**
 
 **Hash-neutrality:** no hash-path code touched — `retention_report` is a
 read-only projection over the ledger/views (never folded into any hash), and
@@ -1741,7 +1783,7 @@ unchanged.
 
 Touched `dissonance/explorer/src/retention.rs` (the new `Recomputation`
 variant), `dissonance/explorer/src/campaign.rs` (`AncestryIndex` +
-`ancestor_collected` + `retention_report`'s report loop + the five regression
+`ancestor_collected` + `retention_report`'s report loop + the six regression
 tests + the shared `synthetic_evidence` fixture helper),
 `dissonance/explorer/src/evidence.rs` (the `observations_at` doc reword + the
 witness assertion), `dissonance/explorer/tests/public-api.txt` (regenerated),
