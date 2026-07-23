@@ -118,19 +118,20 @@ pub enum LedgerError {
         /// A human-readable detail.
         detail: String,
     },
-    /// The file was written by an unsupported ledger version. Version 3
-    /// (`hm-j7ie`) refuses every pre-3 ledger loudly rather than silently
-    /// reinterpreting a stale Seal shape: task 144 changed a Seal record to
-    /// serialize the run-forward suffix + observed cut, so a version-2 seal
-    /// reopened under the new lineage walk would carry historically truncated
-    /// cells (and no longer matches its batch identity for the same seed). No
-    /// read-old or in-place migration path exists.
+    /// The file was written by an unsupported ledger version — either older or
+    /// newer than this build's `VERSION`. Version 3 (`hm-j7ie`) refuses every
+    /// pre-3 ledger loudly rather than silently reinterpreting a stale Seal
+    /// shape: task 144 changed a Seal record to serialize the run-forward
+    /// suffix + observed cut, so a version-2 seal reopened under the new
+    /// lineage walk would carry historically truncated cells (and no longer
+    /// matches its batch identity for the same seed). A `found` newer than
+    /// `VERSION` (a future build's file) carries no such history and gets a
+    /// version-neutral reason instead — this build simply does not know what
+    /// that version's records mean. No read-old, no forward-compat, and no
+    /// in-place migration path exists in either direction.
     #[error(
-        "evidence ledger version {found} unsupported (this build writes {VERSION}): the Seal \
-         record representation changed in task 144 — a Seal now serializes the run-forward \
-         suffix + observed cut, not the full rollout normalized + base-branch parent_cut, so a \
-         pre-144 (version < 3) ledger's advanced seals would reopen with historically truncated \
-         cells; old ledgers are refused, not silently reinterpreted"
+        "evidence ledger version {found} unsupported (this build writes {VERSION}): {}",
+        version_refusal_reason(*found)
     )]
     UnsupportedVersion {
         /// The version found in the file header.
@@ -159,6 +160,24 @@ pub enum LedgerError {
         /// The declared budget.
         budget: u64,
     },
+}
+
+/// The rationale tail of [`LedgerError::UnsupportedVersion`]'s message. Only a
+/// `found` **older** than `VERSION` has known history (the task-144 suffix-only
+/// Seal change) and gets the suffix/truncation explanation; a `found` **newer**
+/// than `VERSION` is a future build's file this build has never seen the shape
+/// of, so it gets a plain, version-neutral refusal instead of a false claim
+/// that the file at hand predates task 144.
+fn version_refusal_reason(found: u32) -> &'static str {
+    if found < VERSION {
+        "the Seal record representation changed in task 144 — a Seal now serializes the \
+         run-forward suffix + observed cut, not the full rollout normalized + base-branch \
+         parent_cut, so a pre-144 (version < 3) ledger's advanced seals would reopen with \
+         historically truncated cells; old ledgers are refused, not silently reinterpreted"
+    } else {
+        "this file was written by a newer build than this one understands; refused rather \
+         than silently reinterpreting a record shape this build has never seen"
+    }
 }
 
 /// The referenced immutable-payload backing (the `TraceStore` stand-in in this
@@ -883,6 +902,36 @@ mod tests {
         assert!(
             msg.contains("suffix") && msg.contains("truncated") && msg.contains("task 144"),
             "the refusal names the suffix-only representation change: {msg}"
+        );
+    }
+
+    /// A **future** ledger (`found` newer than this build's `VERSION`) is
+    /// refused loudly like any other unsupported version, but the refusal must
+    /// not misdiagnose it: this build never wrote a pre-144 ledger of this
+    /// file, so the message must not claim the truncation history that only
+    /// applies to `found < VERSION`. It gets a plain, version-neutral reason
+    /// instead.
+    #[test]
+    fn future_version_is_rejected_without_the_pre_144_claim() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("evidence.log");
+        // A well-formed header from a hypothetical future build: VERSION == 4.
+        {
+            let mut f = File::create(&path).unwrap();
+            f.write_all(&MAGIC).unwrap();
+            f.write_all(&4u32.to_le_bytes()).unwrap();
+            f.sync_data().unwrap();
+        }
+        let err = EvidenceLedger::open(&path).expect_err("v4 refused");
+        assert!(matches!(err, LedgerError::UnsupportedVersion { found: 4 }));
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("pre-144") && !msg.contains("truncated") && !msg.contains("task 144"),
+            "a future version must not be misdiagnosed as a pre-144 ledger: {msg}"
+        );
+        assert!(
+            msg.contains("newer"),
+            "a future version's refusal names it as newer than this build understands: {msg}"
         );
     }
 
