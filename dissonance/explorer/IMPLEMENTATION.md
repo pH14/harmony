@@ -925,71 +925,94 @@ PR #147's `capture_seal_suffix` constrained only the **decoded suffix length**,
 leaving two verified holes. This task closes both at the one choke point, in the
 two halves the complete honest invariant needs.
 
-**Count half — closes C1 (the re-check appendix, judge-CONFIRMED, repro at
+> **PR #150 REQUEST_CHANGES (tribunal, Fable-5 judge) — applied.** The discovery
+> pass rejected the first attempt's `cut.at`-bounded count form (JC1) and
+> confirmed two findings against it; this section documents the **ruled** fix. See
+> the "Superseded first attempt" note at the end for what changed and why.
+
+**Count half — closes C1 (the re-check appendix, judge-CONFIRMED P1, repro at
 `7f7bbda4`).** The old check compared `suffix.events.len()` against
 `cut.sdk_events.saturating_sub(rollout_raw_len)`. Below the baseline the
 `saturating_sub` clamped the expectation to 0, and any capture ≤ baseline decodes
 to an empty suffix, so **any** `(stamp ≤ baseline, capture ≤ baseline)` pair
 passed — an under-stamp silently excludes a captured firing from the sealed cell,
 an over-stamp silently includes inherited rows the sealed state never reached. The
-fix compares the stamp against the honest included count **before decoding**:
-`cut.sdk_events == (# raw capture records with Moment ≤ cut.at)`. This subsumes the
-suffix-length check and refuses every below-baseline count divergence.
+fix is the spec's ruled literal invariant, compared **before decoding**:
 
-- **Deviation from the spec's literal `cut.sdk_events == raw.len()`.** The bead's
-  phrasing assumes a vtime-truncated capture (true for the explorer toy and
-  production). It is **not** universal: `campaign-runner`'s `GameToyMachine`
-  computes its capture as a pure function of the env (the whole play, not
-  truncated at the seal), so an honest interior seal legitimately stamps fewer
-  than `raw.len()`. Bounding the count by `cut.at` (`# records with Moment ≤
-  cut.at`) is the faithful invariant that holds for **both** capture models,
-  still catches every C1 under/over-stamp (all explorer records sit at or before
-  the seal moment, so the count equals `raw.len()` there), and admits
-  `GameToyMachine`'s interior seals. Verified: the moment-bounded form keeps all
-  `GameToyMachine` tests green where the literal `raw.len()` form broke them.
+```
+cut.sdk_events == raw.len()
+```
 
-**Content half — closes V3 (the verify event, PLAUSIBLE).** When the seal reached
-or passed the rollout terminal (`raw.len() >= rollout_raw_len`, so a run-forward
-suffix is composed), the shared prefix it composes onto must reproduce the
-rollout's committed evidence. The seal re-decodes its own prefix skipping the same
-`inherited` ancestor positions and compares against the rollout's existing
-`Normalized.commitment` (count + blake3 digest) — the anchor the verify
-disposition named; **no new hash surface**. A same-length but content-divergent
-prefix (equal count, different digest) is refused as the typed
-`SealPrefixDivergence` — otherwise the suffix glues onto a prefix the rollout
-never produced (a hybrid state a count check cannot see). It constrains only the
-**shared** prefix (the suffix is the new evidence the seal contributes) and only
-when a suffix is composed; an interior seal composes none and needs no re-check.
+The server stamps the SDK capture vector's current prefix length from the same
+stopped state as one atomic observation (`control.rs:936-943`), so no honest
+machine returns a record its clock has not reached — the stamp equals the raw
+length exactly. Comparing the **length** (not a moment-derived count) is load
+bearing: `decode_child_suffix` slices by raw **position**, so a record appended
+past the cut moment stages as a committed suffix row regardless of its `Moment` —
+a moment-bounded count counts it as absent while the decode stages a phantom row
+(finding F1). The length refuses it outright.
 
-**Cross-surface touch — `campaign-runner`'s `BoxGuest` test fixture (blessed by
-the task owner, A over B).** `BoxGuest` (a `#[cfg(test)]` fixture) stamped a
-constant `0` at every seal while its rollout captured ~360 frame-marker firings —
-it was *itself* exhibiting the C1 under-stamp, admitted only through the hole this
-task closes. No data-driven check can distinguish its honest-per-its-old-model
-below-baseline seal from a genuine divergent under-stamp; they are structurally
-identical. The task surface is `dissonance/explorer`, but closing C1 requires the
-fixture to stamp faithfully. Per the ruling (option A), `BoxGuest::snapshot` now
-stamps the honest count of capture records at or before the seal moment (matching
-production's `vmm.sdk_events().len()` and every faithful machine). **Blast radius:
-zero** — all 179 `campaign-runner` + 148 `explorer` tests pass; the seal-cut value
-does not feed cells/work-evidence/determinism (those derive from frame markers and
-vtime spans). This is the direct analog of PR #147's "the toy had to become
-faithful first" — the same frame correction, one fixture that was missed.
+**Content half — closes V3 (the verify event) + F2 (judge-CONFIRMED P2
+ride-along).** When the seal reached or passed the rollout terminal (`raw.len()
+>= rollout_raw_len`, so a run-forward suffix is composed), the shared prefix it
+composes onto must reproduce the rollout's committed evidence. The seal re-decodes
+its own prefix skipping the same `inherited` ancestor positions and compares it
+**structurally** against the rollout's `Normalized` (`prefix !=
+*rollout.normalized`). `Normalized`'s `PartialEq` covers schema, every event's
+`ObservationId`, and the commitment — strictly stronger than the commitment digest
+alone, which folds only each event's `Moment` and raw bytes and so is **blind to
+an id/schema swap** at identical payload (F2). This is anchored on the existing
+`Normalized` — **no new hash surface** — and keeps the typed `SealPrefixDivergence`
+refusal. It constrains only the shared prefix (the suffix is the new evidence the
+seal contributes) and only when a suffix is composed; a strictly-shorter divergent
+interior capture is **out of scope**, parked as bead `hm-w1o6` (F3).
 
-**Regression tests (all four, in `campaign::tests`).**
+**The toys had to become faithful first (F1b / F1c).** The literal invariant is
+honest for production and the explorer's `ScriptedMachine` (cursor-bounded
+capture, stamp `1 + included == raw.len()`). Two `campaign-runner` toys returned
+an **unfaithful** capture read — the whole deterministic play, not the clock-bounded
+prefix their own `snapshot` stamps — so only their `sdk_events()` reads needed the
+fix, mirroring the frame correction PR #147 already applied:
+
+- `GameToyMachine::sdk_events` now returns `capture().filter(at <= self.vtime)`,
+  mirroring its own `snapshot` filter (`at <= vt`). A terminal read (drain/film)
+  sits at or past every emission, so it is unchanged; only an interior seal read
+  is bounded, keeping `sdk_events().len()` equal to the stamped cut.
+- `BoxGuest` (`#[cfg(test)]` fixture) stamped a constant `0` while its rollout
+  captured 360 frame-marker firings — itself the C1 under-stamp, admitted only
+  through the hole. Its **per-rollout frame drain** (the one a candidate seal
+  reconciles) is now clock-bounded and `snapshot` stamps that length. Its
+  **setup billboard drain** is deliberately left whole: that drain feeds the base
+  seal, which `seal_base` **drops** (never reconciled), and it is read at
+  `vtime = base_vtime` where the `len` register (at `base_vtime + 1`) would
+  otherwise truncate away and break billboard establishment (`billboard_window_of`
+  reads by register, not `Moment`). Cross-surface but blessed (option A, task
+  owner); zero production surface, full `campaign-runner` suite green.
+
+**Regression tests (in `campaign::tests`).** The four shipped regressions stay
+green under the literal form (asserted `captured` values `{2, 2, 1}` coincide with
+`raw.len()` in every case), plus two new for F1/F2:
 1. `a_below_baseline_under_stamp_is_refused_loudly` — the C1 repro (stamp 1 vs a
-   2-record capture, baseline 2): pre-146 ADMITTED, now `SealSuffixDivergence`.
-2. `a_below_baseline_over_stamp_is_refused_loudly` — stamp 2 (≤ baseline) vs a
-   truncated 1-record capture: now `SealSuffixDivergence`.
+   2-record capture): `SealSuffixDivergence { captured: 2 }`.
+2. `a_below_baseline_over_stamp_is_refused_loudly` — stamp 2 vs a truncated
+   1-record capture: `SealSuffixDivergence { captured: 1 }`.
 3. `an_honest_production_frame_seal_capture_is_accepted` — the honest-host frame
    test stays green (the C1 fix must not reintroduce the V1 false refusal):
-   `PASS [0.055s] explorer campaign::tests::an_honest_production_frame_seal_capture_is_accepted`.
+   `PASS explorer campaign::tests::an_honest_production_frame_seal_capture_is_accepted`.
 4. `a_same_length_prefix_divergent_capture_is_refused_loudly` — equal length,
-   equal stamp, one prefix value byte flipped: now `SealPrefixDivergence`.
+   equal stamp, one prefix value byte flipped: `SealPrefixDivergence`.
+5. **`an_appended_future_moment_record_is_refused_loudly` (F1)** — honest prefix
+   plus one record stamped past the cut: `SealSuffixDivergence { captured: 3,
+   stamped: 2 }`. The `cut.at`-bounded form ADMITTED this; the literal form
+   refuses it.
+6. **`a_prefix_id_swap_is_refused_loudly` (F2)** — an equal-length prefix that
+   bumps a firing's register id (identical payload + `Moment`, so the commitment
+   digest is blind): refused by the structural comparison as
+   `SealPrefixDivergence`.
 
 `a_seal_capture_short_of_its_stamped_cut_is_refused_loudly` (the PR #147 divergent
-regression) is retained; its `captured` field now reports the honest included
-count (`2`) rather than the decoded suffix length (`0`) — same public shape.
+regression) is retained; its `captured` field reports `raw.len()` (`2`) — same
+public shape.
 
 **Determinism / hash-neutrality:** honest runs commit no changed hash. Quoted
 green: `campaign_replays_bit_identically`, `distinct_seeds_diverge`,
@@ -998,8 +1021,20 @@ green: `campaign_replays_bit_identically`, `distinct_seeds_diverge`,
 `reseed_fold_proptest::draw_carrying_folds_are_bit_identical`.
 
 **Public API:** new `MachineError::SealPrefixDivergence { baseline, expected,
-got }` variant → `tests/public-api.txt` regenerated on the pinned nightly
-(`nightly-2026-06-16`). `SealSuffixDivergence`'s shape is unchanged. No dependency
-changes (`cargo deny` not required). The three seal-reconciliation anchors
-(`raw_len`, `commitment`, `inherited`) are bundled into a private `SealAnchors`
+got }` variant → `tests/public-api.txt` carries the four snapshot lines (regenerated
+on the pinned nightly `nightly-2026-06-16` in the first attempt; the F2 rewrite kept
+the fields, so it is unchanged since). `SealSuffixDivergence`'s shape is unchanged.
+No dependency changes (`cargo deny` not required). The seal-reconciliation anchors
+(`raw_len`, `&Normalized`, `inherited`) are bundled into a private `SealAnchors`
 struct to keep `materialize_candidate` within the argument-count lint.
+
+**Superseded first attempt (PR #150 discovery).** The first attempt shipped the
+count half as `cut.sdk_events == (# raw records with Moment ≤ cut.at)` and defended
+it as necessary for `GameToyMachine`'s "whole-play" capture. The tribunal rejected
+this: the toy's own `snapshot` already filters `at <= vt` for its stamp and its
+child-restore capture — the unfaithful party was the toy's `sdk_events()` read, not
+the ruled invariant (JC1 REJECTED). The bounded form admitted an appended
+future-`Moment` record (F1, P1) because the decode slices by position, and its
+content half compared only the commitment digest, blind to an id/schema swap (F2,
+P2). This section reflects the corrected fix; the `BoxGuest` faithfulness
+correction (JC2) was UPHELD and stands.
