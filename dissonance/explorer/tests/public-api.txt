@@ -158,6 +158,7 @@ pub explorer::RawAvailability::Collected::covered_by: explorer::CoverageRef
 pub explorer::RawAvailability::Retained
 pub enum explorer::Recomputation
 pub explorer::Recomputation::FromRetainedEvidence
+pub explorer::Recomputation::RequiresAncestorReplay
 pub explorer::Recomputation::RequiresReplay
 pub enum explorer::ReducedValue
 pub explorer::ReducedValue::Accumulated(alloc::collections::btree::set::BTreeSet<u64>)
