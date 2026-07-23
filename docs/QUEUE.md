@@ -47,6 +47,11 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
   (closure 1 preferred — single stamped frame, folds `hm-udgn`); **Closer-only re-check
   next**, then merge-or-STOP per the verify discipline. Park family: `hm-f82p` `hm-4gaw`
   `hm-mmkf` `hm-j7ie` (+V4 appended) `hm-udgn` `hm-whoo` (V3) `hm-wshf` (V5).
+- **GHA-residue landing** (tasks/145, `hm-nsfl`, P1, Paul-directed): worker spawned
+  2026-07-23 late morning (Opus 4.8) on `task/gha-residue-landing` — cherry-pick the two
+  ci commits + evacuation snapshot onto main, keep 4-way mutants sharding AND PR #141
+  timeout+infra-retry, no crate renames (branch predates the `harmony-linux/` naming;
+  bead item (b) discrepancy recorded in the spec), land as a ready PR.
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -59,12 +64,7 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
   `hm-f2s`/`hm-x9f` (P0, Paul's), CI benchmark `hm-w9s` (P1, Paul's), aarch64 public-api
   gate `hm-4aj`, PR #108 arrival-day validation `hm-f99`, AMD hammer dry-run `hm-8v4`.
 
-## Ready (unblocked; foreman spawns as slots free — 1 of 3 slots in use)
-
-- **Land the GHA-migration + skills/hygiene residue** (`hm-nsfl`, P1, Paul-directed —
-  **next spawn**): rebase `oob/gha-residue` onto main (~a week stale), reconcile the
-  mutants un-sharding regression vs PR #141's timeout+retry structure, land as a
-  handoff-style ready PR. Needs a foreman-drafted spec first.
+## Ready (unblocked; foreman spawns as slots free — 2 of 3 slots in use)
 - **Box/toolchain reproducibility pair** (`hm-gfr1` static box definition; `hm-nji6`
   payload-pin reproducibility + certified-binary archive) — the aa3-recert-pins landmine
   turned into work items.
