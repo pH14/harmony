@@ -21,6 +21,21 @@
 //! ([`LedgerError::UnsupportedVersion`]) — the format predates any integrated
 //! deployment and campaign ledgers are per-campaign artifacts.
 //!
+//! ## Format v3 — suffix-only Seal records (`hm-j7ie`)
+//!
+//! Task 144 (`hm-aqf0`) changed the *meaning* of a durable **Seal** record: a
+//! Seal now serializes the run-forward **suffix + observed cut**, where a
+//! version-2 Seal serialized the full rollout `normalized` + base-branch
+//! `parent_cut`. Because the meaning of a durable record changed, the header
+//! bumps to `VERSION = 3` and every pre-3 ledger is **refused loudly**
+//! ([`LedgerError::UnsupportedVersion`]). Reopening a version-2 seal under the
+//! new lineage walk would resurrect it with historically **truncated** cells
+//! (the exact silent-wrong the fix closes), and the same seed's batch identity
+//! ([`CompletedRunEvidence::canonical_bytes`](crate::CompletedRunEvidence::canonical_bytes))
+//! no longer matches across the upgrade — so a cross-version identity compare is
+//! meaningless. There is no read-old or in-place migration path; if one is ever
+//! wanted it is its own future task, not this format.
+//!
 //! ## TraceStore is referenced backing, not the relational authority
 //!
 //! The strategy is explicit: the `TraceStore` "may remain payload backing for
@@ -59,10 +74,14 @@ use crate::retention::{CollectedBatch, CoverageRef, RetentionCheckpoint, Retenti
 
 /// The ledger file magic and format version — a header a foreign or future file
 /// is rejected against, never silently reinterpreted. Version 2 introduced the
-/// tagged [`LedgerRecord`] frames (`hm-5sv`); a v1 file (bare evidence frames)
-/// is rejected loudly.
+/// tagged [`LedgerRecord`] frames (`hm-5sv`); version 3 (`hm-j7ie`) marks the
+/// suffix-only Seal representation of task 144, under which a Seal's
+/// `canonical_bytes()` batch-identity preimage differs from a version-2 Seal for
+/// the same seed. Every pre-3 file (version-2 tagged frames, version-1 bare
+/// evidence) is rejected loudly ([`LedgerError::UnsupportedVersion`]) — no
+/// in-place migration is built.
 const MAGIC: [u8; 4] = *b"HEVL";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 /// The frame header: `len(u32) + payload_digest(32)`. A frame with fewer bytes
 /// than this remaining is a torn tail.
 const FRAME_HEADER: usize = 4 + 32;
@@ -99,8 +118,20 @@ pub enum LedgerError {
         /// A human-readable detail.
         detail: String,
     },
-    /// The file was written by an unsupported ledger version.
-    #[error("evidence ledger version {found} unsupported (this build writes {VERSION})")]
+    /// The file was written by an unsupported ledger version. Version 3
+    /// (`hm-j7ie`) refuses every pre-3 ledger loudly rather than silently
+    /// reinterpreting a stale Seal shape: task 144 changed a Seal record to
+    /// serialize the run-forward suffix + observed cut, so a version-2 seal
+    /// reopened under the new lineage walk would carry historically truncated
+    /// cells (and no longer matches its batch identity for the same seed). No
+    /// read-old or in-place migration path exists.
+    #[error(
+        "evidence ledger version {found} unsupported (this build writes {VERSION}): the Seal \
+         record representation changed in task 144 — a Seal now serializes the run-forward \
+         suffix + observed cut, not the full rollout normalized + base-branch parent_cut, so a \
+         pre-144 (version < 3) ledger's advanced seals would reopen with historically truncated \
+         cells; old ledgers are refused, not silently reinterpreted"
+    )]
     UnsupportedVersion {
         /// The version found in the file header.
         found: u32,
@@ -826,6 +857,62 @@ mod tests {
         }
         let err = EvidenceLedger::open(&path).expect_err("v1 rejected");
         assert!(matches!(err, LedgerError::UnsupportedVersion { found: 1 }));
+    }
+
+    /// A **version-2** ledger (pre-144 tagged frames, whose Seal records still
+    /// carry the old full-`normalized` + base-branch `parent_cut` shape) is
+    /// refused loudly on reopen — the F5 silent-truncation this task closes — and
+    /// the refusal names *why* (the suffix-only Seal representation change), so an
+    /// operator is never left guessing why an old campaign ledger will not open.
+    #[test]
+    fn version_two_ledger_is_refused_with_the_suffix_reason() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("evidence.log");
+        // A well-formed header at the prior version: valid magic, VERSION == 2.
+        {
+            let mut f = File::create(&path).unwrap();
+            f.write_all(&MAGIC).unwrap();
+            f.write_all(&2u32.to_le_bytes()).unwrap();
+            f.sync_data().unwrap();
+        }
+        let err = EvidenceLedger::open(&path).expect_err("v2 refused");
+        assert!(matches!(err, LedgerError::UnsupportedVersion { found: 2 }));
+        // Loud about the reason: the refusal message names the suffix-only
+        // representation change and the truncation it would otherwise cause.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("suffix") && msg.contains("truncated") && msg.contains("task 144"),
+            "the refusal names the suffix-only representation change: {msg}"
+        );
+    }
+
+    /// A freshly written ledger stamps `VERSION = 3` in its durable header and
+    /// reopens cleanly (round-trip) — the current build both *writes* and *reads*
+    /// version 3, so our own files are never caught by the pre-3 refusal.
+    #[test]
+    fn fresh_ledger_is_version_three_and_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("evidence.log");
+        let id = {
+            let mut led = EvidenceLedger::open(&path).expect("open");
+            led.append(&evidence(0, b"v3")).expect("append")
+        };
+        // The durable header carries version 3, not 2.
+        assert_eq!(VERSION, 3, "this build writes version 3");
+        let mut hdr = [0u8; FILE_HEADER as usize];
+        File::open(&path)
+            .unwrap()
+            .read_exact(&mut hdr)
+            .expect("read header");
+        assert_eq!(&hdr[0..4], &MAGIC, "magic");
+        assert_eq!(
+            u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]),
+            3,
+            "on-disk version byte is 3"
+        );
+        // …and it reopens cleanly at version 3 (no refusal on our own file).
+        let led = EvidenceLedger::open(&path).expect("reopen at v3");
+        assert!(led.contains(&id), "the round-tripped batch survives reopen");
     }
 
     /// TraceStore retention cannot delete a live reference: while its entry is in
