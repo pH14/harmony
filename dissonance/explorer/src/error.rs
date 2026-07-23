@@ -200,22 +200,25 @@ pub enum MachineError {
         got_sdk_events: u64,
     },
     /// A materialized seal's **captured run-forward suffix** does not reconcile
-    /// with its server-stamped cut (task 144). The suffix must account for
-    /// exactly the span the stamped `sdk_events` runs past the rollout terminal
-    /// (`captured == stamped.saturating_sub(terminal)`): a short or
-    /// prefix-divergent host capture would otherwise silently recreate
-    /// `cut.sdk_events > graph rows` — the exact evidence truncation this
-    /// surface must fail closed on. Both in-tree machines derive capture and
-    /// cut from one state, so there is no in-tree trigger; the guard fails a
-    /// divergent host loudly, mirroring the materializer's [`CutDivergence`]
-    /// discipline rather than admitting a truncated seal.
+    /// with its server-stamped cut (task 144), in the single raw
+    /// capture-position frame (catalog-inclusive) both quantities share: the
+    /// suffix must be exactly the span the stamped `sdk_events` runs past the
+    /// sealed rollout's raw capture length (`captured ==
+    /// stamped.saturating_sub(baseline)`). A short or count-divergent host
+    /// capture would otherwise silently recreate `cut.sdk_events > graph rows`
+    /// — the exact evidence truncation this surface must fail closed on. An
+    /// in-frame host derives capture and stamp from one state, so there is no
+    /// honest trigger; the guard fails a divergent host loudly, mirroring the
+    /// materializer's [`CutDivergence`] discipline rather than admitting a
+    /// truncated seal.
     #[error(
-        "seal suffix capture ({captured} events past terminal {terminal}) does not \
-         reconcile with the stamped cut count {stamped}"
+        "seal suffix capture ({captured} events past rollout capture baseline {baseline}) \
+         does not reconcile with the stamped cut count {stamped}"
     )]
     SealSuffixDivergence {
-        /// The rollout terminal count (the seal's `parent_cut.sdk_events`).
-        terminal: u64,
+        /// The sealed rollout's raw capture length (`rollout.raw_len`), the
+        /// catalog-inclusive baseline the stamped cut is measured against.
+        baseline: u64,
         /// The decoded run-forward suffix length.
         captured: u64,
         /// The server-stamped cut's included SDK-event count.

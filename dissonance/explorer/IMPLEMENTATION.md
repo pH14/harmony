@@ -746,24 +746,59 @@ the walk change: `cut observations diverge (rollout 3, count 5)`.
 ### F2 — reconcile the capture against the stamped cut
 
 The seal decode accepted the host's raw capture with no check that it accounts
-for the stamped cut. A short or prefix-divergent capture would silently recreate
+for the stamped cut. A short or count-divergent capture would silently recreate
 `cut.sdk_events > graph rows` — the precise shape this task fails closed on. The
-snapshot path now reconciles `suffix.len() == cut.sdk_events - terminal_count`
-(via `saturating_sub`, so interior seals whose cut sits at or below the terminal
-expect an empty suffix) and refuses a mismatch with the typed
-`MachineError::SealSuffixDivergence` — the materializer's loud-divergence
-discipline (`cut_divergence_is_loud`, `materialize_divergence_is_loud`). No
-in-tree trigger (both machines derive capture and cut from one state); the guard
-is for a divergent host. Regression:
-`a_seal_capture_short_of_its_stamped_cut_is_refused_loudly` (a wrapper stamping
-the seal cut one event beyond its capture; genesis left honest so the frame
-diverges only at the seal). The two rollout-frame counts the decode + reconcile
-need are grouped into a `RolloutFrame` argument (kept `materialize_candidate`
-within the arg-count lint). New public error variant → `tests/public-api.txt`
-regenerated on the pinned nightly.
+snapshot path now reconciles the captured suffix against the stamped cut and
+refuses a mismatch with the typed `MachineError::SealSuffixDivergence` — the
+materializer's loud-divergence discipline (`cut_divergence_is_loud`,
+`materialize_divergence_is_loud`). No honest trigger; the guard is for a
+divergent host.
+
+**The frame correction (PR #147 verify event, V1 — CONFIRMED P1).** The first
+form of this check was wrong: it computed `cut.sdk_events − observed_cut.sdk_events`
+across two frames. The production server stamps `cut.sdk_events` as
+`vmm.sdk_events().len()` — raw capture positions, **catalog included**
+(`control.rs`) — while `observed_cut` counts `normalized.events`, from which
+`decode_binary` **excludes** the catalog. So an honest Binary-ingress host was
+refused at every at-or-past-terminal seal (the catalog offset made
+`captured != stamped − terminal`). The toy suites masked it only because the toy
+stamped a firings-only count (the F6/hm-udgn frame divergence).
+
+Closure (the preferred one): reconcile in **one frame**. The toy `snapshot()`
+now stamps the production catalog-inclusive capture-position count
+(`testkit.rs`: `1 + included`, folding **hm-udgn** / F6 — the toy is now
+faithful to the frame `campaign-runner`'s `DeclaredMachine` and the real server
+already use), and the check is `suffix.events.len() ==
+cut.sdk_events.saturating_sub(rollout.raw_len)` — both operands are raw
+capture-position counts, so their difference is exactly the advanced-span firing
+count (`saturating_sub` gives 0 for an interior seal). `RolloutFrame` is gone;
+`materialize_candidate` takes `rollout_raw_len` directly. Every stamped cut in a
+toy test shifts by +1 (the catalog now counts); the three explicit-count
+assertions were updated and the whole graph/compose/DD flow is transparent to
+the shift (position 0 is the empty catalog slot). `campaign-runner` was already
+in this frame, so its 179 tests are untouched.
+
+Regressions (the verify event mandated both halves):
+- `an_honest_production_frame_seal_capture_is_accepted` — a wrapper stamping the
+  literal `inner.sdk_events().len()` (catalog-inclusive) is admitted; `step()`
+  **succeeds**. This is the shape the frame-crossing bug wrongly refused.
+- `a_seal_capture_short_of_its_stamped_cut_is_refused_loudly` — the same wrapper
+  stamping one event beyond its capture is refused with the typed divergence.
+
+**V2 (ride-along, P2).** After `snapshot()` succeeds, every post-snapshot
+failure path — `recorded_env`, `sdk_events`, `decode_child_suffix`, the
+divergence return — now releases the held seal best-effort
+(`let _ = self.machine.drop_snap(seal)`) before propagating, matching
+`materialize.rs`'s release-first discipline; the aborting `step()` would
+otherwise leak the backend snapshot. The capture+reconcile body is split into
+`capture_seal_suffix` so the single release site wraps all of them. The
+divergence regression asserts a `drop_snap` actually fired (a shared counter on
+the wrapper). New public error variant → `tests/public-api.txt` regenerated on
+the pinned nightly.
 
 ### Scope
 
 F3 was refuted (checkpoint coverage + step-atomicity keep a seal and its rollout
-inseparable across GC); F4/F5/F6 are parked as beads per the adjudication and are
-**not** touched here.
+inseparable across GC). **F6/hm-udgn is folded** by the V1 closure (the toy frame
+is now aligned to production). F4/F5 and V3/V4/V5 remain parked as beads per the
+adjudications and are **not** touched here.
