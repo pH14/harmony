@@ -854,7 +854,10 @@ mod tests {
     }
 
     /// A v1 file (or any foreign version) is rejected loudly, never silently
-    /// reinterpreted.
+    /// reinterpreted — and, mirroring `version_two_ledger_is_refused_with_the_suffix_reason`,
+    /// the refusal names *why* (the suffix-only Seal representation change),
+    /// pinning the `found < VERSION` arm across its whole reachable domain
+    /// (`found` = 1 and 2), not just the `found: 1` variant shape.
     #[test]
     fn foreign_version_is_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -867,6 +870,11 @@ mod tests {
         }
         let err = EvidenceLedger::open(&path).expect_err("v1 rejected");
         assert!(matches!(err, LedgerError::UnsupportedVersion { found: 1 }));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("suffix") && msg.contains("truncated") && msg.contains("task 144"),
+            "the refusal names the suffix-only representation change: {msg}"
+        );
     }
 
     /// A **version-2** ledger (pre-144 tagged frames, whose Seal records still

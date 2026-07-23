@@ -1080,33 +1080,49 @@ verbatim.
 ## `hm-wshf` — the accessor docs now state exactly what they return
 
 `observations_at_cut`/`observations_at` reduce `self.normalized.events` only,
-against a doc claiming the result is "true at this evidence's own cut". True
-only for a **genesis-rooted** record (`parent_cut == None`, so
-`normalized.events` holds the whole run from genesis). False for **any
-lineage-bearing record** (`parent_cut: Some(..)`) — not just a post-144
-(`hm-aqf0`) Seal batch, whose `normalized.events` holds only the run-forward
-suffix past the sealed rollout's terminal (empty, and so no accumulated
-state reported, for a seal that did not advance past that terminal even when
-the rollout it seals carries real state), but equally a **branch-child
-Rollout** (task 132), whose `normalized` "carries only its own suffix" per
-its own field doc — the first-attempt doc claimed Rollout batches always
-coincide with the true cut view, which is false for every non-genesis
-rollout in a campaign (PR #153 review, pr153-A).
+against a doc claiming the result is "true at this evidence's own cut".
+Coincidence with the true cut view is keyed by **ledger-ancestor existence**
+(`rollout.parent`), not by `parent_cut`: `compose_observations_at` walks
+`rollout.parent` to find ancestor records to compose through, so a
+`rollout.parent == None` record has nothing to compose and local ≡ composed
+exactly, **regardless of `parent_cut`** — a genesis explore stamps
+`parent_cut: Some(genesis_cut)` even with `rollout.parent: None`
+(`campaign.rs`'s `pick_base`), so `parent_cut` is only the cumulative-position
+*base*, never the lineage key. For a `rollout.parent: Some(..)` record the
+local reduction omits every *retained* ancestor contribution (not an absolute
+inequality — a fully-GC'd ancestor contributes nothing to
+`compose_observations_at` either) — concretely a post-144 (`hm-aqf0`) Seal
+batch, whose `normalized.events` holds only the run-forward suffix past the
+sealed rollout's terminal (empty, and so no accumulated state reported, for a
+seal that did not advance past that terminal even when the retained rollout
+it seals carries real state), and equally a **branch-child Rollout** (task
+132), whose `normalized` "carries only its own suffix" per its own field doc.
+(A first-pass fix keyed this on `parent_cut == None` instead — false for the
+modal production record, since every production explore, genesis or branch,
+stamps `parent_cut: Some(..)`; corrected in the PR #153 verify fix batch
+below, V1.)
 
 **Direction taken (per spec, alongside the hm-j7ie ruling, not redesigned):**
 re-document + fence, not compose-aware accessors. A single `Evidence` record
 cannot compose (that needs ancestor access — `compose_observations_at`'s job).
 
-**Doc fix:** rewrote both accessors' doc comments to state plainly they return
-the record-LOCAL reduction over `normalized.events` alone. The coincidence with
-the true cut view is restricted to **genesis-rooted** records (`parent_cut ==
-None`); **every** lineage-bearing record (`parent_cut: Some(..)`) is
-suffix-local — named explicitly as two distinct shapes: a post-144 Seal batch
-(empty map for a non-advanced seal of a state-bearing rollout) and a
-branch-child Rollout (its `normalized` is only its own suffix past the branch
-point, task 132) — both directed at `compose_observations_at` for the true
-cut view. No signature change, no behavior change — `reduce_at_cut`'s call
-sites are untouched.
+**Doc fix (final form, post-V1):** rewrote both accessors' doc comments to
+state plainly they return the record-LOCAL reduction over `normalized.events`
+alone. Coincidence with the true cut view is keyed by `rollout.parent`
+(`None` ⟺ no ledger ancestor to compose), not by `parent_cut` (the
+cumulative-position base, `Some` on every production record); for
+`rollout.parent: Some(..)` records the local reduction omits every *retained*
+ancestor contribution — named explicitly as two distinct shapes, a post-144
+Seal batch (empty map for a non-advanced seal of a state-bearing rollout) and
+a branch-child Rollout (its `normalized` is only its own suffix past the
+branch point, task 132) — both directed at `compose_observations_at` for the
+true cut view. `observations_at`'s doc additionally states its `included`
+parameter is a **local index** (`take(included)`), not cumulative — unlike
+`compose_observations_at`'s `included`. The `parent_cut` field doc's own
+"(`None` for a genesis-rooted run)" parenthetical was also corrected: a
+production genesis-rooted run carries `Some(genesis_cut)`; lineage is
+`rollout.parent`'s job, not this field's. No signature change, no behavior
+change — `reduce_at_cut`'s call sites are untouched.
 
 **Explicit example (doc-test-shaped, this crate's convention — no crate here
 uses literal rustdoc doctests):** added
@@ -1123,13 +1139,28 @@ comment points at this test by name.
 **Branch-child Rollout divergence (PR #153 review, pr153-A):** the first
 attempt's fork test, `compose_excludes_the_parent_event_at_the_fork_count`,
 already builds a branch-child Rollout (parent `[5, 7]`, child suffix `[9]`,
-`parent_cut` at count 1) but only asserted the composed side. Added one more
-assertion in the same test: `child.observations_at_cut()` reduces to
-`Accumulated({9})` (the child's own suffix alone, missing the inherited `5`),
-against the existing `compose_observations_at(&led, &child, 2)` assertion of
-`Accumulated({5, 9})` — the same local-vs-composed divergence
-`seal_local_reduction_diverges_from_composed_truth` shows for a Seal, now shown
-for a Rollout. `observations_at_cut`'s doc comment cites both tests by name.
+`rollout.parent: Some(1)`, `parent_cut` at count 1) but only asserted the
+composed side. Added one more assertion in the same test:
+`child.observations_at_cut()` reduces to `Accumulated({9})` (the child's own
+suffix alone, missing the inherited `5`), against the existing
+`compose_observations_at(&led, &child, 2)` assertion of `Accumulated({5, 9})`
+— the same local-vs-composed divergence
+`seal_local_reduction_diverges_from_composed_truth` shows for a Seal, now
+shown for a Rollout, keyed by the child's retained ledger parent
+(`rollout.parent`), not by `parent_cut: Some(..)` (every production record's
+shape).
+
+**Genesis coincidence witness (PR #153 verify, V1):** added
+`genesis_rollout_local_reduction_matches_composed_truth` — a
+production-genesis-shaped record (`rollout.parent: None`, but `parent_cut:
+Some(..)` with a nonzero base 3, standing in for a restored pre-campaign
+setup prefix) asserts `ev.observations_at_cut() ==
+compose_observations_at(&led, &ev, ev.cut.sdk_events)` exactly. This is the
+positive witness for the coincidence side of the re-keyed contract:
+`rollout.parent == None` means nothing to compose, so local ≡ composed even
+though `parent_cut` is `Some(..)` — proving the key is `rollout.parent`, not
+`parent_cut`. `observations_at_cut`'s doc comment cites all three tests by
+name.
 
 **Caller audit (spec-named, both test-only — no production caller exists):**
 - `campaign.rs` `restart_rebuilds_canonical_inputs_from_the_ledger` (the
@@ -1144,12 +1175,14 @@ for a Rollout. `observations_at_cut`'s doc comment cites both tests by name.
   `e2.observations_at_cut()` to independently recompute the cell key
   `cells.key(e2.cut, &e2.observations_at_cut())` for cross-checking against
   `fold_batch`'s own (production) key. `e2` is a `testkit::seal_evidence(...)`
-  fixture: `parent_cut: None`, never appended to the test's ledger, so it has
-  no ancestor to compose over — its record-local reduction **is** the true cut
-  view here (there is nothing beyond it to compose). **Wants the local
-  reduction as-is** — migrating it to `compose_observations_at` would be a
-  no-op given this fixture's shape, so left unchanged except a comment
-  recording why.
+  fixture with `rollout.parent: Some(0)`, but the test's `led` is empty
+  (never appended) — `compose_observations_at` walks `rollout.parent`, finds
+  no issue-0 batch in `led`, and contributes nothing, exactly like a
+  collected/GC'd ancestor — so its record-local reduction **is** the true cut
+  view here too (re-keyed per V1: the reason is the missing ledger ancestor,
+  not `parent_cut`). **Wants the local reduction as-is** — migrating it to
+  `compose_observations_at` would be a no-op given this fixture's shape, so
+  left unchanged except a comment recording why.
 - Production Seal-arm code (`retention.rs` `fold_batch`'s `EvidenceRole::Seal`
   match arm) and the parity oracle already call `compose_observations_at`, not
   the local accessors — confirmed unchanged, not part of this task's surface.
@@ -1179,18 +1212,24 @@ zero public-API drift) was verified conformant. Fixed as one batch:
   Seal-scoped, so a caller holding a branch-child Rollout — the majority
   record shape in any campaign with branches — was affirmatively told the
   local accessor is the true cut: the exact contract drift hm-wshf exists to
-  close, reintroduced for Rollouts. **Fixed** at the doc choke point: the
-  coincidence claim is now restricted to genesis-rooted records (`parent_cut
-  == None`); both lineage-bearing shapes (post-144 Seal, branch-child
-  Rollout — anything with `parent_cut: Some(..)`) are named as suffix-local,
-  directed at `compose_observations_at`. `IMPLEMENTATION.md`'s echo (this
-  file) corrected the same way. Added the recommended ride-in: one assertion
-  in `compose_excludes_the_parent_event_at_the_fork_count` showing
+  close, reintroduced for Rollouts. **Fixed at the time** (this discovery
+  batch) at the doc choke point: the coincidence claim was restricted to
+  genesis-rooted records (`parent_cut == None`); both lineage-bearing shapes
+  (post-144 Seal, branch-child Rollout — anything with `parent_cut:
+  Some(..)`) were named as suffix-local, directed at
+  `compose_observations_at`. `IMPLEMENTATION.md`'s echo (this file) corrected
+  the same way. Added the recommended ride-in: one assertion in
+  `compose_excludes_the_parent_event_at_the_fork_count` showing
   `child.observations_at_cut()` (`{9}`, local) diverge from the test's
   existing `compose_observations_at` assertion (`{5, 9}`, composed) — the same
   "show it" pattern as the Seal-side test, now for the Rollout side. No
   accessor redesign, no rename, no API drift — stayed inside the
   re-document-not-compose direction the judge confirmed is spec-encoded.
+  **Superseded (verify V1, below):** this prescription's own key —
+  `parent_cut == None` — was itself wrong (generalized from the test
+  fixtures' shape rather than the production constructors); the true key is
+  `rollout.parent == None` (ledger-ancestor existence). See "PR #153 verify
+  fix batch" below for the corrected contract.
 
 - **pr153-B (P1, CONFIRMED, judge-recomputed) + pr153-C (P2, rides jointly
   with B).** `cargo mutants --no-shuffle --in-diff` found 1 surviving mutant:
@@ -1209,10 +1248,86 @@ zero public-API drift) was verified conformant. Fixed as one batch:
   full PR diff (`git diff origin/main...HEAD`) reports **0 missed** (see Gates
   run below).
 
+## PR #153 verify fix batch (verify event, head 743ce43d — one batch, two items)
+
+The verify event (closer + a fresh gate-auditor-v seat, Fable 5 judge)
+confirmed pr153-B/C closed and REFUTED the gate-evasion claim against the
+inline fix (V2: the empty-in-diff-mutant-set pass is the gate's own designed
+contract, and the claimed alternate surviving mutant is an operand rewrite
+outside cargo-mutants' operator-swap set — not a regression the inline
+introduced). It also found one new P1, explicitly **not attributed to this
+worker**: the worker faithfully implemented the discovery record's own A1
+prescription, but that prescription mis-keyed the coincidence condition by
+generalizing from the test fixtures' shape rather than the production
+constructors.
+
+- **V1 (P1, CONFIRMED, closer).** Coincidence between the local reduction and
+  the composed truth is keyed by **ledger-ancestor existence**
+  (`rollout.parent`), not by `parent_cut`: `compose_observations_at` walks
+  `rollout.parent` to find ancestor records (`evidence.rs`'s `while let
+  Some(issue) = parent`), so a `rollout.parent: None` record composes
+  nothing beyond its own events and local ≡ composed exactly — `parent_cut`
+  only shifts the cumulative position each event is stamped at, a shift
+  `reduce_at_cut`'s `take(included)` never has to see: `included` is always
+  at least the local vector's own length, so `take` always takes the whole
+  local vector regardless of `parent_cut`'s base. Production genesis
+  explores stamp `parent_cut: Some(self.genesis_cut)` **with
+  `rollout.parent: None`** (`campaign.rs`'s `pick_base`, the `None` choice
+  arm) — so the discovery fix's "`parent_cut == None` ⟺ coincide" claim is
+  false for the modal production record (every genesis explore); no
+  production constructor ever stamps `parent_cut: None` at all (only test
+  fixtures and legacy pre-132 decodes do).
+
+  **Fix — six choke points, doc-only + one witness assertion:**
+  1. `observations_at_cut`'s doc re-keyed to `rollout.parent`; `parent_cut`
+     reframed as the cumulative-position base (`Some` on every production
+     record, `None` only in fixtures/legacy decodes, behaving as base 0);
+     the `rollout.parent: Some(..)` case reworded from an absolute
+     inequality to "omits every *retained* ancestor contribution" (a fully
+     collected/GC'd ancestor contributes nothing to
+     `compose_observations_at` either, so the two can still coincide there).
+  2. `observations_at`'s doc re-keyed the same way, plus states `included`
+     is a **local index** (`take(included)`), not cumulative — unlike
+     `compose_observations_at`'s `included`.
+  3. The `parent_cut` field doc's "(`None` for a genesis-rooted run)"
+     parenthetical corrected: a production genesis-rooted run carries
+     `Some(genesis_cut)`; lineage is `rollout.parent`'s job.
+  4. The fork test's comment (`compose_excludes_the_parent_event_at_the_fork_count`)
+     re-keyed: the divergence is the child's retained ledger parent
+     (`rollout.parent`, walked via `led`), not `parent_cut: Some(..)` (every
+     production record's shape).
+  5. Both `IMPLEMENTATION.md` echoes corrected (the `hm-wshf` section above
+     and the pr153-A bullet, which now cross-references this section).
+  6. **Witness (new test):** `genesis_rollout_local_reduction_matches_composed_truth`
+     — a production-genesis-shaped record (`rollout.parent: None`,
+     `parent_cut: Some(..)` with a nonzero base 3 standing in for a restored
+     pre-campaign setup prefix) asserts `ev.observations_at_cut() ==
+     compose_observations_at(&led, &ev, ev.cut.sdk_events)` exactly —
+     positive proof the key is `rollout.parent`, not `parent_cut`.
+
+  Also corrected in the same pass (not spec-mandated choke points, but the
+  same misattribution): the `retention.rs` caller-audit inline comment and
+  its `IMPLEMENTATION.md` echo, which had described `e2`'s (`testkit::seal_evidence`)
+  local-reduction-is-truth case as "`parent_cut: None`" — `e2` actually
+  carries `rollout.parent: Some(0)`; the real reason local ≡ composed there
+  is that the test's `led` is empty, so the walk finds no issue-0 batch and
+  contributes nothing (a *missing* ancestor, exactly like a GC'd one), not
+  an absence of lineage.
+
+- **V3 (P2, ride-along, extracted from a refuted V2 sub-claim's substance).**
+  `foreign_version_is_rejected` (the `found: 1` case) asserted only the
+  variant shape, leaving the `found < VERSION` arm's message pinned at only
+  one of its two reachable inputs (`found: 2`, via the sibling test). Added
+  the same suffix/truncated/task-144 message assertion `found: 1`, mirroring
+  `version_two_ledger_is_refused_with_the_suffix_reason` — pins the arm
+  across its whole reachable domain (1 and 2).
+
 ## Gates run
 
 `cargo build -p explorer --all-features`; `cargo nextest run -p explorer
---all-features` (154 pass, 1 skip — the two new tests included); `cargo clippy
+--all-features` (**155 pass, 1 skip** — `genesis_rollout_local_reduction_matches_composed_truth`
+is the one net-new test this verify batch adds;
+`foreign_version_is_rejected` gained an assertion in place); `cargo clippy
 -p explorer --all-features --all-targets -- -D warnings` (exit 0; only
 pre-existing root `clippy.toml` `rand::thread_rng`/`rand::rng`/`rand::random`
 config diagnostics, unrelated to this change); `cargo fmt -p explorer --
@@ -1220,14 +1335,12 @@ config diagnostics, unrelated to this change); `cargo fmt -p explorer --
 (no dependency change). No `unsafe` added → no Miri obligation.
 `cargo mutants --no-shuffle --in-diff` against the full PR diff
 (`git diff origin/main...HEAD > pr.diff`, matching the CI `mutants` job's
-invocation): `INFO No mutants to filter`, exit 0 — after the pr153-B/C inline
-fix, the diff contains no code in a cargo-mutants-visitable position (the
-`if` lives inside the `#[error(...)]` attribute's token stream, not a plain
-fn body; the rest of the diff is doc comments and test-only code). **0
-missed**, satisfying the required gate.
+invocation): `INFO No mutants to filter`, exit 0 — the whole diff remains
+doc comments plus test-only code (the V1/V3 batch adds no production-code
+mutable surface), so the mutants gate stays at **0 missed** as expected.
 **Hash-neutrality:** neither fix touches the evidence/hash path — `hm-s6cb`
 only rewrites an error `Display` string (never hashed/persisted), and `hm-wshf`
-is docs plus a new self-contained test; no `reduce_at_cut`/`compose_observations_at`
+is docs plus test-only code; no `reduce_at_cut`/`compose_observations_at`
 call site changed. Ran anyway as part of the full suite:
 `campaign::tests::same_seed_yields_identical_campaign` and
 `retention::tests::same_seed_yields_identical_retention_artifacts` both green.
