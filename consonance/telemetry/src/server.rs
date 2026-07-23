@@ -433,33 +433,22 @@ fn serve_events(
     // Register with the hub before a single response byte is written, so the
     // subscription is live the instant the client can observe the stream.
     let sub = hub.subscribe();
-    // Bracket the whole streaming lifetime so the unsubscribe runs on every exit
-    // path — including a header-write error, which now happens while subscribed.
-    let result = announce_and_stream(&mut stream, running, &sub);
+    // Bracket the whole streaming lifetime — including the header write — so
+    // the unsubscribe runs on every exit path, even a header-write error.
+    let result = (|| -> io::Result<()> {
+        let header = "HTTP/1.1 200 OK\r\n\
+             Content-Type: text/event-stream\r\n\
+             Cache-Control: no-cache\r\n\
+             Connection: keep-alive\r\n\
+             \r\n";
+        stream.write_all(header.as_bytes())?;
+        stream.flush()?;
+        // Writes should fail fast (not hang) once a client goes away.
+        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+        pump_events_to(&mut stream, running, &sub)
+    })();
     hub.unsubscribe(&sub);
     result
-}
-
-/// Writes the SSE response header, then streams frames for the lifetime of the
-/// connection. Split out from [`serve_events`] so the subscribe/unsubscribe
-/// bracket there spans the header write too: the subscription is registered
-/// before the header (closing the connect/emit race) yet is still torn down if
-/// the header write itself fails.
-fn announce_and_stream(
-    stream: &mut TcpStream,
-    running: &Arc<AtomicBool>,
-    sub: &Arc<Subscriber>,
-) -> io::Result<()> {
-    let header = "HTTP/1.1 200 OK\r\n\
-         Content-Type: text/event-stream\r\n\
-         Cache-Control: no-cache\r\n\
-         Connection: keep-alive\r\n\
-         \r\n";
-    stream.write_all(header.as_bytes())?;
-    stream.flush()?;
-    // Writes should fail fast (not hang) once a client goes away.
-    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-    pump_events_to(stream, running, sub)
 }
 
 /// Advances the idle-iteration counter and decides whether a keepalive is due.
@@ -705,7 +694,14 @@ mod tests {
                 text: "hello".to_string(),
             },
         ));
-        let frame = read_until(&mut c, "\n\n");
+        // Anchor phase 2 on the real event payload marker: a periodic
+        // `: keepalive\n\n` comment frame also satisfies a bare "\n\n" wait, so
+        // keep reading past any keepalive-only frame until a genuine `data: `
+        // frame arrives (hm-3r2k).
+        let mut frame = read_until(&mut c, "\n\n");
+        while !frame.contains("data: ") {
+            frame = read_until(&mut c, "\n\n");
+        }
         assert!(frame.contains("data: "), "SSE data prefix: {frame:?}");
         assert!(frame.contains("\"Console\""));
         assert!(frame.contains("hello"));
