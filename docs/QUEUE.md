@@ -39,15 +39,10 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- **pvclock exact-arrival overshoot fix** (tasks/140, `hm-zwhi` bug,
-  agent-pvclock-exact-arrival, Opus 4.8 xhigh, spawned ~20:55): verify the dropped
-  `arm_arrival`-bool hypothesis with instrumentation first, then marker-clamp the rollout
-  run / make the decline loud; hash-neutral for the @1e7 maze + PR #138 game paths; box
-  leg optional (x86 box, if reachable).
-- **AA-6 injection attestation** (tasks/141, `hm-oh3v`,
-  agent-aa6-injection-attestation, Opus 4.8 xhigh, spawned ~21:09): stamp injection
-  config into run-set.json + per-record fired flag; `check_aa6_matrix` fail-closed on it;
-  planted-failure fixtures; routes the PR-#142 lane through the same attestation.
+- **MockBackend late-landing variant** (tasks/142, `hm-40na`,
+  agent-mockbackend-late-landing, Opus 4.8 xhigh, spawned 2026-07-23 ~00:50): make the
+  @3e7 arm-seam failure shape portably real (mock + tests only) — the portable red for
+  `hm-zwhi` and acceptance material for the `hm-x1ss` schedule-closure decision.
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -85,6 +80,16 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **pvclock arm-seam fail-closed guard MERGED** (tasks/140, PR #143, 2026-07-23 early —
+  full tribunal pipeline: 5-seat discovery → F2+F3+F4 batch → verify (V1 protocol-v9
+  bump, V2 Miri split, V3 strategy arm) → Closer re-check): silent staged-Moment
+  overshoot on pvclock guests now refuses loudly at the arm site
+  (`ScheduleMomentUnreachable`, wire v9); **`hm-zwhi` stays OPEN** — the @3e7 cure is
+  the `hm-x1ss` decision; box discrimination runbook shipped; hm-40na filed and
+  dispatched.
+- **AA-6 injection attestation MERGED** (tasks/141, PR #144, `hm-oh3v`, 2026-07-22 late):
+  run-set injection stamp + per-record fired witness; `check_aa6_matrix` fail-closed on
+  missing/OFF/zero-fired/incoherent; three planted-failure fixtures RED-asserted.
 - **AA-6 masked-register-digest apparatus MERGED** (tasks/138, PR #142, 2026-07-22 late
   eve): closed-list {x29, SP} mask pinned to the on-N1 register dump, fail-closed lane
   checker with negative controls, `injected_landed_digest` witness (`hm-fiqo` closed),
