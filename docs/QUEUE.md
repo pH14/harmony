@@ -39,10 +39,10 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- **Advanced-span verdict folds** (tasks/152, `hm-mmkf`, PR #147 F4): Opus 4.8 worker
-  spawned 2026-07-23 late afternoon on `task/advanced-span-verdict-folds` — route the
-  Seal batch's suffix occurrence/assertion events through fold_batch's verdict folds
-  (false-absence closure); red-before required on the tasks/144 repro shape.
+- (no active workers — 2026-07-23 evening; next spawns from `bd ready`: the PR #147
+  park family is fully drained; remaining P2 frontier = `hm-w1o6` (interior-seal
+  alignment design, now carries PR #155 V1's catalog-handling annotation), `hm-4gaw`,
+  `hm-f82p`, `hm-5mx0` (v1-verb test machine), `hm-0qpm` (doc one-liner))
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -86,6 +86,14 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **Advanced-span verdict folds MERGED** (tasks/152, PR #155, `hm-mmkf`, 2026-07-23
+  evening — discovery (F1 CONFIRMED P1: fold-semantics change reached persisted
+  checkpoints with no version boundary; judge stale-checkpoint repro) → one batch
+  (ledger VERSION 3→4 loud refusal, satisfied-count `== 1` pin, fixture honesty) →
+  verify clean (two-build repro: head refuses what pre-fix silently reopened; 4 P1
+  claims at verify, 0 survived)): the PR #147 F4 false-absence class is closed —
+  advanced-span occurrence/assertion events now judged. Parks: `hm-5mx0`
+  (v1-verb test machine → e2e gate + StepReport surface), V1 folded into `hm-w1o6`.
 - **SSE scanner hardening MERGED** (tasks/151, PR #154, `hm-b5km`+`hm-8c5m`,
   2026-07-23 evening — discovery (1 P1: stale test-count claim) → one batch → verify
   clean): scanner generic over io::Read with scripted-read coverage; phase-1 anchor
