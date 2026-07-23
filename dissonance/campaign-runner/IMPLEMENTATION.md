@@ -1479,3 +1479,18 @@ The film gate passes its base `Snapshot` through, and **fails loud if that base 
 freshly-booted guest has run no `exec`, so a tainted base means something improvised on the boot —
 and every filmed timeline would inherit the taint (it never clears downstream), making the whole
 capture off the record. Better to stop than to film an unreproducible timeline.
+
+### Task 146 (hm-whoo) — `BoxGuest` fixture made faithful (cross-surface, blessed)
+
+Task 146's surface is `dissonance/explorer`, but completing that task's seal-capture
+**count invariant** (`cut.sdk_events == the raw capture records at or before the seal
+moment`) required one correction here. The `BoxGuest` `#[cfg(test)]` fixture in
+`gamecampaign.rs` stamped a constant `sdk_events: 0` at every seal while its rollout
+captured ~360 frame-marker firings — it was itself an instance of the below-baseline
+under-stamp the explorer task closes, admitted only through the hole. `BoxGuest::snapshot`
+now stamps the honest count of capture records at or before the seal moment (mirroring
+`sdk_events`'s two drain states, each bounded by the cut), matching production
+(`vmm.sdk_events().len()`) and every faithful machine — the same "the toy had to become
+faithful first" frame correction PR #147 applied, on the one fixture that was missed.
+No public API or dependency change; full `-p campaign-runner` nextest green. Rationale and
+the full analysis live in `dissonance/explorer/IMPLEMENTATION.md` §Task 146.

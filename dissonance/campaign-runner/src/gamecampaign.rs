@@ -2151,14 +2151,39 @@ mod tests {
         fn snapshot(&mut self) -> Result<(explorer::SnapId, explorer::EvidenceCut), MachineError> {
             let id = self.next_snap;
             self.next_snap += 1;
-            // The cut is stamped from the stopped state (task 127). BoxGuest
-            // models per-rollout (run-local) captures, so the cumulative
-            // prefix base is 0.
+            // The cut is stamped from the stopped state (task 127) as the count
+            // of capture records **at or before the seal moment** — exactly what
+            // production stamps (`vmm.sdk_events().len()` measured at the cut,
+            // `control.rs`) and what [`sdk_events`](Self::sdk_events) below
+            // exposes at this state. Task 146 (hm-whoo) completed the explorer's
+            // seal-capture count invariant (`cut.sdk_events == the raw records at
+            // or before the cut`); the earlier constant `0` here was the
+            // firings-only frame the task-144 `saturating_sub` tolerated but the
+            // count invariant refuses — an interior/candidate seal that stamps 0
+            // against its own multi-record capture is the below-baseline
+            // under-stamp the invariant now catches. Mirror `sdk_events`'s two
+            // states (the one-shot billboard setup drain, then each rollout's
+            // per-frame drain), each record bounded by the seal moment.
+            let records_at_or_before = |moments: &[u64]| -> u64 {
+                moments.iter().filter(|at| **at <= self.vtime).count() as u64
+            };
+            let count = if self.published {
+                // Each announced frame drains three tuples at the same Moment.
+                (0..self.frame_markers)
+                    .map(|f| self.base_vtime + f + 1)
+                    .filter(|at| *at <= self.vtime)
+                    .count() as u64
+                    * 3
+            } else if self.billboard.is_some() {
+                records_at_or_before(&[self.base_vtime, self.base_vtime + 1])
+            } else {
+                0
+            };
             Ok((
                 explorer::SnapId(id),
                 explorer::EvidenceCut {
                     at: Moment(self.vtime),
-                    sdk_events: 0,
+                    sdk_events: count,
                 },
             ))
         }
