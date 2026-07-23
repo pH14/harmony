@@ -6,10 +6,10 @@
 > Adopted 2026-07-09 (Paul: "worth a try") to replace prose-trigger sprawl across GitHub
 > issues, task-spec headers, and memory notes.
 
-_Full regeneration 2026-07-22 late eve (foreman loop): the ARM AA-0..AA-6 re-cert is
-COMPLETE, the maze cooperative gate and Differential vertical are merged, the queue turned
-over to the follow-up/hardening tier, and the main checkout was evacuated from
-`ci/gha-migration` back to `main` (residue parked on `oob/gha-residue`, Paul-directed)._
+_Refreshed 2026-07-23 morning (foreman loop): PR #147 (seal-suffix capture) through
+discovery tribunal + verify event — F1 closure VERIFIED, one narrow fix batch (V1+V2)
+dispatched to the worker; Closer-only re-check next. The GHA-residue landing (`hm-nsfl`,
+P1, Paul-directed) is the next spawn._
 
 Decision-gate safety: before dispatching ready work, the foreman inspects any closed decision
 blocker and requires a recorded GO; it never dispatches in the same iteration that closes that
@@ -39,8 +39,14 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- (no active workers — 2026-07-23 ~01:50; next spawn from `bd ready` at the coming
-  iteration)
+- **Seal run-forward suffix capture** (tasks/144, PR #147, `hm-aqf0`): discovery tribunal
+  REQUEST_CHANGES (F1 CONFIRMED P1: advanced-seal suffix invisible to descendant
+  recomputation) → F1+F2 fix batch → verify event: **F1 closure VERIFIED**, but the F2
+  ride-along introduced V1 (CONFIRMED P1: reconciliation crosses two cut frames, refuses
+  an honest production host). V1+V2 fix batch dispatched 2026-07-23 morning
+  (closure 1 preferred — single stamped frame, folds `hm-udgn`); **Closer-only re-check
+  next**, then merge-or-STOP per the verify discipline. Park family: `hm-f82p` `hm-4gaw`
+  `hm-mmkf` `hm-j7ie` (+V4 appended) `hm-udgn` `hm-whoo` (V3) `hm-wshf` (V5).
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -53,14 +59,19 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
   `hm-f2s`/`hm-x9f` (P0, Paul's), CI benchmark `hm-w9s` (P1, Paul's), aarch64 public-api
   gate `hm-4aj`, PR #108 arrival-day validation `hm-f99`, AMD hammer dry-run `hm-8v4`.
 
-## Ready (unblocked; foreman spawns as slots free — 2 of 3 slots in use)
+## Ready (unblocked; foreman spawns as slots free — 1 of 3 slots in use)
 
+- **Land the GHA-migration + skills/hygiene residue** (`hm-nsfl`, P1, Paul-directed —
+  **next spawn**): rebase `oob/gha-residue` onto main (~a week stale), reconcile the
+  mutants un-sharding regression vs PR #141's timeout+retry structure, land as a
+  handoff-style ready PR. Needs a foreman-drafted spec first.
 - **Box/toolchain reproducibility pair** (`hm-gfr1` static box definition; `hm-nji6`
   payload-pin reproducibility + certified-binary archive) — the aa3-recert-pins landmine
   turned into work items.
-- **Flaky SSE-frame test** (`hm-ftok`, P2): intermittently reds the gates job.
-- **PR #138 follow-up family**: seal-past-rollout truncation `hm-aqf0`, evidence-coverage
-  family `hm-btht`, reseal genesis-rooted re-materialization `hm-kyy5`.
+- **PR #138 follow-up family**: evidence-coverage family `hm-btht`, reseal genesis-rooted
+  re-materialization `hm-kyy5` (truncation `hm-aqf0` is in flight as PR #147).
+- **PR #146 deflake parks**: `hm-3r2k` (anchor phase-2 wait on `data: `), `hm-gfi2`
+  (helper inline-or-generalize), `hm-gnxr` (doc amendment, P3).
 - **Schedule-closure design question** (`hm-x1ss`): can the unsafe-snapshot-moment CLASS
   die at the root — now also owns the `hm-zwhi` fix direction.
 - Large hardening backlog (PR #132/#134/#135 review-park families, AMD spike residue,
@@ -78,6 +89,9 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **Telemetry SSE-frame test deflaked MERGED** (tasks/143, PR #146, `hm-ftok`,
+  2026-07-23 early): subscribe before announcing the SSE stream; three review parks
+  filed (`hm-3r2k`, `hm-gfi2`, `hm-gnxr`).
 - **MockBackend late-landing capability MERGED** (tasks/142, PR #145, `hm-40na`,
   2026-07-23 ~01:50, tribunal: zero surviving P1s): the genuine @3e7 shape is portably
   real for the first time; the load-bearing, judge-mutation-CONFIRMED finding — the
