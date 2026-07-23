@@ -39,11 +39,9 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- **Seal-capture reconciliation hardening** (tasks/146, `hm-whoo`): Opus 4.8 worker
-  spawned 2026-07-23 midday on `task/seal-capture-reconciliation` — count invariant
-  `cut.sdk_events == raw.len()` before decoding (closes the C1 below-baseline hole) +
-  prefix commitment via `Normalized.commitment` (closes V3) + doc overclaim fix; four
-  required regression tests incl. honest-host-still-admitted.
+- **SSE bounded accumulating wait** (tasks/149, `hm-38kv`): Sonnet 5 worker spawned
+  2026-07-23 mid-afternoon on `task/sse-bounded-wait` — test-only closure of the
+  PR #149 F1 wait-loop family + deterministic keepalive-skip coverage.
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -87,6 +85,16 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **Seal-capture reconciliation MERGED** (tasks/146, PR #150, `hm-whoo`, 2026-07-23
+  mid-afternoon — full pipeline: 5-seat discovery REQUEST_CHANGES (F1 CONFIRMED P1:
+  the worker's bounded-by-cut.at form admitted an appended future-Moment record;
+  judge refuted the toy-faithfulness defense) → one fix batch (literal invariant,
+  vtime-truncated toy read, clock-bounded BoxGuest fixture, structural prefix
+  comparison) → verify event all-clear (every closure recomputed) → post-rebase
+  contract-seat pass after the PR #151 conflict → merged): the seal-capture
+  reconciliation is now count-complete AND content-aware (id/schema-swap refused).
+  Parks: `hm-w1o6` (F3 interior-seal content validation + V-N2 diagnostic note) —
+  now unblocked.
 - **Ledger VERSION 2→3 MERGED** (tasks/148, PR #151, `hm-j7ie`, 2026-07-23 afternoon —
   5-seat tribunal, zero P1s, three seats zero findings): pre-144 suffix-only-seal
   ledgers refused loudly before any record decodes (V4 cross-version-identity class
