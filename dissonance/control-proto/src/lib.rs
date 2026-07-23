@@ -91,8 +91,13 @@ pub const PROTO_VERSION: u16 = 1;
 /// synchronized seal [`Moment`], included SDK-event count, and taint from the same
 /// stopped server state — and the bare-handle `SnapId` reply (wire tag 2) is
 /// retired. A **reshape**, not an addition: a v7 peer would mis-decode the new
-/// snapshot body mid-session, so it must reject at `hello`.
-pub const APP_PROTOCOL_VERSION: u16 = 8;
+/// snapshot body mid-session, so it must reject at `hello`. Bumped to **9** by task
+/// 140 (bead `hm-zwhi`): the exact-arrival arm seam adds the
+/// [`ControlError::ScheduleMomentUnreachable`] error tag (codec 20). Byte-additive,
+/// but per the bump procedure a new `ControlError` tag bumps the version so a v≤8
+/// peer rejects at `hello` rather than hit a mid-session `ShortFrame` on the unknown
+/// tag (precedent: v2/v5/v6 each bumped for new-`ControlError`-tag additions).
+pub const APP_PROTOCOL_VERSION: u16 = 9;
 
 /// The maximum bytes one [`Read`](Request::Read) may request. A larger `len` is a
 /// loud [`ReadTooLarge`](ControlError::ReadTooLarge), rejected **before any
@@ -122,7 +127,7 @@ mod tests {
     fn wire_constants_are_pinned() {
         assert_eq!(MAX_FRAME_LEN, 16_777_216); // == 16 * 1024 * 1024 (16 MiB)
         assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(APP_PROTOCOL_VERSION, 8); // task 127: the seal-bound Snapshot reply reshaped the snapshot vocabulary
+        assert_eq!(APP_PROTOCOL_VERSION, 9); // task 140 (hm-zwhi): the ScheduleMomentUnreachable error tag (codec 20)
         assert_eq!(READ_CAP, 65_536); // == 1 << 16 (64 KiB)
     }
 }

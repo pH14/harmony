@@ -4378,3 +4378,245 @@ passing), and every integration binary is `ok` (`event_loop` 19,
 restore `Mapping`) are exercised by a running Miri test, the restore side through a
 retained raw pointer read after the mapping's move. `snapshot-store`'s own nightly
 step (`--lib` + disable-isolation) passes with the new alignment tests (14 passed).
+
+# Task 140 — exact-arrival overshoots staged Moments on pvclock guests (hm-zwhi)
+
+A maze SelectorV1 exploit rollout (`StopMask::NONE`, single deadline `origin+delta`,
+`delta = 3e7`, multi-quantum) fails on the box: the server refuses with `run overshot
+staged Moment M (now at V-time M'); schedule unsatisfiable`. The exact-arrival
+machinery was expected to STOP at the staged reseed Moment M and drain it; instead
+the run sailed past to `M'`, overshooting by < 1 quantum. `@1e7` (one-quantum) is
+green (11/11 exploits drain in-window reseeds bit-identically); the failing
+ingredient is the maze being a **pvclock guest** (task-110; the ~10.4 ms quantum is
+the guest's pvclock refresh grid).
+
+## Verify FIRST — the leading hypothesis is REFUTED
+
+The bead's leading suspect was: `control.rs`'s run-loop arms `vmm.arm_arrival(m)` and
+**drops the bool**; `arm_arrival` silently DECLINES (`false`) when `work_for_vns(m) <
+last_intercept_work`, so a future staged Moment maps below the anchor, the arm
+no-ops, and the guest free-runs. The task required verifying this before any fix.
+
+It is **wrong**, and the proof is short (test `arm_arrival_rounds_an_off_grid_moment_
+up_not_declines`, plus this argument). The drain leaves a Moment staged only when
+`m > effective_vns() = snapshot_vns(last_intercept_work)`. On the snapshot-bearing
+path `ratio_den == 1` is enforced (`VtimeWiring::new`), so `snapshot_vns` and
+`work_for_vns` are **monotone inverses**: `m > snapshot_vns(anchor)` forces
+`work_for_vns(m) > anchor`. So a Moment the run-loop actually arms can **never** map
+below the anchor — `arm_arrival` returns `true` every time. The decline branch is
+unreachable on any consistent clock (portable OR box — both use the deterministic
+anchor + the same clock). The "silent decline" is not the mechanism.
+
+## The overshoot mechanism — portable seam model (settled) vs. box mechanism (OPEN)
+
+The exact-arrival seam can only stop the guest at points its **stoppable grid** can
+represent. A staged Moment finer than that grid is unreachable: `arm_arrival` arms at
+`work_for_vns(m)` — the round-UP work count whose V-time is the first grid point
+**at-or-after** `m` — so the guest lands PAST `m`, the next drain sees `m <
+effective_vns` and poisons. That is the **portable seam shape**, and it is settled;
+what makes the box's @3e7 overshoot happen is **not yet proven** and is deliberately
+kept as a hypothesis here (the task's "do not fix blind", applied to the diagnosis).
+
+- **Box (the actual @3e7 failure): mechanism OPEN — it CONTRADICTS the in-tree
+  min-composition contract.** The box contract clock is fine — `ratio_num == 1`, 1
+  ns/branch (`contract_vclock_config`, vendor/x86/dispatch.rs:1097), so every Moment
+  is on the V-time grid and `arm_arrival` arms at `m` *exactly* (`arrival_vns() ==
+  m`). By the documented composition, arming the arrival at `m` should STOP the guest
+  at `m`:
+
+  > "Taking the min is what lets the deadlines coexist: the guest is forced out at
+  > whichever seed-deterministic work count comes first, and the losers stay armed for
+  > the following step." — `run_until_deadline()`, **vmm.rs:3607-3628** (arrival
+  > competes with the pvclock refresh and *wins* when nearer)
+
+  > "arrival is exact — [`Vmm::arm_arrival`] makes `step`'s `run_until` stop *between
+  > instructions* at the next staged `Moment`" — control.rs:1425-1428 (and
+  > vmm.rs:3630-3633)
+
+  With a mid-quantum marker `m < anchor + delta_work`
+  (`PVCLOCK_DEFAULT_DELTA_WORK = 10_000_000`) the arrival is the min, so the contract
+  says the guest stops at `m` — yet the box run stops at the refresh boundary `M'`.
+  The @3e7 overshoot is therefore a **violation of a documented contract — a bug with
+  an unknown mechanism**, not a designed-in limitation. Candidate classes, which the
+  box runbook below must discriminate:
+  1. **stale-arm lifecycle** — the `#34`/`#55` class the `run` doc names
+     (control.rs:1416-1423): a `run_until` arm not reset across runs, so the arrival
+     is not actually the deadline the backend sees on that leg;
+  2. **refresh clobber** — a pvclock refresh landing (or its `on_deadline` anchor
+     move) clearing/overwriting the pending arrival arm before the guest reaches it;
+  3. **never armed** — the arrival not composed into `run_until_deadline()` on that
+     leg at all.
+
+  An earlier draft of this section asserted this was a "backend limitation" (a
+  compute-bound guest stoppable only at refreshes), leaning on the `run` doc's "a
+  `patched_kvm`/`pmu_sys` change outside task-58's surface, deferred". That quote is
+  about **hard-deadline stale-arm reset** — a *different* mechanism — so it does not
+  establish a limitation, and the claim is retracted to hypothesis status here (and,
+  per F2, on hm-x1ss/hm-sp8v). What IS certain: the mock cannot decide this —
+  `MockBackend::run_until` always honors the armed deadline (rewrites `reached :=
+  deadline`, mock.rs:393-399), so it stops exactly at `m` and the overshoot never
+  appears; only on-box instrumentation of the composed deadline per step can.
+
+- **Portable model (the regression test): a coarse V-time clock — this IS settled.**
+  With `ratio_num > 1` (`ratio_den == 1`) the V-time grid itself is coarse
+  (`{0, R, 2R, …}`). This is a *model* of the seam, NOT the box mechanism: it makes
+  the ARM overshoot (a Moment between grid points is off the grid, `work_for_vns`
+  rounds UP, `arrival_vns() > m`), an on-grid landing the mock faithfully executes.
+  `coarse_enforce_vmm` (ratio 1000) + an off-grid marker at 1500 reproduces the
+  overshoot SHAPE the task names (red before the guard, green after), entirely at the
+  vns↔work seam — the sanctioned "focused unit around the anchor math". It does not
+  claim to be the box's `ratio_num == 1` case, where `arrival_vns() == m` and the
+  guard never fires (see the fix's cure/no-cure note below).
+
+## The fix — capture the arm outcome, refuse precisely and early (hash-neutral)
+
+`control.rs`'s run-loop no longer drops `arm_arrival`'s outcome. On a
+determinism-complete backend (`can_arm_arrival()`), when the exact seam cannot clamp
+EXACTLY on the staged Moment — it declined (`arrival_vns()` is `None`, held
+defensively though unreachable) OR the nearest representable arrival lands past `m`
+(`arrival_vns() > m`) — the run refuses AT THE ARM SITE with a **distinct typed
+variant** `ControlError::ScheduleMomentUnreachable { moment, landing }`, naming the
+STAGED Moment `m` and the unreachable `landing`, and latches the poison **before**
+stepping the guest past the marker. A declined arm on a determinism-complete guest is
+a schedule-integrity event, not a no-op (the bead's "typed error … at the arm site"
+fix-direction).
+
+- **Why a new variant, not `ScheduleUnsatisfiable` (F3).** `ScheduleUnsatisfiable`'s
+  `vtime` field is documented as "the effective V-time the run *reached* (already
+  beyond `moment`)" and its message reads "run *overshot* … now at V-time …". At the
+  arm-site refusal the guest has **not** moved — preventing the overshoot is the whole
+  point — so `landing` is a *prospective, unreached* V-time; jamming it into a
+  reached-V-time field (as the first cut did) is a wire-contract violation, and a
+  single variant/message cannot truthfully describe both "overshot" and "refused
+  before overshoot". `ScheduleMomentUnreachable` carries `(moment, landing)` with
+  `landing` documented as prospective, and the poison latch (now storing the exact
+  `ControlError`) re-emits *that* variant + coordinates on every subsequent
+  `run`/`perturb`/`snapshot` until a rewind — so a client keying on the error (and
+  hm-sp8v, directed to inherit this seam live) gets one honest, stable shape. The
+  control-proto addition (variant + codec code 20 + golden + `public-api.txt`) is the
+  spec's own "typed error" fix direction, i.e. specced surface.
+
+- **Hash-neutral, proven.** On every currently-green path the contract clock is exact
+  (`ratio_num == 1`), so a staged `m` is on-grid and `arrival_vns() == m` — the gate
+  is byte-for-byte inert. The full `vmm-core` suite (537 tests, including every
+  `state_hash` / snapshot-round-trip / `arbitrary_schedule_applied_twice` gate) and
+  the downstream maze/game campaigns (`campaign-runner` + `explorer`, 320 tests
+  including the bit-identical determinism proptests) all pass unchanged.
+- **Scoped to the exact seam.** A backend WITHOUT it (`!can_arm_arrival` — stock KVM
+  / M1 / M2) returns `false` from `arm_arrival` as its ORDINARY task-58 fallback (run
+  to a natural exit, compare `effective_vns`); the gate leaves that untouched.
+
+## What the fix does and does NOT cure — read before the box leg
+
+- It CURES the seam-overshoot that is detectable in-process: a coarse V-time clock (or
+  any config where `work_for_vns(m)` rounds past `m`). The guest never free-runs past
+  the marker; the refusal names `m` and the grid point it could not avoid.
+- It is **inert on the box's @3e7 case** by design: there `arrival_vns() == m` (fine
+  clock), so `arrival_vns() > m` is false and the guard never fires. Whatever makes
+  the box overshoot (one of the three OPEN candidate classes above — stale-arm,
+  refresh clobber, or never-armed) is NOT the round-UP seam this guard detects, so the
+  guard cannot pre-empt it; the existing post-step `ScheduleUnsatisfiable` poison still
+  names `(m, M')` truthfully. This PR therefore does **not** fix @3e7 (by design — the
+  box leg is non-blocking) and hm-zwhi stays open. Which candidate class it is, and any
+  CURE, are for the box runbook + **hm-x1ss** (a schedule-closure decision — e.g.
+  draining a reseed at the nearest reachable refresh boundary `≥ m`), not this task's
+  surface. The finding is fed to hm-x1ss and **hm-sp8v** (the ARM `arm_arrival` port)
+  **as a hypothesis, not a settled limitation** — the ARM port must confirm on-silicon
+  before assuming mid-quantum exact arrival cannot hold.
+
+## Deviations considered and rejected
+
+- **Drain off-grid / mid-quantum markers at the grid-ceil (make @3e7 green).** This
+  would apply the reseed at `work_for_vns(m)`/`M'` instead of at `m` — a change to
+  drain semantics (which count a marker applies at). That is the hm-x1ss
+  schedule-closure design the task's scope guard forbids taking on, and it risks a
+  hash change on any path with an off-grid marker. Rejected; fed to hm-x1ss.
+- **Marker-clamp the deadline per marker in the run-loop (like
+  `materialize_candidate`).** `materialize_candidate` re-runs with `until.deadline =
+  m` per marker, but the opportunistic stop (`vns ≥ deadline`) is evaluated only at an
+  exit, so under the leading box hypotheses it would still land at the first reachable
+  boundary `≥ m` and poison the same way — it relocates the stop rather than curing
+  the overshoot, and (like everything box-side here) is unverified. Not pursued: it is
+  the exact-arrival seam (`arm_arrival`), already the clamp on every path, whose box
+  behavior the runbook must first explain; and a genuine clamp/drain redesign is
+  hm-x1ss, not this task.
+- **The maze-driver `deadline_delta` guard.** Explicitly out of scope (bead: Paul's
+  Option (a) accepts @1e7; a loud driver rejection is follow-up only). Untouched.
+- **A persistent arm-trace diagnostic buffer on `ControlServer`** (to "log the arm
+  bool + (vns, work, effective_vns) triple"). The verification it was meant to serve
+  is already settled analytically + by the portable test (hypothesis refuted), and
+  the typed refusal carries `(m, landing)` on the wire. Adding a buffer is surface
+  the fix does not need; the box runbook below captures the triple with a temporary
+  trace if deeper on-silicon confirmation is wanted.
+
+## Known limitations / integrator notes — box leg handoff
+
+The box leg (`@3e7` on `ssh hetzner`) is **not run here** — the x86 box was not
+exercised this session; the portable seam repro + this analysis stand, and the box
+diagnosis is handed to the foreman (task spec Environment: box optional, do not block
+the PR on it). The runbook must do two things: confirm the guard is inert on the box,
+and **discriminate the three OPEN candidate classes** (stale-arm / refresh-clobber /
+never-armed) — the current arm-site-only logging cannot tell them apart, because on
+the box `arrival_vns() == m` in all three:
+
+```sh
+# ssh hetzner ; pin per docs/BOX-PINNING.md ; smoke-fire-once ; revert KVM to stock when done.
+# Re-run the failing @3e7 maze leg (lease maze-qcpp-3e7). It STILL fails loud with
+# ScheduleUnsatisfiable naming the staged Moment (unchanged by this fix — expected;
+# the guard's ScheduleMomentUnreachable does NOT fire, since arrival_vns() == m).
+#
+# (a) Arm-site log, per staged-Moment arm (refutes the decline; confirms on-grid):
+#     (m, armed = arm_arrival(m), effective_vns(), arrival_vns()).
+#     Expect: armed == true and arrival_vns() == m — NOT a decline, NOT a round-UP.
+#
+# (b) THE DISCRIMINATOR — log the COMPOSED deadline the backend is actually told, at
+#     EVERY step of the overshooting leg, until effective_vns crosses m:
+#       (step#, last_intercept_work, run_until_deadline(),
+#        preemption_deadline(), arrival_deadline (via arrival_vns()),
+#        pvclock_refresh_deadline(),  exit kind, reached).
+#     Read it against vmm.rs:3607-3628 (min-composition):
+#       - arrival is the MIN but the guest still lands at M' -> the backend ran past
+#         the composed deadline  => stale-arm / backend-honor class (candidate 1);
+#       - arrival present one step, GONE the next (dropped after a refresh landing)
+#         => refresh-clobber class (candidate 2);
+#       - arrival NEVER in run_until_deadline() on that leg
+#         => never-armed class (candidate 3).
+#     This is the evidence hm-x1ss needs to pick the cure; do NOT choose it here.
+```
+
+The box CURE (whichever class it is; e.g. a bounded-late drain at the refresh
+boundary) is hm-x1ss. This task delivers the **hypothesis-and-evidence** diagnosis
+(not a settled limitation), the hash-neutral typed-refusal seam guard, and the
+portable regression pinning the vns↔work-seam overshoot shape.
+
+## Tribunal round 2 — the F2/F3/F4 fix batch (PR #143)
+
+- **F2 (this section).** The box mechanism is reworded from "settled backend
+  limitation / verified diagnosis" to **leading-hypothesis-pending-runbook**: it
+  *contradicts* the documented `run_until_deadline()` min-composition contract
+  (vmm.rs:3607-3628), so it is a contract violation with three OPEN candidate classes
+  (stale-arm / refresh-clobber / never-armed); the runbook is extended to log the
+  composed deadline per step to discriminate them; the test-block comment that
+  conflated the portable ratio-1000 V-time-clock model with the box's on-grid case is
+  corrected.
+- **F3.** The arm-site refusal no longer overloads `ScheduleUnsatisfiable` (whose
+  `vtime` is the *reached* V-time). A distinct typed variant
+  `ControlError::ScheduleMomentUnreachable { moment, landing }` was added to
+  control-proto (codec code 20 + golden + `public-api.txt`), `landing` documented as
+  the *prospective/unreached* arrival. The poison latch now stores the exact
+  `ControlError` and re-emits it verbatim, so both poison classes keep their own typed
+  variant across `run`/`perturb`/`snapshot`.
+- **F4.** The regression test now pins the latch: after the arm-site refusal, a
+  re-sent `run`, a `perturb`, and a `snapshot` all fail with the **identical**
+  `ScheduleMomentUnreachable(1500, 2000)` (original coordinates), and a `replay` of a
+  pristine base clears it (the session then runs cleanly).
+
+## Gates (Mac)
+
+`build` / `nextest` (`vmm-core` 537 passed / 4 skipped — includes the two `hm-zwhi`
+tests and the F4 latch assertions; `control-proto` 77 passed / 1 skipped — includes
+the new `err_schedule_moment_unreachable` golden) / `clippy -D warnings` / `fmt
+--check` / `deny` all green; the `control-proto` `public-api` pin matches (the new
+variant's three lines). Downstream `campaign-runner` + `explorer` (320 passed, 2
+skipped) green, pinning hash-neutrality on the real maze/game campaign surface across
+both the vmm-core latch refactor and the new control-proto variant.
