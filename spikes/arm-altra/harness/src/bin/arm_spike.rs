@@ -1043,6 +1043,26 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
     let core_regs_digest = machine
         .core_regs_digest()
         .map_err(|e| format!("digest final core register state: {e}"))?;
+    // AA-6 masked-register digest (hm-3bwm) at the success landing: the full register file
+    // MINUS exactly {x29, SP} (host-time counters already excluded). The named condition on
+    // the AA-6 LinuxGuest PROVISIONAL→full-GO upgrade — bit-identical across ≥1000 same-seed
+    // injected reps proves change #4's console+vGIC narrowing masks exactly-and-only the
+    // disclosed stack-ASLR residual, not an injection-path register divergence.
+    let masked_regs_digest = machine
+        .masked_regs_digest()
+        .map_err(|e| format!("digest final masked register state: {e}"))?;
+    // The masked digest's exclusion set, enumerated (not implied) so the evidence output
+    // states EXACTLY what is dropped: the two masked general registers by full KVM id, and
+    // the pre-existing host-time counter exclusion by name. Widening either is a P0 STOP.
+    let masked_excluded_gprs = format!(
+        "x29:{:#018x},SP:{:#018x}",
+        arm_harness::sys::kvm::REG_CORE_X29,
+        arm_harness::sys::kvm::REG_CORE_SP,
+    );
+    let masked_excluded_host_time = "CNTPCT_EL0,CNTPCTSS_EL0,CNTVCTSS_EL0,KVM_REG_ARM_TIMER_CNT";
+    // hm-fiqo: the injection-Moment masked-register witness, emitted (no longer discarded);
+    // `none` on the negative-control OFF path where no injection fired.
+    let injected_landed_digest = result.injected_landed_digest.as_deref().unwrap_or("none");
 
     // AA-6 LinuxGuest record emission (the mini-gate matrix's 9th class). A `LinuxGuest` armed+
     // delivered RunRecord whose overflow landed at the injected Moment and whose `state_digest`
@@ -1056,13 +1076,14 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
              success gate"
                 .to_string()
         })?;
-        // The LinuxGuest AA-6 determinism carrier: console + vGIC injection state. The full
-        // register digest diverges same-seed on the userspace stack-placement ASLR (the AA-5(c)
-        // kernel-CRNG residual, hm-of6t F12) — orthogonal to injection — so the compared digest
-        // is the AA-5(c)-proven-deterministic console plus the vGIC state that carries the
-        // injected pending interrupt. `injected_landed_digest` (registers at the injection Moment)
-        // is retained in the boot result for diagnostics but is not the compared digest.
-        let _ = result.injected_landed_digest.as_ref();
+        // The LinuxGuest AA-6 determinism carrier for the RECORD: console + vGIC injection
+        // state (change #4). The full register digest diverges same-seed on the userspace
+        // stack-placement ASLR (the AA-5(c) kernel-CRNG residual, hm-of6t F12) — orthogonal to
+        // injection — so the record's compared digest is the AA-5(c)-proven-deterministic
+        // console plus the vGIC state that carries the injected pending interrupt. The
+        // masked-register digest and the injection-Moment witness (`injected_landed_digest`,
+        // hm-fiqo) — the hm-3bwm named-condition evidence — are emitted in the summary line
+        // below, the lane that proves this narrowing masks exactly-and-only {x29, SP}.
         let aa6_digest = machine
             .console_vgic_digest(&result.boot.console)
             .map_err(|e| format!("digest the AA-6 LinuxGuest console+vGIC state: {e}"))?;
@@ -1152,7 +1173,9 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
          clockevent_assertions={} clockevent_acks={} clockevent_max_lateness_ticks={} \
          exec_guard_enabled={} exec_guard_exits={} exec_guard_scans={} exec_guard_approvals={} \
          exec_guard_rejections={} exec_guard_write_revocations={} exec_guard_blocked_writes={} \
-         state_digest={} regs_digest={} core_regs_digest={} transcript={}",
+         state_digest={} regs_digest={} core_regs_digest={} masked_regs_digest={} \
+         injected_landed_digest={} masked_excluded_gprs={} masked_excluded_host_time={} \
+         transcript={}",
         result.boot.exits,
         result.boot.console.len(),
         console_sha256,
@@ -1176,6 +1199,10 @@ fn linux_boot(opts: LinuxBootOpts) -> Result<(), String> {
         state_digest,
         regs_digest,
         core_regs_digest,
+        masked_regs_digest,
+        injected_landed_digest,
+        masked_excluded_gprs,
+        masked_excluded_host_time,
         opts.console_out.display()
     );
     println!(

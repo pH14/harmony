@@ -444,6 +444,30 @@ pub mod kvm {
 
     /// `KVM_REG_ARM_CORE_REG(regs.pstate)`.
     pub const REG_CORE_PSTATE: u64 = REG_CORE_PSTATE_OFFSET / 4;
+
+    /// The **full** `KVM_GET_ONE_REG` id of `x29` (the arm64 frame pointer) — the core
+    /// prefix OR'd with the register index, exactly as it appears in `KVM_GET_REG_LIST`
+    /// and in the retained on-N1 per-register dump (`0x6030_0000_0010_003A`). One of the
+    /// **exactly two** general registers the AA-6 masked-register digest excludes: `x29`
+    /// carries the userspace init's stack-frame pointer, an AA-5(c) stack-placement-ASLR
+    /// residual (hm-of6t F12). Pinned by
+    /// [`super::tests::masked_general_registers_are_exactly_x29_and_sp`].
+    pub const REG_CORE_X29: u64 = REG_ARM64_CORE_U64 | (REG_CORE_X0 + 29 * REG_CORE_X_STRIDE);
+
+    /// Byte offset of `user_pt_regs.sp` within `struct kvm_regs` — the guest stack
+    /// pointer, immediately after `regs[0..31]` fills `0x00..0xF8`, so `sp` sits at `0xF8`
+    /// (the field just before `pc` at `0x100`).
+    pub const REG_CORE_SP_OFFSET: u64 = 0xF8;
+
+    /// The **full** `KVM_GET_ONE_REG` id of the guest stack pointer (`user_pt_regs.sp`),
+    /// index `REG_CORE_SP_OFFSET / 4`, matching the retained on-N1 dump id
+    /// `0x6030_0000_0010_003E`. The second of the two AA-6 masked general registers: `SP`
+    /// carries the userspace init's stack pointer — the same stack-placement-ASLR residual
+    /// as `x29`. Note this is `user_pt_regs.sp`, NOT the separate `sp_el1` (index
+    /// `0x110/4`): the on-silicon proof shows `sp_el1` is bit-identical same-seed (the
+    /// kernel stack pointer is deterministic; only userspace init's placement is ASLR'd).
+    pub const REG_CORE_SP: u64 = REG_ARM64_CORE_U64 | (REG_CORE_SP_OFFSET / 4);
+
     /// The size field of a register id (`KVM_REG_SIZE_MASK`).
     pub const REG_SIZE_MASK: u64 = 0x00F0_0000_0000_0000;
     /// Shift of the size field.
@@ -1029,6 +1053,77 @@ pub fn digest_regs_only(regs: &std::collections::BTreeMap<u64, Vec<u8>>, vgic: &
     h.update((vgic.len() as u64).to_le_bytes());
     h.update(vgic);
     format!("sha256:{}", crate::evidence::hex_lower(&h.finalize()))
+}
+
+/// Hash a guest state's **register file MINUS exactly the {x29, SP} stack-ASLR residual**
+/// — the AA-6 masked-register digest (bead hm-3bwm), the named condition on upgrading the
+/// AA-6 LinuxGuest disposition from PROVISIONAL to full GO.
+///
+/// The fourth ratified AA-6 gate-semantics change narrowed the LinuxGuest compared digest
+/// to `console + vGIC` ([`crate::sys::machine::Machine::console_vgic_digest`]), dropping
+/// the register file because `x29`/`SP` carry the userspace init's stack-placement ASLR
+/// (the AA-5(c) kernel-CRNG/entropy residual, hm-of6t F12, `docs/ARM-ALTRA.md` §AA-6) and
+/// so diverge same-seed. This digest re-includes the register file that narrowing dropped,
+/// excluding EXACTLY the two residual registers ([`is_masked_general_register`]) plus the
+/// host-time counters ([`is_host_time_register`], already excluded by every sibling
+/// digest). If it is bit-identical across same-seed reps, the console+vGIC narrowing is
+/// proven to have masked **exactly-and-only** {x29, SP} — not any injection-path register
+/// divergence. A divergence in any *other* register is a P0 STOP, never a reason to widen
+/// the mask.
+///
+/// A **distinct domain tag** (`arm-spike-regs-masked-v1`) so a masked digest can never
+/// collide with the full registers-only ([`digest_regs_only`], `arm-spike-regs-v1`) or the
+/// state ([`digest_state`], `arm-spike-state-v2`) digest even over byte-identical
+/// registers. Registers in sorted id order (a `BTreeMap`, Conventions rule 4); the `vgic`
+/// slice is length-prefixed exactly as the siblings. The AA-6 register lane passes it
+/// **empty** — register-file identity is the axis the disposition turns on, and keeping the
+/// vGIC out of *this* digest means a masked-digest divergence is unambiguously a register,
+/// never the separately-certified vGIC. Pure and Miri-testable — no `unsafe`.
+#[must_use]
+pub fn digest_regs_masked(regs: &std::collections::BTreeMap<u64, Vec<u8>>, vgic: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"arm-spike-regs-masked-v1");
+    for (id, value) in regs {
+        // Host-time counters: excluded exactly as `digest_state`/`digest_regs_only`, for
+        // the same reason — they advance with real time, so hashing them kills same-seed
+        // replay. (On the owned LinuxGuest these are 2 of the 4 same-seed-divergent regs;
+        // the other 2 are {x29, SP} below.)
+        if is_host_time_register(*id) {
+            continue;
+        }
+        // The AA-6 masked general registers {x29, SP}: the disclosed stack-ASLR residual,
+        // the ONLY general registers that diverge same-seed on the owned LinuxGuest. This
+        // exclusion — and ONLY this one, beyond host-time — IS the content the masked lane
+        // proves is the whole of change #4's console+vGIC narrowing. The list is closed.
+        if is_masked_general_register(*id) {
+            continue;
+        }
+        h.update(id.to_le_bytes());
+        h.update(value);
+    }
+    h.update((vgic.len() as u64).to_le_bytes());
+    h.update(vgic);
+    format!("sha256:{}", crate::evidence::hex_lower(&h.finalize()))
+}
+
+/// Whether a `KVM_GET_ONE_REG` id names one of the **exactly two** general registers the
+/// AA-6 masked-register digest ([`digest_regs_masked`]) excludes: `x29` (frame pointer)
+/// and `SP` (stack pointer). Both carry the userspace init's stack-placement ASLR — the
+/// disclosed AA-5(c) kernel-CRNG/entropy residual (hm-of6t F12, `docs/ARM-ALTRA.md`
+/// §AA-6) — and are the only general registers that diverge same-seed on the owned
+/// LinuxGuest. The retained on-N1 per-register-dump proof
+/// (`results/aa-6/live-20260721/linuxguest-regs-divergence.diff`) shows EXACTLY these two,
+/// plus the already-host-time-excluded counters, differ across same-seed reps.
+///
+/// The mask is a **closed list of two**. Widening it is a spec violation, not a fix: a
+/// divergence in any *other* register is a possible injection-path register divergence
+/// that the console+vGIC narrowing would be masking — a P0 STOP — not something to silence
+/// by growing this predicate. Pinned by
+/// [`tests::masked_general_registers_are_exactly_x29_and_sp`].
+#[must_use]
+pub fn is_masked_general_register(id: u64) -> bool {
+    id == kvm::REG_CORE_X29 || id == kvm::REG_CORE_SP
 }
 
 /// Whether a `KVM_GET_ONE_REG` id names a **host-time-derived** register — one whose
@@ -2576,6 +2671,131 @@ mod tests {
         );
 
         assert!(digest_regs_only(&a, vgic).starts_with("sha256:"));
+    }
+
+    #[test]
+    fn masked_general_registers_are_exactly_x29_and_sp() {
+        // The mask is a CLOSED LIST OF TWO. Pin both to the full ids in the retained on-N1
+        // per-register dump (`linuxguest-regs-divergence.diff`) — the same ids KVM's
+        // KVM_GET_REG_LIST returns — so a mis-encoded core-register index cannot silently
+        // mask the wrong register (or nothing).
+        assert_eq!(kvm::REG_CORE_X29, 0x6030_0000_0010_003A, "x29 full KVM id");
+        assert_eq!(kvm::REG_CORE_SP, 0x6030_0000_0010_003E, "SP full KVM id");
+        assert!(is_masked_general_register(kvm::REG_CORE_X29), "x29 masked");
+        assert!(is_masked_general_register(kvm::REG_CORE_SP), "SP masked");
+
+        // Nothing else is masked: x28, x30 (LR), pc, pstate, sp_el1, and an ID sysreg are
+        // all KEPT. sp_el1 (byte 0x110 → index 0x44) is the load-bearing near-miss — the
+        // kernel stack pointer is deterministic same-seed, so masking it would hide real
+        // state; only userspace init's `sp` (index 0x3E) is ASLR'd.
+        let sp_el1 = kvm::REG_ARM64_CORE_U64 | (0x110 / 4);
+        for (id, name) in [
+            (
+                kvm::REG_ARM64_CORE_U64 | (28 * kvm::REG_CORE_X_STRIDE),
+                "x28",
+            ),
+            (
+                kvm::REG_ARM64_CORE_U64 | (30 * kvm::REG_CORE_X_STRIDE),
+                "x30/LR",
+            ),
+            (kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC, "pc"),
+            (kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PSTATE, "pstate"),
+            (sp_el1, "sp_el1"),
+            (kvm::REG_ID_AA64PFR0_EL1, "ID_AA64PFR0_EL1"),
+        ] {
+            assert!(!is_masked_general_register(id), "{name} must NOT be masked");
+        }
+    }
+
+    #[test]
+    fn masked_digest_excludes_exactly_x29_and_sp_over_a_known_register_file() {
+        use std::collections::BTreeMap;
+        // Known register file in ⇒ known digest out: x0, x29, SP, pc (the two masked regs
+        // among two kept ones), empty vGIC. The literal is recomputed independently (a
+        // by-hand SHA-256 over `arm-spike-regs-masked-v1` ‖ sorted (id‖value) of the KEPT
+        // regs ‖ vgic_len(0)); if the domain tag, mask, or ordering ever changes, this
+        // pin breaks.
+        let x0 = kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_X0;
+        let mut regs = BTreeMap::new();
+        regs.insert(x0, vec![0xDD; 8]);
+        regs.insert(kvm::REG_CORE_X29, vec![0xAA; 8]);
+        regs.insert(kvm::REG_CORE_SP, vec![0xBB; 8]);
+        regs.insert(kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC, vec![0xCC; 8]);
+        let empty: &[u8] = &[];
+        assert_eq!(
+            digest_regs_masked(&regs, empty),
+            "sha256:4aca97d6d1304efe67996c392a7cf978870f17d166a2b15ada59a66859030105",
+            "known register file must map to the pinned masked digest"
+        );
+
+        // Masking is exactly {x29, SP}: changing EITHER masked register's value leaves the
+        // digest bit-identical...
+        for masked in [kvm::REG_CORE_X29, kvm::REG_CORE_SP] {
+            let mut moved = regs.clone();
+            moved.insert(masked, vec![0x00; 8]);
+            assert_eq!(
+                digest_regs_masked(&regs, empty),
+                digest_regs_masked(&moved, empty),
+                "changing a masked register ({masked:#x}) must not move the masked digest"
+            );
+        }
+        // ...while changing ANY kept register (here x0 and pc) DOES move it — the digest is
+        // real evidence over every non-masked, non-host-time register, not a constant.
+        for kept in [x0, kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC] {
+            let mut moved = regs.clone();
+            moved.insert(kept, vec![0x77; 8]);
+            assert_ne!(
+                digest_regs_masked(&regs, empty),
+                digest_regs_masked(&moved, empty),
+                "changing a kept register ({kept:#x}) MUST move the masked digest"
+            );
+        }
+
+        // Host-time exclusion is inherited: the live counter never reaches the digest.
+        let timer_cnt = 0x6030_0000_0013_DF1A; // KVM_REG_ARM_TIMER_CNT = (3,3,14,3,2)
+        assert!(is_host_time_register(timer_cnt));
+        let mut with_clock = regs.clone();
+        with_clock.insert(timer_cnt, 1_000u64.to_le_bytes().to_vec());
+        let mut with_clock_moved = regs.clone();
+        with_clock_moved.insert(timer_cnt, 9_999_999u64.to_le_bytes().to_vec());
+        assert_eq!(
+            digest_regs_masked(&with_clock, empty),
+            digest_regs_masked(&with_clock_moved, empty),
+            "the live host-time counter must not reach the masked digest"
+        );
+
+        // Order independence (BTreeMap): insertion order cannot reach a hashed byte.
+        let mut shuffled = BTreeMap::new();
+        shuffled.insert(kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC, vec![0xCC; 8]);
+        shuffled.insert(kvm::REG_CORE_SP, vec![0xBB; 8]);
+        shuffled.insert(x0, vec![0xDD; 8]);
+        shuffled.insert(kvm::REG_CORE_X29, vec![0xAA; 8]);
+        assert_eq!(
+            digest_regs_masked(&regs, empty),
+            digest_regs_masked(&shuffled, empty)
+        );
+
+        // Distinct domain separation: the masked digest can NEVER equal the full
+        // registers-only or the full state digest of the SAME kept registers — the three
+        // are compared/emitted side by side, so they must be structurally unequal, not
+        // merely unequal because the mask happened to drop a register.
+        let kept_only: BTreeMap<u64, Vec<u8>> = regs
+            .iter()
+            .filter(|(id, _)| !is_masked_general_register(**id))
+            .map(|(id, v)| (*id, v.clone()))
+            .collect();
+        assert_ne!(
+            digest_regs_masked(&regs, empty),
+            digest_regs_only(&kept_only, empty),
+            "the masked and registers-only domain tags must never collide"
+        );
+        assert_ne!(
+            digest_regs_masked(&regs, empty),
+            digest_state(&kept_only, empty, empty),
+            "the masked and state domain tags must never collide"
+        );
+
+        assert!(digest_regs_masked(&regs, empty).starts_with("sha256:"));
     }
 
     #[test]

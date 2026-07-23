@@ -116,8 +116,12 @@ pub struct LinuxWorkClockResult {
     /// AA-6: the exact work Moment the injection fired at (the first refresh landing ≥ the seeded
     /// `target_work`), or `None` if no injection was configured or it never became due.
     pub injected_at_work: Option<u64>,
-    /// AA-6: the register+vGIC digest AT the injection Moment (the LinuxGuest landed digest — the
-    /// AA-5(c) identity carrier). `None` when nothing was injected.
+    /// AA-6: the **masked-register** digest AT the injection Moment — the register file minus
+    /// exactly `{x29, SP}` (hm-fiqo's injection-Moment register witness the masked lane
+    /// compares, hm-3bwm). The full `regs_digest` would fold in the disclosed userspace
+    /// stack-ASLR residual and diverge same-seed; this witness excludes exactly that, so it is
+    /// bit-identical rep-to-rep iff no *other* register diverges at the injection Moment.
+    /// `None` when nothing was injected.
     pub injected_landed_digest: Option<String>,
     /// AA-6: the register+vGIC digest at the success landing (the LinuxGuest sentinel digest AA-6
     /// replay identity compares — register+vGIC, since full-RAM has the CRNG residual).
@@ -834,7 +838,12 @@ pub fn run_until_ready_work_clock(
                         {
                             vcpu.inject_ppi(inj.intid, true)?;
                             injected_at_work = Some(target);
-                            injected_landed_digest = Some(vcpu.regs_digest()?);
+                            // hm-fiqo: the injection-Moment register witness the AA-6 masked
+                            // lane compares. The MASKED register digest (minus {x29, SP}), not
+                            // the full `regs_digest` — the full one folds in the disclosed
+                            // stack-ASLR residual and would diverge same-seed, so the witness
+                            // the lane requires bit-identical rep-to-rep must exclude it.
+                            injected_landed_digest = Some(vcpu.masked_regs_digest()?);
                         }
                         if let Some(registration_gpa) = vcpu.linux_pvclock_gpa() {
                             let write = if publications == 0 {
@@ -1023,6 +1032,10 @@ mod tests {
 
         fn regs_digest(&mut self) -> Result<String, RunError> {
             Ok("unused".into())
+        }
+
+        fn masked_regs_digest(&mut self) -> Result<String, RunError> {
+            Ok("masked-unused".into())
         }
 
         fn inject_ppi(&mut self, intid: u32, asserted: bool) -> Result<(), RunError> {

@@ -1623,6 +1623,22 @@ pub trait StepVcpu: Vcpu {
     /// [`RunError::Seam`] if the register/vGIC state could not be read.
     fn regs_digest(&mut self) -> Result<String, RunError>;
 
+    /// The AA-6 **masked-register** digest — the register file MINUS exactly `{x29, SP}`
+    /// (host-time counters already excluded), the named condition on upgrading the AA-6
+    /// LinuxGuest disposition PROVISIONAL→full GO (bead hm-3bwm). Where [`regs_digest`]
+    /// folds in `x29`/`SP` (which carry the disclosed AA-5(c) userspace stack-placement
+    /// ASLR residual, hm-of6t F12) and so diverges same-seed on the owned LinuxGuest, this
+    /// digest excludes exactly those two — and nothing else — so it is bit-identical
+    /// same-seed iff no *other* register diverges. Emitted at the injection Moment as the
+    /// `injected_landed_digest` witness (hm-fiqo) and at the success landing as the compared
+    /// digest. Domain-separated ([`crate::sys::digest_regs_masked`]) from the full digests.
+    ///
+    /// [`regs_digest`]: StepVcpu::regs_digest
+    ///
+    /// # Errors
+    /// [`RunError::Seam`] if the register state could not be read.
+    fn masked_regs_digest(&mut self) -> Result<String, RunError>;
+
     /// AA-6 injection: assert (`asserted == true`) or deassert a private-peripheral-interrupt
     /// line at the guest via `KVM_IRQ_LINE`. Called **only** at a landed `Moment` and **only**
     /// when the sample's [`SampleSpec::inject`] is `Some` — the negative-control OFF path never
@@ -2912,6 +2928,11 @@ mod tests {
             // A DISTINCT value from `state_digest`, so a test can tell an intermediate
             // (registers-only) step's digest from the full-payload final one.
             Ok(self.regs_digest.clone())
+        }
+        fn masked_regs_digest(&mut self) -> Result<String, RunError> {
+            // A DISTINCT value again, so a test can tell the masked digest from the full
+            // registers-only one; the bare-payload `run` path does not use it.
+            Ok(format!("masked:{}", self.regs_digest))
         }
         fn inject_ppi(&mut self, intid: u32, asserted: bool) -> Result<(), RunError> {
             self.injections.push((intid, asserted));
