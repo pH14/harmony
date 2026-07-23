@@ -421,11 +421,42 @@ jobs:
   # Sharded 4-way: a single-job run was killed by hosted-runner preemption at
   # ~59 min twice in a row on a 274-mutant diff (hm-4w7q) — each shard tests a
   # deterministic quarter of the mutant list so every leg finishes well inside
-  # the preemption window. Raising the runner lifetime itself is tracked
-  # separately (hm-y53x).
+  # the preemption window.
+  #
+  # Runner survivability (hm-y53x). The ~59-min kills were diagnosed as genuine
+  # hosted-runner preemption: the killed steps logged "The runner has received a
+  # shutdown signal" at ~57-59 min, while two sibling runs on the same diff ran
+  # 83 and 126 min uninterrupted (so it is NOT a fixed timeout — a timeout would
+  # cut every run at the same mark), and no superseding push fired the workflow
+  # `concurrency` cancel at those marks (that path logs only "The operation was
+  # canceled", with every job in the run stopping at the same instant). Two
+  # no-cost defenses back up the sharding; a costed self-hosted/larger-runner
+  # comparison for the residual is in docs/history/IMPLEMENTATION-task139.md.
+  #   * an explicit `timeout-minutes` well above the ~59-min window and far below
+  #     the 6h hosted-runner ceiling: a pathologically slow shard fails cleanly
+  #     instead of burning hours (and doubles as a "this shard got too big,
+  #     raise the shard count" tripwire), while the timeout itself never lands in
+  #     the preemption window.
+  #   * an infrastructure-only retry around each cargo-mutants call. Decision
+  #     table, by cargo-mutants exit code (verified against v27.1.0):
+  #       0        -> pass (all diffed mutants caught, or none in the diff)
+  #       2 or 3   -> surviving / timed-out mutants: a REAL result. Fail now and
+  #                   NEVER retry — a retry must not turn a real red green. The
+  #                   mutants.toml 3x timeout multiplier already absorbs infra
+  #                   slowness, so a residual exit 3 is a real signal too.
+  #       other rc -> infrastructure/transient (baseline flake exit 4, OOM 137,
+  #                   tool-install/network blip, an interrupted run): retry on
+  #                   this runner up to the bound, then fail with that code.
+  # Host preemption tears down the whole runner VM, so no in-job retry can
+  # survive it; that residual is covered by the sharding above plus the
+  # self-hosted option in the task-139 write-up.
   mutants:
     name: mutants (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    # Comfortably above the observed ~59-min preemption window and far below the
+    # 6h hosted-runner job ceiling; calibrated for the 4-way-sharded job (typical
+    # shard ~30-40 min). See the header comment (hm-y53x).
+    timeout-minutes: 90
     if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
@@ -448,7 +479,18 @@ jobs:
       - name: Compute PR diff
         run: git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
       - name: cargo mutants --in-diff
-        run: cargo mutants --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4
+        # Infra-only retry; exit-code decision table is in the mutants-job header
+        # comment. Exit 2/3 (real surviving/timed-out mutants) is never retried.
+        run: |
+          for attempt in 1 2; do
+            set +e; cargo mutants --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4; rc=$?; set -e
+            if [ "$rc" -eq 0 ]; then exit 0; fi
+            if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
+              echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"
+            fi
+            echo "::warning::cargo-mutants infrastructure failure (exit $rc), attempt $attempt/2 — retrying on this runner"; sleep 15
+          done
+          echo "::error::cargo-mutants infrastructure failure persisted after 2 attempts (exit $rc)"; exit "$rc"
       # harmony-linux/sdk is out-of-workspace (its own manifest), so the root run above
       # never mutates it even when the PR diff touches its files — leaving the SDK
       # harness (assert/buggify/state hooks + wire encode) ungated. Mutate its
@@ -457,12 +499,32 @@ jobs:
       # the PR's changed harmony-linux/sdk lines; its own `.cargo/mutants.toml` (if any)
       # auto-discovers, else the run is config-free.
       - name: cargo mutants --in-diff (harmony-linux/sdk, out-of-workspace manifest)
-        run: cargo mutants --manifest-path harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4
+        # Infra-only retry (same contract as the root step above).
+        run: |
+          for attempt in 1 2; do
+            set +e; cargo mutants --manifest-path harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4; rc=$?; set -e
+            if [ "$rc" -eq 0 ]; then exit 0; fi
+            if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
+              echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"
+            fi
+            echo "::warning::cargo-mutants infrastructure failure (exit $rc), attempt $attempt/2 — retrying on this runner"; sleep 15
+          done
+          echo "::error::cargo-mutants infrastructure failure persisted after 2 attempts (exit $rc)"; exit "$rc"
       # harmony-linux/flow-agent (task 61) is out-of-workspace too — mutate its diffed lines
       # on its own manifest so the flow-agent brain (answer→policy / enforcement plan
       # / decider) is gated like harmony-linux/sdk, not left ungated by the root run.
       - name: cargo mutants --in-diff (harmony-linux/flow-agent, out-of-workspace manifest)
-        run: cargo mutants --manifest-path harmony-linux/flow-agent/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4
+        # Infra-only retry (same contract as the root step above).
+        run: |
+          for attempt in 1 2; do
+            set +e; cargo mutants --manifest-path harmony-linux/flow-agent/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4; rc=$?; set -e
+            if [ "$rc" -eq 0 ]; then exit 0; fi
+            if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
+              echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"
+            fi
+            echo "::warning::cargo-mutants infrastructure failure (exit $rc), attempt $attempt/2 — retrying on this runner"; sleep 15
+          done
+          echo "::error::cargo-mutants infrastructure failure persisted after 2 attempts (exit $rc)"; exit "$rc"
 
   # Gating (quality-f): formal proofs on saturating/bounded integer arithmetic
   # via Kani (bounded model checking). The `#[cfg(kani)]` harnesses in
