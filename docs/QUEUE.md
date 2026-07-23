@@ -39,9 +39,10 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- **SSE scanner hardening** (tasks/151, `hm-b5km`+`hm-8c5m`): Sonnet 5 worker spawned
-  2026-07-23 late afternoon on `task/sse-scanner-hardening` — genericize the data-frame
-  scanner over io::Read + scripted-read coverage; one-token phase-1 header anchor.
+- **Advanced-span verdict folds** (tasks/152, `hm-mmkf`, PR #147 F4): Opus 4.8 worker
+  spawned 2026-07-23 late afternoon on `task/advanced-span-verdict-folds` — route the
+  Seal batch's suffix occurrence/assertion events through fold_batch's verdict folds
+  (false-absence closure); red-before required on the tasks/144 repro shape.
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -85,6 +86,11 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **SSE scanner hardening MERGED** (tasks/151, PR #154, `hm-b5km`+`hm-8c5m`,
+  2026-07-23 evening — discovery (1 P1: stale test-count claim) → one batch → verify
+  clean): scanner generic over io::Read with scripted-read coverage; phase-1 anchor
+  fail-closed; ScriptedReader deleted for std Read::chain. The PR #146→149→152→154
+  SSE-deflake arc is now fully closed with zero open parks.
 - **Explorer contract clarifications MERGED** (tasks/150, PR #153,
   `hm-s6cb`+`hm-wshf`, 2026-07-23 late afternoon — full bounded pipeline: discovery
   (2 P1s: false genesis-coincidence doc claim; surviving mutant) → fix (re-key +
