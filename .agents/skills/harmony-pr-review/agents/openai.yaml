@@ -1,0 +1,7 @@
+interface:
+  display_name: "Harmony PR Review (Draft)"
+  short_description: "Evaluate opposing-vendor Harmony review"
+  default_prompt: "Use $harmony-pr-review to evaluate opposing-vendor routing for this Harmony PR."
+
+policy:
+  allow_implicit_invocation: false

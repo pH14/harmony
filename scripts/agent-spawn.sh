@@ -80,6 +80,11 @@ writing any code. Implement the task until every acceptance gate passes.
 You are already in your dedicated worktree on branch $BRANCH (do not create another).
 Commit as you go with clear messages. When all gates are green, write your
 IMPLEMENTATION.md (per conventions), commit, and stop. Do not push.
+
+If and only if the task's Environment section explicitly authorizes a Nimbus machine,
+invoke the \$nimbus skill and use the daemon-backed nimbus client as the sole cloud
+interface. Never inspect credentials/configuration or use raw provider APIs. Always
+release the lease and verify terminal state before stopping.
 EOF
 
 # caffeinate (macOS): keep the machine from idle-sleeping while a worker runs
