@@ -143,7 +143,86 @@ fn accept_aa6_gate_is_accepted() {
         "the AA-6 gate fixture was rejected: {:?}",
         report.failed()
     );
+    // The injection-aware matrix gate PASSES: the manifest carries the ON attestation and every
+    // required class has an injected (armed, delivered, fired) record — the positive case the
+    // three planted-failure fixtures below are measured against (bead hm-oh3v).
+    assert_eq!(
+        report.status_of(CheckId::Aa6Matrix),
+        Some(Status::Pass),
+        "an injected, stamped-ON AA-6 matrix must pass the injection-aware gate"
+    );
     assert_eq!(report.exit_code(), 0);
+}
+
+/// The AA-6 floors (armed-overflow + rep) the injection-attestation fixtures share, so the
+/// injection matrix gate is the only check left to decide the verdict.
+fn aa6_floors() -> Floors {
+    Floors {
+        min_armed_overflows: Some(4),
+        min_reps: Some(4),
+        min_cases: None,
+        sub_normative: true,
+    }
+}
+
+#[test]
+fn reject_aa6_injection_off_is_not_a_determinism_matrix() {
+    // The config slip the attestation exists to catch (bead hm-oh3v): a full, bit-identical AA-6
+    // matrix whose injection was left OFF. Every count / replay / floor check passes; only the
+    // matrix's injection gate fails, because a run stamped OFF injected nothing.
+    assert_single_failure("reject-aa6-injection-off", aa6_floors(), CheckId::Aa6Matrix);
+    // And the verdict says WHY — the stamp is OFF, not merely "incomplete".
+    let report = check("reject-aa6-injection-off", aa6_floors());
+    assert!(
+        report
+            .outcomes
+            .iter()
+            .find(|o| o.id == CheckId::Aa6Matrix)
+            .is_some_and(|o| o.detail.contains("stamped OFF")),
+        "the OFF failure must name the OFF stamp"
+    );
+}
+
+#[test]
+fn reject_aa6_missing_attestation_fails_closed() {
+    // A full injected matrix (the records DID fire) whose manifest carries NO injection stamp.
+    // Fail-closed: without the stamp a checker cannot tell it from a bare AA-3 matrix, so the
+    // absence itself is the failure — "assume bare" is never the default.
+    assert_single_failure(
+        "reject-aa6-missing-attestation",
+        aa6_floors(),
+        CheckId::Aa6Matrix,
+    );
+    let report = check("reject-aa6-missing-attestation", aa6_floors());
+    assert!(
+        report
+            .outcomes
+            .iter()
+            .find(|o| o.id == CheckId::Aa6Matrix)
+            .is_some_and(|o| o.detail.contains("no injection attestation")),
+        "the missing-stamp failure must name the absent attestation"
+    );
+}
+
+#[test]
+fn reject_aa6_injected_flag_inconsistent_with_the_stamp() {
+    // The stamp claims injection ON, but every record's `injected` witness is `false` — zero
+    // fired. The stamp and the per-record evidence disagree, and the checker fails with the
+    // counts enumerated rather than trusting either half alone.
+    assert_single_failure(
+        "reject-aa6-injected-flag-inconsistent",
+        aa6_floors(),
+        CheckId::Aa6Matrix,
+    );
+    let report = check("reject-aa6-injected-flag-inconsistent", aa6_floors());
+    assert!(
+        report
+            .outcomes
+            .iter()
+            .find(|o| o.id == CheckId::Aa6Matrix)
+            .is_some_and(|o| o.detail.contains("stamped ON but no record fired")),
+        "the inconsistency failure must name the ON stamp with no fired record"
+    );
 }
 
 #[test]

@@ -39,7 +39,7 @@ defaults (`$HOME/harmony-linux/Image`, `$HOME/harmony-linux/initramfs.cpio.gz`):
 
 ```sh
 bash host/aa6-masked-digest-lane.sh 20 60 smoke
-# => RESULT: PASS (8 of 8 checks passed) -> results/aa-6/masked-digest-smoke/verdict.json
+# => RESULT: PASS (10 of 10 checks passed) -> results/aa-6/masked-digest-smoke/verdict.json
 ```
 
 Confirm `injected_landed_digest` is a real `sha256:…` (not `none` — the injection fired) and
@@ -51,13 +51,13 @@ Confirm `injected_landed_digest` is a real `sha256:…` (not `none` — the inje
 nohup setsid bash host/aa6-masked-digest-lane.sh 1000 60 gate </dev/null \
     >~/aa6-masked-gate.log 2>&1 &
 # progress every 100 reps in the log; on completion:
-#   RESULT: PASS (8 of 8 checks passed) -> results/aa-6/masked-digest-gate/verdict.json
+#   RESULT: PASS (10 of 10 checks passed) -> results/aa-6/masked-digest-gate/verdict.json
 ```
 
-The runner writes `results/aa-6/masked-digest-gate/`: `config.json` (the injection config,
-recorded explicitly), `rep-NNNN.stdout` per rep, `console-first.bin` (provenance),
-`verdict.json`. **Commit the evidence dir promptly** (the box was account-wiped once on
-2026-07-20).
+The runner writes `results/aa-6/masked-digest-gate/`: `config.json` (the injection config, kept
+for provenance — the authority is now the per-rep harness stamp, below), `rep-NNNN.stdout` per
+rep, `console-first.bin` (provenance), `verdict.json`. **Commit the evidence dir promptly** (the
+box was account-wiped once on 2026-07-20).
 
 ## What is being compared
 
@@ -69,14 +69,19 @@ The summary line now emits:
 - `masked_regs_digest` — the full register file MINUS exactly `{x29, SP}` at the success
   landing (host-time counters already excluded). **This is the digest the lane compares.**
 - `injected_landed_digest` — the same masked digest at the **injection Moment** (hm-fiqo).
+- `injection_enabled=ON inject_ppi=22 inject_at_work=1` — the AA-6 injection attestation the
+  harness **stamps from the config it actually executed** (bead hm-oh3v). This is the same
+  attestation the floor checker reads from `run-set.json`, so the two checkers cannot disagree
+  about whether injection ran. A run with injection left OFF stamps `injection_enabled=OFF` and
+  fails the lane, exactly as it fails the floor checker's `aa6-matrix`.
 - `masked_excluded_gprs=x29:0x603000000010003a,SP:0x603000000010003e` and
   `masked_excluded_host_time=CNTPCT_EL0,CNTPCTSS_EL0,CNTVCTSS_EL0,KVM_REG_ARM_TIMER_CNT` —
   the exclusion set **enumerated**, not implied.
 
 `aa6-masked-digest-check.py` (invoked by the runner) requires: ≥`--min-reps` reps; the mask
-enumerated and **exactly** `{x29, SP}`; the injection **fired** (witness ≠ `none`); the
-pinned artifacts; and both `masked_regs_digest` and `injected_landed_digest`
-**bit-identical across every rep**.
+enumerated and **exactly** `{x29, SP}`; the stamped injection config **ON** with the enumerated
+PPI 22 at-work 1; the injection **fired** (witness ≠ `none`); the pinned artifacts; and both
+`masked_regs_digest` and `injected_landed_digest` **bit-identical across every rep**.
 
 ## Disposition (tasks/138)
 

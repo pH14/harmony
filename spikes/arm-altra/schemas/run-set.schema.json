@@ -83,6 +83,10 @@
         }
       ]
     },
+    "injection": {
+      "description": "The AA-6 injection attestation (`arm_harness::evidence::InjectionAttestation`), stamped by the harness from the injection config it ACTUALLY executed. OPTIONAL and additive: stages that do not inject, and any retained pre-attestation run-set, omit it. An AA-6 run-set MUST carry it — the floor checker fails CLOSED on its absence there, because an armed force-exit landing is not an injected interrupt, so a bare AA-3 armed-overflow matrix is otherwise indistinguishable from an injected AA-6 one (bead hm-oh3v).",
+      "$ref": "#/$defs/injection-attestation"
+    },
     "attempted": {
       "description": "How many samples were ATTEMPTED. Every one of them must appear in `records.jsonl` with a `sample_id` in `0..attempted`, exactly once \u2014 a missing sample is a failure to account, not a pass (\u00a7Evidence integrity #6). At least 1: a run-set that attempted nothing measures nothing and must not pass vacuously. In single-step mode one planned sample emits many step records, so this is the STEP count there; see `planned`.",
       "type": "integer",
@@ -358,6 +362,46 @@
           "description": "The constant offset of the counting window itself. x86's analogue measured n+2; on N1 it is unknown until AA-1 measures it.",
           "type": "integer",
           "minimum": 0
+        }
+      }
+    },
+    "injection-attestation": {
+      "description": "The AA-6 injection attestation (`arm_harness::evidence::InjectionAttestation`). Written from the injection config the run loop actually executed, never echoed from CLI intent. AA-6 certifies determinism UNDER injection; this stamp is what lets the checker tell an injected run-set from a bare AA-3 armed-overflow matrix and fail closed when it is missing or says OFF.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "inject_ppi",
+        "inject_at_work"
+      ],
+      "properties": {
+        "enabled": {
+          "description": "Whether the run loop configured event injection. `false` is the AA-5(c) negative-control posture (a byte-identical, un-injected boot) — legitimate to run, but an AA-6 matrix stamped OFF injected nothing, and the checker refuses it.",
+          "type": "boolean"
+        },
+        "inject_ppi": {
+          "description": "The injected PPI INTID (`--inject-ppi`) issued via `KVM_IRQ_LINE` — the harness's dedicated unowned line, never the timer's KVM-owned PPI. An integer when `enabled`; `null` on the OFF control.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inject_at_work": {
+          "description": "The landing index the injection fires at (`--inject-at-work`), for the LinuxGuest lane that injects at ONE seeded Moment. `null` for the bare-payload lane (which injects at every exact landing) and `null` on the OFF control, so it is not what a checker keys ON/OFF on — `enabled` is.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     }

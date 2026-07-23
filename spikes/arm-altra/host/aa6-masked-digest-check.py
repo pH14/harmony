@@ -50,6 +50,15 @@ EXPECTED_MASKED_GPRS = "x29:0x603000000010003a,SP:0x603000000010003e"
 # The pre-existing host-time counter exclusion, by name (is_host_time_register), enumerated too.
 EXPECTED_MASKED_HOST_TIME = "CNTPCT_EL0,CNTPCTSS_EL0,CNTVCTSS_EL0,KVM_REG_ARM_TIMER_CNT"
 
+# The AA-6 injection configuration the lane runs (host/aa6-masked-digest-lane.sh): PPI 22, the
+# UNWIRED interrupt, fired at the first exact refresh landing (--inject-at-work 1). The harness
+# STAMPS this per rep in the summary line (`injection_enabled`/`inject_ppi`/`inject_at_work`),
+# written from the config it actually executed. This checker enforces the STAMPED fields — the
+# same attestation the floor checker's `aa6-matrix` reads out of `run-set.json` — so the two
+# cannot disagree about whether injection ran (bead hm-oh3v routes both through one stamp).
+EXPECTED_INJECT_PPI = "22"
+EXPECTED_INJECT_AT_WORK = "1"
+
 # Every field the lane relies on must be present in each rep line, or the rep is malformed.
 REQUIRED_KEYS = [
     "image_sha256",
@@ -57,6 +66,9 @@ REQUIRED_KEYS = [
     "state_digest",
     "masked_regs_digest",
     "injected_landed_digest",
+    "injection_enabled",
+    "inject_ppi",
+    "inject_at_work",
     "masked_excluded_gprs",
     "masked_excluded_host_time",
 ]
@@ -103,6 +115,9 @@ def main() -> None:
     initramfs_shas: set[str] = set()
     masked_gprs: set[str] = set()
     masked_host_time: set[str] = set()
+    injection_enabled: set[str] = set()
+    inject_ppi: set[str] = set()
+    inject_at_work: set[str] = set()
     malformed: list[str] = []
     witness_none = 0
 
@@ -112,6 +127,9 @@ def main() -> None:
         initramfs_shas.add(f["initramfs_sha256"])
         masked_gprs.add(f["masked_excluded_gprs"])
         masked_host_time.add(f["masked_excluded_host_time"])
+        injection_enabled.add(f["injection_enabled"])
+        inject_ppi.add(f["inject_ppi"])
+        inject_at_work.add(f["inject_at_work"])
 
         md = f["masked_regs_digest"]
         wd = f["injected_landed_digest"]
@@ -143,8 +161,25 @@ def main() -> None:
         f"gprs={sorted(masked_gprs)} host_time={sorted(masked_host_time)}",
     )
 
+    # The harness-STAMPED injection config attests ON in every rep — the same attestation the
+    # floor checker reads from `run-set.json`, so a config slip that left injection OFF fails here
+    # as it would there (bead hm-oh3v). Enumerated, not implied: the PPI and at-work index must be
+    # single-valued across reps AND the fixed AA-6 config (PPI 22 at the first exact landing).
+    check(
+        "injection-config-on",
+        injection_enabled == {"ON"},
+        f"injection_enabled={sorted(injection_enabled)} (every rep's stamped config must be ON)",
+    )
+    check(
+        "injection-config-enumerated",
+        inject_ppi == {EXPECTED_INJECT_PPI} and inject_at_work == {EXPECTED_INJECT_AT_WORK},
+        f"inject_ppi={sorted(inject_ppi)} inject_at_work={sorted(inject_at_work)} "
+        f"(expected ppi {EXPECTED_INJECT_PPI} at-work {EXPECTED_INJECT_AT_WORK})",
+    )
+
     # The injection must have FIRED in every rep (a masked digest over an un-injected boot would
-    # be a vacuous negative control, not the AA-6 injection lane).
+    # be a vacuous negative control, not the AA-6 injection lane). This is the per-rep WITNESS,
+    # independent of the stamped config above — the config says ON, the witness says it fired.
     check(
         "injection-fired",
         witness_none == 0 and bool(witness_digests),

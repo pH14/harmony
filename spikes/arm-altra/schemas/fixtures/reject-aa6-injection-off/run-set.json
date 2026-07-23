@@ -104,12 +104,12 @@
   },
   "skid_margin": 64,
   "injection": {
-    "enabled": true,
-    "inject_ppi": 20,
+    "enabled": false,
+    "inject_ppi": null,
     "inject_at_work": null
   },
   "attempted": 36,
   "planned": 36,
   "records_file": "records.jsonl",
-  "records_sha256": "6dfbe09bf4840e88edc5c4f8ff8c5b0288eab7543adb34465b97c5b69800b1cc"
+  "records_sha256": "fca583ca98904a211fb14a04d7d24d3fde9a79002db7e16ffcc03e443186fb2f"
 }
