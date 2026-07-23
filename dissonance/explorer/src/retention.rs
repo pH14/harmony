@@ -785,6 +785,15 @@ mod tests {
         assert_eq!(v.finalized.entries_admitted, 2);
         assert_eq!(v.finalized.seals, 3);
         // The assignment accessor resolves the occupied cell (and only it).
+        // `e2` is a standalone seal_evidence() fixture with `rollout.parent:
+        // Some(0)`, but `led` is empty (never appended) — `compose_observations_at`
+        // walks `rollout.parent`, finds no issue-0 batch in `led`, and
+        // contributes nothing (a missing ancestor, exactly like a GC'd one),
+        // so the local reduction IS the true cut view here too (PR #153
+        // verify V1: the key is ledger-ancestor existence, not `parent_cut` —
+        // `observations_at_cut()` is the right, honest accessor for this
+        // independent cross-check of `cells.key`'s formula, not a stand-in
+        // for `compose_observations_at`).
         let cell = cells.key(e2.cut, &e2.observations_at_cut());
         assert_eq!(v.assignment(&cell).expect("occupied").batch, id2);
         assert!(v.assignment(&b"no-such-cell".to_vec()).is_none());
