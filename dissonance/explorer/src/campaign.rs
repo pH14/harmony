@@ -2822,25 +2822,36 @@ mod tests {
     /// recompute its true lineage-composed cells from retained evidence
     /// alone: the collected ancestor's contribution is gone. Before the fix
     /// every retained batch was unconditionally labeled
-    /// `FromRetainedEvidence`, overclaiming recomputability for such a batch;
-    /// this exercises both halves — a fully-retained graph keeps the honest
-    /// label, and collecting the ancestor flips the child's label, never the
-    /// other way around.
+    /// `FromRetainedEvidence`, overclaiming recomputability for such a batch.
+    ///
+    /// The test subject is a **Seal** (`role: EvidenceRole::Seal`), covering
+    /// the "suffix-only seal" half of hm-f82p explicitly: a seal's
+    /// `rollout.parent` is the rollout it seals (task 144 / `hm-aqf0`), a
+    /// two-hop walk away from the eventually-collected genesis rollout. A
+    /// decoy Seal sharing the middle rollout's `rollout.issue` number (an
+    /// unrealistic collision, deliberately planted) proves the walk's
+    /// `role == Rollout` filter is load-bearing, not redundant.
     #[test]
     fn retention_report_flags_a_collected_ancestor() {
         fn empty_normalized() -> Normalized {
             decode_binary(&[]).expect("an empty stream decodes to an empty Normalized")
         }
-        // Only `rollout`/`cut`/`parent_cut` matter here — `ancestor_collected`
-        // and `retention_report` never read `normalized`/`env` content.
-        fn rollout_evidence(issue: u64, parent: Option<u64>, at: u64) -> CompletedRunEvidence {
+        // Only `rollout`/`role`/`cut`/`parent_cut` matter here —
+        // `ancestor_collected` and `retention_report` never read
+        // `normalized`/`env` content.
+        fn evidence(
+            role: EvidenceRole,
+            issue: u64,
+            parent: Option<u64>,
+            at: u64,
+        ) -> CompletedRunEvidence {
             CompletedRunEvidence {
                 rollout: RunId { issue, parent },
-                role: EvidenceRole::Rollout,
+                role,
                 terminal: StopReason::Quiescent { vtime: Moment(at) },
                 env: Reproducer {
                     blob_version: 1,
-                    bytes: vec![issue as u8],
+                    bytes: vec![issue as u8, at as u8],
                 },
                 cut: EvidenceCut {
                     at: Moment(at),
@@ -2870,53 +2881,72 @@ mod tests {
             1,
         )
         .expect("new");
-        // Appended directly (bypassing `step()`): a genesis rollout (issue 1)
-        // and a branch child (issue 2, `rollout.parent == Some(1)`) — no
-        // working-set/occupancy machinery involved, so both start fully
-        // retained and uncontested for collection.
-        let parent_id = camp
+        // Appended directly (bypassing `step()`): a genesis rollout (issue 1,
+        // later collected), a middle rollout (issue 2, `parent == Some(1)`),
+        // a decoy Seal that collides with the middle rollout's issue number
+        // (a same-issue, wrong-role record the walk must not follow), and
+        // the suffix-only-seal test subject (issue 10, `parent == Some(2)`)
+        // — no working-set/occupancy machinery involved, so every batch
+        // starts fully retained and uncontested for collection.
+        let genesis_id = camp
             .ledger
-            .append(&rollout_evidence(1, None, 20))
+            .append(&evidence(EvidenceRole::Rollout, 1, None, 20))
             .expect("appends the genesis rollout");
-        let child_id = camp
+        let mid_id = camp
             .ledger
-            .append(&rollout_evidence(2, Some(1), 30))
-            .expect("appends the branch child");
+            .append(&evidence(EvidenceRole::Rollout, 2, Some(1), 30))
+            .expect("appends the middle rollout");
+        camp.ledger
+            .append(&evidence(EvidenceRole::Seal, 2, None, 31))
+            .expect("appends the decoy seal");
+        let seal_id = camp
+            .ledger
+            .append(&evidence(EvidenceRole::Seal, 10, Some(2), 40))
+            .expect("appends the suffix-only seal");
 
         let before = camp.retention_report();
         assert_eq!(
-            before.batches[&parent_id].recompute_cells,
+            before.batches[&genesis_id].recompute_cells,
             Recomputation::FromRetainedEvidence
         );
         assert_eq!(
-            before.batches[&child_id].recompute_cells,
+            before.batches[&seal_id].recompute_cells,
             Recomputation::FromRetainedEvidence,
             "a fully-retained graph keeps the honest FromRetainedEvidence label"
         );
 
         camp.finalize_evidence().expect("finalize");
-        camp.collect_batch(parent_id)
-            .expect("the parent is not working-set, not live-referenced, and finalized-covered");
+        camp.collect_batch(genesis_id).expect(
+            "the genesis rollout is not working-set, not live-referenced, and finalized-covered",
+        );
 
         let after = camp.retention_report();
         assert!(
             matches!(
-                after.batches[&parent_id].raw,
+                after.batches[&genesis_id].raw,
                 RawAvailability::Collected { .. }
             ),
-            "the collected parent's raw availability reflects the collection"
+            "the collected genesis rollout's raw availability reflects the collection"
         );
         assert_eq!(
-            after.batches[&parent_id].recompute_cells,
+            after.batches[&genesis_id].recompute_cells,
             Recomputation::RequiresReplay
         );
-        assert_eq!(after.batches[&child_id].raw, RawAvailability::Retained);
+        assert_eq!(after.batches[&mid_id].raw, RawAvailability::Retained);
         assert_eq!(
-            after.batches[&child_id].recompute_cells,
+            after.batches[&mid_id].recompute_cells,
             Recomputation::RequiresAncestorReplay,
-            "the child's own raw evidence is still retained, but its ledger \
-             ancestor was collected: recomputing the true lineage-composed \
-             cells still needs replay, so it must not claim \
+            "the middle rollout's own direct parent (the genesis rollout) was \
+             collected"
+        );
+        assert_eq!(after.batches[&seal_id].raw, RawAvailability::Retained);
+        assert_eq!(
+            after.batches[&seal_id].recompute_cells,
+            Recomputation::RequiresAncestorReplay,
+            "the seal's own raw evidence is still retained, but walking its \
+             lineage (seal -> sealed rollout -> genesis rollout) reaches a \
+             collected batch two hops up: recomputing the true \
+             lineage-composed cells still needs replay, so it must not claim \
              FromRetainedEvidence"
         );
     }
