@@ -39,10 +39,11 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- (no active workers — 2026-07-23 evening; next spawns from `bd ready`: the PR #147
-  park family is fully drained; remaining P2 frontier = `hm-w1o6` (interior-seal
-  alignment design, now carries PR #155 V1's catalog-handling annotation), `hm-4gaw`,
-  `hm-f82p`, `hm-5mx0` (v1-verb test machine), `hm-0qpm` (doc one-liner))
+- **Ledger-ingest lineage validation** (tasks/154, `hm-wjv1`): Opus 4.8 worker spawned
+  2026-07-23 night on `task/ledger-ingest-lineage-validation` — reject self/cyclic
+  parents + duplicate-issue Rollouts at the append/replay choke point (three
+  documented harm classes; version question answered explicitly, STOP-if-honest-producer
+  guard).
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -86,6 +87,16 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **retention_report honesty + accessor qualifier MERGED** (tasks/153, PR #156,
+  `hm-f82p`+`hm-0qpm`, 2026-07-23 night — full bounded pipeline: discovery (F1 family
+  P1: the new ancestor walk didn't mirror compose — collected-advanced-seal overclaim,
+  cyclic-lineage HANG, red mutants shard, missing role filter) → structural rewrite →
+  verify (F1a-d closed; new F1e: last-match index vs compose first-match,
+  fix-introduced) → or_insert fix → Closer re-check ALL CLEAR): recomputability labels
+  are now honest and compose-faithful, incl. duplicate-issue and cyclic ledgers.
+  Parks: `hm-wjv1` grew to own THREE harm classes (ingest rejection closes
+  self/cyclic parents, compose's own non-termination, duplicate-issue label
+  instability).
 - **Advanced-span verdict folds MERGED** (tasks/152, PR #155, `hm-mmkf`, 2026-07-23
   evening — discovery (F1 CONFIRMED P1: fold-semantics change reached persisted
   checkpoints with no version boundary; judge stale-checkpoint repro) → one batch
