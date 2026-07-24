@@ -32,8 +32,11 @@ shapes, and replay of a hand-crafted file must refuse loudly):
   in a comment.
 - **Reject duplicate-issue Rollouts**: a Rollout batch whose `rollout.issue` already
   has a Rollout batch in the ledger is refused (typed error naming both batch ids).
-  Seals share their rollout's issue by design — the uniqueness constraint is per-role;
-  do not break the rollout+seal pairing.
+  Seals carry their OWN fresh issue and share the rollout's lineage via
+  `parent: Some(rollout.issue)` (producer survey: campaign.rs:876-880) — the uniqueness
+  constraint is per-role; do not break the rollout+seal pairing. [Corrected by the
+  foreman post-PR #157 discovery: the original sentence "Seals share their rollout's
+  issue by design" was wrong and misled two review seats.]
 - **Parent-existence**: decide-and-document whether a `parent: Some(issue)` referencing
   an issue absent from the ledger is legal (out-of-order append / partial replay?).
   Survey in-tree producers and the replay order; if all producers append parents first,
