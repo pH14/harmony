@@ -39,10 +39,10 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- (no active workers — 2026-07-24 pre-midnight; remaining P2 frontier: `hm-w1o6`
-  interior-seal alignment design (heaviest — needs a design-grade spec), `hm-4gaw`
-  (hm-btht/kyy5 family), `hm-j16h`, PR #157 parks `hm-6x0w`/`hm-avvc`/`hm-g2bq`,
-  PR #146 doc trim `hm-gnxr` was closed with tasks/147; ~90 ready total)
+- (no active workers — 2026-07-24 just past midnight; remaining P2 frontier:
+  `hm-w1o6` interior-seal alignment design (heaviest — needs a design-grade spec,
+  best done fresh), `hm-4gaw` (hm-btht/kyy5 family), PR #157 parks
+  `hm-6x0w`/`hm-avvc`/`hm-g2bq`; `hm-yjf` still awaits Paul; ~90 ready total)
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -86,6 +86,11 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **MockBackend lateness fold MERGED** (tasks/156, PR #159, `hm-j16h`, 2026-07-24
+  just past midnight — five clean tribunal seats, zero findings, all judge scrutiny
+  points confirmed): reached < deadline is now unrepresentable in the double;
+  late_landings queue + push_late_landing deleted (~90 LOC). Park: `hm-n2xh`
+  (arm64 double fold parity, P3).
 - **v1-verb test machine + e2e advanced-span gate MERGED** (tasks/155, PR #158,
   `hm-5mx0`, 2026-07-24 pre-midnight — discovery (F1 P1: the new e2e gates were
   silently vacatable via an unasserted fixture invariant) → provenance-pin fix →
