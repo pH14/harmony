@@ -4811,11 +4811,14 @@ mod tests {
     // (`ScheduleMomentUnreachable`) fires. Here the clock is exact
     // (`ratio_num == 1`, `contract_vclock_config`), so a staged Moment is ON the
     // grid and `arm_arrival` clamps at it EXACTLY (`arrival_vns() == m`); the
-    // overshoot lives at the BACKEND, via [`MockBackend::push_late_landing`]: the
-    // exact-count seam could not clamp, so `run_until` lands PAST `m` at the next
+    // overshoot lives at the BACKEND, encoded in the scripted arrival leg's `reached`
+    // itself (a value PAST the arm deadline): `run_until` folds `reached` with the
+    // deadline via max, so the leg lands PAST `m` at the next
     // natural boundary — the faithful @3e7 shape (a real late landing, not a clock
     // ratio). PR #143's regression could only use the proxy because the mock then
-    // rewrote `reached := deadline` and could never land late (mock.rs:393-399).
+    // rewrote `reached := deadline` and could never land late; task 156 (hm-j16h)
+    // folded lateness into the script entry, making a genuine late landing directly
+    // expressible as a scripted `reached` PAST the deadline.
     //
     // FINDING (this task's output, fed to hm-x1ss — see IMPLEMENTATION.md "Task
     // 142"). On the exact clock the arm-seam guard is **inert**: a genuine late
@@ -4838,16 +4841,17 @@ mod tests {
     /// the overshoot of THAT arm. No `wire_lapic` (unlike `enforce_vmm`) keeps the
     /// leg free of a competing timer deadline.
     fn late_landing_vmm(land_at: u64) -> Vmm<MockBackend> {
+        // The scripted lateness rides on the arrival leg's `reached` itself — an
+        // explicit, deterministic test input (no clock, no randomness): the leg lands
+        // at `land_at`, and `run_until` folds `reached` with the arm deadline via max,
+        // so an arm at (or before) `land_at` lands LATE at `land_at`. `land_at` is
+        // chosen PAST the arm deadline the tests use (1500), so the fold preserves it.
         let mut m = MockBackend::with_exits(vec![
             Exit::Common(CommonExit::Deadline {
-                reached: vmm_backend::Moment(0),
+                reached: vmm_backend::Moment(land_at),
             }),
             Exit::Common(CommonExit::Idle),
         ]);
-        // The scripted lateness — an explicit, deterministic test input (no clock,
-        // no randomness): the arrival leg lands at `land_at` instead of its exact
-        // deadline.
-        m.push_late_landing(vmm_backend::Moment(land_at));
         m.set_policy(&X86Policy {
             cpuid: vmm_backend::CpuidModel::default(),
             msr_filter: vmm_backend::MsrFilter::default(),
