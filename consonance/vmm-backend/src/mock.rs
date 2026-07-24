@@ -13,8 +13,11 @@
 //! and completions so a test can assert what the VMM asked the backend to do.
 //!
 //! Unlike `KvmBackend`, the mock *implements* `run_until` and `inject`: a
-//! scripted `CommonExit::Deadline` is returned from `run_until` with the
-//! requested deadline, and `inject` records the event (so vmm-core's injection
+//! scripted `CommonExit::Deadline` is returned from `run_until` at
+//! `max(scripted reached, requested deadline)` — never *before* the deadline
+//! (the trait's late-only-stop contract), so an at-or-before scripted `reached`
+//! lands EXACTLY at the deadline while a genuinely-late one lands late at its
+//! scripted boundary. `inject` records the event (so vmm-core's injection
 //! planning is testable). Determinism: a `MockBackend` driven by the same
 //! script + same completions produces the same counters and the same saved
 //! `VcpuState`.
@@ -152,14 +155,6 @@ pub struct MockBackend {
     /// being silently swallowed by the extra call. The mock cannot observe real
     /// guest writes (it never writes RAM), so the set is scripted.
     dirty_pending: Option<Vec<u64>>,
-    /// Scripted **late landings** (task 142, hm-40na): absolute `reached` work
-    /// counts, one consumed per scripted [`CommonExit::Deadline`], each modelling
-    /// the guest **free-running PAST the requested `run_until` deadline** to the
-    /// next natural boundary (the box @3e7 overshoot shape — a staged Moment's
-    /// arrival the exact-count seam could not clamp). Empty ⇒ default behavior:
-    /// `run_until` rewrites `reached := deadline` and lands EXACTLY where asked,
-    /// byte-identical to every existing test. See [`Self::push_late_landing`].
-    late_landings: VecDeque<Moment>,
 }
 
 impl Default for MockBackend {
@@ -186,7 +181,6 @@ impl MockBackend {
             defer_accept: false,
             completions: Vec::new(),
             dirty_pending: None,
-            late_landings: VecDeque::new(),
         }
     }
 
@@ -291,27 +285,6 @@ impl MockBackend {
     /// acceptance (the userspace-LAPIC IRR→ISR deferral).
     pub fn set_defer_accept(&mut self, defer: bool) -> &mut Self {
         self.defer_accept = defer;
-        self
-    }
-
-    /// Script the next scripted [`CommonExit::Deadline`] to land **LATE** — at
-    /// `reached` instead of exactly at the requested `run_until` deadline (task
-    /// 142, hm-40na). This is the portable model of the box @3e7 failure shape:
-    /// the exact-count arrival seam could not clamp the guest at the staged
-    /// `Moment`, so the guest free-ran PAST it to the next natural boundary
-    /// (`reached`), an overshoot < 1 quantum. Late landings are a queue consumed
-    /// one per `Deadline` exit, in order; once drained, `run_until` reverts to the
-    /// default `reached := deadline` (exact landing).
-    ///
-    /// `reached` is on the same retired-work axis as the `run_until` deadline; a
-    /// faithful model scripts a value **strictly greater** than the deadline the
-    /// leg will be asked to stop at (a live backend never stops *before* its
-    /// deadline — see `Vmm::on_deadline`). The mock does not enforce that: the
-    /// lateness is an **explicit, deterministic test input** (no clock, no
-    /// randomness), and a test that scripts an at-or-before value is simply
-    /// asserting the exact-landing default, which is the caller's business.
-    pub fn push_late_landing(&mut self, reached: Moment) -> &mut Self {
-        self.late_landings.push_back(reached);
         self
     }
 
@@ -424,14 +397,22 @@ impl Backend for MockBackend {
         self.ensure_runnable()?;
         self.accept_pending_irqs();
         let exit = match self.next_scripted()? {
-            Exit::Common(CommonExit::Deadline { .. }) => {
-                // Default: honor the deadline exactly (`reached := deadline`). A
-                // scripted **late landing** (task 142) instead lands at the next
-                // natural boundary PAST the deadline — the box @3e7 overshoot the
-                // exact-count seam could not clamp. `pop_front` keeps default
-                // behavior byte-identical when no late landing is scripted.
-                let reached = self.late_landings.pop_front().unwrap_or(deadline);
-                Exit::Common(CommonExit::Deadline { reached })
+            Exit::Common(CommonExit::Deadline { reached }) => {
+                // Fold the script entry's `reached` with the requested deadline by
+                // taking the max. A live backend never stops *before* its deadline
+                // (`backend.rs` late-only-stop contract; the frozen
+                // `CommonExit::Deadline` invariant is `reached >= deadline`,
+                // `exit.rs`), so this makes `reached < deadline` UNREPRESENTABLE in
+                // the double by construction: an at-or-before scripted `reached`
+                // lands EXACTLY at the deadline, and a genuinely-late one
+                // (`reached > deadline`) lands late at its scripted boundary — the
+                // box @3e7 overshoot the exact-count seam could not clamp. The
+                // lateness is an explicit, deterministic test input encoded in the
+                // script entry itself (no clock, no randomness). Plain `run` never
+                // folds — it returns the scripted `Deadline` verbatim.
+                Exit::Common(CommonExit::Deadline {
+                    reached: reached.max(deadline),
+                })
             }
             other => other,
         };

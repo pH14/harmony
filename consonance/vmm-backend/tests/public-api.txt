@@ -602,7 +602,6 @@ pub fn vmm_backend::MockBackend::new() -> Self
 pub fn vmm_backend::MockBackend::pending_irq(&self) -> core::option::Option<u8>
 pub fn vmm_backend::MockBackend::push_dirty_gfns(&mut self, alloc::vec::Vec<u64>) -> &mut Self
 pub fn vmm_backend::MockBackend::push_exit(&mut self, vmm_backend::Exit<vmm_backend::arch::x86::X86>) -> &mut Self
-pub fn vmm_backend::MockBackend::push_late_landing(&mut self, vmm_backend::Moment) -> &mut Self
 pub fn vmm_backend::MockBackend::regions(&self) -> &[(vmm_backend::Gpa, usize)]
 pub fn vmm_backend::MockBackend::set_defer_accept(&mut self, bool) -> &mut Self
 pub fn vmm_backend::MockBackend::set_state(&mut self, vmm_backend::VcpuState) -> &mut Self

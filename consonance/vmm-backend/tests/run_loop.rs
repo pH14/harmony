@@ -294,7 +294,12 @@ fn counters_increment_per_reason_and_reset() {
 }
 
 #[test]
-fn run_until_returns_deadline_with_requested_value() {
+fn run_until_folds_an_at_or_before_reached_up_to_the_deadline() {
+    // Required regression 1 (task 156, hm-j16h): a script entry with
+    // `reached < deadline` lands EXACTLY at the deadline. `run_until` folds the
+    // scripted `reached` with the requested deadline via max, so `reached < deadline`
+    // is unrepresentable — the frozen `CommonExit::Deadline` invariant
+    // (`reached >= deadline`) holds by construction. Here `reached: 0 < 4096`.
     let mut m = configured();
     m.extend_exits([Exit::Common(CommonExit::Deadline { reached: Moment(0) })]);
     let e = m.run_until(Moment(4096)).unwrap();
@@ -302,22 +307,26 @@ fn run_until_returns_deadline_with_requested_value() {
         e,
         Exit::Common(CommonExit::Deadline {
             reached: Moment(4096)
-        })
+        }),
+        "an at-or-before scripted reached (0) clamps up to exactly the deadline (4096)"
     );
     assert_eq!(m.exit_counts().deadline, 1);
     assert!(!m.has_pending());
 }
 
 #[test]
-fn late_landing_lands_past_the_requested_deadline() {
-    // Task 142 (hm-40na): a scripted late landing makes `run_until` land PAST the
-    // requested deadline — the guest free-ran to the next natural boundary, the box
-    // @3e7 overshoot the exact-count seam could not clamp. Default behavior (no
-    // scripted landing) is byte-identical exact landing, covered by
-    // `run_until_returns_deadline_with_requested_value` above.
+fn run_until_folds_a_late_reached_past_the_requested_deadline() {
+    // Required regression 2 (task 156, hm-j16h): a genuinely late script entry
+    // (`reached > deadline`) still lands LATE, at its scripted boundary — the guest
+    // free-ran to the next natural boundary, the box @3e7 overshoot the exact-count
+    // seam could not clamp. Lateness now rides on the script entry's `reached`
+    // itself; `run_until` folds via max, so `reached > deadline` passes through
+    // unchanged. (Formerly the `push_late_landing` queue; migrated to the
+    // script-entry form.)
     let mut m = configured();
-    m.extend_exits([Exit::Common(CommonExit::Deadline { reached: Moment(0) })]);
-    m.push_late_landing(Moment(5000));
+    m.extend_exits([Exit::Common(CommonExit::Deadline {
+        reached: Moment(5000),
+    })]);
     let e = m.run_until(Moment(4096)).unwrap();
     assert_eq!(
         e,
@@ -331,62 +340,73 @@ fn late_landing_lands_past_the_requested_deadline() {
 }
 
 #[test]
-fn late_landings_are_a_fifo_queue_that_drains_to_exact() {
-    // Late landings are consumed one per `Deadline`, in order; once drained,
-    // `run_until` reverts to the exact `reached := deadline` default — determinism:
-    // an explicit, ordered test input, no clock, no randomness.
+fn each_run_until_leg_folds_its_own_scripted_reached_independently() {
+    // Lateness rides on the script entry, so successive legs fold independently —
+    // there is no shared queue to misalign (the F3 hazard the fold removes). A late
+    // entry lands late; an at-or-before entry clamps up to its own deadline.
+    // Determinism: explicit, ordered test inputs — no clock, no randomness.
+    // (Formerly `late_landings_are_a_fifo_queue_that_drains_to_exact`.)
     let mut m = configured();
     m.extend_exits([
-        Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
-        Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+        Exit::Common(CommonExit::Deadline {
+            reached: Moment(11),
+        }),
+        Exit::Common(CommonExit::Deadline {
+            reached: Moment(22),
+        }),
         Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
     ]);
-    m.push_late_landing(Moment(11));
-    m.push_late_landing(Moment(22));
-    // First two legs land late, in FIFO order; the third (queue drained) lands exact.
     assert_eq!(
         m.run_until(Moment(1)).unwrap(),
         Exit::Common(CommonExit::Deadline {
             reached: Moment(11)
-        })
+        }),
+        "reached 11 > deadline 1 → lands late at 11"
     );
     assert_eq!(
         m.run_until(Moment(2)).unwrap(),
         Exit::Common(CommonExit::Deadline {
             reached: Moment(22)
-        })
+        }),
+        "reached 22 > deadline 2 → lands late at 22"
     );
     assert_eq!(
         m.run_until(Moment(3)).unwrap(),
         Exit::Common(CommonExit::Deadline { reached: Moment(3) }),
-        "queue drained → exact landing (byte-identical default)"
+        "reached 0 < deadline 3 → clamps up to exactly 3"
     );
 }
 
 #[test]
-fn late_landing_only_affects_run_until_not_run() {
-    // The late landing models the `run_until` overshoot specifically. A scripted
-    // `Deadline` returned via plain `run` (no deadline) is passed verbatim and does
-    // NOT consume a scripted late landing — so it stays available for the next
-    // `run_until`, keeping `run` byte-identical.
+fn run_passes_deadline_verbatim_while_run_until_folds() {
+    // The fold lives in `run_until` only. Plain `run` (no deadline) returns a
+    // scripted `Deadline` verbatim — no fold — so an arbitrary `reached` is
+    // preserved (this is why the arbitrary-reached proptest `counts_match_histogram`
+    // exercises `run`, not `run_until`). `run_until` instead folds the scripted
+    // `reached` with the requested deadline via max.
+    // (Formerly `late_landing_only_affects_run_until_not_run`.)
     let mut m = configured();
     m.extend_exits([
         Exit::Common(CommonExit::Deadline { reached: Moment(7) }),
-        Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+        Exit::Common(CommonExit::Deadline {
+            reached: Moment(99),
+        }),
     ]);
-    m.push_late_landing(Moment(99));
-    // `run` returns the scripted Deadline verbatim (reached:7), late landing untouched.
+    // `run` passes the scripted Deadline verbatim (reached:7 preserved — even though
+    // 7 could be below a hypothetical deadline; `run` never folds).
     assert_eq!(
         m.run().unwrap(),
         Exit::Common(CommonExit::Deadline { reached: Moment(7) }),
-        "run passes the scripted Deadline verbatim, never consuming a late landing"
+        "run passes the scripted Deadline verbatim, never folding"
     );
-    // The still-queued late landing now applies to the `run_until` leg.
+    // `run_until` folds the next entry: max(99, 4) = 99 (a genuinely late entry
+    // lands late).
     assert_eq!(
         m.run_until(Moment(4)).unwrap(),
         Exit::Common(CommonExit::Deadline {
             reached: Moment(99)
-        })
+        }),
+        "run_until folds reached 99 with deadline 4 → 99"
     );
 }
 

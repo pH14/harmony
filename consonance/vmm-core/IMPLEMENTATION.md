@@ -4616,10 +4616,16 @@ portable regression pinning the vns↔work-seam overshoot shape.
 PR #143's F1 residue: its regression could only model the `@3e7` overshoot with a
 **ratio-1000 V-time-clock proxy** because `MockBackend::run_until` rewrote
 `reached := deadline` and could never land late. Task 142 gave the mock a real
-late-landing knob (`MockBackend::push_late_landing`, `vmm-backend`), and this
-section records what driving the guard from a **genuine** late landing on the
-**exact** contract clock (`ratio_num == 1`) actually does — the task's substantive
-output.
+late-landing capability, and this section records what driving the guard from a
+**genuine** late landing on the **exact** contract clock (`ratio_num == 1`) actually
+does — the task's substantive output.
+
+> **Update (task 156, hm-j16h):** the late-landing capability originally shipped as
+> a separate `MockBackend::push_late_landing` queue; task 156 folded lateness into
+> the script entry itself (`run_until` now returns `max(scripted reached, deadline)`)
+> and deleted that queue + method. The fixtures below migrated 1:1 — the scripted
+> arrival leg now carries `reached: land_at` directly instead of a pushed landing —
+> so every test and finding here is unchanged.
 
 **Fixtures + tests (`control.rs`, `control::tests`, all portable + Miri-clean
 except the one restore-reaching latch-clears sibling):**
