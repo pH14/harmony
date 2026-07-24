@@ -1792,3 +1792,218 @@ append/lineage validation (parked as `hm-wjv1`), or fold behavior — the
 compose-across-collected-ancestor behavior itself stays fenced to the
 `hm-4gaw`/`hm-btht` family, per the task spec and the review's fence ruling.
 No dependency changes.
+
+# tasks/154 — ledger-ingest lineage validation (hm-wjv1)
+
+`EvidenceLedger::append` previously validated content-address + budget only
+(`ledger.rs`), so three durable lineage shapes no producer emits were
+representable in a v4 ledger, each a defect every reader had to defend against
+individually:
+
+1. **Self/cyclic parent** (`RunId { issue: 7, parent: Some(7) }`, or a mutual
+   cycle) — `retention_report` was walk-hardened to terminate (PR #156), but
+   `compose_observations_at` (`evidence.rs`) carries **no** visited set and does
+   not terminate on a cyclic `rollout.parent` chain.
+2. **Duplicate-issue Rollout batches** — content-distinct Rollouts sharing one
+   `rollout.issue`. Every ancestor-by-issue reader (`compose_observations_at`'s
+   first-match `.find` over ascending `EvidenceBatchId`; the retention rebuild)
+   resolves such an issue to whichever sorts first, so collecting that batch
+   silently flips which batch each reader resolves to. Label stability across
+   collection is unattainable while both are representable.
+3. The general class: durable lineage shapes rejection at ingest closes
+   structurally instead of every reader defending against them.
+
+## Fix — reject at the one ingest choke point
+
+`EvidenceLedger::validate_lineage` (`ledger.rs`) runs against the batches
+**already** in the ledger, before a record is indexed, and is called from both
+paths that admit a `CompletedRunEvidence`:
+
+- **`append`** — after the idempotent content-address early-return, before any
+  write or budget check.
+- **`replay_frames`** (the `open` path) — for every decoded `Evidence` frame,
+  before `apply`. A whole, digest-verified frame carrying a malformed shape is
+  refused loudly (never truncated as a torn tail, never silently reinterpreted),
+  exactly as `append` would have refused it.
+
+Two additive typed errors (`LedgerError::LineageCycle`,
+`LedgerError::DuplicateRolloutIssue`) carry the offending batch id(s) and issue.
+
+**Cycle / self-parent.** A visited-issue walk seeded with the record's own
+issue steps `rollout.parent` through **retained Rollout** batches (the exact
+node set `compose_observations_at` resolves an issue to — a seal's parent is the
+rollout it seals). A revisit is a cycle; `issue == parent` is the length-one
+self-parent case, caught on the first step. **Invariant (stated in-code):**
+every batch already retained was validated the same way, so the retained
+lineage is always a DAG — appends (and replay frames) are ordered, so a cycle
+can only ever close *through the batch being appended*. Checking the new
+record's chain is therefore sufficient; the visited set also guarantees the
+walk itself terminates on any hand-crafted stream.
+
+**Duplicate-issue Rollout.** A Rollout whose `rollout.issue` is already held by
+a different Rollout batch — **retained OR collected** (`rollout_issue_holder`
+consults both `entries` and the durable tombstones in `collected`) — is refused.
+Consulting the tombstones is load-bearing (PR #157 F1, below): a collected
+Rollout's issue still governs which batch every ancestor-by-issue reader
+resolves to. **Per-role:** Seals are exempt (a seal carries its own distinct
+issue and continues the rollout it seals), so the rollout+seal pairing is never
+broken. The `existing != id` guard keeps a byte-identical re-append idempotent
+(same id ⇒ same batch, not a duplicate) — for a *collected* batch this is the
+pre-existing byte-identical resurrection path, kept unchanged and documented, not
+altered by this fix.
+
+## Parent-existence — dangling parents stay LEGAL (surveyed, not guessed)
+
+The spec required surveying the in-tree producers before deciding whether a
+`parent: Some(issue)` referencing an issue absent from the ledger is legal.
+**The only production appender of `CompletedRunEvidence` into `EvidenceLedger`
+is `DifferentialCampaign::step` (`campaign.rs`):** the rollout append
+(`self.ledger.append(&evidence)`) and the seal append
+(`self.ledger.append(&seal_evidence)`). The revision-coordinator's `append`
+calls are to its **own** `LedgerRecord` ledger, not this one. In `step`:
+
+- a rollout's `parent` is the sealed rollout behind the chosen frontier Entry —
+  appended in a **prior** step;
+- a seal's `parent` is the rollout appended **earlier in the same step**;
+- both `issue`s are `p*.proposal.get()`, and the coordinator mints proposals
+  from a single monotone counter (`next_proposal`, `coordinator.rs`), so every
+  issue is **globally unique and strictly increasing**.
+
+So honest producers always append parents first — **but** an ancestor can be
+legitimately **collected** (proven GC behind a covering checkpoint) while
+descendants remain, which is exactly the steady state `compose_observations_at`
+already handles ("collected or foreign ancestor: compose the retained prefix")
+and `ancestor_collected` mirrors. **Decision:** dangling/missing parents stay
+legal. Rejecting a missing parent would couple `append` to retention state and
+falsely refuse an honest child whose covered ancestor was already collected —
+the retention contract forbids that. The cycle walk is **fenced** accordingly:
+a parent that resolves to no retained Rollout simply ends the walk (no cycle
+through a batch that is not there). All three harm classes close without a
+parent-existence rule.
+
+## Version question — no bump (pure narrowing, verified)
+
+This **restricts** what a v4 ledger accepts and changes the meaning of no
+existing well-formed record. Per the ledger's own doctrine a pure narrowing
+that refuses previously-writable-but-never-produced shapes needs no `VERSION`
+bump. Verified the "no honest v4 file contains them" claim: the only producer
+(`step`, above) mints unique ascending issues and appends parents first, so it
+**cannot** emit a self/cyclic parent or a duplicate-issue Rollout; the PR #156
+repros constructed these only via direct `camp.ledger.append(&synthetic_evidence(..))`
+test calls, never a producer. No honest producer of any rejected shape exists,
+so `VERSION` stays 4 (no read-old/migration question arises — every honest v4
+file already passes the new validation). `compose_observations_at`'s
+non-termination is closed **structurally** by this ingest invariant (no cyclic
+ledger can be constructed or replayed), so its walk and `ancestor_collected`'s
+visited-set bound are retained as **defense-in-depth**, not modified.
+
+## Required-regression → test map
+
+| # | Regression | Test (`ledger.rs` unless noted) |
+|---|---|---|
+| 1 | Self-parent append refused (typed) | `self_parent_append_is_refused` |
+| 2 | Mutual-cycle refused at the closing append | `mutual_cycle_append_is_refused_at_the_closing_append` |
+| 3 | Duplicate-issue Rollout refused (both ids named); Seal for it still appends | `duplicate_issue_rollout_is_refused_but_a_seal_for_it_appends` |
+| 3b | Duplicate of a **collected** Rollout refused at append; same-id resurrection still admitted (PR #157 F1) | `a_duplicate_of_a_collected_rollout_is_refused_at_append` |
+| 4 | Replay of each rejected shape (incl. a crafted collect-then-duplicate stream) refuses loudly | `replay_refuses_each_malformed_lineage_shape` |
+| — | Honest lineage still appends + survives reopen (transparency) | `honest_lineage_appends_and_survives_reopen` |
+| 5 | Migrate the PR #156 walk-hardening tests | `campaign.rs`: `append_refuses_cyclic_lineage_at_ingest` (was `retention_report_terminates_on_cyclic_lineage`), `append_refuses_a_duplicate_issue_rollout_at_ingest` (was `retention_report_resolves_a_duplicate_issue_like_compose_does`) |
+
+**Migrated tests (regression 5).** The two PR #156 tests built a cyclic /
+duplicate-issue ledger through `append` and asserted the downstream *walk*
+survived it. That ledger can no longer be constructed via the public API, so
+each is re-scoped to assert the **ingest refusal** (typed, both batch ids named
+for the duplicate). The `ancestor_collected` visited-set bound and the
+`AncestryIndex::build` / `compose_observations_at` ascending-id first-match
+tie-break are now **defense-in-depth** — kept and correct, but no malformed
+ledger survives ingest to exercise them. `retention_report_ignores_a_collected_decoy_seal_issue_collision`
+survives unchanged: its child (issue 2, parent 1) and decoy **Seal** (issue 1)
+are both well-formed under the per-role rule (a Seal never trips the
+Rollout-uniqueness check; a parent resolving to no retained Rollout ends the
+walk). The retention.rs seal-fold tests (Rollout issue 1 + Seals issues 2/3,
+distinct) likewise stay green.
+
+## PR #157 discovery — F1 (P1) fix + ride-alongs
+
+**F1 (P1, judge-executed):** the duplicate-issue check originally scanned
+`entries` only, so `append(Rollout A{issue 1}) → append(child{2, parent 1}) →
+commit_checkpoint(2) → collect(A) → append(content-distinct Rollout B{issue 1})`
+was admitted — `collect` moves A out of `entries` into a `collected` tombstone,
+so the entries-only scan found nothing and let B in. Then every ancestor-by-issue
+reader resolved issue 1 to the *impostor* B, flipping the child's honesty label
+from `RequiresAncestorReplay` back to a false `FromRetainedEvidence` — undoing the
+PR #156 collected-ancestor honesty through content-distinct data. **Fix (same
+choke point):** the duplicate check now consults `rollout_issue_holder`, which
+looks up a Rollout by issue in `entries` **and** in the durable tombstones
+(`CollectedBatch` carries the full `rollout` RunId + `role` + `batch`, so the
+typed error still names the collected holder). The invariant is strengthened to
+*every issue holds at most one retained-**or-collected** Rollout*. Replay-order
+is safe in both durable layouts — the tombstone frame always precedes any later
+duplicate (an in-order collect writes the tombstone after the evidence;
+`compact` writes all tombstones before all evidence) — so replay has the batch
+collected before the duplicate is validated. Regressions:
+`a_duplicate_of_a_collected_rollout_is_refused_at_append` and case (d) of
+`replay_refuses_each_malformed_lineage_shape` (a crafted `[Evidence A,
+Tombstone A, Evidence B]` stream, the judge repro inverted). The **same-id
+resurrection** exemption (`existing != id`) is deliberately preserved: a
+byte-identical re-append of a collected batch stays admitted — pre-existing
+behavior, decided-and-documented, out of scope for `hm-wjv1`.
+
+**F3 (test-only ride-along):** the `append_raw_evidence` frame re-implementation
+is deleted; the replay regressions now craft streams via `craft_stream`, which
+delegates to the private `EvidenceLedger::append_record` (the real framer, which
+performs no lineage check) — no duplicated frame-layout logic.
+
+**F4 (doc ride-along):** the `ancestor_collected` doc (`campaign.rs`) and the
+`AncestryIndex::build` inline comment no longer claim `append` "validates only
+content-addressing and budget" / accepts duplicate issues; both now state that
+cyclic chains and duplicate issues are **refused at ingest** and their walk
+bound / first-match tie-break are defense-in-depth.
+
+**FYI (spec correction).** The tasks/154 sentence "Seals share their rollout's
+issue by design" was wrong (it misled two review seats) and the foreman
+corrected the spec on main — a seal carries its own fresh issue and shares
+lineage via `parent`. This implementation already matched that truth (the
+per-role check exempts Seals; the producer survey confirms distinct seal issues),
+so no code change followed from the correction.
+
+## Gates run (all green, macOS)
+
+- `cargo build -p explorer --all-features` — clean.
+- `cargo nextest run -p explorer --all-features` — **171 passed, 1 skipped**
+  (the `#[ignore]` public-api test).
+- `cargo nextest run -p campaign-runner --all-features` — **179 passed, 1
+  skipped**, including the hash-neutrality / determinism suites
+  `determinism_proptest::branch_run_hash_is_deterministic_and_replay_reproduces_capture`,
+  `gamecampaign::tests::campaign_replays_bit_identically`,
+  `maze_campaign::same_seed_and_config_yield_identical_artifacts`,
+  `reseed_fold_proptest::draw_carrying_folds_are_bit_identical`.
+- `cargo clippy -p explorer --all-features --all-targets -- -D warnings` — clean
+  (the two `clippy.toml` config notes about `rand::*` disallowed paths are
+  pre-existing, unrelated to this diff).
+- `cargo fmt -p explorer -- --check` — clean.
+- `cargo deny check` — advisories, bans, licenses, sources ok.
+- `cargo mutants -p explorer --no-shuffle --in-diff <task diff>` — **0 missed**
+  (see the run recorded on the PR).
+- `tests/public-api.txt` regenerated on the pinned nightly
+  (`nightly-2026-06-16`, `UPDATE_PUBLIC_API=1`): **purely additive** — the two
+  new `LedgerError` variants and their fields, nothing removed or renamed. The
+  F1 fix added no public surface (the variant fields are unchanged), so no
+  further snapshot drift.
+
+**Hash-neutrality.** Ingest validation is a pure pre-check that either refuses a
+malformed record or proceeds byte-for-byte as before on a well-formed one, so an
+honest run feeds the exact same bytes to the ledger and touches no committed
+hash — the determinism suites above (unchanged) confirm it. No `unsafe` added →
+no Miri obligation. No dependency change.
+
+## Scope fence
+
+Touched only `dissonance/explorer/`: `src/ledger.rs` (the two error variants,
+`validate_lineage` + `retained_rollout`, the `append`/`replay_frames` call
+sites, the new ingest-validation tests + two test-fixture helpers),
+`src/campaign.rs` (the two migrated regression tests only), and
+`tests/public-api.txt` (regenerated). `compose_observations_at`,
+`ancestor_collected`, `AncestryIndex`, `collect`, `compact`, and fold behavior
+are unchanged — the malformed-ledger walk bounds stay as defense-in-depth. No
+sibling crate touched; no dependency changes.

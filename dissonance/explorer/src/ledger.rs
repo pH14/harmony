@@ -89,7 +89,7 @@ use std::path::{Path, PathBuf};
 use revision_coordinator::EvidenceBatchId;
 use serde::{Deserialize, Serialize};
 
-use crate::evidence::CompletedRunEvidence;
+use crate::evidence::{CompletedRunEvidence, EvidenceRole};
 use crate::retention::{CollectedBatch, CoverageRef, RetentionCheckpoint, RetentionError};
 
 /// The ledger file magic and format version — a header a foreign or future file
@@ -193,6 +193,58 @@ pub enum LedgerError {
         needed: u64,
         /// The declared budget.
         budget: u64,
+    },
+    /// An appended or replayed record's lineage **revisits an issue** — a
+    /// self-parent (`issue == parent`, the length-one case) or a longer cycle
+    /// that closes through Rollout batches already in the ledger. No honest
+    /// producer emits cyclic lineage: the Revision coordinator mints
+    /// strictly-increasing issue numbers, so a real parent chain is a finite,
+    /// strictly-descending DAG. A cyclic chain is refused at the ingest choke
+    /// point ([`EvidenceLedger::append`] and replay/[`open`](EvidenceLedger::open)) —
+    /// the structural closure for the otherwise non-terminating
+    /// [`compose_observations_at`](crate::compose_observations_at) walk (it
+    /// carries no visited set), whose bound (and the retention report walk's
+    /// visited-set bound) becomes defense-in-depth once no cyclic ledger can be
+    /// constructed (`hm-wjv1`).
+    #[error(
+        "evidence ledger lineage cycle: batch {batch:?} (rollout issue {issue}) \
+         re-enters issue {revisits} through its parent chain — cyclic lineage is \
+         never produced and is refused at ingest"
+    )]
+    LineageCycle {
+        /// The refused batch's identity.
+        batch: EvidenceBatchId,
+        /// The refused batch's own rollout issue.
+        issue: u64,
+        /// The issue its parent chain re-enters (`== issue` for a self-parent).
+        revisits: u64,
+    },
+    /// A **Rollout** batch's `rollout.issue` is already held by a different
+    /// Rollout batch — **retained or collected**. Every ancestor-by-issue
+    /// reader ([`compose_observations_at`](crate::compose_observations_at) and
+    /// the retention rebuild) resolves an issue by first match over ascending
+    /// [`EvidenceBatchId`], so two retained duplicates make that resolution
+    /// unstable across collection; and a Rollout re-claiming a *collected*
+    /// Rollout's issue installs an impostor ancestor the report would compose a
+    /// descendant through, undoing the collected-ancestor recomputability
+    /// honesty (PR #157 F1). Refusing both keeps every reader's ancestor
+    /// resolution stable. The uniqueness constraint is **per role**: a Seal is
+    /// exempt (it continues the rollout it seals and carries its own distinct
+    /// issue), so the rollout+seal pairing is never broken. A byte-identical
+    /// re-append (same [`EvidenceBatchId`]) is not a duplicate — it stays
+    /// idempotent (`hm-wjv1`).
+    #[error(
+        "evidence ledger duplicate rollout issue {issue}: batch {existing:?} \
+         already holds a Rollout for this issue, refusing batch {incoming:?} — \
+         per-role issue uniqueness keeps every reader's ancestor resolution stable"
+    )]
+    DuplicateRolloutIssue {
+        /// The shared rollout issue.
+        issue: u64,
+        /// The batch already retaining a Rollout for `issue`.
+        existing: EvidenceBatchId,
+        /// The refused incoming batch.
+        incoming: EvidenceBatchId,
     },
 }
 
@@ -421,6 +473,18 @@ impl EvidenceLedger {
                     offset: pos,
                     detail: e.to_string(),
                 })?;
+            // The frame decoded whole and digest-verified, but a hand-crafted or
+            // pre-fix durable stream can still carry a malformed lineage shape
+            // (self/cyclic parent, duplicate-issue Rollout). Refuse it loudly —
+            // the same ingest validation `append` applies, so a v4 file this
+            // build writes can never contain these shapes and replay of one that
+            // does never silently reinterprets it (`hm-wjv1`). Validation runs
+            // against the frames replayed so far, exactly as `append` runs it
+            // against the batches already in the ledger.
+            if let LedgerRecord::Evidence(ev) = &record {
+                let id = EvidenceBatchId::digest(&ev.canonical_bytes());
+                self.validate_lineage(id, ev)?;
+            }
             self.apply(record);
             pos += FRAME_HEADER as u64 + len as u64;
         }
@@ -501,6 +565,118 @@ impl EvidenceLedger {
         self.budget
     }
 
+    /// The retained **Rollout** batch for `issue`, if any — its id and
+    /// evidence. At most one exists (duplicate Rollout issues are refused at
+    /// ingest below), so this is the unambiguous ancestor
+    /// [`compose_observations_at`](crate::compose_observations_at) resolves an
+    /// issue to. `entries` is a `BTreeMap`, so the scan is ascending-id order —
+    /// the exact order compose's own first-match `.find` uses. Seals are
+    /// skipped: the lineage walk composes through Rollout batches (a seal's
+    /// parent is the rollout it seals).
+    fn retained_rollout(&self, issue: u64) -> Option<(EvidenceBatchId, &CompletedRunEvidence)> {
+        self.entries
+            .iter()
+            .find(|(_, ev)| ev.role == EvidenceRole::Rollout && ev.rollout.issue == issue)
+            .map(|(id, ev)| (*id, ev))
+    }
+
+    /// The batch id of the **Rollout** — retained **or collected** — that
+    /// already holds `issue`, if any. Duplicate detection must consult BOTH:
+    /// [`collect`](Self::collect) removes a batch from `entries` and parks its
+    /// tombstone in `collected`, but that tombstone still governs which batch
+    /// every ancestor-by-issue reader resolves the issue to — a collected
+    /// Rollout's absence flips a descendant to `RequiresAncestorReplay`, and a
+    /// content-distinct Rollout re-claiming that issue would silently install an
+    /// *impostor* ancestor (`compose_observations_at` would then compose the
+    /// child through the wrong evidence, flipping the recomputability honesty
+    /// back to a false `FromRetainedEvidence`). At most one Rollout — retained
+    /// or collected — holds an issue (this method's own invariant, held
+    /// inductively by the duplicate refusal). A collected batch's issue is read
+    /// from its durable tombstone ([`CollectedBatch`](crate::retention::CollectedBatch)),
+    /// which carries the full `rollout` RunId + `role`.
+    fn rollout_issue_holder(&self, issue: u64) -> Option<EvidenceBatchId> {
+        if let Some((id, _)) = self.retained_rollout(issue) {
+            return Some(id);
+        }
+        self.collected
+            .values()
+            .find(|t| t.role == EvidenceRole::Rollout && t.rollout.issue == issue)
+            .map(|t| t.batch)
+    }
+
+    /// Reject the three durable lineage shapes no honest producer emits, at the
+    /// one ingest choke point every appended and replayed record passes through
+    /// (`hm-wjv1`). Runs against the batches **already** in the ledger, before
+    /// `record` is indexed.
+    ///
+    /// **Ingest invariant (append-ordered acyclicity):** every batch already
+    /// retained was validated here, so the retained Rollout lineage is always a
+    /// DAG and **every issue holds at most one retained-or-collected Rollout**.
+    /// Appends (and each replayed frame) are ordered, so a new batch can only
+    /// introduce a malformation *through itself* — a parent chain that closes
+    /// back on this batch's issue, or a Rollout issue some retained-or-collected
+    /// Rollout already holds. Validating this one record against the current
+    /// state is therefore sufficient; no full re-scan of history is needed.
+    fn validate_lineage(
+        &self,
+        id: EvidenceBatchId,
+        ev: &CompletedRunEvidence,
+    ) -> Result<(), LedgerError> {
+        // (1) Per-role Rollout issue uniqueness — against retained AND COLLECTED
+        // Rollouts. Two content-distinct Rollouts sharing one issue make every
+        // ancestor-by-issue reader resolve to whichever sorts first, so
+        // collecting it flips the answer; and once a Rollout is collected, a
+        // content-distinct Rollout re-claiming its issue would install an
+        // impostor ancestor the retention report composes the descendant through
+        // (undoing the collected-ancestor honesty — PR #157 F1). Seals are
+        // exempt (distinct issue by construction; the pairing must survive).
+        //
+        // The `existing != id` guard keeps re-appending byte-identical evidence
+        // idempotent (same id ⇒ same batch, not a duplicate). For a COLLECTED
+        // Rollout this deliberately preserves the pre-existing byte-identical
+        // resurrection path (`append` has no collected-id early-return, so a
+        // same-id re-append re-indexes the batch): the guard admits an exact
+        // re-append and refuses only a content-distinct impostor. Changing that
+        // resurrection behavior is out of scope for this fix (hm-wjv1);
+        // documented, not altered.
+        if ev.role == EvidenceRole::Rollout
+            && let Some(existing) = self.rollout_issue_holder(ev.rollout.issue)
+            && existing != id
+        {
+            return Err(LedgerError::DuplicateRolloutIssue {
+                issue: ev.rollout.issue,
+                existing,
+                incoming: id,
+            });
+        }
+        // (2) Self/cyclic parent. Walk `rollout.parent` through retained Rollout
+        // batches, seeded with this record's own issue; a revisit is a cycle
+        // that closes through this batch (`issue == parent` is the length-one
+        // self-parent case, caught on the first step). A parent that resolves to
+        // no retained Rollout — a collected ancestor (a legitimate steady state
+        // after covered GC) or a dangling reference — simply ends the walk,
+        // exactly as `compose_observations_at` stops composing through a
+        // collected/foreign ancestor. The visited set also guarantees
+        // termination, so this never hangs even on a hand-crafted stream.
+        let mut visited = BTreeSet::new();
+        visited.insert(ev.rollout.issue);
+        let mut parent = ev.rollout.parent;
+        while let Some(issue) = parent {
+            if !visited.insert(issue) {
+                return Err(LedgerError::LineageCycle {
+                    batch: id,
+                    issue: ev.rollout.issue,
+                    revisits: issue,
+                });
+            }
+            let Some((_, anc)) = self.retained_rollout(issue) else {
+                break;
+            };
+            parent = anc.rollout.parent;
+        }
+        Ok(())
+    }
+
     /// Durably append one completed run's normalized evidence, returning its
     /// batch identity — the id the caller then submits to the Revision
     /// coordinator for commit. The frame is written and **fsynced durable before
@@ -522,6 +698,12 @@ impl EvidenceLedger {
             // byte-identical commit.)
             return Ok(id);
         }
+        // Reject the durable lineage shapes no honest producer emits (self/cyclic
+        // parents, duplicate-issue Rollouts) BEFORE any write or state change —
+        // the ingest choke point (`hm-wjv1`). Refused whatever the budget; a
+        // well-formed record proceeds untouched, so honest runs feed the exact
+        // same bytes to the ledger and no committed hash moves.
+        self.validate_lineage(id, evidence)?;
         let record = LedgerRecord::Evidence(evidence.clone());
         // Budget check before any write or state change: exhaustion aborts the
         // append; it never expires or collects anything.
@@ -783,6 +965,56 @@ mod tests {
             parent_cut: None,
             sealable_moments: Vec::new(),
         }
+    }
+
+    /// Evidence with an explicit lineage — an arbitrary `role`, `issue`, and
+    /// `parent` — for the ingest-validation regressions. The normalized body is
+    /// the same tiny always-true assertion as [`evidence`]; only `rollout` and
+    /// `role` vary, which is all the lineage validation reads.
+    fn lineage_evidence(
+        issue: u64,
+        parent: Option<u64>,
+        role: EvidenceRole,
+        blob: &[u8],
+    ) -> CompletedRunEvidence {
+        let mut ev = evidence(issue, blob);
+        ev.rollout.parent = parent;
+        ev.role = role;
+        ev
+    }
+
+    /// Craft a durable stream carrying `records` verbatim, **bypassing ingest
+    /// validation**, so a stream with a now-rejected lineage shape can be built
+    /// for the replay regressions. Delegates to the private
+    /// [`EvidenceLedger::append_record`] (the real framer) rather than
+    /// re-implementing the frame layout: `append_record` writes and fsyncs each
+    /// frame at the file's end but performs no lineage check (validation lives
+    /// in `append`/`replay_frames`), which is exactly the pre-fix writer path.
+    /// `open` first stamps the valid v4 header.
+    fn craft_stream(path: &Path, records: &[LedgerRecord]) {
+        let mut led = EvidenceLedger::open(path).expect("header");
+        for record in records {
+            led.append_record(record).expect("raw frame");
+        }
+        // Drop closes the handle; the crafted frames are durable on `path`.
+    }
+
+    /// A durable Evidence frame for `ev` (a `craft_stream` convenience).
+    fn evidence_frame(ev: &CompletedRunEvidence) -> LedgerRecord {
+        LedgerRecord::Evidence(ev.clone())
+    }
+
+    /// A durable Tombstone frame collecting `ev`'s batch (a `craft_stream`
+    /// convenience) — the completeness metadata `collect` would have written.
+    fn tombstone_frame(ev: &CompletedRunEvidence) -> LedgerRecord {
+        LedgerRecord::Tombstone(crate::retention::CollectedBatch {
+            batch: EvidenceBatchId::digest(&ev.canonical_bytes()),
+            rollout: ev.rollout,
+            role: ev.role,
+            cut: ev.cut,
+            events: ev.normalized.events.len() as u64,
+            covered_by: CoverageRef::Finalized,
+        })
     }
 
     /// A checkpoint whose coverage frontier is `issue` (empty views otherwise).
@@ -1238,5 +1470,314 @@ mod tests {
             5,
             "the rebuild anchor survives compaction"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Ingest lineage validation (hm-wjv1): the three malformed durable shapes
+    // no honest producer emits are refused at the append/replay choke point.
+    // -----------------------------------------------------------------------
+
+    /// Required regression 1 — a **self-parent** Rollout append
+    /// (`RunId { issue: 7, parent: Some(7) }`) is refused with a typed
+    /// [`LedgerError::LineageCycle`], and nothing is written: the ledger stays
+    /// empty and a reopen is clean.
+    #[test]
+    fn self_parent_append_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("evidence.log");
+        let mut led = EvidenceLedger::open(&path).expect("open");
+        let ev = lineage_evidence(7, Some(7), EvidenceRole::Rollout, b"self");
+        let err = led.append(&ev).expect_err("self-parent refused");
+        assert!(
+            matches!(
+                err,
+                LedgerError::LineageCycle {
+                    issue: 7,
+                    revisits: 7,
+                    ..
+                }
+            ),
+            "a self-parent is the length-one cycle: {err}"
+        );
+        // Loud, not lossy: no frame was written, so the file still round-trips.
+        assert_eq!(led.len(), 0, "the refused append changed nothing");
+        drop(led);
+        let led = EvidenceLedger::open(&path).expect("reopen clean");
+        assert_eq!(led.len(), 0);
+    }
+
+    /// Required regression 2 — a **mutual cycle** (issue 20 ↔ issue 21) is
+    /// refused at the *closing* append. The first edge (20 → 21) appends fine
+    /// (21 is not yet in the ledger); the second edge (21 → 20) closes the
+    /// cycle through the retained batch and is refused. Appends are ordered, so
+    /// a cycle can only ever close via the batch being appended — the invariant
+    /// [`EvidenceLedger::validate_lineage`] documents.
+    #[test]
+    fn mutual_cycle_append_is_refused_at_the_closing_append() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("evidence.log");
+        let mut led = EvidenceLedger::open(&path).expect("open");
+        // The opening edge: 20 → 21. Its parent (21) is not in the ledger yet,
+        // so the walk ends immediately — accepted.
+        led.append(&lineage_evidence(20, Some(21), EvidenceRole::Rollout, b"a"))
+            .expect("the opening edge appends (parent 21 not yet present)");
+        // The closing edge: 21 → 20. The walk steps 21 → (seed) then parent 20
+        // → retained Rollout 20 → parent 21, which is already visited — a cycle.
+        let err = led
+            .append(&lineage_evidence(21, Some(20), EvidenceRole::Rollout, b"b"))
+            .expect_err("the closing edge is refused");
+        assert!(
+            matches!(
+                err,
+                LedgerError::LineageCycle {
+                    issue: 21,
+                    revisits: 21,
+                    ..
+                }
+            ),
+            "the cycle closes back on the appended batch's own issue: {err}"
+        );
+        assert_eq!(led.len(), 1, "only the opening edge is durable");
+    }
+
+    /// Required regression 3 — a **duplicate-issue Rollout** append is refused
+    /// with a typed [`LedgerError::DuplicateRolloutIssue`] naming BOTH batch
+    /// ids, while a **Seal** sharing that same issue still appends fine (the
+    /// uniqueness constraint is per-role; the rollout+seal pairing survives).
+    #[test]
+    fn duplicate_issue_rollout_is_refused_but_a_seal_for_it_appends() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("evidence.log");
+        let mut led = EvidenceLedger::open(&path).expect("open");
+        let first = lineage_evidence(5, None, EvidenceRole::Rollout, b"first");
+        let first_id = led.append(&first).expect("first rollout appends");
+        // A content-distinct Rollout sharing issue 5: refused, both ids named.
+        let dup = lineage_evidence(5, None, EvidenceRole::Rollout, b"dup");
+        let dup_id = EvidenceBatchId::digest(&dup.canonical_bytes());
+        assert_ne!(first_id, dup_id, "the duplicate is content-distinct");
+        let err = led
+            .append(&dup)
+            .expect_err("duplicate rollout issue refused");
+        match err {
+            LedgerError::DuplicateRolloutIssue {
+                issue,
+                existing,
+                incoming,
+            } => {
+                assert_eq!(issue, 5);
+                assert_eq!(existing, first_id, "names the batch already retained");
+                assert_eq!(incoming, dup_id, "names the refused incoming batch");
+            }
+            other => panic!("expected DuplicateRolloutIssue, got {other}"),
+        }
+        assert_eq!(led.len(), 1, "the duplicate rollout was not written");
+        // A Seal of that same rollout (its own distinct issue, `parent` = the
+        // sealed rollout's issue — the shape `step()` emits): per-role
+        // uniqueness exempts Seals from the Rollout-issue check, so the
+        // rollout+seal pairing is never broken.
+        let seal = lineage_evidence(6, Some(5), EvidenceRole::Seal, b"seal");
+        led.append(&seal)
+            .expect("a seal of the existing rollout still appends");
+        assert_eq!(led.len(), 2, "the seal joined the rollout");
+        // And a SECOND Seal of the same rollout (another distinct issue, same
+        // parent) is fine too — two seals of one rollout share no issue, and
+        // even if they did the check is Rollout-only.
+        led.append(&lineage_evidence(7, Some(5), EvidenceRole::Seal, b"seal2"))
+            .expect("a second seal of the same rollout appends");
+        assert_eq!(led.len(), 3, "both seals of the rollout are retained");
+        // Re-appending the byte-identical first rollout stays idempotent (the
+        // duplicate check's `existing != id` guard) — not a false duplicate.
+        assert_eq!(led.append(&first).expect("idempotent re-append"), first_id);
+        assert_eq!(led.len(), 3, "no new frame for the idempotent re-append");
+    }
+
+    /// PR #157 F1 (judge-executed repro): once a Rollout is **collected**, a
+    /// content-distinct Rollout re-claiming its issue is refused at append. The
+    /// duplicate check consults the tombstone, not just retained `entries`, so
+    /// an impostor can never install itself as the ancestor the retention report
+    /// composes a descendant through — the flip from `RequiresAncestorReplay`
+    /// back to a false `FromRetainedEvidence` the pre-fix (entries-only) check
+    /// allowed. A byte-identical re-append of the collected batch stays admitted
+    /// (the same-id resurrection exemption, documented in `validate_lineage`).
+    #[test]
+    fn a_duplicate_of_a_collected_rollout_is_refused_at_append() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("evidence.log");
+        let mut led = EvidenceLedger::open(&path).expect("open");
+        // Rollout A{issue 1}, a child through it, then collect A (covered by
+        // finalization). A leaves `entries` and lives only as a tombstone; the
+        // child (issue 2, parent 1) now depends on A's collected raw evidence.
+        let a = lineage_evidence(1, None, EvidenceRole::Rollout, b"A");
+        let a_id = led.append(&a).expect("A appends");
+        led.append(&lineage_evidence(
+            2,
+            Some(1),
+            EvidenceRole::Rollout,
+            b"child",
+        ))
+        .expect("child through issue 1 appends");
+        led.finalize().expect("finalize (coverage for collect)");
+        led.collect(a_id, &BTreeSet::new()).expect("A is collected");
+        assert!(!led.contains(&a_id), "A left the retained set");
+        // A content-distinct Rollout re-claiming issue 1: refused, naming the
+        // COLLECTED holder — scanning `entries` alone would have missed it and
+        // admitted the impostor.
+        let impostor = lineage_evidence(1, None, EvidenceRole::Rollout, b"B-impostor");
+        let impostor_id = EvidenceBatchId::digest(&impostor.canonical_bytes());
+        assert_ne!(a_id, impostor_id, "the impostor is content-distinct");
+        let err = led
+            .append(&impostor)
+            .expect_err("duplicate of a collected rollout refused");
+        match err {
+            LedgerError::DuplicateRolloutIssue {
+                issue,
+                existing,
+                incoming,
+            } => {
+                assert_eq!(issue, 1);
+                assert_eq!(
+                    existing, a_id,
+                    "names the collected rollout's tombstone batch"
+                );
+                assert_eq!(incoming, impostor_id, "names the refused impostor");
+            }
+            other => panic!("expected DuplicateRolloutIssue, got {other}"),
+        }
+        // The same-id resurrection exemption is preserved: a byte-identical
+        // re-append of the collected batch is admitted (pre-existing behavior,
+        // out of scope for hm-wjv1 — documented, not changed), not a duplicate.
+        assert_eq!(
+            led.append(&a)
+                .expect("byte-identical re-append of a collected rollout is admitted"),
+            a_id,
+            "the same-id resurrection path is unchanged"
+        );
+    }
+
+    /// Required regression 4 — **replay** of a durable stream carrying each
+    /// rejected shape refuses loudly. The frames are crafted with the pre-fix
+    /// writer path ([`craft_stream`], delegating to the private `append_record`),
+    /// bypassing ingest validation so the malformed bytes actually reach the
+    /// file; reopening must then refuse them.
+    #[test]
+    fn replay_refuses_each_malformed_lineage_shape() {
+        // (a) A self-parent Rollout in the durable stream.
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("evidence.log");
+            craft_stream(
+                &path,
+                &[evidence_frame(&lineage_evidence(
+                    7,
+                    Some(7),
+                    EvidenceRole::Rollout,
+                    b"self",
+                ))],
+            );
+            let err = EvidenceLedger::open(&path).expect_err("self-parent replay refused");
+            assert!(
+                matches!(err, LedgerError::LineageCycle { revisits: 7, .. }),
+                "replay refuses the self-parent: {err}"
+            );
+        }
+        // (b) A mutual cycle (20 ↔ 21) in the durable stream.
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("evidence.log");
+            craft_stream(
+                &path,
+                &[
+                    evidence_frame(&lineage_evidence(20, Some(21), EvidenceRole::Rollout, b"a")),
+                    evidence_frame(&lineage_evidence(21, Some(20), EvidenceRole::Rollout, b"b")),
+                ],
+            );
+            let err = EvidenceLedger::open(&path).expect_err("cycle replay refused");
+            assert!(
+                matches!(err, LedgerError::LineageCycle { .. }),
+                "replay refuses the mutual cycle at its closing frame: {err}"
+            );
+        }
+        // (c) A duplicate-issue Rollout pair (both retained) in the stream.
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("evidence.log");
+            craft_stream(
+                &path,
+                &[
+                    evidence_frame(&lineage_evidence(5, None, EvidenceRole::Rollout, b"first")),
+                    evidence_frame(&lineage_evidence(5, None, EvidenceRole::Rollout, b"dup")),
+                ],
+            );
+            let err = EvidenceLedger::open(&path).expect_err("duplicate replay refused");
+            assert!(
+                matches!(err, LedgerError::DuplicateRolloutIssue { issue: 5, .. }),
+                "replay refuses the retained-duplicate Rollout: {err}"
+            );
+        }
+        // (d) A crafted **collect-then-duplicate** stream (PR #157 F1, inverted
+        // as a replay repro): Rollout A{issue 1}, its Tombstone (A collected),
+        // then a content-distinct Rollout B{issue 1}. The tombstone frame always
+        // precedes the later duplicate — true in both durable layouts (an
+        // in-order collect writes the tombstone after the evidence; `compact`
+        // writes all tombstones before all evidence) — so replay has A collected
+        // by the time B is validated and refuses B against the collected holder.
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("evidence.log");
+            let a = lineage_evidence(1, None, EvidenceRole::Rollout, b"A");
+            let a_id = EvidenceBatchId::digest(&a.canonical_bytes());
+            let b = lineage_evidence(1, None, EvidenceRole::Rollout, b"B-impostor");
+            let b_id = EvidenceBatchId::digest(&b.canonical_bytes());
+            assert_ne!(a_id, b_id, "the impostor is content-distinct");
+            craft_stream(
+                &path,
+                &[evidence_frame(&a), tombstone_frame(&a), evidence_frame(&b)],
+            );
+            let err =
+                EvidenceLedger::open(&path).expect_err("collect-then-duplicate replay refused");
+            match err {
+                LedgerError::DuplicateRolloutIssue {
+                    issue,
+                    existing,
+                    incoming,
+                } => {
+                    assert_eq!(issue, 1);
+                    assert_eq!(
+                        existing, a_id,
+                        "names the COLLECTED rollout's tombstone batch"
+                    );
+                    assert_eq!(incoming, b_id, "names the refused impostor");
+                }
+                other => panic!("expected DuplicateRolloutIssue, got {other}"),
+            }
+        }
+    }
+
+    /// A well-formed lineage — a genesis rollout, a branch child through it, and
+    /// a seal of the child — appends, survives reopen (replay re-validates and
+    /// admits it), and composes: the ingest validation is transparent to every
+    /// honest shape, so no committed hash moves on an honest run.
+    #[test]
+    fn honest_lineage_appends_and_survives_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("evidence.log");
+        let (gid, cid, sid);
+        {
+            let mut led = EvidenceLedger::open(&path).expect("open");
+            gid = led
+                .append(&lineage_evidence(1, None, EvidenceRole::Rollout, b"g"))
+                .expect("genesis rollout");
+            cid = led
+                .append(&lineage_evidence(2, Some(1), EvidenceRole::Rollout, b"c"))
+                .expect("branch child through issue 1");
+            sid = led
+                .append(&lineage_evidence(3, Some(2), EvidenceRole::Seal, b"s"))
+                .expect("seal of the child");
+            assert_eq!(led.len(), 3);
+        }
+        // Replay re-validates the whole stream and admits it unchanged.
+        let led = EvidenceLedger::open(&path).expect("reopen");
+        assert!(led.contains(&gid) && led.contains(&cid) && led.contains(&sid));
+        assert_eq!(led.len(), 3);
     }
 }

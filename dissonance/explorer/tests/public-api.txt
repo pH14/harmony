@@ -110,10 +110,18 @@ pub explorer::LedgerError::BadPayload::offset: u64
 pub explorer::LedgerError::Corrupt
 pub explorer::LedgerError::Corrupt::detail: alloc::string::String
 pub explorer::LedgerError::Corrupt::offset: u64
+pub explorer::LedgerError::DuplicateRolloutIssue
+pub explorer::LedgerError::DuplicateRolloutIssue::existing: revision_coordinator::ids::EvidenceBatchId
+pub explorer::LedgerError::DuplicateRolloutIssue::incoming: revision_coordinator::ids::EvidenceBatchId
+pub explorer::LedgerError::DuplicateRolloutIssue::issue: u64
 pub explorer::LedgerError::Exhausted
 pub explorer::LedgerError::Exhausted::budget: u64
 pub explorer::LedgerError::Exhausted::needed: u64
 pub explorer::LedgerError::Io(std::io::error::Error)
+pub explorer::LedgerError::LineageCycle
+pub explorer::LedgerError::LineageCycle::batch: revision_coordinator::ids::EvidenceBatchId
+pub explorer::LedgerError::LineageCycle::issue: u64
+pub explorer::LedgerError::LineageCycle::revisits: u64
 pub explorer::LedgerError::UnsupportedVersion
 pub explorer::LedgerError::UnsupportedVersion::found: u32
 pub enum explorer::MachineError
