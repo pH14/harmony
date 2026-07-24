@@ -321,8 +321,7 @@ fn run_until_folds_a_late_reached_past_the_requested_deadline() {
     // free-ran to the next natural boundary, the box @3e7 overshoot the exact-count
     // seam could not clamp. Lateness now rides on the script entry's `reached`
     // itself; `run_until` folds via max, so `reached > deadline` passes through
-    // unchanged. (Formerly the `push_late_landing` queue; migrated to the
-    // script-entry form.)
+    // unchanged.
     let mut m = configured();
     m.extend_exits([Exit::Common(CommonExit::Deadline {
         reached: Moment(5000),
@@ -345,7 +344,6 @@ fn each_run_until_leg_folds_its_own_scripted_reached_independently() {
     // there is no shared queue to misalign (the F3 hazard the fold removes). A late
     // entry lands late; an at-or-before entry clamps up to its own deadline.
     // Determinism: explicit, ordered test inputs — no clock, no randomness.
-    // (Formerly `late_landings_are_a_fifo_queue_that_drains_to_exact`.)
     let mut m = configured();
     m.extend_exits([
         Exit::Common(CommonExit::Deadline {
@@ -384,7 +382,6 @@ fn run_passes_deadline_verbatim_while_run_until_folds() {
     // preserved (this is why the arbitrary-reached proptest `counts_match_histogram`
     // exercises `run`, not `run_until`). `run_until` instead folds the scripted
     // `reached` with the requested deadline via max.
-    // (Formerly `late_landing_only_affects_run_until_not_run`.)
     let mut m = configured();
     m.extend_exits([
         Exit::Common(CommonExit::Deadline { reached: Moment(7) }),
