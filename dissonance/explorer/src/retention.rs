@@ -1340,37 +1340,16 @@ mod tests {
     use crate::{Reproducer, StopReason};
     use sdk_events::{NS_ASSERT, ObservationId, decode_binary};
 
-    /// A v1 SDK catalog declaring the given `(kind, local, name)` assertion
-    /// points. The v1 wire carries an explicit verb, so a firing decodes with
-    /// its `AssertType` populated — the form the absence fold
-    /// ([`satisfies_must_hit`](crate::occurrence)) and the occurrence oracle
-    /// key on (mirrors `occurrence.rs`'s catalog helper).
-    fn v1_assert_catalog(points: &[(u8, u32, &str)]) -> Vec<u8> {
-        let magic = u32::from_le_bytes(*b"SDKC");
-        let mut b = Vec::new();
-        b.extend_from_slice(&magic.to_le_bytes());
-        b.push(1); // wire v1
-        b.extend_from_slice(&(points.len() as u32).to_le_bytes());
-        for (kind, local, name) in points {
-            b.push(*kind);
-            b.extend_from_slice(&local.to_le_bytes());
-            b.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            b.extend_from_slice(name.as_bytes());
-        }
-        b
-    }
-
-    /// An assertion firing record `[disposition u8][detail_len u16]` (empty
-    /// detail) at NS_ASSERT `local`, returned as the `(event id, body)` pair
-    /// `decode_binary` expects. `DISP_HIT = 0`, `DISP_VIOLATION = 1` (the
-    /// `wire` constants, `pub(crate)` to sdk-events so hard-coded here as
-    /// `occurrence.rs` does).
-    fn assert_firing(local: u32, disposition: u8) -> (u32, Vec<u8>) {
-        let id = ((NS_ASSERT as u32) << 24) | local;
-        let mut body = vec![disposition];
-        body.extend_from_slice(&0u16.to_le_bytes());
-        (id, body)
-    }
+    // The v1 catalog / assertion-firing fixtures are the shared `testkit`
+    // encoders ([`encode_v1_catalog`]/[`assert_firing`], consolidated per PR
+    // #155 F5): the v1 wire carries the assert verb, so a firing decodes with
+    // its `AssertType` populated — the form the absence fold
+    // ([`satisfies_must_hit`](crate::occurrence)) and the occurrence oracle
+    // key on (the v2 host encoder omits the verb).
+    use crate::testkit::{
+        DISP_HIT, DISP_VIOLATION, KIND_ALWAYS, KIND_SOMETIMES, assert_firing,
+        encode_v1_catalog as v1_assert_catalog,
+    };
 
     /// Build a `CompletedRunEvidence` for a batch whose own decoded evidence is
     /// `[catalog] + firings` (the child re-declares its schema; the catalog is
@@ -1442,8 +1421,6 @@ mod tests {
     /// `IMPLEMENTATION.md`.
     #[test]
     fn advanced_span_sometimes_hit_closes_the_false_absence() {
-        const KIND_SOMETIMES: u8 = 1; // wire::KIND_SOMETIMES
-        const DISP_HIT: u8 = 0; // wire::DISP_HIT
         let prop = ObservationId::Point {
             namespace: NS_ASSERT,
             local: 5,
@@ -1503,8 +1480,6 @@ mod tests {
     /// events.
     #[test]
     fn non_advanced_seal_leaves_verdicts_identical() {
-        const KIND_SOMETIMES: u8 = 1;
-        const DISP_HIT: u8 = 0;
         let (_dir, mut led) = crate::testkit::ledger();
         let cells = DefaultObservationCells::new();
         let mut views = RetentionViews::new(RetentionProfile::Full);
@@ -1564,8 +1539,6 @@ mod tests {
     /// this fold-level gate.
     #[test]
     fn rollout_body_counterexample_is_counted_once() {
-        const KIND_ALWAYS: u8 = 0; // wire::KIND_ALWAYS
-        const DISP_VIOLATION: u8 = 1; // wire::DISP_VIOLATION
         let (_dir, mut led) = crate::testkit::ledger();
         let cells = DefaultObservationCells::new();
         let mut views = RetentionViews::new(RetentionProfile::Full);

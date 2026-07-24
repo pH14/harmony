@@ -444,36 +444,15 @@ mod tests {
         assert_eq!(ces[0].at, Moment(50));
     }
 
-    /// The v1 catalog wire: magic + version + count + per-point (kind, local,
-    /// name). `KIND_UNREACHABLE` = 3 declares the assert verb the v2 path omits.
-    fn v1_catalog(points: &[(u8, u32, &str)]) -> Vec<u8> {
-        let magic = u32::from_le_bytes(*b"SDKC");
-        let mut b = Vec::new();
-        b.extend_from_slice(&magic.to_le_bytes());
-        b.push(1);
-        b.extend_from_slice(&(points.len() as u32).to_le_bytes());
-        for (kind, local, name) in points {
-            b.push(*kind);
-            b.extend_from_slice(&local.to_le_bytes());
-            b.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            b.extend_from_slice(name.as_bytes());
-        }
-        b
-    }
-
     /// A binary `unreachable` firing is a counterexample; the same violation on
     /// two runs shares a fingerprint (dedup across runs).
     #[test]
     fn binary_unreachable_firing_is_a_counterexample() {
-        const KIND_UNREACHABLE: u8 = 3;
-        let decl = v1_catalog(&[(KIND_UNREACHABLE, 3, "never")]);
+        use crate::testkit::{DISP_VIOLATION, KIND_UNREACHABLE, assert_firing, encode_v1_catalog};
+        // The v1 catalog declares the assert verb the v2 path omits.
+        let decl = encode_v1_catalog(&[(KIND_UNREACHABLE, 3, "never")]);
         // An unreachable point fires on the VIOLATION disposition (reaching it).
-        let firing = {
-            let mut b = vec![1u8]; // DISP_VIOLATION
-            b.extend_from_slice(&0u16.to_le_bytes()); // empty detail
-            b
-        };
-        let id = ((sdk_events::NS_ASSERT as u32) << 24) | 3;
+        let (id, firing) = assert_firing(3, DISP_VIOLATION);
         let n = decode_binary(&[
             (sdk_events::Moment(0), 0, decl),
             (sdk_events::Moment(5), id, firing),
@@ -492,19 +471,9 @@ mod tests {
     /// satisfying it on any run clears it, and the satisfied count is monotone.
     #[test]
     fn never_satisfied_sometimes_is_a_retention_stable_absence() {
+        use crate::testkit::{DISP_HIT, KIND_SOMETIMES, assert_firing, encode_v1_catalog};
         // Declare a `sometimes` property (must-hit) via a v1 catalog; never fire it.
-        let catalog = {
-            let magic = u32::from_le_bytes(*b"SDKC");
-            let mut b = Vec::new();
-            b.extend_from_slice(&magic.to_le_bytes());
-            b.push(1); // v1
-            b.extend_from_slice(&1u32.to_le_bytes()); // one point
-            b.push(1); // KIND_SOMETIMES
-            b.extend_from_slice(&5u32.to_le_bytes()); // local 5
-            b.extend_from_slice(&(1u16).to_le_bytes());
-            b.extend_from_slice(b"p");
-            b
-        };
+        let catalog = encode_v1_catalog(&[(KIND_SOMETIMES, 5, "p")]);
         let never = decode_binary(&[(sdk_events::Moment(0), 0, catalog.clone())]).expect("decodes");
         let mut led = AbsenceLedger::new();
         led.observe(&evidence(quiescent(), never, 0));
@@ -519,12 +488,7 @@ mod tests {
 
         // Now a run satisfies it (a HIT). The absence clears and stays cleared —
         // folding the never-firing run again cannot resurrect it (monotone count).
-        let firing = {
-            let mut b = vec![0u8]; // DISP_HIT
-            b.extend_from_slice(&0u16.to_le_bytes());
-            b
-        };
-        let id = ((sdk_events::NS_ASSERT as u32) << 24) | 5;
+        let (id, firing) = assert_firing(5, DISP_HIT);
         let hit = decode_binary(&[
             (sdk_events::Moment(0), 0, catalog.clone()),
             (sdk_events::Moment(3), id, firing),

@@ -356,13 +356,14 @@ pub struct StepReport {
     /// The Entries admitted to occupancy at their actual `sealed_at` (barrier 2).
     pub admitted: Vec<ExemplarRef>,
     /// Occurrence counterexamples newly found this step (deduped by property
-    /// across the campaign). **Rollout-fold only** today: a counterexample first
-    /// seen in a seal's advanced span is folded into the authoritative verdict
-    /// views (`finalized.counterexamples`, the dedup set) but is not echoed
-    /// here — surfacing seal-fold counterexamples in this per-step report is
-    /// parked as `hm-5mx0` (needs a v1-verb test machine to be testable). So
-    /// `finalized.counterexamples` may exceed the sum of what this field
-    /// reported across steps; the views, not this field, are authoritative.
+    /// across the campaign) — from **both** the rollout fold and every seal
+    /// fold. A counterexample first seen in a seal's advanced span
+    /// `[rollout_terminal, seal_cut)` surfaces here with its details (property,
+    /// kind, Moment); the fold's campaign-wide dedup means a fingerprint already
+    /// counted is not re-reported, so a rollout counterexample re-fired in a
+    /// seal span appears exactly once. The running total is
+    /// [`views().finalized.counterexamples`](RetentionViews::finalized), which
+    /// this field's per-step entries sum to.
     pub counterexamples: Vec<OccurrenceCounterexample>,
     /// Whether the step explored fresh (genesis) rather than exploiting.
     pub explored: bool,
@@ -928,6 +929,14 @@ impl<M: Machine> DifferentialCampaign<M> {
                     batch2,
                     &seal_evidence,
                 );
+                // Surface this seal fold's NEW counterexamples in the step report
+                // (F2): an occurrence counterexample first seen in the advanced
+                // span `[rollout_terminal, seal_cut)` carries its details here,
+                // with the fold's own campaign-wide dedup — a fingerprint already
+                // counted (by the rollout fold or an earlier seal this step) is
+                // absent from `new_counterexamples`, so a rollout counterexample
+                // re-fired in a seal span is not duplicated.
+                report.counterexamples.extend(fold2.new_counterexamples);
                 pending.push(PendingSeal {
                     entry: p2.proposal.get(),
                     seal,
@@ -1944,8 +1953,8 @@ mod tests {
     use crate::evidence::DefaultObservationCells;
     use crate::spine::EvidenceCut;
     use crate::testkit::{
-        Emit, MarkerCodec, Program, ScriptedMachine, ToyCodec, campaign, campaign_with, config,
-        coordinator, ledger, simple_program,
+        Emit, MarkerCodec, Program, ScriptedMachine, ToyCodec, campaign, campaign_with,
+        campaign_with_machine, config, coordinator, ledger, simple_program,
     };
     use revision_coordinator::EvidenceBatchId;
     use sdk_events::{NS_STATE, ObservationId, UpdateOp};
@@ -2330,6 +2339,227 @@ mod tests {
         // fix touches evidence composition, not the RNG/schedule stream).
         assert_rematerializes_identically(&mut camp);
         assert_eq!(frontier, observable(7).1);
+    }
+
+    // ---- task 155 (hm-5mx0): the TRUE end-to-end advanced-span verdict gates ----
+    //
+    // The v1-verb `VerbMachine` (testkit) closes PR #155 F3c: it declares
+    // assertion properties through a v1 catalog that carries each verb, so a
+    // firing in the advanced span `[rollout_terminal, seal_cut)` reaches the
+    // occurrence/absence verdict folds when driven through the PRODUCTION
+    // `capture_seal_suffix` -> `decode_child_suffix` -> `step` path.
+    // `ScriptedMachine`'s v2 catalog cannot (no verb -> `AssertType::None`), so
+    // PR #155's red-before had to work at the fold surface (retention.rs's
+    // `advanced_span_sometimes_hit_closes_the_false_absence`); these gates are
+    // its true campaign-driven form.
+    //
+    // The shape mirrors `advanced_seal_captures_its_run_forward_suffix_into_the_graph`
+    // (a proven state-event advanced seal): a rollout-body firing nominates the
+    // candidate at or below the terminal 20; the staged marker at 30 clamps the
+    // seal forward past the terminal; a firing at 25 lands in the seal suffix.
+    use crate::testkit::{
+        DISP_HIT, DISP_VIOLATION, KIND_ALWAYS, KIND_SOMETIMES, KIND_STATE, KIND_UNREACHABLE,
+        VerbEmit, VerbFiring, VerbMachine, VerbRun,
+    };
+
+    /// The staged marker every task-155 gate clamps the seal forward to (past the
+    /// terminal 20, so a firing at 25 falls in the advanced span).
+    const VERB_MARKER: u64 = 30;
+
+    /// A scripted assertion firing at moment `at`: NS_ASSERT `local`, disposition
+    /// `disp`.
+    fn assert_at(at: u64, local: u32, disp: u8) -> VerbEmit {
+        VerbEmit {
+            at,
+            firing: VerbFiring::Assert { local, disp },
+        }
+    }
+
+    /// A scripted state firing at moment `at`: register `reg` set to `value`.
+    fn state_at(at: u64, reg: u32, value: u64) -> VerbEmit {
+        VerbEmit {
+            at,
+            firing: VerbFiring::State { reg, value },
+        }
+    }
+
+    /// A single-step campaign over a [`VerbMachine`] declaring `points` (a v1
+    /// catalog) with the given `emits`/`terminal`, staging one marker at
+    /// [`VERB_MARKER`] so the seal clamps forward past the terminal — the
+    /// advanced-span shape. Seed-independent (the fixtures fire at fixed moments;
+    /// the advanced span, not seed sensitivity, is under test).
+    fn verb_campaign(
+        points: &[(u8, u32, &str)],
+        emits: Vec<VerbEmit>,
+        terminal: u64,
+    ) -> (tempfile::TempDir, DifferentialCampaign<VerbMachine>) {
+        let points: Vec<(u8, u32, String)> = points
+            .iter()
+            .map(|(k, l, n)| (*k, *l, n.to_string()))
+            .collect();
+        let program: Rc<dyn Fn(u64) -> VerbRun> = Rc::new(move |_seed| VerbRun {
+            emits: emits.clone(),
+            terminal,
+        });
+        let machine = VerbMachine::new(points, program).with_markers(vec![VERB_MARKER]);
+        let (dir, led) = ledger();
+        let camp = campaign_with_machine(
+            machine,
+            Box::new(MarkerCodec {
+                markers: vec![VERB_MARKER],
+            }),
+            config(8, u64::MAX),
+            7,
+            led,
+        );
+        (dir, camp)
+    }
+
+    /// **Deliverable 2 — the true e2e advanced-span verdict gate (absence
+    /// direction).** A `sometimes` must-hit (local 5) is declared but NEVER fired
+    /// in the rollout body (a false absence after the rollout fold); a benign
+    /// state emit at 10 nominates the candidate; the must-hit is HIT only at 25,
+    /// inside the advanced span the marker at 30 clamps the seal forward through.
+    /// Driven through the production `step()`, the seal fold satisfies the
+    /// must-hit — the absence clears, exactly once.
+    ///
+    /// RED before PR #155's seal-arm fold: with the Seal arm's `fold_verdicts`
+    /// gated off in `RetentionViews::fold_batch`, this step leaves property 5 a
+    /// live absence (`satisfied == 0`) and the two asserts below fail — the
+    /// red-before run is quoted in `IMPLEMENTATION.md`.
+    #[test]
+    fn advanced_span_sometimes_hit_closes_the_false_absence_e2e() {
+        let prop = ObservationId::Point {
+            namespace: sdk_events::NS_ASSERT,
+            local: 5,
+        };
+        let (_dir, mut camp) = verb_campaign(
+            &[(KIND_STATE, 1, "r1"), (KIND_SOMETIMES, 5, "advanced-only")],
+            vec![state_at(10, 1, 5), assert_at(25, 5, DISP_HIT)],
+            20,
+        );
+        let report = camp.step().expect("the step completes past the marker");
+        assert_eq!(report.admitted.len(), 1, "the advanced candidate sealed");
+        let (_, entry) = camp.frontier().iter().next().expect("one entry");
+        assert_eq!(
+            entry.exemplar.cut.at.0, VERB_MARKER,
+            "sealed at the drained marker past the terminal"
+        );
+
+        // GREEN after the fix: the advanced-span hit satisfied the must-hit
+        // through the production step path — no false absence.
+        assert!(
+            camp.absences().absences().is_empty(),
+            "the advanced-span sometimes-hit closes the false absence end to end"
+        );
+        // Exactly once (`== 1`, not `>= 1`): satisfied-counts feed
+        // `canonical_bytes`, so a double seal-arm fold would inflate this (F3a).
+        assert_eq!(
+            camp.absences().satisfied(&prop),
+            1,
+            "the advanced-span hit is folded exactly once"
+        );
+    }
+
+    /// **Deliverable 2 — non-vacuity companion.** The identical machine, but the
+    /// must-hit is fired NOWHERE (not even in the advanced span). The step still
+    /// seals — the state emit nominates the candidate and the marker clamps the
+    /// empty-suffix seal to 30 — yet the must-hit stays a true absence. This pins
+    /// that the closure above is genuinely the advanced-span hit's doing, not a
+    /// step that clears every declared must-hit.
+    #[test]
+    fn sometimes_unfired_in_the_advanced_span_stays_absent_e2e() {
+        let prop = ObservationId::Point {
+            namespace: sdk_events::NS_ASSERT,
+            local: 5,
+        };
+        let (_dir, mut camp) = verb_campaign(
+            &[(KIND_STATE, 1, "r1"), (KIND_SOMETIMES, 5, "advanced-only")],
+            vec![state_at(10, 1, 5)],
+            20,
+        );
+        let report = camp.step().expect("the step completes past the marker");
+        assert_eq!(
+            report.admitted.len(),
+            1,
+            "the candidate sealed with an empty advanced span"
+        );
+        let absences = camp.absences().absences();
+        assert_eq!(absences.len(), 1, "the never-fired must-hit stands absent");
+        assert_eq!(absences[0].property, prop);
+        assert_eq!(camp.absences().satisfied(&prop), 0);
+    }
+
+    /// **Deliverable 3 — a seal-only counterexample surfaces in `StepReport`
+    /// exactly once (F2).** An `unreachable` (local 8) the rollout NEVER reaches;
+    /// a state emit at 10 nominates the candidate; the violation fires ONLY at 25
+    /// in the advanced span. Before F2 the seal fold's `new_counterexamples` were
+    /// dropped from `StepReport` (campaign.rs consumed only `fold2.admitted`), so
+    /// this counterexample's details could never surface in any step; now the
+    /// seal fold merges them and it appears exactly once.
+    #[test]
+    fn seal_only_counterexample_surfaces_in_step_report_once() {
+        let prop = ObservationId::Point {
+            namespace: sdk_events::NS_ASSERT,
+            local: 8,
+        };
+        let (_dir, mut camp) = verb_campaign(
+            &[(KIND_STATE, 1, "r1"), (KIND_UNREACHABLE, 8, "forbidden")],
+            vec![state_at(10, 1, 5), assert_at(25, 8, DISP_VIOLATION)],
+            20,
+        );
+        let report = camp.step().expect("the step completes past the marker");
+        assert_eq!(report.admitted.len(), 1, "the advanced candidate sealed");
+        assert_eq!(
+            report.counterexamples.len(),
+            1,
+            "the seal-only counterexample surfaces in the step report exactly once"
+        );
+        let ce = &report.counterexamples[0];
+        assert_eq!(ce.property, prop);
+        assert_eq!(
+            ce.kind,
+            crate::occurrence::CounterexampleKind::UnreachableReached
+        );
+        assert_eq!(ce.at.0, 25, "localized to the advanced-span firing moment");
+        // Consistent with the authoritative running total.
+        assert_eq!(camp.views().finalized.counterexamples, 1);
+    }
+
+    /// **Deliverable 3 — a rollout counterexample re-fired in the seal span is
+    /// not duplicated (F2 dedup).** An `always` (local 7) is violated in the
+    /// ROLLOUT body at 12 (which also nominates the candidate) and RE-fired in
+    /// the advanced span at 25. The rollout fold reports it; the seal fold sees
+    /// the same campaign-wide fingerprint and contributes nothing — so the step
+    /// report carries exactly one, never two.
+    #[test]
+    fn rollout_counterexample_refired_in_the_seal_span_is_not_duplicated() {
+        let prop = ObservationId::Point {
+            namespace: sdk_events::NS_ASSERT,
+            local: 7,
+        };
+        let (_dir, mut camp) = verb_campaign(
+            &[(KIND_ALWAYS, 7, "invariant")],
+            vec![
+                assert_at(12, 7, DISP_VIOLATION),
+                assert_at(25, 7, DISP_VIOLATION),
+            ],
+            20,
+        );
+        let report = camp.step().expect("the step completes past the marker");
+        assert_eq!(report.admitted.len(), 1, "the advanced candidate sealed");
+        assert_eq!(
+            report.counterexamples.len(),
+            1,
+            "the re-fired counterexample is reported once, not twice"
+        );
+        assert_eq!(report.counterexamples[0].property, prop);
+        assert_eq!(
+            report.counterexamples[0].kind,
+            crate::occurrence::CounterexampleKind::AlwaysViolated
+        );
+        // The authoritative total agrees: one counterexample, folded once.
+        assert_eq!(camp.views().finalized.counterexamples, 1);
     }
 
     /// SealAnchor regression (task 136 / hm-esfd, bounded-attempts posture): a
