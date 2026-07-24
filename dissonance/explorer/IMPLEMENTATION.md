@@ -2164,3 +2164,65 @@ doc + the new e2e/StepReport gates), `src/occurrence.rs` and `src/retention.rs`
 (F5: the hand-written v1 fixtures replaced with the `testkit` calls). No ledger,
 wire-format, dependency, or public-API change. `ScriptedMachine`,
 `hm-w1o6`/`hm-4gaw`/`hm-6x0w`/`hm-avvc`/`hm-g2bq` untouched.
+
+## PR #158 discovery — F1 (P1) provenance pins + F2/F3/F4 ride-alongs
+
+The discovery tribunal VERIFIED all four scrutiny axes (production path + live
+red-before; hash-neutral, dedup-preserving StepReport merge; Machine contract
+intact; F5 encoder consolidation byte-identical) and returned one P1 with three
+test/doc ride-alongs.
+
+**PR158-F1 (P1) — the e2e gates did not pin firing provenance.** The four gates
+checked only the final absence / view / report, never *which* batch supplied the
+moment-25 firing. The judge reproduced the hole: dropping the `at <= self.terminal`
+filter from `VerbMachine`'s open-loop arm (testkit.rs) leaves the whole suite
+green **even with the production seal-arm fold disabled** — the flagship gates
+rested on an unasserted invariant of brand-new fixture code whose `run` body
+byte-duplicates `ScriptedMachine`'s (the standing consolidation target that would
+trip it). Fix (test-only): a shared `assert_advanced_span_provenance` helper, run
+in all three advanced-span gates, reads both committed ledger batches and asserts
+the moment-25 firing is **absent** from the Rollout evidence and **present** in
+the Seal batch's advanced-span suffix, and that the seal's shared prefix is
+exactly `catalog + rollout body` (`parent_cut.sdk_events == 2`) — so it cannot
+have leaked into the prefix. The non-vacuity companion additionally asserts its
+seal suffix is genuinely empty.
+
+Acceptance — the drift experiment (drop the terminal filter from `VerbMachine`'s
+open-loop arm only) now turns the advanced-span gates RED:
+
+```
+thread 'campaign::tests::advanced_span_sometimes_hit_closes_the_false_absence_e2e'
+panicked at dissonance/explorer/src/campaign.rs:2453:9:
+the advanced-span firing must be ABSENT from the rollout evidence
+(it is only surfaced by the marker-clamped run-forward)
+```
+
+All three advanced-span gates fail at that provenance assert (the seal-only
+StepReport gate and the re-fire dedup gate identically); the non-vacuity gate
+(no moment-25 firing) correctly stays green. Reverted before commit. So the gates
+now fail if the fixture invariant ever drifts, closing the silent-vacation hole —
+the capture/decode/step *integration* coverage (F3c's subject) is pinned, not
+merely implied.
+
+**PR158-F2 (P2, doc-only)** — the `StepReport.counterexamples` doc claimed the
+per-step entries sum to `finalized.counterexamples`; false after ledger reopen,
+where `RetentionViews::rebuild` repopulates the total from durable evidence with
+no `StepReport` carrying it. The claim is now scoped to a single continuous
+campaign instance, with the recovery caveat spelled out.
+
+**PR158-F3 (P2, test-only)** — collapsed single-use indirections: `campaign_with`
+is now generic over `M: Machine` (the separate `campaign_with_machine` wrapper is
+gone), and `VerbMachine` stores a fixed `VerbRun` directly (the seed-ignoring
+`Rc<dyn Fn(u64) -> VerbRun>` indirection is gone).
+
+**PR158-F4 (P2, test-only)** — removed `VerbMachine`'s write-only `deadlines_seen`
+field and its instrumentation, and the caller-less `with_non_quiescent` builder +
+its `non_quiescent` field and snapshot branch. `VerbMachine::snapshot` keeps only
+the load-bearing marker-clamp refusal (`staged_abs` ahead of the clock);
+`ScriptedMachine` retains the covered `deadlines_seen` / non-quiescent retry
+behavior for its own suites.
+
+Gates re-run after the batch: explorer nextest 175 pass / 1 skip, campaign-runner
+179 pass / 1 skip, clippy `-D warnings` (exit 0), fmt clean, cargo deny ok,
+public-api snapshot unchanged, `cargo mutants --in-diff` 1 mutant / 1 caught / 0
+missed. No production behavior change beyond F2's already-landed report-field fill.

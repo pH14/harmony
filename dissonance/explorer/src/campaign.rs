@@ -361,9 +361,14 @@ pub struct StepReport {
     /// `[rollout_terminal, seal_cut)` surfaces here with its details (property,
     /// kind, Moment); the fold's campaign-wide dedup means a fingerprint already
     /// counted is not re-reported, so a rollout counterexample re-fired in a
-    /// seal span appears exactly once. The running total is
-    /// [`views().finalized.counterexamples`](RetentionViews::finalized), which
-    /// this field's per-step entries sum to.
+    /// seal span appears exactly once. Over a **single continuous campaign
+    /// instance** these per-step entries sum to
+    /// [`views().finalized.counterexamples`](RetentionViews::finalized). That
+    /// equality is instance-scoped, not durable: reopening a ledger rebuilds the
+    /// total (and the dedup set) from committed evidence via
+    /// [`RetentionViews::rebuild`] **without** emitting any `StepReport`, so a
+    /// resumed campaign's total starts ahead of what its own steps report — the
+    /// views, not a sum of reports, are authoritative.
     pub counterexamples: Vec<OccurrenceCounterexample>,
     /// Whether the step explored fresh (genesis) rather than exploiting.
     pub explored: bool,
@@ -1953,8 +1958,8 @@ mod tests {
     use crate::evidence::DefaultObservationCells;
     use crate::spine::EvidenceCut;
     use crate::testkit::{
-        Emit, MarkerCodec, Program, ScriptedMachine, ToyCodec, campaign, campaign_with,
-        campaign_with_machine, config, coordinator, ledger, simple_program,
+        Emit, MarkerCodec, Program, ScriptedMachine, ToyCodec, campaign, campaign_with, config,
+        coordinator, ledger, simple_program,
     };
     use revision_coordinator::EvidenceBatchId;
     use sdk_events::{NS_STATE, ObservationId, UpdateOp};
@@ -2397,13 +2402,10 @@ mod tests {
             .iter()
             .map(|(k, l, n)| (*k, *l, n.to_string()))
             .collect();
-        let program: Rc<dyn Fn(u64) -> VerbRun> = Rc::new(move |_seed| VerbRun {
-            emits: emits.clone(),
-            terminal,
-        });
-        let machine = VerbMachine::new(points, program).with_markers(vec![VERB_MARKER]);
+        let machine =
+            VerbMachine::new(points, VerbRun { emits, terminal }).with_markers(vec![VERB_MARKER]);
         let (dir, led) = ledger();
-        let camp = campaign_with_machine(
+        let camp = campaign_with(
             machine,
             Box::new(MarkerCodec {
                 markers: vec![VERB_MARKER],
@@ -2413,6 +2415,63 @@ mod tests {
             led,
         );
         (dir, camp)
+    }
+
+    /// **PR158-F1 — pin the advanced-span firing PROVENANCE.** The gates below
+    /// check the final absence/report; this pins the invariant they rest on —
+    /// that the moment-`advanced_at` firing reaches evidence ONLY through the
+    /// marker-clamped run-forward. Read both committed batches and assert the
+    /// firing is ABSENT from the rollout body and PRESENT in the seal's
+    /// advanced-span suffix, and that the seal's shared prefix is exactly
+    /// `catalog + rollout body` (`prefix_count`) — so it cannot have leaked into
+    /// the prefix. Without this, dropping `VerbMachine::run`'s `at <= terminal`
+    /// filter would surface the firing during the rollout and the gates would
+    /// pass vacuously (the fixture's `run` body is a standing consolidation
+    /// target). Acceptance: that drift turns these asserts red.
+    fn assert_advanced_span_provenance(
+        camp: &DifferentialCampaign<VerbMachine>,
+        advanced_at: u64,
+        prefix_count: u64,
+    ) {
+        let mut rollout = None;
+        let mut seal = None;
+        for id in camp.ledger().batch_ids() {
+            let ev = camp.ledger().get(id).expect("batch present");
+            match ev.role {
+                EvidenceRole::Rollout => {
+                    assert!(rollout.is_none(), "exactly one rollout batch this step");
+                    rollout = Some(ev);
+                }
+                EvidenceRole::Seal => {
+                    assert!(seal.is_none(), "exactly one seal batch this step");
+                    seal = Some(ev);
+                }
+            }
+        }
+        let rollout = rollout.expect("a rollout batch");
+        let seal = seal.expect("a seal batch");
+        assert!(
+            !rollout
+                .normalized
+                .events
+                .iter()
+                .any(|e| e.moment.0 == advanced_at),
+            "the advanced-span firing must be ABSENT from the rollout evidence \
+             (it is only surfaced by the marker-clamped run-forward)"
+        );
+        assert!(
+            seal.normalized
+                .events
+                .iter()
+                .any(|e| e.moment.0 == advanced_at),
+            "the advanced-span firing must be PRESENT in the seal suffix"
+        );
+        assert_eq!(
+            seal.parent_cut.expect("a seal has a parent cut").sdk_events,
+            prefix_count,
+            "the seal's shared prefix is catalog + rollout body only \
+             (the advanced firing cannot have leaked into it)"
+        );
     }
 
     /// **Deliverable 2 — the true e2e advanced-span verdict gate (absence
@@ -2445,6 +2504,10 @@ mod tests {
             entry.exemplar.cut.at.0, VERB_MARKER,
             "sealed at the drained marker past the terminal"
         );
+        // The hit reached evidence ONLY via the advanced-span run-forward — the
+        // invariant the closure below rests on (PR158-F1). Prefix = catalog +
+        // the one rollout-body emit (state@10) = 2.
+        assert_advanced_span_provenance(&camp, 25, 2);
 
         // GREEN after the fix: the advanced-span hit satisfied the must-hit
         // through the production step path — no false absence.
@@ -2484,6 +2547,19 @@ mod tests {
             1,
             "the candidate sealed with an empty advanced span"
         );
+        // The seal genuinely advanced past the terminal with NOTHING to capture
+        // (an empty suffix) — the standing absence is not a fixture artifact of a
+        // seal that never ran forward.
+        let seal = camp
+            .ledger()
+            .batch_ids()
+            .map(|id| camp.ledger().get(id).expect("batch present"))
+            .find(|ev| ev.role == EvidenceRole::Seal)
+            .expect("a seal batch");
+        assert!(
+            seal.normalized.events.is_empty(),
+            "the seal's advanced span is empty (nothing fired past the terminal)"
+        );
         let absences = camp.absences().absences();
         assert_eq!(absences.len(), 1, "the never-fired must-hit stands absent");
         assert_eq!(absences[0].property, prop);
@@ -2510,6 +2586,9 @@ mod tests {
         );
         let report = camp.step().expect("the step completes past the marker");
         assert_eq!(report.admitted.len(), 1, "the advanced candidate sealed");
+        // The violation reached evidence ONLY via the advanced-span run-forward
+        // (PR158-F1). Prefix = catalog + the one rollout-body emit (state@10) = 2.
+        assert_advanced_span_provenance(&camp, 25, 2);
         assert_eq!(
             report.counterexamples.len(),
             1,
@@ -2548,6 +2627,10 @@ mod tests {
         );
         let report = camp.step().expect("the step completes past the marker");
         assert_eq!(report.admitted.len(), 1, "the advanced candidate sealed");
+        // The moment-25 RE-fire reached evidence only via the advanced span; the
+        // rollout body carries the moment-12 violation, not this one (PR158-F1).
+        // Prefix = catalog + the one rollout-body emit (always@7@12) = 2.
+        assert_advanced_span_provenance(&camp, 25, 2);
         assert_eq!(
             report.counterexamples.len(),
             1,

@@ -540,21 +540,10 @@ pub(crate) fn campaign_over(
 }
 
 /// Like [`campaign_over`], but over an explicit machine and codec — the
-/// task-136 SealAnchor regressions pair a non-quiescent / marker-staging
-/// [`ScriptedMachine`] with its matching codec.
-pub(crate) fn campaign_with(
-    machine: ScriptedMachine,
-    codec: Box<dyn EnvCodec>,
-    cfg: CampaignConfig,
-    seed: u64,
-    led: EvidenceLedger,
-) -> DifferentialCampaign<ScriptedMachine> {
-    campaign_with_machine(machine, codec, cfg, seed, led)
-}
-
-/// Like [`campaign_with`], but over any [`Machine`] — the v1-verb
-/// [`VerbMachine`] (task 155) drives the same builder as [`ScriptedMachine`].
-pub(crate) fn campaign_with_machine<M: Machine>(
+/// task-136 SealAnchor regressions pair a marker-staging [`ScriptedMachine`]
+/// with its matching codec, and the task-155 gates pair a [`VerbMachine`] with a
+/// [`MarkerCodec`]. Generic over any [`Machine`].
+pub(crate) fn campaign_with<M: Machine>(
     machine: M,
     codec: Box<dyn EnvCodec>,
     cfg: CampaignConfig,
@@ -675,7 +664,9 @@ pub(crate) struct VerbRun {
 /// identical keys, and the seal advances to the drained marker, capturing any
 /// firing in the advanced span.
 pub(crate) struct VerbMachine {
-    program: Rc<dyn Fn(u64) -> VerbRun>,
+    /// The fixed run script every `branch` replays (deterministic and
+    /// seed-independent — the advanced span, not seed sensitivity, is under test).
+    run: VerbRun,
     /// The declared v1 catalog points `(kind, local, name)` — constant across a
     /// campaign (every rollout and seal re-declares the identical schema).
     points: Vec<(u8, u32, String)>,
@@ -688,25 +679,20 @@ pub(crate) struct VerbMachine {
     /// snap id -> (moment, included count, emitted prefix).
     snaps: BTreeMap<u64, (u64, u64, Vec<VerbEmit>)>,
     next_snap: u64,
-    /// Half-open clock windows `[lo, hi)` at which a `snapshot` is refused
-    /// [`MachineError::NotQuiescent`] (the toy mid-exit model, task 136).
-    non_quiescent: Vec<(u64, u64)>,
     /// Staged-schedule `Moment`s relative to the branch origin (re-anchored at
     /// each `branch`, mirroring the adapter's blob-frame re-keying).
     markers: Vec<u64>,
     /// The absolute staged `Moment`s of the current branch (a `snapshot` while
     /// any lies ahead is refused `NotQuiescent`, the collapsed `SnapshotWhileArmed`).
     staged_abs: Vec<u64>,
-    /// Every `run` deadline observed, in order (lets a test pin the clamp schedule).
-    pub(crate) deadlines_seen: Vec<Option<u64>>,
 }
 
 impl VerbMachine {
-    /// A machine declaring `points` (v1 catalog `(kind, local, name)`) whose run
-    /// script is `program`.
-    pub(crate) fn new(points: Vec<(u8, u32, String)>, program: Rc<dyn Fn(u64) -> VerbRun>) -> Self {
+    /// A machine declaring `points` (v1 catalog `(kind, local, name)`) whose
+    /// every branch replays the fixed `run` script.
+    pub(crate) fn new(points: Vec<(u8, u32, String)>, run: VerbRun) -> Self {
         Self {
-            program,
+            run,
             points,
             seed: 0,
             emits: Vec::new(),
@@ -719,10 +705,8 @@ impl VerbMachine {
             },
             snaps: BTreeMap::new(),
             next_snap: 1,
-            non_quiescent: Vec::new(),
             markers: Vec::new(),
             staged_abs: Vec::new(),
-            deadlines_seen: Vec::new(),
         }
     }
 
@@ -730,14 +714,6 @@ impl VerbMachine {
     /// with a [`MarkerCodec`] reporting the same keys (mirrors `ScriptedMachine`).
     pub(crate) fn with_markers(mut self, markers: Vec<u64>) -> Self {
         self.markers = markers;
-        self
-    }
-
-    /// Refuse snapshots [`MachineError::NotQuiescent`] while the clock sits in any
-    /// half-open `[lo, hi)` window (the task-136 mid-exit model).
-    #[allow(dead_code)] // parity with `ScriptedMachine`; kept for future seal-retry gates
-    pub(crate) fn with_non_quiescent(mut self, windows: Vec<(u64, u64)>) -> Self {
-        self.non_quiescent = windows;
         self
     }
 
@@ -770,7 +746,7 @@ impl Machine for VerbMachine {
                 .cloned()
                 .unwrap_or((0, 0, Vec::new()));
         self.seed = Self::seed_of(env);
-        let prog = (self.program)(self.seed);
+        let prog = self.run.clone();
         self.clock = moment;
         self.cursor = included as usize;
         self.emits = prefix;
@@ -807,7 +783,10 @@ impl Machine for VerbMachine {
         // replay to its sealable point; an open-loop rollout surfaces each
         // emit's sealable point up to the terminal, then terminates — an emit
         // past the terminal belongs only to a later marker-clamped run-forward.
-        self.deadlines_seen.push(until.deadline.map(|d| d.0));
+        // That `at <= self.terminal` filter (the `None` arm below) is the
+        // load-bearing fixture invariant the e2e gates pin via firing provenance
+        // (PR158-F1): dropping it would leak the advanced-span firing into the
+        // rollout evidence and vacate the gates' meaning.
         match until.deadline {
             Some(d) => {
                 while self.cursor < self.emits.len() && self.emits[self.cursor].at < d.0 {
@@ -846,12 +825,9 @@ impl Machine for VerbMachine {
     }
 
     fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
-        if self.staged_abs.iter().any(|&m| m > self.clock)
-            || self
-                .non_quiescent
-                .iter()
-                .any(|&(lo, hi)| self.clock >= lo && self.clock < hi)
-        {
+        // A staged Moment still ahead refuses the seal (`SnapshotWhileArmed`,
+        // collapsed at the adapter) — the marker-clamp discipline.
+        if self.staged_abs.iter().any(|&m| m > self.clock) {
             return Err(MachineError::NotQuiescent);
         }
         let id = self.next_snap;
