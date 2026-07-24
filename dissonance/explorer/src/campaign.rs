@@ -435,6 +435,132 @@ pub struct DifferentialCampaign<M: Machine> {
     views: RetentionViews,
 }
 
+/// Per-[`retention_report`](DifferentialCampaign::retention_report) ledger
+/// ancestry indices (hm-f82p F2): built once so
+/// [`ancestor_collected`](Self::ancestor_collected) walks each retained
+/// batch's lineage in `O(1)` per hop instead of rescanning `batch_ids()` /
+/// `collected()` at every hop of every batch's walk.
+struct AncestryIndex<'a> {
+    /// Retained Rollout batches, by their own issue — the ancestor lookup
+    /// [`compose_observations_at`](crate::evidence::compose_observations_at)
+    /// performs at each hop (`role == Rollout && rollout.issue == issue`).
+    rollouts: BTreeMap<u64, &'a CompletedRunEvidence>,
+    /// Retained Seal batches, by `(sealed rollout issue, cut.sdk_events)` —
+    /// `compose_observations_at`'s run-forward-suffix lookup key
+    /// (`role == Seal && rollout.parent == Some(issue) && cut.sdk_events ==
+    /// upper`).
+    seals: BTreeMap<(u64, u64), &'a CompletedRunEvidence>,
+    /// Collected Rollout tombstones' issues.
+    collected_rollouts: std::collections::BTreeSet<u64>,
+    /// Collected Seal tombstones, by `(sealed rollout issue, cut.sdk_events)`
+    /// — the same key shape as `seals`, so a collected Seal that would have
+    /// supplied the run-forward suffix is detectable at the same lookup.
+    collected_seals: std::collections::BTreeSet<(u64, u64)>,
+}
+
+impl<'a> AncestryIndex<'a> {
+    fn build(ledger: &'a EvidenceLedger) -> Self {
+        let mut rollouts = BTreeMap::new();
+        let mut seals = BTreeMap::new();
+        for id in ledger.batch_ids() {
+            let Some(b) = ledger.get(id) else { continue };
+            match b.role {
+                EvidenceRole::Rollout => {
+                    // `batch_ids()` iterates `EvidenceBatchId`s in ascending
+                    // order (`BTreeMap`); `or_insert` keeps the FIRST match,
+                    // mirroring `compose_observations_at`'s own `.find()`
+                    // over the same ascending iteration (hm-f82p F1e: a
+                    // duplicate `rollout.issue` across content-distinct
+                    // Rollout batches — accepted by public `append`, no
+                    // lineage validation, hm-wjv1 — must resolve to the
+                    // same batch compose would pick, not "whichever
+                    // inserted last").
+                    rollouts.entry(b.rollout.issue).or_insert(b);
+                }
+                EvidenceRole::Seal => {
+                    if let Some(parent) = b.rollout.parent {
+                        seals.entry((parent, b.cut.sdk_events)).or_insert(b);
+                    }
+                }
+            }
+        }
+        let mut collected_rollouts = std::collections::BTreeSet::new();
+        let mut collected_seals = std::collections::BTreeSet::new();
+        for (_, tomb) in ledger.collected() {
+            match tomb.role {
+                EvidenceRole::Rollout => {
+                    collected_rollouts.insert(tomb.rollout.issue);
+                }
+                EvidenceRole::Seal => {
+                    if let Some(parent) = tomb.rollout.parent {
+                        collected_seals.insert((parent, tomb.cut.sdk_events));
+                    }
+                }
+            }
+        }
+        Self {
+            rollouts,
+            seals,
+            collected_rollouts,
+            collected_seals,
+        }
+    }
+
+    /// Whether `ev`'s ledger ancestry — walked via `rollout.parent`, one hop
+    /// at a time, **exactly** as
+    /// [`compose_observations_at`](crate::evidence::compose_observations_at)
+    /// walks it (same Rollout-ancestor lookup, same run-forward-suffix Seal
+    /// lookup gated on `upper > anc.cut.sdk_events`) — passes through a
+    /// collected batch. That is: whether `ev`'s own raw evidence being
+    /// retained is *not* enough to recompute its true lineage-composed
+    /// cells, because compose needs a collected ancestor's raw evidence —
+    /// either a collected Rollout, or a collected Seal that would have
+    /// supplied a run-forward suffix past its rollout's terminal (task 144 /
+    /// `hm-aqf0`; hm-f82p F1a).
+    ///
+    /// A **tombstoned** Rollout/Seal match (not merely "not found among
+    /// retained batches") is required before returning `true` — a "not
+    /// found" that is neither retained nor collected is a foreign/missing
+    /// reference, which `compose_observations_at` itself simply stops
+    /// composing through rather than treating as evidence of collection
+    /// (hm-f82p F1d: the tombstone match is role-filtered exactly like the
+    /// retained-ancestor lookup, so a collected batch of the *wrong* role
+    /// whose issue happens to collide can never be mistaken for the
+    /// ancestor).
+    ///
+    /// Bounded by a visited-issue set: a cyclic `rollout.parent` chain
+    /// (malformed — never produced by the live campaign, but not rejected by
+    /// `EvidenceLedger::append`, which validates only content-addressing and
+    /// budget; see hm-wjv1) terminates the walk conservatively (`false`)
+    /// instead of looping forever (hm-f82p F1b).
+    fn ancestor_collected(&self, ev: &CompletedRunEvidence) -> bool {
+        let mut parent = ev.rollout.parent;
+        let mut upper = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(issue) = parent {
+            if !visited.insert(issue) {
+                break; // cyclic lineage: nothing more provable either way
+            }
+            let Some(anc) = self.rollouts.get(&issue) else {
+                // Not retained: collected (a genuine gap) or foreign
+                // (nothing more to compose through either way — mirrors
+                // compose_observations_at's own "collected or foreign
+                // ancestor: compose the retained prefix" fallthrough).
+                return self.collected_rollouts.contains(&issue);
+            };
+            if upper > anc.cut.sdk_events
+                && !self.seals.contains_key(&(issue, upper))
+                && self.collected_seals.contains(&(issue, upper))
+            {
+                return true;
+            }
+            parent = anc.rollout.parent;
+            upper = anc.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+        }
+        false
+    }
+}
+
 impl<M: Machine> DifferentialCampaign<M> {
     /// Build a campaign over an already-spawned `machine` (snapshotted for the
     /// genesis base), a reproducer codec, the spine policies, the observation cell
@@ -1020,12 +1146,21 @@ impl<M: Machine> DifferentialCampaign<M> {
     /// future cell recomputation is available without replay.
     pub fn retention_report(&self) -> RetentionReport {
         let mut batches = BTreeMap::new();
+        let ancestry = AncestryIndex::build(&self.ledger);
         for id in self.ledger.batch_ids() {
+            // `batch_ids()` only enumerates retained batches, so `get` never
+            // misses here.
+            let ev = self.ledger.get(id).expect("retained batch id resolves");
+            let recompute_cells = if ancestry.ancestor_collected(ev) {
+                Recomputation::RequiresAncestorReplay
+            } else {
+                Recomputation::FromRetainedEvidence
+            };
             batches.insert(
                 *id,
                 BatchAvailability {
                     raw: RawAvailability::Retained,
-                    recompute_cells: Recomputation::FromRetainedEvidence,
+                    recompute_cells,
                     in_working_set: self.views.working.contains(id),
                 },
             );
@@ -1808,6 +1943,52 @@ mod tests {
     use revision_coordinator::EvidenceBatchId;
     use sdk_events::{NS_STATE, ObservationId, UpdateOp};
     use std::rc::Rc;
+
+    /// An empty, validly-decoded `Normalized` — for `ancestor_collected`/
+    /// `retention_report` regression fixtures that append `CompletedRunEvidence`
+    /// records straight onto a campaign's ledger (bypassing `step()`). Neither
+    /// function reads `normalized`/`env` content, only `rollout`/`role`/`cut`/
+    /// `parent_cut`.
+    fn empty_normalized() -> Normalized {
+        decode_binary(&[]).expect("an empty stream decodes to an empty Normalized")
+    }
+
+    /// A synthetic `CompletedRunEvidence` for ledger-ancestry regression
+    /// fixtures: only `rollout`/`role`/`cut`/`parent_cut` are meaningful (see
+    /// `empty_normalized`); `cut_events` is this record's own terminal
+    /// cumulative position (`cut.sdk_events`) and `parent_cut_events` is the
+    /// cumulative position its own suffix starts at (`None` when the record
+    /// has no ancestor to fork from, mirroring a `parent_cut: None` fixture/
+    /// legacy decode).
+    fn synthetic_evidence(
+        role: EvidenceRole,
+        issue: u64,
+        parent: Option<u64>,
+        cut_events: u64,
+        parent_cut_events: Option<u64>,
+    ) -> CompletedRunEvidence {
+        CompletedRunEvidence {
+            rollout: RunId { issue, parent },
+            role,
+            terminal: StopReason::Quiescent {
+                vtime: Moment(cut_events),
+            },
+            env: Reproducer {
+                blob_version: 1,
+                bytes: vec![issue as u8, cut_events as u8],
+            },
+            cut: EvidenceCut {
+                at: Moment(cut_events),
+                sdk_events: cut_events,
+            },
+            normalized: empty_normalized(),
+            parent_cut: parent_cut_events.map(|sdk_events| EvidenceCut {
+                at: Moment(0),
+                sdk_events,
+            }),
+            sealable_moments: vec![],
+        }
+    }
 
     /// One two-barrier step commits the rollout at revision 1, reads it past
     /// barrier 1, materializes a provisional candidate, and admits an Entry at its
@@ -2776,6 +2957,540 @@ mod tests {
             assert_view_parity(&camp);
         }
         assert!(camp.occupied() > 0, "the gate is not vacuous");
+    }
+
+    /// hm-f82p regression: `retention_report` must not overclaim
+    /// recomputability. A batch whose own raw evidence is retained but whose
+    /// ledger ancestor (walked via `rollout.parent`, one issue at a time —
+    /// exactly how `compose_observations_at` walks it) was collected cannot
+    /// recompute its true lineage-composed cells from retained evidence
+    /// alone: the collected ancestor's contribution is gone. Before the fix
+    /// every retained batch was unconditionally labeled
+    /// `FromRetainedEvidence`, overclaiming recomputability for such a batch.
+    ///
+    /// The test subject is a **Seal** (`role: EvidenceRole::Seal`), covering
+    /// the "suffix-only seal" half of hm-f82p explicitly: a seal's
+    /// `rollout.parent` is the rollout it seals (task 144 / `hm-aqf0`), a
+    /// two-hop walk away from the eventually-collected genesis rollout. A
+    /// decoy Seal sharing the middle rollout's `rollout.issue` number (an
+    /// unrealistic collision, deliberately planted) proves the walk's
+    /// `role == Rollout` filter is load-bearing, not redundant.
+    #[test]
+    fn retention_report_flags_a_collected_ancestor() {
+        let mut cfg = config(8, u64::MAX);
+        cfg.retention = RetentionProfile::Bounded {
+            working_set_cap: 8,
+            expiry: crate::retention::ExpiryOrder::OldestFirst,
+        };
+        let (_dir, led) = ledger();
+        let mut camp = DifferentialCampaign::new(
+            ScriptedMachine::new(vec![], simple_program(4)),
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            Box::new(GenesisSelector::new()),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            cfg,
+            1,
+        )
+        .expect("new");
+        // Appended directly (bypassing `step()`): a genesis rollout (issue 1,
+        // later collected), a middle rollout (issue 2, `parent == Some(1)`,
+        // forked exactly at the genesis rollout's own terminal — no
+        // seal-suffix gap), a decoy Seal that collides with the middle
+        // rollout's issue number (a same-issue, wrong-role record the walk
+        // must not follow), and the suffix-only-seal test subject (issue 10,
+        // `parent == Some(2)`, forked exactly at the middle rollout's own
+        // terminal) — no working-set/occupancy machinery involved, so every
+        // batch starts fully retained and uncontested for collection.
+        let genesis_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                1,
+                None,
+                20,
+                None,
+            ))
+            .expect("appends the genesis rollout");
+        let mid_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                2,
+                Some(1),
+                30,
+                Some(20),
+            ))
+            .expect("appends the middle rollout");
+        camp.ledger
+            .append(&synthetic_evidence(EvidenceRole::Seal, 2, None, 31, None))
+            .expect("appends the decoy seal");
+        let seal_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Seal,
+                10,
+                Some(2),
+                40,
+                Some(30),
+            ))
+            .expect("appends the suffix-only seal");
+
+        let before = camp.retention_report();
+        assert_eq!(
+            before.batches[&genesis_id].recompute_cells,
+            Recomputation::FromRetainedEvidence
+        );
+        assert_eq!(
+            before.batches[&seal_id].recompute_cells,
+            Recomputation::FromRetainedEvidence,
+            "a fully-retained graph keeps the honest FromRetainedEvidence label"
+        );
+
+        camp.finalize_evidence().expect("finalize");
+        camp.collect_batch(genesis_id).expect(
+            "the genesis rollout is not working-set, not live-referenced, and finalized-covered",
+        );
+
+        let after = camp.retention_report();
+        assert!(
+            matches!(
+                after.batches[&genesis_id].raw,
+                RawAvailability::Collected { .. }
+            ),
+            "the collected genesis rollout's raw availability reflects the collection"
+        );
+        assert_eq!(
+            after.batches[&genesis_id].recompute_cells,
+            Recomputation::RequiresReplay
+        );
+        assert_eq!(after.batches[&mid_id].raw, RawAvailability::Retained);
+        assert_eq!(
+            after.batches[&mid_id].recompute_cells,
+            Recomputation::RequiresAncestorReplay,
+            "the middle rollout's own direct parent (the genesis rollout) was \
+             collected"
+        );
+        assert_eq!(after.batches[&seal_id].raw, RawAvailability::Retained);
+        assert_eq!(
+            after.batches[&seal_id].recompute_cells,
+            Recomputation::RequiresAncestorReplay,
+            "the seal's own raw evidence is still retained, but walking its \
+             lineage (seal -> sealed rollout -> genesis rollout) reaches a \
+             collected batch two hops up: recomputing the true \
+             lineage-composed cells still needs replay, so it must not claim \
+             FromRetainedEvidence"
+        );
+    }
+
+    /// hm-f82p F1a regression (PR #156 discovery, judge repro): a child
+    /// forked **past** its parent rollout's terminal (task 144 advanced
+    /// seal — rollout terminal at count 10, Seal run-forward to count 20,
+    /// child `parent_cut.sdk_events == 20`) depends on the Seal's suffix —
+    /// `compose_observations_at`'s own `upper > anc.cut.sdk_events` Seal
+    /// pickup (`evidence.rs:445-459`) needs it. Collecting that Seal must
+    /// flip the child to `RequiresAncestorReplay`: the child's own raw
+    /// evidence being retained is not enough when the run-forward suffix it
+    /// depends on is gone.
+    #[test]
+    fn retention_report_flags_a_collected_advanced_seal_dependency() {
+        let mut cfg = config(8, u64::MAX);
+        cfg.retention = RetentionProfile::Bounded {
+            working_set_cap: 8,
+            expiry: crate::retention::ExpiryOrder::OldestFirst,
+        };
+        let (_dir, led) = ledger();
+        let mut camp = DifferentialCampaign::new(
+            ScriptedMachine::new(vec![], simple_program(4)),
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            Box::new(GenesisSelector::new()),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            cfg,
+            1,
+        )
+        .expect("new");
+        // Rollout A (issue 1): terminal at cumulative count 10.
+        let rollout_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                1,
+                None,
+                10,
+                None,
+            ))
+            .expect("appends the sealed rollout");
+        // Seal (issue 5): the run-forward suffix past the rollout's own
+        // terminal, advancing to cumulative count 20 (task 144 / hm-aqf0).
+        let seal_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Seal,
+                5,
+                Some(1),
+                20,
+                Some(10),
+            ))
+            .expect("appends the advanced seal");
+        // Child (issue 2): forked past the rollout's terminal, at the seal's
+        // own advanced count (20) — its lineage composition needs the
+        // seal's suffix to fill positions [10, 20).
+        let child_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                2,
+                Some(1),
+                30,
+                Some(20),
+            ))
+            .expect("appends the forked-past-terminal child");
+
+        assert_eq!(
+            camp.retention_report().batches[&child_id].recompute_cells,
+            Recomputation::FromRetainedEvidence,
+            "fully retained (including the seal's suffix): the honest label"
+        );
+
+        camp.finalize_evidence().expect("finalize");
+        camp.collect_batch(seal_id)
+            .expect("the seal is not working-set, not live-referenced, and finalized-covered");
+
+        let after = camp.retention_report();
+        assert_eq!(after.batches[&child_id].raw, RawAvailability::Retained);
+        assert_eq!(
+            after.batches[&child_id].recompute_cells,
+            Recomputation::RequiresAncestorReplay,
+            "the collected seal's run-forward suffix is exactly what the \
+             child's lineage composition needs to fill positions [10, 20) — \
+             its own raw evidence being retained is not enough"
+        );
+        // The sealed rollout itself has no run-forward-suffix dependency of
+        // its own (its `parent` is `None`) and was never collected.
+        assert_eq!(
+            after.batches[&rollout_id].recompute_cells,
+            Recomputation::FromRetainedEvidence
+        );
+    }
+
+    /// hm-f82p F1a boundary regression: a child forked **exactly at** its
+    /// parent rollout's terminal (no gap — the ordinary, non-advanced seal
+    /// case) does not depend on any seal's run-forward suffix, even when a
+    /// same-cut Seal exists at that exact `(issue, upper)` key and gets
+    /// collected. `compose_observations_at`'s Seal pickup is gated on a
+    /// **strict** `upper > anc.cut.sdk_events` (`evidence.rs:446`) — proves
+    /// the walk's mirroring gate is strict too, not `>=`.
+    #[test]
+    fn retention_report_ignores_a_collected_seal_at_the_no_gap_boundary() {
+        let mut cfg = config(8, u64::MAX);
+        cfg.retention = RetentionProfile::Bounded {
+            working_set_cap: 8,
+            expiry: crate::retention::ExpiryOrder::OldestFirst,
+        };
+        let (_dir, led) = ledger();
+        let mut camp = DifferentialCampaign::new(
+            ScriptedMachine::new(vec![], simple_program(4)),
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            Box::new(GenesisSelector::new()),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            cfg,
+            1,
+        )
+        .expect("new");
+        // Rollout A (issue 1): terminal at cumulative count 10.
+        camp.ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                1,
+                None,
+                10,
+                None,
+            ))
+            .expect("appends the sealed rollout");
+        // A same-cut Seal (issue 99) at exactly the rollout's own terminal
+        // (10) — an ordinary, non-advanced seal, not a run-forward suffix.
+        let seal_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Seal,
+                99,
+                Some(1),
+                10,
+                Some(10),
+            ))
+            .expect("appends the non-advanced seal");
+        // Child (issue 2): forked exactly at the rollout's terminal (10) —
+        // no gap, no dependency on the seal's suffix at all.
+        let child_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                2,
+                Some(1),
+                20,
+                Some(10),
+            ))
+            .expect("appends the no-gap child");
+
+        camp.finalize_evidence().expect("finalize");
+        camp.collect_batch(seal_id)
+            .expect("the seal is not working-set, not live-referenced, and finalized-covered");
+
+        assert_eq!(
+            camp.retention_report().batches[&child_id].recompute_cells,
+            Recomputation::FromRetainedEvidence,
+            "no gap at the fork point (upper == the rollout's own terminal): \
+             the child never depended on the seal's suffix, so its \
+             collection is irrelevant — the gate must be strict '>', not '>='"
+        );
+    }
+
+    /// hm-f82p F1b regression (PR #156 discovery, judge repro): a cyclic
+    /// `rollout.parent` chain — accepted by `EvidenceLedger::append`, which
+    /// validates only content-addressing and budget, never lineage
+    /// (`ledger.rs:513-547`; ledger-ingest validation itself is parked as
+    /// `hm-wjv1`, out of this fix's fence) — must not hang
+    /// `retention_report`, a public read API. The judge killed the
+    /// pre-fix walk at a 30s timeout; the visited-issue set bounds it.
+    #[test]
+    fn retention_report_terminates_on_cyclic_lineage() {
+        let mut cfg = config(8, u64::MAX);
+        cfg.retention = RetentionProfile::Bounded {
+            working_set_cap: 8,
+            expiry: crate::retention::ExpiryOrder::OldestFirst,
+        };
+        let (_dir, led) = ledger();
+        let mut camp = DifferentialCampaign::new(
+            ScriptedMachine::new(vec![], simple_program(4)),
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            Box::new(GenesisSelector::new()),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            cfg,
+            1,
+        )
+        .expect("new");
+        // A direct self-cycle: RunId { issue: 7, parent: Some(7) }.
+        let self_cycle_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                7,
+                Some(7),
+                10,
+                None,
+            ))
+            .expect("append has no lineage validation (hm-wjv1)");
+        // A mutual cycle: issue 20 <-> issue 21 — a stronger exercise of the
+        // visited-issue bound than a direct self-reference (the walk must
+        // detect a *revisit*, not merely refuse to step onto its own start).
+        let mutual_a_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                20,
+                Some(21),
+                10,
+                None,
+            ))
+            .expect("append has no lineage validation (hm-wjv1)");
+        camp.ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                21,
+                Some(20),
+                10,
+                None,
+            ))
+            .expect("append has no lineage validation (hm-wjv1)");
+
+        // Terminates at all (the regression under test): if the walk still
+        // looped forever this call would hang the test process.
+        let report = camp.retention_report();
+        assert_eq!(
+            report.batches[&self_cycle_id].recompute_cells,
+            Recomputation::FromRetainedEvidence,
+            "a cyclic chain proves nothing about a real collected ancestor: \
+             the walk terminates conservatively, never claiming \
+             RequiresAncestorReplay without ledger evidence"
+        );
+        assert_eq!(
+            report.batches[&mutual_a_id].recompute_cells,
+            Recomputation::FromRetainedEvidence
+        );
+    }
+
+    /// hm-f82p F1d regression (PR #156 discovery, from-code finding): the
+    /// walk's tombstone match must be role-filtered to `Rollout`, exactly
+    /// like the retained-ancestor lookup — a collected **Seal** tombstone
+    /// whose issue collides with an unresolvable (never retained, never
+    /// collected as a Rollout) ancestor issue must not be mistaken for a
+    /// collected Rollout ancestor. `CollectedBatch` carries `role`
+    /// (`retention.rs:604`), so the filter is directly checkable.
+    #[test]
+    fn retention_report_ignores_a_collected_decoy_seal_issue_collision() {
+        let mut cfg = config(8, u64::MAX);
+        cfg.retention = RetentionProfile::Bounded {
+            working_set_cap: 8,
+            expiry: crate::retention::ExpiryOrder::OldestFirst,
+        };
+        let (_dir, led) = ledger();
+        let mut camp = DifferentialCampaign::new(
+            ScriptedMachine::new(vec![], simple_program(4)),
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            Box::new(GenesisSelector::new()),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            cfg,
+            1,
+        )
+        .expect("new");
+        // Child (issue 2) points to a parent issue (1) for which NO Rollout
+        // batch ever exists, retained or collected — only a decoy Seal
+        // (role: Seal, issue 1, deliberately colliding) that gets collected.
+        let child_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                2,
+                Some(1),
+                20,
+                None,
+            ))
+            .expect("appends the child");
+        let decoy_seal_id = camp
+            .ledger
+            .append(&synthetic_evidence(EvidenceRole::Seal, 1, None, 15, None))
+            .expect("appends the decoy seal");
+
+        camp.finalize_evidence().expect("finalize");
+        camp.collect_batch(decoy_seal_id).expect(
+            "the decoy seal is not working-set, not live-referenced, and finalized-covered",
+        );
+
+        assert_eq!(
+            camp.retention_report().batches[&child_id].recompute_cells,
+            Recomputation::FromRetainedEvidence,
+            "a collected Seal's issue colliding with an unresolvable parent \
+             issue must not be mistaken for a collected Rollout ancestor — \
+             there is no real Rollout ancestor (retained or collected) to \
+             have lost anything"
+        );
+    }
+
+    /// hm-f82p F1e regression (PR #156 verify, judge repro): public `append`
+    /// accepts content-distinct Rollout batches sharing one `rollout.issue`
+    /// (no lineage validation — `hm-wjv1`).
+    /// `compose_observations_at`'s own ancestor lookup is a `.find()` over
+    /// `batch_ids()`'s ascending-`EvidenceBatchId` iteration order — the
+    /// FIRST match wins. `AncestryIndex::build` must resolve a duplicate
+    /// issue the same way: plain `rollouts.insert` (whichever the build
+    /// loop visits LAST — the batch with the *larger* id, since the loop
+    /// itself iterates in that same ascending order — clobbers the map
+    /// entry) picked the opposite batch from compose, so the report's label
+    /// could disagree with the actual recomputable truth. Two duplicates
+    /// resolving to opposite final answers (one reaches a collected
+    /// grandparent, the other is a dead end) makes any last-wins regression
+    /// fail regardless of which literal id happens to sort first.
+    #[test]
+    fn retention_report_resolves_a_duplicate_issue_like_compose_does() {
+        let mut cfg = config(8, u64::MAX);
+        cfg.retention = RetentionProfile::Bounded {
+            working_set_cap: 8,
+            expiry: crate::retention::ExpiryOrder::OldestFirst,
+        };
+        let (_dir, led) = ledger();
+        let mut camp = DifferentialCampaign::new(
+            ScriptedMachine::new(vec![], simple_program(4)),
+            Box::new(ToyCodec),
+            Box::new(DeclineTactic::new()),
+            Box::new(GenesisSelector::new()),
+            Box::new(DefaultObservationCells::new()),
+            led,
+            coordinator(),
+            cfg,
+            1,
+        )
+        .expect("new");
+        // Grandparent (issue 100): later collected.
+        let grandparent_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                100,
+                None,
+                10,
+                None,
+            ))
+            .expect("appends the grandparent");
+        // Two content-distinct Rollout batches sharing issue 1 (a duplicate
+        // issue). Dup A resolves further to the grandparent (collected
+        // below); Dup B is a dead end (`parent: None`) — opposite final
+        // answers depending on which one the walk resolves to.
+        let dup_a_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                1,
+                Some(100),
+                20,
+                Some(10),
+            ))
+            .expect("appends duplicate-issue rollout A");
+        let dup_b_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                1,
+                None,
+                21,
+                None,
+            ))
+            .expect("appends duplicate-issue rollout B");
+        let child_id = camp
+            .ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Rollout,
+                2,
+                Some(1),
+                30,
+                Some(20),
+            ))
+            .expect("appends the child");
+
+        camp.finalize_evidence().expect("finalize");
+        camp.collect_batch(grandparent_id).expect(
+            "the grandparent is not working-set, not live-referenced, and finalized-covered",
+        );
+
+        // compose_observations_at (and AncestryIndex::build) must resolve
+        // the duplicate to whichever of A/B has the smaller EvidenceBatchId
+        // — the FIRST match in batch_ids()'s ascending iteration order —
+        // regardless of which one that literally is.
+        let expected = if dup_a_id < dup_b_id {
+            Recomputation::RequiresAncestorReplay
+        } else {
+            Recomputation::FromRetainedEvidence
+        };
+        assert_eq!(
+            camp.retention_report().batches[&child_id].recompute_cells,
+            expected,
+            "the duplicate-issue ancestor must resolve to the same batch \
+             compose_observations_at's own ascending-id .find() would pick \
+             — not whichever the index build visited last"
+        );
     }
 
     /// An exploit campaign with real branch lineage: children inherit the

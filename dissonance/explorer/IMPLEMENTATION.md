@@ -1551,3 +1551,244 @@ tests), a one-line field-doc correction in `dissonance/explorer/src/campaign.rs`
 (capture-side evidence coverage), `hm-4gaw`, `hm-f82p`, `hm-w1o6`, and **hm-5mx0**
 (the parked StepReport/e2e surface) untouched; the Seal representation
 (hm-j7ie/hm-aqf0) and the accessor contract (hm-wshf) are unchanged.
+
+# tasks/153 — retention_report recomputability honesty + observations_at
+translation qualifier (hm-f82p, hm-0qpm)
+
+## `hm-f82p` — `retention_report` overclaimed recomputability
+
+`retention_report` (`campaign.rs`) labeled **every** retained batch
+`Recomputation::FromRetainedEvidence` unconditionally — even when a ledger
+ancestor (walked via `rollout.parent`) had been collected. Pre-dated PR #147
+for branch-child rollouts; PR #147's suffix-only Seal representation
+(`hm-aqf0`) extended the same overclaim to seals, since a seal's
+`rollout.parent` is the rollout it seals. A retained batch's own raw evidence
+being present is not enough: `compose_observations_at`'s lineage walk still
+needs the collected ancestor's raw evidence, so recomputation still requires
+materialization replay.
+
+**Fix.** Added `Recomputation::RequiresAncestorReplay` (`retention.rs`) and a
+private `DifferentialCampaign::ancestor_collected` helper (`campaign.rs`) that
+walks a retained batch's `rollout.parent` chain one issue at a time —
+mirroring `compose_observations_at`'s own ancestor walk exactly (same
+`role == Rollout && rollout.issue == issue` lookup among retained batches,
+same "collected or foreign ⇒ stop" fallthrough) — checking
+`ledger.collected()` at each hop. `retention_report`'s retained-batch loop
+picks `RequiresAncestorReplay` over `FromRetainedEvidence` when the walk finds
+a collected ancestor. Report-labeling only: `collect`, `compose_observations_at`,
+and fold behavior are untouched (the compose-across-collected-ancestor
+behavior itself stays fenced to the `hm-4gaw`/`hm-btht` family, per the task
+spec).
+
+**Regenerated `tests/public-api.txt`** on the pinned nightly
+(`nightly-2026-06-16`, `cargo +nightly-2026-06-16 public-api -p explorer`):
+one additive line, `pub explorer::Recomputation::RequiresAncestorReplay`.
+
+**Regression test** (`campaign::tests::retention_report_flags_a_collected_ancestor`):
+appends a genesis rollout (issue 1), a middle rollout (issue 2,
+`parent == Some(1)`), a decoy Seal colliding with the middle rollout's issue
+number (`role: Seal`, same `rollout.issue == 2`, `parent == None`), and a
+suffix-only-seal test subject (issue 10, `parent == Some(2)`) directly onto a
+freshly constructed campaign's ledger — bypassing `step()` entirely, since
+`ancestor_collected` and `retention_report` read only `rollout`/`role`/`cut`,
+never `normalized`/`env` content. Asserts the fully-retained graph keeps
+`FromRetainedEvidence` for both the genesis rollout and the seal, then
+collects the genesis rollout (`finalize_evidence` + `collect_batch`, so
+coverage is `CoverageRef::Finalized` — no checkpoint needed) and asserts the
+middle rollout **and** the two-hops-away seal both flip to
+`RequiresAncestorReplay`, while the genesis rollout itself reports
+`RawAvailability::Collected` + `Recomputation::RequiresReplay`. The decoy Seal
+is what makes the `role == Rollout` conjunct load-bearing in the test, not
+redundant: a first fixture draft (a plain two-generation chain, no decoy, no
+Seal subject) passed `cargo mutants --in-diff` only by chance — the chain
+never needed the walk's second hop, so a `find()` mutant on that hop went
+unexercised. The reworked fixture forces a genuine two-hop walk through a
+record whose own `role` (Seal) can never spuriously self-match the ancestor
+lookup's `role == Rollout` clause, and the decoy proves the role check itself
+matters.
+
+## PR #156 discovery fix batch (`ancestor_collected` did not mirror the compose walk)
+
+The discovery tribunal (5 seats + Fable 5 judge) returned `REQUEST_CHANGES`: one
+P1 family, one choke point. `hm-0qpm` was clean (no findings, unchanged by this
+batch). `ancestor_collected` (`campaign.rs`) documented itself as walking
+lineage "exactly as `compose_observations_at` walks it" but did not — four
+judge-confirmed members, fixed as one batch:
+
+- **F1a (CONFIRMED, judge repro).** A child forked **past** its parent
+  rollout's terminal (task 144 advanced seal: rollout terminal at count 10,
+  Seal run-forward to 20, child `parent_cut.sdk_events == 20`) depends on the
+  Seal's suffix — `compose_observations_at`'s own `upper > anc.cut.sdk_events`
+  Seal pickup (`evidence.rs:446-459`). Collecting that Seal left the child
+  mislabeled `FromRetainedEvidence`: the old walk only ever asked "was a
+  Rollout with this issue collected," never "does this hop's fork depend on a
+  Seal's run-forward suffix, and was *that* collected."
+- **F1b (CONFIRMED, judge repro).** `RunId { issue: 7, parent: Some(7) }` is
+  accepted by `EvidenceLedger::append` (content-address + budget only, no
+  lineage validation — `ledger.rs:513-547`); the old walk never terminated on
+  a cyclic `rollout.parent` chain, hanging `retention_report` — a public read
+  API — killed at a 30s timeout by the judge.
+- **F1c (CONFIRMED, direct CI evidence).** The mutants CI shard was **red** on
+  the reviewed head. The prior write-up claimed the timing-out mutant
+  (`ancestor_collected`'s second `==` → `!=`) was green by the same precedent
+  as this crate's `.cargo/mutants.toml` `timeout_multiplier` comment — wrong: a
+  residual exit 3 is a real signal per the hm-y53x decision table, not a
+  claimable precedent, and the timing-out mutant was exactly F1b's loop shape,
+  not an unrelated equivalent-mutant timeout. **That claim is withdrawn** (see
+  the corrected `cargo mutants` result below).
+- **F1d (CONFIRMED, from code).** The tombstone match
+  (`self.ledger.collected().any(|(_, tomb)| tomb.rollout.issue == issue)`) had
+  **no role filter**, while the sibling retained-ancestor lookup required
+  `role == Rollout`. A collected Seal tombstone whose issue collided with an
+  unresolvable ancestor issue was mistaken for a collected Rollout ancestor —
+  the opposite false positive from the original PR's own decoy-Seal test
+  (which only exercised the *retained*-side role filter, not the
+  *tombstone*-side one).
+
+**Fix — rewrite, not a patch.** `ancestor_collected` moved off
+`DifferentialCampaign` onto a new private `AncestryIndex<'a>` (`campaign.rs`),
+built once per `retention_report()` call (closing F2's `O(N²)` ride-along —
+per-hop linear rescans of `batch_ids()`/`collected()` — for free, since the
+rewrite needs random-access lookups anyway): retained Rollout batches indexed
+by issue, retained Seal batches indexed by `(sealed rollout issue,
+cut.sdk_events)` — `compose_observations_at`'s own two lookup keys — plus the
+matching **role-filtered** collected sets for each. `ancestor_collected` now
+walks `rollout.parent` one hop at a time against these indices: a missing
+retained-Rollout lookup falls back to the role-filtered collected-Rollout set
+(F1d); a strict `upper > anc.cut.sdk_events` gate (proved strict, not `>=`, by
+a same-cut non-advanced-seal boundary test) performs compose's own Seal-suffix
+lookup and treats a tombstoned matching Seal as a collected ancestor (F1a); a
+visited-issue set bounds the walk against a cyclic chain, terminating
+conservatively (`false`) on a revisit rather than looping forever (F1b).
+Ledger-ingest lineage validation itself stays out of this fix's fence — parked
+as `hm-wjv1` for the foreman, per the review's fence ruling.
+
+**Five regression tests** (`campaign.rs` test module):
+`retention_report_flags_a_collected_advanced_seal_dependency` (F1a: a
+collected advanced Seal's suffix flips the forked-past-terminal child to
+`RequiresAncestorReplay`),
+`retention_report_ignores_a_collected_seal_at_the_no_gap_boundary` (the
+`>`-not-`>=` boundary: a same-cut, non-advanced seal's collection is
+irrelevant to a child that forked with no gap),
+`retention_report_terminates_on_cyclic_lineage` (F1b: a direct self-cycle and
+a stronger mutual two-issue cycle both terminate at `FromRetainedEvidence`
+instead of hanging), and
+`retention_report_ignores_a_collected_decoy_seal_issue_collision` (F1d: a
+collected Seal's issue colliding with an unresolvable parent issue stays
+`FromRetainedEvidence`, not `RequiresAncestorReplay`). The pre-existing
+`retention_report_flags_a_collected_ancestor` (adapted to the new
+`synthetic_evidence` fixture helper, hoisted out of the test body so all five
+tests share it) is unchanged in intent.
+
+`cargo mutants -p explorer --no-shuffle --in-diff` against the full task diff:
+**11 mutants — 9 caught, 2 unviable, 0 missed, 0 timeout.** (The prior head's
+1-timeout/1-missed/1-missed state is superseded; see the withdrawn F1c claim
+above.)
+
+## PR #156 verify fix batch (F1e — `AncestryIndex::build` didn't resolve a duplicate issue like compose does)
+
+The verify tribunal confirmed the F1a-F1d rewrite closed clean (walk mirrors
+compose, mutants genuinely clean, CI green) but found one new P1 the rewrite
+itself introduced: `AncestryIndex::build` (`campaign.rs`) resolved a
+duplicate `rollout.issue` differently from `compose_observations_at`.
+`batch_ids()` iterates `EvidenceBatchId`s in ascending order (`BTreeMap`);
+`compose_observations_at`'s own ancestor lookup is a `.find()` over that same
+order, so the **first** match (by ascending id) wins. The `build` loop used
+plain `rollouts.insert`/`seals.insert`, which — iterating in that same
+ascending order — let each subsequent duplicate clobber the map entry, so
+the **last** match (the batch with the *larger* id) won instead. Public
+`EvidenceLedger::append` accepts content-distinct Rollout (or Seal) batches
+sharing one issue (no lineage validation — `hm-wjv1`), so on that shape the
+index's pick could disagree with compose's actual pick, and the report's
+label could diverge from the true recomputable state.
+
+**Fix (one line each).** `rollouts.entry(b.rollout.issue).or_insert(b)` and
+the symmetric `seals.entry((parent, b.cut.sdk_events)).or_insert(b)` — the
+first insert for a given key wins, matching `batch_ids()`'s ascending
+iteration exactly. The collected sets (`collected_rollouts`,
+`collected_seals`) are membership-keyed `BTreeSet`s, not first/last-sensitive
+maps, so they needed no change.
+
+**New regression**
+(`retention_report_resolves_a_duplicate_issue_like_compose_does`): a
+grandparent (issue 100, later collected) and two content-distinct Rollout
+batches sharing issue 1 — Dup A resolves further to the grandparent, Dup B
+is a dead end (`parent: None`) — give **opposite** final labels depending on
+which one the walk resolves to. The test computes its expected label from
+whichever duplicate's `EvidenceBatchId` actually sorts first (not a
+hardcoded guess), so it fails deterministically under the old last-wins
+behavior regardless of which literal id happens to be smaller. Verified by
+hand: reverting `or_insert` back to `insert` locally reproduces the failure
+(`left: FromRetainedEvidence, right: RequiresAncestorReplay`); restoring the
+fix passes again.
+
+`cargo mutants -p explorer --no-shuffle --in-diff` against the full task
+diff (unchanged from the discovery-batch count — `entry`/`or_insert`
+introduces no new mutable comparison operators): **11 mutants — 9 caught, 2
+unviable, 0 missed, 0 timeout.**
+
+## `hm-0qpm` — `observations_at`'s up-to-translation qualifier
+
+Reworded the `observations_at` doc (`evidence.rs`): for a `rollout.parent ==
+None` record, coincidence with `compose_observations_at` holds only **up to
+the cumulative-position translation** —
+`observations_at(k) == compose_observations_at(ledger, self, base + k)`,
+where `base` is the record's own `parent_cut` count (0 when `parent_cut` is
+`None`). The prior wording ("`None` means nothing is omitted") was true about
+*what* is omitted but silent on the argument translation needed for the two
+accessors to actually agree — a caller could read it as license to compare
+`observations_at(k)` against `compose_observations_at(ledger, self, k)`
+directly, which only coincides when `base` is 0 (fixture/legacy pre-132
+decodes); a production genesis record's `parent_cut` is always
+`Some(genesis_cut)` with a generally nonzero count.
+
+Added the optional witness in
+`genesis_rollout_local_reduction_matches_composed_truth` (the fixture already
+uses `base = 3`): `ev.observations_at(1) == compose_observations_at(&led,
+&ev, base + 1)` and `!= compose_observations_at(&led, &ev, 1)` — the
+translated call agrees, the matched-raw-argument call does not. Doc/test-only,
+no behavior change.
+
+## Gates run
+
+`cargo build -p explorer --all-features`; `cargo nextest run -p explorer
+--all-features` (**165 pass, 1 skip** — the six `ancestor_collected`
+regression tests (one adapted, five net-new: four from the discovery fix
+batch plus the F1e duplicate-issue regression from the verify fix batch)
+plus the strengthened `genesis_rollout_local_reduction_matches_composed_truth`;
+the skip is the nightly-only `public_api` snapshot); `cargo clippy -p explorer
+--all-features --all-targets -- -D warnings` (exit 0 — only the pre-existing
+root `clippy.toml` `rand::*` config diagnostics, unrelated); `cargo fmt -p
+explorer -- --check` (clean); `cargo deny check`
+(advisories/bans/licenses/sources ok — no dependency change). `cargo
++nightly-2026-06-16 test -p explorer --test public_api -- --ignored` (green,
+snapshot matches the regenerated `tests/public-api.txt` — `AncestryIndex`
+stays a private type through both fix batches, no further public-API drift).
+`cargo mutants -p explorer --no-shuffle --in-diff <task diff>`: **11 mutants
+tested — 9 caught, 2 unviable, 0 missed, 0 timeout.** (Supersedes the
+discovery head's claimed "1 timeout matching this crate's loop-mutant
+precedent" — that claim is withdrawn per the PR #156 discovery ruling: a
+residual exit 3 is a real signal, and the timing-out mutant was surfacing
+the F1b cyclic-lineage liveness defect, not an equivalent-mutant timeout.)
+No `unsafe` added → no Miri obligation. **No dependency change.**
+
+**Hash-neutrality:** no hash-path code touched — `retention_report` is a
+read-only projection over the ledger/views (never folded into any hash), and
+`observations_at`'s doc/test change touches no production code path at all.
+`campaign::tests::same_seed_yields_identical_campaign` and
+`retention::tests::same_seed_yields_identical_retention_artifacts` both green,
+unchanged.
+
+## Scope fence
+
+Touched `dissonance/explorer/src/retention.rs` (the new `Recomputation`
+variant), `dissonance/explorer/src/campaign.rs` (`AncestryIndex` +
+`ancestor_collected` + `retention_report`'s report loop + the six regression
+tests + the shared `synthetic_evidence` fixture helper),
+`dissonance/explorer/src/evidence.rs` (the `observations_at` doc reword + the
+witness assertion), `dissonance/explorer/tests/public-api.txt` (regenerated),
+and this file. Did not touch `collect`, `compose_observations_at`, ledger
+append/lineage validation (parked as `hm-wjv1`), or fold behavior — the
+compose-across-collected-ancestor behavior itself stays fenced to the
+`hm-4gaw`/`hm-btht` family, per the task spec and the review's fence ruling.
+No dependency changes.
