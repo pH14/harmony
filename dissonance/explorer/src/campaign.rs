@@ -3253,15 +3253,18 @@ mod tests {
         );
     }
 
-    /// hm-f82p F1b regression (PR #156 discovery, judge repro): a cyclic
-    /// `rollout.parent` chain — accepted by `EvidenceLedger::append`, which
-    /// validates only content-addressing and budget, never lineage
-    /// (`ledger.rs:513-547`; ledger-ingest validation itself is parked as
-    /// `hm-wjv1`, out of this fix's fence) — must not hang
-    /// `retention_report`, a public read API. The judge killed the
-    /// pre-fix walk at a 30s timeout; the visited-issue set bounds it.
+    /// hm-wjv1: cyclic `rollout.parent` chains are now **refused at ingest**
+    /// (`EvidenceLedger::append`), so the malformed shape the pre-fix
+    /// `retention_report` walk had to survive can no longer be constructed
+    /// through the public API. This test was hm-f82p F1b (PR #156): it built a
+    /// cyclic ledger and asserted the report *terminated* on it. Migrated to
+    /// the typed-refusal assertion per hm-wjv1 required-regression 5 — the
+    /// visited-issue bounds in `ancestor_collected` (and
+    /// `compose_observations_at`) are now **defense-in-depth**: correct, kept,
+    /// but unreachable via `append`/replay because no cyclic ledger survives
+    /// ingest.
     #[test]
-    fn retention_report_terminates_on_cyclic_lineage() {
+    fn append_refuses_cyclic_lineage_at_ingest() {
         let mut cfg = config(8, u64::MAX);
         cfg.retention = RetentionProfile::Bounded {
             working_set_cap: 8,
@@ -3280,8 +3283,9 @@ mod tests {
             1,
         )
         .expect("new");
-        // A direct self-cycle: RunId { issue: 7, parent: Some(7) }.
-        let self_cycle_id = camp
+        // A direct self-cycle: RunId { issue: 7, parent: Some(7) } — the
+        // length-one cycle, refused with a typed LineageCycle.
+        let self_err = camp
             .ledger
             .append(&synthetic_evidence(
                 EvidenceRole::Rollout,
@@ -3290,12 +3294,23 @@ mod tests {
                 10,
                 None,
             ))
-            .expect("append has no lineage validation (hm-wjv1)");
-        // A mutual cycle: issue 20 <-> issue 21 — a stronger exercise of the
-        // visited-issue bound than a direct self-reference (the walk must
-        // detect a *revisit*, not merely refuse to step onto its own start).
-        let mutual_a_id = camp
-            .ledger
+            .expect_err("self-parent refused at ingest (hm-wjv1)");
+        assert!(
+            matches!(
+                self_err,
+                LedgerError::LineageCycle {
+                    issue: 7,
+                    revisits: 7,
+                    ..
+                }
+            ),
+            "a self-parent is refused as a length-one cycle: {self_err}"
+        );
+        // A mutual cycle: issue 20 <-> issue 21. The opening edge (20 -> 21)
+        // appends (21 not yet present); the closing edge (21 -> 20) closes the
+        // cycle through the retained batch and is refused — appends are ordered,
+        // so a cycle can only ever close via the batch being appended.
+        camp.ledger
             .append(&synthetic_evidence(
                 EvidenceRole::Rollout,
                 20,
@@ -3303,8 +3318,9 @@ mod tests {
                 10,
                 None,
             ))
-            .expect("append has no lineage validation (hm-wjv1)");
-        camp.ledger
+            .expect("the opening edge appends (parent 21 not yet present)");
+        let closing_err = camp
+            .ledger
             .append(&synthetic_evidence(
                 EvidenceRole::Rollout,
                 21,
@@ -3312,22 +3328,22 @@ mod tests {
                 10,
                 None,
             ))
-            .expect("append has no lineage validation (hm-wjv1)");
-
-        // Terminates at all (the regression under test): if the walk still
-        // looped forever this call would hang the test process.
+            .expect_err("the closing edge of the cycle is refused (hm-wjv1)");
+        assert!(
+            matches!(
+                closing_err,
+                LedgerError::LineageCycle {
+                    issue: 21,
+                    revisits: 21,
+                    ..
+                }
+            ),
+            "the mutual cycle is refused at its closing append: {closing_err}"
+        );
+        // The report still runs cleanly over the (acyclic) surviving ledger —
+        // only the opening edge is durable; the refused batches never landed.
         let report = camp.retention_report();
-        assert_eq!(
-            report.batches[&self_cycle_id].recompute_cells,
-            Recomputation::FromRetainedEvidence,
-            "a cyclic chain proves nothing about a real collected ancestor: \
-             the walk terminates conservatively, never claiming \
-             RequiresAncestorReplay without ledger evidence"
-        );
-        assert_eq!(
-            report.batches[&mutual_a_id].recompute_cells,
-            Recomputation::FromRetainedEvidence
-        );
+        assert_eq!(report.batches.len(), 1, "only the opening edge is retained");
     }
 
     /// hm-f82p F1d regression (PR #156 discovery, from-code finding): the
@@ -3390,22 +3406,21 @@ mod tests {
         );
     }
 
-    /// hm-f82p F1e regression (PR #156 verify, judge repro): public `append`
-    /// accepts content-distinct Rollout batches sharing one `rollout.issue`
-    /// (no lineage validation — `hm-wjv1`).
-    /// `compose_observations_at`'s own ancestor lookup is a `.find()` over
-    /// `batch_ids()`'s ascending-`EvidenceBatchId` iteration order — the
-    /// FIRST match wins. `AncestryIndex::build` must resolve a duplicate
-    /// issue the same way: plain `rollouts.insert` (whichever the build
-    /// loop visits LAST — the batch with the *larger* id, since the loop
-    /// itself iterates in that same ascending order — clobbers the map
-    /// entry) picked the opposite batch from compose, so the report's label
-    /// could disagree with the actual recomputable truth. Two duplicates
-    /// resolving to opposite final answers (one reaches a collected
-    /// grandparent, the other is a dead end) makes any last-wins regression
-    /// fail regardless of which literal id happens to sort first.
+    /// hm-wjv1: a second content-distinct Rollout batch sharing one
+    /// `rollout.issue` is now **refused at ingest** with a typed
+    /// [`LedgerError::DuplicateRolloutIssue`] naming both batch ids, so the
+    /// resolution-instability harm (which batch every ancestor-by-issue reader
+    /// resolves to flips when the first-sorting duplicate is collected) is
+    /// closed structurally: two retained duplicates can never coexist. This
+    /// test was hm-f82p F1e (PR #156): it appended both duplicates and asserted
+    /// `AncestryIndex::build` resolved them the same first-match way
+    /// `compose_observations_at` does. Migrated to the typed-refusal assertion
+    /// per hm-wjv1 required-regression 5 — the ascending-id first-match
+    /// tie-break in `AncestryIndex::build`/`compose_observations_at` is now
+    /// **defense-in-depth** (kept, but no duplicate survives ingest to exercise
+    /// it). A Seal of the retained rollout still appends — per-role uniqueness.
     #[test]
-    fn retention_report_resolves_a_duplicate_issue_like_compose_does() {
+    fn append_refuses_a_duplicate_issue_rollout_at_ingest() {
         let mut cfg = config(8, u64::MAX);
         cfg.retention = RetentionProfile::Bounded {
             working_set_cap: 8,
@@ -3424,9 +3439,8 @@ mod tests {
             1,
         )
         .expect("new");
-        // Grandparent (issue 100): later collected.
-        let grandparent_id = camp
-            .ledger
+        // Grandparent (issue 100), then the first Rollout for issue 1.
+        camp.ledger
             .append(&synthetic_evidence(
                 EvidenceRole::Rollout,
                 100,
@@ -3435,32 +3449,37 @@ mod tests {
                 None,
             ))
             .expect("appends the grandparent");
-        // Two content-distinct Rollout batches sharing issue 1 (a duplicate
-        // issue). Dup A resolves further to the grandparent (collected
-        // below); Dup B is a dead end (`parent: None`) — opposite final
-        // answers depending on which one the walk resolves to.
+        let dup_a = synthetic_evidence(EvidenceRole::Rollout, 1, Some(100), 20, Some(10));
         let dup_a_id = camp
             .ledger
-            .append(&synthetic_evidence(
-                EvidenceRole::Rollout,
-                1,
-                Some(100),
-                20,
-                Some(10),
-            ))
-            .expect("appends duplicate-issue rollout A");
-        let dup_b_id = camp
+            .append(&dup_a)
+            .expect("appends rollout A for issue 1");
+        // A content-distinct Rollout ALSO claiming issue 1: refused, both ids
+        // named. `synthetic_evidence` differs in `env.bytes`/`cut`, so the
+        // digest (and thus the batch id) differs from A — a genuine duplicate,
+        // not an idempotent re-append.
+        let dup_b = synthetic_evidence(EvidenceRole::Rollout, 1, None, 21, None);
+        let dup_b_id = EvidenceBatchId::digest(&dup_b.canonical_bytes());
+        assert_ne!(dup_a_id, dup_b_id, "the duplicate is content-distinct");
+        let err = camp
             .ledger
-            .append(&synthetic_evidence(
-                EvidenceRole::Rollout,
-                1,
-                None,
-                21,
-                None,
-            ))
-            .expect("appends duplicate-issue rollout B");
-        let child_id = camp
-            .ledger
+            .append(&dup_b)
+            .expect_err("the duplicate-issue Rollout is refused at ingest (hm-wjv1)");
+        match err {
+            LedgerError::DuplicateRolloutIssue {
+                issue,
+                existing,
+                incoming,
+            } => {
+                assert_eq!(issue, 1);
+                assert_eq!(existing, dup_a_id, "names the retained Rollout for issue 1");
+                assert_eq!(incoming, dup_b_id, "names the refused incoming batch");
+            }
+            other => panic!("expected DuplicateRolloutIssue, got {other}"),
+        }
+        // A child through the (unambiguous) surviving issue-1 rollout appends,
+        // and a Seal of it does too — the per-role exemption keeps the pairing.
+        camp.ledger
             .append(&synthetic_evidence(
                 EvidenceRole::Rollout,
                 2,
@@ -3468,28 +3487,21 @@ mod tests {
                 30,
                 Some(20),
             ))
-            .expect("appends the child");
-
-        camp.finalize_evidence().expect("finalize");
-        camp.collect_batch(grandparent_id).expect(
-            "the grandparent is not working-set, not live-referenced, and finalized-covered",
-        );
-
-        // compose_observations_at (and AncestryIndex::build) must resolve
-        // the duplicate to whichever of A/B has the smaller EvidenceBatchId
-        // — the FIRST match in batch_ids()'s ascending iteration order —
-        // regardless of which one that literally is.
-        let expected = if dup_a_id < dup_b_id {
-            Recomputation::RequiresAncestorReplay
-        } else {
-            Recomputation::FromRetainedEvidence
-        };
-        assert_eq!(
-            camp.retention_report().batches[&child_id].recompute_cells,
-            expected,
-            "the duplicate-issue ancestor must resolve to the same batch \
-             compose_observations_at's own ascending-id .find() would pick \
-             — not whichever the index build visited last"
+            .expect("appends the child through the surviving rollout");
+        camp.ledger
+            .append(&synthetic_evidence(
+                EvidenceRole::Seal,
+                3,
+                Some(1),
+                25,
+                Some(20),
+            ))
+            .expect("a seal of the retained rollout still appends (per-role)");
+        // The report runs cleanly over the unambiguous surviving ledger.
+        let report = camp.retention_report();
+        assert!(
+            report.batches.len() >= 3,
+            "grandparent + rollout + child + seal retained"
         );
     }
 
