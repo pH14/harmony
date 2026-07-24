@@ -1840,11 +1840,17 @@ can only ever close *through the batch being appended*. Checking the new
 record's chain is therefore sufficient; the visited set also guarantees the
 walk itself terminates on any hand-crafted stream.
 
-**Duplicate-issue Rollout.** A Rollout whose `rollout.issue` already has a
-retained Rollout (a *different* batch id — the `existing != id` guard keeps
-byte-identical re-appends idempotent) is refused. **Per-role:** Seals are
-exempt (a seal carries its own distinct issue and continues the rollout it
-seals), so the rollout+seal pairing is never broken.
+**Duplicate-issue Rollout.** A Rollout whose `rollout.issue` is already held by
+a different Rollout batch — **retained OR collected** (`rollout_issue_holder`
+consults both `entries` and the durable tombstones in `collected`) — is refused.
+Consulting the tombstones is load-bearing (PR #157 F1, below): a collected
+Rollout's issue still governs which batch every ancestor-by-issue reader
+resolves to. **Per-role:** Seals are exempt (a seal carries its own distinct
+issue and continues the rollout it seals), so the rollout+seal pairing is never
+broken. The `existing != id` guard keeps a byte-identical re-append idempotent
+(same id ⇒ same batch, not a duplicate) — for a *collected* batch this is the
+pre-existing byte-identical resurrection path, kept unchanged and documented, not
+altered by this fix.
 
 ## Parent-existence — dangling parents stay LEGAL (surveyed, not guessed)
 
@@ -1898,7 +1904,8 @@ visited-set bound are retained as **defense-in-depth**, not modified.
 | 1 | Self-parent append refused (typed) | `self_parent_append_is_refused` |
 | 2 | Mutual-cycle refused at the closing append | `mutual_cycle_append_is_refused_at_the_closing_append` |
 | 3 | Duplicate-issue Rollout refused (both ids named); Seal for it still appends | `duplicate_issue_rollout_is_refused_but_a_seal_for_it_appends` |
-| 4 | Replay of each rejected shape refuses loudly (hand-framed via the pre-fix writer) | `replay_refuses_each_malformed_lineage_shape` |
+| 3b | Duplicate of a **collected** Rollout refused at append; same-id resurrection still admitted (PR #157 F1) | `a_duplicate_of_a_collected_rollout_is_refused_at_append` |
+| 4 | Replay of each rejected shape (incl. a crafted collect-then-duplicate stream) refuses loudly | `replay_refuses_each_malformed_lineage_shape` |
 | — | Honest lineage still appends + survives reopen (transparency) | `honest_lineage_appends_and_survives_reopen` |
 | 5 | Migrate the PR #156 walk-hardening tests | `campaign.rs`: `append_refuses_cyclic_lineage_at_ingest` (was `retention_report_terminates_on_cyclic_lineage`), `append_refuses_a_duplicate_issue_rollout_at_ingest` (was `retention_report_resolves_a_duplicate_issue_like_compose_does`) |
 
@@ -1916,10 +1923,54 @@ Rollout-uniqueness check; a parent resolving to no retained Rollout ends the
 walk). The retention.rs seal-fold tests (Rollout issue 1 + Seals issues 2/3,
 distinct) likewise stay green.
 
+## PR #157 discovery — F1 (P1) fix + ride-alongs
+
+**F1 (P1, judge-executed):** the duplicate-issue check originally scanned
+`entries` only, so `append(Rollout A{issue 1}) → append(child{2, parent 1}) →
+commit_checkpoint(2) → collect(A) → append(content-distinct Rollout B{issue 1})`
+was admitted — `collect` moves A out of `entries` into a `collected` tombstone,
+so the entries-only scan found nothing and let B in. Then every ancestor-by-issue
+reader resolved issue 1 to the *impostor* B, flipping the child's honesty label
+from `RequiresAncestorReplay` back to a false `FromRetainedEvidence` — undoing the
+PR #156 collected-ancestor honesty through content-distinct data. **Fix (same
+choke point):** the duplicate check now consults `rollout_issue_holder`, which
+looks up a Rollout by issue in `entries` **and** in the durable tombstones
+(`CollectedBatch` carries the full `rollout` RunId + `role` + `batch`, so the
+typed error still names the collected holder). The invariant is strengthened to
+*every issue holds at most one retained-**or-collected** Rollout*. Replay-order
+is safe in both durable layouts — the tombstone frame always precedes any later
+duplicate (an in-order collect writes the tombstone after the evidence;
+`compact` writes all tombstones before all evidence) — so replay has the batch
+collected before the duplicate is validated. Regressions:
+`a_duplicate_of_a_collected_rollout_is_refused_at_append` and case (d) of
+`replay_refuses_each_malformed_lineage_shape` (a crafted `[Evidence A,
+Tombstone A, Evidence B]` stream, the judge repro inverted). The **same-id
+resurrection** exemption (`existing != id`) is deliberately preserved: a
+byte-identical re-append of a collected batch stays admitted — pre-existing
+behavior, decided-and-documented, out of scope for `hm-wjv1`.
+
+**F3 (test-only ride-along):** the `append_raw_evidence` frame re-implementation
+is deleted; the replay regressions now craft streams via `craft_stream`, which
+delegates to the private `EvidenceLedger::append_record` (the real framer, which
+performs no lineage check) — no duplicated frame-layout logic.
+
+**F4 (doc ride-along):** the `ancestor_collected` doc (`campaign.rs`) and the
+`AncestryIndex::build` inline comment no longer claim `append` "validates only
+content-addressing and budget" / accepts duplicate issues; both now state that
+cyclic chains and duplicate issues are **refused at ingest** and their walk
+bound / first-match tie-break are defense-in-depth.
+
+**FYI (spec correction).** The tasks/154 sentence "Seals share their rollout's
+issue by design" was wrong (it misled two review seats) and the foreman
+corrected the spec on main — a seal carries its own fresh issue and shares
+lineage via `parent`. This implementation already matched that truth (the
+per-role check exempts Seals; the producer survey confirms distinct seal issues),
+so no code change followed from the correction.
+
 ## Gates run (all green, macOS)
 
 - `cargo build -p explorer --all-features` — clean.
-- `cargo nextest run -p explorer --all-features` — **170 passed, 1 skipped**
+- `cargo nextest run -p explorer --all-features` — **171 passed, 1 skipped**
   (the `#[ignore]` public-api test).
 - `cargo nextest run -p campaign-runner --all-features` — **179 passed, 1
   skipped**, including the hash-neutrality / determinism suites
@@ -1932,11 +1983,13 @@ distinct) likewise stay green.
   pre-existing, unrelated to this diff).
 - `cargo fmt -p explorer -- --check` — clean.
 - `cargo deny check` — advisories, bans, licenses, sources ok.
-- `cargo mutants -p explorer --no-shuffle --in-diff <task diff>` — **14 mutants
-  tested: 10 caught, 4 unviable, 0 missed, 0 timeout.**
+- `cargo mutants -p explorer --no-shuffle --in-diff <task diff>` — **0 missed**
+  (see the run recorded on the PR).
 - `tests/public-api.txt` regenerated on the pinned nightly
   (`nightly-2026-06-16`, `UPDATE_PUBLIC_API=1`): **purely additive** — the two
-  new `LedgerError` variants and their fields, nothing removed or renamed.
+  new `LedgerError` variants and their fields, nothing removed or renamed. The
+  F1 fix added no public surface (the variant fields are unchanged), so no
+  further snapshot drift.
 
 **Hash-neutrality.** Ingest validation is a pure pre-check that either refuses a
 malformed record or proceeds byte-for-byte as before on a well-formed one, so an

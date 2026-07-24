@@ -468,13 +468,16 @@ impl<'a> AncestryIndex<'a> {
                 EvidenceRole::Rollout => {
                     // `batch_ids()` iterates `EvidenceBatchId`s in ascending
                     // order (`BTreeMap`); `or_insert` keeps the FIRST match,
-                    // mirroring `compose_observations_at`'s own `.find()`
-                    // over the same ascending iteration (hm-f82p F1e: a
-                    // duplicate `rollout.issue` across content-distinct
-                    // Rollout batches — accepted by public `append`, no
-                    // lineage validation, hm-wjv1 — must resolve to the
-                    // same batch compose would pick, not "whichever
-                    // inserted last").
+                    // mirroring `compose_observations_at`'s own `.find()` over
+                    // the same ascending iteration. Since `hm-wjv1` a duplicate
+                    // `rollout.issue` across content-distinct Rollout batches is
+                    // **refused at ingest** (`EvidenceLedger::append`/replay
+                    // rejects a Rollout whose issue a retained-or-collected
+                    // Rollout already holds), so at most one retained Rollout
+                    // per issue reaches this build — the first-match tie-break
+                    // is now defense-in-depth (was hm-f82p F1e), kept so the
+                    // resolution stays compose-consistent even under any future
+                    // ingest gap.
                     rollouts.entry(b.rollout.issue).or_insert(b);
                 }
                 EvidenceRole::Seal => {
@@ -528,11 +531,15 @@ impl<'a> AncestryIndex<'a> {
     /// whose issue happens to collide can never be mistaken for the
     /// ancestor).
     ///
-    /// Bounded by a visited-issue set: a cyclic `rollout.parent` chain
-    /// (malformed — never produced by the live campaign, but not rejected by
-    /// `EvidenceLedger::append`, which validates only content-addressing and
-    /// budget; see hm-wjv1) terminates the walk conservatively (`false`)
-    /// instead of looping forever (hm-f82p F1b).
+    /// Bounded by a visited-issue set: a cyclic `rollout.parent` chain would
+    /// otherwise loop forever. Such a chain is malformed — never produced by
+    /// the live campaign, and now **refused at ingest** by
+    /// `EvidenceLedger::append`/replay (`hm-wjv1`: self/cyclic parents are
+    /// rejected before a batch lands), so no cyclic ledger survives to reach
+    /// this walk. The bound is therefore **defense-in-depth**: it still
+    /// terminates conservatively (`false`) on any cycle, but the ingest
+    /// rejection is the structural closure (was hm-f82p F1b, the pre-ingest
+    /// liveness hardening).
     fn ancestor_collected(&self, ev: &CompletedRunEvidence) -> bool {
         let mut parent = ev.rollout.parent;
         let mut upper = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
