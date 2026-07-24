@@ -39,11 +39,9 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- **Ledger-ingest lineage validation** (tasks/154, `hm-wjv1`): Opus 4.8 worker spawned
-  2026-07-23 night on `task/ledger-ingest-lineage-validation` — reject self/cyclic
-  parents + duplicate-issue Rollouts at the append/replay choke point (three
-  documented harm classes; version question answered explicitly, STOP-if-honest-producer
-  guard).
+- (no active workers — 2026-07-23 late night; next spawns from `bd ready`: `hm-5mx0`
+  v1-verb test machine, `hm-w1o6` interior-seal alignment design, `hm-4gaw`,
+  `hm-j16h`, plus the fresh PR #157 parks `hm-6x0w`/`hm-avvc`/`hm-g2bq`)
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -87,6 +85,16 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **Ledger-ingest lineage validation MERGED** (tasks/154, PR #157, `hm-wjv1`,
+  2026-07-23 late night — discovery (F1 P1, judge-EXECUTED repro:
+  collect-then-re-append admitted a content-distinct impostor; F2 refuted, exposing
+  and correcting a wrong sentence in the foreman's own spec) → retained-or-collected
+  fix → verify APPROVE (F1 shut on both entry paths by independent execution)): all
+  three of hm-wjv1's harm classes now refuse at ingest — self/cyclic parents,
+  duplicate-issue Rollouts, compose non-termination shapes. No VERSION bump (pure
+  narrowing, judge-verified from the producer survey). Parks: `hm-6x0w` (restart-
+  dependent resurrection acceptance), `hm-avvc` (tombstone-frame replay validation),
+  `hm-g2bq` (replay scan complexity).
 - **retention_report honesty + accessor qualifier MERGED** (tasks/153, PR #156,
   `hm-f82p`+`hm-0qpm`, 2026-07-23 night — full bounded pipeline: discovery (F1 family
   P1: the new ancestor walk didn't mirror compose — collected-advanced-seal overclaim,
