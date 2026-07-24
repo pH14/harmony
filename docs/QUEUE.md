@@ -39,9 +39,10 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- (no active workers — 2026-07-23 late night; next spawns from `bd ready`: `hm-5mx0`
-  v1-verb test machine, `hm-w1o6` interior-seal alignment design, `hm-4gaw`,
-  `hm-j16h`, plus the fresh PR #157 parks `hm-6x0w`/`hm-avvc`/`hm-g2bq`)
+- (no active workers — 2026-07-24 pre-midnight; remaining P2 frontier: `hm-w1o6`
+  interior-seal alignment design (heaviest — needs a design-grade spec), `hm-4gaw`
+  (hm-btht/kyy5 family), `hm-j16h`, PR #157 parks `hm-6x0w`/`hm-avvc`/`hm-g2bq`,
+  PR #146 doc trim `hm-gnxr` was closed with tasks/147; ~90 ready total)
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -85,6 +86,14 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Recently done (this week)
 
+- **v1-verb test machine + e2e advanced-span gate MERGED** (tasks/155, PR #158,
+  `hm-5mx0`, 2026-07-24 pre-midnight — discovery (F1 P1: the new e2e gates were
+  silently vacatable via an unasserted fixture invariant) → provenance-pin fix →
+  verify MERGE-CLEAR (judge re-ran the drift experiment: 3/4 gates now go red)):
+  the PR #155 F2+F3c residual family is closed — the advanced-span verdict path has
+  true end-to-end coverage through production capture/decode/step, and seal-fold
+  counterexamples surface in StepReport with dedup preserved. F5 encoder
+  consolidation folded in (byte-identical, judge-verified).
 - **Ledger-ingest lineage validation MERGED** (tasks/154, PR #157, `hm-wjv1`,
   2026-07-23 late night — discovery (F1 P1, judge-EXECUTED repro:
   collect-then-re-append admitted a content-distinct impostor; F2 refuted, exposing
