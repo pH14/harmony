@@ -1456,6 +1456,14 @@ unbounded 28207). The in-kernel force-exit fired on every preemption (36/36) and
 
 ## Task 142 (hm-40na) — `MockBackend` late-landing capability
 
+> **Superseded by task 156 (hm-j16h).** The `push_late_landing` queue described
+> below was replaced by folding lateness into the script entry itself; the
+> `push_late_landing` method and the `late_landings` field are **deleted**. The
+> *capability* (a scripted `Deadline` that lands past the requested deadline)
+> survives — it now rides on the script entry's `reached`. See "Task 156" below.
+> The historical rationale here is retained; where it says "`push_late_landing`",
+> read "a scripted `CommonExit::Deadline { reached }` past the deadline".
+
 `run_until` used to rewrite `reached := deadline` unconditionally, so the mock
 could **never land late** — a scripted `Deadline` always stopped exactly where
 asked. That made the box `@3e7` failure shape (a staged `Moment`'s arrival the
@@ -1463,22 +1471,11 @@ exact-count seam could not clamp, so the guest free-ran to the next natural
 boundary — overshoot < 1 quantum) unreproducible portably; PR #143's regression
 had to use a ratio-1000 clock fixture as a *proxy* for the overshoot.
 
-- **New scripted knob:** `MockBackend::push_late_landing(reached)` enqueues an
-  absolute landing count. A FIFO queue is consumed **one per scripted
-  `Deadline` returned from `run_until`**; each such leg lands at the scripted
-  `reached` (PAST the requested deadline) instead of at the deadline. Drained
-  queue ⇒ the exact `reached := deadline` default returns. **Mock-only, behind
-  the `mock` feature — no `Backend` trait or production control-path change.**
-- **Default byte-identical:** with nothing scripted the queue is empty and
-  `run_until` is unchanged, so every existing `vmm-core` /
-  `campaign-runner` / `explorer` test (incl. the bit-identical determinism
-  proptests) passes unchanged (verified: 542 + 320 green).
-- **Determinism:** the lateness is an explicit, ordered test input — no clock,
-  no randomness, no wall time. Consumed only in `run_until`'s `Deadline` arm, so
-  plain `run` stays verbatim (`late_landing_only_affects_run_until_not_run`).
-- **No `unsafe`:** the field is a `VecDeque<Moment>`; push/pop only. The
-  unsafe⇒Miri rule is not triggered, and the new mock tests run clean under Miri
-  regardless (`late_landing_*` in `tests/run_loop.rs`).
+- **The scripted knob (task 142 form, now removed):** `push_late_landing(reached)`
+  enqueued an absolute landing count, consumed one per scripted `Deadline`
+  returned from `run_until`. Task 156 removed the queue; lateness is now the
+  script entry's own `reached`. **Mock-only, behind the `mock` feature — no
+  `Backend` trait or production control-path change**, then and now.
 - **The regression this unblocks lives in `vmm-core`** (`control.rs`, the
   `late_landing_*` tests), driving the merged arm-seam guard's failure shape
   from a genuine late landing. See `vmm-core/IMPLEMENTATION.md` "Task 142" for
@@ -1488,3 +1485,67 @@ had to use a ratio-1000 clock fixture as a *proxy* for the overshoot.
   vns↔work *round-UP* seam, the ratio-1000 proxy's shape, not the
   backend-can't-clamp late landing that `@3e7` actually is). That is hm-x1ss
   input, not cured here.
+
+## Task 156 (hm-j16h) — fold lateness into the script entry's `reached`
+
+Judge-pooled family from PR #145 (F2 + F3), closed with one structural change.
+
+- **F2 (latent fidelity bug).** The task-142 `late_landings.pop_front().unwrap_or(deadline)`
+  used the popped value **unchecked**, so a scripted at-or-before landing produced
+  `reached < deadline` — violating the frozen `CommonExit::Deadline` invariant
+  (`exit.rs`: "reached ≥ requested deadline") and the trait's late-only-stop
+  freeze (`backend.rs`). Test-only (non-default `mock` feature, no in-tree
+  misuse), but a real regression in the double.
+- **F3 (duplication).** The parallel `late_landings` queue duplicated the script's
+  `Deadline::reached` channel (~a field, a public method, three tests, plus a
+  queue-vs-script misalignment hazard).
+
+**The fix.** `run_until` now returns `max(scripted reached, requested deadline)`
+for a scripted `Deadline`. This makes `reached < deadline` **unrepresentable by
+construction** (F2 gone — not guarded, impossible), and the `late_landings` queue
++ `push_late_landing` method are **deleted** (F3 gone): lateness rides on the
+script entry's own `reached`. An at-or-before scripted `reached` clamps up to the
+deadline (exact landing); a genuinely-late one (`reached > deadline`) lands late
+at its boundary. Plain `run` still returns the scripted `Deadline` verbatim (no
+fold) — which is why the arbitrary-reached proptest `counts_match_histogram`
+exercises `run`, not `run_until` (verified: it drives `m.run()` and asserts
+`got == scripted`, so arbitrary `reached` never meets the fold).
+
+- **Public-surface removal.** `push_late_landing` is deleted from the `mock`
+  feature's public API. The frozen `tests/public-api.txt` snapshot **covers the
+  feature-gated surface** (`--all-features`), so its `push_late_landing` line is
+  removed too. The snapshot is Linux-frozen (includes `KvmBackend`) and its guard
+  test skips on macOS; the removal is a single sorted-line deletion (no other
+  public item changes), so it is exactly what a Linux regen on the pinned nightly
+  (`nightly-2026-06-16`) would produce. This removal is the **point** of the
+  change, not drift.
+- **Consumer migration (required regression 3).** The only `push_late_landing`
+  callers were tests: the three `late_landing_*` in `tests/run_loop.rs` and the
+  `late_landing_vmm` fixture in `vmm-core/src/control.rs`. All migrated 1:1 to a
+  scripted `CommonExit::Deadline { reached }`:
+  - `run_loop.rs`: `late_landing_lands_past_the_requested_deadline` →
+    `run_until_folds_a_late_reached_past_the_requested_deadline` (regression 2);
+    `late_landings_are_a_fifo_queue_that_drains_to_exact` →
+    `each_run_until_leg_folds_its_own_scripted_reached_independently`;
+    `late_landing_only_affects_run_until_not_run` →
+    `run_passes_deadline_verbatim_while_run_until_folds`. The pre-existing
+    `run_until_returns_deadline_with_requested_value` (renamed
+    `run_until_folds_an_at_or_before_reached_up_to_the_deadline`) is regression 1
+    (`reached: 0 < deadline` clamps up).
+  - `vmm-core/control.rs`: `late_landing_vmm(land_at)` now scripts
+    `Deadline { reached: land_at }` instead of pushing a landing onto a
+    `reached: 0` placeholder. Equivalent because the arm deadline the fixtures use
+    (1500) is `< land_at` (2000), so `max(land_at, 1500) == land_at` — identical
+    to the old queue's unconditional `land_at`. All four vmm-core `late_landing_*`
+    tests and the section's finding are unchanged.
+- **Behavior-preservation for the other consumers.** Every other scripted
+  `CommonExit::Deadline` reaching a `MockBackend::run_until` uses `reached: 0`
+  (verified across `vmm-core` and `campaign-runner`), so `max(0, deadline) ==
+  deadline` — byte-identical to the old unconditional rewrite. `campaign-runner`'s
+  `CountingBackend` far-deadline delegate (`inner.run_until(d)` on a `reached: 0`
+  placeholder) still yields `reached = d`; its 40/250/`u64::MAX` values are wrapper
+  *outputs*, never scripted inner placeholders.
+- **No `unsafe`, Miri-clean.** The change is safe logic (an integer `max`, a field
+  + method deletion); the unsafe⇒Miri rule is not newly triggered, and the four
+  migrated fold tests run clean under Miri (`nightly-2026-06-16`,
+  `-Zmiri-permissive-provenance`).
