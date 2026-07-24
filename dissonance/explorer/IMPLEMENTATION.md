@@ -2007,3 +2007,160 @@ sites, the new ingest-validation tests + two test-fixture helpers),
 `ancestor_collected`, `AncestryIndex`, `collect`, `compact`, and fold behavior
 are unchanged — the malformed-ledger walk bounds stay as defense-in-depth. No
 sibling crate touched; no dependency changes.
+
+# tasks/155 — v1-verb test machine → e2e advanced-span verdict gate + StepReport seal-counterexample surface (hm-5mx0)
+
+Closes the two residuals PR #155 (tasks/152) parked when it landed the seal-arm
+verdict fold at the fold surface only: **F3c** (no gate drives an advanced-span
+occurrence/assertion hit through the *production* capture/decode/step path) and
+**F2** (the seal fold's `new_counterexamples` never reach `StepReport`). One
+piece of infrastructure — a v1-verb-capable test machine — unlocks both.
+
+## Why the fold-surface deviation existed
+
+The verdict folds (`OccurrenceOracle`, `AbsenceLedger.satisfies_must_hit`) key on
+an assertion's **`AssertType`** — its declared *verb*. Only a **v1** SDK catalog
+carries the verb (in its per-point kind byte); the production host encoder
+`sdk_events::encode_v2_declaration` emits **v2**, which declares an `expectation`
+but no verb, so `AssertType` decodes `None` and neither fold fires. The
+crate-test machine `ScriptedMachine` emits a v2 catalog and state events only,
+with `Quiescent` seals — so an occurrence/assertion firing existing only in a
+seal's advanced span `[rollout_terminal, seal_cut)` was unreachable through
+`step()`. PR #155's red-before therefore worked at the `fold_batch` surface
+(retention.rs `advanced_span_sometimes_hit_closes_the_false_absence`), an
+adjudicated, documented deviation whose residual this task closes.
+
+## The v1-verb test machine (`testkit::VerbMachine`)
+
+`ScriptedMachine`'s Machine-trait shape, generalized so its SDK trajectory is
+arbitrary **assertion** *and* state firings declared through a **v1 catalog**
+that carries each verb. `ScriptedMachine` is left byte-for-byte untouched (its v2
+shape is load-bearing for the existing suites); `VerbMachine` is a sibling built
+alongside it. It is lineage-aware (snapshot captures the emitted prefix; branch
+restores it) and supports the marker-clamped run-forward seal shape (tasks/136 +
+tasks/144): stage a marker with `with_markers`, pair a `MarkerCodec` reporting
+the same key, and the seal advances to the drained marker, capturing any firing
+in the advanced span. Its `run`/`snapshot` are the identical model as
+`ScriptedMachine` (they advance on emit *moments*, blind to firing content), so
+the catalog-inclusive cut stamp (`1 + included`) still equals the raw capture
+length — `capture_seal_suffix`'s count invariant holds unchanged.
+
+The gate shape mirrors the proven state-event advanced seal
+(`advanced_seal_captures_its_run_forward_suffix_into_the_graph`): a rollout-body
+firing at moment 10/12 nominates the candidate at or below the terminal 20; the
+staged marker at 30 clamps the seal forward past the terminal; a firing at 25
+lands in the seal suffix.
+
+## F5 (ride-along) — encoder consolidation
+
+PR #155 F5 flagged three hand-written `SDKC` v1-catalog encoders (occurrence.rs
+×2, retention.rs) plus a duplicated firing encoder. They now all call one
+`testkit` fixture pair — `encode_v1_catalog` / `assert_firing` (+ `state_firing`,
+and the named `KIND_*`/`DISP_*` byte constants) — which `VerbMachine` is itself
+built on. `ScriptedMachine`'s v2 fixtures are unrelated and untouched.
+
+## F3c — the true end-to-end advanced-span verdict gate
+
+`campaign::tests::advanced_span_sometimes_hit_closes_the_false_absence_e2e`: a
+`sometimes` must-hit (local 5) is declared but NEVER fired in the rollout body (a
+false absence after the rollout fold); a benign state emit at 10 nominates the
+candidate; the must-hit is HIT only at 25, inside the advanced span. Driven
+through the production `step()` (→ `capture_seal_suffix` → `decode_child_suffix`
+→ the seal `fold_batch`), the advanced-span hit satisfies the must-hit — the
+absence clears, `satisfied == 1` exactly (`== 1`, not `>= 1`: satisfied-counts
+feed `canonical_bytes`, so a double fold would inflate it — F3a). A non-vacuity
+companion (`sometimes_unfired_in_the_advanced_span_stays_absent_e2e`) fires the
+must-hit nowhere: the step still seals (empty advanced span) yet the must-hit
+stays a true absence, pinning that the closure is the hit's doing.
+
+### RED-BEFORE (quoted)
+
+Gating the seal arm off (`if matches!(ev.role, Rollout) { self.fold_verdicts(..) }`
+in `RetentionViews::fold_batch`) and running the gate:
+
+```
+thread 'campaign::tests::advanced_span_sometimes_hit_closes_the_false_absence_e2e'
+panicked at dissonance/explorer/src/campaign.rs:2451:9:
+the advanced-span sometimes-hit closes the false absence end to end
+```
+
+The absence stands (`satisfied == 0`) exactly as PR #155's fold-surface
+red-before did, now witnessed through the whole production step path. The
+seal-only counterexample gate (below) goes red in the same run
+(`left: 0, right: 1`). Reverted before commit.
+
+## F2 — StepReport seal-counterexample surface
+
+`campaign.rs:step()` initialized `StepReport.counterexamples` from the rollout
+fold only and consumed only `fold2.admitted` from each seal fold, so an
+occurrence counterexample first seen in a seal's advanced span was folded into
+the authoritative views (`finalized.counterexamples`, the dedup set) but its
+details (property, kind, Moment) never surfaced in any step. The seal fold now
+merges `fold2.new_counterexamples` into `report.counterexamples`. Same dedup
+semantics as the rollout fold, for free: `fold_verdicts` only pushes a
+counterexample into `new_counterexamples` when its fingerprint is newly inserted
+into the campaign-wide `seen_counterexamples`, so a fingerprint already counted
+(rollout body, or an earlier seal this step) is absent from the seal fold's
+report — no duplication. Two gates:
+
+- `seal_only_counterexample_surfaces_in_step_report_once`: an `unreachable`
+  reached only in the advanced span surfaces exactly one counterexample,
+  localized to moment 25, consistent with `finalized.counterexamples == 1`.
+- `rollout_counterexample_refired_in_the_seal_span_is_not_duplicated`: an
+  `always` violated in the rollout body *and* re-fired in the advanced span is
+  reported once, not twice.
+
+The field doc's rollout-fold-only caveat (added by PR #155) is removed. The
+`StepReport` **shape is unchanged** — an existing public field is now populated,
+not a new field — so the public-API snapshot is unchanged (re-verified with
+`cargo public-api`, no diff).
+
+## Hash-neutrality
+
+`StepReport` is a report; nothing in it feeds a committed hash. The F2 change
+only populates that report from a fold whose verdict-state effects (the
+`seen_counterexamples` set, `finalized.counterexamples`) were already applied by
+PR #155 — merging its already-deduped output into the report changes no
+canonical bytes. The same-seed campaign / retention determinism suites and the
+`bounded_working_set_holds_cap_and_determinism` proptest (all unchanged) stay
+green. No `unsafe` added → no Miri obligation.
+
+## Deviations considered and rejected
+
+- **A config flag to disable the seal arm for the red-before, instead of a
+  manual edit.** Rejected: it would add a permanent production knob solely to
+  demonstrate a red-before, exactly the surface the charter keeps minimal. The
+  manual gate-and-revert (quoted above) is what PR #155's own red-before used.
+- **Making the encoder/fixtures `pub` so `campaign-runner`'s inline `SDKC` copy
+  (gamecampaign.rs) could share them.** Rejected: F5 names only the three
+  explorer copies; the campaign-runner copy is a `resolve_v1_declaration`
+  guest-catalog-upgrade fixture (a different purpose), out of this task's surface
+  (`dissonance/explorer`), and sharing would widen the public API for a test-only
+  helper.
+- **Emitting the advanced-span occurrence as a `StopReason::Assertion` terminal
+  (the other occurrence-counterexample kind).** Not needed: the data-plane
+  firing path exercises `capture_seal_suffix`/`decode_child_suffix` (the point of
+  F3c); the terminal-assertion path has its own oracle coverage.
+
+## Gates (all green, macOS)
+
+- `cargo build -p explorer --all-features`
+- `cargo nextest run -p explorer --all-features` — 175 pass / 1 skip
+- `cargo nextest run -p campaign-runner --all-features` — 179 pass / 1 skip
+  (incl. same-seed / determinism / reseed-fold proptests)
+- `cargo clippy -p explorer --all-features --all-targets -- -D warnings`
+- `cargo fmt -p explorer -- --check`
+- `cargo deny check` — advisories / bans / licenses / sources ok
+- `cargo public-api -p explorer --all-features` — snapshot unchanged (no drift)
+- `cargo mutants --no-shuffle --in-diff pr.diff -p explorer` — 1 mutant (the F2
+  production line), 1 caught, **0 missed** (the `#[cfg(test)]` machine/fixtures
+  are not mutated)
+
+## Scope fence
+
+Touched only `dissonance/explorer/`: `src/testkit.rs` (the `VerbMachine` +
+consolidated v1 encoders), `src/campaign.rs` (the F2 fix + `StepReport` field
+doc + the new e2e/StepReport gates), `src/occurrence.rs` and `src/retention.rs`
+(F5: the hand-written v1 fixtures replaced with the `testkit` calls). No ledger,
+wire-format, dependency, or public-API change. `ScriptedMachine`,
+`hm-w1o6`/`hm-4gaw`/`hm-6x0w`/`hm-avvc`/`hm-g2bq` untouched.
