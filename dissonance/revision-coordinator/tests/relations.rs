@@ -728,3 +728,87 @@ fn malformed_evidence_rows_are_refused_at_staging() {
     })
     .expect("the well-formed neighbor stages cleanly");
 }
+
+/// PR #162 F1 regression, part (a): a duplicate-child lineage edge must not
+/// OVERWRITE the acyclicity view. Staging `1→2`, then the divergent `1→3`,
+/// then the cycle-closing `2→1` used to return `Ok` on all three (the guard
+/// walked the overwritten `1→3` while the fed graph kept `1→2`), and driving
+/// past the drained cyclic edge set hung `probe_drive` — the exact F7 hang
+/// hm-tx66 is chartered to close. Now the divergent re-edge is refused with
+/// the typed conflict, and the cycle-closing edge is refused by the walk.
+#[test]
+fn duplicate_child_divergent_parent_is_refused_and_the_cycle_stays_closed() {
+    let mut coord = coordinator();
+    let edge = |child: u64, parent: u64, moment: u64| EvidenceRows {
+        rollout: child,
+        lineage: Some(LineageRow {
+            parent,
+            cut: CutRow { moment, count: 0 },
+        }),
+        ..EvidenceRows::default()
+    };
+    let cohort = coord.open_cohort().expect("cohort");
+    let p1 = coord.assign(cohort).expect("assign 1");
+    coord
+        .stage_evidence(p1.proposal, edge(1, 2, 5))
+        .expect("the first edge stages");
+    // The divergent re-edge (same child, different parent): typed refusal,
+    // never an overwrite.
+    let p2 = coord.assign(cohort).expect("assign 2");
+    assert!(matches!(
+        coord.stage_evidence(p2.proposal, edge(1, 3, 6)),
+        Err(CoordError::LineageConflict {
+            rollout: 1,
+            existing_parent: 2,
+            parent: 3,
+            ..
+        })
+    ));
+    // The cycle-closing edge walks the REAL (un-overwritten) edge set.
+    let p3 = coord.assign(cohort).expect("assign 3");
+    assert!(matches!(
+        coord.stage_evidence(p3.proposal, edge(2, 1, 7)),
+        Err(CoordError::LineageCycle {
+            rollout: 2,
+            revisits: 2
+        })
+    ));
+    // A byte-identical re-edge for the child stays tolerated (it collapses
+    // in every distinct-ed relation; only DIVERGENCE conflicts).
+    coord
+        .stage_evidence(p2.proposal, edge(1, 2, 5))
+        .expect("an identical re-edge is not a conflict");
+}
+
+/// PR #162 F1 regression, part (b): NO cycle needed. Two same-parent edges
+/// for one child with DIVERGENT fork counts would both feed the graph and
+/// fold the parent's prefix into the child's inherited start state twice —
+/// the scalar map dropped `l.cut.count` entirely. A divergent fork count is
+/// now the same typed conflict.
+#[test]
+fn duplicate_child_divergent_fork_count_is_refused() {
+    let mut coord = coordinator();
+    let edge = |count: u64| EvidenceRows {
+        rollout: 2,
+        lineage: Some(LineageRow {
+            parent: 1,
+            cut: CutRow { moment: 5, count },
+        }),
+        ..EvidenceRows::default()
+    };
+    let cohort = coord.open_cohort().expect("cohort");
+    let p1 = coord.assign(cohort).expect("assign 1");
+    coord
+        .stage_evidence(p1.proposal, edge(4))
+        .expect("the first edge stages");
+    let p2 = coord.assign(cohort).expect("assign 2");
+    assert!(matches!(
+        coord.stage_evidence(p2.proposal, edge(9)),
+        Err(CoordError::LineageConflict {
+            rollout: 2,
+            existing_count: 4,
+            count: 9,
+            ..
+        })
+    ));
+}

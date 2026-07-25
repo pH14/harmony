@@ -225,26 +225,63 @@ this task's runs (full workspace suite ×, gamecampaign smoke campaigns ×).
   `GameCampaignError::TraceDirNotFresh`) and two additive methods
   (`GameCampaignConfig::config_id`,
   `SdkSchema::original_v1_declaration`).
-- `cargo mutants --no-shuffle --in-diff` over the full task diff (final
-  tree, `main...HEAD`): **66 mutants tested in 16m: 60 caught, 6 unviable,
-  0 missed, 0 timeouts.** The 6 unviable are `Default::default()`
-  return-replacements on types with no `Default` impl — structurally
-  unbuildable, not gaps. Two earlier passes each caught real weaknesses in
-  this task's own tests, fixed in `2ac9ae9b` (vfop guard disjuncts made
-  independently decisive; the redundant tombstone disjunct removed with
-  proof) and `d47f8212` (fork-count equality boundary pinned;
-  expectation-only provenance-drift leg added — the only reachable way to
-  make that comparison disjunct decisive, since a v1 catalog's namespace
-  fixes its classification).
+- `cargo mutants --no-shuffle --in-diff` over the full merge-base diff
+  including the PR #162 F1 fix: **70 mutants tested in 17m: 63 caught, 7
+  unviable, 0 missed, 0 timeouts.** (The pre-review head's run: 66
+  tested, 60 caught, 6 unviable, 0 missed.) The unviable are
+  `Default::default()` return-replacements on types with no `Default`
+  impl — structurally unbuildable, not gaps. The F1 fix's new
+  `LineageConflict` comparison mutants are killed by its regressions
+  (the `&&`-swap by the three-edge sequence's cycle assertion, the
+  `!=`-flips by the identical-re-edge tolerance leg). Two earlier passes
+  each caught real weaknesses in this task's own tests, fixed in
+  `2ac9ae9b` (vfop guard disjuncts made independently decisive; the
+  redundant tombstone disjunct removed with proof) and `d47f8212`
+  (fork-count equality boundary pinned; expectation-only
+  provenance-drift leg added — the only reachable way to make that
+  comparison disjunct decisive, since a v1 catalog's namespace fixes its
+  classification).
+
+## PR #162 review round — F1 fix
+
+The tribunal's judge executed PR162-F1 (P1) against the hm-tx66 choke
+point and was right on both counts; the pre-review "noted rather than
+defended" judgment call below was **wrong** — the overwrite was not
+harmless:
+
+- **(a)** staging `1→2`, then the divergent `1→3` (same child), then the
+  cycle-closing `2→1` all returned `Ok`: the divergent re-edge
+  *overwrote* the scalar validation map while both edges stayed bound for
+  the fed graph, so the acyclicity walk saw `1→3` and missed the fed
+  `1→2→1` cycle — `probe_drive` then hung on the drained edge set, the
+  exact F7 hang hm-tx66 is chartered to close.
+- **(b)** the scalar map dropped `l.cut.count`, so two same-parent edges
+  with divergent fork counts both fed `start_contrib` and corrupted the
+  child's inherited start state with no cycle involved.
+
+Fix (one choke point, in `stage_evidence`): the lineage map now keys
+`child → (parent, fork count)` and is **never overwritten** — a
+divergent re-edge (different parent *or* fork count) is a typed
+`CoordError::LineageConflict` carrying both edges; a byte-identical
+re-edge stays tolerated (the idempotent same-revision restage returns
+early, and an identical edge collapses in every `distinct`-ed relation).
+The acyclicity walk is sound again because its view *is* the fed edge
+set. Regressions: duplicate-child divergent-parent, duplicate-child
+divergent-fork-count, the three-edge cycle sequence (divergent re-edge
+refused, cycle-closing edge refused by the walk), and identical-re-edge
+tolerance. The judge's seed repro was copied in, confirmed red on the
+pre-fix tree (`BYPASS CONFIRMED`), confirmed to die at the divergent
+staging with the typed conflict on the fixed tree, and deleted as
+instructed. F2–F6 are parked as beads (`hm-382z`, `hm-odhm`, `hm-qoen`,
+`hm-dzm7`, `hm-wvzz`) and deliberately untouched here.
 
 ## Judgment calls / limitations for the integrator
 
 - **Coordinator lineage map is append-only and process-local** (rebuilt on
-  recovery via re-staging). A hostile double-stage of one rollout under
-  two proposals with different parents overwrites the edge; the walk stays
-  acyclic-checked at each staging, so the hang stays unreachable — noted
-  rather than defended further (the ledger's own ingest cycle refusal,
-  hm-wjv1, is the durable authority).
+  recovery via re-staging), and since the PR #162 F1 fix it is
+  conflict-checked rather than overwritable: a divergent re-edge for a
+  staged/fed child is a typed refusal, so the validation view can never
+  drift from the fed graph.
 - **`OversizedRecord` is tested on the pure bound**, not through a real
   >64 MiB append (runtime). The framer calls the helper on every append.
 - **mazecampaign's seed-only config id** is out of surface and still

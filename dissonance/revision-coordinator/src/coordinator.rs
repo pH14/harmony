@@ -189,6 +189,33 @@ pub enum CoordError {
         /// self-parent).
         revisits: u64,
     },
+    /// A staged lineage edge for a child rollout **disagrees** with the edge
+    /// already staged/fed for that child — a different parent or a different
+    /// fork count (PR #162 F1). The earlier edge is already in (or bound
+    /// for) the live dataflow and cannot be retracted, so accepting the
+    /// divergent one would let the acyclicity guard's view drift from the
+    /// fed graph (the exact bypass that let a cycle back in to hang
+    /// `probe_drive`), and a divergent fork count alone feeds one child's
+    /// inherited start state twice. A byte-identical re-edge is not a
+    /// conflict (the idempotent same-revision restage returns early, and an
+    /// identical edge collapses in every `distinct`-ed relation).
+    #[error(
+        "conflicting lineage for rollout {rollout}: staged edge (parent {existing_parent}, \
+         fork count {existing_count}) vs incoming (parent {parent}, fork count {count}) — a \
+         divergent re-edge cannot retract the already-fed one and is refused"
+    )]
+    LineageConflict {
+        /// The child rollout with two disagreeing edges.
+        rollout: u64,
+        /// The already-staged/fed edge's parent.
+        existing_parent: u64,
+        /// The already-staged/fed edge's fork count.
+        existing_count: u64,
+        /// The refused incoming edge's parent.
+        parent: u64,
+        /// The refused incoming edge's fork count.
+        count: u64,
+    },
     /// Staged evidence rows violate the relation contract (hm-tx66):
     /// non-monotone state-event positions (the reduce contract feeds each
     /// evidence coordinate exactly once), a position or provisional-cut
@@ -589,11 +616,16 @@ pub struct Coordinator {
     /// Every observation declaration seen (staged or fed), for the schema
     /// conflict check — one identity, one base operation.
     declared: BTreeMap<ObsKey, ReduceOp>,
-    /// Every lineage edge seen (staged or fed), `child rollout → parent` —
-    /// the acyclicity authority for the staging choke point (hm-tx66). Edges
-    /// are never removed: a fed edge is in the live dataflow, so a later
-    /// staging that would close a cycle through it must still be refused.
-    lineage: BTreeMap<u64, u64>,
+    /// Every lineage edge seen (staged or fed), `child rollout → (parent,
+    /// fork count)` — the acyclicity authority for the staging choke point
+    /// (hm-tx66). Edges are never removed OR overwritten: a fed edge is in
+    /// the live dataflow, so a later staging carrying a DIVERGENT edge for
+    /// the same child (different parent or different fork count) is refused
+    /// ([`CoordError::LineageConflict`], PR #162 F1) — an overwrite would
+    /// let the validation view drift from the fed graph, re-opening the
+    /// cycle hang this map exists to close, and a divergent fork count
+    /// alone double-feeds the child's inherited start state.
+    lineage: BTreeMap<u64, (u64, u64)>,
     /// Identities already fed to the live dataflow (a declaration is fed
     /// exactly once, so declaration joins never fan out).
     fed_declares: BTreeSet<ObsKey>,
@@ -893,6 +925,12 @@ impl Coordinator {
     ///   (a self-parent is the length-one case) is a
     ///   [`CoordError::LineageCycle`] — fed to the graph it would hang the
     ///   distinct-over-depth ancestry iteration, and `probe_drive` with it;
+    /// - a lineage edge for a child that already carries a DIVERGENT
+    ///   staged/fed edge (different parent or fork count) is a
+    ///   [`CoordError::LineageConflict`] — the earlier edge cannot be
+    ///   retracted from the fed graph, so an overwrite would let the
+    ///   acyclicity view drift from it (PR #162 F1); a byte-identical
+    ///   re-edge is tolerated;
     /// - structurally malformed rows (non-monotone or below-fork event
     ///   positions, a duplicate or below-fork provisional-cut count, an
     ///   Entry offer with no seal row) are a
@@ -933,6 +971,24 @@ impl Coordinator {
             }
         }
         if let Some(l) = &rows.lineage {
+            // A child already carrying a staged/fed edge may only re-declare
+            // the IDENTICAL edge (parent AND fork count). The earlier edge
+            // cannot be retracted from the fed graph, so a divergent
+            // re-edge is refused rather than overwriting the validation
+            // view (PR #162 F1: the overwrite let a cycle bypass the walk
+            // below and hang `probe_drive`; a divergent fork count alone
+            // double-feeds the child's inherited start state).
+            if let Some(&(existing_parent, existing_count)) = self.lineage.get(&rows.rollout)
+                && (existing_parent != l.parent || existing_count != l.cut.count)
+            {
+                return Err(CoordError::LineageConflict {
+                    rollout: rows.rollout,
+                    existing_parent,
+                    existing_count,
+                    parent: l.parent,
+                    count: l.cut.count,
+                });
+            }
             self.check_lineage_acyclic(rows.rollout, l.parent)?;
         }
         if let Some(existing) = self.staged.get(&rev) {
@@ -945,16 +1001,18 @@ impl Coordinator {
             self.declared.insert(obs.clone(), *op);
         }
         if let Some(l) = &rows.lineage {
-            self.lineage.insert(rows.rollout, l.parent);
+            self.lineage.insert(rows.rollout, (l.parent, l.cut.count));
         }
         self.staged.insert(rev, rows);
         Ok(())
     }
 
     /// Refuse a lineage edge `child → parent` that would close a cycle
-    /// through the staged/fed edge set (hm-tx66). The walk is bounded by the
-    /// visited set, so it terminates even if the retained map were somehow
-    /// already cyclic.
+    /// through the staged/fed edge set (hm-tx66). Sound because the map is
+    /// never overwritten — a divergent re-edge is refused before this walk
+    /// ([`CoordError::LineageConflict`]), so the validation view IS the fed
+    /// edge set. The walk is bounded by the visited set, so it terminates
+    /// even if the retained map were somehow already cyclic.
     fn check_lineage_acyclic(&self, child: u64, parent: u64) -> Result<(), CoordError> {
         let mut visited = BTreeSet::new();
         visited.insert(child);
@@ -967,7 +1025,7 @@ impl Coordinator {
                 });
             }
             match self.lineage.get(&cur) {
-                Some(&next) => cur = next,
+                Some(&(next, _count)) => cur = next,
                 None => return Ok(()),
             }
         }
