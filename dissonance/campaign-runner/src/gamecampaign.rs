@@ -759,9 +759,13 @@ fn smb_instrumentation_catalog() -> Vec<u8> {
 /// is reducible by the Differential relations. A guest that declared its own
 /// (wire-v1) catalog has that declaration **upgraded in place**
 /// ([`sdk_events::resolve_v1_declaration`] — the guest's declared points,
-/// expectations, and names are preserved through the decoder's own parsing);
-/// a guest with no catalog (the portable toys) has the standalone
-/// declaration prepended. Everything else delegates.
+/// expectations, and names are preserved through the decoder's own parsing,
+/// and the upgraded blob **embeds the raw guest v1 bytes** as validated
+/// audit provenance, recoverable from the persisted schema via
+/// `SdkSchema::original_v1_declaration` — hm-dd39: the upgrade no longer
+/// discards the original the schema's audit promise names); a guest with no
+/// catalog (the portable toys) has the standalone declaration prepended.
+/// Everything else delegates.
 struct DeclaredMachine<M> {
     inner: M,
     catalog: Vec<u8>,
@@ -2038,6 +2042,26 @@ mod tests {
         assert!(
             n.schema.entry(&x).expect("declared").is_reducible_state(),
             "the upgraded declaration resolves the register"
+        );
+        // hm-dd39: the upgrade retains the RAW guest v1 bytes as validated
+        // provenance — the schema's audit promise, previously broken by the
+        // in-place rewrite (only the synthetic v2 blob survived). The exact
+        // guest bytes are reconstructed here byte-for-byte.
+        let guest_v1 = {
+            let mut b = Vec::new();
+            b.extend_from_slice(&u32::from_le_bytes(*b"SDKC").to_le_bytes());
+            b.push(1);
+            b.extend_from_slice(&1u32.to_le_bytes());
+            b.push(4);
+            b.extend_from_slice(&(reg::X_BUCKET as u32).to_le_bytes());
+            b.extend_from_slice(&(1u16).to_le_bytes());
+            b.push(b'x');
+            b
+        };
+        assert_eq!(
+            n.schema.original_v1_declaration(),
+            Some(guest_v1.as_slice()),
+            "the raw guest v1 declaration is recoverable for audit/migration"
         );
         // Delegation is verbatim (kills the delegation stub mutants).
         assert_eq!(m.hash().expect("hash"), [7u8; 32]);

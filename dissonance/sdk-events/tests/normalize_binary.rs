@@ -1107,7 +1107,10 @@ proptest! {
     }
 
     /// A random unrecognized catalog version is refused, never decoded under a
-    /// guessed layout; only the two known versions decode.
+    /// guessed layout; only the known versions decode (the plain v1/v2 forms,
+    /// plus the host-side upgraded form 0x82 — whose body here, a zero-length
+    /// original with no v2 records, is malformed and refused by its own
+    /// parser's typed error rather than by the version gate).
     #[test]
     fn unknown_catalog_versions_are_refused(version in any::<u8>()) {
         let mut decl = Vec::new();
@@ -1121,6 +1124,13 @@ proptest! {
         let r = decode_binary(&raw);
         match version {
             1 | 2 => prop_assert!(r.is_ok()),
+            0x82 => {
+                // Known (the upgraded form, hm-dd39) but this body is
+                // malformed for it: an error, and never UnsupportedVersion.
+                let refused = r.is_err()
+                    && !matches!(r, Err(SdkError::UnsupportedVersion { .. }));
+                prop_assert!(refused);
+            }
             _ => {
                 let unsupported = matches!(r, Err(SdkError::UnsupportedVersion { .. }));
                 prop_assert!(unsupported);
@@ -1258,4 +1268,116 @@ fn resolve_v1_refuses_an_uncovered_state_register() {
     let err =
         resolve_v1_declaration(&v1, &[(a, UpdateOp::Set)]).expect_err("register b is unresolved");
     let _ = err; // typed error, not a panic
+}
+
+// --- the upgraded catalog's embedded audit provenance (hm-dd39) ---
+
+/// The upgraded declaration EMBEDS the raw guest v1 bytes: after the whole
+/// decode → persist → load round trip, `original_v1_declaration()` recovers
+/// exactly the bytes the guest declared — the audit/migration promise the
+/// in-place upgrade used to break (the persisted `original_declaration`
+/// held only the synthetic v2 blob; the guest's raw bytes were gone).
+#[test]
+fn upgraded_catalog_retains_the_raw_guest_v1_bytes_for_audit() {
+    let v1 = v1_catalog(&[(4, 1, "a"), (2, 9, "marker")]);
+    let a = ObservationId::Point {
+        namespace: NS_STATE,
+        local: 1,
+    };
+    let upgraded = resolve_v1_declaration(&v1, &[(a.clone(), UpdateOp::Set)]).expect("upgrades");
+    let n = decode_binary(&[
+        (Moment(0), 0, upgraded),
+        (Moment(1), event_id(NS_STATE, 1), state_firing(STATE_SET, 7)),
+    ])
+    .expect("the upgraded capture decodes");
+    assert_eq!(
+        n.schema.original_v1_declaration(),
+        Some(v1.as_slice()),
+        "the raw guest v1 bytes are recoverable from the decoded schema"
+    );
+    // …and the recovery survives the persisted artifact: serialize the whole
+    // Normalized, load it back through the validated entry, recover again.
+    let json = serde_json::to_vec(&n).expect("encodes");
+    let loaded: sdk_events::Normalized = serde_json::from_slice(&json).expect("loads");
+    assert_eq!(loaded.schema.original_v1_declaration(), Some(v1.as_slice()));
+    // Decode SEMANTICS are the plain-v2 records': the resolution holds.
+    assert!(
+        loaded
+            .schema
+            .entry(&a)
+            .expect("declared")
+            .is_reducible_state()
+    );
+}
+
+/// A plain (non-upgraded) declaration reports no embedded original: the
+/// accessor is `None` for a native v2 catalog and for a v1 catalog.
+#[test]
+fn plain_catalogs_carry_no_embedded_original() {
+    let v2 = encode_v2_declaration(&[v2_state(1, "r", UpdateOp::Set)]).expect("encodes");
+    let n = decode_binary(&[(Moment(0), 0, v2)]).expect("decodes");
+    assert_eq!(n.schema.original_v1_declaration(), None);
+    let v1 = v1_catalog(&[(4, 1, "a")]);
+    let n = decode_binary(&[(Moment(0), 0, v1)]).expect("decodes");
+    assert_eq!(n.schema.original_v1_declaration(), None);
+}
+
+/// The embedded provenance is VALIDATED, not trusted: an upgraded blob whose
+/// embedded original was swapped for a different guest declaration (here: a
+/// v1 catalog declaring an extra register) is refused with the typed
+/// provenance error — the audit record can never silently drift from the
+/// schema it vouches for.
+#[test]
+fn upgraded_catalog_with_swapped_provenance_is_refused() {
+    let v1 = v1_catalog(&[(4, 1, "a")]);
+    let other = v1_catalog(&[(4, 1, "a"), (4, 2, "b")]);
+    let a = ObservationId::Point {
+        namespace: NS_STATE,
+        local: 1,
+    };
+    let upgraded = resolve_v1_declaration(&v1, &[(a, UpdateOp::Set)]).expect("upgrades");
+    // Splice `other` in as the embedded original: magic(4) + version(1) +
+    // len(4) + original bytes, then the v2 records.
+    let records_at = 4 + 1 + 4 + v1.len();
+    let mut tampered = Vec::new();
+    tampered.extend_from_slice(&upgraded[..5]); // magic + 0x82
+    tampered.extend_from_slice(&(other.len() as u32).to_le_bytes());
+    tampered.extend_from_slice(&other);
+    tampered.extend_from_slice(&upgraded[records_at..]);
+    let err = decode_binary(&[(Moment(0), 0, tampered)]).expect_err("provenance mismatch refused");
+    assert!(
+        matches!(err, SdkError::UpgradeProvenance { .. }),
+        "typed provenance refusal, got {err:?}"
+    );
+    // An embedded blob that is not a v1 catalog at all (nesting the upgraded
+    // form) is refused the same way.
+    let mut nested = Vec::new();
+    nested.extend_from_slice(&upgraded[..5]);
+    nested.extend_from_slice(&(upgraded.len() as u32).to_le_bytes());
+    nested.extend_from_slice(&upgraded);
+    nested.extend_from_slice(&upgraded[records_at..]);
+    let err = decode_binary(&[(Moment(0), 0, nested)]).expect_err("nested upgrade refused");
+    assert!(matches!(err, SdkError::UpgradeProvenance { .. }));
+}
+
+/// A name/expectation drift between the embedded v1 declaration and the v2
+/// records is refused: same identities, but the provenance no longer
+/// describes the schema (per-entry field comparison, not just the count).
+#[test]
+fn upgraded_catalog_with_drifted_entry_fields_is_refused() {
+    let v1 = v1_catalog(&[(4, 1, "a")]);
+    let renamed = v1_catalog(&[(4, 1, "z")]);
+    let a = ObservationId::Point {
+        namespace: NS_STATE,
+        local: 1,
+    };
+    let upgraded = resolve_v1_declaration(&v1, &[(a, UpdateOp::Set)]).expect("upgrades");
+    let records_at = 4 + 1 + 4 + v1.len();
+    let mut drifted = Vec::new();
+    drifted.extend_from_slice(&upgraded[..5]);
+    drifted.extend_from_slice(&(renamed.len() as u32).to_le_bytes());
+    drifted.extend_from_slice(&renamed);
+    drifted.extend_from_slice(&upgraded[records_at..]);
+    let err = decode_binary(&[(Moment(0), 0, drifted)]).expect_err("field drift refused");
+    assert!(matches!(err, SdkError::UpgradeProvenance { .. }));
 }

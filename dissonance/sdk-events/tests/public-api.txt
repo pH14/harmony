@@ -96,6 +96,8 @@ pub sdk_events::SdkError::UnsupportedDeclaration::namespace: u8
 pub sdk_events::SdkError::UnsupportedDeclaration::reason: &'static str
 pub sdk_events::SdkError::UnsupportedVersion
 pub sdk_events::SdkError::UnsupportedVersion::version: u8
+pub sdk_events::SdkError::UpgradeProvenance
+pub sdk_events::SdkError::UpgradeProvenance::detail: alloc::string::String
 pub enum sdk_events::SourceFormat
 pub sdk_events::SourceFormat::AntithesisJson
 pub sdk_events::SourceFormat::BinaryV1
@@ -178,6 +180,7 @@ pub fn sdk_events::SdkSchema::entry(&self, &sdk_events::ObservationId) -> core::
 pub fn sdk_events::SdkSchema::is_empty(&self) -> bool
 pub fn sdk_events::SdkSchema::len(&self) -> usize
 pub fn sdk_events::SdkSchema::new(sdk_events::SourceFormat, sdk_events::OrderingScope) -> sdk_events::SdkSchema
+pub fn sdk_events::SdkSchema::original_v1_declaration(&self) -> core::option::Option<&[u8]>
 pub struct sdk_events::SiteId
 pub sdk_events::SiteId::begin_column: u64
 pub sdk_events::SiteId::begin_line: u64

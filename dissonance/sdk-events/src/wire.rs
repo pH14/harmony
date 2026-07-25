@@ -34,6 +34,30 @@ pub(crate) const SDK_WIRE_VERSION: u8 = 1;
 /// task's surface).
 pub(crate) const SDK_WIRE_VERSION_V2: u8 = 2;
 
+/// The **host-side upgraded** v2 catalog-declaration version (hm-dd39): the
+/// form [`crate::resolve_v1_declaration`] mints when it upgrades a guest's
+/// wire-v1 catalog to resolved v2 semantics. The high bit marks it as a
+/// host-minted upgrade (never emitted by a guest — the guest sequence owns
+/// the low values); the low bits are the effective declaration version (2).
+///
+/// Upgraded catalog blob layout (all integers little-endian):
+/// ```text
+/// [magic u32][version=0x82 u8]
+/// [original_len u32][original v1 catalog bytes, verbatim]
+/// [count u32][v2 records…]          — exactly the SDK_WIRE_VERSION_V2 body
+/// ```
+/// The embedded original is **audit provenance only**: decode semantics are
+/// exactly the plain-v2 body's (in particular, a v1 assertion verb is *not*
+/// restored from it — the upgrade has always normalized verbs away), and the
+/// decoder validates that the embedded v1 declaration corresponds 1:1 to the
+/// v2 records so the provenance cannot silently drift from the schema it
+/// vouches for. This is what keeps the
+/// [`SdkSchema::original_declaration`](crate::SdkSchema) audit promise true
+/// for an upgraded guest catalog: the raw guest v1 bytes ride inside the
+/// recorded declaration, recoverable via
+/// [`SdkSchema::original_v1_declaration`](crate::SdkSchema::original_v1_declaration).
+pub(crate) const SDK_WIRE_VERSION_V2_UPGRADED: u8 = 0x82;
+
 /// v2 classification byte: a one-shot occurrence.
 pub(crate) const V2_CLASS_OCCURRENCE: u8 = 0;
 /// v2 classification byte: a state-bearing register.

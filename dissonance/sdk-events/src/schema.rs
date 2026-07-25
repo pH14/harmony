@@ -14,7 +14,11 @@
 //! *reportable* ([`UpdateOp`] `None`) but is not eligible for state reduction
 //! until a versioned source declaration resolves it — the binary-v1 never-fired
 //! contract. The original source declaration and raw bytes remain recoverable
-//! ([`SdkSchema::original_declaration`]) so a later decoder can audit or migrate.
+//! ([`SdkSchema::original_declaration`]) so a later decoder can audit or migrate
+//! — including for a guest v1 catalog upgraded in place by a host resolution
+//! ([`crate::resolve_v1_declaration`], hm-dd39): the upgraded declaration
+//! embeds the raw guest v1 bytes as validated provenance, recoverable via
+//! [`SdkSchema::original_v1_declaration`].
 
 use serde::{Deserialize, Serialize};
 
@@ -508,6 +512,19 @@ impl SdkSchema {
     /// Attach the recoverable original declaration bytes.
     pub(crate) fn set_original_declaration(&mut self, raw: Raw) {
         self.original_declaration = Some(raw);
+    }
+
+    /// The raw **guest v1** declaration bytes behind an upgraded catalog, if
+    /// this schema was decoded from the host-side upgrade form
+    /// ([`crate::resolve_v1_declaration`], hm-dd39). The upgraded
+    /// declaration in [`original_declaration`](Self::original_declaration)
+    /// embeds the guest's original v1 bytes verbatim as audit provenance —
+    /// validated at decode against the resolved v2 records — and this
+    /// recovers exactly those bytes for audit or migration. `None` for a
+    /// plain (non-upgraded) declaration or when no declaration was recorded.
+    pub fn original_v1_declaration(&self) -> Option<&[u8]> {
+        let raw = self.original_declaration.as_ref()?;
+        crate::binary::embedded_original_v1(&raw.bytes)
     }
 }
 

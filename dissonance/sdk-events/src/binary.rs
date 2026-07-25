@@ -74,6 +74,18 @@ pub struct DeclaredPoint {
 /// deliverable; this host-side encoder exists so declarations round-trip and so
 /// fixtures/tools can build them.
 pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkError> {
+    let records = encode_v2_records(points)?;
+    let mut out = Vec::with_capacity(5 + records.len());
+    out.extend_from_slice(&wire::CATALOG_MAGIC.to_le_bytes());
+    out.push(wire::SDK_WIRE_VERSION_V2);
+    out.extend_from_slice(&records);
+    Ok(out)
+}
+
+/// Validate and encode a v2 catalog **body** (`count + records`, no header) —
+/// shared by [`encode_v2_declaration`] (the plain form) and
+/// [`resolve_v1_declaration`] (the upgraded, provenance-carrying form).
+fn encode_v2_records(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkError> {
     let mut seen: BTreeSet<(u8, u32)> = BTreeSet::new();
     for p in points {
         validate_v2_point(
@@ -109,8 +121,6 @@ pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkErr
     ordered.sort_by_key(|p| (p.namespace, p.local));
 
     let mut out = Vec::new();
-    out.extend_from_slice(&wire::CATALOG_MAGIC.to_le_bytes());
-    out.push(wire::SDK_WIRE_VERSION_V2);
     out.extend_from_slice(&(points.len() as u32).to_le_bytes());
     for p in ordered {
         out.push(p.namespace);
@@ -158,6 +168,20 @@ pub fn encode_v2_declaration(points: &[DeclaredPoint]) -> Result<Vec<u8>, SdkErr
 /// Errors with the decoder's own typed error on a malformed catalog, and
 /// with the encoder's validation on re-encode if the resolution contradicts
 /// or fails to cover the declaration.
+///
+/// The emitted blob is the **upgraded** catalog form
+/// ([`wire::SDK_WIRE_VERSION_V2_UPGRADED`], hm-dd39): the resolved v2
+/// records **plus the original v1 declaration bytes embedded verbatim** as
+/// audit provenance. The decoder validates the embedded original against
+/// the v2 records (so provenance can never drift from the schema it vouches
+/// for) and the raw guest bytes stay recoverable from the persisted
+/// artifact via
+/// [`SdkSchema::original_v1_declaration`](crate::SdkSchema::original_v1_declaration)
+/// — which is what keeps the `original_declaration` audit promise true for
+/// an upgraded guest catalog. Decode *semantics* are exactly the plain-v2
+/// records' (the embedded bytes change nothing at decode; in particular a
+/// v1 assertion verb stays normalized away, as this upgrade has always
+/// done).
 pub fn resolve_v1_declaration(
     catalog: &[u8],
     ops: &[(ObservationId, UpdateOp)],
@@ -186,7 +210,38 @@ pub fn resolve_v1_declaration(
             expectation: entry.expectation,
         });
     }
-    encode_v2_declaration(&points)
+    let records = encode_v2_records(&points)?;
+    // The length prefix is a u32; a larger original could not round-trip.
+    // No real guest catalog approaches this (the v1 wire itself is
+    // u16-name-prefixed records), so this is a pure bounds refusal.
+    let orig_len = u32::try_from(catalog.len()).map_err(|_| SdkError::UpgradeProvenance {
+        detail: format!(
+            "original v1 declaration of {} bytes exceeds the u32 length prefix",
+            catalog.len()
+        ),
+    })?;
+    let mut out = Vec::with_capacity(9 + catalog.len() + records.len());
+    out.extend_from_slice(&wire::CATALOG_MAGIC.to_le_bytes());
+    out.push(wire::SDK_WIRE_VERSION_V2_UPGRADED);
+    out.extend_from_slice(&orig_len.to_le_bytes());
+    out.extend_from_slice(catalog);
+    out.extend_from_slice(&records);
+    Ok(out)
+}
+
+/// The embedded original v1 declaration inside an **upgraded** catalog blob
+/// ([`wire::SDK_WIRE_VERSION_V2_UPGRADED`]), or `None` for any other bytes
+/// (a plain v1/v2 catalog, or junk). Pure slicing — no validation beyond the
+/// header shape; callers that need the provenance *checked* get that from
+/// [`decode_binary`], which refuses an upgraded blob whose embedded original
+/// does not correspond to its v2 records.
+pub(crate) fn embedded_original_v1(bytes: &[u8]) -> Option<&[u8]> {
+    let mut r = Reader::new(bytes);
+    if r.u32()? != wire::CATALOG_MAGIC || r.u8()? != wire::SDK_WIRE_VERSION_V2_UPGRADED {
+        return None;
+    }
+    let len = r.u32()? as usize;
+    r.take(len)
 }
 
 /// The classification a namespace's firings actually decode to on the binary path
@@ -397,6 +452,7 @@ fn parse_declaration(bytes: &[u8]) -> Result<DeclContext, SdkError> {
     match version {
         Some(wire::SDK_WIRE_VERSION) => parse_v1(&mut r),
         Some(wire::SDK_WIRE_VERSION_V2) => parse_v2(&mut r),
+        Some(wire::SDK_WIRE_VERSION_V2_UPGRADED) => parse_v2_upgraded(&mut r),
         // A *present* but unrecognized version is a deliberate future-format claim:
         // its event payloads may be laid out differently, so refuse rather than
         // decode them under this decoder's layout (mirrors `decode_events`'s taint,
@@ -584,6 +640,74 @@ fn parse_v2(r: &mut Reader<'_>) -> Result<DeclContext, SdkError> {
             context: "v2 catalog",
             extra: r.remaining(),
         });
+    }
+    Ok(ctx)
+}
+
+/// Parse an **upgraded** v2 catalog (header already consumed;
+/// [`wire::SDK_WIRE_VERSION_V2_UPGRADED`], hm-dd39): the embedded original
+/// v1 declaration bytes, then the plain v2 record body. Semantics come from
+/// the v2 records alone; the embedded original is audit provenance —
+/// validated here so it can never silently drift from the schema it vouches
+/// for:
+///
+/// - the embedded blob must itself parse as a **v1 catalog** (magic +
+///   version 1 + records) — anything else is a
+///   [`UpgradeProvenance`](SdkError::UpgradeProvenance) refusal (nesting an
+///   upgraded blob inside an upgraded blob included);
+/// - the v2 records must be exactly the [`resolve_v1_declaration`] image of
+///   the embedded declaration: the same identities in the same canonical
+///   order, each keeping its classification, expectation, and name (the
+///   base op / value shape are what the resolution adds, so they are not
+///   compared — [`parse_v2`]'s own validation already constrains them).
+fn parse_v2_upgraded(r: &mut Reader<'_>) -> Result<DeclContext, SdkError> {
+    let len = need_u32(r, "upgraded catalog original length")? as usize;
+    let available = r.remaining();
+    let original = r.take(len).ok_or(SdkError::MalformedLength {
+        context: "upgraded catalog original bytes",
+        needed: len,
+        available,
+    })?;
+    let ctx = parse_v2(r)?;
+    // Provenance: the embedded original must be a v1 catalog…
+    let provenance = |detail: String| SdkError::UpgradeProvenance { detail };
+    let mut er = Reader::new(original);
+    if er.u32() != Some(wire::CATALOG_MAGIC) {
+        return Err(provenance(
+            "embedded original is not a catalog declaration (bad magic)".to_owned(),
+        ));
+    }
+    if er.u8() != Some(wire::SDK_WIRE_VERSION) {
+        return Err(provenance(
+            "embedded original is not a v1 catalog declaration".to_owned(),
+        ));
+    }
+    let v1 = parse_v1(&mut er)?;
+    // …whose declared identities the v2 records resolve 1:1. Both entry sets
+    // are sorted by identity, so a zipped walk is the exact comparison.
+    if v1.schema.len() != ctx.schema.len() {
+        return Err(provenance(format!(
+            "embedded v1 declares {} identit(ies), the v2 records carry {}",
+            v1.schema.len(),
+            ctx.schema.len()
+        )));
+    }
+    for (v1e, v2e) in v1.schema.entries().iter().zip(ctx.schema.entries()) {
+        if v1e.id != v2e.id {
+            return Err(provenance(format!(
+                "identity mismatch: embedded v1 declares {:?}, v2 records carry {:?}",
+                v1e.id, v2e.id
+            )));
+        }
+        if v1e.classification != v2e.classification
+            || v1e.expectation != v2e.expectation
+            || v1e.name != v2e.name
+        {
+            return Err(provenance(format!(
+                "entry {:?} disagrees between the embedded v1 declaration and the v2 records",
+                v1e.id
+            )));
+        }
     }
     Ok(ctx)
 }

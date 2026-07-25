@@ -173,6 +173,19 @@ pub enum SdkError {
         detail: String,
     },
 
+    /// An **upgraded** v2 catalog (the host-side form
+    /// [`resolve_v1_declaration`](crate::resolve_v1_declaration) mints, hm-dd39)
+    /// whose embedded original v1 declaration does not correspond to its own v2
+    /// records — the audit provenance and the schema it vouches for have
+    /// drifted (a tampered or hand-crafted blob; the host encoder emits the
+    /// pair atomically, so no honest producer reaches this). Refused rather
+    /// than decoded under provenance that lies.
+    #[error("upgraded catalog provenance mismatch: {detail}")]
+    UpgradeProvenance {
+        /// What disagreed between the embedded v1 declaration and the v2 records.
+        detail: String,
+    },
+
     /// A persisted [`Normalized`](crate::Normalized) artifact does not equal what the
     /// live decoders produce from its own preserved bytes. Loading re-decodes the
     /// reconstructed ingress stream (each event's `raw` + the schema's
