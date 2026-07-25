@@ -573,10 +573,34 @@ fn reject_aa3_excludes_a_non_ruled_payload() {
 }
 
 #[test]
-fn an_aa3_run_with_no_exclusions_passes_the_payload_matrix() {
-    // The positive case: the accept fixture excludes nothing, so the AA-3 payload-matrix check is
-    // a clean PASS — the new check binds the exclusion set, it does not demand a full class matrix
-    // of an honest subset run.
+fn reject_aa3_undeclared_omission_fails_coverage() {
+    // PR160-F2 negative control: the UNDECLARED counterpart to the fixture above — a pre-field
+    // `--exclude-payload straight-line` run that dropped a deterministic class with NO
+    // excluded_payloads field at all. The old declaration-only check PASSED it while claiming "the
+    // manifest records the full matrix"; the coverage check now fails closed on the silently
+    // missing non-ruled class, as the sole failure.
+    assert_single_failure(
+        "reject-aa3-undeclared-omission",
+        no_floors(),
+        CheckId::Aa3PayloadMatrix,
+    );
+    let report = check("reject-aa3-undeclared-omission", no_floors());
+    let detail = report
+        .outcomes
+        .iter()
+        .find(|o| o.id == CheckId::Aa3PayloadMatrix)
+        .map(|o| o.detail.clone())
+        .unwrap_or_default();
+    assert!(
+        detail.contains("silently absent") && detail.contains("straight-line"),
+        "the failure must name the silently missing required class, got: {detail}"
+    );
+}
+
+#[test]
+fn an_aa3_run_covering_every_class_passes_the_payload_matrix() {
+    // The positive case: the accept fixture exercises every window class and declares no exclusion,
+    // so the AA-3 payload-matrix check is a clean PASS — coverage is complete and honest.
     let floors = Floors {
         min_armed_overflows: Some(8),
         min_reps: None,
@@ -587,9 +611,47 @@ fn an_aa3_run_with_no_exclusions_passes_the_payload_matrix() {
     assert_eq!(
         report.status_of(CheckId::Aa3PayloadMatrix),
         Some(Status::Pass),
-        "an AA-3 run that excluded nothing must pass the payload-matrix check"
+        "an AA-3 run covering every class with no declared exclusion must pass"
+    );
+    // And the honest PASS detail must not over-claim a "full matrix" the manifest cannot record.
+    let detail = report
+        .outcomes
+        .iter()
+        .find(|o| o.id == CheckId::Aa3PayloadMatrix)
+        .map(|o| o.detail.clone())
+        .unwrap_or_default();
+    assert!(
+        !detail.contains("the manifest records the full matrix"),
+        "the PASS detail must not claim the manifest records the matrix, got: {detail}"
     );
     assert!(report.passed());
+}
+
+#[test]
+fn a_scoped_verdict_over_aggregated_run_sets_is_order_independent() {
+    // PR160-F1 negative control: aggregating a pass+fail fixture pair and scoping to the failing
+    // check must yield a scoped FAIL regardless of argument order — the order flip IS the control.
+    // Before the fix, scoped_verdict recorded only the FIRST occurrence of rep-floor across the
+    // aggregated outcomes, so the exit code flipped with the directory order.
+    let floors = Floors {
+        min_armed_overflows: None,
+        min_reps: Some(2),
+        min_cases: None,
+        sub_normative: true,
+    };
+    let mini = fixtures_dir().join("scoped-aa6-mini-gate"); // rep-floor PASSES (4 reps each)
+    let short = fixtures_dir().join("reject-aa6-rep-floor"); // rep-floor FAILS (1 rep each)
+    for (a, b) in [(&mini, &short), (&short, &mini)] {
+        let report = floor_check::check_run_sets(&[a.as_path(), b.as_path()], &floors)
+            .expect("aggregate loads");
+        let verdict = report.scoped_verdict(&[CheckId::RepFloor]);
+        assert!(
+            !verdict.accepted(),
+            "a scoped rep-floor over a pass+fail pair must FAIL in both orders; not_passed={:?}",
+            verdict.not_passed
+        );
+        assert!(verdict.not_passed.contains(&CheckId::RepFloor));
+    }
 }
 
 #[test]

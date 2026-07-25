@@ -216,16 +216,18 @@ impl CheckId {
 
     /// Parse a [`CheckId`] from its stable kebab-case [`name`](CheckId::name) — the inverse of
     /// `name`, used to name a **scope** on the command line (`floor-check --scope <name>`).
-    /// `None` for an unknown name. New variants must be added to [`ALL_CHECK_IDS`] to be
-    /// nameable here; the `every_check_id_round_trips` test guards the two lists agree.
+    /// `None` for an unknown name. New variants must be added to [`ALL_CHECK_IDS`] to be nameable
+    /// here; the `every_check_id_round_trips_through_its_name` test's **exhaustive match** makes a
+    /// variant missing from the table a compile error, so the two cannot silently drift.
     #[must_use]
     pub fn from_name(name: &str) -> Option<CheckId> {
         ALL_CHECK_IDS.iter().copied().find(|id| id.name() == name)
     }
 }
 
-/// Every [`CheckId`], in enum-declaration order. The single source the scope parser and its
-/// round-trip test read; a new variant added to the enum must be added here too.
+/// Every [`CheckId`], in enum-declaration order. The single source the scope parser reads; a new
+/// variant added to the enum must be added here too, which the round-trip test's exhaustive match
+/// enforces at compile time.
 pub const ALL_CHECK_IDS: &[CheckId] = &[
     CheckId::SchemaVersion,
     CheckId::WellFormed,
@@ -360,35 +362,47 @@ impl CheckReport {
                 scope_dedup.push(id);
             }
         }
-        // Walk the report in its fixed order, partitioning the in-scope checks into
-        // passed / not-passed. A NOT-REQUESTED scoped check is NOT a pass: a floor the
-        // caller declined to name cannot demonstrate the scope.
-        let mut ordered_scope: Vec<CheckId> = Vec::new();
+        // Partition the in-scope checks into passed / not-passed / missing, judging EVERY
+        // occurrence of each id. A multi-dir invocation (the normative AA-1 condition-matrix
+        // path, one `--scope` flag away) runs `run_stage_checks` once per run-set into a single
+        // outcome vector, so each `CheckId` can appear more than once — a scoped id passes ONLY
+        // if EVERY occurrence passed; any non-Pass among the duplicates sinks it (PR160-F1). This
+        // is order-independent: reversing the run-set arguments cannot change the verdict. A
+        // NOT-REQUESTED scoped check is also not a pass (a floor the caller declined to name
+        // cannot demonstrate the scope). Iterate `scope_dedup`, not `self.outcomes`, so the
+        // result lists are deduplicated and in scope order.
         let mut passed: Vec<CheckId> = Vec::new();
         let mut not_passed: Vec<CheckId> = Vec::new();
-        for o in &self.outcomes {
-            if scope_dedup.contains(&o.id) && !ordered_scope.contains(&o.id) {
-                ordered_scope.push(o.id);
-                if o.status == Status::Pass {
-                    passed.push(o.id);
-                } else {
-                    not_passed.push(o.id);
+        let mut missing: Vec<CheckId> = Vec::new();
+        for &id in &scope_dedup {
+            let mut seen = false;
+            let mut any_non_pass = false;
+            for o in &self.outcomes {
+                if o.id == id {
+                    seen = true;
+                    if o.status != Status::Pass {
+                        any_non_pass = true;
+                    }
                 }
             }
+            if !seen {
+                // Fail-closed: a scoped name with no outcome in this run (e.g. an AA-6-only check
+                // named for an AA-1 run) never demonstrated anything.
+                missing.push(id);
+            } else if any_non_pass {
+                not_passed.push(id);
+            } else {
+                passed.push(id);
+            }
         }
-        // Fail-closed: a scoped name that produced no outcome in this run (e.g. an AA-6-only
-        // check named for an AA-1 run) never demonstrated anything.
-        let missing: Vec<CheckId> = scope_dedup
-            .iter()
-            .copied()
-            .filter(|id| !ordered_scope.contains(id))
-            .collect();
         // FAILs OUTSIDE the scope — reported so a scoped verdict hides nothing, never gating.
-        let out_of_scope_failed: Vec<CheckId> = self
-            .failed()
-            .into_iter()
-            .filter(|id| !scope_dedup.contains(id))
-            .collect();
+        // Deduplicated (a multi-dir run can fail the same out-of-scope check on several run-sets).
+        let mut out_of_scope_failed: Vec<CheckId> = Vec::new();
+        for id in self.failed() {
+            if !scope_dedup.contains(&id) && !out_of_scope_failed.contains(&id) {
+                out_of_scope_failed.push(id);
+            }
+        }
         ScopedVerdict {
             scope: scope_dedup,
             passed,
@@ -3100,44 +3114,71 @@ fn required_aa6_classes() -> Vec<Payload> {
     classes
 }
 
-/// The AA-3 exact-landing payload matrix, checked for **exclusion integrity** (bead hm-9zy).
+/// The AA-3 exact-landing payload matrix — **coverage AND exclusion integrity** (bead hm-9zy,
+/// hardened per PR160-F2).
 ///
 /// `arm-spike --exclude-payload` used to admit ANY class and leave no trace in the manifest, so a
-/// generic exclusion could shrink AA-3's exact-landing / count coverage invisibly (the retained
-/// AA-3 evidence excluded only the ruled `wfi-idle`, but nothing enforced that). Now the exclusions
-/// are recorded ([`RunSet::excluded_payloads`]) and, at AA-3, this check enforces:
+/// generic exclusion could shrink AA-3's exact-landing / count coverage invisibly. Now the
+/// exclusions are recorded ([`RunSet::excluded_payloads`]) AND, at AA-3, this check proves what
+/// actually ran:
 ///
-/// 1. **Only the RULED carve-outs may be excluded** — `wfi-idle` (its WFI stalls the `BR_RETIRED`
-///    work clock and its timer resume is AA-5's paravirt-clock domain) and `llsc-atomics` (AA-4's
-///    banned LL/SC exclusive-monitor hazard). These are the same two the replay carve and
-///    `aa3-determinism-compare.py`'s `DEFAULT_EXCLUDE` name. Excluding any deterministic class is a
-///    coverage hole, not a carve-out.
-/// 2. **Every recorded exclusion names a real payload class.**
-/// 3. **Claim agrees with records** — an excluded class must not also appear as an armed, delivered
-///    landing (the manifest's exclusion claim must match the evidence).
+/// 1. **Coverage — every NON-RULED window class is present** as an armed, delivered landing. A
+///    non-ruled class that is silently absent (no armed landing) is a shrunk-coverage FAIL,
+///    **whether or not** `excluded_payloads` is present — because a non-ruled class may never be a
+///    legitimate exclusion, so its absence can only be a coverage hole. This closes the hole
+///    hm-9zy named ("AA-3 has no required-class check"): a pre-field `--exclude-payload
+///    straight-line` run that dropped a deterministic class, leaving no declaration, now fails
+///    here instead of passing with a false "full matrix" claim (PR160-F2).
+/// 2. **The RULED carve-outs may be absent** — `wfi-idle` (its WFI stalls the `BR_RETIRED` work
+///    clock; its timer resume is AA-5's paravirt-clock domain) and `llsc-atomics` (AA-4's banned
+///    LL/SC exclusive-monitor hazard). These two, and only these two — the same pair the replay
+///    carve and `aa3-determinism-compare.py`'s `DEFAULT_EXCLUDE` name — may legitimately be missing.
+/// 3. **Only ruled carve-outs may be *declared* excluded**, each a real class name, and a declared
+///    exclusion must be absent from the records (the manifest's claim must match the evidence).
 ///
-/// It deliberately does NOT require the full class matrix to be *present*: AA-3 run-sets (and the
-/// unit fixtures) legitimately exercise a subset, so requiring completeness would turn honest
-/// subset evidence red. It binds the exclusion set the manifest now carries, which is exactly the
-/// generic-exclusion hole hm-9zy names.
+/// **Legacy pre-field evidence (decided explicitly):** `excluded_payloads` is
+/// `#[serde(default)]`-optional, so retained pre-field run-sets load unchanged — and they PASS iff
+/// their non-ruled coverage is complete, which the honest AA-3 runs are (the retained AA-3 evidence
+/// excluded only the ruled `wfi-idle`, so all six non-ruled classes are present). A pre-field run
+/// that dropped a *non-ruled* class fails here, which is the intended catch, not a regression. No
+/// schema bump is needed: ruled classes being exempt is what lets ruled-only-excluded evidence
+/// validate without a declaration.
 fn check_aa3_payload_matrix(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
     if run_set.stage != Stage::Aa3 {
         return;
     }
-    // The ruled AA-3 carve-outs — the only classes a run may drop from exact-landing coverage.
+    // The ruled AA-3 carve-outs — the only window classes that may be absent from exact-landing
+    // coverage, and the only ones that may be declared excluded.
     const RULED: [Payload; 2] = [Payload::WfiIdle, Payload::LlscAtomics];
 
+    // "Present" for COVERAGE means the class was EXERCISED — it has an armed overflow record.
+    // Delivery is not coverage's concern: a lost PMI (deliveries == 0) is a multiplicity failure
+    // on a class that nonetheless ran, so it must not read here as a missing class (which would
+    // double-count one defect). The declared-exclusion coherence check below uses the same set.
     let present: BTreeSet<Payload> = records
         .iter()
-        .filter(|r| {
-            r.overflow
-                .as_ref()
-                .is_some_and(|o| o.armed && o.deliveries >= 1)
-        })
+        .filter(|r| r.overflow.as_ref().is_some_and(|o| o.armed))
         .map(|r| r.payload)
         .collect();
 
     let mut problems: Vec<String> = Vec::new();
+
+    // (1) Coverage: every non-ruled window class must be present. `present ∪ ruled` must cover the
+    // required window-class set; a missing NON-ruled class is a silently shrunk matrix.
+    for &p in ALL_PAYLOADS
+        .iter()
+        .filter(|p| p.has_window() && !RULED.contains(p))
+    {
+        if !present.contains(&p) {
+            problems.push(format!(
+                "AA-3 required window class {} is silently absent (no armed landing) and is not a \
+                 ruled carve-out — AA-3 exact-landing coverage was shrunk without proof; fail closed",
+                p.name()
+            ));
+        }
+    }
+
+    // (2)+(3) Declared exclusions: ruled-only, real names, absent from the records.
     for name in &run_set.excluded_payloads {
         match Payload::from_name(name) {
             None => problems.push(format!(
@@ -3163,12 +3204,15 @@ fn check_aa3_payload_matrix(run_set: &RunSet, records: &[RunRecord], out: &mut V
         }
     }
 
+    // Honest PASS detail: report what was VERIFIED (non-ruled coverage complete), never claim "the
+    // manifest records the full matrix" — the manifest records only exclusions; coverage is proven
+    // from the records here.
     let ok = if run_set.excluded_payloads.is_empty() {
-        "no payload excluded from AA-3 coverage; the manifest records the full matrix".to_string()
+        "every required AA-3 window class is present; no exclusions declared".to_string()
     } else {
         format!(
-            "only ruled carve-outs excluded ({}), each absent from the records as the manifest \
-             claims",
+            "every required AA-3 window class is present or ruled-excluded; declared exclusions \
+             ({}) are all ruled carve-outs absent from the records",
             run_set.excluded_payloads.join(", ")
         )
     };
@@ -3748,10 +3792,54 @@ mod tests {
     #[test]
     fn every_check_id_round_trips_through_its_name() {
         // `--scope` parses a check by its kebab-case name, so `from_name` must invert `name`
-        // for EVERY variant. `ALL_CHECK_IDS` is the hand-maintained list the parser reads; this
-        // guards it against a new enum variant that was added to `name` (compiler-forced) but
-        // forgotten here (not compiler-forced) — such a check would silently be un-nameable.
+        // for EVERY variant. `ALL_CHECK_IDS` is the hand-maintained list the parser reads.
+        //
+        // The exhaustive match below is the real guard (PR160-F4): it has NO wildcard arm, so
+        // adding a `CheckId` variant is a COMPILE ERROR here until the author lists it — landing
+        // them in this test, where the assertions below then force the variant into
+        // `ALL_CHECK_IDS` (its name must round-trip, and the count must match). Iterating
+        // `ALL_CHECK_IDS` alone could not catch a variant missing from `ALL_CHECK_IDS`; the match
+        // can, because the compiler enumerates the enum, not the table.
+        fn is_listed(id: CheckId) -> bool {
+            match id {
+                CheckId::SchemaVersion
+                | CheckId::WellFormed
+                | CheckId::RecordsSha256
+                | CheckId::Totality
+                | CheckId::StepTotality
+                | CheckId::Multiplicity
+                | CheckId::WeightsPresent
+                | CheckId::CountExactness
+                | CheckId::SkidMarginPresent
+                | CheckId::Skid
+                | CheckId::MechanismAttestation
+                | CheckId::PerfConfig
+                | CheckId::ImagePins
+                | CheckId::Pinning
+                | CheckId::ParamsMode
+                | CheckId::ClockPageMode
+                | CheckId::ReplayIdentity
+                | CheckId::DebugEvidence
+                | CheckId::PayloadStatus
+                | CheckId::ArmedOverflowFloor
+                | CheckId::RepFloor
+                | CheckId::Aa6Matrix
+                | CheckId::Aa3PayloadMatrix
+                | CheckId::Aggregation
+                | CheckId::ConditionConsistency
+                | CheckId::ConditionMatrix
+                | CheckId::Aa4Contract
+                | CheckId::CaseCoverage => ALL_CHECK_IDS.contains(&id),
+            }
+        }
+        // The match enumerated 28 variants; the table must carry exactly those, each nameable.
+        assert_eq!(
+            ALL_CHECK_IDS.len(),
+            28,
+            "a new CheckId variant must be added to ALL_CHECK_IDS (and to the exhaustive match above)"
+        );
         for &id in ALL_CHECK_IDS {
+            assert!(is_listed(id), "{} missing from ALL_CHECK_IDS", id.name());
             assert_eq!(
                 CheckId::from_name(id.name()),
                 Some(id),
@@ -3808,6 +3896,48 @@ mod tests {
         let missing = report.scoped_verdict(&[CheckId::Skid]);
         assert!(!missing.accepted());
         assert!(missing.missing.contains(&CheckId::Skid));
+    }
+
+    #[test]
+    fn a_scoped_verdict_judges_every_occurrence_of_a_duplicated_check() {
+        // PR160-F1: a multi-dir (aggregated) report carries the same CheckId once per run-set. A
+        // scoped id must pass ONLY if EVERY occurrence passed — a later FAIL cannot be swallowed by
+        // recording just the first, and the verdict must not depend on outcome order.
+        let pass_then_fail = CheckReport {
+            run_set_id: "dup".to_string(),
+            stage: Stage::Aa6,
+            outcomes: vec![
+                pass(CheckId::RepFloor, "run A ok"),
+                fail(CheckId::RepFloor, "run B short"),
+            ],
+        };
+        let fail_then_pass = CheckReport {
+            run_set_id: "dup".to_string(),
+            stage: Stage::Aa6,
+            outcomes: vec![
+                fail(CheckId::RepFloor, "run B short"),
+                pass(CheckId::RepFloor, "run A ok"),
+            ],
+        };
+        for report in [&pass_then_fail, &fail_then_pass] {
+            let v = report.scoped_verdict(&[CheckId::RepFloor]);
+            assert!(
+                !v.accepted(),
+                "a duplicated in-scope check with any FAIL occurrence must not be accepted"
+            );
+            assert!(v.not_passed.contains(&CheckId::RepFloor));
+            assert!(!v.passed.contains(&CheckId::RepFloor));
+        }
+        // And the all-Pass duplicate case is still accepted.
+        let all_pass = CheckReport {
+            run_set_id: "dup".to_string(),
+            stage: Stage::Aa6,
+            outcomes: vec![
+                pass(CheckId::RepFloor, "run A ok"),
+                pass(CheckId::RepFloor, "run B ok"),
+            ],
+        };
+        assert!(all_pass.scoped_verdict(&[CheckId::RepFloor]).accepted());
     }
 
     fn a_record(sample_id: u64) -> RunRecord {
