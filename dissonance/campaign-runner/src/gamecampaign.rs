@@ -138,6 +138,69 @@ pub struct GameCampaignConfig {
 }
 
 impl GameCampaignConfig {
+    /// The **content-addressed identity of the immutable campaign
+    /// configuration** (hm-8deo) — the `CampaignConfigId` the Revision
+    /// coordinator's genesis record pins. Digests a canonical, **versioned**
+    /// encoding of every knob that shapes the campaign's deterministic
+    /// trajectory or declared policy, plus the exploration configuration:
+    /// same-seed runs under different selectors/deadlines/caps get
+    /// **different** durable identities, per the `CampaignConfigId` contract
+    /// (`revision-coordinator/src/ids.rs` — it previously digested only the
+    /// seed, colliding all of those).
+    ///
+    /// [`trace_dir`](Self::trace_dir) is deliberately **excluded**: it is
+    /// host-local output placement (where retained artifacts land), not
+    /// campaign semantics — including it would give one campaign different
+    /// identities on different hosts. Everything else in this struct
+    /// participates. The leading version byte covers the encoding itself
+    /// *and* the driver-level constants the config implies (ingress, the
+    /// full-retention profile, event-moment nomination): a change to either
+    /// bumps it, so two builds can never mint colliding identities for
+    /// semantically different configurations.
+    pub fn config_id(&self, config: ExplorationConfig) -> CampaignConfigId {
+        const CONFIG_ENCODING_VERSION: u8 = 1;
+        fn put_u64(b: &mut Vec<u8>, v: u64) {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        fn put_opt_u64(b: &mut Vec<u8>, v: Option<u64>) {
+            match v {
+                None => b.push(0),
+                Some(v) => {
+                    b.push(1);
+                    put_u64(b, v);
+                }
+            }
+        }
+        let mut b = vec![CONFIG_ENCODING_VERSION];
+        put_u64(&mut b, self.campaign_seed);
+        put_u64(&mut b, self.max_branches);
+        put_opt_u64(&mut b, self.deadline_delta);
+        put_u64(&mut b, self.explore_period);
+        put_u64(&mut b, self.snapshot_retry_step);
+        put_u64(&mut b, self.snapshot_max_attempts as u64);
+        put_u64(&mut b, self.setup_deadline_delta);
+        match &self.rom_sha256 {
+            None => b.push(0),
+            Some(s) => {
+                b.push(1);
+                put_u64(&mut b, s.len() as u64);
+                b.extend_from_slice(s.as_bytes());
+            }
+        }
+        b.push(self.require_snapshot_point as u8);
+        put_u64(&mut b, self.guest_ram_len);
+        put_u64(&mut b, self.candidate_cap as u64);
+        put_u64(&mut b, self.replay_budget);
+        b.push(self.verify_reseal as u8);
+        b.push(match config {
+            ExplorationConfig::PureRandom => 0,
+            ExplorationConfig::SelectorV1 => 1,
+            ExplorationConfig::Signal => 2,
+            ExplorationConfig::FrontierOff => 3,
+        });
+        CampaignConfigId::digest(&b)
+    }
+
     /// A small portable/smoke configuration (the no-SDK toy: the generic
     /// seal fallback is its normal path).
     pub fn smoke(campaign_seed: u64) -> Self {
@@ -979,11 +1042,11 @@ pub fn run_game_campaign<M: Machine>(
         }
     };
     let ledger = EvidenceLedger::open(&evidence_path).map_err(CampaignError::from)?;
-    let coordinator = Coordinator::genesis(
-        Box::new(MemLedger::new()),
-        CampaignConfigId::digest(&cfg.campaign_seed.to_le_bytes()),
-    )
-    .map_err(CampaignError::from)?;
+    // The pinned campaign identity is content-addressed over the FULL
+    // immutable configuration (hm-8deo) — seed alone collided same-seed runs
+    // under different selectors/deadlines/caps onto one durable identity.
+    let coordinator = Coordinator::genesis(Box::new(MemLedger::new()), cfg.config_id(config))
+        .map_err(CampaignError::from)?;
     let mut camp = DifferentialCampaign::new(
         machine,
         Box::new(quiet),
@@ -1753,6 +1816,62 @@ impl Machine for GameToyMachine {
 mod tests {
     use super::*;
     use explorer::{EnvCodecError, SpecEnvCodec};
+
+    /// hm-8deo regression: `CampaignConfigId` is content-addressed over the
+    /// FULL immutable campaign configuration, not just the seed. Same-seed
+    /// runs under a different selector, deadline, cap, budget, branch count,
+    /// or ROM claim mint DIFFERENT durable identities; the identity is
+    /// stable for an identical configuration; and the host-local
+    /// `trace_dir` (output placement, not campaign semantics) does not
+    /// participate.
+    #[test]
+    fn campaign_config_id_is_content_addressed_over_the_full_config() {
+        let base = GameCampaignConfig::smoke(7);
+        let baseline = base.config_id(ExplorationConfig::PureRandom);
+        assert_eq!(
+            baseline,
+            base.clone().config_id(ExplorationConfig::PureRandom),
+            "stable for an identical configuration"
+        );
+        // The seed still participates (two seeds, two campaigns).
+        assert_ne!(
+            baseline,
+            GameCampaignConfig::smoke(8).config_id(ExplorationConfig::PureRandom)
+        );
+        // The selector participates — the exact V10 collision: same seed,
+        // different search policy, previously one identity.
+        assert_ne!(baseline, base.config_id(ExplorationConfig::SelectorV1));
+        // Every deterministic knob moves the identity.
+        let mut c = base.clone();
+        c.deadline_delta = Some(123);
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.max_branches += 1;
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.candidate_cap += 1;
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.replay_budget -= 1;
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.explore_period += 1;
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.rom_sha256 = Some("ab".repeat(32));
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.require_snapshot_point = true;
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.verify_reseal = true;
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        // trace_dir is host-local output placement: excluded by design, so
+        // one campaign keeps one identity wherever its artifacts land.
+        let mut c = base.clone();
+        c.trace_dir = Some(std::path::PathBuf::from("/somewhere/else"));
+        assert_eq!(baseline, c.config_id(ExplorationConfig::PureRandom));
+    }
 
     /// The instrumentation declaration is a real, decodable wire-v2 catalog
     /// that resolves EVERY register in the resolution table to reducible
