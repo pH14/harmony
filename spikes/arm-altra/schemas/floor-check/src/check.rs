@@ -208,7 +208,48 @@ impl CheckId {
             CheckId::CaseCoverage => "case-coverage",
         }
     }
+
+    /// Parse a [`CheckId`] from its stable kebab-case [`name`](CheckId::name) — the inverse of
+    /// `name`, used to name a **scope** on the command line (`floor-check --scope <name>`).
+    /// `None` for an unknown name. New variants must be added to [`ALL_CHECK_IDS`] to be
+    /// nameable here; the `every_check_id_round_trips` test guards the two lists agree.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<CheckId> {
+        ALL_CHECK_IDS.iter().copied().find(|id| id.name() == name)
+    }
 }
+
+/// Every [`CheckId`], in enum-declaration order. The single source the scope parser and its
+/// round-trip test read; a new variant added to the enum must be added here too.
+pub const ALL_CHECK_IDS: &[CheckId] = &[
+    CheckId::SchemaVersion,
+    CheckId::WellFormed,
+    CheckId::RecordsSha256,
+    CheckId::Totality,
+    CheckId::StepTotality,
+    CheckId::Multiplicity,
+    CheckId::WeightsPresent,
+    CheckId::CountExactness,
+    CheckId::SkidMarginPresent,
+    CheckId::Skid,
+    CheckId::MechanismAttestation,
+    CheckId::PerfConfig,
+    CheckId::ImagePins,
+    CheckId::Pinning,
+    CheckId::ParamsMode,
+    CheckId::ClockPageMode,
+    CheckId::ReplayIdentity,
+    CheckId::DebugEvidence,
+    CheckId::PayloadStatus,
+    CheckId::ArmedOverflowFloor,
+    CheckId::RepFloor,
+    CheckId::Aa6Matrix,
+    CheckId::Aggregation,
+    CheckId::ConditionConsistency,
+    CheckId::ConditionMatrix,
+    CheckId::Aa4Contract,
+    CheckId::CaseCoverage,
+];
 
 impl fmt::Display for CheckId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -300,6 +341,89 @@ impl CheckReport {
             .filter(|o| o.status == status)
             .map(|o| o.id)
             .collect()
+    }
+
+    /// Compute the [`ScopedVerdict`] for a named scope: the disposition that rests on ONLY
+    /// those checks (`floor-check --scope …`). See [`ScopedVerdict`] for why a scoped verdict
+    /// is not, and can never read as, a full stage acceptance.
+    #[must_use]
+    pub fn scoped_verdict(&self, scope: &[CheckId]) -> ScopedVerdict {
+        let mut scope_dedup: Vec<CheckId> = Vec::new();
+        for &id in scope {
+            if !scope_dedup.contains(&id) {
+                scope_dedup.push(id);
+            }
+        }
+        // Walk the report in its fixed order, partitioning the in-scope checks into
+        // passed / not-passed. A NOT-REQUESTED scoped check is NOT a pass: a floor the
+        // caller declined to name cannot demonstrate the scope.
+        let mut ordered_scope: Vec<CheckId> = Vec::new();
+        let mut passed: Vec<CheckId> = Vec::new();
+        let mut not_passed: Vec<CheckId> = Vec::new();
+        for o in &self.outcomes {
+            if scope_dedup.contains(&o.id) && !ordered_scope.contains(&o.id) {
+                ordered_scope.push(o.id);
+                if o.status == Status::Pass {
+                    passed.push(o.id);
+                } else {
+                    not_passed.push(o.id);
+                }
+            }
+        }
+        // Fail-closed: a scoped name that produced no outcome in this run (e.g. an AA-6-only
+        // check named for an AA-1 run) never demonstrated anything.
+        let missing: Vec<CheckId> = scope_dedup
+            .iter()
+            .copied()
+            .filter(|id| !ordered_scope.contains(id))
+            .collect();
+        // FAILs OUTSIDE the scope — reported so a scoped verdict hides nothing, never gating.
+        let out_of_scope_failed: Vec<CheckId> = self
+            .failed()
+            .into_iter()
+            .filter(|id| !scope_dedup.contains(id))
+            .collect();
+        ScopedVerdict {
+            scope: scope_dedup,
+            passed,
+            not_passed,
+            missing,
+            out_of_scope_failed,
+        }
+    }
+}
+
+/// The verdict of a **scoped** `floor-check --scope …` invocation.
+///
+/// A scoped run rests the exit code on ONLY the named checks, so a manifest whose prose says
+/// "the AA-6 mini determinism gate (≥1000-rep bit-identity) is DEMONSTRATED" can cite the exact
+/// machine-checkable command instead of reconciling a full-run FAIL by hand (hm-7q0). It is
+/// deliberately NOT a full stage acceptance: the out-of-scope checks (including any that FAILED)
+/// are still reported so nothing is hidden, and a caller must mark the invocation `[SCOPED]` so
+/// it can never be read as a normative pass. It is fail-closed on both an empty scope and a
+/// scoped name that never ran.
+#[derive(Clone, Debug)]
+pub struct ScopedVerdict {
+    /// The requested scope, deduplicated, in first-seen order.
+    pub scope: Vec<CheckId>,
+    /// Scoped checks that PASSED — the demonstrated set.
+    pub passed: Vec<CheckId>,
+    /// Scoped checks present in the run that did NOT pass (FAILED or NOT-REQUESTED). Each is a
+    /// reason the scope is not demonstrated.
+    pub not_passed: Vec<CheckId>,
+    /// Scoped names with no outcome in this run at all — fail-closed (naming a check that never
+    /// ran cannot demonstrate it).
+    pub missing: Vec<CheckId>,
+    /// FAILs OUTSIDE the scope — reported for evidence, never gating the scoped exit code.
+    pub out_of_scope_failed: Vec<CheckId>,
+}
+
+impl ScopedVerdict {
+    /// Whether the scoped disposition is accepting: every scoped check present and PASSED, none
+    /// missing, and the scope non-empty. An empty scope demonstrates nothing.
+    #[must_use]
+    pub fn accepted(&self) -> bool {
+        !self.scope.is_empty() && self.not_passed.is_empty() && self.missing.is_empty()
     }
 }
 
@@ -3538,6 +3662,71 @@ mod tests {
     };
     use oracle_model::{DEFAULT_SEED, Payload, Scale, Weights};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn every_check_id_round_trips_through_its_name() {
+        // `--scope` parses a check by its kebab-case name, so `from_name` must invert `name`
+        // for EVERY variant. `ALL_CHECK_IDS` is the hand-maintained list the parser reads; this
+        // guards it against a new enum variant that was added to `name` (compiler-forced) but
+        // forgotten here (not compiler-forced) — such a check would silently be un-nameable.
+        for &id in ALL_CHECK_IDS {
+            assert_eq!(
+                CheckId::from_name(id.name()),
+                Some(id),
+                "{} does not round-trip through its name",
+                id.name()
+            );
+        }
+        // Names are unique (a scope name must resolve to exactly one check).
+        let mut names: Vec<&str> = ALL_CHECK_IDS.iter().map(|id| id.name()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            ALL_CHECK_IDS.len(),
+            "check names must be unique"
+        );
+        assert_eq!(CheckId::from_name("no-such-check"), None);
+    }
+
+    #[test]
+    fn a_scoped_verdict_rests_only_on_the_named_checks() {
+        // A report with a mix of PASS / FAIL / NOT-REQUESTED, exercised through `scoped_verdict`
+        // directly (the fixture-backed end-to-end scope test lives in accept_reject.rs).
+        let report = CheckReport {
+            run_set_id: "scope-unit".to_string(),
+            stage: Stage::Aa6,
+            outcomes: vec![
+                pass(CheckId::RepFloor, "ok"),
+                pass(CheckId::ReplayIdentity, "ok"),
+                fail(CheckId::Aa6Matrix, "out of scope"),
+                fail(CheckId::WeightsPresent, "out of scope"),
+                not_requested(CheckId::CaseCoverage, "no floor named"),
+            ],
+        };
+
+        // The demonstrated scope PASSES; the out-of-scope FAILs are reported, not gated.
+        let good = report.scoped_verdict(&[CheckId::RepFloor, CheckId::ReplayIdentity]);
+        assert!(good.accepted());
+        assert!(good.out_of_scope_failed.contains(&CheckId::Aa6Matrix));
+        assert!(good.out_of_scope_failed.contains(&CheckId::WeightsPresent));
+
+        // A scoped check that FAILED sinks the scoped verdict.
+        let bad = report.scoped_verdict(&[CheckId::RepFloor, CheckId::Aa6Matrix]);
+        assert!(!bad.accepted());
+        assert!(bad.not_passed.contains(&CheckId::Aa6Matrix));
+
+        // A NOT-REQUESTED scoped check is not a pass (a floor the caller declined to name).
+        let unrequested = report.scoped_verdict(&[CheckId::CaseCoverage]);
+        assert!(!unrequested.accepted());
+        assert!(unrequested.not_passed.contains(&CheckId::CaseCoverage));
+
+        // Fail-closed: an empty scope, and a scoped check that never ran.
+        assert!(!report.scoped_verdict(&[]).accepted());
+        let missing = report.scoped_verdict(&[CheckId::Skid]);
+        assert!(!missing.accepted());
+        assert!(missing.missing.contains(&CheckId::Skid));
+    }
 
     fn a_record(sample_id: u64) -> RunRecord {
         // straight-line at smoke: certain 999, window offset 2 => 1001 taken.

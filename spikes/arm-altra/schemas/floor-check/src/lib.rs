@@ -48,5 +48,8 @@ pub mod el0;
 pub mod error;
 pub mod fixtures;
 
-pub use check::{CheckId, CheckReport, Floors, Outcome, Status, check_run_set, check_run_sets};
+pub use check::{
+    ALL_CHECK_IDS, CheckId, CheckReport, Floors, Outcome, ScopedVerdict, Status, check_run_set,
+    check_run_sets,
+};
 pub use error::LoadError;

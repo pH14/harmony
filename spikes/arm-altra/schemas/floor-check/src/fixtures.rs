@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The fixture generator.
 //!
-//! Thirty-eight checked-in run-sets: thirty the checker must reject (one per failure
+//! Thirty-nine checked-in run-sets: thirty the checker must reject (one per failure
 //! mode — including the three AA-6 injection-attestation negative controls: an injection-OFF
 //! matrix, a missing stamp, and per-record witnesses inconsistent with the stamp; and the two
 //! count-exactness step-exemption controls: a step record with corrupt `trips`, and a step
-//! matrix mislabelled outside AA-2) and eight it
+//! matrix mislabelled outside AA-2), one `scoped-aa6-mini-gate` (accepted only under a named
+//! `--scope`, bead hm-7q0), and eight it
 //! must accept (a patched AA-3 landing run, an AA-1 counting run, an
 //! AA-1(c) early/late skid-distribution run, an AA-1 LL/SC-hazard run, an AA-6 same-input
 //! gate, an AA-6 CARVE gate (llsc/wfi diverge but are recorded, contract classes bind), an
@@ -461,6 +462,25 @@ fn accept_aa6_gate() -> Fixture {
     fixture("accept-aa6-gate", &run_set, &records)
 }
 
+/// The AA-6 **mini determinism gate** fixture, for the SCOPED invocation (bead hm-7q0). It is
+/// the shape of `results/aa-6/live-20260720`: a full, bit-identical AA-6 matrix that DEMONSTRATES
+/// the ≥N-rep determinism gate (rep-floor, replay-identity, multiplicity, skid, mechanism), while
+/// two larger AA-6 deliverables are transparently NOT in scope — there is no AA-1 weights pack
+/// (so weights-present + count-exactness FAIL) and no fault injection (so aa6-matrix FAILs). A
+/// FULL `floor-check` run therefore FAILs; a SCOPED run over the five mini-gate checks exits 0,
+/// which is what makes the manifest's `VERDICT: … DEMONSTRATED` machine-checkable instead of
+/// prose-reconciled. Named without an `accept-`/`reject-` prefix because it is neither under a
+/// full invocation: its disposition is defined only relative to a scope.
+fn scoped_aa6_mini_gate() -> Fixture {
+    let records = aa6_full_matrix_records();
+    let mut run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
+    // No AA-1 weights pack — determinism, not count-exactness, is what this gate demonstrates.
+    run_set.weights = None;
+    // No fault injection — the injected-matrix determinism deliverable is out of this gate's scope.
+    run_set.injection = None;
+    fixture("scoped-aa6-mini-gate", &run_set, &records)
+}
+
 /// The AA-6 injection-OFF reject fixture (bead hm-oh3v negative control): a full, bit-identical
 /// AA-6 matrix whose injection was left OFF — the accidental bare matrix the attestation exists to
 /// catch. Every count / replay / floor check passes; only the matrix's injection gate fails,
@@ -726,6 +746,7 @@ pub fn all_fixtures() -> Vec<Fixture> {
         accept_counting(),
         accept_aa1_skid(),
         accept_aa6_gate(),
+        scoped_aa6_mini_gate(),
         accept_aa6_carve(),
         accept_aa2_steps(),
         accept_aa2_bounded(),
@@ -1128,13 +1149,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_thirty_eight_fixtures_with_unique_names() {
+    fn there_are_thirty_nine_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 38);
+        assert_eq!(fixtures.len(), 39);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 38, "fixture names must be unique");
+        assert_eq!(names.len(), 39, "fixture names must be unique");
     }
 
     #[test]
