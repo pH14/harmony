@@ -64,6 +64,16 @@ def load(dir_path):
     if not isinstance(expected, int) or expected < 1:
         raise EvidenceError(f"{manifest_path}: attempted must be a positive integer")
 
+    # Lane identity, for the provenance attestation (hm-6sj): a solo reference and a co-tenant
+    # run are DISTINCT run-sets recorded under DIFFERENT conditions. The RunSet schema requires
+    # both fields, so their absence is malformed evidence.
+    run_set_id = manifest.get("run_set_id")
+    if not isinstance(run_set_id, str) or not run_set_id:
+        raise EvidenceError(f"{manifest_path}: run_set_id is required")
+    condition = manifest.get("condition")
+    if not isinstance(condition, str) or not condition:
+        raise EvidenceError(f"{manifest_path}: condition is required")
+
     records_path = d / manifest.get("records_file", "records.jsonl")
     expected_hash = manifest.get("records_sha256")
     if not isinstance(expected_hash, str):
@@ -89,6 +99,17 @@ def load(dir_path):
                 r = json.loads(line)
                 o = r.get("overflow") or {}
                 key = (r["payload"], r["scale"], r["seed"], o["target"])
+                # Require + type-check the three COMPARED fields (hm-cte). Reading them with
+                # `.get()` at comparison time let a record omitting all three on BOTH lanes compare
+                # `None == None` and report MATCH having compared nothing. Demand them here, exactly
+                # as aa3-determinism-compare.py does (a KeyError there → EvidenceError), so a
+                # symmetric schema drift is caught as malformed evidence, not read as a match.
+                if not isinstance(r["state_digest"], str) or not r["state_digest"]:
+                    raise TypeError("state_digest must be a non-empty string")
+                if not isinstance(r["measured_taken"], int) or isinstance(r["measured_taken"], bool):
+                    raise TypeError("measured_taken must be an integer")
+                if not isinstance(o["deliveries"], int) or isinstance(o["deliveries"], bool):
+                    raise TypeError("overflow.deliveries must be an integer")
             except (json.JSONDecodeError, KeyError, TypeError) as exc:
                 raise EvidenceError(
                     f"{records_path}:{line_number}: malformed comparison record: {exc}"
@@ -107,7 +128,27 @@ def load(dir_path):
         "records_read": records_read,
         "expected_records": expected,
         "records_sha256": actual_hash,
+        "run_set_id": run_set_id,
+        "condition": condition,
     }
+
+
+def attest_distinct_lanes(solo, cotenant):
+    """The two lanes must be a solo reference and a co-tenant run — DISTINCT run-sets under
+    DIFFERENT conditions (hm-6sj). Comparing a directory against itself, or a copied/mislabelled
+    lane, would otherwise full-join MATCH without ever contrasting solo against co-tenant."""
+    if solo["run_set_id"] == cotenant["run_set_id"]:
+        raise EvidenceError(
+            f"both lanes are the same run-set (run_set_id {solo['run_set_id']!r}) — a determinism "
+            "comparison must contrast a solo reference against a DISTINCT co-tenant run, not a "
+            "directory against itself"
+        )
+    if solo["condition"] == cotenant["condition"]:
+        raise EvidenceError(
+            f"both lanes recorded the same condition ({solo['condition']!r}) — the comparison must "
+            "contrast a pinned-solo reference against a co-tenant run, and identical conditions "
+            "cannot be that contrast"
+        )
 
 
 def main(argv):
@@ -117,6 +158,7 @@ def main(argv):
     try:
         solo_input = load(argv[1])
         cot_input = load(argv[2])
+        attest_distinct_lanes(solo_input, cot_input)
     except EvidenceError as exc:
         report = {
             "error": str(exc),

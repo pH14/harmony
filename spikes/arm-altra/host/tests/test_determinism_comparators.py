@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Negative controls for the ARM retained-evidence determinism comparators."""
+"""Negative controls for the ARM retained-evidence determinism comparators.
 
-import hashlib
+Built on the shared planted-failure harness (spikes/negcontrol.py): each control starts from a
+known-good pair of lanes, applies ONE mutation, and asserts the comparator goes red — the same
+discipline the AMD floor checker's controls use, written once.
+"""
+
 import json
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -11,6 +14,10 @@ from pathlib import Path
 
 
 HOST = Path(__file__).resolve().parents[1]
+# The shared harness lives at the spikes/ root: …/spikes/arm-altra/host/tests/ -> parents[3].
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from negcontrol import run_grader, write_run_set  # noqa: E402
+
 AA1C = HOST / "aa1c-determinism-check.py"
 AA3 = HOST / "aa3-determinism-compare.py"
 CAMPAIGN_SCRIPTS = (
@@ -18,24 +25,6 @@ CAMPAIGN_SCRIPTS = (
     HOST / "aa1c-run-all.sh",
     HOST / "aa3-exact-shard.sh",
 )
-
-
-def write_run_set(root, name, records):
-    run_set = root / name
-    run_set.mkdir()
-    encoded = b"".join(
-        (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        for record in records
-    )
-    (run_set / "records.jsonl").write_bytes(encoded)
-    manifest = {
-        "attempted": len(records),
-        "records_file": "records.jsonl",
-        "records_sha256": hashlib.sha256(encoded).hexdigest(),
-        "run_set_id": name,
-    }
-    (run_set / "run-set.json").write_text(json.dumps(manifest), encoding="utf-8")
-    return run_set
 
 
 def aa1c_record(seed, digest="sha256:same"):
@@ -65,13 +54,10 @@ def aa3_record(sample_id, seed, digest="sha256:same"):
 
 
 def run_comparator(script, *inputs):
-    result = subprocess.run(
-        [sys.executable, str(script), *(str(path) for path in inputs)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return result, json.loads(result.stdout)
+    """Run a comparator over `inputs` and return (result, parsed-JSON-report). The comparators
+    always emit a stable-JSON report on stdout, including on an INVALID_INPUT refusal."""
+    result = run_grader(script, *inputs)
+    return result, result.json()
 
 
 class Aa1cComparatorTests(unittest.TestCase):
@@ -149,6 +135,39 @@ class Aa1cComparatorTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertEqual(report["verdict"], "INVALID_INPUT")
             self.assertIn("sha256", report["error"])
+
+    def test_symmetric_missing_compared_fields_is_rejected_not_matched(self):
+        # hm-cte negative control: records omitting all three compared fields (state_digest,
+        # measured_taken, overflow.deliveries) on BOTH lanes used to compare None==None and report
+        # MATCH having compared nothing. The comparator now requires + type-checks them, so a
+        # symmetric schema drift is INVALID_INPUT, never a match.
+        def missing(seed):
+            r = aa1c_record(seed)
+            del r["state_digest"]
+            del r["measured_taken"]
+            del r["overflow"]["deliveries"]
+            return r
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            solo = write_run_set(root, "solo", [missing(1)], condition="pinned-solo")
+            cotenant = write_run_set(root, "cotenant", [missing(1)], condition="co-tenant-load")
+            result, report = run_comparator(AA1C, solo, cotenant)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(report["verdict"], "INVALID_INPUT")
+            self.assertIn("malformed comparison record", report["error"])
+
+    def test_self_comparison_is_rejected(self):
+        # hm-6sj negative control: the same run-set dir passed as BOTH lanes. Same run_set_id and
+        # condition, so it is not a solo-vs-co-tenant contrast — the comparator refuses rather than
+        # full-join MATCHing a directory against itself (the most embarrassing false green).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            solo = write_run_set(root, "solo", [aa1c_record(1), aa1c_record(2)])
+            result, report = run_comparator(AA1C, solo, solo)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(report["verdict"], "INVALID_INPUT")
+            self.assertIn("same run-set", report["error"])
 
 
 class Aa3ComparatorTests(unittest.TestCase):
@@ -251,6 +270,32 @@ class Aa3ComparatorTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertEqual(report["verdict"], "INVALID_INPUT")
             self.assertIn("run-set directory", report["error"])
+
+    def test_self_comparison_is_rejected(self):
+        # hm-6sj negative control: the same run-set dir as solo AND co-tenant. Same run_set_id and
+        # condition — not a solo-vs-co-tenant contrast, so the comparator refuses it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            solo = write_run_set(root, "solo", [aa3_record(0, 1)])
+            result, report = run_comparator(AA3, solo, solo)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(report["verdict"], "INVALID_INPUT")
+            self.assertIn("same run-set", report["error"])
+
+    def test_copied_lane_same_condition_is_rejected(self):
+        # hm-6sj negative control: two DISTINCT run-set dirs mislabelled with the SAME condition —
+        # a copied/mislabelled lane. Distinct run_set_ids, but identical conditions cannot be the
+        # pinned-solo-vs-co-tenant contrast the comparison claims.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            solo = write_run_set(root, "solo", [aa3_record(0, 1)], condition="pinned-solo")
+            cotenant = write_run_set(
+                root, "cotenant", [aa3_record(0, 1)], condition="pinned-solo"
+            )
+            result, report = run_comparator(AA3, solo, cotenant)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(report["verdict"], "INVALID_INPUT")
+            self.assertIn("same condition", report["error"])
 
 
 class CampaignMarkerTests(unittest.TestCase):
