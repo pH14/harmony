@@ -740,7 +740,18 @@ impl<M: Machine> Machine for DeclaredMachine<M> {
         // `seal_base` is dropped, so an unlearned (None) cut there never reaches a
         // child as `parent_cut`.
         if self.prepends_catalog == Some(true) {
-            cut.sdk_events += 1;
+            // Checked (hm-t5py): the inner stamp is a transport value. A
+            // backend returning `sdk_events == u64::MAX` would panic here in
+            // debug and wrap to zero in release — and a zero cut RETAINS the
+            // whole inherited prefix as child evidence. Same transport-class
+            // refusal as a malformed capture.
+            cut.sdk_events = cut.sdk_events.checked_add(1).ok_or_else(|| {
+                MachineError::Transport(format!(
+                    "backend stamped seal cut {} — adding the prepended catalog ordinal \
+                     overflows the SDK-vector axis",
+                    cut.sdk_events
+                ))
+            })?;
         }
         Ok((id, cut))
     }
@@ -1971,6 +1982,120 @@ mod tests {
         // The invariant the two coordinates must satisfy: the cut equals the
         // capture's ordinal length (every position is at/before the seal moment).
         assert_eq!(cut.sdk_events, capture.len() as u64);
+    }
+
+    /// hm-t5py regression: the prepended-catalog cut shift is CHECKED. A
+    /// no-catalog backend stamping `sdk_events == u64::MAX` is a hostile
+    /// transport value — before the fix the `+= 1` panicked in debug and
+    /// wrapped to zero in release, and a zero cut retains the whole
+    /// inherited prefix as child evidence. Now it is the same typed
+    /// transport-class refusal as a malformed capture.
+    #[test]
+    fn declared_machine_refuses_a_cut_stamp_that_overflows_on_the_catalog_shift() {
+        struct MaxStampToy;
+        impl Machine for MaxStampToy {
+            fn branch(
+                &mut self,
+                _s: explorer::SnapId,
+                _e: &Reproducer,
+            ) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn replay(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                _u: &StopConditions,
+                _r: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                Ok(StopReason::Quiescent { vtime: Moment(1) })
+            }
+            fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
+                Ok((
+                    explorer::SnapId(1),
+                    EvidenceCut {
+                        at: Moment(1),
+                        sdk_events: u64::MAX,
+                    },
+                ))
+            }
+            fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([0u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[]
+            }
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+                Ok(SpecEnvCodec.seeded(0))
+            }
+            fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+                // No catalog of its own: the wrapper learns it prepends one.
+                let (id, p) = state_event(reg::WORLD, 0, 1);
+                Ok(vec![(10, id, p)])
+            }
+        }
+        let mut m = DeclaredMachine::new(MaxStampToy);
+        m.sdk_events().expect("the setup drain teaches the wrapper");
+        let err = m.snapshot().expect_err("the overflowing stamp is refused");
+        assert!(
+            matches!(&err, MachineError::Transport(msg) if msg.contains("overflows")),
+            "typed transport-class refusal, got {err:?}"
+        );
+        // The exact boundary: a stamp of u64::MAX - 1 shifts to u64::MAX and
+        // is admitted (the axis end itself is representable).
+        struct EdgeStampToy;
+        impl Machine for EdgeStampToy {
+            fn branch(
+                &mut self,
+                _s: explorer::SnapId,
+                _e: &Reproducer,
+            ) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn replay(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                _u: &StopConditions,
+                _r: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                Ok(StopReason::Quiescent { vtime: Moment(1) })
+            }
+            fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
+                Ok((
+                    explorer::SnapId(1),
+                    EvidenceCut {
+                        at: Moment(1),
+                        sdk_events: u64::MAX - 1,
+                    },
+                ))
+            }
+            fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([0u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[]
+            }
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+                Ok(SpecEnvCodec.seeded(0))
+            }
+            fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+                let (id, p) = state_event(reg::WORLD, 0, 1);
+                Ok(vec![(10, id, p)])
+            }
+        }
+        let mut m = DeclaredMachine::new(EdgeStampToy);
+        m.sdk_events().expect("the setup drain teaches the wrapper");
+        let (_snap, cut) = m.snapshot().expect("the boundary stamp is admitted");
+        assert_eq!(cut.sdk_events, u64::MAX, "shifted exactly to the axis end");
     }
 
     /// The quiet codec's exploit-mutate maps the two refusal classes onto the
