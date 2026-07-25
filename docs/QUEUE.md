@@ -32,9 +32,44 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Decisions waiting on Paul
 
-- **Ratify the cooperative mechanism vertical** (`hm-yjf`, P1): unblocked by the merged
-  maze gate (PR #137). A recorded GO opens the software-system transfer chain (`hm-ebe` →
-  `hm-zlx`) — the next Dissonance frontier.
+- **Ratify the cooperative mechanism vertical** (`hm-yjf`, P1) — **decision packet
+  assembled by the foreman 2026-07-25; open 13 days.** The blocker `hm-cs5` closed with
+  PR #137 (2026-07-22). The question `hm-yjf` actually asks: has the generic Explorer +
+  Differential cells/archive shown enough *non-vacuous* archive-guided progress to
+  transfer into held-out game and software-system evaluation? A recorded GO opens the
+  transfer chain (`hm-ebe` → `hm-zlx`); a NO-GO must block/supersede `hm-ebe`, `hm-2su`
+  and downstream selector work and repair every edge before `bd ready` is used again.
+
+  **The evidence for GO** (`docs/history/IMPLEMENTATION-task134.md`):
+  archive-guided **strictly out-reaches both controls on depth AND cells over 20 seeds,
+  and only it reaches the goal**; frontier-off ≡ pure-random holds (the
+  machinery-neutrality tripwire); same seed/config ⇒ bit-identical for all three configs.
+  Crucially, Fable's blocking vacuity condition on `@1e7` **passed under a read-only
+  audit of the box ledger**: 11/11 admitted SelectorV1 exploit rollouts carry reseed
+  markers drained at exact Moments strictly inside `(branch_origin, +1e7]`, while the
+  controls carry **zero** exploit reseeds — so the win is not entropy-identical
+  relabelling, which is the failure mode that would have made the whole gate vacuous.
+
+  **The two things that temper it** — both real, neither fatal:
+  1. **The supported regime narrowed.** Accepting `@1e7` under your Option (a) narrows
+     the maze to `deadline_delta ≲ one pvclock quantum` (~10.4 ms); multi-quantum legs
+     overshoot staged reseeds on this pvclock guest. The fix `hm-zwhi` is **hard-blocked
+     on `hm-x1ss`**, the schedule-closure design call — so a GO ratifies a mechanism
+     demonstrated in a deliberately narrow window.
+  2. **The one prior held-out workload disagreed.** On NES SMB (task 86 M0) at B=32,
+     `selector-v1 ≈ pure-random` (27.5 [26, 29.5] cells; **depth median 0, IQR [0,0]**
+     for both — no seed cleared a level). That record's own conclusion: the *task-84-era*
+     archive does not beat random restarts on that workload at that budget. This is a
+     **caution, not a refutation** — different (older) archive generation, harder
+     workload, smaller budget — but it is precisely the transfer `hm-yjf` is being asked
+     to authorize, so it belongs in front of the decision rather than behind it.
+
+  **Foreman read:** the maze result is genuine and its worst vacuity hole was audited
+  shut by hand, which is the standard this project holds itself to. The honest framing
+  is that a GO buys a *held-out test of the transfer claim*, not a claim already proven
+  — and the task-86 plateau is the reason that test is worth running rather than a
+  reason to skip it. If you want a second opinion before recording it, this is a textbook
+  Fable 5 consultation (precedent: the entropy-closure ruling and the AA-6 ratification).
 - **PR #141 costed options** (§4 of `docs/history/IMPLEMENTATION-task139.md`): mutants
   runner-class residual — recommendation is ship the $0 option, prefer 8-way sharding
   later, reserve self-hosted.
