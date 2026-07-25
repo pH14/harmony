@@ -3054,7 +3054,31 @@ mod tests {
             .coordinator()
             .materialized(frontier)
             .expect("frontier-passed views are readable");
-        let ledger = camp.ledger();
+        if let Err(divergence) = view_parity_check(camp.ledger(), &views) {
+            panic!("M1 parity: {divergence}");
+        }
+    }
+
+    /// The **full-view** M1 parity comparison (F4 / hm-7k8f): recompute the
+    /// complete expected observation, cell, and occupancy views from the
+    /// durable ledger alone and require the materialized views to equal them
+    /// EXACTLY — whole vectors, not per-coordinate lookups. The pre-F4 shape
+    /// filtered the materialized rows down to the coordinates the ledger
+    /// predicts (`view_pairs`/`cell_at`), so a phantom row at a
+    /// **never-staged** coordinate was structurally invisible to the gate
+    /// auditor; a full-view equality sees every unexpected row. Returns the
+    /// divergence as an `Err` so the planted-failure fixtures below can
+    /// prove the oracle goes red (W1 doctrine: an oracle that cannot fail is
+    /// not a gate).
+    fn view_parity_check(
+        ledger: &EvidenceLedger,
+        views: &revision_coordinator::MaterializedViews,
+    ) -> Result<(), String> {
+        use revision_coordinator::CutRow;
+        /// One expected observation-view row, keyed as the materialized rows are.
+        type ObsRow = ((u64, PointRow, Vec<u8>), ReducedRow);
+        /// One expected cell-view row, keyed as the materialized rows are.
+        type CellRow = ((u64, PointRow, CutRow), CellKey);
         let cells = DefaultObservationCells::new();
 
         // Encode a recomputed observation map into the coordinator's pair
@@ -3075,21 +3099,19 @@ mod tests {
                 .collect()
         };
 
-        let view_pairs = |rollout: u64, point: PointRow| -> Vec<(Vec<u8>, ReducedRow)> {
-            views
-                .observations
-                .iter()
-                .filter(|((r, p, _), _)| *r == rollout && *p == point)
-                .map(|((_, _, k), red)| (k.clone(), red.clone()))
-                .collect()
-        };
-
+        // The complete expected views, keyed exactly as the materialized
+        // rows are (each key unique, so BTreeMap order == the consolidated
+        // canonical order the coordinator's capture emits).
+        let mut expected_obs: BTreeMap<(u64, PointRow, Vec<u8>), ReducedRow> = BTreeMap::new();
+        let mut expected_cells: BTreeMap<(u64, PointRow, CutRow), CellKey> = BTreeMap::new();
         let mut expected_occ: BTreeMap<CellKey, (u64, u64)> = BTreeMap::new();
         for id in ledger.batch_ids() {
             let ev = ledger.get(id).expect("retained");
             match ev.role {
                 EvidenceRole::Rollout => {
-                    // Every provisional cut: recompute observations + cell.
+                    // Every provisional cut: recompute observations + cell
+                    // (dedup by count, first observing moment wins — exactly
+                    // `evidence_rows`'s staging).
                     let start = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
                     let mut seen = std::collections::BTreeSet::new();
                     for &m in &ev.sealable_moments {
@@ -3104,21 +3126,20 @@ mod tests {
                             continue;
                         }
                         let obs = crate::evidence::compose_observations_at(ledger, ev, count);
-                        assert_eq!(
-                            view_pairs(ev.rollout.issue, PointRow::Cut(count)),
-                            encode_pairs(&obs),
-                            "cut observations diverge (rollout {}, count {count})",
-                            ev.rollout.issue
-                        );
+                        for (k, red) in encode_pairs(&obs) {
+                            expected_obs.insert((ev.rollout.issue, PointRow::Cut(count), k), red);
+                        }
                         let cut = EvidenceCut {
                             at: Moment(m),
                             sdk_events: count,
                         };
-                        assert_eq!(
-                            views.cell_at(ev.rollout.issue, PointRow::Cut(count)),
-                            Some(&cells.key(cut, &obs)),
-                            "cut cell diverges (rollout {}, count {count})",
-                            ev.rollout.issue
+                        expected_cells.insert(
+                            (
+                                ev.rollout.issue,
+                                PointRow::Cut(count),
+                                CutRow { moment: m, count },
+                            ),
+                            cells.key(cut, &obs),
                         );
                     }
                 }
@@ -3127,18 +3148,20 @@ mod tests {
                     let point = PointRow::Seal(ev.rollout.issue);
                     let obs =
                         crate::evidence::compose_observations_at(ledger, ev, ev.cut.sdk_events);
-                    assert_eq!(
-                        view_pairs(rollout, point),
-                        encode_pairs(&obs),
-                        "seal observations diverge (seal {})",
-                        ev.rollout.issue
-                    );
+                    for (k, red) in encode_pairs(&obs) {
+                        expected_obs.insert((rollout, point, k), red);
+                    }
                     let cell = cells.key(ev.cut, &obs);
-                    assert_eq!(
-                        views.cell_at(rollout, point),
-                        Some(&cell),
-                        "seal cell diverges (seal {})",
-                        ev.rollout.issue
+                    expected_cells.insert(
+                        (
+                            rollout,
+                            point,
+                            CutRow {
+                                moment: ev.cut.at.0,
+                                count: ev.cut.sdk_events,
+                            },
+                        ),
+                        cell.clone(),
                     );
                     // Recomputed occupancy: best (quality desc, entry asc).
                     let quality = ev.cut.at.0;
@@ -3155,11 +3178,99 @@ mod tests {
                 }
             }
         }
-        let expected_occ: Vec<(CellKey, u64)> = expected_occ
+
+        let want_obs: Vec<ObsRow> = expected_obs.into_iter().collect();
+        if views.observations != want_obs {
+            return Err(format!(
+                "observations diverge from the full recomputed view: got {} row(s) {:?}, \
+                 want {} row(s) {:?}",
+                views.observations.len(),
+                views.observations,
+                want_obs.len(),
+                want_obs
+            ));
+        }
+        let want_cells: Vec<CellRow> = expected_cells.into_iter().collect();
+        if views.cells != want_cells {
+            return Err(format!(
+                "cells diverge from the full recomputed view: got {} row(s) {:?}, want {} \
+                 row(s) {:?}",
+                views.cells.len(),
+                views.cells,
+                want_cells.len(),
+                want_cells
+            ));
+        }
+        let want_occ: Vec<(CellKey, u64)> = expected_occ
             .into_iter()
             .map(|(cell, (_q, e))| (cell, e))
             .collect();
-        assert_eq!(views.occupancy, expected_occ, "occupancy diverges");
+        if views.occupancy != want_occ {
+            return Err(format!(
+                "occupancy diverges from the full recomputed view: got {:?}, want {:?}",
+                views.occupancy, want_occ
+            ));
+        }
+        Ok(())
+    }
+
+    /// The widened parity oracle's planted failures (F4 / hm-7k8f, W1
+    /// doctrine: ship the fixture that makes the oracle go red). A phantom
+    /// observation or cell row at a **never-staged** coordinate — the exact
+    /// class the pre-F4 per-coordinate compare could not see — now fails the
+    /// check, as does a phantom occupancy row (full-view compared before
+    /// this task; pinned here alongside).
+    #[test]
+    fn parity_oracle_detects_phantom_rows_at_never_staged_coordinates() {
+        let (_dir, mut camp) = campaign(simple_program(4), config(8, u64::MAX), 7);
+        camp.step().expect("step");
+        let frontier = camp.coordinator().visible_frontier();
+        let views = camp.coordinator().materialized(frontier).expect("readable");
+        view_parity_check(camp.ledger(), &views).expect("the real views pass");
+        // Rollout 999 / cut 77 was never staged by any ledger batch.
+        let mut phantom = views.clone();
+        phantom.observations.push((
+            (999, PointRow::Cut(77), b"phantom-key".to_vec()),
+            ReducedRow::Scalar(1),
+        ));
+        phantom.observations.sort();
+        assert!(
+            view_parity_check(camp.ledger(), &phantom).is_err(),
+            "a phantom observation row at a never-staged coordinate must go red"
+        );
+        let mut phantom = views.clone();
+        phantom.cells.push((
+            (
+                999,
+                PointRow::Cut(77),
+                revision_coordinator::CutRow {
+                    moment: 1,
+                    count: 77,
+                },
+            ),
+            b"phantom-cell".to_vec(),
+        ));
+        phantom.cells.sort();
+        assert!(
+            view_parity_check(camp.ledger(), &phantom).is_err(),
+            "a phantom cell row at a never-staged coordinate must go red"
+        );
+        let mut phantom = views.clone();
+        phantom.occupancy.push((b"no-such-cell".to_vec(), 999));
+        phantom.occupancy.sort();
+        assert!(
+            view_parity_check(camp.ledger(), &phantom).is_err(),
+            "a phantom occupancy row must stay red"
+        );
+        // A DROPPED row is the mirror image (the view under-reports): the
+        // full-view equality is two-sided.
+        let mut dropped = views.clone();
+        assert!(!dropped.observations.is_empty(), "the step staged rows");
+        dropped.observations.remove(0);
+        assert!(
+            view_parity_check(camp.ledger(), &dropped).is_err(),
+            "a missing observation row must go red"
+        );
     }
 
     /// The occupancy reconciliation is live: the REAL views pass, a
