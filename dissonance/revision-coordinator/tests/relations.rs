@@ -684,6 +684,11 @@ fn malformed_evidence_rows_are_refused_at_staging() {
     });
     assert!(matches!(out, Err(CoordError::EvidenceRowsInvalid { .. })));
     // The well-formed shape all of the above are one mutation away from.
+    // The fork boundary is exact on BOTH row kinds: the first event position
+    // and the first provisional-cut count sit exactly AT the fork count (a
+    // child's own suffix starts there — `start + 0` — and a sealable moment
+    // before any own event cuts there too), so the `<` bounds must admit
+    // equality.
     stage(EvidenceRows {
         rollout: 2,
         lineage: Some(LineageRow {
@@ -696,6 +701,10 @@ fn malformed_evidence_rows_are_refused_at_staging() {
         declares: vec![(a.clone(), ReduceOp::Set)],
         events: vec![ev(4, 10, &a, 3), ev(5, 11, &a, 4)],
         obs_cuts: vec![
+            CutRow {
+                moment: 5,
+                count: 4,
+            },
             CutRow {
                 moment: 6,
                 count: 5,

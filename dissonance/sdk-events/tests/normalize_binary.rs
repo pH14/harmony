@@ -1380,4 +1380,22 @@ fn upgraded_catalog_with_drifted_entry_fields_is_refused() {
     drifted.extend_from_slice(&upgraded[records_at..]);
     let err = decode_binary(&[(Moment(0), 0, drifted)]).expect_err("field drift refused");
     assert!(matches!(err, SdkError::UpgradeProvenance { .. }));
+    // Expectation-only drift (same identity, same classification, same name):
+    // the embedded original claims an `always` marker (no expectation) where
+    // the v2 records were resolved from a `reachable` one (must-hit). This is
+    // the one field the comparison chain's FIRST disjunct family can only
+    // catch on its own — a classification-only drift is unreachable from any
+    // parseable v1 catalog (the namespace fixes the classification), so this
+    // pins the expectation leg directly.
+    let reachable = v1_catalog(&[(2, 9, "marker")]); // KIND_REACHABLE
+    let always = v1_catalog(&[(0, 9, "marker")]); // KIND_ALWAYS, same coordinate
+    let upgraded = resolve_v1_declaration(&reachable, &[]).expect("occurrence-only upgrades");
+    let records_at = 4 + 1 + 4 + reachable.len();
+    let mut drifted = Vec::new();
+    drifted.extend_from_slice(&upgraded[..5]);
+    drifted.extend_from_slice(&(always.len() as u32).to_le_bytes());
+    drifted.extend_from_slice(&always);
+    drifted.extend_from_slice(&upgraded[records_at..]);
+    let err = decode_binary(&[(Moment(0), 0, drifted)]).expect_err("expectation drift refused");
+    assert!(matches!(err, SdkError::UpgradeProvenance { .. }));
 }
