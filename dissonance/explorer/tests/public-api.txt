@@ -122,6 +122,12 @@ pub explorer::LedgerError::LineageCycle
 pub explorer::LedgerError::LineageCycle::batch: revision_coordinator::ids::EvidenceBatchId
 pub explorer::LedgerError::LineageCycle::issue: u64
 pub explorer::LedgerError::LineageCycle::revisits: u64
+pub explorer::LedgerError::OversizedRecord
+pub explorer::LedgerError::OversizedRecord::len: usize
+pub explorer::LedgerError::OversizedRecord::max: usize
+pub explorer::LedgerError::PositionOverflow
+pub explorer::LedgerError::PositionOverflow::events: u64
+pub explorer::LedgerError::PositionOverflow::start: u64
 pub explorer::LedgerError::UnsupportedVersion
 pub explorer::LedgerError::UnsupportedVersion::found: u32
 pub enum explorer::MachineError

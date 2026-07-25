@@ -464,10 +464,16 @@ pub fn compose_observations_at(
     // events at cumulative positions `start + i`, truncated at its child's
     // fork count, then this batch's own suffix — keeping exactly the
     // positions `< included` (the half-open cut is by cumulative position).
+    // Positions saturate rather than wrap (hm-tx66): the ledger's ingest
+    // gate (`LedgerError::PositionOverflow`) already refuses any batch whose
+    // `start + len` passes `u64::MAX`, so saturation is unreachable for
+    // ledger-resident evidence; for a hand-built record it stays total and
+    // fail-closed — a saturated position exceeds every half-open bound and
+    // is excluded, never wrapped to position 0 and double-counted.
     let mut events: Vec<SdkEvent> = Vec::new();
     for (seg, start, upper) in segments.into_iter().rev() {
         for (i, e) in seg.into_iter().enumerate() {
-            let pos = start + i as u64;
+            let pos = start.saturating_add(i as u64);
             if pos < upper && pos < included {
                 events.push(e);
             }
@@ -475,7 +481,7 @@ pub fn compose_observations_at(
     }
     let own_start = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
     for (i, e) in ev.normalized.events.iter().enumerate() {
-        let pos = own_start + i as u64;
+        let pos = own_start.saturating_add(i as u64);
         if pos < included {
             events.push(e.clone());
         }

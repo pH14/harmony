@@ -768,10 +768,22 @@ impl<M: Machine> DifferentialCampaign<M> {
         };
         // The completed-rollout cut is the observed terminal: the full
         // cumulative SDK prefix (inherited ancestor prefix + own suffix).
+        // Checked (hm-tx66): a backend stamping a near-`u64::MAX` base cut
+        // would otherwise wrap the cumulative position in release before the
+        // ledger's own ingest gate could refuse it — same typed error, one
+        // invariant.
         let start = parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+        let suffix_events = rollout.normalized.events.len() as u64;
+        let observed_events =
+            start
+                .checked_add(suffix_events)
+                .ok_or(LedgerError::PositionOverflow {
+                    start,
+                    events: suffix_events,
+                })?;
         let observed_cut = EvidenceCut {
             at: rollout.stop.vtime(),
-            sdk_events: start + rollout.normalized.events.len() as u64,
+            sdk_events: observed_events,
         };
         let evidence = CompletedRunEvidence {
             rollout: rollout_id,

@@ -262,15 +262,18 @@ impl ProbeHost {
             let cum = partials
                 .map(|((r, obs, op, b_lo), agg)| ((r, obs, op), (b_lo, agg)))
                 .reduce(|_k, input, output| {
-                    let mut acc: Option<Agg> = None;
+                    // Combine from `vec.last()` so exactly one aggregate is
+                    // stored per boundary (the inherent output). The old
+                    // shape kept a second running copy and cloned it again
+                    // into the vec — an O(boundaries × set size)
+                    // accumulated-prefix clone per dimension (hm-tx66).
                     let mut vec: Vec<(u64, Agg)> = Vec::with_capacity(input.len());
                     for ((b_lo, agg), _w) in input.iter().map(|(v, w)| ((v.0, &v.1), *w)) {
-                        let next = match acc {
-                            Some(a) => a.combine(agg),
+                        let next = match vec.last() {
+                            Some((_, prev)) => prev.combine(agg),
                             None => agg.clone(),
                         };
-                        vec.push((b_lo, next.clone()));
-                        acc = Some(next);
+                        vec.push((b_lo, next));
                     }
                     output.push((vec, 1isize));
                 });

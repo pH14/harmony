@@ -169,6 +169,41 @@ pub enum CoordError {
         /// The conflicted observation identity (opaque canonical bytes).
         obs: ObsKey,
     },
+    /// A staged lineage edge would make the ancestry relation **cyclic** — a
+    /// self-parent, or a chain that closes back on itself through
+    /// already-staged edges. The live Differential ancestry iteration
+    /// (distinct-over-depth) never converges over a cyclic edge set, so
+    /// [`Coordinator::probe_drive`] would *hang* rather than err; the cycle
+    /// is refused here, at the staging choke point, instead (hm-tx66). No
+    /// honest producer emits one: the coordinator mints strictly increasing
+    /// issues, so real lineage is a strictly descending DAG.
+    #[error(
+        "evidence lineage cycle: rollout {rollout} re-enters {revisits} through its staged \
+         parent chain — a cyclic lineage would hang the ancestry iteration and is refused \
+         at staging"
+    )]
+    LineageCycle {
+        /// The child rollout whose staged edge closes the cycle.
+        rollout: u64,
+        /// The issue the parent chain re-enters (`== rollout` for a
+        /// self-parent).
+        revisits: u64,
+    },
+    /// Staged evidence rows violate the relation contract (hm-tx66):
+    /// non-monotone state-event positions (the reduce contract feeds each
+    /// evidence coordinate exactly once), a position or provisional-cut
+    /// count below the batch's own lineage fork count, a duplicate
+    /// provisional-cut count, or an Entry offer with no seal row (which the
+    /// feed path would otherwise drop silently). Refused with the reason
+    /// rather than fed to the dataflow, where the malformed shape surfaces
+    /// only as a debug-build multiplicity assert or a silently absent row.
+    #[error("evidence rows for {proposal:?} are malformed: {detail}")]
+    EvidenceRowsInvalid {
+        /// The proposal whose staging was refused.
+        proposal: ProposalId,
+        /// Which contract the rows broke.
+        detail: &'static str,
+    },
 }
 
 /// Per-cohort bookkeeping.
@@ -554,6 +589,11 @@ pub struct Coordinator {
     /// Every observation declaration seen (staged or fed), for the schema
     /// conflict check — one identity, one base operation.
     declared: BTreeMap<ObsKey, ReduceOp>,
+    /// Every lineage edge seen (staged or fed), `child rollout → parent` —
+    /// the acyclicity authority for the staging choke point (hm-tx66). Edges
+    /// are never removed: a fed edge is in the live dataflow, so a later
+    /// staging that would close a cycle through it must still be refused.
+    lineage: BTreeMap<u64, u64>,
     /// Identities already fed to the live dataflow (a declaration is fed
     /// exactly once, so declaration joins never fan out).
     fed_declares: BTreeSet<ObsKey>,
@@ -578,6 +618,7 @@ impl Coordinator {
             poisoned: false,
             staged: BTreeMap::new(),
             declared: BTreeMap::new(),
+            lineage: BTreeMap::new(),
             fed_declares: BTreeSet::new(),
         })
     }
@@ -603,6 +644,7 @@ impl Coordinator {
             poisoned: false,
             staged: BTreeMap::new(),
             declared: BTreeMap::new(),
+            lineage: BTreeMap::new(),
             fed_declares: BTreeSet::new(),
         })
     }
@@ -838,9 +880,23 @@ impl Coordinator {
     /// enter the production relations at the proposal's revision when it
     /// drains. Idempotent for a byte-identical restage (crashed worker); a
     /// divergent restage is a [`CoordError::StageConflict`]. Staging after
-    /// the revision drained is a [`CoordError::StagedTooLate`]; declaring
-    /// one observation identity under two base operations is a
-    /// [`CoordError::DeclarationConflict`].
+    /// the revision drained is a [`CoordError::StagedTooLate`].
+    ///
+    /// This is the **validated staging choke point** (hm-tx66) — every row
+    /// set entering the live dataflow passes exactly these checks, so the
+    /// dataflow itself never has to defend against a malformed shape:
+    ///
+    /// - declaring one observation identity under two base operations —
+    ///   across batches **or within this one** — is a
+    ///   [`CoordError::DeclarationConflict`];
+    /// - a lineage edge that closes a cycle through the staged/fed edge set
+    ///   (a self-parent is the length-one case) is a
+    ///   [`CoordError::LineageCycle`] — fed to the graph it would hang the
+    ///   distinct-over-depth ancestry iteration, and `probe_drive` with it;
+    /// - structurally malformed rows (non-monotone or below-fork event
+    ///   positions, a duplicate or below-fork provisional-cut count, an
+    ///   Entry offer with no seal row) are a
+    ///   [`CoordError::EvidenceRowsInvalid`].
     pub fn stage_evidence(
         &mut self,
         proposal: ProposalId,
@@ -856,13 +912,28 @@ impl Coordinator {
         if rev <= self.submitted {
             return Err(CoordError::StagedTooLate { proposal });
         }
+        validate_rows(proposal, &rows)?;
+        // Declaration coherence — one identity, one base operation — checked
+        // against every declaration seen so far AND within this batch (the
+        // intra-batch pair used to slip through: neither was in `declared`
+        // yet, and the feed-time dedup silently dropped the second).
+        let mut batch_declared: BTreeMap<&ObsKey, ReduceOp> = BTreeMap::new();
         for (obs, op) in &rows.declares {
+            if batch_declared
+                .insert(obs, *op)
+                .is_some_and(|prev| prev != *op)
+            {
+                return Err(CoordError::DeclarationConflict { obs: obs.clone() });
+            }
             match self.declared.get(obs) {
                 Some(existing) if existing != op => {
                     return Err(CoordError::DeclarationConflict { obs: obs.clone() });
                 }
                 _ => {}
             }
+        }
+        if let Some(l) = &rows.lineage {
+            self.check_lineage_acyclic(rows.rollout, l.parent)?;
         }
         if let Some(existing) = self.staged.get(&rev) {
             if *existing == rows {
@@ -873,8 +944,33 @@ impl Coordinator {
         for (obs, op) in &rows.declares {
             self.declared.insert(obs.clone(), *op);
         }
+        if let Some(l) = &rows.lineage {
+            self.lineage.insert(rows.rollout, l.parent);
+        }
         self.staged.insert(rev, rows);
         Ok(())
+    }
+
+    /// Refuse a lineage edge `child → parent` that would close a cycle
+    /// through the staged/fed edge set (hm-tx66). The walk is bounded by the
+    /// visited set, so it terminates even if the retained map were somehow
+    /// already cyclic.
+    fn check_lineage_acyclic(&self, child: u64, parent: u64) -> Result<(), CoordError> {
+        let mut visited = BTreeSet::new();
+        visited.insert(child);
+        let mut cur = parent;
+        loop {
+            if !visited.insert(cur) {
+                return Err(CoordError::LineageCycle {
+                    rollout: child,
+                    revisits: cur,
+                });
+            }
+            match self.lineage.get(&cur) {
+                Some(&next) => cur = next,
+                None => return Ok(()),
+            }
+        }
     }
 
     /// Drain contiguous Revision-ordered completions up to the first unmet
@@ -995,6 +1091,52 @@ impl Coordinator {
         self.core.aborted = Some(reason);
         Ok(())
     }
+}
+
+/// The structural bounds of one staged [`EvidenceRows`] (hm-tx66), enforced
+/// at the staging choke point so the dataflow only ever sees well-formed
+/// shapes:
+///
+/// - state-event positions strictly increase (positions are unique per
+///   rollout, and the reduce contract feeds each evidence coordinate exactly
+///   once — a duplicate would surface only as a debug-build multiplicity
+///   assert deep in the capture path);
+/// - with a lineage edge, every event position and provisional-cut count
+///   sits at or above the fork count (the child contributes only its own
+///   suffix; a below-fork row would corrupt the inherited segment
+///   composition);
+/// - provisional-cut counts are unique (the controller dedups by count,
+///   first moment wins — a duplicate here means the producer skipped that);
+/// - an Entry offer requires its seal row (the feed path attaches the offer
+///   to the seal point; without one it would be dropped silently).
+fn validate_rows(proposal: ProposalId, rows: &EvidenceRows) -> Result<(), CoordError> {
+    let invalid = |detail: &'static str| CoordError::EvidenceRowsInvalid { proposal, detail };
+    for pair in rows.events.windows(2) {
+        if pair[1].pos <= pair[0].pos {
+            return Err(invalid("state-event positions must strictly increase"));
+        }
+    }
+    if let Some(l) = &rows.lineage {
+        // Sorted (checked above), so the first position is the minimum.
+        if rows.events.first().is_some_and(|e| e.pos < l.cut.count) {
+            return Err(invalid("state-event position below the lineage fork count"));
+        }
+        if rows.obs_cuts.iter().any(|c| c.count < l.cut.count) {
+            return Err(invalid(
+                "provisional-cut count below the lineage fork count",
+            ));
+        }
+    }
+    let mut counts = BTreeSet::new();
+    for cut in &rows.obs_cuts {
+        if !counts.insert(cut.count) {
+            return Err(invalid("duplicate provisional-cut count"));
+        }
+    }
+    if rows.entry.is_some() && rows.seal.is_none() {
+        return Err(invalid("an Entry offer requires its seal row"));
+    }
+    Ok(())
 }
 
 /// Truncate an abort reason to [`MAX_ABORT_REASON`] bytes on a UTF-8
