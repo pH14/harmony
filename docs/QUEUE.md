@@ -6,10 +6,14 @@
 > Adopted 2026-07-09 (Paul: "worth a try") to replace prose-trigger sprawl across GitHub
 > issues, task-spec headers, and memory notes.
 
-_Refreshed 2026-07-23 midday (foreman loop): PR #147 MERGED through the full bounded
-pipeline (discovery → fix → verify → fix → Closer re-check, zero open P1s) and PR #148
-(the tasks/145 residue landing) MERGED light-tier; `hm-aqf0`/`hm-udgn`/`hm-nsfl` closed;
-no active workers — next spawns from `bd ready` at the coming iteration._
+_Refreshed 2026-07-25 morning (foreman loop): **the queue is now organized as work
+orders.** Paul consolidated 42 parked review findings into seven epics (label
+`work-order`; children label `wo-child`) overnight 2026-07-24/25 — one worker per work
+order, scoped with `bd ready --parent <epic-id>`, instead of one worker per finding.
+Zero open PRs at this iteration; all three P0 work orders dispatched (tasks/157-159)._
+
+> **Dispatch view:** `bd ready --exclude-label wo-child`. Plain `bd ready` re-scatters
+> the same findings into ~100 rows — that is the waste the consolidation removed.
 
 Decision-gate safety: before dispatching ready work, the foreman inspects any closed decision
 blocker and requires a recorded GO; it never dispatches in the same iteration that closes that
@@ -39,10 +43,30 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- (no active workers — 2026-07-24 just past midnight; remaining P2 frontier:
-  `hm-w1o6` interior-seal alignment design (heaviest — needs a design-grade spec,
-  best done fresh), `hm-4gaw` (hm-btht/kyy5 family), PR #157 parks
-  `hm-6x0w`/`hm-avvc`/`hm-g2bq`; `hm-yjf` still awaits Paul; ~90 ready total)
+**Three workers, one per P0 work order — the concurrency cap, spawned 2026-07-25 07:09-07:11.**
+
+- **W8 — Intel box lane** (`hm-i2et`, tasks/157, `task/intel-box-lane`, Opus 4.8):
+  the *only* box-touching worker; co-tenancy on the box makes a real divergence
+  indistinguishable from noise. Box verified up at dispatch (i9-9900K, load 0.00,
+  **KVM stock 1396736**). Order, fastest-close first: `hm-lld` remap-restore factory
+  (proves the lane end to end) → `hm-rdp` flow-agent doorbell — **the only dependency
+  unlock in the lane**, clearing it frees `hm-wvh` live net-fault enforcement — →
+  `hm-2nt` new-Postgres draw-probe gate → `hm-i8kc` `/dev/harmony` liveness (meatiest,
+  may not finish; last for that reason). Excluded by the work order: `hm-zwhi`
+  (hard-blocked on `hm-x1ss`), `hm-efc`.
+- **W7 — PR #134 evidence + campaign bookkeeping** (`hm-zduj`, tasks/158,
+  `task/campaign-evidence-hardening`, **Fable 5** — ten findings unified by one design
+  seam): the `hm-tx66` validated staging/ledger-open choke point first (absorbs
+  `hm-t5py`), then the on-disk identity **pair** `hm-9zr5` + `hm-8deo` landing together
+  under one version bump, then `hm-vfop`/`hm-dd39`/`hm-7h2c`/`hm-7k8f`/`hm-w2ar`.
+  `hm-4vms` (unreproduced occupancy divergence) stays open by design — standing
+  escalation, diagnostics armed, P0 if it ever reproduces.
+- **W1 — negative-control planted-failure fixtures** (`hm-537`, tasks/159,
+  `task/negative-control-fixtures`, Opus 4.8): *a grader without a fixture proving it
+  can go red is not a gate.* Ten green-on-fail findings, six files, ARM + AMD. The
+  reusable fixture harness — written once — is the deliverable that outlives the ten
+  fixes. Mac-side only (the box belongs to W8); owed box halves of `hm-pex`/`hm-5a6`
+  recorded on their beads.
 - **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
   apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
   (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
@@ -55,7 +79,44 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
   `hm-f2s`/`hm-x9f` (P0, Paul's), CI benchmark `hm-w9s` (P1, Paul's), aarch64 public-api
   gate `hm-4aj`, PR #108 arrival-day validation `hm-f99`, AMD hammer dry-run `hm-8v4`.
 
-## Ready (unblocked; foreman spawns as slots free — 2 of 3 slots in use; ~94 ready)
+## Ready — the remaining work orders (0 of 3 worker slots free; 58 ready rows in the dispatch view)
+
+The four work orders not yet dispatched, in `bd ready` order. Each is one worker when a
+slot frees:
+
+- **W5 — docs and labels match committed evidence** (`hm-nsev`, P1): five corrections
+  where prose and evidence disagree, in *both* directions — underclaim (`hm-7pm`:
+  ARM-ALTRA.md calls the execute-guard blocked-on-live-proof, contradicted by results
+  committed in the same PR) and overclaim (`hm-d8g` default-ALLOW demo labelled
+  "MSR default-deny"; `hm-472` step replay called "caught end-to-end" when intermediate
+  steps are register-only and memory-blind). One editing session, no code — worth
+  batching precisely because the failure mode is systemic.
+- **W4 — ARM spike harness input + stage-gating hardening** (`hm-kdih`, P1): one pass
+  over `arm_spike.rs`/`el0.rs`/`run.rs` — unbounded plan/parse OOM on a hostile
+  `--cases`, unbounded advisory-exit hang, a supported `kvm_mode` the run-set schema
+  rejects, an exact-landing path selectable outside its stage, and the EL0 `unsafe`
+  path Miri never reaches. Operator-controlled tool, so nothing is guest-reachable —
+  the value is that the harness stops being the least-defended code in a project whose
+  entire output is evidence integrity.
+- **W6 — next AMD box window: execution register** (`hm-palv`, P2): *not a bead to work
+  now* — the ordered list to execute while a rented AMD box is live, so nobody
+  reconstructs it under time pressure. `hm-gig` (AE-3 exact landing under core
+  isolation) gates `hm-3gw`; then `hm-8ep`, then `hm-n9p`/`hm-gs1` boot-safety **before**
+  the next 6.18 boot. Modelled on `hm-3bwm`'s committed turnkey runbook.
+- **W3 — committed evidence must recompute its verdict** (`hm-a40l`, P2): live verdicts
+  across aa-2/aa-4/aa-5/aa-6 are content-addressed *on the box*; a checkout carries only
+  hashes and conclusions and cannot independently recompute what the gate decided. Same
+  root cause as the AA-3 pin-fragility saga. Deliverable: one evidence-retention
+  contract, one policy applied across the results trees, one checker that enforces it.
+  `hm-gfr1`/`hm-nji6` are its infrastructure half, not separate projects.
+- **W2 — one definition of executable code** (`hm-5e54`, P2): the static ELF scanner and
+  the page-granular runtime execute-guard disagree about what counts as code, and the
+  consequence is not cosmetic — the full AA-5(c) Linux guest **cannot currently boot**
+  under the AA-4 execute-guard (`hm-fcod`), because the guard flags kernel
+  alternative-patching *data* sharing an executable `.init` page. Two features that each
+  pass their own gate do not compose. Solve the seam once.
+
+### Loose beads outside the work orders
 
 - **PR #147 park family remainder** (all P2): `hm-j7ie` (ledger VERSION 2→3 /
   refuse-vs-accept — decision-shaped; foreman drafts the doctrine-consistent spec next:

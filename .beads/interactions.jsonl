@@ -81,3 +81,5 @@
 {"id":"int-47254bcc3c7ea680276ba4c854d118cc","kind":"field_change","created_at":"2026-07-25T03:02:00.903597Z","actor":"Paul Hemberger","issue_id":"hm-nsev","extra":{"field":"priority","new_value":"1","old_value":"2"}}
 {"id":"int-5a1d84f619aa96d99d322962bde1c1c4","kind":"field_change","created_at":"2026-07-25T03:02:01.456956Z","actor":"Paul Hemberger","issue_id":"hm-f2s","extra":{"field":"priority","new_value":"2","old_value":"0"}}
 {"id":"int-ca21fbb9d0326e3d029c64c527e64743","kind":"field_change","created_at":"2026-07-25T03:02:02.001085Z","actor":"Paul Hemberger","issue_id":"hm-x9f","extra":{"field":"priority","new_value":"2","old_value":"0"}}
+{"id":"int-7fd50b768e0897012dd3652de7efb648","kind":"field_change","created_at":"2026-07-25T11:10:54.292864Z","actor":"Paul Hemberger","issue_id":"hm-i2et","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
+{"id":"int-74d48675d64abbbaabb35ff704b065c3","kind":"field_change","created_at":"2026-07-25T11:10:55.524585Z","actor":"Paul Hemberger","issue_id":"hm-537","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
