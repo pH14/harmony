@@ -61,8 +61,10 @@ a build-environment version skew, not a mechanism failure) is recorded, not impr
 5. **Contract vendor-column skeleton + enforcement truth table** —
    `contract/enforcement-truth-table.md`: `det-zen2-v1`, each row → its SVM enforcement
    backend; references (never forks) `docs/cpu-msr-contract-amd-draft.toml`. **Two mechanisms
-   demonstrated on-silicon (AE-4):** CPUID freeze incl. a below-host bit (`ae4-freeze`) and
-   MSR default-deny trapping to the vmm (`ae4-msr`). PMU column pinned to legacy (PerfMonV2
+   demonstrated on-silicon (AE-4):** CPUID freeze incl. a below-host bit (`ae4-freeze`) and a
+   single denied-MSR (HWCR) trapping to the vmm under a `DEFAULT_ALLOW` filter (`ae4-msr`) — the
+   trap mechanism a real default-deny row would use, not a default-deny demonstration itself
+   (that stays verify-on-silicon, deferred to W6's AMD box window). PMU column pinned to legacy (PerfMonV2
    rows inert on Zen 2; re-confirm on Zen 4 EPYC).
 6. **One-command AE-5 demo** — gated on the appliance (`hm-tn9`) and the AE-2/3/4 box steps;
    `host/build-6.18-kernel.sh` + `host/stage-6.18-boot.sh` are the content-pinned patched-stack

@@ -1148,7 +1148,14 @@ cover the full 8-class step matrix, each a valid single step whose `BR_RETIRED` 
 matches its class (AA1-F1: taken/not-taken branch and `ERET` = 1, else 0);
 `replay-identity` PASS — **85,165 stepped groups each bit-identical across reps** (single
 step is not just exact but DETERMINISTIC on N1, the llsc livelock included — it binds under
-AA-2, no carve-out).
+AA-2, no carve-out). **Coverage boundary (PR132 J3, bead `hm-472`):** every step but the last in a
+group carries only the cheap `regs_digest` (registers, no RAM); only the group's FINAL step
+carries the full-payload `state_digest` (`run.rs`'s `StepVcpu::regs_digest` / `step_digest`
+handling). So this PASS establishes register-level replay-identity at every intermediate step and
+full-memory replay-identity at each group's boundary — not a full-memory digest at every
+intermediate step. A hypothetical execution that diverged in RAM mid-group and reconverged before
+the final step would not be caught by this evidence; no such divergence is constructed by the
+current payload set.
 
 **Disposition: GO** (2026-07-17). Stock `KVM_GUESTDBG_SINGLESTEP` on N1 retires **exactly
 one instruction per step**, `BR_RETIRED` increments per the AA1-F1 branch-instruction rule,
@@ -1430,7 +1437,13 @@ ARMv8.1; Altra/Neoverse N1 is ARMv8.2), so an LSE-only guest is buildable on the
   return `EINVAL` before the exact current token is approved. The fixture passed TCG
   liveness/protocol twice pre-silicon; on 2026-07-20 the full guard ran on real N1 under host
   `6.18.35-aa4guard` (patches 0001+0002, build-id `ac576f87…`, cap
-  `KVM_CAP_ARM_STAGE2_EXEC_GUARD=246`, exit 43, core 60 isolated). Retained evidence
+  `KVM_CAP_ARM_STAGE2_EXEC_GUARD=246`, exit 43, core 60 isolated). **Forward-coordination note
+  (hm-ixys F15):** this patch series assigns exit reason 43 on the `-aa4guard` host; the
+  unrelated arm64 0005 single-step patch (`KVM_ARM_MTF_STEP` → `KVM_EXIT_DET_STEP`, also reason
+  43 — `docs/CPU-MSR-CONTRACT.md`, `docs/R-BACKEND.md`) assigns the same number on its own
+  `-aa3preempt`-family host. The two patch series target different box kernels here and share no
+  UAPI, so there is no live collision — but a future host that carries both patch stacks would
+  need one of the two exit numbers renumbered before both could coexist. Retained evidence
   (`results/aa-4/live-20260720/`) proves on silicon: pre-execute rejection of a hazardous page
   (1 scan → 1 rejection, PC unchanged); selective approval of a clean LSE page (ran to an MMIO
   exit — the guard is not blanket-reject); exit-before-modification with revoke-execute, exact-page
@@ -1485,7 +1498,10 @@ solo-vs-co-tenant. Those retained payload runs used a *static* placeholder
 trivially wall-clock-invariant; they are not retroactively claimed as a live-refresh result.
 The Linux executor's `hm-8h8` value-advancing path stamps from the skid-free exact-work anchor,
 not from natural-exit live counts, and ran on N1 in the 2026-07-20 boot
-(`results/aa-5/live-20260720/`), where same-seed console and register digests held bit-identical. The
+(`results/aa-5/live-20260720/`), where same-seed console digests held bit-identical (the register
+digest held only on a separate nokaslr diag build that run — see the AA-5(c) disposition below for
+the F12 re-cert that measured register identity on the pinned image itself and found it does not
+hold). The
 retained digest **excludes** the live host-time counters (`is_host_time_register`), verified in AA-3
 where `CNTPCT_EL0`/`KVM_REG_ARM_TIMER_CNT` varied 240/240 on a passing payload while replay
 held — wall-clock never reaches a compared digest.
@@ -1541,11 +1557,15 @@ fully page-routed (0 raw `cntvct` in `vmlinux`), and EL0 raw-counter access is c
 achieved: a characterized kernel-CRNG entropy residual (`base_crng`/`input_pool` reseed *content*
 varies — 400–700 differing bytes in 256 MB, console and registers unaffected, divergence unstable
 run-to-run) remains — a subsystem distinct from the clock, tracked as the entropy-closure contract
-row (`docs/PARAVIRT-CLOCK.md` §4.3). The register-digest identity is **nokaslr-conditional**: the
-pinned image is `RANDOMIZE_BASE=off`, so kernel VAs are stable run-to-run; a KASLR build would
-diverge register digests by construction (tribunal F1-REG). AA-5(c) therefore claims the work-clock
-plus counter/input closure and architectural (console + register) determinism, **not** full-RAM
-identity.
+row (`docs/PARAVIRT-CLOCK.md` §4.3). The 2026-07-20 register-digest hold above was on a separate
+nokaslr diag build, not the pinned image (`RANDOMIZE_BASE=off` rules out KASLR as the cause but does
+not establish identity on the shipped image itself; tribunal F1-REG). The 2026-07-21 F12 re-cert
+(`results/aa-5/live-20260721/README.md`) closed that gap by measuring `regs_digest`/
+`core_regs_digest` **on the pinned image itself**, and they diverge same-seed: exactly 4/260
+registers (`x29`/`SP`, entropy-derived userspace stack placement, distinct from KASLR) account for
+it. AA-5(c) therefore claims the work-clock plus counter/input closure and **console** determinism,
+**not** register or full-RAM identity — the register/RAM residual is the entropy-closure follow-up
+(`docs/PARAVIRT-CLOCK.md` §4.3).
 
 The exact landing also inherits AA-4's LSE-only precondition: single-stepping through an
 `LDXR`/`STXR` sequence clears its monitor and can add retries or livelock. The arm64 recipe now
@@ -1576,13 +1596,16 @@ keeps that timer disabled and exports only work-clock deadlines. The hardened ra
 scanner rejects linked `vmlinux`/vDSO publication if any CNTV/CNTP CVAL/TVAL program survives and
 has a planted mapping-symbol negative control. The exact Linux 6.18.35 Image build passes that
 gate with zero timer programs. On 2026-07-20 the pinned-N1 run happened: userspace steady state and
-same-seed **console + register** identity PASS (register identity nokaslr-conditional); full-RAM
-state identity remains open behind the kernel-CRNG entropy residual. That same live substrate hosted
+same-seed **console** identity PASS; register identity does not hold on the pinned image (the F12
+re-cert, `results/aa-5/live-20260721/README.md`, attributes the divergence to exactly 4/260 registers
+— `x29`/`SP` entropy-derived stack placement) and full-RAM state identity remains open behind the
+kernel-CRNG entropy residual. That same live substrate hosted
 AA-4 level-3's planted-exclusive proof (`results/aa-4/live-20260720/`).
 
-**Disposition: AA-5 — (a) payload determinism and (b) the closure premise + scanner demonstrated on
-real N1; (c) boot + clock mechanism proven on N1 (2026-07-20), full-RAM state identity open behind
-the kernel-CRNG entropy residual**. The guest-registered exact-work page refresher was executed on
+**Disposition: AA-5 — PROVISIONAL GO** ((a) payload determinism and (b) the closure premise + scanner
+demonstrated on real N1; (c) boot + clock mechanism proven on N1 (2026-07-20), full-RAM state
+identity open behind the kernel-CRNG entropy residual — the named limitation the ladder's
+PROVISIONAL label carries, re-stressed at AA-6). The guest-registered exact-work page refresher was executed on
 the pinned N1 (native box build + live bring-up), and AA-4's KVM execute-guard patch was booted and
 passed its live proof — the items this disposition previously listed as blocking are now cleared.
 What remains for full AA-5(c) state identity is the entropy-closure contract row (a deterministic

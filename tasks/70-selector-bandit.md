@@ -4,7 +4,7 @@
 > task 69 = GO.** Phase F of `docs/EXPLORATION.md`: the first real search cleverness, built only
 > because Phase E validated that cell novelty correlates with bugs. Two `Selector` policies over
 > task 64's spine — **v2** Go-Explore count-based weighting, **v3** an EcoFuzz-shaped
-> non-stationary bandit with a STADS exhaustion/stopping signal. The Progression stays blind:
+> non-stationary bandit with a STADS exhaustion/stopping signal. The search loop stays blind:
 > both see opaque `CellKey`s and `Reward`s, never cell meaning.
 >
 > Depends on **task 64** (the spine: `Selector`/`Frontier`/`Reward` in
@@ -12,10 +12,20 @@
 > plus the STADS estimator this crate reuses). Do not dispatch before 69's
 > `CORRELATION-REPORT.md` rules **GO** — "don't build past a GO/NO-GO without passing it"
 > (`docs/EXPLORATION.md`).
+>
+> **hm-4o4 reconcile note (2026-07-25):** gh#77 (2026-07-06) asked this file to gain (a) the R-L2
+> "multi-objective archive preference / value-weighted best-per-cell domination" design input and
+> (b) the task-84 on-ramp relationship. Both are now superseded by `docs/LAYERS.md`'s later
+> 2026-07-12 amendments and should NOT be added: R-L2 (amended) places quality domination in
+> "Differential archive occupancy, not... advanced selector"; R-L1 (amended) says task-84's "role
+> as a task-70 on-ramp" does not survive, and `tasks/84-exploration-gate.md`'s own current banner
+> already reflects that ("Advanced selector work follows that gate rather than receiving an
+> on-ramp from this old spec"). Vocabulary-only fix applied below (Progression → search loop, per
+> `docs/GLOSSARY.md` and the shipped term in `dissonance/explorer/src/spine.rs:39,96`).
 
 Read first: `tasks/00-CONVENTIONS.md`, `docs/EXPLORATION.md` (roadmap row F, "The two hard
 problems", the Scoring seam), `tasks/64-explorer-spine-refactor.md` (the `Selector` contract +
-the Progression-blindness invariant), `tasks/69-signal-bug-correlation.md` (the benchmark, the
+the search-loop-blindness invariant, `dissonance/explorer/src/spine.rs:39,96`), `tasks/69-signal-bug-correlation.md` (the benchmark, the
 trial discipline, and `stads.rs`), `dissonance/explorer/src/spine.rs`,
 `dissonance/explorer/src/stads.rs` (the estimator this crate consumes).
 
@@ -86,7 +96,7 @@ foreman — never a parallel reward type forked here.
 1. Both implement `spine::Selector` exactly (names, roles, semantics — hard rule 3).
 2. **Determinism discipline:** given `(seed, identical frontier-event + reward history)`, the
    sequence of choices is identical — the fixed `Selector` contract.
-3. **Progression blindness:** opaque `CellKey`s and `Reward`s only. The crate imports no fault
+3. **Search-loop blindness:** opaque `CellKey`s and `Reward`s only. The crate imports no fault
    type, no signal channel, no `CellFn`; its dependency surface is `explorer` + the whitelist.
 
 ### Tactic-portfolio arm seam (ruling)

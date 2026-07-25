@@ -55,10 +55,17 @@ CPUID/MSR enforcement is stock KVM, not gated on the AE-3 patched module):
   a guest run with a `KVM_SET_CPUID2` frozen model saw the frozen `AuthenticAMD` vendor and
   the TSC feature bit (leaf 1 EDX bit 4) **cleared below host capability** (host `0x078bfbff`
   → guest `0x078bfbef`), attested to `KVM_EXIT_HLT`. The VMCB CPUID intercept enforces the model.
-- **MSR default-deny** (`ae4-msr`, `results/ae-4/msr-deny.json`): with
-  `KVM_CAP_X86_USER_SPACE_MSR` + a `KVM_X86_SET_MSR_FILTER` denying HWCR (`0xC001_0015`), a
-  guest RDMSR of it **trapped to the vmm** (`KVM_EXIT_X86_RDMSR`) — the MSR-permission-bitmap
-  enforcement path fired instead of a silent read.
+- **Single-MSR deny trap** (`ae4-msr`, `results/ae-4/msr-deny.json`): with
+  `KVM_CAP_X86_USER_SPACE_MSR` + a `KVM_X86_SET_MSR_FILTER` set to `DEFAULT_ALLOW` and denying
+  only HWCR (`0xC001_0015`), a guest RDMSR of it **trapped to the vmm**
+  (`rdmsr_trapped_to_vmm=1`) — the MSR-permission-bitmap enforcement path fired instead of a
+  silent read. This demonstrates the trap mechanism the **default-deny** row below relies on; it
+  is not itself a default-deny demonstration (the filter's default disposition here is
+  `ALLOW`, and `deny_gp_then_shutdown=0` — the guest was not driven to the injected-`#GP` /
+  triple-fault path). The `unlisted leaves/MSRs | deny-gp (default)` row stays
+  **verify-on-silicon** below: a real default-deny run — filter `DEFAULT_DENY`, an *unlisted*
+  MSR read reaching the same trap, and the injected-`#GP` shutdown path actually exercised
+  (`deny_gp_then_shutdown=1`) — is deferred to work order W6's AMD box window, not claimed here.
 
 AE-0 fixed the two per-generation facts (legacy PMU present, PerfMonV2 absent — `det-zen2-v1`);
 the vendor column already exists as a draft (`docs/cpu-msr-contract-amd-draft.toml`, ratified by
