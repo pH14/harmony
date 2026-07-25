@@ -34,10 +34,12 @@ use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
 use explorer::{SpecEnvCodec, StreamId};
 use runtrace::TraceStore;
-use vmm_backend::{Backend, X86};
-use vmm_core::control::{ControlServer, VmmFactory};
-use vmm_core::vendor::x86::bringup::boot_linux_selected;
-use vmm_core::vmm::{PVCLOCK_DEFAULT_DELTA_WORK, Step, Vmm};
+use vmm_backend::{Backend, PatchedKvmBackend, X86};
+use vmm_core::control::{ControlServer, RemapVmmFactory, VmmFactory};
+use vmm_core::vendor::x86::bringup::{boot_linux_selected, compose_restore_target};
+use vmm_core::vendor::x86::contract_vclock_config;
+use vmm_core::vendor::x86::work_perf::PerfWorkCounter;
+use vmm_core::vmm::{PVCLOCK_DEFAULT_DELTA_WORK, Step, Vmm, VtimeWiring};
 
 use campaign_runner::gamecampaign::{GameCampaignConfig, run_game_campaign};
 use campaign_runner::mazecampaign::{run_maze_campaign, serial_maze_spec};
@@ -276,7 +278,56 @@ fn boot_server(
     // discipline; an operator-typed hash is a claim, the booted image is the
     // fact). Boot-sized (tens of KB), snapshotted once.
     let serial = live.serial().to_vec();
-    Ok((ControlServer::new(live, factory), boot_us, serial))
+    let mut server = ControlServer::new(live, factory);
+    // Task 95 M2.2 opt-in (hm-lld): install the remap-restore factory so campaign
+    // `branch`/`replay` restores take the memslot-remap path — the materialized
+    // mapping IS the guest RAM the memslots register, so no full-image memcpy, and
+    // untouched pages fault lazily under CoW — instead of the pre-task-95 memcpy
+    // path. campaign-runner was outside the task-95 M2 surface waiver, so this
+    // composition root still restored via memcpy; the factory below mirrors the
+    // `VmmFactory` above **minus the boot-image load** (`compose_restore_target`
+    // supplies the RAM, `restore_vm_state` the register file), the exact shape of
+    // vmm-core's live_dirty_remap.rs (b) gate. `set_remap_factory` also flips the
+    // server's default `RestoreMode` to `Remap`, so this is truthful — a restore
+    // now reports the path it actually takes. Box-only: a remap restore runs only on
+    // patched KVM, which is `X86_64_BOOT.backend` (`Patched`) here.
+    let remap: RemapVmmFactory<Box<dyn Backend<A = X86>>> = Box::new(move |mapping| {
+        let backend: Box<dyn Backend<A = X86>> = Box::new(PatchedKvmBackend::new()?);
+        // wire_lapic: true — the Linux composition wires the userspace xAPIC, so the
+        // restore target must mirror it (the restored LAPIC state then replaces this
+        // fresh one wholesale, and `restore_vm_state`'s wiring check would otherwise
+        // reject the memory-only restore).
+        let mut v = compose_restore_target(backend, mapping, true)?;
+        let work = Box::new(PerfWorkCounter::open()?);
+        v.wire_vtime(VtimeWiring::new(contract_vclock_config(), work, BOOT_SEED)?);
+        // Same page-on composition as the `VmmFactory` and the live VM (same-state ⇒
+        // same-future): offer the page here too when page-on, else a remapped branch
+        // would answer the guest's pvclock registration `UnknownService` where the
+        // source accepted it (the pvclock_validate_restore capability check).
+        if page_on {
+            v.enable_pvclock(PVCLOCK_DEFAULT_DELTA_WORK);
+        }
+        Ok(v)
+    });
+    server.set_remap_factory(remap);
+    // A/B knob for the before/after restore-cost numbers (hm-lld live gate) and a
+    // fallback if a remap restore ever misbehaves on the box: `set_remap_factory`
+    // above makes `Remap` the default, and `HARMONY_RESTORE_MEMCPY=1` flips the
+    // *same* binary back to the pre-task-95 memcpy path (`restore_mode == Memcpy`
+    // ⇒ restores use the memcpy `factory`, `control.rs`'s `use_remap` guard). This
+    // is a host-side composition switch — it never reaches guest state or a hash
+    // (the task-95 (b) gate proves both paths restore to the identical state_hash),
+    // so an A/B over it is a pure timing comparison. Mirrors the server's existing
+    // `set_restore_mode` test knob.
+    if std::env::var_os("HARMONY_RESTORE_MEMCPY").is_some() {
+        server.set_restore_mode(vmm_core::control::RestoreMode::Memcpy);
+    }
+    println!(
+        "[campaign-runner] box: restore path = {:?} (task 95 M2.2; set HARMONY_RESTORE_MEMCPY=1 \
+         for the memcpy baseline).",
+        server.restore_mode()
+    );
+    Ok((server, boot_us, serial))
 }
 
 /// The initial environment the box's live VM boots under (the seed/policy the
