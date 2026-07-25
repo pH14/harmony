@@ -1,5 +1,15 @@
 # Task 94 — rename the two loops: **Modulation** (inner) / **Progression** (outer)
 
+> **hm-4o4 flag (2026-07-25) — likely superseded, integrator ruling needed, not resolved here.**
+> `docs/LAYERS.md`'s "What this unblocks / changes" vocabulary note gives the loops' naming
+> history as **Timeline/Multiverse → Modulation/Progression (this task) → rollout/step
+> (`docs/GLOSSARY.md`)** — i.e. LAYERS.md's own text treats this task's Modulation/Progression
+> names as an intermediate step already superseded by the glossary's final `rollout`/`step`
+> naming, and the shipped code (`dissonance/explorer/src/spine.rs:39,96`) already says
+> "search-loop blindness", not "Progression blindness". Per gh#77's explicit instruction not to
+> silently supersede this file, it is left as-is below (unexecuted, not rewritten) pending an
+> integrator ruling on whether it still names a live rename target or is fully historical.
+>
 > **DEFERRED CHORE · queue after the Wave-4 keystones (58–61).** The two exploration loops
 > currently have **three** competing vocabularies: `docs/DISSONANCE.md` says **Variation/Theme**,
 > `tasks/12-explorer.md` and all of `dissonance/explorer`'s code say **Timeline/Multiverse**
