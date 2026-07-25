@@ -1069,14 +1069,14 @@ pub fn run_game_campaign<M: Machine>(
     // ledger under the trace dir can only be a prior run's — reopening it
     // rebuilds old occupancy against an empty coordinator and the FIRST step
     // fail-closes with a confusing OccupancyDivergence. Refuse it here with
-    // the fix in the message instead. Any durable content counts (retained
-    // batches, tombstones, a checkpoint, the finalized end): each alone is
-    // enough to poison a resumed rebuild.
+    // the fix in the message instead. Any durable content counts — retained
+    // batches, a checkpoint, or the finalized end; each alone poisons a
+    // resumed rebuild. Tombstones need no disjunct of their own: `collect`
+    // demands durable coverage (a checkpoint or the finalized end) before it
+    // writes one, so a tombstone-bearing ledger always trips one of the two
+    // conditions already checked.
     if cfg.trace_dir.is_some()
-        && (!ledger.is_empty()
-            || ledger.collected().next().is_some()
-            || ledger.last_checkpoint().is_some()
-            || ledger.is_finalized())
+        && (!ledger.is_empty() || ledger.last_checkpoint().is_some() || ledger.is_finalized())
     {
         return Err(GameCampaignError::TraceDirNotFresh {
             path: evidence_path,
@@ -2982,6 +2982,41 @@ mod tests {
             ExplorationConfig::PureRandom,
         )
         .expect("a per-rep subdirectory is fresh");
+        // Each durable-content condition is INDEPENDENTLY decisive (the
+        // in-diff mutation gate flagged the tail disjuncts as untested): a
+        // batch-less ledger holding only a retention CHECKPOINT, and one
+        // holding only the FINALIZED end, are each refused on their own.
+        let assert_not_fresh = |name: &str, prime: &dyn Fn(&mut explorer::EvidenceLedger)| {
+            let sub = dir.path().join(name);
+            std::fs::create_dir_all(&sub).expect("mkdir");
+            let mut led = explorer::EvidenceLedger::open(&sub.join("evidence.log")).expect("open");
+            prime(&mut led);
+            drop(led);
+            let cfg_sub = GameCampaignConfig {
+                trace_dir: Some(sub),
+                ..cfg.clone()
+            };
+            let err = run_game_campaign(
+                GameToyMachine::new(),
+                Box::new(SpecEnvCodec),
+                &cfg_sub,
+                ExplorationConfig::PureRandom,
+            )
+            .expect_err("durable content alone refuses the dir");
+            assert!(
+                matches!(err, GameCampaignError::TraceDirNotFresh { .. }),
+                "{name}: typed refusal, got {err:?}"
+            );
+        };
+        assert_not_fresh("checkpoint-only", &|led| {
+            led.commit_checkpoint(&explorer::RetentionCheckpoint {
+                views: explorer::RetentionViews::new(explorer::RetentionProfile::Full),
+            })
+            .expect("checkpoint");
+        });
+        assert_not_fresh("finalized-only", &|led| {
+            led.finalize().expect("finalize");
+        });
     }
 
     fn run_outcome(config: ExplorationConfig, seed: u64) -> GameCampaignOutcome {
