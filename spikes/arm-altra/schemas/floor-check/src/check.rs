@@ -157,6 +157,10 @@ pub enum CheckId {
     /// floor only grades inputs that are present, so a missing payload is otherwise
     /// invisible).
     Aa6Matrix,
+    /// At AA-3, the run-set's recorded payload exclusions are only the RULED carve-outs
+    /// (`wfi-idle`, `llsc-atomics`) and agree with the records — a generic `--exclude-payload`
+    /// cannot silently drop a deterministic class from exact-landing coverage (bead hm-9zy).
+    Aa3PayloadMatrix,
     /// A cumulative (condition-matrix) check spans exactly one stage, with no duplicate
     /// run-sets double-counting the floor.
     Aggregation,
@@ -201,6 +205,7 @@ impl CheckId {
             CheckId::ArmedOverflowFloor => "armed-overflow-floor",
             CheckId::RepFloor => "rep-floor",
             CheckId::Aa6Matrix => "aa6-matrix",
+            CheckId::Aa3PayloadMatrix => "aa3-payload-matrix",
             CheckId::Aggregation => "aggregation",
             CheckId::ConditionConsistency => "condition-consistency",
             CheckId::ConditionMatrix => "condition-matrix",
@@ -244,6 +249,7 @@ pub const ALL_CHECK_IDS: &[CheckId] = &[
     CheckId::ArmedOverflowFloor,
     CheckId::RepFloor,
     CheckId::Aa6Matrix,
+    CheckId::Aa3PayloadMatrix,
     CheckId::Aggregation,
     CheckId::ConditionConsistency,
     CheckId::ConditionMatrix,
@@ -502,6 +508,7 @@ fn run_stage_checks(
     check_replay_identity(run_set.stage, records, out);
     check_debug_evidence(run_set.stage, records, out);
     check_aa6_matrix(run_set.stage, run_set.injection.as_ref(), records, out);
+    check_aa3_payload_matrix(run_set, records, out);
     check_aa4_contract(run_set.stage, records, out);
     check_condition_consistency(run_set, records, out);
     check_payload_status(records, out);
@@ -3093,6 +3100,81 @@ fn required_aa6_classes() -> Vec<Payload> {
     classes
 }
 
+/// The AA-3 exact-landing payload matrix, checked for **exclusion integrity** (bead hm-9zy).
+///
+/// `arm-spike --exclude-payload` used to admit ANY class and leave no trace in the manifest, so a
+/// generic exclusion could shrink AA-3's exact-landing / count coverage invisibly (the retained
+/// AA-3 evidence excluded only the ruled `wfi-idle`, but nothing enforced that). Now the exclusions
+/// are recorded ([`RunSet::excluded_payloads`]) and, at AA-3, this check enforces:
+///
+/// 1. **Only the RULED carve-outs may be excluded** — `wfi-idle` (its WFI stalls the `BR_RETIRED`
+///    work clock and its timer resume is AA-5's paravirt-clock domain) and `llsc-atomics` (AA-4's
+///    banned LL/SC exclusive-monitor hazard). These are the same two the replay carve and
+///    `aa3-determinism-compare.py`'s `DEFAULT_EXCLUDE` name. Excluding any deterministic class is a
+///    coverage hole, not a carve-out.
+/// 2. **Every recorded exclusion names a real payload class.**
+/// 3. **Claim agrees with records** — an excluded class must not also appear as an armed, delivered
+///    landing (the manifest's exclusion claim must match the evidence).
+///
+/// It deliberately does NOT require the full class matrix to be *present*: AA-3 run-sets (and the
+/// unit fixtures) legitimately exercise a subset, so requiring completeness would turn honest
+/// subset evidence red. It binds the exclusion set the manifest now carries, which is exactly the
+/// generic-exclusion hole hm-9zy names.
+fn check_aa3_payload_matrix(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    if run_set.stage != Stage::Aa3 {
+        return;
+    }
+    // The ruled AA-3 carve-outs — the only classes a run may drop from exact-landing coverage.
+    const RULED: [Payload; 2] = [Payload::WfiIdle, Payload::LlscAtomics];
+
+    let present: BTreeSet<Payload> = records
+        .iter()
+        .filter(|r| {
+            r.overflow
+                .as_ref()
+                .is_some_and(|o| o.armed && o.deliveries >= 1)
+        })
+        .map(|r| r.payload)
+        .collect();
+
+    let mut problems: Vec<String> = Vec::new();
+    for name in &run_set.excluded_payloads {
+        match Payload::from_name(name) {
+            None => problems.push(format!(
+                "excluded_payloads names an unknown payload {name:?}"
+            )),
+            Some(p) => {
+                if !RULED.contains(&p) {
+                    problems.push(format!(
+                        "payload {} is excluded from AA-3 coverage but is not a ruled carve-out \
+                         (only wfi-idle and llsc-atomics may be excluded from exact-landing \
+                         coverage) — a generic exclusion cannot silently drop a deterministic class",
+                        p.name()
+                    ));
+                }
+                if present.contains(&p) {
+                    problems.push(format!(
+                        "payload {} is recorded as excluded but appears as an armed landing — the \
+                         manifest's exclusion claim disagrees with the records",
+                        p.name()
+                    ));
+                }
+            }
+        }
+    }
+
+    let ok = if run_set.excluded_payloads.is_empty() {
+        "no payload excluded from AA-3 coverage; the manifest records the full matrix".to_string()
+    } else {
+        format!(
+            "only ruled carve-outs excluded ({}), each absent from the records as the manifest \
+             claims",
+            run_set.excluded_payloads.join(", ")
+        )
+    };
+    verdict(CheckId::Aa3PayloadMatrix, &problems, ok, out);
+}
+
 /// AA-6's mini determinism gate is over a **matrix** of classes, not one input. The
 /// rep floor ([`check_floors`]) only grades inputs that are *present*, so 1,000 copies
 /// of a single `straight-line` record satisfies `--min-reps 1000` while every other
@@ -3823,6 +3905,7 @@ mod tests {
             weights: Some(Weights::measured(0, 0, 0, 0, 2)),
             skid_margin: Some(64),
             injection: None,
+            excluded_payloads: Vec::new(),
             attempted: 1,
             planned: 1,
             records_file: "records.jsonl".into(),

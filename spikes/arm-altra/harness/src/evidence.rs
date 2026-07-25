@@ -559,6 +559,17 @@ pub struct RunSet {
     /// stamp serializes to nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub injection: Option<InjectionAttestation>,
+    /// The payload classes deliberately **excluded** from this run-set's coverage matrix, by
+    /// name (`arm-spike --exclude-payload`). Retained so a checker can prove *what ran* rather
+    /// than inferring it from the records' presence: a class absent because it was ruled out
+    /// looks, in the records alone, exactly like one silently dropped. At AA-3 the floor checker
+    /// (`check_aa3_payload_matrix`) reads this to enforce that only the RULED carve-outs
+    /// (`wfi-idle`, `llsc-atomics`) may be excluded — a generic `--exclude-payload` that dropped
+    /// a deterministic class would otherwise weaken count/landing coverage invisibly (bead
+    /// hm-9zy). **Optional and additive**: an empty exclusion set serializes to nothing, so
+    /// retained pre-field run-sets validate unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_payloads: Vec<String>,
     /// How many samples were **attempted**. Every one of them must appear in the
     /// records file. In single-step mode one attempted sample emits MANY step
     /// records, so `attempted` is the STEP count there, not the plan size — see
@@ -612,6 +623,10 @@ pub struct RunSetContext {
     /// The AA-6 injection attestation ([`InjectionAttestation`]), stamped by the harness from
     /// the injection configuration it actually executed. `None` for a non-injecting stage.
     pub injection: Option<InjectionAttestation>,
+    /// The payload classes deliberately excluded from this run's coverage matrix (from
+    /// `--exclude-payload`), retained in the manifest so a checker can prove what ran (see
+    /// [`RunSet::excluded_payloads`]). Empty when nothing was excluded.
+    pub excluded_payloads: Vec<String>,
     /// How many samples were **attempted** — for an ordinary run this is the plan's
     /// length; in single-step mode the caller sets it to the STEP count (one plan
     /// sample emits many step records).
@@ -666,6 +681,7 @@ pub fn assemble_run_set(
         weights: ctx.weights,
         skid_margin: ctx.skid_margin,
         injection: ctx.injection,
+        excluded_payloads: ctx.excluded_payloads,
         attempted: ctx.attempted,
         planned: ctx.planned,
         records_file: "records.jsonl".to_string(),

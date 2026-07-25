@@ -2633,6 +2633,11 @@ fn execute(args: RunArgs) -> Result<(), String> {
             // Stamp the injection config the loop actually executed — an AA-6 run with
             // injection OFF is stamped OFF (not omitted), so the matrix checker sees the slip.
             injection: injection_attestation(args.stage, args.inject.as_ref()),
+            // Record which payload classes were excluded, so the manifest proves what ran and
+            // the AA-3 matrix checker can reject a non-ruled exclusion (bead hm-9zy). The plan
+            // built above already dropped these classes; recording them closes the "unrecorded
+            // exclusion" gap that let a generic --exclude-payload shrink coverage invisibly.
+            excluded_payloads: args.exclude_payloads,
             attempted,
             planned,
         };

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The fixture generator.
 //!
-//! Thirty-nine checked-in run-sets: thirty the checker must reject (one per failure
+//! Forty checked-in run-sets: thirty-one the checker must reject (one per failure
 //! mode — including the three AA-6 injection-attestation negative controls: an injection-OFF
-//! matrix, a missing stamp, and per-record witnesses inconsistent with the stamp; and the two
+//! matrix, a missing stamp, and per-record witnesses inconsistent with the stamp; the two
 //! count-exactness step-exemption controls: a step record with corrupt `trips`, and a step
-//! matrix mislabelled outside AA-2), one `scoped-aa6-mini-gate` (accepted only under a named
-//! `--scope`, bead hm-7q0), and eight it
+//! matrix mislabelled outside AA-2; and an AA-3 run that excluded a non-ruled payload class),
+//! one `scoped-aa6-mini-gate` (accepted only under a named `--scope`, bead hm-7q0), and eight it
 //! must accept (a patched AA-3 landing run, an AA-1 counting run, an
 //! AA-1(c) early/late skid-distribution run, an AA-1 LL/SC-hazard run, an AA-6 same-input
 //! gate, an AA-6 CARVE gate (llsc/wfi diverge but are recorded, contract classes bind), an
@@ -306,6 +306,8 @@ fn build_run_set(stage: Stage, mechanism: Mechanism, records: &[RunRecord]) -> R
         } else {
             None
         },
+        // No payload excluded by default; the hm-9zy planted-failure fixture overrides this.
+        excluded_payloads: Vec::new(),
         attempted: records.len() as u64,
         planned,
         records_file: "records.jsonl".to_string(),
@@ -1125,6 +1127,28 @@ pub fn all_fixtures() -> Vec<Fixture> {
         ));
     }
 
+    // 26. reject-aa3-excludes-nonruled (hm-9zy) — an AA-3 run-set that excluded a NON-ruled
+    //     payload (straight-line, a deterministic exact-landing class) and RECORDED the exclusion
+    //     in the manifest. Only wfi-idle and llsc-atomics may be carved from AA-3 coverage; a
+    //     generic --exclude-payload that dropped a deterministic class used to leave no trace and
+    //     no check. Now the exclusion is recorded and the AA-3 payload-matrix check rejects it as
+    //     the sole failure (the remaining seven classes are a coherent, contiguous run).
+    {
+        let mut records: Vec<RunRecord> = base_records(ExitReason::Preempt)
+            .into_iter()
+            .filter(|r| r.payload != Payload::StraightLine)
+            .collect();
+        // Renumber to a contiguous 0..n so the exclusion — not a totality gap — is the failure.
+        for (i, r) in records.iter_mut().enumerate() {
+            r.sample_id = i as u64;
+        }
+        let mut run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
+        run_set.excluded_payloads = vec![Payload::StraightLine.name().to_string()];
+        run_set.attempted = records.len() as u64;
+        run_set.records_sha256 = synth_sha256_of_bytes(records_jsonl(&records).as_bytes());
+        fixtures.push(fixture("reject-aa3-excludes-nonruled", &run_set, &records));
+    }
+
     fixtures
 }
 
@@ -1149,13 +1173,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_thirty_nine_fixtures_with_unique_names() {
+    fn there_are_forty_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 39);
+        assert_eq!(fixtures.len(), 40);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 39, "fixture names must be unique");
+        assert_eq!(names.len(), 40, "fixture names must be unique");
     }
 
     #[test]

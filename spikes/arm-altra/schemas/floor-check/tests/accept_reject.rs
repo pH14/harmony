@@ -548,6 +548,51 @@ fn reject_aa3_step_bypasses_counts_is_no_longer_exempt() {
 }
 
 #[test]
+fn reject_aa3_excludes_a_non_ruled_payload() {
+    // hm-9zy: an AA-3 run-set that excluded a NON-ruled deterministic class (straight-line) and
+    // recorded the exclusion in the manifest. Only wfi-idle and llsc-atomics may be carved from
+    // AA-3 exact-landing coverage. A generic --exclude-payload used to drop a class with no trace
+    // and no check; now the recorded exclusion is graded and the AA-3 payload-matrix check catches
+    // it as the sole failure.
+    assert_single_failure(
+        "reject-aa3-excludes-nonruled",
+        no_floors(),
+        CheckId::Aa3PayloadMatrix,
+    );
+    let report = check("reject-aa3-excludes-nonruled", no_floors());
+    let detail = report
+        .outcomes
+        .iter()
+        .find(|o| o.id == CheckId::Aa3PayloadMatrix)
+        .map(|o| o.detail.clone())
+        .unwrap_or_default();
+    assert!(
+        detail.contains("ruled carve-out") && detail.contains("straight-line"),
+        "the failure must name the non-ruled exclusion, got: {detail}"
+    );
+}
+
+#[test]
+fn an_aa3_run_with_no_exclusions_passes_the_payload_matrix() {
+    // The positive case: the accept fixture excludes nothing, so the AA-3 payload-matrix check is
+    // a clean PASS — the new check binds the exclusion set, it does not demand a full class matrix
+    // of an honest subset run.
+    let floors = Floors {
+        min_armed_overflows: Some(8),
+        min_reps: None,
+        min_cases: Some(8),
+        sub_normative: true,
+    };
+    let report = check("accept", floors);
+    assert_eq!(
+        report.status_of(CheckId::Aa3PayloadMatrix),
+        Some(Status::Pass),
+        "an AA-3 run that excluded nothing must pass the payload-matrix check"
+    );
+    assert!(report.passed());
+}
+
+#[test]
 fn reject_aa6_rep_floor_counts_per_input_not_total() {
     // The evasion the per-input floor closes: eight DISTINCT inputs, one rep each. The
     // total (8) meets a floor of 2, but no input is repeated even twice — which a
