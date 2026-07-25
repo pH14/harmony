@@ -6,11 +6,10 @@
 > Adopted 2026-07-09 (Paul: "worth a try") to replace prose-trigger sprawl across GitHub
 > issues, task-spec headers, and memory notes.
 
-_Refreshed 2026-07-25 morning (foreman loop): **the queue is now organized as work
-orders.** Paul consolidated 42 parked review findings into seven epics (label
-`work-order`; children label `wo-child`) overnight 2026-07-24/25 — one worker per work
-order, scoped with `bd ready --parent <epic-id>`, instead of one worker per finding.
-Zero open PRs at this iteration; all three P0 work orders dispatched (tasks/157-159)._
+_Refreshed 2026-07-25 late morning (foreman loop). **Three merges today, all through the
+bounded pipeline.** The queue is organized as work orders — Paul consolidated 42 parked
+review findings into seven epics (label `work-order`; children `wo-child`) overnight
+2026-07-24/25 — one worker per work order, scoped with `bd ready --parent <epic-id>`._
 
 > **Dispatch view:** `bd ready --exclude-label wo-child`. Plain `bd ready` re-scatters
 > the same findings into ~100 rows — that is the waste the consolidation removed.
@@ -78,63 +77,25 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-**Two PRs open, both from the P0 work orders dispatched this morning.**
+**Three lanes, the concurrency cap.**
 
-- **[PR #160](https://github.com/pH14/harmony/pull/160) — W1 negative-control fixtures.**
-  REQUEST_CHANGES at discovery (6-seat tribunal + Fable 5 judge): **2 open P1s**, and the
-  bite is that both are *new graders in this PR that can fail to go red* — F1, the `--scope`
-  verdict keeps only the first occurrence of each in-scope CheckId (same two fixtures exit 0
-  in one argument order and 1 reversed); F2, the AA-3 payload matrix returns PASS on a
-  silently missing class while printing "the manifest records the full matrix". Fix batch
-  dispatched to the live worker. Parks: `hm-hj29` (lane provenance — three seats said P1 and
-  demanded a crypto attestation; judge confirmed the mechanism and **refuted the demand**,
-  there being no signer in this pipeline to be a trust root), `hm-rgu8` (judge-originated:
-  evidence-validity checks don't gate scoped verdicts).
-- **[PR #161](https://github.com/pH14/harmony/pull/161) — W8 Intel box lane.** Portable gates
-  green (campaign-runner 107 tests, clippy, fmt); 5-seat tribunal complete, judge
-  adjudicating. Live box evidence for both closed items is quoted in the PR body.
-
-**Worker lanes (spawned 2026-07-25 07:09-07:11, cap of 3):**
-
-- **W8 — Intel box lane** (`hm-i2et`, tasks/157, PR #161) — **LANE COMPLETE, 2 of 4 closed**:
-  `hm-lld` (remap-restore, live gate green) and `hm-rdp` (**the flow-agent doorbell fired for
-  the first time in project history** — but only the kernel-dependency half; the Net service
-  was unwired, so the enforcement leg is NOT proven and `hm-wvh` is unblocked on the
-  kernel-config premise only, see the foreman note on `hm-rdp`). `hm-2nt` and `hm-i8kc` remain
-  open and untouched — the spec preferred fewer items closed cleanly. Box returned to stock
-  KVM 1396736, no leases held. Original brief:
-  the *only* box-touching worker; co-tenancy on the box makes a real divergence
-  indistinguishable from noise. Box verified up at dispatch (i9-9900K, load 0.00,
-  **KVM stock 1396736**). Order, fastest-close first: `hm-lld` remap-restore factory
-  (proves the lane end to end) → `hm-rdp` flow-agent doorbell — **the only dependency
-  unlock in the lane**, clearing it frees `hm-wvh` live net-fault enforcement — →
-  `hm-2nt` new-Postgres draw-probe gate → `hm-i8kc` `/dev/harmony` liveness (meatiest,
-  may not finish; last for that reason). Excluded by the work order: `hm-zwhi`
-  (hard-blocked on `hm-x1ss`), `hm-efc`.
 - **W7 — PR #134 evidence + campaign bookkeeping** (`hm-zduj`, tasks/158,
-  `task/campaign-evidence-hardening`, **Fable 5** — ten findings unified by one design
-  seam): the `hm-tx66` validated staging/ledger-open choke point first (absorbs
-  `hm-t5py`), then the on-disk identity **pair** `hm-9zr5` + `hm-8deo` landing together
-  under one version bump, then `hm-vfop`/`hm-dd39`/`hm-7h2c`/`hm-7k8f`/`hm-w2ar`.
-  `hm-4vms` (unreproduced occupancy divergence) stays open by design — standing
-  escalation, diagnostics armed, P0 if it ever reproduces.
-- **W1 — negative-control planted-failure fixtures** (`hm-537`, tasks/159, PR #160) —
-  all 8 children implemented, now in the fix batch. Original brief: *a grader without a fixture proving it
-  can go red is not a gate.* Ten green-on-fail findings, six files, ARM + AMD. The
-  reusable fixture harness — written once — is the deliverable that outlives the ten
-  fixes. Mac-side only (the box belongs to W8); owed box halves of `hm-pex`/`hm-5a6`
-  recorded on their beads.
-- **Parked box lane**: `hm-3bwm` masked-register-digest ≥1000-rep on-silicon leg —
-  apparatus + turnkey runbook MERGED (PR #142); fires when an ARM window reopens
-  (`hm-x9f` or a re-lease). All-identical ⇒ escalate the full-GO upgrade to Paul.
-- **Out-of-band: GHA-migration residue** (`oob/gha-residue`, pushed): the evacuated
-  `ci/gha-migration` work — hosted-runner content-check gates + cargo-deny pin (the two
-  unique ci commits), provider-neutral skills (harmony-coordinator/handoff/pr-review/
-  nimbus), secret-hygiene stack, docs/CLI.md + docs/NIMBUS.md, foreman-skill/spawn/
-  conventions edits. Tracked by its own bead; lands as a handoff-style PR when Paul says.
-- **Claimed, no live session (reconcile at next planning pass):** scratch-box provisioning
-  `hm-f2s`/`hm-x9f` (P0, Paul's), CI benchmark `hm-w9s` (P1, Paul's), aarch64 public-api
-  gate `hm-4aj`, PR #108 arrival-day validation `hm-f99`, AMD hammer dry-run `hm-8v4`.
+  [PR #162](https://github.com/pH14/harmony/pull/162)) — REQUEST_CHANGES at discovery,
+  **1 open P1**, fix in progress. PR162-F1: the lineage map at `coordinator.rs:596` drops
+  `l.cut.count`, so staging `1→2`, `1→3`, `2→1` all return `Ok` (the guard walks the
+  overwritten edge) and driving past it **hangs `probe_drive`** — judge-executed, killed by a
+  60 s watchdog where healthy tests finish in 0.02 s. A second defect rides inside it: two
+  same-parent edges with divergent fork counts feed twice into `start_contrib` **with no
+  cycle at all**. It blocks because cyclic lineage hanging `probe_drive` is in `hm-tx66`'s own
+  charter — the choke point this PR builds does not yet close its chartered case.
+  Parks: `hm-382z`, `hm-odhm`, `hm-qoen`, `hm-dzm7`, `hm-wvzz`.
+- **`hm-nvwx` — box-window lease lifetime** (tasks/164, `task/box-window-lease-lifetime`):
+  first commit landed, direction chosen — **leases live on time+pid, not pid alone**.
+- **W4 — ARM spike harness hardening** (`hm-kdih`, tasks/165,
+  `task/arm-spike-harness-hardening`): five PR #132 findings in three files. `hm-ej5` leads
+  with a **stop condition** — if any *retained* AA-1 manifest could have been produced by the
+  ungated exact-landing path, that is an evidence question, not a code fix, and the worker
+  halts and reports.
 
 ## New this session (foreman-filed, 2026-07-25)
 
@@ -215,6 +176,44 @@ slot frees:
   `hm-6rv` (P3s behind strategy dispositions).
 
 ## Recently done (this week)
+
+- **W5 — docs and labels match committed evidence MERGED** (tasks/163,
+  [PR #163](https://github.com/pH14/harmony/pull/163), `hm-nsev` + 5 children, light tier).
+  **The headline inverted its own bead.** `hm-7pm` was filed as an underclaim; the reality was
+  an overclaim in the dangerous direction — `docs/ARM-ALTRA.md` asserted "console + register
+  digests held bit-identical" when the register digest had been measured on a *separate
+  nokaslr diag build*, and the 2026-07-21 re-cert measured it **on the pinned image** and
+  found it **diverges same-seed**, 4 of 260 registers (`{x29, SP}` — the mask `hm-3bwm`
+  exists to characterise). Foreman verified that citation verbatim against
+  `results/aa-5/live-20260721/README.md` before merging. Also: AE-4's "MSR default-deny"
+  relabelled to what the demo does (owed real demonstration → `hm-vh3d`, rides W6), AA-2's
+  step-replay claim now carries its coverage boundary, AA-5(c) got an explicit PROVISIONAL GO.
+  Two claims were **left alone with a note** rather than corrected by invention; two P3 nits
+  were found **already fixed**; two gh#77 asks **declined** as superseded.
+- **W8 — Intel box lane MERGED** (tasks/157,
+  [PR #161](https://github.com/pH14/harmony/pull/161), `hm-lld` + `hm-rdp` + `hm-5zch`).
+  **The flow-agent doorbell fired for the first time in project history.** The tribunal found
+  the lane's own new gate was **green-on-fail** — `flow-init.sh` emitted `FLOW_DONE` before
+  testing the agent's `rc`, and because the `VTIM` hash chunk folds `SeededEntropy::save_state()`,
+  branch reseeding alone satisfies ≥2-distinct-futures with *zero guest entropy*, so a
+  Crash-path run printed `box GATES PASS` and exited 0 on a broken agent. Fixed, then proven
+  with a live **red/green pair** on the box before merge rather than on a promise:
+  `GATES PASS` counted **zero** times in the planted-failure arm. **The epic `hm-i2et` stays
+  OPEN** — `hm-2nt` and `hm-i8kc` untouched by design. **Claim boundary that must travel:**
+  `hm-rdp` proved the kernel-dependency half only; the enforcement leg never exercised, so
+  `hm-wvh` is unblocked on the guest-side kernel-config premise **only**.
+- **W1 — every grader must be able to fail MERGED** (tasks/159,
+  [PR #160](https://github.com/pH14/harmony/pull/160), `hm-537`'s 8 grader children).
+  `spikes/negcontrol.py` — the shared planted-failure harness, written once, with a five-line
+  "arming a new gate" contract. The tribunal found **two green-on-fail defects in this PR's
+  own new graders**: the `--scope` verdict kept only the first occurrence of each in-scope
+  check (same two fixtures exited 0 in one argument order and 1 reversed), and
+  `aa3-payload-matrix` returned PASS on a silently missing class while printing "the manifest
+  records the full matrix". Both fixed and re-verified by hand in both directions. The judge
+  **refuted** the highest-convergence finding (three seats, all P1, demanding a cryptographic
+  attestation — no signer exists in this pipeline to be a trust root); its own telemetry line:
+  *votes are ordering, not evidence*. **`hm-537` stays OPEN** over its unrelated child
+  `hm-f99`. Parks: `hm-hj29`, `hm-rgu8`, `hm-hb8v`.
 
 - **MockBackend lateness fold MERGED** (tasks/156, PR #159, `hm-j16h`, 2026-07-24
   just past midnight — five clean tribunal seats, zero findings, all judge scrutiny
