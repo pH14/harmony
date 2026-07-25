@@ -370,6 +370,24 @@ pub enum GameCampaignError {
     /// campaign that silently produced un-rekeyable output.
     #[error("deep-reproducer retention failed: {0}")]
     Retention(String),
+    /// The trace directory already holds a prior campaign's evidence ledger
+    /// (tribunal F6 / hm-vfop). A game campaign starts its Revision
+    /// coordinator fresh every run, so it can never resume a prior ledger:
+    /// reopening one rebuilds the old occupancy while the coordinator starts
+    /// empty, and the first step fail-closes with a confusing
+    /// `OccupancyDivergence`. Refused up front instead, with the fix in the
+    /// message — the honest mistake (a reused `--trace-out`) gets a
+    /// diagnosis, not a divergence report. The box driver's per-rep
+    /// `rep-N/` subdirectories already satisfy this.
+    #[error(
+        "the trace directory already holds a prior run's evidence ledger ({path}): a game \
+         campaign starts its coordinator fresh and cannot resume prior evidence — pass a \
+         fresh --trace-out directory (or remove the old evidence.log) per run"
+    )]
+    TraceDirNotFresh {
+        /// The pre-existing evidence ledger's path.
+        path: std::path::PathBuf,
+    },
     /// The two-barrier Differential controller failed (coordinator, evidence
     /// ledger, codec, or materialized-view failure) — loud, never absorbed
     /// (task 132).
@@ -1042,6 +1060,24 @@ pub fn run_game_campaign<M: Machine>(
         }
     };
     let ledger = EvidenceLedger::open(&evidence_path).map_err(CampaignError::from)?;
+    // Fresh-dir precondition (tribunal F6 / hm-vfop): this campaign's
+    // coordinator is always a fresh MemLedger, so a pre-existing evidence
+    // ledger under the trace dir can only be a prior run's — reopening it
+    // rebuilds old occupancy against an empty coordinator and the FIRST step
+    // fail-closes with a confusing OccupancyDivergence. Refuse it here with
+    // the fix in the message instead. Any durable content counts (retained
+    // batches, tombstones, a checkpoint, the finalized end): each alone is
+    // enough to poison a resumed rebuild.
+    if cfg.trace_dir.is_some()
+        && (!ledger.is_empty()
+            || ledger.collected().next().is_some()
+            || ledger.last_checkpoint().is_some()
+            || ledger.is_finalized())
+    {
+        return Err(GameCampaignError::TraceDirNotFresh {
+            path: evidence_path,
+        });
+    }
     // The pinned campaign identity is content-addressed over the FULL
     // immutable configuration (hm-8deo) — seed alone collided same-seed runs
     // under different selectors/deadlines/caps onto one durable identity.
@@ -2865,6 +2901,63 @@ mod tests {
 
     fn run(config: ExplorationConfig, seed: u64) -> ExplorationLog {
         run_outcome(config, seed).log
+    }
+
+    /// Tribunal F6 / hm-vfop regression: a REUSED trace dir is refused **up
+    /// front** with the fix in the message — not fail-closed later as a
+    /// confusing first-step `OccupancyDivergence` (the coordinator starts
+    /// empty every run, so a reopened prior ledger can never reconcile). A
+    /// fresh dir, and the box driver's per-rep subdirectory scheme, are
+    /// unaffected.
+    #[cfg_attr(
+        miri,
+        ignore = "runs full game campaigns against a real trace directory (durable evidence \
+                  ledger file I/O), which Miri isolation forbids; the refusal logic itself is \
+                  pure and covered transitively by the native suite."
+    )]
+    #[test]
+    fn reused_trace_dir_is_refused_up_front_with_the_fix_in_the_message() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = GameCampaignConfig {
+            max_branches: 2,
+            trace_dir: Some(dir.path().to_path_buf()),
+            ..GameCampaignConfig::smoke(7)
+        };
+        run_game_campaign(
+            GameToyMachine::new(),
+            Box::new(SpecEnvCodec),
+            &cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .expect("the first run under a fresh dir proceeds");
+        let err = run_game_campaign(
+            GameToyMachine::new(),
+            Box::new(SpecEnvCodec),
+            &cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .expect_err("the second run refuses the reused dir");
+        assert!(
+            matches!(err, GameCampaignError::TraceDirNotFresh { .. }),
+            "typed refusal, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--trace-out") && msg.contains("fresh"),
+            "the refusal names the fix: {msg}"
+        );
+        // A per-rep subdirectory (the box driver's isolation scheme) is fresh.
+        let cfg_rep = GameCampaignConfig {
+            trace_dir: Some(dir.path().join("rep-2")),
+            ..cfg.clone()
+        };
+        run_game_campaign(
+            GameToyMachine::new(),
+            Box::new(SpecEnvCodec),
+            &cfg_rep,
+            ExplorationConfig::PureRandom,
+        )
+        .expect("a per-rep subdirectory is fresh");
     }
 
     fn run_outcome(config: ExplorationConfig, seed: u64) -> GameCampaignOutcome {

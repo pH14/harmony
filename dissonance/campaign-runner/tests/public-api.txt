@@ -123,6 +123,8 @@ pub campaign_runner::gamecampaign::GameCampaignError::RolloutDied::stop: alloc::
 pub campaign_runner::gamecampaign::GameCampaignError::SetupNotReached
 pub campaign_runner::gamecampaign::GameCampaignError::SetupNotReached::stop: alloc::string::String
 pub campaign_runner::gamecampaign::GameCampaignError::SignalUnavailable
+pub campaign_runner::gamecampaign::GameCampaignError::TraceDirNotFresh
+pub campaign_runner::gamecampaign::GameCampaignError::TraceDirNotFresh::path: std::path::PathBuf
 pub enum campaign_runner::gamecampaign::GateVerdict
 pub campaign_runner::gamecampaign::GateVerdict::BelowFloor
 pub campaign_runner::gamecampaign::GateVerdict::BelowFloor::repeat: usize
