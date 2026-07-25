@@ -471,9 +471,12 @@ impl ProbeHost {
                 break;
             }
         }
-        if until > self.driven {
-            self.driven = until;
-        }
+        // Monotone watermark, stated as the max it is (hm-w2ar: the old
+        // `if until > self.driven` guard's `>`→`>=` mutant was semantically
+        // EQUIVALENT — the equal case assigns an equal value — so it could
+        // survive every possible suite; `max` removes the untestable
+        // boundary instead of pretending to test it).
+        self.driven = self.driven.max(until);
     }
 
     /// The exclusive watermark `drive` has passed: views are complete for
@@ -545,4 +548,32 @@ fn flat<T: Ord + Clone + std::fmt::Debug>(rows: &[(T, u64, isize)], visible: u64
             data
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::relations::canonical_cell;
+
+    /// The `driven` watermark is monotone and exact (hm-w2ar's untested
+    /// boundary): a drive to a LOWER `until` after a higher one never
+    /// regresses it, an equal drive holds it exactly, and a higher drive
+    /// advances it. Kills the regression-class mutants on the watermark
+    /// update (a `min` swap or a dropped assignment fails here directly,
+    /// not merely through a downstream `FrontierStalled`).
+    #[test]
+    fn driven_watermark_is_monotone_and_exact() {
+        let mut host = ProbeHost::new(std::rc::Rc::new(canonical_cell));
+        assert_eq!(host.driven(), 0, "nothing driven yet");
+        host.advance(4);
+        host.drive(4);
+        assert_eq!(host.driven(), 4, "a drive sets the watermark");
+        host.drive(2);
+        assert_eq!(host.driven(), 4, "a lower drive never regresses it");
+        host.drive(4);
+        assert_eq!(host.driven(), 4, "an equal drive holds it exactly");
+        host.advance(6);
+        host.drive(6);
+        assert_eq!(host.driven(), 6, "a higher drive advances it");
+    }
 }
