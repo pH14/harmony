@@ -78,9 +78,31 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-**Three workers, one per P0 work order — the concurrency cap, spawned 2026-07-25 07:09-07:11.**
+**Two PRs open, both from the P0 work orders dispatched this morning.**
 
-- **W8 — Intel box lane** (`hm-i2et`, tasks/157, `task/intel-box-lane`, Opus 4.8):
+- **[PR #160](https://github.com/pH14/harmony/pull/160) — W1 negative-control fixtures.**
+  REQUEST_CHANGES at discovery (6-seat tribunal + Fable 5 judge): **2 open P1s**, and the
+  bite is that both are *new graders in this PR that can fail to go red* — F1, the `--scope`
+  verdict keeps only the first occurrence of each in-scope CheckId (same two fixtures exit 0
+  in one argument order and 1 reversed); F2, the AA-3 payload matrix returns PASS on a
+  silently missing class while printing "the manifest records the full matrix". Fix batch
+  dispatched to the live worker. Parks: `hm-hj29` (lane provenance — three seats said P1 and
+  demanded a crypto attestation; judge confirmed the mechanism and **refuted the demand**,
+  there being no signer in this pipeline to be a trust root), `hm-rgu8` (judge-originated:
+  evidence-validity checks don't gate scoped verdicts).
+- **[PR #161](https://github.com/pH14/harmony/pull/161) — W8 Intel box lane.** Portable gates
+  green (campaign-runner 107 tests, clippy, fmt); 5-seat tribunal complete, judge
+  adjudicating. Live box evidence for both closed items is quoted in the PR body.
+
+**Worker lanes (spawned 2026-07-25 07:09-07:11, cap of 3):**
+
+- **W8 — Intel box lane** (`hm-i2et`, tasks/157, PR #161) — **LANE COMPLETE, 2 of 4 closed**:
+  `hm-lld` (remap-restore, live gate green) and `hm-rdp` (**the flow-agent doorbell fired for
+  the first time in project history** — but only the kernel-dependency half; the Net service
+  was unwired, so the enforcement leg is NOT proven and `hm-wvh` is unblocked on the
+  kernel-config premise only, see the foreman note on `hm-rdp`). `hm-2nt` and `hm-i8kc` remain
+  open and untouched — the spec preferred fewer items closed cleanly. Box returned to stock
+  KVM 1396736, no leases held. Original brief:
   the *only* box-touching worker; co-tenancy on the box makes a real divergence
   indistinguishable from noise. Box verified up at dispatch (i9-9900K, load 0.00,
   **KVM stock 1396736**). Order, fastest-close first: `hm-lld` remap-restore factory
@@ -96,8 +118,8 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
   under one version bump, then `hm-vfop`/`hm-dd39`/`hm-7h2c`/`hm-7k8f`/`hm-w2ar`.
   `hm-4vms` (unreproduced occupancy divergence) stays open by design — standing
   escalation, diagnostics armed, P0 if it ever reproduces.
-- **W1 — negative-control planted-failure fixtures** (`hm-537`, tasks/159,
-  `task/negative-control-fixtures`, Opus 4.8): *a grader without a fixture proving it
+- **W1 — negative-control planted-failure fixtures** (`hm-537`, tasks/159, PR #160) —
+  all 8 children implemented, now in the fix batch. Original brief: *a grader without a fixture proving it
   can go red is not a gate.* Ten green-on-fail findings, six files, ARM + AMD. The
   reusable fixture harness — written once — is the deliverable that outlives the ten
   fixes. Mac-side only (the box belongs to W8); owed box halves of `hm-pex`/`hm-5a6`
@@ -113,6 +135,18 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 - **Claimed, no live session (reconcile at next planning pass):** scratch-box provisioning
   `hm-f2s`/`hm-x9f` (P0, Paul's), CI benchmark `hm-w9s` (P1, Paul's), aarch64 public-api
   gate `hm-4aj`, PR #108 arrival-day validation `hm-f99`, AMD hammer dry-run `hm-8v4`.
+
+## New this session (foreman-filed, 2026-07-25)
+
+- **`hm-nvwx`** (P1 bug) — `scripts/box-window.sh` stores each lease as a **pid**, so acquiring
+  inside its own short-lived `ssh` invocation makes the lease stale the instant it is created;
+  the next invocation of any verb sweeps it and, because a zero-lease window gets reverted,
+  would `rmmod` the patched module out from under a live campaign in another session. Observed
+  live on the W8 lane. Inverts the coordinator's own safety invariant ("the window never
+  outlives its last lease"); survivable only because that work order serializes the box to one
+  worker. The lane worker fixed its own run wrapper — **the coordinator in `scripts/` is
+  untouched**.
+- **`hm-hj29`** (P2) / **`hm-rgu8`** (P2) — the PR #160 discovery parks, above.
 
 ## Ready — the remaining work orders (0 of 3 worker slots free; 58 ready rows in the dispatch view)
 
