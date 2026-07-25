@@ -70,6 +70,9 @@ pub explorer::CampaignError::Ledger(explorer::LedgerError)
 pub explorer::CampaignError::Machine(explorer::MachineError)
 pub explorer::CampaignError::OccupancyDivergence
 pub explorer::CampaignError::OccupancyDivergence::detail: alloc::string::String
+pub explorer::CampaignError::RecoveryIncomplete
+pub explorer::CampaignError::RecoveryIncomplete::batch: revision_coordinator::ids::EvidenceBatchId
+pub explorer::CampaignError::RecoveryIncomplete::revision: u64
 pub explorer::CampaignError::ResealDivergence
 pub explorer::CampaignError::ResealDivergence::at: u64
 pub explorer::CampaignError::ResealDivergence::entry: u64

@@ -222,6 +222,25 @@ pub enum CampaignError {
         /// What diverged.
         detail: String,
     },
+    /// Recovery re-staging found a committed batch that is **neither
+    /// retained nor collected** in the paired evidence ledger (verify V9 /
+    /// hm-7h2c). The coordinator durably ordered this batch, so a ledger
+    /// that cannot account for it is not this campaign's ledger (or lost
+    /// evidence outside the proven-GC path); silently omitting its relation
+    /// rows would let the next exploit derive a wrong inherited cell or a
+    /// spurious occupancy divergence. Refused instead — a collected
+    /// (tombstoned) batch is fine and simply contributes nothing, exactly
+    /// as in the retention rebuild.
+    #[error(
+        "recovery: committed batch {batch:?} at revision {revision} is neither retained nor \
+         collected in the evidence ledger — refusing to resume over unaccounted evidence"
+    )]
+    RecoveryIncomplete {
+        /// The committed revision whose batch is unaccounted for.
+        revision: u64,
+        /// The unaccounted batch identity.
+        batch: revision_coordinator::EvidenceBatchId,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -616,14 +635,24 @@ impl<M: Machine> DifferentialCampaign<M> {
             proj_cells.key(cut, &map)
         }))?;
         // Recovery re-staging: restart replays committed ledger inputs (the
-        // durable evidence batches), never a live arrangement. A committed
-        // batch absent from this evidence ledger contributes no relation
-        // rows (a foreign coordinator's input), exactly as it contributes
-        // nothing to the rebuilt retention views.
-        for (_rev, proposal, batch) in coordinator.committed_inputs() {
+        // durable evidence batches), never a live arrangement. Every batch
+        // the coordinator durably ordered must be ACCOUNTED FOR here (verify
+        // V9 / hm-7h2c): retained → its rows re-stage; collected → its
+        // tombstone vouches for it and it contributes no rows, exactly as it
+        // contributes nothing to the rebuilt retention views; anything else
+        // is a refusal — a ledger that cannot account for a committed batch
+        // is not this campaign's ledger (or lost evidence outside proven
+        // GC), and silently omitting its rows would hand the next exploit a
+        // wrong inherited cell or a spurious occupancy divergence.
+        for (rev, proposal, batch) in coordinator.committed_inputs() {
             if let Some(ev) = ledger.get(&batch) {
                 let rows = evidence_rows(ev);
                 coordinator.stage_evidence(proposal, rows)?;
+            } else if ledger.collected().all(|(id, _)| *id != batch) {
+                return Err(CampaignError::RecoveryIncomplete {
+                    revision: rev.get(),
+                    batch,
+                });
             }
         }
         let (genesis, genesis_cut) = machine.snapshot()?;
@@ -2861,6 +2890,92 @@ mod tests {
             Some(&crate::evidence::ReducedValue::Scalar(5)),
             "the pre-seal value, not the post-seal 99"
         );
+    }
+
+    /// Verify V9 / hm-7h2c: same-config durable-coordinator recovery
+    /// REFUSES a committed batch the paired evidence ledger can neither
+    /// retain nor account for by tombstone — silent omission in a recovery
+    /// path handed the next exploit a wrong inherited cell or a spurious
+    /// occupancy divergence. The true reopened ledger resumes; a properly
+    /// **collected** batch (tombstoned under a covering checkpoint) is
+    /// accounted for and simply contributes nothing.
+    #[test]
+    fn recovery_refuses_a_committed_batch_the_ledger_cannot_account_for() {
+        use revision_coordinator::FileLedger;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ev_path = dir.path().join("evidence.log");
+        let coord_path = dir.path().join("coordinator.log");
+        let cfg_id = revision_coordinator::CampaignConfigId::digest(b"v9-recovery");
+        let fresh_campaign = |led: EvidenceLedger, coord: Coordinator| {
+            DifferentialCampaign::new(
+                ScriptedMachine::new(vec![(1, UpdateOp::Set)], simple_program(4)),
+                Box::new(ToyCodec),
+                Box::new(DeclineTactic::new()),
+                Box::new(GenesisSelector::new()),
+                Box::new(DefaultObservationCells::new()),
+                led,
+                coord,
+                config(8, u64::MAX),
+                7,
+            )
+        };
+        // A durable-coordinator campaign: two steps commit real batches into
+        // both ledgers, then a checkpoint covers them (the coverage the
+        // collected-batch leg below cites).
+        {
+            let led = EvidenceLedger::open(&ev_path).expect("open");
+            let coord = Coordinator::genesis(
+                Box::new(FileLedger::open(&coord_path).expect("file ledger")),
+                cfg_id,
+            )
+            .expect("genesis");
+            let mut camp = fresh_campaign(led, coord).expect("new");
+            camp.explore(2).expect("explore");
+            camp.commit_checkpoint().expect("checkpoint");
+        }
+        let recover = || {
+            let file = FileLedger::open(&coord_path).expect("reopen file ledger");
+            Coordinator::recover(&file).expect("recover")
+        };
+        // (1) Paired with an EMPTY evidence ledger: the committed batches
+        // are unaccounted for — refused with the typed error, not silently
+        // re-staged as nothing.
+        let empty = EvidenceLedger::open(&dir.path().join("empty.log")).expect("open");
+        let err = fresh_campaign(empty, recover())
+            .err()
+            .expect("an unaccounted committed batch refuses recovery");
+        assert!(
+            matches!(err, CampaignError::RecoveryIncomplete { .. }),
+            "typed refusal, got {err:?}"
+        );
+        // (2) Paired with the TRUE reopened ledger: every batch accounts,
+        // recovery proceeds, and the campaign keeps stepping.
+        {
+            let led = EvidenceLedger::open(&ev_path).expect("reopen");
+            let mut camp =
+                fresh_campaign(led, recover()).expect("the true ledger accounts for every batch");
+            camp.explore(1)
+                .expect("a recovered campaign keeps stepping");
+        }
+        // (3) A COLLECTED batch is accounted for by its tombstone: collect
+        // one committed batch under the checkpoint's coverage, and recovery
+        // proceeds with it contributing nothing.
+        {
+            let mut led = EvidenceLedger::open(&ev_path).expect("reopen");
+            // The checkpoint covers the phase-one issues; pick the earliest
+            // (issue 1) explicitly so the collect's coverage is by
+            // construction, not by digest order.
+            let victim = *led
+                .batch_ids()
+                .find(|id| led.get(id).is_some_and(|e| e.rollout.issue == 1))
+                .expect("the first committed rollout is retained");
+            led.collect(victim, &std::collections::BTreeSet::new())
+                .expect("covered collect");
+            drop(led);
+            let led = EvidenceLedger::open(&ev_path).expect("reopen");
+            fresh_campaign(led, recover())
+                .expect("a tombstoned batch is accounted for and contributes nothing");
+        }
     }
 
     /// A partial (assigned-but-uncommitted) batch cannot advance a frontier: an
