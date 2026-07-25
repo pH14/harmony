@@ -103,8 +103,8 @@
     "window_offset": 2
   },
   "skid_margin": 64,
-  "attempted": 2,
-  "planned": 2,
+  "attempted": 12,
+  "planned": 12,
   "records_file": "records.jsonl",
-  "records_sha256": "92ec285c50d53ca4628421324de65fa79d4ad3aa8a46d00da84ccc95df161590"
+  "records_sha256": "dbc50d04e4eb22d6f5b4eb0b31cb404beda709a6779c3ca31c53383f730cab96"
 }

@@ -347,6 +347,22 @@ jobs:
       - name: miri — oracle-model (shared page layout + count derivations)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path "$SPIKE/oracle-model/Cargo.toml" --features std
 
+  # spikes/amd-epyc (tasks/123) — the AMD floor checker's negative controls. The C harness
+  # (ae0-probe.c, singlestep-driver.c, …) is Linux/KVM and is NOT built here — it needs
+  # /dev/kvm and the patched kernel, and wiring it into a Linux CI runner is hm-l82. What DOES
+  # run here, and needs nothing but python3, is check-floors.py's planted-failure suite: the
+  # grader-integrity discipline (work order hm-537) says a floor checker that has never been
+  # seen to go red is unproven, so its negative controls are gated on every PR.
+  spike-amd-epyc:
+    name: spikes/amd-epyc (floor-checker negative controls)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check-floors.py planted-failure suite
+        # The shared harness (spikes/negcontrol.py) is imported by the test via a spikes/-root
+        # sys.path insert; the full repo checkout above puts it in place.
+        run: python3 -m unittest discover -s spikes/amd-epyc/host/tests -p 'test_*.py'
+
   # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
   # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`
   # under PR concurrency the Miri run was OOM/timeout-flaky (SIGKILL/137) and

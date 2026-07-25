@@ -58,14 +58,16 @@ static long perf_open(uint64_t config, uint64_t period) {
     return syscall(SYS_perf_event_open, &a, 0, -1, -1, 0);
 }
 
-/* Confirm the event opens pinned+non-multiplexed and counts > 0. */
-static void probe_event_openable(uint64_t event) {
+/* Confirm the event opens pinned+non-multiplexed and counts > 0. Returns 1 iff the event is
+ * fully usable as the work clock (opened, read back, non-multiplexed, count > 0), else 0 — the
+ * load-bearing signal main() gates its exit code on (bead hm-e1n). */
+static int probe_event_openable(uint64_t event) {
     long fd = perf_open(event, 0);
     printf("  \"ex_ret_brn_tkn_openable\": {\n");
     printf("    \"event\": \"0x%llx\",\n", (unsigned long long)event);
     if (fd < 0) {
         printf("    \"opened\": false, \"errno\": %d, \"count\": 0, \"non_multiplexed\": false\n  },\n", errno);
-        return;
+        return 0;
     }
     struct { uint64_t v, en, run; } rr = {0, 0, 0};
     ioctl((int)fd, PERF_EVENT_IOC_RESET, 0);
@@ -73,20 +75,23 @@ static void probe_event_openable(uint64_t event) {
     asm_loop(1000000);
     ioctl((int)fd, PERF_EVENT_IOC_DISABLE, 0);
     int rd = read((int)fd, &rr, sizeof(rr)) == (ssize_t)sizeof(rr);
+    int non_multiplexed = rd && rr.en == rr.run;
     printf("    \"opened\": true, \"count\": %llu, \"non_multiplexed\": %s, \"read_ok\": %s\n  },\n",
-           (unsigned long long)rr.v, (rd && rr.en == rr.run) ? "true" : "false", rd ? "true" : "false");
+           (unsigned long long)rr.v, non_multiplexed ? "true" : "false", rd ? "true" : "false");
     close((int)fd);
+    return (rd && non_multiplexed && rr.v > 0) ? 1 : 0;
 }
 
-/* Trivial overflow: arm a small period, confirm at least one PERF_RECORD_SAMPLE lands. */
-static void probe_overflow_delivers(uint64_t event) {
+/* Trivial overflow: arm a small period, confirm at least one PERF_RECORD_SAMPLE lands. Returns 1
+ * iff a sample was delivered, else 0 — the second load-bearing signal main()'s exit gates on. */
+static int probe_overflow_delivers(uint64_t event) {
     long fd = perf_open(event, 100000);
     printf("  \"trivial_overflow_delivers_sample\": ");
-    if (fd < 0) { printf("{\"opened\": false, \"errno\": %d},\n", errno); return; }
+    if (fd < 0) { printf("{\"opened\": false, \"errno\": %d},\n", errno); return 0; }
     long ps = sysconf(_SC_PAGESIZE);
     size_t maplen = (size_t)ps * 9;
     struct perf_event_mmap_page *mp = mmap(0, maplen, PROT_READ | PROT_WRITE, MAP_SHARED, (int)fd, 0);
-    if (mp == MAP_FAILED) { printf("{\"opened\": true, \"mmap\": false, \"errno\": %d},\n", errno); close((int)fd); return; }
+    if (mp == MAP_FAILED) { printf("{\"opened\": true, \"mmap\": false, \"errno\": %d},\n", errno); close((int)fd); return 0; }
     ioctl((int)fd, PERF_EVENT_IOC_RESET, 0);
     ioctl((int)fd, PERF_EVENT_IOC_ENABLE, 0);
     asm_loop(2000000);   /* ~expect >= 20 overflows at period 1e5 vs ~2e6 branches */
@@ -104,6 +109,7 @@ static void probe_overflow_delivers(uint64_t event) {
     printf("{\"opened\": true, \"mmap\": true, \"samples\": %u, \"delivered\": %s},\n",
            samples, samples > 0 ? "true" : "false");
     munmap(mp, maplen); close((int)fd);
+    return samples > 0 ? 1 : 0;
 }
 
 int main(void) {
@@ -131,7 +137,8 @@ int main(void) {
     jbool("rdseed", (b >> 18) & 1);
 
     __cpuid(0x80000001, a, b, c, d);
-    jbool("svm_supported", (c >> 2) & 1);
+    int svm_supported = (c >> 2) & 1;
+    jbool("svm_supported", svm_supported);
     jbool("rdtscp", (d >> 27) & 1);
 
     __cpuid(0x80000007, a, b, c, d);
@@ -175,9 +182,17 @@ int main(void) {
     printf("    \"note\": \"BTF/TF/DR architectural on AMD64; #DB-under-SVM behavior is the AE-2 empirical question\"\n  },\n");
 
     /* live perf openability + overflow-delivery (the load-bearing AE-0 row) */
-    probe_event_openable(0xc4);
-    probe_overflow_delivers(0xc4);
+    int event_openable = probe_event_openable(0xc4);
+    int overflow_delivers = probe_overflow_delivers(0xc4);
 
     printf("  \"probe\": \"done\"\n}\n");
-    return 0;
+
+    /* Exit non-zero when a LOAD-BEARING capability is absent, so a runner can use this probe as
+     * an automated stage-stop (bead hm-e1n) rather than reading its exit code — which used to be
+     * an unconditional 0 — as always-OK. The load-bearing AE-0 row is: SVM present AND the pinned
+     * ex_ret_brn_tkn event opens non-multiplexed and counts AND a trivial overflow delivers a
+     * sample. Everything else in the truth table above is REPORTED (the caller judges it from the
+     * emitted JSON rows and tags the platform-scoped ones), not gated here. */
+    int capabilities_ok = svm_supported && event_openable && overflow_delivers;
+    return capabilities_ok ? 0 : 1;
 }

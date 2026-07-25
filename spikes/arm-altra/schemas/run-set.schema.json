@@ -87,6 +87,11 @@
       "description": "The AA-6 injection attestation (`arm_harness::evidence::InjectionAttestation`), stamped by the harness from the injection config it ACTUALLY executed. OPTIONAL and additive: stages that do not inject, and any retained pre-attestation run-set, omit it. An AA-6 run-set MUST carry it — the floor checker fails CLOSED on its absence there, because an armed force-exit landing is not an injected interrupt, so a bare AA-3 armed-overflow matrix is otherwise indistinguishable from an injected AA-6 one (bead hm-oh3v).",
       "$ref": "#/$defs/injection-attestation"
     },
+    "excluded_payloads": {
+      "description": "The payload classes deliberately EXCLUDED from this run-set's coverage matrix (from `arm-spike --exclude-payload`), by name. Retained so a checker can prove WHAT RAN instead of inferring it from the records: a class absent because it was ruled out is, in the records alone, indistinguishable from one silently dropped. OPTIONAL and additive: an empty exclusion set is omitted, so retained pre-field run-sets validate unchanged. At AA-3 the floor checker enforces that only the RULED carve-outs (`wfi-idle`, `llsc-atomics`) may appear here (bead hm-9zy).",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
     "attempted": {
       "description": "How many samples were ATTEMPTED. Every one of them must appear in `records.jsonl` with a `sample_id` in `0..attempted`, exactly once \u2014 a missing sample is a failure to account, not a pass (\u00a7Evidence integrity #6). At least 1: a run-set that attempted nothing measures nothing and must not pass vacuously. In single-step mode one planned sample emits many step records, so this is the STEP count there; see `planned`.",
       "type": "integer",

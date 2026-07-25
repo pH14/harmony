@@ -225,6 +225,132 @@ fn reject_aa6_injected_flag_inconsistent_with_the_stamp() {
     );
 }
 
+/// Run the `floor-check` binary over `args` and return its output. The scope feature's exit
+/// code is behaviour the library method cannot observe, so the negative control drives the real
+/// CLI — a scoped gate that never goes red on the wire is not a gate (bead hm-7q0).
+fn run_floor_check(args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_floor-check"))
+        .args(args)
+        .output()
+        .expect("spawn floor-check")
+}
+
+/// The five checks the AA-6 mini determinism gate DEMONSTRATES (rep-floor, replay-identity,
+/// multiplicity, skid, mechanism-attestation) — the scope `results/aa-6/live-20260720`'s manifest
+/// verdict rests on.
+const AA6_MINI_GATE_SCOPE: &[CheckId] = &[
+    CheckId::RepFloor,
+    CheckId::ReplayIdentity,
+    CheckId::Multiplicity,
+    CheckId::Skid,
+    CheckId::MechanismAttestation,
+];
+
+#[test]
+fn scoped_aa6_mini_gate_full_run_fails_but_scoped_run_is_demonstrated() {
+    // hm-7q0(b): the mini-gate fixture mirrors the manifest — a full, bit-identical AA-6 matrix
+    // with NO weights pack and NO fault injection. A FULL invocation FAILs (weights-present,
+    // count-exactness, aa6-matrix), so the manifest's "DEMONSTRATED" cannot be read off a full
+    // run. The SCOPED verdict over the five mini-gate checks is accepted, and the out-of-scope
+    // FAILs are reported, not hidden — which is what makes the manifest machine-checkable.
+    let floors = aa6_floors();
+    let report = check("scoped-aa6-mini-gate", floors);
+    assert!(
+        !report.passed(),
+        "a full run of the mini-gate must FAIL (the larger deliverables are out of scope)"
+    );
+    for id in [
+        CheckId::WeightsPresent,
+        CheckId::CountExactness,
+        CheckId::Aa6Matrix,
+    ] {
+        assert_eq!(
+            report.status_of(id),
+            Some(Status::Fail),
+            "{id} is transparently out of scope and must FAIL on a full run"
+        );
+    }
+    let verdict = report.scoped_verdict(AA6_MINI_GATE_SCOPE);
+    assert!(
+        verdict.accepted(),
+        "the mini-gate scope must be DEMONSTRATED; not passed: {:?}, missing: {:?}",
+        verdict.not_passed,
+        verdict.missing
+    );
+    assert!(
+        verdict.out_of_scope_failed.contains(&CheckId::Aa6Matrix),
+        "the out-of-scope FAILs must be on the face of the scoped verdict"
+    );
+}
+
+#[test]
+fn the_scoped_cli_exits_zero_for_the_demonstrated_scope_and_red_when_a_scoped_check_fails() {
+    // The end-to-end control: the exact machine-checkable invocation a manifest can cite. The
+    // demonstrated scope exits 0; adding a check that FAILS to the scope drives the CLI RED —
+    // a scoped gate that could not go red would be a script, not a gate.
+    let dir = fixtures_dir().join("scoped-aa6-mini-gate");
+    let dir = dir.to_str().expect("utf-8 path");
+
+    // 1. Scoped to the five mini-gate checks (with the rep floor named) → SCOPED PASS, exit 0.
+    let ok = run_floor_check(&[
+        dir,
+        "--min-reps",
+        "4",
+        "--sub-normative",
+        "--scope",
+        "rep-floor",
+        "--scope",
+        "replay-identity",
+        "--scope",
+        "multiplicity",
+        "--scope",
+        "skid",
+        "--scope",
+        "mechanism-attestation",
+    ]);
+    assert!(
+        ok.status.success(),
+        "the demonstrated scope must exit 0; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&ok.stdout),
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&ok.stdout).contains("[SCOPED] PASS"),
+        "a scoped acceptance must be labelled [SCOPED], never a full stage pass"
+    );
+
+    // 2. The planted failure: pull an out-of-scope FAILing check (aa6-matrix) INTO the scope.
+    //    The CLI must now exit non-zero — the negative control that proves the scope can go red.
+    let red = run_floor_check(&[
+        dir,
+        "--min-reps",
+        "4",
+        "--sub-normative",
+        "--scope",
+        "rep-floor",
+        "--scope",
+        "aa6-matrix",
+    ]);
+    assert!(
+        !red.status.success(),
+        "a FAILing check inside the scope must drive the scoped verdict RED; stdout:\n{}",
+        String::from_utf8_lossy(&red.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&red.stdout).contains("[SCOPED] FAIL"),
+        "the red scoped verdict must say so"
+    );
+
+    // 3. Fail-closed: a scope that names a check which did not run in this invocation.
+    //    armed-overflow-floor is NOT-REQUESTED here (no --min-armed-overflows), so naming it
+    //    cannot demonstrate it.
+    let unrun = run_floor_check(&[dir, "--scope", "armed-overflow-floor"]);
+    assert!(
+        !unrun.status.success(),
+        "a scoped check that did not run must fail closed, not pass by omission"
+    );
+}
+
 #[test]
 fn accept_aa6_carve_is_accepted() {
     // The AA-6 carve: llsc-atomics (AA-4's banned counter-example) and wfi-idle (AA-5's timer
@@ -375,6 +501,157 @@ fn reject_aa2_dropped_planned_sample() {
         no_floors(),
         CheckId::StepTotality,
     );
+}
+
+#[test]
+fn reject_aa2_step_bad_trips_is_graded_not_exempt() {
+    // hm-7q0 negative control: the valid AA-2 step matrix with ONE step record's `trips`
+    // corrupted. `trips` is the payload's INPUT constant, graded by count-exactness even for a
+    // step record (whose WINDOW count stays exempt). Under the old blanket step-exemption this
+    // rode through ungraded and the whole matrix read PASS; now count-exactness catches it, and
+    // nothing else reads trips, so it is the sole failure.
+    assert_single_failure(
+        "reject-aa2-step-bad-trips",
+        no_floors(),
+        CheckId::CountExactness,
+    );
+}
+
+#[test]
+fn reject_aa3_step_bypasses_counts_is_no_longer_exempt() {
+    // hm-gmt negative control: the AA-2 single-step matrix mislabelled as an AA-3 run-set. The
+    // step-exemption from the window-count oracle is AA-2's alone; a non-AA-2 step record must
+    // not bypass count-exactness. Under the old blanket `step.is_some() -> continue`, every
+    // record was silently exempted and count-exactness read PASS (falsely). Now count-exactness
+    // FAILS on each non-AA-2 step, naming the AA-2 scope. (mechanism-attestation also fails — the
+    // Debug exits are not AA-3's Preempt — so this is not a single-failure case; the isolated
+    // assertion is that count-exactness no longer looks away.)
+    let report = check("reject-aa3-step-bypasses-counts", no_floors());
+    assert!(!report.passed());
+    assert_eq!(
+        report.status_of(CheckId::CountExactness),
+        Some(Status::Fail),
+        "a non-AA-2 step record must fail count-exactness, not ride the AA-2 exemption; \
+         report failed {:?}",
+        report.failed()
+    );
+    let detail = report
+        .outcomes
+        .iter()
+        .find(|o| o.id == CheckId::CountExactness)
+        .map(|o| o.detail.clone())
+        .unwrap_or_default();
+    assert!(
+        detail.contains("AA-2"),
+        "the count-exactness failure must name the AA-2-only scope, got: {detail}"
+    );
+}
+
+#[test]
+fn reject_aa3_excludes_a_non_ruled_payload() {
+    // hm-9zy: an AA-3 run-set that excluded a NON-ruled deterministic class (straight-line) and
+    // recorded the exclusion in the manifest. Only wfi-idle and llsc-atomics may be carved from
+    // AA-3 exact-landing coverage. A generic --exclude-payload used to drop a class with no trace
+    // and no check; now the recorded exclusion is graded and the AA-3 payload-matrix check catches
+    // it as the sole failure.
+    assert_single_failure(
+        "reject-aa3-excludes-nonruled",
+        no_floors(),
+        CheckId::Aa3PayloadMatrix,
+    );
+    let report = check("reject-aa3-excludes-nonruled", no_floors());
+    let detail = report
+        .outcomes
+        .iter()
+        .find(|o| o.id == CheckId::Aa3PayloadMatrix)
+        .map(|o| o.detail.clone())
+        .unwrap_or_default();
+    assert!(
+        detail.contains("ruled carve-out") && detail.contains("straight-line"),
+        "the failure must name the non-ruled exclusion, got: {detail}"
+    );
+}
+
+#[test]
+fn reject_aa3_undeclared_omission_fails_coverage() {
+    // PR160-F2 negative control: the UNDECLARED counterpart to the fixture above — a pre-field
+    // `--exclude-payload straight-line` run that dropped a deterministic class with NO
+    // excluded_payloads field at all. The old declaration-only check PASSED it while claiming "the
+    // manifest records the full matrix"; the coverage check now fails closed on the silently
+    // missing non-ruled class, as the sole failure.
+    assert_single_failure(
+        "reject-aa3-undeclared-omission",
+        no_floors(),
+        CheckId::Aa3PayloadMatrix,
+    );
+    let report = check("reject-aa3-undeclared-omission", no_floors());
+    let detail = report
+        .outcomes
+        .iter()
+        .find(|o| o.id == CheckId::Aa3PayloadMatrix)
+        .map(|o| o.detail.clone())
+        .unwrap_or_default();
+    assert!(
+        detail.contains("silently absent") && detail.contains("straight-line"),
+        "the failure must name the silently missing required class, got: {detail}"
+    );
+}
+
+#[test]
+fn an_aa3_run_covering_every_class_passes_the_payload_matrix() {
+    // The positive case: the accept fixture exercises every window class and declares no exclusion,
+    // so the AA-3 payload-matrix check is a clean PASS — coverage is complete and honest.
+    let floors = Floors {
+        min_armed_overflows: Some(8),
+        min_reps: None,
+        min_cases: Some(8),
+        sub_normative: true,
+    };
+    let report = check("accept", floors);
+    assert_eq!(
+        report.status_of(CheckId::Aa3PayloadMatrix),
+        Some(Status::Pass),
+        "an AA-3 run covering every class with no declared exclusion must pass"
+    );
+    // And the honest PASS detail must not over-claim a "full matrix" the manifest cannot record.
+    let detail = report
+        .outcomes
+        .iter()
+        .find(|o| o.id == CheckId::Aa3PayloadMatrix)
+        .map(|o| o.detail.clone())
+        .unwrap_or_default();
+    assert!(
+        !detail.contains("the manifest records the full matrix"),
+        "the PASS detail must not claim the manifest records the matrix, got: {detail}"
+    );
+    assert!(report.passed());
+}
+
+#[test]
+fn a_scoped_verdict_over_aggregated_run_sets_is_order_independent() {
+    // PR160-F1 negative control: aggregating a pass+fail fixture pair and scoping to the failing
+    // check must yield a scoped FAIL regardless of argument order — the order flip IS the control.
+    // Before the fix, scoped_verdict recorded only the FIRST occurrence of rep-floor across the
+    // aggregated outcomes, so the exit code flipped with the directory order.
+    let floors = Floors {
+        min_armed_overflows: None,
+        min_reps: Some(2),
+        min_cases: None,
+        sub_normative: true,
+    };
+    let mini = fixtures_dir().join("scoped-aa6-mini-gate"); // rep-floor PASSES (4 reps each)
+    let short = fixtures_dir().join("reject-aa6-rep-floor"); // rep-floor FAILS (1 rep each)
+    for (a, b) in [(&mini, &short), (&short, &mini)] {
+        let report = floor_check::check_run_sets(&[a.as_path(), b.as_path()], &floors)
+            .expect("aggregate loads");
+        let verdict = report.scoped_verdict(&[CheckId::RepFloor]);
+        assert!(
+            !verdict.accepted(),
+            "a scoped rep-floor over a pass+fail pair must FAIL in both orders; not_passed={:?}",
+            verdict.not_passed
+        );
+        assert!(verdict.not_passed.contains(&CheckId::RepFloor));
+    }
 }
 
 #[test]

@@ -80,7 +80,14 @@ static int vm_set_start(struct vm *v, int guest_tf, int set_btf) {
         m.h.nmsrs = 1; m.e.index = MSR_DEBUGCTL; m.e.data = DEBUGCTL_BTF;
         if (ioctl(v->vcpu, KVM_SET_MSRS, &m) < 1) { /* attested via the run result */ }
     }
-    /* read back RFLAGS.TF actually in force (attest whether KVM kept the guest's TF) */
+    /* Read back the GUEST-set RFLAGS.TF — the bit we wrote just above — after the SET_REGS
+     * round-trip. NOTE (bead hm-pex): this is measured BEFORE KVM_SET_GUEST_DEBUG (main() applies
+     * that AFTER vm_set_start returns), so it observes ONLY whether the guest's OWN TF (set for
+     * modes tfg/btf) survived the round-trip. It CANNOT observe KVM's single-step TF, which is
+     * armed later, so for mode tf — where guest_tf is 0 — this is 0 BY CONSTRUCTION and establishes
+     * nothing about guest-transparency of KVM's single-step. The genuine "does a guest PUSHF observe
+     * TF" transparency test needs the box and is an owed residual on hm-pex; do not read this field
+     * as a transparency result. */
     struct kvm_regs rb; ioctl(v->vcpu, KVM_GET_REGS, &rb);
     return (int)((rb.rflags & RFLAGS_TF) ? 1 : 0);
 }

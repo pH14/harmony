@@ -11,3 +11,23 @@ floor-check --min-reps 1000:
         linux-guest — the larger AA-6 deliverable, not the mini-gate).
 VERDICT: AA-6 mini determinism gate (>=1000-rep bit-identity) DEMONSTRATED on silicon.
 records.jsonl content-addressed on box (run-set.json records_sha256).
+
+--- machine-checkable verdict (added 2026-07-25, bead hm-7q0) ---
+The prose VERDICT above is now checkable by a SCOPED floor-check invocation that rests the
+exit code on ONLY the five mini-gate checks and exits 0 iff every one PASSES, while the two
+transparently-larger deliverables (weights/count-exactness, aa6-matrix) are reported but do
+not gate:
+
+  floor-check <run-set-dir> --min-reps 1000 \
+    --scope rep-floor --scope replay-identity --scope multiplicity \
+    --scope skid --scope mechanism-attestation
+
+Exit 0 == "the AA-6 mini determinism gate is DEMONSTRATED for this run-set" — no prose
+reconciliation of a full-run FAIL. The scoped run prints RESULT: [SCOPED] PASS and lists the
+out-of-scope FAILs on the face of the verdict, so it can never be read as a full stage
+acceptance. Demonstrated exit-0 over the committed sibling run-set
+results/aa-6/live-20260721/aa6-minigate (8000 records, real evidence): full run FAILs only
+aa6-matrix; the scoped invocation above exits 0. The 2026-07-20 run-set's records are
+content-addressed on box, so re-running the command here needs the box; the capability and its
+negative control (a FAILing check pulled into scope drives it RED) are gated in CI by
+floor-check's accept_reject suite.

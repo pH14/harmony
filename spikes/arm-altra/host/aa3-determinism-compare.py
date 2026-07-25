@@ -68,12 +68,28 @@ def resolve_input(input_path):
     expected_hash = manifest.get("records_sha256")
     if not isinstance(expected_hash, str):
         raise EvidenceError(f"{manifest_path}: records_sha256 is required")
-    return path / manifest.get("records_file", "records.jsonl"), expected, expected_hash
+    # Lane identity, for the provenance attestation (hm-6sj).
+    run_set_id = manifest.get("run_set_id")
+    if not isinstance(run_set_id, str) or not run_set_id:
+        raise EvidenceError(f"{manifest_path}: run_set_id is required")
+    condition = manifest.get("condition")
+    if not isinstance(condition, str) or not condition:
+        raise EvidenceError(f"{manifest_path}: condition is required")
+    return {
+        "records_path": path / manifest.get("records_file", "records.jsonl"),
+        "expected_records": expected,
+        "expected_hash": expected_hash,
+        "run_set_id": run_set_id,
+        "condition": condition,
+    }
 
 
 def load(input_path, exclude):
     """Load one run-set without collapsing its expected repeated tuples."""
-    records_path, expected_records, expected_hash = resolve_input(input_path)
+    resolved = resolve_input(input_path)
+    records_path = resolved["records_path"]
+    expected_records = resolved["expected_records"]
+    expected_hash = resolved["expected_hash"]
     values = {}
     multiplicities = {}
     sample_ids = set()
@@ -153,7 +169,37 @@ def load(input_path, exclude):
         "expected_records": expected_records,
         "records_sha256": actual_hash,
         "manifest_verified": expected_records is not None,
+        "run_set_id": resolved["run_set_id"],
+        "condition": resolved["condition"],
     }
+
+
+def attest_distinct_lanes(solo, cotenant_inputs):
+    """The solo reference and every co-tenant lane must be DISTINCT run-sets under DIFFERENT
+    conditions (hm-6sj). Passing the same run-set dir twice — or a copied/mislabelled lane —
+    would otherwise full-join MATCH without ever contrasting solo against co-tenant. Co-tenant
+    lanes must also be distinct run-sets from one another."""
+    seen_ids = {solo["run_set_id"]: solo["source"]}
+    for lane in cotenant_inputs:
+        if lane["run_set_id"] == solo["run_set_id"]:
+            raise EvidenceError(
+                f"co-tenant lane {lane['source']} is the same run-set as the solo reference "
+                f"(run_set_id {solo['run_set_id']!r}) — a determinism comparison must contrast a "
+                "solo reference against a DISTINCT co-tenant run, not a directory against itself"
+            )
+        if lane["condition"] == solo["condition"]:
+            raise EvidenceError(
+                f"co-tenant lane {lane['source']} recorded the same condition "
+                f"({solo['condition']!r}) as the solo reference — the comparison must contrast a "
+                "pinned-solo reference against a co-tenant run, and identical conditions cannot be "
+                "that contrast"
+            )
+        if lane["run_set_id"] in seen_ids:
+            raise EvidenceError(
+                f"co-tenant lanes {seen_ids[lane['run_set_id']]} and {lane['source']} are the same "
+                f"run-set (run_set_id {lane['run_set_id']!r}) — each lane must be a distinct run"
+            )
+        seen_ids[lane["run_set_id"]] = lane["source"]
 
 
 def parse_args(argv):
@@ -182,6 +228,7 @@ def main(argv):
         exclude, inputs = parse_args(argv)
         solo_input = load(inputs[0], exclude)
         cotenant_inputs = [load(path, exclude) for path in inputs[1:]]
+        attest_distinct_lanes(solo_input, cotenant_inputs)
 
         cotenant = {}
         cotenant_multiplicities = {}

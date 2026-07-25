@@ -103,8 +103,11 @@
     "window_offset": 2
   },
   "skid_margin": 64,
-  "attempted": 8,
+  "excluded_payloads": [
+    "straight-line"
+  ],
+  "attempted": 7,
   "planned": 7,
   "records_file": "records.jsonl",
-  "records_sha256": "20c3945a245a94258f4ccf5cf1c41eee9a7fff5bf44e7915f739a03a62f4e7fe"
+  "records_sha256": "7983fccdc8fa8b59c4d7cd75767728b45e95f9cbb5c6cf75640df91307e153d0"
 }

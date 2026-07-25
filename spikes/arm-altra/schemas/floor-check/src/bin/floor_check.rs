@@ -14,7 +14,7 @@ use std::process::ExitCode;
 
 use arm_harness::evidence::ARM64_WORK_CLOCK_BINDING;
 use clap::Parser;
-use floor_check::{Floors, Status, check_run_sets};
+use floor_check::{ALL_CHECK_IDS, CheckId, Floors, Status, check_run_sets};
 
 /// Recompute a run-set's acceptance floors from its retained per-sample records.
 #[derive(Parser, Debug)]
@@ -59,6 +59,16 @@ struct Cli {
     /// and dev runs, not a disposition.
     #[arg(long)]
     sub_normative: bool,
+
+    /// Rest the exit code on ONLY the named checks (repeatable, kebab-case check ids, e.g.
+    /// `--scope rep-floor --scope replay-identity`). A SCOPED run exits 0 iff every named
+    /// check PASSED; out-of-scope checks — including any that FAILED — are still printed for
+    /// evidence but do not gate. This is what makes a manifest's "the AA-6 mini determinism
+    /// gate is DEMONSTRATED" machine-checkable rather than prose-reconciled against a full-run
+    /// FAIL (bead hm-7q0). A scoped verdict is marked `[SCOPED]` and is NEVER a full stage
+    /// acceptance: it is fail-closed on an unknown/never-ran check and on an empty scope.
+    #[arg(long = "scope", value_name = "CHECK-ID")]
+    scope: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -101,6 +111,71 @@ fn main() -> ExitCode {
             Status::NotRequested => eprintln!("NOT-REQUESTED {}: {}", o.id, o.detail),
             Status::Pass => {}
         }
+    }
+
+    // A SCOPED invocation rests the exit code on ONLY the named checks (bead hm-7q0). It is a
+    // distinct disposition from a full run, so it is handled here and returns before the
+    // full-run exit logic — a scoped verdict is never a full stage acceptance.
+    if !cli.scope.is_empty() {
+        let mut scope: Vec<CheckId> = Vec::new();
+        for name in &cli.scope {
+            match CheckId::from_name(name) {
+                Some(id) => scope.push(id),
+                None => {
+                    eprintln!(
+                        "floor-check: --scope names an unknown check {name:?}; valid ids: {}",
+                        names(ALL_CHECK_IDS)
+                    );
+                    // A scope that names a check that does not exist cannot be satisfied.
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        let verdict = report.scoped_verdict(&scope);
+        // The out-of-scope FAILs are on the face of the verdict (a scoped run hides nothing),
+        // and so is every reason the scope was or was not demonstrated.
+        if !verdict.out_of_scope_failed.is_empty() {
+            eprintln!(
+                "SCOPED: {} out-of-scope check(s) FAILED but do not gate this scoped verdict: {}",
+                verdict.out_of_scope_failed.len(),
+                names(&verdict.out_of_scope_failed)
+            );
+        }
+        if verdict.accepted() {
+            println!(
+                "RESULT: [SCOPED] PASS — the scoped set is DEMONSTRATED ({} check(s): {}). NOT a \
+                 full stage acceptance: {} out-of-scope check(s) not gated{}.",
+                verdict.passed.len(),
+                names(&verdict.passed),
+                verdict.out_of_scope_failed.len(),
+                if verdict.out_of_scope_failed.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (incl. FAILs: {})", names(&verdict.out_of_scope_failed))
+                }
+            );
+            return ExitCode::SUCCESS;
+        }
+        let mut reasons = Vec::new();
+        if !verdict.not_passed.is_empty() {
+            reasons.push(format!(
+                "{} scoped check(s) did not pass: {}",
+                verdict.not_passed.len(),
+                names(&verdict.not_passed)
+            ));
+        }
+        if !verdict.missing.is_empty() {
+            reasons.push(format!(
+                "{} scoped check(s) did not run (fail-closed): {}",
+                verdict.missing.len(),
+                names(&verdict.missing)
+            ));
+        }
+        if scope.is_empty() {
+            reasons.push("an empty scope demonstrates nothing".to_string());
+        }
+        println!("RESULT: [SCOPED] FAIL — {}.", reasons.join("; "));
+        return ExitCode::FAILURE;
     }
 
     let failed = report.failed();

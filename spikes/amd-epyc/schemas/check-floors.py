@@ -2,15 +2,24 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """check-floors.py — machine floor-checker (docs/AMD-EPYC.md §Evidence integrity #2).
 
-Recomputes every numeric acceptance floor FROM the retained raw per-sample records
-that the hammer wrote, never from a summary line the harness asserted. The stage
-disposition may not be written until this passes; this script's own stdout is
-retained evidence. Exit non-zero if any floor is unmet.
+Recomputes the acceptance floors from the retained records that the hammer wrote. The stage
+disposition may not be written until this passes; this script's own stdout is retained
+evidence. Exit non-zero if any floor is unmet.
 
-It is deliberately dumb and independent of the C harness: it re-derives exactness
-from count deltas vs oracle deltas, re-derives overflow multiplicity/totality from
-the per-record overflow counts, and re-checks that every attempted rep is present
-(no missing samples — a gap is a failure to account, not a pass, #6).
+It is deliberately dumb and independent of the C harness where the retained records let it be:
+the EXACTNESS half re-derives count deltas vs oracle deltas per CLEAN window (never trusting
+`rr["exact"]`), and the AE-3 landing half re-derives every landing floor from the per-arm fields
+(never the harness's own `ok`/`rc`), and both re-check that every attempted rep is present (no
+missing samples — a gap is a failure to account, not a pass, #6).
+
+CAVEAT — the OVERFLOW half is NOT yet independent (bead hm-5a6). `check_overflow` reads the
+per-payload `hits_1_ok` / `hits_0_lost` / `hits_gt1_dup` / `arms_total` tallies from the
+harness's own `overflow_summary` rows — a summary the harness asserted — because the committed
+records do not retain the per-arm overflow rows a recomputation would need. It cross-checks those
+tallies for internal accounting (lost + ok + dup == arms) and against the retained per-arm
+`overflow_anomaly` records (every lost/dup arm must have one), but it cannot recompute the tally
+itself. The forward-looking fix is to retain richer per-arm overflow records so this half recomputes
+like the others; that is a harness/box change tracked on hm-5a6, not applicable to the already-committed run.
 
 Usage:
   check-floors.py exactness --min-reps R --records FILE [FILE ...]

@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The fixture generator.
 //!
-//! Thirty-six checked-in run-sets: twenty-eight the checker must reject (one per failure
+//! Forty-one checked-in run-sets: thirty-two the checker must reject (one per failure
 //! mode — including the three AA-6 injection-attestation negative controls: an injection-OFF
-//! matrix, a missing stamp, and per-record witnesses inconsistent with the stamp) and eight it
+//! matrix, a missing stamp, and per-record witnesses inconsistent with the stamp; the two
+//! count-exactness step-exemption controls: a step record with corrupt `trips`, and a step
+//! matrix mislabelled outside AA-2; and two AA-3 payload-matrix controls: a DECLARED non-ruled
+//! exclusion and an UNDECLARED silent omission of a required class),
+//! one `scoped-aa6-mini-gate` (accepted only under a named `--scope`, bead hm-7q0), and eight it
 //! must accept (a patched AA-3 landing run, an AA-1 counting run, an
 //! AA-1(c) early/late skid-distribution run, an AA-1 LL/SC-hazard run, an AA-6 same-input
 //! gate, an AA-6 CARVE gate (llsc/wfi diverge but are recorded, contract classes bind), an
@@ -303,6 +307,8 @@ fn build_run_set(stage: Stage, mechanism: Mechanism, records: &[RunRecord]) -> R
         } else {
             None
         },
+        // No payload excluded by default; the hm-9zy planted-failure fixture overrides this.
+        excluded_payloads: Vec::new(),
         attempted: records.len() as u64,
         planned,
         records_file: "records.jsonl".to_string(),
@@ -457,6 +463,25 @@ fn accept_aa6_gate() -> Fixture {
     let records = aa6_full_matrix_records();
     let run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
     fixture("accept-aa6-gate", &run_set, &records)
+}
+
+/// The AA-6 **mini determinism gate** fixture, for the SCOPED invocation (bead hm-7q0). It is
+/// the shape of `results/aa-6/live-20260720`: a full, bit-identical AA-6 matrix that DEMONSTRATES
+/// the ≥N-rep determinism gate (rep-floor, replay-identity, multiplicity, skid, mechanism), while
+/// two larger AA-6 deliverables are transparently NOT in scope — there is no AA-1 weights pack
+/// (so weights-present + count-exactness FAIL) and no fault injection (so aa6-matrix FAILs). A
+/// FULL `floor-check` run therefore FAILs; a SCOPED run over the five mini-gate checks exits 0,
+/// which is what makes the manifest's `VERDICT: … DEMONSTRATED` machine-checkable instead of
+/// prose-reconciled. Named without an `accept-`/`reject-` prefix because it is neither under a
+/// full invocation: its disposition is defined only relative to a scope.
+fn scoped_aa6_mini_gate() -> Fixture {
+    let records = aa6_full_matrix_records();
+    let mut run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
+    // No AA-1 weights pack — determinism, not count-exactness, is what this gate demonstrates.
+    run_set.weights = None;
+    // No fault injection — the injected-matrix determinism deliverable is out of this gate's scope.
+    run_set.injection = None;
+    fixture("scoped-aa6-mini-gate", &run_set, &records)
 }
 
 /// The AA-6 injection-OFF reject fixture (bead hm-oh3v negative control): a full, bit-identical
@@ -724,6 +749,7 @@ pub fn all_fixtures() -> Vec<Fixture> {
         accept_counting(),
         accept_aa1_skid(),
         accept_aa6_gate(),
+        scoped_aa6_mini_gate(),
         accept_aa6_carve(),
         accept_aa2_steps(),
         accept_aa2_bounded(),
@@ -736,23 +762,23 @@ pub fn all_fixtures() -> Vec<Fixture> {
         reject_aa6_injected_flag_inconsistent(),
     ];
 
-    // 1. reject-short-count — a valid but small run-set. The checker rejects it
-    //    only when a floor larger than its armed-overflow count is demanded; the
-    //    fixture itself is clean, so the floor is the sole failure. The test runs
-    //    it with `--min-armed-overflows` above its count.
+    // 1. reject-short-count — a clean, full AA-3 matrix (all eight window classes, so
+    //    aa3-payload-matrix passes) that the checker rejects ONLY when a floor larger than its
+    //    armed-overflow count is demanded; the fixture itself is valid, so the floor is the sole
+    //    failure. The test runs it with `--min-armed-overflows` far above its count.
     {
-        let records: Vec<RunRecord> = base_records(ExitReason::Preempt)
-            .into_iter()
-            .take(2)
-            .collect();
+        let records = base_records(ExitReason::Preempt);
         let run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
         fixtures.push(fixture("reject-short-count", &run_set, &records));
     }
 
-    // 2. reject-missing-sample — sample id 3 removed, `attempted` unchanged: a gap.
+    // 2. reject-missing-sample — a RULED class's sample (wfi-idle, sample id 4) removed,
+    //    `attempted` unchanged: a totality gap. Dropping a ruled carve-out (not a deterministic
+    //    class) keeps every non-ruled window class present, so aa3-payload-matrix passes and
+    //    totality is the sole failure — the defect this fixture isolates.
     {
         let mut records = base_records(ExitReason::Preempt);
-        records.retain(|r| r.sample_id != 3);
+        records.retain(|r| r.sample_id != 4);
         // `attempted` still reflects the full eight, so the gap is a totality fail.
         let mut run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
         run_set.attempted = 8;
@@ -972,17 +998,49 @@ pub fn all_fixtures() -> Vec<Fixture> {
         fixtures.push(fixture("accept-aa1-llsc-hazard", &run_set, &records));
     }
 
-    // 17. reject-divergent-digests — two repetitions of the SAME (payload, scale,
-    //     seed, condition, target) that landed on different state digests. Every
-    //     count matches, every overflow was delivered exactly once, the sample count
-    //     meets any rep floor you like — and the two runs did different things. This
-    //     is the vacuity the rep floor had: it counted rows and never compared them.
+    // 17. reject-divergent-digests — a full non-ruled AA-3 matrix, each class TWICE (so the rep
+    //     floor of 2 is met per input AND aa3-payload-matrix sees every required class), with
+    //     straight-line's two reps landing on DIFFERENT digests and every other class's two reps
+    //     bit-identical. Every count matches, every overflow delivered exactly once, the rep floor
+    //     is met — and straight-line's two runs did different things. Only replay-identity trips:
+    //     the vacuity the rep floor had (it counted rows, never compared them). wfi-idle/llsc are
+    //     ruled (replay-carved at AA-3) and omitted as permitted.
     {
-        let mut a = generate_record(0, Payload::StraightLine, ExitReason::Preempt);
-        let mut b = generate_record(1, Payload::StraightLine, ExitReason::Preempt);
-        a.state_digest = format!("sha256:{}", synth_sha256("state-rep-a"));
-        b.state_digest = format!("sha256:{}", synth_sha256("state-rep-b"));
-        let records = vec![a, b];
+        let nonruled = [
+            Payload::StraightLine,
+            Payload::BranchDense,
+            Payload::Svc,
+            Payload::ExceptionAbort,
+            Payload::LseAtomics,
+            Payload::ClockPage,
+        ];
+        let mut records = Vec::new();
+        for (i, &p) in nonruled.iter().enumerate() {
+            for rep in 0..2u64 {
+                let id = i as u64 + rep * nonruled.len() as u64;
+                let mut r = generate_record(id, p, ExitReason::Preempt);
+                if p == Payload::StraightLine {
+                    // Divergent reps: a distinct landed digest per rep (the AA-3 comparison digest).
+                    if let Some(o) = r.overflow.as_mut() {
+                        o.landed_digest = format!(
+                            "sha256:{}",
+                            synth_sha256(&format!("divergent-landed-{rep}"))
+                        );
+                    }
+                    r.state_digest =
+                        format!("sha256:{}", synth_sha256(&format!("divergent-state-{rep}")));
+                } else {
+                    // Bit-identical reps: one shared digest per class, so only straight-line trips.
+                    if let Some(o) = r.overflow.as_mut() {
+                        o.landed_digest =
+                            format!("sha256:{}", synth_sha256(&format!("landed-{}", p.name())));
+                    }
+                    r.state_digest =
+                        format!("sha256:{}", synth_sha256(&format!("state-{}", p.name())));
+                }
+                records.push(r);
+            }
+        }
         let run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
         fixtures.push(fixture("reject-divergent-digests", &run_set, &records));
     }
@@ -1070,6 +1128,88 @@ pub fn all_fixtures() -> Vec<Fixture> {
         ));
     }
 
+    // 24. reject-aa2-step-bad-trips (hm-7q0) — the negative control the trips-on-step-records
+    //     grading owes. The valid AA-2 step matrix with ONE step record's `trips` corrupted to
+    //     0. `trips` is the payload's INPUT constant (straight-line at smoke ⇒ 1000), graded by
+    //     count-exactness even for a step record — whose WINDOW count stays exempt. Under the
+    //     old blanket `step.is_some() -> continue`, `trips` rode through ungraded and the whole
+    //     matrix read PASS; now count-exactness is the SOLE failure (nothing else reads trips).
+    fixtures.push(mutated_aa2_reject("reject-aa2-step-bad-trips", |records| {
+        records[0].trips = 0;
+    }));
+
+    // 25. reject-aa3-step-bypasses-counts (hm-gmt) — the negative control the stage-scoped
+    //     step-exemption owes. The AA-2 single-step matrix mislabelled as an AA-3 run-set. A
+    //     `step` record must never bypass count-exactness outside AA-2: under the old blanket
+    //     exemption this run FALSELY passed count-exactness (every record silently exempted and
+    //     mislabelled "AA-2 step"), so count-exactness now FAILS on each non-AA-2 step record.
+    //     (mechanism-attestation also fails — the Debug exits are not AA-3's Preempt — so this
+    //     is not a single-failure case; the point isolated by the test is that count-exactness
+    //     no longer looks away.)
+    {
+        let records = aa2_records();
+        let mut run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
+        // A stepped run arms no overflow, so its perf event carries no sampling period; re-pin
+        // the records' sha to the emitted bytes (build_run_set pins the AA-2-shaped records).
+        run_set.perf.sample_period = None;
+        run_set.records_sha256 = synth_sha256_of_bytes(records_jsonl(&records).as_bytes());
+        fixtures.push(fixture(
+            "reject-aa3-step-bypasses-counts",
+            &run_set,
+            &records,
+        ));
+    }
+
+    // 26. reject-aa3-excludes-nonruled (hm-9zy) — an AA-3 run-set that excluded a NON-ruled
+    //     payload (straight-line, a deterministic exact-landing class) and RECORDED the exclusion
+    //     in the manifest. Only wfi-idle and llsc-atomics may be carved from AA-3 coverage; a
+    //     generic --exclude-payload that dropped a deterministic class used to leave no trace and
+    //     no check. Now the exclusion is recorded and the AA-3 payload-matrix check rejects it as
+    //     the sole failure (the remaining seven classes are a coherent, contiguous run).
+    {
+        let mut records: Vec<RunRecord> = base_records(ExitReason::Preempt)
+            .into_iter()
+            .filter(|r| r.payload != Payload::StraightLine)
+            .collect();
+        // Renumber to a contiguous 0..n so the exclusion — not a totality gap — is the failure.
+        for (i, r) in records.iter_mut().enumerate() {
+            r.sample_id = i as u64;
+        }
+        let mut run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
+        run_set.excluded_payloads = vec![Payload::StraightLine.name().to_string()];
+        run_set.attempted = records.len() as u64;
+        run_set.records_sha256 = synth_sha256_of_bytes(records_jsonl(&records).as_bytes());
+        fixtures.push(fixture("reject-aa3-excludes-nonruled", &run_set, &records));
+    }
+
+    // 27. reject-aa3-undeclared-omission (hm-9zy / PR160-F2) — the UNDECLARED counterpart to #26,
+    //     and the negative control the coverage half of aa3-payload-matrix owes. It is exactly the
+    //     bundle an honest PRE-FIELD `arm-spike --exclude-payload straight-line` run produced: a
+    //     deterministic class silently absent, with NO `excluded_payloads` field at all. The old
+    //     declaration-only check passed it (`RESULT: PASS`, "the manifest records the full matrix")
+    //     while a required class was missing; the coverage check now fails closed on the silently
+    //     missing non-ruled class, as the sole failure. (#26 covers DECLARED omissions; this covers
+    //     UNDECLARED ones — the two are distinct escapes.)
+    {
+        let mut records: Vec<RunRecord> = base_records(ExitReason::Preempt)
+            .into_iter()
+            .filter(|r| r.payload != Payload::StraightLine)
+            .collect();
+        // Contiguous 0..n so the missing CLASS — not a totality gap — is the failure. No
+        // excluded_payloads field: the pre-field run left no declaration.
+        for (i, r) in records.iter_mut().enumerate() {
+            r.sample_id = i as u64;
+        }
+        let mut run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
+        run_set.attempted = records.len() as u64;
+        run_set.records_sha256 = synth_sha256_of_bytes(records_jsonl(&records).as_bytes());
+        fixtures.push(fixture(
+            "reject-aa3-undeclared-omission",
+            &run_set,
+            &records,
+        ));
+    }
+
     fixtures
 }
 
@@ -1094,13 +1234,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_thirty_six_fixtures_with_unique_names() {
+    fn there_are_forty_one_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 36);
+        assert_eq!(fixtures.len(), 41);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 36, "fixture names must be unique");
+        assert_eq!(names.len(), 41, "fixture names must be unique");
     }
 
     #[test]

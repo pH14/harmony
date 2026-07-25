@@ -20,7 +20,7 @@ transfer and are flagged **PROVISIONAL — re-confirm on a real EPYC** where the
 |---|---|---|
 | **AE-0** | **GO** | Zen 2 part exposes every assumption: SVM full surface, `ex_ret_brn_tkn`=0xc4 openable/exact/overflow-delivers, legacy PMU (no PerfMonV2), single-step surface present. |
 | **AE-1** | **PROVISIONAL GO** | The existential trio holds: host-side + guest-mode counting bit-exact; 10⁶ overflows exactly-once; skid bounded (max 5043); SpecLockMap overcount **not reproduced** (null). |
-| **AE-2** | **PROVISIONAL GO** | Ruled **TF** (via `KVM_GUESTDBG_SINGLESTEP`), **not BTF** — refuting the doc's provisional lead on silicon: TF is exact + guest-transparent (`tf_kept=0`); BTF delivers 0 `#DB` through stock KVM; MOV-SS shadow the one recorded hazard. |
+| **AE-2** | **PROVISIONAL GO** | Ruled **TF** (via `KVM_GUESTDBG_SINGLESTEP`), **not BTF** — refuting the doc's provisional lead on silicon: TF is **exact** (`#DB` count == the by-construction instruction oracle — the sound basis of this GO); BTF delivers 0 `#DB` through stock KVM; MOV-SS shadow the one recorded hazard. **Guest-transparency of TF is NOT established here and is an owed box residual (hm-pex):** `guest_tf_kept=0` is read in `vm_set_start` BEFORE `KVM_SET_GUEST_DEBUG`, so for mode `tf` it is 0 by construction and says nothing about whether the guest can observe KVM's single-step TF; the genuine guest-`PUSHF`-observes-TF test needs the box. |
 | **AE-3** | **ESCALATED (mechanism observed on-silicon, records not retained)** | Escalation execution (Paul 2026-07-17: build+boot 6.18.35 on this box). The patched `kvm_amd` was **observed** firing `KVM_EXIT_PREEMPT` (skid ∈ [2581,3039], no overflow overshoot), and a **2nd svm.c hunk** was needed (SVM opt-in cap advertisement — 0003 is VMX-only) — but the box was re-provisioned before the run records were committed, so **no machine evidence is retained** (`results/ae-3/` holds only the build-environment + the ESCALATED disposition, matching `README.md`). Exact single-step landing showed run-to-run jitter (core-isolation dependency). Upgrade to a real GO (retained records, exact landing under isolation, 10⁶ campaign) tracked by **hm-gig**. See §AE-3 execution. |
 | **AE-4** | **PROVISIONAL GO** | Freeze **demonstrated on-silicon**: guest sees frozen `AuthenticAMD` + TSC bit cleared **below host** (`0x078bfbff`→`ef`); denied MSR (HWCR) RDMSR **traps to the vmm**. `det-zen2-v1` truth table ratified. |
 | **AE-5** | **PARTIAL** | Substrate same-seed determinism **demonstrated (1000/1000 bit-identical** on SVM, pre-6.18 boot). Mechanism-integrated gate harness (`harness/ae5-gate.c`: work-clock preempt + `svm.c` force-exit + fault-at-Moment + same-seed) written and cap-fix-ready, but the **full mini gate blocked on (a) the AE-3 exact-landing core-isolation residual, (b) the postgres Subject via the appliance (`hm-tn9`), and now (c) restored box access** (lost mid-run). |
@@ -28,7 +28,9 @@ transfer and are flagged **PROVISIONAL — re-confirm on a real EPYC** where the
 
 No **kill condition** fired: no unexplained count mismatch (the ±1 jitter is accounted host
 interrupts, exactly 0 on clean windows), overflow never lost/duplicated/early, a single-step
-primitive that lands exactly and is guest-hidden exists (TF), and no un-freezable
+primitive that lands **exactly** exists (TF; `#DB` count == the by-construction instruction
+oracle — its guest-transparency is an owed box residual per **hm-pex**, not a kill condition,
+since the GO rests on that exactness, not on transparency), and no un-freezable
 guest-visible state was found (CPUID + MSR freeze demonstrated). The one **escalation** (AE-3,
 a build-environment version skew, not a mechanism failure) is recorded, not improvised around.
 
