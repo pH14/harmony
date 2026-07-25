@@ -378,6 +378,50 @@ fn reject_aa2_dropped_planned_sample() {
 }
 
 #[test]
+fn reject_aa2_step_bad_trips_is_graded_not_exempt() {
+    // hm-7q0 negative control: the valid AA-2 step matrix with ONE step record's `trips`
+    // corrupted. `trips` is the payload's INPUT constant, graded by count-exactness even for a
+    // step record (whose WINDOW count stays exempt). Under the old blanket step-exemption this
+    // rode through ungraded and the whole matrix read PASS; now count-exactness catches it, and
+    // nothing else reads trips, so it is the sole failure.
+    assert_single_failure(
+        "reject-aa2-step-bad-trips",
+        no_floors(),
+        CheckId::CountExactness,
+    );
+}
+
+#[test]
+fn reject_aa3_step_bypasses_counts_is_no_longer_exempt() {
+    // hm-gmt negative control: the AA-2 single-step matrix mislabelled as an AA-3 run-set. The
+    // step-exemption from the window-count oracle is AA-2's alone; a non-AA-2 step record must
+    // not bypass count-exactness. Under the old blanket `step.is_some() -> continue`, every
+    // record was silently exempted and count-exactness read PASS (falsely). Now count-exactness
+    // FAILS on each non-AA-2 step, naming the AA-2 scope. (mechanism-attestation also fails — the
+    // Debug exits are not AA-3's Preempt — so this is not a single-failure case; the isolated
+    // assertion is that count-exactness no longer looks away.)
+    let report = check("reject-aa3-step-bypasses-counts", no_floors());
+    assert!(!report.passed());
+    assert_eq!(
+        report.status_of(CheckId::CountExactness),
+        Some(Status::Fail),
+        "a non-AA-2 step record must fail count-exactness, not ride the AA-2 exemption; \
+         report failed {:?}",
+        report.failed()
+    );
+    let detail = report
+        .outcomes
+        .iter()
+        .find(|o| o.id == CheckId::CountExactness)
+        .map(|o| o.detail.clone())
+        .unwrap_or_default();
+    assert!(
+        detail.contains("AA-2"),
+        "the count-exactness failure must name the AA-2-only scope, got: {detail}"
+    );
+}
+
+#[test]
 fn reject_aa6_rep_floor_counts_per_input_not_total() {
     // The evasion the per-input floor closes: eight DISTINCT inputs, one rep each. The
     // total (8) meets a floor of 2, but no input is repeated even twice — which a

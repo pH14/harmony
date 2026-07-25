@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The fixture generator.
 //!
-//! Thirty-six checked-in run-sets: twenty-eight the checker must reject (one per failure
+//! Thirty-eight checked-in run-sets: thirty the checker must reject (one per failure
 //! mode — including the three AA-6 injection-attestation negative controls: an injection-OFF
-//! matrix, a missing stamp, and per-record witnesses inconsistent with the stamp) and eight it
+//! matrix, a missing stamp, and per-record witnesses inconsistent with the stamp; and the two
+//! count-exactness step-exemption controls: a step record with corrupt `trips`, and a step
+//! matrix mislabelled outside AA-2) and eight it
 //! must accept (a patched AA-3 landing run, an AA-1 counting run, an
 //! AA-1(c) early/late skid-distribution run, an AA-1 LL/SC-hazard run, an AA-6 same-input
 //! gate, an AA-6 CARVE gate (llsc/wfi diverge but are recorded, contract classes bind), an
@@ -1070,6 +1072,38 @@ pub fn all_fixtures() -> Vec<Fixture> {
         ));
     }
 
+    // 24. reject-aa2-step-bad-trips (hm-7q0) — the negative control the trips-on-step-records
+    //     grading owes. The valid AA-2 step matrix with ONE step record's `trips` corrupted to
+    //     0. `trips` is the payload's INPUT constant (straight-line at smoke ⇒ 1000), graded by
+    //     count-exactness even for a step record — whose WINDOW count stays exempt. Under the
+    //     old blanket `step.is_some() -> continue`, `trips` rode through ungraded and the whole
+    //     matrix read PASS; now count-exactness is the SOLE failure (nothing else reads trips).
+    fixtures.push(mutated_aa2_reject("reject-aa2-step-bad-trips", |records| {
+        records[0].trips = 0;
+    }));
+
+    // 25. reject-aa3-step-bypasses-counts (hm-gmt) — the negative control the stage-scoped
+    //     step-exemption owes. The AA-2 single-step matrix mislabelled as an AA-3 run-set. A
+    //     `step` record must never bypass count-exactness outside AA-2: under the old blanket
+    //     exemption this run FALSELY passed count-exactness (every record silently exempted and
+    //     mislabelled "AA-2 step"), so count-exactness now FAILS on each non-AA-2 step record.
+    //     (mechanism-attestation also fails — the Debug exits are not AA-3's Preempt — so this
+    //     is not a single-failure case; the point isolated by the test is that count-exactness
+    //     no longer looks away.)
+    {
+        let records = aa2_records();
+        let mut run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
+        // A stepped run arms no overflow, so its perf event carries no sampling period; re-pin
+        // the records' sha to the emitted bytes (build_run_set pins the AA-2-shaped records).
+        run_set.perf.sample_period = None;
+        run_set.records_sha256 = synth_sha256_of_bytes(records_jsonl(&records).as_bytes());
+        fixtures.push(fixture(
+            "reject-aa3-step-bypasses-counts",
+            &run_set,
+            &records,
+        ));
+    }
+
     fixtures
 }
 
@@ -1094,13 +1128,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_thirty_six_fixtures_with_unique_names() {
+    fn there_are_thirty_eight_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 36);
+        assert_eq!(fixtures.len(), 38);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 36, "fixture names must be unique");
+        assert_eq!(names.len(), 38, "fixture names must be unique");
     }
 
     #[test]

@@ -1504,14 +1504,46 @@ fn check_counts(weights: &Weights, records: &[RunRecord], stage: Stage, out: &mu
     let mut oracle_trips: u64 = 0;
 
     for r in records {
-        // AA-2 single-step records are EXEMPT from the window-count oracle. A bounded stepped
-        // run (stopped at `--max-steps` before MARK_END — how the llsc livelock is bounded)
-        // never closes its window, so its count is not the oracle's; and a step record's
-        // acceptance is check_debug_evidence / check_replay_identity, not the window-count
-        // oracle. Grading it here would reject a legitimately bounded run. Its window
-        // endpoints' self-consistency (`measured_taken == work_end - work_begin`) is still
-        // enforced — by check_well_formed, on every step record.
+        // The trip count the record claims the payload was given must be the analytic
+        // per-(payload, scale) constant the oracle grades against — a zeroed or corrupt
+        // `trips` field must not ride through count-exactness ungraded. This binds on EVERY
+        // record, stepped or not (hm-7q0): `trips` is the payload's INPUT constant, not a
+        // windowed measurement, so a single-step record — whose window count the exemption
+        // below skips — must still have its `trips` graded. A no-window payload carries the
+        // oracle's `trips` of 0, so it grades cleanly here too.
+        let expected_trips = trips(r.payload, r.scale);
+        if r.trips != expected_trips {
+            problems.push(format!(
+                "sample {}: payload {} scale {} carries trips {} but the oracle defines {}",
+                r.sample_id,
+                r.payload.name(),
+                r.scale.name(),
+                r.trips,
+                expected_trips
+            ));
+        }
+
+        // AA-2 single-step records are EXEMPT from the WINDOW-count oracle (only). A bounded
+        // stepped run (stopped at `--max-steps` before MARK_END — how the llsc livelock is
+        // bounded) never closes its window, so its count is not the oracle's; and a step
+        // record's window acceptance is check_debug_evidence / check_replay_identity, not the
+        // window-count oracle. Grading the window here would reject a legitimately bounded run.
+        // Its window endpoints' self-consistency (`measured_taken == work_end - work_begin`) is
+        // still enforced by check_well_formed, and its `trips` is graded above.
+        //
+        // The exemption is STAGE-SCOPED to AA-2 (hm-gmt): a `step` record at any other stage is
+        // malformed evidence, and count-exactness is the payloads' SEMANTIC gate — a non-AA-2
+        // run must never bypass it merely by carrying a step block. Such a record is rejected
+        // outright here rather than silently exempted (defence in depth: its Debug exit also
+        // fails mechanism-attestation at every stage that is not AA-2).
         if r.step.is_some() {
+            if stage != Stage::Aa2 {
+                problems.push(format!(
+                    "sample {}: single-step record at stage {stage:?} — the window-count \
+                     exemption is AA-2's alone; count-exactness is not bypassed outside AA-2",
+                    r.sample_id
+                ));
+            }
             continue;
         }
         graded += 1;
@@ -1528,21 +1560,6 @@ fn check_counts(weights: &Weights, records: &[RunRecord], stage: Stage, out: &mu
                 "sample {}: work_end {} is before work_begin {} (negative window)",
                 r.sample_id, r.work_end, r.work_begin
             )),
-        }
-
-        // The trip count the record claims the payload was given must be the analytic
-        // per-(payload, scale) constant the oracle grades against — a zeroed or corrupt
-        // `trips` field must not ride through count-exactness ungraded.
-        let expected_trips = trips(r.payload, r.scale);
-        if r.trips != expected_trips {
-            problems.push(format!(
-                "sample {}: payload {} scale {} carries trips {} but the oracle defines {}",
-                r.sample_id,
-                r.payload.name(),
-                r.scale.name(),
-                r.trips,
-                expected_trips
-            ));
         }
 
         // The oracle is only defined for payloads that have a counting window.
@@ -1637,8 +1654,8 @@ fn check_counts(weights: &Weights, records: &[RunRecord], stage: Stage, out: &mu
         } else {
             format!(
                 "all {graded} counting record(s) match the oracle and are self-consistent \
-                 ({stepped} AA-2 step record(s) exempt — graded by debug-evidence/replay-identity)\
-                 {wfi_note}"
+                 ({stepped} AA-2 step record(s) exempt from the window-count oracle — trips \
+                 graded here, step-moment by debug-evidence/replay-identity){wfi_note}"
             )
         },
         out,
