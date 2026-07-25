@@ -107,7 +107,8 @@ pre-date the seal and are baked identically into the base) — not via any guest
 divergence. That same fold is why `flow-init.sh` must **success-gate** the
 `FLOW_DONE` marker: without it, a Crash-path run (a failed agent) would satisfy all
 three sweep gates and print a vacuous PASS. The planted-failure red-fire of the
-fixed image (W1 doctrine) is filed as **hm-5zch** (box-gated, next window).
+fixed image (W1 doctrine) **was run on the box — hm-5zch, both arms verbatim in
+§2a below**.
 
 **Caveat (→ hm-i8kc F10).** The host answered `DoorbellUnwired → Nominal` (a clean
 deterministic fallback, rc=0) because the doorbell fires during `boot_server`'s
@@ -119,6 +120,44 @@ hm-i8kc's F10, not a flow-agent defect.
 
 No product-code change — the flow-agent crate is unmodified; the commit adds only
 the box evidence harness.
+
+### 2a. hm-5zch — the W1 red/green pair for the success-gated marker ✅ box-verified
+
+The PR161-F1 fix (`flow-init.sh` emits `FLOW_DONE` only on `rc == 0`) was proven
+red-before-green on the box (hetzner, core 2, governor=performance, no_turbo=1,
+patched KVM via `box-window.sh`, reverted to stock 1396736), both arms in one
+window. **ARM 1** boots a planted-failure image — the *committed, unmodified*
+`flow-init.sh` with `/opt/harmony/flow-agent` replaced by a stub that exits 3
+(`FLOW_AGENT_BIN=<stub>` at image-build). **ARM 2** re-runs the real fixed image.
+
+```
+LEASED_CORE=2 GOVERNOR=performance NO_TURBO=1
+######## ARM 1 — NEGATIVE CONTROL (planted failure; MUST go RED) ########
+FLOW_DEVMEM: present
+FLOW_URANDOM: present
+PLANTED_FAIL: simulated flow-agent failure (exit 3) — hm-5zch negative control
+FLOW_AGENT_RC=3
+FLOW_FAILED: reboot (flow-agent failed)
+[campaign-runner] failed to reach the readiness marker: guest reached a terminal
+    (Shutdown) at step 97471 before the readiness marker appeared
+ARM1_RC=1
+######## ARM 2 — POSITIVE CONTROL (fixed image; MUST stay GREEN) ########
+FLOW_AGENT_RC=0
+FLOW_DONE
+[campaign-runner] box GATES PASS: per-seed reproducible, >= 2 distinct futures, replay == capture.
+ARM2_RC=0
+REVERT OK   (lsmod kvm = 1396736)
+```
+
+**ARM 1 goes RED:** the planted `rc=3` triggers `FLOW_FAILED: reboot` *before* any
+marker, the triple-fault reaches `drive_to_marker` as `Step::Terminal(Shutdown)`,
+`boot_server` fails, `campaign-runner` exits non-zero (`ARM1_RC=1`), and
+**`box GATES PASS` appears zero times in the ARM-1 section** (total across the whole
+run = 1, from ARM 2 only). Before the fix this exact run printed `GATES PASS` and
+exited 0. **ARM 2 stays GREEN:** `FLOW_AGENT_RC=0` → `FLOW_DONE` → `GATES PASS` →
+`ARM2_RC=0`, so the guard did not break the success path it protects. hm-5zch
+closed; the gate is now trusted because it has been *seen* to go red on a planted
+failure.
 
 ---
 
