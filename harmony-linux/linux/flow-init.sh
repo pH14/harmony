@@ -17,9 +17,14 @@
 # path still executed (the point). A real `net_decide` answer needs the agent to
 # run mid-served-workload (the k3s image path, hm-wvh) or an F10 wiring fix.
 #
-# The consonance-VMM force terminals hold (see maze-init.sh): a flow-agent failure
-# (rc != 0) -> `reboot -f` -> triple-fault -> StopReason::Crash (loud), a clean
-# exit -> `halt -f` -> HLT -> StopReason::Quiescent.
+# The consonance-VMM force terminals hold (see maze-init.sh), SUCCESS-GATED so the
+# gate cannot pass on a failed agent (PR161-F1): a flow-agent failure (rc != 0) ->
+# `reboot -f` BEFORE the FLOW_DONE marker -> the triple-fault reaches
+# drive_to_marker as Step::Terminal -> boot_server FAILURE (loud AND fatal). A
+# clean run (rc == 0, including the unwired-host `-> nominal` fallback, which is a
+# successful doorbell round-trip) emits FLOW_DONE -> `halt -f` -> HLT ->
+# StopReason::Quiescent. Emitting the marker unconditionally would seal the base at
+# a point the failure already passed and print a vacuous GATES PASS.
 BB=/bin/busybox
 
 $BB mount -t proc proc /proc
@@ -38,11 +43,17 @@ if [ -e /dev/urandom ]; then echo "FLOW_URANDOM: present"; else echo "FLOW_URAND
     --iface lo --dst-ip 127.0.0.1 --dport 5432
 rc=$?
 echo "FLOW_AGENT_RC=$rc"
-echo "FLOW_DONE"
-
+# Success-gate the marker (PR161-F1): FLOW_DONE — the sweep's --ready-marker — is
+# emitted ONLY on rc == 0. A failed agent reboots FIRST, so the marker never
+# appears; drive_to_marker then reaches the triple-fault as a terminal and
+# boot_server fails loudly, instead of sealing past the failure and printing a
+# vacuous GATES PASS (the VTIM reseed fold alone satisfies the sweep's
+# >=2-distinct-futures check with zero guest entropy, so a green must not be
+# trusted on a Crash-path run).
 if [ "$rc" != "0" ]; then
-    echo "FLOW_CRASH_TERMINAL: reboot (flow-agent failed)"
+    echo "FLOW_FAILED: reboot (flow-agent failed)"
     exec $BB reboot -f
 fi
+echo "FLOW_DONE"
 echo "FLOW_CLEAN_TERMINAL: halt"
 exec $BB halt -f

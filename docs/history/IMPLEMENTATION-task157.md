@@ -39,9 +39,15 @@ hash — the task-95 (b) gate proves both paths restore to the identical
 - Serial confirms `box: restore path = Remap (task 95 M2.2)`.
 - Sweep **GATES PASS** over remap: per-seed reproducible, ≥2 distinct futures,
   `replay(base) == capture`.
-- **A/B before/after** (identical params, one window):
+- **A/B before/after** (identical params, one window; single shot each):
   - BEFORE memcpy: 16 branches in **213.62 s**
   - AFTER  remap : 16 branches in **207.69 s**
+  - **Caveat — this figure is diluted, and understates the remap win.** It is a
+    single-shot **2.8 % total-wall** delta, not the restore-cost ratio: each
+    branch's wall is dominated by the fixed 20 000 000 ns V-time run + the 2 GiB
+    `state_hash`, with the memslot-remap-vs-memcpy restore only a small fraction of
+    it. The *isolated* restore cost is the task-96 stopwatch's **Branch phase**, not
+    the total sweep wall; do not read 2.8 % as the restore speedup.
 - Per-seed **and** base `state_hash` are **bit-identical** across the memcpy and
   remap arms (base capture `2eb3eb1f…`; e.g. seed `0x9e1f…` → `ec5edbbb…` in both)
   — the task-95 (b) property, now demonstrated at the campaign level. The task-96
@@ -89,9 +95,19 @@ The agent reached `net_decide` with **no `iopl(3)` error and no `/dev/mem` error
 was issued, and a clean deterministic response returned. **The guest-side doorbell
 path that "never once executed" now executes** — hm-rdp's claim is validated, and
 the guest-side prerequisite for hm-wvh (task 61b live net-fault enforcement) is
-cleared. The whole boot+halt is deterministic: the sweep GATES PASS (per-seed
-`/dev/urandom` divergence → distinct Quiescent futures, per-seed reproducible,
-replay==capture).
+cleared.
+
+The real firing evidence is the serial above (`iopl(3)=0`, `/dev/mem` mmap OK, OUT
+issued), **not** the sweep verdict. The boot is deterministic and the sweep prints
+GATES PASS, but for *this* harness that is a **weak** signal (PR161-F1): the
+≥2-distinct-futures check passes via the **VTIM reseed fold** — a branch reseed
+folds `SeededEntropy::save_state()` into the hash chunk, distinguishing every
+seed's hash with **zero** post-seal guest entropy (all `/dev/urandom` reads
+pre-date the seal and are baked identically into the base) — not via any guest
+divergence. That same fold is why `flow-init.sh` must **success-gate** the
+`FLOW_DONE` marker: without it, a Crash-path run (a failed agent) would satisfy all
+three sweep gates and print a vacuous PASS. The planted-failure red-fire of the
+fixed image (W1 doctrine) is filed as **hm-5zch** (box-gated, next window).
 
 **Caveat (→ hm-i8kc F10).** The host answered `DoorbellUnwired → Nominal` (a clean
 deterministic fallback, rc=0) because the doorbell fires during `boot_server`'s
