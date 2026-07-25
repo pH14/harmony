@@ -171,11 +171,12 @@
           "type": "string"
         },
         "kvm_mode": {
-          "description": "`vhe` or `nvhe`.",
+          "description": "The effective KVM mode, as `sys::kvm_mode` reads it from the kernel's own boot line: `vhe`, `nvhe`, or `protected` (protected nVHE / pKVM). `protected` is a SUPPORTED mode the box can boot in, so the enum must accept it — omitting it made a faithfully-recorded protected-mode run schema-invalid on the write path (hm-usj/J17), the worst outcome since the harness's own live cross-check passes `protected` through before writing.",
           "type": "string",
           "enum": [
             "vhe",
-            "nvhe"
+            "nvhe",
+            "protected"
           ]
         }
       }

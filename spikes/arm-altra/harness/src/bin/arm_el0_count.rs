@@ -21,7 +21,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use arm_harness::el0::{El0Class, el0_plan};
+use arm_harness::el0::{El0Class, el0_plan_bounded};
 use arm_harness::evidence::Environment;
 use clap::{Parser, ValueEnum};
 use oracle_model::Scale;
@@ -106,7 +106,9 @@ mod measure {
     //! of one artifact, not of two similar ones.
 
     use super::{Cli, El0Class, Environment, Scale};
-    use arm_harness::el0::{El0Context, El0Record, El0Sample, assemble_el0_set};
+    use arm_harness::el0::{
+        El0Context, El0Measurement, El0Sample, assemble_el0_set, collect_el0_records,
+    };
     use arm_harness::sys::{self, HostCounter};
 
     core::arch::global_asm!(include_str!(
@@ -247,7 +249,7 @@ mod measure {
     pub fn execute(cli: &Cli, scales: &[Scale], environment: Environment) -> Result<(), String> {
         sys::pin_to_core(cli.core).map_err(|e| format!("pin to core {}: {e}", cli.core))?;
 
-        let samples = super::plan_for(cli, scales);
+        let samples = super::plan_for(cli, scales)?;
         let attempted = samples.len() as u64;
         if attempted == 0 {
             return Err(
@@ -263,46 +265,31 @@ mod measure {
             (unsafe { EL0_EXPECT_PID }, fp)
         };
         let mut mark = [0u8; 64];
-        let mut records: Vec<El0Record> = Vec::new();
         let mut armed_attr = None;
-        let mut failure: Option<String> = None;
-        for (i, s) in samples.iter().enumerate() {
+        // The record assembly and first-failure bookkeeping is the portable seam
+        // (`collect_el0_records`, Miri-exercised); this closure is the unsafe half it
+        // plugs in — a fresh counter fd per sample (so each record's count starts from a
+        // reset the harness chose, and a wedged descriptor cannot leak across samples)
+        // and the aarch64 window call. The seam derives trips, class/scale names, ids.
+        let (records, failure) = collect_el0_records(&samples, |_i, s| {
             let El0Sample {
                 class,
                 scale,
                 seed,
-                rep,
+                rep: _,
             } = *s;
             let trips = class.trips(scale);
-            let result = (|| {
-                // A fresh fd per sample: each record's count starts from a reset
-                // the harness chose, and a wedged descriptor cannot leak across
-                // samples.
-                let mut counter = HostCounter::open().map_err(|e| e.to_string())?;
-                armed_attr = Some(*counter.attr());
-                run_window(&mut counter, class, trips, seed, &mut mark, pid, fault_page)
-            })();
-            match result {
-                Ok((count, accumulator, time_enabled, time_running)) => {
-                    records.push(El0Record {
-                        sample_id: i as u64,
-                        class: class.name().to_string(),
-                        scale: scale.name().to_string(),
-                        seed,
-                        trips,
-                        rep,
-                        count,
-                        accumulator,
-                        time_enabled,
-                        time_running,
-                    });
-                }
-                Err(e) => {
-                    failure = Some(format!("sample {i} ({}): {e}", class.name()));
-                    break;
-                }
-            }
-        }
+            let mut counter = HostCounter::open().map_err(|e| e.to_string())?;
+            armed_attr = Some(*counter.attr());
+            let (count, accumulator, time_enabled, time_running) =
+                run_window(&mut counter, class, trips, seed, &mut mark, pid, fault_page)?;
+            Ok(El0Measurement {
+                count,
+                accumulator,
+                time_enabled,
+                time_running,
+            })
+        });
 
         // Write the evidence regardless of failure — a partial run-set with
         // `attempted` = the full plan is how the totality check sees the gap.
@@ -360,9 +347,10 @@ mod measure {
     }
 }
 
-/// The deterministic plan for this CLI spec.
-fn plan_for(cli: &Cli, scales: &[Scale]) -> Vec<arm_harness::el0::El0Sample> {
-    el0_plan(&EL0_CLASSES, scales, cli.seed, cli.cases, cli.reps)
+/// The deterministic plan for this CLI spec, through the bounded entry point so a
+/// hostile `--cases`/`--reps` is a named refusal, not an OOM (hm-8z7).
+fn plan_for(cli: &Cli, scales: &[Scale]) -> Result<Vec<arm_harness::el0::El0Sample>, String> {
+    el0_plan_bounded(&EL0_CLASSES, scales, cli.seed, cli.cases, cli.reps).map_err(|e| e.to_string())
 }
 
 /// Write the run-set files with the immutable-evidence discipline: refuse an

@@ -312,6 +312,23 @@ pub enum RunError {
         /// Where it needed to reach.
         target: u64,
     },
+    /// The overflow was delivered, then the patched vCPU kept force-exiting at or above
+    /// the target — duplicate deliveries after the landing. A small number is anomalous
+    /// (the multiplicity check flags any duplicate); an unbounded stream resets the
+    /// per-`KVM_RUN` watchdog on every exit, so the sample HANGS instead of finishing.
+    /// Capped at [`MAX_DELIVERIES`]: a duplicate-delivery storm is a bounded failure,
+    /// never a silent box-window burn (hm-bec).
+    #[error(
+        "{deliveries} deliveries after the landing at work {landed}: the vCPU keeps \
+         force-exiting at or above the target without reaching its exit sentinel — a \
+         duplicate-delivery storm, not progress"
+    )]
+    DeliveryStorm {
+        /// How many deliveries were counted before the cap tripped.
+        deliveries: u64,
+        /// Where the first (real) landing was, for the message.
+        landed: u64,
+    },
     /// The AA-3 exact-landing arm-early period underflows: the drawn work `delta` is not
     /// strictly greater than the `skid_margin`, so the overflow cannot be armed a full margin
     /// **below** the target. Without room below the target the arm-early `Preempt` cannot be
@@ -499,6 +516,18 @@ pub trait WorkCounter {
 /// that spins forever is worse than one that fails. The bound is generous: a 1e8-branch
 /// window at a 1 kHz tick produces on the order of a thousand.
 const MAX_ADVISORY_EXITS: u64 = 100_000;
+
+/// How many DELIVERIES (mechanism exits at or above the target) one sample may take
+/// before the harness gives up.
+///
+/// A clean run delivers exactly once; the multiplicity check flags any duplicate. But
+/// the patched vCPU exits on ANY host IRQ, so AFTER the landing a fast stream of
+/// duplicate `KVM_EXIT_PREEMPT` at/above the target keeps the loop alive with no
+/// progress toward the guest's exit sentinel. Each is a fresh `KVM_RUN`, which resets
+/// the per-`KVM_RUN` watchdog — so the watchdog never trips and the sample HANGS,
+/// silently burning a box window (hm-bec). Bounding deliveries turns that storm into a
+/// named failure. Generous: no legitimate run (probe included) approaches it.
+const MAX_DELIVERIES: u64 = 100_000;
 
 /// How many single steps the AA-3 exact-landing loop may take before giving up.
 ///
@@ -1098,6 +1127,17 @@ pub fn run_sample(
                 }
 
                 deliveries += 1;
+                // Bound the post-landing duplicate deliveries: after the first landing,
+                // the patched vCPU can keep exiting on host IRQs at/above the target, and
+                // each fresh KVM_RUN resets the watchdog — an unbounded stream hangs the
+                // sample instead of failing (hm-bec). The first delivery (deliveries == 1)
+                // is the landing; only a storm exceeds the cap.
+                if deliveries > MAX_DELIVERIES {
+                    return Err(RunError::DeliveryStorm {
+                        deliveries,
+                        landed: landed.unwrap_or(work),
+                    });
+                }
                 // The FIRST landing is the one the contract is about; a second is a
                 // duplicate delivery, and it is `deliveries` — not these fields — that
                 // makes it visible.
@@ -1333,11 +1373,19 @@ pub fn run_sample_exact(
                     });
                 };
 
-                if landed.is_some() {
+                if let Some(landed_at) = landed {
                     // A second `Preempt` after the exact landing. The perf overflow was parked
                     // and the patch's one-shot was not re-armed, so none is expected; count it
                     // as a duplicate delivery (multiplicity flags it) rather than re-landing.
+                    // Bound it, though: an unbounded post-landing storm resets the per-KVM_RUN
+                    // watchdog on every exit and hangs the sample rather than failing (hm-bec).
                     deliveries += 1;
+                    if deliveries > MAX_DELIVERIES {
+                        return Err(RunError::DeliveryStorm {
+                            deliveries,
+                            landed: landed_at,
+                        });
+                    }
                     continue 'run;
                 }
 
@@ -2320,6 +2368,46 @@ mod tests {
         ));
     }
 
+    // Ignored under Miri for the same reason as the advisory-storm test: it drives
+    // MAX_DELIVERIES+1 (100_001) scripted exits, which the interpreter runs ~100× slower
+    // for a bound whose logic is a `>` comparison with no unsafe to verify.
+    #[cfg_attr(
+        miri,
+        ignore = "100k scripted iterations; a plain bound check, no unsafe"
+    )]
+    #[test]
+    fn a_post_landing_delivery_storm_is_refused_not_spun_on() {
+        // hm-bec: after the real landing, the patched vCPU can keep force-exiting at/above
+        // the target — each a duplicate delivery. Unbounded, each fresh KVM_RUN resets the
+        // per-KVM_RUN watchdog, so the sample HANGS silently (worse than a failure: it burns
+        // a box window). The loop must CAP the duplicate deliveries and fail by name.
+        //
+        // Pre-fix (no MAX_DELIVERIES cap) this same storm returns a completed record with a
+        // huge `deliveries` (never DeliveryStorm) — or, past the readings, a Seam error —
+        // and in the field it hangs; post-fix it returns DeliveryStorm before that. So the
+        // assertion below fails before the fix and passes after.
+        let bytes = transcript();
+        let mark_at = bytes
+            .iter()
+            .position(|&b| b == MARK_BEGIN)
+            .expect("mark present");
+        // One landing then a storm of duplicate deliveries, all at/above the target.
+        let injected: Vec<(usize, VcpuExit)> = (0..MAX_DELIVERIES + 1)
+            .map(|_| (mark_at, VcpuExit::Preempt))
+            .collect();
+        let mut vcpu = ScriptedVcpu::printing(&bytes, &injected);
+        // begin(1000), then an endless supply of at-target (=1500) reads: the first lands,
+        // every subsequent one is a duplicate delivery.
+        let mut readings = vec![1_000u64];
+        readings.extend(std::iter::repeat_n(1_500u64, (MAX_DELIVERIES + 2) as usize));
+        let mut counter = ScriptedCounter::new(&readings);
+        assert!(matches!(
+            run_sample(&mut vcpu, &mut counter, &spec(Some(500))),
+            Err(RunError::DeliveryStorm { deliveries, landed })
+                if deliveries == MAX_DELIVERIES + 1 && landed == 1_500
+        ));
+    }
+
     #[test]
     fn a_wedged_vcpu_surfaces_as_an_error_not_a_hang_or_a_record() {
         // The watchdog turns a KVM_RUN that never returns into RunError::Watchdog. The
@@ -3082,6 +3170,50 @@ mod tests {
         s.inject = inject;
         let rec = run_sample_exact(&mut vcpu, &mut counter, &s, 0).expect("an exact landing");
         (rec, vcpu.injections.clone())
+    }
+
+    // hm-bec, exact-landing variant: `run_sample_exact` shares the same MAX_DELIVERIES
+    // guard as `run_sample`. After the exact landing a storm of duplicate Preempts must
+    // fail by name, never spin (each fresh KVM_RUN resets the per-KVM_RUN watchdog).
+    #[cfg_attr(
+        miri,
+        ignore = "100k scripted iterations; a plain bound check, no unsafe"
+    )]
+    #[test]
+    fn the_exact_path_also_caps_a_post_landing_delivery_storm() {
+        let mut script = boot_prologue();
+        // The arm-early Preempt (below target) then one step up to the exact landing —
+        // the same landing scaffold as `drive_exact_landing`.
+        script.push(Scripted::Preempt);
+        script.push(Scripted::Step {
+            pc_after: STEP_PC + 4,
+            opcode: 0xD503_201F,
+            delta: 0,
+        });
+        // Then the storm: duplicate Preempts after the landing. The post-landing branch
+        // reads no counter, so it consumes only scripted exits.
+        script.extend((0..MAX_DELIVERIES + 1).map(|_| Scripted::Preempt));
+        let cell = Rc::new(Cell::new(0));
+        let mut vcpu = ScriptedStepVcpu {
+            exits: script.into(),
+            pc: STEP_PC,
+            last_opcode: None,
+            vbar: STEP_VBAR,
+            counter: Rc::clone(&cell),
+            regs_digest: "sha256:regs".into(),
+            digest: "sha256:final".into(),
+            armed: false,
+            last_read_reply: None,
+            injections: Vec::new(),
+        };
+        // MARK_BEGIN(100) → arm-early Preempt(102, in [arm_point,target)) → step to target
+        // (118). The post-landing storm reads no counter, so these readings suffice.
+        let mut counter = ScriptedCounter::new(&[100, 102, 118, 118]);
+        assert!(matches!(
+            run_sample_exact(&mut vcpu, &mut counter, &spec(Some(18)), 0),
+            Err(RunError::DeliveryStorm { deliveries, landed })
+                if deliveries == MAX_DELIVERIES + 1 && landed == 118
+        ));
     }
 
     #[test]
