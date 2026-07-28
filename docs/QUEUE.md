@@ -6,16 +6,15 @@
 > Adopted 2026-07-09 (Paul: "worth a try") to replace prose-trigger sprawl across GitHub
 > issues, task-spec headers, and memory notes.
 
-_Refreshed 2026-07-28 just past midnight (foreman loop). **The two-day Fable-limit pause ended and
-the entire parked review pipeline cleared in one evening**: both interrupted judges resumed
-on preserved prompts and completed, and **three PRs merged — W7 (#162), the box-window
-lease-lifetime fix (#164, discovery → fix → verify same night), and W4 (#165)**. The fixed
-coordinator was then **deployed to the box and hand-verified** (`hm-tp45` closed, incl. the
-acquire-after-expiry composite on the real module), which lifted the hold on W8 — its lane
-worker is live. Zero open PRs. Worker baseline moved to **Opus 5** (Paul, tonight). The
-queue is organized as work orders — Paul consolidated 42 parked review findings into seven
-epics (label `work-order`; children `wo-child`) overnight 2026-07-24/25 — one worker per
-work order, scoped with `bd ready --parent <epic-id>`._
+_Refreshed 2026-07-28 just past midnight (foreman loop). **Four PRs merged in one
+evening**: the two-day Fable-limit pause ended, both interrupted judges resumed on
+preserved prompts and completed — W7 (#162), the box-window lease-lifetime fix (#164,
+discovery → fix → verify → **deployed to the box and hand-verified**, `hm-tp45` closed),
+W4 (#165) — and the unblocked W8 lane then ran end-to-end and merged as session 2
+(#166). Zero open PRs, zero live workers, box at stock. Worker baseline moved to
+**Opus 5** (Paul). The queue is organized as work orders — Paul consolidated 42 parked
+review findings into seven epics (label `work-order`; children `wo-child`) overnight
+2026-07-24/25 — one worker per work order, scoped with `bd ready --parent <epic-id>`._
 
 > **Dispatch view:** `bd ready --exclude-label wo-child`. Plain `bd ready` re-scatters
 > the same findings into ~100 rows — that is the waste the consolidation removed.
@@ -87,19 +86,7 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 candidates, in order: `hm-xkh5` (P1 — the separating experiment is named in the bead;
 box work, needs a short foreman spec), then W3/W2 (Mac work orders, P2).
 
-## New this session (foreman-filed, 2026-07-25)
-
-- **`hm-nvwx`** (P1 bug) — `scripts/box-window.sh` stores each lease as a **pid**, so acquiring
-  inside its own short-lived `ssh` invocation makes the lease stale the instant it is created;
-  the next invocation of any verb sweeps it and, because a zero-lease window gets reverted,
-  would `rmmod` the patched module out from under a live campaign in another session. Observed
-  live on the W8 lane. Inverts the coordinator's own safety invariant ("the window never
-  outlives its last lease"); survivable only because that work order serializes the box to one
-  worker. The lane worker fixed its own run wrapper — **the coordinator in `scripts/` is
-  untouched**.
-- **`hm-hj29`** (P2) / **`hm-rgu8`** (P2) — the PR #160 discovery parks, above.
-
-## Ready — the remaining work orders (2 of 3 worker slots free)
+## Ready — the remaining work orders (all 3 worker slots free)
 
 In `bd ready` order. Each is one worker when dispatched:
 
