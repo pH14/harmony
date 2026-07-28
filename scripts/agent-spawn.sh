@@ -6,7 +6,7 @@
 #   <task-slug>  matches a tasks/*<slug>*.md spec (e.g. "vtime", "snapshot-store")
 #   --engine     deepseek routes the worker through DeepSeek's Anthropic-compatible
 #                endpoint (requires DEEPSEEK_API_KEY in the environment)
-#   --model      worker model id (default: claude-opus-4-8 — Opus 4.8, the baseline for
+#   --model      worker model id (default: claude-opus-5 — Opus 5, the baseline for
 #                ordinary tasks). Pass --model claude-fable-5 to route a high-complexity
 #                task (deep architectural reasoning, cross-crate refactors, gnarly
 #                determinism bugs) to Fable 5 instead, or --model claude-sonnet-5 for a
@@ -28,7 +28,7 @@ cd "$(dirname "$0")/.."
 SLUG="${1:?usage: agent-spawn.sh <task-slug> [--engine claude|deepseek] [--model ID] [--effort low|medium|high|xhigh|max] [--yolo]}"
 shift
 ENGINE=claude
-MODEL=claude-opus-4-8          # Opus 4.8 — baseline model; --model claude-fable-5 for high-complexity,
+MODEL=claude-opus-5            # Opus 5 — baseline model; --model claude-fable-5 for high-complexity,
                                 # --model claude-sonnet-5 for quick/simple tasks
 EFFORT=""                      # reasoning effort; empty = per-model default below (ruled by Paul
                                 # 2026-07-14: workers were silently landing on the CLI's lowest tier)
