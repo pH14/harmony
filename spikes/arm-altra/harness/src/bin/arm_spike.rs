@@ -2198,6 +2198,84 @@ fn injection_attestation(
     }
 }
 
+/// The counting-mode sampling path a run selects, once per run (it depends only on the
+/// stage, mechanism, and skid margin — all run-level).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SamplePath {
+    /// The AA-3 exact single-step-up landing ([`run_sample_exact`]) at the measured skid
+    /// margin. Records `skid == 0`.
+    Exact {
+        /// The measured skid margin the overflow is armed below the target by.
+        margin: u64,
+    },
+    /// The arm-at-target overflow path ([`run_sample`]): the stock signal-kick, or the
+    /// patched mechanism WITHOUT a margin (the arm-at-target reliability proxy).
+    Overflow,
+}
+
+/// The stage's CLI spelling (`aa1`, `aa3`, …), for operator-facing messages.
+const fn stage_arg_name(stage: Stage) -> &'static str {
+    match stage {
+        Stage::Aa0 => "aa0",
+        Stage::Aa1 => "aa1",
+        Stage::Aa2 => "aa2",
+        Stage::Aa3 => "aa3",
+        Stage::Aa4 => "aa4",
+        Stage::Aa5 => "aa5",
+        Stage::Aa6 => "aa6",
+    }
+}
+
+/// Whether the exact single-step-up landing is the **contract** of `stage`.
+///
+/// The exact landing is a patched force-exit path (`Preempt`, recorded as `skid == 0`),
+/// so it belongs to the stages whose acceptance RIDES that mechanism — the same set the
+/// floor checker keys on (`requires_patched_mechanism`): AA-3 (the exact-landing
+/// contract), AA-4 (which injects through AA-3's machinery), and AA-6 (the mini
+/// determinism gate + injection at exact landed Moments). AA-1 MEASURES the skid margin
+/// and AA-2 single-steps under different arming; neither lands exactly.
+const fn exact_landing_stage(stage: Stage) -> bool {
+    matches!(stage, Stage::Aa3 | Stage::Aa4 | Stage::Aa6)
+}
+
+/// Decide the counting-mode sampling path, REFUSING an exact-landing request at a stage
+/// that does not certify it (finding hm-ej5).
+///
+/// `run_sample_exact` used to be selected on `Preempt + skid_margin` ALONE, so
+/// `--stage aa1 --mechanism patched --skid-margin N` recorded an exact `skid == 0`
+/// landing under an AA-1 manifest label — false evidence of the very calibration AA-1
+/// exists to MEASURE. The exact path is the patched force-exit contract of AA-3/AA-4/AA-6
+/// ([`exact_landing_stage`]); at any other stage the combination is rejected OUTRIGHT
+/// rather than silently degraded to the arm-at-target path the operator did not request.
+///
+/// Portable and pure so it is unit-tested off-box; the `run` loop that calls it is
+/// Linux-only.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn select_sample_path(
+    stage: Stage,
+    mechanism: MechanismArg,
+    skid_margin: Option<u64>,
+) -> Result<SamplePath, String> {
+    match (skid_margin, mechanism) {
+        (Some(margin), MechanismArg::Patched) => {
+            if exact_landing_stage(stage) {
+                Ok(SamplePath::Exact { margin })
+            } else {
+                Err(format!(
+                    "--skid-margin {margin} with --mechanism patched selects the exact \
+                     single-step-up landing (recorded as skid=0), the patched force-exit \
+                     contract of stages aa3/aa4/aa6 — refusing to record it under a --stage \
+                     {} manifest, where an exact landing would misdescribe the run (AA-1 \
+                     MEASURES the skid margin, it does not land on it)",
+                    stage_arg_name(stage)
+                ))
+            }
+        }
+        // Stock kick, or patched WITHOUT a margin (the arm-at-target reliability proxy).
+        _ => Ok(SamplePath::Overflow),
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn execute(args: RunArgs) -> Result<(), String> {
     use arm_harness::evidence::{
@@ -2358,6 +2436,16 @@ fn execute(args: RunArgs) -> Result<(), String> {
     } else {
         args.scales.clone()
     };
+    // Decide (and VALIDATE) the counting-mode sampling path up front, before a VM is built
+    // or a sample measured: an exact-landing request (patched mechanism + a skid margin) at
+    // a stage that does not certify the exact landing is REFUSED here (hm-ej5), never
+    // recorded under a mislabelling manifest. Single-step mode (AA-2) has its own path and
+    // no armed target to mislabel, so it skips the decision.
+    let counting_path = if args.single_step {
+        SamplePath::Overflow
+    } else {
+        select_sample_path(args.stage, args.mechanism, args.skid_margin)?
+    };
     // AA-3 exact landing (patched mechanism + a measured skid margin) draws targets no closer to
     // MARK_BEGIN than `skid_margin + LANDING_HEADROOM`, so every target can be armed that full
     // combined margin below and single-stepped up to its canonical landing PC; every other
@@ -2490,18 +2578,18 @@ fn execute(args: RunArgs) -> Result<(), String> {
                     // control: the default AA-3/AA-5 path is byte-identical (no `KVM_IRQ_LINE`).
                     inject: args.inject,
                 };
-                // AA-3 exact landing rides the patched mechanism WITH a measured skid margin:
-                // `run_sample_exact` re-arms the overflow `skid_margin` events below the target,
-                // takes the `Preempt` below target, then single-steps up to `work == target`
-                // (the run_until_overflow + single_step contract). A patched run WITHOUT a margin
-                // stays the arm-at-target reliability proxy; the stock kick stays `run_sample`.
-                match args.skid_margin {
-                    Some(margin) if matches!(mechanism_kind, sys::Mechanism::Preempt) => {
+                // The path was DECIDED and validated once, above (`counting_path`): the AA-3
+                // exact landing (`run_sample_exact` — arm `skid_margin` events below target,
+                // take the `Preempt` below target, then single-step up to `work == target`)
+                // is reachable only at the stages that certify it; every other run takes the
+                // arm-at-target `run_sample` (the stock kick, or patched without a margin).
+                match counting_path {
+                    SamplePath::Exact { margin } => {
                         run_sample_exact(&mut machine, &mut counter, &spec, margin)
                             .map(|r| vec![r])
                             .map_err(|e| e.to_string())
                     }
-                    _ => run_sample(&mut machine, &mut counter, &spec)
+                    SamplePath::Overflow => run_sample(&mut machine, &mut counter, &spec)
                         .map(|r| vec![r])
                         .map_err(|e| e.to_string()),
                 }
@@ -2871,5 +2959,87 @@ mod tests {
             injection_attestation(Stage::Aa3, Some(&InjectionConfig { intid: 22 }))
                 .is_some_and(|a| a.enabled && a.inject_ppi == Some(22))
         );
+    }
+
+    #[test]
+    fn the_exact_landing_path_is_gated_to_the_stages_that_certify_it() {
+        use arm_harness::evidence::Stage;
+
+        // hm-ej5: `--stage aa1 --mechanism patched --skid-margin N` used to select the exact
+        // skid=0 landing, recording it under an AA-1 manifest — false evidence of the very
+        // skid AA-1 exists to MEASURE. The combination is now refused OUTRIGHT, by name.
+        let err = select_sample_path(Stage::Aa1, MechanismArg::Patched, Some(53))
+            .expect_err("aa1 must not reach the exact path");
+        assert!(
+            err.contains("aa1") && err.contains("skid=0"),
+            "the refusal names the mislabelled stage and what it would record: {err}"
+        );
+
+        // None of the non-certifying stages may reach the exact landing.
+        for stage in [Stage::Aa0, Stage::Aa1, Stage::Aa2, Stage::Aa5] {
+            assert!(
+                select_sample_path(stage, MechanismArg::Patched, Some(53)).is_err(),
+                "{stage:?} does not certify the exact landing and must refuse it"
+            );
+        }
+
+        // The patched force-exit stages (the floor checker's `requires_patched_mechanism`
+        // set) DO certify it, so the exact path is selected with its margin.
+        for stage in [Stage::Aa3, Stage::Aa4, Stage::Aa6] {
+            assert_eq!(
+                select_sample_path(stage, MechanismArg::Patched, Some(53)),
+                Ok(SamplePath::Exact { margin: 53 }),
+                "{stage:?} certifies the exact landing"
+            );
+        }
+
+        // Patched WITHOUT a margin stays the arm-at-target reliability proxy — even at AA-3;
+        // the stock kick is never the exact path, margin passed or not.
+        assert_eq!(
+            select_sample_path(Stage::Aa3, MechanismArg::Patched, None),
+            Ok(SamplePath::Overflow)
+        );
+        assert_eq!(
+            select_sample_path(Stage::Aa1, MechanismArg::Patched, None),
+            Ok(SamplePath::Overflow)
+        );
+        assert_eq!(
+            select_sample_path(Stage::Aa1, MechanismArg::Stock, None),
+            Ok(SamplePath::Overflow)
+        );
+        assert_eq!(
+            select_sample_path(Stage::Aa3, MechanismArg::Stock, Some(53)),
+            Ok(SamplePath::Overflow)
+        );
+    }
+
+    #[cfg_attr(
+        miri,
+        ignore = "reads the schema file from disk; a pure data check, no unsafe"
+    )]
+    #[test]
+    fn the_run_set_schema_accepts_every_kvm_mode_the_harness_can_record() {
+        // hm-usj (J17): the harness records `environment.kvm_mode` from its OWN live read
+        // (`sys::kvm_mode`), which returns one of `vhe` / `nvhe` / `protected` — the three
+        // modes KVM prints at boot. The run-set schema's enum must accept every one, or a
+        // faithfully recorded (and SUPPORTED) protected-nVHE run writes a schema-invalid
+        // manifest — which the harness's own live cross-check would have let through.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../schemas/run-set.schema.json"
+        );
+        let text = std::fs::read_to_string(path).expect("read the run-set schema");
+        let schema: serde_json::Value =
+            serde_json::from_str(&text).expect("parse the run-set schema");
+        let modes = schema["$defs"]["environment"]["properties"]["kvm_mode"]["enum"]
+            .as_array()
+            .expect("kvm_mode carries an enum");
+        for mode in ["vhe", "nvhe", "protected"] {
+            assert!(
+                modes.iter().any(|m| m == mode),
+                "the schema's kvm_mode enum must accept `{mode}` (a value sys::kvm_mode can \
+                 record); enum is {modes:?}"
+            );
+        }
     }
 }
