@@ -6,7 +6,7 @@
 > Adopted 2026-07-09 (Paul: "worth a try") to replace prose-trigger sprawl across GitHub
 > issues, task-spec headers, and memory notes.
 
-_Refreshed 2026-07-28 just past midnight (foreman loop). **Four PRs merged in one
+_Refreshed 2026-07-28 ~02:50 (foreman loop). **Four PRs merged in one
 evening**: the two-day Fable-limit pause ended, both interrupted judges resumed on
 preserved prompts and completed — W7 (#162), the box-window lease-lifetime fix (#164,
 discovery → fix → verify → **deployed to the box and hand-verified**, `hm-tp45` closed),
@@ -47,7 +47,13 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
   into `BASELINES`, or split the draw precondition into its own gate (the new
   `live_draw_probe_pair` is effectively that gate already). Judge's sequencing note on
   the PR: settle this promptly. The task-78 evidence-claim relabel rides the same bead.
-- **Ratify the cooperative mechanism vertical** (`hm-yjf`, P1) — **decision packet
+- ~~Ratify the cooperative mechanism vertical~~ — **RULED: GO recorded 2026-07-28 01:09**
+  (Paul, in session, full decision packet in view, both caveats acknowledged). The GO
+  authorizes the *held-out transfer test*, not a proven claim: opens `hm-ebe`
+  (planted-bug proof) → `hm-zlx` (transfer ratification). Foreman dispatches `hm-ebe`
+  next iteration per decision-gate safety. Historical packet below retained for the
+  record:
+- **(ruled)** Ratify the cooperative mechanism vertical (`hm-yjf`, P1) — **decision packet
   assembled by the foreman 2026-07-25; open 13 days.** The blocker `hm-cs5` closed with
   PR #137 (2026-07-22). The question `hm-yjf` actually asks: has the generic Explorer +
   Differential cells/archive shown enough *non-vacuous* archive-guided progress to
