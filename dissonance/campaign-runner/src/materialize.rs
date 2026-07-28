@@ -143,11 +143,13 @@ pub struct MaterializeReport {
     /// entropy — measured, not assumed. The probe leg re-runs the tail window
     /// under the SAME branch seed plus a trailing reseed marker back to that
     /// seed at the landing boundary (using the very task-78 machinery under
-    /// test): a no-op iff no draw moved the stream, so its hash differs from
-    /// the tail leg's iff the window drew. The reseed-aware fold gates
-    /// ((b)/(c) bit-identity) are only *entropy-exercising* when this is
-    /// `true`; a draw-free workload window leaves them vacuous on the entropy
-    /// axis (the task-68 situation).
+    /// test): a no-op iff no draw moved the stream, so its **settled** hash
+    /// (see `settle` — both legs advanced one boundary past the marker, the
+    /// hm-xkh5 arrival-clamp false-positive fix) differs from the settled
+    /// plain leg's iff the window drew. The reseed-aware fold gates ((b)/(c)
+    /// bit-identity) are only *entropy-exercising* when this is `true`; a
+    /// draw-free workload window leaves them vacuous on the entropy axis (the
+    /// task-68 situation).
     pub tail_draws: bool,
 }
 
@@ -295,7 +297,9 @@ pub fn run_materialize<M: Machine>(
     //     still live: re-run each hop window plainly and with a trailing
     //     reseed marker back to the same seed at the landed boundary — the
     //     hashes differ iff a draw inside the window moved the stream (the
-    //     same self-normalizing probe as the tail's, step 6b).
+    //     same self-normalizing probe as the tail's, step 6b). Both legs are
+    //     **settled** past the marker Moment before hashing (see [`settle`] —
+    //     the hm-xkh5 false-positive fix).
     let mut hop_draws: Vec<bool> = Vec::with_capacity(cfg.hops);
     {
         let mut parent = genesis;
@@ -303,9 +307,11 @@ pub fn run_materialize<M: Machine>(
         for (i, h) in hops.iter().enumerate() {
             machine.branch(parent, &codec.seeded(cfg.seed))?;
             let landed = run_to(machine, h.at, &format!("hop {i} plain probe"))?;
+            settle(machine, h.at)?;
             let h_plain = machine.hash()?;
             machine.branch(parent, &reseed_probe_env(cfg.seed, parent_at, h.at)?)?;
             run_to(machine, h.at, &format!("hop {i} marker probe"))?;
+            settle(machine, h.at)?;
             hop_draws.push(machine.hash()? != h_plain);
             debug_assert_eq!(landed, h.at, "the hop leg is deterministic");
             parent = seals[i];
@@ -366,9 +372,9 @@ pub fn run_materialize<M: Machine>(
     // 6b. The draw probe (task 78): the tail leg again under the SAME branch
     //     seed, plus a trailing reseed marker back to that seed at the landing
     //     boundary. The guest executes identically (same seed ⇒ same drawn
-    //     values), so the probe hash differs from `leg_hash` exactly when the
-    //     trailing reseed was NOT a no-op — i.e. when a draw inside the window
-    //     moved the stream off its reseed point.
+    //     values), so the settled probe hash differs from the settled plain
+    //     hash exactly when the trailing reseed was NOT a no-op — i.e. when a
+    //     draw inside the window moved the stream off its reseed point.
     //
     //     **Deadline-stopped tails only (PR #62 round-4 blocking fix).** For a
     //     Quiescent/Crash tail the probe's `deadline = landing` stops BEFORE
@@ -377,23 +383,23 @@ pub fn run_materialize<M: Machine>(
     //     terminal tail reports `tail_draws = false` (draws-unknown; the
     //     per-hop probes are unaffected — their legs are Deadline stops by
     //     construction).
+    //     **Settled comparison (hm-xkh5).** The plain side is a fresh re-run of
+    //     the tail leg settled past the landing — NOT `leg_hash`, which stays
+    //     the gate-(c) anchor at the landing itself. Comparing the probe leg's
+    //     boundary stop against a natural-boundary stop is what produced the
+    //     hm-xkh5 false positive; both probe legs must stop by the same
+    //     mechanism (see [`settle`]).
     let tail_draws = if matches!(leg_stop, StopReason::Deadline { .. }) {
         let landing = leg_stop.vtime().0;
         let deep_at = cur_at;
+        machine.branch(deep_seal, &codec.seeded(cfg.seed))?;
+        run_to(machine, landing, "tail plain probe")?;
+        settle(machine, landing)?;
+        let t_plain = machine.hash()?;
         machine.branch(deep_seal, &reseed_probe_env(cfg.seed, deep_at, landing)?)?;
-        let probe_stop = machine.run(
-            &StopConditions {
-                deadline: Some(Moment(landing)),
-                on: StopMask::NONE,
-            },
-            None,
-        )?;
-        debug_assert_eq!(
-            probe_stop.vtime().0,
-            landing,
-            "timing is draw-value-independent"
-        );
-        machine.hash()? != leg_hash
+        run_to(machine, landing, "tail marker probe")?;
+        settle(machine, landing)?;
+        machine.hash()? != t_plain
     } else {
         false
     };
@@ -420,6 +426,40 @@ pub fn run_materialize<M: Machine>(
         hop_draws,
         tail_draws,
     })
+}
+
+/// **Settle a probe leg past its marker `Moment` (the hm-xkh5 false-positive
+/// fix):** run to `boundary + 1` under [`StopMask::NONE`], i.e. to the next
+/// natural deterministic stop strictly past the boundary, accepting whatever
+/// stop arrives (a terminal inside the settle window is deterministic and
+/// lands both legs of a pair on the identical state, so the comparison stays
+/// valid).
+///
+/// Why this exists: a trailing reseed marker at the landed boundary makes the
+/// server arm the **exact-count arrival** seam, which freezes the guest
+/// *between instructions* at exactly that retired-branch count — while the
+/// marker-free plain leg stops at its first **natural** deterministic
+/// intercept at the same V-time, a few (non-branch) instructions later. Same
+/// `Moment`, same entropy stream, different micro-position: on the box the
+/// two stops differ in `regs` + one RAM region and NOTHING else (bead
+/// `hm-xkh5`, the tasks/167 chunk-diff), so hashing at the boundary reports a
+/// "draw" on a window whose stream never moved. Settling both legs one
+/// boundary further makes them stop by the SAME mechanism (no arrival is
+/// armed in either settle — the marker is already consumed): the clamp
+/// residue converges, while a genuine draw survives (the stream state itself
+/// differs, and no later common-mode draw can re-align it — a reseed-to-seed
+/// after k > 0 draws puts the two legs at different stream positions
+/// forever). Draws inside the settle extension are common-mode: with a
+/// draw-free window both legs draw the identical values from the identical
+/// position, so the probe still measures exactly `[origin, landed]`.
+fn settle<M: Machine>(machine: &mut M, boundary: u64) -> Result<StopReason, MachineError> {
+    machine.run(
+        &StopConditions {
+            deadline: Some(Moment(boundary.saturating_add(1))),
+            on: StopMask::NONE,
+        },
+        None,
+    )
 }
 
 /// The draw-probe env (task 78): branch-reseed to `seed` at the window origin
