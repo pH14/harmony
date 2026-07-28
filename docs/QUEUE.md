@@ -6,10 +6,13 @@
 > Adopted 2026-07-09 (Paul: "worth a try") to replace prose-trigger sprawl across GitHub
 > issues, task-spec headers, and memory notes.
 
-_Refreshed 2026-07-25 late morning (foreman loop). **Three merges today, all through the
-bounded pipeline.** The queue is organized as work orders — Paul consolidated 42 parked
-review findings into seven epics (label `work-order`; children `wo-child`) overnight
-2026-07-24/25 — one worker per work order, scoped with `bd ready --parent <epic-id>`._
+_Refreshed 2026-07-27 evening (foreman loop). **The two-day Fable-limit pause is over**:
+the spend limit that killed both tribunal judges mid-adjudication on 2026-07-25 (`hm-2j4w`)
+has lifted; both judges were resumed on their preserved prompts + partials. **W7 (PR #162)
+merged tonight** after its resumed verify judge confirmed the mutants split exactly. The
+queue is organized as work orders — Paul consolidated 42 parked review findings into seven
+epics (label `work-order`; children `wo-child`) overnight 2026-07-24/25 — one worker per
+work order, scoped with `bd ready --parent <epic-id>`._
 
 > **Dispatch view:** `bd ready --exclude-label wo-child`. Plain `bd ready` re-scatters
 > the same findings into ~100 rows — that is the waste the consolidation removed.
@@ -77,25 +80,19 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-**Three lanes, the concurrency cap.**
+**Two lanes, both at the judge step (workers parked awaiting verdicts).**
 
-- **W7 — PR #134 evidence + campaign bookkeeping** (`hm-zduj`, tasks/158,
-  [PR #162](https://github.com/pH14/harmony/pull/162)) — REQUEST_CHANGES at discovery,
-  **1 open P1**, fix in progress. PR162-F1: the lineage map at `coordinator.rs:596` drops
-  `l.cut.count`, so staging `1→2`, `1→3`, `2→1` all return `Ok` (the guard walks the
-  overwritten edge) and driving past it **hangs `probe_drive`** — judge-executed, killed by a
-  60 s watchdog where healthy tests finish in 0.02 s. A second defect rides inside it: two
-  same-parent edges with divergent fork counts feed twice into `start_contrib` **with no
-  cycle at all**. It blocks because cyclic lineage hanging `probe_drive` is in `hm-tx66`'s own
-  charter — the choke point this PR builds does not yet close its chartered case.
-  Parks: `hm-382z`, `hm-odhm`, `hm-qoen`, `hm-dzm7`, `hm-wvzz`.
-- **`hm-nvwx` — box-window lease lifetime** (tasks/164, `task/box-window-lease-lifetime`):
-  first commit landed, direction chosen — **leases live on time+pid, not pid alone**.
+- **`hm-nvwx` — box-window lease lifetime** (tasks/164,
+  [PR #164](https://github.com/pH14/harmony/pull/164)): fix complete on the branch —
+  leases live on time+pid (`deadline pid core`, `--ttl`, `renew` verb), box red/green
+  evidence retained in the implementation record. Four discovery seats reported 2026-07-25;
+  the **resumed discovery judge is adjudicating now**. On merge, the deploy step is
+  `hm-tp45` (the box runs `/root/box-window.sh`, not the repo copy — merge does not deploy).
 - **W4 — ARM spike harness hardening** (`hm-kdih`, tasks/165,
-  `task/arm-spike-harness-hardening`): five PR #132 findings in three files. `hm-ej5` leads
-  with a **stop condition** — if any *retained* AA-1 manifest could have been produced by the
-  ungated exact-landing path, that is an evidence question, not a code fix, and the worker
-  halts and reports.
+  [PR #165](https://github.com/pH14/harmony/pull/165)): five PR #132 findings in three
+  files; worker pushed and parked. Five discovery seats completed 2026-07-27 evening
+  (~850 LOC diff → 5-seat panel, contract+adversary merged); **judge spawn queued behind
+  PR #164's** — one heavy review op per iteration.
 
 ## New this session (foreman-filed, 2026-07-25)
 
@@ -109,25 +106,17 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
   untouched**.
 - **`hm-hj29`** (P2) / **`hm-rgu8`** (P2) — the PR #160 discovery parks, above.
 
-## Ready — the remaining work orders (0 of 3 worker slots free; 58 ready rows in the dispatch view)
+## Ready — the remaining work orders (all 3 worker slots free; both live sessions are parked at review)
 
-The four work orders not yet dispatched, in `bd ready` order. Each is one worker when a
-slot frees:
+In `bd ready` order. Each is one worker when dispatched:
 
-- **W5 — docs and labels match committed evidence** (`hm-nsev`, P1): five corrections
-  where prose and evidence disagree, in *both* directions — underclaim (`hm-7pm`:
-  ARM-ALTRA.md calls the execute-guard blocked-on-live-proof, contradicted by results
-  committed in the same PR) and overclaim (`hm-d8g` default-ALLOW demo labelled
-  "MSR default-deny"; `hm-472` step replay called "caught end-to-end" when intermediate
-  steps are register-only and memory-blind). One editing session, no code — worth
-  batching precisely because the failure mode is systemic.
-- **W4 — ARM spike harness input + stage-gating hardening** (`hm-kdih`, P1): one pass
-  over `arm_spike.rs`/`el0.rs`/`run.rs` — unbounded plan/parse OOM on a hostile
-  `--cases`, unbounded advisory-exit hang, a supported `kvm_mode` the run-set schema
-  rejects, an exact-landing path selectable outside its stage, and the EL0 `unsafe`
-  path Miri never reaches. Operator-controlled tool, so nothing is guest-reachable —
-  the value is that the harness stops being the least-defended code in a project whose
-  entire output is evidence integrity.
+- **W8 — Intel box lane, remaining half** (`hm-i2et`, P0, epic stays open): `hm-2nt`
+  (July-9 Postgres image broke the draw-probe gate's precondition) then `hm-i8kc`
+  (/dev/harmony bridge liveness — no gate does a REAL transaction). One box-touching
+  worker, serialized. **Foreman is holding this until PR #164 merges AND `hm-tp45`
+  deploys the fixed coordinator to `/root/box-window.sh`** — running the lane against
+  the defective pid-only coordinator is exactly the observed rmmod-under-live-campaign
+  hazard.
 - **W6 — next AMD box window: execution register** (`hm-palv`, P2): *not a bead to work
   now* — the ordered list to execute while a rented AMD box is live, so nobody
   reconstructs it under time pressure. `hm-gig` (AE-3 exact landing under core
@@ -177,6 +166,19 @@ slot frees:
 
 ## Recently done (this week)
 
+- **W7 — PR #134 evidence + campaign bookkeeping hardening MERGED** (tasks/158,
+  [PR #162](https://github.com/pH14/harmony/pull/162), `hm-zduj` + 9 of 10 children,
+  2026-07-27 evening — full bounded pipeline stretched across the Fable-limit pause:
+  discovery REQUEST_CHANGES (F1 P1: lineage map dropped `l.cut.count`, judge-executed
+  `probe_drive` hang) → fix (keys on (parent, fork count), divergent re-edge = typed
+  `LineageConflict`, three regressions) → verify APPROVE by the **resumed** judge, which
+  independently reconfirmed the mutants split **exactly** (70 tested / 63 caught /
+  7 unviable / 0 missed). Verify triage: vadversary's tombstone P1 candidate downgraded
+  to P3 (forgery-only trigger) and parked as `hm-cplq`; vcontract's finding was discovery
+  F4 verbatim (`hm-qoen`); vcloser's "missing beads" REFUTED — it read the stale worktree
+  JSONL, all five parks live in the tracker. `hm-4vms` (unreproduced occupancy divergence)
+  deliberately outlives the closed epic as a standing escalation. Parks: `hm-382z`,
+  `hm-odhm`, `hm-qoen`, `hm-dzm7`, `hm-wvzz`, `hm-cplq`.
 - **W5 — docs and labels match committed evidence MERGED** (tasks/163,
   [PR #163](https://github.com/pH14/harmony/pull/163), `hm-nsev` + 5 children, light tier).
   **The headline inverted its own bead.** `hm-7pm` was filed as an underclaim; the reality was
