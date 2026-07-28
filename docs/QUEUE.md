@@ -36,6 +36,17 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## Decisions waiting on Paul
 
+- **`hm-pwmd` (P1, NEW tonight) — REQUIRE_DRAWS re-home after the hm-xkh5 resolution.**
+  PR #167 proved the task-78 draw probe's positives on the Postgres guests were FALSE —
+  those guests draw nothing during the whole Postgres phase, so `REQUIRE_DRAWS` was
+  vacuously satisfied and the "bit-identical even when entropy is drawn inside a
+  collapsed interval" wording does not rest on a drawing window on those baselines. The
+  fixed probe now honestly reports no draws, which leaves **the default
+  `live_materialization` box gate red at its precondition** (the spec-mandated,
+  non-lowered floor). The call: promote a genuinely drawing baseline (the bridge guest)
+  into `BASELINES`, or split the draw precondition into its own gate (the new
+  `live_draw_probe_pair` is effectively that gate already). Judge's sequencing note on
+  the PR: settle this promptly. The task-78 evidence-claim relabel rides the same bead.
 - **Ratify the cooperative mechanism vertical** (`hm-yjf`, P1) — **decision packet
   assembled by the foreman 2026-07-25; open 13 days.** The blocker `hm-cs5` closed with
   PR #137 (2026-07-22). The question `hm-yjf` actually asks: has the generic Explorer +
@@ -82,9 +93,10 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-**Nothing.** All lanes merged; the box is at stock with zero leases. Next dispatch
-candidates, in order: `hm-xkh5` (P1 — the separating experiment is named in the bead;
-box work, needs a short foreman spec), then W3/W2 (Mac work orders, P2).
+- **Draw-probe hardening batch** (`hm-c8ho`, tasks/168, session
+  `agent-draw-probe-hardening`, Sonnet 5, spawned 2026-07-28 ~02:10): the three PR #167
+  parks — settle fails closed at the top of the V-time axis, honest edge-semantics docs,
+  pair positive arm tightened to the full measured pattern. Mac-only lane, no box access.
 
 ## Ready — the remaining work orders (all 3 worker slots free)
 
@@ -139,6 +151,19 @@ In `bd ready` order. Each is one worker when dispatched:
 
 ## Recently done (this week)
 
+- **hm-xkh5 RESOLVED — the draw probe's false positive, found, fixed, and pair-proven
+  MERGED** (tasks/167, [PR #167](https://github.com/pH14/harmony/pull/167), 2026-07-28
+  ~02:05 — Fable 5 lane worker, 6-seat discovery, zero P1s). **Determination (a), branch
+  (b) refuted by direct measurement**: the chunk-diff shows `vtim:entropy` EQUAL on both
+  firing windows while regs + one RAM region differ — the probe's trailing reseed marker
+  armed the exact-count arrival seam (freeze between instructions at the staged count)
+  while the marker-free leg stopped at its first natural intercept; same Moment, same
+  stream, different micro-position, phantom "draw". Fix: the probe settles past its
+  marker Moment so both legs stop by the same mechanism; proven both directions on the
+  box (Postgres pair: no draws + box-and-branch byte-identical; bridge guest: fires).
+  The judge's sensitivity adjudication: the one constructed miss (skid-window draw) is
+  one-sided fail-closed. Spawned `hm-pwmd` (P1 decision, above) and `hm-c8ho` (hardening
+  batch, in flight). Box left at stock, hand-verified.
 - **W8 session 2 — draw-probe gate + first real /dev/harmony transaction MERGED**
   (tasks/157, [PR #166](https://github.com/pH14/harmony/pull/166), 2026-07-28 ~00:30 —
   6-seat discovery, zero P1s, 4 of 7 gate-auditor P1s re-graded down, 4 refuted with
