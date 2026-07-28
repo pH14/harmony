@@ -99,10 +99,15 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-**Nothing** (hm-c8ho merged as [PR #168](https://github.com/pH14/harmony/pull/168),
-2026-07-28 ~02:45 — 5-seat tribunal, zero P1s, judge recomputed the F3 fail-before
-itself; park `hm-2cn2`). **Next dispatch: `hm-ebe`** — the planted-bug transfer proof
-the `hm-yjf` GO just opened; frontier lane, Fable 5, foreman spec first.
+- **FRONTIER: the planted-bug transfer proof** (`hm-ebe`, tasks/169, session
+  `agent-planted-bug-transfer-proof`, Fable 5, spawned 2026-07-28 ~02:55 — the held-out
+  test the `hm-yjf` GO authorizes): a new consensus-style guest toy with bounded
+  role/term/commit state declared over the real `/dev/harmony` SDK path (PR #166's
+  bridge), a planted adversity-gated bug, archive-guided vs equal-budget random vs
+  nominal at a PREDECLARED budget/threshold (M0 commit before any campaign), replay
+  25/25. PASS/FAIL feeds `hm-zlx`. Likely multi-session.
+  (hm-c8ho merged earlier tonight as [PR #168](https://github.com/pH14/harmony/pull/168),
+  zero P1s; park `hm-2cn2`.)
 
 ## Ready — the remaining work orders (all 3 worker slots free)
 
