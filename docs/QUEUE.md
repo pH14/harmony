@@ -99,10 +99,10 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-- **Draw-probe hardening batch** (`hm-c8ho`, tasks/168, session
-  `agent-draw-probe-hardening`, Sonnet 5, spawned 2026-07-28 ~02:10): the three PR #167
-  parks — settle fails closed at the top of the V-time axis, honest edge-semantics docs,
-  pair positive arm tightened to the full measured pattern. Mac-only lane, no box access.
+**Nothing** (hm-c8ho merged as [PR #168](https://github.com/pH14/harmony/pull/168),
+2026-07-28 ~02:45 — 5-seat tribunal, zero P1s, judge recomputed the F3 fail-before
+itself; park `hm-2cn2`). **Next dispatch: `hm-ebe`** — the planted-bug transfer proof
+the `hm-yjf` GO just opened; frontier lane, Fable 5, foreman spec first.
 
 ## Ready — the remaining work orders (all 3 worker slots free)
 
