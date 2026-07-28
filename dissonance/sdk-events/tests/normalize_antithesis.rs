@@ -750,3 +750,83 @@ proptest! {
         prop_assert_eq!(&n.events[0].payload, &Payload::Unknown);
     }
 }
+
+// --- F9: the /dev/harmony driver's event id 0 (bead hm-i8kc) -----------------
+
+/// The exact byte shape a `/dev/harmony` guest produces: the driver validates
+/// the `{…}` object, splices in its `harmony_attribution` (rip/pid/comm_hex),
+/// and stamps the record with a hardcoded event id of **0** — which is
+/// `CATALOG_EVENT_ID`, the binary ingress' catalog slot.
+fn driver_json(id: &str) -> String {
+    format!(
+        r#"{{"harmony_attribution":{{"rip":"0xdeadbeef","pid":42,"comm_hex":"6272696467652d70726f6265"}},"antithesis_assert":{{"assert_type":"always","condition":true,"message":"{id}","id":"{id}"}}}}"#
+    )
+}
+
+/// **F9 in one test.** One JSON emission from the device, decoded both ways:
+/// the JSON ingress produces the assertion; the binary ingress — which is the
+/// default `Ingress` and would be selected by accident, not by decision —
+/// refuses it by name instead of swallowing it as an empty catalog.
+///
+/// Before this refusal existed, the binary path returned `Ok` with **zero
+/// events**: `parse_declaration` saw no `SDKC` magic, leniently produced an
+/// empty context, and `decode_binary` skipped the id-0 record as "schema, not an
+/// event". A campaign would have reported a clean, empty run on a guest that had
+/// asserted — silence, not a signal.
+#[test]
+fn driver_stamped_json_decodes_under_json_ingress_and_is_refused_by_the_binary_one() {
+    let json = driver_json("bridge-probe-live");
+
+    let n = decode_antithesis(&[rec(7, &json)]).expect("the JSON ingress decodes it");
+    assert_eq!(n.events.len(), 1, "the assertion is an event, not schema");
+    assert_eq!(
+        n.events[0].id,
+        ObservationId::Property("bridge-probe-live".into())
+    );
+
+    let err = sdk_events::decode_binary(&[(Moment(7), 0, json.clone().into_bytes())])
+        .expect_err("the binary ingress must refuse a JSON catalog, not empty it");
+    match err {
+        SdkError::AntithesisJsonUnderBinaryIngress { len, prefix } => {
+            assert_eq!(len, json.len());
+            assert!(
+                prefix.starts_with('{'),
+                "the message quotes the record so the operator can see what it is: {prefix:?}"
+            );
+        }
+        other => panic!("expected the F9 refusal, got {other:?}"),
+    }
+}
+
+/// Two JSON emissions in one rollout — the shape any real instrumented workload
+/// produces — are refused by the binary ingress as multiple declarations, since
+/// the driver stamps *both* with id 0. Both records survive the JSON ingress.
+#[test]
+fn two_driver_json_emissions_are_two_json_events_and_a_binary_refusal() {
+    let a = driver_json("probe-raw");
+    let b = driver_json("probe-libvoidstar");
+
+    let n = decode_antithesis(&[rec(1, &a), rec(2, &b)]).expect("decodes");
+    assert_eq!(n.events.len(), 2);
+
+    let err = sdk_events::decode_binary(&[
+        (Moment(1), 0, a.into_bytes()),
+        (Moment(2), 0, b.into_bytes()),
+    ])
+    .expect_err("two id-0 records are ambiguous under the binary ingress");
+    assert!(
+        matches!(err, SdkError::MultipleDeclarations { count: 2 }),
+        "got {err:?}"
+    );
+}
+
+/// The refusal stays narrow: a non-JSON, non-`SDKC` catalog-slot record is still
+/// leniently treated as "no usable declaration" (the pre-existing contract), so
+/// this change cannot break a binary guest that ships an unrecognized blob.
+#[test]
+fn a_non_json_unrecognized_catalog_record_is_still_lenient() {
+    let n = sdk_events::decode_binary(&[(Moment(0), 0, vec![0xde, 0xad, 0xbe, 0xef, 0x01])])
+        .expect("unrecognized ≠ JSON: still an empty declaration");
+    assert_eq!(n.events.len(), 0);
+    assert_eq!(n.schema.len(), 0);
+}

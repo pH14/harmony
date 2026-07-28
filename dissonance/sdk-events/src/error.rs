@@ -150,6 +150,30 @@ pub enum SdkError {
         count: usize,
     },
 
+    /// The `event_id == 0` record is **Antithesis SDK JSON**, not a binary
+    /// catalog — this stream came from a `/dev/harmony` guest and is being
+    /// decoded by the wrong ingress (bead `hm-i8kc` finding F9).
+    ///
+    /// The kernel driver stamps *every* JSON emission with a hardcoded event id
+    /// of `0`, which is exactly [`CATALOG_EVENT_ID`](crate::wire::CATALOG_EVENT_ID).
+    /// A JSON guest's first assertion therefore arrives looking like this
+    /// stream's schema declaration. Left lenient, a lone JSON event would be
+    /// swallowed as an empty catalog and vanish — a campaign reporting zero
+    /// events on a guest that emitted some, the worst kind of silence. So the
+    /// binary decoder refuses a JSON-shaped catalog and names the fix: select
+    /// `Ingress::AntithesisJson` for this guest.
+    #[error(
+        "the event-id-0 record is Antithesis SDK JSON ({len} bytes starting {prefix:?}), not a \
+         binary catalog: this stream needs AntithesisJson ingestion — the /dev/harmony driver \
+         stamps every JSON emission with event id 0 (= CATALOG_EVENT_ID)"
+    )]
+    AntithesisJsonUnderBinaryIngress {
+        /// Length of the offending record.
+        len: usize,
+        /// A bounded, lossy prefix of the record, for diagnosis.
+        prefix: String,
+    },
+
     /// The catalog declaration appears *after* one or more event firings. A
     /// declaration governs the whole batch, so applying it to bytes that preceded
     /// it would retroactively reassign semantics to prior untrusted input (a

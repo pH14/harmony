@@ -212,6 +212,27 @@ fn boot_server(
     if page_on {
         live.enable_pvclock(PVCLOCK_DEFAULT_DELTA_WORK);
     }
+    // **Wire the doorbell channels BEFORE the boot drive (hm-i8kc F10).**
+    // `ControlServer::new` (below) wires `enable_sdk`/`enable_net`, but that is
+    // after `drive_to_marker` — and `Vmm::doorbell_service_offered` gates the
+    // Event, Sdk, Net *and* Entropy services on those channels being present. So
+    // an instrumented guest that rings the doorbell on its way to its readiness
+    // marker met a default-deny channel and got `UnknownService` back: measured
+    // live in `tests/live_harmony_bridge.rs`'s negative-control arm, where the
+    // driver turns that into `write(json): Input/output error` and the probe
+    // dies before its marker. Guests that never ring the doorbell are unaffected
+    // — both channels are inert and unhashed until used, so this is byte-for-byte
+    // today's boot for every existing workload.
+    //
+    // The server re-wires (and resets the capture) when it takes ownership, which
+    // is correct rather than lossy: boot-phase emissions belong to the boot, and
+    // every rollout's capture starts at its own `branch`.
+    let boot_env = EnvSpec::Seeded {
+        seed: live.entropy_state().unwrap_or(BOOT_SEED),
+        policy: FaultPolicy::none(),
+    };
+    live.enable_sdk(boot_env.materialize(), boot_env.policy());
+    live.enable_net();
     println!("[campaign-runner] box: booting the guest to the readiness marker {ready_marker:?} …");
     let boot_us = match drive_to_marker(&mut live, ready_marker.as_bytes()) {
         Ok(steps) => {
