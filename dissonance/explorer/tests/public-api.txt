@@ -70,6 +70,9 @@ pub explorer::CampaignError::Ledger(explorer::LedgerError)
 pub explorer::CampaignError::Machine(explorer::MachineError)
 pub explorer::CampaignError::OccupancyDivergence
 pub explorer::CampaignError::OccupancyDivergence::detail: alloc::string::String
+pub explorer::CampaignError::RecoveryIncomplete
+pub explorer::CampaignError::RecoveryIncomplete::batch: revision_coordinator::ids::EvidenceBatchId
+pub explorer::CampaignError::RecoveryIncomplete::revision: u64
 pub explorer::CampaignError::ResealDivergence
 pub explorer::CampaignError::ResealDivergence::at: u64
 pub explorer::CampaignError::ResealDivergence::entry: u64
@@ -122,6 +125,12 @@ pub explorer::LedgerError::LineageCycle
 pub explorer::LedgerError::LineageCycle::batch: revision_coordinator::ids::EvidenceBatchId
 pub explorer::LedgerError::LineageCycle::issue: u64
 pub explorer::LedgerError::LineageCycle::revisits: u64
+pub explorer::LedgerError::OversizedRecord
+pub explorer::LedgerError::OversizedRecord::len: usize
+pub explorer::LedgerError::OversizedRecord::max: usize
+pub explorer::LedgerError::PositionOverflow
+pub explorer::LedgerError::PositionOverflow::events: u64
+pub explorer::LedgerError::PositionOverflow::start: u64
 pub explorer::LedgerError::UnsupportedVersion
 pub explorer::LedgerError::UnsupportedVersion::found: u32
 pub enum explorer::MachineError

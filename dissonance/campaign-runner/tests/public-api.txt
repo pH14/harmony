@@ -123,6 +123,8 @@ pub campaign_runner::gamecampaign::GameCampaignError::RolloutDied::stop: alloc::
 pub campaign_runner::gamecampaign::GameCampaignError::SetupNotReached
 pub campaign_runner::gamecampaign::GameCampaignError::SetupNotReached::stop: alloc::string::String
 pub campaign_runner::gamecampaign::GameCampaignError::SignalUnavailable
+pub campaign_runner::gamecampaign::GameCampaignError::TraceDirNotFresh
+pub campaign_runner::gamecampaign::GameCampaignError::TraceDirNotFresh::path: std::path::PathBuf
 pub enum campaign_runner::gamecampaign::GateVerdict
 pub campaign_runner::gamecampaign::GateVerdict::BelowFloor
 pub campaign_runner::gamecampaign::GateVerdict::BelowFloor::repeat: usize
@@ -155,6 +157,7 @@ pub campaign_runner::gamecampaign::GameCampaignConfig::snapshot_retry_step: u64
 pub campaign_runner::gamecampaign::GameCampaignConfig::trace_dir: core::option::Option<std::path::PathBuf>
 pub campaign_runner::gamecampaign::GameCampaignConfig::verify_reseal: bool
 impl campaign_runner::gamecampaign::GameCampaignConfig
+pub fn campaign_runner::gamecampaign::GameCampaignConfig::config_id(&self, benchmark::exploration::ExplorationConfig) -> revision_coordinator::ids::CampaignConfigId
 pub fn campaign_runner::gamecampaign::GameCampaignConfig::smoke(u64) -> Self
 pub struct campaign_runner::gamecampaign::GameCampaignOutcome
 pub campaign_runner::gamecampaign::GameCampaignOutcome::billboard: core::option::Option<(u64, u64)>

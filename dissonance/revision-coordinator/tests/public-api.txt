@@ -63,11 +63,23 @@ pub revision_coordinator::CoordError::CorruptLedger
 pub revision_coordinator::CoordError::CorruptLedger::detail: alloc::string::String
 pub revision_coordinator::CoordError::DeclarationConflict
 pub revision_coordinator::CoordError::DeclarationConflict::obs: revision_coordinator::relations::ObsKey
+pub revision_coordinator::CoordError::EvidenceRowsInvalid
+pub revision_coordinator::CoordError::EvidenceRowsInvalid::detail: &'static str
+pub revision_coordinator::CoordError::EvidenceRowsInvalid::proposal: revision_coordinator::ProposalId
 pub revision_coordinator::CoordError::FrontierStalled
 pub revision_coordinator::CoordError::FrontierStalled::target: revision_coordinator::Revision
 pub revision_coordinator::CoordError::FrontierStalled::visible: revision_coordinator::Revision
 pub revision_coordinator::CoordError::IdExhausted
 pub revision_coordinator::CoordError::Ledger(revision_coordinator::LedgerError)
+pub revision_coordinator::CoordError::LineageConflict
+pub revision_coordinator::CoordError::LineageConflict::count: u64
+pub revision_coordinator::CoordError::LineageConflict::existing_count: u64
+pub revision_coordinator::CoordError::LineageConflict::existing_parent: u64
+pub revision_coordinator::CoordError::LineageConflict::parent: u64
+pub revision_coordinator::CoordError::LineageConflict::rollout: u64
+pub revision_coordinator::CoordError::LineageCycle
+pub revision_coordinator::CoordError::LineageCycle::revisits: u64
+pub revision_coordinator::CoordError::LineageCycle::rollout: u64
 pub revision_coordinator::CoordError::MissingGenesis
 pub revision_coordinator::CoordError::Poisoned
 pub revision_coordinator::CoordError::ProjectionTooLate

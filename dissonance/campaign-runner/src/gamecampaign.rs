@@ -138,6 +138,69 @@ pub struct GameCampaignConfig {
 }
 
 impl GameCampaignConfig {
+    /// The **content-addressed identity of the immutable campaign
+    /// configuration** (hm-8deo) — the `CampaignConfigId` the Revision
+    /// coordinator's genesis record pins. Digests a canonical, **versioned**
+    /// encoding of every knob that shapes the campaign's deterministic
+    /// trajectory or declared policy, plus the exploration configuration:
+    /// same-seed runs under different selectors/deadlines/caps get
+    /// **different** durable identities, per the `CampaignConfigId` contract
+    /// (`revision-coordinator/src/ids.rs` — it previously digested only the
+    /// seed, colliding all of those).
+    ///
+    /// [`trace_dir`](Self::trace_dir) is deliberately **excluded**: it is
+    /// host-local output placement (where retained artifacts land), not
+    /// campaign semantics — including it would give one campaign different
+    /// identities on different hosts. Everything else in this struct
+    /// participates. The leading version byte covers the encoding itself
+    /// *and* the driver-level constants the config implies (ingress, the
+    /// full-retention profile, event-moment nomination): a change to either
+    /// bumps it, so two builds can never mint colliding identities for
+    /// semantically different configurations.
+    pub fn config_id(&self, config: ExplorationConfig) -> CampaignConfigId {
+        const CONFIG_ENCODING_VERSION: u8 = 1;
+        fn put_u64(b: &mut Vec<u8>, v: u64) {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        fn put_opt_u64(b: &mut Vec<u8>, v: Option<u64>) {
+            match v {
+                None => b.push(0),
+                Some(v) => {
+                    b.push(1);
+                    put_u64(b, v);
+                }
+            }
+        }
+        let mut b = vec![CONFIG_ENCODING_VERSION];
+        put_u64(&mut b, self.campaign_seed);
+        put_u64(&mut b, self.max_branches);
+        put_opt_u64(&mut b, self.deadline_delta);
+        put_u64(&mut b, self.explore_period);
+        put_u64(&mut b, self.snapshot_retry_step);
+        put_u64(&mut b, self.snapshot_max_attempts as u64);
+        put_u64(&mut b, self.setup_deadline_delta);
+        match &self.rom_sha256 {
+            None => b.push(0),
+            Some(s) => {
+                b.push(1);
+                put_u64(&mut b, s.len() as u64);
+                b.extend_from_slice(s.as_bytes());
+            }
+        }
+        b.push(self.require_snapshot_point as u8);
+        put_u64(&mut b, self.guest_ram_len);
+        put_u64(&mut b, self.candidate_cap as u64);
+        put_u64(&mut b, self.replay_budget);
+        b.push(self.verify_reseal as u8);
+        b.push(match config {
+            ExplorationConfig::PureRandom => 0,
+            ExplorationConfig::SelectorV1 => 1,
+            ExplorationConfig::Signal => 2,
+            ExplorationConfig::FrontierOff => 3,
+        });
+        CampaignConfigId::digest(&b)
+    }
+
     /// A small portable/smoke configuration (the no-SDK toy: the generic
     /// seal fallback is its normal path).
     pub fn smoke(campaign_seed: u64) -> Self {
@@ -307,6 +370,24 @@ pub enum GameCampaignError {
     /// campaign that silently produced un-rekeyable output.
     #[error("deep-reproducer retention failed: {0}")]
     Retention(String),
+    /// The trace directory already holds a prior campaign's evidence ledger
+    /// (tribunal F6 / hm-vfop). A game campaign starts its Revision
+    /// coordinator fresh every run, so it can never resume a prior ledger:
+    /// reopening one rebuilds the old occupancy while the coordinator starts
+    /// empty, and the first step fail-closes with a confusing
+    /// `OccupancyDivergence`. Refused up front instead, with the fix in the
+    /// message — the honest mistake (a reused `--trace-out`) gets a
+    /// diagnosis, not a divergence report. The box driver's per-rep
+    /// `rep-N/` subdirectories already satisfy this.
+    #[error(
+        "the trace directory already holds a prior run's evidence ledger ({path}): a game \
+         campaign starts its coordinator fresh and cannot resume prior evidence — pass a \
+         fresh --trace-out directory (or remove the old evidence.log) per run"
+    )]
+    TraceDirNotFresh {
+        /// The pre-existing evidence ledger's path.
+        path: std::path::PathBuf,
+    },
     /// The two-barrier Differential controller failed (coordinator, evidence
     /// ledger, codec, or materialized-view failure) — loud, never absorbed
     /// (task 132).
@@ -678,9 +759,13 @@ fn smb_instrumentation_catalog() -> Vec<u8> {
 /// is reducible by the Differential relations. A guest that declared its own
 /// (wire-v1) catalog has that declaration **upgraded in place**
 /// ([`sdk_events::resolve_v1_declaration`] — the guest's declared points,
-/// expectations, and names are preserved through the decoder's own parsing);
-/// a guest with no catalog (the portable toys) has the standalone
-/// declaration prepended. Everything else delegates.
+/// expectations, and names are preserved through the decoder's own parsing,
+/// and the upgraded blob **embeds the raw guest v1 bytes** as validated
+/// audit provenance, recoverable from the persisted schema via
+/// `SdkSchema::original_v1_declaration` — hm-dd39: the upgrade no longer
+/// discards the original the schema's audit promise names); a guest with no
+/// catalog (the portable toys) has the standalone declaration prepended.
+/// Everything else delegates.
 struct DeclaredMachine<M> {
     inner: M,
     catalog: Vec<u8>,
@@ -740,7 +825,18 @@ impl<M: Machine> Machine for DeclaredMachine<M> {
         // `seal_base` is dropped, so an unlearned (None) cut there never reaches a
         // child as `parent_cut`.
         if self.prepends_catalog == Some(true) {
-            cut.sdk_events += 1;
+            // Checked (hm-t5py): the inner stamp is a transport value. A
+            // backend returning `sdk_events == u64::MAX` would panic here in
+            // debug and wrap to zero in release — and a zero cut RETAINS the
+            // whole inherited prefix as child evidence. Same transport-class
+            // refusal as a malformed capture.
+            cut.sdk_events = cut.sdk_events.checked_add(1).ok_or_else(|| {
+                MachineError::Transport(format!(
+                    "backend stamped seal cut {} — adding the prepended catalog ordinal \
+                     overflows the SDK-vector axis",
+                    cut.sdk_events
+                ))
+            })?;
         }
         Ok((id, cut))
     }
@@ -968,11 +1064,29 @@ pub fn run_game_campaign<M: Machine>(
         }
     };
     let ledger = EvidenceLedger::open(&evidence_path).map_err(CampaignError::from)?;
-    let coordinator = Coordinator::genesis(
-        Box::new(MemLedger::new()),
-        CampaignConfigId::digest(&cfg.campaign_seed.to_le_bytes()),
-    )
-    .map_err(CampaignError::from)?;
+    // Fresh-dir precondition (tribunal F6 / hm-vfop): this campaign's
+    // coordinator is always a fresh MemLedger, so a pre-existing evidence
+    // ledger under the trace dir can only be a prior run's — reopening it
+    // rebuilds old occupancy against an empty coordinator and the FIRST step
+    // fail-closes with a confusing OccupancyDivergence. Refuse it here with
+    // the fix in the message instead. Any durable content counts — retained
+    // batches, a checkpoint, or the finalized end; each alone poisons a
+    // resumed rebuild. Tombstones need no disjunct of their own: `collect`
+    // demands durable coverage (a checkpoint or the finalized end) before it
+    // writes one, so a tombstone-bearing ledger always trips one of the two
+    // conditions already checked.
+    if cfg.trace_dir.is_some()
+        && (!ledger.is_empty() || ledger.last_checkpoint().is_some() || ledger.is_finalized())
+    {
+        return Err(GameCampaignError::TraceDirNotFresh {
+            path: evidence_path,
+        });
+    }
+    // The pinned campaign identity is content-addressed over the FULL
+    // immutable configuration (hm-8deo) — seed alone collided same-seed runs
+    // under different selectors/deadlines/caps onto one durable identity.
+    let coordinator = Coordinator::genesis(Box::new(MemLedger::new()), cfg.config_id(config))
+        .map_err(CampaignError::from)?;
     let mut camp = DifferentialCampaign::new(
         machine,
         Box::new(quiet),
@@ -1743,6 +1857,62 @@ mod tests {
     use super::*;
     use explorer::{EnvCodecError, SpecEnvCodec};
 
+    /// hm-8deo regression: `CampaignConfigId` is content-addressed over the
+    /// FULL immutable campaign configuration, not just the seed. Same-seed
+    /// runs under a different selector, deadline, cap, budget, branch count,
+    /// or ROM claim mint DIFFERENT durable identities; the identity is
+    /// stable for an identical configuration; and the host-local
+    /// `trace_dir` (output placement, not campaign semantics) does not
+    /// participate.
+    #[test]
+    fn campaign_config_id_is_content_addressed_over_the_full_config() {
+        let base = GameCampaignConfig::smoke(7);
+        let baseline = base.config_id(ExplorationConfig::PureRandom);
+        assert_eq!(
+            baseline,
+            base.clone().config_id(ExplorationConfig::PureRandom),
+            "stable for an identical configuration"
+        );
+        // The seed still participates (two seeds, two campaigns).
+        assert_ne!(
+            baseline,
+            GameCampaignConfig::smoke(8).config_id(ExplorationConfig::PureRandom)
+        );
+        // The selector participates — the exact V10 collision: same seed,
+        // different search policy, previously one identity.
+        assert_ne!(baseline, base.config_id(ExplorationConfig::SelectorV1));
+        // Every deterministic knob moves the identity.
+        let mut c = base.clone();
+        c.deadline_delta = Some(123);
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.max_branches += 1;
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.candidate_cap += 1;
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.replay_budget -= 1;
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.explore_period += 1;
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.rom_sha256 = Some("ab".repeat(32));
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.require_snapshot_point = true;
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        let mut c = base.clone();
+        c.verify_reseal = true;
+        assert_ne!(baseline, c.config_id(ExplorationConfig::PureRandom));
+        // trace_dir is host-local output placement: excluded by design, so
+        // one campaign keeps one identity wherever its artifacts land.
+        let mut c = base.clone();
+        c.trace_dir = Some(std::path::PathBuf::from("/somewhere/else"));
+        assert_eq!(baseline, c.config_id(ExplorationConfig::PureRandom));
+    }
+
     /// The instrumentation declaration is a real, decodable wire-v2 catalog
     /// that resolves EVERY register in the resolution table to reducible
     /// state under its declared op (task 132; kills the catalog/resolution
@@ -1873,6 +2043,26 @@ mod tests {
             n.schema.entry(&x).expect("declared").is_reducible_state(),
             "the upgraded declaration resolves the register"
         );
+        // hm-dd39: the upgrade retains the RAW guest v1 bytes as validated
+        // provenance — the schema's audit promise, previously broken by the
+        // in-place rewrite (only the synthetic v2 blob survived). The exact
+        // guest bytes are reconstructed here byte-for-byte.
+        let guest_v1 = {
+            let mut b = Vec::new();
+            b.extend_from_slice(&u32::from_le_bytes(*b"SDKC").to_le_bytes());
+            b.push(1);
+            b.extend_from_slice(&1u32.to_le_bytes());
+            b.push(4);
+            b.extend_from_slice(&(reg::X_BUCKET as u32).to_le_bytes());
+            b.extend_from_slice(&(1u16).to_le_bytes());
+            b.push(b'x');
+            b
+        };
+        assert_eq!(
+            n.schema.original_v1_declaration(),
+            Some(guest_v1.as_slice()),
+            "the raw guest v1 declaration is recoverable for audit/migration"
+        );
         // Delegation is verbatim (kills the delegation stub mutants).
         assert_eq!(m.hash().expect("hash"), [7u8; 32]);
         assert_eq!(m.coverage(), &[3]);
@@ -1971,6 +2161,120 @@ mod tests {
         // The invariant the two coordinates must satisfy: the cut equals the
         // capture's ordinal length (every position is at/before the seal moment).
         assert_eq!(cut.sdk_events, capture.len() as u64);
+    }
+
+    /// hm-t5py regression: the prepended-catalog cut shift is CHECKED. A
+    /// no-catalog backend stamping `sdk_events == u64::MAX` is a hostile
+    /// transport value — before the fix the `+= 1` panicked in debug and
+    /// wrapped to zero in release, and a zero cut retains the whole
+    /// inherited prefix as child evidence. Now it is the same typed
+    /// transport-class refusal as a malformed capture.
+    #[test]
+    fn declared_machine_refuses_a_cut_stamp_that_overflows_on_the_catalog_shift() {
+        struct MaxStampToy;
+        impl Machine for MaxStampToy {
+            fn branch(
+                &mut self,
+                _s: explorer::SnapId,
+                _e: &Reproducer,
+            ) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn replay(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                _u: &StopConditions,
+                _r: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                Ok(StopReason::Quiescent { vtime: Moment(1) })
+            }
+            fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
+                Ok((
+                    explorer::SnapId(1),
+                    EvidenceCut {
+                        at: Moment(1),
+                        sdk_events: u64::MAX,
+                    },
+                ))
+            }
+            fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([0u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[]
+            }
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+                Ok(SpecEnvCodec.seeded(0))
+            }
+            fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+                // No catalog of its own: the wrapper learns it prepends one.
+                let (id, p) = state_event(reg::WORLD, 0, 1);
+                Ok(vec![(10, id, p)])
+            }
+        }
+        let mut m = DeclaredMachine::new(MaxStampToy);
+        m.sdk_events().expect("the setup drain teaches the wrapper");
+        let err = m.snapshot().expect_err("the overflowing stamp is refused");
+        assert!(
+            matches!(&err, MachineError::Transport(msg) if msg.contains("overflows")),
+            "typed transport-class refusal, got {err:?}"
+        );
+        // The exact boundary: a stamp of u64::MAX - 1 shifts to u64::MAX and
+        // is admitted (the axis end itself is representable).
+        struct EdgeStampToy;
+        impl Machine for EdgeStampToy {
+            fn branch(
+                &mut self,
+                _s: explorer::SnapId,
+                _e: &Reproducer,
+            ) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn replay(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                _u: &StopConditions,
+                _r: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                Ok(StopReason::Quiescent { vtime: Moment(1) })
+            }
+            fn snapshot(&mut self) -> Result<(explorer::SnapId, EvidenceCut), MachineError> {
+                Ok((
+                    explorer::SnapId(1),
+                    EvidenceCut {
+                        at: Moment(1),
+                        sdk_events: u64::MAX - 1,
+                    },
+                ))
+            }
+            fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([0u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[]
+            }
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+                Ok(SpecEnvCodec.seeded(0))
+            }
+            fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+                let (id, p) = state_event(reg::WORLD, 0, 1);
+                Ok(vec![(10, id, p)])
+            }
+        }
+        let mut m = DeclaredMachine::new(EdgeStampToy);
+        m.sdk_events().expect("the setup drain teaches the wrapper");
+        let (_snap, cut) = m.snapshot().expect("the boundary stamp is admitted");
+        assert_eq!(cut.sdk_events, u64::MAX, "shifted exactly to the axis end");
     }
 
     /// The quiet codec's exploit-mutate maps the two refusal classes onto the
@@ -2621,6 +2925,98 @@ mod tests {
 
     fn run(config: ExplorationConfig, seed: u64) -> ExplorationLog {
         run_outcome(config, seed).log
+    }
+
+    /// Tribunal F6 / hm-vfop regression: a REUSED trace dir is refused **up
+    /// front** with the fix in the message — not fail-closed later as a
+    /// confusing first-step `OccupancyDivergence` (the coordinator starts
+    /// empty every run, so a reopened prior ledger can never reconcile). A
+    /// fresh dir, and the box driver's per-rep subdirectory scheme, are
+    /// unaffected.
+    #[cfg_attr(
+        miri,
+        ignore = "runs full game campaigns against a real trace directory (durable evidence \
+                  ledger file I/O), which Miri isolation forbids; the refusal logic itself is \
+                  pure and covered transitively by the native suite."
+    )]
+    #[test]
+    fn reused_trace_dir_is_refused_up_front_with_the_fix_in_the_message() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = GameCampaignConfig {
+            max_branches: 2,
+            trace_dir: Some(dir.path().to_path_buf()),
+            ..GameCampaignConfig::smoke(7)
+        };
+        run_game_campaign(
+            GameToyMachine::new(),
+            Box::new(SpecEnvCodec),
+            &cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .expect("the first run under a fresh dir proceeds");
+        let err = run_game_campaign(
+            GameToyMachine::new(),
+            Box::new(SpecEnvCodec),
+            &cfg,
+            ExplorationConfig::PureRandom,
+        )
+        .expect_err("the second run refuses the reused dir");
+        assert!(
+            matches!(err, GameCampaignError::TraceDirNotFresh { .. }),
+            "typed refusal, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--trace-out") && msg.contains("fresh"),
+            "the refusal names the fix: {msg}"
+        );
+        // A per-rep subdirectory (the box driver's isolation scheme) is fresh.
+        let cfg_rep = GameCampaignConfig {
+            trace_dir: Some(dir.path().join("rep-2")),
+            ..cfg.clone()
+        };
+        run_game_campaign(
+            GameToyMachine::new(),
+            Box::new(SpecEnvCodec),
+            &cfg_rep,
+            ExplorationConfig::PureRandom,
+        )
+        .expect("a per-rep subdirectory is fresh");
+        // Each durable-content condition is INDEPENDENTLY decisive (the
+        // in-diff mutation gate flagged the tail disjuncts as untested): a
+        // batch-less ledger holding only a retention CHECKPOINT, and one
+        // holding only the FINALIZED end, are each refused on their own.
+        let assert_not_fresh = |name: &str, prime: &dyn Fn(&mut explorer::EvidenceLedger)| {
+            let sub = dir.path().join(name);
+            std::fs::create_dir_all(&sub).expect("mkdir");
+            let mut led = explorer::EvidenceLedger::open(&sub.join("evidence.log")).expect("open");
+            prime(&mut led);
+            drop(led);
+            let cfg_sub = GameCampaignConfig {
+                trace_dir: Some(sub),
+                ..cfg.clone()
+            };
+            let err = run_game_campaign(
+                GameToyMachine::new(),
+                Box::new(SpecEnvCodec),
+                &cfg_sub,
+                ExplorationConfig::PureRandom,
+            )
+            .expect_err("durable content alone refuses the dir");
+            assert!(
+                matches!(err, GameCampaignError::TraceDirNotFresh { .. }),
+                "{name}: typed refusal, got {err:?}"
+            );
+        };
+        assert_not_fresh("checkpoint-only", &|led| {
+            led.commit_checkpoint(&explorer::RetentionCheckpoint {
+                views: explorer::RetentionViews::new(explorer::RetentionProfile::Full),
+            })
+            .expect("checkpoint");
+        });
+        assert_not_fresh("finalized-only", &|led| {
+            led.finalize().expect("finalize");
+        });
     }
 
     fn run_outcome(config: ExplorationConfig, seed: u64) -> GameCampaignOutcome {

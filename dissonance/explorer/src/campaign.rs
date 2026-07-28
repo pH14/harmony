@@ -222,6 +222,25 @@ pub enum CampaignError {
         /// What diverged.
         detail: String,
     },
+    /// Recovery re-staging found a committed batch that is **neither
+    /// retained nor collected** in the paired evidence ledger (verify V9 /
+    /// hm-7h2c). The coordinator durably ordered this batch, so a ledger
+    /// that cannot account for it is not this campaign's ledger (or lost
+    /// evidence outside the proven-GC path); silently omitting its relation
+    /// rows would let the next exploit derive a wrong inherited cell or a
+    /// spurious occupancy divergence. Refused instead — a collected
+    /// (tombstoned) batch is fine and simply contributes nothing, exactly
+    /// as in the retention rebuild.
+    #[error(
+        "recovery: committed batch {batch:?} at revision {revision} is neither retained nor \
+         collected in the evidence ledger — refusing to resume over unaccounted evidence"
+    )]
+    RecoveryIncomplete {
+        /// The committed revision whose batch is unaccounted for.
+        revision: u64,
+        /// The unaccounted batch identity.
+        batch: revision_coordinator::EvidenceBatchId,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -616,14 +635,24 @@ impl<M: Machine> DifferentialCampaign<M> {
             proj_cells.key(cut, &map)
         }))?;
         // Recovery re-staging: restart replays committed ledger inputs (the
-        // durable evidence batches), never a live arrangement. A committed
-        // batch absent from this evidence ledger contributes no relation
-        // rows (a foreign coordinator's input), exactly as it contributes
-        // nothing to the rebuilt retention views.
-        for (_rev, proposal, batch) in coordinator.committed_inputs() {
+        // durable evidence batches), never a live arrangement. Every batch
+        // the coordinator durably ordered must be ACCOUNTED FOR here (verify
+        // V9 / hm-7h2c): retained → its rows re-stage; collected → its
+        // tombstone vouches for it and it contributes no rows, exactly as it
+        // contributes nothing to the rebuilt retention views; anything else
+        // is a refusal — a ledger that cannot account for a committed batch
+        // is not this campaign's ledger (or lost evidence outside proven
+        // GC), and silently omitting its rows would hand the next exploit a
+        // wrong inherited cell or a spurious occupancy divergence.
+        for (rev, proposal, batch) in coordinator.committed_inputs() {
             if let Some(ev) = ledger.get(&batch) {
                 let rows = evidence_rows(ev);
                 coordinator.stage_evidence(proposal, rows)?;
+            } else if ledger.collected().all(|(id, _)| *id != batch) {
+                return Err(CampaignError::RecoveryIncomplete {
+                    revision: rev.get(),
+                    batch,
+                });
             }
         }
         let (genesis, genesis_cut) = machine.snapshot()?;
@@ -768,10 +797,22 @@ impl<M: Machine> DifferentialCampaign<M> {
         };
         // The completed-rollout cut is the observed terminal: the full
         // cumulative SDK prefix (inherited ancestor prefix + own suffix).
+        // Checked (hm-tx66): a backend stamping a near-`u64::MAX` base cut
+        // would otherwise wrap the cumulative position in release before the
+        // ledger's own ingest gate could refuse it — same typed error, one
+        // invariant.
         let start = parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+        let suffix_events = rollout.normalized.events.len() as u64;
+        let observed_events =
+            start
+                .checked_add(suffix_events)
+                .ok_or(LedgerError::PositionOverflow {
+                    start,
+                    events: suffix_events,
+                })?;
         let observed_cut = EvidenceCut {
             at: rollout.stop.vtime(),
-            sdk_events: start + rollout.normalized.events.len() as u64,
+            sdk_events: observed_events,
         };
         let evidence = CompletedRunEvidence {
             rollout: rollout_id,
@@ -2851,6 +2892,92 @@ mod tests {
         );
     }
 
+    /// Verify V9 / hm-7h2c: same-config durable-coordinator recovery
+    /// REFUSES a committed batch the paired evidence ledger can neither
+    /// retain nor account for by tombstone — silent omission in a recovery
+    /// path handed the next exploit a wrong inherited cell or a spurious
+    /// occupancy divergence. The true reopened ledger resumes; a properly
+    /// **collected** batch (tombstoned under a covering checkpoint) is
+    /// accounted for and simply contributes nothing.
+    #[test]
+    fn recovery_refuses_a_committed_batch_the_ledger_cannot_account_for() {
+        use revision_coordinator::FileLedger;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ev_path = dir.path().join("evidence.log");
+        let coord_path = dir.path().join("coordinator.log");
+        let cfg_id = revision_coordinator::CampaignConfigId::digest(b"v9-recovery");
+        let fresh_campaign = |led: EvidenceLedger, coord: Coordinator| {
+            DifferentialCampaign::new(
+                ScriptedMachine::new(vec![(1, UpdateOp::Set)], simple_program(4)),
+                Box::new(ToyCodec),
+                Box::new(DeclineTactic::new()),
+                Box::new(GenesisSelector::new()),
+                Box::new(DefaultObservationCells::new()),
+                led,
+                coord,
+                config(8, u64::MAX),
+                7,
+            )
+        };
+        // A durable-coordinator campaign: two steps commit real batches into
+        // both ledgers, then a checkpoint covers them (the coverage the
+        // collected-batch leg below cites).
+        {
+            let led = EvidenceLedger::open(&ev_path).expect("open");
+            let coord = Coordinator::genesis(
+                Box::new(FileLedger::open(&coord_path).expect("file ledger")),
+                cfg_id,
+            )
+            .expect("genesis");
+            let mut camp = fresh_campaign(led, coord).expect("new");
+            camp.explore(2).expect("explore");
+            camp.commit_checkpoint().expect("checkpoint");
+        }
+        let recover = || {
+            let file = FileLedger::open(&coord_path).expect("reopen file ledger");
+            Coordinator::recover(&file).expect("recover")
+        };
+        // (1) Paired with an EMPTY evidence ledger: the committed batches
+        // are unaccounted for — refused with the typed error, not silently
+        // re-staged as nothing.
+        let empty = EvidenceLedger::open(&dir.path().join("empty.log")).expect("open");
+        let err = fresh_campaign(empty, recover())
+            .err()
+            .expect("an unaccounted committed batch refuses recovery");
+        assert!(
+            matches!(err, CampaignError::RecoveryIncomplete { .. }),
+            "typed refusal, got {err:?}"
+        );
+        // (2) Paired with the TRUE reopened ledger: every batch accounts,
+        // recovery proceeds, and the campaign keeps stepping.
+        {
+            let led = EvidenceLedger::open(&ev_path).expect("reopen");
+            let mut camp =
+                fresh_campaign(led, recover()).expect("the true ledger accounts for every batch");
+            camp.explore(1)
+                .expect("a recovered campaign keeps stepping");
+        }
+        // (3) A COLLECTED batch is accounted for by its tombstone: collect
+        // one committed batch under the checkpoint's coverage, and recovery
+        // proceeds with it contributing nothing.
+        {
+            let mut led = EvidenceLedger::open(&ev_path).expect("reopen");
+            // The checkpoint covers the phase-one issues; pick the earliest
+            // (issue 1) explicitly so the collect's coverage is by
+            // construction, not by digest order.
+            let victim = *led
+                .batch_ids()
+                .find(|id| led.get(id).is_some_and(|e| e.rollout.issue == 1))
+                .expect("the first committed rollout is retained");
+            led.collect(victim, &std::collections::BTreeSet::new())
+                .expect("covered collect");
+            drop(led);
+            let led = EvidenceLedger::open(&ev_path).expect("reopen");
+            fresh_campaign(led, recover())
+                .expect("a tombstoned batch is accounted for and contributes nothing");
+        }
+    }
+
     /// A partial (assigned-but-uncommitted) batch cannot advance a frontier: an
     /// unfinished proposal leaves the committed frontier where it was.
     #[test]
@@ -2927,7 +3054,31 @@ mod tests {
             .coordinator()
             .materialized(frontier)
             .expect("frontier-passed views are readable");
-        let ledger = camp.ledger();
+        if let Err(divergence) = view_parity_check(camp.ledger(), &views) {
+            panic!("M1 parity: {divergence}");
+        }
+    }
+
+    /// The **full-view** M1 parity comparison (F4 / hm-7k8f): recompute the
+    /// complete expected observation, cell, and occupancy views from the
+    /// durable ledger alone and require the materialized views to equal them
+    /// EXACTLY — whole vectors, not per-coordinate lookups. The pre-F4 shape
+    /// filtered the materialized rows down to the coordinates the ledger
+    /// predicts (`view_pairs`/`cell_at`), so a phantom row at a
+    /// **never-staged** coordinate was structurally invisible to the gate
+    /// auditor; a full-view equality sees every unexpected row. Returns the
+    /// divergence as an `Err` so the planted-failure fixtures below can
+    /// prove the oracle goes red (W1 doctrine: an oracle that cannot fail is
+    /// not a gate).
+    fn view_parity_check(
+        ledger: &EvidenceLedger,
+        views: &revision_coordinator::MaterializedViews,
+    ) -> Result<(), String> {
+        use revision_coordinator::CutRow;
+        /// One expected observation-view row, keyed as the materialized rows are.
+        type ObsRow = ((u64, PointRow, Vec<u8>), ReducedRow);
+        /// One expected cell-view row, keyed as the materialized rows are.
+        type CellRow = ((u64, PointRow, CutRow), CellKey);
         let cells = DefaultObservationCells::new();
 
         // Encode a recomputed observation map into the coordinator's pair
@@ -2948,21 +3099,19 @@ mod tests {
                 .collect()
         };
 
-        let view_pairs = |rollout: u64, point: PointRow| -> Vec<(Vec<u8>, ReducedRow)> {
-            views
-                .observations
-                .iter()
-                .filter(|((r, p, _), _)| *r == rollout && *p == point)
-                .map(|((_, _, k), red)| (k.clone(), red.clone()))
-                .collect()
-        };
-
+        // The complete expected views, keyed exactly as the materialized
+        // rows are (each key unique, so BTreeMap order == the consolidated
+        // canonical order the coordinator's capture emits).
+        let mut expected_obs: BTreeMap<(u64, PointRow, Vec<u8>), ReducedRow> = BTreeMap::new();
+        let mut expected_cells: BTreeMap<(u64, PointRow, CutRow), CellKey> = BTreeMap::new();
         let mut expected_occ: BTreeMap<CellKey, (u64, u64)> = BTreeMap::new();
         for id in ledger.batch_ids() {
             let ev = ledger.get(id).expect("retained");
             match ev.role {
                 EvidenceRole::Rollout => {
-                    // Every provisional cut: recompute observations + cell.
+                    // Every provisional cut: recompute observations + cell
+                    // (dedup by count, first observing moment wins — exactly
+                    // `evidence_rows`'s staging).
                     let start = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
                     let mut seen = std::collections::BTreeSet::new();
                     for &m in &ev.sealable_moments {
@@ -2977,21 +3126,20 @@ mod tests {
                             continue;
                         }
                         let obs = crate::evidence::compose_observations_at(ledger, ev, count);
-                        assert_eq!(
-                            view_pairs(ev.rollout.issue, PointRow::Cut(count)),
-                            encode_pairs(&obs),
-                            "cut observations diverge (rollout {}, count {count})",
-                            ev.rollout.issue
-                        );
+                        for (k, red) in encode_pairs(&obs) {
+                            expected_obs.insert((ev.rollout.issue, PointRow::Cut(count), k), red);
+                        }
                         let cut = EvidenceCut {
                             at: Moment(m),
                             sdk_events: count,
                         };
-                        assert_eq!(
-                            views.cell_at(ev.rollout.issue, PointRow::Cut(count)),
-                            Some(&cells.key(cut, &obs)),
-                            "cut cell diverges (rollout {}, count {count})",
-                            ev.rollout.issue
+                        expected_cells.insert(
+                            (
+                                ev.rollout.issue,
+                                PointRow::Cut(count),
+                                CutRow { moment: m, count },
+                            ),
+                            cells.key(cut, &obs),
                         );
                     }
                 }
@@ -3000,18 +3148,20 @@ mod tests {
                     let point = PointRow::Seal(ev.rollout.issue);
                     let obs =
                         crate::evidence::compose_observations_at(ledger, ev, ev.cut.sdk_events);
-                    assert_eq!(
-                        view_pairs(rollout, point),
-                        encode_pairs(&obs),
-                        "seal observations diverge (seal {})",
-                        ev.rollout.issue
-                    );
+                    for (k, red) in encode_pairs(&obs) {
+                        expected_obs.insert((rollout, point, k), red);
+                    }
                     let cell = cells.key(ev.cut, &obs);
-                    assert_eq!(
-                        views.cell_at(rollout, point),
-                        Some(&cell),
-                        "seal cell diverges (seal {})",
-                        ev.rollout.issue
+                    expected_cells.insert(
+                        (
+                            rollout,
+                            point,
+                            CutRow {
+                                moment: ev.cut.at.0,
+                                count: ev.cut.sdk_events,
+                            },
+                        ),
+                        cell.clone(),
                     );
                     // Recomputed occupancy: best (quality desc, entry asc).
                     let quality = ev.cut.at.0;
@@ -3028,11 +3178,99 @@ mod tests {
                 }
             }
         }
-        let expected_occ: Vec<(CellKey, u64)> = expected_occ
+
+        let want_obs: Vec<ObsRow> = expected_obs.into_iter().collect();
+        if views.observations != want_obs {
+            return Err(format!(
+                "observations diverge from the full recomputed view: got {} row(s) {:?}, \
+                 want {} row(s) {:?}",
+                views.observations.len(),
+                views.observations,
+                want_obs.len(),
+                want_obs
+            ));
+        }
+        let want_cells: Vec<CellRow> = expected_cells.into_iter().collect();
+        if views.cells != want_cells {
+            return Err(format!(
+                "cells diverge from the full recomputed view: got {} row(s) {:?}, want {} \
+                 row(s) {:?}",
+                views.cells.len(),
+                views.cells,
+                want_cells.len(),
+                want_cells
+            ));
+        }
+        let want_occ: Vec<(CellKey, u64)> = expected_occ
             .into_iter()
             .map(|(cell, (_q, e))| (cell, e))
             .collect();
-        assert_eq!(views.occupancy, expected_occ, "occupancy diverges");
+        if views.occupancy != want_occ {
+            return Err(format!(
+                "occupancy diverges from the full recomputed view: got {:?}, want {:?}",
+                views.occupancy, want_occ
+            ));
+        }
+        Ok(())
+    }
+
+    /// The widened parity oracle's planted failures (F4 / hm-7k8f, W1
+    /// doctrine: ship the fixture that makes the oracle go red). A phantom
+    /// observation or cell row at a **never-staged** coordinate — the exact
+    /// class the pre-F4 per-coordinate compare could not see — now fails the
+    /// check, as does a phantom occupancy row (full-view compared before
+    /// this task; pinned here alongside).
+    #[test]
+    fn parity_oracle_detects_phantom_rows_at_never_staged_coordinates() {
+        let (_dir, mut camp) = campaign(simple_program(4), config(8, u64::MAX), 7);
+        camp.step().expect("step");
+        let frontier = camp.coordinator().visible_frontier();
+        let views = camp.coordinator().materialized(frontier).expect("readable");
+        view_parity_check(camp.ledger(), &views).expect("the real views pass");
+        // Rollout 999 / cut 77 was never staged by any ledger batch.
+        let mut phantom = views.clone();
+        phantom.observations.push((
+            (999, PointRow::Cut(77), b"phantom-key".to_vec()),
+            ReducedRow::Scalar(1),
+        ));
+        phantom.observations.sort();
+        assert!(
+            view_parity_check(camp.ledger(), &phantom).is_err(),
+            "a phantom observation row at a never-staged coordinate must go red"
+        );
+        let mut phantom = views.clone();
+        phantom.cells.push((
+            (
+                999,
+                PointRow::Cut(77),
+                revision_coordinator::CutRow {
+                    moment: 1,
+                    count: 77,
+                },
+            ),
+            b"phantom-cell".to_vec(),
+        ));
+        phantom.cells.sort();
+        assert!(
+            view_parity_check(camp.ledger(), &phantom).is_err(),
+            "a phantom cell row at a never-staged coordinate must go red"
+        );
+        let mut phantom = views.clone();
+        phantom.occupancy.push((b"no-such-cell".to_vec(), 999));
+        phantom.occupancy.sort();
+        assert!(
+            view_parity_check(camp.ledger(), &phantom).is_err(),
+            "a phantom occupancy row must stay red"
+        );
+        // A DROPPED row is the mirror image (the view under-reports): the
+        // full-view equality is two-sided.
+        let mut dropped = views.clone();
+        assert!(!dropped.observations.is_empty(), "the step staged rows");
+        dropped.observations.remove(0);
+        assert!(
+            view_parity_check(camp.ledger(), &dropped).is_err(),
+            "a missing observation row must go red"
+        );
     }
 
     /// The occupancy reconciliation is live: the REAL views pass, a

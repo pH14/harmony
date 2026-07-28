@@ -246,6 +246,36 @@ pub enum LedgerError {
         /// The refused incoming batch.
         incoming: EvidenceBatchId,
     },
+    /// A batch's cumulative positions overflow the `u64` position axis: its
+    /// own suffix (`normalized.events.len()` events) starting at its
+    /// `parent_cut` count would pass `u64::MAX`. No honest producer reaches
+    /// this (positions count real persisted SDK events); a forged base makes
+    /// every downstream `start + i` position computation (relation staging,
+    /// lineage composition) panic in debug and silently wrap in release.
+    /// Refused at the ingest choke point (hm-tx66) so downstream position
+    /// arithmetic is in-range **by invariant**, not by scattered checks.
+    #[error(
+        "evidence batch positions overflow the u64 axis: {events} events from cumulative \
+         base {start}"
+    )]
+    PositionOverflow {
+        /// The batch's cumulative base (its `parent_cut` count).
+        start: u64,
+        /// The batch's own event count.
+        events: u64,
+    },
+    /// A record's serialized frame exceeds the replay bound
+    /// (`MAX_FRAME_PAYLOAD`): writing it would produce a durable file this
+    /// build's own replay refuses as corrupt on the next open. Refused at
+    /// append instead (hm-tx66's input-bounds leg) — fail closed at write
+    /// time, not at the next restart.
+    #[error("ledger record of {len} bytes exceeds the {max}-byte frame bound")]
+    OversizedRecord {
+        /// The serialized record's byte length.
+        len: usize,
+        /// The frame bound (`MAX_FRAME_PAYLOAD`).
+        max: usize,
+    },
 }
 
 /// The referenced immutable-payload backing (the `TraceStore` stand-in in this
@@ -360,6 +390,19 @@ pub struct EvidenceLedger {
 /// (the `Reproducer::blob_version` is carried separately; this versions the
 /// *ledger's* payload framing, not the blob).
 const REPRODUCER_FORMAT_VERSION: u16 = 1;
+
+/// Whether a serialized record of `len` bytes fits the replay frame bound —
+/// the append-side mirror of `replay_frames`'s `MAX_FRAME_PAYLOAD` check
+/// (hm-tx66): a frame the replay would refuse must never be written.
+fn ensure_frame_fits(len: usize) -> Result<(), LedgerError> {
+    if len > MAX_FRAME_PAYLOAD {
+        return Err(LedgerError::OversizedRecord {
+            len,
+            max: MAX_FRAME_PAYLOAD,
+        });
+    }
+    Ok(())
+}
 
 impl EvidenceLedger {
     /// Open (creating if absent) the durable evidence ledger at `path`, replaying
@@ -534,11 +577,15 @@ impl EvidenceLedger {
         entries.insert(id, evidence);
     }
 
-    /// Frame one record and write it durable (fsynced before return).
+    /// Frame one record and write it durable (fsynced before return). A
+    /// record whose serialized frame exceeds the replay bound is refused
+    /// ([`LedgerError::OversizedRecord`]) before any byte is written — the
+    /// file must never carry a frame its own replay rejects.
     fn append_record(&mut self, record: &LedgerRecord) -> Result<(), LedgerError> {
         // Infallible for our owned, finite, non-float types; a serialize error
         // here would be a programming error, not untrusted input.
         let payload = serde_json::to_vec(record).expect("LedgerRecord serializes");
+        ensure_frame_fits(payload.len())?;
         let digest = *blake3::hash(&payload).as_bytes();
         let mut frame = Vec::with_capacity(FRAME_HEADER + payload.len());
         frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -604,10 +651,11 @@ impl EvidenceLedger {
             .map(|t| t.batch)
     }
 
-    /// Reject the three durable lineage shapes no honest producer emits, at the
-    /// one ingest choke point every appended and replayed record passes through
-    /// (`hm-wjv1`). Runs against the batches **already** in the ledger, before
-    /// `record` is indexed.
+    /// Reject the durable shapes no honest producer emits — the lineage
+    /// malformations of `hm-wjv1` plus the cumulative-position overflow of
+    /// `hm-tx66` — at the one ingest choke point every appended and replayed
+    /// record passes through. Runs against the batches **already** in the
+    /// ledger, before `record` is indexed.
     ///
     /// **Ingest invariant (append-ordered acyclicity):** every batch already
     /// retained was validated here, so the retained Rollout lineage is always a
@@ -622,6 +670,16 @@ impl EvidenceLedger {
         id: EvidenceBatchId,
         ev: &CompletedRunEvidence,
     ) -> Result<(), LedgerError> {
+        // (0) Cumulative-position overflow (hm-tx66): the batch's own suffix
+        // must fit on the u64 position axis from its `parent_cut` base, so
+        // every downstream `start + i` (relation staging, lineage
+        // composition) is in-range by invariant. Same choke point as the
+        // lineage shapes below: append and replay both pass through here.
+        let start = ev.parent_cut.map(|c| c.sdk_events).unwrap_or(0);
+        let events = ev.normalized.events.len() as u64;
+        if start.checked_add(events).is_none() {
+            return Err(LedgerError::PositionOverflow { start, events });
+        }
         // (1) Per-role Rollout issue uniqueness — against retained AND COLLECTED
         // Rollouts. Two content-distinct Rollouts sharing one issue make every
         // ancestor-by-issue reader resolve to whichever sorts first, so
@@ -1271,6 +1329,64 @@ mod tests {
             }),
             "the live reference survives retention"
         );
+    }
+
+    /// A batch whose cumulative positions overflow the u64 axis (`parent_cut`
+    /// base + its own event count past `u64::MAX`) is refused with a typed
+    /// error at BOTH ingest paths — append and replay — so downstream
+    /// `start + i` position arithmetic (staging, composition) is in-range by
+    /// invariant (hm-tx66). The boundary is exact: a batch landing precisely
+    /// on `u64::MAX` is still on-axis and admitted.
+    #[test]
+    fn position_overflow_is_refused_at_ingest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("evidence.log");
+        let mut led = EvidenceLedger::open(&path).expect("open");
+        // The `evidence` fixture carries exactly one event; a base of
+        // `u64::MAX` puts that event past the axis.
+        let mut over = evidence(0, b"over");
+        over.parent_cut = Some(EvidenceCut {
+            at: Moment(1),
+            sdk_events: u64::MAX,
+        });
+        let err = led.append(&over).expect_err("overflow refused at append");
+        assert!(matches!(
+            err,
+            LedgerError::PositionOverflow {
+                start: u64::MAX,
+                events: 1
+            }
+        ));
+        // Exactly on the axis end: admitted (checked_add == Some(u64::MAX)).
+        let mut edge = evidence(1, b"edge");
+        edge.parent_cut = Some(EvidenceCut {
+            at: Moment(1),
+            sdk_events: u64::MAX - 1,
+        });
+        led.append(&edge)
+            .expect("a batch landing exactly on u64::MAX is on-axis");
+        // Replay path: a crafted pre-fix stream carrying the overflowing
+        // batch is refused on open, never silently reinterpreted.
+        let path2 = dir.path().join("crafted.log");
+        craft_stream(&path2, &[evidence_frame(&over)]);
+        let err = EvidenceLedger::open(&path2).expect_err("overflow refused at replay");
+        assert!(matches!(err, LedgerError::PositionOverflow { .. }));
+    }
+
+    /// The append-side frame bound mirrors the replay bound exactly: a
+    /// record at `MAX_FRAME_PAYLOAD` fits, one byte past it is a typed
+    /// refusal — so a frame the replay would reject as corrupt can never be
+    /// written durable (hm-tx66's input-bounds leg). Checked on the pure
+    /// bound (a real >64 MiB record would dominate the suite's runtime; the
+    /// framer calls this helper on every append).
+    #[test]
+    fn oversized_record_is_refused_before_any_write() {
+        assert!(ensure_frame_fits(MAX_FRAME_PAYLOAD).is_ok());
+        assert!(matches!(
+            ensure_frame_fits(MAX_FRAME_PAYLOAD + 1),
+            Err(LedgerError::OversizedRecord { len, max })
+                if len == MAX_FRAME_PAYLOAD + 1 && max == MAX_FRAME_PAYLOAD
+        ));
     }
 
     /// The declared byte budget fails an over-budget evidence append loudly and
