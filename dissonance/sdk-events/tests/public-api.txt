@@ -47,6 +47,9 @@ pub sdk_events::Payload::State::op: sdk_events::UpdateOp
 pub sdk_events::Payload::State::value: u64
 pub sdk_events::Payload::Unknown
 pub enum sdk_events::SdkError
+pub sdk_events::SdkError::AntithesisJsonUnderBinaryIngress
+pub sdk_events::SdkError::AntithesisJsonUnderBinaryIngress::len: usize
+pub sdk_events::SdkError::AntithesisJsonUnderBinaryIngress::prefix: alloc::string::String
 pub sdk_events::SdkError::ArtifactDivergedFromDecode
 pub sdk_events::SdkError::ArtifactDivergedFromDecode::detail: alloc::string::String
 pub sdk_events::SdkError::ClassificationConflict

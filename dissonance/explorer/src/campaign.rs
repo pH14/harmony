@@ -90,13 +90,23 @@ const SEAL_RETRY_ATTEMPTS: u32 = 64;
 /// Which ingress format the controller decodes a rollout's raw SDK capture with.
 /// The internal binary Event wire (the shape [`Machine::sdk_events`] returns) is
 /// the default; Antithesis JSON is available for the app-facing surface.
+///
+/// **Pick this deliberately for a `/dev/harmony` guest (bead `hm-i8kc` F9).**
+/// The char driver stamps *every* JSON emission with event id `0`, which the
+/// binary wire reserves for the catalog declaration — so a JSON guest left on
+/// the default `Binary` presents its first assertion as this rollout's schema.
+/// That used to vanish silently (an empty declaration, zero events, a campaign
+/// reporting a clean run on a guest that asserted); it is now a typed refusal,
+/// `SdkError::AntithesisJsonUnderBinaryIngress`, naming this knob. The default
+/// stays `Binary` because every shipped campaign guest (game, maze) speaks the
+/// binary wire; a JSON guest must say so.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Ingress {
     /// The internal binary Event wire (`(moment, event_id, bytes)`).
     #[default]
     Binary,
     /// The app-facing Antithesis JSON surface (each record is one JSON object;
-    /// the `event_id` is ignored).
+    /// the `event_id` is ignored) — the `/dev/harmony` device's format.
     AntithesisJson,
 }
 

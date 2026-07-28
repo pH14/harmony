@@ -444,6 +444,17 @@ fn parse_declaration(bytes: &[u8]) -> Result<DeclContext, SdkError> {
     let mut r = Reader::new(bytes);
     let magic = r.u32();
     if magic != Some(wire::CATALOG_MAGIC) {
+        // …with ONE exception (hm-i8kc F9): a JSON object here is not "noise
+        // with no usable declaration", it is a `/dev/harmony` guest decoded by
+        // the wrong ingress. The driver stamps every JSON emission with event id
+        // 0, so the guest's first assertion lands in the catalog slot; emptying
+        // it leniently would delete the event. Refuse, and name the fix.
+        if looks_like_antithesis_json(bytes) {
+            return Err(SdkError::AntithesisJsonUnderBinaryIngress {
+                len: bytes.len(),
+                prefix: json_prefix(bytes),
+            });
+        }
         return Ok(DeclContext::empty());
     }
     // Magic present ⇒ a declaration is present; its version byte governs the layout.
@@ -470,6 +481,31 @@ fn parse_declaration(bytes: &[u8]) -> Result<DeclContext, SdkError> {
             available,
         }),
     }
+}
+
+/// Does this catalog-slot record look like an Antithesis SDK JSON emission
+/// rather than a binary catalog (hm-i8kc F9)?
+///
+/// The test is deliberately narrow — a leading `{` after optional ASCII
+/// whitespace — because it only has to separate two *known* producers: the
+/// binary SDK (whose catalog always opens with the `SDKC` magic, checked
+/// before this is reached) and the `/dev/harmony` driver (which forwards a
+/// validated `{…}` object; `harmony_emit_json` rejects anything else with
+/// `-EINVAL`, so a JSON emission always starts with `{`). Everything else stays
+/// on the lenient empty-context path exactly as before.
+fn looks_like_antithesis_json(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_some_and(|b| *b == b'{')
+}
+
+/// A bounded, lossy prefix of a record for error messages — never the whole
+/// payload (a 4 KiB device write would swamp the message) and never a panic on
+/// non-UTF-8 (this is untrusted guest input).
+fn json_prefix(bytes: &[u8]) -> String {
+    const LIMIT: usize = 64;
+    String::from_utf8_lossy(&bytes[..bytes.len().min(LIMIT)]).into_owned()
 }
 
 /// Read a fixed-width field or fail with a truthful [`MalformedLength`].
