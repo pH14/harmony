@@ -164,3 +164,43 @@ New surface, all additive (contract preserved): `acquire <name> [--exclusive] [-
 - Time source is `date +%s` (wall clock) — appropriate here: lease lifetime is an operational
   timeout, not part of any determinism-relevant computation. `BOX_WINDOW_NOW` overrides it for
   hermetic time tests only.
+
+## Review round 1 — discovery tribunal (REQUEST_CHANGES, head e018c3cf → this batch)
+
+One P1 + four judge-designated ride-alongs, one batch. No contract surface changed; all edits
+confined to the two scripts (+ this note). Beads F4→`hm-v1m0`, F6→`hm-ubkp` parked (not touched
+here). Deploy remains `hm-tp45` — **merge does not deploy**; the box still runs
+`/root/box-window.sh` until that chore runs.
+
+- **F1 (P1) — the invariant was enforced only in `release`.** An expired last lease swept by
+  `status`/`renew`/`acquire` left the module patched with zero leases (byte-for-byte the
+  observed-live `hm-nvwx` state), and a new lane's `acquire` then hard-aborted in `load_patched`.
+  Fixed by factoring the empty-window revert into a `revert_if_empty` helper called after
+  **every** `sweep_stale` under lock (acquire — before the `n==0 → load_patched` decision, so an
+  orphaned window reverts and reloads cleanly; renew — covers both branches; release; status).
+  Tests: scenario G now asserts the module is stock immediately after the expired-renew refusal;
+  new scenario H proves acquire-after-expiry from the orphaned-patched state succeeds (rc 0, core
+  printed) and that `status` heals too. Suite 31→43 green.
+- **F2 (P2) — `is_int` admitted TTLs bash arithmetic rejects/wraps.** `--ttl 09` died *after*
+  `load_patched`; `--ttl ≥ 2^63` wrapped to a negative deadline. Normalized `TTL=$((10#$TTL))`
+  and bounded `1..31536000` after `is_int` in acquire and renew, so bad TTLs are rejected before
+  any module transition. Verified: `09`→ok (deadline +9), `0`/`99999999999`→rc 2 with kvm left
+  stock.
+- **F3 (P2) — flock fail-open.** The macOS suite had been running with every `flock` failing 127,
+  silenced by redirects. Added a fail-closed guard (`command -v flock … || exit 3`) so an
+  unserialized run is impossible on the box; the hermetic suite supplies a deliberate, commented
+  no-op `flock` shim in its FAKEBIN (the suite is strictly sequential, so there is nothing to
+  serialize). Verified: no flock on PATH → `FATAL … refusing to run unserialized`, rc 3.
+- **F7 (P2) — blocked-acquire tests couldn't tell "blocked" from "errored".** `with_timeout`'s rc
+  is now captured and asserted to be the kill path (143/137 = SIGTERM/SIGKILL) at all three sites
+  (E ×2, F ×1), alongside the lease-count check.
+- **F5 (P3, opt-in) — deadline-only lease counted live but held no core.** `lease_live` now also
+  requires non-empty pid and core fields (pid `-` allowed), closing the truncated-file footgun at
+  the sweep choke point.
+- **F8 (P3, opt-in) — dead knob.** Removed the unused `BOX_WINDOW_CORES` seam (`CORES=(2 1 3)`);
+  kept `BOX_WINDOW_KVM_B`/`STOCK_SIZE`, which the suite uses.
+
+Gates re-run: `shellcheck` clean on both scripts, `bash -n` OK, suite **43/43** (scenario A still
+red on the OLD script — negative control intact). Per the judge, the box lane is **not** re-run
+for this batch — the decision-logic changes are covered by the extended hermetic suite, and the
+box gates re-run naturally at the `hm-tp45` deploy step.

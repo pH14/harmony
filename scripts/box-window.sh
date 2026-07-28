@@ -48,17 +48,23 @@
 #   BOX_WINDOW_KVM_B                     - patched-module .ko directory
 #   BOX_WINDOW_STOCK_SIZE                - stock kvm lsmod size
 #   BOX_WINDOW_TTL                       - default lease TTL in seconds
-#   BOX_WINDOW_CORES                     - space-separated core allocation order
 #   BOX_WINDOW_NOW                       - override "now" (epoch seconds) for time tests
 #   BOX_WINDOW_PID                       - pid recorded on acquire ("-" = none); defaults to $PPID
 set -uo pipefail
+
+# Serialization is not optional: without flock, concurrent module transitions race
+# and the whole coordinator is unsound. Fail closed rather than run unserialized.
+# (macOS dev boxes have no flock; the hermetic test supplies a deliberate, commented
+# no-op shim — see scripts/box-window-test.sh. On the box, flock is genuinely present.)
+command -v flock >/dev/null 2>&1 || { echo "FATAL: flock not found — refusing to run unserialized" >&2; exit 3; }
+
 LOCK="${BOX_WINDOW_LOCK:-/root/box-window.lock}"
 LEASES="${BOX_WINDOW_LEASES:-/root/box-window-leases}"
 EXCL_MARK="$LEASES/.exclusive"
 B="${BOX_WINDOW_KVM_B:-/root/kvm-spike/deb612/hdr/usr/src/linux-headers-6.12.90+deb13.1-amd64/arch/x86/kvm}"
 STOCK_SIZE="${BOX_WINDOW_STOCK_SIZE:-1396736}"
 TTL_DEFAULT="${BOX_WINDOW_TTL:-1800}"
-read -r -a CORES <<< "${BOX_WINDOW_CORES:-2 1 3}"
+CORES=(2 1 3)
 
 mkdir -p "$LEASES"
 
@@ -72,7 +78,8 @@ kvm_size() { lsmod | awk '$1=="kvm"{print $2}'; }
 lease_live() { # $1=lease file
     local f="$1" deadline pid _core
     read -r deadline pid _core < "$f" || return 1
-    is_int "$deadline" || return 1          # malformed → not live (swept)
+    is_int "$deadline" || return 1                     # malformed deadline → not live (swept)
+    { [ -n "$pid" ] && [ -n "$_core" ]; } || return 1  # truncated lease (missing pid/core field) → not live (F5)
     [ "$deadline" -gt "$(now)" ] && return 0
     is_int "$pid" && kill -0 "$pid" 2>/dev/null && return 0
     return 1
@@ -124,6 +131,19 @@ revert_stock() {
     if [ "$sz" = "$STOCK_SIZE" ]; then echo "REVERT OK" >&2; else echo "REVERT MISMATCH ($sz)!" >&2; return 1; fi
 }
 
+# Enforce the box-safety invariant on EVERY verb, not just release: a window with
+# zero live leases but a still-patched module is ORPHANED (its last lease was swept
+# by a non-release verb, or a gate died) — revert it to stock. Called under lock,
+# immediately after sweep_stale, by acquire/renew/release/status. Without this the
+# exact observed-live defect state (patched module, zero leases) recurs through
+# status/renew/acquire, and a new lane's acquire then hard-aborts on load_patched. (F1)
+revert_if_empty() {
+    if [ "$(live_leases)" -eq 0 ] && [ "$(kvm_size)" != "$STOCK_SIZE" ]; then
+        revert_stock || return 1
+    fi
+    return 0
+}
+
 case "${1:?usage: box-window.sh acquire|renew|release|status ...}" in
 acquire)
     NAME="${2:?acquire needs a lease name}"
@@ -138,11 +158,14 @@ acquire)
         shift
     done
     is_int "$TTL" || { echo "acquire: --ttl must be integer seconds" >&2; exit 2; }
+    TTL=$((10#$TTL))                                  # strip leading zeros so bash arithmetic (deadline) can't choke, e.g. --ttl 09 (F2)
+    { [ "$TTL" -ge 1 ] && [ "$TTL" -le 31536000 ]; } || { echo "acquire: --ttl out of range (1..31536000s)" >&2; exit 2; }
     LEASE_PID="${BOX_WINDOW_PID:-$PPID}"
     while true; do
         exec 9>"$LOCK"
         flock 9
         sweep_stale
+        revert_if_empty || { flock -u 9; exit 1; }   # heal an orphaned patched window before deciding to load (F1)
         n=$(live_leases)
         if [ "$EXCL" = 1 ] && [ "$n" -gt 0 ]; then flock -u 9; sleep 15; continue; fi
         if [ "$EXCL" = 0 ] && [ -f "$EXCL_MARK" ]; then flock -u 9; sleep 15; continue; fi
@@ -166,8 +189,11 @@ renew)
     NAME="${2:?renew needs the lease name}"
     TTL="${3:-$TTL_DEFAULT}"
     is_int "$TTL" || { echo "renew: seconds must be an integer" >&2; exit 2; }
+    TTL=$((10#$TTL))                                  # normalize + bound, as acquire (F2)
+    { [ "$TTL" -ge 1 ] && [ "$TTL" -le 31536000 ]; } || { echo "renew: seconds out of range (1..31536000)" >&2; exit 2; }
     exec 9>"$LOCK"; flock 9
     sweep_stale
+    revert_if_empty || { flock -u 9; exit 1; }        # heal an orphaned window on either branch below (F1)
     if [ -f "$LEASES/$NAME" ]; then
         read -r _ pid core < "$LEASES/$NAME"
         echo "$(( $(now) + TTL )) $pid $core" > "$LEASES/$NAME"
@@ -189,14 +215,13 @@ release)
         [ "$xname" = "$NAME" ] && rm -f "$EXCL_MARK"
     fi
     sweep_stale
-    if [ "$(live_leases)" -eq 0 ] && [ "$(kvm_size)" != "$STOCK_SIZE" ]; then
-        revert_stock || { flock -u 9; exit 1; }
-    fi
+    revert_if_empty || { flock -u 9; exit 1; }        # last live lease out → revert+verify (F1: shared choke point)
     flock -u 9
     ;;
 status)
     exec 9>"$LOCK"; flock 9
     sweep_stale
+    revert_if_empty || true                           # status is a verb too: heal an orphaned window, but never fail the report (F1)
     echo "kvm size: $(kvm_size) (stock=$STOCK_SIZE)"
     echo "live leases: $(live_leases)"
     nowv=$(now)

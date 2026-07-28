@@ -54,6 +54,13 @@ EOF
 printf '#!/usr/bin/env bash\necho %s > "%s"\n' "$PATCHED" "$KVMSTATE" > "$FAKEBIN/insmod"
 printf '#!/usr/bin/env bash\necho %s > "%s"\n' "$STOCK"   "$KVMSTATE" > "$FAKEBIN/modprobe"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKEBIN/rmmod"
+# flock shim (PR164 F3): box-window.sh now fails closed when flock is absent, and
+# macOS dev boxes have no flock. This suite drives the script strictly SEQUENTIALLY
+# — one invocation at a time — so there is nothing to serialize here and a no-op
+# flock is correct. It also makes "run unlocked on macOS" a deliberate, visible
+# decision instead of a silent 127. Real cross-session serialization is proved on
+# the box, where flock (util-linux) is genuinely present.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKEBIN/flock"
 chmod +x "$FAKEBIN"/*
 export PATH="$FAKEBIN:$PATH"
 
@@ -101,6 +108,11 @@ with_timeout() { # seconds cmd...
     kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
     return "$rc"
 }
+
+# A genuinely-blocked acquire is one with_timeout had to KILL (128+SIGTERM=143, or
+# 128+SIGKILL=137); an acquire that errored out instantly exits with its own small
+# rc. Asserting the kill path distinguishes "blocked" from "errored". (PR164 F7)
+was_killed() { case "$1" in 143|137) echo killed;; *) echo "rc=$1";; esac; }
 
 # model "the ssh shell that acquired has exited" by pinning the lease's pid dead
 kill_shell_old() { local f="$SANDBOX/old-leases/$1" c; read -r _ c < "$f"; echo "$DEAD $c" > "$f"; }
@@ -169,14 +181,16 @@ check "D: reverted once pid died after TTL"      "$(kvm)" "$STOCK"
 echo "-- E: exclusivity still holds --"
 reset_new
 nw acquire shared1 >/dev/null 2>&1
-with_timeout 3 env "${new_env[@]}" bash "$NEW" acquire excl --exclusive >/dev/null 2>&1
-check "E: exclusive blocked while a shared lease lives" "$(lease_count new)" "1"
+with_timeout 3 env "${new_env[@]}" bash "$NEW" acquire excl --exclusive >/dev/null 2>&1; rc=$?
+check "E: exclusive genuinely blocked (killed, not errored)" "$(was_killed "$rc")" "killed"
+check "E: exclusive created no lease while a shared lease lives" "$(lease_count new)" "1"
 nw release shared1 >/dev/null 2>&1
 reset_new
 nw acquire excl --exclusive >/dev/null 2>&1
 check "E: exclusive opened window" "$(kvm)" "$PATCHED"
-with_timeout 3 env "${new_env[@]}" bash "$NEW" acquire joiner >/dev/null 2>&1
-check "E: joiner blocked by exclusive holder" "$(lease_count new)" "1"
+with_timeout 3 env "${new_env[@]}" bash "$NEW" acquire joiner >/dev/null 2>&1; rc=$?
+check "E: joiner genuinely blocked (killed, not errored)" "$(was_killed "$rc")" "killed"
+check "E: joiner created no lease" "$(lease_count new)" "1"
 nw release excl >/dev/null 2>&1
 check "E: reverted after exclusive released" "$(kvm)" "$STOCK"
 
@@ -193,8 +207,9 @@ check "F: g2 core" "$f2" "1"
 check "F: g3 core" "$f3" "3"
 check "F: window opened once" "$(kvm)" "$PATCHED"
 check "F: three live leases" "$(lease_count new)" "3"
-with_timeout 3 env "${new_env[@]}" bash "$NEW" acquire g4 >/dev/null 2>&1
-check "F: 4th acquire blocks (all cores held)" "$(lease_count new)" "3"
+with_timeout 3 env "${new_env[@]}" bash "$NEW" acquire g4 >/dev/null 2>&1; rc=$?
+check "F: 4th acquire genuinely blocks (killed, not errored)" "$(was_killed "$rc")" "killed"
+check "F: 4th acquire created no lease (all cores held)" "$(lease_count new)" "3"
 nw release g1 >/dev/null 2>&1; check "F: still patched after 1 of 3 released" "$(kvm)" "$PATCHED"
 nw release g2 >/dev/null 2>&1; check "F: still patched after 2 of 3 released" "$(kvm)" "$PATCHED"
 nw release g3 >/dev/null 2>&1; check "F: reverted after last released" "$(kvm)" "$STOCK"
@@ -213,8 +228,36 @@ if nw BOX_WINDOW_NOW=2000 renew long 100 >/dev/null 2>&1; then
 else
     ok "G: renew of expired lease refused"
 fi
-nw BOX_WINDOW_NOW=2000 release other >/dev/null 2>&1    # clean up: sweep the now-expired lease
-check "G: window reverted after expiry" "$(kvm)" "$STOCK"
+# F1: the refused renew swept the expired last lease AND reverted the orphaned
+# window in the same call — module is stock immediately after, no trailing verb.
+check "G: expired-renew self-healed the orphaned window (F1)" "$(kvm)" "$STOCK"
+check "G: expired lease swept" "$(lease_count new)" "0"
+
+# ============================================================================
+# Scenario H — every verb heals an orphaned patched window (F1). The pre-fix
+# defect state (module patched, zero live leases) must not survive any verb, and
+# a new lane's acquire from it must open cleanly instead of hard-aborting.
+# ============================================================================
+echo "-- H: any verb heals an orphaned patched window; acquire opens cleanly (F1) --"
+# H1: acquire from the orphaned-patched state succeeds (was a hard ABORT pre-F1).
+reset_new
+nw BOX_WINDOW_NOW=1000 BOX_WINDOW_PID=- acquire orphan --ttl 10 >/dev/null 2>&1
+check "H1: window open" "$(kvm)" "$PATCHED"
+# Time passes: the orphan lease expires, but NO verb has run to sweep/revert it —
+# state is now exactly hm-nvwx's observed-live defect: patched module + stale lease.
+hcore=$(nw BOX_WINDOW_NOW=2000 acquire fresh 2>/dev/null); hrc=$?
+check "H1: acquire-after-expiry succeeds (hard ABORT pre-F1)" "$hrc" "0"
+check "H1: acquire printed a core"                           "$hcore" "2"
+check "H1: window healed and reopened (patched)"            "$(kvm)" "$PATCHED"
+check "H1: only the fresh lease remains"                    "$(lease_count new)" "1"
+nw BOX_WINDOW_NOW=2000 release fresh >/dev/null 2>&1
+check "H1: reverts after fresh released" "$(kvm)" "$STOCK"
+# H2: status is a verb too — it must revert an orphaned patched window, not just report it.
+reset_new
+nw BOX_WINDOW_NOW=1000 BOX_WINDOW_PID=- acquire s1 --ttl 10 >/dev/null 2>&1
+nw BOX_WINDOW_NOW=2000 status >/dev/null 2>&1
+check "H2: status healed the orphaned window" "$(kvm)" "$STOCK"
+check "H2: status swept the expired lease"    "$(lease_count new)" "0"
 
 # ----------------------------------------------------------------------------
 echo
