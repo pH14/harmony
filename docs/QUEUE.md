@@ -6,7 +6,7 @@
 > Adopted 2026-07-09 (Paul: "worth a try") to replace prose-trigger sprawl across GitHub
 > issues, task-spec headers, and memory notes.
 
-_Refreshed 2026-07-27 late night (foreman loop). **The two-day Fable-limit pause ended and
+_Refreshed 2026-07-28 just past midnight (foreman loop). **The two-day Fable-limit pause ended and
 the entire parked review pipeline cleared in one evening**: both interrupted judges resumed
 on preserved prompts and completed, and **three PRs merged — W7 (#162), the box-window
 lease-lifetime fix (#164, discovery → fix → verify same night), and W4 (#165)**. The fixed
@@ -83,14 +83,9 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-**One lane.**
-
-- **W8 — Intel box lane, remaining half** (`hm-i2et`, tasks/157, session
-  `agent-intel-box-lane`, spawned 2026-07-27 ~22:15 on the new Opus 5 baseline):
-  item 3 `hm-2nt` (draw-probe gate on the Jul-9 Postgres image) then item 4 `hm-i8kc`
-  (/dev/harmony bridge liveness; may span sessions). Scope update sent: items 1–2 merged
-  in PR #161, coordinator semantics changed (time+pid leases — size `--ttl`, renew before
-  deadline on long runs), smoke-fire-once stands. One box-touching worker, serialized.
+**Nothing.** All lanes merged; the box is at stock with zero leases. Next dispatch
+candidates, in order: `hm-xkh5` (P1 — the separating experiment is named in the bead;
+box work, needs a short foreman spec), then W3/W2 (Mac work orders, P2).
 
 ## New this session (foreman-filed, 2026-07-25)
 
@@ -157,6 +152,23 @@ In `bd ready` order. Each is one worker when dispatched:
 
 ## Recently done (this week)
 
+- **W8 session 2 — draw-probe gate + first real /dev/harmony transaction MERGED**
+  (tasks/157, [PR #166](https://github.com/pH14/harmony/pull/166), 2026-07-28 ~00:30 —
+  6-seat discovery, zero P1s, 4 of 7 gate-auditor P1s re-graded down, 4 refuted with
+  quoted rationale). **`hm-2nt` closed by premise inversion**: both Postgres images are
+  draw-free and behaviorally identical; the gate is green on the Jul-9 image at pr44
+  numbers, proven by four W1 red arms including failing the draw-precondition itself.
+  **`hm-i8kc` F2/F9/F10 closed**: the first real `/dev/harmony` transaction in project
+  history (bridge image, manifest-pinned kernel), JSON-under-binary ingestion now a
+  refusal not silence, and a **conductor channel-ordering fix** (doorbell wired before
+  the boot drive) proven red/green with two binaries differing only in that change.
+  **The lane's biggest find is `hm-xkh5` (P1, open)**: the task-78 draw probe reports
+  draws in two windows the independent entropy-stream measurement shows are draw-free —
+  either the draw-precondition is vacuous on these guests or a restored branch draws
+  where the live boot doesn't (replay fidelity). The separating experiment is named in
+  the bead; no draw-proven claim was folded into the image certification. Parks:
+  `hm-uxjx`, `hm-gcfk`, `hm-8err`, `hm-et03`. Epic `hm-i2et` stays open over F11 +
+  `hm-xkh5`.
 - **Box-window lease lifetime MERGED + DEPLOYED** (tasks/164,
   [PR #164](https://github.com/pH14/harmony/pull/164), `hm-nvwx`, 2026-07-27 night —
   discovery (F1 P1: any non-release verb sweeping the last live lease orphaned a patched
