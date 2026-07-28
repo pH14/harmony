@@ -267,10 +267,12 @@ fn fixed_probe_fires_on_the_genuinely_drawing_bridge_guest() {
     let failures = verify_materialize(&report, None);
     assert!(failures.is_empty(), "chain gates failed: {failures:?}");
     assert!(
-        report.hop_draws.iter().any(|d| *d) || report.tail_draws,
+        report.hop_draws == [false, false, true] && report.tail_draws,
         "the bridge guest draws on demand inside this chain's span (measured: raw at \
-         ~113.188 M, lib at ~113.205 M v-ns), so the fixed probe must fire on at least one \
-         window: hops {:?}, tail {}",
+         ~113.188 M, lib at ~113.205 M v-ns): the fixed probe must fire on exactly the deep \
+         hop AND the tail — the full measured pattern (lane-record table), not a \
+         species-partial any(hop)||tail that a regression could pass while the production \
+         precondition any(hop)&&tail never fires: hops {:?}, tail {}",
         report.hop_draws,
         report.tail_draws
     );

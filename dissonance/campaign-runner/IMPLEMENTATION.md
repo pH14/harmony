@@ -1506,3 +1506,93 @@ No public API or dependency change; full `-p campaign-runner` nextest green (329
 passed / 2 skipped across both crates). Rationale and the full analysis (including the
 superseded `cut.at`-bounded first attempt) live in
 `dissonance/explorer/IMPLEMENTATION.md` §Task 146.
+
+---
+
+## Task 168 (`hm-c8ho`) — draw-probe hardening batch (PR #167 parks F3+F4+F6)
+
+Three small, campaign-runner-local fixes the tasks/167 adjudication record
+parked as non-blocking (`bd show hm-c8ho`), all in `src/materialize.rs`
+except the test-only F6:
+
+- **F3.** `settle`'s boundary nudge (`materialize.rs`, the private helper
+  below `run_materialize`) used `boundary.saturating_add(1)`: at
+  `boundary == u64::MAX` this saturates right back to `u64::MAX`, a
+  zero-step "settle" that returns `Ok` without ever running past the marker
+  Moment — silently reopening the hm-xkh5 arrival-clamp false-positive
+  window this function exists to close. Changed to `checked_add(1)`,
+  failing loud with `MachineError::Transport` when no representable
+  post-boundary point exists, mirroring `reseed_probe_env`'s existing
+  fail-closed guard in the same file. The trigger is synthetic (~585 years
+  of retired-branch V-time), so the regression (`settle_fails_loud_at_the_
+  top_of_the_vtime_axis`) uses a small in-crate toy `Machine`
+  (`PinnedTopMachine`) that pins its V-time axis at the top exactly like
+  `CountingBackend`'s `SharedWork` (`mock.rs:520-556`, PR #62 round-6) —
+  no socket/box needed. **Verified RED against the pre-fix
+  `saturating_add(1)`** (manually reverted the fix, confirmed the test
+  panics with `Ok(Deadline{u64::MAX})` instead of the expected `Err`, then
+  restored the fix and confirmed green).
+- **F4.** `MaterializeReport::{hop_draws, tail_draws}`'s doc comments
+  claimed an `iff` the probe cannot honor: a draw landing in the
+  boundary-Moment skid (after the marker-armed leg's exact-count arrival,
+  before the plain leg's next natural intercept) moves a stream neither
+  settled leg observes differently, so it probes `false` exactly like a
+  draw-free window. Rewrote both doc comments to state the probe answers
+  over the half-open window ending at the arrival micro-position, not an
+  `iff` over the closed window, and to spell out the one-sided-safe
+  direction (`true` still implies a genuine draw; `false` is honestly
+  "no draw observed", which fails a `REQUIRE_DRAWS`-style gate closed
+  rather than passing it vacuously). Doc-only — no behavior change; the
+  optional box skid-draw payload named in the bead is explicitly out of
+  this lane's scope.
+- **F6.** `tests/live_draw_probe_pair.rs`'s positive-arm assertion tightened
+  from `any(hop) || tail` to the full measured pattern
+  `hop_draws == [false, false, true] && tail_draws` (the lane-record
+  table) — the production precondition is `any(hop) && tail`, so the old
+  `any(hop) || tail` would keep passing a probe regression that could never
+  satisfy production. Test-only; box-only `#[ignore]`, so this is a
+  portable compile-check on this Mac (the file is `cfg`'d to
+  `target_os = "linux", target_arch = "x86_64"` and compiled to zero tests
+  here) and runs for real on the next box window.
+
+### Deviations considered
+
+- **F3's regression as a hand-written toy `Machine`, not a socket/box
+  drive to `u64::MAX`.** Tried first: a `SocketMachine` against
+  `mock::server` driven to `Moment(u64::MAX)`, hoping `CountingBackend`'s
+  `run_until` far-deadline delegation (which rewrites a scripted
+  `CommonExit::Deadline` placeholder's `reached` to the caller's target —
+  the mechanism `mock.rs:520-556`'s own unit test exercises directly on
+  `CountingBackend`) would carry through the full `ControlServer::run`
+  loop. It does not: the server's `run` loop only calls
+  `backend.run_until` when a **preemption/arrival deadline** is separately
+  armed (LAPIC timer or a staged schedule Moment); a plain client
+  `Request::Run{until.deadline}` is serviced by single-stepping
+  `backend.run()` one scripted exit at a time, so the placeholder-rewrite
+  trick never fires and the session dies loud instead
+  (`ServeError`/session-fatal on script exhaustion). Reproducing the
+  pinned-axis semantics for real over the wire would need arming an
+  arrival/timer at `u64::MAX` through machinery this lane's surface list
+  does not touch. The toy `Machine` gets the same fail-before/fail-after
+  proof with no wire dependency, matching how the rest of this file's toy
+  `Machine`s (`AssertMachine`, `RetryingMachine`, …) are used elsewhere in
+  this crate.
+- **F4 left the wording "the probe" ambiguous between `hop_draws` and
+  `tail_draws`** on purpose in `hop_draws`'s doc — it now points at
+  `tail_draws`'s fuller explanation rather than duplicating the whole
+  one-sided-safe argument twice, since both fields share the exact same
+  probe mechanism and caveat.
+
+### Gates
+
+`cargo nextest run -p campaign-runner --all-features`: **183 passed, 1
+skipped** (unchanged skip count — `live_draw_probe_pair.rs` compiles to
+zero tests off Linux/x86_64, so F6's change is a portable compile-check
+only). `cargo clippy -p campaign-runner --all-features --all-targets -- -D
+warnings`: clean (exit 0; the crate emits zero lint warnings — the
+`rand::thread_rng`/`rand::rng`/`rand::random` messages clippy prints are
+pre-existing `clippy.toml` config warnings, unrelated to this change and
+present on `main`). `cargo fmt -p campaign-runner -- --check`: clean.
+`cargo deny check`: clean (no dependency change). No public-API change; no
+file outside `dissonance/campaign-runner/{src/materialize.rs,
+tests/live_draw_probe_pair.rs}` touched.

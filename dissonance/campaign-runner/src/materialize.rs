@@ -133,23 +133,38 @@ pub struct MaterializeReport {
     /// `state_hash` at the replay leg's stop.
     pub replay_hash: [u8; 32],
     /// **Draw probes (task 78), per collapsed hop window:** `hop_draws[j]` is
-    /// `true` iff hop `j`'s window (parent seal → landed boundary) actually
-    /// draws entropy — measured with the same trailing-reseed probe as
-    /// [`tail_draws`](MaterializeReport::tail_draws) (below). These are the
-    /// windows a compose-fold collapses, so the reseed-aware bit-identity
-    /// gates ((b)/(c)) exercise entropy exactly when one of these is `true`.
+    /// `true` if hop `j`'s window (parent seal → landed boundary) draws
+    /// entropy — measured with the same trailing-reseed probe as
+    /// [`tail_draws`](MaterializeReport::tail_draws) (below), and subject to
+    /// the same one-sided semantics documented there (this is an answer over
+    /// the half-open window at the **arrival micro-position**, not an `iff`
+    /// over the closed `[parent, landed]` window). These are the windows a
+    /// compose-fold collapses, so the reseed-aware bit-identity gates ((b)/(c))
+    /// are known to exercise entropy when one of these is `true`.
     pub hop_draws: Vec<bool>,
-    /// **Draw probe (task 78):** `true` iff the tail window actually draws
-    /// entropy — measured, not assumed. The probe leg re-runs the tail window
-    /// under the SAME branch seed plus a trailing reseed marker back to that
-    /// seed at the landing boundary (using the very task-78 machinery under
-    /// test): a no-op iff no draw moved the stream, so its **settled** hash
-    /// (see `settle` — both legs advanced one boundary past the marker, the
-    /// hm-xkh5 arrival-clamp false-positive fix) differs from the settled
-    /// plain leg's iff the window drew. The reseed-aware fold gates ((b)/(c)
-    /// bit-identity) are only *entropy-exercising* when this is `true`; a
-    /// draw-free workload window leaves them vacuous on the entropy axis (the
-    /// task-68 situation).
+    /// **Draw probe (task 78):** `true` if the tail window draws entropy —
+    /// measured, not assumed. The probe leg re-runs the tail window under the
+    /// SAME branch seed plus a trailing reseed marker back to that seed at the
+    /// landing boundary (using the very task-78 machinery under test): its
+    /// **settled** hash (see `settle` — both legs advanced one boundary past
+    /// the marker, the hm-xkh5 arrival-clamp false-positive fix) differs from
+    /// the settled plain leg's when a draw moved the stream.
+    ///
+    /// This is **not** an `iff` over the closed window — the probe answers
+    /// over the half-open window ending at the **arrival micro-position**
+    /// (where the marker-armed leg freezes), not the plain leg's later natural
+    /// intercept. A draw sitting in the boundary-Moment skid between those two
+    /// points — after the exact-count arrival, before the plain leg's next
+    /// intercept — moved a stream neither settled leg observes differently, so
+    /// it probes `false` exactly like a draw-free window. The error is
+    /// one-sided and safe: `true` still implies a genuine draw; `false` means
+    /// "no draw observed in `[origin, arrival)`", which honestly includes both
+    /// a draw-free window and a skid-only draw — so a caller gating on this
+    /// (e.g. `REQUIRE_DRAWS`) fails closed (red) rather than vacuously
+    /// passing. The reseed-aware fold gates ((b)/(c) bit-identity) are only
+    /// *known* entropy-exercising when this is `true`; a `false` window leaves
+    /// them vacuous on the entropy axis (the task-68 situation) OR carries an
+    /// undetected skid draw — either way, not a claim of draw-freedom.
     pub tail_draws: bool,
 }
 
@@ -453,9 +468,15 @@ pub fn run_materialize<M: Machine>(
 /// draw-free window both legs draw the identical values from the identical
 /// position, so the probe still measures exactly `[origin, landed]`.
 fn settle<M: Machine>(machine: &mut M, boundary: u64) -> Result<StopReason, MachineError> {
+    let past = boundary.checked_add(1).ok_or_else(|| {
+        MachineError::Transport(format!(
+            "settle: boundary {boundary} is u64::MAX — no representable post-boundary settle \
+             point exists to run past the marker Moment"
+        ))
+    })?;
     machine.run(
         &StopConditions {
-            deadline: Some(Moment(boundary.saturating_add(1))),
+            deadline: Some(Moment(past)),
             on: StopMask::NONE,
         },
         None,
@@ -847,6 +868,93 @@ mod tests {
         let env = reseed_probe_env(7, 100, 100).expect("landed == origin is a valid empty window");
         let decoded = explorer::AdapterEnv::decode(&env).expect("adapter blob");
         assert_eq!(decoded.spec.reseeds().len(), 1);
+    }
+
+    /// A toy [`Machine`] whose V-time axis is pinned at the top exactly like
+    /// `CountingBackend`'s `SharedWork` (`mock.rs:520-556`, PR #62 round-6): a
+    /// `run` deadline at-or-past `u64::MAX` lands there via `saturating_add`,
+    /// never wrapping. Everything else is unused by this test and answers the
+    /// cheapest total value.
+    struct PinnedTopMachine {
+        vt: u64,
+    }
+
+    impl Machine for PinnedTopMachine {
+        fn branch(&mut self, _snap: SnapId, _env: &Reproducer) -> Result<(), MachineError> {
+            Ok(())
+        }
+        fn replay(&mut self, _snap: SnapId) -> Result<(), MachineError> {
+            Ok(())
+        }
+        fn run(
+            &mut self,
+            until: &StopConditions,
+            _resolve: Option<&explorer::Answer>,
+        ) -> Result<StopReason, MachineError> {
+            if let Some(d) = until.deadline {
+                self.vt = self.vt.max(d.0);
+            }
+            Ok(StopReason::Deadline {
+                vtime: Moment(self.vt),
+            })
+        }
+        fn snapshot(&mut self) -> Result<(SnapId, EvidenceCut), MachineError> {
+            Err(MachineError::NotQuiescent)
+        }
+        fn drop_snap(&mut self, _snap: SnapId) -> Result<(), MachineError> {
+            Ok(())
+        }
+        fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+            Ok([0; 32])
+        }
+        fn coverage(&self) -> &[u8] {
+            &[]
+        }
+        fn recorded_env(&self) -> Result<Reproducer, MachineError> {
+            Ok(Reproducer {
+                blob_version: 1,
+                bytes: Vec::new(),
+            })
+        }
+    }
+
+    /// **F3 regression (hm-c8ho):** `settle`'s boundary nudge fails closed at
+    /// the top of the V-time axis. Pre-fix, `saturating_add(1)` pinned
+    /// `boundary == u64::MAX` right back to `u64::MAX` — a zero-step "settle"
+    /// that reports success without ever running past the marker Moment,
+    /// silently reopening the very hm-xkh5 false-positive window this
+    /// function exists to close (a synthetic trigger — ~585 years of
+    /// retired-branch V-time — but the class already fails closed elsewhere
+    /// in this file, `reseed_probe_env` above). Portable: [`PinnedTopMachine`]
+    /// mirrors `CountingBackend`'s saturating-at-the-top semantics
+    /// (`mock.rs:520-556`) directly, with no box/wire needed. FAILS (RED)
+    /// against the pre-fix `saturating_add(1)`, which would return `Ok` here
+    /// instead.
+    #[test]
+    fn settle_fails_loud_at_the_top_of_the_vtime_axis() {
+        let mut m = PinnedTopMachine { vt: 0 };
+        let stop = m
+            .run(
+                &StopConditions {
+                    deadline: Some(Moment(u64::MAX)),
+                    on: StopMask::NONE,
+                },
+                None,
+            )
+            .expect("run to the axis top");
+        assert_eq!(
+            stop,
+            StopReason::Deadline {
+                vtime: Moment(u64::MAX)
+            },
+            "the toy machine pins the grid at u64::MAX rather than overflowing"
+        );
+        let err = settle(&mut m, u64::MAX)
+            .expect_err("no representable post-boundary settle point exists past u64::MAX");
+        assert!(
+            matches!(err, MachineError::Transport(_)),
+            "fails as a transport-invariant error, got {err:?}"
+        );
     }
 
     /// `verify_materialize` is a total, public function over an arbitrary
