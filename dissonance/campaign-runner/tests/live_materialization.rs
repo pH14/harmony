@@ -38,20 +38,31 @@
 //! the old default `HOPS=3`, hops all false / tail draws; that was a stale
 //! default, corrected to `HOPS=4` below. Every substantive assertion — depth,
 //! round-trip, reproducer — passes on the pinned image either way.) The ruling
-//! (bead `hm-xdp`; the new-image path is `hm-2nt`) pins the gate to the PR-44
-//! pair by content hash and FAILS CLOSED on any future drift, quoting the
-//! expected-vs-found sha256, rather than silently mis-probing. Stage the pinned
-//! build (e.g. from the box's `/root/harmony-pr44/harmony-linux/build`) and verify with
-//! `sha256sum harmony-linux/build/{bzImage,initramfs-postgres.cpio.gz}` against the
-//! `PINNED_*` constants below, or run a DIFFERENT build deliberately via
-//! `INITRAMFS=<name> INITRAMFS_SHA256=<hex>` (+ `BZIMAGE_SHA256=<hex>` /
-//! `KERNEL=<name>` for the kernel).
+//! (bead `hm-xdp`) pins the gate by content hash and FAILS CLOSED on any drift,
+//! quoting the expected-vs-found sha256, rather than silently mis-probing.
 //!
-//! Knobs: `HOPS` (default 4 — the PR-44-proven count; `HOPS=3` measures no hop
-//! draw on the pinned image, see the `cfg_hops` note), `HOP_DELTA_VNS` (default 2 000 000),
-//! `TAIL_DELTA_VNS` (default 1 000 000), `CHAIN_SEED`, `READY_MARKER`,
-//! `KERNEL`/`INITRAMFS` (filenames under `harmony-linux/build` or `harmony-linux/linux`) with
-//! the `BZIMAGE_SHA256`/`INITRAMFS_SHA256` pins above.
+//! **Approved baselines (`BASELINE`, hm-2nt).** An image is a gate baseline only
+//! once it appears in [`BASELINES`] with the characteristics — content pins,
+//! readiness marker, chain-window sizing — under which its draw-probe
+//! precondition has actually been *measured* green on the box. `BASELINE=pr44`
+//! (the default) is the task-78-proven PR-44 pair; `BASELINE=jul9` is the
+//! 2026-07-09 rebuild, promoted from "drifted file" to a first-class baseline by
+//! hm-2nt. Stage a baseline's build (e.g. from the box's
+//! `/root/harmony-pr44/harmony-linux/build`) and verify with `sha256sum
+//! harmony-linux/build/{bzImage,initramfs-postgres.cpio.gz}` against its pins, or run a
+//! DIFFERENT build deliberately via `INITRAMFS=<name> INITRAMFS_SHA256=<hex>`
+//! (+ `BZIMAGE_SHA256=<hex>` / `KERNEL=<name>` for the kernel).
+//!
+//! [`postgres_baseline_marker_timeline`] is the measuring instrument: it boots a
+//! baseline and prints the V-time of every workload marker, which is how a new
+//! image's `ready_marker` / window sizing are chosen (and re-checked) rather than
+//! guessed.
+//!
+//! Knobs: `BASELINE` (default `pr44`), `HOPS`, `HOP_DELTA_VNS`, `TAIL_DELTA_VNS`
+//! (each defaulting to the selected baseline's proven value), `CHAIN_SEED`,
+//! `READY_MARKER` (default: the baseline's), `KERNEL`/`INITRAMFS` (filenames
+//! under `harmony-linux/build` or `harmony-linux/linux`) with the
+//! `BZIMAGE_SHA256`/`INITRAMFS_SHA256` pins above.
 //!
 //! **Box-safety (CRITICAL).** Stock KVM = 1396736; ALWAYS leave the box on
 //! stock + verified after the run: `pkill -9 -f live_materialization` FIRST
@@ -101,23 +112,112 @@ const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_tim
 /// real bound; this stops a wedged guest from looping forever).
 const MAX_BOOT_STEPS: u64 = 50_000_000_000;
 
+/// One **approved gate baseline** (hm-2nt): a pinned (kernel, initramfs) pair
+/// *plus* the image characteristics the task-78 draw probe depends on. Both
+/// halves are the baseline — a content pin alone says which bytes ran, not
+/// whether the chain's windows land where entropy is actually drawn, and it was
+/// exactly that second half going unrecorded that left the 2026-07-09 rebuild
+/// unusable as a baseline.
+struct Baseline {
+    /// `BASELINE` selector value.
+    id: &'static str,
+    /// Kernel filename under `harmony-linux/build` or `harmony-linux/linux`.
+    kernel: &'static str,
+    /// The kernel's pinned sha256.
+    kernel_sha256: &'static str,
+    /// Initramfs filename under the same two directories.
+    initramfs: &'static str,
+    /// The initramfs' pinned sha256.
+    initramfs_sha256: &'static str,
+    /// Serial marker the chain's base is sealed at — where "the workload has
+    /// begun" is for *this* image.
+    ready_marker: &'static str,
+    /// Chain length whose windows are measured to cover a drawing span from
+    /// `ready_marker`.
+    hops: u64,
+    /// Per-hop window width in V-nanoseconds.
+    hop_delta_vns: u64,
+    /// Tail (gate-(c) "bug" leg) window width in V-nanoseconds.
+    tail_delta_vns: u64,
+    /// One line on where this baseline's numbers come from.
+    provenance: &'static str,
+}
+
 /// **Pin-by-content-hash discipline (foreman ruling, beads `hm-xdp` / `hm-2nt`).**
 /// This gate references the guest images by CONTENT HASH, never a mutable
 /// canonical path: the 2026-07-09 rebuild of the box's canonical
 /// `initramfs-postgres.cpio.gz` silently changed what default-knob gate runs
-/// were testing — a mutation under main's gates that no path caught. These pins are
-/// the task-78-proven pair (the `/root/harmony-pr44` build, Jul 2; initramfs
-/// md5 `46b1461962b5b0f8aea98654f52a9ce5` for cross-reference) — the same pins
-/// `vmm-core`'s task-95 `live_dirty_remap` gate enforces, so the two gates
-/// cannot drift apart on which image "the Postgres guest" means. Running a
-/// *different* build deliberately requires supplying its hash:
-/// `INITRAMFS=<name> INITRAMFS_SHA256=<hex>` (and `BZIMAGE_SHA256=<hex>` /
+/// were testing — a mutation under main's gates that no path caught. Running a
+/// build that is in no baseline requires supplying its hash explicitly
+/// (`INITRAMFS=<name> INITRAMFS_SHA256=<hex>`, and `BZIMAGE_SHA256=<hex>` /
 /// `KERNEL=<name>` if the kernel changes too) — the check never silently
 /// accepts a drifted file.
-const PINNED_BZIMAGE_SHA256: &str =
-    "f06a34a79010a8f2cc8226dc629cc8fb049740016f035f53e3f2e53d9a30dd41";
-const PINNED_INITRAMFS_SHA256: &str =
-    "3c4a7f2f0db4b59aaf4dee55d43a42c57fc0d10ac25441de88128c61be0778c2";
+///
+/// `pr44` is the default and is byte-identical to the pins `vmm-core`'s task-95
+/// `live_dirty_remap` gate enforces, so the two gates cannot drift apart on
+/// which image "the Postgres guest" means.
+const BASELINES: &[Baseline] = &[
+    Baseline {
+        id: "pr44",
+        kernel: "bzImage",
+        kernel_sha256: "f06a34a79010a8f2cc8226dc629cc8fb049740016f035f53e3f2e53d9a30dd41",
+        initramfs: "initramfs-postgres.cpio.gz",
+        initramfs_sha256: "3c4a7f2f0db4b59aaf4dee55d43a42c57fc0d10ac25441de88128c61be0778c2",
+        // Postgres' own readiness log line. The first uuid draw lands ~6 M v-ns
+        // later, so the chain needs a 4th hop to cover it — see `hops` below.
+        ready_marker: "database system is ready to accept connections",
+        // HOPS=4, not 3: on this image the uuid workload's first entropy draw
+        // lands just beyond three 2 M-v-ns hop windows, so `HOPS=3` measures no
+        // hop draw (only the tail draws) and `REQUIRE_DRAWS` fails on the
+        // correct image. The 4th hop extends the chain LENGTH (not the window
+        // WIDTH) so a compose-collapsed hop window covers that drawing span.
+        hops: 4,
+        hop_delta_vns: 2_000_000,
+        tail_delta_vns: 1_000_000,
+        provenance: "task-78 box gate (PR 44 build, Jul 2; initramfs md5 46b1461962b5b0f8aea98654f52a9ce5)",
+    },
+    Baseline {
+        id: "jul9",
+        // Same kernel bytes as pr44 — the 2026-07-09 rebuild moved the
+        // initramfs only (verified by sha256 on the box's t81 checkout).
+        kernel: "bzImage",
+        kernel_sha256: "f06a34a79010a8f2cc8226dc629cc8fb049740016f035f53e3f2e53d9a30dd41",
+        // Deliberately NOT the canonical `initramfs-postgres.cpio.gz` name:
+        // baselines coexist in `harmony-linux/build` under distinct filenames so
+        // selecting one is `BASELINE=jul9`, never swapping files under a shared
+        // name (which is how the 2026-07-09 drift happened in the first place).
+        // Stage it as:
+        //   cp <t81-checkout>/build/initramfs-postgres.cpio.gz \
+        //      harmony-linux/build/initramfs-postgres-jul9.cpio.gz
+        initramfs: "initramfs-postgres-jul9.cpio.gz",
+        initramfs_sha256: "82395d189e3b2e0605b583cabe1035381921cedf0b6044c1ecb25ecb56a2880b",
+        // Identical to pr44's, and that is the hm-2nt finding, not laziness:
+        // `postgres_baseline_marker_timeline` measured both images and they run
+        // the same program to within ~35 µs of V-time at every marker, with the
+        // same (empty) draw map after early userspace. The bead's premise — that
+        // THIS image's first entropy draw lands past the hop windows, so its
+        // marker must move into the uuid loop — does not survive measurement:
+        // neither image draws anywhere in the Postgres phase, so no marker
+        // placement inside that phase changes the draw map. What broke on
+        // 2026-07-09 was the then-default HOPS=3 (already corrected to 4 for
+        // pr44), not the rebuild. See docs/history/IMPLEMENTATION-task157.md §3.
+        ready_marker: "database system is ready to accept connections",
+        hops: 4,
+        hop_delta_vns: 2_000_000,
+        tail_delta_vns: 1_000_000,
+        provenance: "hm-2nt (2026-07-09 rebuild, initramfs md5 9860a065abc69d7e9c7144d7c2c37e2b)",
+    },
+];
+
+/// The baseline named by `BASELINE` (default `pr44`) — an unknown id is a loud
+/// refusal listing what IS approved, never a silent fallback to the default.
+fn selected_baseline() -> &'static Baseline {
+    let id = std::env::var("BASELINE").unwrap_or_else(|_| "pr44".into());
+    BASELINES.iter().find(|b| b.id == id).unwrap_or_else(|| {
+        let ids: Vec<&str> = BASELINES.iter().map(|b| b.id).collect();
+        panic!("BASELINE={id} is not an approved gate baseline (approved: {ids:?})")
+    })
+}
 
 fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
@@ -196,18 +296,50 @@ fn resolve_pinned(
     bytes
 }
 
-/// The pinned (kernel, initramfs) pair, each verified against its content hash
-/// before a byte of it reaches the guest — the drift gate (hm-xdp) that makes
-/// `REQUIRE_DRAWS` meaningful again.
-fn guest_images() -> (Vec<u8>, Vec<u8>) {
-    let kernel = resolve_pinned("KERNEL", "bzImage", "BZIMAGE_SHA256", PINNED_BZIMAGE_SHA256);
+/// The selected baseline's (kernel, initramfs) pair, each verified against its
+/// content hash before a byte of it reaches the guest — the drift gate (hm-xdp)
+/// that makes `REQUIRE_DRAWS` meaningful again.
+fn guest_images(b: &Baseline) -> (Vec<u8>, Vec<u8>) {
+    let kernel = resolve_pinned("KERNEL", b.kernel, "BZIMAGE_SHA256", b.kernel_sha256);
     let initramfs = resolve_pinned(
         "INITRAMFS",
-        "initramfs-postgres.cpio.gz",
+        b.initramfs,
         "INITRAMFS_SHA256",
-        PINNED_INITRAMFS_SHA256,
+        b.initramfs_sha256,
     );
     (kernel, initramfs)
+}
+
+/// Boot the selected baseline on the patched backend at [`BOOT_SEED`] — the one
+/// composition both the gate and the timeline probe use, so a timeline measured
+/// here describes the VM the gate actually runs.
+fn boot_baseline(kernel: &[u8], initramfs: &[u8]) -> Vmm<Box<dyn Backend<A = X86>>> {
+    boot_linux_selected(
+        BackendKind::Patched,
+        kernel,
+        initramfs,
+        GUEST_RAM_LEN,
+        CMDLINE,
+        BOOT_SEED,
+    )
+    .expect("boot_linux_selected (patched)")
+}
+
+/// Refuse to run anywhere but the box, loudly (a missing precondition is never a
+/// vacuous skip).
+fn require_box_host() {
+    assert!(
+        std::path::Path::new("/dev/kvm").exists(),
+        "/dev/kvm absent — run on the determinism box with the LOADED patched KVM modules"
+    );
+    let report = vmm_core::vendor::x86::hostassert::report();
+    if let Some(bad) = report.iter().find(|o| !o.pass) {
+        panic!(
+            "host is not the det-cfl-v1 baseline (first failing assertion: {} expected {}, \
+             observed {})",
+            bad.key, bad.expected, bad.actual
+        );
+    }
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -260,39 +392,26 @@ fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend<A = X86>>>, marker: &[u8]) -> R
 #[ignore = "box-only: needs loaded patched KVM + det-cfl-v1 host + the built Postgres image"]
 fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
     // Preconditions — every missing one is a loud failure, never vacuous.
-    assert!(
-        std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm absent — run on the determinism box with the LOADED patched KVM modules"
-    );
-    let report = vmm_core::vendor::x86::hostassert::report();
-    if let Some(bad) = report.iter().find(|o| !o.pass) {
-        panic!(
-            "host is not the det-cfl-v1 baseline (first failing assertion: {} expected {}, \
-             observed {})",
-            bad.key, bad.expected, bad.actual
-        );
-    }
+    require_box_host();
     // Pinned by content hash (hm-xdp): a drifted image is a loud refusal here,
     // not a silent mis-probe of the draw windows.
-    let (kernel, initramfs) = guest_images();
-    let marker = std::env::var("READY_MARKER")
-        .unwrap_or_else(|_| "database system is ready to accept connections".into());
+    let baseline = selected_baseline();
+    let (kernel, initramfs) = guest_images(baseline);
+    let marker = std::env::var("READY_MARKER").unwrap_or_else(|_| baseline.ready_marker.into());
+    eprintln!(
+        "[live_materialization] baseline {} ({}) — marker {:?}",
+        baseline.id, baseline.provenance, marker
+    );
 
     // Boot the live guest to the readiness marker (the one workload-aware
     // step — the chain seals land mid-workload, post-readiness).
-    let mut live = boot_linux_selected(
-        BackendKind::Patched,
-        &kernel,
-        &initramfs,
-        GUEST_RAM_LEN,
-        CMDLINE,
-        BOOT_SEED,
-    )
-    .expect("boot_linux_selected (patched)");
+    let mut live = boot_baseline(&kernel, &initramfs);
     eprintln!("[live_materialization] booting to the readiness marker {marker:?} …");
     let steps = drive_to_marker(&mut live, marker.as_bytes()).expect("reach readiness");
     eprintln!("\n[live_materialization] readiness at step {steps}; starting the chain protocol.");
 
+    // The factory returns the Result rather than going through `boot_baseline`:
+    // a re-boot failure mid-session is the server's error to report, not a panic.
     let factory: VmmFactory<Box<dyn Backend<A = X86>>> = Box::new(move || {
         boot_linux_selected(
             BackendKind::Patched,
@@ -305,22 +424,22 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
     });
     let mut server = ControlServer::new(live, factory);
 
-    // Default HOPS=4, not 3 (hm-xdp): on the pinned PR-44 image the Postgres
-    // uuid workload's first entropy draw lands ~6 M v-ns past the base, just
-    // beyond three 2 M-v-ns hop windows — so `HOPS=3` measures no hop draw (only
-    // the tail draws) and the task-78 `REQUIRE_DRAWS` precondition fails even on
-    // the correct image. HOPS=4 extends the chain one hop so a compose-collapsed
-    // hop window covers that drawing span (the same span the tail already proves
-    // draws) — the count the task-78 box gate was PROVEN green with. This raises
-    // the chain LENGTH, not the window WIDTH (`HOP_DELTA_VNS`): the draw is still
-    // a measured two-seed probe, and image drift still fails closed by hash.
-    let cfg_hops = env_u64("HOPS", 4) as usize;
+    // Window sizing comes from the selected baseline (hm-2nt), because it is a
+    // property of the IMAGE, not of the protocol: `pr44` bases at Postgres'
+    // readiness line, ~6 M v-ns before the uuid workload's first entropy draw,
+    // so it needs HOPS=4 for a compose-collapsed hop window to cover that
+    // drawing span (`HOPS=3` measures no hop draw and `REQUIRE_DRAWS` fails on
+    // the correct image). `jul9` bases at the workload marker itself, so hop 0
+    // already covers draws. Overriding raises the chain LENGTH, not the window
+    // WIDTH: the draw stays a measured two-seed probe and drift still fails
+    // closed by hash.
+    let cfg_hops = env_u64("HOPS", baseline.hops) as usize;
     let cfg = MaterializeConfig {
         // The same non-boot chain seed shape the task-58 box sweep branches.
         seed: env_u64("CHAIN_SEED", 0x0028_C0FF_EE5E_EDC0 ^ 0x9E37_79B9_7F4A_7C15),
         hops: cfg_hops,
-        hop_delta: env_u64("HOP_DELTA_VNS", 2_000_000),
-        tail_delta: env_u64("TAIL_DELTA_VNS", 1_000_000),
+        hop_delta: env_u64("HOP_DELTA_VNS", baseline.hop_delta_vns),
+        tail_delta: env_u64("TAIL_DELTA_VNS", baseline.tail_delta_vns),
         // Postgres is interrupt-driven; generous retry past non-sealable
         // boundaries (mirrors the campaign-runner box mode).
         snapshot_retry_step: 1_000_000,
@@ -354,10 +473,14 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
             report.hop_draws.iter().any(|d| *d) && report.tail_draws,
             "the task-78 gate needs BOTH a draw inside a compose-collapsed hop window AND a \
              drawing tail window (probes: hops {:?}, tail {}) — the tail is what gate (c)'s \
-             reproducer fold replays across its trailing reseed point. Raise \
-             HOPS/HOP_DELTA_VNS so a hop window covers a drawing span, move READY_MARKER \
-             into the Postgres workload loop, use an entropy-drawing payload, or set \
-             REQUIRE_DRAWS=0 to accept the draw-free (pre-task-78) shape",
+             reproducer fold replays across its trailing reseed point. Run \
+             `postgres_baseline_marker_timeline` on this image FIRST: it prints where \
+             the seeded stream actually moves, and on both Postgres baselines the \
+             answer is `nowhere after early userspace` (hm-2nt) — so moving \
+             READY_MARKER around inside the workload will NOT help, and the knob that \
+             matters is HOPS (3 fails, 4 passes). Otherwise use an entropy-drawing \
+             payload, or set REQUIRE_DRAWS=0 to accept the draw-free (pre-task-78) \
+             shape",
             report.hop_draws,
             report.tail_draws
         );
@@ -379,5 +502,245 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
     assert!(
         failures.is_empty(),
         "task-68 box gates failed (see [REPORT])"
+    );
+}
+
+/// The workload markers a Postgres baseline is characterized by, in the order
+/// `pg-init.sh` + the task-42 workload emit them. `row|i|count|sum|` prefixes are
+/// the workload's deterministic anchor (the uuid/timestamp tail is seed-derived,
+/// so only the prefix is a stable marker).
+const POSTGRES_MARKERS: &[&str] = &[
+    "PG37: starting postgres",
+    "database system is ready to accept connections",
+    "PG37: workload begin",
+    "row|1|1|1|",
+    "row|2|2|3|",
+    "row|5|5|15|",
+    "row|10|10|55|",
+    "row|20|20|210|",
+    "PG37: workload end",
+    "GUEST_READY",
+];
+
+/// Wire the doorbell channels **exactly as `ControlServer::new` does**, on a VM
+/// the timeline probe drives itself.
+///
+/// This is not optional dressing: `Vmm::doorbell_service_offered` gates the
+/// **Entropy** service on `sdk.is_some() || net.is_some()`, so a bare VM answers
+/// a guest's entropy request with `UnknownService` while the gate's
+/// server-wrapped VM services it from the seeded stream. Measure the bare VM and
+/// you measure a *different guest*: one whose entropy consumers are being
+/// refused. Every draw-related number this probe prints would then under-report
+/// — which is exactly the trap this function exists to avoid.
+fn wire_doorbell_channels(vmm: &mut Vmm<Box<dyn Backend<A = X86>>>) {
+    let recorded = EnvSpec::Seeded {
+        seed: vmm.entropy_state().unwrap_or(BOOT_SEED),
+        policy: FaultPolicy::none(),
+    };
+    vmm.enable_sdk(recorded.materialize(), recorded.policy());
+    vmm.enable_net();
+}
+
+/// The seeded-entropy stream position at this instant, as a short hex tag.
+///
+/// `Vmm::state_components()`'s `vtim:entropy` component is `SeededEntropy::
+/// save_state()` digested — the PRNG's position. It changes **exactly** when the
+/// guest consumes seeded entropy, which is the same condition the task-78
+/// `hop_draws`/`tail_draws` probes measure by re-running a window with a
+/// trailing reseed marker. Reading it directly costs one state digest instead of
+/// two guest re-executions per window, so a whole image can be mapped in one
+/// boot rather than one chain run per candidate window layout.
+fn entropy_tag(vmm: &Vmm<Box<dyn Backend<A = X86>>>) -> String {
+    vmm.state_components()
+        .into_iter()
+        .find(|(k, _)| *k == "vtim:entropy")
+        .map(|(_, d)| d[..8].iter().map(|b| format!("{b:02x}")).collect())
+        .unwrap_or_else(|| "unwired".to_string())
+}
+
+/// **hm-2nt's measuring instrument.** Boot a baseline once and print, for each
+/// workload marker, its V-time *and* the seeded-entropy stream position — so a
+/// new image's `ready_marker` and chain-window sizing are chosen from
+/// measurement instead of guesswork. The gap this bead closed was that nobody
+/// knew *where* the 2026-07-09 rebuild's first entropy draw landed, only that
+/// the default windows missed it; the `draws` column answers that directly.
+///
+/// This is a characterization probe, not a gate: it asserts only that every
+/// marker appears in order before the guest terminates (an image whose workload
+/// never runs is a broken image, and that IS worth failing on). Its output is
+/// what the `BASELINES` table's numbers are derived from.
+///
+/// ```sh
+/// BASELINE=jul9 taskset -c 2 cargo test -p campaign-runner --test live_materialization \
+///     -- --ignored --nocapture --test-threads=1 postgres_baseline_marker_timeline
+/// ```
+///
+/// `MARKERS` (a `;`-separated list) overrides the marker set for a non-Postgres
+/// image.
+#[test]
+#[ignore = "box-only: needs loaded patched KVM + det-cfl-v1 host + the built Postgres image"]
+fn postgres_baseline_marker_timeline() {
+    require_box_host();
+    let baseline = selected_baseline();
+    let (kernel, initramfs) = guest_images(baseline);
+    let markers: Vec<String> = match std::env::var("MARKERS") {
+        Ok(s) => s
+            .split(';')
+            .filter(|m| !m.is_empty())
+            .map(String::from)
+            .collect(),
+        Err(_) => POSTGRES_MARKERS.iter().map(|m| (*m).to_string()).collect(),
+    };
+    assert!(!markers.is_empty(), "MARKERS is empty — nothing to measure");
+
+    eprintln!(
+        "[timeline] baseline {} ({}) — {} markers",
+        baseline.id,
+        baseline.provenance,
+        markers.len()
+    );
+    let mut vmm = boot_baseline(&kernel, &initramfs);
+    wire_doorbell_channels(&mut vmm);
+
+    // (marker, step, effective V-time ns, entropy-stream tag). Both are read at
+    // the step the marker became visible on the serial: exact to a step
+    // boundary, which is the same granularity the chain's `run_to` deadlines
+    // land on.
+    let mut hits: Vec<(String, u64, u64, String)> = Vec::with_capacity(markers.len());
+    let mut next = 0usize;
+    // Absolute index into the serial buffer that the *current* marker search
+    // starts from — advanced past each hit so markers are matched strictly in
+    // order, and so several markers landing in one chunk are all seen.
+    let mut scan_from = 0usize;
+    let mut printed = vmm.serial().len();
+    let mut steps = 0u64;
+    let mut terminal: Option<String> = None;
+    let stderr = std::io::stderr();
+    while steps < MAX_BOOT_STEPS && next < markers.len() {
+        match vmm.step() {
+            Ok(Step::Continued) => {}
+            Ok(Step::Terminal(r)) => {
+                terminal = Some(format!("{r:?}"));
+                break;
+            }
+            Ok(Step::SdkStop) => {
+                terminal = Some("SdkStop".into());
+                break;
+            }
+            Err(e) => panic!("step error at {steps}: {e}"),
+        }
+        steps += 1;
+        let serial_len = vmm.serial().len();
+        if serial_len <= printed {
+            continue;
+        }
+        {
+            let mut h = stderr.lock();
+            let _ = h.write_all(&vmm.serial()[printed..]);
+            let _ = h.flush();
+        }
+        printed = serial_len;
+        // Drain every marker that is now visible (a chunk can carry more than one).
+        while next < markers.len() {
+            let needle = markers[next].as_bytes();
+            let Some(off) = vmm.serial()[scan_from..]
+                .windows(needle.len())
+                .position(|w| w == needle)
+            else {
+                break;
+            };
+            let vns = vmm
+                .effective_vns()
+                .expect("V-time is wired by boot_linux_selected");
+            let tag = entropy_tag(&vmm);
+            hits.push((markers[next].clone(), steps, vns, tag));
+            scan_from += off + needle.len();
+            next += 1;
+        }
+    }
+
+    println!(
+        "\n[TIMELINE] baseline {} — {}",
+        baseline.id, baseline.provenance
+    );
+    println!(
+        "[TIMELINE] kernel  {} sha256 {}",
+        baseline.kernel, baseline.kernel_sha256
+    );
+    println!(
+        "[TIMELINE] initramfs {} sha256 {}",
+        baseline.initramfs, baseline.initramfs_sha256
+    );
+    println!(
+        "[TIMELINE] {:<48} {:>12} {:>14} {:>12} {:>18} {:>6}",
+        "marker", "step", "vtime_ns", "delta_ns", "entropy_state", "drew?"
+    );
+    let mut prev: Option<(u64, &str)> = None;
+    for (m, s, v, tag) in &hits {
+        let (delta, drew) = match prev {
+            // "drew" = the seeded stream moved since the previous marker, i.e.
+            // the guest consumed entropy somewhere in that interval. This is the
+            // per-interval draw map the chain's window sizing needs.
+            Some((pv, ptag)) => (v.saturating_sub(pv), if ptag == tag { "no" } else { "YES" }),
+            None => (0, "-"),
+        };
+        println!("[TIMELINE] {m:<48} {s:>12} {v:>14} {delta:>12} {tag:>18} {drew:>6}");
+        prev = Some((*v, tag));
+    }
+    if let Some(t) = &terminal {
+        println!("[TIMELINE] terminal after {steps} steps: {t}");
+    }
+    // The verdict this probe exists for: the gate's chain runs
+    // `hops * hop_delta + tail_delta` V-ns forward from the base marker, and
+    // `REQUIRE_DRAWS` needs BOTH a hop window and the tail to land where the
+    // guest actually draws. So compare the chain's span against the last marker
+    // whose interval drew — not merely against the end of the workload, which is
+    // what makes a chain "fit" on paper while its tail seals in a draw-free
+    // shutdown.
+    if let Some(base) = hits.iter().find(|(m, _, _, _)| *m == baseline.ready_marker) {
+        let chain = baseline.hops * baseline.hop_delta_vns + baseline.tail_delta_vns;
+        let last_draw = hits
+            .windows(2)
+            .filter(|w| w[0].3 != w[1].3)
+            .map(|w| (w[1].0.clone(), w[1].2))
+            .next_back();
+        println!(
+            "[TIMELINE] base {:?} at {} ns; the chain spans {} ns ({} hops x {} + {} tail) \
+             ending at {} ns",
+            baseline.ready_marker,
+            base.2,
+            chain,
+            baseline.hops,
+            baseline.hop_delta_vns,
+            baseline.tail_delta_vns,
+            base.2 + chain
+        );
+        match last_draw {
+            Some((m, at)) => println!(
+                "[TIMELINE] last drawing interval ends at {at} ns ({m:?}) => the chain's tail {}",
+                if base.2 + chain <= at {
+                    "lands INSIDE the drawing span"
+                } else {
+                    "OVERRUNS it (REQUIRE_DRAWS will fail on the tail)"
+                }
+            ),
+            None => println!(
+                "[TIMELINE] NO interval drew entropy — this image cannot satisfy REQUIRE_DRAWS \
+                 at any window layout over these markers"
+            ),
+        }
+    }
+
+    assert_eq!(
+        next,
+        markers.len(),
+        "only {}/{} markers appeared before the guest {} — this image's workload did not run to \
+         completion (hits: {:?})",
+        next,
+        markers.len(),
+        terminal.as_deref().unwrap_or("ran out of steps"),
+        hits.iter()
+            .map(|(m, _, _, _)| m.as_str())
+            .collect::<Vec<_>>()
     );
 }

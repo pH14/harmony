@@ -161,18 +161,140 @@ failure.
 
 ---
 
-## 3. hm-2nt — draw-probe gate on the new Postgres image ⬜ NOT STARTED
+## 3. hm-2nt — draw-probe gate on the new Postgres image ✅ CLOSED (session 2)
 
-Deferred deliberately. The bead's own 2026-07-15 note records this as
-**cosmetic/optional**: the gate default is now `HOPS=4`, so the pinned pr44 image
-is already green with default knobs — "a cosmetic/optional simplification, not a
-correctness need." Closing it requires re-baking the Jul-9 postgres image
-(`initramfs-postgres.cpio.gz` md5 9860a065) with `READY_MARKER` moved into/nearer
-the uuid workload loop (or the drawing workload started earlier), then re-running
-`live_materialization`'s `REQUIRE_DRAWS` draw-probe and pinning the new content
-hashes — a docker/initdb postgres-image rebuild for a cosmetic gain. Under
-"finishing fewer items cleanly beats starting all four," left for a session that
-wants the Jul-9 image promoted as the gate baseline.
+**The bead asked for a re-bake; measurement says no re-bake was ever needed.**
+The Jul-9 image is now an approved gate baseline, green at the standard
+configuration, with its characteristics recorded — and the premise it was filed
+under is refuted.
+
+### What the bead assumed, and what is actually true
+
+hm-2nt (and `live_materialization`'s own module doc) held that the Postgres
+workload's `gen_random_uuid()` loop "rides `pg_strong_random` → RDRAND", so the
+2026-07-09 rebuild's first entropy draw had merely drifted past the default hop
+windows and a `READY_MARKER` moved into the uuid loop would recover it.
+
+The new `postgres_baseline_marker_timeline` probe measures that directly — it
+reads `Vmm::state_components()`'s `vtim:entropy` (the `SeededEntropy` position)
+at each workload marker, so an interval "drew" exactly when the stream moved.
+Both images, one boot each:
+
+```
+marker                                     vtime_ns      entropy_state  drew?
+Linux version                              82019814   6bdb5981672a7b6a    -
+random: crng init done                     82019814   6bdb5981672a7b6a    no
+Run /init as init process                 422419380   5382e1a597a4908f   YES
+PG37: starting postgres                   424055064   5382e1a597a4908f    no
+database system is ready to accept …      441941448   5382e1a597a4908f    no
+row|1|1|1|                                448967766   5382e1a597a4908f    no
+PG37: workload end                        451053256   5382e1a597a4908f    no
+GUEST_READY                               455499740   5382e1a597a4908f    no
+```
+
+**The Postgres phase draws no seeded entropy at all.** Every draw happens during
+the initramfs/early-userspace span; from 422 M v-ns to the terminal the stream
+never moves. The uuid values are seed-derived because the *kernel CRNG* was
+seeded from the stream at boot, not because the loop draws live. So no marker
+placement inside the workload — the bead's prescription — can change the draw
+map, and the Jul-9 rebuild is not the variable: the two images run the same
+program to within ~35 µs of V-time at every marker, with identical draw maps.
+What broke in July was the then-default `HOPS=3`, already corrected to `HOPS=4`
+for pr44 (the harness's own note said as much for the pinned image).
+
+Three controls make that negative result trustworthy rather than an instrument
+failure: (1) a **positive control** — the same probe *does* register the
+early-userspace draw, so it is not stuck; (2) the probe wires the **SDK and Net
+doorbell channels exactly as `ControlServer::new` does** (`wire_doorbell_channels`),
+because `doorbell_service_offered` gates the Entropy service on those channels —
+a bare VM would silently refuse a guest's entropy request and under-report;
+measured both ways, byte-identical. (3) `SeededEntropy` is an xorshift whose
+`save_state()` is the live state word, so an unchanged tag cannot hide a draw.
+
+### The change
+
+`live_materialization.rs` replaces its two `PINNED_*` constants with a
+**`BASELINES` table**. A baseline is now both halves of what a gate needs: the
+(kernel, initramfs) content pins **and** the image characteristics the draw probe
+depends on — ready marker, hop count, window widths, provenance. `BASELINE=pr44`
+(default) is byte-for-byte the old behaviour; `BASELINE=jul9` is the rebuild.
+An unknown `BASELINE` is a loud refusal listing what is approved; the
+name-without-hash and hash-mismatch refusals are unchanged. The two images live
+under **distinct filenames** (`initramfs-postgres-jul9.cpio.gz`) so selecting one
+is a `BASELINE=` choice, never a file swapped under a shared name — which is how
+the 2026-07-09 drift happened in the first place.
+
+### Live gate (box, core 2, governor=performance, no_turbo=1)
+
+`BASELINE=jul9`, no other knobs — its own committed defaults, `REQUIRE_DRAWS=1`:
+
+```
+base: sealed at V-time 442953098 (2 attempts)
+hop 0..3 landed 445221603 / 447221744 / 449247686 / 451289424  (attempts 1 each)
+hot    depth 2041738  ratio  4524 ppm   (task-63 baseline 15463 ppm)
+folded depth 4067680  ratio  9013 ppm   folds 1
+worst  depth 8336326  ratio 18472 ppm   from_genesis
+round-trip: folded == hot, worst == hot   (state_hash b72a4122…)
+reproducer: leg == replay  Deadline@452433490  (state_hash 13a8ec92…)
+draw probes (task 78): hops [false, false, false, true]; tail window DRAWS
+[REPORT] GATES PASS
+```
+
+The pr44 regression arm, same session, same binary, its own defaults: `GATES
+PASS`, hot ratio **4524 ppm** — identical — hop pattern identical, depths within
+~100 ns. The refactor did not move the proven configuration.
+
+### Open finding, filed not buried: the draw probe disagrees with the stream
+
+The gate reports `hop_draws[3] = true` and `tail_draws = true` for windows
+`[449.2 M, 451.3 M]` and `[451.3 M, 452.4 M]` — squarely inside the span the
+measurement above shows is draw-free. Both instruments are load-bearing and they
+cannot both be right:
+
+- if the trailing-reseed probe has a **false positive**, then `REQUIRE_DRAWS` is
+  vacuous on these guests and the task-78 "bit-identical *even when entropy is
+  drawn inside a collapsed interval*" box evidence does not rest on a drawing
+  window at all;
+- if the probe is right, then a **restored, reseeded branch draws where the live
+  boot does not** — an execution difference between the live and branched paths,
+  which matters for replay fidelity.
+
+Mechanically the probe *should* be a no-op under no draws: `reseed_probe_env`
+records two markers to the **same** seed (`record_reseed(0, seed)` and
+`record_reseed(rel, seed)`), and `reseed_entropy` is a plain
+`vt.entropy = SeededEntropy::new(seed)` assignment, so with an unmoved stream
+both legs end at the identical state. The portable loopback's draw-free script
+agrees (all probes false). The next experiment is named in the bead: diff
+`state_components()` between the plain and probe legs of hop 3 to see **which**
+hashed chunk differs (entropy, `vtim:eff-vns`, or RAM). Not resolved here — this
+lane certified an image, and quietly certifying it against a precondition whose
+meaning is in doubt would be exactly the vacuity the W1 doctrine exists to stop.
+
+### W1 red/green: every guard this commit adds, seen to fire
+
+Five negative controls and a positive one, all on the box in one window. `rc=101`
+is the test process panicking; `GATES PASS` appears **zero** times across the
+whole red log and once in the green gate run.
+
+| arm | provocation | observed |
+|-----|-------------|----------|
+| A | `BASELINE=whatever` | `rc=101` — *"is not an approved gate baseline (approved: ["pr44", "jul9"])"* |
+| B | `BASELINE=jul9` pins against the **pr44 file** | `rc=101` — content-hash mismatch, both hashes quoted |
+| C | image named without its hash | `rc=101` — *"overriding the image requires supplying its content hash"* |
+| D | timeline probe, a marker that never appears | `rc=101` — *"only 1/2 markers appeared before the guest Shutdown"* (never a vacuous pass) |
+| E | `BASELINE=jul9 HOPS=3` (the July default) | `rc=101` — `REQUIRE_DRAWS` red: `hops [false, false, false], tail true` |
+| green | timeline probe, real markers | `rc=0` |
+
+Arm **E** is the substantive one: it reproduces, on the new image, exactly the
+failure hm-2nt was filed for — and shows the knob that governs it is `HOPS`, not
+the image or the marker. Arm **D** matters because a characterization probe that
+"passes" on an image whose workload never ran would be worse than no probe.
+
+*(First pass at these arms reported `ARM_x_RC=0` because the run wrapper read
+`PIPESTATUS` through a shell function — the panics were still the evidence, but
+the exit codes were masked. Re-run with the test's own status; the table above is
+the corrected run. Noted rather than silently fixed: a harness that reports a
+green rc on a panicking test is the same green-on-fail shape PR161-F1 was.)*
 
 ## 4. hm-i8kc — /dev/harmony bridge liveness family (F2/F9/F10/F11) ⬜ NOT STARTED
 
