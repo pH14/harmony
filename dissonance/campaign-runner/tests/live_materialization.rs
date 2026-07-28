@@ -34,12 +34,13 @@
 //! under main's gates that no path caught, exactly the silent-drift hazard this
 //! pin closes: a mismatched image is now a loud, expected-vs-found refusal, not
 //! a quiet mis-probe. (The drift was not itself what broke the task-78
-//! `REQUIRE_DRAWS` precondition — the pinned PR-44 image fails it identically at
-//! the old default `HOPS=3`, hops all false / tail draws; that was a stale
-//! default, corrected to `HOPS=4` below. Every substantive assertion — depth,
-//! round-trip, reproducer — passes on the pinned image either way.) The ruling
-//! (bead `hm-xdp`) pins the gate by content hash and FAILS CLOSED on any drift,
-//! quoting the expected-vs-found sha256, rather than silently mis-probing.
+//! `REQUIRE_DRAWS` precondition — and tasks/167 (bead `hm-xkh5`) later showed
+//! the `HOPS`-dependent green was the probe's own false positive: these images
+//! draw nothing in the Postgres phase at any window layout. Every substantive
+//! assertion — depth, round-trip, reproducer — passes on the pinned image
+//! either way.) The ruling (bead `hm-xdp`) pins the gate by content hash and
+//! FAILS CLOSED on any drift, quoting the expected-vs-found sha256, rather
+//! than silently mis-probing.
 //!
 //! **Approved baselines (`BASELINE`, hm-2nt).** An image is a gate baseline only
 //! once it appears in [`BASELINES`] with the characteristics — content pins,
@@ -77,15 +78,20 @@
 //! (the task-68 documented limit, retired; positive twin pinned portably in
 //! `tests/materialize_loopback.rs::sequential_entropy_fold_is_bit_identical_reseed_markers_flip_the_task68_pin`).
 //! This gate therefore also requires the tail window to actually DRAW
-//! (`MaterializeReport::tail_draws`, a measured two-seed divergence probe —
-//! never an assumption): drive the guest into an entropy-drawing span (the
-//! Postgres workload's `gen_random_uuid()` loop rides `pg_strong_random` →
-//! RDRAND, so a `READY_MARKER` inside the workload loop works; a raw-RDRAND
-//! payload or the task-73 SDK entropy service also qualifies), or set
-//! `REQUIRE_DRAWS=0` to accept a draw-free window (the pre-task-78 shape,
-//! e.g. for an A/B against the old baseline). If a gate (b)/(c) hash mismatch
-//! appears WITH draws, that is a task-78 defect (marker lost / mis-spliced /
-//! mis-anchored) — a real finding on this task's machinery.
+//! (`MaterializeReport::tail_draws`, a measured trailing-reseed probe — never
+//! an assumption). **The Postgres baselines cannot satisfy that requirement
+//! (tasks/167, bead `hm-xkh5`):** the marker timeline shows their seeded
+//! stream never moves after early userspace — the `gen_random_uuid()` loop
+//! does NOT draw live (the kernel CRNG was seeded at boot) — and the
+//! pre-tasks/167 `HOPS=4` green was the hm-xkh5 probe false positive (the
+//! trailing-reseed marker's arrival clamp, not a draw), so `REQUIRE_DRAWS=1`
+//! is honestly RED on these images at every window layout. Use a genuinely
+//! drawing workload (the `/dev/harmony` bridge guest draws on demand —
+//! `tests/live_draw_probe_pair.rs` is the pinned positive/negative pair), or
+//! set `REQUIRE_DRAWS=0` to accept a draw-free window (the pre-task-78
+//! shape). If a gate (b)/(c) hash mismatch appears WITH draws, that is a
+//! task-78 defect (marker lost / mis-spliced / mis-anchored) — a real finding
+//! on this task's machinery.
 
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
@@ -163,14 +169,14 @@ const BASELINES: &[Baseline] = &[
         kernel_sha256: "f06a34a79010a8f2cc8226dc629cc8fb049740016f035f53e3f2e53d9a30dd41",
         initramfs: "initramfs-postgres.cpio.gz",
         initramfs_sha256: "3c4a7f2f0db4b59aaf4dee55d43a42c57fc0d10ac25441de88128c61be0778c2",
-        // Postgres' own readiness log line. The first uuid draw lands ~6 M v-ns
-        // later, so the chain needs a 4th hop to cover it — see `hops` below.
+        // Postgres' own readiness log line.
         ready_marker: "database system is ready to accept connections",
-        // HOPS=4, not 3: on this image the uuid workload's first entropy draw
-        // lands just beyond three 2 M-v-ns hop windows, so `HOPS=3` measures no
-        // hop draw (only the tail draws) and `REQUIRE_DRAWS` fails on the
-        // correct image. The 4th hop extends the chain LENGTH (not the window
-        // WIDTH) so a compose-collapsed hop window covers that drawing span.
+        // HOPS=4 was chosen when the hop-3 window appeared to draw; tasks/167
+        // (hm-xkh5) showed that appearance was the probe's arrival-clamp false
+        // positive — this image draws NOWHERE in the Postgres phase, so no hop
+        // count satisfies REQUIRE_DRAWS honestly. The value is kept as the
+        // measured historical configuration; the draw precondition needs a
+        // genuinely drawing workload (see tests/live_draw_probe_pair.rs).
         hops: 4,
         hop_delta_vns: 2_000_000,
         tail_delta_vns: 1_000_000,
@@ -198,9 +204,11 @@ const BASELINES: &[Baseline] = &[
         // THIS image's first entropy draw lands past the hop windows, so its
         // marker must move into the uuid loop — does not survive measurement:
         // neither image draws anywhere in the Postgres phase, so no marker
-        // placement inside that phase changes the draw map. What broke on
-        // 2026-07-09 was the then-default HOPS=3 (already corrected to 4 for
-        // pr44), not the rebuild. See docs/history/IMPLEMENTATION-task157.md §3.
+        // placement inside that phase changes the draw map. (The "HOPS=3 fails,
+        // 4 passes" reading of the 2026-07-09 breakage is retired by tasks/167:
+        // the HOPS=4 green was the hm-xkh5 probe false positive, not a covered
+        // draw.) See docs/history/IMPLEMENTATION-task157.md §3 and
+        // docs/history/IMPLEMENTATION-task167.md.
         ready_marker: "database system is ready to accept connections",
         hops: 4,
         hop_delta_vns: 2_000_000,
@@ -425,14 +433,12 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
     let mut server = ControlServer::new(live, factory);
 
     // Window sizing comes from the selected baseline (hm-2nt), because it is a
-    // property of the IMAGE, not of the protocol: `pr44` bases at Postgres'
-    // readiness line, ~6 M v-ns before the uuid workload's first entropy draw,
-    // so it needs HOPS=4 for a compose-collapsed hop window to cover that
-    // drawing span (`HOPS=3` measures no hop draw and `REQUIRE_DRAWS` fails on
-    // the correct image). `jul9` bases at the workload marker itself, so hop 0
-    // already covers draws. Overriding raises the chain LENGTH, not the window
-    // WIDTH: the draw stays a measured two-seed probe and drift still fails
-    // closed by hash.
+    // property of the IMAGE, not of the protocol. (tasks/167 / hm-xkh5: neither
+    // Postgres baseline draws anywhere in the Postgres phase, so no HOPS value
+    // makes REQUIRE_DRAWS honestly green on these images — the earlier
+    // "HOPS=4 covers the drawing span" reading was the probe's arrival-clamp
+    // false positive. The knobs still size the chain; drift still fails closed
+    // by hash.)
     let cfg_hops = env_u64("HOPS", baseline.hops) as usize;
     let cfg = MaterializeConfig {
         // The same non-boot chain seed shape the task-58 box sweep branches.
@@ -476,11 +482,12 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
              reproducer fold replays across its trailing reseed point. Run \
              `postgres_baseline_marker_timeline` on this image FIRST: it prints where \
              the seeded stream actually moves, and on both Postgres baselines the \
-             answer is `nowhere after early userspace` (hm-2nt) — so moving \
-             READY_MARKER around inside the workload will NOT help, and the knob that \
-             matters is HOPS (3 fails, 4 passes). Otherwise use an entropy-drawing \
-             payload, or set REQUIRE_DRAWS=0 to accept the draw-free (pre-task-78) \
-             shape",
+             answer is `nowhere after early userspace` (hm-2nt) — NO window layout can \
+             satisfy this precondition on these images (the pre-tasks/167 'HOPS=4 \
+             passes' was the hm-xkh5 probe false positive, not a draw). Use a \
+             genuinely drawing workload (the /dev/harmony bridge guest draws on \
+             demand — tests/live_draw_probe_pair.rs), or set REQUIRE_DRAWS=0 to \
+             accept the draw-free (pre-task-78) shape",
             report.hop_draws,
             report.tail_draws
         );

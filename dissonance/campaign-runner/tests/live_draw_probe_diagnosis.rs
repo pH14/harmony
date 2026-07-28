@@ -125,7 +125,9 @@ fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend<A = X86>>>, marker: &[u8]) -> R
         match vmm.step() {
             Ok(Step::Continued) => {}
             Ok(Step::Terminal(r)) => {
-                return Err(format!("guest terminal ({r:?}) at step {steps} before readiness"));
+                return Err(format!(
+                    "guest terminal ({r:?}) at step {steps} before readiness"
+                ));
             }
             Ok(Step::SdkStop) => {
                 return Err(format!("guest SDK stop at step {steps} before readiness"));
@@ -245,12 +247,57 @@ struct LegState {
     idle_landings: Vec<u64>,
     preemption_landings: Vec<u64>,
     components: Vec<(&'static str, [u8; 32])>,
+    /// Per-chunk digests of `state_blob()` (tag → sha256 of the chunk body).
+    /// `state_components` deliberately omits some hash chunks (`SDK\0`, `PVCK`,
+    /// `VMST`), so a whole-hash divergence with no differing component is
+    /// localized here instead of staying a mystery.
+    chunks: Vec<(String, [u8; 32])>,
     hash: [u8; 32],
     regs: control_proto::RegsView,
 }
 
+/// Split a `state_blob` into its `put_chunk` frames: `tag(4) ‖ len(u64 LE) ‖
+/// body`, digesting each body. Repeated tags (none today) would get an index
+/// suffix; a malformed tail is reported as a `TRUNC` pseudo-chunk rather than
+/// panicking (this is an instrument).
+fn chunk_digests(blob: &[u8]) -> Vec<(String, [u8; 32])> {
+    use sha2::{Digest, Sha256};
+    let mut out = Vec::new();
+    let mut off = 0usize;
+    while off + 12 <= blob.len() {
+        let tag: String = blob[off..off + 4]
+            .iter()
+            .map(|&b| {
+                if b.is_ascii_graphic() {
+                    (b as char).to_string()
+                } else {
+                    format!("\\x{b:02x}")
+                }
+            })
+            .collect();
+        let len = u64::from_le_bytes(blob[off + 4..off + 12].try_into().expect("8 bytes"));
+        let start = off + 12;
+        let Some(end) = start.checked_add(len as usize).filter(|&e| e <= blob.len()) else {
+            out.push(("TRUNC".into(), Sha256::digest(&blob[off..]).into()));
+            return out;
+        };
+        out.push((tag, Sha256::digest(&blob[start..end]).into()));
+        off = end;
+    }
+    if off != blob.len() {
+        use sha2::Digest;
+        out.push(("TRUNC".into(), sha2::Sha256::digest(&blob[off..]).into()));
+    }
+    out
+}
+
 fn capture(server: &mut Srv, stop_vns: u64) -> LegState {
-    let hash = match call(server, &Request::Hash { scope: HashScope::Whole }) {
+    let hash = match call(
+        server,
+        &Request::Hash {
+            scope: HashScope::Whole,
+        },
+    ) {
         Reply::Hash(h) => h,
         other => panic!("hash answered {other:?}"),
     };
@@ -268,6 +315,7 @@ fn capture(server: &mut Srv, stop_vns: u64) -> LegState {
         idle_landings: vmm.idle_landings().to_vec(),
         preemption_landings: vmm.preemption_landings().to_vec(),
         components: vmm.state_components(),
+        chunks: chunk_digests(&vmm.state_blob()),
         hash,
         regs,
     }
@@ -281,7 +329,10 @@ fn hex8(d: &[u8; 32]) -> String {
 /// hashes differ (what the production probe keys on).
 fn report(window: &str, plain: &LegState, probe: &LegState) -> bool {
     let fires = plain.hash != probe.hash;
-    println!("\n[DIAG] ── window {window}: probe {}", if fires { "FIRES" } else { "quiet" });
+    println!(
+        "\n[DIAG] ── window {window}: probe {}",
+        if fires { "FIRES" } else { "quiet" }
+    );
     println!(
         "[DIAG] {:<18} {:>20} {:>20} {:>6}",
         "field", "plain", "probe", "diff?"
@@ -290,8 +341,16 @@ fn report(window: &str, plain: &LegState, probe: &LegState) -> bool {
         let d = if a != b { "DIFF" } else { "" };
         println!("[DIAG] {name:<18} {a:>20} {b:>20} {d:>6}");
     };
-    row("stop_vns", plain.stop_vns.to_string(), probe.stop_vns.to_string());
-    row("eff_vns", plain.eff_vns.to_string(), probe.eff_vns.to_string());
+    row(
+        "stop_vns",
+        plain.stop_vns.to_string(),
+        probe.stop_vns.to_string(),
+    );
+    row(
+        "eff_vns",
+        plain.eff_vns.to_string(),
+        probe.eff_vns.to_string(),
+    );
     row(
         "entropy_state",
         format!("{:016x}", plain.entropy),
@@ -302,7 +361,11 @@ fn report(window: &str, plain: &LegState, probe: &LegState) -> bool {
         plain.synchronized.to_string(),
         probe.synchronized.to_string(),
     );
-    row("serial_len", plain.serial_len.to_string(), probe.serial_len.to_string());
+    row(
+        "serial_len",
+        plain.serial_len.to_string(),
+        probe.serial_len.to_string(),
+    );
     row(
         "idle_landings",
         format!("{}", plain.idle_landings.len()),
@@ -319,11 +382,23 @@ fn report(window: &str, plain: &LegState, probe: &LegState) -> bool {
     if plain.idle_landings != probe.idle_landings {
         println!(
             "[DIAG]   idle_landings plain(last 6): {:?}",
-            plain.idle_landings.iter().rev().take(6).rev().collect::<Vec<_>>()
+            plain
+                .idle_landings
+                .iter()
+                .rev()
+                .take(6)
+                .rev()
+                .collect::<Vec<_>>()
         );
         println!(
             "[DIAG]   idle_landings probe(last 6): {:?}",
-            probe.idle_landings.iter().rev().take(6).rev().collect::<Vec<_>>()
+            probe
+                .idle_landings
+                .iter()
+                .rev()
+                .take(6)
+                .rev()
+                .collect::<Vec<_>>()
         );
     }
     if plain.preemption_landings != probe.preemption_landings {
@@ -349,7 +424,10 @@ fn report(window: &str, plain: &LegState, probe: &LegState) -> bool {
         );
     }
     // Component-by-component: the named experiment's actual answer.
-    println!("[DIAG] state_components ({} labels):", plain.components.len());
+    println!(
+        "[DIAG] state_components ({} labels):",
+        plain.components.len()
+    );
     let mut differing: Vec<&'static str> = Vec::new();
     let probe_map: std::collections::BTreeMap<&'static str, [u8; 32]> =
         probe.components.iter().copied().collect();
@@ -358,13 +436,40 @@ fn report(window: &str, plain: &LegState, probe: &LegState) -> bool {
             Some(qd) if qd == pd => {}
             Some(qd) => {
                 differing.push(label);
-                println!("[DIAG]   {label:<20} plain {} probe {}  DIFF", hex8(pd), hex8(qd));
+                println!(
+                    "[DIAG]   {label:<20} plain {} probe {}  DIFF",
+                    hex8(pd),
+                    hex8(qd)
+                );
             }
             None => println!("[DIAG]   {label:<20} MISSING from the probe leg"),
         }
     }
     if differing.is_empty() {
         println!("[DIAG]   (no component differs)");
+    }
+    // Hash-chunk breakdown: the chunks `state_components` has no label for
+    // (`SDK\0`, `PVCK`, `VMST`) are exactly where a "hash differs but every
+    // component matches" divergence must live.
+    let mut chunk_diff: Vec<String> = Vec::new();
+    let probe_chunks: std::collections::BTreeMap<&str, &[u8; 32]> =
+        probe.chunks.iter().map(|(t, d)| (t.as_str(), d)).collect();
+    for (tag, pd) in &plain.chunks {
+        match probe_chunks.get(tag.as_str()) {
+            Some(qd) if *qd == pd => {}
+            Some(qd) => {
+                chunk_diff.push(tag.clone());
+                println!(
+                    "[DIAG]   chunk {tag:<6} plain {} probe {}  DIFF",
+                    hex8(pd),
+                    hex8(qd)
+                );
+            }
+            None => println!("[DIAG]   chunk {tag:<6} MISSING from the probe leg"),
+        }
+    }
+    if fires && chunk_diff.is_empty() {
+        println!("[DIAG]   (hash differs but NO chunk differs — blob framing/ordering divergence)");
     }
     // Register-level drill-down when the vcpu chunk moved.
     if plain.regs != probe.regs {
@@ -374,7 +479,10 @@ fn report(window: &str, plain: &LegState, probe: &LegState) -> bool {
             println!("[DIAG]   rip   plain {:#x} probe {:#x}", p.rip, q.rip);
         }
         if p.rflags != q.rflags {
-            println!("[DIAG]   rflags plain {:#x} probe {:#x}", p.rflags, q.rflags);
+            println!(
+                "[DIAG]   rflags plain {:#x} probe {:#x}",
+                p.rflags, q.rflags
+            );
         }
         for (i, name) in [
             "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9", "r10", "r11",
@@ -384,7 +492,10 @@ fn report(window: &str, plain: &LegState, probe: &LegState) -> bool {
         .enumerate()
         {
             if p.gpr[i] != q.gpr[i] {
-                println!("[DIAG]   {name:<5} plain {:#x} probe {:#x}", p.gpr[i], q.gpr[i]);
+                println!(
+                    "[DIAG]   {name:<5} plain {:#x} probe {:#x}",
+                    p.gpr[i], q.gpr[i]
+                );
             }
         }
     }
@@ -483,7 +594,12 @@ fn draw_probe_vs_entropy_stream_component_diff() {
         // reproducing the chain — a different, worse finding).
         let unit = call(&mut server, &Request::Replay(seal_i));
         assert!(matches!(unit, Reply::Unit));
-        let sealed_hash = match call(&mut server, &Request::Hash { scope: HashScope::Whole }) {
+        let sealed_hash = match call(
+            &mut server,
+            &Request::Hash {
+                scope: HashScope::Whole,
+            },
+        ) {
             Reply::Hash(h) => h,
             other => panic!("hash answered {other:?}"),
         };
@@ -510,7 +626,11 @@ fn draw_probe_vs_entropy_stream_component_diff() {
     // original seal probes the same window.)
     let &(deep_seal, deep_at) = rows.last().expect("hops >= 1");
     branch(&mut server, deep_seal, &seeded_env(seed));
-    let landing = run_to(&mut server, deep_at.saturating_add(tail_delta), "tail plain leg");
+    let landing = run_to(
+        &mut server,
+        deep_at.saturating_add(tail_delta),
+        "tail plain leg",
+    );
     let plain = capture(&mut server, landing);
     branch(&mut server, deep_seal, &probe_env(seed, deep_at, landing));
     let landed = run_to(&mut server, landing, "tail probe leg");
