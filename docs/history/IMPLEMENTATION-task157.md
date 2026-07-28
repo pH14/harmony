@@ -296,20 +296,119 @@ the exit codes were masked. Re-run with the test's own status; the table above i
 the corrected run. Noted rather than silently fixed: a harness that reports a
 green rc on a panicking test is the same green-on-fail shape PR161-F1 was.)*
 
-## 4. hm-i8kc — /dev/harmony bridge liveness family (F2/F9/F10/F11) ⬜ NOT STARTED
+## 4. hm-i8kc — /dev/harmony bridge liveness family ✅ F2 + F9 + F10; ⬜ F11
 
-The meatiest item, deliberately last; not reached. F2 ("the live transaction *is*
-the item") needs a guest image that opens `/dev/harmony`, emits a JSON SDK event,
-and reads entropy — i.e. a **libvoidstar** guest (the play-agent dynamic-glibc +
-`dlopen` pattern, heavier than the static flow-agent) with `/dev/harmony` +
-`libvoidstar.so` mounted into the container rootfs (F11). F9 (select
-`AntithesisJson` ingestion so the driver's event-id-0 = `CATALOG_EVENT_ID` JSON is
-not misparsed by the default `Ingress::Binary` path) is only meaningful once F2's
-live JSON exists. **F10 is directly corroborated by item 2 above** — the net/SDK
-doorbell is wired only after `boot_server`'s readiness marker, so a pre-marker
-emission hits the default-deny un-wired doorbell; the fix is to wire the channel
-before the boot drive. A full close needs a libvoidstar guest-image build + a live
-`/dev/harmony` box transaction and is a multi-part effort in its own right.
+**The bridge has now carried real traffic.** Before this session nothing anywhere
+executed it end to end: `libvoidstar/tests/abi_test.c` macro-mocks
+`open`/`read`/`write` and compiles the library against the mocks, and the Linux
+box gate only greps the serial for `GUEST_READY`. The driver's ABI, the host's
+Entropy/Event doorbell services and the shipped `libvoidstar.so` had never met —
+"the bridge works" was an inference across three separately-tested halves.
+
+### The vehicle
+
+`harmony-linux/linux/build-bridge-image.sh` builds `initramfs-bridge.cpio.gz`:
+static busybox, `libvoidstar.so` at its fixed ABI path, and `bridge-probe` —
+**dynamically linked on purpose**, so it can `dlopen` that library the way a real
+SDK guest does (the play-agent pattern; the flow image is static and cannot).
+`bridge-init.sh` success-gates `BRIDGE_DONE` exactly as `flow-init.sh` learned to
+(PR161-F1): a failed probe reboots *before* the marker, so a broken run fails
+loudly instead of sealing past it.
+
+The probe runs **two legs deliberately**. The raw leg opens `/dev/harmony` itself
+and checks every return value; the libvoidstar leg goes through the shipped
+`.so`. The raw leg is what makes failure loud — the public libvoidstar ABI is
+fire-and-forget (`fuzz_json_data` returns `void`, `fuzz_get_random` returns `0`
+both for "the host said 0" and for "the transaction failed"), so a probe built
+only on the library could not tell a live bridge from a dead one. That is the
+same green-on-fail shape this lane already had to fix once.
+
+The kernel is pinned to `MANIFEST.sha256`'s `bzImage` (`91b092c5…`): `/dev/harmony`
+is `CONFIG_HARMONY_DEVICE=y`, added 2026-07-20 by PR #133, so **every** earlier
+bzImage — including the PR-44 kernel the materialization gates boot — has no such
+device and would fail at `open(2)` for a misleading reason.
+
+### F2 — the live transaction ✅
+
+`tests/live_harmony_bridge.rs`, box, core 2, all four arms in **4.29 s**. Every
+assertion is host-side; none of it trusts what the guest prints about itself.
+
+```
+ARM 1 (negative control, unwired): BRIDGE_FAIL: write(json): Input/output error
+                                   probe exit 2, no marker, 0 events captured
+ARM 2 (wired first):  event id 0 @109755722  {"harmony_attribution":{"rip":"0x7ff8e8f4c687",
+                        "pid":100,"comm_hex":"6272696467652d70726f6265"},
+                        "antithesis_assert":{"id":"harmony_bridge_probe_raw","condition":true}}
+                      event id 0 @109764014  … "harmony_bridge_probe_libvoidstar" …
+                      seeded-entropy stream 11471204516818368 → 10046815388069170954
+                      words c2ee06c3fd0e230c, d6f7bae6cf459b07, b17f6dfd17a5d622
+ARM 3: AntithesisJson → 2 events / 2 schema entries; Ingress::Binary refuses both shapes
+ARM 4: same seed → identical words; seed …ed17 → 6a819dc8…, 3fa6e4db…, daedd029…
+```
+
+The **stream position moving** is the load-bearing evidence for the entropy leg:
+a guest can print any words it likes, but it cannot move the host's
+`SeededEntropy`. Arm 4 is what makes those words *seeded* rather than merely
+non-zero.
+
+### F9 — event id 0 is now a refusal, not silence ✅
+
+The driver stamps every JSON emission with a hardcoded event id of `0`
+(`put_unaligned_le32(0, payload)`), which is exactly `CATALOG_EVENT_ID`. Under
+the default `Ingress::Binary`, `parse_declaration` saw no `SDKC` magic, leniently
+returned an empty context, and `decode_binary` skipped the record as "schema, not
+an event" — so a JSON guest's assertion **vanished** and the campaign reported a
+clean, empty run. `SdkError::AntithesisJsonUnderBinaryIngress` now refuses it by
+name and says which ingress to pick. Proven on **live device bytes** in arm 3
+above, not only on the portable fixtures.
+
+The refusal is deliberately narrow (a leading `{` after optional whitespace):
+the only two producers that reach that slot are the binary SDK, whose catalog
+always opens with `SDKC`, and the driver, which forwards a validated `{…}`
+object. A non-JSON unrecognized blob keeps the old lenient path — pinned by test.
+
+### F10 — wire the doorbell before the boot drive ✅ fixed
+
+`boot_server` drove to the readiness marker and only then handed the VM to
+`ControlServer::new`, where `enable_sdk`/`enable_net` happen — and
+`doorbell_service_offered` gates the Event, Sdk, Net **and** Entropy services on
+those channels existing. Last session's flow-agent saw the polite end of this
+("Net doorbell unwired → nominal"); an instrumented workload sees the sharp end.
+`boxrun.rs` now wires both channels on the live VM before the drive; guests that
+never ring the doorbell are unaffected (both channels are inert and unhashed
+until used).
+
+Red/green through the **product path** — `campaign-runner box` on the bridge
+image, one window, two binaries from the same tree differing only in this change:
+
+```
+RED  (pre-fix): BRIDGE_FAIL: write(json): Input/output error → probe exit 2 →
+                BRIDGE_FAILED: reboot → "failed to reach the readiness marker:
+                guest reached a terminal (Shutdown) at step 97517" → rc=1
+GREEN (fixed):  72-byte raw JSON, c2ee06c3fd0e230c, 80-byte libvoidstar JSON,
+                d6f7bae6cf459b07 / b17f6dfd17a5d622 → BRIDGE_DONE → rc=0
+```
+
+The words are byte-identical to the ones the test harness draws, so the two
+independent drivers agree on the guest's execution.
+
+*(The first attempt at this pair reported `rc=1` on **both** arms and was thrown
+out: `--seeds 2` fails argument validation before any boot, so the "red" proved
+nothing. Recorded rather than quietly re-run — a red arm that is red for the
+wrong reason is precisely what this doctrine exists to catch.)*
+
+### F11 — container rootfs ⬜ NOT DONE
+
+Untouched, and it is genuinely separate work. `install_libvoidstar`
+(`lib-build.sh`) only ever targets the **outer** guest rootfs; the OCI bundle
+`build-docker-image.sh` extracts from the postgres image layers never receives
+`libvoidstar.so`, and the default `runc spec` device list has no `/dev/harmony`.
+Both docker and k3s images also still boot the **unpatched** container-class
+bzImage, which has no such device at any level. So F11 needs: the patched kernel
+under those images, an `install -m 0755 … "$BUNDLE/rootfs/usr/lib/libvoidstar.so"`
+step, and `/dev/harmony` added to the bundle's `config.json` mounts (the
+`container-setup.sh` unshare path would pick it up from devtmpfs automatically;
+the `runc` path would not). Left open on the bead with this shape recorded.
 
 ---
 
@@ -331,6 +430,35 @@ before the boot drive. A full close needs a libvoidstar guest-image build + a li
   which dies immediately and is swept on the next `sweep_stale`. Fixed in the run
   wrappers by redirecting acquire's stdout to a file
   (`… acquire "$LEASE" > .core`) so the long-lived script is the lease holder.
+  (Session 2 ran on the tasks/164 coordinator, where a lease lives on time+pid;
+  the wrapper still writes acquire's stdout to a file and renews at TTL/3.)
+
+### Session 2 (hm-2nt, hm-i8kc)
+
+- **`--release` for every box run.** The gates' assertions are hash equalities and
+  V-time/step ratios — build-mode independent — but a debug build's 2 GiB state
+  digest dominates everything: the same chain took **30 min debug** (killed) and
+  **176 s release**, and the marker timeline went from ~2 min *per marker* to 79 s
+  for a whole boot. Nothing about the evidence changes; only whether the
+  measurement is affordable enough to iterate on.
+- **The timeline probe reads `state_components()`, not `save_vtime()`.**
+  `save_vtime` is cheaper but fails closed at non-synchronized points, which is
+  most serial-write boundaries; `state_components` is total and its
+  `vtim:entropy` component is exactly the stream position. The cost (one state
+  digest per marker) is the price of a probe that never silently skips a reading.
+- **Did not move the Postgres `READY_MARKER`.** The bead prescribed it; the
+  measurement says the workload draws nothing, so it would have been a change
+  that looked like a fix and fixed nothing. Recording *why* the prescription was
+  wrong is the durable part.
+- **Did not promote `jul9` with a fabricated "draw-proven" story.** It is
+  certified at the standard configuration, and the draw-probe discrepancy is
+  written down as an open question rather than rounded into the certification.
+- **The bridge probe has a raw leg as well as a libvoidstar leg**, because the
+  libvoidstar ABI cannot report failure — a single-leg probe would have been
+  another green-on-fail gate.
+- **F11 left undone deliberately.** It needs the patched kernel under the
+  docker/k3s images plus OCI bundle changes; starting it would have meant
+  finishing neither it nor the F10 fix.
 
 ## Box safety
 
@@ -339,5 +467,30 @@ release (reverts to stock + verifies on the last lease out, even on failure).
 After the final run: `kvm = 1396736 (REVERT OK)`, `live leases: 0`. The box is at
 its clean resting state.
 
-**LANE COMPLETE — closed: hm-lld, hm-rdp | reached-not-closed: (none) |
+**Session 1 — LANE COMPLETE — closed: hm-lld, hm-rdp | reached-not-closed: (none) |
 untouched: hm-2nt, hm-i8kc.** Box back to stock KVM 1396736, no leases held.
+
+**Session 2 — LANE COMPLETE — closed: hm-2nt, hm-i8kc (F2/F9/F10) |
+reached-not-closed: hm-i8kc F11 (container rootfs; shape recorded above) |
+untouched: (none).** Every window opened through `scripts/box-window.sh` with an
+EXIT-trap release; after the final run `lsmod kvm = 1396736 (REVERT OK)`,
+`live leases: 0`.
+
+Two items for the foreman's queue, both from measurement rather than opinion:
+
+1. **P1 candidate — the task-78 draw probe disagrees with the entropy stream.**
+   `REQUIRE_DRAWS` reports drawing windows on both Postgres baselines where an
+   independent, positive-controlled measurement shows the seeded stream never
+   moves. Either the precondition is vacuous on these guests (and the task-78 box
+   evidence does not rest on a drawing window), or a restored branch draws where
+   the live boot does not. Reproduce: `BASELINE=pr44` gate (hop 3 + tail report
+   draws) against `postgres_baseline_marker_timeline` (no interval draws after
+   422 M v-ns). Next experiment: diff `state_components()` between hop 3's plain
+   and probe legs.
+2. **The bridge guest is the first workload whose futures diverge through real
+   guest entropy.** `campaign-runner box` over `initramfs-bridge.cpio.gz` prints
+   `box GATES PASS` — and unlike the flow image, its per-seed divergence is not
+   carried by the V-time reseed fold alone: the guest draws three seeded words
+   per run and they change with the seed (proven in `live_harmony_bridge.rs` arm
+   4). That makes it a candidate drawing baseline for exactly the `REQUIRE_DRAWS`
+   precondition finding 1 questions.
