@@ -6,10 +6,13 @@
 > Adopted 2026-07-09 (Paul: "worth a try") to replace prose-trigger sprawl across GitHub
 > issues, task-spec headers, and memory notes.
 
-_Refreshed 2026-07-27 evening (foreman loop). **The two-day Fable-limit pause is over**:
-the spend limit that killed both tribunal judges mid-adjudication on 2026-07-25 (`hm-2j4w`)
-has lifted; both judges were resumed on their preserved prompts + partials. **W7 (PR #162)
-merged tonight** after its resumed verify judge confirmed the mutants split exactly. The
+_Refreshed 2026-07-27 late night (foreman loop). **The two-day Fable-limit pause ended and
+the entire parked review pipeline cleared in one evening**: both interrupted judges resumed
+on preserved prompts and completed, and **three PRs merged — W7 (#162), the box-window
+lease-lifetime fix (#164, discovery → fix → verify same night), and W4 (#165)**. The fixed
+coordinator was then **deployed to the box and hand-verified** (`hm-tp45` closed, incl. the
+acquire-after-expiry composite on the real module), which lifted the hold on W8 — its lane
+worker is live. Zero open PRs. Worker baseline moved to **Opus 5** (Paul, tonight). The
 queue is organized as work orders — Paul consolidated 42 parked review findings into seven
 epics (label `work-order`; children `wo-child`) overnight 2026-07-24/25 — one worker per
 work order, scoped with `bd ready --parent <epic-id>`._
@@ -80,19 +83,14 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
 
 ## In flight
 
-**Two lanes, both at the judge step (workers parked awaiting verdicts).**
+**One lane.**
 
-- **`hm-nvwx` — box-window lease lifetime** (tasks/164,
-  [PR #164](https://github.com/pH14/harmony/pull/164)): fix complete on the branch —
-  leases live on time+pid (`deadline pid core`, `--ttl`, `renew` verb), box red/green
-  evidence retained in the implementation record. Four discovery seats reported 2026-07-25;
-  the **resumed discovery judge is adjudicating now**. On merge, the deploy step is
-  `hm-tp45` (the box runs `/root/box-window.sh`, not the repo copy — merge does not deploy).
-- **W4 — ARM spike harness hardening** (`hm-kdih`, tasks/165,
-  [PR #165](https://github.com/pH14/harmony/pull/165)): five PR #132 findings in three
-  files; worker pushed and parked. Five discovery seats completed 2026-07-27 evening
-  (~850 LOC diff → 5-seat panel, contract+adversary merged); **judge spawn queued behind
-  PR #164's** — one heavy review op per iteration.
+- **W8 — Intel box lane, remaining half** (`hm-i2et`, tasks/157, session
+  `agent-intel-box-lane`, spawned 2026-07-27 ~22:15 on the new Opus 5 baseline):
+  item 3 `hm-2nt` (draw-probe gate on the Jul-9 Postgres image) then item 4 `hm-i8kc`
+  (/dev/harmony bridge liveness; may span sessions). Scope update sent: items 1–2 merged
+  in PR #161, coordinator semantics changed (time+pid leases — size `--ttl`, renew before
+  deadline on long runs), smoke-fire-once stands. One box-touching worker, serialized.
 
 ## New this session (foreman-filed, 2026-07-25)
 
@@ -106,17 +104,10 @@ ladder pending the Epyc box (`hm-5wq` provider pick open).
   untouched**.
 - **`hm-hj29`** (P2) / **`hm-rgu8`** (P2) — the PR #160 discovery parks, above.
 
-## Ready — the remaining work orders (all 3 worker slots free; both live sessions are parked at review)
+## Ready — the remaining work orders (2 of 3 worker slots free)
 
 In `bd ready` order. Each is one worker when dispatched:
 
-- **W8 — Intel box lane, remaining half** (`hm-i2et`, P0, epic stays open): `hm-2nt`
-  (July-9 Postgres image broke the draw-probe gate's precondition) then `hm-i8kc`
-  (/dev/harmony bridge liveness — no gate does a REAL transaction). One box-touching
-  worker, serialized. **Foreman is holding this until PR #164 merges AND `hm-tp45`
-  deploys the fixed coordinator to `/root/box-window.sh`** — running the lane against
-  the defective pid-only coordinator is exactly the observed rmmod-under-live-campaign
-  hazard.
 - **W6 — next AMD box window: execution register** (`hm-palv`, P2): *not a bead to work
   now* — the ordered list to execute while a rented AMD box is live, so nobody
   reconstructs it under time pressure. `hm-gig` (AE-3 exact landing under core
@@ -166,6 +157,26 @@ In `bd ready` order. Each is one worker when dispatched:
 
 ## Recently done (this week)
 
+- **Box-window lease lifetime MERGED + DEPLOYED** (tasks/164,
+  [PR #164](https://github.com/pH14/harmony/pull/164), `hm-nvwx`, 2026-07-27 night —
+  discovery (F1 P1: any non-release verb sweeping the last live lease orphaned a patched
+  window; next acquire hard-aborted) → one batch (`revert_if_empty` after every sweep +
+  TTL normalization, flock fail-closed, kill-path grader assertions; suite 31→43) →
+  verify APPROVE (judge re-ran the suite and repro'd the ride-alongs; two fix-residues
+  parked: `hm-5mbn` TTL-wrap + env hooks, `hm-dakl` status swallows a failed heal) →
+  **deployed to `/root/box-window.sh` and hand-verified the same night** (`hm-tp45`
+  closed): H1 acquire-after-expiry composite ran on the real module — swept, reverted to
+  verified stock, reloaded, leased rc 0 — where the old coordinator hard-aborted.
+  Coordinator parks: `hm-v1m0` (enforced-gate wiring), `hm-ubkp` (pid-identity).
+- **W4 — ARM spike harness input + stage-gating hardening MERGED** (tasks/165,
+  [PR #165](https://github.com/pH14/harmony/pull/165), `hm-kdih` + 5 children, 2026-07-27
+  night — 5-seat discovery, zero P1s, three seats clean): all five PR #132 J-findings
+  closed in one commit with same-commit regressions; **Miri now reaches the EL0 unsafe
+  seam** (166 lib tests incl. the hostile-input family on the pinned nightly); the
+  `hm-ej5` stop condition's negative was independently re-established by the judge from
+  the retained aa1/aa2 manifests — no retained evidence could have ridden the ungated
+  exact-landing path. Parks: `hm-dxvm` (`--reps 0` ceiling bypass, release-build survival
+  is an optimizer accident), `hm-b666` (doc cites the unretained 6k-record run).
 - **W7 — PR #134 evidence + campaign bookkeeping hardening MERGED** (tasks/158,
   [PR #162](https://github.com/pH14/harmony/pull/162), `hm-zduj` + 9 of 10 children,
   2026-07-27 evening — full bounded pipeline stretched across the Fable-limit pause:
