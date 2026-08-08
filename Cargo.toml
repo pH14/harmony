@@ -13,7 +13,13 @@ members = ["consonance/*", "dissonance/*"]
 # dissonance/differential-lineage is a standalone workspace root by design;
 # the exclusion lets workspace members path-depend on it (the revision
 # coordinator wires into its dataflow) without merging the two graphs.
-exclude = ["harmony-linux", "dissonance/differential-lineage"]
+# dissonance-v2/ is a standalone workspace root by design (the LibAFL rebuild,
+# docs/LIBAFL-PLAN.md); it must not share this build graph before its phase 5.
+exclude = [
+  "harmony-linux",
+  "dissonance/differential-lineage",
+  "dissonance-v2",
+]
 
 [workspace.package]
 edition = "2024"
