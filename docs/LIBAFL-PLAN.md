@@ -80,6 +80,25 @@ The corpus is `InMemoryOnDiskCorpus`, so every testcase and its metadata are
 plain files on disk. Those files are the interface between the fuzzer and
 everything below.
 
+### Adding a target (the plug-in seam)
+
+Every target — maze, adventure toy, NES game, eventually the consonance VM —
+answers the same five questions, which becomes one trait plus one action
+type: an action vocabulary (typed, total actions with mutation hooks, so the
+generic mutator stack works everywhere), `reset` to genesis, `apply` one
+action, `observe` (the evidence detectors and triage read), `fingerprint`
+(the base coverage feature, coarse on purpose), an `exit_kind` oracle, and
+*optional* `snapshot`/`restore` (default: replay from genesis, which
+determinism makes merely slow, never wrong). The executor, mutator stack,
+and generated-code facades are generic over this trait; plugging in a new
+game means implementing it and nothing else.
+
+Sequencing: do **not** design this trait up front. Phase 1 hardcodes the
+maze; the trait is extracted in phase 4a when the adventure toy — the
+second target — forces the real seams into view. The NES (phase 4b) then
+validates the extraction as a third implementor, and consonance (phase 5)
+is the fourth.
+
 ### Generated code: detectors
 
 The instrumentor LLM emits **Rust source**, not configuration. A generated
