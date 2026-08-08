@@ -22,7 +22,10 @@ target-execution counts rather than wall-clock durations.
 - Phase 2: `InMemoryOnDiskCorpus`, separate deterministic label and log
   sidecars, `LoadLabelsStage`, `TriageScore` with `WeightedScheduler`, a regex
   triager, null-versus-scripted A/B, and recorded-label replay.
-- Phase 3: in progress on this branch.
+- Phase 3: generated-detector trait and facade, lineage-gated `ScopedFeedback`,
+  per-detector novelty accounting, deterministic mechanical retirement, an
+  exhaustive append-only plateau proof, and a generate→build→restart→resume
+  detector install that crosses a real process boundary.
 
 ## Decisions
 
@@ -41,6 +44,16 @@ target-execution counts rather than wall-clock durations.
   crate and restarts that artifact against the persisted corpus. The generated
   source therefore remains inspectable while running the demo does not dirty the
   checked-out source tree.
+- The generated detector is hand-written by the demo instrumentor, as allowed by
+  the phase 3 validation plan. The instrumentor refuses to install until it has
+  read both `fuzzer_stats` plateau evidence and a label describing the hidden
+  inventory distinction.
+- Phase 3 checkpoints the seeded RNG, execution count, current testcase, inputs,
+  and parent ids, then reconstructs LibAFL feedback history by replaying the
+  persisted corpus before continuing. Full `StdState` deserialization in a newly
+  linked installer depended on `SerdeAny` constructor registration for generic
+  metadata; the explicit checkpoint avoids unsafe manual registration and records
+  exactly the campaign state the restart requires.
 - `LoadLabelsStage` compares exact sidecar bytes instead of filesystem modification
   times. Modification times are host state; content comparison preserves the plan's
   changed-file behavior while keeping replay independent of wall-clock metadata.
@@ -58,3 +71,7 @@ target-execution counts rather than wall-clock durations.
   the referenced old paths are no longer functions. Clippy still exits successfully
   under `-D warnings`; fixing that root configuration is outside this directory's
   scope.
+- `SerdeAny` metadata is convenient inside one binary but chafes at the generated
+  process boundary: link-time registration of generic map and stage metadata is
+  not a stable restart contract. Replaying the small persisted corpus is both
+  deterministic and simpler for this prototype.
