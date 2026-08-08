@@ -6,7 +6,7 @@
 # interpretation, R-L2), publishes the always-on billboard (task 87's enabling
 # seam), and marks legibility events (`assert_reachable`).
 #
-# Standalone workspace (like `harmony-linux/flow-agent` and `harmony-linux/sdk`): the root
+# Standalone workspace (like `harmony-linux/sdk`): the root
 # Cargo.toml excludes `harmony-linux/`, so this crate declares its own `[workspace]` and
 # carries its own lockfile. It is a **guest-resident harmony-linux artifact** —
 # the no-`cfg(target_os)` portability rule does not apply to it (conventions
@@ -41,7 +41,7 @@ path = "src/main.rs"
 harmony-sdk = { path = "../sdk", version = "0.1.0" }
 # The guest-side hypercall client + Transport trait the SDK is generic over.
 hypercall-proto = { path = "../../consonance/hypercall-proto", version = "0.1.0", default-features = false, features = ["guest"] }
-# The real doorbell transport (mapped out of /dev/mem, flow-agent pattern).
+# The real doorbell transport (mapped out of /dev/mem).
 hypercall-doorbell = { path = "../../consonance/hypercall-doorbell", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
 
