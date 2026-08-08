@@ -8,9 +8,11 @@ From this directory, run:
 cargo run --bin demo
 ```
 
-The command is the final phase 0–3 demonstration. It runs the null-versus-scripted
-triage comparison and the phase 3 blind-spot baseline/rescue comparison, reporting
-target-execution counts rather than wall-clock durations.
+The command is the demonstration through phase 4a. It runs the
+null-versus-scripted triage comparison, the phase 3 blind-spot baseline/rescue,
+the full phase 4a 2 × 3 adventure matrix, and a generated detector/macro
+build-and-restart. It reports target-execution counts rather than wall-clock
+durations.
 
 ## What is built
 
@@ -26,10 +28,21 @@ target-execution counts rather than wall-clock durations.
   per-detector novelty accounting, deterministic mechanical retirement, an
   exhaustive append-only plateau proof, and a generate→build→restart→resume
   detector install that crosses a real process boundary.
-- Phase 4a started after the 0–3 audit: a small adventure toy now supplies the
-  second implementor that forced extraction of the `Target` trait. It includes
-  rooms, inventory, a locked door, a goal, a hazard, and snapshots; the existing
-  combination-lock maze is the other implementor.
+- Phase 4a: a small adventure target supplies the second implementor that forced
+  extraction of the `Target` trait. It includes rooms, inventory, a locked door,
+  a goal, a hazard, and snapshots. A room-only base map hides the inventory and
+  door transitions. Generated detector features retain those transitions; the
+  semantic macro emits the coherent fetch-key/open-door route in one mutation.
+- Phase 4a runs `{null, scripted}` triage × `{base, generated detectors,
+  detectors + macros}` across explicit seeds. Each cell records deterministic
+  per-seed execution counts and their median. Tests require the macro arm to beat
+  detector-only under both triagers and require macro-enabled same-seed corpora,
+  lineage, producer tags, accounting, and execution counts to match exactly.
+- Generated mutators expose only a pure `AdventureInput → AdventureInput`
+  function. The host facade validates the result, tags retained testcases with
+  their producer, accounts offspring and novelty, and retires a macro after a
+  fixed number of non-novel offspring. The install harness emits both detector
+  and mutator source, builds a separate crate, and restarts the campaign process.
 
 ## Decisions
 
@@ -58,6 +71,16 @@ target-execution counts rather than wall-clock durations.
   linked installer depended on `SerdeAny` constructor registration for generic
   metadata; the explicit checkpoint avoids unsafe manual registration and records
   exactly the campaign state the restart requires.
+- The phase 4a triage seam is a `Triager` over a stable JSON `TriageRequest`.
+  Null and regex-scripted implementations drive the checked experiment. A
+  JSON-over-stdin/stdout `SubprocessTriager` is available for a future model
+  process; no model is called by the demo's matrix logic or by tests.
+- Every retained phase 4a testcase, including the genesis seed and base-mutator
+  offspring, carries `ProducerMetadata`. Generated-mutator names are assigned by
+  the host adapter rather than accepted from generated code.
+- Macro retirement is based on consecutive emitted offspring that fail to enter
+  the corpus. Skipped mutations do not count, novelty resets the counter, and all
+  counters use saturating arithmetic so long campaigns cannot panic on overflow.
 - `LoadLabelsStage` compares exact sidecar bytes instead of filesystem modification
   times. Modification times are host state; content comparison preserves the plan's
   changed-file behavior while keeping replay independent of wall-clock metadata.

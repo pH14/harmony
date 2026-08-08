@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Single-command demonstration of Phase 2 steering and Phase 3 rescue.
+//! Single-command demonstration through the Phase 4a experiment matrix.
 
 use std::{error::Error, path::PathBuf};
 
 use fuzzer::{
     phase2::{run_null, run_scripted},
     phase3::{install_build_restart, run_blind_baseline},
+    phase4a::{SearchArm, TriageArm, install_build_restart_adventure, run_adventure_matrix},
 };
 
 const PHASE2_BUDGET: u64 = 100_000;
 const PHASE3_BASELINE_BUDGET: u64 = 2_000;
 const PHASE3_RESCUE_BUDGET: u64 = 20_000;
+const PHASE4A_BUDGET: u64 = 10_000;
 
 fn median(values: &mut [u64]) -> u64 {
     values.sort_unstable();
@@ -52,6 +54,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         PHASE3_RESCUE_BUDGET,
     )?;
 
+    let phase4a_seeds: Vec<u64> = (0_u64..6).map(|offset| 0x5eed_d400 + offset).collect();
+    let matrix = run_adventure_matrix(
+        &output.join("phase4a-matrix"),
+        &phase4a_seeds,
+        PHASE4A_BUDGET,
+    )?;
+    let installed_macro = install_build_restart_adventure(
+        &output.join("phase4a-installed-campaign"),
+        &output.join("phase4a-build"),
+        0x5eed_d4ff,
+        PHASE4A_BUDGET,
+        TriageArm::Scripted,
+    )?;
+
     println!("Dissonance v2 LibAFL demo");
     println!("phase 2 null triage time-to-target:     {null_median} executions (median, 6 seeds)");
     println!(
@@ -64,6 +80,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "phase 3 detector-rescue time-to-target: {} executions after restart (position {})",
         rescued.invocation_executions, rescued.maximum_position
+    );
+    for cell in &matrix.cells {
+        let triage = match cell.triage {
+            TriageArm::Null => "null",
+            TriageArm::Scripted => "scripted",
+        };
+        let search = match cell.search {
+            SearchArm::Base => "base",
+            SearchArm::GeneratedDetectors => "generated detectors",
+            SearchArm::DetectorsAndMacros => "detectors + macros",
+        };
+        println!(
+            "phase 4a {triage:8} × {search:21}: {} executions (median, {}/{} reached)",
+            cell.median_executions,
+            cell.reached,
+            matrix.seeds.len()
+        );
+    }
+    println!(
+        "phase 4a installed macro rescue:       {} executions after generated-code restart",
+        installed_macro
+            .time_to_target
+            .ok_or("installed phase 4a macro did not reach the target")?
     );
     println!("artifacts: {}", output.display());
     Ok(())
