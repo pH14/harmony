@@ -132,18 +132,15 @@ sidecars into in-memory testcase metadata. This avoids racing LibAFL's own
 metadata persistence. (~100 lines against public corpus API; the one piece of
 glue LibAFL doesn't ship.)
 
-### The instrumentor process — and the "digest" pressure test
+### The instrumentor process
 
-Verdict on "digest": **dropped — it was neither necessary nor
-industry-backed.** The instrumentor is an agent with file tools pointed at the
-fuzzer's output directory, reading exactly what a human fuzzing operator
-reads: `fuzzer_stats` and `plot_data` (stock `AflStatsStage`), plus the corpus
+The instrumentor is an agent with file tools pointed at the fuzzer's output
+directory, reading exactly what a human fuzzing operator reads:
+`fuzzer_stats` and `plot_data` (stock `AflStatsStage`), plus the corpus
 directory with its metadata and label sidecars. "Assemble relevant context
-from files" is what agent harnesses do natively (grep, read, jq); designing a
-bespoke summary artifact would be building a worse, static version of that.
-If the corpus outgrows what the agent can browse comfortably, the fix is a
-better stats file or a query script — operator tooling, not new architecture
-or vocabulary.
+from files" is what agent harnesses do natively (grep, read, jq). If the
+corpus outgrows what the agent can browse comfortably, the fix is a better
+stats file or a query script — operator tooling.
 
 The instrumentor's outputs are exactly two, both already named: a generated
 detector file (see above) and label/priority edits (energy caps expressed as

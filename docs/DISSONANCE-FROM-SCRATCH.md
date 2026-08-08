@@ -43,8 +43,9 @@ triage-and-instrumentation loop** alongside. Five components:
    decays where nothing new comes back.
 4. **Triage** — a pool of cheap LLMs streaming behind the search, labeling
    each new corpus entry. Never blocks the fast loop.
-5. **Instrumentor** — a bigger LLM, invoked occasionally with a digest of
-   triage labels and corpus stats. Two outputs, named for what they touch:
+5. **Instrumentor** — a bigger LLM, invoked occasionally; it reads the
+   fuzzer's stats and the labeled corpus, like a human fuzzing operator
+   would. Two outputs, named for what they touch:
    it **writes instrumentation** (finer-grained novelty detectors, *scoped* to
    descendants of a corpus entry) and it **sets energy** (priority caps on a
    subtree). Artifacts install between runs and auto-retire when unproductive.
@@ -65,7 +66,7 @@ LLMs' only power is to change where the map is detailed.
               scoped instrumentation                    ▼
               + energy caps     │                 Triage — cheap LLMs,
                                 │                 label entries, stream
-                                │                       │ digest
+                                │                       │ labels + stats
                                 └── Instrumentor ◄──────┘
                                     (LLM, occasional)
 
@@ -123,16 +124,16 @@ TriageLabels {
   interest:     Boost | Neutral | Suppress    // machine-consumed → energy
   duplicate_of: id?                           // machine-consumed → dedup
   flags:        [BugSuspect, InvariantNearMiss, DeadEnd]
-  tags:         ["leader-election", ...]      // digest-bound free text
+  tags:         ["leader-election", ...]      // instrumentor-facing free text
   summary:      one line
-  hypotheses:   [free text]                   // digest-bound
+  hypotheses:   [free text]                   // instrumentor-facing
 }
 ```
 
 ## Testing without LLMs
 
 LLMs never act; they emit data through two typed seams (`evidence → labels`,
-`digest → artifacts`). Consequences:
+`stats + labels → artifacts`). Consequences:
 
 - The fast loop tests as a pure fuzzer: determinism properties, novelty
   monotonicity, scoping (artifact on entry E affects only E's descendants),
@@ -185,17 +186,11 @@ event.
 ## Follow-up
 
 `docs/LIBAFL-PLAN.md` verifies LibAFL's API surface against this sketch and
-lays out the phased build. It supersedes the first three open questions below
-(installable code → recompile-and-restart; digest → dropped, the instrumentor
-reads fuzzer stats and the labeled corpus directly).
+lays out the phased build, including how instrumentor-written code ships
+(recompile and restart, resuming from the on-disk corpus).
 
 ## Open questions
 
-- How installable code ships: scoped detectors as data (feature configs), an
-  expression layer, WASM, or restart-per-install. Gates how fast the
-  instrumentor loop can turn.
-- Digest design: what summary of triage labels + corpus stats fits an
-  instrumentor context and still localizes starvation.
 - Whether interactive LLM trajectory seeding (play once slowly at the
   macro-action layer, record as input, mutate mechanically) earns its plumbing
   over open-loop script writing. Severable either way.
