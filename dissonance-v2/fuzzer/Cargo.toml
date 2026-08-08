@@ -9,3 +9,7 @@ license.workspace = true
 # (docs/LIBAFL-PLAN.md "Version churn").
 libafl = "=0.15.4"
 libafl_bolts = "=0.15.4"
+postcard = { version = "=1.1.3", features = ["alloc"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
