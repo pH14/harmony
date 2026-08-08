@@ -19,7 +19,10 @@ target-execution counts rather than wall-clock durations.
 - Phase 1: typed `DecisionList`, append/perturb/truncate/splice mutators,
   a seeded combination-lock maze executor, `MaxMapFeedback`, and deterministic
   A/B and same-seed corpus tests.
-- Phases 2–3: in progress on this branch.
+- Phase 2: `InMemoryOnDiskCorpus`, separate deterministic label and log
+  sidecars, `LoadLabelsStage`, `TriageScore` with `WeightedScheduler`, a regex
+  triager, null-versus-scripted A/B, and recorded-label replay.
+- Phase 3: in progress on this branch.
 
 ## Decisions
 
@@ -38,6 +41,9 @@ target-execution counts rather than wall-clock durations.
   crate and restarts that artifact against the persisted corpus. The generated
   source therefore remains inspectable while running the demo does not dirty the
   checked-out source tree.
+- `LoadLabelsStage` compares exact sidecar bytes instead of filesystem modification
+  times. Modification times are host state; content comparison preserves the plan's
+  changed-file behavior while keeping replay independent of wall-clock metadata.
 
 ## LibAFL friction
 

@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 /// Maximum number of decisions retained by the Phase 1 mutators.
 pub const MAX_DECISIONS: usize = 16;
-const MAP_SIZE: usize = 64;
+pub(crate) const MAP_SIZE: usize = 64;
 
 /// The known deep route through the combination-lock maze.
 pub const DEEP_ROUTE: [Decision; 8] = [
@@ -244,7 +244,7 @@ where
     }
 }
 
-type MazeObserver = StdMapObserver<'static, u8, false>;
+pub(crate) type MazeObserver = StdMapObserver<'static, u8, false>;
 type MazeObservers = (MazeObserver, ());
 
 /// Safe in-process executor that owns and updates its map observer.
@@ -255,7 +255,7 @@ pub struct MazeExecutor {
 }
 
 impl MazeExecutor {
-    fn new(observer: MazeObserver) -> Self {
+    pub(crate) fn new(observer: MazeObserver) -> Self {
         Self {
             observers: tuple_list!(observer),
             last_depth: 0,
