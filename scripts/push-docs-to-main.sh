@@ -13,7 +13,7 @@
 # script auto-approves while raw `git push origin main` stays classifier-gated:
 #   "permissions": { "allow": ["Bash(scripts/push-docs-to-main.sh:*)"] }
 #
-# Anything NOT allowlisted (consonance/**, dissonance/**, Cargo.toml,
+# Anything NOT allowlisted (consonance/**, dissonance-v2/**, Cargo.toml,
 # Cargo.lock, deny.toml, clippy.toml, .github/**, .claude/settings*, scripts/**, …)
 # still requires a PR — fail-closed by default.
 set -euo pipefail

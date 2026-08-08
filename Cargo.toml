@@ -2,12 +2,13 @@
 resolver = "2"
 # Crates are grouped under harmony-themed top-level dirs (task 90). `consonance/`
 # is the deterministic engine — vmm-core/vmm-backend and the crates they compose,
-# plus `consonance/unison` (the determinism harness, ex-`detharness`). `dissonance/*`
-# is the bug finder built on consonance (environment/control-proto/explorer —
-# tasks 24/25/12; pv-net/task 26 was retired by task 50, the net-fault boundary);
-# the glob is present so the first dissonance crate gates with
-# `cargo -p <crate>` (it matches nothing until a crate lands).
-members = ["consonance/*", "dissonance/*"]
+# plus `consonance/unison` (the determinism harness, ex-`detharness`) and the
+# engine's contract surface, `consonance/environment` + `consonance/control-proto`
+# (the decision vocabulary and control-transport wire; relocated here from the
+# retired `dissonance/` tree, which they never should have lived under —
+# consonance is their only consumer). The v1 dissonance searcher was removed;
+# its rebuild lives in the standalone `dissonance-v2/` workspace.
+members = ["consonance/*"]
 # harmony-linux/ contains standalone Linux-side crates; the acceptance-suite
 # payloads use custom targets/linker flags. Neither belongs to this workspace.
 # spikes/differential-lineage is a standalone workspace root by design (tasks/120);
