@@ -182,6 +182,13 @@ event.
   the trait system has had a chance to chafe. Priced-in caveat: LibAFL is
   generics-heavy with a steep learning curve.
 
+## Follow-up
+
+`docs/LIBAFL-PLAN.md` verifies LibAFL's API surface against this sketch and
+lays out the phased build. It supersedes the first three open questions below
+(installable code → recompile-and-restart; digest → dropped, the instrumentor
+reads fuzzer stats and the labeled corpus directly).
+
 ## Open questions
 
 - How installable code ships: scoped detectors as data (feature configs), an
