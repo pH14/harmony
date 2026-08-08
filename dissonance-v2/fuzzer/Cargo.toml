@@ -1,0 +1,11 @@
+[package]
+name = "fuzzer"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Pinned for all phases; upgrade once, deliberately, at phase 5
+# (docs/LIBAFL-PLAN.md "Version churn").
+libafl = "=0.15.4"
+libafl_bolts = "=0.15.4"

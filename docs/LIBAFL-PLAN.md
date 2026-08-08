@@ -39,12 +39,17 @@ executor, not dependencies of the prototype).
 
 ### Crate layout
 
-One prototype crate, off to the side of the main build graph until it earns
-its way in — e.g. `dissonance/libafl-spike/` as its own small workspace.
-Internal modules: `input` (per-target input types + mutators), `executor`
-(per-target executors), `feedback` (the scoped-feedback combinator +
-generated-code facade), `triage` (label schema + score), `harness` (the
-codegen/rebuild loop).
+`dissonance-v2/` — a standalone workspace root outside the harmony root
+workspace (same pattern as `spikes/differential-lineage`), with `libafl`
+pinned at 0.15.4. Its `CLAUDE.md` instructs agents working there to use only
+this doc and the sketch doc, and not to read the v1 `dissonance/` crates or
+the legacy design docs — the rebuild must not inherit the old decomposition
+by osmosis. No dependencies on harmony crates before phase 5.
+
+Modules inside the `fuzzer` crate as they land: `input` (per-target input
+types + mutators), `executor` (per-target executors), `feedback` (the
+scoped-feedback combinator + generated-code facade), `triage` (label schema +
+score), `harness` (the codegen/rebuild loop).
 
 ### The fuzzer process
 
