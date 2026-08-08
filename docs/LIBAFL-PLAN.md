@@ -110,6 +110,23 @@ that's the point to revisit — not before.
 map; a detector whose map has produced no novelties for N minutes is dropped
 at the next rebuild. No LLM in that decision.
 
+**Generated mutators (semantic macros) — same channel, second trait.** The
+instrumentor can also emit a `Mutator` implementation behind an equally
+narrow facade: a pure `input → input` function that splices a parameterized,
+semantically coherent motif into a sequence ("partition the leader while a
+write is in flight", "jump-arc of length N"). This is where triage
+hypotheses land when the gap is in the *action* space rather than the
+observation space: coordinated multi-action patterns that single-atom
+mutation composes only by luck. Everything mirrors detectors — same
+install-by-rebuild, unit-testable against fixture inputs (plus a property
+test that output stays total), and mechanical retirement via per-mutator
+offspring accounting: tag each testcase with the mutator that produced it
+(testcase metadata again); a macro whose offspring stop producing novelties
+is dropped. Sequenced after detectors: phase 3 proves the install loop on
+the easier artifact, phase 4 A/Bs base mutators vs. base + generated macros.
+Macros that keep earning their place accrete into a per-target library of
+legible, reviewable moves that carries across campaigns.
+
 ### The triage process
 
 A separate process — any agent harness — that walks the corpus directory,
@@ -202,8 +219,8 @@ fuzzer through it and the baseline doesn't.
 **Phase 4 — NES target (1–2 weeks).** Key-press input vocabulary, emulator
 executor (a Rust NES core), snapshot prefix cache, distance-into-game metric.
 The showpiece demo, and the direct test of the LLM thesis: A/B
-{null, scripted, cheap-LLM triage} × {base, generated detectors}. Exit:
-published metric curves per configuration.
+{null, scripted, cheap-LLM triage} × {base, generated detectors, generated
+detectors + macros}. Exit: published metric curves per configuration.
 
 **Phase 5 — real executor (later, separate decision).** Swap in consonance
 behind the same `Executor` trait; fault schedules become one more input
