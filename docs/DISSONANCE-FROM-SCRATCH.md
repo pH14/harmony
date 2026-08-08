@@ -11,7 +11,7 @@ ruling; if any of this is adopted, it goes through the normal glossary process.
 
 ## Premise
 
-Antithesis validates its searcher by having it play video games. LLMs are
+A good way to validate a searcher is to have it play video games. LLMs are
 excellent at the *strategy* layer of games (goals, quest logic) and terrible at
 the *twitch* layer (per-frame control); a mechanical searcher is the inverse.
 LLM calls are ~10^6 slower than a branching decision, so LLMs must never sit on
@@ -153,8 +153,8 @@ is irrelevant:
 
 1. Toy state machines / maze programs with known deep states (exact
    time-to-state metrics).
-2. An NES/SDL game via key presses (Antithesis's own Super Mario validation;
-   tests the LLM-as-game-player thesis directly).
+2. An NES/SDL game via key presses (tests the LLM-as-game-player thesis
+   directly).
 3. An SDK-instrumented program where the input is the decision sequence the
    SDK requests.
 

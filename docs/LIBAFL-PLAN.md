@@ -199,7 +199,7 @@ fuzzer through it and the baseline doesn't.
 
 **Phase 4 — NES target (1–2 weeks).** Key-press input vocabulary, emulator
 executor (a Rust NES core), snapshot prefix cache, distance-into-game metric.
-The Antithesis-style demo, and the direct test of the LLM thesis: A/B
+The showpiece demo, and the direct test of the LLM thesis: A/B
 {null, scripted, cheap-LLM triage} × {base, generated detectors}. Exit:
 published metric curves per configuration.
 
