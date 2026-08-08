@@ -1,86 +1,89 @@
 # LibAFL integration plan
 
 **Status: exploration plan, companion to `docs/DISSONANCE-FROM-SCRATCH.md`.**
-That document sketches the design (a coverage-guided snapshot fuzzer with an
-LLM triage + instrumentation loop); this one verifies LibAFL's actual API
-surface against it and lays out the build. API claims below were checked
-against **libafl 0.15.4** source (crates.io release), not docs or memory —
-file references are to that crate.
+Read that document first — it explains the design this plan implements. This
+document verifies that LibAFL actually provides what the design needs, then
+lays out the build in phases. The code lives in `dissonance-v2/`; read
+`dissonance-v2/CLAUDE.md` before working there.
 
-Vocabulary rule for this plan: LibAFL's own terms only — *testcase, corpus,
-input, executor, observer, feedback, scheduler, stage, metadata*. Where the
-sketch doc coined anything ("scoped instrumentation"), this plan reduces it to
-a named LibAFL component instead.
+Every API claim below was checked against the **libafl 0.15.4** source (the
+crates.io release), not against docs or memory. File references are to that
+crate.
 
-## 1. Verified surface
+Vocabulary rule: use LibAFL's own terms only — *testcase, corpus, input,
+executor, observer, feedback, scheduler, stage, metadata*. Do not coin new
+terms.
 
-What the design needs, and where LibAFL 0.15.4 actually provides it:
+## 1. What LibAFL provides (verified)
 
-| Design need | LibAFL surface (verified) |
+| What the design needs | Where LibAFL 0.15.4 provides it |
 |---|---|
-| Non-byte inputs (key presses, decision sequences) | `Input` is any `Clone + Serialize + Deserialize + Debug + Hash` type (`inputs/mod.rs:82`). Custom inputs are first-class; mutators are per-input-type (`Mutator<I, S>`, `mutators/mod.rs:111`). |
-| Custom executor (emulator, later consonance VM) | `Executor::run_target(fuzzer, state, mgr, input) -> ExitKind` is the whole contract (`executors/mod.rs:128`). One method to implement. |
-| Novelty check | `Feedback::is_interesting(...)` (`feedbacks/mod.rs:81`); feedbacks compose via `feedback_or!`-style logic (`FeedbackLogic`). `MaxMapFeedback` tracks per-run novelties and stamps `MapNoveltiesMetadata` onto the testcase (`feedbacks/map.rs`). |
-| Sensors | `Observer` trait with pre/post-exec hooks (`observers/mod.rs:40`). |
-| Lineage (fork tree) | `Testcase.parent_id: Option<CorpusId>` built in (`corpus/testcase.rs:58`). |
-| Labels on corpus entries, readable by external processes | `Testcase.metadata: SerdeAnyMap`; `InMemoryOnDiskCorpus` persists each testcase's metadata as prettified JSON in a `.<testcase>.metadata` sidecar file (`corpus/inmemory_ondisk.rs:57,258`). |
-| Triage-driven scheduling | `TestcaseScore::compute(state, testcase) -> f64` (`schedulers/testcase_score.rs:19`) plugs into `WeightedScheduler`; AFLFast power schedules (EXPLORE / EXPLOIT / FAST / COE / LIN / QUAD) ship in `schedulers/powersched.rs`. |
-| External processes injecting corpus entries | `SyncFromDiskStage` (`stages/sync.rs:63`) — AFL-style corpus directory syncing. |
-| Operator-readable stats | `AflStatsStage` writes AFL++-compatible `fuzzer_stats` and `plot_data` (`stages/afl_stats.rs`). |
+| Inputs that aren't bytes (key presses, decision lists) | `Input` is a plain trait: any `Clone + Serialize + Deserialize + Debug + Hash` type (`inputs/mod.rs:82`). Mutators are defined per input type (`Mutator<I, S>`, `mutators/mod.rs:111`). |
+| A custom way to run the target | `Executor` is one method: `run_target(fuzzer, state, mgr, input) -> ExitKind` (`executors/mod.rs:128`). |
+| The novelty check | `Feedback::is_interesting(...)` decides whether a run joins the corpus (`feedbacks/mod.rs:81`). Feedbacks compose with and/or logic. `MaxMapFeedback` tracks which map cells a run newly hit (`feedbacks/map.rs`). |
+| Sensors on a run | The `Observer` trait, with hooks before and after each run (`observers/mod.rs:40`). |
+| The fork tree (which entry came from which) | Every `Testcase` has `parent_id: Option<CorpusId>` built in (`corpus/testcase.rs:58`). |
+| Labels on corpus entries that outside processes can read | `Testcase` carries a metadata map, and `InMemoryOnDiskCorpus` writes each testcase's metadata to a JSON sidecar file next to the input file (`corpus/inmemory_ondisk.rs:57`). |
+| Scheduling that respects triage labels | `TestcaseScore::compute(state, testcase) -> f64` (`schedulers/testcase_score.rs:19`) plugs into `WeightedScheduler`. AFL's power schedules (EXPLORE, FAST, COE, …) ship in `schedulers/powersched.rs`. |
+| Importing inputs an outside process wrote | `SyncFromDiskStage` (`stages/sync.rs:63`) — drop an input file in a directory, the fuzzer picks it up. |
+| Stats a human or agent can read | `AflStatsStage` writes AFL++-compatible `fuzzer_stats` and `plot_data` files (`stages/afl_stats.rs`). |
 
-Nothing in the design requires forking LibAFL. Everything custom is an
-implementation of an existing trait.
+Nothing requires forking LibAFL. Everything custom is an implementation of
+an existing trait.
 
-Adjacent crates noted but not needed before phase 5: `libafl_qemu`,
-`libafl_nyx` (hypervisor/snapshot executors — prior art for the consonance
-executor, not dependencies of the prototype).
+Related crates, noted but not needed before phase 5: `libafl_qemu` and
+`libafl_nyx` (hypervisor/snapshot executors — prior art for plugging a VM in
+behind the `Executor` trait).
 
-## 2. Integration design
+## 2. How the pieces fit together
 
-### Crate layout
+### Where the code lives
 
-`dissonance-v2/` — a standalone workspace root outside the harmony root
-workspace (same pattern as `spikes/differential-lineage`), with `libafl`
-pinned at 0.15.4. Its `CLAUDE.md` instructs agents working there to use only
-this doc and the sketch doc, and not to read the v1 `dissonance/` crates or
-the legacy design docs — the rebuild must not inherit the old decomposition
-by osmosis. No dependencies on harmony crates before phase 5.
+`dissonance-v2/` is a standalone Cargo workspace, deliberately outside the
+harmony root workspace (the same pattern as `spikes/differential-lineage`).
+`libafl` is pinned at 0.15.4 until phase 5. No dependencies on harmony
+crates (`consonance/*`, `dissonance/*`) before phase 5. The directory's
+`CLAUDE.md` tells agents working there to read only this plan and the design
+sketch, and not to read the old `dissonance/` crates — the rebuild must not
+inherit the old decomposition by accident.
 
-Modules inside the `fuzzer` crate as they land: `input` (per-target input
-types + mutators), `executor` (per-target executors), `feedback` (the
-scoped-feedback combinator + generated-code facade), `triage` (label schema +
-score), `harness` (the codegen/rebuild loop).
+Modules inside the `fuzzer` crate, as they land: `input` (per-target input
+types and mutators), `executor` (per-target executors), `feedback` (the
+lineage-scoping wrapper and the generated-code facades), `triage` (label
+schema and score), `harness` (the generate → build → restart loop).
 
 ### The fuzzer process
 
-A standard LibAFL fuzzer, assembled from stock parts plus four small custom
-components:
+A standard LibAFL fuzzer assembled from stock parts, plus four small custom
+pieces:
 
-1. **Input type per target** — e.g. `Vec<ButtonFrame>` for the NES target, a
-   decision list for the maze target. Mutators: append, truncate, splice at a
-   point, perturb an element. All implement `Mutator<I, S>`.
-2. **Executor per target** — wraps the emulator/toy. Internally it may keep a
-   **snapshot cache keyed by input prefix** (determinism ⇒ snapshot ≡ genesis
-   + prefix): before running an input, resume from the longest cached prefix
-   instead of genesis. This is purely a speedup inside `run_target`; the
-   fuzzing loop never sees it.
-3. **`ScopedFeedback<F>`** — one reusable combinator: wraps any feedback `F`
-   and gates it on lineage, i.e. it only fires when the current run's parent
-   chain (via `parent_id`) passes through a listed `CorpusId`. This is the
-   whole "scoped instrumentation" idea from the sketch doc expressed as ~50
-   lines against public API. Blast radius of a bad generated feedback =
-   one subtree.
-4. **`TriageScore`** — a `TestcaseScore` impl that reads triage labels from
-   testcase metadata (Boost/Neutral/Suppress → multiplier) and multiplies the
-   stock AFLFast factor. Plugs into `WeightedScheduler` unchanged.
+1. **An input type per target.** For example `Vec<ButtonChord>` (a button
+   combination plus a hold duration) for the NES target, or a list of typed
+   decisions for the maze target. Mutators: append an action, truncate,
+   splice two sequences at a point, perturb one element's parameters.
+2. **An executor per target.** Wraps the toy, the emulator, or eventually
+   the VM. Internally it may cache snapshots keyed by input prefix: since
+   the target is deterministic, a snapshot is equivalent to "genesis plus an
+   input prefix", so before running an input the executor can resume from
+   the longest cached prefix instead of replaying from the start. This is
+   purely a speedup inside `run_target`; the fuzzing loop never sees it.
+3. **`ScopedFeedback<F>`.** A wrapper that gates any feedback `F` on
+   lineage: it only fires if the current run's parent chain passes through a
+   listed `CorpusId`. This is how a generated detector gets restricted to
+   one subtree. Roughly fifty lines against public API.
+4. **`TriageScore`.** A `TestcaseScore` implementation that reads triage
+   labels out of testcase metadata (Boost / Neutral / Suppress becomes a
+   multiplier) and combines that with the stock power-schedule factor.
+   Plugs into `WeightedScheduler` unchanged.
 
-Corpus: `InMemoryOnDiskCorpus`, so every testcase and its metadata are plain
-files — the interchange surface for everything below.
+The corpus is `InMemoryOnDiskCorpus`, so every testcase and its metadata are
+plain files on disk. Those files are the interface between the fuzzer and
+everything below.
 
-### LLM-written code is the instrumentation primitive
+### Generated code: detectors
 
-The instrumentor LLM emits **Rust source**, not config. Concretely: a
-generated file implements one narrow facade trait —
+The instrumentor LLM emits **Rust source**, not configuration. A generated
+file implements one narrow trait:
 
 ```rust
 /// The only thing generated code implements. Everything else is scaffolding.
@@ -91,154 +94,160 @@ pub trait GeneratedDetector {
 }
 ```
 
-— and scaffolding (not generated) adapts any `GeneratedDetector` into an
-`Observer` + map-style `Feedback` pair, optionally wrapped in
-`ScopedFeedback`. Keeping the generated surface to one pure function is what
-makes generation reliable and review/testing trivial: generated code can be
-unit-tested against recorded `RunObservations` fixtures with no fuzzer
-running.
+Hand-written scaffolding (not generated) adapts any `GeneratedDetector` into
+an `Observer` + map-feedback pair, optionally wrapped in `ScopedFeedback`.
+Keeping the generated surface to one pure function is what makes generation
+reliable and review easy: a generated detector can be unit-tested against
+recorded `RunObservations` fixtures with no fuzzer running.
 
-**Install = recompile + restart.** The harness writes the generated file into
-the spike crate, runs `cargo build`, restarts the fuzzer, and the fuzzer
-resumes from the on-disk corpus — which is exactly how fuzzing already works
-(re-instrument the target, resume from the queue directory). No hot-swap, no
-WASM, no scripting layer in v1; the corpus and metadata survive on disk and a
-restart costs seconds. If instrumentor cadence ever outpaces rebuild time,
-that's the point to revisit — not before.
+**Install = recompile + restart.** The harness writes the generated file
+into the crate, runs `cargo build`, restarts the fuzzer, and the fuzzer
+resumes from the on-disk corpus. This is how fuzzing already works when you
+re-instrument a target: rebuild, then resume from the queue directory. No
+hot-swapping, no WASM, no scripting layer in v1. A restart costs seconds.
+Revisit only if instrumentor cadence ever outpaces rebuild time.
 
-**Retirement is mechanical.** Each generated detector feeds its own coverage
-map; a detector whose map has produced no novelties for N minutes is dropped
-at the next rebuild. No LLM in that decision.
+**Retirement is mechanical.** Each generated detector feeds its own map. A
+detector whose map produces no novelties for N minutes is dropped at the
+next rebuild. No LLM is involved in that decision.
 
-**Generated mutators (semantic macros) — same channel, second trait.** The
-instrumentor can also emit a `Mutator` implementation behind an equally
-narrow facade: a pure `input → input` function that splices a parameterized,
-semantically coherent motif into a sequence ("partition the leader while a
-write is in flight", "jump-arc of length N"). This is where triage
-hypotheses land when the gap is in the *action* space rather than the
-observation space: coordinated multi-action patterns that single-atom
-mutation composes only by luck. Everything mirrors detectors — same
-install-by-rebuild, unit-testable against fixture inputs (plus a property
-test that output stays total), and mechanical retirement via per-mutator
-offspring accounting: tag each testcase with the mutator that produced it
-(testcase metadata again); a macro whose offspring stop producing novelties
-is dropped. Sequenced after detectors: phase 3 proves the install loop on
-the easier artifact, phase 4 A/Bs base mutators vs. base + generated macros.
-Macros that keep earning their place accrete into a per-target library of
+### Generated code: mutators (semantic macros)
+
+The same channel can install a `Mutator`: a pure `input → input` function
+that splices a coherent, parameterized pattern into a sequence — "partition
+the leader while a write is in flight", "jump-arc of length N". This is
+where triage hypotheses land when the gap is in the *action* space rather
+than the observation space: multi-action patterns that single-action
+mutation would only compose by luck.
+
+Everything mirrors detectors: same install-by-rebuild, unit-testable against
+fixture inputs (plus a property test that the output stays valid), and
+mechanical retirement — tag each testcase with the mutator that produced it
+(testcase metadata again), and drop a macro whose offspring stop producing
+novelties.
+
+Sequencing: detectors come first (phase 3) because they are easier to
+validate; macros join in phase 4, where the A/B measures their payoff.
+Macros that keep earning their place accumulate into a per-target library of
 legible, reviewable moves that carries across campaigns.
 
 ### The triage process
 
 A separate process — any agent harness — that walks the corpus directory,
-reads testcases + existing metadata, and writes labels. Label schema (a
-serde struct registered as testcase metadata):
+reads testcases and their evidence, and writes labels:
 
 ```rust
 struct TriageLabels {
     interest: Interest,          // Boost | Neutral | Suppress → TriageScore
     duplicate_of: Option<u64>,   // semantic dedup
     flags: Vec<Flag>,            // BugSuspect | InvariantNearMiss | DeadEnd
-    tags: Vec<String>,           // free text, instrumentor-facing
-    summary: String,
-    hypotheses: Vec<String>,
+    tags: Vec<String>,           // free text, for the instrumentor
+    summary: String,             // one line
+    hypotheses: Vec<String>,     // free text, for the instrumentor
 }
 ```
 
-Only `interest` and `duplicate_of` are machine-consumed; the rest exist to be
-read by the instrumentor and humans.
+Only `interest` and `duplicate_of` are consumed by machines; the free-text
+fields exist to be read by the instrumentor and by humans.
 
-**Single-writer rule:** the fuzzer owns `.<testcase>.metadata`; triage never
-writes it. Triage writes `<testcase>.labels.json` sidecars, and a small custom
-stage in the fuzzer (`LoadLabelsStage`, a periodic scan) merges changed
-sidecars into in-memory testcase metadata. This avoids racing LibAFL's own
-metadata persistence. (~100 lines against public corpus API; the one piece of
-glue LibAFL doesn't ship.)
+**Single-writer rule.** The fuzzer owns the `.metadata` sidecar files;
+triage never writes them. Triage writes its labels to separate
+`<testcase>.labels.json` files, and a small custom stage in the fuzzer
+(`LoadLabelsStage`, a periodic scan by file modification time) merges
+changed label files into testcase metadata. This avoids racing LibAFL's own
+persistence. About a hundred lines; the one piece of glue LibAFL doesn't
+ship.
 
 ### The instrumentor process
 
-The instrumentor is an agent with file tools pointed at the fuzzer's output
-directory, reading exactly what a human fuzzing operator reads:
-`fuzzer_stats` and `plot_data` (stock `AflStatsStage`), plus the corpus
-directory with its metadata and label sidecars. "Assemble relevant context
-from files" is what agent harnesses do natively (grep, read, jq). If the
-corpus outgrows what the agent can browse comfortably, the fix is a better
-stats file or a query script — operator tooling.
-
-The instrumentor's outputs are exactly two, both already named: a generated
-detector file (see above) and label/priority edits (energy caps expressed as
-`Suppress` labels on subtree roots). Nothing else.
+An agent with file tools pointed at the fuzzer's output directory. It reads
+what a human fuzzing operator reads: `fuzzer_stats` and `plot_data` (stock
+`AflStatsStage`), plus the corpus directory with its metadata and label
+files. Its outputs are exactly two, described above: generated code
+(detectors and macros) and label edits (energy caps expressed as `Suppress`
+labels on subtree roots). If the corpus outgrows comfortable browsing, the
+fix is a better stats file or a query script — operator tooling.
 
 ### Determinism and testing
 
-- The executor is deterministic by construction (toy targets, emulator with
-  fixed init). One check item on LibAFL itself: seed its RNG explicitly
-  (`StdRand::with_seed`) so mutation schedules replay; verify no other entropy
-  sources leak in (calibration stage timing is the likely offender — measure,
-  and exclude time-based feedbacks from the prototype).
-- Unit tiers, no LLM anywhere: input mutator properties; executor determinism
-  (same input ⇒ identical observations, snapshot cache on or off);
-  `ScopedFeedback` scoping; `LoadLabelsStage` merge; generated-detector
+- The executors are deterministic by construction. Seed LibAFL's RNG
+  explicitly (`StdRand::with_seed`) so mutation schedules replay. Exclude
+  time-derived feedbacks and scheduling factors; the phase 1 determinism
+  test is the guard.
+- Unit tests, no LLM anywhere: mutator properties, executor determinism
+  (same input → identical observations, with the snapshot cache on or off),
+  `ScopedFeedback` scoping, `LoadLabelsStage` merging, generated-code
   fixtures.
-- Integration tier: record every triage label and generated file during a
-  campaign; a campaign replayed from (seed, recorded labels, recorded
-  detectors) reproduces the corpus. This is the no-LLM replay property from
-  the sketch doc, made concrete: the "artifact stream" is just files in a
-  directory with an ordering log.
-- Model quality is measured separately as A/B campaigns (below), never in CI.
+- Integration test: record every label file and generated file during a
+  campaign, in order. Replaying the campaign from (seed, recorded files)
+  must reproduce the corpus. This is the no-LLM replay property from the
+  design sketch, made concrete.
+- Model quality is measured in A/B campaigns (see phases), never in CI.
 
 ## 3. Phases
 
-Each phase has an exit criterion; no phase depends on fault injection or
-consonance.
+Each phase adds exactly one new kind of risk, and each has an exit
+criterion. No phase before 5 depends on fault injection, consonance, or any
+harmony crate.
 
-**Phase 0 — vanilla spike (days).** Build a stock bytes fuzzer against a toy
-C/Rust target with LibAFL as-shipped. Purpose: pay the generics learning curve
-on the framework's happy path, not on our custom stack. Exit: fuzzer runs,
-finds the planted crash, corpus persists and resumes across restarts.
+**Phase 0 — vanilla spike (days).** A stock byte-input fuzzer against a toy
+target with a planted crash, built from LibAFL as-shipped, nothing custom.
+Purpose: learn the framework's assembly (state, feedbacks, event manager,
+stages) on its happy path, and watch corpus persistence and restart-resume
+work. Exit: finds the planted crash; corpus survives a restart.
 
-**Phase 1 — custom input + executor (week).** Maze / state-machine target
-with a known deep state. Custom input type + mutators, in-process executor,
-`MaxMapFeedback` over a state-hash observer, RNG seeded. Exit: reaches deep
-states measurably faster than random walk; determinism test passes (two runs,
-same seed, identical corpus).
+**Phase 1 — our types (week).** Swap in a custom input (a decision list)
+and a maze / state-machine target with known deep states. Write the
+mutators. Coverage is a small map over a hash of the target's state, fed to
+stock `MaxMapFeedback`. Seed the RNG. Exit: reaches deep states measurably
+faster than a random-walk baseline, and two campaigns with the same seed
+produce identical corpora (written as a test).
 
-**Phase 2 — triage loop (week).** `InMemoryOnDiskCorpus`, `TriageLabels`,
-`LoadLabelsStage`, `TriageScore` + `WeightedScheduler`. Drive it first with a
-*scripted* triager (regex over run logs — no LLM), A/B against a null triager.
-Exit: scripted labels measurably shift scheduling and time-to-target;
-label-recording replay works.
+**Phase 2 — external steering, no LLM (week).** On-disk corpus,
+`TriageLabels`, `LoadLabelsStage`, `TriageScore` + `WeightedScheduler`.
+Drive it with a *scripted* triager — a regex over run logs — and A/B against
+a null triager. Scripted-first separates "does the plumbing steer the
+scheduler" from "is the model any good", and the scripted triager stays
+around as a deterministic CI fixture. Exit: labels measurably shift
+time-to-target; a campaign replayed from recorded labels reproduces itself.
 
-**Phase 3 — generated detectors (1–2 weeks).** The codegen harness:
-prompt → `GeneratedDetector` file → `cargo build` → restart → resume.
-`ScopedFeedback`, per-detector novelty accounting, mechanical retirement.
-First with hand-written detectors standing in for generated ones, then with a
-real model. Exit: on a target with a deliberate coverage blind spot (a state
-distinction the base map can't see), an LLM-generated detector gets the
-fuzzer through it and the baseline doesn't.
+**Phase 3 — generated detectors (1–2 weeks).** The generate → build →
+restart → resume loop, `ScopedFeedback`, per-detector novelty accounting,
+mechanical retirement. Validate with hand-written detectors first (zero
+model variance), then a real model. The target gets a deliberate blind
+spot: a state distinction the base map cannot see, so the baseline search
+provably plateaus. Exit: a model-written detector gets the fuzzer through
+the blind spot; the baseline doesn't.
 
-**Phase 4 — NES target (1–2 weeks).** Key-press input vocabulary, emulator
-executor (a Rust NES core), snapshot prefix cache, distance-into-game metric.
-The showpiece demo, and the direct test of the LLM thesis: A/B
-{null, scripted, cheap-LLM triage} × {base, generated detectors, generated
-detectors + macros}. Exit: published metric curves per configuration.
+**Phase 4 — NES target (1–2 weeks).** Key-press input vocabulary, an
+emulator behind the executor trait, the snapshot prefix cache (runs are now
+expensive enough for it to matter), a distance-into-game metric, and
+generated macros joining generated detectors. The full experiment:
+{null, scripted, cheap-LLM triage} × {base, generated detectors, detectors +
+macros}. Exit: metric curves per configuration.
 
-**Phase 5 — real executor (later, separate decision).** Swap in consonance
-behind the same `Executor` trait; fault schedules become one more input
-vocabulary. Also the decision point for embed-LibAFL-vs-port-ideas in
-production dissonance, informed by where phases 0–4 chafed.
+**Phase 5 — the real executor (later, a separate decision).** Consonance
+slots in behind the same one-method `Executor` trait; fault schedules become
+one more input vocabulary. With four phases of experience, decide whether
+production dissonance embeds LibAFL or ports its ideas. This is also the
+one deliberate moment to consider a libafl version upgrade.
 
-## 4. Risks and chafe points
+## 4. Risks
 
-- **Generics.** LibAFL's type parameters compound; phase 0 exists to absorb
-  this. Mitigation: copy a maintained example fuzzer's type assembly and
-  mutate it, don't compose from scratch.
-- **Metadata races.** Handled by the single-writer rule; the residual risk is
-  `LoadLabelsStage` scan cost on large corpora (bounded: scan mtimes).
-- **Restart cadence.** Rebuild+restart per detector install is fine at
-  instrumentor cadence (minutes); it would not be fine at triage cadence —
-  which is why triage never requires a restart (labels flow via sidecars).
-- **Hidden nondeterminism in LibAFL stages.** Calibration and time-based
-  scheduling factors may read wall-clock. Prototype excludes time-derived
-  feedbacks; determinism test in phase 1 is the guard.
-- **Version churn.** LibAFL moves fast and breaks API between minors. Pin
-  0.15.4 for all phases; upgrade once, deliberately, at phase 5.
+- **Generics.** LibAFL's type parameters compound and error messages are
+  hard to read. Phase 0 exists to absorb this. Mitigation: copy a
+  maintained example fuzzer's type assembly and modify it; don't compose
+  from scratch.
+- **Metadata races.** Handled by the single-writer rule. Residual risk is
+  `LoadLabelsStage` scan cost on large corpora; bounded by scanning file
+  modification times.
+- **Restart cadence.** Rebuild-and-restart per installed artifact is fine
+  at instrumentor cadence (minutes). It would not be fine at triage
+  cadence — which is why triage flows through label files and never needs a
+  restart.
+- **Hidden nondeterminism in stock stages.** Calibration and any
+  time-based scheduling factors may read the wall clock. The prototype
+  excludes time-derived feedbacks; the phase 1 determinism test is the
+  guard.
+- **Version churn.** LibAFL breaks API between minor versions. Pin 0.15.4
+  for all phases; upgrade once, deliberately, at phase 5.
