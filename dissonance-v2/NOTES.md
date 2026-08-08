@@ -26,6 +26,10 @@ target-execution counts rather than wall-clock durations.
   per-detector novelty accounting, deterministic mechanical retirement, an
   exhaustive append-only plateau proof, and a generate→build→restart→resume
   detector install that crosses a real process boundary.
+- Phase 4a started after the 0–3 audit: a small adventure toy now supplies the
+  second implementor that forced extraction of the `Target` trait. It includes
+  rooms, inventory, a locked door, a goal, a hazard, and snapshots; the existing
+  combination-lock maze is the other implementor.
 
 ## Decisions
 
@@ -57,6 +61,10 @@ target-execution counts rather than wall-clock durations.
 - `LoadLabelsStage` compares exact sidecar bytes instead of filesystem modification
   times. Modification times are host state; content comparison preserves the plan's
   changed-file behavior while keeping replay independent of wall-clock metadata.
+- The `Target` trait was extracted only after the adventure toy existed. Its
+  associated action, observation, and snapshot types are the seams demonstrated by
+  the two targets; the completed phase 0–3 executor has not been prematurely
+  refactored around unvalidated generic machinery.
 
 ## LibAFL friction
 
