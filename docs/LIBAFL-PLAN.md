@@ -219,12 +219,27 @@ spot: a state distinction the base map cannot see, so the baseline search
 provably plateaus. Exit: a model-written detector gets the fuzzer through
 the blind spot; the baseline doesn't.
 
-**Phase 4 — NES target (1–2 weeks).** Key-press input vocabulary, an
-emulator behind the executor trait, the snapshot prefix cache (runs are now
-expensive enough for it to matter), a distance-into-game metric, and
-generated macros joining generated detectors. The full experiment:
-{null, scripted, cheap-LLM triage} × {base, generated detectors, detectors +
-macros}. Exit: metric curves per configuration.
+**Phase 4a — the full experiment on a toy game (1 week).** Extend the maze
+into a small adventure game we write ourselves: rooms, keys, locked doors,
+an inventory, hazards — a few hundred lines, fully in-process. Because we
+control the game, we control the blind spots and can compute exact
+progress metrics. Generated macros join generated detectors here. The full
+experiment runs on this target: {null, scripted, cheap-LLM triage} ×
+{base, generated detectors, detectors + macros}. Exit: metric curves per
+configuration. This phase carries the science; phase 4b is the showpiece.
+
+**Phase 4b — NES demo (optional, 1 week, cuttable without losing the
+science).** The same experiment on a real game, for demonstration value.
+We do not write an emulator: `tetanes-core` (0.15.0, verified against
+source) is a headless NES core with `load_rom`, per-frame stepping
+(`clock_frame`), joypad input, RAM access, and in-memory save states
+(`save_state`/`load_state`) — its `ControlDeck` documents a deterministic
+batch mode explicitly. The executor wrapper is a few hundred lines, and
+save states make the snapshot prefix cache nearly free. Use an
+open-licensed homebrew ROM, not a commercial one: no licensing problem,
+and published source means the RAM layout is documented, which makes
+detectors and the progress metric easier to write. If this phase fights
+us, cut it and let phase 4a's curves stand.
 
 **Phase 5 — the real executor (later, a separate decision).** Consonance
 slots in behind the same one-method `Executor` trait; fault schedules become
