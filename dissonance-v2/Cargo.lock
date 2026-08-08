@@ -343,7 +343,9 @@ dependencies = [
  "libafl_bolts",
  "postcard",
  "proptest",
+ "regex",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 
