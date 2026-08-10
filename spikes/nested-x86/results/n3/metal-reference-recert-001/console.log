@@ -1,0 +1,43 @@
+=== METAL_GATE_BEGIN n3_repeat_gate 10:45:42
+
+running 1 test
+test n3_repeat_gate ... N3JSON {"event":"start","item":"insn-rng","reps":1000,"seed":11471204516818368}
+N3JSON {"event":"progress","attempted":100,"identical":100,"mismatches":0}
+N3JSON {"event":"progress","attempted":200,"identical":200,"mismatches":0}
+N3JSON {"event":"progress","attempted":300,"identical":300,"mismatches":0}
+N3JSON {"event":"progress","attempted":400,"identical":400,"mismatches":0}
+N3JSON {"event":"progress","attempted":500,"identical":500,"mismatches":0}
+N3JSON {"event":"progress","attempted":600,"identical":600,"mismatches":0}
+N3JSON {"event":"progress","attempted":700,"identical":700,"mismatches":0}
+N3JSON {"event":"progress","attempted":800,"identical":800,"mismatches":0}
+N3JSON {"event":"progress","attempted":900,"identical":900,"mismatches":0}
+N3JSON {"event":"progress","attempted":1000,"identical":1000,"mismatches":0}
+N3JSON {"event":"summary","item":"insn-rng","attempted":1000,"identical":1000,"mismatches":0,"state_hash":"6163f1109b5677de0ff924f7932e7ade007434c99c24bc9a7e11beac27f5bbb4","observable_digest":"0fe06bf4edf727fc1d200f810a307c30e65915b7c1ed230a5e513defbb2a3926"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11594.72s
+
+=== METAL_GATE_RC n3_repeat_gate rc=0 13:58:57
+=== METAL_GATE_BEGIN n2_hammer 13:58:57
+
+running 1 test
+test n2_deadline_hammer ... N2JSON {"event":"start","total":10000,"seed":2600001099,"backend":"PatchedKvmBackend","pid":335452}
+N2JSON {"event":"progress","armed":10000,"exact":10000,"oracle_ok":10000,"mismatches":0,"record_violations":0,"records":{"samples":5504,"lost":0,"throttle":0,"other":0}}
+N2JSON {"event":"summary","armed":10000,"exact":10000,"oracle_ok":10000,"mismatches":0,"record_violations":0,"final_work":175379628,"records":{"samples":5504,"lost":0,"throttle":0,"other":0}}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 24.57s
+
+=== METAL_GATE_RC n2_hammer rc=0 13:59:22
+=== METAL_GATE_BEGIN live_determinism 13:59:22
+
+running 2 tests
+test p6_rdtsc_rng_are_deterministic_and_vtime_backed ... [p6] tsc reads = [0, 2, 4, 6]  aux = 0x0
+[p6] rdrand = 0x9f72a62a  rdseed = 0x42b87398
+ok
+test p6_snapshot_restore_resumes_both_clocks_exactly ... [p6] snapshot/restore transparent: results = Results { tsc: [0, 2, 4, 6], aux: 0, rdrand: 2675090986, rdseed: 1119384472 }
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.73s
+
+=== METAL_GATE_RC live_determinism rc=0 13:59:22

@@ -1,0 +1,8 @@
+{
+  "condition": "idle",
+  "deadlines": 10000,
+  "seed": 2600001099,
+  "stress_pid": "",
+  "cpuset": "3",
+  "started": "2026-07-14T05:52:29Z"
+}

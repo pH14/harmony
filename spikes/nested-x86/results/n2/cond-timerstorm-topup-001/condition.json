@@ -1,0 +1,8 @@
+{
+  "condition": "timerstorm",
+  "deadlines": 90000,
+  "seed": 2600002010,
+  "stress_pid": "2652123",
+  "cpuset": "3",
+  "started": "2026-07-16T03:27:14Z"
+}

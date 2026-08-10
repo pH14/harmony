@@ -1,0 +1,15 @@
+{
+  "captured": "2026-07-13T03:00:54Z",
+  "purpose": "re-certification window (PR #98, beads hm-dbh/hm-jpu)",
+  "uname": "Linux hypervizor 6.12.90+deb13.1-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.90-2 (2026-05-27) x86_64 GNU/Linux",
+  "kvm_size": "1396736",
+  "kvm_intel_size": "417792",
+  "kvm_intel_nested": "Y",
+  "kvm_enable_pmu": "Y",
+  "kvm_intel_ko_md5": "e5bd73872260841c4c39a99b264589d5",
+  "kvm_ko_md5": "c59c16c2d94eba5799671eddd4a35e8e",
+  "cmdline": "BOOT_IMAGE=/vmlinuz-6.12.90+deb13.1-amd64 root=UUID=93bab584-ea2d-4376-aaad-04e0b2b09563 ro consoleblank=0 systemd.show_status=true consoleblank=0",
+  "governor": "powersave",
+  "qemu_running": 0,
+  "kvm_refcnt": 1
+}

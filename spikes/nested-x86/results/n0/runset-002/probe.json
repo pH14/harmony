@@ -1,0 +1,50 @@
+NESTED_X86_PROBE_BEGIN
+{
+  "cpuid_vendor": "GenuineIntel",
+  "cpuid1_eax": "0x000906ec",
+  "vmx_bit": true,
+  "hypervisor_bit": true,
+  "hypervisor_leaf": "KVMKVMKVM",
+  "perfmon_version": 2,
+  "gp_counters": 4,
+  "gp_counter_width": 48,
+  "event_unavail_mask": "0x00",
+  "branch_insn_retired_available": true,
+  "fixed_counters": 3,
+  "fixed_counter_width": 48,
+  "IA32_VMX_BASIC_0x480": "0x00d8100011e57ed0",
+  "IA32_VMX_PINBASED_0x481": "0x0000007f00000016",
+  "IA32_VMX_PROCBASED_0x482": "0xfff9fffe0401e172",
+  "IA32_VMX_EXIT_0x483": "0x00ffffff00036dff",
+  "IA32_VMX_ENTRY_0x484": "0x0001f3ff000011ff",
+  "IA32_VMX_MISC_0x485": "0x0000000020000165",
+  "IA32_VMX_PROCBASED2_0x48B": "0x001378ff00000000",
+  "IA32_VMX_EPT_VPID_CAP_0x48C": "0x00000f0106334041",
+  "IA32_VMX_TRUE_PINBASED_0x48D": "0x0000007f00000016",
+  "IA32_VMX_TRUE_PROCBASED_0x48E": "0xfff9fffe04006172",
+  "IA32_VMX_TRUE_EXIT_0x48F": "0x00ffffff00036dfb",
+  "IA32_VMX_TRUE_ENTRY_0x490": "0x0001f3ff000011fb",
+  "IA32_PERF_CAPABILITIES_0x345": "0x0000000000002000",
+  "ctl_rdtsc_exiting": true,
+  "ctl_mtf": true,
+  "ctl_secondary_controls": true,
+  "ctl2_ept": true,
+  "ctl2_unrestricted_guest": true,
+  "ctl2_rdrand_exiting": true,
+  "ctl2_rdseed_exiting": true,
+  "ctl2_pml": true,
+  "exit_load_perf_global_ctrl": true,
+  "entry_load_perf_global_ctrl": true,
+  "sniff_raw_0x1c4_br_cond": {
+    "n_1000000": [1000002, 1000002, 1000002, 1000002, 1000002],
+    "n_10000000": [10000002, 10000002, 10000002, 10000002, 10000002],
+    "n_100000000": [100000002, 100000002, 100000002, 100000002, 100000002]
+  },
+  "sniff_hw_instructions": {
+    "n_1000000": [2000029, 2000029, 2000029, 2000029, 2000029],
+    "n_10000000": [20000030, 20000029, 20000030, 20000029, 20000030],
+    "n_100000000": [200000034, 200000034, 200000034, 200000034, 200000034]
+  },
+  "probe": "done"
+}
+NESTED_X86_PROBE_END

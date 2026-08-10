@@ -1,0 +1,9 @@
+{
+  "finding": "pause-resume wedge (N-3 condition 4, SIGSTOP variant)",
+  "config": "SIGSTOP 2s of every 7s against the L1 QEMU while n3_repeat_gate(insn-rng, 250 reps) ran nested",
+  "observed": "gate produced no output past rep <100 for ~27min; 207+ pauses delivered; after pauser stopped + SIGCONT, gate did NOT recover; vCPU thread spinning in KVM_RUN at ~72% (wchan=0/R), main loop in poll — L1 guest spinning forever",
+  "interpretation": "a nested work-clock event (vPMU overflow PMI or MTF completion) was most plausibly lost across the process freeze; run_until then waits indefinitely — an OBSERVABLE HANG (fails loud), not silent divergence; determinism claim unaffected, availability finding recorded",
+  "reps_completed_clean_before_wedge": "under 100 (no rep-100 checkpoint printed)",
+  "diagnostics": "stuck-diagnostics.txt",
+  "recorded": "2026-07-10T16:26:17Z"
+}

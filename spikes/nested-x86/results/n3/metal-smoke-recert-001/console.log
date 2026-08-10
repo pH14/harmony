@@ -1,0 +1,32 @@
+=== METAL_GATE_BEGIN n3_repeat_gate 10:43:12
+
+running 1 test
+test n3_repeat_gate ... N3JSON {"event":"start","item":"insn-rng","reps":10,"seed":11471204516818368}
+N3JSON {"event":"summary","item":"insn-rng","attempted":10,"identical":10,"mismatches":0,"state_hash":"6163f1109b5677de0ff924f7932e7ade007434c99c24bc9a7e11beac27f5bbb4","observable_digest":"0fe06bf4edf727fc1d200f810a307c30e65915b7c1ed230a5e513defbb2a3926"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 120.37s
+
+=== METAL_GATE_RC n3_repeat_gate rc=0 10:45:12
+=== METAL_GATE_BEGIN n2_hammer 10:45:12
+
+running 1 test
+test n2_deadline_hammer ... N2JSON {"event":"start","total":2000,"seed":2600001000,"backend":"PatchedKvmBackend","pid":318184}
+N2JSON {"event":"summary","armed":2000,"exact":2000,"oracle_ok":2000,"mismatches":0,"record_violations":0,"final_work":34146909,"records":{"samples":1101,"lost":0,"throttle":0,"other":0}}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 5.28s
+
+=== METAL_GATE_RC n2_hammer rc=0 10:45:18
+=== METAL_GATE_BEGIN live_determinism 10:45:18
+
+running 2 tests
+test p6_rdtsc_rng_are_deterministic_and_vtime_backed ... [p6] tsc reads = [0, 2, 4, 6]  aux = 0x0
+[p6] rdrand = 0x9f72a62a  rdseed = 0x42b87398
+ok
+test p6_snapshot_restore_resumes_both_clocks_exactly ... [p6] snapshot/restore transparent: results = Results { tsc: [0, 2, 4, 6], aux: 0, rdrand: 2675090986, rdseed: 1119384472 }
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.78s
+
+=== METAL_GATE_RC live_determinism rc=0 10:45:18

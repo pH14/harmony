@@ -1,0 +1,2080 @@
+[    0.000000] Linux version 6.12.90+deb13.1-amd64 (debian-kernel@lists.debian.org) (x86_64-linux-gnu-gcc-14 (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP PREEMPT_DYNAMIC Debian 6.12.90-2 (2026-05-27)
+[    0.000000] Command line: console=ttyS0 rdinit=/init panic=-1
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000000f0000-0x00000000000fffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000007ffdefff] usable
+[    0.000000] BIOS-e820: [mem 0x000000007ffdf000-0x000000007fffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000b0000000-0x00000000bfffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000fed1c000-0x00000000fed1ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000feffc000-0x00000000feffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000fffc0000-0x00000000ffffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000100000000-0x000000027fffffff] usable
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] APIC: Static calls initialized
+[    0.000000] SMBIOS 2.8 present.
+[    0.000000] DMI: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-debian-1.16.3-2 04/01/2014
+[    0.000000] DMI: Memory slots populated: 1/1
+[    0.000000] Hypervisor detected: KVM
+[    0.000000] last_pfn = 0x7ffdf max_arch_pfn = 0x400000000
+[    0.000000] kvm-clock: Using msrs 4b564d01 and 4b564d00
+[    0.000000] kvm-clock: using sched offset of 158270400 cycles
+[    0.000001] clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns
+[    0.000004] tsc: Detected 3599.998 MHz processor
+[    0.000730] last_pfn = 0x280000 max_arch_pfn = 0x400000000
+[    0.000752] MTRR map: 4 entries (3 fixed + 1 variable; max 19), built from 8 variable MTRRs
+[    0.000754] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+[    0.000784] last_pfn = 0x7ffdf max_arch_pfn = 0x400000000
+[    0.005868] found SMP MP-table at [mem 0x000f5480-0x000f548f]
+[    0.005878] Using GB pages for direct mapping
+[    0.005937] RAMDISK: [mem 0x7b084000-0x7ffcffff]
+[    0.005942] ACPI: Early table checksum verification disabled
+[    0.005943] ACPI: RSDP 0x00000000000F52A0 000014 (v00 BOCHS )
+[    0.005946] ACPI: RSDT 0x000000007FFE2351 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005950] ACPI: FACP 0x000000007FFE2149 0000F4 (v03 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005954] ACPI: DSDT 0x000000007FFE0040 002109 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005956] ACPI: FACS 0x000000007FFE0000 000040
+[    0.005958] ACPI: APIC 0x000000007FFE223D 000078 (v03 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005960] ACPI: HPET 0x000000007FFE22B5 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005962] ACPI: MCFG 0x000000007FFE22ED 00003C (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005964] ACPI: WAET 0x000000007FFE2329 000028 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.005966] ACPI: Reserving FACP table memory at [mem 0x7ffe2149-0x7ffe223c]
+[    0.005967] ACPI: Reserving DSDT table memory at [mem 0x7ffe0040-0x7ffe2148]
+[    0.005967] ACPI: Reserving FACS table memory at [mem 0x7ffe0000-0x7ffe003f]
+[    0.005968] ACPI: Reserving APIC table memory at [mem 0x7ffe223d-0x7ffe22b4]
+[    0.005968] ACPI: Reserving HPET table memory at [mem 0x7ffe22b5-0x7ffe22ec]
+[    0.005969] ACPI: Reserving MCFG table memory at [mem 0x7ffe22ed-0x7ffe2328]
+[    0.005969] ACPI: Reserving WAET table memory at [mem 0x7ffe2329-0x7ffe2350]
+[    0.006283] No NUMA configuration found
+[    0.006284] Faking a node at [mem 0x0000000000000000-0x000000027fffffff]
+[    0.006289] NODE_DATA(0) allocated [mem 0x27ffd5680-0x27fffffff]
+[    0.006554] Zone ranges:
+[    0.006554]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+[    0.006555]   DMA32    [mem 0x0000000001000000-0x00000000ffffffff]
+[    0.006556]   Normal   [mem 0x0000000100000000-0x000000027fffffff]
+[    0.006557]   Device   empty
+[    0.006558] Movable zone start for each node
+[    0.006559] Early memory node ranges
+[    0.006559]   node   0: [mem 0x0000000000001000-0x000000000009efff]
+[    0.006560]   node   0: [mem 0x0000000000100000-0x000000007ffdefff]
+[    0.006561]   node   0: [mem 0x0000000100000000-0x000000027fffffff]
+[    0.006562] Initmem setup node 0 [mem 0x0000000000001000-0x000000027fffffff]
+[    0.006695] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.006706] On node 0, zone DMA: 97 pages in unavailable ranges
+[    0.010066] On node 0, zone Normal: 33 pages in unavailable ranges
+[    0.010477] ACPI: PM-Timer IO Port: 0x608
+[    0.010490] ACPI: LAPIC_NMI (acpi_id[0xff] dfl dfl lint[0x1])
+[    0.010516] IOAPIC[0]: apic_id 0, version 17, address 0xfec00000, GSI 0-23
+[    0.010518] ACPI: INT_SRC_OVR (bus 0 bus_irq 0 global_irq 2 dfl dfl)
+[    0.010519] ACPI: INT_SRC_OVR (bus 0 bus_irq 5 global_irq 5 high level)
+[    0.010520] ACPI: INT_SRC_OVR (bus 0 bus_irq 9 global_irq 9 high level)
+[    0.010521] ACPI: INT_SRC_OVR (bus 0 bus_irq 10 global_irq 10 high level)
+[    0.010521] ACPI: INT_SRC_OVR (bus 0 bus_irq 11 global_irq 11 high level)
+[    0.010524] ACPI: Using ACPI (MADT) for SMP configuration information
+[    0.010525] ACPI: HPET id: 0x8086a201 base: 0xfed00000
+[    0.010528] TSC deadline timer available
+[    0.010532] CPU topo: Max. logical packages:   1
+[    0.010532] CPU topo: Max. logical dies:       1
+[    0.010532] CPU topo: Max. dies per package:   1
+[    0.010535] CPU topo: Max. threads per core:   1
+[    0.010535] CPU topo: Num. cores per package:     1
+[    0.010536] CPU topo: Num. threads per package:   1
+[    0.010536] CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
+[    0.010550] kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()
+[    0.010566] PM: hibernation: Registered nosave memory: [mem 0x00000000-0x00000fff]
+[    0.010567] PM: hibernation: Registered nosave memory: [mem 0x0009f000-0x000fffff]
+[    0.010568] PM: hibernation: Registered nosave memory: [mem 0x7ffdf000-0xffffffff]
+[    0.010569] [mem 0xc0000000-0xfed1bfff] available for PCI devices
+[    0.010570] Booting paravirtualized kernel on KVM
+[    0.010571] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
+[    0.013941] setup_percpu: NR_CPUS:8192 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
+[    0.014152] percpu: Embedded 66 pages/cpu s233472 r8192 d28672 u2097152
+[    0.014177] kvm-guest: PV spinlocks disabled, single CPU
+[    0.014178] Kernel command line: console=ttyS0 rdinit=/init panic=-1
+[    0.014214] random: crng init done
+[    0.014963] Dentry cache hash table entries: 1048576 (order: 11, 8388608 bytes, linear)
+[    0.015339] Inode-cache hash table entries: 524288 (order: 10, 4194304 bytes, linear)
+[    0.015372] Fallback order for Node 0: 0 
+[    0.015374] Built 1 zonelists, mobility grouping on.  Total pages: 2097021
+[    0.015375] Policy zone: Normal
+[    0.015381] mem auto-init: stack:all(zero), heap alloc:on, heap free:off
+[    0.015385] software IO TLB: area num 1.
+[    0.030555] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.030575] ftrace: allocating 45769 entries in 179 pages
+[    0.035777] ftrace: allocated 179 pages with 5 groups
+[    0.036258] Dynamic Preempt: voluntary
+[    0.036403] rcu: Preemptible hierarchical RCU implementation.
+[    0.036403] rcu: 	RCU restricting CPUs from NR_CPUS=8192 to nr_cpu_ids=1.
+[    0.036405] 	Trampoline variant of Tasks RCU enabled.
+[    0.036405] 	Rude variant of Tasks RCU enabled.
+[    0.036405] 	Tracing variant of Tasks RCU enabled.
+[    0.036406] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[    0.036406] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.036410] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.036411] RCU Tasks Rude: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.036412] RCU Tasks Trace: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.039583] NR_IRQS: 524544, nr_irqs: 256, preallocated irqs: 16
+[    0.039755] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.051603] Console: colour VGA+ 80x25
+[    0.051644] printk: legacy console [ttyS0] enabled
+[    0.166901] ACPI: Core revision 20240827
+[    0.167678] clocksource: hpet: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604467 ns
+[    0.169199] APIC: Switch to symmetric I/O mode setup
+[    0.170095] x2apic enabled
+[    0.170688] APIC: Switched APIC routing to: physical x2apic
+[    0.172198] ..TIMER: vector=0x30 apic1=0 pin1=2 apic2=-1 pin2=-1
+[    0.173123] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x33e451ab1a6, max_idle_ns: 440795278720 ns
+[    0.174725] Calibrating delay loop (skipped) preset value.. 7199.99 BogoMIPS (lpj=14399992)
+[    0.176064] x86/cpu: User Mode Instruction Prevention (UMIP) activated
+[    0.177104] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+[    0.178725] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+[    0.179624] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+[    0.180912] Spectre V2 : Spectre BHI mitigation: SW BHB clearing on syscall and VM exit
+[    0.182725] Spectre V2 : Mitigation: IBRS
+[    0.183333] Spectre V2 : Spectre v2 / SpectreRSB: Filling RSB on context switch and VMEXIT
+[    0.184564] RETBleed: Mitigation: IBRS
+[    0.185140] Spectre V2 : mitigation: Enabling conditional Indirect Branch Prediction Barrier
+[    0.186404] Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl
+[    0.186728] MDS: Mitigation: Clear CPU buffers
+[    0.187399] MMIO Stale Data: Mitigation: Clear CPU buffers
+[    0.188229] SRBDS: Unknown: Dependent on hypervisor status
+[    0.189051] active return thunk: its_return_thunk
+[    0.190725] ITS: Mitigation: Aligned branch/return thunks
+[    0.191548] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.192692] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+[    0.193651] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+[    0.194725] x86/fpu: Supporting XSAVE feature 0x008: 'MPX bounds registers'
+[    0.195768] x86/fpu: Supporting XSAVE feature 0x010: 'MPX CSR'
+[    0.196643] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+[    0.197611] x86/fpu: xstate_offset[3]:  832, xstate_sizes[3]:   64
+[    0.198539] x86/fpu: xstate_offset[4]:  896, xstate_sizes[4]:   64
+[    0.198725] x86/fpu: Enabled xstate features 0x1f, context size is 960 bytes, using 'compacted' format.
+[    0.231032] Freeing SMP alternatives memory: 40K
+[    0.231740] pid_max: default: 32768 minimum: 301
+[    0.232461] LSM: initializing lsm=lockdown,capability,landlock,yama,apparmor,tomoyo,bpf,ipe,ima,evm
+[    0.233864] landlock: Up and running.
+[    0.234422] Yama: disabled by default; enable with sysctl kernel.yama.*
+[    0.234780] AppArmor: AppArmor initialized
+[    0.235416] TOMOYO Linux initialized
+[    0.236085] LSM support for eBPF active
+[    0.236720] Mount-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.237859] Mountpoint-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.238938] smpboot: CPU0: Intel(R) Core(TM) i9-9900K CPU @ 3.60GHz (family: 0x6, model: 0x9e, stepping: 0xc)
+[    0.240562] Performance Events: Skylake events, full-width counters, Intel PMU driver.
+[    0.241786] ... version:                2
+[    0.242394] ... bit width:              48
+[    0.242726] ... generic registers:      4
+[    0.243334] ... value mask:             0000ffffffffffff
+[    0.244138] ... max period:             00007fffffffffff
+[    0.244936] ... fixed-purpose events:   3
+[    0.245556] ... event mask:             000000070000000f
+[    0.246415] signal: max sigframe size: 2032
+[    0.246747] rcu: Hierarchical SRCU implementation.
+[    0.247478] rcu: 	Max phase no-delay instances is 1000.
+[    0.250925] smp: Bringing up secondary CPUs ...
+[    0.251629] smp: Brought up 1 node, 1 CPU
+[    0.252243] smpboot: Total of 1 processors activated (7199.99 BogoMIPS)
+[    0.265874] node 0 deferred pages initialised in 12ms
+[    0.266680] Memory: 8047192K/8388084K available (16384K kernel code, 2497K rwdata, 11808K rodata, 4164K init, 4916K bss, 337088K reserved, 0K cma-reserved)
+[    0.267017] devtmpfs: initialized
+[    0.267551] x86/mm: Memory block size: 128MB
+[    0.268785] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[    0.270255] futex hash table entries: 256 (order: 2, 16384 bytes, linear)
+[    0.270766] pinctrl core: initialized pinctrl subsystem
+[    0.271934] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.272937] DMA: preallocated 1024 KiB GFP_KERNEL pool for atomic allocations
+[    0.274054] DMA: preallocated 1024 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[    0.274881] DMA: preallocated 1024 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations
+[    0.276092] audit: initializing netlink subsys (disabled)
+[    0.276937] audit: type=2000 audit(1783654586.011:1): state=initialized audit_enabled=0 res=1
+[    0.278307] thermal_sys: Registered thermal governor 'fair_share'
+[    0.278308] thermal_sys: Registered thermal governor 'bang_bang'
+[    0.278730] thermal_sys: Registered thermal governor 'step_wise'
+[    0.279643] thermal_sys: Registered thermal governor 'user_space'
+[    0.280550] thermal_sys: Registered thermal governor 'power_allocator'
+[    0.281495] cpuidle: using governor ladder
+[    0.282732] cpuidle: using governor menu
+[    0.283365] acpiphp: ACPI Hot Plug PCI Controller Driver version: 0.5
+[    0.284455] PCI: ECAM [mem 0xb0000000-0xbfffffff] (base 0xb0000000) for domain 0000 [bus 00-ff]
+[    0.285777] PCI: ECAM [mem 0xb0000000-0xbfffffff] reserved as E820 entry
+[    0.286736] PCI: Using configuration type 1 for base access
+[    0.287661] kprobes: kprobe jump-optimization is enabled. All kprobes are optimized if possible.
+[    0.310927] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.311963] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.312980] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.314002] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.319090] ACPI: Added _OSI(Module Device)
+[    0.319732] ACPI: Added _OSI(Processor Device)
+[    0.320409] ACPI: Added _OSI(Processor Aggregator Device)
+[    0.321923] ACPI: 1 ACPI AML tables successfully acquired and loaded
+[    0.323843] ACPI: Interpreter enabled
+[    0.324432] ACPI: PM: (supports S0 S3 S4 S5)
+[    0.325084] ACPI: Using IOAPIC for interrupt routing
+[    0.325849] PCI: Using host bridge windows from ACPI; if necessary, use "pci=nocrs" and report a bug
+[    0.326726] PCI: Using E820 reservations for host bridge windows
+[    0.327695] ACPI: Enabled 2 GPEs in block 00 to 3F
+[    0.329919] ACPI: PCI Root Bridge [PCI0] (domain 0000 [bus 00-ff])
+[    0.330729] acpi PNP0A08:00: _OSC: OS supports [ExtendedConfig ASPM ClockPM Segments MSI HPX-Type3]
+[    0.332129] acpi PNP0A08:00: _OSC: platform does not support [PCIeHotplug LTR]
+[    0.333262] acpi PNP0A08:00: _OSC: OS now controls [SHPCHotplug PME AER PCIeCapability]
+[    0.334590] PCI host bridge to bus 0000:00
+[    0.334728] pci_bus 0000:00: root bus resource [io  0x0000-0x0cf7 window]
+[    0.335772] pci_bus 0000:00: root bus resource [io  0x0d00-0xffff window]
+[    0.336795] pci_bus 0000:00: root bus resource [mem 0x000a0000-0x000bffff window]
+[    0.337930] pci_bus 0000:00: root bus resource [mem 0x80000000-0xafffffff window]
+[    0.338727] pci_bus 0000:00: root bus resource [mem 0xc0000000-0xfebfffff window]
+[    0.339872] pci_bus 0000:00: root bus resource [mem 0x280000000-0xa7fffffff window]
+[    0.341024] pci_bus 0000:00: root bus resource [bus 00-ff]
+[    0.341910] pci 0000:00:00.0: [8086:29c0] type 00 class 0x060000 conventional PCI endpoint
+[    0.343207] pci 0000:00:01.0: [1234:1111] type 00 class 0x030000 conventional PCI endpoint
+[    0.345789] pci 0000:00:01.0: BAR 0 [mem 0xfd000000-0xfdffffff pref]
+[    0.348426] pci 0000:00:01.0: BAR 2 [mem 0xfebd4000-0xfebd4fff]
+[    0.352769] pci 0000:00:01.0: ROM [mem 0xfebc0000-0xfebcffff pref]
+[    0.353821] pci 0000:00:01.0: Video device with shadowed ROM at [mem 0x000c0000-0x000dffff]
+[    0.355094] pci 0000:00:02.0: [8086:10d3] type 00 class 0x020000 PCIe Root Complex Integrated Endpoint
+[    0.357180] pci 0000:00:02.0: BAR 0 [mem 0xfeb80000-0xfeb9ffff]
+[    0.358648] pci 0000:00:02.0: BAR 1 [mem 0xfeba0000-0xfebbffff]
+[    0.359600] pci 0000:00:02.0: BAR 2 [io  0xc040-0xc05f]
+[    0.361412] pci 0000:00:02.0: BAR 3 [mem 0xfebd0000-0xfebd3fff]
+[    0.363725] pci 0000:00:02.0: ROM [mem 0xfeb40000-0xfeb7ffff pref]
+[    0.364716] pci 0000:00:02.0: enabling Extended Tags
+[    0.366537] pci 0000:00:1f.0: [8086:2918] type 00 class 0x060100 conventional PCI endpoint
+[    0.367251] pci 0000:00:1f.0: quirk: [io  0x0600-0x067f] claimed by ICH6 ACPI/GPIO/TCO
+[    0.368717] pci 0000:00:1f.2: [8086:2922] type 00 class 0x010601 conventional PCI endpoint
+[    0.371675] pci 0000:00:1f.2: BAR 4 [io  0xc060-0xc07f]
+[    0.372851] pci 0000:00:1f.2: BAR 5 [mem 0xfebd5000-0xfebd5fff]
+[    0.374578] pci 0000:00:1f.3: [8086:2930] type 00 class 0x0c0500 conventional PCI endpoint
+[    0.376264] pci 0000:00:1f.3: BAR 4 [io  0x0700-0x073f]
+[    0.379105] ACPI: PCI: Interrupt link LNKA configured for IRQ 10
+[    0.380090] ACPI: PCI: Interrupt link LNKB configured for IRQ 10
+[    0.381478] ACPI: PCI: Interrupt link LNKC configured for IRQ 11
+[    0.382455] ACPI: PCI: Interrupt link LNKD configured for IRQ 11
+[    0.382797] ACPI: PCI: Interrupt link LNKE configured for IRQ 10
+[    0.383773] ACPI: PCI: Interrupt link LNKF configured for IRQ 10
+[    0.384755] ACPI: PCI: Interrupt link LNKG configured for IRQ 11
+[    0.385731] ACPI: PCI: Interrupt link LNKH configured for IRQ 11
+[    0.386681] ACPI: PCI: Interrupt link GSIA configured for IRQ 16
+[    0.386732] ACPI: PCI: Interrupt link GSIB configured for IRQ 17
+[    0.387651] ACPI: PCI: Interrupt link GSIC configured for IRQ 18
+[    0.388564] ACPI: PCI: Interrupt link GSID configured for IRQ 19
+[    0.389493] ACPI: PCI: Interrupt link GSIE configured for IRQ 20
+[    0.390732] ACPI: PCI: Interrupt link GSIF configured for IRQ 21
+[    0.391661] ACPI: PCI: Interrupt link GSIG configured for IRQ 22
+[    0.392572] ACPI: PCI: Interrupt link GSIH configured for IRQ 23
+[    0.393831] iommu: Default domain type: Translated
+[    0.394562] iommu: DMA domain TLB invalidation policy: lazy mode
+[    0.394840] pps_core: LinuxPPS API ver. 1 registered
+[    0.395594] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.396980] PTP clock support registered
+[    0.397586] EDAC MC: Ver: 3.0.0
+[    0.398498] NetLabel: Initializing
+[    0.398726] NetLabel:  domain hash size = 128
+[    0.399386] NetLabel:  protocols = UNLABELED CIPSOv4 CALIPSO
+[    0.400277] NetLabel:  unlabeled traffic allowed by default
+[    0.401118] PCI: Using ACPI for IRQ routing
+[    0.470531] pci 0000:00:01.0: vgaarb: setting as boot VGA device
+[    0.470723] pci 0000:00:01.0: vgaarb: bridge control possible
+[    0.470723] pci 0000:00:01.0: vgaarb: VGA device added: decodes=io+mem,owns=io+mem,locks=none
+[    0.470726] vgaarb: loaded
+[    0.471171] hpet0: at MMIO 0xfed00000, IRQs 2, 8, 0
+[    0.471915] hpet0: 3 comparators, 64-bit 100.000000 MHz counter
+[    0.475775] clocksource: Switched to clocksource kvm-clock
+[    0.477172] VFS: Disk quotas dquot_6.6.0
+[    0.477781] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[    0.478723] AppArmor: AppArmor Filesystem Enabled
+[    0.478723] pnp: PnP ACPI init
+[    0.479255] system 00:05: [mem 0xb0000000-0xbfffffff window] has been reserved
+[    0.480561] pnp: PnP ACPI: found 6 devices
+[    0.486596] clocksource: acpi_pm: mask: 0xffffff max_cycles: 0xffffff, max_idle_ns: 2085701024 ns
+[    0.488002] NET: Registered PF_INET protocol family
+[    0.488920] IP idents hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.498654] tcp_listen_portaddr_hash hash table entries: 4096 (order: 4, 65536 bytes, linear)
+[    0.499971] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.501147] TCP established hash table entries: 65536 (order: 7, 524288 bytes, linear)
+[    0.502537] TCP bind hash table entries: 65536 (order: 9, 2097152 bytes, linear)
+[    0.503802] TCP: Hash tables configured (established 65536 bind 65536)
+[    0.504820] MPTCP token hash table entries: 8192 (order: 6, 196608 bytes, linear)
+[    0.505968] UDP hash table entries: 4096 (order: 5, 131072 bytes, linear)
+[    0.507010] UDP-Lite hash table entries: 4096 (order: 5, 131072 bytes, linear)
+[    0.508152] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.509019] NET: Registered PF_XDP protocol family
+[    0.509759] pci_bus 0000:00: resource 4 [io  0x0000-0x0cf7 window]
+[    0.510700] pci_bus 0000:00: resource 5 [io  0x0d00-0xffff window]
+[    0.511655] pci_bus 0000:00: resource 6 [mem 0x000a0000-0x000bffff window]
+[    0.512695] pci_bus 0000:00: resource 7 [mem 0x80000000-0xafffffff window]
+[    0.513734] pci_bus 0000:00: resource 8 [mem 0xc0000000-0xfebfffff window]
+[    0.514774] pci_bus 0000:00: resource 9 [mem 0x280000000-0xa7fffffff window]
+[    0.515932] PCI: CLS 0 bytes, default 64
+[    0.516622] Trying to unpack rootfs image as initramfs...
+[    0.519095] PCI-DMA: Using software bounce buffering for IO (SWIOTLB)
+[    0.520089] software IO TLB: mapped [mem 0x0000000077084000-0x000000007b084000] (64MB)
+[    0.521309] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x33e451ab1a6, max_idle_ns: 440795278720 ns
+[    0.527123] Initialise system trusted keyrings
+[    0.527834] Key type blacklist registered
+[    0.531044] workingset: timestamp_bits=36 max_order=21 bucket_order=0
+[    0.532041] zbud: loaded
+[    0.532510] fuse: init (API version 7.41)
+[    0.535045] integrity: Platform Keyring initialized
+[    0.535808] integrity: Machine keyring initialized
+[    0.554980] Key type asymmetric registered
+[    0.555627] Asymmetric key parser 'x509' registered
+[    0.916961] Freeing initrd memory: 81200K
+[    0.918141] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 246)
+[    0.919307] io scheduler mq-deadline registered
+[    0.920819] ledtrig-cpu: registered to indicate activity on CPUs
+[    0.921755] shpchp: Standard Hot Plug PCI Controller Driver version: 0.4
+[    0.922927] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[    0.924287] 00:03: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16550A
+[    0.925777] Linux agpgart interface v0.103
+[    0.926595] i8042: PNP: PS/2 Controller [PNP0303:KBD,PNP0f13:MOU] at 0x60,0x64 irq 1,12
+[    0.928503] serio: i8042 KBD port at 0x60,0x64 irq 1
+[    0.929260] serio: i8042 AUX port at 0x60,0x64 irq 12
+[    0.930095] mousedev: PS/2 mouse device common for all mice
+[    0.931206] input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input0
+[    0.932728] rtc_cmos 00:04: RTC can wake from S4
+[    0.933894] rtc_cmos 00:04: registered as rtc0
+[    0.934644] rtc_cmos 00:04: setting system clock to 2026-07-10T03:36:26 UTC (1783654586)
+[    0.935955] rtc_cmos 00:04: alarms up to one day, y3k, 242 bytes nvram, hpet irqs
+[    0.937090] intel_pstate: CPU model not supported
+[    0.938378] NET: Registered PF_INET6 protocol family
+[    0.939709] Segment Routing with IPv6
+[    0.940274] In-situ OAM (IOAM) with IPv6
+[    0.940886] mip6: Mobile IPv6
+[    0.941395] NET: Registered PF_PACKET protocol family
+[    0.942304] mpls_gso: MPLS GSO support
+[    0.942994] IPI shorthand broadcast: enabled
+[    0.944945] sched_clock: Marking stable (816001826, 126963006)->(960566693, -17601861)
+[    0.946271] registered taskstats version 1
+[    0.946979] Loading compiled-in X.509 certificates
+[    0.958960] Loaded X.509 cert 'Build time autogenerated kernel key: e87b99600394fc77ba6018a2cc6a68db4bb86ee6'
+[    0.961626] Demotion targets for Node 0: null
+[    0.962380] Key type .fscrypt registered
+[    0.962988] Key type fscrypt-provisioning registered
+[    0.964226] Key type encrypted registered
+[    0.964855] AppArmor: AppArmor sha256 policy hashing enabled
+[    0.965720] ima: No TPM chip found, activating TPM-bypass!
+[    0.966612] ima: Allocated hash algorithm: sha256
+[    0.967350] ima: No architecture policies found
+[    0.968069] evm: Initialising EVM extended attributes:
+[    0.968850] evm: security.selinux
+[    0.969357] evm: security.SMACK64 (disabled)
+[    0.970059] evm: security.SMACK64EXEC (disabled)
+[    0.970762] evm: security.SMACK64TRANSMUTE (disabled)
+[    0.971538] evm: security.SMACK64MMAP (disabled)
+[    0.972253] evm: security.apparmor
+[    0.972772] evm: security.ima
+[    0.973227] evm: security.capability
+[    0.973773] evm: HMAC attrs: 0x1
+[    0.993283] RAS: Correctable Errors collector initialized.
+[    1.006981] clk: Disabling unused clocks
+[    1.007607] PM: genpd: Disabling unused power domains
+[    1.012248] Freeing unused decrypted memory: 2028K
+[    1.013044] Freeing unused kernel image (initmem) memory: 4164K
+[    1.013689] Write protecting the kernel read-only data: 28672k
+[    1.014500] Freeing unused kernel image (rodata/data gap) memory: 480K
+[    1.049730] x86/mm: Checked W+X mappings: passed, no W+X pages found.
+[    1.074974] Run /init as init process
+NESTED_X86_L1_BOOT_OK
+Linux (none) 6.12.90+deb13.1-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.90-2 (2026-05-27) x86_64 GNU/Linux
+              total        used        free      shared  buff/cache   available
+Mem:           7948          56        7738         153         154        7602
+msr: loaded
+irqbypass: loaded
+[    1.104003] kvm: loading out-of-tree module taints kernel.
+[    1.104612] kvm: module verification failed: signature and/or required key missing - tainting kernel
+kvm(PATCHED): loaded
+kvm-intel(PATCHED): loaded
+L1_DEV_KVM_PRESENT
+NESTED_X86_L2_PIN_CHECK_BEGIN
+f06a34a79010a8f2cc8226dc629cc8fb049740016f035f53e3f2e53d9a30dd41  guest/build/bzImage
+3c4a7f2f0db4b59aaf4dee55d43a42c57fc0d10ac25441de88128c61be0778c2  guest/build/initramfs-postgres.cpio.gz
+NESTED_X86_L2_PIN_CHECK_END
+NESTED_X86_GATE_BEGIN live_determinism
+
+running 2 tests
+test p6_rdtsc_rng_are_deterministic_and_vtime_backed ... [p6] tsc reads = [0, 2, 4, 6]  aux = 0x0
+[p6] rdrand = 0x9f72a62a  rdseed = 0x42b87398
+ok
+test p6_snapshot_restore_resumes_both_clocks_exactly ... [p6] snapshot/restore transparent: results = Results { tsc: [0, 2, 4, 6], aux: 0, rdrand: 2675090986, rdseed: 1119384472 }
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+
+NESTED_X86_GATE_RC live_determinism rc=0
+NESTED_X86_GATE_END live_determinism
+NESTED_X86_GATE_BEGIN live_preemption
+
+running 2 tests
+test busy_spin_guest_is_preempted_and_timer_lands_deterministic_twice ... [gate2] seed A: irq-landing PASS — busy-spin preempted, all 8 timer deadlines landed.
+[gate2]   state_hash = 1b9f87a505035429e0d0678b3dda7e49d3c03b311cd7d0ff6707a8a2e03608cd
+[gate2]   landings (measured) = [2667, 7959, 13293, 18668, 29335, 72002, 242669, 925336]
+[gate2]   reports (programmed ICRs) = [64, 0, 127, 0, 128, 0, 129, 0, 256, 0, 1024, 0, 4096, 0, 16384, 0]
+[gate2] deterministic-twice CONFIRMED at seed 0x00005eedd31e2026: state_hash 1b9f87a505035429e0d0678b3dda7e49d3c03b311cd7d0ff6707a8a2e03608cd == 1b9f87a505035429e0d0678b3dda7e49d3c03b311cd7d0ff6707a8a2e03608cd
+[gate2] seed B 0x00000badc0de1234: PASS, landings == seed A (MEASURED preemption work is seed-pure for a pure guest); state_hash = 8d9801ce4dfd002dfe16660d94b818f6910f529ee3c320515a86b678e3f50cc7 != seed A (seed keys the entropy state)
+ok
+test preemption_instant_is_a_pure_function_of_the_seed ... [gate2] irq-landing-rng deterministic-twice CONFIRMED at seed 0x00005eedd31e2026: landings [410851, 963853, 1410689, 1553858] repeat, state_hash a83868217927ece4f1734c3f1084a51bca08fe435dee2216656ef3a41e1a59b3 == a83868217927ece4f1734c3f1084a51bca08fe435dee2216656ef3a41e1a59b3
+[gate2] irq-landing-rng seed B 0x00000badc0de1234: PASS, MEASURED landings [304560, 707520, 1022938, 1358481] != seed A [410851, 963853, 1410689, 1553858] (run_until preempted at DIFFERENT retired-branch counts — seed-dependent preemption); state_hash = 0031fecd89d482719d1d25bacd402691495293c2e30d3ed0a34af7af829e6ec3
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 70.28s
+
+NESTED_X86_GATE_RC live_preemption rc=0
+NESTED_X86_GATE_END live_preemption
+NESTED_X86_GATE_BEGIN live_postgres
+
+running 3 tests
+test p1_postgres_runs_and_streams_patched ... [host-assert] CPU-MSR-CONTRACT §1.1 baseline:
+[host-assert]   PASS  family-model-stepping: expected 06_9e_0c, observed 06_9e_0c
+[host-assert]   PASS  host-microcode-rev: expected 0x00000000000000f8, observed 0x00000000000000f8
+[host-assert]   PASS  mxcsr-mask: expected 0xffff, observed 0xffff
+[host-assert]   PASS  maxphyaddr-min: expected >= 39, observed 39
+[host-assert]   PASS  rtm-disabled: expected rtm physically absent (the IA32_TSX_CTRL pin is not installed by this skeleton), observed rtm-absent (XBEGIN #UDs; already non-usable)
+[host-assert]   PASS  host-absent HRESET: expected absent, observed absent
+[host-assert]   PASS  host-absent PCONFIG: expected absent, observed absent
+[host-assert]   PASS  host-absent RDPID: expected absent, observed absent
+[host-assert]   PASS  host-absent SERIALIZE: expected absent, observed absent
+[host-assert]   PASS  host-absent SHA: expected absent, observed absent
+[host-assert]   PASS  host-absent TPAUSE: expected absent, observed absent
+[host-assert]   PASS  host-absent UMONITOR: expected absent, observed absent
+[host-assert]   PASS  host-absent UMWAIT: expected absent, observed absent
+[pg] cmdline: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0x1272418 work=73630982 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff8128cdf8 work=73632602 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff8128ce03 work=73632602 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0xffffffff8128ce35 work=73632605 disposition=AllowFixed(0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff818810c2 work=73635427 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff81287e39 work=73638802 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff81287e46 work=73638802 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff81287d1c work=73638813 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=73638985 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296dc7 work=74060614 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0xffffffff82ba3479 work=74065364 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0xffffffff8128b422 work=74065374 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0xffffffff82ba2b76 work=77485987 disposition=AllowFixed(4276095232)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=80220026 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0xffffffff81297a36 work=80220029 disposition=AllowFixed(4276095232)
+[    0.000000] Linux version 6.18.35 (hypervizor@hypervizor) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Thu Jan  1 00:00:00 UTC 1970
+[    0.000000] Command line: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable
+[    0.000000] x86/CPU: Running old microcode
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000000dfff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000000e000-0x000000000000ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000000010000-0x000000000009ffff] usable
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000007fffffff] usable
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] APIC: Static calls initialized
+[    0.000000] DMI not present or invalid.
+[    0.000000] tsc: Detected 2000.000 MHz processor
+[    0.000004] last_pfn = 0x80000 max_arch_pfn = 0x400000000
+[    0.000004] MTRRs disabled by BIOS
+[    0.000005] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+[    0.000594] Using GB pages for direct mapping
+[    0.000774] RAMDISK: [mem 0x7daa1000-0x7fffffff]
+[    0.000775] ACPI: Early table checksum verification disabled
+[    0.000775] ACPI: RSDP 0x00000000000E0000 000024 (v02 HARMNY)
+[    0.000777] ACPI: XSDT 0x00000000000E0040 00002C (v01 HARMNY HARMONYT 00000001 HARM 00000001)
+[    0.000779] ACPI: APIC 0x00000000000E0080 000034 (v05 HARMNY HARMONYT 00000001 HARM 00000001)
+[    0.000781] ACPI: Reserving APIC table memory at [mem 0xe0080-0xe00b3]
+[    0.000784] Zone ranges:
+[    0.000785]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+[    0.000786]   DMA32    [mem 0x0000000001000000-0x000000007fffffff]
+[    0.000786]   Normal   empty
+[    0.000787]   Device   empty
+[    0.000787] Movable zone start for each node
+[    0.000788] Early memory node ranges
+[    0.000788]   node   0: [mem 0x0000000000001000-0x000000000000dfff]
+[    0.000789]   node   0: [mem 0x0000000000010000-0x000000000009ffff]
+[    0.000789]   node   0: [mem 0x0000000000100000-0x000000007fffffff]
+[    0.000790] Initmem setup node 0 [mem 0x0000000000001000-0x000000007fffffff]
+[    0.000792] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.000793] On node 0, zone DMA: 2 pages in unavailable ranges
+[    0.000813] On node 0, zone DMA: 96 pages in unavailable ranges
+[    0.003425] ACPI: Skipping IOAPIC probe due to 'noapic' option.
+[    0.003426] ACPI: Using ACPI for processor (LAPIC) configuration information
+[    0.003427] CPU topo: Max. logical packages:   1
+[    0.003428] CPU topo: Max. logical dies:       1
+[    0.003428] CPU topo: Max. dies per package:   1
+[    0.003430] CPU topo: Max. threads per core:   1
+[    0.003430] CPU topo: Num. cores per package:     1
+[    0.003431] CPU topo: Num. threads per package:   1
+[    0.003431] CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
+[    0.003433] [mem 0x80000000-0xffffffff] available for PCI devices
+[    0.003433] Booting paravirtualized kernel on bare hardware
+[    0.003434] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.006017] setup_percpu: NR_CPUS:240 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
+[    0.006052] percpu: Embedded 39 pages/cpu s127000 r0 d32744 u2097152
+[    0.006059] Kernel command line: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable
+[    0.006102] Unknown kernel command line parameters "nokaslr", will be passed to user space.
+[    0.006103] random: crng init done
+[    0.006104] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.006138] Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    0.006156] Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.006159] Built 1 zonelists, mobility grouping on.  Total pages: 524189
+[    0.006160] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.007791] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.007807] rcu: Hierarchical RCU implementation.
+[    0.007807] rcu: 	RCU event tracing is enabled.
+[    0.007807] rcu: 	RCU restricting CPUs from NR_CPUS=240 to nr_cpu_ids=1.
+[    0.007808] 	Tracing variant of Tasks RCU enabled.
+[    0.007808] rcu: RCU calculated value of scheduler-enlistment delay is 10 jiffies.
+[    0.007809] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.007810] RCU Tasks Trace: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.007812] NR_IRQS: 15616, nr_irqs: 32, preallocated irqs: 16
+[    0.007945] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.007957] Console: colour dummy device 80x25
+[    0.007959] printk: legacy console [ttyS0] enabled
+[    0.008013] ACPI: Core revision 20250807
+[    0.008018] ACPI: setting ELCR to 0001 (from 0000)
+[    0.008020] APIC: Switch to symmetric I/O mode setup
+[    0.008021] Not enabling interrupt remapping due to skipped IO-APIC setup
+[    0.008022] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x39a85c9bff6, max_idle_ns: 881590591483 ns
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff82b9d57f work=82085643 disposition=EmulateVtime
+[    0.008025] Calibrating delay loop (skipped) preset value.. 800.00 BogoMIPS (lpj=4000000)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff818810c2 work=82087978 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff81287e39 work=82088308 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff81287e46 work=82088308 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff81287d1c work=82088319 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3a data=n/a rip=0xffffffff812874ee work=82088422 disposition=AllowFixed(1)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x140 data=n/a rip=0xffffffff81287f65 work=82088726 disposition=DenyGp
+[    0.008028] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+[    0.008030] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=82092546 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=82092618 disposition=AllowFixed(167775241)
+[    0.008032] mitigations: Enabled attack vectors: user_kernel, user_user, SMT mitigations: auto
+[    0.008034] Speculative Store Bypass: Vulnerable
+[    0.008035] SRBDS: Vulnerable: No microcode
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284be2 work=82097366 disposition=DenyGp
+[    0.008036] unchecked MSR access error: RDMSR from 0x123 at rIP: 0xffffffff81284be2 (native_read_msr+0x2/0x10)
+[    0.008039] Call Trace:
+[    0.008040]  <TASK>
+[    0.008041]  cpu_select_mitigations+0x969/0x1e40
+[    0.008043]  arch_cpu_finalize_init+0xbe/0x140
+[    0.008046]  start_kernel+0x54b/0x5d0
+[    0.008048]  x86_64_start_reservations+0x20/0x20
+[    0.008051]  x86_64_start_kernel+0xc0/0xc0
+[    0.008054]  common_startup_64+0x13b/0x148
+[    0.008056]  </TASK>
+[    0.008057] Spectre V2 : Mitigation: Retpolines
+[    0.008058] RETBleed: Vulnerable
+[    0.008059] MDS: Vulnerable: Clear CPU buffers attempted, no microcode
+[    0.008060] MMIO Stale Data: Vulnerable: Clear CPU buffers attempted, no microcode
+[    0.008062] VMSCAPE: Vulnerable
+[    0.008063] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+[    0.008065] Spectre V2 : Spectre v2 / SpectreRSB: Filling RSB on context switch and VMEXIT
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284e7e work=82128067 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x123 data=0x0 rip=0xffffffff81284e9c work=82128128 disposition=DenyGp
+[    0.008067] unchecked MSR access error: WRMSR to 0x123 (tried to write 0x0000000000000000) at rIP: 0xffffffff81284e9c (update_gds_msr+0x3c/0x80)
+[    0.008070] Call Trace:
+[    0.008071]  <TASK>
+[    0.008072]  cpu_select_mitigations+0x1ae6/0x1e40
+[    0.008074]  arch_cpu_finalize_init+0xbe/0x140
+[    0.008077]  start_kernel+0x54b/0x5d0
+[    0.008080]  x86_64_start_reservations+0x20/0x20
+[    0.008083]  x86_64_start_kernel+0xc0/0xc0
+[    0.008085]  common_startup_64+0x13b/0x148
+[    0.008087]  </TASK>
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284e9e work=82149353 disposition=DenyGp
+[    0.008088] GDS: Mitigation: Microcode
+[    0.008089] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.008091] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+[    0.008093] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+[    0.008094] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+[    0.008096] x86/fpu: Enabled xstate features 0x7, context size is 832 bytes, using 'standard' format.
+[    0.013926] Freeing SMP alternatives memory: 48K
+[    0.013927] pid_max: default: 32768 minimum: 301
+[    0.013933] LSM: initializing lsm=capability,landlock
+[    0.013944] landlock: Up and running.
+[    0.013948] Mount-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.013950] Mountpoint-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.013988] ACPI Warning: AcpiEnable failed (20250807/utxfinit-147)
+[    0.013990] ACPI: Unable to enable ACPI
+[    0.013995] smpboot: CPU0: Intel Deterministic vCPU (CFL-class) @ 2.00GHz (family: 0x6, model: 0x9e, stepping: 0xc)
+[    0.014041] Performance Events: unsupported CPU family 6 model 158 no PMU driver, software events only.
+[    0.014046] signal: max sigframe size: 1360
+[    0.014052] rcu: Hierarchical SRCU implementation.
+[    0.014053] rcu: 	Max phase no-delay instances is 1000.
+[    0.014075] smp: Bringing up secondary CPUs ...
+[    0.014076] smp: Brought up 1 node, 1 CPU
+[    0.014077] smpboot: Total of 1 processors activated (800.00 BogoMIPS)
+[    0.014085] Memory: 1986112K/2096756K available (15511K kernel code, 1167K rwdata, 4332K rodata, 2112K init, 2396K bss, 107696K reserved, 0K cma-reserved)
+[    0.014123] devtmpfs: initialized
+[    0.014133] x86/mm: Memory block size: 128MB
+[    0.014250] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.014252] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[    0.014255] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[    0.014286] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.014320] audit: initializing netlink subsys (disabled)
+[    0.014339] thermal_sys: Registered thermal governor 'step_wise'
+[    0.014341] audit: type=2000 audit(943920000.000:1): state=initialized audit_enabled=0 res=1
+[    0.014344] cpuidle: using governor menu
+[    0.014367] PCI: Fatal: No config space access function found
+[    0.014405] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.014407] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.014409] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.014410] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.014444] ACPI: Interpreter disabled.
+[    0.014447] iommu: Default domain type: Translated
+[    0.014449] iommu: DMA domain TLB invalidation policy: lazy mode
+[    0.014479] SCSI subsystem initialized
+[    0.014482] pps_core: LinuxPPS API ver. 1 registered
+[    0.014483] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.014486] PTP clock support registered
+[    0.014560] PCI: System does not support PCI
+[    0.014565] vgaarb: loaded
+[    0.014578] clocksource: Switched to clocksource tsc-early
+[    0.014608] pnp: PnP ACPI: disabled
+[    0.014952] NET: Registered PF_INET protocol family
+[    0.014959] IP idents hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.015052] tcp_listen_portaddr_hash hash table entries: 1024 (order: 2, 16384 bytes, linear)
+[    0.015055] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.015058] TCP established hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.015076] TCP bind hash table entries: 16384 (order: 7, 524288 bytes, linear)
+[    0.015095] TCP: Hash tables configured (established 16384 bind 16384)
+[    0.015097] UDP hash table entries: 1024 (order: 4, 65536 bytes, linear)
+[    0.015102] UDP-Lite hash table entries: 1024 (order: 4, 65536 bytes, linear)
+[    0.015111] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.015114] PCI: CLS 0 bytes, default 64
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x606 data=n/a rip=0xffffffff82b91ab4 work=89186923 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x64e data=n/a rip=0xffffffff81252803 work=89187057 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x34 data=n/a rip=0xffffffff81252803 work=89187129 disposition=DenyGp
+[    0.015142] Trying to unpack rootfs image as initramfs...
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fc data=n/a rip=0xffffffff81252803 work=98562447 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fd data=n/a rip=0xffffffff81252803 work=98562515 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fe data=n/a rip=0xffffffff81252803 work=98562583 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x60d data=n/a rip=0xffffffff81252803 work=98562653 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3f8 data=n/a rip=0xffffffff81252803 work=98562721 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3f9 data=n/a rip=0xffffffff81252803 work=98562789 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fa data=n/a rip=0xffffffff81252803 work=98562857 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x630 data=n/a rip=0xffffffff81252803 work=98562925 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x631 data=n/a rip=0xffffffff81252803 work=98562993 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x632 data=n/a rip=0xffffffff81252803 work=98563061 disposition=DenyGp
+[    0.018025] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x39a85c9bff6, max_idle_ns: 881590591483 ns
+[    0.018025] clocksource: Switched to clocksource tsc
+[    0.018025] platform rtc_cmos: registered platform RTC device (no PNP device found)
+[    0.018025] workingset: timestamp_bits=46 max_order=19 bucket_order=0
+[    0.018077] Key type cifs.spnego registered
+[    0.018079] Key type cifs.idmap registered
+[    0.018085] fuse: init (API version 7.45)
+[    0.018140] SGI XFS with security attributes, scrub, repair, no debug enabled
+[    0.018164] 9p: Installing v9fs 9p2000 file system support
+[    0.020280] NET: Registered PF_ALG protocol family
+[    0.020283] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 249)
+[    0.028346] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled
+[    0.028360] serial8250: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16450
+[    0.028796] brd: module loaded
+[    0.029057] loop: module loaded
+[    0.029078] tun: Universal TUN/TAP device driver, 1.6
+[    0.029105] VFIO - User Level meta-driver version: 0.3
+[    0.029267] xt_time: kernel timezone is -0000
+[    0.029271] IPVS: Registered protocols (TCP, UDP, SCTP, AH, ESP)
+[    0.029274] IPVS: Connection hash table configured (size=4096, memory=32Kbytes)
+[    0.029291] IPVS: ipvs loaded.
+[    0.029292] IPVS: [rr] scheduler registered.
+[    0.029293] IPVS: [wrr] scheduler registered.
+[    0.029294] IPVS: [lc] scheduler registered.
+[    0.029296] IPVS: [wlc] scheduler registered.
+[    0.029297] IPVS: [fo] scheduler registered.
+[    0.029298] IPVS: [ovf] scheduler registered.
+[    0.029299] IPVS: [lblc] scheduler registered.
+[    0.029301] IPVS: [lblcr] scheduler registered.
+[    0.029302] IPVS: [dh] scheduler registered.
+[    0.029303] IPVS: [sh] scheduler registered.
+[    0.029304] IPVS: [sed] scheduler registered.
+[    0.029305] IPVS: [nq] scheduler registered.
+[    0.029307] IPVS: [sip] pe registered.
+[    0.029342] Initializing XFRM netlink socket
+[    0.029356] NET: Registered PF_INET6 protocol family
+[    0.029429] Segment Routing with IPv6
+[    0.029432] In-situ OAM (IOAM) with IPv6
+[    0.029446] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    0.029490] NET: Registered PF_PACKET protocol family
+[    0.029499] Bridge firewalling registered
+[    0.029506] 9pnet: Installing 9P2000 support
+[    0.029508] Key type dns_resolver registered
+[    0.029520] NET: Registered PF_VSOCK protocol family
+[    0.029534] microcode: Current revision: 0x00000001
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff8128cdf8 work=110153125 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff8128ce03 work=110153125 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0xffffffff8128ce35 work=110153128 disposition=AllowFixed(0)
+[    0.029540] IPI shorthand broadcast: enabled
+[    0.030227] sched_clock: Marking stable (28197096, 78531)->(34829050, -6553423)
+[    0.030243] registered taskstats version 1
+[   76.932387] perf: interrupt took too long (2512 > 2500), lowering kernel.perf_event_max_sample_rate to 79500
+[    0.038833] alg: No test for fips(ansi_cprng) (fips_ansi_cprng)
+[   78.061240] perf: interrupt took too long (3171 > 3140), lowering kernel.perf_event_max_sample_rate to 63000
+[   79.704489] perf: interrupt took too long (3991 > 3963), lowering kernel.perf_event_max_sample_rate to 50000
+[    0.341416] Freeing initrd memory: 38268K
+[    0.341588] Freeing unused kernel image (initmem) memory: 2112K
+[    0.341598] Write protecting the kernel read-only data: 22528k
+[    0.341717] Freeing unused kernel image (text/rodata gap) memory: 872K
+[    0.341802] Freeing unused kernel image (rodata/data gap) memory: 1812K
+[    0.341805] Run /init as init process
+PG37: mounting baked ext4 PGDATA (loop, RAM-backed)
+[    0.343091] loop0: detected capacity change from 0 to 196608
+[    0.343297] EXT4-fs (loop0): mounted filesystem deadbeef-0000-0000-0000-000000000037 r/w with ordered data mode. Quota mode: disabled.
+PG37: starting postgres
+[pg 108] LOG:  starting PostgreSQL 17.10 (Debian 17.10-0+deb13u1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+[pg 108] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+[pg 116] LOG:  database system was shut down at 2026-06-26 14:37:57 UTC
+[pg 108] LOG:  database system is ready to accept connections
+PG37: workload begin
+row|1|1|1|646ac5fa-ce3a-4049-97b0-42fb548f33ef|1999-11-30 00:00:00.360083+00
+row|2|2|3|4e10a782-08f9-49ef-a487-7772c91d0f7d|1999-11-30 00:00:00.360347+00
+row|3|3|6|8f91e7c3-85be-4422-af0c-2557bd18932d|1999-11-30 00:00:00.360412+00
+row|4|4|10|84f4cabb-29a9-4bdb-aa4d-5cb9a7959e19|1999-11-30 00:00:00.360474+00
+row|5|5|15|5c1e5d9b-3c03-45f6-b6e7-4c61463f5c51|1999-11-30 00:00:00.360536+00
+row|6|6|21|ea677a41-118c-45d6-9782-17f98edd8e6a|1999-11-30 00:00:00.360599+00
+row|7|7|28|8fdedd44-3912-485c-968b-b203dee755c5|1999-11-30 00:00:00.360661+00
+row|8|8|36|06547420-fb15-4979-9093-c3eb72940604|1999-11-30 00:00:00.360724+00
+row|9|9|45|e9b8449f-6cd2-4fb7-a9c2-8ec7660f934c|1999-11-30 00:00:00.360787+00
+row|10|10|55|39f5399f-5440-4b7c-b3e9-2e9b7cece8fe|1999-11-30 00:00:00.36085+00
+row|11|11|66|da79ed32-ddf9-4712-b127-94e7cce717ef|1999-11-30 00:00:00.360914+00
+row|12|12|78|25a42845-dcfd-4425-b56c-8b0c8be87840|1999-11-30 00:00:00.360977+00
+row|13|13|91|685a8be8-f03b-4b29-b0a7-30cd8a1d17de|1999-11-30 00:00:00.361041+00
+row|14|14|105|d04b367d-1b46-4d02-a4e2-72b64430fc28|1999-11-30 00:00:00.361105+00
+row|15|15|120|e88cc4a5-8374-4227-89ac-4d40976f093d|1999-11-30 00:00:00.36117+00
+row|16|16|136|0698399b-4ceb-4993-a1d0-348a8c01db3b|1999-11-30 00:00:00.361234+00
+row|17|17|153|1dbfa55e-8a45-491f-a6ed-9d80afa6bdaa|1999-11-30 00:00:00.361298+00
+row|18|18|171|96d47bda-7b7c-463a-aa57-6e7ac80bdb00|1999-11-30 00:00:00.361363+00
+row|19|19|190|9398f090-5d6b-4734-a5d9-c9a546be0639|1999-11-30 00:00:00.361428+00
+row|20|20|210|988f04ec-9b20-466e-bc90-2d122cca55f5|1999-11-30 00:00:00.361494+00
+PG37: workload end
+server shutting down
+[pg 108] LOG:  received fast shutdown request
+[pg 108] LOG:  aborting any active transactions
+[pg 108] LOG:  background worker "logical replication launcher" (PID 119) exited with exit code 1
+[pg 114] LOG:  shutting down
+[pg 114] LOG:  checkpoint starting: shutdown immediate
+[pg 114] LOG:  checkpoint complete: wrote 47 buffers (1.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.001 s; sync files=36, longest=0.001 s, average=0.001 s; distance=145 kB, estimate=145 kB; lsn=0/15112D0, redo lsn=0/15112D0
+[pg 108] LOG:  database system is shut down
+GUEST_READY
+[    0.375392] EXT4-fs (loop0): unmounting filesystem deadbeef-0000-0000-0000-000000000037.
+[    0.382473] reboot: Restarting system
+[    0.382474] reboot: machine restart
+
+[p1] steps=112633 terminal=Some(Shutdown) pg_ready=true workload_done=true final_row=true uuids=20 GUEST_READY=true step_error=None
+[p1] final-row sample: uuid=988f04ec-9b20-466e-bc90-2d122cca55f5 t=1999-11-30 00:00:00.361494+00
+[p1] sample UUID (seed 0x0028c0ffee5eedc0): 988f04ec-9b20-466e-bc90-2d122cca55f5
+ok
+test p2_postgres_deterministic_twice_patched ... [host-assert] CPU-MSR-CONTRACT §1.1 baseline:
+[host-assert]   PASS  family-model-stepping: expected 06_9e_0c, observed 06_9e_0c
+[host-assert]   PASS  host-microcode-rev: expected 0x00000000000000f8, observed 0x00000000000000f8
+[host-assert]   PASS  mxcsr-mask: expected 0xffff, observed 0xffff
+[host-assert]   PASS  maxphyaddr-min: expected >= 39, observed 39
+[host-assert]   PASS  rtm-disabled: expected rtm physically absent (the IA32_TSX_CTRL pin is not installed by this skeleton), observed rtm-absent (XBEGIN #UDs; already non-usable)
+[host-assert]   PASS  host-absent HRESET: expected absent, observed absent
+[host-assert]   PASS  host-absent PCONFIG: expected absent, observed absent
+[host-assert]   PASS  host-absent RDPID: expected absent, observed absent
+[host-assert]   PASS  host-absent SERIALIZE: expected absent, observed absent
+[host-assert]   PASS  host-absent SHA: expected absent, observed absent
+[host-assert]   PASS  host-absent TPAUSE: expected absent, observed absent
+[host-assert]   PASS  host-absent UMONITOR: expected absent, observed absent
+[host-assert]   PASS  host-absent UMWAIT: expected absent, observed absent
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0x1272418 work=73630982 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff8128cdf8 work=73632602 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff8128ce03 work=73632602 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0xffffffff8128ce35 work=73632605 disposition=AllowFixed(0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff818810c2 work=73635427 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff81287e39 work=73638802 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff81287e46 work=73638802 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff81287d1c work=73638813 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=73638985 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296dc7 work=74060614 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0xffffffff82ba3479 work=74065364 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0xffffffff8128b422 work=74065374 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0xffffffff82ba2b76 work=77485987 disposition=AllowFixed(4276095232)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=80220026 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0xffffffff81297a36 work=80220029 disposition=AllowFixed(4276095232)
+[    0.000000] Linux version 6.18.35 (hypervizor@hypervizor) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Thu Jan  1 00:00:00 UTC 1970
+[    0.000000] Command line: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable
+[    0.000000] x86/CPU: Running old microcode
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000000dfff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000000e000-0x000000000000ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000000010000-0x000000000009ffff] usable
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000007fffffff] usable
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] APIC: Static calls initialized
+[    0.000000] DMI not present or invalid.
+[    0.000000] tsc: Detected 2000.000 MHz processor
+[    0.000004] last_pfn = 0x80000 max_arch_pfn = 0x400000000
+[    0.000004] MTRRs disabled by BIOS
+[    0.000005] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+[    0.000594] Using GB pages for direct mapping
+[    0.000774] RAMDISK: [mem 0x7daa1000-0x7fffffff]
+[    0.000775] ACPI: Early table checksum verification disabled
+[    0.000775] ACPI: RSDP 0x00000000000E0000 000024 (v02 HARMNY)
+[    0.000777] ACPI: XSDT 0x00000000000E0040 00002C (v01 HARMNY HARMONYT 00000001 HARM 00000001)
+[    0.000779] ACPI: APIC 0x00000000000E0080 000034 (v05 HARMNY HARMONYT 00000001 HARM 00000001)
+[    0.000781] ACPI: Reserving APIC table memory at [mem 0xe0080-0xe00b3]
+[    0.000784] Zone ranges:
+[    0.000785]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+[    0.000786]   DMA32    [mem 0x0000000001000000-0x000000007fffffff]
+[    0.000786]   Normal   empty
+[    0.000787]   Device   empty
+[    0.000787] Movable zone start for each node
+[    0.000788] Early memory node ranges
+[    0.000788]   node   0: [mem 0x0000000000001000-0x000000000000dfff]
+[    0.000789]   node   0: [mem 0x0000000000010000-0x000000000009ffff]
+[    0.000789]   node   0: [mem 0x0000000000100000-0x000000007fffffff]
+[    0.000790] Initmem setup node 0 [mem 0x0000000000001000-0x000000007fffffff]
+[    0.000792] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.000793] On node 0, zone DMA: 2 pages in unavailable ranges
+[    0.000813] On node 0, zone DMA: 96 pages in unavailable ranges
+[    0.003425] ACPI: Skipping IOAPIC probe due to 'noapic' option.
+[    0.003426] ACPI: Using ACPI for processor (LAPIC) configuration information
+[    0.003427] CPU topo: Max. logical packages:   1
+[    0.003428] CPU topo: Max. logical dies:       1
+[    0.003428] CPU topo: Max. dies per package:   1
+[    0.003430] CPU topo: Max. threads per core:   1
+[    0.003430] CPU topo: Num. cores per package:     1
+[    0.003431] CPU topo: Num. threads per package:   1
+[    0.003431] CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
+[    0.003433] [mem 0x80000000-0xffffffff] available for PCI devices
+[    0.003433] Booting paravirtualized kernel on bare hardware
+[    0.003434] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.006017] setup_percpu: NR_CPUS:240 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
+[    0.006052] percpu: Embedded 39 pages/cpu s127000 r0 d32744 u2097152
+[    0.006059] Kernel command line: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable
+[    0.006102] Unknown kernel command line parameters "nokaslr", will be passed to user space.
+[    0.006103] random: crng init done
+[    0.006104] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.006138] Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    0.006156] Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.006159] Built 1 zonelists, mobility grouping on.  Total pages: 524189
+[    0.006160] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.007791] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.007807] rcu: Hierarchical RCU implementation.
+[    0.007807] rcu: 	RCU event tracing is enabled.
+[    0.007807] rcu: 	RCU restricting CPUs from NR_CPUS=240 to nr_cpu_ids=1.
+[    0.007808] 	Tracing variant of Tasks RCU enabled.
+[    0.007808] rcu: RCU calculated value of scheduler-enlistment delay is 10 jiffies.
+[    0.007809] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.007810] RCU Tasks Trace: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.007812] NR_IRQS: 15616, nr_irqs: 32, preallocated irqs: 16
+[    0.007945] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.007957] Console: colour dummy device 80x25
+[    0.007959] printk: legacy console [ttyS0] enabled
+[    0.008013] ACPI: Core revision 20250807
+[    0.008018] ACPI: setting ELCR to 0001 (from 0000)
+[    0.008020] APIC: Switch to symmetric I/O mode setup
+[    0.008021] Not enabling interrupt remapping due to skipped IO-APIC setup
+[    0.008022] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x39a85c9bff6, max_idle_ns: 881590591483 ns
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff82b9d57f work=82085643 disposition=EmulateVtime
+[    0.008025] Calibrating delay loop (skipped) preset value.. 800.00 BogoMIPS (lpj=4000000)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff818810c2 work=82087978 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff81287e39 work=82088308 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff81287e46 work=82088308 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff81287d1c work=82088319 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3a data=n/a rip=0xffffffff812874ee work=82088422 disposition=AllowFixed(1)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x140 data=n/a rip=0xffffffff81287f65 work=82088726 disposition=DenyGp
+[    0.008028] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+[    0.008030] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=82092546 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=82092618 disposition=AllowFixed(167775241)
+[    0.008032] mitigations: Enabled attack vectors: user_kernel, user_user, SMT mitigations: auto
+[    0.008034] Speculative Store Bypass: Vulnerable
+[    0.008035] SRBDS: Vulnerable: No microcode
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284be2 work=82097366 disposition=DenyGp
+[    0.008036] unchecked MSR access error: RDMSR from 0x123 at rIP: 0xffffffff81284be2 (native_read_msr+0x2/0x10)
+[    0.008039] Call Trace:
+[    0.008040]  <TASK>
+[    0.008041]  cpu_select_mitigations+0x969/0x1e40
+[    0.008043]  arch_cpu_finalize_init+0xbe/0x140
+[    0.008046]  start_kernel+0x54b/0x5d0
+[    0.008048]  x86_64_start_reservations+0x20/0x20
+[    0.008051]  x86_64_start_kernel+0xc0/0xc0
+[    0.008054]  common_startup_64+0x13b/0x148
+[    0.008056]  </TASK>
+[    0.008057] Spectre V2 : Mitigation: Retpolines
+[    0.008058] RETBleed: Vulnerable
+[    0.008059] MDS: Vulnerable: Clear CPU buffers attempted, no microcode
+[    0.008060] MMIO Stale Data: Vulnerable: Clear CPU buffers attempted, no microcode
+[    0.008062] VMSCAPE: Vulnerable
+[    0.008063] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+[    0.008065] Spectre V2 : Spectre v2 / SpectreRSB: Filling RSB on context switch and VMEXIT
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284e7e work=82128067 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x123 data=0x0 rip=0xffffffff81284e9c work=82128128 disposition=DenyGp
+[    0.008067] unchecked MSR access error: WRMSR to 0x123 (tried to write 0x0000000000000000) at rIP: 0xffffffff81284e9c (update_gds_msr+0x3c/0x80)
+[    0.008070] Call Trace:
+[    0.008071]  <TASK>
+[    0.008072]  cpu_select_mitigations+0x1ae6/0x1e40
+[    0.008074]  arch_cpu_finalize_init+0xbe/0x140
+[    0.008077]  start_kernel+0x54b/0x5d0
+[    0.008080]  x86_64_start_reservations+0x20/0x20
+[    0.008083]  x86_64_start_kernel+0xc0/0xc0
+[    0.008085]  common_startup_64+0x13b/0x148
+[    0.008087]  </TASK>
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284e9e work=82149353 disposition=DenyGp
+[    0.008088] GDS: Mitigation: Microcode
+[    0.008089] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.008091] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+[    0.008093] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+[    0.008094] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+[    0.008096] x86/fpu: Enabled xstate features 0x7, context size is 832 bytes, using 'standard' format.
+[    0.013926] Freeing SMP alternatives memory: 48K
+[    0.013927] pid_max: default: 32768 minimum: 301
+[    0.013933] LSM: initializing lsm=capability,landlock
+[    0.013944] landlock: Up and running.
+[    0.013948] Mount-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.013950] Mountpoint-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.013988] ACPI Warning: AcpiEnable failed (20250807/utxfinit-147)
+[    0.013990] ACPI: Unable to enable ACPI
+[    0.013995] smpboot: CPU0: Intel Deterministic vCPU (CFL-class) @ 2.00GHz (family: 0x6, model: 0x9e, stepping: 0xc)
+[    0.014041] Performance Events: unsupported CPU family 6 model 158 no PMU driver, software events only.
+[    0.014046] signal: max sigframe size: 1360
+[    0.014052] rcu: Hierarchical SRCU implementation.
+[    0.014053] rcu: 	Max phase no-delay instances is 1000.
+[    0.014075] smp: Bringing up secondary CPUs ...
+[    0.014076] smp: Brought up 1 node, 1 CPU
+[    0.014077] smpboot: Total of 1 processors activated (800.00 BogoMIPS)
+[    0.014085] Memory: 1986112K/2096756K available (15511K kernel code, 1167K rwdata, 4332K rodata, 2112K init, 2396K bss, 107696K reserved, 0K cma-reserved)
+[    0.014123] devtmpfs: initialized
+[    0.014133] x86/mm: Memory block size: 128MB
+[    0.014250] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.014252] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[    0.014255] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[    0.014286] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.014320] audit: initializing netlink subsys (disabled)
+[    0.014339] thermal_sys: Registered thermal governor 'step_wise'
+[    0.014341] audit: type=2000 audit(943920000.000:1): state=initialized audit_enabled=0 res=1
+[    0.014344] cpuidle: using governor menu
+[    0.014367] PCI: Fatal: No config space access function found
+[    0.014405] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.014407] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.014409] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.014410] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.014444] ACPI: Interpreter disabled.
+[    0.014447] iommu: Default domain type: Translated
+[    0.014449] iommu: DMA domain TLB invalidation policy: lazy mode
+[    0.014479] SCSI subsystem initialized
+[    0.014482] pps_core: LinuxPPS API ver. 1 registered
+[    0.014483] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.014486] PTP clock support registered
+[    0.014560] PCI: System does not support PCI
+[    0.014565] vgaarb: loaded
+[    0.014578] clocksource: Switched to clocksource tsc-early
+[    0.014608] pnp: PnP ACPI: disabled
+[    0.014952] NET: Registered PF_INET protocol family
+[    0.014959] IP idents hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.015052] tcp_listen_portaddr_hash hash table entries: 1024 (order: 2, 16384 bytes, linear)
+[    0.015055] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.015058] TCP established hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.015076] TCP bind hash table entries: 16384 (order: 7, 524288 bytes, linear)
+[    0.015095] TCP: Hash tables configured (established 16384 bind 16384)
+[    0.015097] UDP hash table entries: 1024 (order: 4, 65536 bytes, linear)
+[    0.015102] UDP-Lite hash table entries: 1024 (order: 4, 65536 bytes, linear)
+[    0.015111] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.015114] PCI: CLS 0 bytes, default 64
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x606 data=n/a rip=0xffffffff82b91ab4 work=89186923 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x64e data=n/a rip=0xffffffff81252803 work=89187057 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x34 data=n/a rip=0xffffffff81252803 work=89187129 disposition=DenyGp
+[    0.015142] Trying to unpack rootfs image as initramfs...
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fc data=n/a rip=0xffffffff81252803 work=98562447 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fd data=n/a rip=0xffffffff81252803 work=98562515 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fe data=n/a rip=0xffffffff81252803 work=98562583 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x60d data=n/a rip=0xffffffff81252803 work=98562653 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3f8 data=n/a rip=0xffffffff81252803 work=98562721 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3f9 data=n/a rip=0xffffffff81252803 work=98562789 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fa data=n/a rip=0xffffffff81252803 work=98562857 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x630 data=n/a rip=0xffffffff81252803 work=98562925 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x631 data=n/a rip=0xffffffff81252803 work=98562993 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x632 data=n/a rip=0xffffffff81252803 work=98563061 disposition=DenyGp
+[    0.018025] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x39a85c9bff6, max_idle_ns: 881590591483 ns
+[    0.018025] clocksource: Switched to clocksource tsc
+[    0.018025] platform rtc_cmos: registered platform RTC device (no PNP device found)
+[    0.018025] workingset: timestamp_bits=46 max_order=19 bucket_order=0
+[    0.018077] Key type cifs.spnego registered
+[    0.018079] Key type cifs.idmap registered
+[    0.018085] fuse: init (API version 7.45)
+[    0.018140] SGI XFS with security attributes, scrub, repair, no debug enabled
+[    0.018164] 9p: Installing v9fs 9p2000 file system support
+[    0.020280] NET: Registered PF_ALG protocol family
+[    0.020283] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 249)
+[    0.028346] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled
+[    0.028360] serial8250: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16450
+[    0.028796] brd: module loaded
+[    0.029057] loop: module loaded
+[    0.029078] tun: Universal TUN/TAP device driver, 1.6
+[    0.029105] VFIO - User Level meta-driver version: 0.3
+[    0.029267] xt_time: kernel timezone is -0000
+[    0.029271] IPVS: Registered protocols (TCP, UDP, SCTP, AH, ESP)
+[    0.029274] IPVS: Connection hash table configured (size=4096, memory=32Kbytes)
+[    0.029291] IPVS: ipvs loaded.
+[    0.029292] IPVS: [rr] scheduler registered.
+[    0.029293] IPVS: [wrr] scheduler registered.
+[    0.029294] IPVS: [lc] scheduler registered.
+[    0.029296] IPVS: [wlc] scheduler registered.
+[    0.029297] IPVS: [fo] scheduler registered.
+[    0.029298] IPVS: [ovf] scheduler registered.
+[    0.029299] IPVS: [lblc] scheduler registered.
+[    0.029301] IPVS: [lblcr] scheduler registered.
+[    0.029302] IPVS: [dh] scheduler registered.
+[    0.029303] IPVS: [sh] scheduler registered.
+[    0.029304] IPVS: [sed] scheduler registered.
+[    0.029305] IPVS: [nq] scheduler registered.
+[    0.029307] IPVS: [sip] pe registered.
+[    0.029342] Initializing XFRM netlink socket
+[    0.029356] NET: Registered PF_INET6 protocol family
+[    0.029429] Segment Routing with IPv6
+[    0.029432] In-situ OAM (IOAM) with IPv6
+[    0.029446] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    0.029490] NET: Registered PF_PACKET protocol family
+[    0.029499] Bridge firewalling registered
+[    0.029506] 9pnet: Installing 9P2000 support
+[    0.029508] Key type dns_resolver registered
+[    0.029520] NET: Registered PF_VSOCK protocol family
+[    0.029534] microcode: Current revision: 0x00000001
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff8128cdf8 work=110153125 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff8128ce03 work=110153125 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0xffffffff8128ce35 work=110153128 disposition=AllowFixed(0)
+[    0.029540] IPI shorthand broadcast: enabled
+[    0.030227] sched_clock: Marking stable (28197096, 78531)->(34829050, -6553423)
+[    0.030243] registered taskstats version 1
+[    0.038833] alg: No test for fips(ansi_cprng) (fips_ansi_cprng)
+[  180.162912] perf: interrupt took too long (4989 > 4988), lowering kernel.perf_event_max_sample_rate to 40000
+[    0.341416] Freeing initrd memory: 38268K
+[    0.341588] Freeing unused kernel image (initmem) memory: 2112K
+[    0.341598] Write protecting the kernel read-only data: 22528k
+[    0.341717] Freeing unused kernel image (text/rodata gap) memory: 872K
+[    0.341802] Freeing unused kernel image (rodata/data gap) memory: 1812K
+[    0.341805] Run /init as init process
+PG37: mounting baked ext4 PGDATA (loop, RAM-backed)
+[    0.343091] loop0: detected capacity change from 0 to 196608
+[    0.343297] EXT4-fs (loop0): mounted filesystem deadbeef-0000-0000-0000-000000000037 r/w with ordered data mode. Quota mode: disabled.
+PG37: starting postgres
+[pg 108] LOG:  starting PostgreSQL 17.10 (Debian 17.10-0+deb13u1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+[pg 108] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+[pg 116] LOG:  database system was shut down at 2026-06-26 14:37:57 UTC
+[pg 108] LOG:  database system is ready to accept connections
+PG37: workload begin
+row|1|1|1|646ac5fa-ce3a-4049-97b0-42fb548f33ef|1999-11-30 00:00:00.360083+00
+row|2|2|3|4e10a782-08f9-49ef-a487-7772c91d0f7d|1999-11-30 00:00:00.360347+00
+row|3|3|6|8f91e7c3-85be-4422-af0c-2557bd18932d|1999-11-30 00:00:00.360412+00
+row|4|4|10|84f4cabb-29a9-4bdb-aa4d-5cb9a7959e19|1999-11-30 00:00:00.360474+00
+row|5|5|15|5c1e5d9b-3c03-45f6-b6e7-4c61463f5c51|1999-11-30 00:00:00.360536+00
+row|6|6|21|ea677a41-118c-45d6-9782-17f98edd8e6a|1999-11-30 00:00:00.360599+00
+row|7|7|28|8fdedd44-3912-485c-968b-b203dee755c5|1999-11-30 00:00:00.360661+00
+row|8|8|36|06547420-fb15-4979-9093-c3eb72940604|1999-11-30 00:00:00.360724+00
+row|9|9|45|e9b8449f-6cd2-4fb7-a9c2-8ec7660f934c|1999-11-30 00:00:00.360787+00
+row|10|10|55|39f5399f-5440-4b7c-b3e9-2e9b7cece8fe|1999-11-30 00:00:00.36085+00
+row|11|11|66|da79ed32-ddf9-4712-b127-94e7cce717ef|1999-11-30 00:00:00.360914+00
+row|12|12|78|25a42845-dcfd-4425-b56c-8b0c8be87840|1999-11-30 00:00:00.360977+00
+row|13|13|91|685a8be8-f03b-4b29-b0a7-30cd8a1d17de|1999-11-30 00:00:00.361041+00
+row|14|14|105|d04b367d-1b46-4d02-a4e2-72b64430fc28|1999-11-30 00:00:00.361105+00
+row|15|15|120|e88cc4a5-8374-4227-89ac-4d40976f093d|1999-11-30 00:00:00.36117+00
+row|16|16|136|0698399b-4ceb-4993-a1d0-348a8c01db3b|1999-11-30 00:00:00.361234+00
+row|17|17|153|1dbfa55e-8a45-491f-a6ed-9d80afa6bdaa|1999-11-30 00:00:00.361298+00
+row|18|18|171|96d47bda-7b7c-463a-aa57-6e7ac80bdb00|1999-11-30 00:00:00.361363+00
+row|19|19|190|9398f090-5d6b-4734-a5d9-c9a546be0639|1999-11-30 00:00:00.361428+00
+row|20|20|210|988f04ec-9b20-466e-bc90-2d122cca55f5|1999-11-30 00:00:00.361494+00
+PG37: workload end
+server shutting down
+[pg 108] LOG:  received fast shutdown request
+[pg 108] LOG:  aborting any active transactions
+[pg 108] LOG:  background worker "logical replication launcher" (PID 119) exited with exit code 1
+[pg 114] LOG:  shutting down
+[pg 114] LOG:  checkpoint starting: shutdown immediate
+[pg 114] LOG:  checkpoint complete: wrote 47 buffers (1.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.001 s; sync files=36, longest=0.001 s, average=0.001 s; distance=145 kB, estimate=145 kB; lsn=0/15112D0, redo lsn=0/15112D0
+[pg 108] LOG:  database system is shut down
+GUEST_READY
+[    0.375392] EXT4-fs (loop0): unmounting filesystem deadbeef-0000-0000-0000-000000000037.
+[    0.382473] reboot: Restarting system
+[    0.382474] reboot: machine restart
+
+[p2 run A] steps=112633 terminal=Some(Shutdown) pg_ready=true workload_done=true final_row=true uuids=20 GUEST_READY=true step_error=None
+[p2 run A] final-row sample: uuid=988f04ec-9b20-466e-bc90-2d122cca55f5 t=1999-11-30 00:00:00.361494+00
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0x1272418 work=73630982 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff8128cdf8 work=73632602 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff8128ce03 work=73632602 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0xffffffff8128ce35 work=73632605 disposition=AllowFixed(0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff818810c2 work=73635427 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff81287e39 work=73638802 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff81287e46 work=73638802 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff81287d1c work=73638813 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=73638985 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296dc7 work=74060614 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0xffffffff82ba3479 work=74065364 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0xffffffff8128b422 work=74065374 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0xffffffff82ba2b76 work=77485987 disposition=AllowFixed(4276095232)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=80220026 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0xffffffff81297a36 work=80220029 disposition=AllowFixed(4276095232)
+[    0.000000] Linux version 6.18.35 (hypervizor@hypervizor) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Thu Jan  1 00:00:00 UTC 1970
+[    0.000000] Command line: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable
+[    0.000000] x86/CPU: Running old microcode
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000000dfff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000000e000-0x000000000000ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000000010000-0x000000000009ffff] usable
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000007fffffff] usable
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] APIC: Static calls initialized
+[    0.000000] DMI not present or invalid.
+[    0.000000] tsc: Detected 2000.000 MHz processor
+[    0.000004] last_pfn = 0x80000 max_arch_pfn = 0x400000000
+[    0.000004] MTRRs disabled by BIOS
+[    0.000005] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+[    0.000594] Using GB pages for direct mapping
+[    0.000774] RAMDISK: [mem 0x7daa1000-0x7fffffff]
+[    0.000775] ACPI: Early table checksum verification disabled
+[    0.000775] ACPI: RSDP 0x00000000000E0000 000024 (v02 HARMNY)
+[    0.000777] ACPI: XSDT 0x00000000000E0040 00002C (v01 HARMNY HARMONYT 00000001 HARM 00000001)
+[    0.000779] ACPI: APIC 0x00000000000E0080 000034 (v05 HARMNY HARMONYT 00000001 HARM 00000001)
+[    0.000781] ACPI: Reserving APIC table memory at [mem 0xe0080-0xe00b3]
+[    0.000784] Zone ranges:
+[    0.000785]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+[    0.000786]   DMA32    [mem 0x0000000001000000-0x000000007fffffff]
+[    0.000786]   Normal   empty
+[    0.000787]   Device   empty
+[    0.000787] Movable zone start for each node
+[    0.000788] Early memory node ranges
+[    0.000788]   node   0: [mem 0x0000000000001000-0x000000000000dfff]
+[    0.000789]   node   0: [mem 0x0000000000010000-0x000000000009ffff]
+[    0.000789]   node   0: [mem 0x0000000000100000-0x000000007fffffff]
+[    0.000790] Initmem setup node 0 [mem 0x0000000000001000-0x000000007fffffff]
+[    0.000792] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.000793] On node 0, zone DMA: 2 pages in unavailable ranges
+[    0.000813] On node 0, zone DMA: 96 pages in unavailable ranges
+[    0.003425] ACPI: Skipping IOAPIC probe due to 'noapic' option.
+[    0.003426] ACPI: Using ACPI for processor (LAPIC) configuration information
+[    0.003427] CPU topo: Max. logical packages:   1
+[    0.003428] CPU topo: Max. logical dies:       1
+[    0.003428] CPU topo: Max. dies per package:   1
+[    0.003430] CPU topo: Max. threads per core:   1
+[    0.003430] CPU topo: Num. cores per package:     1
+[    0.003431] CPU topo: Num. threads per package:   1
+[    0.003431] CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
+[    0.003433] [mem 0x80000000-0xffffffff] available for PCI devices
+[    0.003433] Booting paravirtualized kernel on bare hardware
+[    0.003434] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.006017] setup_percpu: NR_CPUS:240 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
+[    0.006052] percpu: Embedded 39 pages/cpu s127000 r0 d32744 u2097152
+[    0.006059] Kernel command line: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable
+[    0.006102] Unknown kernel command line parameters "nokaslr", will be passed to user space.
+[    0.006103] random: crng init done
+[    0.006104] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.006138] Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    0.006156] Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.006159] Built 1 zonelists, mobility grouping on.  Total pages: 524189
+[    0.006160] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.007791] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.007807] rcu: Hierarchical RCU implementation.
+[    0.007807] rcu: 	RCU event tracing is enabled.
+[    0.007807] rcu: 	RCU restricting CPUs from NR_CPUS=240 to nr_cpu_ids=1.
+[    0.007808] 	Tracing variant of Tasks RCU enabled.
+[    0.007808] rcu: RCU calculated value of scheduler-enlistment delay is 10 jiffies.
+[    0.007809] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.007810] RCU Tasks Trace: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.007812] NR_IRQS: 15616, nr_irqs: 32, preallocated irqs: 16
+[    0.007945] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.007957] Console: colour dummy device 80x25
+[    0.007959] printk: legacy console [ttyS0] enabled
+[    0.008013] ACPI: Core revision 20250807
+[    0.008018] ACPI: setting ELCR to 0001 (from 0000)
+[    0.008020] APIC: Switch to symmetric I/O mode setup
+[    0.008021] Not enabling interrupt remapping due to skipped IO-APIC setup
+[    0.008022] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x39a85c9bff6, max_idle_ns: 881590591483 ns
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff82b9d57f work=82085643 disposition=EmulateVtime
+[    0.008025] Calibrating delay loop (skipped) preset value.. 800.00 BogoMIPS (lpj=4000000)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff818810c2 work=82087978 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff81287e39 work=82088308 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff81287e46 work=82088308 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff81287d1c work=82088319 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3a data=n/a rip=0xffffffff812874ee work=82088422 disposition=AllowFixed(1)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x140 data=n/a rip=0xffffffff81287f65 work=82088726 disposition=DenyGp
+[    0.008028] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+[    0.008030] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=82092546 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=82092618 disposition=AllowFixed(167775241)
+[    0.008032] mitigations: Enabled attack vectors: user_kernel, user_user, SMT mitigations: auto
+[    0.008034] Speculative Store Bypass: Vulnerable
+[    0.008035] SRBDS: Vulnerable: No microcode
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284be2 work=82097366 disposition=DenyGp
+[    0.008036] unchecked MSR access error: RDMSR from 0x123 at rIP: 0xffffffff81284be2 (native_read_msr+0x2/0x10)
+[    0.008039] Call Trace:
+[    0.008040]  <TASK>
+[    0.008041]  cpu_select_mitigations+0x969/0x1e40
+[    0.008043]  arch_cpu_finalize_init+0xbe/0x140
+[    0.008046]  start_kernel+0x54b/0x5d0
+[    0.008048]  x86_64_start_reservations+0x20/0x20
+[    0.008051]  x86_64_start_kernel+0xc0/0xc0
+[    0.008054]  common_startup_64+0x13b/0x148
+[    0.008056]  </TASK>
+[    0.008057] Spectre V2 : Mitigation: Retpolines
+[    0.008058] RETBleed: Vulnerable
+[    0.008059] MDS: Vulnerable: Clear CPU buffers attempted, no microcode
+[    0.008060] MMIO Stale Data: Vulnerable: Clear CPU buffers attempted, no microcode
+[    0.008062] VMSCAPE: Vulnerable
+[    0.008063] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+[    0.008065] Spectre V2 : Spectre v2 / SpectreRSB: Filling RSB on context switch and VMEXIT
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284e7e work=82128067 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x123 data=0x0 rip=0xffffffff81284e9c work=82128128 disposition=DenyGp
+[    0.008067] unchecked MSR access error: WRMSR to 0x123 (tried to write 0x0000000000000000) at rIP: 0xffffffff81284e9c (update_gds_msr+0x3c/0x80)
+[    0.008070] Call Trace:
+[    0.008071]  <TASK>
+[    0.008072]  cpu_select_mitigations+0x1ae6/0x1e40
+[    0.008074]  arch_cpu_finalize_init+0xbe/0x140
+[    0.008077]  start_kernel+0x54b/0x5d0
+[    0.008080]  x86_64_start_reservations+0x20/0x20
+[    0.008083]  x86_64_start_kernel+0xc0/0xc0
+[    0.008085]  common_startup_64+0x13b/0x148
+[    0.008087]  </TASK>
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284e9e work=82149353 disposition=DenyGp
+[    0.008088] GDS: Mitigation: Microcode
+[    0.008089] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.008091] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+[    0.008093] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+[    0.008094] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+[    0.008096] x86/fpu: Enabled xstate features 0x7, context size is 832 bytes, using 'standard' format.
+[    0.013926] Freeing SMP alternatives memory: 48K
+[    0.013927] pid_max: default: 32768 minimum: 301
+[    0.013933] LSM: initializing lsm=capability,landlock
+[    0.013944] landlock: Up and running.
+[    0.013948] Mount-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.013950] Mountpoint-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.013988] ACPI Warning: AcpiEnable failed (20250807/utxfinit-147)
+[    0.013990] ACPI: Unable to enable ACPI
+[    0.013995] smpboot: CPU0: Intel Deterministic vCPU (CFL-class) @ 2.00GHz (family: 0x6, model: 0x9e, stepping: 0xc)
+[    0.014041] Performance Events: unsupported CPU family 6 model 158 no PMU driver, software events only.
+[    0.014046] signal: max sigframe size: 1360
+[    0.014052] rcu: Hierarchical SRCU implementation.
+[    0.014053] rcu: 	Max phase no-delay instances is 1000.
+[    0.014075] smp: Bringing up secondary CPUs ...
+[    0.014076] smp: Brought up 1 node, 1 CPU
+[    0.014077] smpboot: Total of 1 processors activated (800.00 BogoMIPS)
+[    0.014085] Memory: 1986112K/2096756K available (15511K kernel code, 1167K rwdata, 4332K rodata, 2112K init, 2396K bss, 107696K reserved, 0K cma-reserved)
+[    0.014123] devtmpfs: initialized
+[    0.014133] x86/mm: Memory block size: 128MB
+[    0.014250] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.014252] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[    0.014255] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[    0.014286] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.014320] audit: initializing netlink subsys (disabled)
+[    0.014339] thermal_sys: Registered thermal governor 'step_wise'
+[    0.014341] audit: type=2000 audit(943920000.000:1): state=initialized audit_enabled=0 res=1
+[    0.014344] cpuidle: using governor menu
+[    0.014367] PCI: Fatal: No config space access function found
+[    0.014405] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.014407] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.014409] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.014410] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.014444] ACPI: Interpreter disabled.
+[    0.014447] iommu: Default domain type: Translated
+[    0.014449] iommu: DMA domain TLB invalidation policy: lazy mode
+[    0.014479] SCSI subsystem initialized
+[    0.014482] pps_core: LinuxPPS API ver. 1 registered
+[    0.014483] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.014486] PTP clock support registered
+[    0.014560] PCI: System does not support PCI
+[    0.014565] vgaarb: loaded
+[    0.014578] clocksource: Switched to clocksource tsc-early
+[    0.014608] pnp: PnP ACPI: disabled
+[    0.014952] NET: Registered PF_INET protocol family
+[    0.014959] IP idents hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.015052] tcp_listen_portaddr_hash hash table entries: 1024 (order: 2, 16384 bytes, linear)
+[    0.015055] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.015058] TCP established hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.015076] TCP bind hash table entries: 16384 (order: 7, 524288 bytes, linear)
+[    0.015095] TCP: Hash tables configured (established 16384 bind 16384)
+[    0.015097] UDP hash table entries: 1024 (order: 4, 65536 bytes, linear)
+[    0.015102] UDP-Lite hash table entries: 1024 (order: 4, 65536 bytes, linear)
+[    0.015111] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.015114] PCI: CLS 0 bytes, default 64
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x606 data=n/a rip=0xffffffff82b91ab4 work=89186923 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x64e data=n/a rip=0xffffffff81252803 work=89187057 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x34 data=n/a rip=0xffffffff81252803 work=89187129 disposition=DenyGp
+[    0.015142] Trying to unpack rootfs image as initramfs...
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fc data=n/a rip=0xffffffff81252803 work=98562447 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fd data=n/a rip=0xffffffff81252803 work=98562515 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fe data=n/a rip=0xffffffff81252803 work=98562583 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x60d data=n/a rip=0xffffffff81252803 work=98562653 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3f8 data=n/a rip=0xffffffff81252803 work=98562721 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3f9 data=n/a rip=0xffffffff81252803 work=98562789 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fa data=n/a rip=0xffffffff81252803 work=98562857 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x630 data=n/a rip=0xffffffff81252803 work=98562925 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x631 data=n/a rip=0xffffffff81252803 work=98562993 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x632 data=n/a rip=0xffffffff81252803 work=98563061 disposition=DenyGp
+[    0.018025] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x39a85c9bff6, max_idle_ns: 881590591483 ns
+[    0.018025] clocksource: Switched to clocksource tsc
+[    0.018025] platform rtc_cmos: registered platform RTC device (no PNP device found)
+[    0.018025] workingset: timestamp_bits=46 max_order=19 bucket_order=0
+[    0.018077] Key type cifs.spnego registered
+[    0.018079] Key type cifs.idmap registered
+[    0.018085] fuse: init (API version 7.45)
+[    0.018140] SGI XFS with security attributes, scrub, repair, no debug enabled
+[    0.018164] 9p: Installing v9fs 9p2000 file system support
+[    0.020280] NET: Registered PF_ALG protocol family
+[    0.020283] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 249)
+[    0.028346] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled
+[    0.028360] serial8250: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16450
+[    0.028796] brd: module loaded
+[    0.029057] loop: module loaded
+[    0.029078] tun: Universal TUN/TAP device driver, 1.6
+[    0.029105] VFIO - User Level meta-driver version: 0.3
+[    0.029267] xt_time: kernel timezone is -0000
+[    0.029271] IPVS: Registered protocols (TCP, UDP, SCTP, AH, ESP)
+[    0.029274] IPVS: Connection hash table configured (size=4096, memory=32Kbytes)
+[    0.029291] IPVS: ipvs loaded.
+[    0.029292] IPVS: [rr] scheduler registered.
+[    0.029293] IPVS: [wrr] scheduler registered.
+[    0.029294] IPVS: [lc] scheduler registered.
+[    0.029296] IPVS: [wlc] scheduler registered.
+[    0.029297] IPVS: [fo] scheduler registered.
+[    0.029298] IPVS: [ovf] scheduler registered.
+[    0.029299] IPVS: [lblc] scheduler registered.
+[    0.029301] IPVS: [lblcr] scheduler registered.
+[    0.029302] IPVS: [dh] scheduler registered.
+[    0.029303] IPVS: [sh] scheduler registered.
+[    0.029304] IPVS: [sed] scheduler registered.
+[    0.029305] IPVS: [nq] scheduler registered.
+[    0.029307] IPVS: [sip] pe registered.
+[    0.029342] Initializing XFRM netlink socket
+[    0.029356] NET: Registered PF_INET6 protocol family
+[    0.029429] Segment Routing with IPv6
+[    0.029432] In-situ OAM (IOAM) with IPv6
+[    0.029446] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    0.029490] NET: Registered PF_PACKET protocol family
+[    0.029499] Bridge firewalling registered
+[    0.029506] 9pnet: Installing 9P2000 support
+[    0.029508] Key type dns_resolver registered
+[    0.029520] NET: Registered PF_VSOCK protocol family
+[    0.029534] microcode: Current revision: 0x00000001
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff8128cdf8 work=110153125 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff8128ce03 work=110153125 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0xffffffff8128ce35 work=110153128 disposition=AllowFixed(0)
+[    0.029540] IPI shorthand broadcast: enabled
+[    0.030227] sched_clock: Marking stable (28197096, 78531)->(34829050, -6553423)
+[    0.030243] registered taskstats version 1
+[    0.038833] alg: No test for fips(ansi_cprng) (fips_ansi_cprng)
+[  281.822651] perf: interrupt took too long (6246 > 6236), lowering kernel.perf_event_max_sample_rate to 32000
+[    0.341416] Freeing initrd memory: 38268K
+[    0.341588] Freeing unused kernel image (initmem) memory: 2112K
+[    0.341598] Write protecting the kernel read-only data: 22528k
+[    0.341717] Freeing unused kernel image (text/rodata gap) memory: 872K
+[    0.341802] Freeing unused kernel image (rodata/data gap) memory: 1812K
+[    0.341805] Run /init as init process
+PG37: mounting baked ext4 PGDATA (loop, RAM-backed)
+[    0.343091] loop0: detected capacity change from 0 to 196608
+[    0.343297] EXT4-fs (loop0): mounted filesystem deadbeef-0000-0000-0000-000000000037 r/w with ordered data mode. Quota mode: disabled.
+PG37: starting postgres
+[pg 108] LOG:  starting PostgreSQL 17.10 (Debian 17.10-0+deb13u1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+[pg 108] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+[pg 116] LOG:  database system was shut down at 2026-06-26 14:37:57 UTC
+[pg 108] LOG:  database system is ready to accept connections
+PG37: workload begin
+row|1|1|1|646ac5fa-ce3a-4049-97b0-42fb548f33ef|1999-11-30 00:00:00.360083+00
+row|2|2|3|4e10a782-08f9-49ef-a487-7772c91d0f7d|1999-11-30 00:00:00.360347+00
+row|3|3|6|8f91e7c3-85be-4422-af0c-2557bd18932d|1999-11-30 00:00:00.360412+00
+row|4|4|10|84f4cabb-29a9-4bdb-aa4d-5cb9a7959e19|1999-11-30 00:00:00.360474+00
+row|5|5|15|5c1e5d9b-3c03-45f6-b6e7-4c61463f5c51|1999-11-30 00:00:00.360536+00
+row|6|6|21|ea677a41-118c-45d6-9782-17f98edd8e6a|1999-11-30 00:00:00.360599+00
+row|7|7|28|8fdedd44-3912-485c-968b-b203dee755c5|1999-11-30 00:00:00.360661+00
+row|8|8|36|06547420-fb15-4979-9093-c3eb72940604|1999-11-30 00:00:00.360724+00
+row|9|9|45|e9b8449f-6cd2-4fb7-a9c2-8ec7660f934c|1999-11-30 00:00:00.360787+00
+row|10|10|55|39f5399f-5440-4b7c-b3e9-2e9b7cece8fe|1999-11-30 00:00:00.36085+00
+row|11|11|66|da79ed32-ddf9-4712-b127-94e7cce717ef|1999-11-30 00:00:00.360914+00
+row|12|12|78|25a42845-dcfd-4425-b56c-8b0c8be87840|1999-11-30 00:00:00.360977+00
+row|13|13|91|685a8be8-f03b-4b29-b0a7-30cd8a1d17de|1999-11-30 00:00:00.361041+00
+row|14|14|105|d04b367d-1b46-4d02-a4e2-72b64430fc28|1999-11-30 00:00:00.361105+00
+row|15|15|120|e88cc4a5-8374-4227-89ac-4d40976f093d|1999-11-30 00:00:00.36117+00
+row|16|16|136|0698399b-4ceb-4993-a1d0-348a8c01db3b|1999-11-30 00:00:00.361234+00
+row|17|17|153|1dbfa55e-8a45-491f-a6ed-9d80afa6bdaa|1999-11-30 00:00:00.361298+00
+row|18|18|171|96d47bda-7b7c-463a-aa57-6e7ac80bdb00|1999-11-30 00:00:00.361363+00
+row|19|19|190|9398f090-5d6b-4734-a5d9-c9a546be0639|1999-11-30 00:00:00.361428+00
+row|20|20|210|988f04ec-9b20-466e-bc90-2d122cca55f5|1999-11-30 00:00:00.361494+00
+PG37: workload end
+server shutting down
+[pg 108] LOG:  received fast shutdown request
+[pg 108] LOG:  aborting any active transactions
+[pg 108] LOG:  background worker "logical replication launcher" (PID 119) exited with exit code 1
+[pg 114] LOG:  shutting down
+[pg 114] LOG:  checkpoint starting: shutdown immediate
+[pg 114] LOG:  checkpoint complete: wrote 47 buffers (1.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.001 s; sync files=36, longest=0.001 s, average=0.001 s; distance=145 kB, estimate=145 kB; lsn=0/15112D0, redo lsn=0/15112D0
+[pg 108] LOG:  database system is shut down
+GUEST_READY
+[    0.375392] EXT4-fs (loop0): unmounting filesystem deadbeef-0000-0000-0000-000000000037.
+[    0.382473] reboot: Restarting system
+[    0.382474] reboot: machine restart
+
+[p2 run B] steps=112633 terminal=Some(Shutdown) pg_ready=true workload_done=true final_row=true uuids=20 GUEST_READY=true step_error=None
+[p2 run B] final-row sample: uuid=988f04ec-9b20-466e-bc90-2d122cca55f5 t=1999-11-30 00:00:00.361494+00
+[pg] determinism: serial_len A/B = 17748/17748
+  state_hash A = 73e38ded063e548c939113374989a2b439a86b84136aca56e3afe042be417b20
+  state_hash B = 73e38ded063e548c939113374989a2b439a86b84136aca56e3afe042be417b20
+[pg] deterministic-twice witness (seed 0x0028c0ffee5eedc0): the random-looking UUID + wall-clock timestamp are bit-identical in run A and run B —
+  uuid = 988f04ec-9b20-466e-bc90-2d122cca55f5
+  t    = 1999-11-30 00:00:00.361494+00
+ok
+test p3_postgres_seed_sensitivity_patched ... [host-assert] CPU-MSR-CONTRACT §1.1 baseline:
+[host-assert]   PASS  family-model-stepping: expected 06_9e_0c, observed 06_9e_0c
+[host-assert]   PASS  host-microcode-rev: expected 0x00000000000000f8, observed 0x00000000000000f8
+[host-assert]   PASS  mxcsr-mask: expected 0xffff, observed 0xffff
+[host-assert]   PASS  maxphyaddr-min: expected >= 39, observed 39
+[host-assert]   PASS  rtm-disabled: expected rtm physically absent (the IA32_TSX_CTRL pin is not installed by this skeleton), observed rtm-absent (XBEGIN #UDs; already non-usable)
+[host-assert]   PASS  host-absent HRESET: expected absent, observed absent
+[host-assert]   PASS  host-absent PCONFIG: expected absent, observed absent
+[host-assert]   PASS  host-absent RDPID: expected absent, observed absent
+[host-assert]   PASS  host-absent SERIALIZE: expected absent, observed absent
+[host-assert]   PASS  host-absent SHA: expected absent, observed absent
+[host-assert]   PASS  host-absent TPAUSE: expected absent, observed absent
+[host-assert]   PASS  host-absent UMONITOR: expected absent, observed absent
+[host-assert]   PASS  host-absent UMWAIT: expected absent, observed absent
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0x1272418 work=73630982 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff8128cdf8 work=73632602 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff8128ce03 work=73632602 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0xffffffff8128ce35 work=73632605 disposition=AllowFixed(0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff818810c2 work=73635427 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff81287e39 work=73638802 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff81287e46 work=73638802 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff81287d1c work=73638813 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=73638985 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296dc7 work=74060614 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0xffffffff82ba3479 work=74065364 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0xffffffff8128b422 work=74065374 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0xffffffff82ba2b76 work=77485987 disposition=AllowFixed(4276095232)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=80220026 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0xffffffff81297a36 work=80220029 disposition=AllowFixed(4276095232)
+[    0.000000] Linux version 6.18.35 (hypervizor@hypervizor) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Thu Jan  1 00:00:00 UTC 1970
+[    0.000000] Command line: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable
+[    0.000000] x86/CPU: Running old microcode
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000000dfff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000000e000-0x000000000000ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000000010000-0x000000000009ffff] usable
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000007fffffff] usable
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] APIC: Static calls initialized
+[    0.000000] DMI not present or invalid.
+[    0.000000] tsc: Detected 2000.000 MHz processor
+[    0.000004] last_pfn = 0x80000 max_arch_pfn = 0x400000000
+[    0.000004] MTRRs disabled by BIOS
+[    0.000005] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+[    0.000594] Using GB pages for direct mapping
+[    0.000774] RAMDISK: [mem 0x7daa1000-0x7fffffff]
+[    0.000775] ACPI: Early table checksum verification disabled
+[    0.000775] ACPI: RSDP 0x00000000000E0000 000024 (v02 HARMNY)
+[    0.000777] ACPI: XSDT 0x00000000000E0040 00002C (v01 HARMNY HARMONYT 00000001 HARM 00000001)
+[    0.000779] ACPI: APIC 0x00000000000E0080 000034 (v05 HARMNY HARMONYT 00000001 HARM 00000001)
+[    0.000781] ACPI: Reserving APIC table memory at [mem 0xe0080-0xe00b3]
+[    0.000784] Zone ranges:
+[    0.000785]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+[    0.000786]   DMA32    [mem 0x0000000001000000-0x000000007fffffff]
+[    0.000786]   Normal   empty
+[    0.000787]   Device   empty
+[    0.000787] Movable zone start for each node
+[    0.000788] Early memory node ranges
+[    0.000788]   node   0: [mem 0x0000000000001000-0x000000000000dfff]
+[    0.000789]   node   0: [mem 0x0000000000010000-0x000000000009ffff]
+[    0.000789]   node   0: [mem 0x0000000000100000-0x000000007fffffff]
+[    0.000790] Initmem setup node 0 [mem 0x0000000000001000-0x000000007fffffff]
+[    0.000792] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.000793] On node 0, zone DMA: 2 pages in unavailable ranges
+[    0.000813] On node 0, zone DMA: 96 pages in unavailable ranges
+[    0.003425] ACPI: Skipping IOAPIC probe due to 'noapic' option.
+[    0.003426] ACPI: Using ACPI for processor (LAPIC) configuration information
+[    0.003427] CPU topo: Max. logical packages:   1
+[    0.003428] CPU topo: Max. logical dies:       1
+[    0.003428] CPU topo: Max. dies per package:   1
+[    0.003430] CPU topo: Max. threads per core:   1
+[    0.003430] CPU topo: Num. cores per package:     1
+[    0.003431] CPU topo: Num. threads per package:   1
+[    0.003431] CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
+[    0.003433] [mem 0x80000000-0xffffffff] available for PCI devices
+[    0.003433] Booting paravirtualized kernel on bare hardware
+[    0.003434] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.006017] setup_percpu: NR_CPUS:240 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
+[    0.006052] percpu: Embedded 39 pages/cpu s127000 r0 d32744 u2097152
+[    0.006059] Kernel command line: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable
+[    0.006102] Unknown kernel command line parameters "nokaslr", will be passed to user space.
+[    0.006103] random: crng init done
+[    0.006104] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.006138] Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    0.006156] Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.006159] Built 1 zonelists, mobility grouping on.  Total pages: 524189
+[    0.006160] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.007791] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.007807] rcu: Hierarchical RCU implementation.
+[    0.007807] rcu: 	RCU event tracing is enabled.
+[    0.007807] rcu: 	RCU restricting CPUs from NR_CPUS=240 to nr_cpu_ids=1.
+[    0.007808] 	Tracing variant of Tasks RCU enabled.
+[    0.007808] rcu: RCU calculated value of scheduler-enlistment delay is 10 jiffies.
+[    0.007809] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.007810] RCU Tasks Trace: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.007812] NR_IRQS: 15616, nr_irqs: 32, preallocated irqs: 16
+[    0.007945] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.007957] Console: colour dummy device 80x25
+[    0.007959] printk: legacy console [ttyS0] enabled
+[    0.008013] ACPI: Core revision 20250807
+[    0.008018] ACPI: setting ELCR to 0001 (from 0000)
+[    0.008020] APIC: Switch to symmetric I/O mode setup
+[    0.008021] Not enabling interrupt remapping due to skipped IO-APIC setup
+[    0.008022] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x39a85c9bff6, max_idle_ns: 881590591483 ns
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff82b9d57f work=82085643 disposition=EmulateVtime
+[    0.008025] Calibrating delay loop (skipped) preset value.. 800.00 BogoMIPS (lpj=4000000)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff818810c2 work=82087978 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff81287e39 work=82088308 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff81287e46 work=82088308 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff81287d1c work=82088319 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3a data=n/a rip=0xffffffff812874ee work=82088422 disposition=AllowFixed(1)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x140 data=n/a rip=0xffffffff81287f65 work=82088726 disposition=DenyGp
+[    0.008028] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+[    0.008030] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=82092546 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=82092618 disposition=AllowFixed(167775241)
+[    0.008032] mitigations: Enabled attack vectors: user_kernel, user_user, SMT mitigations: auto
+[    0.008034] Speculative Store Bypass: Vulnerable
+[    0.008035] SRBDS: Vulnerable: No microcode
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284be2 work=82097366 disposition=DenyGp
+[    0.008036] unchecked MSR access error: RDMSR from 0x123 at rIP: 0xffffffff81284be2 (native_read_msr+0x2/0x10)
+[    0.008039] Call Trace:
+[    0.008040]  <TASK>
+[    0.008041]  cpu_select_mitigations+0x969/0x1e40
+[    0.008043]  arch_cpu_finalize_init+0xbe/0x140
+[    0.008046]  start_kernel+0x54b/0x5d0
+[    0.008048]  x86_64_start_reservations+0x20/0x20
+[    0.008051]  x86_64_start_kernel+0xc0/0xc0
+[    0.008054]  common_startup_64+0x13b/0x148
+[    0.008056]  </TASK>
+[    0.008057] Spectre V2 : Mitigation: Retpolines
+[    0.008058] RETBleed: Vulnerable
+[    0.008059] MDS: Vulnerable: Clear CPU buffers attempted, no microcode
+[    0.008060] MMIO Stale Data: Vulnerable: Clear CPU buffers attempted, no microcode
+[    0.008062] VMSCAPE: Vulnerable
+[    0.008063] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+[    0.008065] Spectre V2 : Spectre v2 / SpectreRSB: Filling RSB on context switch and VMEXIT
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284e7e work=82128067 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x123 data=0x0 rip=0xffffffff81284e9c work=82128128 disposition=DenyGp
+[    0.008067] unchecked MSR access error: WRMSR to 0x123 (tried to write 0x0000000000000000) at rIP: 0xffffffff81284e9c (update_gds_msr+0x3c/0x80)
+[    0.008070] Call Trace:
+[    0.008071]  <TASK>
+[    0.008072]  cpu_select_mitigations+0x1ae6/0x1e40
+[    0.008074]  arch_cpu_finalize_init+0xbe/0x140
+[    0.008077]  start_kernel+0x54b/0x5d0
+[    0.008080]  x86_64_start_reservations+0x20/0x20
+[    0.008083]  x86_64_start_kernel+0xc0/0xc0
+[    0.008085]  common_startup_64+0x13b/0x148
+[    0.008087]  </TASK>
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284e9e work=82149353 disposition=DenyGp
+[    0.008088] GDS: Mitigation: Microcode
+[    0.008089] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.008091] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+[    0.008093] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+[    0.008094] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+[    0.008096] x86/fpu: Enabled xstate features 0x7, context size is 832 bytes, using 'standard' format.
+[    0.013926] Freeing SMP alternatives memory: 48K
+[    0.013927] pid_max: default: 32768 minimum: 301
+[    0.013933] LSM: initializing lsm=capability,landlock
+[    0.013944] landlock: Up and running.
+[    0.013948] Mount-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.013950] Mountpoint-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.013988] ACPI Warning: AcpiEnable failed (20250807/utxfinit-147)
+[    0.013990] ACPI: Unable to enable ACPI
+[    0.013995] smpboot: CPU0: Intel Deterministic vCPU (CFL-class) @ 2.00GHz (family: 0x6, model: 0x9e, stepping: 0xc)
+[    0.014041] Performance Events: unsupported CPU family 6 model 158 no PMU driver, software events only.
+[    0.014046] signal: max sigframe size: 1360
+[    0.014052] rcu: Hierarchical SRCU implementation.
+[    0.014053] rcu: 	Max phase no-delay instances is 1000.
+[    0.014075] smp: Bringing up secondary CPUs ...
+[    0.014076] smp: Brought up 1 node, 1 CPU
+[    0.014077] smpboot: Total of 1 processors activated (800.00 BogoMIPS)
+[    0.014085] Memory: 1986112K/2096756K available (15511K kernel code, 1167K rwdata, 4332K rodata, 2112K init, 2396K bss, 107696K reserved, 0K cma-reserved)
+[    0.014123] devtmpfs: initialized
+[    0.014133] x86/mm: Memory block size: 128MB
+[    0.014250] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.014252] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[    0.014255] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[    0.014286] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.014320] audit: initializing netlink subsys (disabled)
+[    0.014339] thermal_sys: Registered thermal governor 'step_wise'
+[    0.014341] audit: type=2000 audit(943920000.000:1): state=initialized audit_enabled=0 res=1
+[    0.014344] cpuidle: using governor menu
+[    0.014367] PCI: Fatal: No config space access function found
+[    0.014405] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.014407] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.014409] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.014410] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.014444] ACPI: Interpreter disabled.
+[    0.014447] iommu: Default domain type: Translated
+[    0.014449] iommu: DMA domain TLB invalidation policy: lazy mode
+[    0.014479] SCSI subsystem initialized
+[    0.014482] pps_core: LinuxPPS API ver. 1 registered
+[    0.014483] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.014486] PTP clock support registered
+[    0.014560] PCI: System does not support PCI
+[    0.014565] vgaarb: loaded
+[    0.014578] clocksource: Switched to clocksource tsc-early
+[    0.014608] pnp: PnP ACPI: disabled
+[    0.014952] NET: Registered PF_INET protocol family
+[    0.014959] IP idents hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.015052] tcp_listen_portaddr_hash hash table entries: 1024 (order: 2, 16384 bytes, linear)
+[    0.015055] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.015058] TCP established hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.015076] TCP bind hash table entries: 16384 (order: 7, 524288 bytes, linear)
+[    0.015095] TCP: Hash tables configured (established 16384 bind 16384)
+[    0.015097] UDP hash table entries: 1024 (order: 4, 65536 bytes, linear)
+[    0.015102] UDP-Lite hash table entries: 1024 (order: 4, 65536 bytes, linear)
+[    0.015111] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.015114] PCI: CLS 0 bytes, default 64
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x606 data=n/a rip=0xffffffff82b91ab4 work=89186923 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x64e data=n/a rip=0xffffffff81252803 work=89187057 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x34 data=n/a rip=0xffffffff81252803 work=89187129 disposition=DenyGp
+[    0.015142] Trying to unpack rootfs image as initramfs...
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fc data=n/a rip=0xffffffff81252803 work=98562447 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fd data=n/a rip=0xffffffff81252803 work=98562515 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fe data=n/a rip=0xffffffff81252803 work=98562583 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x60d data=n/a rip=0xffffffff81252803 work=98562653 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3f8 data=n/a rip=0xffffffff81252803 work=98562721 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3f9 data=n/a rip=0xffffffff81252803 work=98562789 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fa data=n/a rip=0xffffffff81252803 work=98562857 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x630 data=n/a rip=0xffffffff81252803 work=98562925 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x631 data=n/a rip=0xffffffff81252803 work=98562993 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x632 data=n/a rip=0xffffffff81252803 work=98563061 disposition=DenyGp
+[    0.018025] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x39a85c9bff6, max_idle_ns: 881590591483 ns
+[    0.018025] clocksource: Switched to clocksource tsc
+[    0.018025] platform rtc_cmos: registered platform RTC device (no PNP device found)
+[    0.018025] workingset: timestamp_bits=46 max_order=19 bucket_order=0
+[    0.018077] Key type cifs.spnego registered
+[    0.018079] Key type cifs.idmap registered
+[    0.018085] fuse: init (API version 7.45)
+[    0.018140] SGI XFS with security attributes, scrub, repair, no debug enabled
+[    0.018164] 9p: Installing v9fs 9p2000 file system support
+[    0.020280] NET: Registered PF_ALG protocol family
+[    0.020283] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 249)
+[    0.028346] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled
+[    0.028360] serial8250: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16450
+[    0.028796] brd: module loaded
+[    0.029057] loop: module loaded
+[    0.029078] tun: Universal TUN/TAP device driver, 1.6
+[    0.029105] VFIO - User Level meta-driver version: 0.3
+[    0.029267] xt_time: kernel timezone is -0000
+[    0.029271] IPVS: Registered protocols (TCP, UDP, SCTP, AH, ESP)
+[    0.029274] IPVS: Connection hash table configured (size=4096, memory=32Kbytes)
+[    0.029291] IPVS: ipvs loaded.
+[    0.029292] IPVS: [rr] scheduler registered.
+[    0.029293] IPVS: [wrr] scheduler registered.
+[    0.029294] IPVS: [lc] scheduler registered.
+[    0.029296] IPVS: [wlc] scheduler registered.
+[    0.029297] IPVS: [fo] scheduler registered.
+[    0.029298] IPVS: [ovf] scheduler registered.
+[    0.029299] IPVS: [lblc] scheduler registered.
+[    0.029301] IPVS: [lblcr] scheduler registered.
+[    0.029302] IPVS: [dh] scheduler registered.
+[    0.029303] IPVS: [sh] scheduler registered.
+[    0.029304] IPVS: [sed] scheduler registered.
+[    0.029305] IPVS: [nq] scheduler registered.
+[    0.029307] IPVS: [sip] pe registered.
+[    0.029342] Initializing XFRM netlink socket
+[    0.029356] NET: Registered PF_INET6 protocol family
+[    0.029429] Segment Routing with IPv6
+[    0.029432] In-situ OAM (IOAM) with IPv6
+[    0.029446] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    0.029490] NET: Registered PF_PACKET protocol family
+[    0.029499] Bridge firewalling registered
+[    0.029506] 9pnet: Installing 9P2000 support
+[    0.029508] Key type dns_resolver registered
+[    0.029520] NET: Registered PF_VSOCK protocol family
+[    0.029534] microcode: Current revision: 0x00000001
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff8128cdf8 work=110153125 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff8128ce03 work=110153125 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0xffffffff8128ce35 work=110153128 disposition=AllowFixed(0)
+[    0.029540] IPI shorthand broadcast: enabled
+[    0.030227] sched_clock: Marking stable (28197096, 78531)->(34829050, -6553423)
+[    0.030243] registered taskstats version 1
+[    0.038833] alg: No test for fips(ansi_cprng) (fips_ansi_cprng)
+[    0.341416] Freeing initrd memory: 38268K
+[    0.341588] Freeing unused kernel image (initmem) memory: 2112K
+[    0.341598] Write protecting the kernel read-only data: 22528k
+[    0.341717] Freeing unused kernel image (text/rodata gap) memory: 872K
+[    0.341802] Freeing unused kernel image (rodata/data gap) memory: 1812K
+[    0.341805] Run /init as init process
+PG37: mounting baked ext4 PGDATA (loop, RAM-backed)
+[    0.343091] loop0: detected capacity change from 0 to 196608
+[    0.343297] EXT4-fs (loop0): mounted filesystem deadbeef-0000-0000-0000-000000000037 r/w with ordered data mode. Quota mode: disabled.
+PG37: starting postgres
+[pg 108] LOG:  starting PostgreSQL 17.10 (Debian 17.10-0+deb13u1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+[pg 108] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+[pg 116] LOG:  database system was shut down at 2026-06-26 14:37:57 UTC
+[pg 108] LOG:  database system is ready to accept connections
+PG37: workload begin
+row|1|1|1|646ac5fa-ce3a-4049-97b0-42fb548f33ef|1999-11-30 00:00:00.360083+00
+row|2|2|3|4e10a782-08f9-49ef-a487-7772c91d0f7d|1999-11-30 00:00:00.360347+00
+row|3|3|6|8f91e7c3-85be-4422-af0c-2557bd18932d|1999-11-30 00:00:00.360412+00
+row|4|4|10|84f4cabb-29a9-4bdb-aa4d-5cb9a7959e19|1999-11-30 00:00:00.360474+00
+row|5|5|15|5c1e5d9b-3c03-45f6-b6e7-4c61463f5c51|1999-11-30 00:00:00.360536+00
+row|6|6|21|ea677a41-118c-45d6-9782-17f98edd8e6a|1999-11-30 00:00:00.360599+00
+row|7|7|28|8fdedd44-3912-485c-968b-b203dee755c5|1999-11-30 00:00:00.360661+00
+row|8|8|36|06547420-fb15-4979-9093-c3eb72940604|1999-11-30 00:00:00.360724+00
+row|9|9|45|e9b8449f-6cd2-4fb7-a9c2-8ec7660f934c|1999-11-30 00:00:00.360787+00
+row|10|10|55|39f5399f-5440-4b7c-b3e9-2e9b7cece8fe|1999-11-30 00:00:00.36085+00
+row|11|11|66|da79ed32-ddf9-4712-b127-94e7cce717ef|1999-11-30 00:00:00.360914+00
+row|12|12|78|25a42845-dcfd-4425-b56c-8b0c8be87840|1999-11-30 00:00:00.360977+00
+row|13|13|91|685a8be8-f03b-4b29-b0a7-30cd8a1d17de|1999-11-30 00:00:00.361041+00
+row|14|14|105|d04b367d-1b46-4d02-a4e2-72b64430fc28|1999-11-30 00:00:00.361105+00
+row|15|15|120|e88cc4a5-8374-4227-89ac-4d40976f093d|1999-11-30 00:00:00.36117+00
+row|16|16|136|0698399b-4ceb-4993-a1d0-348a8c01db3b|1999-11-30 00:00:00.361234+00
+row|17|17|153|1dbfa55e-8a45-491f-a6ed-9d80afa6bdaa|1999-11-30 00:00:00.361298+00
+row|18|18|171|96d47bda-7b7c-463a-aa57-6e7ac80bdb00|1999-11-30 00:00:00.361363+00
+row|19|19|190|9398f090-5d6b-4734-a5d9-c9a546be0639|1999-11-30 00:00:00.361428+00
+row|20|20|210|988f04ec-9b20-466e-bc90-2d122cca55f5|1999-11-30 00:00:00.361494+00
+PG37: workload end
+server shutting down
+[pg 108] LOG:  received fast shutdown request
+[pg 108] LOG:  aborting any active transactions
+[pg 108] LOG:  background worker "logical replication launcher" (PID 119) exited with exit code 1
+[pg 114] LOG:  shutting down
+[pg 114] LOG:  checkpoint starting: shutdown immediate
+[pg 114] LOG:  checkpoint complete: wrote 47 buffers (1.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.001 s; sync files=36, longest=0.001 s, average=0.001 s; distance=145 kB, estimate=145 kB; lsn=0/15112D0, redo lsn=0/15112D0
+[pg 108] LOG:  database system is shut down
+GUEST_READY
+[    0.375392] EXT4-fs (loop0): unmounting filesystem deadbeef-0000-0000-0000-000000000037.
+[    0.382473] reboot: Restarting system
+[    0.382474] reboot: machine restart
+
+[p3 seed A] steps=112633 terminal=Some(Shutdown) pg_ready=true workload_done=true final_row=true uuids=20 GUEST_READY=true step_error=None
+[p3 seed A] final-row sample: uuid=988f04ec-9b20-466e-bc90-2d122cca55f5 t=1999-11-30 00:00:00.361494+00
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0x1272418 work=73630982 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff8128cdf8 work=73632602 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff8128ce03 work=73632602 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0xffffffff8128ce35 work=73632605 disposition=AllowFixed(0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff818810c2 work=73635427 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff81287e39 work=73638802 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff81287e46 work=73638802 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff81287d1c work=73638813 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=73638985 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296dc7 work=74060614 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0xffffffff82ba3479 work=74065364 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0xffffffff8128b422 work=74065374 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0xffffffff82ba2b76 work=77485987 disposition=AllowFixed(4276095232)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=80220026 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0xffffffff81297a36 work=80220029 disposition=AllowFixed(4276095232)
+[    0.000000] Linux version 6.18.35 (hypervizor@hypervizor) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Thu Jan  1 00:00:00 UTC 1970
+[    0.000000] Command line: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable
+[    0.000000] x86/CPU: Running old microcode
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000000dfff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000000e000-0x000000000000ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000000010000-0x000000000009ffff] usable
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000007fffffff] usable
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] APIC: Static calls initialized
+[    0.000000] DMI not present or invalid.
+[    0.000000] tsc: Detected 2000.000 MHz processor
+[    0.000004] last_pfn = 0x80000 max_arch_pfn = 0x400000000
+[    0.000004] MTRRs disabled by BIOS
+[    0.000005] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+[    0.000594] Using GB pages for direct mapping
+[    0.000774] RAMDISK: [mem 0x7daa1000-0x7fffffff]
+[    0.000775] ACPI: Early table checksum verification disabled
+[    0.000775] ACPI: RSDP 0x00000000000E0000 000024 (v02 HARMNY)
+[    0.000777] ACPI: XSDT 0x00000000000E0040 00002C (v01 HARMNY HARMONYT 00000001 HARM 00000001)
+[    0.000779] ACPI: APIC 0x00000000000E0080 000034 (v05 HARMNY HARMONYT 00000001 HARM 00000001)
+[    0.000781] ACPI: Reserving APIC table memory at [mem 0xe0080-0xe00b3]
+[    0.000784] Zone ranges:
+[    0.000785]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+[    0.000786]   DMA32    [mem 0x0000000001000000-0x000000007fffffff]
+[    0.000786]   Normal   empty
+[    0.000787]   Device   empty
+[    0.000787] Movable zone start for each node
+[    0.000788] Early memory node ranges
+[    0.000788]   node   0: [mem 0x0000000000001000-0x000000000000dfff]
+[    0.000789]   node   0: [mem 0x0000000000010000-0x000000000009ffff]
+[    0.000789]   node   0: [mem 0x0000000000100000-0x000000007fffffff]
+[    0.000790] Initmem setup node 0 [mem 0x0000000000001000-0x000000007fffffff]
+[    0.000792] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.000793] On node 0, zone DMA: 2 pages in unavailable ranges
+[    0.000813] On node 0, zone DMA: 96 pages in unavailable ranges
+[    0.003425] ACPI: Skipping IOAPIC probe due to 'noapic' option.
+[    0.003426] ACPI: Using ACPI for processor (LAPIC) configuration information
+[    0.003427] CPU topo: Max. logical packages:   1
+[    0.003428] CPU topo: Max. logical dies:       1
+[    0.003428] CPU topo: Max. dies per package:   1
+[    0.003430] CPU topo: Max. threads per core:   1
+[    0.003430] CPU topo: Num. cores per package:     1
+[    0.003431] CPU topo: Num. threads per package:   1
+[    0.003431] CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
+[    0.003433] [mem 0x80000000-0xffffffff] available for PCI devices
+[    0.003433] Booting paravirtualized kernel on bare hardware
+[    0.003434] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.006017] setup_percpu: NR_CPUS:240 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
+[    0.006052] percpu: Embedded 39 pages/cpu s127000 r0 d32744 u2097152
+[    0.006059] Kernel command line: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable
+[    0.006102] Unknown kernel command line parameters "nokaslr", will be passed to user space.
+[    0.006103] random: crng init done
+[    0.006104] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.006138] Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    0.006156] Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.006159] Built 1 zonelists, mobility grouping on.  Total pages: 524189
+[    0.006160] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.007791] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.007807] rcu: Hierarchical RCU implementation.
+[    0.007807] rcu: 	RCU event tracing is enabled.
+[    0.007807] rcu: 	RCU restricting CPUs from NR_CPUS=240 to nr_cpu_ids=1.
+[    0.007808] 	Tracing variant of Tasks RCU enabled.
+[    0.007808] rcu: RCU calculated value of scheduler-enlistment delay is 10 jiffies.
+[    0.007809] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.007810] RCU Tasks Trace: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.007812] NR_IRQS: 15616, nr_irqs: 32, preallocated irqs: 16
+[    0.007945] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.007957] Console: colour dummy device 80x25
+[    0.007959] printk: legacy console [ttyS0] enabled
+[    0.008013] ACPI: Core revision 20250807
+[    0.008018] ACPI: setting ELCR to 0001 (from 0000)
+[    0.008020] APIC: Switch to symmetric I/O mode setup
+[    0.008021] Not enabling interrupt remapping due to skipped IO-APIC setup
+[    0.008022] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x39a85c9bff6, max_idle_ns: 881590591483 ns
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff82b9d57f work=82085643 disposition=EmulateVtime
+[    0.008025] Calibrating delay loop (skipped) preset value.. 800.00 BogoMIPS (lpj=4000000)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff818810c2 work=82087978 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff81287e39 work=82088308 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff81287e46 work=82088308 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff81287d1c work=82088319 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3a data=n/a rip=0xffffffff812874ee work=82088422 disposition=AllowFixed(1)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x140 data=n/a rip=0xffffffff81287f65 work=82088726 disposition=DenyGp
+[    0.008028] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+[    0.008030] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=82092546 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=82092618 disposition=AllowFixed(167775241)
+[    0.008032] mitigations: Enabled attack vectors: user_kernel, user_user, SMT mitigations: auto
+[    0.008034] Speculative Store Bypass: Vulnerable
+[    0.008035] SRBDS: Vulnerable: No microcode
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284be2 work=82097366 disposition=DenyGp
+[    0.008036] unchecked MSR access error: RDMSR from 0x123 at rIP: 0xffffffff81284be2 (native_read_msr+0x2/0x10)
+[    0.008039] Call Trace:
+[    0.008040]  <TASK>
+[    0.008041]  cpu_select_mitigations+0x969/0x1e40
+[    0.008043]  arch_cpu_finalize_init+0xbe/0x140
+[    0.008046]  start_kernel+0x54b/0x5d0
+[    0.008048]  x86_64_start_reservations+0x20/0x20
+[    0.008051]  x86_64_start_kernel+0xc0/0xc0
+[    0.008054]  common_startup_64+0x13b/0x148
+[    0.008056]  </TASK>
+[    0.008057] Spectre V2 : Mitigation: Retpolines
+[    0.008058] RETBleed: Vulnerable
+[    0.008059] MDS: Vulnerable: Clear CPU buffers attempted, no microcode
+[    0.008060] MMIO Stale Data: Vulnerable: Clear CPU buffers attempted, no microcode
+[    0.008062] VMSCAPE: Vulnerable
+[    0.008063] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+[    0.008065] Spectre V2 : Spectre v2 / SpectreRSB: Filling RSB on context switch and VMEXIT
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284e7e work=82128067 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x123 data=0x0 rip=0xffffffff81284e9c work=82128128 disposition=DenyGp
+[    0.008067] unchecked MSR access error: WRMSR to 0x123 (tried to write 0x0000000000000000) at rIP: 0xffffffff81284e9c (update_gds_msr+0x3c/0x80)
+[    0.008070] Call Trace:
+[    0.008071]  <TASK>
+[    0.008072]  cpu_select_mitigations+0x1ae6/0x1e40
+[    0.008074]  arch_cpu_finalize_init+0xbe/0x140
+[    0.008077]  start_kernel+0x54b/0x5d0
+[    0.008080]  x86_64_start_reservations+0x20/0x20
+[    0.008083]  x86_64_start_kernel+0xc0/0xc0
+[    0.008085]  common_startup_64+0x13b/0x148
+[    0.008087]  </TASK>
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284e9e work=82149353 disposition=DenyGp
+[    0.008088] GDS: Mitigation: Microcode
+[    0.008089] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.008091] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+[    0.008093] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+[    0.008094] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+[    0.008096] x86/fpu: Enabled xstate features 0x7, context size is 832 bytes, using 'standard' format.
+[    0.013926] Freeing SMP alternatives memory: 48K
+[    0.013927] pid_max: default: 32768 minimum: 301
+[    0.013933] LSM: initializing lsm=capability,landlock
+[    0.013944] landlock: Up and running.
+[    0.013948] Mount-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.013950] Mountpoint-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.013988] ACPI Warning: AcpiEnable failed (20250807/utxfinit-147)
+[    0.013990] ACPI: Unable to enable ACPI
+[    0.013995] smpboot: CPU0: Intel Deterministic vCPU (CFL-class) @ 2.00GHz (family: 0x6, model: 0x9e, stepping: 0xc)
+[    0.014041] Performance Events: unsupported CPU family 6 model 158 no PMU driver, software events only.
+[    0.014046] signal: max sigframe size: 1360
+[    0.014052] rcu: Hierarchical SRCU implementation.
+[    0.014053] rcu: 	Max phase no-delay instances is 1000.
+[    0.014075] smp: Bringing up secondary CPUs ...
+[    0.014076] smp: Brought up 1 node, 1 CPU
+[    0.014077] smpboot: Total of 1 processors activated (800.00 BogoMIPS)
+[    0.014085] Memory: 1986112K/2096756K available (15511K kernel code, 1167K rwdata, 4332K rodata, 2112K init, 2396K bss, 107696K reserved, 0K cma-reserved)
+[    0.014123] devtmpfs: initialized
+[    0.014133] x86/mm: Memory block size: 128MB
+[    0.014250] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.014252] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[    0.014255] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[    0.014286] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.014320] audit: initializing netlink subsys (disabled)
+[    0.014339] thermal_sys: Registered thermal governor 'step_wise'
+[    0.014341] audit: type=2000 audit(943920000.000:1): state=initialized audit_enabled=0 res=1
+[    0.014344] cpuidle: using governor menu
+[    0.014367] PCI: Fatal: No config space access function found
+[    0.014405] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.014407] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.014409] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.014410] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.014444] ACPI: Interpreter disabled.
+[    0.014447] iommu: Default domain type: Translated
+[    0.014449] iommu: DMA domain TLB invalidation policy: lazy mode
+[    0.014479] SCSI subsystem initialized
+[    0.014482] pps_core: LinuxPPS API ver. 1 registered
+[    0.014483] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.014486] PTP clock support registered
+[    0.014560] PCI: System does not support PCI
+[    0.014565] vgaarb: loaded
+[    0.014578] clocksource: Switched to clocksource tsc-early
+[    0.014608] pnp: PnP ACPI: disabled
+[    0.014952] NET: Registered PF_INET protocol family
+[    0.014959] IP idents hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.015052] tcp_listen_portaddr_hash hash table entries: 1024 (order: 2, 16384 bytes, linear)
+[    0.015055] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.015058] TCP established hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.015076] TCP bind hash table entries: 16384 (order: 7, 524288 bytes, linear)
+[    0.015095] TCP: Hash tables configured (established 16384 bind 16384)
+[    0.015097] UDP hash table entries: 1024 (order: 4, 65536 bytes, linear)
+[    0.015102] UDP-Lite hash table entries: 1024 (order: 4, 65536 bytes, linear)
+[    0.015111] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.015114] PCI: CLS 0 bytes, default 64
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x606 data=n/a rip=0xffffffff82b91ab4 work=89186923 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x64e data=n/a rip=0xffffffff81252803 work=89187057 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x34 data=n/a rip=0xffffffff81252803 work=89187129 disposition=DenyGp
+[    0.015142] Trying to unpack rootfs image as initramfs...
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fc data=n/a rip=0xffffffff81252803 work=98562447 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fd data=n/a rip=0xffffffff81252803 work=98562515 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fe data=n/a rip=0xffffffff81252803 work=98562583 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x60d data=n/a rip=0xffffffff81252803 work=98562653 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3f8 data=n/a rip=0xffffffff81252803 work=98562721 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3f9 data=n/a rip=0xffffffff81252803 work=98562789 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fa data=n/a rip=0xffffffff81252803 work=98562857 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x630 data=n/a rip=0xffffffff81252803 work=98562925 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x631 data=n/a rip=0xffffffff81252803 work=98562993 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x632 data=n/a rip=0xffffffff81252803 work=98563061 disposition=DenyGp
+[    0.018025] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x39a85c9bff6, max_idle_ns: 881590591483 ns
+[    0.018025] clocksource: Switched to clocksource tsc
+[    0.018025] platform rtc_cmos: registered platform RTC device (no PNP device found)
+[    0.018025] workingset: timestamp_bits=46 max_order=19 bucket_order=0
+[    0.018077] Key type cifs.spnego registered
+[    0.018079] Key type cifs.idmap registered
+[    0.018085] fuse: init (API version 7.45)
+[    0.018140] SGI XFS with security attributes, scrub, repair, no debug enabled
+[    0.018164] 9p: Installing v9fs 9p2000 file system support
+[    0.020280] NET: Registered PF_ALG protocol family
+[    0.020283] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 249)
+[    0.028346] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled
+[    0.028360] serial8250: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16450
+[    0.028797] brd: module loaded
+[    0.029057] loop: module loaded
+[    0.029078] tun: Universal TUN/TAP device driver, 1.6
+[    0.029106] VFIO - User Level meta-driver version: 0.3
+[    0.029267] xt_time: kernel timezone is -0000
+[    0.029271] IPVS: Registered protocols (TCP, UDP, SCTP, AH, ESP)
+[    0.029274] IPVS: Connection hash table configured (size=4096, memory=32Kbytes)
+[    0.029292] IPVS: ipvs loaded.
+[    0.029293] IPVS: [rr] scheduler registered.
+[    0.029294] IPVS: [wrr] scheduler registered.
+[    0.029295] IPVS: [lc] scheduler registered.
+[    0.029296] IPVS: [wlc] scheduler registered.
+[    0.029297] IPVS: [fo] scheduler registered.
+[    0.029298] IPVS: [ovf] scheduler registered.
+[    0.029300] IPVS: [lblc] scheduler registered.
+[    0.029301] IPVS: [lblcr] scheduler registered.
+[    0.029302] IPVS: [dh] scheduler registered.
+[    0.029303] IPVS: [sh] scheduler registered.
+[    0.029305] IPVS: [sed] scheduler registered.
+[    0.029306] IPVS: [nq] scheduler registered.
+[    0.029307] IPVS: [sip] pe registered.
+[    0.029342] Initializing XFRM netlink socket
+[    0.029356] NET: Registered PF_INET6 protocol family
+[    0.029430] Segment Routing with IPv6
+[    0.029433] In-situ OAM (IOAM) with IPv6
+[    0.029446] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    0.029491] NET: Registered PF_PACKET protocol family
+[    0.029499] Bridge firewalling registered
+[    0.029506] 9pnet: Installing 9P2000 support
+[    0.029509] Key type dns_resolver registered
+[    0.029521] NET: Registered PF_VSOCK protocol family
+[    0.029535] microcode: Current revision: 0x00000001
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff8128cdf8 work=110153541 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff8128ce03 work=110153541 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0xffffffff8128ce35 work=110153544 disposition=AllowFixed(0)
+[    0.029541] IPI shorthand broadcast: enabled
+[    0.030227] sched_clock: Marking stable (28197096, 78531)->(34829050, -6553423)
+[    0.030243] registered taskstats version 1
+[    0.038833] alg: No test for fips(ansi_cprng) (fips_ansi_cprng)
+[  484.687715] perf: interrupt took too long (7814 > 7807), lowering kernel.perf_event_max_sample_rate to 25500
+[    0.341417] Freeing initrd memory: 38268K
+[    0.341589] Freeing unused kernel image (initmem) memory: 2112K
+[    0.341598] Write protecting the kernel read-only data: 22528k
+[    0.341718] Freeing unused kernel image (text/rodata gap) memory: 872K
+[    0.341803] Freeing unused kernel image (rodata/data gap) memory: 1812K
+[    0.341805] Run /init as init process
+PG37: mounting baked ext4 PGDATA (loop, RAM-backed)
+[    0.343091] loop0: detected capacity change from 0 to 196608
+[    0.343297] EXT4-fs (loop0): mounted filesystem deadbeef-0000-0000-0000-000000000037 r/w with ordered data mode. Quota mode: disabled.
+PG37: starting postgres
+[pg 108] LOG:  starting PostgreSQL 17.10 (Debian 17.10-0+deb13u1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+[pg 108] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+[pg 116] LOG:  database system was shut down at 2026-06-26 14:37:57 UTC
+[pg 108] LOG:  database system is ready to accept connections
+PG37: workload begin
+row|1|1|1|80cbcf9a-727e-47c4-89ef-15fa5c38c072|1999-11-30 00:00:00.360062+00
+row|2|2|3|d9d486e5-8acf-4180-bdab-c6547ff1abbb|1999-11-30 00:00:00.360326+00
+row|3|3|6|8bb1f74e-5756-4f0f-850a-d34ed81e27ae|1999-11-30 00:00:00.360391+00
+row|4|4|10|2ca8203d-f1f2-46ea-a55d-7e774ad84b6b|1999-11-30 00:00:00.360453+00
+row|5|5|15|4b3355d9-b490-4d5a-953d-76f88a572154|1999-11-30 00:00:00.360515+00
+row|6|6|21|02c70222-0c48-4b3f-8ab0-59e9ba6dc399|1999-11-30 00:00:00.360578+00
+row|7|7|28|9e65e20d-1845-4b5d-8fba-19b8f23ed144|1999-11-30 00:00:00.36064+00
+row|8|8|36|b5f9fee6-1e94-4ae2-9d45-c8a6c1e89f0e|1999-11-30 00:00:00.360703+00
+row|9|9|45|69ce1a2d-5939-49c0-854d-cb6f2aef6ece|1999-11-30 00:00:00.360766+00
+row|10|10|55|6ab7b9cf-4422-4bb3-b207-66f3e6551acb|1999-11-30 00:00:00.360829+00
+row|11|11|66|d6bb1695-faeb-428e-abf6-898fde63dbe4|1999-11-30 00:00:00.360893+00
+row|12|12|78|d6a582a9-960d-4313-9d14-a2dcb7dc480e|1999-11-30 00:00:00.360956+00
+row|13|13|91|194e0c65-474f-43af-92d7-7a7214554632|1999-11-30 00:00:00.36102+00
+row|14|14|105|cb0537c2-5322-4ef1-80d2-70494760af5c|1999-11-30 00:00:00.361084+00
+row|15|15|120|7f4eecf9-b253-4b49-8228-d87d837d1161|1999-11-30 00:00:00.361148+00
+row|16|16|136|fa4eba00-6da0-438e-9ee8-041c3fec93f6|1999-11-30 00:00:00.361213+00
+row|17|17|153|c87905dd-d3a5-42ae-95f4-dd9fec127cae|1999-11-30 00:00:00.361278+00
+row|18|18|171|968b9684-f999-434a-af52-024412400a84|1999-11-30 00:00:00.361342+00
+row|19|19|190|0b6a2f45-9435-4a19-92fd-0c7cab53ea6e|1999-11-30 00:00:00.361407+00
+row|20|20|210|e4437b38-798a-4f47-8c93-0c52f93f0896|1999-11-30 00:00:00.361472+00
+PG37: workload end
+server shutting down
+[pg 108] LOG:  received fast shutdown request
+[pg 108] LOG:  aborting any active transactions
+[pg 108] LOG:  background worker "logical replication launcher" (PID 119) exited with exit code 1
+[pg 114] LOG:  shutting down
+[pg 114] LOG:  checkpoint starting: shutdown immediate
+[pg 114] LOG:  checkpoint complete: wrote 47 buffers (1.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.001 s; sync files=36, longest=0.001 s, average=0.001 s; distance=145 kB, estimate=145 kB; lsn=0/15112D0, redo lsn=0/15112D0
+[pg 108] LOG:  database system is shut down
+GUEST_READY
+[    0.375317] EXT4-fs (loop0): unmounting filesystem deadbeef-0000-0000-0000-000000000037.
+[    0.382473] reboot: Restarting system
+[    0.382474] reboot: machine restart
+
+[p3 seed B] steps=112633 terminal=Some(Shutdown) pg_ready=true workload_done=true final_row=true uuids=20 GUEST_READY=true step_error=None
+[p3 seed B] final-row sample: uuid=e4437b38-798a-4f47-8c93-0c52f93f0896 t=1999-11-30 00:00:00.361472+00
+[pg] seed-sensitivity: sample UUID per seed —
+  seed 0x0028c0ffee5eedc0 -> 988f04ec-9b20-466e-bc90-2d122cca55f5
+  seed 0x9e1fb946911491d5 -> e4437b38-798a-4f47-8c93-0c52f93f0896
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 507.33s
+
+NESTED_X86_GATE_RC live_postgres rc=0
+NESTED_X86_GATE_END live_postgres
+--- L1 dmesg tail (kvm/vmx/pmu/perf) ---
+[    0.000000] Hypervisor detected: KVM
+[    0.000000] kvm-clock: Using msrs 4b564d01 and 4b564d00
+[    0.000000] kvm-clock: using sched offset of 158270400 cycles
+[    0.000001] clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns
+[    0.010550] kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()
+[    0.010570] Booting paravirtualized kernel on KVM
+[    0.014177] kvm-guest: PV spinlocks disabled, single CPU
+[    0.240562] Performance Events: Skylake events, full-width counters, Intel PMU driver.
+[    0.475775] clocksource: Switched to clocksource kvm-clock
+[    1.104003] kvm: loading out-of-tree module taints kernel.
+[    1.104612] kvm: module verification failed: signature and/or required key missing - tainting kernel
+[   76.932387] perf: interrupt took too long (2512 > 2500), lowering kernel.perf_event_max_sample_rate to 79500
+[   78.061240] perf: interrupt took too long (3171 > 3140), lowering kernel.perf_event_max_sample_rate to 63000
+[   79.704489] perf: interrupt took too long (3991 > 3963), lowering kernel.perf_event_max_sample_rate to 50000
+[  180.162912] perf: interrupt took too long (4989 > 4988), lowering kernel.perf_event_max_sample_rate to 40000
+[  281.822651] perf: interrupt took too long (6246 > 6236), lowering kernel.perf_event_max_sample_rate to 32000
+[  484.687715] perf: interrupt took too long (7814 > 7807), lowering kernel.perf_event_max_sample_rate to 25500
+NESTED_X86_L1_DONE
+[  579.691800] ACPI: PM: Preparing to enter system sleep state S5
+[  579.692569] kvm: exiting hardware virtualization
+[  579.693145] reboot: Power down

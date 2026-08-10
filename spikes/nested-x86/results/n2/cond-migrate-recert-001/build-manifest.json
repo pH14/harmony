@@ -1,0 +1,16 @@
+{
+  "kver": "6.12.90+deb13.1-amd64",
+  "source": "spike/nested-x86 rsync of e0a62e2",
+  "gates": [
+    {"name": "live_determinism-738f21d807cbcac0", "sha256": "079980eb8deb40ecf2a97ca84fc79468c4e1a867d751775247d48f6c7a156560"},
+    {"name": "n2_nested_hammer-a7cc3f47b8e93461", "sha256": "da6ac2acc542d69458e8884b55195699914d246a29d5eae0a76acc9fce1a7410"},
+    {"name": "n3_repeat_gate-ee2d3fab6d015a04", "sha256": "0695cf42eabbda700c08e12ffa0f117ce57c0b5d978a94baae23cf73aac75679"}
+  ],
+  "sha256_kvm_ko_patched": "ce998d6aeb1e9aa694368061e023d1db5e658333c117c405aed212462c543452",
+  "sha256_kvm_intel_ko_patched": "b6e6d3d2c4fd6f08a67ce00d39d9a735219625e5bca4e33a572ce943da13ed2e",
+  "sha256_l2_bzImage": "f06a34a79010a8f2cc8226dc629cc8fb049740016f035f53e3f2e53d9a30dd41",
+  "sha256_l2_initramfs_postgres": "3c4a7f2f0db4b59aaf4dee55d43a42c57fc0d10ac25441de88128c61be0778c2",
+  "sha256_appliance_cpio": "ab6146c51762c0a92f766c713fb5dc288986709f7496aa302f712d22a750a906",
+  "sha256_l1_kernel": "5af22ccdc339fe5c1fdfcd4cf6a3c503ff983648664a8d6660454368785e8fd5",
+  "built": "2026-07-13T03:16:20Z"
+}

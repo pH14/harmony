@@ -1,0 +1,9 @@
+{
+  "condition": "pause-sigstop",
+  "pause_every_s": 28,
+  "pause_len_s": 2,
+  "pauses_confirmed": 417,
+  "pauses_failed": 0,
+  "rc": 0,
+  "finished": "2026-07-14T04:12:18Z"
+}

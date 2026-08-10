@@ -1,0 +1,8 @@
+{
+  "condition": "othercore",
+  "deadlines": 200000,
+  "seed": 2600001004,
+  "stress_pid": "149446",
+  "cpuset": "3",
+  "started": "2026-07-13T04:34:55Z"
+}
