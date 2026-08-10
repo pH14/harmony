@@ -12,7 +12,7 @@
 //! prefixes, per-observation `set`/`max`/`min`/`accumulate` reduction at
 //! half-open evidence cuts, the cell projection at each evaluation point, and
 //! the deterministic best-entry-per-cell occupancy reduction — the
-//! `spikes/differential-lineage` relations, productionized.
+//! `differential-lineage` relations, productionized.
 //!
 //! Doctrine (ruled; violations blocking): branch/rollout identity is a key,
 //! `Revision` is the ONLY timestamp, `Moment`/position are data columns, and

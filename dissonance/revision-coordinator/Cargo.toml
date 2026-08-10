@@ -27,7 +27,7 @@ test-support = []
 # docs/DISSONANCE-STRATEGY.md ("Use production differential-dataflow initially
 # with one Timely worker"). Both are off the rule-5 whitelist — ask-by-comment:
 # the task IS the Differential input coordinator, and the merged
-# spikes/differential-lineage crate (tasks/120) already proved these exact
+# differential-lineage crate (tasks/120) already proved these exact
 # versions. MIT-licensed, crates.io only.
 differential-dataflow = "0.24"
 timely = "0.30"
@@ -59,4 +59,4 @@ tempfile = "3"
 # fixture records and the spike program's captured views are the artifacts
 # asserted byte-identical across permutation/restart/cohort mint order.
 # Pinned `version` alongside `path` for `cargo deny`'s wildcard ban.
-differential-lineage = { path = "../../spikes/differential-lineage", version = "0.1.0" }
+differential-lineage = { path = "../differential-lineage", version = "0.1.0" }

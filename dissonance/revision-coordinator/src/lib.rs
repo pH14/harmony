@@ -24,7 +24,7 @@
 //! make input ordering deterministic; the seeded `assign` order does. The
 //! coordinator neither decodes SDK payloads nor materializes VMs
 //! (`hm-bbx.4` owns the evidence-ledger payloads) and never authors
-//! Differential relations (the merged `spikes/differential-lineage` crate
+//! Differential relations (the merged `differential-lineage` crate
 //! defines the proven dataflow shapes it submits inputs to).
 //!
 //! **Scope of the in-crate dataflow** (task 132, `hm-e6q`): the dataflow
@@ -33,7 +33,7 @@
 //! probed, and read back as the [`DrainedView`] — is the coordination
 //! contract, byte-for-byte unchanged from the PR #124 echo program. Beside
 //! it now run the **production observation/materialization relations** (the
-//! merged `spikes/differential-lineage` shapes, productionized in
+//! merged `differential-lineage` shapes, productionized in
 //! [`relations`]): typed evidence rows staged per proposal
 //! ([`Coordinator::stage_evidence`]) enter at their batch's committed
 //! revision, and the graph materializes lineage-composed per-observation

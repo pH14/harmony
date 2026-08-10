@@ -128,7 +128,7 @@ binding public-API item from the spec exists with the specified semantics.
   versions as the ratified tasks/120 spike. `blake3` (whitelisted) for ledger
   frame checksums and digest-based ids.
 - **Root `Cargo.toml`: one `exclude` line.** M2 requires a path dependency on
-  the standalone `spikes/differential-lineage` workspace; Cargo refuses a
+  the standalone `differential-lineage` workspace; Cargo refuses a
   nested workspace root inside the outer workspace's tree unless the outer
   excludes it (the same mechanism as `harmony-linux/`). No member globs changed.
 - **`deny.toml`: two advisory ignores** (`RUSTSEC-2025-0141` bincode,

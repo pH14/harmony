@@ -1,1 +1,0 @@
-FAIL: boot Linux: the vCPU wedged inside KVM_RUN past the 300s watchdog deadline (no exit returned)

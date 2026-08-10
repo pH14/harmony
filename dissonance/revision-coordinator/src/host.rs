@@ -15,7 +15,7 @@
 //!
 //! Alongside the committed-input relation, this host now runs the
 //! **production observation/materialization relations** (task 132, `hm-e6q`
-//! — the `spikes/differential-lineage` shapes, productionized): staged
+//! — the `differential-lineage` shapes, productionized): staged
 //! [`EvidenceRows`] enter at their batch's committed revision, and the graph
 //! materializes lineage-composed per-observation reductions at every
 //! evaluation point (the shared segment-aggregate formulation the spike

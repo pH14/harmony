@@ -6,26 +6,13 @@
 *.img
 *.bin
 !consonance/acceptance-suite/golden/*.bin
-# AA-5(c) console transcripts are retained checker inputs: aa5-identity-check.py
-# recomputes each console sha256 from console.bin, so a fresh checkout must carry
-# them for the same-seed identity evidence to self-verify (hm-of6t F12). ~5 KiB
-# ASCII each; consistency with the committed stdout hashes is what the checker gates.
-!spikes/arm-altra/results/aa-5/live-20260720/**/console.bin
-!spikes/arm-altra/results/aa-5/live-20260721/**/console.bin
 /.claude/skills/pr-review-workspace/
 .agent-prompt.md
 .env
-# Bring-up measurement spikes — kept on the dev box for reference, untracked from
-# the tree. (The patched-KVM determinism recipe is NOT here — it lives, tracked, at
-# consonance/vmm-backend/kvm-patches/.)
-spikes/*
-# ...with one exception, ruled by docs/ARM-ALTRA.md §Repository layout: the ARM
-# vendor spike program's *apparatus* is tracked by design. Its payloads, harness,
-# evidence schemas and floor checkers are arrival-day load-bearing and are reviewed
-# and merged like any other code (tasks/109); only its measurement *outputs* are the
-# untracked kind this rule was written for. spikes/arm-altra/.gitignore draws that
-# line inside the directory.
-!spikes/arm-altra/
+# Spikes are worktrees on spike/* branches, never directories on main
+# (AGENTS.md, Conventions). Historical spike trees live on the spike/*
+# branches; local spike checkouts and build litter stay untracked here.
+spikes/
 /mutants.out
 /mutants.out.old
 
@@ -33,37 +20,10 @@ spikes/*
 *.ndjson
 *.log
 
-# Beads / Dolt files (added by bd init)
-.dolt/
-*.db
-.beads-credential-key
-.beads/proxieddb/
 .DS_Store
 
-# SPIKE(nested-x86): track this spike's scripts + evidence on the spike branch
-# (overrides spikes/* and *.log above; last match wins)
-!spikes/nested-x86
-!spikes/nested-x86/**
-
-# SPIKE(differential-lineage): tracked by design — tasks/120 requires the committed
-# fixtures, generator, and benchmark report (overrides spikes/* above; last match
-# wins). Build artifacts are re-ignored by the spike's own .gitignore.
-!spikes/differential-lineage
-!spikes/differential-lineage/**
-
-# SPIKE(amd-epyc): the AMD vendor spike (docs/AMD-EPYC.md, tasks/123) tracks its
-# apparatus AND its stage evidence (overrides spikes/* and *.log above; last match
-# wins). Build artifacts are re-ignored by the spike's own .gitignore.
-!spikes/amd-epyc
-!spikes/amd-epyc/**
-# The shared planted-failure (negative-control) harness (work order hm-537): one grader
-# discipline used across every spike's CLI graders, so it lives at the spikes/ root rather
-# than inside one spike. Tracked by design like the spike apparatus (overrides spikes/*).
-!spikes/negcontrol.py
-spikes/arm-altra/payloads/fixtures/*.elf
-
 # Parked (2026-08-10): macOS-backend exploration stays untracked until ratified.
-# The QEMU TCG spike itself is ignored by the spikes/* default above.
+# The QEMU TCG spike itself is ignored by the spikes/ rule above.
 docs/QEMU-TCG-EXACT-BRANCH-CLOCK-SPIKE.md
 docs/MACOS-M3-BACKEND-ALTERNATIVES.md
 flake.nix

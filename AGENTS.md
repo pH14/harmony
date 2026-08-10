@@ -130,8 +130,9 @@ shared-enum or cfg(linux) work done.
   paragraph.
 - **Spikes are worktrees, not directories.** Exploratory work happens on a `spike/<name>`
   branch in its own `git worktree`, and never merges to `main` as a `spikes/` folder; it
-  either graduates into a real crate/module or the branch dies. (The existing `spikes/`
-  entries predate this rule and leave with the code that depends on them.)
+  either graduates into a real crate/module or the branch dies. Historical spike trees
+  (nested-x86, arm-altra, amd-epyc) live on `spike/*` branches; `differential-lineage`
+  graduated to `dissonance/differential-lineage` (still its own workspace root).
 
 ## Issue tracking
 

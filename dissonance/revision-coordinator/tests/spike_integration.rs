@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! M2 — integration against the merged spike dataflow (tasks/120,
-//! `spikes/differential-lineage`).
+//! `differential-lineage`).
 //!
 //! The coordinator is the control side; the spike crate is the proven
 //! observation plane. The wiring under test: every spike fixture revision
