@@ -14,7 +14,7 @@ name: quality
 # What STAYS on the box (NOT in this workflow, and never was): the ~23
 # live_*/determinism/seal-rate/PMU gates that need a real /dev/kvm, the patched KVM
 # module, hardware perf counters, and quiet pinned cores. Those run out-of-band
-# through scripts/box-window.sh (docs/BOX-PINNING.md, "Frontier determinism gates").
+# through the box run-window tooling (now in the harmony-development repo).
 # Formalizing them as a dispatchable `runs-on: [self-hosted, kvm]` job is a documented
 # follow-up (see the migration PR description); until then the box's role is unchanged.
 #
