@@ -61,3 +61,9 @@ spikes/*
 # than inside one spike. Tracked by design like the spike apparatus (overrides spikes/*).
 !spikes/negcontrol.py
 spikes/arm-altra/payloads/fixtures/*.elf
+
+# Parked (2026-08-10): macOS-backend exploration stays untracked until ratified.
+# The QEMU TCG spike itself is ignored by the spikes/* default above.
+docs/QEMU-TCG-EXACT-BRANCH-CLOCK-SPIKE.md
+docs/MACOS-M3-BACKEND-ALTERNATIVES.md
+flake.nix
