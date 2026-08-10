@@ -179,6 +179,31 @@ durations.
   its inner mutators implements `post_exec`, so the LibAFL 0.15.4 no-op cannot
   suppress accounting there. Generated SMB mutations remained disabled in
   campaign runs until this regression and the M8 gates passed.
+- M9 gives SMB its own `TriageScore` with weights Boost=4, Neutral=1, and
+  Suppress=0.01; the Phase 2 score and `LoadLabelsStage` remain unchanged. The
+  restart path now notifies the existing weighted scheduler after attaching
+  initial labels, runs in fixed 500-execution batches, and synchronously labels
+  newly retained testcases between batches. Every compact replay event contains
+  the real corpus id, the visibility execution count, the complete `SmbInput`,
+  and its labels; the per-testcase file shown to the model contains that input
+  plus its observations. The redundant request-level joined log was removed;
+  each observation retains its existing mechanical `log_line`.
+- M9's local-only 1,000-execution preflight used seed `0x5eed_d900`, attached 12
+  neutral fixture labels at execution 500, grew the corpus to 61, reached scroll
+  bucket 20, and reproduced the complete report under recorded-label replay.
+  Evidence is in the ignored directory
+  `target/model-campaigns/m9-neutral-preflight-compact-20260810`; compact label
+  events keep the live report to 68 KiB while the full model-facing observations
+  remain in per-testcase files.
+- After explicit standing authorization for Luna evidence (but never ROM bytes),
+  M9's live smoke ran the same seed and budget. All 12/12 calls succeeded with no
+  fallback; their labels became visible exactly at execution 500 and comprised
+  one Boost plus eleven Neutral decisions. The run retained 60 testcases and
+  reached bucket 14, below the neutral preflight's bucket 20. This is the valid
+  negative A/B allowed by the plan, not a reason to add a hand-authored progress
+  term. Recorded-label replay reproduced the complete 70 KiB report exactly.
+  Evidence is in the ignored directory
+  `target/model-campaigns/m9-luna-20260810`.
 - All time-to-target comparisons use deterministic target-execution counts, not
   wall-clock time. Wall-clock measurements would violate the replay contract and
   make the tests host-dependent.

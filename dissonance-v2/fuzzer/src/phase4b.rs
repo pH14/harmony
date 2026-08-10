@@ -13,8 +13,8 @@ use std::{
 };
 
 use libafl::{
-    Error as LibAflError, HasMetadata, StdFuzzer,
-    corpus::{Corpus, CorpusId, InMemoryCorpus},
+    Error as LibAflError, HasMetadata, HasScheduler, StdFuzzer,
+    corpus::{Corpus, CorpusId, InMemoryCorpus, Testcase},
     events::NopEventManager,
     executors::{Executor, ExitKind, HasObservers},
     feedbacks::{ConstFeedback, EagerOrFeedback, MaxMapFeedback},
@@ -22,7 +22,7 @@ use libafl::{
     inputs::Input,
     mutators::{MutationResult, Mutator, SingleChoiceScheduledMutator},
     observers::StdMapObserver,
-    schedulers::{QueueScheduler, WeightedScheduler},
+    schedulers::{QueueScheduler, RemovableScheduler, TestcaseScore, WeightedScheduler},
     stages::StdMutationalStage,
     state::{HasCorpus, HasExecutions, HasRand, StdState},
 };
@@ -39,7 +39,7 @@ use tetanes_core::{
 };
 
 use crate::{
-    phase2::{TriageLabels, TriageScore},
+    phase2::TriageLabels,
     phase4a::{MutatorStats, ProducerMetadata},
     target::Target,
 };
@@ -50,6 +50,10 @@ pub const WRAM_SIZE: usize = 2 * 1024;
 pub const MAX_HOLD_FRAMES: u8 = 120;
 /// Longest action list retained by the SMB mutator stack.
 pub const MAX_SMB_ACTIONS: usize = 96;
+/// Fixed execution interval between synchronous SMB label refreshes.
+pub const SMB_TRIAGE_BATCH_EXECUTIONS: u64 = 500;
+/// Maximum live SMB labels accepted during one campaign.
+pub const SMB_MAX_TRIAGE_CALLS: usize = 200;
 
 const SMB_MAP_SIZE: usize = 4096;
 const PREFIX_CACHE_CAPACITY: usize = 512;
@@ -529,10 +533,12 @@ pub struct SmbObservations {
 pub struct SmbTriageRequest {
     /// Monotonic corpus index assigned by the host view.
     pub testcase_id: u64,
+    /// Deterministic target-execution count at which these labels become visible.
+    pub execution_count: u64,
+    /// Complete retained input supplied to the scheduler triager.
+    pub input: SmbInput,
     /// Complete mechanical RAM evidence at action boundaries.
     pub observations: Vec<SmbObservations>,
-    /// Compact mechanical log with no decoded game fields.
-    pub log: String,
 }
 
 /// Complete in-memory state needed to resume an NES prefix exactly.
@@ -864,6 +870,22 @@ pub struct SmbConfiguredReport {
     pub macro_name: String,
     /// Generated-macro offspring and retirement counters.
     pub macro_stats: MutatorStats,
+    /// Synchronous label writes, in visibility order, for no-model replay.
+    #[serde(default)]
+    pub label_events: Vec<SmbLabelEvent>,
+}
+
+/// One SMB scheduler label and the exact boundary where it became visible.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbLabelEvent {
+    /// Monotonic LibAFL corpus identifier.
+    pub testcase_id: u64,
+    /// Deterministic target-execution count at which the labels became visible.
+    pub execution_count: u64,
+    /// Exact retained input used to detect replay divergence.
+    pub input: SmbInput,
+    /// Structured scheduler labels applied at that boundary.
+    pub labels: TriageLabels,
 }
 
 /// Host policy and provenance names for one configured M6 arm.
@@ -890,8 +912,30 @@ pub struct SmbLabeledCorpusEntry {
     pub labels: TriageLabels,
 }
 
+/// SMB-specific weighted-scheduler score with a bounded Boost multiplier.
+#[derive(Clone, Copy, Debug)]
+pub struct SmbTriageScore;
+
+impl<I, S> TestcaseScore<I, S> for SmbTriageScore {
+    fn compute(_state: &S, entry: &mut Testcase<I>) -> Result<f64, LibAflError> {
+        let Some(labels) = entry.metadata_map().get::<TriageLabels>() else {
+            return Ok(1.0);
+        };
+        if labels.duplicate_of.is_some() {
+            return Ok(0.01);
+        }
+        Ok(match labels.interest {
+            crate::phase2::Interest::Boost => 4.0,
+            crate::phase2::Interest::Neutral => 1.0,
+            crate::phase2::Interest::Suppress => 0.01,
+        })
+    }
+}
+
 type SmbObserver = StdMapObserver<'static, u8, false>;
 type SmbObservers = (SmbObserver, (SmbObserver, ()));
+type SmbCampaignState =
+    StdState<InMemoryCorpus<SmbInput>, SmbInput, StdRand, InMemoryCorpus<SmbInput>>;
 
 /// In-process TetaNES executor that writes the base map and one generated-detector map.
 #[derive(Debug)]
@@ -1312,6 +1356,7 @@ where
         detector: executor.detector_stats(),
         macro_name: artifacts.macro_name.to_owned(),
         macro_stats: macro_stats.borrow().clone(),
+        label_events: Vec::new(),
     })
 }
 
@@ -1329,8 +1374,128 @@ where
     D: SmbDetector,
     M: SmbMacro,
 {
+    let mut unused_triage = |_request: &SmbTriageRequest| {
+        Err::<TriageLabels, Box<dyn Error>>("SMB triage is disabled".into())
+    };
+    run_smb_restart_configured_inner(
+        rom,
+        initial_corpus,
+        seed,
+        execution_budget,
+        detector,
+        macro_generator,
+        artifacts,
+        0,
+        SMB_TRIAGE_BATCH_EXECUTIONS,
+        &mut unused_triage,
+    )
+}
+
+/// Run an SMB restart with synchronous labels applied every fixed 500 executions.
+#[allow(clippy::too_many_arguments)] // existing configured runner plus the synchronous label callback
+pub fn run_smb_restart_configured_with_triage<D, M, F>(
+    rom: &[u8],
+    initial_corpus: &[SmbLabeledCorpusEntry],
+    seed: u64,
+    execution_budget: u64,
+    detector: D,
+    macro_generator: M,
+    artifacts: SmbArtifactConfig<'_>,
+    mut triage: F,
+) -> Result<SmbConfiguredReport, Box<dyn Error>>
+where
+    D: SmbDetector,
+    M: SmbMacro,
+    F: FnMut(&SmbTriageRequest) -> Result<TriageLabels, Box<dyn Error>>,
+{
+    run_smb_restart_configured_inner(
+        rom,
+        initial_corpus,
+        seed,
+        execution_budget,
+        detector,
+        macro_generator,
+        artifacts,
+        SMB_MAX_TRIAGE_CALLS,
+        SMB_TRIAGE_BATCH_EXECUTIONS,
+        &mut triage,
+    )
+}
+
+/// Replay synchronous SMB labels at their recorded testcase and execution counts.
+#[allow(clippy::too_many_arguments)] // mirrors the configured runner and adds recorded events
+pub fn replay_smb_restart_configured<D, M>(
+    rom: &[u8],
+    initial_corpus: &[SmbLabeledCorpusEntry],
+    seed: u64,
+    execution_budget: u64,
+    detector: D,
+    macro_generator: M,
+    artifacts: SmbArtifactConfig<'_>,
+    events: &[SmbLabelEvent],
+) -> Result<SmbConfiguredReport, Box<dyn Error>>
+where
+    D: SmbDetector,
+    M: SmbMacro,
+{
+    if events.len() > SMB_MAX_TRIAGE_CALLS {
+        return Err("recorded SMB labels exceed the 200-call budget".into());
+    }
+    let mut next_event = 0_usize;
+    let mut replay = |request: &SmbTriageRequest| {
+        let event = events
+            .get(next_event)
+            .ok_or("replay requested an unrecorded SMB label")?;
+        if event.testcase_id != request.testcase_id
+            || event.execution_count != request.execution_count
+            || event.input != request.input
+        {
+            return Err("recorded SMB label request became visible at a different boundary".into());
+        }
+        next_event = next_event.saturating_add(1);
+        Ok(event.labels.clone())
+    };
+    let report = run_smb_restart_configured_inner(
+        rom,
+        initial_corpus,
+        seed,
+        execution_budget,
+        detector,
+        macro_generator,
+        artifacts,
+        events.len(),
+        SMB_TRIAGE_BATCH_EXECUTIONS,
+        &mut replay,
+    )?;
+    if next_event != events.len() {
+        return Err("replay did not consume every recorded SMB label".into());
+    }
+    Ok(report)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_smb_restart_configured_inner<D, M, F>(
+    rom: &[u8],
+    initial_corpus: &[SmbLabeledCorpusEntry],
+    seed: u64,
+    execution_budget: u64,
+    detector: D,
+    macro_generator: M,
+    artifacts: SmbArtifactConfig<'_>,
+    max_triage_calls: usize,
+    triage_batch_executions: u64,
+    triage: &mut F,
+) -> Result<SmbConfiguredReport, Box<dyn Error>>
+where
+    D: SmbDetector,
+    M: SmbMacro,
+    F: FnMut(&SmbTriageRequest) -> Result<TriageLabels, Box<dyn Error>>,
+{
     if initial_corpus.is_empty() {
         return Err("M6 restart requires a nonempty M5 corpus".into());
+    }
+    if triage_batch_executions == 0 {
+        return Err("SMB triage batch size must be positive".into());
     }
     let base_observer = StdMapObserver::owned("smb_base_position", vec![0_u8; SMB_MAP_SIZE]);
     let detector_observer =
@@ -1348,7 +1513,7 @@ where
         &mut objective,
     )?;
     let scheduler =
-        WeightedScheduler::<_, TriageScore, SmbObserver>::new(&mut state, &base_observer);
+        WeightedScheduler::<_, SmbTriageScore, SmbObserver>::new(&mut state, &base_observer);
     let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
     let mut manager = NopEventManager::new();
     let mut executor = SmbExecutor::new(
@@ -1362,13 +1527,15 @@ where
     let mut milestones = SmbMilestones::default();
     let mut first_reached = SmbMilestoneTimes::default();
     let mut first_inputs = SmbMilestoneInputs::default();
+    let mut labeled_ids = BTreeMap::new();
     for entry in initial_corpus {
         let id = fuzzer.add_input(&mut state, &mut executor, &mut manager, entry.input.clone())?;
-        state
-            .corpus()
-            .get(id)?
-            .borrow_mut()
-            .add_metadata(entry.labels.clone());
+        let mut updated = state.corpus().get(id)?.borrow().clone();
+        updated.add_metadata(entry.labels.clone());
+        let previous = state.corpus_mut().replace(id, updated)?;
+        <_ as HasScheduler<SmbInput, SmbCampaignState>>::scheduler_mut(&mut fuzzer)
+            .on_replace(&mut state, id, &previous)?;
+        labeled_ids.insert(id, ());
         update_campaign_milestones(
             &mut milestones,
             &mut first_reached,
@@ -1393,16 +1560,56 @@ where
         mutator,
         NonZeroUsize::MIN,
     ));
+    let mut label_events = Vec::new();
     while *state.executions() < execution_budget {
-        fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut manager)?;
-        update_campaign_milestones(
-            &mut milestones,
-            &mut first_reached,
-            &mut first_inputs,
-            executor.last_milestones(),
-            *state.executions(),
-            executor.last_input(),
-        );
+        let batch_end = state
+            .executions()
+            .saturating_add(triage_batch_executions)
+            .min(execution_budget);
+        while *state.executions() < batch_end {
+            fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut manager)?;
+            update_campaign_milestones(
+                &mut milestones,
+                &mut first_reached,
+                &mut first_inputs,
+                executor.last_milestones(),
+                *state.executions(),
+                executor.last_input(),
+            );
+        }
+        if *state.executions() == execution_budget || label_events.len() >= max_triage_calls {
+            continue;
+        }
+        let new_ids = state
+            .corpus()
+            .ids()
+            .filter(|id| !labeled_ids.contains_key(id))
+            .collect::<Vec<_>>();
+        for id in new_ids {
+            if label_events.len() >= max_triage_calls {
+                break;
+            }
+            let input = state.corpus().cloned_input_for_id(id)?;
+            let request = SmbTriageRequest {
+                testcase_id: u64::try_from(usize::from(id))?,
+                execution_count: *state.executions(),
+                observations: observe_smb_input(rom, &input)?,
+                input,
+            };
+            let labels = triage(&request)?;
+            let mut updated = state.corpus().get(id)?.borrow().clone();
+            updated.add_metadata(labels.clone());
+            let previous = state.corpus_mut().replace(id, updated)?;
+            <_ as HasScheduler<SmbInput, SmbCampaignState>>::scheduler_mut(&mut fuzzer)
+                .on_replace(&mut state, id, &previous)?;
+            labeled_ids.insert(id, ());
+            label_events.push(SmbLabelEvent {
+                testcase_id: request.testcase_id,
+                execution_count: request.execution_count,
+                input: request.input,
+                labels,
+            });
+        }
     }
 
     let mut corpus = Vec::with_capacity(state.corpus().count());
@@ -1423,6 +1630,7 @@ where
         detector: executor.detector_stats(),
         macro_name: artifacts.macro_name.to_owned(),
         macro_stats: macro_stats.borrow().clone(),
+        label_events,
     })
 }
 
@@ -1486,14 +1694,19 @@ pub fn run_smb_random_mash(
 #[cfg(test)]
 mod tests {
     use super::{
-        AppendButtonChordMutator, ButtonChord, MAX_SMB_ACTIONS, NullSmbDetector, SmbArtifactConfig,
-        SmbInput, SmbMacro, SmbTarget, run_smb_configured,
+        AppendButtonChordMutator, ButtonChord, MAX_SMB_ACTIONS, NullSmbDetector, NullSmbMacro,
+        SMB_TRIAGE_BATCH_EXECUTIONS, SmbArtifactConfig, SmbDetector, SmbInput,
+        SmbLabeledCorpusEntry, SmbMacro, SmbObservations, SmbTarget, SmbTriageScore,
+        run_smb_configured, run_smb_restart_configured_inner,
     };
+    use crate::phase2::{Interest, TriageLabels};
     use crate::target::{Target, execute_actions};
     use libafl::{
+        HasMetadata,
         corpus::{Corpus, InMemoryCorpus, Testcase},
         feedbacks::ConstFeedback,
         mutators::{MutationResult, Mutator},
+        schedulers::TestcaseScore,
         state::StdState,
     };
     use libafl_bolts::rands::StdRand;
@@ -1520,6 +1733,26 @@ mod tests {
                 candidate.actions.push(ButtonChord::new(0x81, 2));
             }
             candidate
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct ObservationCountDetector;
+
+    impl SmbDetector for ObservationCountDetector {
+        fn features(&self, observations: &[SmbObservations]) -> Vec<u64> {
+            vec![u64::try_from(observations.len()).unwrap_or(u64::MAX)]
+        }
+    }
+
+    fn labels(interest: Interest) -> TriageLabels {
+        TriageLabels {
+            interest,
+            duplicate_of: None,
+            flags: Vec::new(),
+            tags: Vec::new(),
+            summary: "deterministic M9 fixture".to_owned(),
+            hypotheses: Vec::new(),
         }
     }
 
@@ -1651,5 +1884,99 @@ mod tests {
         assert_eq!(report.macro_stats.novel_offspring, 0);
         assert_eq!(report.macro_stats.executions_without_novelty, 1);
         assert!(!report.macro_stats.active);
+    }
+
+    #[test]
+    fn smb_boost_score_is_capped_at_four() {
+        assert_eq!(SMB_TRIAGE_BATCH_EXECUTIONS, 500);
+        let mut testcase = Testcase::new(SmbInput::default());
+        testcase.add_metadata(labels(Interest::Boost));
+        assert_eq!(
+            <SmbTriageScore as TestcaseScore<SmbInput, ()>>::compute(&(), &mut testcase)
+                .expect("compute SMB score"),
+            4.0
+        );
+    }
+
+    #[test]
+    fn batched_labels_are_visible_at_the_recorded_count_and_replay() {
+        let rom = synthetic_nrom();
+        let initial_corpus = vec![SmbLabeledCorpusEntry {
+            input: SmbInput::default(),
+            labels: labels(Interest::Neutral),
+        }];
+        let artifacts = SmbArtifactConfig {
+            detector_name: "observation_count",
+            detector_retire_after: u64::MAX,
+            macro_name: "none",
+            macro_retire_after: u64::MAX,
+            enable_macro: false,
+        };
+        let mut live_triage = |request: &super::SmbTriageRequest| {
+            let encoded = serde_json::to_value(request).expect("serialize SMB triage request");
+            assert!(encoded.get("input").is_some());
+            assert!(encoded.get("observations").is_some());
+            assert!(encoded.get("log").is_none());
+            Ok(labels(Interest::Boost))
+        };
+        let live = run_smb_restart_configured_inner(
+            &rom,
+            &initial_corpus,
+            9,
+            24,
+            ObservationCountDetector,
+            NullSmbMacro,
+            artifacts,
+            200,
+            8,
+            &mut live_triage,
+        )
+        .expect("run batched labels");
+        assert!(!live.label_events.is_empty());
+        assert!(
+            live.label_events
+                .iter()
+                .all(|event| matches!(event.execution_count, 8 | 16))
+        );
+        assert!(live.label_events.iter().all(|event| {
+            usize::try_from(event.testcase_id)
+                .ok()
+                .and_then(|id| live.campaign.corpus.get(id))
+                == Some(&event.input)
+        }));
+        let encoded = serde_json::to_value(&live.label_events[0]).expect("serialize label event");
+        assert!(encoded.get("input").is_some());
+        assert!(encoded.get("observations").is_none());
+
+        let events = live.label_events.clone();
+        let mut next_event = 0_usize;
+        let mut replay_triage = |request: &super::SmbTriageRequest| {
+            let event = events.get(next_event).ok_or_else(|| {
+                Box::<dyn std::error::Error>::from("missing recorded fixture label")
+            })?;
+            if event.testcase_id != request.testcase_id
+                || event.execution_count != request.execution_count
+                || event.input != request.input
+            {
+                return Err("fixture label became visible at a different boundary".into());
+            }
+            next_event = next_event.saturating_add(1);
+            Ok(event.labels.clone())
+        };
+        let replay = run_smb_restart_configured_inner(
+            &rom,
+            &initial_corpus,
+            9,
+            24,
+            ObservationCountDetector,
+            NullSmbMacro,
+            artifacts,
+            events.len(),
+            8,
+            &mut replay_triage,
+        )
+        .expect("replay batched labels");
+        assert_eq!(next_event, events.len());
+        assert_eq!(replay, live);
     }
 }

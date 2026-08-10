@@ -329,15 +329,11 @@ fn label_corpus(
     let mut failures = 0_u64;
     for (index, input) in source.corpus.iter().enumerate() {
         let observations = observe_smb_input(rom, input)?;
-        let log = observations
-            .iter()
-            .map(|observation| observation.log_line.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
         let request = SmbTriageRequest {
             testcase_id: index as u64,
+            execution_count: 0,
+            input: input.clone(),
             observations,
-            log,
         };
         let stem = format!("testcase-{index:020}");
         write_json(
