@@ -30,7 +30,7 @@ pub trait Target {
     fn exit_kind(&self) -> ExitKind;
 
     /// Optionally snapshot the target. `None` means replay from genesis.
-    fn snapshot(&self) -> Option<Self::Snapshot> {
+    fn snapshot(&mut self) -> Option<Self::Snapshot> {
         None
     }
 
@@ -114,7 +114,7 @@ impl Target for MazeTarget {
         ExitKind::Ok
     }
 
-    fn snapshot(&self) -> Option<Self::Snapshot> {
+    fn snapshot(&mut self) -> Option<Self::Snapshot> {
         Some(self.observe())
     }
 
@@ -265,7 +265,7 @@ impl Target for AdventureToy {
         }
     }
 
-    fn snapshot(&self) -> Option<Self::Snapshot> {
+    fn snapshot(&mut self) -> Option<Self::Snapshot> {
         Some(AdventureSnapshot(self.observe()))
     }
 

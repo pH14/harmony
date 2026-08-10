@@ -283,7 +283,8 @@ where
         ))
     }
 
-    fn retire(&mut self) {
+    /// Disable this generated feedback while leaving the base feedback intact.
+    pub fn retire(&mut self) {
         self.roots.clear();
     }
 }

@@ -85,6 +85,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let triage = match cell.triage {
             TriageArm::Null => "null",
             TriageArm::Scripted => "scripted",
+            TriageArm::Luna => "luna",
         };
         let search = match cell.search {
             SearchArm::Base => "base",

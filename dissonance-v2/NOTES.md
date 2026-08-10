@@ -46,6 +46,128 @@ durations.
 
 ## Decisions
 
+- M0 verified the live model invocation on 2026-08-10 with
+  `codex-cli 0.147.0-alpha.6.5`: `gtimeout 120 codex exec
+  --ignore-user-config --ephemeral --skip-git-repo-check -s read-only -C
+  <operator-view> -m gpt-5.6-luna -c model_reasoning_effort="low" -c
+  service_tier="fast" --output-schema <schema> -o <last-message> - <prompt>`.
+  The CLI banner confirmed Luna, read-only, and low effort; `service_tier="fast"`
+  was accepted by the service. The final file was
+  `{"status":"ok","answer":4}` and passed the toy-schema check. OpenAI's
+  structured-output validator requires every property using `enum`/`const` to
+  carry an explicit `type`; the initial type-less toy property was rejected with
+  `invalid_json_schema`, then corrected and rerun successfully. Campaign schemas
+  follow that stricter form.
+- M1 follows the 2026-08-10 option-1 ruling recorded in
+  `MODEL-IN-THE-LOOP-PLAN.md`: the triage timing A/B runs on the hand-written
+  detector arm, while a separate Luna-labeled base plateau supplies M2. Across
+  seeds `0x5eed_d400..=0x5eed_d405` at 10,000 executions, null counts were
+  `[275, 290, 345, 352, 265, 345]` (upper median 345), scripted counts were
+  `[172, 48, 110, 199, 65, 60]` (median 110), and calibrated Luna counts were
+  `[165, 48, 110, 199, 65, 60]` (median 110). Luna reached on 6/6 seeds, used 56
+  successful calls with no fallbacks, met the predeclared `median <= 80% of
+  null` threshold, and every seed reproduced execution count and corpus under
+  recorded-label replay. The separate 10,000-execution base run retained four
+  Luna-labeled testcases, remained closed at semantic progress 1 with no target,
+  and replayed exactly.
+- M1 preserved one failed prompt-calibration run before the passing matrix. The
+  initial general prompt let Luna Boost terminal crash novelty in four seeds;
+  with the scheduler's 256x Boost multiplier, Luna's median was 3,478 versus
+  null's 345. The corrected general policy makes Boost scarce, requires
+  `Suppress` + `DeadEnd` for `crashed=true`, and asks the triager to compare a
+  candidate with the visible retained corpus. It still never names keys, doors,
+  or the meaning of mechanical progress. The failed and passing transcripts live
+  in ignored campaign output for audit.
+- M1's production wrapper is the `triage-agent` workspace binary and
+  `triage-agent/schemas/triage-labels.schema.json`. It fixes Luna, low effort,
+  fast service, a 120-second timeout, and a 200-call campaign cap. Each call gets
+  a symlink-free copy of the operator view and records request, prompt, raw final,
+  parsed labels, stdout/stderr, and metadata. Wrapper failures become recorded
+  neutral labels so the fast loop continues; no unit test invokes a model.
+- M2's production wrapper is `instrumentor-agent` with
+  `instrumentor-agent/schemas/instrumentor-decision.schema.json`. It fixes Luna,
+  xhigh effort, fast service, and a 1,200-second timeout. The host accepts only a
+  pure `AdventureDetector`, rejects generated source with unsafe, process, file,
+  network, environment, time/random/thread, panic, include, or unbounded-loop
+  surfaces, compiles an ignored standalone crate offline, runs each detector
+  twice on every recorded plateau testcase, and then restarts the persisted
+  labeled corpus. Generated keys are global coverage bits reduced modulo 64;
+  this mapping is part of the public detector interface because low-bit
+  collisions otherwise make a semantically distinct detector vacuous.
+- M2 used the maximum five instrumentor calls. The first two were preserved
+  harness-calibration calls: one detector's high tags collided modulo 64, and one
+  emitted only standalone boolean milestones that were already globally seen.
+  After freezing the complete generic feature-map contract, calls 3–5 were the
+  three independent trials. All 3/3 emitted different bounded implementations of
+  room/visible-state conjunctions, compiled on attempt one, passed deterministic
+  fixtures, retained five detector-attributed novelties, and reached the target
+  at post-restart execution 10,285 under the same seed `0x5eed_d500` and 20,000
+  execution allowance. All three remained active with 648 executions since last
+  novelty and all three complete no-model reruns reproduced their ten-entry
+  corpora and reports exactly. Detector retirement uses the existing phase-3
+  threshold of 10,000 executions without novelty; a deterministic unit regression
+  covers novelty reset and mechanical retirement.
+- M4 pins `tetanes-core` 0.15.0 (MIT OR Apache-2.0) and keeps the commercial
+  ROM external through `HARMONY_SMB_ROM`. The recorded ROM SHA-256 is
+  `0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea`;
+  neither ROM bytes nor a ROM copy enter the worktree. TetaNES is configured
+  with all-zero startup RAM, no persistent SRAM directory, no run-ahead, and
+  no audio. Campaigns also disable video after proving that video-enabled and
+  headless execution yield identical complete RAM traces. A fixed title-screen
+  bootstrap is snapshotted as gameplay genesis. The M4 real-ROM smoke proves
+  same input → identical RAM trace, prefix snapshot restore equivalence,
+  video/headless RAM equivalence, and same-seed miniature-corpus reproduction.
+  Unit tests instantiate the same properties with a synthetic in-memory NROM;
+  no test reads the SMB ROM.
+- M4's base fingerprint remains position-only: screen page, a 64-pixel scroll
+  bucket, and a coarse player-y bucket. Operator logs expose only frame count
+  and changed WRAM indices; the full 2 KiB WRAM is raw evidence. Controller
+  holds are total and clamped to `1..=120`. The initial 60-frame calibration
+  could not cross the first scroll-retention boundary in one action, while two
+  60-frame run-jumps reached bucket 2. The plan names 60 only as an example of
+  a bounded hold, so widening the bound to 120 preserved the frozen map and
+  allowed a generic single action to enter the ratchet.
+- M5 froze its ladder before search: maximum 1-1 scroll bucket, 1-1 flag,
+  reach 1-2, then onward. The no-ratchet control is a seeded no-feedback random
+  walk over the same append/perturb/truncate mechanics: it retains one current
+  input regardless of novelty and has no corpus. Fixed multi-chord samples were
+  rejected as a calibration artifact because they granted several fresh
+  extension opportunities per target execution. Across seeds
+  `0x5eed_d700..=0x5eed_d705` at 500 executions, ratchet maximum buckets were
+  `[3, 9, 7, 5, 7, 5]` (upper median 7) versus random-walk
+  `[3, 7, 5, 4, 5, 6]` (upper median 5). The ratchet therefore beats the
+  no-feedback control and makes real progress, but both plateau before the 1-1
+  flag. A deterministic 512-entry save-state prefix cache restores the longest
+  known prefix together with its exact base features and observation trace;
+  the cached run reproduced the pre-cache corpus and milestone result exactly.
+- M6 ran only after the user explicitly authorized sending per-action 2 KiB
+  ROM-derived WRAM snapshots, changed indices, controller inputs, labels, and
+  campaign statistics to GPT-5.6 Luna; the ROM itself remained local. Two
+  preflight launches failed locally before any model call because the release
+  helper binaries had not been built. Their fallback records are preserved in
+  separate ignored directories; the clean campaign is
+  `target/model-campaigns/m6-authorized-final-20260810`.
+- The clean M6 run made 39/39 successful low-effort triage calls with no
+  fallback. One xhigh detector call generated a bounded whole-WRAM/change-shape
+  fingerprint and passed its deterministic fixture. The first xhigh macro
+  candidate was mechanically rejected for the forbidden unbounded-loop token
+  `while `; the recorded corrective call generated a bounded parameterized
+  five-chord jump arc, compiled offline, and passed the final fixture. This used
+  three instrumentor invocations, below the five-call campaign cap.
+- At 500 executions for seeds `0x5eed_d800..=0x5eed_d805`, frozen M5 had never
+  exceeded scroll bucket 9. M6 maxima were base restart
+  `[9, 12, 9, 9, 11, 9]`, Luna triage `[11, 9, 11, 9, 9, 14]`, Luna detector
+  `[12, 12, 9, 15, 12, 9]`, and full stack `[11, 11, 11, 9, 11, 11]`.
+  Therefore five of six full-stack seeds reached the previously unseen bucket
+  10-or-beyond within 500 executions, while the frozen baseline's time is
+  right-censored beyond 500. Detector and full-stack seed-0 no-model reruns
+  reproduced their complete reports exactly.
+- M7 deterministically scans the recorded corpus in order for the first retained
+  input that reaches a run's maximum scroll bucket, rejects malformed WRAM
+  lengths, and writes an action-boundary PNG strip plus a SHA-pinned manifest.
+  The headline full-stack seed-0 film contains 16 frames and visibly reaches
+  bucket 11. The renderer also retains modes for the first generic progress,
+  1-1 flag, 1-2, and onward inputs when those milestones exist.
 - All time-to-target comparisons use deterministic target-execution counts, not
   wall-clock time. Wall-clock measurements would violate the replay contract and
   make the tests host-dependent.

@@ -4,10 +4,12 @@ A from-scratch rebuild of the dissonance search loop on LibAFL. This
 directory is its own Cargo workspace, deliberately outside the harmony root
 workspace.
 
-## The only two design docs that apply here
+## The only three design docs that apply here
 
 - `docs/DISSONANCE-FROM-SCRATCH.md` — the design
 - `docs/LIBAFL-PLAN.md` — the verified LibAFL surface and the phased plan
+- `docs/MODEL-IN-THE-LOOP-PLAN.md` — the current SMB Step 3 execution plan;
+  completed M0–M7 evidence is in `NOTES.md`
 
 ## Do not read the old stack
 
@@ -19,7 +21,8 @@ or patterns from:
   `docs/DISSONANCE-STRATEGY.md`, or other legacy design docs
 
 They describe a different decomposition with different names. Reusable ideas
-were already carried over into the two docs above; anything not there is out.
+were already carried over into the three docs above; anything not there is
+out.
 
 ## Rules
 
