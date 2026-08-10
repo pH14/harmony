@@ -1,0 +1,6 @@
+{
+  "schema": "amd-epyc-ae6-nested-readiness-v1",
+  "kvm_amd_nested": "1",
+  "svm_nrip_save": true,
+  "note": "nested SVM enabled in-module; full AE-6 (consonance stack as L1) gated on AE-5 GO + appliance + AE-3 patched kernel"
+}

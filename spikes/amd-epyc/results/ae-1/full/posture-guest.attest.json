@@ -1,0 +1,1 @@
+{"core": 2, "governor_prev": "schedutil", "ls_cfg_after": "0x0046404000000000", "ls_cfg_before": "0x0006404000000000", "ls_cfg_bit54": 1, "ls_cfg_msr": "0xC0011020", "schema": "amd-epyc-posture-v1", "sibling": "8", "sibling_state": "offlined", "speclockmap_workaround_requested": "on"}

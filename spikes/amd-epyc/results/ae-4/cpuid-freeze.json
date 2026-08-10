@@ -1,0 +1,1 @@
+{"schema":"amd-epyc-ae4-freeze-v1","hlt_ok":1,"guest_vendor":"AuthenticAMD","vendor_frozen":1,"cleared_edx_bit":4,"host_has_bit":1,"guest_sees_bit":0,"below_host_freeze_demonstrated":1,"host_leaf1_edx":"0x078bfbff","guest_leaf1_edx":"0x078bfbef"}

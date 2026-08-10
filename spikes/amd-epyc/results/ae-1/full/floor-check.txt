@@ -1,0 +1,14 @@
+# AE-1(a) exactness
+PASS exactness[branch_dense]: reps=3000 clean=876 contaminated=2124 clean_mismatches=0 multiplexed=0 offset_stable=True missing_reps=False
+PASS exactness[call_ret]: reps=3000 clean=1057 contaminated=1943 clean_mismatches=0 multiplexed=0 offset_stable=True missing_reps=False
+PASS exactness[locked]: reps=3000 clean=1056 contaminated=1944 clean_mismatches=0 multiplexed=0 offset_stable=True missing_reps=False
+PASS exactness[loop_backedge]: reps=3000 clean=1044 contaminated=1956 clean_mismatches=0 multiplexed=0 offset_stable=True missing_reps=False
+PASS exactness[straight_line]: reps=3000 clean=1053 contaminated=1947 clean_mismatches=0 multiplexed=0 offset_stable=True missing_reps=False
+FLOOR_CHECK: PASS
+# AE-1(d) overflow+skid
+PASS overflow: arms=1000000 delivered_ok=1000000 lost=0 duplicate=0 min_required=1000000 accounted=True anomaly_records=0/0 skid_max=5043 clean_skid_max=5043
+  [loop_backedge] period=10000 skid_hist(0|1-9|10-99|100-999|1e3-9999|>=1e4)=[1, 9, 53, 455, 999482, 0] clean_arms=1000000 clean_skid_max=5043
+FLOOR_CHECK: PASS
+# AE-1(c) SpecLockMap off-vs-on
+speclockmap[NULL(no-overcount)] clean windows: off_clean=1049 off_deltas=[20000] on_clean=1044 on_deltas=[20000] oracle=20000
+FLOOR_CHECK: PASS

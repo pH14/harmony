@@ -1,0 +1,14 @@
+{
+  "blocker": "determinism plumbing (patches 0001/0002/0004) targets ~6.18; box runs stock 6.8; 6.8 lacks KVM_EXIT_PREEMPT and the deterministic_intercepts/preempt_armed fields the svm.c hunk compiles against",
+  "box_kernel": "6.8.0-88-generic",
+  "escalation": "needs a 6.18-class box kernel OR an official 6.8 backport of the determinism series \u2014 a decision above the spike (tasks/123 escalate-do-not-improvise)",
+  "has_deterministic_intercepts_field": false,
+  "has_preempt_armed_field": false,
+  "kernel_source_pkg": "linux-source-6.8.0",
+  "nmi_interception_target_matches": true,
+  "schema": "amd-epyc-ae3-buildenv-v1",
+  "shared_patches_apply_to_6_8": false,
+  "svm_c_hunk_applies_to_6_8": true,
+  "uapi_has_KVM_EXIT_PREEMPT": false,
+  "uapi_max_exit_reason": 39
+}
