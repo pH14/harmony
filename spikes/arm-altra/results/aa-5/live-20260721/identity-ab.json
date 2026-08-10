@@ -1,0 +1,83 @@
+{
+ "check": "aa5-same-seed-identity",
+ "expect_mismatch": false,
+ "fields": {
+  "clockevent_acks": {
+   "a": "1",
+   "b": "1",
+   "identical": true
+  },
+  "clockevent_assertions": {
+   "a": "1",
+   "b": "1",
+   "identical": true
+  },
+  "clockevent_max_lateness_ticks": {
+   "a": "0",
+   "b": "0",
+   "identical": true
+  },
+  "console_bytes": {
+   "a": "5339",
+   "b": "5339",
+   "identical": true
+  },
+  "console_bytes_bitwise": {
+   "a_sha256": "f2cbd019e5941acaa70aa442fe7fde9660771b549d1a80f9269db49ecd452494",
+   "b_sha256": "f2cbd019e5941acaa70aa442fe7fde9660771b549d1a80f9269db49ecd452494",
+   "identical": true
+  },
+  "console_sha256": {
+   "a": "f2cbd019e5941acaa70aa442fe7fde9660771b549d1a80f9269db49ecd452494",
+   "b": "f2cbd019e5941acaa70aa442fe7fde9660771b549d1a80f9269db49ecd452494",
+   "identical": true
+  },
+  "core_regs_digest": {
+   "a": "sha256:001969f720a1f6ea93095e660b716e129350e9a3867a8339e79eb37bb0394a98",
+   "b": "sha256:c9537ac1c8891174bfbcccb8c171307a4584d8a60386cce3ab4487dea5d6bf85",
+   "identical": false
+  },
+  "exits": {
+   "a": "21319",
+   "b": "21286",
+   "identical": false
+  },
+  "guest_clock_hz": {
+   "a": "25000000",
+   "b": "25000000",
+   "identical": true
+  },
+  "pvclock_gpa": {
+   "a": "0x40001000",
+   "b": "0x40001000",
+   "identical": true
+  },
+  "pvclock_last_work": {
+   "a": "30000000",
+   "b": "30000000",
+   "identical": true
+  },
+  "pvclock_max_gap_work": {
+   "a": "10000000",
+   "b": "10000000",
+   "identical": true
+  },
+  "pvclock_publications": {
+   "a": "3",
+   "b": "3",
+   "identical": true
+  },
+  "regs_digest": {
+   "a": "sha256:f6bf661359c1d2486ff9b758c3d514f6eea3d01edfe0c79a7a88e4d6436db1dd",
+   "b": "sha256:8c79be9265a1016a26cf21a7e97705e24580676bf98b39e88ba7d1681893c489",
+   "identical": false
+  },
+  "state_digest": {
+   "a": "sha256:4375e24ddee75b984287eea94e98e7d6afb19c6ff0936c7bbcc82b7c226b23eb",
+   "b": "sha256:07f5e5787d867ee1c2d9e748c496f4cc2e179cb01ff595e399cb981eb324ae8b",
+   "identical": false
+  }
+ },
+ "identical": false,
+ "result": "FAIL"
+}

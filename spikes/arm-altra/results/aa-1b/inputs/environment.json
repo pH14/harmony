@@ -1,0 +1,10 @@
+{
+  "firmware": {
+    "bios_release_date": "01/16/2025",
+    "bios_version": "1.74"
+  },
+  "host_kernel": "6.18.35",
+  "kvm_mode": "vhe",
+  "midr": 1094701249,
+  "soc": "Ampere(R) Altra(R) Processor (HPE ProLiant RL300 Gen11)"
+}

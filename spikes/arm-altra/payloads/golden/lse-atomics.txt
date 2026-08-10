@@ -1,0 +1,7 @@
+PAYLOAD lse-atomics START
+PARAMS mode=self-seeded scale=smoke seed=0x5eed5eed5eed5eed
+WINDOW trips=1000
+LSE last_read=999 final=1000
+OK counter-exact
+PAYLOAD lse-atomics PASS
+PAYLOAD EXIT 0

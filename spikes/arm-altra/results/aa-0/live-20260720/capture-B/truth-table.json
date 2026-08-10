@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "midr": 1094701249,
+    "implementer": 65,
+    "part_num": 3340,
+    "variant": 3,
+    "revision": 1,
+    "soc": "Ampere(R) Altra(R) Processor (HPE ProLiant RL300 Gen11)",
+    "core_count": 80,
+    "host_kernel": "6.8.0-134-generic",
+    "firmware": {
+      "bios_release_date": "05/23/2024",
+      "bios_version": "1.70"
+    }
+  },
+  "topology": {
+    "housekeeping_cores": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "measurement_cores": [
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69
+    ],
+    "guest_cores": [
+      70,
+      71,
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78,
+      79
+    ],
+    "governor": "performance"
+  },
+  "rows": [
+    {
+      "id": "dev-kvm",
+      "kind": "kvm",
+      "question": "/dev/kvm present and openable?",
+      "expected": "present",
+      "found": "present",
+      "raw": "dev-kvm: probe returned present",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "perf-raw-0x21-pinned",
+      "kind": "perf",
+      "question": "raw event 0x21 opens pinned + non-multiplexed and counts?",
+      "expected": "present",
+      "found": "present",
+      "raw": "perf-raw-0x21-pinned: probe returned present",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "kvm-cap-set-guest-debug",
+      "kind": "kvm",
+      "question": "KVM_CAP_SET_GUEST_DEBUG (single-step) advertised?",
+      "expected": "present",
+      "found": "present",
+      "raw": "kvm-cap-set-guest-debug: probe returned present",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "br-retired-pmceid1",
+      "kind": "perf",
+      "question": "BR_RETIRED (0x21) is PMCEID1-implemented (events/br_retired = event=0x21)?",
+      "expected": "present",
+      "found": "present",
+      "raw": "br-retired-pmceid1: probe returned present",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "host-overflow-delivers",
+      "kind": "perf",
+      "question": "a host BR_RETIRED overflow actually delivers a sample?",
+      "expected": "present",
+      "found": "present",
+      "raw": "host-overflow-delivers: probe returned present",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "vgicv3-creatable",
+      "kind": "kvm",
+      "question": "an in-kernel GICv3 is creatable?",
+      "expected": "present",
+      "found": "present",
+      "raw": "vgicv3-creatable: probe returned present",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "writable-id-registers",
+      "kind": "kvm",
+      "question": "a below-host ID-register feature installs and reads back?",
+      "expected": "present",
+      "found": "absent",
+      "raw": "writable-id-registers: probe returned absent",
+      "confirmed": false,
+      "disposition": "RULED 2026-07-17 (task 122 spike executor): genuinely absent on stock Ubuntu 6.8.0-134 — the per-register probe shows every enumerated ID_AA64* register writable (reduced write + read-back) or carrying no reducible field, EXCEPT ID_AA64PFR1_EL1, which is FROZEN (has reducible fields, accepts no changed write; its writable mask landed in later mainline than 6.8). Not an AA-0 stop condition (the stop is KVM/EL2, usable PMUv3, BR_RETIRED — all present). Consequence recorded: the AA-6(a) whole-surface synthetic ID-register freeze cannot fully install on THIS stock kernel. AA-6 runs on the AA-3 patched host kernel (linux-6.18.35); this row MUST be re-probed there and found present before AA-6(a) relies on it. If PFR1 is still frozen on the patched host, it becomes a named row in the AA-6 enforcement truth table (frozen-by-kernel, with HCR_EL2.TID3 trap-emulation evaluated as the enforcement level instead of a KVM-installed freeze)."
+    },
+    {
+      "id": "kvm-cap-arm-deterministic-intercepts",
+      "kind": "kvm",
+      "question": "the 0004-analogue determinism cap advertised? Expect absent on a stock kernel.",
+      "expected": "absent",
+      "found": "absent",
+      "raw": "kvm-cap-arm-deterministic-intercepts: probe returned absent",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "kvm-cap-arm-stage2-exec-guard",
+      "kind": "kvm",
+      "question": "the AA-4 per-GFN stage-2 execute guard advertised? Expect absent on stock KVM.",
+      "expected": "absent",
+      "found": "absent",
+      "raw": "kvm-cap-arm-stage2-exec-guard: probe returned absent",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "ecv",
+      "kind": "id-register",
+      "question": "ID_AA64MMFR0_EL1.ECV — FEAT_ECV present? Expect absent (the paravirt-clock premise).",
+      "expected": "absent",
+      "found": "absent",
+      "raw": "ID_AA64MMFR0_EL1.ECV = 0x0",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "lse",
+      "kind": "id-register",
+      "question": "ID_AA64ISAR0_EL1.Atomic — FEAT_LSE present? Expect present (AA-4's premise).",
+      "expected": "present",
+      "found": "present",
+      "raw": "ID_AA64ISAR0_EL1.Atomic = 0x2",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "sve",
+      "kind": "id-register",
+      "question": "ID_AA64PFR0_EL1.SVE — FEAT_SVE present? Expect absent on N1.",
+      "expected": "absent",
+      "found": "absent",
+      "raw": "ID_AA64PFR0_EL1.SVE = 0x0",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "nested-virt",
+      "kind": "id-register",
+      "question": "ID_AA64MMFR2_EL1.NV — FEAT_NV present? Expect absent.",
+      "expected": "absent",
+      "found": "absent",
+      "raw": "ID_AA64MMFR2_EL1.NV = 0x0",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "pmuver",
+      "kind": "pmu",
+      "question": "ID_AA64DFR0_EL1.PMUVer — the PMU version behind the BR_RETIRED work-clock bet.",
+      "expected": "0x4",
+      "found": "0x4",
+      "raw": "ID_AA64DFR0_EL1.PMUVer = 0x4 (read from a KVM_ARM_VCPU_PMU_V3-enabled vCPU)",
+      "confirmed": true,
+      "disposition": null
+    },
+    {
+      "id": "kvm-mode",
+      "kind": "kvm",
+      "question": "The EFFECTIVE KVM mode (kvm_arm.mode), not the architectural VHE bit.",
+      "expected": "vhe",
+      "found": "vhe",
+      "raw": "/sys/module/kvm_arm/parameters/mode = vhe (ID_AA64MMFR1_EL1.VH = 0x1)",
+      "confirmed": true,
+      "disposition": null
+    }
+  ]
+}

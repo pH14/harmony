@@ -1,0 +1,15 @@
+# The payloads always build for the freestanding aarch64 target. The linker
+# script is injected by the payload crate's build.rs (build scripts can resolve
+# the absolute path to linker.ld; rustflags here cannot).
+#
+# oracle-model's host-side tests override --target explicitly (it is the one
+# crate here that also builds for the host).
+[build]
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+rustflags = [
+    # The target defaults to a static PIE; we link at a fixed physical address
+    # (RAM base + 512 KiB on the QEMU `virt` map) with no relocation processing.
+    "-C", "relocation-model=static",
+]

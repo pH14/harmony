@@ -1,0 +1,8 @@
+PAYLOAD clock-page START
+PARAMS mode=self-seeded scale=smoke seed=0x5eed5eed5eed5eed
+CLOCKPAGE mode=self-seeded abi=1 flags=0x1
+WINDOW trips=1000
+CLOCKPAGE retries=0
+OK seqlock-quiescent
+PAYLOAD clock-page PASS
+PAYLOAD EXIT 0

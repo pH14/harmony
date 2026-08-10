@@ -1,0 +1,6 @@
+wfi-idle exact-landing-injection probe — N1 aa3preempt 2026-07-21 (justifies matrix exclusion)
+6 wfi-idle records under injection: deliveries = 0,0,0,1,1,0 (4/6 LOST the overflow — WFI stalls
+the BR_RETIRED work counter, the exact-landing single-step cannot progress through it), one
+payload_status=1 (self-check fail), same-seed digests diverge (2 of 3 groups). Same physics as
+AA-3 exclusion. wfi-idle removed from required_aa6_classes; its WFI-class determinism is AA-5s
+paravirt-clock domain, exercised by the LinuxGuest.

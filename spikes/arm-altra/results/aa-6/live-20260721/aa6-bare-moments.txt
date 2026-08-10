@@ -1,0 +1,5 @@
+AA-6 supplementary multi-Moment bare gate — N1 aa3preempt 2026-07-21
+7 bare payloads x 5 distinct seeded Moments x 1000 reps = 35000 records, 35 replay groups.
+floor-check --min-reps 1000: replay-identity PASS (35 groups bit-identical, each of 5 Moments/payload replays 1000x); count-exactness PASS (35000/35000); rep-floor PASS (35 inputs). Demonstrates the spec seeded-random MOMENTS (plural).
+aa6-matrix FAIL is EXPECTED: bare-only supplement (no LinuxGuest); the LinuxGuest is in the PRIMARY gate aa6-minigate (20/20 PASS at >=1000 reps).
+Raw 35000 records (~17MB) content-addressed on box by run-set.json records_sha256.

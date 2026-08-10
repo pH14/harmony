@@ -1,0 +1,2 @@
+AA4_GUARD_RACE image_sha256=bc7bdd99780c1e020c9307a4309ebbc2471094b87eaece4909544563d48dd2a8 target=0x40082000 writer=0x40083000 race=GuardBlocked { gpa: 1074274304, generation: 1 } control=GuardWrite { gpa: 1074274304, generation: 1 } blocked_when_frozen=true write_when_approved=true
+AA4_GUARD_RACE PASS: a writer vCPU's store to a page frozen for another vCPU's scan was BLOCKED; once that scan was approved the same store revoked execute (WRITE), not blocked

@@ -1,0 +1,6 @@
+PAYLOAD wfi-idle START
+PARAMS mode=self-seeded scale=smoke seed=0x5eed5eed5eed5eed
+WINDOW trips=200
+OK all-interrupts-taken
+PAYLOAD wfi-idle PASS
+PAYLOAD EXIT 0

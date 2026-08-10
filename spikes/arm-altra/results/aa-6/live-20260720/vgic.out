@@ -1,0 +1,1 @@
+VGIC_ROUNDTRIP injected_intid=20 negative_control_differs=true roundtrip_identical=true registers=15 out=/home/ubuntu/harmony/spikes/arm-altra/results/aa-6/live-20260720/vgic-roundtrip.json

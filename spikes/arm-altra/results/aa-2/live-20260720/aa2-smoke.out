@@ -1,0 +1,2 @@
+wrote 78529 of 78529 attempted records to /home/ubuntu/harmony/spikes/arm-altra/results/aa-2/live-20260720/aa2-smoke-001
+NOTE: this harness's verdict is not a disposition. Run `floor-check /home/ubuntu/harmony/spikes/arm-altra/results/aa-2/live-20260720/aa2-smoke-001` with the stage's floors; the checker's output is the evidence.

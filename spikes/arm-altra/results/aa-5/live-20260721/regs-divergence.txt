@@ -1,0 +1,8 @@
+AA-5(c) register-divergence attribution — 2026-07-21, pinned image d0161a7d, aa3preempt/N1
+4 of 260 registers differ same-seed:
+  x29 (FP) [kvm id ...10003a] and SP [...10003e]: a userspace stack pointer (0x0000ffff_f2..)
+    -> entropy-derived stack placement; IN the determinism digest (core_regs_digest diverges).
+  CNTPCT [...13df01] and TIMER_CNT [...13df1a]: generic-timer counters (host-time)
+    -> EXCLUDED from the digest by is_host_time_register; they move with wall-clock, not hashed.
+Console + clock + input-closure are deterministic; the register/RAM divergence is the disclosed
+kernel-CRNG/stack-placement residual (entropy-closure ruling), distinct from the work-clock.

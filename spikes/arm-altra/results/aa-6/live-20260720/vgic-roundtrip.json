@@ -1,0 +1,23 @@
+{
+  "check": "aa6-vgic-save-restore-roundtrip",
+  "injected_intid": 20,
+  "negative_control_differs": true,
+  "roundtrip_identical": true,
+  "registers": [
+    {"reg": "GICR_IGROUPR0", "saved": "0xffffffff", "fresh_before": "0xffffffff", "fresh_after": "0xffffffff"},
+    {"reg": "GICR_IGRPMODR0", "saved": "0x00000000", "fresh_before": "0x00000000", "fresh_after": "0x00000000"},
+    {"reg": "GICR_ISENABLER0", "saved": "0x0010ffff", "fresh_before": "0x0000ffff", "fresh_after": "0x0010ffff"},
+    {"reg": "GICR_ISPENDR0", "saved": "0x00100000", "fresh_before": "0x00000000", "fresh_after": "0x00100000"},
+    {"reg": "GICR_ISACTIVER0", "saved": "0x00000000", "fresh_before": "0x00000000", "fresh_after": "0x00000000"},
+    {"reg": "GICR_ICFGR0", "saved": "0xaaaaaaaa", "fresh_before": "0xaaaaaaaa", "fresh_after": "0xaaaaaaaa"},
+    {"reg": "GICR_ICFGR1", "saved": "0x00000000", "fresh_before": "0x00000000", "fresh_after": "0x00000000"},
+    {"reg": "GICR_IPRIORITYR0", "saved": "0x00000000", "fresh_before": "0x00000000", "fresh_after": "0x00000000"},
+    {"reg": "GICR_IPRIORITYR1", "saved": "0x00000000", "fresh_before": "0x00000000", "fresh_after": "0x00000000"},
+    {"reg": "GICR_IPRIORITYR2", "saved": "0x00000000", "fresh_before": "0x00000000", "fresh_after": "0x00000000"},
+    {"reg": "GICR_IPRIORITYR3", "saved": "0x00000000", "fresh_before": "0x00000000", "fresh_after": "0x00000000"},
+    {"reg": "GICR_IPRIORITYR4", "saved": "0x00000000", "fresh_before": "0x00000000", "fresh_after": "0x00000000"},
+    {"reg": "GICR_IPRIORITYR5", "saved": "0x00000000", "fresh_before": "0x00000000", "fresh_after": "0x00000000"},
+    {"reg": "GICR_IPRIORITYR6", "saved": "0x00000000", "fresh_before": "0x00000000", "fresh_after": "0x00000000"},
+    {"reg": "GICR_IPRIORITYR7", "saved": "0x00000000", "fresh_before": "0x00000000", "fresh_after": "0x00000000"}
+  ]
+}

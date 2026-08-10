@@ -1,0 +1,236 @@
+From 0d29800235f96b90f6f33f5ea0f7ea1b518a5777 Mon Sep 17 00:00:00 2001
+From: spike <s@s>
+Date: Mon, 13 Jul 2026 18:00:00 +0200
+Subject: [PATCH] KVM: arm64: add KVM_EXIT_PREEMPT in-kernel force-exit
+ preemption
+
+Add the arm64 analogue of the x86 deterministic in-kernel force-exit
+that hits the V-time work-counter deadline with a bounded skid
+(harmony task 109; arm64 mirror of x86 patch 0004,
+consonance/vmm-backend/kvm-patches/patches/0004-KVM-x86-add-KVM_EXIT_PREEMPT-in-kernel-force-exit-pr.patch).
+
+On x86 a retired-branch perf_event armed at deadline - SKID_MARGIN
+overflows and fires a host PMI delivered as an NMI; with
+PIN_BASED_NMI_EXITING the NMI VM-exits, and handle_exception_nmi()
+returns to userspace with KVM_EXIT_PREEMPT instead of re-entering when
+the one-shot arm is set. On arm64, V-time is driven by the same class
+of retired-branch overflow (BR_RETIRED, raw event 0x21 on Neoverse
+N1), but the PMU overflow interrupt is delivered as an ordinary
+*maskable* IRQ, not an NMI-equivalent exception -- arm64 KVM has no
+distinct PMI exit path. Every guest-mode host IRQ, PMU overflow or
+otherwise, is reported through the single ARM_EXCEPTION_IRQ case of
+handle_exit(). This patch hooks that case: when a VM has opted into
+KVM_CAP_ARM_DETERMINISTIC_INTERCEPTS and userspace has armed the
+one-shot KVM_ARM_PREEMPT_EXIT vcpu ioctl, the next ARM_EXCEPTION_IRQ
+exit clears the arm and returns to userspace with the new
+KVM_EXIT_PREEMPT (42) exit reason instead of re-entering the guest;
+otherwise the exit is handled as before (return 1, re-enter after the
+host IRQ is serviced by handle_exit_early()/the host IRQ handler).
+
+Load-bearing arch difference (do not lose this in review). Because the
+overflow rides the same IRQ path as every other host interrupt (timer
+tick included), an armed vCPU takes KVM_EXIT_PREEMPT on ANY host IRQ,
+not only on the work-counter overflow that was actually armed for.
+This is a named residual, not a defect: it only costs efficiency
+(extra userspace round-trips on unrelated host IRQs), never
+correctness, and is mitigated by core isolation/nohz_full on the
+pinned measurement core (docs/BOX-PINNING.md). Userspace must treat
+every KVM_EXIT_PREEMPT as advisory: re-read the work counter and, if
+the deadline was not reached, re-arm and re-enter -- exactly the
+handling the x86 backend already applies to stale KVM_EXIT_PREEMPT
+exits from 0004's disarm asymmetry (see decode_exit,
+consonance/vmm-backend/src/kvm.rs, and the 'Disarm asymmetry' note in
+consonance/vmm-backend/kvm-patches/patches/README.md). The bounded-
+skid claim is unaffected; only exit frequency is, and that is a stage
+AA-3 measurement question (docs/ARM-ALTRA.md Sec 3), not something
+this patch can resolve. A precise-exit alternative -- moving the work
+counter in-kernel via perf_event_create_kernel_counter() with an
+overflow handler that sets a preempt_pending flag directly, avoiding
+the IRQ-path ambiguity -- is the AA-3 design question this patch
+punts on; it would add new counter-configuration ioctls and is not
+implemented here.
+
+UAPI additions (arch-independent, include/uapi/linux/kvm.h): the exit
+reason KVM_EXIT_PREEMPT (42) and the vcpu ioctl KVM_ARM_PREEMPT_EXIT
+(_IO(KVMIO, 0xe4)) are byte-for-byte the same lines the x86 0004 patch
+adds -- applying both series to the same tree requires de-duplicating
+that shared hunk (see host/README.md's conflict warning in this
+spike). KVM_CAP_ARM_DETERMINISTIC_INTERCEPTS (245) is a new,
+arm64-only opt-in capability -- the next free KVM_CAP_* number in this
+tree (last existing: KVM_CAP_GUEST_MEMFD_FLAGS 244); default-off, so
+stock behavior is unchanged unless a VM opts in. The opt-in itself is
+a new bit in struct kvm_arch's existing flags bitmap,
+KVM_ARCH_FLAG_DETERMINISTIC_INTERCEPTS (11), following the idiom of
+KVM_ARCH_FLAG_RETURN_NISV_IO_ABORT_TO_USER (0) through
+KVM_ARCH_FLAG_WRITABLE_IMP_ID_REGS (10) rather than adding a bare bool
+to kvm_arch. kvm_vm_ioctl_enable_cap()'s new case mirrors the
+KVM_CAP_ARM_NISV_TO_USER case exactly; kvm_vm_ioctl_check_extension()
+advertises the cap; kvm_arch_vcpu_ioctl()'s new KVM_ARM_PREEMPT_EXIT
+case returns -EINVAL unless the VM opted in, else arms the per-vCPU
+one-shot vcpu->arch.preempt_armed (cleared only when it fires, mirrored
+from the x86 patch's own disarm asymmetry -- there is no disarm ioctl
+here either, so the same stale-exit handling applies).
+
+This is an untested-on-silicon draft (harmony ARM pre-build apparatus,
+docs/ARCH-BOUNDARY.md Sec Pre-build ruling): verified to git-am cleanly
+onto v6.18.35 and to build (arch/arm64/kvm/, and vmlinux where
+attempted) with no new warnings, on a native aarch64 build container.
+It has not run as a host kernel, has not booted a guest, and makes no
+claim about PMU overflow reliability, skid bound, or IRQ-delivery
+behavior on real hardware -- those are exactly stage AA-1's and AA-3's
+job on the Ampere Altra box per docs/ARM-ALTRA.md. Applies + compiles
+is the whole claim.
+
+Co-developed-for: harmony ARM pre-build apparatus (tasks/109)
+---
+ arch/arm64/include/asm/kvm_host.h | 14 ++++++++++++++
+ arch/arm64/kvm/arm.c              | 22 ++++++++++++++++++++++
+ arch/arm64/kvm/handle_exit.c      | 23 +++++++++++++++++++++++
+ include/uapi/linux/kvm.h          |  4 ++++
+ 4 files changed, 63 insertions(+)
+
+diff --git a/arch/arm64/include/asm/kvm_host.h b/arch/arm64/include/asm/kvm_host.h
+index 7bee8a357..fbf27d505 100644
+--- a/arch/arm64/include/asm/kvm_host.h
++++ b/arch/arm64/include/asm/kvm_host.h
+@@ -350,6 +350,12 @@ struct kvm_arch {
+ #define KVM_ARCH_FLAG_GUEST_HAS_SVE			9
+ 	/* MIDR_EL1, REVIDR_EL1, and AIDR_EL1 are writable from userspace */
+ #define KVM_ARCH_FLAG_WRITABLE_IMP_ID_REGS		10
++	/*
++	 * Deterministic in-kernel force-exit at PMU overflow opted in
++	 * (harmony task 109; arm64 mirror of the x86 KVM_EXIT_PREEMPT
++	 * determinism intercept).
++	 */
++#define KVM_ARCH_FLAG_DETERMINISTIC_INTERCEPTS		11
+ 	unsigned long flags;
+ 
+ 	/* VM-wide vCPU feature set */
+@@ -842,6 +848,14 @@ struct kvm_vcpu_arch {
+ 	 */
+ 	bool pause;
+ 
++	/*
++	 * Deterministic preemption (harmony task 109): one-shot arm for the
++	 * in-kernel force-exit on the next PMU-overflow IRQ VM-exit. Set by
++	 * the KVM_ARM_PREEMPT_EXIT vcpu ioctl, cleared by the kernel when it
++	 * fires (handle_exit()'s ARM_EXCEPTION_IRQ case).
++	 */
++	bool preempt_armed;
++
+ 	/*
+ 	 * We maintain more than a single set of debug registers to support
+ 	 * debugging the guest from the host and to maintain separate host and
+diff --git a/arch/arm64/kvm/arm.c b/arch/arm64/kvm/arm.c
+index e59cb36b5..e4795ea0c 100644
+--- a/arch/arm64/kvm/arm.c
++++ b/arch/arm64/kvm/arm.c
+@@ -96,6 +96,11 @@ int kvm_vm_ioctl_enable_cap(struct kvm *kvm,
+ 		set_bit(KVM_ARCH_FLAG_RETURN_NISV_IO_ABORT_TO_USER,
+ 			&kvm->arch.flags);
+ 		break;
++	case KVM_CAP_ARM_DETERMINISTIC_INTERCEPTS:
++		r = 0;
++		set_bit(KVM_ARCH_FLAG_DETERMINISTIC_INTERCEPTS,
++			&kvm->arch.flags);
++		break;
+ 	case KVM_CAP_ARM_MTE:
+ 		mutex_lock(&kvm->lock);
+ 		if (system_supports_mte() && !kvm->created_vcpus) {
+@@ -327,6 +332,7 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
+ 	case KVM_CAP_IRQFD_RESAMPLE:
+ 	case KVM_CAP_COUNTER_OFFSET:
+ 	case KVM_CAP_ARM_WRITABLE_IMP_ID_REGS:
++	case KVM_CAP_ARM_DETERMINISTIC_INTERCEPTS:
+ 		r = 1;
+ 		break;
+ 	case KVM_CAP_SET_GUEST_DEBUG2:
+@@ -1834,6 +1840,22 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
+ 
+ 		return kvm_arm_vcpu_finalize(vcpu, what);
+ 	}
++	case KVM_ARM_PREEMPT_EXIT:
++		/*
++		 * Deterministic preemption (harmony task 109): arm the one-shot
++		 * in-kernel force-exit on the next PMU-overflow IRQ VM-exit.
++		 * Gated on the determinism opt-in (default-off -> stock
++		 * behavior). See the arch-difference note in handle_exit.c:
++		 * on arm64 the PMU overflow is an ordinary maskable IRQ, so the
++		 * armed exit fires on ANY host IRQ, not only the overflow.
++		 */
++		r = -EINVAL;
++		if (test_bit(KVM_ARCH_FLAG_DETERMINISTIC_INTERCEPTS,
++			     &vcpu->kvm->arch.flags)) {
++			vcpu->arch.preempt_armed = true;
++			r = 0;
++		}
++		break;
+ 	default:
+ 		r = -EINVAL;
+ 	}
+diff --git a/arch/arm64/kvm/handle_exit.c b/arch/arm64/kvm/handle_exit.c
+index cc7d5d170..88cd85f75 100644
+--- a/arch/arm64/kvm/handle_exit.c
++++ b/arch/arm64/kvm/handle_exit.c
+@@ -459,6 +459,29 @@ int handle_exit(struct kvm_vcpu *vcpu, int exception_index)
+ 
+ 	switch (exception_index) {
+ 	case ARM_EXCEPTION_IRQ:
++		/*
++		 * Deterministic preemption (harmony task 109): the arm64 mirror
++		 * of x86's KVM_EXIT_PREEMPT in-kernel force-exit.
++		 *
++		 * Arch difference from x86 (load-bearing, see host/README.md):
++		 * on x86 the perf-overflow PMI is an NMI and the exit path is
++		 * NMI-specific, so the exit is nearly unambiguous. On arm64 the
++		 * PMU overflow interrupt is an ordinary *maskable* IRQ, and
++		 * every host IRQ (timer tick included) leaves the guest through
++		 * this same ARM_EXCEPTION_IRQ path. So an armed vCPU exits
++		 * KVM_EXIT_PREEMPT on ANY host IRQ, not only on the work-counter
++		 * overflow -- a named residual, not a defect: userspace must
++		 * re-read the work counter and, if the deadline was not
++		 * reached, re-arm and re-enter (exactly what the x86 backend
++		 * already does for stale KVM_EXIT_PREEMPT exits).
++		 */
++		if (test_bit(KVM_ARCH_FLAG_DETERMINISTIC_INTERCEPTS,
++			     &vcpu->kvm->arch.flags) &&
++		    vcpu->arch.preempt_armed) {
++			vcpu->arch.preempt_armed = false;
++			run->exit_reason = KVM_EXIT_PREEMPT;
++			return 0;
++		}
+ 		return 1;
+ 	case ARM_EXCEPTION_EL1_SERROR:
+ 		return 1;
+diff --git a/include/uapi/linux/kvm.h b/include/uapi/linux/kvm.h
+index 954e0511c..42c824b08 100644
+--- a/include/uapi/linux/kvm.h
++++ b/include/uapi/linux/kvm.h
+@@ -184,6 +184,7 @@ struct kvm_xen_exit {
+ #define KVM_EXIT_LOONGARCH_IOCSR  38
+ #define KVM_EXIT_MEMORY_FAULT     39
+ #define KVM_EXIT_TDX              40
++#define KVM_EXIT_PREEMPT          42
+ 
+ /* For KVM_EXIT_INTERNAL_ERROR */
+ /* Emulate instruction failed. */
+@@ -968,6 +969,7 @@ struct kvm_enable_cap {
+ #define KVM_CAP_RISCV_MP_STATE_RESET 242
+ #define KVM_CAP_ARM_CACHEABLE_PFNMAP_SUPPORTED 243
+ #define KVM_CAP_GUEST_MEMFD_FLAGS 244
++#define KVM_CAP_ARM_DETERMINISTIC_INTERCEPTS 245
+ 
+ struct kvm_irq_routing_irqchip {
+ 	__u32 irqchip;
+@@ -1305,6 +1307,8 @@ struct kvm_vfio_spapr_tce {
+ #define KVM_SET_DEVICE_ATTR	  _IOW(KVMIO,  0xe1, struct kvm_device_attr)
+ #define KVM_GET_DEVICE_ATTR	  _IOW(KVMIO,  0xe2, struct kvm_device_attr)
+ #define KVM_HAS_DEVICE_ATTR	  _IOW(KVMIO,  0xe3, struct kvm_device_attr)
++/* Deterministic preemption (harmony task 109): arm the one-shot force-exit. */
++#define KVM_ARM_PREEMPT_EXIT	  _IO(KVMIO,   0xe4)
+ 
+ /*
+  * ioctls for vcpu fds
+-- 
+2.47.3
+

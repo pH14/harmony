@@ -1,0 +1,18 @@
+AA-4/AA-5 window re-provision build manifest — 2026-07-21, Ampere Altra N1 (account-wipe rebuild)
+host running at build time: 6.8.0-136-generic (stock); build gcc: gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+kernel source: linux-6.18.35 sha256=f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236
+
+== patched HOST kernels (bindeb-pkg; base config = running-6.8 olddefconfig, trusted-keys/BTF off) ==
+aa3preempt (patch 0001 KVM_EXIT_PREEMPT) deb sha256: 431afa5ed2c86d4a44787b16d4a52f3ec6486e53a4022ae93e12bfaac0f6e11a
+aa4guard   (patch 0001+0002 exec-guard)    deb sha256: 3ea62e3c59e0c7a3eca9ce8e93a001799e4b01d9377aabec66e71f33e6107cdd
+host patch 0001 sha256: 069c226ad2dfe87d31ea5147875088c0244c6c87d8d66bf58d5757bfeeca9555
+host patch 0002 sha256: b51a75f6daad7ad8c8f50e2384bb170660acf429dabc2e72058b2771705736ad
+
+== GUEST arm64 image (consolidated single pinned image; section-aware LL/SC scan + counter scan CLEAN) ==
+Image sha256: d0161a7d41309b6e9139534d99c8c3d24152c0b10c06b4829443402698c5aefe
+initramfs.cpio.gz sha256: 604733be3338ac55cc0f387ba55b7b6b31250d158761ca2cc422cf2e37d08573
+initramfs-el0probe.cpio.gz sha256: 46b2bc5a53818654a436e2c36e0e016b2c55c29312898586cd3b2e622d33a12b
+
+== AA-4 anti-weakening fixture (aa4-mislabel-evasion) ==
+fixture ELF sha256: 330c6181052085f5268d648695bfe65e6a105fa2b1ba14e8dc2fe20db4dc7d36
+  static section-aware scan: PASS (evasion); runtime guard REJECTS at entry on aa4guard (mislabel-evasion.guard-reject.out) = anti-weakening proof

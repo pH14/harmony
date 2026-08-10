@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+AA-1(c) RETAINED-EVIDENCE FULL-JOIN RECOMPUTATION — 2026-07-18
+
+Certification status: results retained; certification pending; mechanism presumed sound.
+Purpose: decide whether the prior intersection-only comparator hid missing coverage or a
+physical solo/co-tenant divergence.
+
+Comparator:
+  python3 host/aa1c-determinism-check.py \
+    results/aa-1c/parallel/aa1c-xref-par1 \
+    results/aa-1c/parallel/aa1c-xcheck-par1
+
+Inputs (raw records retained on harmony-arm; manifest count and sha256 verified by comparator):
+  solo run-set:      aa1c-xref-par1
+  solo attempted:    3200
+  solo records hash: 1dc63715561071e62f28a1c9027278fd82794c56712099cf744bd2d8a3e9cca2
+  co-tenant run-set:      aa1c-xcheck-par1
+  co-tenant attempted:    3200
+  co-tenant records hash: 9f9085477286450ed778c7c9e547be3de0d5bb8c52382815761d75387686ceaa
+
+--- AA-1(c) solo==co-tenant determinism ---
+work clock binding: arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)
+full join: solo 3200/3200 keys/records; co-tenant 3200/3200 keys/records; shared 3200; solo-only 0; co-tenant-only 0
+MATCH: all 3200 tuples joined on both sides and are bit-identical solo vs co-tenant (state_digest + count + delivery). Co-tenancy does not perturb the digest.
+
+VERDICT: PHYSICS HOLDS. The prior failure is certification/apparatus-only; no divergence was
+found. This transcript does not re-issue the voided AA-3 GO certificate.

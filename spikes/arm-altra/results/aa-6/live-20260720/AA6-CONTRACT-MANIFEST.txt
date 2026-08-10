@@ -1,0 +1,10 @@
+AA-6(a) ID-register freeze + AA-6(b) vGIC save/restore round-trip — live, 2026-07-20, N1
+host: 6.18.35-aa4guard (build-id ac576f87), core 60, perf_event_paranoid=-1
+
+id-freeze:    all_enforced=true (8 ID_AA64* registers frozen below host, guest-visible
+              read-back holds each), pmu_denied_without_feature=true, host_pmuver=4.
+              => AA-6(a) ID-register-freeze enforcement DEMONSTRATED. Installability was
+              predicted by the AA-0 patched re-probe (writable-ID surface present on 6.18.35).
+vgic-roundtrip: injected PPI 20, negative_control_differs=true, roundtrip_identical=true
+              over 15 redistributor private-IRQ registers.
+              => AA-6(b) vGIC save/restore round-trip DEMONSTRATED.

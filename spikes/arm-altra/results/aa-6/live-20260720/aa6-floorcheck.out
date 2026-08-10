@@ -1,0 +1,26 @@
+work clock binding: arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)
+floor-check aa6-minigate-001 stage=aa6
+  [PASS] aggregation: one stage, distinct run-sets, one constants pack + measurement environment
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 d060383a835870dac0f7adfab5321fc0563d9670a813a995049782d1c94b4f23 matches the manifest
+  [PASS] totality: all 6000 attempted samples present exactly once
+  [PASS] multiplicity: all 6000 armed overflows delivered exactly once
+  [FAIL] weights-present: the manifest carries no measured weights (`weights: null`): refusing to check counts rather than substituting a default (task 109: count offsets are spike deliverables, never defaults)
+  [FAIL] count-exactness: not checked: counts cannot be recomputed without measured weights
+  [PASS] skid-margin-present: the manifest carries a measured skid margin
+  [PASS] skid: no overshoot; all landings within margin (Aa6)
+  [PASS] mechanism-attestation: all records carry the claimed Preempt exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 60
+  [PASS] params-mode: every record attests managed params mode
+  [PASS] replay-identity: 6 repeated group(s) landed on bit-identical state digests
+  [FAIL] aa6-matrix: AA-6's determinism matrix is incomplete: 3 class(es) have no injected (armed, delivered) record — wfi-idle, llsc-atomics, linux-guest. AA-6 certifies determinism UNDER injection, so a class present only as unarmed records injected nothing; the matrix must be verified from what was actually injected, not from payload labels.
+  [PASS] condition-consistency: every record's condition matches the manifest's (pinned-solo)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+  [PASS] rep-floor: 6 distinct input(s), each repeated at least 1000 times (floor 1000)
+FAIL weights-present: the manifest carries no measured weights (`weights: null`): refusing to check counts rather than substituting a default (task 109: count offsets are spike deliverables, never defaults)
+FAIL count-exactness: not checked: counts cannot be recomputed without measured weights
+FAIL aa6-matrix: AA-6's determinism matrix is incomplete: 3 class(es) have no injected (armed, delivered) record — wfi-idle, llsc-atomics, linux-guest. AA-6 certifies determinism UNDER injection, so a class present only as unarmed records injected nothing; the matrix must be verified from what was actually injected, not from payload labels.
+RESULT: FAIL (3 of 20 checks failed: weights-present, count-exactness, aa6-matrix)

@@ -1,0 +1,22 @@
+work clock binding: arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)
+floor-check aa2-smoke-001 stage=aa2
+  [PASS] aggregation: one stage, distinct run-sets, one constants pack + measurement environment
+  [PASS] schema-version: schema version 4
+  [PASS] well-formed: every schema-constrained field is well-formed
+  [PASS] records-sha256: records sha256 222349b5deb3404876f9c0209074ef6cf7c97fb38b7fe5791f0d465402934077 matches the manifest
+  [PASS] totality: all 78529 attempted samples present exactly once
+  [PASS] step-totality: all 7 planned sample id(s) 0..7 represented in the step records
+  [PASS] multiplicity: all 0 armed overflows delivered exactly once
+  [FAIL] weights-present: the manifest carries no measured weights (`weights: null`): refusing to check counts rather than substituting a default (task 109: count offsets are spike deliverables, never defaults)
+  [FAIL] count-exactness: not checked: counts cannot be recomputed without measured weights
+  [PASS] skid: skid distribution recorded and self-consistent (AA-1 measures it; the landing contract does not bind here)
+  [PASS] mechanism-attestation: all records carry the claimed SignalKick exit; mechanism attested
+  [PASS] perf-config: raw 0x21 armed guest-only and pinned
+  [PASS] image-pins: all 9 boot artifacts verified, the host kernel pinned, every exercised artifact bound
+  [PASS] pinning: pinned to core 60
+  [PASS] params-mode: every record attests managed params mode
+  [NOT-REQUESTED] replay-identity: stage Aa2 carries 78529 stepped record(s) but not one is repeated (--reps 1): no stepped state was replayed, so replay identity is untested — and an unrelated repeated group does not stand in for a stepped one. Submit repeated inputs
+  [FAIL] debug-evidence: 1 AA-2 step problem(s): the AA-2 step matrix is incomplete: no step covers [Wfi, Injection] — the stage requires stepping every transition class (sequential, taken branch, not-taken branch, exception entry, ERET, WFI, injection, LL/SC exclusive), not merely a nonempty subset
+  [PASS] condition-consistency: every record's condition matches the manifest's (pinned-solo)
+  [PASS] payload-status: every payload's in-guest self-checks passed
+RESULT: FAIL (3 of 19 checks failed: weights-present, count-exactness, debug-evidence); 1 not requested: replay-identity

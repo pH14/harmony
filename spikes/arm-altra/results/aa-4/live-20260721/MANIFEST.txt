@@ -1,0 +1,22 @@
+AA-4 W^X + rescan-on-exec FULL re-cert — 2026-07-21, Ampere Altra N1 (rebuilt aa4guard)
+host: 6.18.35-aa4guard, build-id 01000000000100004c696e757800000000000000, cap KVM_CAP_ARM_STAGE2_EXEC_GUARD=246 / exit 43, core 60
+aa4guard deb sha256: 3ea62e3c59e0c7a3eca9ce8e93a001799e4b01d9377aabec66e71f33e6107cdd
+
+MECHANISM GATES (all PASS; a stock kernel cannot construct a guarded VM):
+  reject: AA4_GUARD_REJECT PASS
+  mislabel-evasion: AA4_GUARD_REJECT PASS
+  write: AA4_GUARD_WRITE PASS
+  notifier: AA4_GUARD_NOTIFIER PASS
+  backing: AA4_GUARD_BACKING PASS
+  race: blocked_when_frozen=true write_when_approved=true
+
+SELECTIVITY (guard approves clean pages, not blanket-reject):
+  write: page approved then write-revoked+rescanned (see write.out)
+  notifier/backing: page approved (gen 4) then forced-rescan (gen 7) — approval is real
+
+payload pins (bit-reproduce 2026-07-20):
+  llsc-atomics 13cd6475184545de8ce2546e628805ad95b8a71a803dbe34f1cef22d6301e40c
+  lse-atomics 26bf064eea39a5f166f0d7f1d666c60e9d9ba2cbb57bcf353341a27c4e4375b4
+  aa4-self-modify e45a2f6d319a73b28ea4ae7e3d5c45955b62829f24232d5763a3326ca2300d14
+  aa4-reexec bc7bdd99780c1e020c9307a4309ebbc2471094b87eaece4909544563d48dd2a8
+  aa4-mislabel-evasion 330c6181052085f5268d648695bfe65e6a105fa2b1ba14e8dc2fe20db4dc7d36

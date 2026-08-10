@@ -1,0 +1,6 @@
+AA-5(c) live gate run — 2026-07-20, Ampere Altra N1 (RL300 Gen11)
+host kernel: 6.18.35-aa3preempt (KVM_EXIT_PREEMPT), build-id c35681ee...
+guest Image sha256: 980b798265c12b798df6fe3a93e3736992c2a15017a9943e843ce0ee4d6426fb
+guest initramfs sha256: 604733be3338ac55cc0f387ba55b7b6b31250d158761ca2cc422cf2e37d08573
+el0probe initramfs sha256: 46b2bc5a53818654a436e2c36e0e016b2c55c29312898586cd3b2e622d33a12b
+skid_margin used: 1024 (AA-1 constant 53 overshoots on the Linux guest)

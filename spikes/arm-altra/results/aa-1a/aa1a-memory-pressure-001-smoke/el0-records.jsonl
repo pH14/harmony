@@ -1,0 +1,2 @@
+{"sample_id":0,"class":"straight-line","scale":"smoke","seed":18157726123883287543,"trips":1000,"rep":0,"count":1012,"accumulator":13749731977890418597,"time_enabled":26240,"time_running":26240}
+{"sample_id":1,"class":"branch-dense","scale":"smoke","seed":16369348538226379880,"trips":1000,"rep":0,"count":8014,"accumulator":17490,"time_enabled":16280,"time_running":16280}

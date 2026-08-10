@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+AA-3 RETAINED-EVIDENCE FULL-JOIN RECOMPUTATION — 2026-07-18
+
+Certification status: results retained; certification pending; mechanism presumed sound.
+Purpose: decide whether the prior intersection-only comparator hid missing coverage or a
+physical solo/co-tenant divergence.
+
+Comparator:
+  python3 host/aa3-determinism-compare.py \
+    results/aa-3/exact-solo-ref \
+    results/aa-3/exact/aa3-exact-r3-s0
+
+Inputs (raw records retained on harmony-arm; manifest count and sha256 verified by comparator):
+  solo run-set:      aa3-exact-solo-ref
+  solo attempted:    13300
+  solo records hash: a26f0cb547460a928ffe4a93b2d2f6b28dd17558e5ff20201f1065c4514c8d5d
+  co-tenant run-set:      aa3-exact-r3-s0
+  co-tenant attempted:    13300
+  co-tenant records hash: 763fbf8018d37802e0f4663870513fe308fb3c0c8444a05f9f816a186a207be3
+
+Excluded by the ruled AA-3 replay carve-out: llsc-atomics, wfi-idle.
+
+work clock binding: arm64 BR_RETIRED raw 0x21 = all architecturally executed branch instructions (taken or not; AA1-F1)
+full join: solo 5700 keys/11400 included records; co-tenant 5700 keys/11400 included records; shared 5700; solo-only 0; co-tenant-only 0; multiplicity mismatches 0
+MATCH: all 5700 tuples joined on both sides with equal repetition counts and bit-identical exact-landing + final-state digests.
+
+VERDICT: PHYSICS HOLDS. The prior failure is certification/apparatus-only; no divergence was
+found. This transcript does not re-issue the voided AA-3 GO certificate.

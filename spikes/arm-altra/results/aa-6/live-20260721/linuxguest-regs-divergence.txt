@@ -1,0 +1,14 @@
+AA-6 LinuxGuest register-digest divergence — root cause, N1 aa3preempt 2026-07-21
+The mini-gate FAILED replay-identity: linux-guest, 1000 same-seed reps -> 1000 different
+register digests (aa6-floorcheck-regsdigest-FAIL.txt). Same-seed reps use the SAME injection
+Moment (--seed 1 --inject-at-work 1 -> target 10000000), so this is NOT a Moment difference.
+Direct proof (2 same-seed injected boots, per-register dump diff): EXACTLY 4 of 260 registers
+differ, all disclosed AA-5(c) entropy residuals, NONE work-clock or injection:
+  x29 (FP), SP  = userspace init stack pointer (0x0000ffff_...) -> stack-placement ASLR
+                  (kernel-CRNG/entropy residual, hm-of6t F12) -> IN the register digest.
+  CNTPCT, TIMER_CNT = generic-timer counters -> host-time, ALREADY excluded (is_host_time_register).
+All 256 other registers (every work-clock, exact-landing, injection, and execution register)
+are bit-identical same-seed. Fix: the AA-6 LinuxGuest compared digest is console + vGIC
+(console AA-5(c)-deterministic; vGIC carries the injected pending bit, deterministic, not among
+the 4 diverging regs) -> excludes the stack-ASLR residual without folding it in. Determinism-core
+gate-semantics change; flagged for Paul.

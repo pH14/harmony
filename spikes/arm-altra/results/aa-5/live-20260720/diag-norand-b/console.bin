@@ -1,0 +1,98 @@
+Booting Linux on physical CPU 0x0000000000 [0x413fd0c1]
+Linux version 6.18.35 (hypervizor@hypervizor) (gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #1 SMP Thu Jan  1 00:00:00 UTC 1970
+Machine model: harmony-aa5-arm64
+earlycon: pl11 at MMIO32 0x0000000009000000 (options '')
+printk: legacy bootconsole [pl11] enabled
+printk: debug: skip boot console de-registration.
+OF: reserved mem: 0x0000000040001000..0x0000000040001fff (4 KiB) map non-reusable pvclock@40001000
+Zone ranges:
+  Normal   [mem 0x0000000040000000-0x000000004fffffff]
+Movable zone start for each node
+Early memory node ranges
+  node   0: [mem 0x0000000040000000-0x000000004fffffff]
+Initmem setup node 0 [mem 0x0000000040000000-0x000000004fffffff]
+psci: probing for conduit method from DT.
+psci: PSCIv1.3 detected in firmware.
+psci: Using standard PSCI v0.2 function IDs
+psci: Trusted OS migration not required
+psci: SMC Calling Convention v1.1
+smccc: KVM: hypervisor services detected (0x00000000 0x00000000 0x00000000 0x00000003)
+percpu: Embedded 13 pages/cpu s22944 r0 d30304 u53248
+Detected PIPT I-cache on CPU0
+CPU features: detected: GICv3 CPU interface
+CPU features: detected: Spectre-v4
+CPU features: detected: Spectre-BHB
+CPU features: kernel page table isolation disabled by kernel configuration
+alternatives: applying boot alternatives
+Kernel command line: console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 keep_bootcon rdinit=/init nokaslr maxcpus=1 random.trust_cpu=off harmony_pvclock nohlt norandmaps
+Unknown kernel command line parameters "nokaslr harmony_pvclock", will be passed to user space.
+printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+Dentry cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+Inode-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+software IO TLB: area num 1.
+software IO TLB: mapped [mem 0x000000004feb9000-0x000000004fef9000] (0MB)
+Built 1 zonelists, mobility grouping on.  Total pages: 65536
+mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+SLUB: HWalign=64, Order=0-1, MinObjects=0, CPUs=1, Nodes=1
+rcu: Hierarchical RCU implementation.
+rcu: 	RCU restricting CPUs from NR_CPUS=2 to nr_cpu_ids=1.
+rcu: RCU calculated value of scheduler-enlistment delay is 10 jiffies.
+rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+GICv3: 224 SPIs implemented
+GICv3: 0 Extended SPIs implemented
+Root IRQ handler: 0xffff80008001007c
+GICv3: GICv3 features: 16 PPIs, DirectLPI
+GICv3: GICD_CTLR.DS=1, SCR_EL3.FIQ=0
+GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000
+rcu: srcu_init: Setting srcu_struct sizes based on contention.
+Harmony pvclock: registered page 0x40001000 (ABI 1)
+arch_timer: Harmony clock: denying EL0 generic-counter access
+arch_timer: cp15 timer running at 25.00MHz (virt).
+clocksource: harmony-arm-pvclock: mask: 0xffffffffffffff max_cycles: 0x5c40939b5, max_idle_ns: 440795202646 ns
+sched_clock: 56 bits at 25MHz, resolution 40ns, wraps every 4398046511100ns
+Console: colour dummy device 80x25
+Calibrating delay loop (skipped), value calculated using timer frequency.. 50.00 BogoMIPS (lpj=250000)
+pid_max: default: 32768 minimum: 301
+Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+cacheinfo: Unable to detect cache hierarchy for CPU 0
+rcu: Hierarchical SRCU implementation.
+rcu: 	Max phase no-delay instances is 1000.
+smp: Bringing up secondary CPUs ...
+smp: Brought up 1 node, 1 CPU
+SMP: Total of 1 processors activated.
+CPU: All CPU(s) started at EL1
+CPU features: detected: 32-bit EL0 Support
+CPU features: detected: Data cache clean to the PoU not required for I/D coherence
+CPU features: detected: CRC32 instructions
+CPU features: detected: Enhanced Virtualization Traps
+CPU features: detected: RCpc load-acquire (LDAPR)
+CPU features: detected: LSE atomic instructions
+CPU features: detected: Speculative Store Bypassing Safe (SSBS)
+alternatives: applying system-wide alternatives
+Memory: 252776K/262144K available (1664K kernel code, 572K rwdata, 280K rodata, 256K init, 218K bss, 8612K reserved, 0K cma-reserved)
+devtmpfs: initialized
+clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+DMA: preallocated 128 KiB GFP_KERNEL pool for atomic allocations
+ASID allocator initialised with 65536 entries
+Serial: AMBA PL011 UART driver
+9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+printk: console [ttyAMA0] enabled
+printk: console [ttyAMA0] enabled
+clocksource: Switched to clocksource harmony-arm-pvclock
+clocksource: Switched to clocksource harmony-arm-pvclock
+Unpacking initramfs...
+Unpacking initramfs...
+workingset: timestamp_bits=62 max_order=16 bucket_order=0
+workingset: timestamp_bits=62 max_order=16 bucket_order=0
+clk: Disabling unused clocks
+clk: Disabling unused clocks
+Freeing unused kernel memory: 256K
+Freeing unused kernel memory: 256K
+Run /init as init process
+Run /init as init process
+HARMONY_AA5_CLOCKSOURCE_OK
+HARMONY_AA5_READY
