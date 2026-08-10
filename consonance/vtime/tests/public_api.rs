@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Frozen public-API snapshot guard — see `docs/CODE-QUALITY.md`
-//! ("Public-API snapshots") and `tasks/00-CONVENTIONS.md` rule 3.
+//! ("Public-API snapshots") and `AGENTS.md` ("Frozen surfaces are contracts").
 //!
 //! Regenerates this crate's public surface with `cargo public-api` on the
 //! pinned nightly toolchain and asserts it byte-matches the committed

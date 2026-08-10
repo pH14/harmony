@@ -334,7 +334,7 @@ jobs:
       # The payload crates (runtime, oracles) contain `unsafe` but are architecturally
       # outside the unsafe⇒Miri path, by the contract's own terms — see the rebuttal in
       # payloads/runtime/src/lib.rs (§`unsafe`, and why this crate is Miri-exempt), which
-      # quotes AGENTS.md:48-55 and tasks/00-CONVENTIONS.md:104-117. Two facts: (1) their
+      # quotes the unsafe⇒Miri rule (AGENTS.md). Two facts: (1) their
       # top-level `global_asm!` is aarch64 machine code the host assembler rejects, so
       # `cargo miri test -p runtime`/`-p oracles` does not compile — no interpreter run
       # to gate; (2) the residual unsafe is the rule's own `asm!` carve-out plus
@@ -589,7 +589,7 @@ jobs:
   # `public_api` tests regenerate each crate's public surface with
   # `cargo public-api` on the pinned nightly and diff it against the committed
   # `tests/public-api.txt`; any drift in a frozen contract
-  # (tasks/00-CONVENTIONS.md rule 3) fails here. Keep PINNED_NIGHTLY in sync
+  # (AGENTS.md, "Frozen surfaces are contracts") fails here. Keep PINNED_NIGHTLY in sync
   # with the tests, the miri job, and docs/CODE-QUALITY.md.
   public-api:
     name: public-api

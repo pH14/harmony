@@ -5,7 +5,7 @@
 # docs/CODE-QUALITY.md).
 #
 # These are *tools*, not crate dependencies — they are exempt from the
-# Convention rule-5 dependency whitelist (tasks/00-CONVENTIONS.md).
+# Dependency-whitelist exemption for quality binaries (AGENTS.md, Conventions).
 #
 # Idempotent: `cargo install` is a no-op when the requested version is already
 # present, so re-running is a fast success. Safe to run on macOS and Linux.
