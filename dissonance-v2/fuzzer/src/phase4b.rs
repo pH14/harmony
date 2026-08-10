@@ -280,6 +280,95 @@ smb_named_mutator!(PerturbButtonChordMutator);
 smb_named_mutator!(TruncateButtonChordMutator);
 smb_named_mutator!(SpliceButtonChordMutator);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SmbLastProducer {
+    Base,
+    Generated,
+}
+
+#[derive(Debug)]
+struct SmbCampaignMutator<M> {
+    name: Cow<'static, str>,
+    generated_enabled: bool,
+    append: AppendButtonChordMutator,
+    perturb: PerturbButtonChordMutator,
+    truncate: TruncateButtonChordMutator,
+    splice: SpliceButtonChordMutator,
+    generated: GeneratedSmbMacroAdapter<M>,
+    last_producer: Option<SmbLastProducer>,
+}
+
+impl<M> SmbCampaignMutator<M> {
+    fn new(generated_enabled: bool, generated: GeneratedSmbMacroAdapter<M>) -> Self {
+        Self {
+            name: Cow::Borrowed("SmbCampaignMutator"),
+            generated_enabled,
+            append: AppendButtonChordMutator::default(),
+            perturb: PerturbButtonChordMutator::default(),
+            truncate: TruncateButtonChordMutator::default(),
+            splice: SpliceButtonChordMutator::default(),
+            generated,
+            last_producer: None,
+        }
+    }
+}
+
+impl<M> Named for SmbCampaignMutator<M> {
+    fn name(&self) -> &Cow<'static, str> {
+        &self.name
+    }
+}
+
+impl<M, S> Mutator<SmbInput, S> for SmbCampaignMutator<M>
+where
+    M: SmbMacro,
+    S: HasCorpus<SmbInput> + HasRand,
+{
+    fn mutate(
+        &mut self,
+        state: &mut S,
+        input: &mut SmbInput,
+    ) -> Result<MutationResult, LibAflError> {
+        self.last_producer = None;
+        let choices = if self.generated_enabled { 5 } else { 4 };
+        let choice = state
+            .rand_mut()
+            .below(NonZeroUsize::new(choices).expect("constant is nonzero"));
+        let result = match choice {
+            0 => self.append.mutate(state, input)?,
+            1 => self.perturb.mutate(state, input)?,
+            2 => self.truncate.mutate(state, input)?,
+            3 => self.splice.mutate(state, input)?,
+            4 => self.generated.mutate(state, input)?,
+            _ => {
+                return Err(LibAflError::illegal_state(
+                    "SMB mutator choice is out of range",
+                ));
+            }
+        };
+        if result == MutationResult::Mutated {
+            self.last_producer = Some(if choice == 4 {
+                SmbLastProducer::Generated
+            } else {
+                SmbLastProducer::Base
+            });
+        }
+        Ok(result)
+    }
+
+    fn post_exec(
+        &mut self,
+        state: &mut S,
+        new_corpus_id: Option<CorpusId>,
+    ) -> Result<(), LibAflError> {
+        if self.last_producer == Some(SmbLastProducer::Generated) {
+            self.generated.post_exec(state, new_corpus_id)?;
+        }
+        self.last_producer = None;
+        Ok(())
+    }
+}
+
 fn random_chord<S>(state: &mut S) -> ButtonChord
 where
     S: HasRand,
@@ -1185,13 +1274,7 @@ where
         artifacts.macro_retire_after,
         Rc::clone(&macro_stats),
     );
-    let mutator = SingleChoiceScheduledMutator::new(tuple_list!(
-        AppendButtonChordMutator::default(),
-        PerturbButtonChordMutator::default(),
-        TruncateButtonChordMutator::default(),
-        SpliceButtonChordMutator::default(),
-        generated_macro,
-    ));
+    let mutator = SmbCampaignMutator::new(artifacts.enable_macro, generated_macro);
     let mut stages = tuple_list!(StdMutationalStage::with_max_iterations(
         mutator,
         NonZeroUsize::MIN,
@@ -1305,13 +1388,7 @@ where
         artifacts.macro_retire_after,
         Rc::clone(&macro_stats),
     );
-    let mutator = SingleChoiceScheduledMutator::new(tuple_list!(
-        AppendButtonChordMutator::default(),
-        PerturbButtonChordMutator::default(),
-        TruncateButtonChordMutator::default(),
-        SpliceButtonChordMutator::default(),
-        generated_macro,
-    ));
+    let mutator = SmbCampaignMutator::new(artifacts.enable_macro, generated_macro);
     let mut stages = tuple_list!(StdMutationalStage::with_max_iterations(
         mutator,
         NonZeroUsize::MIN,
@@ -1408,7 +1485,10 @@ pub fn run_smb_random_mash(
 
 #[cfg(test)]
 mod tests {
-    use super::{AppendButtonChordMutator, ButtonChord, MAX_SMB_ACTIONS, SmbInput, SmbTarget};
+    use super::{
+        AppendButtonChordMutator, ButtonChord, MAX_SMB_ACTIONS, NullSmbDetector, SmbArtifactConfig,
+        SmbInput, SmbMacro, SmbTarget, run_smb_configured,
+    };
     use crate::target::{Target, execute_actions};
     use libafl::{
         corpus::{Corpus, InMemoryCorpus, Testcase},
@@ -1428,6 +1508,19 @@ mod tests {
             prg[vector..vector + 2].copy_from_slice(&0x8000_u16.to_le_bytes());
         }
         rom
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct AlwaysAppendMacro;
+
+    impl SmbMacro for AlwaysAppendMacro {
+        fn mutate(&self, input: &SmbInput) -> SmbInput {
+            let mut candidate = input.clone();
+            if candidate.actions.len() < MAX_SMB_ACTIONS {
+                candidate.actions.push(ButtonChord::new(0x81, 2));
+            }
+            candidate
+        }
     }
 
     #[test]
@@ -1534,5 +1627,29 @@ mod tests {
                 .expect("bounded append"),
             MutationResult::Skipped
         );
+    }
+
+    #[test]
+    fn configured_path_forwards_generated_mutator_post_exec() {
+        let report = run_smb_configured(
+            &synthetic_nrom(),
+            7,
+            64,
+            NullSmbDetector,
+            AlwaysAppendMacro,
+            SmbArtifactConfig {
+                detector_name: "none",
+                detector_retire_after: 1,
+                macro_name: "always_append",
+                macro_retire_after: 1,
+                enable_macro: true,
+            },
+        )
+        .expect("run configured production path");
+
+        assert_eq!(report.macro_stats.offspring, 1);
+        assert_eq!(report.macro_stats.novel_offspring, 0);
+        assert_eq!(report.macro_stats.executions_without_novelty, 1);
+        assert!(!report.macro_stats.active);
     }
 }

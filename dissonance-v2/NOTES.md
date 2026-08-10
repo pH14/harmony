@@ -168,6 +168,17 @@ durations.
   The headline full-stack seed-0 film contains 16 frames and visibly reaches
   bucket 11. The renderer also retains modes for the first generic progress,
   1-1 flag, 1-2, and onward inputs when those milestones exist.
+- M8 replaces `SingleChoiceScheduledMutator` only on the two SMB paths that can
+  schedule a generated mutator. The local five-way chooser remembers whether a
+  base or generated mutator emitted the candidate and forwards `post_exec` only
+  for the generated producer, so retained-offspring metadata and deterministic
+  novelty retirement run on the complete `StdMutationalStage` path. A synthetic
+  NROM regression drives that production path and proves one non-retained
+  generated child reaches the retirement threshold. The remaining
+  `SingleChoiceScheduledMutator` site is M5's four-way base-only ratchet; none of
+  its inner mutators implements `post_exec`, so the LibAFL 0.15.4 no-op cannot
+  suppress accounting there. Generated SMB mutations remained disabled in
+  campaign runs until this regression and the M8 gates passed.
 - All time-to-target comparisons use deterministic target-execution counts, not
   wall-clock time. Wall-clock measurements would violate the replay contract and
   make the tests host-dependent.
