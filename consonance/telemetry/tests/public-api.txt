@@ -1,0 +1,132 @@
+pub mod telemetry
+pub mod telemetry::server
+pub enum telemetry::server::Mode
+pub telemetry::server::Mode::Live
+pub telemetry::server::Mode::Replay
+pub struct telemetry::server::RunningServer
+impl telemetry::server::RunningServer
+pub fn telemetry::server::RunningServer::local_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn telemetry::server::RunningServer::shutdown(self)
+impl core::ops::drop::Drop for telemetry::server::RunningServer
+pub fn telemetry::server::RunningServer::drop(&mut self)
+pub struct telemetry::server::ServerOptions
+pub telemetry::server::ServerOptions::mode: telemetry::server::Mode
+pub telemetry::server::ServerOptions::recording: core::option::Option<std::path::PathBuf>
+impl core::default::Default for telemetry::server::ServerOptions
+pub fn telemetry::server::ServerOptions::default() -> Self
+pub const telemetry::server::INDEX_HTML: &str
+pub fn telemetry::server::serve(core::net::socket_addr::SocketAddr, telemetry::LiveSink, telemetry::server::ServerOptions) -> std::io::error::Result<telemetry::server::RunningServer>
+#[non_exhaustive] pub enum telemetry::EventKind
+pub telemetry::EventKind::Checkpoint
+pub telemetry::EventKind::Checkpoint::state_hash: [u8; 32]
+pub telemetry::EventKind::Console
+pub telemetry::EventKind::Console::text: alloc::string::String
+pub telemetry::EventKind::Counts(telemetry::ExitCounts)
+pub telemetry::EventKind::Cpuid
+pub telemetry::EventKind::Cpuid::leaf: u32
+pub telemetry::EventKind::Cpuid::subleaf: u32
+pub telemetry::EventKind::Dropped
+pub telemetry::EventKind::Dropped::count: u64
+pub telemetry::EventKind::GuestEvent
+pub telemetry::EventKind::GuestEvent::data: alloc::vec::Vec<u8>
+pub telemetry::EventKind::GuestEvent::id: u32
+pub telemetry::EventKind::Hypercall
+pub telemetry::EventKind::Hypercall::opcode: u16
+pub telemetry::EventKind::Hypercall::service: u8
+pub telemetry::EventKind::Hypercall::status: u16
+pub telemetry::EventKind::Inject
+pub telemetry::EventKind::Inject::vector: u8
+pub telemetry::EventKind::Io
+pub telemetry::EventKind::Io::port: u16
+pub telemetry::EventKind::Io::size: u8
+pub telemetry::EventKind::Io::value: u64
+pub telemetry::EventKind::Io::write: bool
+pub telemetry::EventKind::Mmio
+pub telemetry::EventKind::Mmio::addr: u64
+pub telemetry::EventKind::Mmio::size: u8
+pub telemetry::EventKind::Mmio::value: u64
+pub telemetry::EventKind::Mmio::write: bool
+pub telemetry::EventKind::Msr
+pub telemetry::EventKind::Msr::index: u32
+pub telemetry::EventKind::Msr::value: u64
+pub telemetry::EventKind::Msr::write: bool
+pub telemetry::EventKind::Rng
+pub telemetry::EventKind::Rng::value: u64
+pub telemetry::EventKind::Terminal
+pub telemetry::EventKind::Terminal::reason: alloc::string::String
+pub telemetry::EventKind::Tsc
+pub telemetry::EventKind::Tsc::value: u64
+pub enum telemetry::Mode
+pub telemetry::Mode::Live
+pub telemetry::Mode::Replay
+pub enum telemetry::WireError
+pub telemetry::WireError::Decode(serde_json::error::Error)
+pub struct telemetry::Event
+pub telemetry::Event::kind: telemetry::EventKind
+pub telemetry::Event::seq: u64
+pub telemetry::Event::vns: u64
+pub telemetry::Event::work: u64
+impl telemetry::Event
+pub fn telemetry::Event::new(u64, u64, u64, telemetry::EventKind) -> telemetry::Event
+pub struct telemetry::ExitCounts
+pub telemetry::ExitCounts::cpuid: u64
+pub telemetry::ExitCounts::deadline: u64
+pub telemetry::ExitCounts::hlt: u64
+pub telemetry::ExitCounts::hypercall: u64
+pub telemetry::ExitCounts::io: u64
+pub telemetry::ExitCounts::mmio: u64
+pub telemetry::ExitCounts::rdmsr: u64
+pub telemetry::ExitCounts::rdrand: u64
+pub telemetry::ExitCounts::rdseed: u64
+pub telemetry::ExitCounts::rdtsc: u64
+pub telemetry::ExitCounts::rdtscp: u64
+pub telemetry::ExitCounts::shutdown: u64
+pub telemetry::ExitCounts::wrmsr: u64
+impl telemetry::ExitCounts
+pub fn telemetry::ExitCounts::total(&self) -> u64
+pub struct telemetry::LiveSink
+impl telemetry::LiveSink
+pub fn telemetry::LiveSink::capacity(&self) -> usize
+pub fn telemetry::LiveSink::drain(&self) -> alloc::vec::Vec<telemetry::Event>
+pub fn telemetry::LiveSink::is_empty(&self) -> bool
+pub fn telemetry::LiveSink::len(&self) -> usize
+pub fn telemetry::LiveSink::new(usize) -> telemetry::LiveSink
+pub fn telemetry::LiveSink::pending_dropped(&self) -> u64
+pub fn telemetry::LiveSink::with_default_capacity() -> telemetry::LiveSink
+impl telemetry::Observer for telemetry::LiveSink
+pub fn telemetry::LiveSink::emit(&mut self, &telemetry::Event)
+pub struct telemetry::NdjsonRecorder<W: std::io::Write>
+impl<W: std::io::Write> telemetry::NdjsonRecorder<W>
+pub fn telemetry::NdjsonRecorder<W>::error(&self) -> core::option::Option<&std::io::error::Error>
+pub fn telemetry::NdjsonRecorder<W>::flush(&mut self) -> std::io::error::Result<()>
+pub fn telemetry::NdjsonRecorder<W>::into_inner(self) -> W
+pub fn telemetry::NdjsonRecorder<W>::new(W) -> telemetry::NdjsonRecorder<W>
+pub fn telemetry::NdjsonRecorder<W>::take_error(&mut self) -> core::option::Option<std::io::error::Error>
+impl<W: std::io::Write> telemetry::Observer for telemetry::NdjsonRecorder<W>
+pub fn telemetry::NdjsonRecorder<W>::emit(&mut self, &telemetry::Event)
+pub struct telemetry::NullObserver
+impl telemetry::Observer for telemetry::NullObserver
+pub fn telemetry::NullObserver::emit(&mut self, &telemetry::Event)
+pub struct telemetry::RunningServer
+impl telemetry::server::RunningServer
+pub fn telemetry::server::RunningServer::local_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn telemetry::server::RunningServer::shutdown(self)
+impl core::ops::drop::Drop for telemetry::server::RunningServer
+pub fn telemetry::server::RunningServer::drop(&mut self)
+pub struct telemetry::ServerOptions
+pub telemetry::ServerOptions::mode: telemetry::server::Mode
+pub telemetry::ServerOptions::recording: core::option::Option<std::path::PathBuf>
+impl core::default::Default for telemetry::server::ServerOptions
+pub fn telemetry::server::ServerOptions::default() -> Self
+pub const telemetry::DEFAULT_CAPACITY: usize
+pub trait telemetry::Observer
+pub fn telemetry::Observer::emit(&mut self, &telemetry::Event)
+impl telemetry::Observer for telemetry::LiveSink
+pub fn telemetry::LiveSink::emit(&mut self, &telemetry::Event)
+impl telemetry::Observer for telemetry::NullObserver
+pub fn telemetry::NullObserver::emit(&mut self, &telemetry::Event)
+impl<W: std::io::Write> telemetry::Observer for telemetry::NdjsonRecorder<W>
+pub fn telemetry::NdjsonRecorder<W>::emit(&mut self, &telemetry::Event)
+pub fn telemetry::from_ndjson(&str) -> core::result::Result<telemetry::Event, telemetry::WireError>
+pub fn telemetry::serve(core::net::socket_addr::SocketAddr, telemetry::LiveSink, telemetry::server::ServerOptions) -> std::io::error::Result<telemetry::server::RunningServer>
+pub fn telemetry::to_ndjson(&telemetry::Event) -> core::result::Result<alloc::string::String, telemetry::WireError>
