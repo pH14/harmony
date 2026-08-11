@@ -243,12 +243,14 @@ work, not gated. The ratchet doctrine is unchanged: floor moves up as coverage i
 
 ## Public-API snapshots (2026-06-17)
 
-Each of the four crates (`hypercall-proto`, `snapshot-store`, `unison`, `vtime`) carries a
-committed snapshot of its public surface at `tests/public-api.txt` and a guard test at
-`tests/public_api.rs`. The test shells out to `cargo public-api` on a **pinned nightly**,
-regenerates the surface, and asserts it byte-matches the committed snapshot — so any drift in a
-frozen contract is a failing test and a reviewable diff. The CI `public-api` job (gating, no
-`continue-on-error`) runs these tests on every PR.
+Every workspace crate carries a committed snapshot of its public surface at
+`tests/public-api.txt` and a guard test at `tests/public_api.rs` (the last two —
+`telemetry` and `hypercall-doorbell` — landed with the testing-ladder rework). The test shells
+out to `cargo public-api` on a **pinned nightly**, regenerates the surface, and asserts it
+byte-matches the committed snapshot — so any drift in a frozen contract is a failing test and a
+reviewable diff. The CI `public-api` job (gating, no `continue-on-error`) runs these tests on
+every PR; it enumerates crates explicitly with `-p`, so **a new crate's snapshot test is inert
+until it is added to that list**.
 
 - **Pinned nightly:** `nightly-2026-06-16`. `cargo public-api` needs rustdoc-JSON, which is
   nightly-only; pinning keeps the output reproducible. The same constant lives in each
@@ -256,9 +258,17 @@ frozen contract is a failing test and a reviewable diff. The CI `public-api` job
   three in sync when bumping. Install with `rustup toolchain install nightly-2026-06-16`.
 - **Surface flags:** generated with `-sss` (omit blanket, auto-trait, and auto-derived impls)
   so the snapshot is the genuine hand-written API, not toolchain-version-dependent auto-impl
-  noise. Default features only (the host-side build vmm-core integrates against).
+  noise, and with `--all-features` so an item gated behind a non-default feature cannot drift
+  unnoticed.
 - **Refresh after an intentional, reviewed API change:**
   `UPDATE_PUBLIC_API=1 cargo test -p <crate> --test public_api`, then review the diff.
+- **The Linux-frozen crates** (`vmm-backend`, `vmm-core` — their surfaces include
+  `#[cfg(target_os = "linux")]` items) freeze the *Linux* surface, so their in-tree guard test
+  skips loudly on macOS rather than diffing a subset. To regenerate one from a Mac, cross-target
+  the generator instead of waiting for a Linux host:
+  `cargo +nightly-2026-06-16 public-api -p <crate> --all-features --target x86_64-unknown-linux-gnu -sss --color never > <crate>/tests/public-api.txt`.
+  Confirm it reproduces the committed baseline byte-for-byte *before* applying your change, so a
+  toolchain difference cannot masquerade as an API diff.
 - **No new crate dependencies:** the guard invokes the installed `cargo-public-api` *binary*
   (Convention rule-5 tool exemption) rather than adding the `public-api`/`rustdoc-json` library
   crates. On a box lacking the nightly or the tool, the test **skips loudly** (keeps a plain
