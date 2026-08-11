@@ -226,7 +226,11 @@ jobs:
       # hosted runner (no /dev/kvm, no patched module). They are verified instead by
       # those `#[ignore]` box tests and by Miri (which still *executes* `kvm.rs`'s
       # synthetic-`kvm_run` unit tests — incl. the KVM_EXIT_DETERMINISM decode — so a
-      # logic regression still fails the suite, just not coverage-*counted*). The
+      # logic regression still fails the suite, just not coverage-*counted*).
+      # `consonance/acceptance-suite/src/realvmm.rs` is excluded on the same grounds as
+      # `boxrun.rs`: it is the acceptance runner's real-VMM composition root and needs a
+      # real `/dev/kvm`, the patched modules, and built payloads, so no portable test can
+      # reach it. The
       # coverage-gated set is the portable, platform-agnostic logic the splits
       # factored out: `region`/`run_buf`, the value types, the run-loop contract
       # (`mock`/`run_loop`), and vmm-core's `work::WorkSource`/`ScriptedWork` + V-time
@@ -234,7 +238,7 @@ jobs:
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/vendor/x86/work_perf\.rs|dissonance/campaign-runner/src/boxrun\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/vendor/x86/work_perf\.rs|dissonance/campaign-runner/src/boxrun\.rs|consonance/acceptance-suite/src/realvmm\.rs' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()

@@ -563,6 +563,18 @@ pub fn dirty_log_exactness_exam<F: BackendFixture>(fx: &mut F, report: &mut Cont
     };
     b.set_policy(&fx.policy()).expect("set_policy");
     let Some(expected) = fx.dirty_pages(&mut b) else {
+        // The decline is itself under test, exactly as it is for `run_until`: a
+        // backend without dirty tracking must answer the documented
+        // `Unsupported` so every caller takes the always-correct full-scan
+        // path. Answering `Ok` with *any* set — even an empty one — would be a
+        // backend claiming to have vouched for a window it never tracked, and
+        // a caller that trusted it would silently corrupt a snapshot.
+        assert!(
+            matches!(b.drain_dirty_pages(), Err(BackendError::Unsupported { .. })),
+            "a backend with no dirty log must answer Unsupported, never an Ok set it cannot \
+             vouch for"
+        );
+        report.ran("exactness/dirty_log_declines_loudly");
         report.decline("exactness/dirty_log", DeclineReason::NoDirtyLog);
         return;
     };

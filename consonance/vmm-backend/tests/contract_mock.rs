@@ -198,9 +198,10 @@ impl Backend for NoDeadlineBackend {
         // forwards, adding no obligation.
         unsafe { self.0.map_memory(gpa, host) }
     }
-    fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
-        self.0.drain_dirty_pages()
-    }
+    // `drain_dirty_pages` is deliberately NOT forwarded: this newtype models a
+    // backend with no dirty log, so it inherits the trait's default body — and
+    // the contract exam's decline check is what pins that default to
+    // `Unsupported`.
     fn run(&mut self) -> Result<Exit<X86>> {
         self.0.run()
     }
@@ -320,9 +321,11 @@ fn a_limited_backend_declines_honestly_and_the_declines_are_recorded() {
     ] {
         assert!(report.did_run(exam), "{exam} must still run: {report:?}");
     }
-    // A backend that does not implement `run_until` must say so with the
-    // documented error — the exam checks the decline itself.
+    // A backend that cannot do something must say so with the documented error.
+    // The exam checks the decline itself, for both capabilities this fixture
+    // lacks.
     assert!(report.did_run("exactness/run_until_declines_loudly"));
+    assert!(report.did_run("exactness/dirty_log_declines_loudly"));
 
     // Every decline is named, with its reason. This is the assertion that stops
     // a shrinking exam from reading as a passing one.
