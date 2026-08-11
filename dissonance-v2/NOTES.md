@@ -224,6 +224,30 @@ durations.
   first-pit result is **no**. Its terminal-aware H.264 film contains 986 frames
   (16.433 seconds). Evidence is in the ignored directory
   `target/model-campaigns/m10-neutral-20260810`.
+- M12 implements the governing generated-mutator v2 contract directly on
+  `SmbMacro`: generated code receives an immutable input plus one `u64` drawn
+  from LibAFL's seeded RNG only when the generated mutator is selected. The
+  adapter rejects action lists above 96 entries and every hold outside
+  `1..=120`. Fixture verification repeats seeds `0`, `0x5eed_dc00`, and
+  `u64::MAX`; generated detector output is capped at 4,096 feature keys.
+  SMB validation also rejects non-null legacy lineage scope, so detectors
+  remain global while completed adventure/phase-3 behavior is unchanged.
+- M12 predeclared one paired 500-execution pilot at seed `0x5eed_dc00`, a
+  retained-execution cap of 1/5, three attempts per invocation, and a no-max-x-
+  regression floor. The recorded M6 whole-WRAM shotgun fixture (39 restored
+  entries, 371 final entries) is mechanically rejected at 332/500 retained.
+  Every attempted source and validation result is written before another retry.
+- The live M12 invocation exposed 13 distinct M10 evidence cases: the eight
+  highest-max-x traces plus eight terminal-death traces after overlap removal,
+  alongside the M10 report and 986-frame film. Detector attempt 1 was another
+  whole-WRAM hash: although max x rose 57 -> 60, 198/500 executions were
+  retained, so the fixed cap rejected it. Attempt 2 installed a sparse
+  three-feature conjunction globally with `scope_to_lineage=null`; its corpus
+  count and max x exactly matched control (67 and 57). The first seeded-mutator
+  attempt installed a bounded three-chord jump arc: its paired full arm retained
+  41/500 executions (corpus 39 -> 80) and improved max x 57 -> 62. The combined
+  binary passed final fixture verification. Evidence is in the ignored
+  directory `target/model-campaigns/m12-luna-20260811`.
 - All time-to-target comparisons use deterministic target-execution counts, not
   wall-clock time. Wall-clock measurements would violate the replay contract and
   make the tests host-dependent.

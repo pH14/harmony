@@ -143,8 +143,8 @@ impl HasLen for SmbInput {
 
 /// Pure generated semantic-mutator surface for SMB action lists.
 pub trait SmbMacro {
-    /// Produce one deterministic candidate from an immutable input.
-    fn mutate(&self, input: &SmbInput) -> SmbInput;
+    /// Produce one deterministic candidate from an immutable input and host-supplied seed.
+    fn mutate(&self, input: &SmbInput, seed: u64) -> SmbInput;
 }
 
 /// Macro that contributes no candidate.
@@ -152,7 +152,7 @@ pub trait SmbMacro {
 pub struct NullSmbMacro;
 
 impl SmbMacro for NullSmbMacro {
-    fn mutate(&self, input: &SmbInput) -> SmbInput {
+    fn mutate(&self, input: &SmbInput, _seed: u64) -> SmbInput {
         input.clone()
     }
 }
@@ -198,21 +198,27 @@ impl<M> Named for GeneratedSmbMacroAdapter<M> {
 impl<M, S> Mutator<SmbInput, S> for GeneratedSmbMacroAdapter<M>
 where
     M: SmbMacro,
-    S: HasCorpus<SmbInput>,
+    S: HasCorpus<SmbInput> + HasRand,
 {
     fn mutate(
         &mut self,
-        _state: &mut S,
+        state: &mut S,
         input: &mut SmbInput,
     ) -> Result<MutationResult, LibAflError> {
         self.emitted = false;
         if !self.enabled || !self.stats.borrow().active {
             return Ok(MutationResult::Skipped);
         }
-        let candidate = self.generated.mutate(input);
-        if candidate.actions.len() > MAX_SMB_ACTIONS {
+        let seed = state.rand_mut().next();
+        let candidate = self.generated.mutate(input, seed);
+        if candidate.actions.len() > MAX_SMB_ACTIONS
+            || candidate
+                .actions
+                .iter()
+                .any(|chord| chord.hold_frames == 0 || chord.hold_frames > MAX_HOLD_FRAMES)
+        {
             return Err(LibAflError::illegal_state(
-                "generated SMB macro exceeded the action limit",
+                "generated SMB macro emitted an out-of-bounds action list",
             ));
         }
         if candidate == *input {
@@ -1819,10 +1825,26 @@ mod tests {
     struct AlwaysAppendMacro;
 
     impl SmbMacro for AlwaysAppendMacro {
-        fn mutate(&self, input: &SmbInput) -> SmbInput {
+        fn mutate(&self, input: &SmbInput, _seed: u64) -> SmbInput {
             let mut candidate = input.clone();
             if candidate.actions.len() < MAX_SMB_ACTIONS {
                 candidate.actions.push(ButtonChord::new(0x81, 2));
+            }
+            candidate
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct SeedVariantMacro;
+
+    impl SmbMacro for SeedVariantMacro {
+        fn mutate(&self, input: &SmbInput, seed: u64) -> SmbInput {
+            let mut candidate = input.clone();
+            if candidate.actions.len() < MAX_SMB_ACTIONS {
+                let variant = u8::try_from(seed % 11).unwrap_or(0);
+                candidate
+                    .actions
+                    .push(ButtonChord::new(0x81, variant.saturating_add(2)));
             }
             candidate
         }
@@ -1990,6 +2012,16 @@ mod tests {
             }
         }
         assert!(short * 4 > non_start * 3);
+    }
+
+    #[test]
+    fn generated_macro_seed_variants_are_replayable() {
+        let input = SmbInput::default();
+        let first = SeedVariantMacro.mutate(&input, 3);
+        let replay = SeedVariantMacro.mutate(&input, 3);
+        let variant = SeedVariantMacro.mutate(&input, 9);
+        assert_eq!(first, replay);
+        assert_ne!(first, variant);
     }
 
     #[test]

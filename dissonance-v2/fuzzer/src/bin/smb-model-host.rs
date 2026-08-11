@@ -3,6 +3,8 @@
 //! M6 live-model orchestration, generated-artifact validation, restart, and replay.
 
 use std::{
+    cmp::Reverse,
+    collections::BTreeSet,
     env,
     error::Error,
     ffi::OsStr,
@@ -35,6 +37,10 @@ const MAX_TRIAGE_CALLS: usize = 200;
 const MAX_ATTEMPTS: u8 = 3;
 const SOURCE_LIMIT: usize = 262_144;
 const ERROR_LIMIT: usize = 16_384;
+const PILOT_SEED: u64 = 0x5eed_dc00;
+const PILOT_EXECUTIONS: u64 = 500;
+const PILOT_RETAINED_NUMERATOR: usize = 1;
+const PILOT_RETAINED_DENOMINATOR: usize = 5;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct M5Report {
@@ -68,7 +74,11 @@ struct M6Report {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
-    let output = required_path(&mut args, "output directory")?;
+    let first = args.next().ok_or("missing output directory or m12 mode")?;
+    if first == "m12" {
+        return run_m12(&mut args);
+    }
+    let output = PathBuf::from(first);
     let m5_path = required_path(&mut args, "M5 report")?;
     let triage_agent = required_path(&mut args, "triage-agent binary")?;
     let instrumentor_agent = required_path(&mut args, "instrumentor-agent binary")?;
@@ -145,28 +155,46 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     write_json(&output.join("base-restart.json"), &base_restart)?;
     write_json(&output.join("luna-triage.json"), &luna_triage)?;
+    let pilot_control = run_smb_restart_configured(
+        &rom,
+        &labeled_corpus,
+        PILOT_SEED,
+        PILOT_EXECUTIONS,
+        NullSmbDetector,
+        NullSmbMacro,
+        no_artifacts(),
+    )?;
+    write_json(&output.join("m12-pilot-control.json"), &pilot_control)?;
 
     let instrumentor_records = output.join("model-records/instrumentor");
     write_detector_interface(&operator_view)?;
     let detector_decision = obtain_artifact(
         ArtifactKind::Detector,
         1,
-        &operator_view,
-        &instrumentor_records,
-        &instrumentor_agent,
-        &output,
+        (
+            &operator_view,
+            &instrumentor_records,
+            &instrumentor_agent,
+            &output,
+        ),
         None,
-    )?;
+        (&rom_path, &labeled_path, &pilot_control),
+    )?
+    .ok_or("detector artifact exhausted the predeclared attempts")?;
     write_macro_interface(&operator_view)?;
     let macro_decision = obtain_artifact(
         ArtifactKind::Macro,
         2,
-        &operator_view,
-        &instrumentor_records,
-        &instrumentor_agent,
-        &output,
+        (
+            &operator_view,
+            &instrumentor_records,
+            &instrumentor_agent,
+            &output,
+        ),
         Some(&detector_decision),
-    )?;
+        (&rom_path, &labeled_path, &pilot_control),
+    )?
+    .ok_or("macro artifact exhausted the predeclared attempts")?;
     let generated_binary = build_generated(
         &output,
         &detector_decision.rust_source,
@@ -278,6 +306,194 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !report.full_stack_reaches_new_milestone {
         return Err("M6 full stack did not reach a milestone absent from M5".into());
     }
+    Ok(())
+}
+
+fn run_m12(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {
+    let output = required_path(args, "M12 output directory")?;
+    let m10_report_path = required_path(args, "M10 live report")?;
+    let film_manifest = required_path(args, "M10 film manifest")?;
+    let film_video = required_path(args, "M10 film video")?;
+    let labeled_path = required_path(args, "labeled corpus")?;
+    let instrumentor_agent = required_path(args, "instrumentor-agent binary")?;
+    if args.next().is_some() {
+        return Err("unexpected extra M12 argument".into());
+    }
+    fs::create_dir(&output)?;
+    let rom_path = PathBuf::from(
+        env::var_os("HARMONY_SMB_ROM")
+            .ok_or("HARMONY_SMB_ROM must name the external Super Mario Bros ROM")?,
+    );
+    let rom = fs::read(&rom_path)?;
+    let m10: SmbConfiguredReport = read_json(&m10_report_path)?;
+    let labeled_corpus: Vec<SmbLabeledCorpusEntry> = read_json(&labeled_path)?;
+    let operator_view = output.join("operator-view");
+    fs::create_dir_all(operator_view.join("corpus"))?;
+    write_m12_evidence(
+        &operator_view,
+        &rom,
+        &m10,
+        &m10_report_path,
+        &film_manifest,
+        &film_video,
+    )?;
+
+    let pilot_control = run_smb_restart_configured(
+        &rom,
+        &labeled_corpus,
+        PILOT_SEED,
+        PILOT_EXECUTIONS,
+        NullSmbDetector,
+        NullSmbMacro,
+        no_artifacts(),
+    )?;
+    write_json(&output.join("m12-pilot-control.json"), &pilot_control)?;
+    let records = output.join("model-records/instrumentor");
+    write_detector_interface(&operator_view)?;
+    let detector = obtain_artifact(
+        ArtifactKind::Detector,
+        1,
+        (&operator_view, &records, &instrumentor_agent, &output),
+        None,
+        (&rom_path, &labeled_path, &pilot_control),
+    )?;
+    write_macro_interface(&operator_view)?;
+    let macro_decision = obtain_artifact(
+        ArtifactKind::Macro,
+        2,
+        (&operator_view, &records, &instrumentor_agent, &output),
+        detector.as_ref(),
+        (&rom_path, &labeled_path, &pilot_control),
+    )?;
+
+    let final_binary = if detector.is_some() || macro_decision.is_some() {
+        let detector_source = match &detector {
+            Some(decision) => decision.rust_source.as_str(),
+            None => stub_detector_source(),
+        };
+        let macro_source = match &macro_decision {
+            Some(decision) => decision.rust_source.as_str(),
+            None => stub_macro_source(),
+        };
+        let binary = build_generated(&output, detector_source, macro_source, "m12-final")
+            .map_err(|error| format!("M12 final generated-artifact build failed: {error}"))?;
+        run_checked(
+            Command::new(&binary)
+                .arg("verify")
+                .arg(&rom_path)
+                .arg(&labeled_path),
+            &output.join("artifact-validation/m12-final-fixture"),
+        )?;
+        Some(binary)
+    } else {
+        None
+    };
+    write_json(
+        &output.join("m12-report.json"),
+        &serde_json::json!({
+            "source_m10_report": m10_report_path,
+            "source_film_manifest": film_manifest,
+            "source_film_video": film_video,
+            "pilot_seed": PILOT_SEED,
+            "pilot_executions": PILOT_EXECUTIONS,
+            "retained_fraction_cap": {
+                "numerator": PILOT_RETAINED_NUMERATOR,
+                "denominator": PILOT_RETAINED_DENOMINATOR,
+            },
+            "max_attempts_per_invocation": MAX_ATTEMPTS,
+            "detector": detector,
+            "macro": macro_decision,
+            "final_binary": final_binary,
+        }),
+    )?;
+    Ok(())
+}
+
+fn write_m12_evidence(
+    view: &Path,
+    rom: &[u8],
+    report: &SmbConfiguredReport,
+    report_path: &Path,
+    film_manifest: &Path,
+    film_video: &Path,
+) -> Result<(), Box<dyn Error>> {
+    fs::write(
+        view.join("fuzzer_stats"),
+        format!(
+            "target : nes-super-mario-bros\nexecs_done : {}\ncorpus_count : {}\nmax_position_bucket : {}\nflag_observed : {}\nlevel_1_2_observed : {}\n",
+            report.campaign.executions,
+            report.campaign.corpus.len(),
+            report.campaign.milestones.max_1_1_scroll_bucket,
+            report.campaign.milestones.reached_1_1_flag,
+            report.campaign.milestones.reached_1_2,
+        ),
+    )?;
+    fs::write(
+        view.join("input-vocabulary.txt"),
+        "Inputs are ordered lists of NES controller chords. buttons is the standard eight-bit A/B/Select/Start/Up/Down/Left/Right mask. hold_frames is total and clamped to 1..=120. The host mutators append, perturb, truncate, and splice bounded lists of at most 96 chords.\n",
+    )?;
+    fs::write(
+        view.join("observation-format.txt"),
+        "Each observer event exposes frame_count, complete 2048-byte CPU work RAM, sorted changed_indices, terminal dead, and a mechanical log line. Events occur at each 16-pixel x transition, first death, and action endpoint.\n",
+    )?;
+    fs::copy(report_path, view.join("m10-live.json"))?;
+    fs::copy(film_manifest, view.join("m10-max-scroll-film.json"))?;
+    fs::copy(film_video, view.join("m10-max-scroll.mp4"))?;
+
+    let mut traces = Vec::with_capacity(report.campaign.corpus.len());
+    for (testcase_id, input) in report.campaign.corpus.iter().enumerate() {
+        let observations = observe_smb_input(rom, input)?;
+        let mut max_x = 0_u16;
+        for observation in &observations {
+            let wram = observation
+                .wram
+                .as_slice()
+                .try_into()
+                .map_err(|_| "M10 evidence observation WRAM is not exactly 2 KiB")?;
+            max_x =
+                max_x.max(fuzzer::phase4b::smb_milestones_from_wram(wram).max_1_1_scroll_bucket);
+        }
+        let dead = observations
+            .last()
+            .is_some_and(|observation| observation.dead);
+        traces.push((max_x, dead, testcase_id, input.clone(), observations));
+    }
+    traces.sort_by_key(|(max_x, _, testcase_id, _, _)| (Reverse(*max_x), *testcase_id));
+    let mut selected = traces
+        .iter()
+        .take(8)
+        .map(|(_, _, testcase_id, _, _)| *testcase_id)
+        .collect::<BTreeSet<_>>();
+    selected.extend(
+        traces
+            .iter()
+            .filter(|(_, dead, _, _, _)| *dead)
+            .take(8)
+            .map(|(_, _, testcase_id, _, _)| *testcase_id),
+    );
+    let mut index = Vec::new();
+    for (max_x, dead, testcase_id, input, observations) in traces {
+        if !selected.contains(&testcase_id) {
+            continue;
+        }
+        write_json(
+            &view
+                .join("corpus")
+                .join(format!("testcase-{testcase_id:020}.json")),
+            &SmbTriageRequest {
+                testcase_id: u64::try_from(testcase_id)?,
+                execution_count: report.campaign.executions,
+                input,
+                observations,
+            },
+        )?;
+        index.push(serde_json::json!({
+            "testcase_id": testcase_id,
+            "max_x": max_x,
+            "ends_in_death": dead,
+        }));
+    }
+    write_json(&view.join("evidence-index.json"), &index)?;
     Ok(())
 }
 
@@ -397,7 +613,7 @@ fn no_artifacts() -> SmbArtifactConfig<'static> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum ArtifactKind {
     Detector,
     Macro,
@@ -406,12 +622,12 @@ enum ArtifactKind {
 fn obtain_artifact(
     kind: ArtifactKind,
     trial: u8,
-    operator_view: &Path,
-    records: &Path,
-    agent: &Path,
-    output: &Path,
+    paths: (&Path, &Path, &Path, &Path),
     detector: Option<&InstrumentorDecision>,
-) -> Result<InstrumentorDecision, Box<dyn Error>> {
+    pilot: (&Path, &Path, &SmbConfiguredReport),
+) -> Result<Option<InstrumentorDecision>, Box<dyn Error>> {
+    let (operator_view, records, agent, output) = paths;
+    let (rom, corpus, pilot_control) = pilot;
     let mut previous_error = None;
     for attempt in 1..=MAX_ATTEMPTS {
         let request = InstrumentorRequest {
@@ -429,7 +645,17 @@ fn obtain_artifact(
             ],
             &request,
         )?;
+        record_attempted_source(output, kind, trial, attempt, &decision.rust_source)?;
         if let Err(error) = validate_artifact(kind, &decision) {
+            record_validation(
+                output,
+                kind,
+                (trial, attempt),
+                false,
+                Some(&error),
+                None,
+                None,
+            )?;
             previous_error = Some(error);
             continue;
         }
@@ -454,11 +680,270 @@ fn obtain_artifact(
             macro_source,
             &format!("trial-{trial}-attempt-{attempt}"),
         ) {
-            Ok(_) => return Ok(decision),
-            Err(error) => previous_error = Some(error),
+            Ok(binary) => match validate_built_artifact(
+                kind,
+                &binary,
+                (rom, corpus),
+                output,
+                (trial, attempt),
+                pilot_control,
+            ) {
+                Ok(()) => return Ok(Some(decision)),
+                Err(error) => {
+                    if !validation_record_path(output, kind, trial, attempt).exists() {
+                        record_validation(
+                            output,
+                            kind,
+                            (trial, attempt),
+                            false,
+                            Some(&error),
+                            None,
+                            None,
+                        )?;
+                    }
+                    previous_error = Some(error);
+                }
+            },
+            Err(error) => {
+                record_validation(
+                    output,
+                    kind,
+                    (trial, attempt),
+                    false,
+                    Some(&error),
+                    None,
+                    None,
+                )?;
+                previous_error = Some(error);
+            }
         }
     }
-    Err(format!("model artifact trial {trial} exhausted three attempts").into())
+    Ok(None)
+}
+
+fn validate_built_artifact(
+    kind: ArtifactKind,
+    binary: &Path,
+    inputs: (&Path, &Path),
+    output: &Path,
+    invocation: (u8, u8),
+    detector_control: &SmbConfiguredReport,
+) -> Result<(), String> {
+    let (rom, corpus) = inputs;
+    let (trial, attempt) = invocation;
+    let stem = format!("{}-trial-{trial}-attempt-{attempt}", artifact_name(kind));
+    if let Err(error) = run_checked(
+        Command::new(binary).arg("verify").arg(rom).arg(corpus),
+        &output
+            .join("artifact-validation")
+            .join(format!("{stem}-fixture")),
+    ) {
+        let error = error.to_string();
+        record_validation(
+            output,
+            kind,
+            (trial, attempt),
+            false,
+            Some(&error),
+            None,
+            None,
+        )
+        .map_err(|record_error| record_error.to_string())?;
+        return Err(error);
+    }
+
+    let control_path = output
+        .join("artifact-validation")
+        .join(format!("{stem}-control.json"));
+    let control = if matches!(kind, ArtifactKind::Detector) {
+        write_json(&control_path, detector_control).map_err(|error| error.to_string())?;
+        detector_control.clone()
+    } else {
+        run_generated(binary, "detector", rom, corpus, &control_path, PILOT_SEED)
+            .map_err(|error| error.to_string())?;
+        read_json(&control_path).map_err(|error| error.to_string())?
+    };
+    let candidate_path = output
+        .join("artifact-validation")
+        .join(format!("{stem}-candidate.json"));
+    let candidate_arm = if matches!(kind, ArtifactKind::Detector) {
+        "detector"
+    } else {
+        "full"
+    };
+    run_generated(
+        binary,
+        candidate_arm,
+        rom,
+        corpus,
+        &candidate_path,
+        PILOT_SEED,
+    )
+    .map_err(|error| error.to_string())?;
+    let candidate: SmbConfiguredReport =
+        read_json(&candidate_path).map_err(|error| error.to_string())?;
+    let initial_corpus_count: usize = read_json::<Vec<SmbLabeledCorpusEntry>>(corpus)
+        .map_err(|error| error.to_string())?
+        .len();
+    let pilot = validate_pilot(&control, &candidate, initial_corpus_count);
+    match pilot {
+        Ok(()) => {
+            record_validation(
+                output,
+                kind,
+                (trial, attempt),
+                true,
+                None,
+                Some(&control),
+                Some(&candidate),
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        Err(error) => {
+            record_validation(
+                output,
+                kind,
+                (trial, attempt),
+                false,
+                Some(&error),
+                Some(&control),
+                Some(&candidate),
+            )
+            .map_err(|record_error| record_error.to_string())?;
+            Err(error)
+        }
+    }
+}
+
+fn validate_pilot(
+    control: &SmbConfiguredReport,
+    candidate: &SmbConfiguredReport,
+    initial_corpus_count: usize,
+) -> Result<(), String> {
+    if control.campaign.seed != PILOT_SEED
+        || candidate.campaign.seed != PILOT_SEED
+        || control.campaign.executions != PILOT_EXECUTIONS
+        || candidate.campaign.executions != PILOT_EXECUTIONS
+    {
+        return Err(
+            "artifact pilot did not use the predeclared seed and 500-execution budget".to_owned(),
+        );
+    }
+    validate_pilot_metrics(
+        initial_corpus_count,
+        candidate.campaign.corpus.len(),
+        candidate.campaign.executions,
+        control.campaign.milestones.max_1_1_scroll_bucket,
+        candidate.campaign.milestones.max_1_1_scroll_bucket,
+    )
+}
+
+fn validate_pilot_metrics(
+    initial_corpus_count: usize,
+    candidate_corpus_count: usize,
+    executions: u64,
+    control_max_x: u16,
+    candidate_max_x: u16,
+) -> Result<(), String> {
+    let retained = candidate_corpus_count
+        .checked_sub(initial_corpus_count)
+        .ok_or_else(|| "artifact pilot lost restored corpus entries".to_owned())?;
+    let execution_count = usize::try_from(executions)
+        .map_err(|_| "artifact pilot execution count exceeds usize".to_owned())?;
+    let retained_scaled = retained
+        .checked_mul(PILOT_RETAINED_DENOMINATOR)
+        .ok_or_else(|| "artifact pilot retention calculation overflowed".to_owned())?;
+    let cap_scaled = execution_count
+        .checked_mul(PILOT_RETAINED_NUMERATOR)
+        .ok_or_else(|| "artifact pilot cap calculation overflowed".to_owned())?;
+    if retained_scaled > cap_scaled {
+        return Err(format!(
+            "artifact pilot retained {retained}/{execution_count} executions; cap is {PILOT_RETAINED_NUMERATOR}/{PILOT_RETAINED_DENOMINATOR}"
+        ));
+    }
+    if candidate_max_x < control_max_x {
+        return Err(format!(
+            "artifact pilot max x regressed from {control_max_x} to {candidate_max_x}"
+        ));
+    }
+    Ok(())
+}
+
+fn record_attempted_source(
+    output: &Path,
+    kind: ArtifactKind,
+    trial: u8,
+    attempt: u8,
+    source: &str,
+) -> Result<(), Box<dyn Error>> {
+    let directory = output.join("artifact-validation");
+    fs::create_dir_all(&directory)?;
+    fs::write(
+        directory.join(format!(
+            "{}-trial-{trial}-attempt-{attempt}.rs",
+            artifact_name(kind)
+        )),
+        with_license(source),
+    )?;
+    Ok(())
+}
+
+fn record_validation(
+    output: &Path,
+    kind: ArtifactKind,
+    invocation: (u8, u8),
+    accepted: bool,
+    error: Option<&str>,
+    control: Option<&SmbConfiguredReport>,
+    candidate: Option<&SmbConfiguredReport>,
+) -> Result<(), Box<dyn Error>> {
+    let (trial, attempt) = invocation;
+    let directory = output.join("artifact-validation");
+    fs::create_dir_all(&directory)?;
+    write_json(
+        &validation_record_path(output, kind, trial, attempt),
+        &serde_json::json!({
+            "kind": artifact_name(kind),
+            "trial": trial,
+            "attempt": attempt,
+            "accepted": accepted,
+            "error": error,
+            "pilot_seed": PILOT_SEED,
+            "pilot_executions": PILOT_EXECUTIONS,
+            "retained_fraction_cap": {
+                "numerator": PILOT_RETAINED_NUMERATOR,
+                "denominator": PILOT_RETAINED_DENOMINATOR,
+            },
+            "control": control.map(pilot_summary),
+            "candidate": candidate.map(pilot_summary),
+        }),
+    )
+}
+
+fn validation_record_path(output: &Path, kind: ArtifactKind, trial: u8, attempt: u8) -> PathBuf {
+    output.join("artifact-validation").join(format!(
+        "{}-trial-{trial}-attempt-{attempt}.validation.json",
+        artifact_name(kind)
+    ))
+}
+
+fn pilot_summary(report: &SmbConfiguredReport) -> serde_json::Value {
+    serde_json::json!({
+        "seed": report.campaign.seed,
+        "executions": report.campaign.executions,
+        "corpus_count": report.campaign.corpus.len(),
+        "max_x": report.campaign.milestones.max_1_1_scroll_bucket,
+        "reached_flag": report.campaign.milestones.reached_1_1_flag,
+        "reached_1_2": report.campaign.milestones.reached_1_2,
+    })
+}
+
+fn artifact_name(kind: ArtifactKind) -> &'static str {
+    match kind {
+        ArtifactKind::Detector => "detector",
+        ArtifactKind::Macro => "macro",
+    }
 }
 
 fn validate_artifact(kind: ArtifactKind, decision: &InstrumentorDecision) -> Result<(), String> {
@@ -477,6 +962,9 @@ fn validate_artifact(kind: ArtifactKind, decision: &InstrumentorDecision) -> Res
             "expected {action:?}, received {:?}",
             decision.action
         ));
+    }
+    if decision.scope_to_lineage.is_some() {
+        return Err("SMB generated artifacts are global; scope_to_lineage must be null".to_owned());
     }
     if decision.rust_source.is_empty() || decision.rust_source.len() > SOURCE_LIMIT {
         return Err("source is empty or exceeds 256 KiB".to_owned());
@@ -527,7 +1015,7 @@ fn write_detector_interface(view: &Path) -> Result<(), Box<dyn Error>> {
 fn write_macro_interface(view: &Path) -> Result<(), Box<dyn Error>> {
     fs::write(
         view.join("artifact-interface.txt"),
-        "This invocation asks for a generated semantic mutator such as a parameterized jump arc. Return action=install_mutator. Complete source declares `pub struct InstalledMacro;` and implements `fuzzer::phase4b::SmbMacro` for it. The method is `fn mutate(&self, input: &fuzzer::phase4b::SmbInput) -> fuzzer::phase4b::SmbInput`. It may import `ButtonChord`, `SmbInput`, `MAX_HOLD_FRAMES`, and `MAX_SMB_ACTIONS`. The result must contain at most 96 chords and durations at most 120. Source is pure, deterministic, bounded, and uses no dependencies beyond fuzzer/std. A generated macro must be meaningfully parameterized by the visible input rather than merely copying it.\n",
+        "This invocation asks for a generated semantic mutator such as a parameterized jump arc. Return action=install_mutator. Complete source declares `pub struct InstalledMacro;` and implements `fuzzer::phase4b::SmbMacro` for it. The method is `fn mutate(&self, input: &fuzzer::phase4b::SmbInput, seed: u64) -> fuzzer::phase4b::SmbInput`. It may import `ButtonChord`, `SmbInput`, `MAX_HOLD_FRAMES`, and `MAX_SMB_ACTIONS`. The host draws seed from LibAFL's seeded RNG, so the same input and seed must return the same candidate while different seeds may select bounded parameter variants. The result must contain at most 96 chords and every duration must be in 1..=120. Source is pure, deterministic, bounded, and uses no dependencies beyond fuzzer/std. A generated macro must be meaningfully parameterized by the visible input and/or seed rather than merely copying it.\n",
     )?;
     Ok(())
 }
@@ -586,7 +1074,7 @@ fn build_generated(
 }
 
 fn generated_main_source() -> &'static str {
-    "// SPDX-License-Identifier: AGPL-3.0-or-later\n\nmod detector;\nmod generated_macro;\n\nuse std::{error::Error, fs, path::PathBuf};\nuse detector::InstalledDetector;\nuse generated_macro::InstalledMacro;\nuse fuzzer::phase4b::{MAX_HOLD_FRAMES, MAX_SMB_ACTIONS, NullSmbMacro, SmbArtifactConfig, SmbDetector, SmbLabeledCorpusEntry, SmbMacro, observe_smb_input, run_smb_restart_configured};\n\nfn main() -> Result<(), Box<dyn Error>> {\n    let mut args = std::env::args_os().skip(1);\n    let mode = args.next().ok_or(\"missing mode\")?;\n    let rom_path = PathBuf::from(args.next().ok_or(\"missing ROM path\")?);\n    let corpus_path = PathBuf::from(args.next().ok_or(\"missing corpus path\")?);\n    let rom = fs::read(rom_path)?;\n    let corpus: Vec<SmbLabeledCorpusEntry> = serde_json::from_slice(&fs::read(corpus_path)?)?;\n    match mode.to_str() {\n        Some(\"verify\") => {\n            if args.next().is_some() { return Err(\"unexpected verify argument\".into()); }\n            for entry in &corpus {\n                let first = observe_smb_input(&rom, &entry.input)?;\n                let second = observe_smb_input(&rom, &entry.input)?;\n                if first != second { return Err(\"fixture RAM trace was nondeterministic\".into()); }\n                if InstalledDetector.features(&first) != InstalledDetector.features(&second) { return Err(\"generated detector was nondeterministic\".into()); }\n                let a = InstalledMacro.mutate(&entry.input);\n                let b = InstalledMacro.mutate(&entry.input);\n                if a != b || a.actions.len() > MAX_SMB_ACTIONS || a.actions.iter().any(|chord| chord.hold_frames == 0 || chord.hold_frames > MAX_HOLD_FRAMES) { return Err(\"generated macro violated deterministic bounds\".into()); }\n            }\n            Ok(())\n        }\n        Some(\"run\") => {\n            let arm = args.next().ok_or(\"missing arm\")?;\n            let output = PathBuf::from(args.next().ok_or(\"missing output report\")?);\n            let seed: u64 = args.next().ok_or(\"missing seed\")?.to_string_lossy().parse()?;\n            let budget: u64 = args.next().ok_or(\"missing budget\")?.to_string_lossy().parse()?;\n            if args.next().is_some() { return Err(\"unexpected run argument\".into()); }\n            let report = match arm.to_str() {\n                Some(\"detector\") => run_smb_restart_configured(&rom, &corpus, seed, budget, InstalledDetector, NullSmbMacro, SmbArtifactConfig { detector_name: \"luna_smb_detector\", detector_retire_after: 128, macro_name: \"none\", macro_retire_after: u64::MAX, enable_macro: false })?,\n                Some(\"full\") => run_smb_restart_configured(&rom, &corpus, seed, budget, InstalledDetector, InstalledMacro, SmbArtifactConfig { detector_name: \"luna_smb_detector\", detector_retire_after: 128, macro_name: \"luna_smb_macro\", macro_retire_after: 128, enable_macro: true })?,\n                _ => return Err(\"unknown arm\".into()),\n            };\n            fs::write(output, serde_json::to_vec_pretty(&report)?)?;\n            Ok(())\n        }\n        _ => Err(\"unknown mode\".into()),\n    }\n}\n"
+    "// SPDX-License-Identifier: AGPL-3.0-or-later\n\nmod detector;\nmod generated_macro;\n\nuse std::{error::Error, fs, path::PathBuf};\nuse detector::InstalledDetector;\nuse generated_macro::InstalledMacro;\nuse fuzzer::phase4b::{MAX_HOLD_FRAMES, MAX_SMB_ACTIONS, NullSmbMacro, SmbArtifactConfig, SmbDetector, SmbLabeledCorpusEntry, SmbMacro, observe_smb_input, run_smb_restart_configured};\n\nconst MAX_GENERATED_FEATURES: usize = 4096;\nconst VERIFY_SEEDS: [u64; 3] = [0, 0x5eed_dc00, u64::MAX];\n\nfn main() -> Result<(), Box<dyn Error>> {\n    let mut args = std::env::args_os().skip(1);\n    let mode = args.next().ok_or(\"missing mode\")?;\n    let rom_path = PathBuf::from(args.next().ok_or(\"missing ROM path\")?);\n    let corpus_path = PathBuf::from(args.next().ok_or(\"missing corpus path\")?);\n    let rom = fs::read(rom_path)?;\n    let corpus: Vec<SmbLabeledCorpusEntry> = serde_json::from_slice(&fs::read(corpus_path)?)?;\n    match mode.to_str() {\n        Some(\"verify\") => {\n            if args.next().is_some() { return Err(\"unexpected verify argument\".into()); }\n            for entry in &corpus {\n                let first = observe_smb_input(&rom, &entry.input)?;\n                let second = observe_smb_input(&rom, &entry.input)?;\n                if first != second { return Err(\"fixture RAM trace was nondeterministic\".into()); }\n                let features_a = InstalledDetector.features(&first);\n                let features_b = InstalledDetector.features(&second);\n                if features_a != features_b { return Err(\"generated detector was nondeterministic\".into()); }\n                if features_a.len() > MAX_GENERATED_FEATURES { return Err(\"generated detector exceeded the feature bound\".into()); }\n                for seed in VERIFY_SEEDS {\n                    let a = InstalledMacro.mutate(&entry.input, seed);\n                    let b = InstalledMacro.mutate(&entry.input, seed);\n                    if a != b || a.actions.len() > MAX_SMB_ACTIONS || a.actions.iter().any(|chord| chord.hold_frames == 0 || chord.hold_frames > MAX_HOLD_FRAMES) { return Err(\"generated macro violated deterministic bounds\".into()); }\n                }\n            }\n            Ok(())\n        }\n        Some(\"run\") => {\n            let arm = args.next().ok_or(\"missing arm\")?;\n            let output = PathBuf::from(args.next().ok_or(\"missing output report\")?);\n            let seed: u64 = args.next().ok_or(\"missing seed\")?.to_string_lossy().parse()?;\n            let budget: u64 = args.next().ok_or(\"missing budget\")?.to_string_lossy().parse()?;\n            if args.next().is_some() { return Err(\"unexpected run argument\".into()); }\n            let report = match arm.to_str() {\n                Some(\"detector\") => run_smb_restart_configured(&rom, &corpus, seed, budget, InstalledDetector, NullSmbMacro, SmbArtifactConfig { detector_name: \"luna_smb_detector\", detector_retire_after: 128, macro_name: \"none\", macro_retire_after: u64::MAX, enable_macro: false })?,\n                Some(\"full\") => run_smb_restart_configured(&rom, &corpus, seed, budget, InstalledDetector, InstalledMacro, SmbArtifactConfig { detector_name: \"luna_smb_detector\", detector_retire_after: 128, macro_name: \"luna_smb_macro\", macro_retire_after: 128, enable_macro: true })?,\n                _ => return Err(\"unknown arm\".into()),\n            };\n            fs::write(output, serde_json::to_vec_pretty(&report)?)?;\n            Ok(())\n        }\n        _ => Err(\"unknown mode\".into()),\n    }\n}\n"
 }
 
 fn stub_detector_source() -> &'static str {
@@ -594,7 +1082,7 @@ fn stub_detector_source() -> &'static str {
 }
 
 fn stub_macro_source() -> &'static str {
-    "pub struct InstalledMacro;\nimpl fuzzer::phase4b::SmbMacro for InstalledMacro { fn mutate(&self, input: &fuzzer::phase4b::SmbInput) -> fuzzer::phase4b::SmbInput { input.clone() } }\n"
+    "pub struct InstalledMacro;\nimpl fuzzer::phase4b::SmbMacro for InstalledMacro { fn mutate(&self, input: &fuzzer::phase4b::SmbInput, _seed: u64) -> fuzzer::phase4b::SmbInput { input.clone() } }\n"
 }
 
 fn with_license(source: &str) -> String {
@@ -696,4 +1184,43 @@ fn required_path(
     Ok(PathBuf::from(
         args.next().ok_or_else(|| format!("missing {name}"))?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ArtifactKind, validate_artifact, validate_pilot_metrics};
+    use fuzzer::phase4a::{InstrumentorAction, InstrumentorDecision};
+
+    #[test]
+    fn m6_whole_wram_shotgun_fixture_is_rejected() {
+        let error = validate_pilot_metrics(39, 371, 500, 44, 48)
+            .expect_err("66.4% retained executions must exceed the 20% cap");
+        assert!(error.contains("retained 332/500"));
+    }
+
+    #[test]
+    fn pilot_rejects_max_x_regression_at_an_acceptable_retention_rate() {
+        let error = validate_pilot_metrics(39, 50, 500, 49, 48)
+            .expect_err("candidate must not regress max x");
+        assert!(error.contains("regressed from 49 to 48"));
+    }
+
+    #[test]
+    fn pilot_accepts_the_predeclared_cap_without_max_x_regression() {
+        validate_pilot_metrics(39, 139, 500, 49, 49).expect("20% cap is inclusive");
+    }
+
+    #[test]
+    fn smb_artifacts_reject_legacy_lineage_scoping() {
+        let decision = InstrumentorDecision {
+            action: InstrumentorAction::InstallDetector,
+            name: "scoped".to_owned(),
+            rust_source: "pub struct InstalledDetector; impl fuzzer::phase4b::SmbDetector for InstalledDetector { fn features(&self, _: &[fuzzer::phase4b::SmbObservations]) -> Vec<u64> { Vec::new() } }".to_owned(),
+            scope_to_lineage: Some(7),
+            rationale: "fixture".to_owned(),
+        };
+        let error = validate_artifact(ArtifactKind::Detector, &decision)
+            .expect_err("SMB detector must remain global");
+        assert!(error.contains("scope_to_lineage must be null"));
+    }
 }
