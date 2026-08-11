@@ -4540,7 +4540,7 @@ fix-direction).
   the exact-arrival seam (`arm_arrival`), already the clamp on every path, whose box
   behavior the runbook must first explain; and a genuine clamp/drain redesign is
   hm-x1ss, not this task.
-- **The maze-driver `deadline_delta` guard.** Explicitly out of scope (bead: Paul's
+- **The maze-driver `deadline_delta` guard.** Explicitly out of scope (bead: the integrator's
   Option (a) accepts @1e7; a loud driver rejection is follow-up only). Untouched.
 - **A persistent arm-trace diagnostic buffer on `ControlServer`** (to "log the arm
   bool + (vns, work, effective_vns) triple"). The verification it was meant to serve
@@ -4662,7 +4662,7 @@ landing — a different mechanism the arm-seam guard cannot pre-empt.
   fire from a genuine late landing would require a production control-path/`arm`
   change (e.g. having the arm consult a backend-reported reachable landing) — which
   the spec's scope guard forbids and routes to hm-x1ss. The task's *achievable*
-  substance (delivered here, confirmed by Paul): the portable late-landing
+  substance (delivered here, confirmed at review): the portable late-landing
   mechanism + tests that pin **which** guard fires and prove the arm-seam guard's
   inertness, plus the mutation note below. The proxy tests are retained unchanged.
 - **What the genuine late landing expresses that the ratio-1000 proxy cannot:** the

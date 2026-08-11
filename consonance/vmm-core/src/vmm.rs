@@ -2691,7 +2691,7 @@ where
     /// composition answers `UnknownService` ("not offered"), so a probing
     /// guest cleanly keeps its trap-backstopped time paths.
     ///
-    /// **One-shot** (the PR #110 r2 GPA ruling, Paul-veto-flagged): the first
+    /// **One-shot** (the PR #110 r2 GPA ruling, flagged for integrator veto): the first
     /// accepted registration pins the page for the machine's life;
     /// re-registration — same GPA or not — is a guest fault, rejected with
     /// `BadRequest` and touching nothing. The stamping target never moves.

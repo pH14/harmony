@@ -11,7 +11,7 @@ playbook). **The search is still not the fix.**
 > Effect-size floor: **ρ ≤ −3/10** · Stopping ε: **1/1000** · Deadline: 50 000 V-time ·
 > Replay bar: 25/25 · Cells: real task-67 `LogSensor` + `CellFnV1`.
 
-## Scope — the M2 amendment (Paul, `fa9d323`)
+## Scope — the M2 amendment (`fa9d323`)
 
 This gate rules on **bugs 1 and 3** (≥20 seeds/config each). **Bug 2 (ordering-interrupt) is
 documented below as found-but-degenerate/deferred** — its interrupt-counter observable is
@@ -116,7 +116,7 @@ information** to guide the remaining ~510 branches.
 
 ## Bug 2 — found-but-degenerate / deferred (three box findings)
 
-Bug 2's interrupt-counter observable (Paul's 2026-07-07 option-B) is **structurally
+Bug 2's interrupt-counter observable (the 2026-07-07 option-B ruling) is **structurally
 uncalibratable** on this box; details in `campaign-data/bug1/NOTES.md`, escalation `c71038a`:
 
 1. **Injection latency → duty ≈ 1.** The injected interrupt is serviced a few thousand V-time
@@ -183,7 +183,7 @@ follow-up applies: bug 2's rare-value-gate successor is a *conjunctive* bug on w
 dimension exploit should converge — the case where the signal has its best chance to beat
 baseline — and would sharpen an otherwise underpowered (n=11) discriminator.
 
-## Addendum — the explore/exploit ablation (Paul-authorized; does NOT reopen the NO-GO)
+## Addendum — the explore/exploit ablation (integrator-authorized; does NOT reopen the NO-GO)
 
 To separate *"the cells are blind"* from *"the exploit budget is harmful on rare-value bugs,"* the
 signal config was re-run on bug 3 with the exploit turned off: **20 seeds, signal config,

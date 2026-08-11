@@ -1,12 +1,11 @@
 # PROTOCOL — the wire-protocol authority doc
 
-> **Status: RULED (Paul, 2026-08-10).** This document is the authority for the control protocol:
-> what its verbs are, which plane each belongs to, and what obligation that plane carries. It
-> records a ruled *direction* for the wire as well — but **this document changes no bytes**. The
-> execution of the collapse described under "Ruled direction" is a separate PR, gated on the
-> protocol tests landed alongside this doc. Companion docs: `docs/TESTING.md` (rung 4 is where
-> these obligations become tests), `docs/GLOSSARY.md` (the naming authority),
-> `docs/LAYERS.md` (the capability layering).
+This document is the authority for the control protocol: what its verbs are, which plane each
+belongs to, and what obligation that plane carries. It records a ruled *direction* for the wire
+as well — but **this document changes no bytes**. Executing the collapse described under "Ruled
+direction" is a separate PR, gated on the protocol tests that landed alongside this doc.
+Companion docs: `docs/TESTING.md` (rung 4 is where these obligations become tests),
+`docs/GLOSSARY.md` (the naming authority), `docs/LAYERS.md` (the capability layering).
 
 ## What the control protocol is
 

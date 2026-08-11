@@ -1,11 +1,11 @@
 # TESTING — the testing authority doc
 
-> **Status: RULED (Paul, 2026-08-10).** This document is the index and the authority for how
-> harmony is tested. It replaces the scattered per-crate `IMPLEMENTATION.md` prose that used to
-> serve as the list of hardware gates and their hand-typed invocations. Companion docs:
-> `AGENTS.md` (what "correct" means), `docs/GLOSSARY.md` (the naming authority),
-> `docs/LAYERS.md` (the capability layering), `docs/ARCH-BOUNDARY.md` (the ISA boundary),
-> `docs/PROTOCOL.md` (the control-wire authority), `docs/CODE-QUALITY.md` (the tool floor).
+This document is the index and the authority for how harmony is tested. It replaces the
+scattered per-crate `IMPLEMENTATION.md` prose that used to serve as the list of hardware gates
+and their hand-typed invocations. Companion docs: `AGENTS.md` (what "correct" means),
+`docs/GLOSSARY.md` (the naming authority), `docs/LAYERS.md` (the capability layering),
+`docs/ARCH-BOUNDARY.md` (the ISA boundary), `docs/PROTOCOL.md` (the control-wire authority),
+`docs/CODE-QUALITY.md` (the tool floor).
 
 ## Why a ladder
 
@@ -66,7 +66,7 @@ instruction:
 **Where it runs.** On the chip. Nowhere else — this is the one rung that is *definitionally*
 hardware, because the artifact under test is the silicon.
 
-**Status: specified here, built in a later PR.** Its first two customers are already queued:
+**Specified here, built in a later PR.** Its first two customers are already queued:
 
 - the **x86 determinism box re-certification** — the `det-cfl-v1` baseline (Coffee Lake-S,
   `docs/CPU-MSR-CONTRACT.md` §2) is currently pinned by a hand-audited contract table plus the

@@ -1,10 +1,9 @@
 # GLOSSARY — the vocabulary ruling
 
-> **Status: RULED (Paul, 2026-07-06).** Binding on all new code, docs, and task specs
-> immediately. Existing code keeps its legacy names until the rename slate below rides its
-> scheduled work (see "Sequencing"); a legacy name in merged code is debt, not precedent.
-> This document is the naming authority — a task spec that mints a new term must add it
-> here (or use one already here) in the same PR.
+Binding on all new code, docs, and task specs immediately. Existing code keeps its legacy names
+until the rename slate below rides its scheduled work (see "Sequencing"); a legacy name in merged
+code is debt, not precedent. This document is the naming authority — a task spec that mints a new
+term must add it here (or use one already here) in the same PR.
 
 ## Why this exists
 
@@ -189,13 +188,13 @@ campaign  — a seeded, budgeted sequence of steps against one workload
 
 ## Sequencing
 
-> **Landed (tasks/105, PR #106, 2026-07-13).** Items 2 and 3 below are **in code**, alongside the
-> `dissonance/link` → `sdk-events` crate rename, `VTime` → `Moment`/`Span`, and consonance's
-> `Machine` → `Subject`. Still riding their natural work per item 4: the remaining crate renames
-> (`runtrace` → `journal`, `logtmpl` → `log-templates`, `matcher` → `signals`, `tactics-regime` →
-> `tactics`) and the `sdk-events` internals — `LinkSensor`, `LINK_ASSERT_CHANNEL`/`LINK_STATE_CHANNEL`,
-> `GuestEvent` → `SdkEvent`, and the SDK "catalog" → `SdkSchema` — which the `hm-bbx` Differential
-> integration deletes/renames rather than churning ahead of it.
+Items 2 and 3 below are **in code**, alongside the `dissonance/link` → `sdk-events` crate rename,
+`VTime` → `Moment`/`Span`, and consonance's `Machine` → `Subject`. Still riding their natural work
+per item 4: the remaining crate renames (`runtrace` → `journal`, `logtmpl` → `log-templates`,
+`matcher` → `signals`, `tactics-regime` → `tactics`) and the `sdk-events` internals —
+`LinkSensor`, `LINK_ASSERT_CHANNEL`/`LINK_STATE_CHANNEL`, `GuestEvent` → `SdkEvent`, and the SDK
+"catalog" → `SdkSchema` — which the `hm-bbx` Differential integration deletes/renames rather than
+churning ahead of it.
 
 1. **This document is binding on new code immediately** (it costs nothing).
 2. **Eager, standalone**: `explorer::Environment` → `Reproducer` — the collision every
@@ -211,13 +210,12 @@ campaign  — a seeded, budgeted sequence of steps against one workload
 
 # Consonance addendum
 
-> **Status: RULED (Paul, 2026-07-06).** The same review, run over consonance. Same
-> discipline: binding on new code immediately; renames ride their scheduled windows; no
-> big-bang. Consonance needed a much smaller slate than dissonance — its verb spine
-> (`branch`/`replay`/`snapshot`/`drop`/`hash`/`run`, `seal`/`quiescent`, `work`) is already
-> bit-consistent from `snapshot-store` through the `ControlServer` to the explorer seam.
-> What it had instead was a handful of cross-family collisions this document's first pass
-> missed because it was written looking at dissonance.
+The same review, run over consonance. Same discipline: binding on new code immediately; renames
+ride their scheduled windows; no big-bang. Consonance needed a much smaller slate than dissonance
+— its verb spine (`branch`/`replay`/`snapshot`/`drop`/`hash`/`run`, `seal`/`quiescent`, `work`)
+is already bit-consistent from `snapshot-store` through the `ControlServer` to the explorer seam.
+What it had instead was a handful of cross-family collisions this document's first pass missed
+because it was written looking at dissonance.
 
 ## A fourth governing rule — prefixes are earned by pairs
 
@@ -315,10 +313,9 @@ prefix.
 
 # Scoring addendum
 
-> **Status: AMENDED (2026-07-12).** The Differential strategy keeps the plain operation
-> **recompute cells**, retains the research term **energy** only if that exact mechanism is built,
-> and uses **quality** as archive-domination data. The earlier `re-key`/`re-key epoch` and exact
-> two-channel `Reward` rulings are superseded.
+The Differential strategy keeps the plain operation **recompute cells**, retains the research
+term **energy** only if that exact mechanism is built, and uses **quality** as archive-domination
+data. The earlier `re-key`/`re-key epoch` and exact two-channel `Reward` rulings are superseded.
 
 ## Adopted vocabulary — scoring
 
@@ -337,10 +334,9 @@ prefix.
 
 # Testing addendum
 
-> **Status: RULED (Paul, 2026-08-10).** The same review, run over the testing architecture. Same
-> discipline: binding on new code and new docs immediately; renames ride their scheduled work; no
-> big-bang. The five-rung ladder these words describe is `docs/TESTING.md`; the wire planes are
-> `docs/PROTOCOL.md`.
+The same review, run over the testing architecture. Same discipline: binding on new code and new
+docs immediately; renames ride their scheduled work; no big-bang. The five-rung ladder these
+words describe is `docs/TESTING.md`; the wire planes are `docs/PROTOCOL.md`.
 
 ## Kills — testing
 
