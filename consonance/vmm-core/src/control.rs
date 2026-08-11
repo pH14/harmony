@@ -482,6 +482,17 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.engine.stats(*id).ok().map(|s| s.chain_len)
     }
 
+    /// Store-wide snapshot accounting — how many layers are live and how much
+    /// the store keeps resident. Read-only; not a wire verb.
+    ///
+    /// The `Drop` verb's obligation is that dropping a handle **actually
+    /// releases the state**, not merely forgets the handle. That is only
+    /// checkable against the store's own accounting, so the protocol tests read
+    /// it here (`docs/TESTING.md`, rung 4).
+    pub fn snapshot_store_stats(&self) -> snapshot_store::StoreStats {
+        self.engine.store_stats()
+    }
+
     /// Serve one session over a byte stream (a connected unix socket, or an
     /// in-process socketpair end): decode request frames, dispatch each through
     /// [`ControlServer::handle`], and write the reply frames back, until the

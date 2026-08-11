@@ -265,6 +265,30 @@ fn req_regs() {
     check_req(12, Request::Regs, &[0x0B]);
 }
 
+#[test]
+fn req_sdk_events() {
+    check_req(
+        15,
+        Request::SdkEvents { offset: 0x2A },
+        &[
+            0x09, // REQ_SDK_EVENTS
+            0x2A, 0x00, 0x00, 0x00, // offset = 0x2A
+        ],
+    );
+}
+
+#[test]
+fn req_console() {
+    check_req(
+        16,
+        Request::Console { offset: 0x0100 },
+        &[
+            0x0E, // REQ_CONSOLE
+            0x00, 0x01, 0x00, 0x00, // offset = 0x100
+        ],
+    );
+}
+
 // -------------------------------- replies ----------------------------------
 
 #[test]
@@ -324,6 +348,68 @@ fn reply_bytes() {
             0x00, 0x07, // RESULT_OK, REPLY_BYTES
             0x04, 0x00, 0x00, 0x00, // bytes len = 4
             0xDE, 0xAD, 0xBE, 0xEF, // bytes
+        ],
+    );
+}
+
+#[test]
+fn reply_sdk_events() {
+    // A two-event page: the count, then each `(moment, event_id, bytes)` in
+    // capture order. Order-preserving by construction — a reordering here is a
+    // reordering of the evidence a reproducer is judged against.
+    check_reply(
+        64,
+        Ok(Reply::SdkEvents(vec![
+            (0x11, 0x22, vec![0xAA]),
+            (0x33, 0x44, vec![]),
+        ])),
+        &[
+            0x00, 0x06, // RESULT_OK, REPLY_SDK_EVENTS
+            0x02, 0x00, 0x00, 0x00, // event count = 2
+            0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [0] moment = 0x11
+            0x22, 0x00, 0x00, 0x00, // [0] event_id = 0x22
+            0x01, 0x00, 0x00, 0x00, // [0] bytes len = 1
+            0xAA, // [0] bytes
+            0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [1] moment = 0x33
+            0x44, 0x00, 0x00, 0x00, // [1] event_id = 0x44
+            0x00, 0x00, 0x00, 0x00, // [1] bytes len = 0 (an empty payload is legal)
+        ],
+    );
+}
+
+#[test]
+fn reply_console() {
+    // `total` is the capture's full length (the paging bound), `chunk` the page.
+    check_reply(
+        65,
+        Ok(Reply::Console {
+            total: 0x1234,
+            chunk: vec![b'h', b'i'],
+        }),
+        &[
+            0x00, 0x0C, // RESULT_OK, REPLY_CONSOLE
+            0x34, 0x12, 0x00, 0x00, // total = 0x1234
+            0x02, 0x00, 0x00, 0x00, // chunk len = 2
+            0x68, 0x69, // chunk = "hi"
+        ],
+    );
+}
+
+/// An empty console page — the drained-capture case a client pages until it
+/// sees. Pinned separately because "no bytes" is the state a truncating codec
+/// bug is most likely to reach by accident.
+#[test]
+fn reply_console_empty_page() {
+    check_reply(
+        66,
+        Ok(Reply::Console {
+            total: 0,
+            chunk: vec![],
+        }),
+        &[
+            0x00, 0x0C, // RESULT_OK, REPLY_CONSOLE
+            0x00, 0x00, 0x00, 0x00, // total = 0
+            0x00, 0x00, 0x00, 0x00, // chunk len = 0
         ],
     );
 }
@@ -770,4 +856,181 @@ fn class_bit_mirrors_decision_class() {
     // And the task-73 addition is pinned to its literal, so the enum and the
     // mirror moving together (to the wrong shared value) is still caught.
     assert_eq!(class_bit::BUGGIFY, 7);
+}
+
+// ---------------------------------------------------------------------------
+// Exhaustiveness — a new verb cannot land without a golden.
+// ---------------------------------------------------------------------------
+//
+// Reproducers are **persisted evidence**: a reproducer recorded today is
+// expected to replay months from now, from an archive, to justify a bug report.
+// Codec drift therefore does not merely break a client, it silently invalidates
+// the archive — and it does so without any test failing unless the *bytes* are
+// pinned. That is why the provenance obligation (`docs/PROTOCOL.md`) is stated
+// as an encoding property rather than a round-trip property: a codec that
+// round-trips its own drift is exactly the failure mode.
+//
+// The two tests below are the tripwire that keeps the golden set complete. Each
+// matches its enum **exhaustively, with no wildcard arm**, so adding a verb or a
+// reply is a compile error here; the fix is to add the sample below *and* a
+// byte-exact golden above.
+
+/// The body tag of an encoded frame: the first byte after the fixed 14-byte
+/// header (`magic·version·seq·len`).
+fn body_tag(frame: &[u8]) -> u8 {
+    frame[14]
+}
+
+#[test]
+fn every_request_variant_has_a_pinned_tag() {
+    let samples = vec![
+        Request::Hello(sample_caps()),
+        Request::Snapshot,
+        Request::Drop(SnapId(1)),
+        Request::Branch {
+            snap: SnapId(1),
+            env: Reproducer {
+                blob_version: 1,
+                bytes: vec![0x00],
+            },
+        },
+        Request::Replay(SnapId(1)),
+        Request::Run {
+            until: StopConditions {
+                deadline: None,
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        },
+        Request::Hash {
+            scope: HashScope::Whole,
+        },
+        Request::Perturb {
+            fault: HostFault(vec![0x00]),
+            at: Moment(0),
+        },
+        Request::SdkEvents { offset: 0 },
+        Request::Read { gpa: 0, len: 1 },
+        Request::Regs,
+        Request::Exec {
+            cmd: "true".to_string(),
+            deadline: Moment(1),
+        },
+        Request::RecordedEnv,
+        Request::Console { offset: 0 },
+    ];
+
+    let mut tags = Vec::new();
+    for req in &samples {
+        // No wildcard arm: a new verb fails to compile here until it is given a
+        // tag, a sample above, and a byte-exact golden earlier in this file.
+        let expected: u8 = match req {
+            Request::Hello(_) => 0x01,
+            Request::Snapshot => 0x02,
+            Request::Drop(_) => 0x03,
+            Request::Branch { .. } => 0x04,
+            Request::Replay(_) => 0x05,
+            Request::Run { .. } => 0x06,
+            Request::Hash { .. } => 0x07,
+            Request::Perturb { .. } => 0x08,
+            Request::SdkEvents { .. } => 0x09,
+            Request::Read { .. } => 0x0A,
+            Request::Regs => 0x0B,
+            Request::Exec { .. } => 0x0C,
+            Request::RecordedEnv => 0x0D,
+            Request::Console { .. } => 0x0E,
+        };
+        let mut buf = Vec::new();
+        encode_request(1, req, &mut buf).expect("encode");
+        assert_eq!(body_tag(&buf), expected, "{req:?}: body tag drifted");
+        tags.push(expected);
+    }
+
+    tags.sort_unstable();
+    tags.dedup();
+    assert_eq!(
+        tags,
+        (0x01u8..=0x0E).collect::<Vec<u8>>(),
+        "the 14 peer verbs must occupy tags 1..=14, each exactly once"
+    );
+}
+
+#[test]
+fn every_reply_variant_has_a_pinned_tag() {
+    use control_proto::RegsView;
+
+    let samples = vec![
+        Reply::Hello(sample_caps()),
+        Reply::Unit,
+        Reply::Stop(StopReason::Quiescent { vtime: Moment(0) }),
+        Reply::Hash([0u8; 32]),
+        Reply::SdkEvents(vec![]),
+        Reply::Console {
+            total: 0,
+            chunk: vec![],
+        },
+        Reply::Bytes(vec![]),
+        Reply::Regs(RegsView {
+            version: RegsView::VERSION,
+            gpr: [0; 16],
+            rip: 0,
+            rflags: 0,
+            seg: [0; 6],
+            cr0: 0,
+            cr3: 0,
+            cr4: 0,
+            moment: Moment(0),
+            vtime: 0,
+        }),
+        Reply::ExecResult {
+            output: vec![],
+            ok: true,
+        },
+        Reply::Snapshot {
+            id: SnapId(1),
+            at: Moment(0),
+            sdk_events: 0,
+            tainted: false,
+        },
+        Reply::Recorded(Reproducer {
+            blob_version: 1,
+            bytes: vec![],
+        }),
+    ];
+
+    let mut tags = Vec::new();
+    for reply in &samples {
+        // No wildcard arm — same tripwire as the request side.
+        let expected: u8 = match reply {
+            Reply::Hello(_) => 0x01,
+            // 0x02 was the pre-cut bare-handle snapshot reply. Retired, never
+            // reused: an old client must not decode a new reply as the shape it
+            // remembers.
+            Reply::Unit => 0x03,
+            Reply::Stop(_) => 0x04,
+            Reply::Hash(_) => 0x05,
+            Reply::SdkEvents(_) => 0x06,
+            Reply::Bytes(_) => 0x07,
+            Reply::Regs(_) => 0x08,
+            Reply::ExecResult { .. } => 0x09,
+            Reply::Snapshot { .. } => 0x0A,
+            Reply::Recorded(_) => 0x0B,
+            Reply::Console { .. } => 0x0C,
+        };
+        let mut buf = Vec::new();
+        encode_reply(1, &Ok(reply.clone()), &mut buf).expect("encode");
+        // A successful reply body is `RESULT_OK` then the variant tag.
+        assert_eq!(body_tag(&buf), 0x00, "{reply:?}: RESULT_OK byte drifted");
+        assert_eq!(buf[15], expected, "{reply:?}: reply tag drifted");
+        tags.push(expected);
+    }
+
+    tags.sort_unstable();
+    tags.dedup();
+    let mut expected_tags: Vec<u8> = (0x01u8..=0x0C).collect();
+    expected_tags.retain(|t| *t != 0x02); // retired, never reused
+    assert_eq!(
+        tags, expected_tags,
+        "every reply must occupy its own tag, and 0x02 must stay retired"
+    );
 }

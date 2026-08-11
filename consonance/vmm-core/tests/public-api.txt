@@ -20,6 +20,7 @@ pub fn vmm_core::control::ControlServer<B>::set_max_chain_len(&mut self, u32)
 pub fn vmm_core::control::ControlServer<B>::set_remap_factory(&mut self, vmm_core::control::RemapVmmFactory<B>)
 pub fn vmm_core::control::ControlServer<B>::set_restore_mode(&mut self, vmm_core::control::RestoreMode)
 pub fn vmm_core::control::ControlServer<B>::snapshot_chain_len(&self, control_proto::types::SnapId) -> core::option::Option<u32>
+pub fn vmm_core::control::ControlServer<B>::snapshot_store_stats(&self) -> snapshot_store::StoreStats
 pub fn vmm_core::control::ControlServer<B>::vmm(&self) -> core::option::Option<&vmm_core::vmm::Vmm<B>>
 pub fn vmm_core::control::server_caps() -> control_proto::types::Caps
 pub type vmm_core::control::RemapVmmFactory<B> = alloc::boxed::Box<dyn core::ops::function::FnMut(snapshot_store::mapping::Mapping) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>>
