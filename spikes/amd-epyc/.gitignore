@@ -1,5 +1,0 @@
-# build artifacts (apparatus + evidence are tracked; builds are not)
-target/
-*.o
-*.ko
-harness/amd-hammer

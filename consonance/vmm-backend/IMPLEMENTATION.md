@@ -1423,33 +1423,33 @@ unbounded 28207). The in-kernel force-exit fired on every preemption (36/36) and
   (x86.c, vmx.c) must be copied into `$B/arch/x86/kvm/`; the headers resolve from `$CM`. Symptom
   if missed: `KVM_ARM_PREEMPT_EXIT` returns `EINVAL` (the arm case isn't in the loaded module).
 
-## Task 95 M2.1 — KVM dirty-log capture (flag + harvest verb + portable decode)
+## Task 95 M2.1 — KVM dirty-log capture (flag + drain verb + portable decode)
 
 - `map_memory` now registers guest-RAM memslots (both LAPIC-split parts) with
   `KVM_MEM_LOG_DIRTY_PAGES`, **default on**. `KvmBackend::set_dirty_log_enabled(false)`
   (forwarded by `PatchedKvmBackend`) is the `flags: 0` A/B arm of the
   tracking-is-inert box gate and the emergency revert; it affects only
-  subsequently-mapped slots. The per-slot `(slot, gpa, size)` harvest table is
+  subsequently-mapped slots. The per-slot `(slot, gpa, size)` drain table is
   recorded at map time and rolled back with a failed split map.
-- `Backend::harvest_dirty_gfns()` — new trait verb with a **default
+- `Backend::drain_dirty_pages()` — new trait verb with a **default
   `Unsupported` body**: a backend without tracking makes every caller take the
   (always-correct) full-scan path. The KVM impl issues `KVM_GET_DIRTY_LOG`
   (retrieve-and-reset) per recorded slot and translates slot-relative bits to
   absolute gfns via the pure `region::decode_dirty_bitmap` (unit-/property-
   tested portably; the ioctl side stays in the coverage-excluded `kvm_sys`).
   Output is sorted ascending + deduplicated (the stated contract).
-- **Contract note (the review centerpiece):** the harvest is a *cost hint,
+- **Contract note (the review centerpiece):** the drain is a *cost hint,
   never a correctness input*. An over-report is harmless (capture-side dedup);
   an under-report is silent snapshot corruption — and host-side writes through
   the userspace mapping are invisible to KVM's log by construction, so the
   layer that writes guest RAM from the host (vmm-core) tracks those itself and
-  unions them in. On any harvest error callers MUST full-scan; a failure
+  unions them in. On any drain error callers MUST full-scan; a failure
   mid-walk may have already reset earlier slots' bitmaps, which is safe under
   exactly that rule.
 - `Box<dyn Backend>` and `PatchedKvmBackend` forward the verb **explicitly** —
   the trait default would otherwise shadow the inner dirty log (pinned by
-  `run_loop.rs::harvest_default_declines_and_box_forwards_to_the_inner_impl`).
-- `MockBackend` grows a scriptable harvest (`enable_dirty_tracking` /
+  `run_loop.rs::drain_default_declines_and_box_forwards_to_the_inner_impl`).
+- `MockBackend` grows a scriptable drain (`enable_dirty_tracking` /
   `push_dirty_gfns`; exhausted script ⇒ empty set) so vmm-core's seal wiring is
   portably testable. The mock cannot observe real guest writes, so the set is
   scripted like the exit script.

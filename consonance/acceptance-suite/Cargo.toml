@@ -10,6 +10,10 @@ default = ["cli"]
 # The `acceptance-suite` binary and its deps; disable for a clap-free library
 # (e.g. embedding the oracles in another harness).
 cli = ["dep:clap", "dep:serde_json"]
+# Non-default. Wires the real-VMM registry into the binary's hardware cells.
+# Linux/x86-64 only by construction (the deps are target-gated); enabling it
+# elsewhere is inert.
+real-vmm = ["dep:vmm-core", "dep:vmm-backend"]
 
 [[bin]]
 name = "acceptance-suite"
@@ -34,6 +38,19 @@ serde_json = { version = "1", optional = true }
 # CLI (bins only, per the whitelist).
 clap = { version = "4", features = ["derive"], optional = true }
 thiserror = "2"
+
+# The real-VMM registry's composition root (Linux/x86-64 only): the binary's
+# hardware cells boot a corpus payload on the patched backend through
+# `vmm_core::vendor::x86::bringup::boot_patched_corpus`, exactly as
+# `dissonance/campaign-runner/src/boxrun.rs` composes its box entry point. The
+# LIBRARY stays substrate-free — this is a `[[bin]]`-only edge, gated on the
+# `real-vmm` feature so a portable build never pulls it in.
+#
+# vmm-core dev-depends on this crate (its box_corpus gate drives these oracles),
+# so this is the allowed normal-dep/dev-dep cycle, not a build cycle.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+vmm-core = { path = "../vmm-core", version = "0.1.0", optional = true }
+vmm-backend = { path = "../vmm-backend", version = "0.1.0", optional = true }
 
 [dev-dependencies]
 proptest = "1"

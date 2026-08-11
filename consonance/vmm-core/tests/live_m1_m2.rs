@@ -201,6 +201,13 @@ impl Subject for VmmMachine {
     fn state_hash(&self) -> [u8; 32] {
         self.vmm.state_hash()
     }
+
+    fn observable_digest(&self) -> [u8; 32] {
+        // The VMM's own guest-emitted-output digest (report stream + serial),
+        // never `state_hash` — O3 is unsound on the latter, since the latent
+        // seeded entropy stream diverges across seeds whatever the guest does.
+        self.vmm.observable_digest()
+    }
 }
 
 /// Builds a fresh `Vmm<KvmBackend>` for one payload (the only place a concrete

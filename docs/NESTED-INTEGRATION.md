@@ -1,7 +1,7 @@
 # NESTED-INTEGRATION — from spike GO to product surface
 
-Status: **PARKED PRODUCT SKETCH — NOT RATIFIED** (Paul, 2026-07-12). Paul reviewed this and
-ruled it product strategy ahead of a product decision: the ratified goal is instead the
+**PARKED PRODUCT SKETCH — NOT RATIFIED.** This was reviewed and ruled product strategy ahead of
+a product decision: the ratified goal is instead the
 **reach matrix** (vendors Intel/AMD/ARM × forms bare-metal/virtualized — see
 `docs/ROADMAP.md`). The portability-infrastructure items were extracted to beads (appliance
 build `hm-tn9`, host-qualification preflight CLI `hm-69y`; harmonyd
@@ -157,7 +157,7 @@ Reproducer replays exactly only against its recorded artifacts).
 
 ### 3.4 Guest-level interfaces: `harmony-oci` first, plugin architecture (ruled 2026-07-10)
 
-Paul's ruling: **running OCI images is the primitive; `harmony-oci` is the first
+The ruling: **running OCI images is the primitive; `harmony-oci` is the first
 guest-level interface**, exposed as `harmony oci <subcommand…>`, with a plugin
 architecture so `harmony-docker-compose` / `harmony-kubernetes` can be added later and
 appear as `harmony docker-compose …` / `harmony kubernetes …`.
@@ -246,7 +246,7 @@ per `docs/GLOSSARY.md` rule 1 takes plain-descriptive names only (an earlier dra
 kill class as conductor/ensemble). Throughout: the **event index**, whose entries are
 `(event, Moment)` pairs.
 
-**Idea (Paul, 2026-07-10).** In a natural run, the app already narrates itself — log
+**Idea.** In a natural run, the app already narrates itself — log
 lines, OTel spans (`PUT 5` → event). Because a deterministic run makes **(Reproducer,
 Moment) an address**, stamping every app-level event with the Moment at which it was
 emitted turns the app's own observability stream into an index of rewind points. An

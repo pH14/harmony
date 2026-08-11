@@ -145,13 +145,13 @@ pub struct MockBackend {
     defer_accept: bool,
     completions: Vec<Completion>,
     /// Scripted dirty-page tracking (task 95 M2.1): `None` = no dirty tracking
-    /// (`harvest_dirty_gfns` answers `Unsupported`, like a `flags: 0` live
+    /// (`drain_dirty_pages` answers `Unsupported`, like a `flags: 0` live
     /// backend); `Some(pending)` = tracking enabled — [`Self::push_dirty_gfns`]
     /// **accumulates** gfns exactly as guest writes accumulate in KVM's log,
-    /// and each harvest drains the whole accumulated set (retrieve-and-reset).
-    /// An accumulate-then-drain model, NOT a queue of per-harvest sets: a
-    /// caller is free to harvest more than once per operation (e.g. a
-    /// harvest-and-discard re-arm right after a seal) without a scripted set
+    /// and each drain empties the whole accumulated set (retrieve-and-reset).
+    /// An accumulate-then-drain model, NOT a queue of per-drain sets: a
+    /// caller is free to drain more than once per operation (e.g. a
+    /// drain-and-discard re-arm right after a seal) without a scripted set
     /// being silently swallowed by the extra call. The mock cannot observe real
     /// guest writes (it never writes RAM), so the set is scripted.
     dirty_pending: Option<Vec<u64>>,
@@ -261,9 +261,9 @@ impl MockBackend {
         self
     }
 
-    /// Turn on dirty tracking (task 95 M2.1): after this, `harvest_dirty_gfns`
+    /// Turn on dirty tracking (task 95 M2.1): after this, `drain_dirty_pages`
     /// answers `Ok` — whatever [`Self::push_dirty_gfns`] has accumulated since
-    /// the last harvest (empty if nothing). Off (`Unsupported`, the trait
+    /// the last drain (empty if nothing). Off (`Unsupported`, the trait
     /// default's shape) until called.
     pub fn enable_dirty_tracking(&mut self) -> &mut Self {
         self.dirty_pending.get_or_insert_with(Vec::new);
@@ -272,7 +272,7 @@ impl MockBackend {
 
     /// Record scripted guest writes (implies [`Self::enable_dirty_tracking`]):
     /// the gfns **accumulate** — as writes do in KVM's log — until the next
-    /// `harvest_dirty_gfns` drains them all, however many harvests a caller
+    /// `drain_dirty_pages` drains them all, however many drains a caller
     /// issues in between operations.
     pub fn push_dirty_gfns(&mut self, gfns: Vec<u64>) -> &mut Self {
         self.dirty_pending.get_or_insert_with(Vec::new).extend(gfns);
@@ -370,10 +370,10 @@ impl Backend for MockBackend {
         Ok(())
     }
 
-    fn harvest_dirty_gfns(&mut self) -> Result<Vec<u64>> {
+    fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
         match self.dirty_pending.as_mut() {
             None => Err(BackendError::Unsupported {
-                what: "harvest_dirty_gfns (mock dirty tracking not enabled)",
+                what: "drain_dirty_pages (mock dirty tracking not enabled)",
             }),
             Some(pending) => {
                 // Retrieve-and-reset, like the live log.

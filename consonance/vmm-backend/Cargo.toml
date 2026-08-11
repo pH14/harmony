@@ -11,6 +11,11 @@ license.workspace = true
 # mock task 15 turns on under `[dev-dependencies]`. The default build compiles the
 # trait + value types only. See tasks/14-backend.md §"Features".
 mock = []
+# Non-default. Gates `vmm_backend::contract`, the shared `Backend` contract
+# exam (`docs/TESTING.md`, rung 2). Like `mock` it is a feature rather than
+# `#[cfg(test)]` so downstream crates — and this crate's own box-only KVM
+# integration tests — can run the identical exam the portable mock test runs.
+contract-tests = []
 
 [dependencies]
 thiserror = "2"

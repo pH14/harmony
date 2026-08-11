@@ -11,12 +11,15 @@ resolver = "2"
 members = ["consonance/*"]
 # harmony-linux/ contains standalone Linux-side crates; the acceptance-suite
 # payloads use custom targets/linker flags. Neither belongs to this workspace.
-# spikes/differential-lineage is a standalone workspace root by design (tasks/120);
-# the exclusion lets workspace members path-depend on it (tasks/121 M2 wires the
-# revision coordinator to the spike dataflow) without merging the two graphs.
+# dissonance/differential-lineage is a standalone workspace root by design;
+# the exclusion keeps its differential-dataflow/timely graph out of this one.
 # dissonance-v2/ is a standalone workspace root by design (the LibAFL rebuild,
 # docs/LIBAFL-PLAN.md); it must not share this build graph before its phase 5.
-exclude = ["harmony-linux", "spikes/differential-lineage", "dissonance-v2"]
+exclude = [
+  "harmony-linux",
+  "dissonance/differential-lineage",
+  "dissonance-v2",
+]
 
 [workspace.package]
 edition = "2024"

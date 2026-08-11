@@ -1,10 +1,9 @@
 # CLI — the `harmony` command
 
-> **Status: DRAFT — NOT RATIFIED (2026-07-13, pondering session).** This document develops
-> the CLI/plugin thinking recorded in `docs/NESTED-INTEGRATION.md` §3.4. That section's two
-> safety rules and the `harmony-oci`-first ordering were **ruled by Paul 2026-07-10** and are
-> treated as standing here; the surrounding product sketch remains parked and this document
-> does not un-park it. `docs/GLOSSARY.md` stays the naming authority: the verbs below are a
+> **DRAFT — NOT RATIFIED.** This document develops the CLI/plugin thinking recorded in
+> `docs/NESTED-INTEGRATION.md` §3.4. That section's two safety rules and the `harmony-oci`-first
+> ordering are **ruled** and are treated as standing here; the surrounding product sketch remains
+> parked and this document does not un-park it. `docs/GLOSSARY.md` stays the naming authority: the verbs below are a
 > slate for ruling, and any that ratify must be added there in the same PR. Both consonance
 > and dissonance surfaces are moving targets right now — so this document pins the **grammar
 > and contracts** hard and keeps the **verb slate** deliberately soft.
@@ -104,7 +103,7 @@ timeline off as reproducible.
 | `harmony resolve <reproducer> --at <moment\|event>` | boot class-matched replay, `run_to` the Moment, attach the resolution client | fronts the existing `dissonance/resolution` REPL/session |
 | `harmony film <reproducer> --span <a..b>` | render what the screen showed | ruled word; task-87 machinery |
 | `harmony unison <bundle>` | determinism self-certification: run twice (or N×), compare `state_hash` | the family word doing product work; relation to `acceptance-suite` is an open question (§8) |
-| `harmony preflight` | host qualification probe: GO or fail-closed machine-readable refusal | bead `hm-69y` (renamed from "doctor"; Paul wants it composable — launcher invokes it, users can too) |
+| `harmony preflight` | host qualification probe: GO or fail-closed machine-readable refusal | bead `hm-69y` (renamed from "doctor"; ruled composable — the launcher invokes it, users can too) |
 | `harmony plugin ls` | list discovered plugins + versions + bundle schema versions | `harmony --help` also lists them (§3.4 mechanics) |
 
 Cross-cutting conventions:

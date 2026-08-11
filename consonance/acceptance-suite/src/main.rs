@@ -5,20 +5,43 @@
 //! Exit codes: `0` if every oracle passed, `2` if any oracle failed (it is a
 //! detector, not a failure), `1` on an operational error (bad manifest, I/O).
 //!
-//! For this task the factory registry is the **toy** registry: each item's
-//! `source` is interpreted as a `unison` program-generator seed (a decimal
-//! integer, or any other string hashed deterministically to one), so the CLI is
-//! self-contained with no payload files. The real-VMM registry is wired at
-//! integration without touching the library.
+//! # Cells and registries
+//!
+//! A manifest row is one **cell** of the acceptance matrix (`docs/TESTING.md`,
+//! rung 5): (workload) × (oracle set) × (host) × (virt level). `--host <id>`
+//! selects which cells run; the host also selects which registry supplies each
+//! cell's `SubjectFactory`:
+//!
+//! * `--host portable` (the default) — the **toy** registry: each item's
+//!   `source` is a `unison` program-generator seed (a decimal integer, or any
+//!   other string hashed deterministically to one), so the binary is
+//!   self-contained with no payload files and runs anywhere. This is what the
+//!   portable CI smoke test exercises.
+//! * any hardware host — the **real-VMM** registry ([`realvmm`]), a
+//!   Linux/x86-64 composition root behind the `real-vmm` feature that boots the
+//!   item's built payload on the patched backend. It is the one place a concrete
+//!   `(Backend impl, Arch vendor)` pair is named, mirroring
+//!   `dissonance/campaign-runner/src/boxrun.rs`.
+//!
+//! The library above both stays substrate-free: `run_item` is generic over
+//! [`unison::SubjectFactory`] and does not know which registry produced it.
 
 use std::process::ExitCode;
 
 use acceptance_suite::{
-    CorpusItem, ItemReport, RunConfig, load_manifest, run_item, to_manifest, toy_factory, validate,
+    CorpusItem, HostId, ItemReport, RunConfig, load_manifest, run_item, to_manifest, toy_factory,
+    validate,
 };
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 use unison::toy::ZERO_SEED_STATE;
+
+// The real-VMM composition root. Gated on the **arch** as well as the OS
+// (AGENTS.md, cross-arch discipline): `boot_patched_corpus` names the x86
+// vendor's patched backend, so this is x86-64-Linux-only, not merely
+// Linux-only. Absent everywhere else, where a hardware host is refused loudly.
+#[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "real-vmm"))]
+mod realvmm;
 
 #[derive(Parser)]
 #[command(name = "acceptance-suite", version, about)]
@@ -37,6 +60,11 @@ enum Cmd {
         /// Only run the item with this name.
         #[arg(long)]
         item: Option<String>,
+        /// Which host's cells to run: `portable` (any machine, the toy
+        /// registry), `det-cfl-v1` (the x86 determinism box), or `msr1` (the
+        /// arm64 box). Cells that do not list this host are reported as unrun.
+        #[arg(long, default_value = "portable")]
+        host: String,
         /// Primary seed (O1/O2, and seed_a for O3).
         #[arg(long, default_value_t = 0)]
         seed: u64,
@@ -62,7 +90,12 @@ enum Cmd {
 /// The single JSON object the `run` subcommand prints.
 #[derive(Serialize)]
 struct RunSummary {
+    /// Which host's cells this run selected.
+    host: String,
     items: Vec<ItemReport>,
+    /// Cells present in the manifest that this host does not satisfy. Reported,
+    /// never silent: an unrun cell must not read as a passing one.
+    unrun: Vec<String>,
     all_passed: bool,
 }
 
@@ -85,9 +118,50 @@ fn default_seed_b(seed: u64) -> u64 {
     seed ^ K
 }
 
+/// Execute one cell, choosing the registry by host.
+///
+/// The **only** difference between a portable cell and a hardware cell is which
+/// registry supplies the `SubjectFactory`; the item, its oracles, and
+/// `run_item` are identical. On a build without the real-VMM composition root, a
+/// hardware host is refused loudly here rather than silently downgraded to the
+/// toy registry — a toy run reported under a hardware host's name would be the
+/// worst kind of false green.
+fn run_cell<G: Fn(&str) -> Option<String> + Copy>(
+    item: &CorpusItem,
+    host: HostId,
+    cfg: &RunConfig,
+    read_golden: G,
+) -> Result<ItemReport, Box<dyn std::error::Error>> {
+    match host {
+        HostId::Portable => Ok(run_item(
+            item,
+            &toy_factory(&item.source),
+            cfg,
+            read_golden,
+        )?),
+        #[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "real-vmm"))]
+        HostId::DetCflV1 => realvmm::run_cell(item, cfg, read_golden),
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64", feature = "real-vmm")))]
+        HostId::DetCflV1 => Err(format!(
+            "cell {:?} needs host det-cfl-v1, but this binary has no real-VMM registry \
+             (build it on Linux/x86-64 with --features real-vmm). Refusing to run it on the \
+             toy registry and report the result under a hardware host's name.",
+            item.name
+        )
+        .into()),
+        HostId::Msr1 => Err(format!(
+            "cell {:?} needs host msr1; the arm64 registry does not exist yet \
+             (docs/TESTING.md rung 1 — CPU qualification comes first)",
+            item.name
+        )
+        .into()),
+    }
+}
+
 fn cmd_run(
     manifest: &str,
     item_filter: Option<&str>,
+    host: HostId,
     cfg: &RunConfig,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(manifest)?;
@@ -98,10 +172,17 @@ fn cmd_run(
     let read_golden = |path: &str| std::fs::read_to_string(path).ok();
 
     let mut reports = Vec::new();
+    let mut unrun = Vec::new();
     for it in &items {
         if let Some(want) = item_filter
             && it.name != want
         {
+            continue;
+        }
+        // A cell this host cannot satisfy is *reported*, not skipped in silence:
+        // an unrun cell must never read as a passing one.
+        if !it.hosts.contains(&host) {
+            unrun.push(it.name.clone());
             continue;
         }
         // A registered item that declares no oracles would run nothing yet
@@ -113,17 +194,20 @@ fn cmd_run(
             )
             .into());
         }
-        let factory = toy_factory(&it.source);
-        reports.push(run_item(it, &factory, cfg, read_golden)?);
+        reports.push(run_cell(it, host, cfg, read_golden)?);
     }
 
-    // Fail loudly if nothing actually ran (e.g. `--item <typo>`): otherwise the
-    // empty `.all(..)` below is vacuously true and reports all_passed.
+    // Fail loudly if nothing actually ran (e.g. `--item <typo>`, or a host no
+    // cell lists): otherwise the empty `.all(..)` below is vacuously true and
+    // reports all_passed.
     if reports.is_empty() {
         return Err(format!(
-            "--item {:?} matched no item in the manifest ({} present): nothing ran",
+            "nothing ran: --host {} --item {:?} matched no cell in the manifest \
+             ({} item(s) present, {} unrun on this host)",
+            host.to_token(),
             item_filter.unwrap_or(""),
-            items.len()
+            items.len(),
+            unrun.len()
         )
         .into());
     }
@@ -132,7 +216,9 @@ fn cmd_run(
     println!(
         "{}",
         serde_json::to_string(&RunSummary {
+            host: host.to_token().to_string(),
             items: reports,
+            unrun,
             all_passed
         })?
     );
@@ -172,11 +258,15 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Cmd::Run {
             manifest,
             item,
+            host,
             seed,
             seed_b,
             checkpoint_every,
             limit,
         } => {
+            let host = HostId::from_token(&host).ok_or_else(|| {
+                format!("unknown --host {host:?}; expected one of: portable, det-cfl-v1, msr1")
+            })?;
             // A zero limit verifies nothing (compare_runs compares 0 checkpoints,
             // every run halts after 0 work), so it could only ever be vacuously
             // green; reject it.
@@ -201,7 +291,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 checkpoint_every,
                 limit,
             };
-            cmd_run(&manifest, item.as_deref(), &cfg)
+            cmd_run(&manifest, item.as_deref(), host, &cfg)
         }
         Cmd::Validate { manifest } => cmd_validate(&manifest),
     }

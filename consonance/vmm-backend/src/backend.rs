@@ -67,10 +67,10 @@ pub trait Backend {
     /// every later `run`.
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()>;
 
-    /// Harvest-and-reset the backend's **guest-write dirty-page log** (task 95
+    /// Drain-and-reset the backend's **guest-write dirty-page log** (task 95
     /// M2.1): return the guest frame numbers dirtied *by guest execution* since
-    /// the previous harvest (or since the region was mapped), **sorted ascending
-    /// and deduplicated**, and atomically reset the log so the next harvest
+    /// the previous drain (or since the region was mapped), **sorted ascending
+    /// and deduplicated**, and atomically reset the log so the next drain
     /// covers exactly the span from this call. On KVM this is `KVM_GET_DIRTY_LOG`
     /// (retrieve-and-reset) per RAM memslot, decoded and translated back to
     /// absolute gfns.
@@ -88,9 +88,9 @@ pub trait Backend {
     /// The default returns [`Unsupported`](crate::BackendError::Unsupported): a
     /// backend without dirty tracking simply makes every caller take the
     /// full-scan path.
-    fn harvest_dirty_gfns(&mut self) -> Result<Vec<u64>> {
+    fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
         Err(crate::error::BackendError::Unsupported {
-            what: "harvest_dirty_gfns",
+            what: "drain_dirty_pages",
         })
     }
 
@@ -244,10 +244,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         unsafe { (**self).map_memory(gpa, host) }
     }
 
-    fn harvest_dirty_gfns(&mut self) -> Result<Vec<u64>> {
+    fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
         // Explicit forward: without this the default (Unsupported) body would
         // shadow the boxed backend's real dirty log.
-        (**self).harvest_dirty_gfns()
+        (**self).drain_dirty_pages()
     }
 
     fn run(&mut self) -> Result<Exit<Self::A>> {

@@ -1,10 +1,9 @@
 # GLOSSARY — the vocabulary ruling
 
-> **Status: RULED (Paul, 2026-07-06).** Binding on all new code, docs, and task specs
-> immediately. Existing code keeps its legacy names until the rename slate below rides its
-> scheduled work (see "Sequencing"); a legacy name in merged code is debt, not precedent.
-> This document is the naming authority — a task spec that mints a new term must add it
-> here (or use one already here) in the same PR.
+Binding on all new code, docs, and task specs immediately. Existing code keeps its legacy names
+until the rename slate below rides its scheduled work (see "Sequencing"); a legacy name in merged
+code is debt, not precedent. This document is the naming authority — a task spec that mints a new
+term must add it here (or use one already here) in the same PR.
 
 ## Why this exists
 
@@ -189,13 +188,13 @@ campaign  — a seeded, budgeted sequence of steps against one workload
 
 ## Sequencing
 
-> **Landed (tasks/105, PR #106, 2026-07-13).** Items 2 and 3 below are **in code**, alongside the
-> `dissonance/link` → `sdk-events` crate rename, `VTime` → `Moment`/`Span`, and consonance's
-> `Machine` → `Subject`. Still riding their natural work per item 4: the remaining crate renames
-> (`runtrace` → `journal`, `logtmpl` → `log-templates`, `matcher` → `signals`, `tactics-regime` →
-> `tactics`) and the `sdk-events` internals — `LinkSensor`, `LINK_ASSERT_CHANNEL`/`LINK_STATE_CHANNEL`,
-> `GuestEvent` → `SdkEvent`, and the SDK "catalog" → `SdkSchema` — which the `hm-bbx` Differential
-> integration deletes/renames rather than churning ahead of it.
+Items 2 and 3 below are **in code**, alongside the `dissonance/link` → `sdk-events` crate rename,
+`VTime` → `Moment`/`Span`, and consonance's `Machine` → `Subject`. Still riding their natural work
+per item 4: the remaining crate renames (`runtrace` → `journal`, `logtmpl` → `log-templates`,
+`matcher` → `signals`, `tactics-regime` → `tactics`) and the `sdk-events` internals —
+`LinkSensor`, `LINK_ASSERT_CHANNEL`/`LINK_STATE_CHANNEL`, `GuestEvent` → `SdkEvent`, and the SDK
+"catalog" → `SdkSchema` — which the `hm-bbx` Differential integration deletes/renames rather than
+churning ahead of it.
 
 1. **This document is binding on new code immediately** (it costs nothing).
 2. **Eager, standalone**: `explorer::Environment` → `Reproducer` — the collision every
@@ -211,13 +210,12 @@ campaign  — a seeded, budgeted sequence of steps against one workload
 
 # Consonance addendum
 
-> **Status: RULED (Paul, 2026-07-06).** The same review, run over consonance. Same
-> discipline: binding on new code immediately; renames ride their scheduled windows; no
-> big-bang. Consonance needed a much smaller slate than dissonance — its verb spine
-> (`branch`/`replay`/`snapshot`/`drop`/`hash`/`run`, `seal`/`quiescent`, `work`) is already
-> bit-consistent from `snapshot-store` through the `ControlServer` to the explorer seam.
-> What it had instead was a handful of cross-family collisions this document's first pass
-> missed because it was written looking at dissonance.
+The same review, run over consonance. Same discipline: binding on new code immediately; renames
+ride their scheduled windows; no big-bang. Consonance needed a much smaller slate than dissonance
+— its verb spine (`branch`/`replay`/`snapshot`/`drop`/`hash`/`run`, `seal`/`quiescent`, `work`)
+is already bit-consistent from `snapshot-store` through the `ControlServer` to the explorer seam.
+What it had instead was a handful of cross-family collisions this document's first pass missed
+because it was written looking at dissonance.
 
 ## A fourth governing rule — prefixes are earned by pairs
 
@@ -315,10 +313,9 @@ prefix.
 
 # Scoring addendum
 
-> **Status: AMENDED (2026-07-12).** The Differential strategy keeps the plain operation
-> **recompute cells**, retains the research term **energy** only if that exact mechanism is built,
-> and uses **quality** as archive-domination data. The earlier `re-key`/`re-key epoch` and exact
-> two-channel `Reward` rulings are superseded.
+The Differential strategy keeps the plain operation **recompute cells**, retains the research
+term **energy** only if that exact mechanism is built, and uses **quality** as archive-domination
+data. The earlier `re-key`/`re-key epoch` and exact two-channel `Reward` rulings are superseded.
 
 ## Adopted vocabulary — scoring
 
@@ -332,3 +329,67 @@ prefix.
 - **`quality`** — deterministic per-Entry data used by Differential best-per-cell domination.
   Whether it is scalar, lexicographic, or later exposed through `Reward` remains an implementation
   contract to earn; it is not ruled to be exactly a second `Reward` channel.
+
+---
+
+# Testing addendum
+
+The same review, run over the testing architecture. Same discipline: binding on new code and new
+docs immediately; renames ride their scheduled work; no big-bang. The five-rung ladder these
+words describe is `docs/TESTING.md`; the wire planes are `docs/PROTOCOL.md`.
+
+## Kills — testing
+
+| Legacy | Replacement | Why |
+|---|---|---|
+| "deterministic-twice" | **identity test** | Named the mechanism by its shape ("we ran it twice") and never said what it established. The claim is *identity*: one address, two runs, indistinguishable state |
+| "conformance" (of a trait implementation) | **contract tests** | The trait's doc comments *are* the contract; the exam makes them executable. "Conformance" also collides head-on with the acceptance suite's **O2 conformance-to-spec** oracle, which is a different thing (a workload's observable output against a committed golden) |
+| "chip census" | **CPU qualification** | A census counts; this decides. The sweep issues a per-chip verdict — the chip either is or is not a lawful determinism substrate |
+| **"seam"** (in new text) | **boundary**, or the concrete trait/contract by name | An unfalsifiable word: every interface is a "seam", so the term carries no information and hides *which* line is meant. Write "boundary" for an architectural line, or name the thing (`the Backend trait`, `the interrupt delivery contract`, `the ISA boundary`). **Banned in new text only** — existing occurrences are debt cleared by their own scheduled pass, not churned here |
+| `harvest_dirty_gfns` | **`drain_dirty_pages`** | "Harvest" is inherited KVM jargon; "drain" is the crate's own existing word for retrieve-and-reset, and the method's semantics are exactly a drain |
+
+## Adopted vocabulary — testing
+
+| Word | Names | Notes |
+|---|---|---|
+| **identity test** | run the same address twice; require the full state hashes to be bit-identical | The rung-3 claim. An identity test compares `state_hash` (all state, latent included) — not `observable_digest`, which would be blind to a latent divergence |
+| **contract tests** | the one shared exam every implementor of a trait must pass, written once and run against each | Plural by nature: it is a *suite* keyed to a trait, not a single test. The exam is generic over the trait and driven through a fixture the implementor supplies |
+| **CPU qualification** | the per-chip sweep that qualifies new hardware as a determinism substrate | Classifies every advertised instruction/feature as *deterministically pure* / *must-trap* / *forbidden*, plus per-chip exactness and save/restore fixpoint. Rung 1 |
+| **plane** | a group of control-protocol verbs sharing **one** obligation | Five today: session, state algebra, observation, intervention, provenance (`docs/PROTOCOL.md`). A new verb inherits its plane's obligation; a verb that fits no plane's obligation is a design error |
+
+## The backend contract categories — exactly three
+
+A `Backend` obligation is **ordering**, **exactness**, or **fixpoint**. There is no fourth
+category, and in particular:
+
+- **"capability honesty" is not a category.** A capability flag creates no obligation of its own —
+  it **selects which exactness exams apply**. A backend advertising a deterministic clock is
+  bound by the clock-reads-resolve-to-V-time exam; one that does not advertise it is bound to
+  decline loudly rather than behave as if it had the capability. Both are exactness.
+
+| Category | Names |
+|---|---|
+| **ordering** | operations happen in the contract's order; an out-of-order one fails closed rather than silently mis-servicing the guest |
+| **exactness** | quantities the engine treats as exact really are exact — deadlines, dirty-page sets, repeated runs |
+| **fixpoint** | round trips are round trips — `save → restore → save` is the identity, and a malformed blob is an error, never a panic |
+
+## Pins — testing
+
+- **The three digests keep their three roles** (restating the consonance addendum's pin, because
+  the acceptance oracles are where it is load-bearing): `state_hash` = all state incl. latent;
+  `observable_digest` = guest-emitted output only, and **the only sound basis for O3**;
+  `Hash { scope }` = the wire verb. Three names, three roles; never unify.
+- **O1 / O2 / O3 keep their numbers and their meanings**: O1 **identity**, O2
+  **conformance-to-spec** (observable digest against a committed golden), O3 **seed-sensitivity**.
+  The word "conformance" is reserved to O2 and is not available for trait contract tests.
+- **`sweep` stays fenced as gate-only vocabulary** (see the top-level Keeps). A CPU-qualification
+  sweep is a gate; it is not a campaign and never appears in product-facing language.
+
+## Sequencing — testing
+
+1. **Binding on new code and new docs immediately.**
+2. **Eager, standalone**: `harvest_dirty_gfns` → `drain_dirty_pages` (trait verb, all
+   implementations, callers, docs; regenerates one public-API snapshot, touches no wire and no
+   golden).
+3. **New text only** for the "seam" ban: a repo-wide purge of existing occurrences is its own
+   pass, deliberately not folded into unrelated work.

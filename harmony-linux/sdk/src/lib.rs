@@ -4,7 +4,7 @@
 //!
 //! # The thin-SDK ruling (load-bearing)
 //!
-//! The SDK is **hooks + transport only** (Paul, 2026-07-01): it contributes
+//! The SDK is **hooks + transport only** (ruled): it contributes
 //! *identity and observation* — named points, their firings, numeric state — and
 //! the **host owns every interpretation**. There are no checkers and no policy in
 //! the guest; Elle/history checkers live at the evaluator layer (task 75). So:

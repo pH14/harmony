@@ -8,7 +8,7 @@
 //! failing test and a reviewable diff.
 //!
 //! Refresh after an intentional, reviewed API change:
-//!   `UPDATE_PUBLIC_API=1 cargo test -p vtime --test public_api`
+//!   `UPDATE_PUBLIC_API=1 cargo test -p telemetry --test public_api`
 //!
 //! Requires the pinned nightly toolchain and `cargo-public-api`
 //! (`scripts/install-quality-tools.sh`). When either is absent the test skips
@@ -20,7 +20,7 @@ use std::process::Command;
 /// Pinned nightly — `cargo-public-api` needs rustdoc-JSON, which is
 /// nightly-only. Keep in sync with `docs/CODE-QUALITY.md`.
 const PINNED_NIGHTLY: &str = "nightly-2026-06-16";
-const CRATE: &str = "vtime";
+const CRATE: &str = "telemetry";
 
 #[test]
 #[ignore = "needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`"]

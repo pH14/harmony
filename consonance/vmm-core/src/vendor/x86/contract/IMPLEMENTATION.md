@@ -18,7 +18,7 @@ machinery, with every AMD enforcement cell marked `verify-on-silicon`.
 - **Per-row `verified = "on-silicon-pending-AE4"`** on `cpuid.entry` / `msr.entry`
   (`CpuidRow.verified` / `MsrRow.verified`). `None` for Intel rows (implicitly
   `verified = det-cfl-v1`); `Some(..)` on every AMD enforcement row. **Part of the hashed
-  canonical form** (Deliverable 3, Paul veto point 2 — row-level, in the hash), so a row
+  canonical form** (Deliverable 3, integrator veto point 2 — row-level, in the hash), so a row
   silently losing its marker is a hash-breaking byte diff.
 - **Per-row `applies-when = "legacy-perfmon" | "zen4+"`** on `msr.entry`
   (`MsrRow.applies_when`) — the per-generation PMU marker (Deliverable 4). Hashed. The
@@ -27,7 +27,7 @@ machinery, with every AMD enforcement cell marked `verify-on-silicon`.
   level `transfers-unchanged-pending-AE4` markers for the shared-ISA surface
   (`cpuid-standard`, `insn`, `timer`, `cmos`, `mmio`) and the per-silicon `host-assert`
   block (`on-silicon-pending-AE4`). The canonicalizer emits `transfer <section>
-  <disposition>` in place of the section's rows (Deliverable 2, Paul veto point 5 —
+  <disposition>` in place of the section's rows (Deliverable 2, integrator veto point 5 —
   section-level, not 3000 hand-copied rows).
 - **`[[msr-shared.entry]]`** array (`Contract.msr_shared: Vec<IndexSpec>`) — the shared
   architectural MSR surface is an **explicit allowlist**, not a numeric range (round-4
@@ -46,7 +46,7 @@ reader — no `toml` crate, no new dependency (`thiserror` was already present).
 ## Loader shape (Deliverable 7 — under `vendor/x86/contract/`)
 
 - `VendorId` (`pub(crate)`) is the first-class axis, and lives **inside**
-  `vendor/x86/contract/` (Paul veto point 3), consistent with the tasks/108 engine/vendor
+  `vendor/x86/contract/` (integrator veto point 3), consistent with the tasks/108 engine/vendor
   split: both Intel and AMD are x86 vendors. The engine names no vendor specifics.
 - `Contract::load(toml, expected: VendorId) -> Result<Contract, ContractError>` is the
   single validating entry point, and it is **fail-closed** — every ambiguity is a refusal,
@@ -91,7 +91,7 @@ contract — it is structurally unreachable, not merely undialed. `contract()` /
 `cpuid_model()` / `msr_filter_allow()` / `disp_map()` all operate on the Intel column only.
 `amd_draft_is_unreachable_from_the_live_path` asserts the live path is GenuineIntel.
 
-## Intel canonical-form decision (Deliverable 6, Paul veto point 4) — **zero-drift**
+## Intel canonical-form decision (Deliverable 6, integrator veto point 4) — **zero-drift**
 
 The spec offered two paths: a reviewed `contract-version` bump (vendor key hashed) vs a
 zero-drift grammar (vendor key un-hashed header metadata, Intel canonical form truly
@@ -158,8 +158,8 @@ edit. Until then the draft is data + machinery only, reachable only from tests.
 
 - **Reviewed version bump (vendor key hashed).** Rejected in favour of zero-drift (above) —
   the spec prefers zero-drift when feasible, and it is.
-- **A vendor-neutral `vendor/contract/` module** parameterized by vendor (Paul veto
-  point 3). Rejected: both Intel and AMD are x86 vendors, so `vendor/x86/contract/` is the
+- **A vendor-neutral `vendor/contract/` module** parameterized by vendor (integrator
+  veto point 3). Rejected: both Intel and AMD are x86 vendors, so `vendor/x86/contract/` is the
   correct home; the ARM contract is a *different schema* handled later (below).
 - **Materializing the shared-ISA surface (standard CPUID leaves, the shared MSR space, the
   §4/§5 tables) into the AMD file.** Rejected: that forks the one reproducer. Section-level
