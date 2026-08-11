@@ -263,6 +263,52 @@ pub fn vmm_backend::arch::arm64::Arm64Exit::stages_completion(&self) -> bool
 impl vmm_backend::arch::ArchExit for vmm_backend::arch::x86::X86Exit
 pub fn vmm_backend::arch::x86::X86Exit::reason(&self) -> vmm_backend::ExitReason
 pub fn vmm_backend::arch::x86::X86Exit::stages_completion(&self) -> bool
+pub mod vmm_backend::contract
+pub enum vmm_backend::contract::DeclineReason
+pub vmm_backend::contract::DeclineReason::CapabilityAbsent(&'static str)
+pub vmm_backend::contract::DeclineReason::NoDirtyLog
+pub vmm_backend::contract::DeclineReason::NoRunUntil
+pub vmm_backend::contract::DeclineReason::ScenarioUnavailable(vmm_backend::contract::Scenario)
+pub enum vmm_backend::contract::PendingKind
+pub vmm_backend::contract::PendingKind::Cpuid
+pub vmm_backend::contract::PendingKind::Hypercall
+pub vmm_backend::contract::PendingKind::Rdmsr
+pub vmm_backend::contract::PendingKind::Read
+pub vmm_backend::contract::PendingKind::Wrmsr
+pub enum vmm_backend::contract::Scenario
+pub vmm_backend::contract::Scenario::BusyLoop
+pub vmm_backend::contract::Scenario::Cpuid
+pub vmm_backend::contract::Scenario::Hypercall
+pub vmm_backend::contract::Scenario::Idle
+pub vmm_backend::contract::Scenario::MmioLoad
+pub vmm_backend::contract::Scenario::PortIn
+pub vmm_backend::contract::Scenario::Rdmsr
+pub vmm_backend::contract::Scenario::Rdrand
+pub vmm_backend::contract::Scenario::Rdtsc
+pub vmm_backend::contract::Scenario::Wrmsr
+pub struct vmm_backend::contract::ContractReport
+pub vmm_backend::contract::ContractReport::backend: &'static str
+pub vmm_backend::contract::ContractReport::declined: alloc::vec::Vec<vmm_backend::contract::Decline>
+pub vmm_backend::contract::ContractReport::ran: alloc::vec::Vec<&'static str>
+impl vmm_backend::contract::ContractReport
+pub fn vmm_backend::contract::ContractReport::did_run(&self, &'static str) -> bool
+pub struct vmm_backend::contract::Decline
+pub vmm_backend::contract::Decline::exam: &'static str
+pub vmm_backend::contract::Decline::why: vmm_backend::contract::DeclineReason
+pub trait vmm_backend::contract::BackendFixture
+pub type vmm_backend::contract::BackendFixture::B: vmm_backend::Backend<A = vmm_backend::arch::x86::X86>
+pub fn vmm_backend::contract::BackendFixture::dirty_pages(&mut self, &mut Self::B) -> core::option::Option<alloc::vec::Vec<u64>>
+pub fn vmm_backend::contract::BackendFixture::implements_run_until(&self) -> bool
+pub fn vmm_backend::contract::BackendFixture::name(&self) -> &'static str
+pub fn vmm_backend::contract::BackendFixture::policy(&self) -> vmm_backend::arch::x86::X86Policy
+pub fn vmm_backend::contract::BackendFixture::spawn(&mut self, vmm_backend::contract::Scenario) -> core::option::Option<Self::B>
+pub fn vmm_backend::contract::capability_keyed_exactness_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
+pub fn vmm_backend::contract::deadline_exactness_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
+pub fn vmm_backend::contract::dirty_log_exactness_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
+pub fn vmm_backend::contract::fixpoint_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
+pub fn vmm_backend::contract::interrupt_delivery_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
+pub fn vmm_backend::contract::ordering_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
+pub fn vmm_backend::contract::run_all<F: vmm_backend::contract::BackendFixture>(&mut F) -> vmm_backend::contract::ContractReport
 pub enum vmm_backend::Arm64Completion
 pub enum vmm_backend::Arm64Exit
 pub vmm_backend::Arm64Exit::Sysreg
