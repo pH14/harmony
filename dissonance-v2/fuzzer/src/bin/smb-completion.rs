@@ -11,7 +11,10 @@ use fuzzer::{
         SmbInput, SmbLabeledCorpusEntry, SmbMilestones, observe_smb_input,
         run_smb_restart_configured, smb_milestones_from_wram,
     },
-    phase4c::{SmbArchiveReport, run_smb_archive_search},
+    phase4c::{
+        MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
+        run_smb_archive_search, run_smb_archive_search_with_config,
+    },
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -53,6 +56,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "archive" {
         return run_archive_mode(&mut args);
+    }
+    if mode == "archive-resume" {
+        return run_archive_resume_mode(&mut args, SmbArchiveDurationPolicy::Legacy);
+    }
+    if mode == "archive-resume-temporal" {
+        return run_archive_resume_mode(&mut args, SmbArchiveDurationPolicy::Stratified);
     }
     if mode != "reproduce-baseline" {
         return Err("unknown smb-completion mode".into());
@@ -264,6 +273,85 @@ fn run_archive_mode(
         champion_input_sha256,
         champion_observations_sha256,
     );
+    fs::write(
+        output.join("archive-summary.json"),
+        serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_archive_resume_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+    duration_policy: SmbArchiveDurationPolicy,
+) -> Result<(), Box<dyn Error>> {
+    let source = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let seed = parse_u64(&args.next().ok_or("missing seed")?.to_string_lossy())?;
+    let budget = parse_u64(
+        &args
+            .next()
+            .ok_or("missing execution budget")?
+            .to_string_lossy(),
+    )?;
+    let action_limit_u64 = parse_u64(
+        &args
+            .next()
+            .ok_or("missing completion action limit")?
+            .to_string_lossy(),
+    )?;
+    let action_limit = usize::try_from(action_limit_u64)?;
+    if action_limit > MAX_SMB_COMPLETION_ACTIONS {
+        return Err("completion action limit exceeds the compiled bound".into());
+    }
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    let replay_requested = parse_replay_flag(args, "archive-resume")?;
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source)?)?;
+    let initial = [source.champion_input];
+    let report = run_smb_archive_search_with_config(
+        &rom,
+        &initial,
+        seed,
+        budget,
+        action_limit,
+        duration_policy,
+    )?;
+    fs::write(
+        output.join("archive-live.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    let replay_verified = if replay_requested {
+        let replay = run_smb_archive_search_with_config(
+            &rom,
+            &initial,
+            seed,
+            budget,
+            action_limit,
+            duration_policy,
+        )?;
+        fs::write(
+            output.join("archive-replay.json"),
+            serde_json::to_vec_pretty(&replay)?,
+        )?;
+        Some(replay == report)
+    } else {
+        None
+    };
+    let observations = observe_smb_input(&rom, &report.champion_input)?;
+    let summary = archive_summary(
+        &report,
+        replay_verified,
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&report.champion_input)?)
+        ),
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&observations)?)),
+    );
+    let summary = serde_json::json!({
+        "action_limit": action_limit,
+        "campaign": summary,
+    });
     fs::write(
         output.join("archive-summary.json"),
         serde_json::to_vec_pretty(&summary)?,

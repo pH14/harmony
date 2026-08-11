@@ -24,6 +24,18 @@ const FRONTIER_WINDOW: usize = 128;
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 const BUTTON_MASKS: [u8; 9] = [0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10];
 
+/// Largest bounded action horizon accepted by the completion-only archive.
+pub const MAX_SMB_COMPLETION_ACTIONS: usize = 512;
+
+/// Duration distribution used by completion suffix mutation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SmbArchiveDurationPolicy {
+    /// Frozen H1 distribution: three quarters short, one quarter full-range.
+    Legacy,
+    /// Generic two-stratum distribution covering short control and long time horizons.
+    Stratified,
+}
+
 /// One bounded quality-diversity cell for an action-boundary snapshot.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct SmbArchiveKey {
@@ -178,19 +190,22 @@ impl Archive {
         Ok(Some(id))
     }
 
-    fn active_ids(&self) -> Vec<usize> {
+    fn active_ids(&self, max_actions: usize) -> Vec<usize> {
         self.active
             .iter()
             .enumerate()
             .filter_map(|(id, active)| {
-                (*active && self.entries[id].report.input.actions.len() < MAX_SMB_ACTIONS)
-                    .then_some(id)
+                (*active && self.entries[id].report.input.actions.len() < max_actions).then_some(id)
             })
             .collect()
     }
 
-    fn choose_parent(&self, rand: &mut StdRand) -> Result<usize, Box<dyn Error>> {
-        let active = self.active_ids();
+    fn choose_parent(
+        &self,
+        rand: &mut StdRand,
+        max_actions: usize,
+    ) -> Result<usize, Box<dyn Error>> {
+        let active = self.active_ids(max_actions);
         if active.is_empty() {
             return Err("SMB archive has no expandable entry".into());
         }
@@ -219,8 +234,53 @@ pub fn run_smb_archive_search(
     seed: u64,
     execution_budget: u64,
 ) -> Result<SmbArchiveReport, Box<dyn Error>> {
+    run_smb_archive_search_with_action_limit(
+        rom,
+        initial_inputs,
+        seed,
+        execution_budget,
+        MAX_SMB_ACTIONS,
+    )
+}
+
+/// Run completion search with an explicit bounded completion-only action horizon.
+pub fn run_smb_archive_search_with_action_limit(
+    rom: &[u8],
+    initial_inputs: &[SmbInput],
+    seed: u64,
+    execution_budget: u64,
+    max_actions: usize,
+) -> Result<SmbArchiveReport, Box<dyn Error>> {
+    run_smb_archive_search_with_config(
+        rom,
+        initial_inputs,
+        seed,
+        execution_budget,
+        max_actions,
+        SmbArchiveDurationPolicy::Legacy,
+    )
+}
+
+/// Run completion search with explicit bounded horizon and duration policy.
+pub fn run_smb_archive_search_with_config(
+    rom: &[u8],
+    initial_inputs: &[SmbInput],
+    seed: u64,
+    execution_budget: u64,
+    max_actions: usize,
+    duration_policy: SmbArchiveDurationPolicy,
+) -> Result<SmbArchiveReport, Box<dyn Error>> {
     if initial_inputs.is_empty() {
         return Err("SMB archive search requires a nonempty initial corpus".into());
+    }
+    if !(1..=MAX_SMB_COMPLETION_ACTIONS).contains(&max_actions) {
+        return Err("SMB completion action limit is outside its bounded range".into());
+    }
+    if initial_inputs
+        .iter()
+        .any(|input| input.actions.len() > max_actions)
+    {
+        return Err("SMB archive input exceeds the configured action limit".into());
     }
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let mut archive = Archive::new();
@@ -290,7 +350,7 @@ pub fn run_smb_archive_search(
     let mut curve = Vec::new();
     let mut deaths = 0_u64;
     for execution in 1..=execution_budget {
-        let parent_id = archive.choose_parent(&mut rand)?;
+        let parent_id = archive.choose_parent(&mut rand, max_actions)?;
         let parent = archive.entries[parent_id].clone();
         target.restore(&parent.snapshot)?;
         let mut input = parent.report.input.clone();
@@ -302,10 +362,10 @@ pub fn run_smb_archive_search(
         };
         let mut current_parent = parent_id;
         for _ in 0..suffix_len {
-            if target.is_dead() || input.actions.len() >= MAX_SMB_ACTIONS {
+            if target.is_dead() || input.actions.len() >= max_actions {
                 break;
             }
-            let action = sample_chord(&mut rand)?;
+            let action = sample_chord(&mut rand, duration_policy)?;
             input.actions.push(action);
             target.apply(&action);
             merge_action_milestones(&mut milestones, &target)?;
@@ -383,13 +443,33 @@ fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
     }
 }
 
-fn sample_chord(rand: &mut StdRand) -> Result<ButtonChord, Box<dyn Error>> {
+fn sample_chord(
+    rand: &mut StdRand,
+    duration_policy: SmbArchiveDurationPolicy,
+) -> Result<ButtonChord, Box<dyn Error>> {
     let buttons = BUTTON_MASKS
         [rand.below(NonZeroUsize::new(BUTTON_MASKS.len()).ok_or("empty SMB button vocabulary")?)];
-    let hold_frames = if rand.below(NonZeroUsize::new(4).ok_or("invalid hold odds")?) != 0 {
-        u8::try_from(2 + rand.below(NonZeroUsize::new(11).ok_or("invalid short hold span")?))?
-    } else {
-        u8::try_from(1 + rand.below(NonZeroUsize::new(120).ok_or("invalid hold span")?))?
+    let hold_frames = match duration_policy {
+        SmbArchiveDurationPolicy::Legacy => {
+            if rand.below(NonZeroUsize::new(4).ok_or("invalid hold odds")?) != 0 {
+                u8::try_from(
+                    2 + rand.below(NonZeroUsize::new(11).ok_or("invalid short hold span")?),
+                )?
+            } else {
+                u8::try_from(1 + rand.below(NonZeroUsize::new(120).ok_or("invalid hold span")?))?
+            }
+        }
+        SmbArchiveDurationPolicy::Stratified => {
+            if rand.below(NonZeroUsize::new(2).ok_or("invalid stratum odds")?) == 0 {
+                u8::try_from(
+                    2 + rand.below(NonZeroUsize::new(11).ok_or("invalid short hold span")?),
+                )?
+            } else {
+                u8::try_from(
+                    96 + rand.below(NonZeroUsize::new(25).ok_or("invalid long hold span")?),
+                )?
+            }
+        }
     };
     Ok(ButtonChord::new(buttons, hold_frames))
 }
