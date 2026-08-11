@@ -165,10 +165,10 @@ Five findings, in order of severity:
 A doubled budget (1,000 executions, detector arm) confirmed the diagnosis:
 no progress past bucket 15; the corpus grew 356 → 605 entries.
 
-### Ground rule: no new machinery
+### Ground rule: generated artifacts only
 
-The mechanical layer stays stock LibAFL plus the three existing model outputs:
-labels, generated detectors, and generated mutators. This step fixes bugs,
+The mechanical layer stays stock LibAFL plus the four model outputs:
+labels, generated detectors, generated mutators, and generated rankings. This step fixes bugs,
 tunes constants and granularity, and gives the models more leverage without
 adding engine concepts or fallback systems. Everything remains testcase,
 corpus, input, executor, observer, feedback, scheduler, stage, and metadata.

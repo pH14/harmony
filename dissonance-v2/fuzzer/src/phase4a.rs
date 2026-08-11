@@ -793,6 +793,8 @@ pub enum InstrumentorAction {
     InstallDetector,
     /// Compile and install a generated semantic mutator.
     InstallMutator,
+    /// Compile and install a generated within-cell archive ranking.
+    InstallRanking,
     /// Make no change for this invocation.
     None,
 }

@@ -2,7 +2,13 @@
 
 //! Deterministic champion–challenger campaigns for the SMB completion experiment.
 
-use std::{env, error::Error, fs, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env,
+    error::Error,
+    fs,
+    path::PathBuf,
+};
 
 use fuzzer::{
     phase2::{Flag, Interest, TriageLabels},
@@ -13,7 +19,7 @@ use fuzzer::{
     },
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
-        run_smb_archive_search, run_smb_archive_search_with_config,
+        SmbArchiveSuffixPolicy, run_smb_archive_search, run_smb_archive_search_with_policies,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -21,6 +27,15 @@ use sha2::{Digest, Sha256};
 
 const M12_PILOT_SEED: u64 = 0x5eed_dc00;
 const M12_PILOT_EXECUTIONS: u64 = 500;
+const FRONTIER_RESUME_INPUTS: usize = 64;
+
+#[derive(Clone, Copy)]
+enum ResumeSelection {
+    Champion,
+    Frontier,
+    FrontierSet,
+    FrontierBandSet,
+}
 
 #[derive(Debug, Deserialize)]
 struct M5Report {
@@ -58,10 +73,52 @@ fn main() -> Result<(), Box<dyn Error>> {
         return run_archive_mode(&mut args);
     }
     if mode == "archive-resume" {
-        return run_archive_resume_mode(&mut args, SmbArchiveDurationPolicy::Legacy);
+        return run_archive_resume_mode(
+            &mut args,
+            SmbArchiveDurationPolicy::Legacy,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            ResumeSelection::Champion,
+        );
     }
     if mode == "archive-resume-temporal" {
-        return run_archive_resume_mode(&mut args, SmbArchiveDurationPolicy::Stratified);
+        return run_archive_resume_mode(
+            &mut args,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            ResumeSelection::Champion,
+        );
+    }
+    if mode == "archive-resume-frontier" {
+        return run_archive_resume_mode(
+            &mut args,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            ResumeSelection::Frontier,
+        );
+    }
+    if mode == "archive-resume-frontier-set" {
+        return run_archive_resume_mode(
+            &mut args,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            ResumeSelection::FrontierSet,
+        );
+    }
+    if mode == "archive-resume-burst" {
+        return run_archive_resume_mode(
+            &mut args,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::BurstUpToFour,
+            ResumeSelection::FrontierSet,
+        );
+    }
+    if mode == "archive-resume-band-burst" {
+        return run_archive_resume_mode(
+            &mut args,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::BurstUpToFour,
+            ResumeSelection::FrontierBandSet,
+        );
     }
     if mode != "reproduce-baseline" {
         return Err("unknown smb-completion mode".into());
@@ -284,6 +341,8 @@ fn run_archive_mode(
 fn run_archive_resume_mode(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
     duration_policy: SmbArchiveDurationPolicy,
+    suffix_policy: SmbArchiveSuffixPolicy,
+    selection: ResumeSelection,
 ) -> Result<(), Box<dyn Error>> {
     let source = PathBuf::from(args.next().ok_or("missing source archive report")?);
     let seed = parse_u64(&args.next().ok_or("missing seed")?.to_string_lossy())?;
@@ -308,27 +367,70 @@ fn run_archive_resume_mode(
     fs::create_dir_all(&output)?;
     let rom = read_rom()?;
     let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source)?)?;
-    let initial = [source.champion_input];
-    let report = run_smb_archive_search_with_config(
+    let initial = match selection {
+        ResumeSelection::Champion => vec![source.champion_input],
+        ResumeSelection::Frontier => vec![
+            frontier_entries(&source)?
+                .first()
+                .ok_or("source archive contains no frontier entries")?
+                .input
+                .clone(),
+        ],
+        ResumeSelection::FrontierSet => {
+            let mut distinct = BTreeMap::new();
+            for entry in frontier_entries(&source)? {
+                distinct
+                    .entry((entry.key.player_y_bucket, entry.key.player_engine_state))
+                    .or_insert_with(|| entry.input.clone());
+            }
+            distinct
+                .into_values()
+                .take(FRONTIER_RESUME_INPUTS)
+                .collect()
+        }
+        ResumeSelection::FrontierBandSet => {
+            let mut distinct = BTreeSet::new();
+            let mut by_progress = BTreeMap::<u16, Vec<_>>::new();
+            for entry in frontier_band_entries(&source)? {
+                by_progress
+                    .entry(entry.key.progress)
+                    .or_default()
+                    .push(entry);
+            }
+            by_progress
+                .into_values()
+                .flat_map(|entries| entries.into_iter().take(8))
+                .filter_map(|entry| {
+                    distinct
+                        .insert(entry.input.clone())
+                        .then_some(entry.input.clone())
+                })
+                .take(FRONTIER_RESUME_INPUTS)
+                .collect()
+        }
+    };
+    let report = run_smb_archive_search_with_policies(
         &rom,
         &initial,
         seed,
         budget,
         action_limit,
         duration_policy,
+        suffix_policy,
     )?;
     fs::write(
         output.join("archive-live.json"),
         serde_json::to_vec_pretty(&report)?,
     )?;
     let replay_verified = if replay_requested {
-        let replay = run_smb_archive_search_with_config(
+        let replay = run_smb_archive_search_with_policies(
             &rom,
             &initial,
             seed,
             budget,
             action_limit,
             duration_policy,
+            suffix_policy,
         )?;
         fs::write(
             output.join("archive-replay.json"),
@@ -350,6 +452,17 @@ fn run_archive_resume_mode(
     );
     let summary = serde_json::json!({
         "action_limit": action_limit,
+        "source_selection": match selection {
+            ResumeSelection::Champion => "champion",
+            ResumeSelection::Frontier => "mechanical_frontier",
+            ResumeSelection::FrontierSet => "mechanical_frontier_set",
+            ResumeSelection::FrontierBandSet => "mechanical_frontier_band_set",
+        },
+        "source_inputs": initial.len(),
+        "suffix_policy": match suffix_policy {
+            SmbArchiveSuffixPolicy::OneOrTwo => "one_or_two",
+            SmbArchiveSuffixPolicy::BurstUpToFour => "burst_up_to_four",
+        },
         "campaign": summary,
     });
     fs::write(
@@ -358,6 +471,46 @@ fn run_archive_resume_mode(
     )?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
+}
+
+fn frontier_entries(
+    source: &SmbArchiveReport,
+) -> Result<Vec<&fuzzer::phase4c::SmbArchiveEntryReport>, Box<dyn Error>> {
+    let frontier = source
+        .entries
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level, entry.key.progress))
+        .max()
+        .ok_or("source archive contains no retained entries")?;
+    let mut entries = source
+        .entries
+        .iter()
+        .filter(|entry| (entry.key.world, entry.key.level, entry.key.progress) == frontier)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| (entry.input.actions.len(), entry.id));
+    Ok(entries)
+}
+
+fn frontier_band_entries(
+    source: &SmbArchiveReport,
+) -> Result<Vec<&fuzzer::phase4c::SmbArchiveEntryReport>, Box<dyn Error>> {
+    let frontier = source
+        .entries
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level, entry.key.progress))
+        .max()
+        .ok_or("source archive contains no retained entries")?;
+    let mut entries = source
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.key.world == frontier.0
+                && entry.key.level == frontier.1
+                && entry.key.progress.saturating_add(7) >= frontier.2
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| (entry.input.actions.len(), entry.id));
+    Ok(entries)
 }
 
 fn archive_summary(

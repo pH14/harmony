@@ -248,6 +248,31 @@ durations.
   41/500 executions (corpus 39 -> 80) and improved max x 57 -> 62. The combined
   binary passed final fixture verification. Evidence is in the ignored
   directory `target/model-campaigns/m12-luna-20260811`.
+- Decision: the Step 3 ground rule now names four model outputs: labels,
+  generated detectors, generated mutators, and generated rankings. Rankings
+  use the existing instrumentor decision and generated-file recording path;
+  they do not add a protocol or a hand-written live fallback.
+- M12's fixed 500-execution validation window and inclusive 1/5 retained-
+  execution cap already bound the detector rate before install, so no second
+  runtime threshold is added. M6's 332/500 whole-WRAM flood is the regression
+  fixture proving that a detector which remains noisy cannot become live.
+- Expect archive selection over deterministic snapshots to optimize hidden
+  state that the archive cannot name, including RNG phase and timers. Keep that
+  possibility in mind when interpreting why one champion lineage wins.
+- Deferral: replacing a cell representative does not improve descendants
+  already extended from the old representative; the search re-extends the new
+  representative instead. Revisit explicit descendant repair only if
+  replacement churn is high while descendant novelty stalls.
+- M13 adds `install_ranking` to the existing instrumentor decision schema. A
+  ranking is a pure `SmbObservations -> i64` generated function consulted only
+  when a full archive cell considers replacement; score ties end with fewer
+  actions. It cannot affect novelty, cell keys, scheduling, or parent choice.
+  Retirement is checked every 512 executions and occurs after 1,024 executions
+  without descendant cell novelty following a ranking-selected replacement.
+- The first live M13 ranking passed its fixed 256-execution pilot and exact
+  model-free replay. Across the six 5,000-execution SMB pairs it reached onward
+  on 2/6 versus 0/6 controls, but missed the registered 4/6 promotion rule.
+  The mechanism lands; this ranking is a registered SMB non-promotion.
 - All time-to-target comparisons use deterministic target-execution counts, not
   wall-clock time. Wall-clock measurements would violate the replay contract and
   make the tests host-dependent.

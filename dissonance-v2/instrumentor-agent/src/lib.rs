@@ -213,7 +213,7 @@ fn render_prompt() -> &'static str {
 fuzzer_stats, the plateau evidence, the labeled corpus, and whichever of\n\
 detector-interface.txt or artifact-interface.txt is present in this operator-only\n\
 directory. Follow that interface file exactly: it states whether this invocation asks\n\
-for a detector or mutator, the required struct and trait, and the visible types. Propose\n\
+for a detector, mutator, or ranking, the required struct and trait, and the visible types. Propose\n\
 one artifact from visible evidence only. Do not treat any mechanical progress field as\n\
 an instrumentation oracle and do not assume target source access. Return the matching\n\
 install action and complete Rust source as rust_source, raw in the JSON string rather\n\
@@ -444,6 +444,7 @@ mod tests {
         let serialized: Vec<_> = [
             InstrumentorAction::InstallDetector,
             InstrumentorAction::InstallMutator,
+            InstrumentorAction::InstallRanking,
             InstrumentorAction::None,
         ]
         .into_iter()

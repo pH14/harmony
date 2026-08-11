@@ -21,8 +21,10 @@ use fuzzer::{
         NullSmbDetector, NullSmbMacro, SmbArtifactConfig, SmbCampaignReport, SmbConfiguredReport,
         SmbLabeledCorpusEntry, SmbTriageRequest, observe_smb_input, run_smb_restart_configured,
     },
+    phase4c::SmbArchiveReport,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256};
 
 const SEEDS: [u64; 6] = [
     0x5eed_d800,
@@ -41,6 +43,17 @@ const PILOT_SEED: u64 = 0x5eed_dc00;
 const PILOT_EXECUTIONS: u64 = 500;
 const PILOT_RETAINED_NUMERATOR: usize = 1;
 const PILOT_RETAINED_DENOMINATOR: usize = 5;
+const M13_SEEDS: [u64; 6] = [
+    0x5eed_e000,
+    0x5eed_e001,
+    0x5eed_e002,
+    0x5eed_e003,
+    0x5eed_e004,
+    0x5eed_e005,
+];
+const M13_EXECUTION_BUDGET: u64 = 5_000;
+const M13_VALIDATION_SEED: u64 = 0x5eed_ef00;
+const M13_VALIDATION_EXECUTIONS: u64 = 256;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct M5Report {
@@ -72,11 +85,30 @@ struct M6Report {
     full_stack_beats_baseline_time_to_milestone: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct M13Report {
+    rom_sha256: String,
+    source_archive: PathBuf,
+    source_film_manifest: PathBuf,
+    source_film_video: PathBuf,
+    ranking_decision: InstrumentorDecision,
+    validation_seed: u64,
+    validation_executions: u64,
+    execution_budget: u64,
+    seeds: Vec<u64>,
+    controls: Vec<SmbArchiveReport>,
+    rankings: Vec<SmbArchiveReport>,
+    replay_verified: bool,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let first = args.next().ok_or("missing output directory or m12 mode")?;
     if first == "m12" {
         return run_m12(&mut args);
+    }
+    if first == "m13" {
+        return run_m13(&mut args);
     }
     let output = PathBuf::from(first);
     let m5_path = required_path(&mut args, "M5 report")?;
@@ -409,6 +441,404 @@ fn run_m12(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
     Ok(())
 }
 
+fn run_m13(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {
+    let output = required_path(args, "M13 output directory")?;
+    let source_archive_path = required_path(args, "source archive report")?;
+    let film_manifest = required_path(args, "plateau film manifest")?;
+    let film_video = required_path(args, "plateau film video")?;
+    let instrumentor_agent = required_path(args, "instrumentor-agent binary")?;
+    if args.next().is_some() {
+        return Err("unexpected extra M13 argument".into());
+    }
+    let resume_prepared_evidence = output.is_dir();
+    if !resume_prepared_evidence {
+        fs::create_dir(&output)?;
+    }
+    let rom_path = PathBuf::from(
+        env::var_os("HARMONY_SMB_ROM")
+            .ok_or("HARMONY_SMB_ROM must name the external Super Mario Bros ROM")?,
+    );
+    let rom = fs::read(&rom_path)?;
+    let source_archive: SmbArchiveReport = read_json(&source_archive_path)?;
+    let operator_view = output.join("operator-view");
+    if resume_prepared_evidence {
+        validate_prepared_m13_evidence(&operator_view, &output)?;
+    } else {
+        fs::create_dir_all(operator_view.join("corpus"))?;
+        write_m13_evidence(
+            &operator_view,
+            &rom,
+            &source_archive,
+            &film_manifest,
+            &film_video,
+        )?;
+        write_ranking_interface(&operator_view)?;
+    }
+    let records = output.join("model-records/instrumentor");
+    let ranking_decision = obtain_ranking(
+        &operator_view,
+        &records,
+        &instrumentor_agent,
+        &output,
+        &rom_path,
+        &source_archive_path,
+    )?
+    .ok_or("ranking artifact exhausted the predeclared attempts")?;
+    let binary = build_generated_ranking(&output, &ranking_decision.rust_source, "m13-final")
+        .map_err(|error| format!("M13 final ranking build failed: {error}"))?;
+    run_checked(
+        Command::new(&binary)
+            .arg("verify")
+            .arg(&rom_path)
+            .arg(&source_archive_path),
+        &output.join("artifact-validation/m13-final-fixture"),
+    )?;
+
+    let mut controls = Vec::new();
+    let mut rankings = Vec::new();
+    for seed in M13_SEEDS {
+        let control_path = output.join(format!("control-{seed:016x}.json"));
+        run_generated_ranking(
+            &binary,
+            "control",
+            &rom_path,
+            &source_archive_path,
+            &control_path,
+            seed,
+            M13_EXECUTION_BUDGET,
+        )?;
+        controls.push(read_json(&control_path)?);
+        let ranking_path = output.join(format!("ranking-{seed:016x}.json"));
+        run_generated_ranking(
+            &binary,
+            "ranking",
+            &rom_path,
+            &source_archive_path,
+            &ranking_path,
+            seed,
+            M13_EXECUTION_BUDGET,
+        )?;
+        rankings.push(read_json(&ranking_path)?);
+    }
+    let replay_path = output.join("ranking-replay.json");
+    run_generated_ranking(
+        &binary,
+        "ranking",
+        &rom_path,
+        &source_archive_path,
+        &replay_path,
+        M13_SEEDS[0],
+        M13_EXECUTION_BUDGET,
+    )?;
+    let replay: SmbArchiveReport = read_json(&replay_path)?;
+    let replay_verified = replay == rankings[0];
+    let report = M13Report {
+        rom_sha256: format!("{:x}", Sha256::digest(&rom)),
+        source_archive: source_archive_path,
+        source_film_manifest: film_manifest,
+        source_film_video: film_video,
+        ranking_decision,
+        validation_seed: M13_VALIDATION_SEED,
+        validation_executions: M13_VALIDATION_EXECUTIONS,
+        execution_budget: M13_EXECUTION_BUDGET,
+        seeds: M13_SEEDS.to_vec(),
+        controls,
+        rankings,
+        replay_verified,
+    };
+    write_json(&output.join("m13-report.json"), &report)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if !report.replay_verified {
+        return Err("M13 no-model archive replay mismatch".into());
+    }
+    Ok(())
+}
+
+fn validate_prepared_m13_evidence(view: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
+    for relative in [
+        "fuzzer_stats",
+        "source-summary.json",
+        "plateau-film.json",
+        "plateau-film.mp4",
+        "artifact-interface.txt",
+    ] {
+        if !view.join(relative).is_file() {
+            return Err(format!("prepared M13 evidence is missing {relative}").into());
+        }
+    }
+    for sample in 0..8 {
+        if !view
+            .join("corpus")
+            .join(format!("state-{sample:04}.json"))
+            .is_file()
+        {
+            return Err("prepared M13 evidence is missing a state trace".into());
+        }
+    }
+    if output.join("model-records").exists() || output.join("artifact-validation").exists() {
+        return Err("M13 evidence resume refuses a started model or validation record".into());
+    }
+    Ok(())
+}
+
+fn write_m13_evidence(
+    view: &Path,
+    rom: &[u8],
+    archive: &SmbArchiveReport,
+    film_manifest: &Path,
+    film_video: &Path,
+) -> Result<(), Box<dyn Error>> {
+    fs::write(
+        view.join("fuzzer_stats"),
+        format!(
+            "target : nes-super-mario-bros\nexecs_done : {}\ncorpus_count : {}\n",
+            archive.executions,
+            archive.entries.len(),
+        ),
+    )?;
+    write_json(
+        &view.join("source-summary.json"),
+        &serde_json::json!({
+            "seed": archive.seed,
+            "executions": archive.executions,
+            "retained": archive.retained,
+            "rejected": archive.rejected,
+            "deaths": archive.deaths,
+        }),
+    )?;
+    fs::copy(film_manifest, view.join("plateau-film.json"))?;
+    fs::copy(film_video, view.join("plateau-film.mp4"))?;
+    let sample_count = archive.entries.len().min(8);
+    if sample_count == 0 {
+        return Err("M13 source archive contains no entries".into());
+    }
+    for sample in 0..sample_count {
+        let index = sample
+            .checked_mul(archive.entries.len())
+            .ok_or("M13 evidence index overflow")?
+            / sample_count;
+        let entry = &archive.entries[index];
+        write_json(
+            &view.join("corpus").join(format!("state-{sample:04}.json")),
+            &serde_json::json!({
+                "archive_id": entry.id,
+                "observations": observe_smb_input(rom, &entry.input)?,
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+fn obtain_ranking(
+    operator_view: &Path,
+    records: &Path,
+    agent: &Path,
+    output: &Path,
+    rom: &Path,
+    archive: &Path,
+) -> Result<Option<InstrumentorDecision>, Box<dyn Error>> {
+    let mut previous_error = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let request = InstrumentorRequest {
+            trial: 3,
+            attempt,
+            previous_error: previous_error.clone(),
+        };
+        let decision = call_json_agent::<_, InstrumentorDecision>(
+            agent,
+            &[
+                OsStr::new("--operator-view"),
+                operator_view.as_os_str(),
+                OsStr::new("--records-dir"),
+                records.as_os_str(),
+            ],
+            &request,
+        )?;
+        record_attempted_source(
+            output,
+            ArtifactKind::Ranking,
+            3,
+            attempt,
+            &decision.rust_source,
+        )?;
+        if let Err(error) = validate_artifact(ArtifactKind::Ranking, &decision) {
+            record_ranking_validation(output, attempt, false, Some(&error), None, None)?;
+            previous_error = Some(error);
+            continue;
+        }
+        match build_generated_ranking(
+            output,
+            &decision.rust_source,
+            &format!("ranking-trial-3-attempt-{attempt}"),
+        ) {
+            Ok(binary) => match validate_built_ranking(&binary, rom, archive, output, attempt) {
+                Ok(()) => return Ok(Some(decision)),
+                Err(error) => {
+                    let record = output
+                        .join("artifact-validation")
+                        .join(format!("ranking-trial-3-attempt-{attempt}.validation.json"));
+                    if !record.exists() {
+                        record_ranking_validation(
+                            output,
+                            attempt,
+                            false,
+                            Some(&error),
+                            None,
+                            None,
+                        )?;
+                    }
+                    previous_error = Some(error);
+                }
+            },
+            Err(error) => {
+                record_ranking_validation(output, attempt, false, Some(&error), None, None)?;
+                previous_error = Some(error);
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn validate_built_ranking(
+    binary: &Path,
+    rom: &Path,
+    archive: &Path,
+    output: &Path,
+    attempt: u8,
+) -> Result<(), String> {
+    let stem = format!("ranking-trial-3-attempt-{attempt}");
+    if let Err(error) = run_checked(
+        Command::new(binary).arg("verify").arg(rom).arg(archive),
+        &output
+            .join("artifact-validation")
+            .join(format!("{stem}-fixture")),
+    ) {
+        let error = error.to_string();
+        record_ranking_validation(output, attempt, false, Some(&error), None, None)
+            .map_err(|record_error| record_error.to_string())?;
+        return Err(error);
+    }
+    let control_path = output
+        .join("artifact-validation")
+        .join(format!("{stem}-control.json"));
+    run_generated_ranking(
+        binary,
+        "control",
+        rom,
+        archive,
+        &control_path,
+        M13_VALIDATION_SEED,
+        M13_VALIDATION_EXECUTIONS,
+    )
+    .map_err(|error| error.to_string())?;
+    let candidate_path = output
+        .join("artifact-validation")
+        .join(format!("{stem}-candidate.json"));
+    run_generated_ranking(
+        binary,
+        "ranking",
+        rom,
+        archive,
+        &candidate_path,
+        M13_VALIDATION_SEED,
+        M13_VALIDATION_EXECUTIONS,
+    )
+    .map_err(|error| error.to_string())?;
+    let replay_path = output
+        .join("artifact-validation")
+        .join(format!("{stem}-replay.json"));
+    run_generated_ranking(
+        binary,
+        "ranking",
+        rom,
+        archive,
+        &replay_path,
+        M13_VALIDATION_SEED,
+        M13_VALIDATION_EXECUTIONS,
+    )
+    .map_err(|error| error.to_string())?;
+    let control: SmbArchiveReport = read_json(&control_path).map_err(|error| error.to_string())?;
+    let candidate: SmbArchiveReport =
+        read_json(&candidate_path).map_err(|error| error.to_string())?;
+    let replay: SmbArchiveReport = read_json(&replay_path).map_err(|error| error.to_string())?;
+    let validation = if control.seed != M13_VALIDATION_SEED
+        || candidate.seed != M13_VALIDATION_SEED
+        || control.executions != M13_VALIDATION_EXECUTIONS
+        || candidate.executions != M13_VALIDATION_EXECUTIONS
+    {
+        Err("ranking pilot did not use the predeclared seed and execution budget".to_owned())
+    } else if control.ranking.installed || !candidate.ranking.installed {
+        Err("ranking pilot did not isolate the replacement policy".to_owned())
+    } else if candidate != replay {
+        Err("ranking pilot did not reproduce the exact archive report".to_owned())
+    } else {
+        Ok(())
+    };
+    match validation {
+        Ok(()) => {
+            record_ranking_validation(
+                output,
+                attempt,
+                true,
+                None,
+                Some(&control),
+                Some(&candidate),
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        Err(error) => {
+            record_ranking_validation(
+                output,
+                attempt,
+                false,
+                Some(&error),
+                Some(&control),
+                Some(&candidate),
+            )
+            .map_err(|record_error| record_error.to_string())?;
+            Err(error)
+        }
+    }
+}
+
+fn record_ranking_validation(
+    output: &Path,
+    attempt: u8,
+    accepted: bool,
+    error: Option<&str>,
+    control: Option<&SmbArchiveReport>,
+    candidate: Option<&SmbArchiveReport>,
+) -> Result<(), Box<dyn Error>> {
+    let directory = output.join("artifact-validation");
+    fs::create_dir_all(&directory)?;
+    write_json(
+        &directory.join(format!("ranking-trial-3-attempt-{attempt}.validation.json")),
+        &serde_json::json!({
+            "kind": "ranking",
+            "trial": 3,
+            "attempt": attempt,
+            "accepted": accepted,
+            "error": error,
+            "validation_seed": M13_VALIDATION_SEED,
+            "validation_executions": M13_VALIDATION_EXECUTIONS,
+            "control": control.map(archive_pilot_summary),
+            "candidate": candidate.map(archive_pilot_summary),
+        }),
+    )
+}
+
+fn archive_pilot_summary(report: &SmbArchiveReport) -> serde_json::Value {
+    serde_json::json!({
+        "seed": report.seed,
+        "executions": report.executions,
+        "entries": report.entries.len(),
+        "retained": report.retained,
+        "rejected": report.rejected,
+        "ranking": report.ranking,
+    })
+}
+
 fn write_m12_evidence(
     view: &Path,
     rom: &[u8],
@@ -617,6 +1047,7 @@ fn no_artifacts() -> SmbArtifactConfig<'static> {
 enum ArtifactKind {
     Detector,
     Macro,
+    Ranking,
 }
 
 fn obtain_artifact(
@@ -943,6 +1374,7 @@ fn artifact_name(kind: ArtifactKind) -> &'static str {
     match kind {
         ArtifactKind::Detector => "detector",
         ArtifactKind::Macro => "macro",
+        ArtifactKind::Ranking => "ranking",
     }
 }
 
@@ -955,6 +1387,10 @@ fn validate_artifact(kind: ArtifactKind, decision: &InstrumentorDecision) -> Res
         ArtifactKind::Macro => (
             InstrumentorAction::InstallMutator,
             "SmbMacro for InstalledMacro",
+        ),
+        ArtifactKind::Ranking => (
+            InstrumentorAction::InstallRanking,
+            "SmbRanking for InstalledRanking",
         ),
     };
     if decision.action != action {
@@ -1001,6 +1437,37 @@ fn validate_artifact(kind: ArtifactKind, decision: &InstrumentorDecision) -> Res
             return Err(format!("source contains forbidden token {forbidden:?}"));
         }
     }
+    if matches!(kind, ArtifactKind::Ranking) {
+        let lowercase = decision.rust_source.to_ascii_lowercase();
+        for forbidden in [
+            "progress",
+            "milestone",
+            "world",
+            "level",
+            "flag",
+            "0x071a",
+            "0x71a",
+            "1818",
+            "0x071c",
+            "0x71c",
+            "1820",
+            "0x075f",
+            "0x75f",
+            "1887",
+            "0x075c",
+            "0x75c",
+            "1884",
+            "0x0746",
+            "0x746",
+            "1862",
+        ] {
+            if lowercase.contains(forbidden) {
+                return Err(format!(
+                    "ranking source contains forbidden progress token {forbidden:?}"
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1018,6 +1485,188 @@ fn write_macro_interface(view: &Path) -> Result<(), Box<dyn Error>> {
         "This invocation asks for a generated semantic mutator such as a parameterized jump arc. Return action=install_mutator. Complete source declares `pub struct InstalledMacro;` and implements `fuzzer::phase4b::SmbMacro` for it. The method is `fn mutate(&self, input: &fuzzer::phase4b::SmbInput, seed: u64) -> fuzzer::phase4b::SmbInput`. It may import `ButtonChord`, `SmbInput`, `MAX_HOLD_FRAMES`, and `MAX_SMB_ACTIONS`. The host draws seed from LibAFL's seeded RNG, so the same input and seed must return the same candidate while different seeds may select bounded parameter variants. The result must contain at most 96 chords and every duration must be in 1..=120. Source is pure, deterministic, bounded, and uses no dependencies beyond fuzzer/std. A generated macro must be meaningfully parameterized by the visible input and/or seed rather than merely copying it.\n",
     )?;
     Ok(())
+}
+
+fn write_ranking_interface(view: &Path) -> Result<(), Box<dyn Error>> {
+    fs::write(
+        view.join("artifact-interface.txt"),
+        "This invocation asks for a generated archive ranking. Return action=install_ranking. Complete source declares `pub struct InstalledRanking;` and implements `fuzzer::phase4c::SmbRanking` for it. The method is `fn score(&self, observations: &[fuzzer::phase4b::SmbObservations]) -> i64`. It is one pure, deterministic, bounded function over one state's recorded observations and may combine several terms into one comparable score. Do not use progress measures; cell keys and frontier selection already represent them. Choose the ranking from the supplied corpus evidence only. The host consults it only when a full cell considers replacement and keeps fewer actions as the final tie-breaker. Source uses no dependencies beyond fuzzer/std.\n",
+    )?;
+    Ok(())
+}
+
+fn build_generated_ranking(
+    output: &Path,
+    ranking_source: &str,
+    stem: &str,
+) -> Result<PathBuf, String> {
+    let build = output.join("build").join(stem);
+    let source = build.join("src");
+    fs::create_dir_all(&source).map_err(|error| error.to_string())?;
+    let fuzzer_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let escaped = fuzzer_path
+        .to_str()
+        .ok_or_else(|| "fuzzer path is not UTF-8".to_owned())?
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    fs::write(
+        build.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"m13-installed\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"AGPL-3.0-or-later\"\n\n[dependencies]\nfuzzer = {{ path = \"{escaped}\" }}\nserde_json = \"1.0\"\n\n[workspace]\n"
+        ),
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(source.join("ranking.rs"), with_license(ranking_source))
+        .map_err(|error| error.to_string())?;
+    fs::write(source.join("main.rs"), generated_ranking_main_source())
+        .map_err(|error| error.to_string())?;
+    let target = output.join("build/target");
+    let result = Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .arg("--quiet")
+        .arg("--offline")
+        .arg("--manifest-path")
+        .arg(build.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(&target)
+        .output()
+        .map_err(|error| error.to_string())?;
+    fs::write(output.join(format!("build-{stem}.stdout")), &result.stdout)
+        .map_err(|error| error.to_string())?;
+    fs::write(output.join(format!("build-{stem}.stderr")), &result.stderr)
+        .map_err(|error| error.to_string())?;
+    if !result.status.success() {
+        return Err(bounded_lossy(&result.stderr));
+    }
+    Ok(target.join("release/m13-installed"))
+}
+
+fn generated_ranking_main_source() -> &'static str {
+    r#"// SPDX-License-Identifier: AGPL-3.0-or-later
+
+mod ranking;
+
+use std::{error::Error, fs, path::PathBuf};
+use fuzzer::{
+    phase4b::{SmbInput, observe_smb_input},
+    phase4c::{
+        MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
+        SmbArchiveSuffixPolicy, SmbRanking, SmbRankingSearchConfig,
+        run_smb_archive_search_with_config,
+        run_smb_archive_search_with_ranking,
+    },
+};
+use ranking::InstalledRanking;
+
+fn sampled_inputs(report: &SmbArchiveReport) -> Result<Vec<SmbInput>, Box<dyn Error>> {
+    let frontier = report
+        .entries
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level, entry.key.progress))
+        .max()
+        .ok_or("source archive contains no entries")?;
+    let input = report
+        .entries
+        .iter()
+        .filter(|entry| (entry.key.world, entry.key.level, entry.key.progress) == frontier)
+        .min_by_key(|entry| (entry.input.actions.len(), entry.id))
+        .ok_or("source archive contains no frontier input")?
+        .input
+        .clone();
+    Ok(vec![input])
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut args = std::env::args_os().skip(1);
+    let mode = args.next().ok_or("missing mode")?;
+    let rom_path = PathBuf::from(args.next().ok_or("missing ROM path")?);
+    let archive_path = PathBuf::from(args.next().ok_or("missing archive path")?);
+    let rom = fs::read(rom_path)?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(archive_path)?)?;
+    let inputs = sampled_inputs(&source)?;
+    match mode.to_str() {
+        Some("verify") => {
+            if args.next().is_some() {
+                return Err("unexpected verify argument".into());
+            }
+            let empty_a = InstalledRanking.score(&[]);
+            let empty_b = InstalledRanking.score(&[]);
+            if empty_a != empty_b {
+                return Err("generated ranking was nondeterministic on empty evidence".into());
+            }
+            for input in &inputs {
+                let first = observe_smb_input(&rom, input)?;
+                let second = observe_smb_input(&rom, input)?;
+                if first != second {
+                    return Err("recorded state observations were nondeterministic".into());
+                }
+                if InstalledRanking.score(&first) != InstalledRanking.score(&second) {
+                    return Err("generated ranking was nondeterministic".into());
+                }
+            }
+            Ok(())
+        }
+        Some("run") => {
+            let arm = args.next().ok_or("missing arm")?;
+            let output = PathBuf::from(args.next().ok_or("missing output report")?);
+            let seed: u64 = args.next().ok_or("missing seed")?.to_string_lossy().parse()?;
+            let budget: u64 = args.next().ok_or("missing budget")?.to_string_lossy().parse()?;
+            if args.next().is_some() {
+                return Err("unexpected run argument".into());
+            }
+            let report = match arm.to_str() {
+                Some("control") => run_smb_archive_search_with_config(
+                    &rom,
+                    &inputs,
+                    seed,
+                    budget,
+                    MAX_SMB_COMPLETION_ACTIONS,
+                    SmbArchiveDurationPolicy::Stratified,
+                )?,
+                Some("ranking") => run_smb_archive_search_with_ranking(
+                    &rom,
+                    &inputs,
+                    seed,
+                    budget,
+                    SmbRankingSearchConfig {
+                        max_actions: MAX_SMB_COMPLETION_ACTIONS,
+                        duration_policy: SmbArchiveDurationPolicy::Stratified,
+                        suffix_policy: SmbArchiveSuffixPolicy::OneOrTwo,
+                    },
+                    &InstalledRanking,
+                )?,
+                _ => return Err("unknown ranking arm".into()),
+            };
+            fs::write(output, serde_json::to_vec_pretty(&report)?)?;
+            Ok(())
+        }
+        _ => Err("unknown mode".into()),
+    }
+}
+"#
+}
+
+fn run_generated_ranking(
+    binary: &Path,
+    arm: &str,
+    rom: &Path,
+    archive: &Path,
+    output: &Path,
+    seed: u64,
+    budget: u64,
+) -> Result<(), Box<dyn Error>> {
+    run_checked(
+        Command::new(binary)
+            .arg("run")
+            .arg(rom)
+            .arg(archive)
+            .arg(arm)
+            .arg(output)
+            .arg(seed.to_string())
+            .arg(budget.to_string()),
+        &output.with_extension("process"),
+    )
 }
 
 fn build_generated(
@@ -1222,5 +1871,19 @@ mod tests {
         let error = validate_artifact(ArtifactKind::Detector, &decision)
             .expect_err("SMB detector must remain global");
         assert!(error.contains("scope_to_lineage must be null"));
+    }
+
+    #[test]
+    fn ranking_rejects_progress_terms() {
+        let decision = InstrumentorDecision {
+            action: InstrumentorAction::InstallRanking,
+            name: "progress_rank".to_owned(),
+            rust_source: "pub struct InstalledRanking; impl fuzzer::phase4c::SmbRanking for InstalledRanking { fn score(&self, observations: &[fuzzer::phase4b::SmbObservations]) -> i64 { observations.last().map_or(0, |event| i64::from(event.wram[0x071a])) } }".to_owned(),
+            scope_to_lineage: None,
+            rationale: "fixture".to_owned(),
+        };
+        let error = validate_artifact(ArtifactKind::Ranking, &decision)
+            .expect_err("ranking must not duplicate progress measures");
+        assert!(error.contains("forbidden progress token"));
     }
 }

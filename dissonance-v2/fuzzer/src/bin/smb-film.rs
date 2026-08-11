@@ -3,6 +3,7 @@
 //! Deterministic M7 PNG frame-strip generator for recorded SMB milestone inputs.
 
 use std::{
+    cmp::Reverse,
     env,
     error::Error,
     fs,
@@ -11,7 +12,8 @@ use std::{
 
 use fuzzer::{
     phase4b::{
-        SmbCampaignReport, SmbConfiguredReport, SmbInput, SmbTarget, observe_smb_input,
+        SmbCampaignReport, SmbConfiguredReport, SmbInput, SmbMechanicalState, SmbMilestones,
+        SmbObservations, SmbTarget, observe_smb_input, smb_mechanical_state_from_wram,
         smb_milestones_from_wram,
     },
     phase4c::SmbArchiveReport,
@@ -35,12 +37,31 @@ struct FilmManifest {
     rom_sha256: String,
     input: SmbInput,
     frames: Vec<String>,
+    action_boundaries: Vec<FilmBoundary>,
+    observation_events: Vec<FilmObservation>,
+}
+
+#[derive(Debug, Serialize)]
+struct FilmBoundary {
+    action_count: usize,
+    raw_wram: Vec<u8>,
+    decoded: SmbMechanicalState,
+    milestones: SmbMilestones,
+}
+
+#[derive(Debug, Serialize)]
+struct FilmObservation {
+    action_count: usize,
+    frame_count: u64,
+    raw_wram: Vec<u8>,
+    decoded: SmbMechanicalState,
+    milestones: SmbMilestones,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let mode = args.next().ok_or(
-        "usage: smb-film <m5|campaign|configured|archive> <report> [run-index] <milestone> <output-dir>",
+        "usage: smb-film <m5|campaign|configured|archive|archive-frontier|archive-key> <report> [run-index|world level progress] <milestone> <output-dir>",
     )?;
     let source = PathBuf::from(args.next().ok_or("missing source report")?);
     let (campaign, milestone, output) = match mode.to_str() {
@@ -102,6 +123,76 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             (campaign, milestone, output)
         }
+        Some("archive-frontier") => {
+            let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+            let report: SmbArchiveReport = serde_json::from_slice(&fs::read(&source)?)?;
+            let frontier = report
+                .entries
+                .iter()
+                .max_by_key(|entry| {
+                    (
+                        entry.key.world,
+                        entry.key.level,
+                        entry.key.progress,
+                        Reverse(entry.input.actions.len()),
+                        Reverse(entry.id),
+                    )
+                })
+                .map(|entry| entry.input.clone())
+                .ok_or("source archive contains no retained entries")?;
+            let mut first_inputs = report.first_inputs;
+            first_inputs.progress_into_1_1 = Some(frontier);
+            let campaign = SmbCampaignReport {
+                seed: report.seed,
+                executions: report.executions,
+                milestones: report.milestones,
+                first_reached: report.first_reached,
+                first_inputs,
+                corpus: vec![report.champion_input],
+            };
+            (campaign, "progress".to_owned(), output)
+        }
+        Some("archive-key") => {
+            let world: u8 = args
+                .next()
+                .ok_or("missing archive-key world")?
+                .to_string_lossy()
+                .parse()?;
+            let level: u8 = args
+                .next()
+                .ok_or("missing archive-key level")?
+                .to_string_lossy()
+                .parse()?;
+            let progress: u16 = args
+                .next()
+                .ok_or("missing archive-key progress")?
+                .to_string_lossy()
+                .parse()?;
+            let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+            let report: SmbArchiveReport = serde_json::from_slice(&fs::read(&source)?)?;
+            let selected = report
+                .entries
+                .iter()
+                .filter(|entry| {
+                    entry.key.world == world
+                        && entry.key.level == level
+                        && entry.key.progress == progress
+                })
+                .min_by_key(|entry| (entry.input.actions.len(), entry.id))
+                .map(|entry| entry.input.clone())
+                .ok_or("source archive contains no entry at the requested mechanical key")?;
+            let mut first_inputs = report.first_inputs;
+            first_inputs.progress_into_1_1 = Some(selected);
+            let campaign = SmbCampaignReport {
+                seed: report.seed,
+                executions: report.executions,
+                milestones: report.milestones,
+                first_reached: report.first_reached,
+                first_inputs,
+                corpus: vec![report.champion_input],
+            };
+            (campaign, "progress".to_owned(), output)
+        }
         _ => return Err("unknown film source mode".into()),
     };
     if args.next().is_some() {
@@ -116,12 +207,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&output)?;
     let mut target = SmbTarget::from_smb_rom_bytes(&rom)?;
     let mut frames = Vec::new();
+    let mut action_boundaries = vec![film_boundary(0, &target)];
+    let mut observation_events = Vec::new();
     write_frame(&output, 0, &target.frame_rgba(), &mut frames)?;
     for (index, action) in input.actions.iter().enumerate() {
         target.apply(action);
         if target.exit_kind() != libafl::executors::ExitKind::Ok {
             return Err(format!("emulator failed while rendering action {index}").into());
         }
+        for observation in target.last_action_observations() {
+            observation_events.push(film_observation(index + 1, observation)?);
+        }
+        action_boundaries.push(film_boundary(index + 1, &target));
         write_frame(&output, index + 1, &target.frame_rgba(), &mut frames)?;
         if target.is_dead() {
             break;
@@ -133,6 +230,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         rom_sha256: format!("{:x}", Sha256::digest(&rom)),
         input,
         frames,
+        action_boundaries,
+        observation_events,
     };
     fs::write(
         output.join("manifest.json"),
@@ -140,6 +239,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     println!("{}", serde_json::to_string_pretty(&manifest)?);
     Ok(())
+}
+
+fn film_observation(
+    action_count: usize,
+    observation: &SmbObservations,
+) -> Result<FilmObservation, Box<dyn Error>> {
+    let wram: &[u8; 2_048] = observation
+        .wram
+        .as_slice()
+        .try_into()
+        .map_err(|_| "film observation WRAM is not exactly 2 KiB")?;
+    Ok(FilmObservation {
+        action_count,
+        frame_count: observation.frame_count,
+        raw_wram: observation.wram.clone(),
+        decoded: smb_mechanical_state_from_wram(wram),
+        milestones: smb_milestones_from_wram(wram),
+    })
+}
+
+fn film_boundary(action_count: usize, target: &SmbTarget) -> FilmBoundary {
+    FilmBoundary {
+        action_count,
+        raw_wram: target.wram().to_vec(),
+        decoded: smb_mechanical_state_from_wram(target.wram()),
+        milestones: smb_milestones_from_wram(target.wram()),
+    }
 }
 
 fn milestone_input(

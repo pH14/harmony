@@ -12,7 +12,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["install_detector", "install_mutator", "none"]
+      "enum": ["install_detector", "install_mutator", "install_ranking", "none"]
     },
     "name": { "type": "string" },
     "rust_source": { "type": "string" },
