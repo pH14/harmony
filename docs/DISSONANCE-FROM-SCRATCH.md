@@ -1,6 +1,6 @@
 # Dissonance from scratch — a fuzzing-vocabulary design sketch
 
-**Status: exploration note, not a ruling.** This document describes a
+This document is an exploration note, not a ruling. It describes a
 from-scratch redesign of the dissonance search loop. It deliberately uses
 standard fuzzing vocabulary instead of harmony's own names (for example *run*
 where the glossary says *rollout*, *corpus* where the code says `Archive`).

@@ -1,6 +1,6 @@
 # LibAFL integration plan
 
-**Status: exploration plan, companion to `docs/DISSONANCE-FROM-SCRATCH.md`.**
+This is an exploration plan, a companion to `docs/DISSONANCE-FROM-SCRATCH.md`.
 Read that document first — it explains the design this plan implements. This
 document verifies that LibAFL actually provides what the design needs, then
 lays out the build in phases. The code lives in `dissonance/`; read
