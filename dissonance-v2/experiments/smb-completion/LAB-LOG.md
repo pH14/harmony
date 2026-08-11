@@ -245,3 +245,84 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
 - Ranked replacement counts were `[711, 764, 619, 547, 474, 741]`; descendant-novelty counts were `[130, 204, 102, 274, 349, 672]`. Every ranking remained active, so the mechanical retirement rule correctly did not discard a ranking that kept producing descendant novelty.
 - The full 5,000-execution e000 ranking report reproduced byte-for-byte from the recorded generated source with no model, and `m13-report.json` records `replay_verified=true`.
 - Decision: M13 capability is accepted and lands. This generated ranking is not promoted as the SMB search configuration because 2/6 misses the registered 4/6 threshold; no held-out panel is due. The two reproducible onward gains remain evidence for ordering the next hypothesis.
+
+### Post-M13 frontier diagnosis — pass
+
+- M13 ranked seed e004 retained 700 states in 1-3 and reached a mechanically furthest entry at `(world 0, level 2, progress 195)`. Its observer-event manifest contains 583 raw-plus-decoded events for the 222-action clean-reset input.
+- At the frontier event, raw page `12` and x `55` independently yield `12 * 16 + floor(55 / 16) = 195`; the decoded flag task is active and the film visibly shows Mario on the 1-3 flagpole. Result: **pass**. This is a genuine level-end state, not a progress decode fault. Raw evidence: `target/smb-completion/m13-frontier-film/`.
+
+## H11 — preregistered within-level frontier continuation
+
+- Falsifiable claim: after the first newly reached level, milestone-only `champion_input` resume throws away the later level-end state needed for the next transition. Resuming from the exact mechanically furthest state in the same archive will reach 1-4 reproducibly, while resuming from the first-onward champion will not.
+- Source is the exact M13 ranked e004 report. Control selects its recorded `champion_input`; challenger selects the shortest recorded input at the maximum `(world, level, progress)` tuple. Both reconstruct from clean gameplay genesis and then run the accepted H3 archive search: frozen H3 parent scheduler and controller vocabulary, stratified durations, one-or-two action suffixes, 512-action bound, no ranking, and 5,000 target executions.
+- Development seeds remain `0x5eed_e000..=0x5eed_e005`. Acceptance requires recorded `(world 0, level 3)` entries on at least 4/6 challenger seeds, strictly more paired successes than control, and no regression below 1-3. Only then repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105`; exact replay is due only for a promoted result.
+- Raw destination: `target/smb-completion/h11-dev/` and, only after development acceptance, `target/smb-completion/h11-held/`.
+
+### H11 result — rejected
+
+- Controls and challengers reached 1-4 on 0/6 development seeds. No held-out panel or promotion replay is due.
+- Challenger frontiers were uniformly `(world 0, level 2, progress 195)`. Control frontiers were `[195, 195, 20, 19, 20, 19]` in 1-3, so mechanical-frontier resume preserved the flagpole state more consistently but never completed the transition.
+- Challenger retained-entry counts were `[3779, 3653, 3770, 3844, 3727, 3920]`; deaths were `[43, 38, 50, 37, 37, 32]`. The archive continued to grow normally while every challenger stalled at the same independently validated numeric boundary.
+- Decision: selecting the later clean-reset bootstrap state is insufficient. The repeated full-cell search at a genuine flag-active boundary is evidence that later transition preparation is being lost among representatives inside existing cells, not evidence for another progress-key or scheduler change. Raw evidence: `target/smb-completion/h11-dev/`.
+
+## H12 — preregistered ranked flag-transition continuation
+
+- Falsifiable claim: the validated M13 generated ranking preserves within-cell state that is better prepared to finish the 1-3 flag transition, so installing that recorded ranking during continuation from the exact 1-3 frontier will reach 1-4 reproducibly.
+- Smallest test: source remains the exact M13 ranked e004 report and bootstrap selection remains its shortest input at maximum `(world, level, progress)`. Controls are the completed H11 mechanical-frontier arms. Challengers differ only by installing the exact model-generated M13 ranking source already validated and recorded for replay. The accepted H3 scheduler, controller vocabulary, stratified durations, one-or-two suffix, 512-action bound, and 5,000-execution budget remain frozen.
+- Development seeds remain `0x5eed_e000..=0x5eed_e005`. Acceptance requires recorded `(world 0, level 3)` entries on at least 4/6 challenger seeds, strictly more successes than the 0/6 controls, and no regression below 1-3. Only then repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105`; exact no-model replay is due only for a promoted result.
+- Raw destination: `target/smb-completion/h12-dev/` and, only after development acceptance, `target/smb-completion/h12-held/`.
+
+### H12 result — rejected
+
+- Challengers reached 1-4 on 0/6 development seeds, matching the 0/6 H11 controls. Every challenger remained at `(world 0, level 2, progress 195)`, so no held-out panel or promotion replay is due.
+- The generated ranking was materially active: replacement counts were `[855, 602, 612, 875, 746, 829]` and descendant-novelty counts were `[273, 247, 210, 289, 139, 197]`. It remained installed and active in every arm under the mechanical retirement rule.
+- Retained-entry counts were `[4297, 3881, 3984, 4255, 4158, 4286]`; deaths were `[39, 34, 33, 34, 32, 31]`. Ranking-driven replacement and normal archive growth therefore did not make this H10-evidence ranking useful at the independently verified 1-3 transition boundary. Raw evidence: `target/smb-completion/h12-dev/`.
+
+## H13 — preregistered plateau-evidence generated ranking
+
+- Falsifiable claim: M13's first ranking was generated from the 1-2 approach corpus and is too generic for the later 1-3 transition. A fresh ranking chosen by the instrumentor from the exact recorded 1-3 plateau corpus will preserve within-cell preparation that reaches 1-4 reproducibly.
+- Source is H12 seed e003, selected mechanically because it produced the most descendant novelty among the tied progress-195 runs. The operator view contains only neutral campaign counts, the independently validated raw-plus-decoded frontier film, and eight insertion-order-spaced recorded observation traces. It contains the ranking contract but no suggested score terms, fields, or goals. Luna xhigh has at most three compile/fixture attempts through the existing instrumentor decision schema.
+- Validation remains fixed at seed `0x5eed_ef00` for 256 target executions and requires deterministic fixture scores, replacement-policy isolation, and exact archive-report replay with no model. The paired development panel uses seeds `0x5eed_e000..=0x5eed_e005`, 5,000 target executions, the H12 source frontier, and the frozen H3 scheduler/controller/duration/suffix/action-bound configuration. Arms differ only by the newly recorded generated ranking.
+- Acceptance requires recorded `(world 0, level 3)` entries on at least 4/6 ranking arms, strictly more successes than controls, and no regression below 1-3. Only then repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105`; a promoted result must replay exactly with the recorded generated files and no model.
+- Raw destination: `target/smb-completion/h13-luna-20260811/` and, only after development acceptance, `target/smb-completion/h13-held/`.
+
+### H13 result — rejected
+
+- Luna xhigh attempt 1 emitted a bounded liveness/engine-state/WRAM-activity ranking without using a progress measure. It passed source validation, deterministic observation fixtures, the fixed seed `0x5eed_ef00` 256-execution isolation pilot, and exact pilot replay with no model.
+- Controls and ranking arms reached 1-4 on 0/6 development seeds. Every report remained at `(world 0, level 2, progress 195)`, so no held-out panel or promotion replay is due.
+- Ranking replacement counts were `[818, 747, 802, 860, 666, 797]`; descendant-novelty counts were `[126, 1188, 95, 176, 99, 209]`. The ranking remained active in every run. Fresh plateau-specific ranking evidence therefore changed within-cell selection substantially without crossing the transition.
+- Decision: a second active generated ranking null makes another ranking iteration lower priority than temporal-horizon diagnosis. Raw evidence and generated files: `target/smb-completion/h13-luna-20260811/`.
+
+## H14 — preregistered frozen transition burst
+
+- Falsifiable claim: the automatic 1-3 flag sequence lasts longer than the accepted H3 execution's maximum two 120-frame chords, and useful intermediate animation states are not retained even under two active generated rankings. Extending only the state-blind suffix horizon to at most four chords will observe the 1-4 transition within one target execution reproducibly.
+- Source is unchanged H12 seed e003 and bootstrap selection remains its shortest maximum-`(world, level, progress)` input. Controls are the completed H13 controls. Challengers use the frozen H3 parent scheduler, nine-mask controller vocabulary, stratified duration policy, archive keys/retention, no ranking, 512-action bound, and 5,000-execution budget. The sole change is the previously fixed burst distribution: one, two, three, or four chords with probabilities 1/2, 1/4, 1/8, and 1/8.
+- Development seeds remain `0x5eed_e000..=0x5eed_e005`. Acceptance requires recorded `(world 0, level 3)` entries on at least 4/6 challengers, strictly more successes than the 0/6 controls, and no regression below 1-3. Only then repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105`; a promoted result must replay exactly without a model.
+- Raw destination: `target/smb-completion/h14-dev/` and, only after development acceptance, `target/smb-completion/h14-held/`.
+
+### H14 registered result — rejected under the recorded decoder
+
+- Recorded keys reached nominal 1-4 on 0/6 challengers and all reported `(world 0, level 2, progress 195)`, matching the registered 0/6 decision rule. Retained-entry counts were `[5367, 5266, 5121, 5217, 4859, 4839]`; deaths were `[39, 63, 37, 49, 45, 46]`. No held-out panel is due under that preregistration.
+- The result immediately triggered the standing plateau-instrumentation check rather than another temporal redesign. Raw evidence: `target/smb-completion/h14-dev/`.
+
+### Post-H14 level decode diagnosis — fail
+
+- The supposed M13/H11–H14 1-3 flag frame visibly reads `WORLD 1-2` in the HUD. Its raw WRAM has `LevelNumber=$02` and `StarFlagTaskControl=$05`, while the old decoder reported zero-based level 2. Exact H14 flag descendant 362 then shows the black transition frame with the task cleared and the same raw level number.
+- A mechanically deepest retained descendant of that exact flag lineage, archive id 5279, visibly plays `WORLD 1-3` while raw `LevelNumber` remains `$02`; the old decoder still reports level 2. This proves that a real 1-2 -> 1-3 transition was scored as no level gain.
+- The SMB disassembly independently identifies `$075c` as `LevelNumber` and shows that the `RdyNextA` path increments it exactly when `StarFlagTaskControl == $05`, before the new area loads. The corrected current-level decode therefore uses `LevelNumber - 1` only during task 5, and the raw level number otherwise. The earlier 1-1 flag fixture at task 2 remains level 0.
+- Consequence: M13's reported 2/6 `reached_onward` values were false positives at the late 1-2 flag task, and H11–H14's nominal 1-4 tests were actually exploring the 1-2 -> 1-3 transition. Their raw reports remain immutable evidence, but their semantic level labels are superseded by this failed diagnosis. Diagnostic films: `target/smb-completion/h14-transition-diagnosis/`, `h14-transition-lineage-diagnosis/`, and `level-decode-1-1-flag-diagnosis/`.
+
+## H15 — preregistered transition-aware level decode
+
+- Falsifiable claim: correcting only the phase-timed level decode will let the existing frozen H3 scheduler recognize and extend the already observed 1-2 -> 1-3 transition reproducibly, without another ranking or search-policy change.
+- Source remains the exact recorded H12 e003 archive and its same shortest old-key frontier input. Development seeds remain `0x5eed_e000..=0x5eed_e005`, 5,000 target executions, frozen H3 scheduler and nine-mask vocabulary, stratified durations, one-or-two suffix, 512-action bound, and no ranking. The sole behavioral change is the corrected current-level observation used by milestones and archive keys.
+- Acceptance requires corrected `(world 0, level 2)` entries on at least 4/6 seeds and no regression below visible 1-2. If accepted, repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105` and require the same threshold. A promoted result must replay exactly without a model.
+- Raw destination: `target/smb-completion/h15-dev/` and, only after development acceptance, `target/smb-completion/h15-held/`.
+
+### H15 result — accepted
+
+- Development retained genuine corrected 1-3 entries on 6/6 seeds, with within-level frontiers `[19, 19, 20, 20, 19, 19]`. Retained-entry counts were `[3738, 3929, 3855, 4253, 3938, 4134]`; deaths were `[51, 31, 35, 29, 33, 33]`.
+- Held-out retained genuine corrected 1-3 entries on 6/6 seeds, with frontiers `[20, 20, 20, 19, 20, 20]`. Retained-entry counts were `[4034, 4053, 4145, 4184, 4107, 4081]`; deaths were `[23, 49, 37, 36, 45, 31]`.
+- Promoted campaign is held-out seed `0x5eed_e102`: 5,000 executions, 4,145 retained entries, 37 deaths, corrected 1-3 progress 20. Champion input SHA-256 is `acdf519be359d21a27cc91354cfe1bfd0445d9c2242c3a3eaa15349f6e4efe81`; observation SHA-256 is `5c9353565906478822f4449a07a3499cf0d8a25c2a93c184acb19eb1ee10827c`.
+- The independent complete no-model replay is byte-identical; both archive reports have SHA-256 `dd3c9a40988434d5fa3188ce54ccc5c28d1fe94fddceef6c5e3cadf8d48f24db` and the summary records `replay_verified=true`.
+- Decision: promote the transition-aware current-level decode. The 12/12 result and exact replay demonstrate that the prior hard boundary was an instrumentation fault, not a need for ranking, burst, or scheduler machinery. Raw evidence: `target/smb-completion/h15-dev/`, `h15-held/`, and `h15-promotion-replay-e102/`.

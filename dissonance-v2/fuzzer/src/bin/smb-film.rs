@@ -61,7 +61,7 @@ struct FilmObservation {
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let mode = args.next().ok_or(
-        "usage: smb-film <m5|campaign|configured|archive|archive-frontier|archive-key> <report> [run-index|world level progress] <milestone> <output-dir>",
+        "usage: smb-film <m5|campaign|configured|archive|archive-frontier|archive-key|archive-id> <report> [run-index|world level progress|archive-id] <milestone> <output-dir>",
     )?;
     let source = PathBuf::from(args.next().ok_or("missing source report")?);
     let (campaign, milestone, output) = match mode.to_str() {
@@ -181,6 +181,32 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .min_by_key(|entry| (entry.input.actions.len(), entry.id))
                 .map(|entry| entry.input.clone())
                 .ok_or("source archive contains no entry at the requested mechanical key")?;
+            let mut first_inputs = report.first_inputs;
+            first_inputs.progress_into_1_1 = Some(selected);
+            let campaign = SmbCampaignReport {
+                seed: report.seed,
+                executions: report.executions,
+                milestones: report.milestones,
+                first_reached: report.first_reached,
+                first_inputs,
+                corpus: vec![report.champion_input],
+            };
+            (campaign, "progress".to_owned(), output)
+        }
+        Some("archive-id") => {
+            let archive_id: u64 = args
+                .next()
+                .ok_or("missing archive entry id")?
+                .to_string_lossy()
+                .parse()?;
+            let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+            let report: SmbArchiveReport = serde_json::from_slice(&fs::read(&source)?)?;
+            let selected = report
+                .entries
+                .iter()
+                .find(|entry| entry.id == archive_id)
+                .map(|entry| entry.input.clone())
+                .ok_or("source archive contains no entry with the requested id")?;
             let mut first_inputs = report.first_inputs;
             first_inputs.progress_into_1_1 = Some(selected);
             let campaign = SmbCampaignReport {

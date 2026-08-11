@@ -97,6 +97,7 @@ const PLAYER_KILLED_STATE: u8 = 0x0b;
 const WORLD_NUMBER_OFFSET: usize = 0x075f;
 const LEVEL_NUMBER_OFFSET: usize = 0x075c;
 const FLAG_TASK_OFFSET: usize = 0x0746;
+const LEVEL_ADVANCED_FLAG_TASK: u8 = 0x05;
 const MUTATION_BUTTON_MASKS: [u8; 10] =
     [0x00, 0x01, 0x02, 0x08, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10];
 
@@ -1253,7 +1254,7 @@ fn set_base_feature(observer: &mut SmbObserver, fingerprint: u64) -> usize {
 #[must_use]
 pub fn smb_milestones_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMilestones {
     let world = wram[WORLD_NUMBER_OFFSET];
-    let level = wram[LEVEL_NUMBER_OFFSET];
+    let level = smb_current_level(wram);
     let in_1_1 = world == 0 && level == 0;
     let scroll_bucket = if in_1_1 { smb_scroll_bucket(wram) } else { 0 };
     SmbMilestones {
@@ -1288,12 +1289,21 @@ pub struct SmbMechanicalState {
 pub fn smb_mechanical_state_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMechanicalState {
     SmbMechanicalState {
         world: wram[WORLD_NUMBER_OFFSET],
-        level: wram[LEVEL_NUMBER_OFFSET],
+        level: smb_current_level(wram),
         progress: smb_scroll_bucket(wram),
         player_y_bucket: wram[PLAYER_Y_OFFSET] / 16,
         player_engine_state: wram[PLAYER_ENGINE_STATE_OFFSET],
         dead: smb_player_is_dead(wram),
         flag_active: wram[FLAG_TASK_OFFSET] != 0,
+    }
+}
+
+fn smb_current_level(wram: &[u8; WRAM_SIZE]) -> u8 {
+    let level = wram[LEVEL_NUMBER_OFFSET];
+    if wram[FLAG_TASK_OFFSET] == LEVEL_ADVANCED_FLAG_TASK {
+        level.saturating_sub(1)
+    } else {
+        level
     }
 }
 
@@ -1823,8 +1833,9 @@ mod tests {
         AppendButtonChordMutator, ButtonChord, MAX_SMB_ACTIONS, NullSmbDetector, NullSmbMacro,
         SCREEN_PAGE_OFFSET, SCREEN_X_OFFSET, SMB_TRIAGE_BATCH_EXECUTIONS, SmbArtifactConfig,
         SmbDetector, SmbInput, SmbLabeledCorpusEntry, SmbMacro, SmbObservations, SmbTarget,
-        SmbTriageScore, observe_smb_input, run_smb_configured, run_smb_restart_configured_inner,
-        sample_chord,
+        SmbTriageScore, WRAM_SIZE, observe_smb_input, run_smb_configured,
+        run_smb_restart_configured_inner, sample_chord, smb_mechanical_state_from_wram,
+        smb_milestones_from_wram,
     };
     use crate::phase2::{Interest, TriageLabels};
     use crate::target::{Target, execute_actions};
@@ -1917,6 +1928,25 @@ mod tests {
             execute_actions(&mut first, &actions),
             execute_actions(&mut second, &actions)
         );
+    }
+
+    #[test]
+    fn level_decode_waits_for_the_flag_task_to_clear() {
+        let mut wram = [0_u8; WRAM_SIZE];
+        wram[super::LEVEL_NUMBER_OFFSET] = 2;
+        wram[super::FLAG_TASK_OFFSET] = super::LEVEL_ADVANCED_FLAG_TASK;
+        assert_eq!(smb_mechanical_state_from_wram(&wram).level, 1);
+        let flag = smb_milestones_from_wram(&wram);
+        assert!(flag.reached_1_2);
+        assert!(!flag.reached_onward);
+
+        wram[super::FLAG_TASK_OFFSET] = 0;
+        assert_eq!(smb_mechanical_state_from_wram(&wram).level, 2);
+        assert!(smb_milestones_from_wram(&wram).reached_onward);
+
+        wram[super::LEVEL_NUMBER_OFFSET] = 0;
+        wram[super::FLAG_TASK_OFFSET] = 2;
+        assert_eq!(smb_mechanical_state_from_wram(&wram).level, 0);
     }
 
     #[test]

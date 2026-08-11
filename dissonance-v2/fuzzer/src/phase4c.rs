@@ -419,7 +419,7 @@ pub fn run_smb_archive_search_with_config(
     max_actions: usize,
     duration_policy: SmbArchiveDurationPolicy,
 ) -> Result<SmbArchiveReport, Box<dyn Error>> {
-    run_smb_archive_search_internal(
+    run_smb_archive_search_with_config_and_suffix(
         rom,
         initial_inputs,
         seed,
@@ -427,6 +427,27 @@ pub fn run_smb_archive_search_with_config(
         max_actions,
         duration_policy,
         SmbArchiveSuffixPolicy::OneOrTwo,
+    )
+}
+
+/// Run frozen completion search with explicit bounded duration and suffix policies.
+pub fn run_smb_archive_search_with_config_and_suffix(
+    rom: &[u8],
+    initial_inputs: &[SmbInput],
+    seed: u64,
+    execution_budget: u64,
+    max_actions: usize,
+    duration_policy: SmbArchiveDurationPolicy,
+    suffix_policy: SmbArchiveSuffixPolicy,
+) -> Result<SmbArchiveReport, Box<dyn Error>> {
+    run_smb_archive_search_internal(
+        rom,
+        initial_inputs,
+        seed,
+        execution_budget,
+        max_actions,
+        duration_policy,
+        suffix_policy,
         None,
         false,
     )
@@ -799,7 +820,8 @@ fn entry_cost(entry: &SmbArchiveEntryReport) -> (usize, u64) {
 mod tests {
     use super::{
         Archive, SmbArchiveDurationPolicy, SmbArchiveSuffixPolicy, SmbRanking,
-        SmbRankingSearchConfig, run_smb_archive_search, run_smb_archive_search_with_ranking,
+        SmbRankingSearchConfig, run_smb_archive_search,
+        run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_ranking,
     };
     use crate::phase4b::{MAX_SMB_ACTIONS, SmbInput, SmbObservations};
 
@@ -841,6 +863,27 @@ mod tests {
                 .iter()
                 .all(|entry| entry.input.actions.len() <= MAX_SMB_ACTIONS)
         );
+        let burst_first = run_smb_archive_search_with_config_and_suffix(
+            &rom,
+            &initial,
+            0x5eed_e000,
+            32,
+            MAX_SMB_ACTIONS,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::BurstUpToFour,
+        )
+        .expect("first frozen burst campaign");
+        let burst_second = run_smb_archive_search_with_config_and_suffix(
+            &rom,
+            &initial,
+            0x5eed_e000,
+            32,
+            MAX_SMB_ACTIONS,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::BurstUpToFour,
+        )
+        .expect("replayed frozen burst campaign");
+        assert_eq!(burst_first, burst_second);
     }
 
     #[test]

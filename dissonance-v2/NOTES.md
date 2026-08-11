@@ -272,7 +272,16 @@ durations.
 - The first live M13 ranking passed its fixed 256-execution pilot and exact
   model-free replay. Across the six 5,000-execution SMB pairs it reached onward
   on 2/6 versus 0/6 controls, but missed the registered 4/6 promotion rule.
-  The mechanism lands; this ranking is a registered SMB non-promotion.
+  The mechanism lands; this ranking is a registered SMB non-promotion. A later
+  raw-WRAM/film audit superseded the `onward` interpretation: SMB increments
+  `LevelNumber` while `StarFlagTaskControl == 5`, before the next area loads, so
+  those two reports were late 1-2 flag states rather than live 1-3 states.
+- H15 decodes the visible current level as `LevelNumber - 1` only during flag
+  task 5, using the raw level number otherwise. The disassembly names the exact
+  increment site, and films independently show the old failure (visible 1-2
+  decoded as 1-3, then visible 1-3 still decoded as 1-3). The corrected frozen
+  H3 search retained genuine 1-3 on 12/12 development plus held-out seeds and
+  replayed a full promoted campaign byte-for-byte.
 - All time-to-target comparisons use deterministic target-execution counts, not
   wall-clock time. Wall-clock measurements would violate the replay contract and
   make the tests host-dependent.
