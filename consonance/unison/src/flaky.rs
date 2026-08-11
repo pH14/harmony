@@ -334,6 +334,11 @@ mod tests {
             h[1..9].copy_from_slice(&self.work.to_le_bytes());
             h
         }
+        fn observable_digest(&self) -> [u8; 32] {
+            // A bisection mock with no output channel: its work counter is all
+            // there is to observe, and there is no latent state to exclude.
+            self.state_hash()
+        }
     }
 
     impl Perturbable for JumpMachine {
