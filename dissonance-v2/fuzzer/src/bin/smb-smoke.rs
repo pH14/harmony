@@ -91,6 +91,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         frame_count: 0,
         wram: Vec::new(),
         changed_indices: Vec::new(),
+        dead: false,
         log_line: String::new(),
     });
     let report = SmokeReport {
@@ -153,6 +154,9 @@ fn calibration_sequences(rom: &[u8]) -> Result<Vec<(String, SmbMilestones)>, Box
             milestones.reached_1_1_flag |= current.reached_1_1_flag;
             milestones.reached_1_2 |= current.reached_1_2;
             milestones.reached_onward |= current.reached_onward;
+            if target.is_dead() {
+                break;
+            }
         }
         results.push((name.to_owned(), milestones));
     }

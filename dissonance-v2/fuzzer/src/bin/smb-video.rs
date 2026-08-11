@@ -105,10 +105,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut target = SmbTarget::from_smb_rom_bytes(&rom)?;
     let mut frame_count = 0_u64;
     write_frame(&mut encoder, &mut target, &mut frame_count)?;
-    for action in &film.input.actions {
+    'actions: for action in &film.input.actions {
         for _ in 0..action.bounded_hold_frames() {
             target.clock_frame_for_film(action.buttons)?;
             write_frame(&mut encoder, &mut target, &mut frame_count)?;
+            if target.is_dead() {
+                target.release_buttons_for_film();
+                break 'actions;
+            }
         }
         target.release_buttons_for_film();
     }

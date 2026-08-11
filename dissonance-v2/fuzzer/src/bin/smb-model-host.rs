@@ -312,7 +312,7 @@ fn write_operator_scaffold(
     )?;
     fs::write(
         view.join("observation-format.txt"),
-        "Each action boundary exposes frame_count, the complete 2048-byte CPU work RAM as an integer array, sorted changed_indices, and a mechanical log line containing only frame count and changed indices. No RAM offset is decoded or declared to mean progress. The base novelty map is deliberately coarse position only.\n",
+        "Each observer event exposes frame_count, the complete 2048-byte CPU work RAM as an integer array, sorted changed_indices, a terminal dead bit, and a mechanical log line containing only frame count and changed indices. Events occur at each 16-pixel x transition, first death, and action endpoint. No other RAM offset is decoded or declared to mean progress. The base novelty map is deliberately position-only.\n",
     )?;
     fs::write(view.join("m5-summary.json"), serde_json::to_vec_pretty(m5)?)?;
     Ok(())
@@ -519,7 +519,7 @@ fn validate_artifact(kind: ArtifactKind, decision: &InstrumentorDecision) -> Res
 fn write_detector_interface(view: &Path) -> Result<(), Box<dyn Error>> {
     fs::write(
         view.join("artifact-interface.txt"),
-        "This invocation asks for a detector. Return action=install_detector. Complete source declares `pub struct InstalledDetector;` and implements `fuzzer::phase4b::SmbDetector` for it. The method is `fn features(&self, observations: &[fuzzer::phase4b::SmbObservations]) -> Vec<u64>`. Each observation exposes only frame_count, wram, changed_indices, and log_line. Feature keys are global and reduced modulo 4096 by the host, so preserve useful conjunctions with distinct low bits. Source is pure, deterministic, bounded, and uses no dependencies beyond fuzzer/std.\n",
+        "This invocation asks for a detector. Return action=install_detector. Complete source declares `pub struct InstalledDetector;` and implements `fuzzer::phase4b::SmbDetector` for it. The method is `fn features(&self, observations: &[fuzzer::phase4b::SmbObservations]) -> Vec<u64>`. Each observation exposes only frame_count, wram, changed_indices, dead, and log_line. Feature keys are global and reduced modulo 4096 by the host, so preserve useful conjunctions with distinct low bits. Source is pure, deterministic, bounded, and uses no dependencies beyond fuzzer/std.\n",
     )?;
     Ok(())
 }

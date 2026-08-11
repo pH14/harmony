@@ -104,6 +104,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             return Err(format!("emulator failed while rendering action {index}").into());
         }
         write_frame(&output, index + 1, &target.frame_rgba(), &mut frames)?;
+        if target.is_dead() {
+            break;
+        }
     }
     let manifest = FilmManifest {
         source_report: source,

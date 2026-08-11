@@ -188,7 +188,7 @@ fn write_operator_scaffold(view: &Path) -> Result<(), Box<dyn Error>> {
     )?;
     fs::write(
         view.join("observation-format.txt"),
-        "Each retained corpus file contains its SmbInput and action-boundary observations. Each observation exposes frame_count, complete 2048-byte work RAM, sorted changed_indices, and its existing mechanical log_line. No separately joined log is supplied. No RAM offset is decoded or declared to mean progress.\n",
+        "Each retained corpus file contains its SmbInput and observer-event trace. Events occur at each 16-pixel x transition, first death, and action endpoint. Each observation exposes frame_count, complete 2048-byte work RAM, sorted changed_indices, terminal dead, and its existing mechanical log_line. No separately joined log is supplied. No other RAM offset is decoded or declared to mean progress.\n",
     )?;
     Ok(())
 }

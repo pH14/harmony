@@ -92,6 +92,8 @@ pub struct SmbDetectorStats {
 const SCREEN_PAGE_OFFSET: usize = 0x071a;
 const SCREEN_X_OFFSET: usize = 0x071c;
 const PLAYER_Y_OFFSET: usize = 0x00ce;
+const PLAYER_ENGINE_STATE_OFFSET: usize = 0x000e;
+const PLAYER_KILLED_STATE: u8 = 0x0b;
 const WORLD_NUMBER_OFFSET: usize = 0x075f;
 const LEVEL_NUMBER_OFFSET: usize = 0x075c;
 const FLAG_TASK_OFFSET: usize = 0x0746;
@@ -389,6 +391,8 @@ where
     let buttons = MUTATION_BUTTON_MASKS[button_index];
     let hold = if buttons == 0x08 {
         1
+    } else if rand.below(NonZeroUsize::new(4).expect("positive short-hold ratio")) != 0 {
+        rand.below(NonZeroUsize::new(11).expect("positive short-hold range")) + 2
     } else {
         rand.below(NonZeroUsize::new(usize::from(MAX_HOLD_FRAMES)).expect("positive hold bound"))
             + 1
@@ -515,15 +519,18 @@ where
     }
 }
 
-/// Mechanical evidence captured at one NES action boundary.
+/// Mechanical evidence captured at one NES observer event.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbObservations {
-    /// Number of requested emulated frames since genesis.
+    /// Number of frames actually emulated since genesis.
     pub frame_count: u64,
     /// Complete 2 KiB NES CPU work RAM, with no semantic decoding.
     pub wram: Vec<u8>,
-    /// Sorted work-RAM indices whose bytes changed since the previous boundary.
+    /// Sorted work-RAM indices whose bytes changed since the previous observer event.
     pub changed_indices: Vec<u16>,
+    /// Whether this event is the first observed player-death frame.
+    #[serde(default)]
+    pub dead: bool,
     /// Compact mechanical log line; it deliberately contains no decoded game fields.
     pub log_line: String,
 }
@@ -537,7 +544,7 @@ pub struct SmbTriageRequest {
     pub execution_count: u64,
     /// Complete retained input supplied to the scheduler triager.
     pub input: SmbInput,
-    /// Complete mechanical RAM evidence at action boundaries.
+    /// Complete mechanical RAM evidence at bucket transitions, death, and action endpoints.
     pub observations: Vec<SmbObservations>,
 }
 
@@ -546,6 +553,7 @@ pub struct SmbTriageRequest {
 pub struct SmbSnapshot {
     emulator_state: Vec<u8>,
     observation: SmbObservations,
+    dead: bool,
     failed: bool,
 }
 
@@ -555,6 +563,8 @@ pub struct SmbTarget {
     deck: ControlDeck,
     genesis_state: Vec<u8>,
     observation: SmbObservations,
+    action_observations: Vec<SmbObservations>,
+    dead: bool,
     failed: bool,
 }
 
@@ -582,11 +592,13 @@ impl SmbTarget {
         deck.load_rom("campaign.nes", &mut Cursor::new(rom))?;
         let mut genesis_state = Vec::new();
         deck.save_state(&mut genesis_state)?;
-        let observation = observation_from(&deck, 0, &[0; WRAM_SIZE]);
+        let observation = observation_from(&deck, 0, &[0; WRAM_SIZE], false);
         Ok(Self {
             deck,
             genesis_state,
+            action_observations: vec![observation.clone()],
             observation,
+            dead: false,
             failed: false,
         })
     }
@@ -630,9 +642,11 @@ impl SmbTarget {
         let mut genesis_state = Vec::new();
         target.deck.save_state(&mut genesis_state)?;
         target.genesis_state = genesis_state;
-        target.observation = observation_from(&target.deck, 0, target.deck.wram());
+        target.observation = observation_from(&target.deck, 0, target.deck.wram(), false);
         target.observation.changed_indices.clear();
         target.observation.log_line = "frame=0 changed=[]".to_owned();
+        target.action_observations = vec![target.observation.clone()];
+        target.dead = false;
         Ok(target)
     }
 
@@ -651,11 +665,16 @@ impl SmbTarget {
     ///
     /// Returns a TetaNES error if frame execution fails.
     pub fn clock_frame_for_film(&mut self, buttons: u8) -> tetanes_core::control_deck::Result<()> {
+        if self.dead {
+            return Ok(());
+        }
         self.deck.joypad_mut(Player::One).buttons =
             JoypadBtnState::from_bits_truncate(u16::from(buttons));
         let result = self.deck.clock_frame();
         if result.is_err() {
             self.failed = true;
+        } else {
+            self.dead = smb_player_is_dead(self.deck.wram());
         }
         result.map(|_| ())
     }
@@ -670,6 +689,18 @@ impl SmbTarget {
     pub fn wram(&self) -> &[u8; WRAM_SIZE] {
         self.deck.wram()
     }
+
+    /// Return whether execution reached the first player-death frame.
+    #[must_use]
+    pub fn is_dead(&self) -> bool {
+        self.dead
+    }
+
+    /// Return every observer event emitted by the most recently applied action.
+    #[must_use]
+    pub fn last_action_observations(&self) -> &[SmbObservations] {
+        &self.action_observations
+    }
 }
 
 /// Replay one SMB input from gameplay genesis and return its mechanical observation trace.
@@ -680,9 +711,12 @@ pub fn observe_smb_input(
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let mut observations = vec![target.observe()];
     for action in &input.actions {
+        if target.is_dead() {
+            break;
+        }
         target.apply(action);
-        observations.push(target.observe());
-        if target.exit_kind() != ExitKind::Ok {
+        observations.extend_from_slice(target.last_action_observations());
+        if target.is_dead() || target.exit_kind() != ExitKind::Ok {
             break;
         }
     }
@@ -699,29 +733,62 @@ impl Target for SmbTarget {
             .deck
             .load_state(Cursor::new(&self.genesis_state))
             .is_err();
-        self.observation = observation_from(&self.deck, 0, &[0; WRAM_SIZE]);
+        self.dead = false;
+        self.observation = observation_from(&self.deck, 0, &[0; WRAM_SIZE], false);
+        self.action_observations = vec![self.observation.clone()];
     }
 
     fn apply(&mut self, action: &Self::Action) {
-        if self.failed {
+        self.action_observations.clear();
+        if self.failed || self.dead {
             return;
         }
-        let prior_wram = self.deck.wram().to_owned();
+        let mut prior_observed_wram = self.deck.wram().to_owned();
+        let mut prior_bucket = smb_scroll_bucket(self.deck.wram());
         self.deck.joypad_mut(Player::One).buttons =
             JoypadBtnState::from_bits_truncate(u16::from(action.buttons));
         let hold_frames = action.bounded_hold_frames();
+        let mut executed_frames = 0_u64;
         for _ in 0..hold_frames {
             if self.deck.clock_frame().is_err() {
                 self.failed = true;
                 break;
             }
+            executed_frames = executed_frames.saturating_add(1);
+            let current_bucket = smb_scroll_bucket(self.deck.wram());
+            self.dead = smb_player_is_dead(self.deck.wram());
+            if current_bucket != prior_bucket || self.dead {
+                let observation = observation_from(
+                    &self.deck,
+                    self.observation.frame_count.saturating_add(executed_frames),
+                    &prior_observed_wram,
+                    self.dead,
+                );
+                prior_observed_wram = self.deck.wram().to_owned();
+                prior_bucket = current_bucket;
+                self.action_observations.push(observation);
+            }
+            if self.dead {
+                break;
+            }
         }
         self.deck.joypad_mut(Player::One).buttons = JoypadBtnState::empty();
-        self.observation = observation_from(
-            &self.deck,
-            self.observation.frame_count + u64::from(hold_frames),
-            &prior_wram,
-        );
+        let endpoint_frame = self.observation.frame_count.saturating_add(executed_frames);
+        let endpoint_already_recorded = self
+            .action_observations
+            .last()
+            .is_some_and(|observation| observation.frame_count == endpoint_frame);
+        if !endpoint_already_recorded {
+            self.action_observations.push(observation_from(
+                &self.deck,
+                endpoint_frame,
+                &prior_observed_wram,
+                self.dead,
+            ));
+        }
+        if let Some(observation) = self.action_observations.last() {
+            self.observation = observation.clone();
+        }
     }
 
     fn observe(&self) -> Self::Observations {
@@ -729,11 +796,7 @@ impl Target for SmbTarget {
     }
 
     fn fingerprint(&self) -> u64 {
-        let wram = self.deck.wram();
-        let screen_page = u64::from(wram[SCREEN_PAGE_OFFSET]);
-        let screen_x_bucket = u64::from(wram[SCREEN_X_OFFSET] / 64);
-        let player_y_bucket = u64::from(wram[PLAYER_Y_OFFSET] / 32);
-        (screen_page << 8) | (screen_x_bucket << 4) | player_y_bucket
+        smb_fingerprint_from_wram(self.deck.wram())
     }
 
     fn exit_kind(&self) -> ExitKind {
@@ -753,6 +816,7 @@ impl Target for SmbTarget {
         Some(SmbSnapshot {
             emulator_state,
             observation: self.observation.clone(),
+            dead: self.dead,
             failed: self.failed,
         })
     }
@@ -762,6 +826,8 @@ impl Target for SmbTarget {
             .load_state(Cursor::new(&snapshot.emulator_state))
             .map_err(|error| LibAflError::illegal_state(error.to_string()))?;
         self.observation = snapshot.observation.clone();
+        self.action_observations = vec![self.observation.clone()];
+        self.dead = snapshot.dead;
         self.failed = snapshot.failed;
         Ok(())
     }
@@ -771,6 +837,7 @@ fn observation_from(
     deck: &ControlDeck,
     frame_count: u64,
     prior_wram: &[u8; WRAM_SIZE],
+    dead: bool,
 ) -> SmbObservations {
     let wram = deck.wram();
     let changed_indices = wram
@@ -788,14 +855,30 @@ fn observation_from(
         frame_count,
         wram: wram.to_vec(),
         changed_indices,
+        dead,
         log_line,
     }
 }
 
-/// Frozen M5 milestone ladder, accumulated over every action boundary in a run.
+fn smb_scroll_bucket(wram: &[u8; WRAM_SIZE]) -> u16 {
+    u16::from(wram[SCREEN_PAGE_OFFSET]) * 16 + u16::from(wram[SCREEN_X_OFFSET] / 16)
+}
+
+fn smb_player_is_dead(wram: &[u8; WRAM_SIZE]) -> bool {
+    wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_KILLED_STATE
+}
+
+fn smb_fingerprint_from_wram(wram: &[u8; WRAM_SIZE]) -> u64 {
+    let screen_page = u64::from(wram[SCREEN_PAGE_OFFSET]);
+    let screen_x_bucket = u64::from(wram[SCREEN_X_OFFSET] / 16);
+    let player_y_bucket = u64::from(wram[PLAYER_Y_OFFSET] / 32);
+    (screen_page << 8) | (screen_x_bucket << 4) | player_y_bucket
+}
+
+/// Campaign milestone ladder, accumulated over every observer event in a run.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbMilestones {
-    /// Greatest 64-pixel scroll bucket observed while the RAM level tuple is 1-1.
+    /// Greatest 16-pixel scroll bucket observed while the RAM level tuple is 1-1.
     pub max_1_1_scroll_bucket: u16,
     /// Whether the 1-1 flag-task byte was observed active.
     pub reached_1_1_flag: bool,
@@ -1095,15 +1178,23 @@ where
                 (0, vec![index], vec![self.target.observe()])
             };
         for action in &input.actions[start..] {
+            if self.target.is_dead() {
+                break;
+            }
             self.target.apply(action);
-            self.last_milestones
-                .merge(smb_milestones_from_wram(self.target.wram()));
-            base_features.push(set_base_feature(
-                &mut self.observers.0,
-                self.target.fingerprint(),
-            ));
-            observations.push(self.target.observe());
-            if self.target.exit_kind() != ExitKind::Ok {
+            for observation in self.target.last_action_observations() {
+                let wram: &[u8; WRAM_SIZE] =
+                    observation.wram.as_slice().try_into().map_err(|_| {
+                        LibAflError::illegal_state("SMB observer emitted malformed work RAM")
+                    })?;
+                self.last_milestones.merge(smb_milestones_from_wram(wram));
+                base_features.push(set_base_feature(
+                    &mut self.observers.0,
+                    smb_fingerprint_from_wram(wram),
+                ));
+                observations.push(observation.clone());
+            }
+            if self.target.is_dead() || self.target.exit_kind() != ExitKind::Ok {
                 break;
             }
         }
@@ -1158,11 +1249,7 @@ pub fn smb_milestones_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMilestones {
     let world = wram[WORLD_NUMBER_OFFSET];
     let level = wram[LEVEL_NUMBER_OFFSET];
     let in_1_1 = world == 0 && level == 0;
-    let scroll_bucket = if in_1_1 {
-        u16::from(wram[SCREEN_PAGE_OFFSET]) * 4 + u16::from(wram[SCREEN_X_OFFSET] / 64)
-    } else {
-        0
-    };
+    let scroll_bucket = if in_1_1 { smb_scroll_bucket(wram) } else { 0 };
     SmbMilestones {
         max_1_1_scroll_bucket: scroll_bucket,
         reached_1_1_flag: in_1_1 && wram[FLAG_TASK_OFFSET] != 0,
@@ -1668,7 +1755,7 @@ pub fn run_smb_random_mash(
         for action in &input.actions {
             target.apply(action);
             run.merge(smb_milestones_from_wram(target.wram()));
-            if target.exit_kind() != ExitKind::Ok {
+            if target.is_dead() || target.exit_kind() != ExitKind::Ok {
                 break;
             }
         }
@@ -1695,9 +1782,10 @@ pub fn run_smb_random_mash(
 mod tests {
     use super::{
         AppendButtonChordMutator, ButtonChord, MAX_SMB_ACTIONS, NullSmbDetector, NullSmbMacro,
-        SMB_TRIAGE_BATCH_EXECUTIONS, SmbArtifactConfig, SmbDetector, SmbInput,
-        SmbLabeledCorpusEntry, SmbMacro, SmbObservations, SmbTarget, SmbTriageScore,
-        run_smb_configured, run_smb_restart_configured_inner,
+        SCREEN_PAGE_OFFSET, SCREEN_X_OFFSET, SMB_TRIAGE_BATCH_EXECUTIONS, SmbArtifactConfig,
+        SmbDetector, SmbInput, SmbLabeledCorpusEntry, SmbMacro, SmbObservations, SmbTarget,
+        SmbTriageScore, observe_smb_input, run_smb_configured, run_smb_restart_configured_inner,
+        sample_chord,
     };
     use crate::phase2::{Interest, TriageLabels};
     use crate::target::{Target, execute_actions};
@@ -1712,11 +1800,15 @@ mod tests {
     use libafl_bolts::rands::StdRand;
 
     fn synthetic_nrom() -> Vec<u8> {
+        synthetic_nrom_with_program(&[0x4c, 0x00, 0x80])
+    }
+
+    fn synthetic_nrom_with_program(program: &[u8]) -> Vec<u8> {
         let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
         rom[..16].copy_from_slice(&[b'N', b'E', b'S', 0x1a, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let prg = &mut rom[16..16 + (16 * 1024)];
         prg.fill(0xea);
-        prg[..3].copy_from_slice(&[0x4c, 0x00, 0x80]);
+        prg[..program.len()].copy_from_slice(program);
         for vector in [0x3ffa, 0x3ffc, 0x3ffe] {
             prg[vector..vector + 2].copy_from_slice(&0x8000_u16.to_le_bytes());
         }
@@ -1826,6 +1918,78 @@ mod tests {
             hold_frames: 0,
         });
         assert_eq!(target.observe().frame_count, 1);
+    }
+
+    #[test]
+    fn long_action_observes_intermediate_sixteen_pixel_buckets() {
+        let rom = synthetic_nrom_with_program(&[
+            0xee, 0x1c, 0x07, // INC $071c
+            0xa0, 0x14, // LDY #20
+            0xa2, 0xff, // outer: LDX #255
+            0xca, // inner: DEX
+            0xd0, 0xfd, // BNE inner
+            0x88, // DEY
+            0xd0, 0xf8, // BNE outer
+            0x4c, 0x00, 0x80, // JMP $8000
+        ]);
+        let mut target = SmbTarget::from_rom_bytes(&rom).expect("load bucket ROM");
+        target.apply(&ButtonChord::new(0x80, 120));
+
+        let observations = target.last_action_observations();
+        assert!(observations.len() > 2);
+        assert_eq!(
+            observations.last().map(|event| event.frame_count),
+            Some(120)
+        );
+        assert!(
+            observations
+                .windows(2)
+                .all(|events| events[0].frame_count < events[1].frame_count)
+        );
+        let buckets = observations
+            .iter()
+            .map(|event| {
+                u16::from(event.wram[SCREEN_PAGE_OFFSET]) * 16
+                    + u16::from(event.wram[SCREEN_X_OFFSET] / 16)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(buckets.len() > 2);
+    }
+
+    #[test]
+    fn death_is_terminal_and_replays_at_the_same_frame() {
+        let rom = synthetic_nrom_with_program(&[
+            0xa9, 0x0b, // LDA #$0b
+            0x85, 0x0e, // STA $0e
+            0x4c, 0x04, 0x80, // JMP $8004
+        ]);
+        let input = SmbInput {
+            actions: vec![ButtonChord::new(0x80, 120), ButtonChord::new(0x81, 120)],
+        };
+        let first = observe_smb_input(&rom, &input).expect("first terminal replay");
+        let second = observe_smb_input(&rom, &input).expect("second terminal replay");
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first.last().map(|event| event.frame_count), Some(1));
+        assert!(first.last().is_some_and(|event| event.dead));
+    }
+
+    #[test]
+    fn sampled_non_start_holds_are_biased_short() {
+        let mut rand = StdRand::with_seed(0x5eed_da10);
+        let mut short = 0_usize;
+        let mut non_start = 0_usize;
+        for _ in 0..1_024 {
+            let chord = sample_chord(&mut rand);
+            if chord.buttons != 0x08 {
+                non_start += 1;
+                if (2..=12).contains(&chord.hold_frames) {
+                    short += 1;
+                }
+            }
+        }
+        assert!(short * 4 > non_start * 3);
     }
 
     #[test]

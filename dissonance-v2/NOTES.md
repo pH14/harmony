@@ -204,6 +204,26 @@ durations.
   term. Recorded-label replay reproduced the complete 70 KiB report exactly.
   Evidence is in the ignored directory
   `target/model-campaigns/m9-luna-20260810`.
+- M10 samples the existing SMB observer at every 16-pixel scroll transition,
+  the first player-death frame, and each action endpoint. The base fingerprint
+  and milestone ladder use the same 16-pixel x granularity. Death is the
+  predeclared SMB engine state `$000e == $0b`; retained M9 traces demonstrated
+  the old failure by entering `$0b` and then continuing through the automatic
+  reset to a live endpoint. The target now stops the action on that first death
+  frame, snapshots the terminal bit, and stops campaign replay, film strips, and
+  full-frame video there without adding crash retention or another input.
+  Generated non-Start chords retain the `1..=120` type bound but draw 75% of
+  their holds directly from `2..=12`; Start remains a one-frame press.
+- M10's deterministic synthetic-NROM regressions cover multiple intermediate
+  16-pixel observations inside one 120-frame action, same-frame terminal-death
+  replay, and the seeded short-hold bias. The real-ROM neutral smoke reused the
+  M9 synchronous-label path with seed `0x5eed_d900`: 1,000 executions retained
+  67 cases, refreshed 23 labels with zero failures, reached 16-pixel bucket 49,
+  and reproduced the complete report under recorded-label replay. The winning
+  input stopped at the pipe cluster before the first pit, so the required
+  first-pit result is **no**. Its terminal-aware H.264 film contains 986 frames
+  (16.433 seconds). Evidence is in the ignored directory
+  `target/model-campaigns/m10-neutral-20260810`.
 - All time-to-target comparisons use deterministic target-execution counts, not
   wall-clock time. Wall-clock measurements would violate the replay contract and
   make the tests host-dependent.
