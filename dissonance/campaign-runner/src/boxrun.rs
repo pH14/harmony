@@ -1207,7 +1207,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
             hex32(&c.state_hash),
         );
     }
-    // The signal GUARDRAIL — HARD FAIL (Paul's CellFn ruling, 2026-07-06 + the
+    // The signal GUARDRAIL — HARD FAIL (the CellFn ruling, 2026-07-06 + the
     // PR#90 round-1 finding): the REAL LogSensor/CellFnV1 must actually produce
     // cells on the box path. A signal campaign that makes ZERO distinct cells is
     // measuring NOTHING (the sensor saw no guest console, so the signal has nothing

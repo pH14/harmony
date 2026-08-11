@@ -3,6 +3,13 @@ pub enum acceptance_suite::CorpusKind
 pub acceptance_suite::CorpusKind::FuzzSeed
 pub acceptance_suite::CorpusKind::Micro
 pub acceptance_suite::CorpusKind::Workload
+pub enum acceptance_suite::HostId
+pub acceptance_suite::HostId::DetCflV1
+pub acceptance_suite::HostId::Msr1
+pub acceptance_suite::HostId::Portable
+impl acceptance_suite::HostId
+pub fn acceptance_suite::HostId::from_token(&str) -> core::option::Option<acceptance_suite::HostId>
+pub fn acceptance_suite::HostId::to_token(self) -> &'static str
 pub enum acceptance_suite::OracleKind
 pub acceptance_suite::OracleKind::Conformance
 pub acceptance_suite::OracleKind::Determinism
@@ -10,12 +17,20 @@ pub acceptance_suite::OracleKind::SeedSensitivity
 pub acceptance_suite::OracleKind::SeedSensitivity::rng_consuming: bool
 impl serde_core::ser::Serialize for acceptance_suite::OracleKind
 pub fn acceptance_suite::OracleKind::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+pub enum acceptance_suite::VirtLevel
+pub acceptance_suite::VirtLevel::L1
+pub acceptance_suite::VirtLevel::L2
+impl acceptance_suite::VirtLevel
+pub fn acceptance_suite::VirtLevel::from_token(&str) -> core::option::Option<acceptance_suite::VirtLevel>
+pub fn acceptance_suite::VirtLevel::to_token(self) -> &'static str
 pub struct acceptance_suite::CorpusItem
 pub acceptance_suite::CorpusItem::golden: core::option::Option<alloc::string::String>
+pub acceptance_suite::CorpusItem::hosts: alloc::vec::Vec<acceptance_suite::HostId>
 pub acceptance_suite::CorpusItem::kind: acceptance_suite::CorpusKind
 pub acceptance_suite::CorpusItem::name: alloc::string::String
 pub acceptance_suite::CorpusItem::oracles: alloc::vec::Vec<acceptance_suite::OracleKind>
 pub acceptance_suite::CorpusItem::source: alloc::string::String
+pub acceptance_suite::CorpusItem::virt: acceptance_suite::VirtLevel
 pub struct acceptance_suite::ItemReport
 pub acceptance_suite::ItemReport::name: alloc::string::String
 pub acceptance_suite::ItemReport::results: alloc::vec::Vec<acceptance_suite::OracleResult>

@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Task 69 M2 — PR#90 ABLATION (Paul-authorized): bug-3 SIGNAL config only, 20 seeds,
+# Task 69 M2 — PR#90 ABLATION (integrator-authorized): bug-3 SIGNAL config only, 20 seeds,
 # --explore-period 1 (explore every branch, NO exploit — a RECORDED flag, PR#90
 # round-2, not an env). Same seeds/budget/deadline/calibration/image as the main
 # campaign. Separates "cells blind" from "exploit budget harmful on rare-value bugs":

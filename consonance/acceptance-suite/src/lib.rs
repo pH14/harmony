@@ -23,7 +23,9 @@ mod oracle;
 mod registry;
 mod report;
 
-pub use manifest::{CorpusItem, CorpusKind, ManifestError, load_manifest, to_manifest, validate};
+pub use manifest::{
+    CorpusItem, CorpusKind, HostId, ManifestError, VirtLevel, load_manifest, to_manifest, validate,
+};
 pub use oracle::{
     OracleKind, OracleResult, check_conformance, check_determinism, check_seed_sensitivity,
 };

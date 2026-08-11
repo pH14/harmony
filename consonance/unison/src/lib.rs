@@ -103,13 +103,15 @@ pub trait Subject {
     /// diverges — yet its `state_hash` would diverge regardless via the latent
     /// seeded PRNG, so the oracle is unsound on `state_hash`.
     ///
-    /// The default returns [`Subject::state_hash`] purely for backward
-    /// compatibility with machines that predate this accessor; it conflates
-    /// observable output with latent state, so **any machine used for O3 must
-    /// override it** to hash only its observable output.
-    fn observable_digest(&self) -> [u8; 32] {
-        self.state_hash()
-    }
+    /// **Required, deliberately.** This accessor once defaulted to
+    /// [`Subject::state_hash`], which made O3 pass *vacuously* for every machine
+    /// that did not override it: two different seeds always diverge `state_hash`
+    /// through the latent entropy stream, so the oracle answered "seed-sensitive"
+    /// without ever consulting the guest's output. An implementor must now say
+    /// what its observable output is — and a machine whose observable output
+    /// genuinely is its whole state says so explicitly, in one line, on the
+    /// record.
+    fn observable_digest(&self) -> [u8; 32];
 }
 
 /// Creates fresh machines. Bisection re-executes from scratch many times, so
@@ -408,12 +410,13 @@ mod tests {
         }
     }
 
-    /// A machine that does NOT override `observable_digest`, so it exercises the
-    /// trait's default body (`= state_hash()`).
-    struct DefaultDigestMachine {
+    /// A machine with no latent state at all: everything it holds is observable,
+    /// so its two digests coincide — stated explicitly, which is the point of
+    /// `observable_digest` having no default.
+    struct WhollyObservableMachine {
         hash: [u8; 32],
     }
-    impl Subject for DefaultDigestMachine {
+    impl Subject for WhollyObservableMachine {
         fn run_to(&mut self, _target: u64) -> Result<RunOutcome, SubjectError> {
             Ok(RunOutcome::Halted)
         }
@@ -423,17 +426,20 @@ mod tests {
         fn state_hash(&self) -> [u8; 32] {
             self.hash
         }
-        // observable_digest deliberately not overridden.
+        fn observable_digest(&self) -> [u8; 32] {
+            // This machine has no latent device or PRNG state, so its whole
+            // state IS its observable output. Written out rather than inherited:
+            // the claim is deliberate, not an oversight.
+            self.hash
+        }
     }
 
     #[test]
-    fn default_observable_digest_is_state_hash_and_varies() {
-        // Default body returns state_hash: pin that it equals state_hash (kills a
-        // constant `[0; 32]`/`[1; 32]` body) and that it tracks observed state.
-        let a = DefaultDigestMachine { hash: [7u8; 32] };
+    fn a_wholly_observable_machine_states_that_its_digests_coincide() {
+        let a = WhollyObservableMachine { hash: [7u8; 32] };
         assert_eq!(a.observable_digest(), a.state_hash());
         assert_eq!(a.observable_digest(), [7u8; 32]);
-        let b = DefaultDigestMachine { hash: [9u8; 32] };
+        let b = WhollyObservableMachine { hash: [9u8; 32] };
         assert_ne!(a.observable_digest(), b.observable_digest());
     }
 

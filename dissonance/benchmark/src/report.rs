@@ -553,7 +553,7 @@ impl CorrelationReport {
                 && b.signal_finders >= 1
                 && b.baseline_finders >= 1
         });
-        // ⚠️ SUPERSEDED by the M2 amendment (integrator ruling `fa9d323`, Paul
+        // ⚠️ SUPERSEDED by the M2 amendment (integrator ruling `fa9d323`, the integrator
         // 2026-07-07). This binary "novelty correlates on ≥2 of 3 bugs AND signal
         // not worse on any" verdict is the PRE-AMENDMENT rule. With bug 2 deferred
         // (structurally uncalibratable) and bug 1 degenerate by design, ≥2-of-3 can

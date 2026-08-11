@@ -240,7 +240,7 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// `branch`/`replay` (the restore source), `None` for a fresh boot or
     /// whenever the dirty-tracking window could not be armed. When `Some` and
     /// the parent is still live with `chain_len < max_chain_len`, a seal
-    /// captures via `snapshot_derive` over the harvested dirty set; on **any**
+    /// captures via `snapshot_derive` over the drained dirty set; on **any**
     /// doubt it falls back to `snapshot_base` (the safety rule: the dirty set is
     /// a cost hint, never a correctness input — a seal never fails because the
     /// optimization was unavailable).
@@ -480,6 +480,17 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     pub fn snapshot_chain_len(&self, snap: SnapId) -> Option<u32> {
         let id = self.snaps.get(&snap.0)?;
         self.engine.stats(*id).ok().map(|s| s.chain_len)
+    }
+
+    /// Store-wide snapshot accounting — how many layers are live and how much
+    /// the store keeps resident. Read-only; not a wire verb.
+    ///
+    /// The `Drop` verb's obligation is that dropping a handle **actually
+    /// releases the state**, not merely forgets the handle. That is only
+    /// checkable against the store's own accounting, so the protocol tests read
+    /// it here (`docs/TESTING.md`, rung 4).
+    pub fn snapshot_store_stats(&self) -> snapshot_store::StoreStats {
+        self.engine.store_stats()
     }
 
     /// Serve one session over a byte stream (a connected unix socket, or an
@@ -847,15 +858,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     }
 
     /// The capture-path chooser for one seal (task 95 M2.1). Derive over the
-    /// harvested dirty set **only** when everything is provably right: a tracked
+    /// drained dirty set **only** when everything is provably right: a tracked
     /// parent exists, it is still live in the store, its chain is under the
-    /// bound, and the harvest vouches for completeness ([`Vmm::harvest_dirty_gfns`]
+    /// bound, and the drain vouches for completeness ([`Vmm::drain_dirty_pages`]
     /// returns `Some` — backend log readable, no untracked host write). On any
     /// doubt — including a failed derive itself — fall back to `snapshot_base`
     /// (correct-by-construction; content-dedup keeps a flatten cheap in storage).
     /// The seal RPC never fails because the optimization was unavailable.
     /// Returns `(id, window_consumed)`: `window_consumed` is `true` iff the
-    /// harvest ran (and therefore reset the tracking window as its own
+    /// drain ran (and therefore reset the tracking window as its own
     /// retrieve-and-reset side effect) — the caller then arms the next window
     /// directly instead of issuing a redundant second drain.
     fn seal_into_store(
@@ -870,7 +881,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             let chain_ok = engine
                 .stats(parent)
                 .is_ok_and(|s| s.chain_len < engine.max_chain_len());
-            if chain_ok && let Some(gfns) = vmm.harvest_dirty_gfns() {
+            if chain_ok && let Some(gfns) = vmm.drain_dirty_pages() {
                 // From here the window is consumed either way. A derive error
                 // (unreachable in practice: liveness and image size were just
                 // checked, and a dropped builder releases its interned pages)
@@ -890,7 +901,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
 
     /// `snapshot`: seal the current point into the engine (memory image +
     /// canonical `vm_state` blob) and mint a wire handle. Since task 95 M2.1 the
-    /// memory half derives from the tracked parent over the harvested dirty set
+    /// memory half derives from the tracked parent over the drained dirty set
     /// when it safely can ([`Self::seal_into_store`]); the reply and semantics
     /// are identical either way.
     ///
@@ -945,7 +956,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // the next seal's parent (the arm fails ⇒ the next seal full-scans too).
         //
         // `take()` the parent across the fallible seal: if the seal errors
-        // AFTER the harvest drained the window, a caller that treats the error
+        // AFTER the drain emptied the window, a caller that treats the error
         // as retryable (the pub `handle` API permits it) must NOT find the old
         // parent still armed — a retried seal would then derive over a window
         // missing everything dirtied before the failure. A failed seal always
@@ -953,9 +964,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let parent = self.derive_parent.take();
         let (store_id, window_consumed) =
             Self::seal_into_store(&mut self.engine, vmm, parent, &blob)?;
-        // A consumed window was already reset by the harvest itself (nothing
+        // A consumed window was already reset by the drain itself (nothing
         // ran since — the VM is stopped between verbs), so arm directly and
-        // skip the redundant per-slot drain; otherwise harvest-and-discard now.
+        // skip the redundant per-slot drain; otherwise drain-and-discard now.
         self.derive_parent = (window_consumed || vmm.reset_dirty_tracking()).then_some(store_id);
         // Task 73: capture the SDK channel's replay-relevant state (seeded stream
         // position + event log) alongside the guest snapshot — owned, so `vmm`'s
@@ -1361,7 +1372,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // Task 95 M2.1: the restored VM's memory IS `store_id`'s image (memcpy
         // wrote exactly it; remap maps exactly it), so arm the dirty window with
         // the branch/replay source as the next seal's derive parent. The
-        // harvest-and-discard resets the backend log (dropping any stale
+        // drain-and-discard resets the backend log (dropping any stale
         // pre-restore guest-write bits) and clears the memcpy path's wholesale
         // latch; if it cannot arm, the next seal simply full-scans.
         {
@@ -2199,7 +2210,7 @@ mod tests {
     }
 
     /// M2.1 wiring: with tracking armed, the second seal derives from the first
-    /// (chain 2), the harvested set covers a host-side write, and the derived
+    /// (chain 2), the drained set covers a host-side write, and the derived
     /// snapshot materializes exactly the live image — byte-identical to what a
     /// full-scan base seal of the same state stores.
     #[test]

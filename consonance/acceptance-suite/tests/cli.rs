@@ -381,3 +381,145 @@ oracles = [\"conformance\"]
     let (code, _) = run(&["validate", "--manifest", &empty]);
     assert_eq!(code, 2, "validate must reject an empty corpus");
 }
+
+// ---------------------------------------------------------------------------
+// The acceptance matrix as data: host selection, and the portable smoke test.
+// ---------------------------------------------------------------------------
+
+/// The real acceptance matrix, relative to this crate's directory (cargo runs a
+/// test with the crate root as its working directory).
+const REAL_MANIFEST: &str = "../../docs/corpus-manifest.toml";
+
+/// **The CI smoke test for the packaged entry point.** The `acceptance-suite`
+/// binary must run *every* portable cell of the real matrix on any machine —
+/// otherwise the entry point rots green while only the hardware lane exercises
+/// it, which is exactly the failure the ladder exists to prevent.
+///
+/// What is asserted, and why it is not stronger: under `--host portable` every
+/// cell runs on the **toy** registry, so the O2 conformance goldens (real
+/// digests captured from the patched backend on the box) cannot match. That is
+/// expected and shows up as an oracle failure, not an operational one. So the
+/// test requires:
+///
+/// * exit `0` or `2` — never `1`, the operational-error code. A `1` means the
+///   entry point could not even run the matrix;
+/// * every manifest cell present in the report and none listed unrun;
+/// * every **O1 determinism** result green — the oracle the toy registry can
+///   genuinely answer.
+#[test]
+fn the_binary_runs_every_portable_cell_of_the_real_matrix() {
+    let (code, report) = run(&["run", "--manifest", REAL_MANIFEST, "--host", "portable"]);
+    assert!(
+        code == 0 || code == 2,
+        "exit {code}: the portable matrix must run to a verdict, not an operational error"
+    );
+    assert_eq!(report["host"], "portable");
+    assert_eq!(
+        report["unrun"].as_array().unwrap().len(),
+        0,
+        "every cell of the real matrix lists `portable`; an unrun cell means the host axis \
+         and the manifest have drifted apart"
+    );
+
+    let manifest = std::fs::read_to_string(REAL_MANIFEST).unwrap();
+    let expected = acceptance_suite::load_manifest(&manifest).unwrap();
+    let items = report["items"].as_array().unwrap();
+    assert_eq!(
+        items.len(),
+        expected.len(),
+        "every manifest cell must appear in the report"
+    );
+    for cell in &expected {
+        let got = items
+            .iter()
+            .find(|it| it["name"] == cell.name)
+            .unwrap_or_else(|| panic!("cell {} missing from the report", cell.name));
+        assert!(
+            !got["results"].as_array().unwrap().is_empty(),
+            "cell {} ran no oracle",
+            cell.name
+        );
+        assert!(
+            passed(&report, &cell.name, "determinism"),
+            "cell {} must pass O1 determinism on the toy registry",
+            cell.name
+        );
+    }
+}
+
+#[test]
+fn a_hardware_host_is_refused_loudly_rather_than_run_on_the_toy_registry() {
+    // The worst available outcome would be a toy run reported under a hardware
+    // host's name. On a build with no real-VMM registry the request must be an
+    // operational error (exit 1); on one that has it, the missing payloads /
+    // absent patched KVM make it exit 1 too. Either way: never a false green.
+    let (code, _) = run(&["run", "--manifest", REAL_MANIFEST, "--host", "det-cfl-v1"]);
+    assert_eq!(
+        code, 1,
+        "a hardware host on a machine that cannot serve it is an operational error"
+    );
+}
+
+#[test]
+fn an_unknown_host_is_an_error_not_an_empty_run() {
+    let (code, _) = run(&["run", "--manifest", REAL_MANIFEST, "--host", "nope"]);
+    assert_eq!(code, 1, "an unknown --host must be rejected");
+}
+
+#[test]
+fn a_cell_no_selected_host_satisfies_is_reported_unrun_never_passed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(
+        dir.path(),
+        "mixed.toml",
+        "\
+[[item]]
+name = \"here\"
+kind = \"micro\"
+source = \"1\"
+oracles = [\"determinism\"]
+hosts = [\"portable\"]
+virt = \"l1\"
+
+[[item]]
+name = \"elsewhere\"
+kind = \"micro\"
+source = \"2\"
+oracles = [\"determinism\"]
+hosts = [\"det-cfl-v1\"]
+virt = \"l1\"
+",
+    );
+    let (code, report) = run(&["run", "--manifest", &path, "--host", "portable"]);
+    assert_eq!(code, 0);
+    assert_eq!(report["items"].as_array().unwrap().len(), 1);
+    assert_eq!(report["items"][0]["name"], "here");
+    assert_eq!(
+        report["unrun"].as_array().unwrap(),
+        &vec![serde_json::json!("elsewhere")],
+        "the cell this host cannot run must be named, not silently dropped"
+    );
+}
+
+#[test]
+fn an_unknown_host_token_in_the_manifest_is_a_parse_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(
+        dir.path(),
+        "typo.toml",
+        "\
+[[item]]
+name = \"alpha\"
+kind = \"micro\"
+source = \"1\"
+oracles = [\"determinism\"]
+hosts = [\"det-cfl-v2\"]
+",
+    );
+    // A typo'd host must be loud: silently, it would be a cell that no run ever
+    // executes and no report ever mentions.
+    let (code, _) = run(&["run", "--manifest", &path, "--host", "portable"]);
+    assert_eq!(code, 1, "an unknown host token must fail the parse");
+    let (code, _) = run(&["validate", "--manifest", &path]);
+    assert_eq!(code, 1, "validate must reject it too");
+}

@@ -530,23 +530,23 @@ fn mock_map_memory_validation_errors() {
 }
 
 /// Task 95 M2.1: the trait default declines (`Unsupported` — callers full-scan),
-/// and `Box<dyn Backend<A = X86>>` **forwards** the harvest to the inner impl instead of
+/// and `Box<dyn Backend<A = X86>>` **forwards** the drain to the inner impl instead of
 /// re-answering the default — the shadowing landmine the explicit blanket
 /// forward exists to disarm. The scripted set comes back sorted + deduplicated.
 #[test]
-fn harvest_default_declines_and_box_forwards_to_the_inner_impl() {
+fn drain_default_declines_and_box_forwards_to_the_inner_impl() {
     let mut plain = MockBackend::new();
     assert!(matches!(
-        plain.harvest_dirty_gfns(),
+        plain.drain_dirty_pages(),
         Err(BackendError::Unsupported { .. })
     ));
 
     let mut m = MockBackend::new();
     m.push_dirty_gfns(vec![9, 2, 2]);
     let mut boxed: Box<dyn Backend<A = X86>> = Box::new(m);
-    assert_eq!(boxed.harvest_dirty_gfns().unwrap(), vec![2, 9]);
-    // Drained: the next harvest window is empty, not a replay of the last.
-    assert_eq!(boxed.harvest_dirty_gfns().unwrap(), Vec::<u64>::new());
+    assert_eq!(boxed.drain_dirty_pages().unwrap(), vec![2, 9]);
+    // Drained: the next drain window is empty, not a replay of the last.
+    assert_eq!(boxed.drain_dirty_pages().unwrap(), Vec::<u64>::new());
 }
 
 // ---------------------------------------------------------------------------

@@ -40,7 +40,7 @@ regression, not microcode, not the box-image rebuild:
   family/model, max-leaf, brand string) moved; the one changed bit is exactly
   the intended v4 correction.
 
-## Box evidence (Paul ruled "load patched, run the real gate")
+## Box evidence (ruled: "load patched, run the real gate")
 
 Determinism box (i9-9900K, kernel 6.12.90, microcode 0xf8), patched KVM
 (`kvm.ko` 1400832) loaded via `scripts/box-window.sh` on core 2, reverted to
@@ -63,7 +63,7 @@ The blessed value `cd321ad6…` independently matches three prior box captures
 
 - **Stock-KVM-only capture** (honoring the spec's "stock KVM is fine" note): the
   committed O2 gate (`box_corpus`) hard-requires the patched module; a stock
-  proxy would not be "the box acceptance-suite O2 gate green." Raised the tension; Paul
+  proxy would not be "the box acceptance-suite O2 gate green." Raised the tension; the integrator
   ruled to load patched and run the real gate. Done.
 - **A fresh physical reboot to prove stability**: unnecessary — the cross-reboot
   legs already exist. The box last rebooted 2026-07-10 20:02:15 UTC; the

@@ -12,8 +12,17 @@
 use crate::oracle::OracleKind;
 use serde::{Deserialize, Serialize};
 
-/// One registered workload. Parsed from `corpus-manifest.toml`; also
-/// constructible directly.
+/// One registered workload — **one cell of the acceptance matrix**
+/// (`docs/TESTING.md`, rung 5). The axes are the fields: workload
+/// (`name`/`kind`/`source`) × oracle set (`oracles`) × host (`hosts`) × virt
+/// level (`virt`).
+///
+/// A hardware cell differs from a portable cell **only in the host row**. That
+/// is the point of expressing cells as data: same workload, same oracles, same
+/// runner — a different host requirement. Nothing about an oracle changes when
+/// the substrate does.
+///
+/// Parsed from `corpus-manifest.toml`; also constructible directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorpusItem {
     /// Unique, human-readable identifier.
@@ -27,6 +36,82 @@ pub struct CorpusItem {
     /// Path to the golden digest. Required iff [`OracleKind::Conformance`] is in
     /// `oracles` (enforced by [`validate`], not by parsing).
     pub golden: Option<String>,
+    /// The hosts this cell can execute on (order preserved). A run selects one
+    /// host and executes the cells that list it; a cell no selected host
+    /// satisfies is reported as unrun, never as a pass.
+    pub hosts: Vec<HostId>,
+    /// The virtualization level this cell runs at.
+    pub virt: VirtLevel,
+}
+
+/// A host the acceptance matrix can run a cell on. Closed by design: an
+/// unrecognized token is a loud parse error rather than a cell that silently
+/// never runs. Adding a box means adding a variant here **and** a runner label
+/// in `.github/workflows/box.yml` (`docs/TESTING.md`, "the runner-label
+/// scheme").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostId {
+    /// Any developer machine or hosted CI runner: no `/dev/kvm`, no pinned
+    /// core, no chip baseline. The toy registry serves these cells.
+    Portable,
+    /// The x86 determinism box — the `det-cfl-v1` chip baseline
+    /// (`docs/CPU-MSR-CONTRACT.md` §2), patched KVM, pinned cores.
+    DetCflV1,
+    /// The arm64 box.
+    Msr1,
+}
+
+impl HostId {
+    /// Stable manifest token.
+    pub fn to_token(self) -> &'static str {
+        match self {
+            HostId::Portable => "portable",
+            HostId::DetCflV1 => "det-cfl-v1",
+            HostId::Msr1 => "msr1",
+        }
+    }
+
+    /// Parse a manifest token (also the `--host` CLI value). `None` for an
+    /// unrecognized token.
+    pub fn from_token(s: &str) -> Option<HostId> {
+        match s {
+            "portable" => Some(HostId::Portable),
+            "det-cfl-v1" => Some(HostId::DetCflV1),
+            "msr1" => Some(HostId::Msr1),
+            _ => None,
+        }
+    }
+}
+
+/// How deeply virtualized the cell's guest is. `L2` cells run the guest inside
+/// an already-virtualized host, where the determinism claim is strictly harder
+/// — so the level is part of a cell's identity, not a property of the runner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VirtLevel {
+    /// The guest runs on a bare-metal host.
+    #[default]
+    L1,
+    /// The guest runs inside a virtualized host (nested).
+    L2,
+}
+
+impl VirtLevel {
+    /// Stable manifest token.
+    pub fn to_token(self) -> &'static str {
+        match self {
+            VirtLevel::L1 => "l1",
+            VirtLevel::L2 => "l2",
+        }
+    }
+
+    /// Parse a manifest token. `None` for an unrecognized token.
+    pub fn from_token(s: &str) -> Option<VirtLevel> {
+        match s {
+            "l1" => Some(VirtLevel::L1),
+            "l2" => Some(VirtLevel::L2),
+            _ => None,
+        }
+    }
 }
 
 /// Which corpus family a [`CorpusItem`] belongs to. See
@@ -89,6 +174,22 @@ struct ItemDto {
     oracles: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     golden: Option<String>,
+    /// Defaults to `["portable"]` so a row written before the host axis existed
+    /// still parses — as the portable cell it in fact was. Always re-serialized,
+    /// so the file becomes self-describing on the first round trip.
+    #[serde(default = "default_hosts")]
+    hosts: Vec<String>,
+    /// Defaults to `l1`: a cell that does not say otherwise runs on bare metal.
+    #[serde(default = "default_virt")]
+    virt: String,
+}
+
+fn default_hosts() -> Vec<String> {
+    vec![HostId::Portable.to_token().to_string()]
+}
+
+fn default_virt() -> String {
+    VirtLevel::default().to_token().to_string()
 }
 
 /// Top-level manifest document: an array-of-tables of [`ItemDto`].
@@ -111,6 +212,8 @@ impl From<&CorpusItem> for ItemDto {
                 .map(|o| o.to_token().to_string())
                 .collect(),
             golden: it.golden.clone(),
+            hosts: it.hosts.iter().map(|h| h.to_token().to_string()).collect(),
+            virt: it.virt.to_token().to_string(),
         }
     }
 }
@@ -133,12 +236,30 @@ impl ItemDto {
             })?;
             oracles.push(o);
         }
+        let mut hosts = Vec::with_capacity(self.hosts.len());
+        for tok in &self.hosts {
+            let h = HostId::from_token(tok).ok_or_else(|| {
+                ManifestError::new(format!(
+                    "item {:?}: unknown host token {:?}",
+                    self.name, tok
+                ))
+            })?;
+            hosts.push(h);
+        }
+        let virt = VirtLevel::from_token(&self.virt).ok_or_else(|| {
+            ManifestError::new(format!(
+                "item {:?}: unknown virt level {:?}",
+                self.name, self.virt
+            ))
+        })?;
         Ok(CorpusItem {
             name: self.name,
             kind,
             source: self.source,
             oracles,
             golden: self.golden,
+            hosts,
+            virt,
         })
     }
 }
@@ -165,9 +286,10 @@ pub fn to_manifest(items: &[CorpusItem]) -> String {
 
 /// Validate a parsed manifest: it must be non-empty (an empty corpus tests
 /// nothing and would vacuously report all-pass), no item may declare an empty
-/// oracle list (a registered item that runs zero oracles is likewise vacuous),
-/// and every [`OracleKind::Conformance`] item must carry a `golden`. On failure the
-/// error lists every offending item name.
+/// oracle list or an empty host list (a registered item that runs zero oracles,
+/// or that no host can ever run, is likewise vacuous), and every
+/// [`OracleKind::Conformance`] item must carry a `golden`. On failure the error
+/// lists every offending item name.
 pub fn validate(items: &[CorpusItem]) -> Result<(), ManifestError> {
     if items.is_empty() {
         return Err(ManifestError::new(
@@ -183,6 +305,17 @@ pub fn validate(items: &[CorpusItem]) -> Result<(), ManifestError> {
         return Err(ManifestError::new(format!(
             "items declare no oracles (would test nothing): {}",
             no_oracles.join(", ")
+        )));
+    }
+    let no_hosts: Vec<&str> = items
+        .iter()
+        .filter(|it| it.hosts.is_empty())
+        .map(|it| it.name.as_str())
+        .collect();
+    if !no_hosts.is_empty() {
+        return Err(ManifestError::new(format!(
+            "items declare no hosts (no run could ever execute them): {}",
+            no_hosts.join(", ")
         )));
     }
     let missing: Vec<&str> = items
@@ -221,6 +354,8 @@ mod tests {
             source: format!("consonance/acceptance-suite/payloads/{name}.bin"),
             oracles,
             golden: golden.map(str::to_string),
+            hosts: vec![HostId::Portable],
+            virt: VirtLevel::L1,
         }
     }
 
@@ -313,6 +448,54 @@ mod tests {
         let err = validate(&items).unwrap_err();
         assert!(err.to_string().contains("no oracles"), "{err}");
         assert!(err.to_string().contains("inert"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_item_with_no_hosts() {
+        // A cell no host can ever run is as vacuous as one with no oracles: it
+        // sits in the matrix looking covered and is never executed.
+        let mut items = vec![item(
+            "stranded",
+            CorpusKind::Micro,
+            vec![OracleKind::Determinism],
+            None,
+        )];
+        items[0].hosts.clear();
+        assert_eq!(load_manifest(&to_manifest(&items)).unwrap(), items);
+        let err = validate(&items).unwrap_err();
+        assert!(err.to_string().contains("no hosts"), "{err}");
+        assert!(err.to_string().contains("stranded"), "{err}");
+    }
+
+    #[test]
+    fn unknown_host_and_virt_tokens_are_errors_not_panics() {
+        assert!(
+            load_manifest(
+                "[[item]]\nname='x'\nkind='micro'\nsource='s'\noracles=[]\nhosts=['nope']"
+            )
+            .is_err()
+        );
+        assert!(
+            load_manifest("[[item]]\nname='x'\nkind='micro'\nsource='s'\noracles=[]\nvirt='l3'")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_row_without_the_host_axis_defaults_to_a_portable_l1_cell() {
+        // Rows written before the host axis existed still parse — as the
+        // portable, bare-metal cells they in fact were. The defaults are stated
+        // rather than inferred, and the round trip makes the file
+        // self-describing.
+        let parsed = load_manifest(
+            "[[item]]\nname='legacy'\nkind='micro'\nsource='1'\noracles=['determinism']",
+        )
+        .unwrap();
+        assert_eq!(parsed[0].hosts, vec![HostId::Portable]);
+        assert_eq!(parsed[0].virt, VirtLevel::L1);
+        let text = to_manifest(&parsed);
+        assert!(text.contains("hosts = [\"portable\"]"), "{text}");
+        assert!(text.contains("virt = \"l1\""), "{text}");
     }
 
     #[test]

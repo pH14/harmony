@@ -23,7 +23,7 @@
 //! here owns the memory half and the opaque blob container, and never interprets
 //! a record.
 //!
-//! The KVM-specific mechanics this builds on — the dirty-log harvest that yields the
+//! The KVM-specific mechanics this builds on — the dirty-log drain that yields the
 //! per-snapshot dirty set, and the memslot remap that makes restore O(dirty) rather
 //! than O(image) — live **below the `Backend` trait** in `vmm-backend` (task 08's
 //! measured mechanism); see `IMPLEMENTATION.md`. The engine here is portable and
@@ -59,7 +59,7 @@ pub enum SnapshotError {
     /// panic (Convention rule #4).
     #[error("device blob malformed: {0}")]
     DeviceBlob(&'static str),
-    /// A harvested dirty-page gfn lies outside the configured guest image.
+    /// A drained dirty-page gfn lies outside the configured guest image.
     #[error("dirty gfn {gfn} out of range: guest image is {pages} pages")]
     DirtyGfnOutOfRange {
         /// The offending guest frame number.
@@ -170,11 +170,11 @@ impl SnapshotEngine {
     /// Derive a child snapshot of `parent` from the current full image.
     ///
     /// When `dirty` is `Some(gfns)`, only those frames are written — the **dirty-set-
-    /// proportional** path the KVM dirty-log harvest feeds (each later snapshot pays
+    /// proportional** path the KVM dirty-log drain feeds (each later snapshot pays
     /// only for what changed). When `dirty` is `None`, every frame is written and the
     /// store's seal-time dedup keeps the result equally cheap (a frame whose content
     /// already resolves through the parent chain is discarded), so capture is correct
-    /// even without a harvested dirty set — only the capture *cost* differs.
+    /// even without a drained dirty set — only the capture *cost* differs.
     pub fn snapshot_derive(
         &mut self,
         parent: SnapshotId,
@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(
             eng.stats(child).unwrap().owned_pages,
             1,
-            "derive is dirty-set-proportional even without a harvested dirty set"
+            "derive is dirty-set-proportional even without a drained dirty set"
         );
         // Store-wide: the 3 base contents + the 1 new content = 4 (page 1's old
         // 0xB is still referenced by the base).
@@ -310,7 +310,7 @@ mod tests {
         let mut mem = base_mem.clone();
         mem[3 * PG..4 * PG].fill(0x99);
         mem[7 * PG..8 * PG].fill(0x77);
-        // Harvested dirty set {3, 7}: capture only those frames.
+        // Drained dirty set {3, 7}: capture only those frames.
         let child = eng
             .snapshot_derive(base, &mem, Some(&[3, 7]), b"c")
             .unwrap();

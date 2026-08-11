@@ -22,6 +22,15 @@ mod error;
 mod exit;
 mod types;
 
+// The `Backend` contract tests (`docs/TESTING.md`, rung 2): the shared exam
+// every implementor must pass, generic over the trait and driven through a
+// caller-supplied fixture. Behind the non-default `contract-tests` feature and
+// NOT `#[cfg(test)]` — a `#[cfg(test)]` item is invisible downstream, and the
+// exam's whole point is that the box-only KVM integration tests run the
+// *identical* exam the portable mock test runs.
+#[cfg(feature = "contract-tests")]
+pub mod contract;
+
 // The two pointer seams (`region` slot table + GPA copies, `run_buf` kvm_run
 // offset math). Used by `KvmBackend` on Linux and by their own `#[cfg(test)]`
 // suites under Miri; dead on a non-test, non-Linux build, hence the conditional

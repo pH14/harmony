@@ -293,7 +293,7 @@ draws op=insert of a rejectable fault (≈1/4 per exploit).
   (add a `MachineError::Inadmissible`-style variant + map it in `control_error_to_machine`)
   and skip in the campaign loop. Must NOT swallow genuine `Transport` (would mask real
   failures/determinism).
-- **(B) Benchmark validity (semantics — foreman/Paul ruling):** even with (A), the signal
+- **(B) Benchmark validity (semantics — foreman/integrator ruling):** even with (A), the signal
   EXPLOIT mutation draws a *uniform-random big* host fault (`host_fault_from`), so
   exploitation is mostly wasted/defanged (insert→~3/4 rejected+skipped; remove→drops the
   parent's good fault; only move preserves it). Exploitation ≠ exploitation. The benchmark
@@ -304,14 +304,14 @@ draws op=insert of a rejectable fault (≈1/4 per exploit).
   framework, checkpoint + escalate rather than build unilaterally.
 
 **ACTION TAKEN:** campaign left running for now (baseline data valid; not a divergence).
-Escalating to Paul: (1) stop the run now vs let baselines finish (recommend STOP — 0
+Escalating to the integrator: (1) stop the run now vs let baselines finish (recommend STOP — 0
 completed, fix doesn't touch baseline code path so a clean unified relaunch is apples-to-
 apples); (2) fix scope A vs A+B (recommend A+B + re-validate the EXPLOIT path specifically
 before relaunch). Pending decision.
 
-## 2026-07-07 RESOLVED — Paul: STOP + A+B; foreman ruling folded in; fixed + validated
+## 2026-07-07 RESOLVED — ruled STOP + A+B; foreman ruling folded in; fixed + validated
 
-**Decision (Paul):** stop the run now; fix scope **A+B** with exploit-path re-validation.
+**Decision (integrator):** stop the run now; fix scope **A+B** with exploit-path re-validation.
 **Foreman ruling (issue #66):** (A) `MachineError::Inadmissible` mapped from
 `PerturbOutOfRange`/`PerturbPastMoment`/`PerturbMomentTaken`/`Unsupported`, skip-not-abort,
 never swallow genuine `Transport`; (B) exploit kernel BUG-AGNOSTIC (jitter parent's existing
@@ -485,7 +485,7 @@ Every run below: foreground, kvm_intel back to **9** after (verified), no module
   CALL_FUNCTION 0xfb). If a vector fires → calibration success (set that vector in calibration.json,
   narrow window to ~1/256, confirm marker < deadline 50000 + cert). If NEITHER range fires → ESCALATE:
   the mechanism truly can't produce an involuntary ctxsw on this single-task/no-timer guest. Fix
-  options for the foreman/Paul then: **(A)** deterministic co-runner (order-init launches a 2nd busy
+  options for the foreman/integrator then: **(A)** deterministic co-runner (order-init launches a 2nd busy
   userspace task so a reschedule actually deschedules order-super) + a real vector — faithful but the
   two-task scheduling must be proven deterministic under the harness (the 25/25-cert risk); **(B)** a
   single-task-observable realization (detect the injected interrupt landing in the window via a kernel
@@ -529,7 +529,7 @@ assumptions fail on THIS guest:
 - **Bug 3 (uuid):** the base seals PAST uuid-super's fast post-READY draw ⇒ draw baked, no
   per-branch variation, branches inherit a rebooting base. 0/512, 0/16(1-bit), 0/4(hardcoded-fire).
 
-**Fix options for foreman/Paul (all are benchmark-mechanism changes — NOT built unilaterally):**
+**Fix options for foreman/integrator (all are benchmark-mechanism changes — NOT built unilaterally):**
 - Bug 2 — **(A)** deterministic co-runner (order-init launches a 2nd busy userspace task so a
   reschedule actually deschedules order-super) + a real reschedule/timer vector; determinism of
   two-task scheduling under the harness must be proven (the 25/25-cert risk). **(B)** detect the
@@ -545,11 +545,11 @@ assumptions fail on THIS guest:
 needs the discriminating bugs 2 & 3. Bug-3's fix is the most contained (a pre-draw loop); bug-2's
 needs a mechanism decision (co-runner vs interrupt-counter). ~half a day of guest rework + box
 re-calibration + gate-2 each. ALTERNATIVES: rule GO/NO-GO on bug-1-only (fails the spec's "≥3 bugs,
-each found" gate — needs a waiver), or defer bugs 2/3 to a follow-up task. Escalated to Paul/foreman
+each found" gate — needs a waiver), or defer bugs 2/3 to a follow-up task. Escalated to the integrator/foreman
 for the call. Bug-1 suite untouched throughout (healthy, all rc=0, kvm_intel→9 after every core-4
 run).
 
-### 2026-07-07 — FOREMAN RULING (Paul) + BUG-3 FIX DONE + SMOKE-VALIDATED
+### 2026-07-07 — FOREMAN RULING (integrator) + BUG-3 FIX DONE + SMOKE-VALIDATED
 
 Ruling: bug-2 = **interrupt-counter observable** (single-task; detect the injected interrupt landing
 in the window via a kernel COUNTER, not preemption; no co-runner); bug-3 = **pre-draw stabilization
@@ -650,7 +650,7 @@ solo==co-tenant verdict pending.
   8192. Box smoke: **3 fires / 512 @deadline 50000, 1 certified find** (branch 52, state_hash
   5281f249…). Committed 7deb3ab.
 - **Bug 2 (order-interrupt): MECHANISM VALIDATED, CALIBRATION PENDING.** Fix = interrupt-COUNTER
-  observable (Paul's ruling, no co-runner): `interrupts_serviced()` sums /proc/interrupts' per-CPU
+  observable (the integrator's ruling, no co-runner): `interrupts_serviced()` sums /proc/interrupts' per-CPU
   counts (NOT /proc/stat `intr` — that omits the spurious/APIC lines the unregistered injected
   vectors land on). **PROOF the counter works:** a diagnostic firing on ANY counter change since
   ORDER_READY hit **16/16 branches** + certified — so task-59's InjectInterrupt IS delivered +
@@ -683,7 +683,7 @@ iteration. **Next session:**
    8-bit/narrow-window rates make a large-deadline campaign infeasible (~5M V-time × ≥256 branches),
    so use an EASY variant (bug-3 PREFIX_BITS=1; bug-2 wide WINDOW_SPIN) at deadline ~8M → a firing
    branch reaches Crash{Shutdown} + certifies 25/25. The crash path (announce→deref/isa-exit→/init
-   reboot→Shutdown) is trigger-rate-independent, so this validates the real bug. Flagged to Paul;
+   reboot→Shutdown) is trigger-rate-independent, so this validates the real bug. Flagged to the integrator;
    he has not objected.
 5. **Campaigns:** clone the bug-1 orchestrator (`run-bug2/3-campaign.sh` already written), 3-wide,
    20×2 each, deadline 50000, + the 3 solo determinism spot-checks. **~15h each, back-to-back** →
@@ -697,7 +697,7 @@ iteration. **Next session:**
 
 ### BOX STATE + DISCIPLINE (as of this checkpoint)
 - Box CLEAN: **kvm 1396736 (stock), 0 leases**, no conductor. Bug-1 campaign done (pid gone).
-- **REFINED DISCIPLINE (Paul-confirmed direction):** no live campaign ⇒ hazard is orphaning, not
+- **REFINED DISCIPLINE (confirmed direction):** no live campaign ⇒ hazard is orphaning, not
   collision. Foreground for <~9-min runs (local Bash caps at 600s and SIGTERMs the ssh → orphans);
   longer runs → MONITORED-DETACHED (setsid on box, DONE sentinel, self-release+revert, a
   `run_in_background` poller re-invokes me). Kill by EXACT PID (never `pkill -f` — self-matches the
@@ -736,7 +736,7 @@ whole iteration. **The rate dial must therefore be a NON-fireable filler**, not 
 `FILLER_SPIN` (busy-spin at the loop BOTTOM, outside [intr_before, intr_after]) so
 `duty ≈ window/(window+filler)`. An interrupt serviced in the filler is a non-trigger by
 construction (next iter's `intr_before` samples after it ⇒ both samples include the bump). This is
-still FAITHFUL to Paul's ruling: the fireable span IS the process's non-atomic critical section
+still FAITHFUL to the integrator's ruling: the fireable span IS the process's non-atomic critical section
 (sample→update→sample); the filler just makes hitting it rare. Set WINDOW_SPIN=256 (keep the
 held-torn window a modest real fraction, minimize the deadline) + FILLER_SPIN as the rate dial.
 
@@ -797,7 +797,7 @@ on CONJUNCTIVE triggers (perturb one dim at a time); bug-1 (conjunctive) is dege
 (conjunctive) is blocked, bug-3 is single-dimension (rare seed prefix — no exploit locality). So no
 bug currently showcases the exploit's advantage in a findable range.
 
-**ESCALATED TO PAUL (options; recommend B, gated on fixing seal reproducibility):**
+**ESCALATED TO THE INTEGRATOR (options; recommend B, gated on fixing seal reproducibility):**
 - **(A) Accept bug-2 degenerate** (fire+attribute+certify at TTF≈4, deadline 50000, cells OK). Meets
   gate-2 "3 bugs found"; rule the correlation on bug-3 as sole discriminator. Fast, but thin basis.
   STILL needs a reproducible firing image (finding 3).
@@ -815,16 +815,16 @@ bug currently showcases the exploit's advantage in a findable range.
 re-verify (also tests uuid-image reproducibility per finding 3) → gate-2 validity (large-deadline
 real Crash + 25/25) → 20×2 campaign. Box clean (stock 1396736) after every run.
 
-### 2026-07-08 — FOREMAN CORRECTION: bug-2 "rare-value gate" answer VOID; bug-2 on hold for Paul
-The AskUserQuestion "Rare-value gate" answer was **NOT Paul** — a foreman tooling mis-keystroke
-(Enter on the highlighted default). VOID it. bug-2's ruling belongs to Paul; the escalation above is
+### 2026-07-08 — FOREMAN CORRECTION: bug-2 "rare-value gate" answer VOID; bug-2 on hold for the integrator
+The AskUserQuestion "Rare-value gate" answer was **NOT the integrator** — a foreman tooling mis-keystroke
+(Enter on the highlighted default). VOID it. bug-2's ruling belongs to the integrator; the escalation above is
 forwarded to him. **No bug-2 mechanism change started** (interrupted before any rare-value-gate code;
 working tree has only the bug-3 gate-2 `PREFIX_BITS` edit; order-super.c reverted to committed;
-`BENCH_ORDER_RANGE` is just the inert mint dial). Until Paul's ruling: proceed ONLY on the no-regret
+`BENCH_ORDER_RANGE` is just the inert mint dial). Until the integrator's ruling: proceed ONLY on the no-regret
 path all options share — **bug-3 (and bug-1) campaign work**; smoke-fire-once before any campaign
 spend; real LogSensor+CellFnV1; 3-wide on leased cores {1,2,3}; solo==co-tenant state_hash
 (divergence = P0 STOP+escalate); NO box spend on bug-2 experiments; do NOT write the
-CORRELATION-REPORT GO/NO-GO or bug-2 final disposition until Paul rules.
+CORRELATION-REPORT GO/NO-GO or bug-2 final disposition until the integrator rules.
 
 ### 2026-07-08 — BUG-3 GATE-2 VALIDITY: real Crash PROVEN (crash lands at seal+~9M, NOT ~5M like bug-1)
 Gate-2 for bug-3 was the smoke-fire-first before the campaign. Key subtlety found: bug-3's crash
@@ -842,8 +842,8 @@ like bench-campaign); use bench-campaign for bug-3, not the task-58 record tool.
 then the 20×2 campaign on the canonical 8-bit image (backed up as initramfs-uuid-canonical8bit.cpio.gz;
 gate-2 used a throwaway PREFIX_BITS=1 rebuild). Box reverts to stock 1396736 after each run.
 
-### 2026-07-08 — PAUL RULED bug-2 (OPTION 4 + amendments, spec commit fa9d323) + RETENTION added
-**Paul's real ruling** (relayed by foreman; the earlier "rare-value gate" AskUserQuestion answer was a
+### 2026-07-08 — RULED bug-2 (OPTION 4 + amendments, spec commit fa9d323) + RETENTION added
+**The integrator's real ruling** (relayed by foreman; the earlier "rare-value gate" AskUserQuestion answer was a
 VOID tooling keystroke): **Option 4** — stop bug-2 investment; document it in CORRELATION-REPORT.md as
 found-but-degenerate/deferred with the 3 box findings; the rare-value gate is a CONDITIONAL follow-up
 (only if bugs-1&3 evidence is ambiguous). Spec amended (`tasks/69-…md` §"M2 amendment"): **Gate 2 & 3 =
@@ -908,6 +908,6 @@ branches) unproductively → starves exploration → misses more.
 non-saturating cells + revisit the selector's explore/exploit split for non-conjunctive bugs; re-key
 offline; re-run harness). **Task 70 does NOT dispatch.** Report also documents: bug-2 deferred (3
 findings); the 3-part M2 realization (marker cert / large-deadline Crash validity / exploit kernel);
-cell counts + zero-cell scope; bug-1-traces gap (recommend accept). **HANDED TO FOREMAN/PAUL.**
+cell counts + zero-cell scope; bug-1-traces gap (recommend accept). **HANDED TO FOREMAN/INTEGRATOR.**
 Conditional-tiebreaker note: the bug-2 rare-value-gate successor (a CONJUNCTIVE bug where the 1-dim
 exploit SHOULD converge) is the amendment's tiebreaker if the underpowered n=11 needs sharpening.

@@ -822,7 +822,7 @@ reinterpreted"). Two concrete harms:
   → `EvidenceBatchId`) differs across the upgrade for the same seed (verify V4),
   so any cross-version identity/commit-conflict comparison is meaningless.
 
-### The ruling (foreman default; flagged for Paul's veto at review)
+### The ruling (foreman default; flagged for integrator veto at review)
 
 **Bump `VERSION` 2 → 3 and REFUSE every pre-3 ledger loudly** through the
 existing `LedgerError::UnsupportedVersion` path, whose message now names the
