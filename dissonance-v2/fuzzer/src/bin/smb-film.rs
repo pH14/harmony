@@ -14,6 +14,7 @@ use fuzzer::{
         SmbCampaignReport, SmbConfiguredReport, SmbInput, SmbTarget, observe_smb_input,
         smb_milestones_from_wram,
     },
+    phase4c::SmbArchiveReport,
     target::Target,
 };
 use serde::{Deserialize, Serialize};
@@ -39,7 +40,7 @@ struct FilmManifest {
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let mode = args.next().ok_or(
-        "usage: smb-film <m5|campaign|configured> <report> [run-index] <milestone> <output-dir>",
+        "usage: smb-film <m5|campaign|configured|archive> <report> [run-index] <milestone> <output-dir>",
     )?;
     let source = PathBuf::from(args.next().ok_or("missing source report")?);
     let (campaign, milestone, output) = match mode.to_str() {
@@ -82,6 +83,24 @@ fn main() -> Result<(), Box<dyn Error>> {
             let output = PathBuf::from(args.next().ok_or("missing output directory")?);
             let report: SmbConfiguredReport = serde_json::from_slice(&fs::read(&source)?)?;
             (report.campaign, milestone, output)
+        }
+        Some("archive") => {
+            let milestone = args
+                .next()
+                .ok_or("missing milestone")?
+                .to_string_lossy()
+                .into_owned();
+            let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+            let report: SmbArchiveReport = serde_json::from_slice(&fs::read(&source)?)?;
+            let campaign = SmbCampaignReport {
+                seed: report.seed,
+                executions: report.executions,
+                milestones: report.milestones,
+                first_reached: report.first_reached,
+                first_inputs: report.first_inputs,
+                corpus: vec![report.champion_input],
+            };
+            (campaign, milestone, output)
         }
         _ => return Err("unknown film source mode".into()),
     };

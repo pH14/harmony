@@ -1264,6 +1264,39 @@ pub fn smb_milestones_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMilestones {
     }
 }
 
+/// Route-agnostic mechanical state available to completion search and evaluation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SmbMechanicalState {
+    /// Zero-based world number decoded from work RAM.
+    pub world: u8,
+    /// Zero-based level number within the current world.
+    pub level: u8,
+    /// Current 16-pixel horizontal progress bucket.
+    pub progress: u16,
+    /// Coarse player vertical-position bucket.
+    pub player_y_bucket: u8,
+    /// Mechanical player engine state, without interpreting a route.
+    pub player_engine_state: u8,
+    /// Whether the target's first-death state is active.
+    pub dead: bool,
+    /// Whether the level-end flag task is active.
+    pub flag_active: bool,
+}
+
+/// Decode the bounded mechanical state used by generic completion search.
+#[must_use]
+pub fn smb_mechanical_state_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMechanicalState {
+    SmbMechanicalState {
+        world: wram[WORLD_NUMBER_OFFSET],
+        level: wram[LEVEL_NUMBER_OFFSET],
+        progress: smb_scroll_bucket(wram),
+        player_y_bucket: wram[PLAYER_Y_OFFSET] / 16,
+        player_engine_state: wram[PLAYER_ENGINE_STATE_OFFSET],
+        dead: smb_player_is_dead(wram),
+        flag_active: wram[FLAG_TASK_OFFSET] != 0,
+    }
+}
+
 fn update_campaign_milestones(
     aggregate: &mut SmbMilestones,
     times: &mut SmbMilestoneTimes,
