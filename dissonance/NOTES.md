@@ -1,4 +1,4 @@
-# Dissonance v2 LibAFL prototype
+# Dissonance LibAFL prototype
 
 ## Demo
 

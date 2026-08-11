@@ -1,6 +1,6 @@
 # Standalone workspace root, deliberately outside the harmony root workspace
-# (same pattern as spikes/differential-lineage). See CLAUDE.md in this
-# directory before working here.
+# (as is differential-lineage/ below this directory, which is not a member
+# here). See CLAUDE.md in this directory before working here.
 [workspace]
 resolver = "2"
 members = ["fuzzer"]

@@ -3,8 +3,8 @@
 **Status: exploration plan, companion to `docs/DISSONANCE-FROM-SCRATCH.md`.**
 Read that document first — it explains the design this plan implements. This
 document verifies that LibAFL actually provides what the design needs, then
-lays out the build in phases. The code lives in `dissonance-v2/`; read
-`dissonance-v2/CLAUDE.md` before working there.
+lays out the build in phases. The code lives in `dissonance/`; read
+`dissonance/CLAUDE.md` before working there.
 
 Every API claim below was checked against the **libafl 0.15.4** source (the
 crates.io release), not against docs or memory. File references are to that
@@ -39,10 +39,11 @@ behind the `Executor` trait).
 
 ### Where the code lives
 
-`dissonance-v2/` is a standalone Cargo workspace, deliberately outside the
-harmony root workspace (the same pattern as `spikes/differential-lineage`).
+`dissonance/` is a standalone Cargo workspace, deliberately outside the
+harmony root workspace (the same pattern as `dissonance/differential-lineage`,
+itself a separate workspace root nested below it).
 `libafl` is pinned at 0.15.4 until phase 5. No dependencies on harmony
-crates (`consonance/*`, `dissonance/*`) before phase 5. The directory's
+crates (`consonance/*`, `differential-lineage`) before phase 5. The directory's
 `CLAUDE.md` tells agents working there to read only this plan and the design
 sketch, and not to read the old `dissonance/` crates — the rebuild must not
 inherit the old decomposition by accident.

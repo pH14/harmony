@@ -8,7 +8,7 @@ Nothing here retires a `docs/GLOSSARY.md` ruling; if any of this is adopted,
 it goes through the normal glossary process.
 
 The implementation plan that goes with this document is `docs/LIBAFL-PLAN.md`.
-The code lives in `dissonance-v2/`.
+The code lives in `dissonance/`.
 
 ## The idea in one paragraph
 
