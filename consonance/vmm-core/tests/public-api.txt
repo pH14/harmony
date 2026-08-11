@@ -693,6 +693,7 @@ pub fn vmm_core::vmm::Vmm<B>::apply_host_fault(&mut self, &environment::host::Ho
 pub fn vmm_core::vmm::Vmm<B>::arm_arrival(&mut self, environment::host::Moment) -> bool
 pub fn vmm_core::vmm::Vmm<B>::can_arm_arrival(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::clear_arrival(&mut self)
+pub fn vmm_core::vmm::Vmm<B>::drain_dirty_pages(&mut self) -> core::option::Option<alloc::vec::Vec<u64>>
 pub fn vmm_core::vmm::Vmm<B>::effective_vns(&self) -> core::option::Option<u64>
 pub fn vmm_core::vmm::Vmm<B>::enable_net(&mut self) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::enable_pvclock(&mut self, u64) -> &mut Self
@@ -700,7 +701,6 @@ pub fn vmm_core::vmm::Vmm<B>::enable_sdk(&mut self, environment::recorded::Recor
 pub fn vmm_core::vmm::Vmm<B>::entropy_state(&self) -> core::option::Option<u64>
 pub fn vmm_core::vmm::Vmm<B>::exit_counts(&self) -> vmm_backend::exit::ExitCounts
 pub fn vmm_core::vmm::Vmm<B>::guest_memory(&self) -> &[u8]
-pub fn vmm_core::vmm::Vmm<B>::harvest_dirty_gfns(&mut self) -> core::option::Option<alloc::vec::Vec<u64>>
 pub fn vmm_core::vmm::Vmm<B>::has_active_event_injection(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::has_inflight_event_injection(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::has_pending_guest_interrupt(&mut self) -> core::result::Result<bool, vmm_core::vmm::VmmError>

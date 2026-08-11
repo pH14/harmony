@@ -568,7 +568,7 @@ pub fn dirty_log_exactness_exam<F: BackendFixture>(fx: &mut F, report: &mut Cont
     };
 
     let drained = b
-        .harvest_dirty_gfns()
+        .drain_dirty_pages()
         .expect("a fixture that staged dirty pages must have a working log");
 
     assert!(
@@ -585,7 +585,7 @@ pub fn dirty_log_exactness_exam<F: BackendFixture>(fx: &mut F, report: &mut Cont
 
     // Retrieve-and-reset: the next drain covers exactly the span from the last
     // one, so a second drain with no writes in between is empty.
-    let again = b.harvest_dirty_gfns().expect("second drain");
+    let again = b.drain_dirty_pages().expect("second drain");
     assert!(
         again.is_empty(),
         "the log must reset on drain; a second drain replayed {again:?}"

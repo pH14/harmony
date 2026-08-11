@@ -248,7 +248,7 @@ pub(crate) fn split_around_hole(
 /// page count are ignored — the bitmap KVM fills is rounded up to whole `u64`
 /// words, so the tail bits of the last word are padding, never pages. Pure
 /// interval arithmetic, no syscall — unit-tested portably; the box-only ioctl
-/// side (`KvmBackend::harvest_dirty_gfns`, Linux-only) only iterates its
+/// side (`KvmBackend::drain_dirty_pages`, Linux-only) only iterates its
 /// recorded slot table and calls this per slot.
 pub(crate) fn decode_dirty_bitmap(
     slot_gpa: u64,

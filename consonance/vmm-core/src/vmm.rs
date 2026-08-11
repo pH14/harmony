@@ -717,18 +717,18 @@ where
     /// compiler-provably arch-blind (`docs/ARCH-BOUNDARY.md` §B).
     pub(crate) devices: <B::A as Vendor>::Devices,
     /// Guest frame numbers written **host-side** since the last
-    /// [`Vmm::reset_dirty_tracking`] / [`Vmm::harvest_dirty_gfns`] drain (task 95
+    /// [`Vmm::reset_dirty_tracking`] / [`Vmm::drain_dirty_pages`] drain (task 95
     /// M2.1). The backend's dirty log sees only *guest* writes (KVM tracks sptes,
     /// not the userspace mapping), so every place vmm-core itself writes guest
     /// RAM — the doorbell response page, a `CorruptMemory` host fault — records
-    /// the touched gfns here, and the harvest unions them in. A `BTreeSet` so no
+    /// the touched gfns here, and the drain unions them in. A `BTreeSet` so no
     /// order can reach the (already order-insensitive) capture. **Not hashed**
     /// (host bookkeeping, like the exit counters); the writes themselves are what
     /// the hash sees.
     pub(crate) host_dirty: std::collections::BTreeSet<u64>,
     /// Latched when guest RAM was host-written **wholesale or untrackably**
     /// ([`Vmm::restore_guest_memory`]'s full-image overwrite). While set,
-    /// [`Vmm::harvest_dirty_gfns`] answers `None` — the safety rule: a dirty set
+    /// [`Vmm::drain_dirty_pages`] answers `None` — the safety rule: a dirty set
     /// that cannot be proven complete is never handed out; the caller full-scans.
     /// Cleared only by [`Vmm::reset_dirty_tracking`] (the caller's explicit
     /// "this state is my new baseline" arm point).
@@ -1086,7 +1086,7 @@ where
         }
         ram.copy_from_slice(image);
         // A full-image host write: per-gfn tracking is meaningless from here, so
-        // poison the harvest (fail closed to the full scan) until the caller
+        // poison the drain (fail closed to the full scan) until the caller
         // re-arms at its next baseline (`reset_dirty_tracking`). The control
         // server's branch path does exactly that right after a restore.
         self.host_dirty_wholesale = true;
@@ -3062,7 +3062,7 @@ where
         };
         dst.copy_from_slice(resp);
         // A host-side RAM write the backend's dirty log cannot see — record it
-        // for the harvest union (task 95 M2.1 safety rule). The ABI GPA is
+        // for the drain union (task 95 M2.1 safety rule). The ABI GPA is
         // absolute (vendor-invariant), so the dirty gfn is correct on both arches.
         self.mark_host_dirty(RESP_GPA as u64, resp.len() as u64);
         Ok(())
@@ -3795,7 +3795,7 @@ where
         Ok(())
     }
 
-    /// Record `[gpa, gpa + len)` as **host-written** for the dirty harvest (task
+    /// Record `[gpa, gpa + len)` as **host-written** for the dirty drain (task
     /// 95 M2.1): every gfn the range touches. Called by the exhaustive set of
     /// production host-write paths — [`Vmm::write_doorbell_response`] and
     /// [`Vmm::corrupt_memory`]; the third, [`Vmm::restore_guest_memory`], is a
@@ -3811,23 +3811,23 @@ where
         self.host_dirty.extend(first..=last);
     }
 
-    /// Harvest the **complete dirty-gfn set since the last drain** — the
+    /// Drain the **complete dirty-gfn set since the last drain** — the
     /// backend's guest-write log unioned with the host-side writes this `Vmm`
     /// performed — sorted ascending, deduplicated; and re-arm both for the next
     /// window (task 95 M2.1).
     ///
-    /// Returns `None` on **any doubt**: the backend cannot harvest (no dirty
+    /// Returns `None` on **any doubt**: the backend cannot drain (no dirty
     /// tracking, an ioctl error) or an untrackable full-image host write
     /// happened ([`Vmm::restore_guest_memory`]). `None` obliges the caller to
     /// full-scan — the dirty set is a cost hint, never a correctness input, so
     /// this deliberately returns an `Option`, not a `Result` whose error a
     /// caller could act on. After a `None` the tracking window is NOT re-armed; call
     /// [`Vmm::reset_dirty_tracking`] at the next baseline.
-    pub fn harvest_dirty_gfns(&mut self) -> Option<Vec<u64>> {
+    pub fn drain_dirty_pages(&mut self) -> Option<Vec<u64>> {
         if self.host_dirty_wholesale {
             return None;
         }
-        let mut gfns = self.backend.harvest_dirty_gfns().ok()?;
+        let mut gfns = self.backend.drain_dirty_pages().ok()?;
         // Fold in the host-side gfns.
         gfns.extend(self.host_dirty.iter().copied());
         self.host_dirty.clear();
@@ -3852,8 +3852,8 @@ where
         Some(rel)
     }
 
-    /// Harvest-and-discard: reset the dirty tracking so the **current** state is
-    /// the baseline the next [`Vmm::harvest_dirty_gfns`] measures from (task 95
+    /// Drain-and-discard: reset the dirty tracking so the **current** state is
+    /// the baseline the next [`Vmm::drain_dirty_pages`] measures from (task 95
     /// M2.1's arm point — right after a seal or a branch restore). Clears the
     /// host-side set and the wholesale latch, and drains the backend log.
     /// Returns `true` iff the backend log was actually reset — `false` means
@@ -3861,7 +3861,7 @@ where
     pub fn reset_dirty_tracking(&mut self) -> bool {
         self.host_dirty.clear();
         self.host_dirty_wholesale = false;
-        self.backend.harvest_dirty_gfns().is_ok()
+        self.backend.drain_dirty_pages().is_ok()
     }
 
     /// The next-timer **V-time deadline (ns)** on the determinism-complete path, or
@@ -4321,13 +4321,13 @@ mod tests {
         vmm
     }
 
-    // ---- task 95 M2.1: the dirty harvest (backend log ∪ host-side writes) ----
+    // ---- task 95 M2.1: the dirty drain (backend log ∪ host-side writes) ----
 
-    /// The harvest unions the backend's guest-write log with the host-side
+    /// The drain unions the backend's guest-write log with the host-side
     /// writes the Vmm performed (here a `CorruptMemory` straddling a page
     /// boundary), sorted + deduplicated — and draining re-arms the window.
     #[test]
-    fn harvest_unions_backend_log_with_host_writes_and_drains() {
+    fn drain_unions_backend_log_with_host_writes_and_drains() {
         let mut m = configured_mock(vec![]);
         m.push_dirty_gfns(vec![5, 3, 5]); // scripted guest writes, unsorted + dup
         let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
@@ -4337,36 +4337,36 @@ mod tests {
             mask: environment::BitMask(0xFFFF_FFFF_FFFF_FFFF),
         })
         .unwrap();
-        assert_eq!(vmm.harvest_dirty_gfns(), Some(vec![3, 5, 6, 7]));
+        assert_eq!(vmm.drain_dirty_pages(), Some(vec![3, 5, 6, 7]));
         // Drained: the next window starts empty (the mock's exhausted script is
         // an empty guest-write set, and the host set was cleared).
-        assert_eq!(vmm.harvest_dirty_gfns(), Some(vec![]));
+        assert_eq!(vmm.drain_dirty_pages(), Some(vec![]));
     }
 
     /// The doorbell response write — the run loop's host-side RAM write — lands
-    /// in the harvest (the safety rule's production case).
+    /// in the drain (the safety rule's production case).
     #[test]
-    fn doorbell_response_write_is_harvested_as_host_dirty() {
+    fn doorbell_response_write_is_drained_as_host_dirty() {
         let mut m = configured_mock(vec![]);
         m.enable_dirty_tracking();
         let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
         vmm.write_doorbell_response(&[0xAB; 16]).unwrap();
         // RESP_GPA = 0xF000 → gfn 15.
         assert_eq!(
-            vmm.harvest_dirty_gfns(),
+            vmm.drain_dirty_pages(),
             Some(vec![(RESP_GPA as u64) / 4096])
         );
     }
 
     /// Review r15: on a high-RAM-base (arm64) machine the backend dirty log
     /// reports **absolute** GFNs, but `SnapshotEngine::snapshot_derive` indexes
-    /// the main RAM 0-based. The harvest must rebase them to main-RAM-relative
+    /// the main RAM 0-based. The drain must rebase them to main-RAM-relative
     /// indices and exclude the dedicated doorbell memslot's GFNs (that page rides
     /// the device blob, r11) — otherwise high GFNs are out-of-range (full-scan
     /// fallback) and the doorbell slot mis-indexes the main RAM. x86 (base 0) is
     /// byte-identical (the two tests above are the neutrality proof).
     #[test]
-    fn harvest_rebases_high_base_gfns_and_excludes_the_doorbell_slot() {
+    fn drain_rebases_high_base_gfns_and_excludes_the_doorbell_slot() {
         let mut m = configured_mock(vec![]);
         // Absolute GFNs as an arm64 backend logs them: two main-RAM pages (RAM at
         // 0x4000_0000 → base GFN 0x40000) plus the doorbell RESP page (GFN 15, a
@@ -4375,7 +4375,7 @@ mod tests {
         let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
         vmm.ram_base_gpa = 0x4000_0000;
 
-        let dirty = vmm.harvest_dirty_gfns().unwrap();
+        let dirty = vmm.drain_dirty_pages().unwrap();
         assert_eq!(
             dirty,
             vec![1, 3],
@@ -4384,30 +4384,30 @@ mod tests {
         let pages = (vmm.ram.len() / 4096) as u64;
         assert!(
             dirty.iter().all(|&g| g < pages),
-            "every harvested GFN indexes the main RAM — no snapshot_derive fallback"
+            "every drained GFN indexes the main RAM — no snapshot_derive fallback"
         );
     }
 
-    /// A full-image host write (`restore_guest_memory`) poisons the harvest —
+    /// A full-image host write (`restore_guest_memory`) poisons the drain —
     /// per-gfn tracking cannot vouch for it — until the explicit re-arm.
     #[test]
-    fn wholesale_host_write_poisons_the_harvest_until_reset() {
+    fn wholesale_host_write_poisons_the_drain_until_reset() {
         let mut m = configured_mock(vec![]);
         m.enable_dirty_tracking();
         let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
         vmm.restore_guest_memory(&vec![7u8; TEST_RAM]).unwrap();
-        assert_eq!(vmm.harvest_dirty_gfns(), None, "untrackable ⇒ no dirty set");
+        assert_eq!(vmm.drain_dirty_pages(), None, "untrackable ⇒ no dirty set");
         assert!(vmm.reset_dirty_tracking(), "re-arm at the new baseline");
-        assert_eq!(vmm.harvest_dirty_gfns(), Some(vec![]));
+        assert_eq!(vmm.drain_dirty_pages(), Some(vec![]));
     }
 
-    /// Without backend dirty tracking the harvest always declines (`None`) and
+    /// Without backend dirty tracking the drain always declines (`None`) and
     /// the window never arms — the caller full-scans forever, never corrupts.
     #[test]
-    fn harvest_declines_without_backend_tracking() {
+    fn drain_declines_without_backend_tracking() {
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         vmm.write_doorbell_response(&[1]).unwrap();
-        assert_eq!(vmm.harvest_dirty_gfns(), None);
+        assert_eq!(vmm.drain_dirty_pages(), None);
         assert!(!vmm.reset_dirty_tracking());
     }
 
@@ -4571,7 +4571,7 @@ mod tests {
         );
 
         // Dirty-range: the host response write records the ABSOLUTE RESP gfn
-        // (0xF000 / 4096 = 15) for the harvest union — not a RAM_BASE-relative
+        // (0xF000 / 4096 = 15) for the drain union — not a RAM_BASE-relative
         // one (the bug would have marked 0x4000_F000's gfn, or none).
         assert!(
             vmm.host_dirty.contains(&(RESP_GPA as u64 / 4096)),

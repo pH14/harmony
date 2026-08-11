@@ -455,8 +455,8 @@ pub fn vmm_backend::Arm64KvmBackend<K>::complete_fault(&mut self) -> vmm_backend
 pub fn vmm_backend::Arm64KvmBackend<K>::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::complete_ok(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::Arm64KvmBackend<K>::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::Arm64KvmBackend<K>::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::Arm64KvmBackend<K>::harvest_dirty_gfns(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::Arm64KvmBackend<K>::inject(&mut self, vmm_backend::arch::arm64::Arm64Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::Arm64KvmBackend<K>::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::reset_exit_counts(&mut self)
@@ -573,8 +573,8 @@ pub fn vmm_backend::KvmBackend::complete_fault(&mut self) -> vmm_backend::Result
 pub fn vmm_backend::KvmBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::KvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::KvmBackend::harvest_dirty_gfns(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::KvmBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::KvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::reset_exit_counts(&mut self)
@@ -622,8 +622,8 @@ pub fn vmm_backend::MockArm64Backend::complete_fault(&mut self) -> vmm_backend::
 pub fn vmm_backend::MockArm64Backend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::complete_ok(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockArm64Backend::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::MockArm64Backend::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::MockArm64Backend::harvest_dirty_gfns(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::MockArm64Backend::inject(&mut self, vmm_backend::arch::arm64::Arm64Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::MockArm64Backend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::reset_exit_counts(&mut self)
@@ -663,8 +663,8 @@ pub fn vmm_backend::MockBackend::complete_fault(&mut self) -> vmm_backend::Resul
 pub fn vmm_backend::MockBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::MockBackend::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::MockBackend::harvest_dirty_gfns(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::MockBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::MockBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::reset_exit_counts(&mut self)
@@ -698,8 +698,8 @@ pub fn vmm_backend::PatchedKvmBackend::complete_fault(&mut self) -> vmm_backend:
 pub fn vmm_backend::PatchedKvmBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::PatchedKvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::PatchedKvmBackend::harvest_dirty_gfns(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::PatchedKvmBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::PatchedKvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::reset_exit_counts(&mut self)
@@ -883,8 +883,8 @@ pub fn vmm_backend::Backend::complete_fault(&mut self) -> vmm_backend::Result<()
 pub fn vmm_backend::Backend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::Backend::complete_ok(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Backend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::Backend::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::Backend::harvest_dirty_gfns(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::Backend::inject(&mut self, <Self::A as vmm_backend::arch::Arch>::Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::Backend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::Backend::reset_exit_counts(&mut self)
@@ -903,8 +903,8 @@ pub fn vmm_backend::KvmBackend::complete_fault(&mut self) -> vmm_backend::Result
 pub fn vmm_backend::KvmBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::KvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::KvmBackend::harvest_dirty_gfns(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::KvmBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::KvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::reset_exit_counts(&mut self)
@@ -923,8 +923,8 @@ pub fn vmm_backend::MockArm64Backend::complete_fault(&mut self) -> vmm_backend::
 pub fn vmm_backend::MockArm64Backend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::complete_ok(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockArm64Backend::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::MockArm64Backend::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::MockArm64Backend::harvest_dirty_gfns(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::MockArm64Backend::inject(&mut self, vmm_backend::arch::arm64::Arm64Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::MockArm64Backend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::reset_exit_counts(&mut self)
@@ -943,8 +943,8 @@ pub fn vmm_backend::MockBackend::complete_fault(&mut self) -> vmm_backend::Resul
 pub fn vmm_backend::MockBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::MockBackend::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::MockBackend::harvest_dirty_gfns(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::MockBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::MockBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::reset_exit_counts(&mut self)
@@ -963,8 +963,8 @@ pub fn vmm_backend::PatchedKvmBackend::complete_fault(&mut self) -> vmm_backend:
 pub fn vmm_backend::PatchedKvmBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::PatchedKvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::PatchedKvmBackend::harvest_dirty_gfns(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::PatchedKvmBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::PatchedKvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::reset_exit_counts(&mut self)
@@ -983,8 +983,8 @@ pub fn alloc::boxed::Box<B>::complete_fault(&mut self) -> vmm_backend::Result<()
 pub fn alloc::boxed::Box<B>::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
 pub fn alloc::boxed::Box<B>::complete_ok(&mut self) -> vmm_backend::Result<()>
 pub fn alloc::boxed::Box<B>::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn alloc::boxed::Box<B>::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn alloc::boxed::Box<B>::harvest_dirty_gfns(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn alloc::boxed::Box<B>::inject(&mut self, <Self::A as vmm_backend::arch::Arch>::Injection) -> vmm_backend::Result<()>
 pub unsafe fn alloc::boxed::Box<B>::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn alloc::boxed::Box<B>::reset_exit_counts(&mut self)
@@ -1003,8 +1003,8 @@ pub fn vmm_backend::Arm64KvmBackend<K>::complete_fault(&mut self) -> vmm_backend
 pub fn vmm_backend::Arm64KvmBackend<K>::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::complete_ok(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::Arm64KvmBackend<K>::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::Arm64KvmBackend<K>::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::Arm64KvmBackend<K>::harvest_dirty_gfns(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::Arm64KvmBackend<K>::inject(&mut self, vmm_backend::arch::arm64::Arm64Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::Arm64KvmBackend<K>::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::reset_exit_counts(&mut self)

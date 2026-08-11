@@ -2305,7 +2305,7 @@ guest through that backing, so the restored memory is live on the next `KVM_RUN`
 **memcpy-class** (O(image)) restore, the right thing within this directory (rule 1).
 
 The **O(dirty) memslot-swap** that beats full-`memcpy` (gate 2's headline) and the **dirty-log
-harvest** that yields the precise per-snapshot dirty set are KVM-specific and live **below the
+drain** that yields the precise per-snapshot dirty set are KVM-specific and live **below the
 `Backend` trait, in `vmm-backend`**: `KVM_GET_DIRTY_LOG` + a `KVM_SET_USER_MEMORY_REGION` remap
 pointing the memslot at `materialize()`'s CoW mapping (task 08's chosen mechanism). They are a
 **reviewed `vmm-backend` follow-up** (a small `Backend::remap_memory` / dirty-log seam), out of this
@@ -2445,7 +2445,7 @@ or `save_vm_state` would seal it lossily — the audit is the contract.
 
 ## Known limitations / integrator notes
 
-- The **dirty-log harvest + O(1) memslot-swap restore are the `vmm-backend` follow-up** (above).
+- The **dirty-log drain + O(1) memslot-swap restore are the `vmm-backend` follow-up** (above).
   This task delivers the portable substrate (engine + adapter + correct memcpy-class restore) that
   the explorer (task 12) and the branching demo (task 40) build on; "branch" *is* `restore_snapshot`
   + `reseed_entropy`.
@@ -4157,13 +4157,13 @@ at repo root. Crate-side summary:
 - **Capture (M2.1).** `Vmm` tracks **host-side** guest-RAM writes (doorbell
   response page, `CorruptMemory`; `restore_guest_memory` latches a wholesale
   poison) because KVM's dirty log sees only guest writes — an untracked host
-  write in a harvested set would be silent snapshot corruption. Any new host
+  write in a drained set would be silent snapshot corruption. Any new host
   write path must call `Vmm::mark_host_dirty` (invariant documented there).
-  `Vmm::harvest_dirty_gfns() -> Option<Vec<u64>>` returns backend-log ∪
+  `Vmm::drain_dirty_pages() -> Option<Vec<u64>>` returns backend-log ∪
   host-set, or `None` on any doubt; `Vmm::reset_dirty_tracking()` is the
-  harvest-and-discard arm point. `ControlServer` tracks `derive_parent`
+  drain-and-discard arm point. `ControlServer` tracks `derive_parent`
   (seal / branch / replay set it; fresh boots and failed arms clear it) and
-  seals via `snapshot_derive` over the harvest iff the parent is live and
+  seals via `snapshot_derive` over the drain iff the parent is live and
   `chain_len < SnapshotEngine::max_chain_len()` (default 32, a knob) — every
   other path, including a failed derive, is `snapshot_base`; the seal RPC never
   fails because the optimization was unavailable.

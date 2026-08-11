@@ -198,8 +198,8 @@ impl Backend for NoDeadlineBackend {
         // forwards, adding no obligation.
         unsafe { self.0.map_memory(gpa, host) }
     }
-    fn harvest_dirty_gfns(&mut self) -> Result<Vec<u64>> {
-        self.0.harvest_dirty_gfns()
+    fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        self.0.drain_dirty_pages()
     }
     fn run(&mut self) -> Result<Exit<X86>> {
         self.0.run()
