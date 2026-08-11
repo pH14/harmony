@@ -353,6 +353,49 @@ gate_film() {
         -- --ignored --nocapture --test-threads=1
 }
 
+gate_exec_improvisation() {
+    require_patched_modules
+    with_stock_revert run env INITRAMFS=initramfs-exec.cpio.gz \
+        taskset -c "${CORE_PIN_MEASURE}" \
+        cargo test -p vmm-core --release --test live_exec_improvisation \
+        -- --ignored --nocapture
+}
+
+gate_postgres_docker() {
+    require_patched_modules
+    with_stock_revert run taskset -c "${CORE_PIN_MEASURE}" timeout 3000 \
+        cargo test -p vmm-core --test live_postgres_docker \
+        -- --ignored --nocapture --test-threads=1 p2_docker_postgres_deterministic_twice_patched
+}
+
+gate_runc_postgres() {
+    require_patched_modules
+    with_stock_revert run taskset -c "${CORE_PIN_FRONTIER}" timeout 4200 \
+        cargo test -p vmm-core --test live_runc_postgres \
+        -- --ignored --nocapture --test-threads=1 r2_runc_postgres_deterministic_twice_patched
+}
+
+gate_k3s_postgres() {
+    require_patched_modules
+    with_stock_revert run taskset -c "${CORE_PIN_MEASURE}" timeout 14400 \
+        cargo test -p vmm-core --test live_k3s_postgres \
+        -- --ignored --nocapture --test-threads=1 k2_k3s_postgres_deterministic_twice_patched
+}
+
+gate_draw_probe_pair() {
+    require_patched_modules
+    with_stock_revert run taskset -c "${CORE_PIN_FRONTIER}" \
+        cargo test --release -p campaign-runner --test live_draw_probe_pair \
+        -- --ignored --nocapture --test-threads=1
+}
+
+gate_draw_probe_diagnosis() {
+    require_patched_modules
+    with_stock_revert run taskset -c "${CORE_PIN_FRONTIER}" \
+        cargo test --release -p campaign-runner --test live_draw_probe_diagnosis \
+        -- --ignored --nocapture --test-threads=1
+}
+
 # name|rung|description|function — the execution order is this array's order.
 GATES=(
     "kvm-smoke|2|live KvmBackend smoke (stock)|gate_kvm_smoke"
@@ -371,12 +414,22 @@ GATES=(
     "dirty-remap|3|dirty-log derive + remap restore|gate_dirty_remap"
     "nonquiescent|3|non-quiescent snapshot|gate_nonquiescent"
     "branching-demo|3|the single-node branching demo|gate_branching_demo"
+    "exec-improvisation|4|Exec taint on a live timeline|gate_exec_improvisation"
     "corpus|5|the C1 acceptance cells, both entry points|gate_corpus"
     "postgres|5|bare-Postgres workload identity|gate_postgres"
     "seal-rate|5|the seal-rate sweep|gate_seal_rate"
     "materialization|5|lazy materialization|gate_materialization"
     "harmony-bridge|5|the campaign bridge|gate_harmony_bridge"
+    "draw-probe-pair|5|the game workload's draw probe|gate_draw_probe_pair"
+    "draw-probe-diagnosis|5|draw-probe diagnostic|gate_draw_probe_diagnosis"
     "film|5|film the game workload|gate_film"
+    # The multi-hour container/orchestrator workloads. LAST by design: they are
+    # the most expensive cells in the matrix, and a window that cannot afford
+    # them should still have run everything above. `--skip` them explicitly when
+    # the lease is short.
+    "postgres-docker|5|Postgres in a Docker image|gate_postgres_docker"
+    "runc-postgres|5|Postgres under runc|gate_runc_postgres"
+    "k3s-postgres|5|Postgres under k3s (the longest gate)|gate_k3s_postgres"
 )
 
 gate_name() { echo "${1%%|*}"; }
