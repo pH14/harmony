@@ -981,3 +981,36 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   only after the ordered field-semantics correction below. Raw evidence and
   all model/generated/journal artifacts:
   `target/smb-completion/h27-luna-20260812/`.
+
+## M16 amendment — ordered-field direction and range
+
+- H27's recorded view and result remain immutable. Before any later
+  instrumentor call, amend both model views so every spatial or ordered
+  observation field states its verified range and direction. In particular,
+  state explicitly that vertical buckets are `0..=15` and larger values are
+  lower on the screen. This is decode polarity, not route knowledge.
+- Record a standalone copy of the corrected operator context and seed the next
+  strategy journal with both the direction correction and H27's null result.
+  Validate the exact sentences mechanically and rerun the focused no-model
+  context/journal gates. No model call or search panel is part of this
+  amendment.
+
+### M16 amendment result — accepted
+
+- The next-call field semantics now state the inclusive range and direction
+  for every spatial or ordered observation field. In particular,
+  `decoded.player_y_bucket` is recorded as `0..=15`, with larger values lower
+  on the screen. H27's registration, recorded view, and null result were not
+  modified.
+- The next journal carries both the polarity correction and the immutable H27
+  null result, including that H27's larger-bucket-as-higher interpretation was
+  opposite the corrected decode direction. These entries remain prompt-only.
+- The standalone no-model record is
+  `target/smb-completion/post-h27-model-context/`. Its field-semantics SHA-256
+  is `e7445808395d7073c2f09ef04657fb27bcc492082a8080ffbf05e557c5695ba5` and
+  its journal SHA-256 is
+  `5b40286ca1304f892fd3e60c1c4a79efe23985d093e3ffe3f4193d51c0abbddb`.
+- The focused host and instrumentor tests, format check, diff check, and
+  focused clippy gate pass. Clippy still prints the pre-existing workspace
+  configuration warning for the removed `rand::thread_rng` path; it reports no
+  code warning.

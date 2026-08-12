@@ -106,6 +106,9 @@ struct M13Report {
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let first = args.next().ok_or("missing output directory or m12 mode")?;
+    if first == "record-context" {
+        return record_current_model_context(&mut args);
+    }
     if first == "m12" {
         return run_m12(&mut args);
     }
@@ -344,6 +347,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !report.full_stack_reaches_new_milestone {
         return Err("M6 full stack did not reach a milestone absent from M5".into());
     }
+    Ok(())
+}
+
+fn record_current_model_context(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let output = required_path(args, "model-context output directory")?;
+    if args.next().is_some() {
+        return Err("unexpected extra record-context argument".into());
+    }
+    fs::create_dir(&output)?;
+    let view = output.join("operator-view");
+    fs::create_dir(&view)?;
+    write_verified_model_context(&view)?;
+    write_json(
+        &output.join("strategy-journal.json"),
+        &initial_strategy_journal(),
+    )?;
+    write_json(
+        &output.join("context-record.json"),
+        &serde_json::json!({
+            "field_semantics": "operator-view/field-semantics.txt",
+            "verified_dynamics": "operator-view/verified-dynamics.txt",
+            "strategy_journal": "strategy-journal.json",
+        }),
+    )?;
     Ok(())
 }
 
@@ -1093,20 +1122,20 @@ fn write_operator_scaffold(
 fn write_verified_model_context(view: &Path) -> Result<(), Box<dyn Error>> {
     fs::write(
         view.join("field-semantics.txt"),
-        "frame_count measures the number of emulated frames since gameplay genesis.\n\
+        "frame_count measures emulated frames since gameplay genesis in the inclusive range 0..=18446744073709551615 and increases as emulation advances.\n\
 wram contains the raw 2,048-byte work RAM at a milestone crossing and is empty in stored null-detector observations at other events.\n\
-decoded.world measures the zero-based world number read from work RAM.\n\
-decoded.level measures the zero-based visible level, correcting the recorded level byte by one only while the verified level-advance task value is active.\n\
-decoded.progress measures horizontal position in 16-pixel buckets from the recorded screen-page and screen-x bytes.\n\
-decoded.player_y_bucket measures the recorded player vertical-position byte divided into sixteen-value buckets.\n\
+decoded.world measures the zero-based world number in the inclusive byte range 0..=255, with larger values later in numeric world order.\n\
+decoded.level measures the zero-based visible level in the inclusive range 0..=255, with larger values later in numeric level order, correcting the recorded level byte by one only while the verified level-advance task value is active.\n\
+decoded.progress measures horizontal position in the inclusive range 0..=4095 as 16-pixel buckets from the recorded screen-page and screen-x bytes, with larger values farther to the right.\n\
+decoded.player_y_bucket measures the recorded player vertical-position byte divided into sixteen-value buckets in the inclusive range 0..=15, with larger values lower on the screen.\n\
 decoded.player_engine_state measures the recorded player-engine-state byte without adding route meaning.\n\
 decoded.dead reports whether the verified kill-state value is active.\n\
 decoded.flag_active reports whether the recorded level-end flag-task byte is nonzero.\n\
-milestones.max_1_1_scroll_bucket measures the greatest verified 16-pixel progress bucket observed in the first level.\n\
+milestones.max_1_1_scroll_bucket measures the greatest verified 16-pixel horizontal bucket observed in the first level in the inclusive range 0..=4095, with larger values farther to the right.\n\
 milestones.reached_1_1_flag reports whether the first-level end-task byte has been observed active.\n\
 milestones.reached_1_2 reports whether the decoded level tuple has reached the second level.\n\
 milestones.reached_onward reports whether the decoded level tuple has advanced beyond the second level.\n\
-changed_indices lists, in ascending order, the work-RAM byte indices changed since the previous observer event.\n\
+changed_indices lists changed work-RAM byte addresses in the inclusive range 0..=2047, sorted from lower to higher address.\n\
 dead reports whether this event is the first observed kill-state frame.\n\
 log_line records only the frame count and changed work-RAM indices.\n",
     )?;
@@ -1204,10 +1233,12 @@ fn initial_strategy_journal() -> StrategyJournal {
         beliefs: vec![
             "Raw work RAM and film independently validate the current progress-39 boundary in the third decoded level.".to_owned(),
             "The archive grows normally at the boundary and the corrected viability audit found only 15 of 374 maximal-frontier entries doomed under ten fixed continuations.".to_owned(),
+            "Field-semantics correction after H27: horizontal progress ranges from 0 through 4095 and larger values are farther right; vertical buckets range from 0 through 15 and larger values are lower on the screen; world and level bytes range from 0 through 255 in increasing numeric order.".to_owned(),
         ],
         failed_approaches: vec![
             "At this boundary, repeated panels for longer suffix bursts, broader frontier scheduling, progress-band scheduling, a fixed interaction macro, generated archive mutation, and checkpoint retention did not exceed progress 39.".to_owned(),
             "Earlier generated rankings at separately film-validated boundaries did not meet their registered promotion rules.".to_owned(),
+            "H27's journal-informed ranking made 466 to 699 replacements and 142 to 190 descendant novelties per seed but exceeded corrected progress 39 on zero of six seeds; its interpretation of larger vertical buckets as a higher vertical peak was opposite the now-explicit screen direction.".to_owned(),
         ],
         open_questions: vec![
             "Which recorded non-progress state attributes distinguish prefixes prepared to produce descendant novelty beyond the current boundary?".to_owned(),
@@ -2478,6 +2509,15 @@ mod tests {
         assert!(!dynamics.contains("Super"));
         assert!(!semantics.contains("Mario"));
         assert!(!semantics.contains("Super"));
+        assert!(semantics.contains("frame_count measures emulated frames since gameplay genesis in the inclusive range 0..=18446744073709551615 and increases as emulation advances."));
+        assert!(semantics.contains("decoded.world measures the zero-based world number in the inclusive byte range 0..=255, with larger values later in numeric world order."));
+        assert!(semantics.contains("decoded.level measures the zero-based visible level in the inclusive range 0..=255, with larger values later in numeric level order"));
+        assert!(semantics.contains(
+            "decoded.progress measures horizontal position in the inclusive range 0..=4095"
+        ));
+        assert!(semantics.contains("with larger values farther to the right."));
+        assert!(semantics.contains("decoded.player_y_bucket measures the recorded player vertical-position byte divided into sixteen-value buckets in the inclusive range 0..=15, with larger values lower on the screen."));
+        assert!(semantics.contains("changed_indices lists changed work-RAM byte addresses in the inclusive range 0..=2047, sorted from lower to higher address."));
     }
 
     #[test]
