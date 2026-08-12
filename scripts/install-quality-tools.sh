@@ -43,7 +43,7 @@ cargo deny --version
 cargo public-api --version
 
 # Wire up the local fast-feedback git hooks (.githooks/pre-push: fmt, clippy,
-# nextest, and Miri on the `unsafe` crates) via core.hooksPath. Convenience only —
+# nextest) via core.hooksPath. Convenience only —
 # the gate of record is the self-hosted runner (.github/workflows/quality.yml).
 # Skip with `git push --no-verify`. Run from inside the repo.
 if git rev-parse --git-dir >/dev/null 2>&1; then
@@ -61,9 +61,10 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     fi
 fi
 
-# The pre-push hook's Miri step needs a nightly toolchain with the miri component.
-# Suggest it (don't force a multi-hundred-MB download on every tool install).
+# Miri runs only in CI (nightly.yml), but the unsafe⇒Miri review rule (AGENTS.md)
+# means reviewers run it locally on crates whose diff touches `unsafe`.
+# Suggest the toolchain (don't force a multi-hundred-MB download on every tool install).
 if ! cargo +nightly-2026-06-16 miri --version >/dev/null 2>&1; then
-    echo "== note: for the local Miri pre-push step, install the pinned nightly + miri:"
+    echo "== note: for local Miri runs on unsafe-touching diffs, install the pinned nightly + miri:"
     echo "     rustup toolchain install nightly-2026-06-16 --component miri"
 fi
