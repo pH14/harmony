@@ -12,9 +12,9 @@ use std::{
 
 use fuzzer::{
     phase4b::{
-        SmbCampaignReport, SmbConfiguredReport, SmbInput, SmbMechanicalState, SmbMilestones,
-        SmbObservations, SmbTarget, observe_smb_input, smb_mechanical_state_from_wram,
-        smb_milestones_from_wram,
+        SmbCampaignReport, SmbConfiguredReport, SmbExecutionWork, SmbExecutorMode, SmbInput,
+        SmbMechanicalState, SmbMilestones, SmbObservations, SmbTarget, observe_smb_input,
+        smb_mechanical_state_from_wram, smb_milestones_from_wram,
     },
     phase4c::SmbArchiveReport,
     target::Target,
@@ -120,6 +120,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 first_reached: report.first_reached,
                 first_inputs: report.first_inputs,
                 corpus: vec![report.champion_input],
+                corpus_entries: Vec::new(),
+                executor_mode: SmbExecutorMode::SnapshotResume,
+                executor_work: SmbExecutionWork::default(),
             };
             (campaign, milestone, output)
         }
@@ -149,6 +152,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 first_reached: report.first_reached,
                 first_inputs,
                 corpus: vec![report.champion_input],
+                corpus_entries: Vec::new(),
+                executor_mode: SmbExecutorMode::SnapshotResume,
+                executor_work: SmbExecutionWork::default(),
             };
             (campaign, "progress".to_owned(), output)
         }
@@ -190,6 +196,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 first_reached: report.first_reached,
                 first_inputs,
                 corpus: vec![report.champion_input],
+                corpus_entries: Vec::new(),
+                executor_mode: SmbExecutorMode::SnapshotResume,
+                executor_work: SmbExecutionWork::default(),
             };
             (campaign, "progress".to_owned(), output)
         }
@@ -216,6 +225,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 first_reached: report.first_reached,
                 first_inputs,
                 corpus: vec![report.champion_input],
+                corpus_entries: Vec::new(),
+                executor_mode: SmbExecutorMode::SnapshotResume,
+                executor_work: SmbExecutionWork::default(),
             };
             (campaign, "progress".to_owned(), output)
         }

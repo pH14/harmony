@@ -90,6 +90,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let final_observation = first_trace.last().cloned().unwrap_or(SmbObservations {
         frame_count: 0,
         wram: Vec::new(),
+        decoded: Default::default(),
+        milestones: Default::default(),
         changed_indices: Vec::new(),
         dead: false,
         log_line: String::new(),

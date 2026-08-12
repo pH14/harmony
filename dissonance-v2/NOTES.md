@@ -294,6 +294,22 @@ durations.
   in all six full SMB arms but did not cross the independently validated 1-3
   progress-39 boundary, so the mechanism lands and that generated artifact is
   a registered non-promotion.
+- Decision: M15 implements the executor rework's Phase 1 before any further
+  long SMB campaign. Scheduling reports now distinguish the legacy control
+  from corpus-pinned snapshot resume and record deterministic emulated-work and
+  snapshot-restore counters. The acceptance boundary is the integrator's fixed
+  5,000-execution old/new identity gate for maze, adventure, and SMB plus a
+  deterministic tenfold SMB frame-reduction requirement. Phase 2 remains
+  outside this milestone and may begin only after M15 is accepted and
+  committed.
+- Decision: the integrator's 2026-08-12 ruling makes EXECUTOR-REWORK amendment
+  3 authoritative over M15's frozen tenfold threshold. M15 is accepted on its
+  bit-identical three-target identity gate, replay-exact deterministic work
+  counters, and honestly reported ratios. Executor choice is fixed and recorded
+  per campaign: legacy may serve shallow workloads where Criterion shows it is
+  faster; snapshot resume serves depth where it pays. Modes never mix within a
+  campaign. Phase 2 is routed elsewhere; SMB completion returns to the genuine
+  1-3 progress-39 frontier.
 - All time-to-target comparisons use deterministic target-execution counts, not
   wall-clock time. Wall-clock measurements would violate the replay contract and
   make the tests host-dependent.

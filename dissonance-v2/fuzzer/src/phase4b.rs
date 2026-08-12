@@ -59,10 +59,35 @@ const SMB_MAP_SIZE: usize = 4096;
 const PREFIX_CACHE_CAPACITY: usize = 512;
 const DETECTOR_MAP_SIZE: usize = 4096;
 
+/// Scheduling-path executor selected for an SMB campaign.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmbExecutorMode {
+    /// Historical bounded FIFO prefix cache used by the identity-gate control.
+    Legacy,
+    /// Corpus-pinned snapshot resume used by all new campaigns.
+    #[default]
+    SnapshotResume,
+}
+
+/// Replayable work performed by one SMB scheduling-path executor.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbExecutionWork {
+    /// Video frames actually emulated after reset or snapshot restore.
+    pub emulated_frames: u64,
+    /// Corpus or transient snapshots restored before executing a suffix.
+    pub snapshot_restores: u64,
+}
+
 /// Pure generated-detector surface for complete SMB RAM traces.
 pub trait SmbDetector {
     /// Map mechanical action-boundary observations to deterministic feature keys.
     fn features(&self, observations: &[SmbObservations]) -> Vec<u64>;
+
+    /// Whether compatibility with this detector requires complete raw WRAM at every event.
+    fn requires_complete_wram_trace(&self) -> bool {
+        true
+    }
 }
 
 /// Detector that contributes no generated features.
@@ -72,6 +97,10 @@ pub struct NullSmbDetector;
 impl SmbDetector for NullSmbDetector {
     fn features(&self, _observations: &[SmbObservations]) -> Vec<u64> {
         Vec::new()
+    }
+
+    fn requires_complete_wram_trace(&self) -> bool {
+        false
     }
 }
 
@@ -531,8 +560,14 @@ where
 pub struct SmbObservations {
     /// Number of frames actually emulated since genesis.
     pub frame_count: u64,
-    /// Complete 2 KiB NES CPU work RAM, with no semantic decoding.
+    /// Raw 2 KiB work RAM at a milestone crossing; otherwise empty in stored null-detector traces.
     pub wram: Vec<u8>,
+    /// Route-agnostic decoded state recorded directly in the trace.
+    #[serde(default)]
+    pub decoded: SmbMechanicalState,
+    /// Frozen campaign milestones decoded at this event.
+    #[serde(default)]
+    pub milestones: SmbMilestones,
     /// Sorted work-RAM indices whose bytes changed since the previous observer event.
     pub changed_indices: Vec<u16>,
     /// Whether this event is the first observed player-death frame.
@@ -861,6 +896,8 @@ fn observation_from(
     SmbObservations {
         frame_count,
         wram: wram.to_vec(),
+        decoded: smb_mechanical_state_from_wram(wram),
+        milestones: smb_milestones_from_wram(wram),
         changed_indices,
         dead,
         log_line,
@@ -930,6 +967,19 @@ pub struct SmbMilestoneInputs {
     pub onward: Option<SmbInput>,
 }
 
+/// One insertion-ordered SMB corpus entry used by the executor identity gate.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbCorpusEntry {
+    /// Monotonic LibAFL corpus identifier.
+    pub id: u64,
+    /// Recorded parent testcase, when this entry was produced by mutation.
+    pub parent: Option<u64>,
+    /// Host-owned producer tag.
+    pub producer: String,
+    /// Retained typed input.
+    pub input: SmbInput,
+}
+
 /// Deterministic report for one M5 ratchet or random-mash run.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbCampaignReport {
@@ -945,6 +995,15 @@ pub struct SmbCampaignReport {
     pub first_inputs: SmbMilestoneInputs,
     /// Retained inputs in insertion order; empty for random mash.
     pub corpus: Vec<SmbInput>,
+    /// Corpus, lineage, and producer tags in insertion order.
+    #[serde(default)]
+    pub corpus_entries: Vec<SmbCorpusEntry>,
+    /// Executor implementation used for the campaign.
+    #[serde(default)]
+    pub executor_mode: SmbExecutorMode,
+    /// Deterministic executor work counters.
+    #[serde(default)]
+    pub executor_work: SmbExecutionWork,
 }
 
 /// Report for an M6 arm with host-owned generated-artifact accounting.
@@ -1038,16 +1097,33 @@ pub struct SmbExecutor<D> {
     detector_retire_after: u64,
     last_milestones: SmbMilestones,
     last_input: SmbInput,
-    prefix_cache: BTreeMap<Vec<ButtonChord>, CachedPrefix>,
+    last_cached: Option<Rc<CachedPrefix>>,
+    mode: SmbExecutorMode,
+    work: SmbExecutionWork,
+    pinned_prefixes: BTreeMap<Vec<ButtonChord>, Rc<CachedPrefix>>,
+    prefix_cache: BTreeMap<Vec<ButtonChord>, Rc<CachedPrefix>>,
     cache_order: VecDeque<Vec<ButtonChord>>,
+    pending_prefix: Option<(Vec<ButtonChord>, Rc<CachedPrefix>)>,
 }
 
 #[derive(Clone, Debug)]
 struct CachedPrefix {
     snapshot: SmbSnapshot,
     milestones: SmbMilestones,
-    base_features: Vec<usize>,
-    observations: Vec<SmbObservations>,
+    base_features: Rc<Vec<usize>>,
+    detector_features: Vec<u64>,
+    observations: Rc<Vec<SmbObservations>>,
+    observation_count: usize,
+}
+
+impl CachedPrefix {
+    fn observations(&self) -> &[SmbObservations] {
+        &self.observations[..self.observation_count]
+    }
+
+    fn base_features(&self) -> &[usize] {
+        &self.base_features[..self.observation_count]
+    }
 }
 
 impl<D> SmbExecutor<D>
@@ -1060,6 +1136,7 @@ where
         rom: &[u8],
         detector: D,
         detector_retire_after: u64,
+        mode: SmbExecutorMode,
     ) -> tetanes_core::control_deck::Result<Self> {
         Ok(Self {
             observers: tuple_list!(base_observer, detector_observer),
@@ -1073,8 +1150,13 @@ where
             detector_retire_after,
             last_milestones: SmbMilestones::default(),
             last_input: SmbInput::default(),
+            last_cached: None,
+            mode,
+            work: SmbExecutionWork::default(),
+            pinned_prefixes: BTreeMap::new(),
             prefix_cache: BTreeMap::new(),
             cache_order: VecDeque::new(),
+            pending_prefix: None,
         })
     }
 
@@ -1090,25 +1172,119 @@ where
         self.detector_stats
     }
 
+    /// Deterministic work performed by this executor.
+    #[must_use]
+    pub fn work(&self) -> SmbExecutionWork {
+        self.work
+    }
+
     /// Complete mechanical trace for the most recently executed input.
     #[must_use]
     pub fn last_observations(&self) -> &[SmbObservations] {
-        self.prefix_cache
-            .get(&self.last_input.actions)
-            .map_or(&[], |cached| cached.observations.as_slice())
+        self.last_cached
+            .as_ref()
+            .map_or(&[], |cached| cached.observations())
     }
 
     fn last_input(&self) -> &SmbInput {
         &self.last_input
     }
 
-    fn longest_cached_prefix(&self, input: &SmbInput) -> Option<(usize, CachedPrefix)> {
-        (0..=input.actions.len()).rev().find_map(|length| {
-            self.prefix_cache
-                .get(&input.actions[..length])
-                .cloned()
-                .map(|entry| (length, entry))
-        })
+    fn longest_cached_prefix(&self, input: &SmbInput) -> Option<(usize, Rc<CachedPrefix>)> {
+        match self.mode {
+            SmbExecutorMode::Legacy => (0..=input.actions.len()).rev().find_map(|length| {
+                self.prefix_cache
+                    .get(&input.actions[..length])
+                    .map(Rc::clone)
+                    .map(|entry| (length, entry))
+            }),
+            SmbExecutorMode::SnapshotResume => (0..=input.actions.len()).rev().find_map(|length| {
+                self.pinned_prefixes
+                    .get(&input.actions[..length])
+                    .map(Rc::clone)
+                    .map(|entry| (length, entry))
+            }),
+        }
+    }
+
+    fn pin_last_input(&mut self) -> Result<(), LibAflError> {
+        if self.mode == SmbExecutorMode::Legacy
+            || self.pinned_prefixes.contains_key(&self.last_input.actions)
+        {
+            return Ok(());
+        }
+        let (_, pending) = self
+            .pending_prefix
+            .take()
+            .filter(|(key, _)| *key == self.last_input.actions)
+            .ok_or_else(|| LibAflError::illegal_state("retained SMB input has no pending state"))?;
+        let start = if let Some((length, cached)) = self.longest_cached_prefix(&self.last_input) {
+            self.target.restore(&cached.snapshot)?;
+            self.work.snapshot_restores = self.work.snapshot_restores.saturating_add(1);
+            length
+        } else {
+            self.target.reset();
+            0
+        };
+        if self.last_input.actions.is_empty() {
+            self.pin_current_prefix(Vec::new(), &pending)?;
+            return Ok(());
+        }
+        for end in start..self.last_input.actions.len() {
+            let start_frame = self.target.observation.frame_count;
+            self.target.apply(&self.last_input.actions[end]);
+            self.work.emulated_frames = self.work.emulated_frames.saturating_add(
+                self.target
+                    .observation
+                    .frame_count
+                    .saturating_sub(start_frame),
+            );
+            let key = self.last_input.actions[..=end].to_vec();
+            if !self.pinned_prefixes.contains_key(&key) {
+                self.pin_current_prefix(key, &pending)?;
+            }
+        }
+        self.last_cached = self
+            .pinned_prefixes
+            .get(&self.last_input.actions)
+            .map(Rc::clone);
+        Ok(())
+    }
+
+    fn pin_current_prefix(
+        &mut self,
+        key: Vec<ButtonChord>,
+        pending: &CachedPrefix,
+    ) -> Result<(), LibAflError> {
+        let snapshot = self.target.snapshot().ok_or_else(|| {
+            LibAflError::illegal_state("TetaNES failed to save a retained SMB testcase prefix")
+        })?;
+        let frame_count = snapshot.observation.frame_count;
+        let observation_count = pending
+            .observations()
+            .partition_point(|observation| observation.frame_count <= frame_count);
+        let observations = &pending.observations()[..observation_count];
+        let detector_features = if self.detector.requires_complete_wram_trace() {
+            self.detector.features(observations)
+        } else {
+            Vec::new()
+        };
+        let mut milestones = SmbMilestones::default();
+        for observation in observations {
+            milestones.merge(observation.milestones);
+        }
+        self.pinned_prefixes.insert(
+            key,
+            Rc::new(CachedPrefix {
+                snapshot,
+                milestones,
+                base_features: Rc::clone(&pending.base_features),
+                detector_features,
+                observations: Rc::clone(&pending.observations),
+                observation_count,
+            }),
+        );
+        Ok(())
     }
 
     fn cache_prefix(
@@ -1116,31 +1292,64 @@ where
         key: Vec<ButtonChord>,
         milestones: SmbMilestones,
         base_features: Vec<usize>,
-        observations: Vec<SmbObservations>,
-    ) -> Result<(), LibAflError> {
-        if self.prefix_cache.contains_key(&key) {
-            return Ok(());
+        detector_features: Vec<u64>,
+        mut observations: Vec<SmbObservations>,
+    ) -> Result<Rc<CachedPrefix>, LibAflError> {
+        if self.mode == SmbExecutorMode::Legacy {
+            if let Some(prefix) = self.prefix_cache.get(&key) {
+                return Ok(Rc::clone(prefix));
+            }
+        } else if let Some(prefix) = self.pinned_prefixes.get(&key).map(Rc::clone) {
+            self.pending_prefix = Some((key, Rc::clone(&prefix)));
+            return Ok(prefix);
         }
         let snapshot = self.target.snapshot().ok_or_else(|| {
             LibAflError::illegal_state("TetaNES failed to save a campaign prefix")
         })?;
-        if self.prefix_cache.len() >= PREFIX_CACHE_CAPACITY {
-            let oldest = self.cache_order.pop_front().ok_or_else(|| {
-                LibAflError::illegal_state("SMB prefix cache order was unexpectedly empty")
-            })?;
-            self.prefix_cache.remove(&oldest);
+        if self.mode == SmbExecutorMode::SnapshotResume
+            && !self.detector.requires_complete_wram_trace()
+        {
+            slim_smb_observations(&mut observations);
         }
-        self.cache_order.push_back(key.clone());
-        self.prefix_cache.insert(
-            key,
-            CachedPrefix {
-                snapshot,
-                milestones,
-                base_features,
-                observations,
-            },
-        );
-        Ok(())
+        let prefix = Rc::new(CachedPrefix {
+            snapshot,
+            milestones,
+            base_features: Rc::new(base_features),
+            detector_features,
+            observation_count: observations.len(),
+            observations: Rc::new(observations),
+        });
+        match self.mode {
+            SmbExecutorMode::Legacy => {
+                while self.prefix_cache.len() >= PREFIX_CACHE_CAPACITY {
+                    let oldest = self.cache_order.pop_front().ok_or_else(|| {
+                        LibAflError::illegal_state("SMB prefix cache order was unexpectedly empty")
+                    })?;
+                    self.prefix_cache.remove(&oldest);
+                }
+                self.cache_order.push_back(key.clone());
+                self.prefix_cache.insert(key, Rc::clone(&prefix));
+            }
+            SmbExecutorMode::SnapshotResume => {
+                self.pending_prefix = Some((key, Rc::clone(&prefix)));
+            }
+        }
+        Ok(prefix)
+    }
+}
+
+fn slim_smb_observations(observations: &mut [SmbObservations]) {
+    let mut previous = SmbMilestones::default();
+    for observation in observations {
+        let current = observation.milestones;
+        let crossing = current.max_1_1_scroll_bucket > previous.max_1_1_scroll_bucket
+            || (current.reached_1_1_flag && !previous.reached_1_1_flag)
+            || (current.reached_1_2 && !previous.reached_1_2)
+            || (current.reached_onward && !previous.reached_onward);
+        if !crossing {
+            observation.wram.clear();
+        }
+        previous.merge(current);
     }
 }
 
@@ -1170,20 +1379,37 @@ where
     ) -> Result<ExitKind, LibAflError> {
         *state.executions_mut() = state.executions().saturating_add(1);
         self.last_input = input.clone();
-        let (start, mut base_features, mut observations) =
-            if let Some((length, cached)) = self.longest_cached_prefix(input) {
-                self.target.restore(&cached.snapshot)?;
-                self.last_milestones = cached.milestones;
-                for index in &cached.base_features {
-                    self.observers.0[*index] = 1;
-                }
-                (length, cached.base_features, cached.observations)
-            } else {
-                self.target.reset();
-                self.last_milestones = smb_milestones_from_wram(self.target.wram());
-                let index = set_base_feature(&mut self.observers.0, self.target.fingerprint());
-                (0, vec![index], vec![self.target.observe()])
-            };
+        let mut start_frame = 0_u64;
+        let (
+            start,
+            mut base_features,
+            prefix_observations,
+            genesis_observation,
+            reusable_detector_features,
+        ) = if let Some((length, cached)) = self.longest_cached_prefix(input) {
+            self.target.restore(&cached.snapshot)?;
+            self.work.snapshot_restores = self.work.snapshot_restores.saturating_add(1);
+            start_frame = cached.snapshot.observation.frame_count;
+            self.last_milestones = cached.milestones;
+            for index in cached.base_features() {
+                self.observers.0[*index] = 1;
+            }
+            let reusable_detector_features =
+                (length == input.actions.len()).then(|| cached.detector_features.clone());
+            (
+                length,
+                cached.base_features().to_vec(),
+                Some(cached),
+                None,
+                reusable_detector_features,
+            )
+        } else {
+            self.target.reset();
+            self.last_milestones = smb_milestones_from_wram(self.target.wram());
+            let index = set_base_feature(&mut self.observers.0, self.target.fingerprint());
+            (0, vec![index], None, Some(self.target.observe()), None)
+        };
+        let mut suffix_observations = Vec::new();
         for action in &input.actions[start..] {
             if self.target.is_dead() {
                 break;
@@ -1199,16 +1425,39 @@ where
                     &mut self.observers.0,
                     smb_fingerprint_from_wram(wram),
                 ));
-                observations.push(observation.clone());
+                suffix_observations.push(observation.clone());
             }
             if self.target.is_dead() || self.target.exit_kind() != ExitKind::Ok {
                 break;
             }
         }
+        self.work.emulated_frames = self.work.emulated_frames.saturating_add(
+            self.target
+                .observation
+                .frame_count
+                .saturating_sub(start_frame),
+        );
+        let observations = if let Some(prefix) = &prefix_observations {
+            let mut combined =
+                Vec::with_capacity(prefix.observations().len() + suffix_observations.len());
+            combined.extend_from_slice(prefix.observations());
+            combined.extend_from_slice(&suffix_observations);
+            combined
+        } else {
+            let mut combined = Vec::with_capacity(1 + suffix_observations.len());
+            if let Some(genesis) = &genesis_observation {
+                combined.push(genesis.clone());
+            }
+            combined.extend_from_slice(&suffix_observations);
+            combined
+        };
+        let mut detector_features = Vec::new();
         if self.detector_stats.active {
             self.detector_stats.executions = self.detector_stats.executions.saturating_add(1);
             let mut novel = 0_u64;
-            for key in self.detector.features(&observations) {
+            detector_features =
+                reusable_detector_features.unwrap_or_else(|| self.detector.features(&observations));
+            for &key in &detector_features {
                 let index = usize::try_from(
                     key.wrapping_mul(0x517c_c1b7) % u64::try_from(DETECTOR_MAP_SIZE).unwrap_or(1),
                 )
@@ -1231,12 +1480,13 @@ where
                 }
             }
         }
-        self.cache_prefix(
+        self.last_cached = Some(self.cache_prefix(
             input.actions.clone(),
             self.last_milestones,
             base_features,
+            detector_features,
             observations,
-        )?;
+        )?);
         Ok(self.target.exit_kind())
     }
 }
@@ -1266,7 +1516,7 @@ pub fn smb_milestones_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMilestones {
 }
 
 /// Route-agnostic mechanical state available to completion search and evaluation.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct SmbMechanicalState {
     /// Zero-based world number decoded from work RAM.
     pub world: u8,
@@ -1336,11 +1586,52 @@ fn update_campaign_milestones(
     }
 }
 
+fn smb_semantic_corpus(
+    corpus: &InMemoryCorpus<SmbInput>,
+) -> Result<Vec<SmbCorpusEntry>, Box<dyn Error>> {
+    let mut entries = Vec::with_capacity(corpus.count());
+    for id in corpus.ids() {
+        let testcase = corpus.get(id)?.borrow();
+        let input = testcase
+            .input()
+            .as_ref()
+            .ok_or("retained SMB testcase has no input")?
+            .clone();
+        let producer = testcase
+            .metadata_map()
+            .get::<ProducerMetadata>()
+            .map_or_else(
+                || if id.0 == 0 { "seed" } else { "base" }.to_owned(),
+                |metadata| metadata.mutator.clone(),
+            );
+        entries.push(SmbCorpusEntry {
+            id: u64::try_from(id.0)?,
+            parent: testcase
+                .parent_id()
+                .map(|parent| u64::try_from(parent.0))
+                .transpose()?,
+            producer,
+            input,
+        });
+    }
+    Ok(entries)
+}
+
 /// Run the M5 null-triage, base-map corpus ratchet for a bounded execution count.
 pub fn run_smb_ratchet(
     rom: &[u8],
     seed: u64,
     execution_budget: u64,
+) -> Result<SmbCampaignReport, Box<dyn Error>> {
+    run_smb_ratchet_with_executor(rom, seed, execution_budget, SmbExecutorMode::SnapshotResume)
+}
+
+/// Run the M5 ratchet through a selected executor for the Phase 1 identity gate.
+pub fn run_smb_ratchet_with_executor(
+    rom: &[u8],
+    seed: u64,
+    execution_budget: u64,
+    executor_mode: SmbExecutorMode,
 ) -> Result<SmbCampaignReport, Box<dyn Error>> {
     let base_observer = StdMapObserver::owned("smb_base_position", vec![0_u8; SMB_MAP_SIZE]);
     let detector_observer =
@@ -1365,8 +1656,10 @@ pub fn run_smb_ratchet(
         rom,
         NullSmbDetector,
         u64::MAX,
+        executor_mode,
     )?;
     fuzzer.add_input(&mut state, &mut executor, &mut manager, SmbInput::default())?;
+    executor.pin_last_input()?;
 
     let mutator = SingleChoiceScheduledMutator::new(tuple_list!(
         AppendButtonChordMutator::default(),
@@ -1382,7 +1675,11 @@ pub fn run_smb_ratchet(
     let mut first_reached = SmbMilestoneTimes::default();
     let mut first_inputs = SmbMilestoneInputs::default();
     while *state.executions() < execution_budget {
+        let corpus_count = state.corpus().count();
         fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut manager)?;
+        if state.corpus().count() > corpus_count {
+            executor.pin_last_input()?;
+        }
         update_campaign_milestones(
             &mut milestones,
             &mut first_reached,
@@ -1393,10 +1690,11 @@ pub fn run_smb_ratchet(
         );
     }
 
-    let mut corpus = Vec::with_capacity(state.corpus().count());
-    for id in state.corpus().ids() {
-        corpus.push(state.corpus().cloned_input_for_id(id)?);
-    }
+    let corpus_entries = smb_semantic_corpus(state.corpus())?;
+    let corpus = corpus_entries
+        .iter()
+        .map(|entry| entry.input.clone())
+        .collect();
     Ok(SmbCampaignReport {
         seed,
         executions: *state.executions(),
@@ -1404,6 +1702,9 @@ pub fn run_smb_ratchet(
         first_reached,
         first_inputs,
         corpus,
+        corpus_entries,
+        executor_mode,
+        executor_work: executor.work(),
     })
 }
 
@@ -1443,8 +1744,10 @@ where
         rom,
         detector,
         artifacts.detector_retire_after,
+        SmbExecutorMode::SnapshotResume,
     )?;
     fuzzer.add_input(&mut state, &mut executor, &mut manager, SmbInput::default())?;
+    executor.pin_last_input()?;
 
     let macro_stats = Rc::new(RefCell::new(MutatorStats::default()));
     let generated_macro = GeneratedSmbMacroAdapter::new(
@@ -1463,7 +1766,11 @@ where
     let mut first_reached = SmbMilestoneTimes::default();
     let mut first_inputs = SmbMilestoneInputs::default();
     while *state.executions() < execution_budget {
+        let corpus_count = state.corpus().count();
         fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut manager)?;
+        if state.corpus().count() > corpus_count {
+            executor.pin_last_input()?;
+        }
         update_campaign_milestones(
             &mut milestones,
             &mut first_reached,
@@ -1474,10 +1781,11 @@ where
         );
     }
 
-    let mut corpus = Vec::with_capacity(state.corpus().count());
-    for id in state.corpus().ids() {
-        corpus.push(state.corpus().cloned_input_for_id(id)?);
-    }
+    let corpus_entries = smb_semantic_corpus(state.corpus())?;
+    let corpus = corpus_entries
+        .iter()
+        .map(|entry| entry.input.clone())
+        .collect();
     let campaign = SmbCampaignReport {
         seed,
         executions: *state.executions(),
@@ -1485,6 +1793,9 @@ where
         first_reached,
         first_inputs,
         corpus,
+        corpus_entries,
+        executor_mode: SmbExecutorMode::SnapshotResume,
+        executor_work: executor.work(),
     };
     Ok(SmbConfiguredReport {
         campaign,
@@ -1658,6 +1969,7 @@ where
         rom,
         detector,
         artifacts.detector_retire_after,
+        SmbExecutorMode::SnapshotResume,
     )?;
 
     let mut milestones = SmbMilestones::default();
@@ -1666,6 +1978,7 @@ where
     let mut labeled_ids = BTreeMap::new();
     for entry in initial_corpus {
         let id = fuzzer.add_input(&mut state, &mut executor, &mut manager, entry.input.clone())?;
+        executor.pin_last_input()?;
         let mut updated = state.corpus().get(id)?.borrow().clone();
         updated.add_metadata(entry.labels.clone());
         let previous = state.corpus_mut().replace(id, updated)?;
@@ -1703,7 +2016,11 @@ where
             .saturating_add(triage_batch_executions)
             .min(execution_budget);
         while *state.executions() < batch_end {
+            let corpus_count = state.corpus().count();
             fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut manager)?;
+            if state.corpus().count() > corpus_count {
+                executor.pin_last_input()?;
+            }
             update_campaign_milestones(
                 &mut milestones,
                 &mut first_reached,
@@ -1748,10 +2065,11 @@ where
         }
     }
 
-    let mut corpus = Vec::with_capacity(state.corpus().count());
-    for id in state.corpus().ids() {
-        corpus.push(state.corpus().cloned_input_for_id(id)?);
-    }
+    let corpus_entries = smb_semantic_corpus(state.corpus())?;
+    let corpus = corpus_entries
+        .iter()
+        .map(|entry| entry.input.clone())
+        .collect();
     let campaign = SmbCampaignReport {
         seed,
         executions: *state.executions(),
@@ -1759,6 +2077,9 @@ where
         first_reached,
         first_inputs,
         corpus,
+        corpus_entries,
+        executor_mode: SmbExecutorMode::SnapshotResume,
+        executor_work: executor.work(),
     };
     Ok(SmbConfiguredReport {
         campaign,
@@ -1824,27 +2145,36 @@ pub fn run_smb_random_mash(
         first_reached,
         first_inputs,
         corpus: Vec::new(),
+        corpus_entries: Vec::new(),
+        executor_mode: SmbExecutorMode::Legacy,
+        executor_work: SmbExecutionWork::default(),
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
     use super::{
-        AppendButtonChordMutator, ButtonChord, MAX_SMB_ACTIONS, NullSmbDetector, NullSmbMacro,
-        SCREEN_PAGE_OFFSET, SCREEN_X_OFFSET, SMB_TRIAGE_BATCH_EXECUTIONS, SmbArtifactConfig,
-        SmbDetector, SmbInput, SmbLabeledCorpusEntry, SmbMacro, SmbObservations, SmbTarget,
-        SmbTriageScore, WRAM_SIZE, observe_smb_input, run_smb_configured,
-        run_smb_restart_configured_inner, sample_chord, smb_mechanical_state_from_wram,
-        smb_milestones_from_wram,
+        AppendButtonChordMutator, ButtonChord, DETECTOR_MAP_SIZE, MAX_SMB_ACTIONS, NullSmbDetector,
+        NullSmbMacro, SCREEN_PAGE_OFFSET, SCREEN_X_OFFSET, SMB_MAP_SIZE,
+        SMB_TRIAGE_BATCH_EXECUTIONS, SmbArtifactConfig, SmbDetector, SmbExecutor, SmbExecutorMode,
+        SmbInput, SmbLabeledCorpusEntry, SmbMacro, SmbObservations, SmbTarget, SmbTriageScore,
+        WRAM_SIZE, observe_smb_input, run_smb_configured, run_smb_ratchet_with_executor,
+        run_smb_restart_configured_inner, sample_chord, slim_smb_observations,
+        smb_mechanical_state_from_wram, smb_milestones_from_wram,
     };
     use crate::phase2::{Interest, TriageLabels};
     use crate::target::{Target, execute_actions};
     use libafl::{
-        HasMetadata,
+        HasMetadata, StdFuzzer,
         corpus::{Corpus, InMemoryCorpus, Testcase},
+        events::NopEventManager,
+        executors::Executor,
         feedbacks::ConstFeedback,
         mutators::{MutationResult, Mutator},
-        schedulers::TestcaseScore,
+        observers::StdMapObserver,
+        schedulers::{QueueScheduler, TestcaseScore},
         state::StdState,
     };
     use libafl_bolts::rands::StdRand;
@@ -1927,6 +2257,138 @@ mod tests {
         assert_eq!(
             execute_actions(&mut first, &actions),
             execute_actions(&mut second, &actions)
+        );
+    }
+
+    #[test]
+    fn snapshot_resume_is_semantically_identical_and_work_is_replayable() {
+        let rom = synthetic_nrom();
+        let mut legacy =
+            run_smb_ratchet_with_executor(&rom, 0x5eed_ee01, 128, super::SmbExecutorMode::Legacy)
+                .expect("legacy synthetic campaign");
+        let first = run_smb_ratchet_with_executor(
+            &rom,
+            0x5eed_ee01,
+            128,
+            super::SmbExecutorMode::SnapshotResume,
+        )
+        .expect("snapshot synthetic campaign");
+        let second = run_smb_ratchet_with_executor(
+            &rom,
+            0x5eed_ee01,
+            128,
+            super::SmbExecutorMode::SnapshotResume,
+        )
+        .expect("snapshot replay");
+        assert_eq!(first, second);
+        let new_work = first.executor_work;
+        legacy.executor_mode = super::SmbExecutorMode::SnapshotResume;
+        legacy.executor_work = new_work;
+        assert_eq!(legacy, first);
+    }
+
+    #[test]
+    fn snapshot_resume_reuses_recorded_detector_keys_for_an_exact_prefix() {
+        #[derive(Clone, Debug)]
+        struct CountingDetector(Rc<RefCell<u64>>);
+
+        impl SmbDetector for CountingDetector {
+            fn features(&self, observations: &[SmbObservations]) -> Vec<u64> {
+                let calls = self.0.borrow().saturating_add(1);
+                *self.0.borrow_mut() = calls;
+                vec![u64::try_from(observations.len()).unwrap_or(u64::MAX)]
+            }
+        }
+
+        let rom = synthetic_nrom();
+        let base = StdMapObserver::owned("reuse_base", vec![0_u8; SMB_MAP_SIZE]);
+        let generated = StdMapObserver::owned("reuse_detector", vec![0_u8; DETECTOR_MAP_SIZE]);
+        let calls = Rc::new(RefCell::new(0));
+        let mut executor = SmbExecutor::new(
+            base,
+            generated,
+            &rom,
+            CountingDetector(Rc::clone(&calls)),
+            u64::MAX,
+            SmbExecutorMode::SnapshotResume,
+        )
+        .expect("snapshot executor");
+        let input = SmbInput {
+            actions: vec![ButtonChord::new(0x81, 3), ButtonChord::new(0x80, 2)],
+        };
+        let mut feedback = ConstFeedback::new(false);
+        let mut objective = ConstFeedback::new(false);
+        let mut state = StdState::new(
+            StdRand::with_seed(7),
+            InMemoryCorpus::<SmbInput>::new(),
+            InMemoryCorpus::<SmbInput>::new(),
+            &mut feedback,
+            &mut objective,
+        )
+        .expect("state");
+        let mut fuzzer = StdFuzzer::new(QueueScheduler::new(), feedback, objective);
+        let mut manager = NopEventManager::new();
+        let genesis_input = SmbInput::default();
+        executor
+            .run_target(&mut fuzzer, &mut state, &mut manager, &genesis_input)
+            .expect("genesis execution");
+        executor.pin_last_input().expect("pin genesis");
+        executor
+            .run_target(&mut fuzzer, &mut state, &mut manager, &input)
+            .expect("first execution");
+        executor.pin_last_input().expect("pin retained input");
+        assert_eq!(
+            *calls.borrow(),
+            5,
+            "genesis execution/pin plus child execution/pin"
+        );
+        let exact = executor
+            .pinned_prefixes
+            .get(&input.actions)
+            .expect("exact pinned input");
+        let first_action = executor
+            .pinned_prefixes
+            .get(&input.actions[..1])
+            .expect("first action boundary");
+        assert!(Rc::ptr_eq(&exact.observations, &first_action.observations));
+        assert!(Rc::ptr_eq(
+            &exact.base_features,
+            &first_action.base_features
+        ));
+        executor
+            .run_target(&mut fuzzer, &mut state, &mut manager, &input)
+            .expect("exact-prefix execution");
+        assert_eq!(*calls.borrow(), 5, "recorded key set is reused");
+    }
+
+    #[test]
+    fn slim_trace_keeps_decoded_fields_and_raw_wram_only_at_crossings() {
+        let rom = synthetic_nrom_with_program(&[
+            0xee, 0x1c, 0x07, // INC $071c
+            0xa0, 0x14, // LDY #20
+            0xa2, 0xff, // outer: LDX #255
+            0xca, // inner: DEX
+            0xd0, 0xfd, // BNE inner
+            0x88, // DEY
+            0xd0, 0xf8, // BNE outer
+            0x4c, 0x00, 0x80, // JMP $8000
+        ]);
+        let mut target = SmbTarget::from_rom_bytes(&rom).expect("load bucket ROM");
+        target.apply(&ButtonChord::new(0x80, 120));
+        let mut trace = target.last_action_observations().to_vec();
+        let decoded = trace.iter().map(|item| item.decoded).collect::<Vec<_>>();
+        slim_smb_observations(&mut trace);
+        assert_eq!(
+            trace.iter().map(|item| item.decoded).collect::<Vec<_>>(),
+            decoded
+        );
+        assert!(trace.iter().any(|item| item.wram.is_empty()));
+        assert!(trace.iter().any(|item| !item.wram.is_empty()));
+        assert!(
+            trace
+                .iter()
+                .filter(|item| !item.wram.is_empty())
+                .all(|item| item.wram.len() == WRAM_SIZE)
         );
     }
 

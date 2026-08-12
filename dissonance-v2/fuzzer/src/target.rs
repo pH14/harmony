@@ -146,7 +146,7 @@ pub enum Room {
 }
 
 /// Total adventure action vocabulary.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum AdventureAction {
     /// Move north when a passage exists.
     North,

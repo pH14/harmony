@@ -2,7 +2,7 @@
 
 //! Phase 1: typed decision lists and a deterministic in-process maze.
 
-use std::{borrow::Cow, error::Error, num::NonZeroUsize};
+use std::{borrow::Cow, collections::BTreeMap, error::Error, num::NonZeroUsize};
 
 use libafl::{
     Error as LibAflError, StdFuzzer,
@@ -28,6 +28,26 @@ use serde::{Deserialize, Serialize};
 /// Maximum number of decisions retained by the Phase 1 mutators.
 pub const MAX_DECISIONS: usize = 16;
 pub(crate) const MAP_SIZE: usize = 64;
+
+/// Executor selected for the scheduling-path identity gate.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MazeExecutorMode {
+    /// Historical replay from the maze genesis.
+    Legacy,
+    /// Resume from the deepest retained testcase prefix.
+    #[default]
+    SnapshotResume,
+}
+
+/// Replayable maze-executor work counters.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MazeExecutionWork {
+    /// Decisions evaluated after genesis or snapshot resume.
+    pub evaluated_decisions: u64,
+    /// Retained snapshots restored.
+    pub snapshot_restores: u64,
+}
 
 /// The known deep route through the combination-lock maze.
 pub const DEEP_ROUTE: [Decision; 8] = [
@@ -252,13 +272,27 @@ type MazeObservers = (MazeObserver, ());
 pub struct MazeExecutor {
     observers: MazeObservers,
     last_depth: usize,
+    last_input: DecisionList,
+    mode: MazeExecutorMode,
+    work: MazeExecutionWork,
+    pinned: BTreeMap<Vec<Decision>, Vec<usize>>,
+    transient: BTreeMap<Vec<Decision>, Vec<usize>>,
 }
 
 impl MazeExecutor {
     pub(crate) fn new(observer: MazeObserver) -> Self {
+        Self::with_mode(observer, MazeExecutorMode::SnapshotResume)
+    }
+
+    pub(crate) fn with_mode(observer: MazeObserver, mode: MazeExecutorMode) -> Self {
         Self {
             observers: tuple_list!(observer),
             last_depth: 0,
+            last_input: DecisionList::default(),
+            mode,
+            work: MazeExecutionWork::default(),
+            pinned: BTreeMap::new(),
+            transient: BTreeMap::new(),
         }
     }
 
@@ -266,6 +300,20 @@ impl MazeExecutor {
     #[must_use]
     pub fn last_depth(&self) -> usize {
         self.last_depth
+    }
+
+    /// Deterministic work performed by this executor.
+    #[must_use]
+    pub fn work(&self) -> MazeExecutionWork {
+        self.work
+    }
+
+    fn pin_last_input(&mut self, input: &DecisionList) {
+        if self.mode == MazeExecutorMode::SnapshotResume
+            && let Some(snapshot) = self.transient.remove(&input.decisions)
+        {
+            self.pinned.insert(input.decisions.clone(), snapshot);
+        }
     }
 }
 
@@ -293,10 +341,34 @@ where
         input: &DecisionList,
     ) -> Result<ExitKind, LibAflError> {
         *state.executions_mut() = state.executions().saturating_add(1);
+        self.last_input = input.clone();
+        let start = if self.mode == MazeExecutorMode::SnapshotResume {
+            (0..=input.decisions.len())
+                .rev()
+                .find(|length| self.pinned.contains_key(&input.decisions[..*length]))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        if start > 0 {
+            self.work.snapshot_restores = self.work.snapshot_restores.saturating_add(1);
+        }
+        self.work.evaluated_decisions = self.work.evaluated_decisions.saturating_add(
+            u64::try_from(input.decisions.len().saturating_sub(start)).unwrap_or(u64::MAX),
+        );
         let depths = visited_depths(input);
         self.last_depth = *depths.last().expect("genesis is always visited");
         for depth in depths {
             self.observers.0[feature_index(depth)] = 1;
+        }
+        if self.mode == MazeExecutorMode::SnapshotResume {
+            self.transient
+                .insert(input.decisions.clone(), visited_depths(input));
+            if self.transient.len() > 8
+                && let Some(key) = self.transient.keys().next().cloned()
+            {
+                self.transient.remove(&key);
+            }
         }
         Ok(ExitKind::Ok)
     }
@@ -323,7 +395,7 @@ pub fn visited_depths(input: &DecisionList) -> Vec<usize> {
 }
 
 /// A semantic snapshot of one testcase, used by the replay property.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CorpusEntry {
     /// Testcase input.
     pub input: DecisionList,
@@ -332,7 +404,7 @@ pub struct CorpusEntry {
 }
 
 /// Result of one bounded guided campaign.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CampaignReport {
     /// Total target executions, including the initial seed.
     pub executions: u64,
@@ -340,10 +412,23 @@ pub struct CampaignReport {
     pub time_to_target: Option<u64>,
     /// Corpus in deterministic insertion order.
     pub corpus: Vec<CorpusEntry>,
+    /// Executor implementation selected for this campaign.
+    pub executor_mode: MazeExecutorMode,
+    /// Deterministic executor work counters.
+    pub executor_work: MazeExecutionWork,
 }
 
 /// Run the Phase 1 coverage-guided campaign for a deterministic budget.
 pub fn run_guided(seed: u64, execution_budget: u64) -> Result<CampaignReport, Box<dyn Error>> {
+    run_guided_with_executor(seed, execution_budget, MazeExecutorMode::SnapshotResume)
+}
+
+/// Run the maze campaign through a selected executor for the Phase 1 identity gate.
+pub fn run_guided_with_executor(
+    seed: u64,
+    execution_budget: u64,
+    executor_mode: MazeExecutorMode,
+) -> Result<CampaignReport, Box<dyn Error>> {
     let observer = StdMapObserver::owned("maze_states", vec![0_u8; MAP_SIZE]);
     let mut feedback = MaxMapFeedback::new(&observer);
     let mut objective = ConstFeedback::new(false);
@@ -357,13 +442,14 @@ pub fn run_guided(seed: u64, execution_budget: u64) -> Result<CampaignReport, Bo
     let scheduler = QueueScheduler::new();
     let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
     let mut manager = NopEventManager::new();
-    let mut executor = MazeExecutor::new(observer);
+    let mut executor = MazeExecutor::with_mode(observer, executor_mode);
     fuzzer.add_input(
         &mut state,
         &mut executor,
         &mut manager,
         DecisionList::default(),
     )?;
+    executor.pin_last_input(&DecisionList::default());
 
     let mutator = SingleChoiceScheduledMutator::new(tuple_list!(
         AppendDecisionMutator::default(),
@@ -377,7 +463,12 @@ pub fn run_guided(seed: u64, execution_budget: u64) -> Result<CampaignReport, Bo
     ));
     let mut time_to_target = None;
     while *state.executions() < execution_budget {
+        let corpus_count = state.corpus().count();
         fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut manager)?;
+        if state.corpus().count() > corpus_count {
+            let retained = executor.last_input.clone();
+            executor.pin_last_input(&retained);
+        }
         if executor.last_depth() == DEEP_ROUTE.len() {
             time_to_target = Some(*state.executions());
             break;
@@ -394,6 +485,8 @@ pub fn run_guided(seed: u64, execution_budget: u64) -> Result<CampaignReport, Bo
         executions: *state.executions(),
         time_to_target,
         corpus,
+        executor_mode,
+        executor_work: executor.work(),
     })
 }
 
@@ -430,8 +523,9 @@ mod tests {
 
     use super::{
         AppendDecisionMutator, DEEP_ROUTE, Decision, DecisionList, MAX_DECISIONS,
-        PerturbDecisionMutator, SpliceDecisionMutator, TruncateDecisionMutator, run_guided,
-        run_random_walk, visited_depths,
+        MazeExecutionWork, MazeExecutorMode, PerturbDecisionMutator, SpliceDecisionMutator,
+        TruncateDecisionMutator, run_guided, run_guided_with_executor, run_random_walk,
+        visited_depths,
     };
 
     fn mutation_state(
@@ -545,6 +639,21 @@ mod tests {
             first.time_to_target.is_some(),
             "guided campaign missed target"
         );
+    }
+
+    #[test]
+    fn legacy_and_snapshot_resume_have_identical_semantics() {
+        let mut legacy = run_guided_with_executor(0x5eed_ee01, 5_000, MazeExecutorMode::Legacy)
+            .expect("legacy maze campaign");
+        let snapshot =
+            run_guided_with_executor(0x5eed_ee01, 5_000, MazeExecutorMode::SnapshotResume)
+                .expect("snapshot maze campaign");
+        legacy.executor_mode = MazeExecutorMode::SnapshotResume;
+        legacy.executor_work = MazeExecutionWork::default();
+        let mut normalized_snapshot = snapshot.clone();
+        normalized_snapshot.executor_work = MazeExecutionWork::default();
+        assert_eq!(legacy, normalized_snapshot);
+        assert!(snapshot.executor_work.snapshot_restores > 0);
     }
 
     #[test]

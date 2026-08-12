@@ -5,7 +5,7 @@
 use std::{
     borrow::Cow,
     cell::RefCell,
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     ffi::OsString,
     fs,
@@ -41,7 +41,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     phase2::{Flag, Interest, TriageLabels, TriageScore},
     phase3::ScopedFeedback,
-    target::{AdventureAction, AdventureObservations, AdventureToy, Room, execute_actions},
+    target::{
+        AdventureAction, AdventureObservations, AdventureSnapshot, AdventureToy, Room, Target,
+        execute_actions,
+    },
 };
 
 /// Maximum action count accepted by the adventure campaign.
@@ -54,6 +57,26 @@ const DEFAULT_DETECTOR_RETIRE_AFTER: u64 = 10_000;
 const INSTALLED_REPORT_FILE: &str = "phase4a-installed-report.json";
 const INSTALLED_DETECTOR_REPORT_FILE: &str = "phase4a-installed-detector-report.json";
 const MAX_TRIAGE_CALLS: u64 = 200;
+
+/// Scheduling-path executor selected for an adventure campaign.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdventureExecutorMode {
+    /// Historical replay from genesis.
+    Legacy,
+    /// Resume from the deepest retained testcase prefix.
+    #[default]
+    SnapshotResume,
+}
+
+/// Replayable work performed by an adventure scheduling-path executor.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AdventureExecutionWork {
+    /// Adventure actions evaluated after genesis or snapshot resume.
+    pub evaluated_actions: u64,
+    /// Retained snapshots restored.
+    pub snapshot_restores: u64,
+}
 
 const ALL_ADVENTURE_ACTIONS: [AdventureAction; 7] = [
     AdventureAction::North,
@@ -601,15 +624,49 @@ struct AdventureExecutor<D> {
     observers: AdventureObservers,
     detector: D,
     last: Vec<AdventureObservations>,
+    last_input: AdventureInput,
+    mode: AdventureExecutorMode,
+    work: AdventureExecutionWork,
+    pinned: BTreeMap<Vec<AdventureAction>, AdventureCachedPrefix>,
+    transient: BTreeMap<Vec<AdventureAction>, AdventureCachedPrefix>,
+}
+
+#[derive(Clone, Debug)]
+struct AdventureCachedPrefix {
+    snapshot: AdventureSnapshot,
+    observations: Vec<AdventureObservations>,
 }
 
 impl<D> AdventureExecutor<D> {
-    fn new(base: AdventureObserver, generated: AdventureObserver, detector: D) -> Self {
+    fn new(
+        base: AdventureObserver,
+        generated: AdventureObserver,
+        detector: D,
+        mode: AdventureExecutorMode,
+    ) -> Self {
         Self {
             observers: tuple_list!(base, generated),
             detector,
             last: Vec::new(),
+            last_input: AdventureInput::default(),
+            mode,
+            work: AdventureExecutionWork::default(),
+            pinned: BTreeMap::new(),
+            transient: BTreeMap::new(),
         }
+    }
+
+    fn pin_last_input(&mut self) {
+        if self.mode == AdventureExecutorMode::SnapshotResume
+            && let Some(snapshot) = self.transient.remove(&self.last_input.actions)
+        {
+            self.pinned
+                .insert(self.last_input.actions.clone(), snapshot);
+        }
+    }
+
+    fn work(&self) -> AdventureExecutionWork {
+        self.work
     }
 }
 
@@ -638,7 +695,35 @@ where
         input: &AdventureInput,
     ) -> Result<ExitKind, LibAflError> {
         *state.executions_mut() = state.executions().saturating_add(1);
-        self.last = run_adventure(input);
+        self.last_input = input.clone();
+        let resume = if self.mode == AdventureExecutorMode::SnapshotResume {
+            (0..=input.actions.len()).rev().find_map(|length| {
+                self.pinned
+                    .get(&input.actions[..length])
+                    .cloned()
+                    .map(|cached| (length, cached))
+            })
+        } else {
+            None
+        };
+        let mut target = AdventureToy::default();
+        let start = if let Some((length, cached)) = resume {
+            target.restore(&cached.snapshot)?;
+            self.work.snapshot_restores = self.work.snapshot_restores.saturating_add(1);
+            self.last = cached.observations;
+            length
+        } else {
+            self.last = vec![target.observe()];
+            0
+        };
+        for action in &input.actions[start..] {
+            target.apply(action);
+            self.last.push(target.observe());
+            self.work.evaluated_actions = self.work.evaluated_actions.saturating_add(1);
+            if target.exit_kind() != ExitKind::Ok {
+                break;
+            }
+        }
         for observation in &self.last {
             let index = usize::try_from(room_index(observation.room) % ADVENTURE_MAP_SIZE_U64)
                 .map_err(|_| LibAflError::illegal_state("base feature index overflow"))?;
@@ -648,6 +733,23 @@ where
             let index = usize::try_from(feature % ADVENTURE_MAP_SIZE_U64)
                 .map_err(|_| LibAflError::illegal_state("detector feature index overflow"))?;
             self.observers.1.0[index] = 1;
+        }
+        if self.mode == AdventureExecutorMode::SnapshotResume {
+            let snapshot = target
+                .snapshot()
+                .ok_or_else(|| LibAflError::illegal_state("adventure snapshot was unavailable"))?;
+            self.transient.insert(
+                input.actions.clone(),
+                AdventureCachedPrefix {
+                    snapshot,
+                    observations: self.last.clone(),
+                },
+            );
+            if self.transient.len() > 8
+                && let Some(key) = self.transient.keys().next().cloned()
+            {
+                self.transient.remove(&key);
+            }
         }
         Ok(self.last.last().map_or(ExitKind::Ok, |observation| {
             if observation.crashed {
@@ -876,6 +978,12 @@ pub struct AdventureRunReport {
     pub triage_events: Vec<RecordedTriageEvent>,
     /// Number of triage calls that fell back to neutral labels.
     pub triage_failures: u64,
+    /// Executor implementation selected for this campaign.
+    #[serde(default)]
+    pub executor_mode: AdventureExecutorMode,
+    /// Deterministic executor work counters.
+    #[serde(default)]
+    pub executor_work: AdventureExecutionWork,
 }
 
 /// Exhaustive evidence that no one-action child of the retained base corpus
@@ -996,6 +1104,25 @@ pub fn run_adventure_campaign(
     triage: TriageArm,
     search: SearchArm,
 ) -> Result<AdventureRunReport, Box<dyn Error>> {
+    run_adventure_campaign_with_executor(
+        output_dir,
+        seed,
+        execution_budget,
+        triage,
+        search,
+        AdventureExecutorMode::SnapshotResume,
+    )
+}
+
+/// Run one adventure campaign through a selected executor for the Phase 1 identity gate.
+pub fn run_adventure_campaign_with_executor(
+    output_dir: &Path,
+    seed: u64,
+    execution_budget: u64,
+    triage: TriageArm,
+    search: SearchArm,
+    executor_mode: AdventureExecutorMode,
+) -> Result<AdventureRunReport, Box<dyn Error>> {
     run_adventure_campaign_with_artifacts(
         output_dir,
         seed,
@@ -1004,9 +1131,11 @@ pub fn run_adventure_campaign(
         search,
         InventoryDoorDetector,
         FetchKeyThenOpenDoor,
+        executor_mode,
     )
 }
 
+#[allow(clippy::too_many_arguments)] // The identity-gate executor mode is an explicit campaign axis.
 fn run_adventure_campaign_with_artifacts<D, M>(
     output_dir: &Path,
     seed: u64,
@@ -1015,6 +1144,7 @@ fn run_adventure_campaign_with_artifacts<D, M>(
     search: SearchArm,
     detector: D,
     generated_mutator: M,
+    executor_mode: AdventureExecutorMode,
 ) -> Result<AdventureRunReport, Box<dyn Error>>
 where
     D: AdventureDetector,
@@ -1038,6 +1168,7 @@ where
         triager,
         MAX_TRIAGE_CALLS,
         false,
+        executor_mode,
     )
 }
 
@@ -1053,6 +1184,7 @@ fn run_adventure_campaign_with_triager<D, M>(
     triager: Box<dyn Triager>,
     max_triage_calls: u64,
     continue_on_triage_failure: bool,
+    executor_mode: AdventureExecutorMode,
 ) -> Result<AdventureRunReport, Box<dyn Error>>
 where
     D: AdventureDetector,
@@ -1086,6 +1218,7 @@ where
             enabled: detector_enabled,
             detector,
         },
+        executor_mode,
     );
     let seed_id = fuzzer.add_input(
         &mut state,
@@ -1093,6 +1226,7 @@ where
         &mut manager,
         AdventureInput::default(),
     )?;
+    executor.pin_last_input();
     let triage_events = Rc::new(RefCell::new(Vec::new()));
     let mut recording_triager = RecordingTriager::new(
         triager,
@@ -1133,7 +1267,11 @@ where
 
     let mut time_to_target = None;
     while *state.executions() < execution_budget {
+        let corpus_count = state.corpus().count();
         fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut manager)?;
+        if state.corpus().count() > corpus_count {
+            executor.pin_last_input();
+        }
         if executor
             .last
             .last()
@@ -1164,6 +1302,8 @@ where
         macro_stats: macro_stats.borrow().clone(),
         triage_events: recorded_events,
         triage_failures,
+        executor_mode,
+        executor_work: executor.work(),
     };
     fs::write(
         output_dir.join("phase4a-run-report.json"),
@@ -1338,12 +1478,18 @@ where
         WeightedScheduler::<_, TriageScore, AdventureObserver>::new(&mut state, &base_observer);
     let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
     let mut manager = NopEventManager::new();
-    let mut executor = AdventureExecutor::new(base_observer, generated_observer, detector);
+    let mut executor = AdventureExecutor::new(
+        base_observer,
+        generated_observer,
+        detector,
+        AdventureExecutorMode::SnapshotResume,
+    );
 
     for entry in &plateau.corpus {
         *state.corpus_mut().current_mut() =
             entry.parent.map(usize::try_from).transpose()?.map(CorpusId);
         let id = fuzzer.add_input(&mut state, &mut executor, &mut manager, entry.input.clone())?;
+        executor.pin_last_input();
         if u64::try_from(id.0)? != entry.id {
             return Err("persisted adventure corpus ids changed during restart".into());
         }
@@ -1379,6 +1525,9 @@ where
         let prior_base_features = adventure_corpus_base_features(&state)?;
         fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut manager)?;
         let corpus_added = state.corpus().count() > prior_count;
+        if corpus_added {
+            executor.pin_last_input();
+        }
         let adds_base_feature = executor
             .last
             .iter()
@@ -1463,6 +1612,7 @@ pub fn run_luna_adventure_campaign(
         Box::new(operator_triager),
         MAX_TRIAGE_CALLS,
         true,
+        AdventureExecutorMode::SnapshotResume,
     )
 }
 
@@ -1487,6 +1637,7 @@ pub fn replay_recorded_adventure_campaign(
         Box::new(replay),
         u64::MAX,
         false,
+        recorded.executor_mode,
     )?;
     if *cursor.borrow() != recorded.triage_events.len() {
         return Err(format!(
@@ -1603,6 +1754,7 @@ where
         SearchArm::DetectorsAndMacros,
         detector,
         generated_mutator,
+        AdventureExecutorMode::SnapshotResume,
     )?;
     fs::write(
         output_dir.join(INSTALLED_REPORT_FILE),
@@ -1690,13 +1842,13 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{
-        AdventureDetectorStats, AdventureInput, FetchKeyThenOpenDoor, GeneratedMutator,
-        GeneratedMutatorAdapter, InventoryDoorDetector, MAX_ADVENTURE_ACTIONS, MutatorStats,
-        ProducerMetadata, SearchArm, TriageArm, TriageRequest, Triager,
-        install_build_restart_adventure, labels_for_request, prove_adventure_base_plateau,
+        AdventureDetectorStats, AdventureExecutionWork, AdventureExecutorMode, AdventureInput,
+        FetchKeyThenOpenDoor, GeneratedMutator, GeneratedMutatorAdapter, InventoryDoorDetector,
+        MAX_ADVENTURE_ACTIONS, MutatorStats, ProducerMetadata, SearchArm, TriageArm, TriageRequest,
+        Triager, install_build_restart_adventure, labels_for_request, prove_adventure_base_plateau,
         replay_recorded_adventure_campaign, run_adventure_campaign,
-        run_adventure_campaign_with_triager, run_adventure_matrix,
-        run_installed_adventure_detector,
+        run_adventure_campaign_with_executor, run_adventure_campaign_with_triager,
+        run_adventure_matrix, run_installed_adventure_detector,
     };
     use crate::phase2::TriageLabels;
     use crate::target::{AdventureAction, AdventureToy, Target, execute_actions};
@@ -1839,6 +1991,34 @@ mod tests {
     }
 
     #[test]
+    fn legacy_and_snapshot_resume_have_identical_semantics() {
+        let legacy_dir = tempfile::tempdir().expect("legacy campaign directory");
+        let snapshot_dir = tempfile::tempdir().expect("snapshot campaign directory");
+        let mut legacy = run_adventure_campaign_with_executor(
+            legacy_dir.path(),
+            0x5eed_ee01,
+            5_000,
+            TriageArm::Null,
+            SearchArm::Base,
+            AdventureExecutorMode::Legacy,
+        )
+        .expect("legacy adventure campaign");
+        let mut snapshot = run_adventure_campaign_with_executor(
+            snapshot_dir.path(),
+            0x5eed_ee01,
+            5_000,
+            TriageArm::Null,
+            SearchArm::Base,
+            AdventureExecutorMode::SnapshotResume,
+        )
+        .expect("snapshot adventure campaign");
+        legacy.executor_mode = AdventureExecutorMode::SnapshotResume;
+        legacy.executor_work = AdventureExecutionWork::default();
+        snapshot.executor_work = AdventureExecutionWork::default();
+        assert_eq!(legacy, snapshot);
+    }
+
+    #[test]
     fn full_matrix_records_all_cells_and_macros_beat_detectors() {
         let output = tempfile::tempdir().expect("matrix directory");
         let seeds = [0x4a00_1000, 0x4a00_1001, 0x4a00_1002, 0x4a00_1003];
@@ -1915,6 +2095,7 @@ mod tests {
             Box::new(FixtureTriager),
             200,
             false,
+            super::AdventureExecutorMode::SnapshotResume,
         )
         .expect("record fixture-label campaign");
         let replayed = replay_recorded_adventure_campaign(replay_dir.path(), &recorded)
@@ -2001,6 +2182,7 @@ mod tests {
             Box::new(FailingTriager),
             200,
             true,
+            super::AdventureExecutorMode::SnapshotResume,
         )
         .expect("campaign continues after triage failures");
         assert!(report.triage_failures > 0);

@@ -420,3 +420,69 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
 - Development controls and mutator arms exceeded genuine 1-3 progress 39 on 0/6 seeds, so this generated mutator is not promoted and no held-out panel is due. Control retained-entry counts were `[3658, 3691, 3977, 3682, 3635, 3576]`; mutator retained-entry counts were `[9362, 9862, 8424, 9860, 8445, 8876]`.
 - Full-arm mutator attempts were `[968, 986, 982, 988, 945, 1020]`, all emitted bounded offspring; retained-offspring counts were `[652, 686, 616, 673, 584, 583]`. Every mutator remained active with final nonretained streaks `[1, 1, 2, 4, 2, 1]`. The null is therefore search utility, not inactivity, invalid output, retirement, or replay failure.
 - The panel obeyed the executor-rework steer's six-arm concurrency cap by running controls and candidates in separate waves. Raw evidence and recorded generated files: `target/smb-completion/m14-luna-20260811/`.
+
+## M15 — preregistered scheduling-path executor Phase 1
+
+- Authority and frozen plan are the integrator specification
+  `/Users/phemberger/workspace/steers/EXECUTOR-REWORK.md`. Registration is
+  recorded before inspecting any identity-gate result. M14 is complete, and no
+  new campaign of 20,000 executions or more has started on the legacy executor.
+- Phase 1 is a semantics-preserving transform. Retained scheduling-path
+  testcases pin their end snapshots, decoded observations, milestones, base
+  features, and detector features. Mutants resume at the deepest unchanged
+  retained prefix. A separate bounded transient cache may bridge execution and
+  corpus admission. Stored null-detector traces retain raw WRAM only at frozen
+  milestone crossings; compatibility detectors may explicitly require the old
+  complete-raw trace. Synchronous triage timing is unchanged.
+- Every campaign report records executor mode, total emulated/evaluated work,
+  and snapshot restores. These are deterministic execution counters and must
+  replay exactly. Corpus reports include insertion order, lineage, and
+  host-owned producer tags.
+- Identity gate seed is `0x5eed_ee01`. For maze, adventure toy, and SMB, run one
+  legacy and one snapshot-resume campaign with a 5,000-execution ceiling.
+  Acceptance requires bit-identical semantic reports after removing only the
+  intentionally different executor-mode/work fields. The SMB new executor must
+  emulate at most one tenth as many frames as legacy. Record wall time as
+  non-semantic benchmark evidence and report both ratios.
+- A Criterion bench compares the two SMB executors at a frozen seed and fixed
+  50-execution budget without a model or network. Raw identity evidence:
+  `target/smb-completion/executor-phase1-identity/`; benchmark evidence:
+  `target/criterion/`.
+
+### M15 result — accepted by integrator ruling
+
+- The fixed 5,000-execution gate is semantically exact on all three scheduling
+  targets after normalizing only executor mode and work counters. Semantic
+  SHA-256 values are maze
+  `6e1500f1f0baa2a479f5828158e68995deef395d2ac5b6eeb45d858f5c6b7844`,
+  adventure
+  `8debc5e902d71df10c18ab868df375a4b84478338686cc2bdff8f97f42a62153`,
+  and SMB
+  `085c22ee1c3f8a57f93362c2d74fd38d2ab5810da42df99d655126ea230ba2a4`.
+  Corpus insertion order, lineage, producer tags, milestones, and reports match.
+- Replay-stable work was maze `648 -> 354` decisions with 178 restores;
+  adventure `7,515 -> 4,485` actions with 4,999 restores; and SMB
+  `730,736 -> 460,921` emulated frames with `4,966 -> 5,149` restores. The
+  shallow SMB frame ratio is 1.59x and observed wall ratio is 1.90x.
+- The frozen local M15 registration's tenfold condition is false. Integrator
+  ruling on 2026-08-12 confirms that EXECUTOR-REWORK amendment 3 supersedes
+  that registered threshold because it originated as an integrator analysis
+  error. Independent exact 20,000-execution deep-regime runs on macOS and Linux
+  measured `4,058,377 -> 2,027,227` frames (2.00x) with bit-identical semantic
+  reports. The frozen registration remains above unchanged; this ruling beside
+  it withdraws only its erroneous performance threshold.
+- Criterion's fixed seed, 50-execution comparison recorded legacy
+  `[1.3313, 1.3730]` seconds and snapshot resume `[1.7523, 1.7829]` seconds per
+  campaign. The shallow serial workload regresses because action-boundary state
+  serialization costs more than it saves; this is recorded rather than hidden.
+- M15 acceptance is therefore the bit-identical identity gate, replay-exact
+  deterministic work counters, and honest measured ratios. All three hold, so
+  the integrator accepts M15. Executor selection remains fixed and recorded per
+  campaign: use legacy for shallow workloads where it is faster and
+  snapshot-resume where depth pays, never mixing modes within one campaign.
+- Phase 2 is explicitly routed to separate executor-performance work and does
+  not begin here. Completion work returns to the independently verified genuine
+  1-3 progress-39 frontier.
+- Raw evidence is under
+  `target/smb-completion/executor-phase1-identity/` and
+  `/private/tmp/harmony-smb-dissonance-target/criterion/`.
