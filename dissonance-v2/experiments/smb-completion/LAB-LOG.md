@@ -955,3 +955,29 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   from its prepared evidence directory. The frozen source, evidence, model,
   attempts, seeds, budgets, controls, acceptance, and replay rules remain
   unchanged.
+
+### H27 result — rejected
+
+- Attempt 1 returned a vertical-readiness ranking but source validation rejected
+  its use of `flag_active` because the existing no-progress validator forbids
+  the token `flag`. Attempt 2 corrected that exact error and installed a bounded
+  32-observation ranking over ordinary engine state, vertical bucket peak and
+  motion, bucket diversity, and changed-index activity. Its 242-word journal
+  passed without compression.
+- Attempt 2 passed deterministic observation fixtures, fixed seed
+  `0x5eed_ef00` 256-execution isolation control/candidate/replay, and the
+  no-model journal-chain replay. Across the full panel the ranking remained
+  active, made `[699, 622, 539, 689, 466, 511]` replacements, and those
+  replacements produced `[190, 153, 168, 179, 162, 142]` descendant novelties.
+- Controls exceeded corrected 1-3 progress 39 on 0/6 seeds and ranking arms on
+  0/6. Every per-frame progress watermark remained exactly
+  `(world 0, level 2, progress 39)`, so no held-out panel or promotion is due.
+  Control retained counts were `[3711, 3715, 3892, 3560, 3651, 3654]`; ranking
+  retained counts were `[3866, 3708, 3704, 3796, 3674, 3706]`.
+- The complete seed-0 ranking replay is byte-equal with SHA-256
+  `de7607e275f92c38f53497343c3e86338b2f89dc8d17e426d3580f8e60e20326`;
+  the aggregate report records `replay_verified=true`. Decision: reject this
+  journal-informed ranking for SMB promotion and resume the mechanical queue
+  only after the ordered field-semantics correction below. Raw evidence and
+  all model/generated/journal artifacts:
+  `target/smb-completion/h27-luna-20260812/`.
