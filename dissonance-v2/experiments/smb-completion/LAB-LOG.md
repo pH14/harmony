@@ -727,6 +727,26 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   maximum-progress watermark. Raw empty/interrupted process logs remain under
   `target/smb-completion/h26-dev/` as an audit trail.
 
+### H26 resumed result — rejected
+
+- After D27 rejected the unrecoverable-frontier diagnosis, H26 resumed without
+  changing its registered mechanism, seeds, budget, source, controls, or
+  acceptance rule. Checkpoint challengers exceeded corrected 1-3 progress 39
+  on 0/6 development seeds. Every retained frontier and every per-frame
+  maximum-progress watermark stopped at `(world 0, level 2, progress 39)`, so
+  no held-out panel or promotion replay is due.
+- Retained-entry counts were `[9045, 9365, 9716, 7941, 9220, 8477]`; deaths
+  were `[10, 16, 23, 31, 22, 52]`. This substantial corpus expansion proves
+  that the 12-frame checkpoint representation was active, while the unchanged
+  watermarks prove no crossing was merely lost between retained endpoints.
+- Decision: reject current-boundary checkpoint retention. The unpromoted
+  mechanism is removed from the live path; its focused deterministic
+  frame-stream and exact-replay fixture passed before the panel. The six
+  completed reports are under
+  `target/smb-completion/h26-dev/rerun-e000-checkpoints/` through
+  `rerun-e005-checkpoints/`; the earlier empty interrupted logs remain beside
+  them.
+
 ## D27 — preregistered frontier-viability diagnostic
 
 - Diagnostic claim: retained evaluation-end states at the progress-39 boundary
@@ -785,3 +805,54 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   deterministic unit fixture verifies an interior progress 41 remains recorded
   when the endpoint returns to 39. It cannot affect search behavior. Raw
   evidence: `target/smb-completion/d27-frontier-viability/`.
+
+## D28 — preregistered correction to frontier-viability classification
+
+- Audit of the D27 implementation before the next mechanism panel found that
+  its kill-state classification inspected only the endpoint after each
+  120-frame continuation. A parent that entered engine state `$0b` and then
+  reset to ordinary play within the continuation could therefore be counted as
+  controllable. This does not satisfy the integrator's specified “reaches the
+  kill state” classification.
+- Rerun the exact D27 source, active-entry reconstruction, 120-frame budget,
+  null input plus frozen nine single chords, ordering, and replay. The sole
+  correction is mechanical: classify a continuation as kill-state if any
+  recorded observation during the continuation, or its endpoint, has player
+  engine state `$0b`; otherwise retain D27's endpoint below-playable and
+  controllable rules. Do not inspect the corrected result before this entry is
+  recorded and do not start another search panel meanwhile.
+- The branch rule remains the integrator's: more than half doomed in the
+  maximal frontier authorizes the registered admission cleanup and unchanged
+  H24 repeat; at most half records the diagnosis false and returns to the
+  completion frontier. Live and model-free replay reports must be byte-exact.
+- Raw destination: `target/smb-completion/d28-frontier-viability/`.
+
+### D28 interrupted attempt — no result produced
+
+- The first corrected-audit process was explicitly interrupted while its live
+  pass was still running because the active completion goal was superseded by
+  separately routed executor work. The audit writes its first report only
+  after every live continuation completes, so the already-created destination
+  directory remained empty. No corrected classification, fraction, or replay
+  result existed to inspect, and no branch decision was made from that attempt.
+- D28 now resumes by rerunning the frozen registration above from the start.
+  Its source, reconstruction, continuation set, frame budget, ordering, replay
+  gate, and strict-majority branch rule remain unchanged.
+
+### D28 corrected result — frontier overwhelmingly viable; diagnosis false
+
+- With kill-state classification applied to every recorded observation as
+  registered, the maximal frontier has 15 doomed entries out of 374,
+  `15/374 = 4.01%`. The inclusive progress-32-through-39 approach band has 31
+  doomed entries out of 1,934, `31/1934 = 1.60%`.
+- The correction changed no classification from D27. This is consistent with
+  the target stopping a continuation on its first observed death frame, but
+  D28 now establishes the specified trace-wide property directly rather than
+  relying on that executor behavior.
+- Live and no-model replay reports are byte-equal with SHA-256
+  `6a5f7065f89fc67f6555a5681dfdc7c3ad8c84b5760da3170e0692505a9cc75a`;
+  `viability-summary.json` records `replay_verified=true`.
+- Decision: the registered strict-majority threshold is missed by a wide
+  margin. The frontier is not mostly unrecoverable, so the doomed-state archive
+  cleanup and unchanged H24 repeat remain unauthorized. Raw evidence:
+  `target/smb-completion/d28-frontier-viability/`.

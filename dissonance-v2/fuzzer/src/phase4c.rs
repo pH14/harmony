@@ -515,7 +515,12 @@ pub fn audit_smb_frontier_viability(
             target.restore(&endpoint)?;
             target.apply(&ButtonChord::new(mask.unwrap_or(0), 120));
             let state = smb_mechanical_state_from_wram(target.wram());
-            continuations.push(if state.player_engine_state == 0x0b {
+            let reached_kill_state = state.player_engine_state == 0x0b
+                || target
+                    .last_action_observations()
+                    .iter()
+                    .any(|observation| observation.decoded.player_engine_state == 0x0b);
+            continuations.push(if reached_kill_state {
                 SmbViabilityClass::KillState
             } else if state.player_y_bucket == 15 {
                 SmbViabilityClass::BelowPlayable
