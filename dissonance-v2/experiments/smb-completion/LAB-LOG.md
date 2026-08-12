@@ -941,3 +941,17 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   promotion must replay exactly from recorded seed, observations, generated
   files, labels, and journals with no model. Otherwise record the ranking as a
   registered null and resume the mechanical queue only after this report.
+
+### H27 pre-model launch failure — no decision produced
+
+- The first host invocation prepared the complete operator view, then failed at
+  the subprocess launch boundary with `No such file or directory`. The supplied
+  instrumentor path `/private/tmp/harmony-smb-h27-target/release/instrumentor-agent`
+  did not exist: the combined Cargo build emitted `smb-model-host` but not that
+  separately selected binary. No `model-records`, journal, generated source,
+  validation record, control, or ranking report exists, so Luna did not receive
+  the view and no result was exposed.
+- Build the same committed instrumentor-agent code explicitly and resume H27
+  from its prepared evidence directory. The frozen source, evidence, model,
+  attempts, seeds, budgets, controls, acceptance, and replay rules remain
+  unchanged.
