@@ -17,6 +17,8 @@ use thiserror::Error;
 
 /// Maximum accepted request or model-final-message size.
 pub const MAX_JSON_BYTES: u64 = 1_048_576;
+/// Maximum accepted strategy-journal length.
+pub const MAX_JOURNAL_WORDS: usize = 1_200;
 
 /// Fixed model used by the instrumentor leg.
 pub const MODEL: &str = "gpt-5.6-luna";
@@ -120,6 +122,10 @@ where
         .map_err(|error| AgentError::io("create unique call directory", error))?;
 
     write_json(call_dir.join("request.json"), &request)?;
+    write_json(
+        call_dir.join("strategy-journal-input.json"),
+        &request.strategy_journal,
+    )?;
     let prompt = render_prompt();
     fs::write(call_dir.join("prompt.txt"), prompt.as_bytes())
         .map_err(|error| AgentError::io("record prompt", error))?;
@@ -132,63 +138,21 @@ where
         .map_err(|error| AgentError::io("write prompt into operator view", error))?;
 
     let last_message = call_dir.join("raw-final.json");
-    let mut command = Command::new(&config.timeout_program);
-    command
-        .arg(config.timeout_seconds.to_string())
-        .arg(&config.codex_program)
-        .arg("exec")
-        .arg("--ignore-user-config")
-        .arg("--ephemeral")
-        .arg("--skip-git-repo-check")
-        .arg("-s")
-        .arg("read-only")
-        .arg("-C")
-        .arg(&call_view)
-        .arg("-m")
-        .arg(MODEL)
-        .arg("-c")
-        .arg(format!("model_reasoning_effort=\"{REASONING_EFFORT}\""))
-        .arg("-c")
-        .arg(format!("service_tier=\"{SERVICE_TIER}\""))
-        .arg("--output-schema")
-        .arg(&config.schema)
-        .arg("-o")
-        .arg(&last_message)
-        .arg("-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(path) = &config.path_override {
-        command.env("PATH", path);
-    }
-
-    #[allow(clippy::disallowed_methods)] // not state-observable: transcript telemetry only
-    let started = Instant::now();
-    let mut child = command
-        .spawn()
-        .map_err(|error| AgentError::io("spawn codex", error))?;
-    let mut child_stdin = child.stdin.take().ok_or(AgentError::MissingChildStdin)?;
-    child_stdin
-        .write_all(prompt.as_bytes())
-        .map_err(|error| AgentError::io("write codex prompt", error))?;
-    drop(child_stdin);
-    let child_output = child
-        .wait_with_output()
-        .map_err(|error| AgentError::io("wait for codex", error))?;
-    #[allow(clippy::disallowed_methods)] // not state-observable: transcript telemetry only
-    let elapsed = started.elapsed();
-    fs::write(call_dir.join("codex.stdout"), &child_output.stdout)
-        .map_err(|error| AgentError::io("record codex stdout", error))?;
-    fs::write(call_dir.join("codex.stderr"), &child_output.stderr)
-        .map_err(|error| AgentError::io("record codex stderr", error))?;
-
-    if !child_output.status.success() {
-        let status = child_output.status.to_string();
+    let (elapsed_millis, status) = invoke_codex(
+        config,
+        &call_view,
+        prompt,
+        &last_message,
+        &call_dir.join("codex.stdout"),
+        &call_dir.join("codex.stderr"),
+    )?;
+    if !status.success() {
+        let status = status.to_string();
         write_metadata(
             &call_dir,
             config,
             &request,
-            elapsed.as_millis(),
+            elapsed_millis,
             false,
             Some(&status),
         )?;
@@ -196,10 +160,91 @@ where
     }
 
     let final_bytes = read_file_bounded(&last_message, MAX_JSON_BYTES, "model final message")?;
-    let decision: InstrumentorDecision = serde_json::from_slice(&final_bytes)
+    let mut decision: InstrumentorDecision = serde_json::from_slice(&final_bytes)
         .map_err(|error| AgentError::json("decode model decision", error))?;
+    write_json(
+        call_dir.join("strategy-journal-output-initial.json"),
+        &decision.strategy_journal,
+    )?;
+    let initial_words = decision.strategy_journal.word_count();
+    let mut total_elapsed_millis = elapsed_millis;
+    let mut compression_retry = false;
+    let mut rejected = false;
+    if initial_words > MAX_JOURNAL_WORDS {
+        compression_retry = true;
+        let compression_prompt = format!(
+            "{prompt}\nYour previous strategy_journal contained {initial_words} words, above the hard {MAX_JOURNAL_WORDS}-word cap. Return the complete decision again, preserving the evidence-grounded mechanical proposal, but compress strategy_journal to at most {MAX_JOURNAL_WORDS} whitespace-delimited words across its four sections.\n"
+        );
+        fs::write(
+            call_dir.join("compression-prompt.txt"),
+            compression_prompt.as_bytes(),
+        )
+        .map_err(|error| AgentError::io("record compression prompt", error))?;
+        let compressed_message = call_dir.join("raw-final-compressed.json");
+        let (compressed_elapsed, compressed_status) = invoke_codex(
+            config,
+            &call_view,
+            &compression_prompt,
+            &compressed_message,
+            &call_dir.join("codex-compressed.stdout"),
+            &call_dir.join("codex-compressed.stderr"),
+        )?;
+        total_elapsed_millis = total_elapsed_millis.saturating_add(compressed_elapsed);
+        if !compressed_status.success() {
+            let status = compressed_status.to_string();
+            write_metadata(
+                &call_dir,
+                config,
+                &request,
+                total_elapsed_millis,
+                false,
+                Some(&status),
+            )?;
+            return Err(AgentError::CodexFailure(status));
+        }
+        let compressed_bytes = read_file_bounded(
+            &compressed_message,
+            MAX_JSON_BYTES,
+            "compressed model final message",
+        )?;
+        let compressed_decision: InstrumentorDecision =
+            serde_json::from_slice(&compressed_bytes)
+                .map_err(|error| AgentError::json("decode compressed model decision", error))?;
+        write_json(
+            call_dir.join("strategy-journal-output-compressed.json"),
+            &compressed_decision.strategy_journal,
+        )?;
+        if compressed_decision.strategy_journal.word_count() > MAX_JOURNAL_WORDS {
+            rejected = true;
+            decision.strategy_journal = request.strategy_journal.clone();
+        } else {
+            decision.strategy_journal = compressed_decision.strategy_journal;
+        }
+    }
+    write_json(
+        call_dir.join("strategy-journal-status.json"),
+        &serde_json::json!({
+            "word_cap": MAX_JOURNAL_WORDS,
+            "input_words": request.strategy_journal.word_count(),
+            "initial_output_words": initial_words,
+            "compression_retry": compression_retry,
+            "effective_output_words": decision.strategy_journal.word_count(),
+            "rejected": rejected,
+        }),
+    )?;
+    write_json(
+        call_dir.join("strategy-journal-output-effective.json"),
+        &decision.strategy_journal,
+    )?;
     write_json(call_dir.join("parsed.json"), &decision)?;
-    write_metadata(&call_dir, config, &request, elapsed.as_millis(), true, None)?;
+    write_metadata(
+        &call_dir,
+        config,
+        &request,
+        total_elapsed_millis,
+        true,
+        None,
+    )?;
     serde_json::to_writer(&mut *output, &decision)
         .map_err(|error| AgentError::json("encode decision to stdout", error))?;
     output
@@ -220,7 +265,70 @@ install action and complete Rust source as rust_source, raw in the JSON string r
 than Markdown. Source must be deterministic and bounded, with no unsafe, I/O, environment\n\
 access, time, randomness, threads, panics, or external dependencies. The host owns naming,\n\
 compilation, fixtures, lineage scope, restart, accounting, and retirement. If request.json\n\
-contains previous_error, correct that exact compile or fixture failure.\n"
+contains previous_error, correct that exact compile or fixture failure. Read the current\n\
+strategy_journal from request.json and return its evidence-grounded update in the four\n\
+required sections: beliefs, failed_approaches, open_questions, and current_plan. Keep the\n\
+combined journal at or below 1,200 words. The journal is prompt memory only and cannot\n\
+change a mechanical decision except through the artifact proposal you return explicitly.\n"
+}
+
+fn invoke_codex(
+    config: &AgentConfig,
+    call_view: &Path,
+    prompt: &str,
+    last_message: &Path,
+    stdout_path: &Path,
+    stderr_path: &Path,
+) -> Result<(u128, std::process::ExitStatus), AgentError> {
+    let mut command = Command::new(&config.timeout_program);
+    command
+        .arg(config.timeout_seconds.to_string())
+        .arg(&config.codex_program)
+        .arg("exec")
+        .arg("--ignore-user-config")
+        .arg("--ephemeral")
+        .arg("--skip-git-repo-check")
+        .arg("-s")
+        .arg("read-only")
+        .arg("-C")
+        .arg(call_view)
+        .arg("-m")
+        .arg(MODEL)
+        .arg("-c")
+        .arg(format!("model_reasoning_effort=\"{REASONING_EFFORT}\""))
+        .arg("-c")
+        .arg(format!("service_tier=\"{SERVICE_TIER}\""))
+        .arg("--output-schema")
+        .arg(&config.schema)
+        .arg("-o")
+        .arg(last_message)
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(path) = &config.path_override {
+        command.env("PATH", path);
+    }
+    #[allow(clippy::disallowed_methods)] // not state-observable: transcript telemetry only
+    let started = Instant::now();
+    let mut child = command
+        .spawn()
+        .map_err(|error| AgentError::io("spawn codex", error))?;
+    let mut child_stdin = child.stdin.take().ok_or(AgentError::MissingChildStdin)?;
+    child_stdin
+        .write_all(prompt.as_bytes())
+        .map_err(|error| AgentError::io("write codex prompt", error))?;
+    drop(child_stdin);
+    let child_output = child
+        .wait_with_output()
+        .map_err(|error| AgentError::io("wait for codex", error))?;
+    #[allow(clippy::disallowed_methods)] // not state-observable: transcript telemetry only
+    let elapsed = started.elapsed().as_millis();
+    fs::write(stdout_path, &child_output.stdout)
+        .map_err(|error| AgentError::io("record codex stdout", error))?;
+    fs::write(stderr_path, &child_output.stderr)
+        .map_err(|error| AgentError::io("record codex stderr", error))?;
+    Ok((elapsed, child_output.status))
 }
 
 #[derive(Serialize)]
@@ -389,12 +497,13 @@ mod tests {
         );
         write_executable(
             &bin.join("codex"),
-            "#!/bin/sh\n# SPDX-License-Identifier: AGPL-3.0-or-later\nout=\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"-o\" ]; then shift; out=$1; fi\n  shift\ndone\nprintf '%s\\n' '{\"action\":\"install_detector\",\"name\":\"fixture\",\"rust_source\":\"pub struct InstalledDetector;\",\"scope_to_lineage\":null,\"rationale\":\"fixture\"}' > \"$out\"\n",
+            "#!/bin/sh\n# SPDX-License-Identifier: AGPL-3.0-or-later\nout=\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"-o\" ]; then shift; out=$1; fi\n  shift\ndone\nprintf '%s\\n' '{\"action\":\"install_detector\",\"name\":\"fixture\",\"rust_source\":\"pub struct InstalledDetector;\",\"scope_to_lineage\":null,\"rationale\":\"fixture\",\"strategy_journal\":{\"beliefs\":[\"fixture belief\"],\"failed_approaches\":[],\"open_questions\":[],\"current_plan\":[\"fixture plan\"]}}' > \"$out\"\n",
         );
         let request = InstrumentorRequest {
             trial: 2,
             attempt: 1,
             previous_error: None,
+            strategy_journal: Default::default(),
         };
         let request_bytes = serde_json::to_vec(&request).expect("encode request");
         let mut output = Vec::new();
@@ -422,6 +531,10 @@ mod tests {
             "operator-view/request.json",
             "operator-view/prompt.txt",
             "operator-view/fuzzer_stats",
+            "strategy-journal-input.json",
+            "strategy-journal-output-initial.json",
+            "strategy-journal-output-effective.json",
+            "strategy-journal-status.json",
         ] {
             assert!(call.join(relative).is_file(), "missing {relative}");
         }
@@ -431,6 +544,98 @@ mod tests {
         assert_eq!(metadata["model"], MODEL);
         assert_eq!(metadata["reasoning_effort"], "xhigh");
         assert_eq!(metadata["timeout_seconds"], 1200);
+    }
+
+    #[test]
+    fn oversized_journal_retries_once_without_changing_the_mechanical_decision() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let bin = temp.path().join("bin");
+        fs::create_dir(&bin).expect("fake bin directory");
+        write_executable(
+            &bin.join("gtimeout"),
+            "#!/bin/sh\n# SPDX-License-Identifier: AGPL-3.0-or-later\nshift\nexec \"$@\"\n",
+        );
+        let long = "word ".repeat(1_201);
+        let script = format!(
+            "#!/bin/sh\n# SPDX-License-Identifier: AGPL-3.0-or-later\nout=\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"-o\" ]; then shift; out=$1; fi\n  shift\ndone\ncase \"$out\" in\n*compressed*)\n  printf '%s\\n' '{{\"action\":\"install_detector\",\"name\":\"changed\",\"rust_source\":\"changed source\",\"scope_to_lineage\":null,\"rationale\":\"changed\",\"strategy_journal\":{{\"beliefs\":[\"short\"],\"failed_approaches\":[],\"open_questions\":[],\"current_plan\":[]}}}}' > \"$out\";;\n*)\n  printf '%s\\n' '{{\"action\":\"install_detector\",\"name\":\"original\",\"rust_source\":\"original source\",\"scope_to_lineage\":null,\"rationale\":\"original\",\"strategy_journal\":{{\"beliefs\":[\"{long}\"],\"failed_approaches\":[],\"open_questions\":[],\"current_plan\":[]}}}}' > \"$out\";;\nesac\n"
+        );
+        write_executable(&bin.join("codex"), &script);
+        let request = InstrumentorRequest {
+            trial: 3,
+            attempt: 1,
+            previous_error: None,
+            strategy_journal: Default::default(),
+        };
+        let input = serde_json::to_vec(&request).expect("encode request");
+        let mut output = Vec::new();
+        run_agent(
+            &config(temp.path(), &bin),
+            &mut input.as_slice(),
+            &mut output,
+        )
+        .expect("compressed fake agent call");
+        let decision: InstrumentorDecision =
+            serde_json::from_slice(&output).expect("decode decision");
+        assert_eq!(decision.name, "original");
+        assert_eq!(decision.rust_source, "original source");
+        assert_eq!(decision.strategy_journal.beliefs, ["short"]);
+        let status: serde_json::Value =
+            serde_json::from_slice(
+                &fs::read(temp.path().join(
+                    "records/instrumentor-trial-003-attempt-001/strategy-journal-status.json",
+                ))
+                .expect("read journal status"),
+            )
+            .expect("decode journal status");
+        assert_eq!(status["compression_retry"], true);
+        assert_eq!(status["rejected"], false);
+    }
+
+    #[test]
+    fn twice_oversized_journal_keeps_the_previous_journal() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let bin = temp.path().join("bin");
+        fs::create_dir(&bin).expect("fake bin directory");
+        write_executable(
+            &bin.join("gtimeout"),
+            "#!/bin/sh\n# SPDX-License-Identifier: AGPL-3.0-or-later\nshift\nexec \"$@\"\n",
+        );
+        let long = "word ".repeat(1_201);
+        let script = format!(
+            "#!/bin/sh\n# SPDX-License-Identifier: AGPL-3.0-or-later\nout=\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"-o\" ]; then shift; out=$1; fi\n  shift\ndone\nprintf '%s\\n' '{{\"action\":\"install_detector\",\"name\":\"fixture\",\"rust_source\":\"fixture source\",\"scope_to_lineage\":null,\"rationale\":\"fixture\",\"strategy_journal\":{{\"beliefs\":[\"{long}\"],\"failed_approaches\":[],\"open_questions\":[],\"current_plan\":[]}}}}' > \"$out\"\n"
+        );
+        write_executable(&bin.join("codex"), &script);
+        let previous = fuzzer::phase4a::StrategyJournal {
+            beliefs: vec!["previous belief".to_owned()],
+            ..Default::default()
+        };
+        let request = InstrumentorRequest {
+            trial: 4,
+            attempt: 1,
+            previous_error: None,
+            strategy_journal: previous.clone(),
+        };
+        let input = serde_json::to_vec(&request).expect("encode request");
+        let mut output = Vec::new();
+        run_agent(
+            &config(temp.path(), &bin),
+            &mut input.as_slice(),
+            &mut output,
+        )
+        .expect("rejected fake agent journal");
+        let decision: InstrumentorDecision =
+            serde_json::from_slice(&output).expect("decode decision");
+        assert_eq!(decision.strategy_journal, previous);
+        let status: serde_json::Value =
+            serde_json::from_slice(
+                &fs::read(temp.path().join(
+                    "records/instrumentor-trial-004-attempt-001/strategy-journal-status.json",
+                ))
+                .expect("read journal status"),
+            )
+            .expect("decode journal status");
+        assert_eq!(status["compression_retry"], true);
+        assert_eq!(status["rejected"], true);
     }
 
     #[test]

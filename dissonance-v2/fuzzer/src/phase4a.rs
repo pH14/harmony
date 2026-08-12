@@ -914,6 +914,36 @@ pub struct InstrumentorDecision {
     pub scope_to_lineage: Option<u64>,
     /// Concise evidence-grounded reason for the decision.
     pub rationale: String,
+    /// Updated prompt-only strategy memory returned by the instrumentor.
+    #[serde(default)]
+    pub strategy_journal: StrategyJournal,
+}
+
+/// Prompt-only strategy memory carried between instrumentor calls.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StrategyJournal {
+    /// Current evidence-grounded beliefs.
+    pub beliefs: Vec<String>,
+    /// Approaches already tried without the required result.
+    pub failed_approaches: Vec<String>,
+    /// Questions not yet settled by recorded evidence.
+    pub open_questions: Vec<String>,
+    /// Current evidence-grounded next-step plan.
+    pub current_plan: Vec<String>,
+}
+
+impl StrategyJournal {
+    /// Count whitespace-delimited words across all four sections.
+    #[must_use]
+    pub fn word_count(&self) -> usize {
+        self.beliefs
+            .iter()
+            .chain(&self.failed_approaches)
+            .chain(&self.open_questions)
+            .chain(&self.current_plan)
+            .map(|entry| entry.split_whitespace().count())
+            .sum()
+    }
 }
 
 /// Request metadata for one bounded instrumentor attempt.
@@ -925,6 +955,9 @@ pub struct InstrumentorRequest {
     pub attempt: u8,
     /// Error returned by the preceding host validation attempt, if any.
     pub previous_error: Option<String>,
+    /// Current prompt-only strategy memory; mechanical code must ignore it.
+    #[serde(default)]
+    pub strategy_journal: StrategyJournal,
 }
 
 /// Instrumentation/mutation arm in the Phase 4a matrix.

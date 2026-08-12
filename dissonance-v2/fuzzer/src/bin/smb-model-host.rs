@@ -16,7 +16,7 @@ use std::{
 
 use fuzzer::{
     phase2::{Flag, Interest, TriageLabels},
-    phase4a::{InstrumentorAction, InstrumentorDecision, InstrumentorRequest},
+    phase4a::{InstrumentorAction, InstrumentorDecision, InstrumentorRequest, StrategyJournal},
     phase4b::{
         NullSmbDetector, NullSmbMacro, SmbArtifactConfig, SmbCampaignReport, SmbConfiguredReport,
         SmbLabeledCorpusEntry, SmbTriageRequest, observe_smb_input, run_smb_restart_configured,
@@ -232,6 +232,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         (&rom_path, &labeled_path, &pilot_control),
     )?
     .ok_or("macro artifact exhausted the predeclared attempts")?;
+    replay_recorded_strategy_journals(&output)?;
     let generated_binary = build_generated(
         &output,
         &detector_decision.rust_source,
@@ -402,6 +403,7 @@ fn run_m12(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
         detector.as_ref(),
         (&rom_path, &labeled_path, &pilot_control),
     )?;
+    replay_recorded_strategy_journals(&output)?;
 
     let final_binary = if detector.is_some() || macro_decision.is_some() {
         let detector_source = match &detector {
@@ -489,6 +491,7 @@ fn run_m13(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
         &source_archive_path,
     )?
     .ok_or("ranking artifact exhausted the predeclared attempts")?;
+    replay_recorded_strategy_journals(&output)?;
     let binary = build_generated_ranking(&output, &ranking_decision.rust_source, "m13-final")
         .map_err(|error| format!("M13 final ranking build failed: {error}"))?;
     run_checked(
@@ -594,6 +597,7 @@ fn run_m14(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
             trial: 4,
             attempt,
             previous_error: previous_error.clone(),
+            strategy_journal: read_strategy_journal(&output)?,
         };
         let decision = call_json_agent::<_, InstrumentorDecision>(
             &instrumentor_agent,
@@ -605,6 +609,7 @@ fn run_m14(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
             ],
             &request,
         )?;
+        record_strategy_journal_exchange(&output, &request, &decision)?;
         record_attempted_source(
             &output,
             ArtifactKind::Macro,
@@ -642,6 +647,7 @@ fn run_m14(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
         }
     }
     let decision = installed.ok_or("archive mutator exhausted the predeclared attempts")?;
+    replay_recorded_strategy_journals(&output)?;
     let binary = build_generated_archive_mutator(&output, &decision.rust_source, "m14-final")
         .map_err(|error| format!("M14 final generated-mutator build failed: {error}"))?;
     run_checked(
@@ -702,6 +708,7 @@ fn write_m13_evidence(
     film_manifest: &Path,
     film_video: &Path,
 ) -> Result<(), Box<dyn Error>> {
+    write_verified_model_context(view)?;
     fs::write(
         view.join("fuzzer_stats"),
         format!(
@@ -757,6 +764,7 @@ fn obtain_ranking(
             trial: 3,
             attempt,
             previous_error: previous_error.clone(),
+            strategy_journal: read_strategy_journal(output)?,
         };
         let decision = call_json_agent::<_, InstrumentorDecision>(
             agent,
@@ -768,6 +776,7 @@ fn obtain_ranking(
             ],
             &request,
         )?;
+        record_strategy_journal_exchange(output, &request, &decision)?;
         record_attempted_source(
             output,
             ArtifactKind::Ranking,
@@ -962,6 +971,7 @@ fn write_m12_evidence(
     film_manifest: &Path,
     film_video: &Path,
 ) -> Result<(), Box<dyn Error>> {
+    write_verified_model_context(view)?;
     fs::write(
         view.join("fuzzer_stats"),
         format!(
@@ -1047,6 +1057,7 @@ fn write_operator_scaffold(
     m5: &M5Report,
     source: &SmbCampaignReport,
 ) -> Result<(), Box<dyn Error>> {
+    write_verified_model_context(view)?;
     fs::write(
         view.join("fuzzer_stats"),
         format!(
@@ -1076,6 +1087,33 @@ fn write_operator_scaffold(
         "Each observer event exposes frame_count, the complete 2048-byte CPU work RAM as an integer array, sorted changed_indices, a terminal dead bit, and a mechanical log line containing only frame count and changed indices. Events occur at each 16-pixel x transition, first death, and action endpoint. No other RAM offset is decoded or declared to mean progress. The base novelty map is deliberately position-only.\n",
     )?;
     fs::write(view.join("m5-summary.json"), serde_json::to_vec_pretty(m5)?)?;
+    Ok(())
+}
+
+fn write_verified_model_context(view: &Path) -> Result<(), Box<dyn Error>> {
+    fs::write(
+        view.join("field-semantics.txt"),
+        "frame_count measures the number of emulated frames since gameplay genesis.\n\
+wram contains the raw 2,048-byte work RAM at a milestone crossing and is empty in stored null-detector observations at other events.\n\
+decoded.world measures the zero-based world number read from work RAM.\n\
+decoded.level measures the zero-based visible level, correcting the recorded level byte by one only while the verified level-advance task value is active.\n\
+decoded.progress measures horizontal position in 16-pixel buckets from the recorded screen-page and screen-x bytes.\n\
+decoded.player_y_bucket measures the recorded player vertical-position byte divided into sixteen-value buckets.\n\
+decoded.player_engine_state measures the recorded player-engine-state byte without adding route meaning.\n\
+decoded.dead reports whether the verified kill-state value is active.\n\
+decoded.flag_active reports whether the recorded level-end flag-task byte is nonzero.\n\
+milestones.max_1_1_scroll_bucket measures the greatest verified 16-pixel progress bucket observed in the first level.\n\
+milestones.reached_1_1_flag reports whether the first-level end-task byte has been observed active.\n\
+milestones.reached_1_2 reports whether the decoded level tuple has reached the second level.\n\
+milestones.reached_onward reports whether the decoded level tuple has advanced beyond the second level.\n\
+changed_indices lists, in ascending order, the work-RAM byte indices changed since the previous observer event.\n\
+dead reports whether this event is the first observed kill-state frame.\n\
+log_line records only the frame count and changed work-RAM indices.\n",
+    )?;
+    fs::write(
+        view.join("verified-dynamics.txt"),
+        "Progress is the route-agnostic horizontal bucket computed as screen_page * 16 + floor(screen_x / 16), and world then corrected visible level then progress form the mechanical position tuple. A run ends at the first observed player-engine kill state $0b; state $08 is verified ordinary play. After a death, already accumulated campaign milestones and retained nonterminal archive snapshots persist, while the dead evaluation itself is not extended and later evaluations resume from deterministic retained snapshots or gameplay genesis. The frozen milestone ladder is nonzero progress in the first level, the first-level end task, entry into the second level, and entry into any later level. Raw work RAM and films independently confirmed the progress decode at the recorded plateaus and the one-step level correction while the level-advance task is active.\n\nThis game may differ from any game it resembles. Where your expectations disagree with the recorded observations, the observations are correct.\n",
+    )?;
     Ok(())
 }
 
@@ -1148,6 +1186,106 @@ fn neutral_labels() -> TriageLabels {
     }
 }
 
+fn strategy_journal_path(output: &Path) -> PathBuf {
+    output.join("strategy-journal.json")
+}
+
+fn read_strategy_journal(output: &Path) -> Result<StrategyJournal, Box<dyn Error>> {
+    let path = strategy_journal_path(output);
+    if path.is_file() {
+        read_json(&path)
+    } else {
+        Ok(initial_strategy_journal())
+    }
+}
+
+fn initial_strategy_journal() -> StrategyJournal {
+    StrategyJournal {
+        beliefs: vec![
+            "Raw work RAM and film independently validate the current progress-39 boundary in the third decoded level.".to_owned(),
+            "The archive grows normally at the boundary and the corrected viability audit found only 15 of 374 maximal-frontier entries doomed under ten fixed continuations.".to_owned(),
+        ],
+        failed_approaches: vec![
+            "At this boundary, repeated panels for longer suffix bursts, broader frontier scheduling, progress-band scheduling, a fixed interaction macro, generated archive mutation, and checkpoint retention did not exceed progress 39.".to_owned(),
+            "Earlier generated rankings at separately film-validated boundaries did not meet their registered SMB promotion rules.".to_owned(),
+        ],
+        open_questions: vec![
+            "Which recorded non-progress state attributes distinguish prefixes prepared to produce descendant novelty beyond the current boundary?".to_owned(),
+        ],
+        current_plan: vec![
+            "Use only the supplied corpus, decoded observations, raw milestone evidence, and recorded plateau history to choose one bounded generated artifact for the current frontier.".to_owned(),
+        ],
+    }
+}
+
+fn record_strategy_journal_exchange(
+    output: &Path,
+    request: &InstrumentorRequest,
+    decision: &InstrumentorDecision,
+) -> Result<(), Box<dyn Error>> {
+    let directory = output.join("strategy-journal-artifacts");
+    fs::create_dir_all(&directory)?;
+    let stem = format!("trial-{:03}-attempt-{:03}", request.trial, request.attempt);
+    write_json(
+        &directory.join(format!("{stem}-input.json")),
+        &request.strategy_journal,
+    )?;
+    write_json(
+        &directory.join(format!("{stem}-output.json")),
+        &decision.strategy_journal,
+    )?;
+    write_json(&strategy_journal_path(output), &decision.strategy_journal)?;
+    Ok(())
+}
+
+fn replay_recorded_strategy_journals(output: &Path) -> Result<(), Box<dyn Error>> {
+    let directory = output.join("strategy-journal-artifacts");
+    let mut inputs = fs::read_dir(&directory)?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with("-input.json"))
+        })
+        .collect::<Vec<_>>();
+    inputs.sort();
+    if inputs.is_empty() {
+        return Err("recorded strategy-journal replay found no exchanges".into());
+    }
+    let mut expected = initial_strategy_journal();
+    for input_path in &inputs {
+        let input: StrategyJournal = read_json(input_path)?;
+        if input != expected {
+            return Err(format!(
+                "recorded strategy-journal input chain mismatch at {}",
+                input_path.display()
+            )
+            .into());
+        }
+        let input_name = input_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("recorded strategy-journal input has no UTF-8 filename")?;
+        let output_name = input_name.replace("-input.json", "-output.json");
+        expected = read_json(&directory.join(output_name))?;
+    }
+    let final_journal: StrategyJournal = read_json(&strategy_journal_path(output))?;
+    if final_journal != expected {
+        return Err("recorded strategy-journal final state mismatch".into());
+    }
+    write_json(
+        &output.join("strategy-journal-replay.json"),
+        &serde_json::json!({
+            "exchanges": inputs.len(),
+            "final_words": final_journal.word_count(),
+            "replay_verified": true,
+        }),
+    )?;
+    Ok(())
+}
+
 fn no_artifacts() -> SmbArtifactConfig<'static> {
     SmbArtifactConfig {
         detector_name: "none",
@@ -1180,6 +1318,7 @@ fn obtain_artifact(
             trial,
             attempt,
             previous_error: previous_error.clone(),
+            strategy_journal: read_strategy_journal(output)?,
         };
         let decision = call_json_agent::<_, InstrumentorDecision>(
             agent,
@@ -1191,6 +1330,7 @@ fn obtain_artifact(
             ],
             &request,
         )?;
+        record_strategy_journal_exchange(output, &request, &decision)?;
         record_attempted_source(output, kind, trial, attempt, &decision.rust_source)?;
         if let Err(error) = validate_artifact(kind, &decision) {
             record_validation(
@@ -2244,8 +2384,14 @@ fn required_path(
 
 #[cfg(test)]
 mod tests {
-    use super::{ArtifactKind, validate_artifact, validate_pilot_metrics};
-    use fuzzer::phase4a::{InstrumentorAction, InstrumentorDecision};
+    use super::{
+        ArtifactKind, initial_strategy_journal, record_strategy_journal_exchange,
+        replay_recorded_strategy_journals, validate_artifact, validate_pilot_metrics,
+        write_verified_model_context,
+    };
+    use fuzzer::phase4a::{
+        InstrumentorAction, InstrumentorDecision, InstrumentorRequest, StrategyJournal,
+    };
 
     #[test]
     fn m6_whole_wram_shotgun_fixture_is_rejected() {
@@ -2274,6 +2420,7 @@ mod tests {
             rust_source: "pub struct InstalledDetector; impl fuzzer::phase4b::SmbDetector for InstalledDetector { fn features(&self, _: &[fuzzer::phase4b::SmbObservations]) -> Vec<u64> { Vec::new() } }".to_owned(),
             scope_to_lineage: Some(7),
             rationale: "fixture".to_owned(),
+            strategy_journal: Default::default(),
         };
         let error = validate_artifact(ArtifactKind::Detector, &decision)
             .expect_err("SMB detector must remain global");
@@ -2288,9 +2435,86 @@ mod tests {
             rust_source: "pub struct InstalledRanking; impl fuzzer::phase4c::SmbRanking for InstalledRanking { fn score(&self, observations: &[fuzzer::phase4b::SmbObservations]) -> i64 { observations.last().map_or(0, |event| i64::from(event.wram[0x071a])) } }".to_owned(),
             scope_to_lineage: None,
             rationale: "fixture".to_owned(),
+            strategy_journal: Default::default(),
         };
         let error = validate_artifact(ArtifactKind::Ranking, &decision)
             .expect_err("ranking must not duplicate progress measures");
         assert!(error.contains("forbidden progress token"));
+    }
+
+    #[test]
+    fn verified_context_is_route_neutral_and_contains_the_required_warning() {
+        let temp = tempfile::tempdir().expect("temporary operator view");
+        write_verified_model_context(temp.path()).expect("write verified model context");
+        let semantics = std::fs::read_to_string(temp.path().join("field-semantics.txt"))
+            .expect("read field semantics");
+        for field in [
+            "frame_count",
+            "wram",
+            "decoded.world",
+            "decoded.level",
+            "decoded.progress",
+            "decoded.player_y_bucket",
+            "decoded.player_engine_state",
+            "decoded.dead",
+            "decoded.flag_active",
+            "changed_indices",
+            "dead",
+            "log_line",
+        ] {
+            assert!(
+                semantics.contains(field),
+                "missing field semantics for {field}"
+            );
+        }
+        let dynamics = std::fs::read_to_string(temp.path().join("verified-dynamics.txt"))
+            .expect("read verified dynamics");
+        assert!(dynamics.contains("Progress is"));
+        assert!(dynamics.contains("A run ends"));
+        assert!(dynamics.contains("After a death"));
+        assert!(dynamics.contains("milestone ladder"));
+        assert!(dynamics.contains("This game may differ from any game it resembles. Where your expectations disagree with the recorded observations, the observations are correct."));
+        assert!(!dynamics.contains("Mario"));
+        assert!(!dynamics.contains("Super"));
+    }
+
+    #[test]
+    fn recorded_journal_chain_replays_without_a_model() {
+        let temp = tempfile::tempdir().expect("temporary campaign output");
+        let first = initial_strategy_journal();
+        let second = StrategyJournal {
+            beliefs: vec!["updated belief".to_owned()],
+            ..first.clone()
+        };
+        let third = StrategyJournal {
+            current_plan: vec!["updated plan".to_owned()],
+            ..second.clone()
+        };
+        for (trial, input, output) in [(1, first, second.clone()), (2, second, third)] {
+            let request = InstrumentorRequest {
+                trial,
+                attempt: 1,
+                previous_error: None,
+                strategy_journal: input,
+            };
+            let decision = InstrumentorDecision {
+                action: InstrumentorAction::None,
+                name: String::new(),
+                rust_source: String::new(),
+                scope_to_lineage: None,
+                rationale: "journal fixture".to_owned(),
+                strategy_journal: output,
+            };
+            record_strategy_journal_exchange(temp.path(), &request, &decision)
+                .expect("record journal exchange");
+        }
+        replay_recorded_strategy_journals(temp.path()).expect("replay journal chain");
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(temp.path().join("strategy-journal-replay.json"))
+                .expect("read replay report"),
+        )
+        .expect("decode replay report");
+        assert_eq!(report["exchanges"], 2);
+        assert_eq!(report["replay_verified"], true);
     }
 }

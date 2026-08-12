@@ -128,6 +128,7 @@ fn request(mut args: impl Iterator<Item = OsString>) -> Result<(), Box<dyn Error
             trial,
             attempt,
             previous_error,
+            strategy_journal: Default::default(),
         },
     )?;
     Ok(())

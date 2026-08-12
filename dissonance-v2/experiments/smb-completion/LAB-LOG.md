@@ -856,3 +856,55 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   margin. The frontier is not mostly unrecoverable, so the doomed-state archive
   cleanup and unchanged H24 repeat remain unauthorized. Raw evidence:
   `target/smb-completion/d28-frontier-viability/`.
+
+## M16 — preregistered verified model context and strategy journal
+
+- Before another model-involved panel, add the same evidence-only field
+  semantics and verified-dynamics context to both triage and instrumentor
+  operator views. The text may state only meanings and dynamics independently
+  established by the existing raw-WRAM, memory-decode, and film audits. It must
+  not name this game or a resembling game, describe a route or layout, identify
+  an item location, or suggest an artifact field, score term, action, or goal.
+  Include the integrator's supplied observations-over-expectations sentence
+  verbatim.
+- Every instrumentor request carries a structured prompt-only strategy journal
+  with `beliefs`, `failed_approaches`, `open_questions`, and `current_plan`.
+  The initial journal summarizes only recorded plateau evidence. Each returned
+  journal is limited to 1,200 whitespace-delimited words; an oversized result
+  gets one compression retry, and a still-oversized retry is rejected in favor
+  of the previous journal. Compression may not alter the initial call's
+  mechanical decision or generated source.
+- Record each journal input, initial output, optional compressed output,
+  effective output, cap decision, and host-level input/output exchange. The
+  journal is never read by novelty, archive keys, scheduling, parent choice,
+  admission, generated-artifact validation, or retirement. Recorded-journal
+  replay must validate the exchange chain without a model, and the standard
+  generated-file campaign replay must remain exact.
+- Acceptance: checked-in schemas match the Rust types; deterministic fake-model
+  fixtures prove recording, compression, rejection fallback, and journal-chain
+  replay; both model views contain the complete verified context; workspace
+  build, tests, Clippy, and formatting pass. No search campaign is part of M16.
+
+### M16 result — accepted
+
+- Both SMB model operator views now receive one plain sentence for every
+  recorded observation field and the same short verified-dynamics account of
+  progress, terminal death, post-death campaign persistence, and the frozen
+  milestone ladder. The required observations-over-expectations sentence is
+  present verbatim. A focused fixture rejects game names from the dynamics text
+  and verifies the complete field list.
+- Instrumentor decisions now carry a four-section strategy journal. Every call
+  records its input, initial output, optional compression output, effective
+  output, and cap status; the host records the input/output exchange and current
+  journal as campaign artifacts. A deterministic no-model replay walks the
+  recorded exchange chain and verifies its final state.
+- Fake-model fixtures prove the 1,200-word limit, one compression retry, and
+  rejection to the previous journal after a second oversized response. They
+  also prove that compression cannot change the first call's action, source,
+  name, scope, or rationale. The journal has no reader in novelty, keys,
+  scheduling, parent choice, admission, validation, accounting, or retirement.
+- Validation: all 47 fuzzer library tests, seven SMB model-host tests, four
+  instrumentor tests, the remaining workspace tests and doc tests pass with
+  cached/offline dependency resolution. Workspace Clippy, formatting, and diff
+  checks pass; Clippy emits only the pre-existing configuration warning for the
+  removed `rand::thread_rng` symbol.
