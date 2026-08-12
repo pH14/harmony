@@ -908,3 +908,36 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   cached/offline dependency resolution. Workspace Clippy, formatting, and diff
   checks pass; Clippy emits only the pre-existing configuration warning for the
   removed `rand::thread_rng` symbol.
+
+## H27 — preregistered journal-informed ranking at the current frontier
+
+- Falsifiable claim: with the verified field semantics, dynamics, recorded
+  plateau history, and persistent strategy journal, the instrumentor can infer
+  a non-progress within-cell ranking that preserves states better prepared to
+  produce descendant novelty beyond genuine corrected 1-3 progress 39.
+- Source is the exact H19 development seed `0x5eed_e002` archive at
+  `target/smb-completion/h19-dev/e002-burst/archive-live.json`, whose maximum
+  tuple is `(world 0, level 2, progress 39)`. Evidence includes its recorded
+  observation traces and the independently validated raw-plus-decoded film
+  manifest/video under `target/smb-completion/h20-plateau-diagnosis/`. The
+  operator view contains M16's context and initial journal but no suggested
+  ranking terms, fields, action, route, layout, item, or goal.
+- Luna xhigh receives one ranking invocation through the existing decision
+  schema, with at most three compile/fixture attempts. The ranking must pass
+  the existing pure/deterministic source checks, observation fixtures, fixed
+  seed `0x5eed_ef00` 256-execution isolation pilot, exact pilot replay, and M16
+  journal-chain replay before the panel. Progress terms remain forbidden.
+- Development controls and ranking arms use seeds
+  `0x5eed_e000..=0x5eed_e005`, 5,000 target executions, the same H19 source,
+  frozen accepted H3 scheduler, nine-mask vocabulary, stratified durations,
+  one-or-two suffix, 512-action bound, and no other generated artifact. The
+  ranking is consulted only for full-cell replacement; fewer actions remains
+  the final tie-breaker. No arm reaches 20,000 executions, and at most six arms
+  run concurrently.
+- Acceptance requires the ranking arms to exceed corrected 1-3 progress 39 on
+  at least 4/6 development seeds, strictly more successes than controls, with
+  no regression below genuine 1-3. If accepted, repeat unchanged on held-out
+  seeds `0x5eed_e100..=0x5eed_e105` and require the same threshold. Any
+  promotion must replay exactly from recorded seed, observations, generated
+  files, labels, and journals with no model. Otherwise record the ranking as a
+  registered null and resume the mechanical queue only after this report.
