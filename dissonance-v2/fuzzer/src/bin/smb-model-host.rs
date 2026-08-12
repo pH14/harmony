@@ -54,6 +54,8 @@ const M13_SEEDS: [u64; 6] = [
 const M13_EXECUTION_BUDGET: u64 = 5_000;
 const M13_VALIDATION_SEED: u64 = 0x5eed_ef00;
 const M13_VALIDATION_EXECUTIONS: u64 = 256;
+const M14_VALIDATION_SEED: u64 = 0x5eed_ef14;
+const M14_VALIDATION_EXECUTIONS: u64 = 256;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct M5Report {
@@ -109,6 +111,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if first == "m13" {
         return run_m13(&mut args);
+    }
+    if first == "m14" {
+        return run_m14(&mut args);
     }
     let output = PathBuf::from(first);
     let m5_path = required_path(&mut args, "M5 report")?;
@@ -554,6 +559,115 @@ fn run_m13(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
     Ok(())
 }
 
+fn run_m14(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {
+    let output = required_path(args, "M14 output directory")?;
+    let source_archive_path = required_path(args, "source archive report")?;
+    let film_manifest = required_path(args, "plateau film manifest")?;
+    let film_video = required_path(args, "plateau film video")?;
+    let instrumentor_agent = required_path(args, "instrumentor-agent binary")?;
+    if args.next().is_some() {
+        return Err("unexpected extra M14 argument".into());
+    }
+    fs::create_dir(&output)?;
+    let rom_path = PathBuf::from(
+        env::var_os("HARMONY_SMB_ROM")
+            .ok_or("HARMONY_SMB_ROM must name the external Super Mario Bros ROM")?,
+    );
+    let rom = fs::read(&rom_path)?;
+    let source_archive: SmbArchiveReport = read_json(&source_archive_path)?;
+    let operator_view = output.join("operator-view");
+    fs::create_dir_all(operator_view.join("corpus"))?;
+    write_m13_evidence(
+        &operator_view,
+        &rom,
+        &source_archive,
+        &film_manifest,
+        &film_video,
+    )?;
+    write_archive_macro_interface(&operator_view)?;
+
+    let records = output.join("model-records/instrumentor");
+    let mut previous_error = None;
+    let mut installed = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let request = InstrumentorRequest {
+            trial: 4,
+            attempt,
+            previous_error: previous_error.clone(),
+        };
+        let decision = call_json_agent::<_, InstrumentorDecision>(
+            &instrumentor_agent,
+            &[
+                OsStr::new("--operator-view"),
+                operator_view.as_os_str(),
+                OsStr::new("--records-dir"),
+                records.as_os_str(),
+            ],
+            &request,
+        )?;
+        record_attempted_source(
+            &output,
+            ArtifactKind::Macro,
+            4,
+            attempt,
+            &decision.rust_source,
+        )?;
+        if let Err(error) = validate_artifact(ArtifactKind::Macro, &decision) {
+            record_m14_validation(&output, attempt, false, Some(&error), None, None)?;
+            previous_error = Some(error);
+            continue;
+        }
+        match build_generated_archive_mutator(
+            &output,
+            &decision.rust_source,
+            &format!("trial-4-attempt-{attempt}"),
+        ) {
+            Ok(binary) => match validate_built_archive_mutator(
+                &binary,
+                &rom_path,
+                &source_archive_path,
+                &output,
+                attempt,
+            ) {
+                Ok(()) => {
+                    installed = Some(decision);
+                    break;
+                }
+                Err(error) => previous_error = Some(error),
+            },
+            Err(error) => {
+                record_m14_validation(&output, attempt, false, Some(&error), None, None)?;
+                previous_error = Some(error);
+            }
+        }
+    }
+    let decision = installed.ok_or("archive mutator exhausted the predeclared attempts")?;
+    let binary = build_generated_archive_mutator(&output, &decision.rust_source, "m14-final")
+        .map_err(|error| format!("M14 final generated-mutator build failed: {error}"))?;
+    run_checked(
+        Command::new(&binary)
+            .arg("verify")
+            .arg(&rom_path)
+            .arg(&source_archive_path),
+        &output.join("artifact-validation/m14-final-fixture"),
+    )?;
+    write_json(
+        &output.join("m14-prepared.json"),
+        &serde_json::json!({
+            "source_archive": source_archive_path,
+            "source_film_manifest": film_manifest,
+            "source_film_video": film_video,
+            "mutator_decision": decision,
+            "validation_seed": M14_VALIDATION_SEED,
+            "validation_executions": M14_VALIDATION_EXECUTIONS,
+            "execution_budget": M13_EXECUTION_BUDGET,
+            "seeds": M13_SEEDS,
+            "binary": binary,
+        }),
+    )?;
+    Ok(())
+}
+
 fn validate_prepared_m13_evidence(view: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
     for relative in [
         "fuzzer_stats",
@@ -836,6 +950,7 @@ fn archive_pilot_summary(report: &SmbArchiveReport) -> serde_json::Value {
         "retained": report.retained,
         "rejected": report.rejected,
         "ranking": report.ranking,
+        "generated_mutator": report.generated_mutator,
     })
 }
 
@@ -1485,6 +1600,298 @@ fn write_macro_interface(view: &Path) -> Result<(), Box<dyn Error>> {
         "This invocation asks for a generated semantic mutator such as a parameterized jump arc. Return action=install_mutator. Complete source declares `pub struct InstalledMacro;` and implements `fuzzer::phase4b::SmbMacro` for it. The method is `fn mutate(&self, input: &fuzzer::phase4b::SmbInput, seed: u64) -> fuzzer::phase4b::SmbInput`. It may import `ButtonChord`, `SmbInput`, `MAX_HOLD_FRAMES`, and `MAX_SMB_ACTIONS`. The host draws seed from LibAFL's seeded RNG, so the same input and seed must return the same candidate while different seeds may select bounded parameter variants. The result must contain at most 96 chords and every duration must be in 1..=120. Source is pure, deterministic, bounded, and uses no dependencies beyond fuzzer/std. A generated macro must be meaningfully parameterized by the visible input and/or seed rather than merely copying it.\n",
     )?;
     Ok(())
+}
+
+fn write_archive_macro_interface(view: &Path) -> Result<(), Box<dyn Error>> {
+    fs::write(
+        view.join("artifact-interface.txt"),
+        "This invocation asks for a generated semantic archive mutator. Return action=install_mutator. Complete source declares `pub struct InstalledMacro;` and implements `fuzzer::phase4b::SmbMacro` for it. The method is `fn mutate(&self, input: &fuzzer::phase4b::SmbInput, seed: u64) -> fuzzer::phase4b::SmbInput`. It may import `ButtonChord`, `SmbInput`, `MAX_HOLD_FRAMES`, and `fuzzer::phase4c::MAX_SMB_COMPLETION_ACTIONS`. The host draws seed from its seeded RNG. Preserve the complete original action prefix and append a meaningfully parameterized bounded semantic suffix chosen only from the supplied corpus evidence. The result has at most 512 chords and every duration is in 1..=120. Source is pure, deterministic, bounded, and uses no dependencies beyond fuzzer/std.\n",
+    )?;
+    Ok(())
+}
+
+fn validate_built_archive_mutator(
+    binary: &Path,
+    rom: &Path,
+    archive: &Path,
+    output: &Path,
+    attempt: u8,
+) -> Result<(), String> {
+    if let Err(error) = run_checked(
+        Command::new(binary).arg("verify").arg(rom).arg(archive),
+        &output.join(format!(
+            "artifact-validation/archive-mutator-trial-4-attempt-{attempt}-fixture"
+        )),
+    ) {
+        let error = error.to_string();
+        record_m14_validation(output, attempt, false, Some(&error), None, None)
+            .map_err(|record_error| record_error.to_string())?;
+        return Err(error);
+    }
+    let control_path = output.join(format!(
+        "artifact-validation/archive-mutator-trial-4-attempt-{attempt}-control.json"
+    ));
+    run_generated_ranking(
+        binary,
+        "control",
+        rom,
+        archive,
+        &control_path,
+        M14_VALIDATION_SEED,
+        M14_VALIDATION_EXECUTIONS,
+    )
+    .map_err(|error| error.to_string())?;
+    let candidate_path = output.join(format!(
+        "artifact-validation/archive-mutator-trial-4-attempt-{attempt}-candidate.json"
+    ));
+    run_generated_ranking(
+        binary,
+        "mutator",
+        rom,
+        archive,
+        &candidate_path,
+        M14_VALIDATION_SEED,
+        M14_VALIDATION_EXECUTIONS,
+    )
+    .map_err(|error| error.to_string())?;
+    let replay_path = output.join(format!(
+        "artifact-validation/archive-mutator-trial-4-attempt-{attempt}-replay.json"
+    ));
+    run_generated_ranking(
+        binary,
+        "mutator",
+        rom,
+        archive,
+        &replay_path,
+        M14_VALIDATION_SEED,
+        M14_VALIDATION_EXECUTIONS,
+    )
+    .map_err(|error| error.to_string())?;
+    let control: SmbArchiveReport = read_json(&control_path).map_err(|error| error.to_string())?;
+    let candidate: SmbArchiveReport =
+        read_json(&candidate_path).map_err(|error| error.to_string())?;
+    let replay: SmbArchiveReport = read_json(&replay_path).map_err(|error| error.to_string())?;
+    let validation = if control.seed != M14_VALIDATION_SEED
+        || candidate.seed != M14_VALIDATION_SEED
+        || control.executions != M14_VALIDATION_EXECUTIONS
+        || candidate.executions != M14_VALIDATION_EXECUTIONS
+    {
+        Err("archive-mutator pilot did not use the predeclared seed and budget".to_owned())
+    } else if control.generated_mutator.installed || !candidate.generated_mutator.installed {
+        Err("archive-mutator pilot did not isolate the generated choice".to_owned())
+    } else if candidate.generated_mutator.attempts == 0
+        || candidate.generated_mutator.offspring == 0
+    {
+        Err("archive-mutator pilot did not exercise an emitted candidate".to_owned())
+    } else if candidate != replay {
+        Err("archive-mutator pilot did not reproduce the exact archive report".to_owned())
+    } else {
+        Ok(())
+    };
+    match validation {
+        Ok(()) => {
+            record_m14_validation(
+                output,
+                attempt,
+                true,
+                None,
+                Some(&control),
+                Some(&candidate),
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        Err(error) => {
+            record_m14_validation(
+                output,
+                attempt,
+                false,
+                Some(&error),
+                Some(&control),
+                Some(&candidate),
+            )
+            .map_err(|record_error| record_error.to_string())?;
+            Err(error)
+        }
+    }
+}
+
+fn record_m14_validation(
+    output: &Path,
+    attempt: u8,
+    accepted: bool,
+    error: Option<&str>,
+    control: Option<&SmbArchiveReport>,
+    candidate: Option<&SmbArchiveReport>,
+) -> Result<(), Box<dyn Error>> {
+    let directory = output.join("artifact-validation");
+    fs::create_dir_all(&directory)?;
+    write_json(
+        &directory.join(format!(
+            "archive-mutator-trial-4-attempt-{attempt}.validation.json"
+        )),
+        &serde_json::json!({
+            "kind": "archive_mutator",
+            "trial": 4,
+            "attempt": attempt,
+            "accepted": accepted,
+            "error": error,
+            "validation_seed": M14_VALIDATION_SEED,
+            "validation_executions": M14_VALIDATION_EXECUTIONS,
+            "control": control.map(archive_pilot_summary),
+            "candidate": candidate.map(archive_pilot_summary),
+        }),
+    )
+}
+
+fn build_generated_archive_mutator(
+    output: &Path,
+    macro_source: &str,
+    stem: &str,
+) -> Result<PathBuf, String> {
+    let build = output.join("build").join(stem);
+    let source = build.join("src");
+    fs::create_dir_all(&source).map_err(|error| error.to_string())?;
+    let fuzzer_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let escaped = fuzzer_path
+        .to_str()
+        .ok_or_else(|| "fuzzer path is not UTF-8".to_owned())?
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    fs::write(
+        build.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"m14-installed\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"AGPL-3.0-or-later\"\n\n[dependencies]\nfuzzer = {{ path = \"{escaped}\" }}\nserde_json = \"1.0\"\n\n[workspace]\n"
+        ),
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(
+        source.join("generated_macro.rs"),
+        with_license(macro_source),
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(
+        source.join("main.rs"),
+        generated_archive_mutator_main_source(),
+    )
+    .map_err(|error| error.to_string())?;
+    let target = output.join("build/target");
+    let result = Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .arg("--quiet")
+        .arg("--offline")
+        .arg("--manifest-path")
+        .arg(build.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(&target)
+        .output()
+        .map_err(|error| error.to_string())?;
+    fs::write(output.join(format!("build-{stem}.stdout")), &result.stdout)
+        .map_err(|error| error.to_string())?;
+    fs::write(output.join(format!("build-{stem}.stderr")), &result.stderr)
+        .map_err(|error| error.to_string())?;
+    if !result.status.success() {
+        return Err(bounded_lossy(&result.stderr));
+    }
+    Ok(target.join("release/m14-installed"))
+}
+
+fn generated_archive_mutator_main_source() -> &'static str {
+    r#"// SPDX-License-Identifier: AGPL-3.0-or-later
+
+mod generated_macro;
+
+use std::{error::Error, fs, path::PathBuf};
+use fuzzer::{
+    phase4b::{ButtonChord, MAX_HOLD_FRAMES, SmbInput, SmbMacro},
+    phase4c::{
+        MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
+        SmbArchiveSuffixPolicy, SmbRankingSearchConfig,
+        run_smb_archive_search_with_config_and_suffix,
+        run_smb_archive_search_with_generated_mutator,
+    },
+};
+use generated_macro::InstalledMacro;
+
+const VERIFY_SEEDS: [u64; 3] = [0, 0x5eed_ef14, u64::MAX];
+
+fn sampled_inputs(report: &SmbArchiveReport) -> Result<Vec<SmbInput>, Box<dyn Error>> {
+    let frontier = report.entries.iter()
+        .map(|entry| (entry.key.world, entry.key.level, entry.key.progress))
+        .max().ok_or("source archive contains no entries")?;
+    let input = report.entries.iter()
+        .filter(|entry| (entry.key.world, entry.key.level, entry.key.progress) == frontier)
+        .min_by_key(|entry| (entry.input.actions.len(), entry.id))
+        .ok_or("source archive contains no frontier input")?.input.clone();
+    Ok(vec![input])
+}
+
+fn verify_candidate(input: &SmbInput) -> Result<(), Box<dyn Error>> {
+    let mut changed = false;
+    for seed in VERIFY_SEEDS {
+        let first = InstalledMacro.mutate(input, seed);
+        let second = InstalledMacro.mutate(input, seed);
+        if first != second
+            || first.actions.len() > MAX_SMB_COMPLETION_ACTIONS
+            || !first.actions.starts_with(&input.actions)
+            || first.actions.iter().any(|action| action.hold_frames == 0 || action.hold_frames > MAX_HOLD_FRAMES)
+        {
+            return Err("generated archive mutator violated deterministic bounds".into());
+        }
+        changed |= first != *input;
+    }
+    if input.actions.len() < MAX_SMB_COMPLETION_ACTIONS && !changed {
+        return Err("generated archive mutator emitted no changed fixture".into());
+    }
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut args = std::env::args_os().skip(1);
+    let mode = args.next().ok_or("missing mode")?;
+    let rom_path = PathBuf::from(args.next().ok_or("missing ROM path")?);
+    let archive_path = PathBuf::from(args.next().ok_or("missing archive path")?);
+    let rom = fs::read(rom_path)?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(archive_path)?)?;
+    let inputs = sampled_inputs(&source)?;
+    match mode.to_str() {
+        Some("verify") => {
+            if args.next().is_some() { return Err("unexpected verify argument".into()); }
+            verify_candidate(&SmbInput::default())?;
+            for input in &inputs { verify_candidate(input)?; }
+            let at_cap = SmbInput { actions: vec![ButtonChord::new(0, 1); MAX_SMB_COMPLETION_ACTIONS] };
+            verify_candidate(&at_cap)?;
+            Ok(())
+        }
+        Some("run") => {
+            let arm = args.next().ok_or("missing arm")?;
+            let output = PathBuf::from(args.next().ok_or("missing output report")?);
+            let seed: u64 = args.next().ok_or("missing seed")?.to_string_lossy().parse()?;
+            let budget: u64 = args.next().ok_or("missing budget")?.to_string_lossy().parse()?;
+            if args.next().is_some() { return Err("unexpected run argument".into()); }
+            let config = SmbRankingSearchConfig {
+                max_actions: MAX_SMB_COMPLETION_ACTIONS,
+                duration_policy: SmbArchiveDurationPolicy::Stratified,
+                suffix_policy: SmbArchiveSuffixPolicy::OneOrTwo,
+            };
+            let report = match arm.to_str() {
+                Some("control") => run_smb_archive_search_with_config_and_suffix(
+                    &rom, &inputs, seed, budget, config.max_actions,
+                    config.duration_policy, config.suffix_policy,
+                )?,
+                Some("mutator") => run_smb_archive_search_with_generated_mutator(
+                    &rom, &inputs, seed, budget, config, &InstalledMacro,
+                )?,
+                _ => return Err("unknown archive-mutator arm".into()),
+            };
+            fs::write(output, serde_json::to_vec_pretty(&report)?)?;
+            Ok(())
+        }
+        _ => Err("unknown mode".into()),
+    }
+}
+"#
 }
 
 fn write_ranking_interface(view: &Path) -> Result<(), Box<dyn Error>> {

@@ -34,6 +34,7 @@ const FRONTIER_RESUME_INPUTS: usize = 64;
 enum ResumeSelection {
     Champion,
     Frontier,
+    FrontierCellSet,
     FrontierSet,
     FrontierBandSet,
 }
@@ -103,6 +104,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveDurationPolicy::Stratified,
             SmbArchiveSuffixPolicy::BurstUpToFour,
             ResumeSelection::Frontier,
+        );
+    }
+    if mode == "archive-resume-frontier-cell-set" {
+        return run_archive_resume_mode(
+            &mut args,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            ResumeSelection::FrontierCellSet,
         );
     }
     if mode == "archive-resume-frontier-set" {
@@ -385,7 +394,7 @@ fn run_archive_resume_mode(
                 .input
                 .clone(),
         ],
-        ResumeSelection::FrontierSet => {
+        ResumeSelection::FrontierCellSet | ResumeSelection::FrontierSet => {
             let mut distinct = BTreeMap::new();
             for entry in frontier_entries(&source)? {
                 distinct
@@ -420,7 +429,7 @@ fn run_archive_resume_mode(
     };
     let frozen_search = matches!(
         selection,
-        ResumeSelection::Champion | ResumeSelection::Frontier
+        ResumeSelection::Champion | ResumeSelection::Frontier | ResumeSelection::FrontierCellSet
     );
     let report = if frozen_search {
         run_smb_archive_search_with_config_and_suffix(
@@ -492,6 +501,7 @@ fn run_archive_resume_mode(
         "source_selection": match selection {
             ResumeSelection::Champion => "champion",
             ResumeSelection::Frontier => "mechanical_frontier",
+            ResumeSelection::FrontierCellSet => "mechanical_frontier_cell_set",
             ResumeSelection::FrontierSet => "mechanical_frontier_set",
             ResumeSelection::FrontierBandSet => "mechanical_frontier_band_set",
         },

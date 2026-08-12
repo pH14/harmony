@@ -282,6 +282,18 @@ durations.
   decoded as 1-3, then visible 1-3 still decoded as 1-3). The corrected frozen
   H3 search retained genuine 1-3 on 12/12 development plus held-out seeds and
   replayed a full promoted campaign byte-for-byte.
+- M14 extends the existing `install_mutator` decision into completion-archive
+  search without adding a protocol or artifact kind. A generated `SmbMacro`
+  preserves its complete parent prefix, stays within 512 actions and valid
+  durations, receives one seeded choice in five, and cannot change novelty,
+  keys, scheduling, or retention. The host records attempts, emitted and
+  retained offspring, nonretained streaks, active state, and execution-count
+  retirement after 128 emitted nonretained candidates.
+- M14's first Luna xhigh mutator passed empty/frontier/at-cap fixtures, an
+  isolated fixed 256-execution pilot, and exact no-model replay. It was active
+  in all six full SMB arms but did not cross the independently validated 1-3
+  progress-39 boundary, so the mechanism lands and that generated artifact is
+  a registered non-promotion.
 - All time-to-target comparisons use deterministic target-execution counts, not
   wall-clock time. Wall-clock measurements would violate the replay contract and
   make the tests host-dependent.

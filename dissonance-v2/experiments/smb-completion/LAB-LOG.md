@@ -326,3 +326,97 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
 - Promoted campaign is held-out seed `0x5eed_e102`: 5,000 executions, 4,145 retained entries, 37 deaths, corrected 1-3 progress 20. Champion input SHA-256 is `acdf519be359d21a27cc91354cfe1bfd0445d9c2242c3a3eaa15349f6e4efe81`; observation SHA-256 is `5c9353565906478822f4449a07a3499cf0d8a25c2a93c184acb19eb1ee10827c`.
 - The independent complete no-model replay is byte-identical; both archive reports have SHA-256 `dd3c9a40988434d5fa3188ce54ccc5c28d1fe94fddceef6c5e3cadf8d48f24db` and the summary records `replay_verified=true`.
 - Decision: promote the transition-aware current-level decode. The 12/12 result and exact replay demonstrate that the prior hard boundary was an instrumentation fault, not a need for ranking, burst, or scheduler machinery. Raw evidence: `target/smb-completion/h15-dev/`, `h15-held/`, and `h15-promotion-replay-e102/`.
+
+## H16 — preregistered genuine 1-3 continuation
+
+- Falsifiable claim: H15 ended while its corrected 1-3 archive was still gaining cells at progress 20, so an unchanged continuation from the mechanically furthest genuine 1-3 state will reach genuine 1-4 more reproducibly than continuation from the first 1-3 champion.
+- Source is the exact byte-replayed H15 promotion archive from held-out seed `0x5eed_e102`. Controls select its recorded `champion_input`; challengers select the shortest recorded input at the maximum corrected `(world, level, progress)` tuple. Both reconstruct from clean gameplay genesis and run the frozen accepted H3 scheduler, nine-mask controller vocabulary, stratified durations, one-or-two suffix, 512-action bound, no generated ranking, and 5,000 target executions. The source is not treated as a plateau: progress-20 cells were still being inserted at execution 4,996.
+- Development seeds remain `0x5eed_e000..=0x5eed_e005`. Acceptance requires genuine corrected `(world 0, level 3)` entries on at least 4/6 challenger seeds, strictly more successes than controls, and no regression below genuine 1-3. Only then repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105`; a promoted result must replay exactly without a model.
+- Raw destination: `target/smb-completion/h16-dev/` and, only after development acceptance, `target/smb-completion/h16-held/`.
+
+### H16 result — rejected
+
+- Controls and challengers reached genuine corrected 1-4 on 0/6 development seeds, so no held-out panel or promotion replay is due. Control 1-3 frontiers were `[17, 18, 19, 19, 34, 19]`; every mechanically furthest challenger stopped at progress 20.
+- Control retained-entry counts were `[4274, 3786, 4353, 3941, 4149, 3528]` with deaths `[43, 38, 33, 38, 46, 32]`. Challenger retained-entry counts were `[3242, 3483, 3245, 3513, 3817, 3346]` with deaths `[40, 30, 47, 38, 33, 44]`.
+- Decision: reject mechanical-frontier continuation. Its 0/6 exact progress-20 boundary with thousands of retained states is the standing signature for a possible instrumentation fault. Before any search redesign, independently validate the decoded 1-3 fields at that boundary against raw WRAM and film evidence. Raw evidence: `target/smb-completion/h16-dev/`.
+
+### Post-H16 plateau decode diagnosis — pass
+
+- Exact challenger archive id 224 independently decodes raw screen page `$01` and x `$4c` as `1 * 16 + floor(76 / 16) = 20`; raw world/level are `0/2`, flag task is zero, and the film visibly shows the early 1-3 mushroom platforms. Exact control archive id 3564 independently decodes page `$02` and x `$22` as progress 34, with the same raw level and no flag transition; its film visibly shows later 1-3 platforms.
+- Result: **pass**. Both numeric boundaries are genuine observations of live 1-3 terrain. The uniform challenger boundary is therefore a search/representative-quality failure, not a level or progress decode fault. Raw-plus-decoded manifests and film strips: `target/smb-completion/h16-plateau-diagnosis/`.
+
+## H17 — preregistered current-plateau generated ranking
+
+- Falsifiable claim: the H16 frontier source preserves a mechanically furthest progress-20 state but repeatedly loses an unkeyed liveness/preparation attribute inside later full cells. A fresh ranking chosen by the instrumentor from this corrected 1-3 corpus will preserve representatives that produce descendant progress beyond 20 more reproducibly than the identical unranked search.
+- Source is H16 frontier seed `0x5eed_e004`, selected mechanically for the largest retained archive among the six tied progress-20 challengers. The operator view contains only neutral campaign counts, its independently validated raw-plus-decoded progress-20 film, and eight insertion-order-spaced recorded observation traces. It states the ranking contract but suggests no score terms, fields, or goals. Luna xhigh has at most three compile/fixture attempts through the existing decision schema.
+- Validation remains fixed at seed `0x5eed_ef00` for 256 target executions and requires deterministic recorded-observation scores, replacement-policy isolation, and exact archive replay with the model absent. The paired development panel uses seeds `0x5eed_e000..=0x5eed_e005`, 5,000 executions, the frozen H3 scheduler/controller/duration/one-or-two suffix/action-bound configuration, and arms differing only by the installed ranking.
+- Search acceptance requires progress greater than 20 in at least 4/6 ranking arms, strictly more paired successes than controls, and no regression below genuine 1-3. If accepted, repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105` and require the same threshold. A promoted ranking campaign must replay exactly with recorded generated files and no model.
+- Raw destination: `target/smb-completion/h17-luna-20260811/` and, only after development acceptance, `target/smb-completion/h17-held/`.
+
+### H17 result — rejected
+
+- Luna xhigh attempt 1 emitted a bounded live-state-evolution/changed-byte-coverage ranking without using a progress measure. It passed deterministic recorded-observation fixtures and the fixed seed `0x5eed_ef00` 256-execution isolation pilot; the pilot made 2 replacements and produced 1 descendant-novelty cell.
+- Controls and ranking arms exceeded genuine 1-3 progress 20 on 0/6 development seeds. Every report remained at corrected `(world 0, level 2, progress 20)`, so no held-out panel is due.
+- The ranking was materially active: replacements were `[652, 849, 659, 748, 757, 658]`, descendant-novelty counts were `[113, 207, 597, 232, 131, 162]`, and it remained active in every arm. Seed e000's complete 5,000-execution ranking report and independent model-free replay are byte-identical, both SHA-256 `ab6a548cadfcacbddee770ba5a45d61db514477d89ae7a94168adbb01beb0f67`.
+- Decision: reject this ranking for SMB promotion. A third active ranking null at a film-validated boundary makes another score iteration lower priority than changing the single-state bootstrap assumption. Raw evidence and recorded generated files: `target/smb-completion/h17-luna-20260811/`.
+
+## H18 — preregistered frozen frontier-state plurality
+
+- Falsifiable claim: a single mechanically furthest input is a brittle bootstrap because one state can be poorly prepared even when another retained state at the same genuine frontier is viable. Seeding the unchanged frozen search with one shortest input per distinct `(player y bucket, player engine state)` at the exact frontier will cross H16 control's progress-34 boundary reproducibly.
+- Source is H16 control seed `0x5eed_e004`, the only development archive to advance beyond progress 20 and the mechanically strongest genuine 1-3 source. Controls select its single shortest input at maximum `(world, level, progress)`; challengers select at most 64 exact-frontier inputs, deterministically taking the first shortest entry for each distinct `(player y bucket, player engine state)`. Both use the frozen accepted H3 scheduler, nine-mask vocabulary, stratified durations, one-or-two suffix, 512-action bound, no ranking, and 5,000 executions. No progress band or experimental scheduler is enabled.
+- Development seeds remain `0x5eed_e000..=0x5eed_e005`. Acceptance requires genuine 1-3 progress greater than 34 on at least 4/6 challengers, strictly more successes than controls, and no regression below 1-3. Only then repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105`; an accepted promotion must replay exactly without a model.
+- Raw destination: `target/smb-completion/h18-dev/` and, only after development acceptance, `target/smb-completion/h18-held/`.
+
+### H18 result — rejected
+
+- Single-state controls and 16-state challengers exceeded genuine 1-3 progress 34 on 0/6 development seeds. All twelve reports stopped at corrected `(world 0, level 2, progress 34)`, so no held-out panel or promotion replay is due.
+- Control retained-entry counts were `[3552, 3347, 3391, 3347, 3416, 3275]` with deaths `[43, 34, 43, 33, 43, 40]`. Plural retained-entry counts were `[2985, 2809, 2955, 3069, 2932, 3074]` with deaths `[30, 37, 32, 47, 35, 35]`.
+- The zero-execution selector validation deterministically reconstructed 16 distinct exact-frontier inputs into 255 initial archive entries and replayed byte-for-byte. The null therefore rejects frontier-state plurality, not selector installation. The post-H16 raw/film diagnosis already independently validated this exact progress-34 boundary, so no new decode fault is indicated. Raw evidence: `target/smb-completion/h18-source-validation/` and `target/smb-completion/h18-dev/`.
+
+## H19 — preregistered genuine 1-3 temporal burst
+
+- Falsifiable claim: the early 1-3 mushroom-platform obstacle needs a longer coordinated action sequence than the accepted H3 execution's maximum two chords. Extending only the suffix horizon to the already-fixed up-to-four distribution will cross the independently validated progress-34 boundary reproducibly.
+- Source is unchanged H16 control seed `0x5eed_e004`; both arms select its same single shortest input at maximum corrected `(world, level, progress)`. Controls are the completed H18 single-frontier arms. Challengers retain the frozen H3 parent scheduler, nine-mask controller vocabulary, stratified durations, archive keys/retention, no ranking, 512-action bound, and 5,000-execution budget. The sole change is the fixed suffix distribution: one, two, three, or four chords with probabilities 1/2, 1/4, 1/8, and 1/8.
+- Development seeds remain `0x5eed_e000..=0x5eed_e005`. Acceptance requires genuine 1-3 progress greater than 34 on at least 4/6 challengers, strictly more successes than the 0/6 controls, and no regression below 1-3. Only then repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105`; an accepted promotion must replay exactly without a model.
+- Raw destination: `target/smb-completion/h19-dev/` and, only after development acceptance, `target/smb-completion/h19-held/`.
+
+### H19 result — rejected
+
+- Challengers exceeded genuine 1-3 progress 34 on 2/6 development seeds, reaching frontiers `[34, 34, 39, 34, 36, 34]` versus the controls' uniform 34. This misses the registered 4/6 threshold, so no held-out panel or promotion replay is due.
+- Retained-entry counts were `[4423, 4447, 4832, 4671, 4972, 4360]`; deaths were `[36, 61, 45, 48, 40, 44]`. The archive did not exhaust, and the nonuniform 34/36/39 frontier is not the standing signature of a new decode fault.
+- Decision: reject up-to-four burst as a reproducible promotion from the progress-34 source. The two paired gains are evidence that the longer horizon can cross this platform boundary occasionally, so the mechanically strongest immutable result is eligible as evidence/source for the next registered continuation. Raw evidence: `target/smb-completion/h19-dev/`.
+
+## H20 — preregistered ratcheted burst continuation
+
+- Falsifiable claim: H19's sporadic progress was limited by its starting boundary rather than by an exhausted burst policy. Resuming from its mechanically strongest genuine 1-3 archive and retaining the same up-to-four suffix distribution will advance beyond progress 39 reproducibly.
+- Source is H19 seed `0x5eed_e002`, selected mechanically for the maximum corrected `(world, level, progress)` tuple of 1-3/39. Both arms select its same single shortest exact-frontier input and use the frozen H3 parent scheduler, nine-mask vocabulary, stratified durations, archive keys/retention, no ranking, 512-action bound, and 5,000 executions. Controls use one-or-two suffixes; challengers use the already-fixed up-to-four distribution. This is a continuation test, not retroactive H19 promotion.
+- Development seeds remain `0x5eed_e000..=0x5eed_e005`. Acceptance requires genuine 1-3 progress greater than 39 on at least 4/6 challengers, strictly more successes than controls, and no regression below 1-3. Only then repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105`; an accepted promotion must replay exactly without a model.
+- Raw destination: `target/smb-completion/h20-dev/` and, only after development acceptance, `target/smb-completion/h20-held/`.
+
+### H20 result — rejected
+
+- Controls and challengers exceeded genuine 1-3 progress 39 on 0/6 development seeds. All twelve reports stopped at corrected `(world 0, level 2, progress 39)`, so no held-out panel or promotion replay is due.
+- Control retained-entry counts were `[3547, 3737, 3590, 3581, 3742, 3829]` with deaths `[41, 29, 35, 28, 42, 36]`. Burst retained-entry counts were `[4646, 4569, 4484, 4767, 4623, 4632]` with deaths `[60, 44, 38, 42, 35, 38]`.
+- Decision: reject ratcheted up-to-four continuation. The exact progress-39 boundary on 12/12 arms alongside normal archive growth is the standing signature of a possible observation fault; independently validate it against raw WRAM and film before another search redesign. Raw evidence: `target/smb-completion/h20-dev/`.
+
+### Post-H20 plateau decode diagnosis — pass
+
+- Exact control archive id 587 independently decodes raw screen page `$02` and x `$7b` as `2 * 16 + floor(123 / 16) = 39`; raw world/level are `0/2`, flag task is zero, and the film visibly shows the large early-1-3 mushroom-platform gap.
+- Result: **pass**. Progress 39 is a genuine observation of live 1-3 terrain, not a level, transition, or scroll decode fault. Raw-plus-decoded manifest and film strip: `target/smb-completion/h20-plateau-diagnosis/`.
+
+## M14 — preregistered generated archive mutator
+
+- Mechanism claim: the existing `install_mutator` instrumentor decision can safely provide a bounded semantic suffix to archive search, allowing corpus-evidence-derived coordinated actions where blind one-to-four chord sampling is unreliable. This extends the existing mutator artifact into the archive path; it adds no protocol or decision kind.
+- The live artifact remains one pure deterministic `SmbInput, seed -> SmbInput` function generated by Luna xhigh. Archive validation uses recorded progress-39 inputs, fixed seeds including zero and `u64::MAX`, requires prefix preservation, at least one bounded change, at most 512 actions, durations in `1..=120`, no panic on empty/at-cap inputs, and exact repeated output. Hand-written implementations are permitted only as scripted deterministic test fixtures.
+- The archive gives the generated mutator one fixed choice in five; the other four choices retain the frozen H3 one-or-two suffix generator. Generated attempts, retained offspring, consecutive nonretained offspring, retirement execution, and active state are recorded. Retirement is mechanical after 128 consecutive emitted offspring fail to enter the archive; skipped/no-change outputs do not count. The mutator cannot change novelty, cell keys, parent scheduling, or retention.
+- Source evidence is H20's exact progress-39 archive/film plus eight insertion-order-spaced observation traces and neutral campaign counts. The operator view states only the archive-mutator interface and supplies no action suggestion, route, field meaning, or goal. At most three compile/fixture attempts are allowed. A fixed seed `0x5eed_ef14`, 256-execution control/candidate pilot must isolate the mutator and replay exactly without a model before a full panel.
+- Search utility uses the same H20 progress-39 source, seeds `0x5eed_e000..=0x5eed_e005`, 5,000 executions, frozen H3 scheduler/vocabulary/durations/one-or-two suffix/action bound, and arms differing only by the installed generated mutator. Acceptance requires progress greater than 39 on at least 4/6 mutator arms, strictly more successes than controls, and no regression below 1-3. If accepted, repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105`; promotion must replay exactly from recorded generated files with no model.
+- Raw destination: `target/smb-completion/m14-luna-20260811/` and, only after development acceptance, `target/smb-completion/m14-held/`.
+
+### M14 result — capability accepted, generated mutator not promoted
+
+- Luna xhigh attempt 1 emitted a seed-parameterized, corpus-derived semantic suffix mutator. It passed schema/source validation plus deterministic empty, exact-frontier, and at-cap prefix/bounds fixtures on seeds zero, `0x5eed_ef14`, and `u64::MAX`.
+- The fixed 256-execution isolation pilot invoked the mutator 48 times, emitted 48 bounded offspring, retained 45, stayed active, and reproduced the complete candidate archive exactly with the model absent. The control recorded no installed mutator. Decision: accept the generated archive-mutator mechanism.
+- Development controls and mutator arms exceeded genuine 1-3 progress 39 on 0/6 seeds, so this generated mutator is not promoted and no held-out panel is due. Control retained-entry counts were `[3658, 3691, 3977, 3682, 3635, 3576]`; mutator retained-entry counts were `[9362, 9862, 8424, 9860, 8445, 8876]`.
+- Full-arm mutator attempts were `[968, 986, 982, 988, 945, 1020]`, all emitted bounded offspring; retained-offspring counts were `[652, 686, 616, 673, 584, 583]`. Every mutator remained active with final nonretained streaks `[1, 1, 2, 4, 2, 1]`. The null is therefore search utility, not inactivity, invalid output, retirement, or replay failure.
+- The panel obeyed the executor-rework steer's six-arm concurrency cap by running controls and candidates in separate waves. Raw evidence and recorded generated files: `target/smb-completion/m14-luna-20260811/`.

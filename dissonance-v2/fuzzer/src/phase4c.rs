@@ -11,9 +11,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     phase4b::{
-        ButtonChord, MAX_SMB_ACTIONS, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes,
-        SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget, smb_mechanical_state_from_wram,
-        smb_milestones_from_wram,
+        ButtonChord, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS, SmbInput, SmbMacro, SmbMilestoneInputs,
+        SmbMilestoneTimes, SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget,
+        smb_mechanical_state_from_wram, smb_milestones_from_wram,
     },
     target::Target,
 };
@@ -23,6 +23,7 @@ const MAX_ENTRIES_PER_KEY: usize = 2;
 const FRONTIER_WINDOW: usize = 128;
 const RANKING_REBUILD_INTERVAL: u64 = 512;
 const RANKING_STALE_EXECUTIONS: u64 = 1_024;
+const GENERATED_MUTATOR_RETIRE_AFTER: u64 = 128;
 const FRONTIER_PROGRESS_BAND: u16 = 8;
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 const FROZEN_BUTTON_MASKS: [u8; 9] = [0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10];
@@ -51,6 +52,25 @@ pub struct SmbRankingAccounting {
     /// New archive cells reached by descendants of ranking-selected replacements.
     pub descendant_novelty: u64,
     /// Execution-count rebuild at which an ineffective ranking was retired.
+    pub retired_at_execution: Option<u64>,
+}
+
+/// Mechanical accounting for one installed generated archive mutator.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbGeneratedMutatorAccounting {
+    /// Whether this campaign installed a generated mutator.
+    pub installed: bool,
+    /// Whether the mutator remained active at campaign end.
+    pub active: bool,
+    /// Times the host selected and invoked the generated mutator.
+    pub attempts: u64,
+    /// Changed, bounded candidates emitted by the generated mutator.
+    pub offspring: u64,
+    /// Emitted candidates that retained at least one archive state.
+    pub retained_offspring: u64,
+    /// Consecutive emitted candidates that retained no archive state.
+    pub consecutive_nonretained: u64,
+    /// Execution at which mechanical retirement occurred.
     pub retired_at_execution: Option<u64>,
 }
 
@@ -160,6 +180,9 @@ pub struct SmbArchiveReport {
     /// Execution-count accounting for the optional generated ranking.
     #[serde(default)]
     pub ranking: SmbRankingAccounting,
+    /// Execution-count accounting for the optional generated archive mutator.
+    #[serde(default)]
+    pub generated_mutator: SmbGeneratedMutatorAccounting,
 }
 
 #[derive(Clone, Debug)]
@@ -449,6 +472,7 @@ pub fn run_smb_archive_search_with_config_and_suffix(
         duration_policy,
         suffix_policy,
         None,
+        None,
         false,
     )
 }
@@ -472,6 +496,7 @@ pub fn run_smb_archive_search_with_policies(
         duration_policy,
         suffix_policy,
         None,
+        None,
         true,
     )
 }
@@ -494,8 +519,49 @@ pub fn run_smb_archive_search_with_ranking<R: SmbRanking>(
         config.duration_policy,
         config.suffix_policy,
         Some(ranking),
+        None,
         false,
     )
+}
+
+/// Run frozen completion search with one bounded generated semantic mutator choice.
+pub fn run_smb_archive_search_with_generated_mutator<M: SmbMacro>(
+    rom: &[u8],
+    initial_inputs: &[SmbInput],
+    seed: u64,
+    execution_budget: u64,
+    config: SmbRankingSearchConfig,
+    generated_mutator: &M,
+) -> Result<SmbArchiveReport, Box<dyn Error>> {
+    run_smb_archive_search_internal(
+        rom,
+        initial_inputs,
+        seed,
+        execution_budget,
+        config.max_actions,
+        config.duration_policy,
+        config.suffix_policy,
+        None,
+        Some(generated_mutator),
+        false,
+    )
+}
+
+fn record_generated_mutator_result(
+    accounting: &mut SmbGeneratedMutatorAccounting,
+    retained: bool,
+    execution: u64,
+) {
+    if retained {
+        accounting.retained_offspring = accounting.retained_offspring.saturating_add(1);
+        accounting.consecutive_nonretained = 0;
+    } else {
+        accounting.consecutive_nonretained = accounting.consecutive_nonretained.saturating_add(1);
+        if accounting.consecutive_nonretained >= GENERATED_MUTATOR_RETIRE_AFTER {
+            accounting.active = false;
+            accounting.retired_at_execution = Some(execution);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -508,6 +574,7 @@ fn run_smb_archive_search_internal(
     duration_policy: SmbArchiveDurationPolicy,
     suffix_policy: SmbArchiveSuffixPolicy,
     ranking: Option<&dyn SmbRanking>,
+    generated_mutator: Option<&dyn SmbMacro>,
     experimental_search: bool,
 ) -> Result<SmbArchiveReport, Box<dyn Error>> {
     if initial_inputs.is_empty() {
@@ -595,35 +662,74 @@ fn run_smb_archive_search_internal(
     let mut rand = StdRand::with_seed(seed);
     let mut curve = Vec::new();
     let mut deaths = 0_u64;
+    let mut generated_mutator_accounting = SmbGeneratedMutatorAccounting {
+        installed: generated_mutator.is_some(),
+        active: generated_mutator.is_some(),
+        ..SmbGeneratedMutatorAccounting::default()
+    };
     for execution in 1..=execution_budget {
         let parent_id = archive.choose_parent(&mut rand, max_actions)?;
         let parent = archive.entries[parent_id].clone();
         target.restore(&parent.snapshot)?;
         let mut input = parent.report.input.clone();
         let mut milestones = parent.report.milestones;
-        let suffix_len = match suffix_policy {
-            SmbArchiveSuffixPolicy::OneOrTwo => {
-                if rand.below(NonZeroUsize::new(4).ok_or("invalid suffix odds")?) == 0 {
-                    2
-                } else {
-                    1
-                }
+        let use_generated_mutator = generated_mutator_accounting.active
+            && rand.below(NonZeroUsize::new(5).ok_or("invalid generated mutator odds")?) == 0;
+        let (suffix, generated_emitted) = if use_generated_mutator {
+            generated_mutator_accounting.attempts =
+                generated_mutator_accounting.attempts.saturating_add(1);
+            let candidate = generated_mutator
+                .ok_or("active generated SMB mutator is missing")?
+                .mutate(&input, rand.next());
+            if candidate.actions.len() > max_actions
+                || !candidate.actions.starts_with(&input.actions)
+                || candidate
+                    .actions
+                    .iter()
+                    .any(|action| action.hold_frames == 0 || action.hold_frames > MAX_HOLD_FRAMES)
+            {
+                return Err("generated SMB archive mutator violated deterministic bounds".into());
             }
-            SmbArchiveSuffixPolicy::BurstUpToFour => {
-                match rand.below(NonZeroUsize::new(8).ok_or("invalid burst odds")?) {
-                    0 => 4,
-                    1 => 3,
-                    2 | 3 => 2,
-                    _ => 1,
-                }
+            let emitted = candidate.actions.len() > input.actions.len();
+            if emitted {
+                generated_mutator_accounting.offspring =
+                    generated_mutator_accounting.offspring.saturating_add(1);
             }
+            (candidate.actions[input.actions.len()..].to_vec(), emitted)
+        } else {
+            let suffix_len = match suffix_policy {
+                SmbArchiveSuffixPolicy::OneOrTwo => {
+                    if rand.below(NonZeroUsize::new(4).ok_or("invalid suffix odds")?) == 0 {
+                        2
+                    } else {
+                        1
+                    }
+                }
+                SmbArchiveSuffixPolicy::BurstUpToFour => {
+                    match rand.below(NonZeroUsize::new(8).ok_or("invalid burst odds")?) {
+                        0 => 4,
+                        1 => 3,
+                        2 | 3 => 2,
+                        _ => 1,
+                    }
+                }
+            };
+            let mut suffix = Vec::with_capacity(suffix_len);
+            for _ in 0..suffix_len {
+                suffix.push(sample_chord(
+                    &mut rand,
+                    duration_policy,
+                    experimental_search,
+                )?);
+            }
+            (suffix, false)
         };
         let mut current_parent = parent_id;
-        for _ in 0..suffix_len {
+        let retained_before = archive.retained;
+        for action in suffix {
             if target.is_dead() || input.actions.len() >= max_actions {
                 break;
             }
-            let action = sample_chord(&mut rand, duration_policy, experimental_search)?;
             input.actions.push(action);
             target.apply(&action);
             merge_action_milestones(&mut milestones, &target)?;
@@ -661,6 +767,13 @@ fn run_smb_archive_search_internal(
                 current_parent = id;
             }
         }
+        if generated_emitted {
+            record_generated_mutator_result(
+                &mut generated_mutator_accounting,
+                archive.retained > retained_before,
+                execution,
+            );
+        }
         archive.finish_execution(execution);
         if execution % 100 == 0 || execution == execution_budget {
             curve.push(SmbArchiveProgressPoint {
@@ -690,6 +803,7 @@ fn run_smb_archive_search_internal(
         rejected: archive.rejected,
         deaths,
         ranking: archive.ranking_accounting,
+        generated_mutator: generated_mutator_accounting,
     })
 }
 
@@ -819,11 +933,12 @@ fn entry_cost(entry: &SmbArchiveEntryReport) -> (usize, u64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Archive, SmbArchiveDurationPolicy, SmbArchiveSuffixPolicy, SmbRanking,
-        SmbRankingSearchConfig, run_smb_archive_search,
-        run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_ranking,
+        Archive, SmbArchiveDurationPolicy, SmbArchiveSuffixPolicy, SmbGeneratedMutatorAccounting,
+        SmbRanking, SmbRankingSearchConfig, record_generated_mutator_result,
+        run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
+        run_smb_archive_search_with_generated_mutator, run_smb_archive_search_with_ranking,
     };
-    use crate::phase4b::{MAX_SMB_ACTIONS, SmbInput, SmbObservations};
+    use crate::phase4b::{ButtonChord, MAX_SMB_ACTIONS, SmbInput, SmbMacro, SmbObservations};
 
     struct ScriptedFrameRanking;
 
@@ -832,6 +947,20 @@ mod tests {
             observations.last().map_or(0, |observation| {
                 i64::try_from(observation.frame_count).unwrap_or(i64::MAX)
             })
+        }
+    }
+
+    struct ScriptedArchiveMutator;
+
+    impl SmbMacro for ScriptedArchiveMutator {
+        fn mutate(&self, input: &SmbInput, seed: u64) -> SmbInput {
+            let mut candidate = input.clone();
+            if candidate.actions.len() < MAX_SMB_ACTIONS {
+                candidate
+                    .actions
+                    .push(ButtonChord::new(if seed & 1 == 0 { 0x81 } else { 0x82 }, 8));
+            }
+            candidate
         }
     }
 
@@ -926,5 +1055,61 @@ mod tests {
         archive.finish_execution(1_536);
         assert_eq!(archive.ranking_accounting.retired_at_execution, Some(1_536));
         assert!(!archive.ranking_accounting.active);
+    }
+
+    #[test]
+    fn generated_mutator_retirement_counts_emitted_offspring_not_time() {
+        let mut accounting = SmbGeneratedMutatorAccounting {
+            installed: true,
+            active: true,
+            ..SmbGeneratedMutatorAccounting::default()
+        };
+        for execution in 1..128 {
+            record_generated_mutator_result(&mut accounting, false, execution);
+        }
+        assert!(accounting.active);
+        assert_eq!(accounting.consecutive_nonretained, 127);
+        record_generated_mutator_result(&mut accounting, true, 128);
+        assert!(accounting.active);
+        assert_eq!(accounting.retained_offspring, 1);
+        assert_eq!(accounting.consecutive_nonretained, 0);
+        for execution in 129..=256 {
+            record_generated_mutator_result(&mut accounting, false, execution);
+        }
+        assert!(!accounting.active);
+        assert_eq!(accounting.retired_at_execution, Some(256));
+    }
+
+    #[test]
+    fn scripted_generated_archive_mutator_replays_exactly() {
+        let rom = synthetic_nrom();
+        let initial = vec![SmbInput::default()];
+        let config = SmbRankingSearchConfig {
+            max_actions: MAX_SMB_ACTIONS,
+            duration_policy: SmbArchiveDurationPolicy::Legacy,
+            suffix_policy: SmbArchiveSuffixPolicy::OneOrTwo,
+        };
+        let first = run_smb_archive_search_with_generated_mutator(
+            &rom,
+            &initial,
+            0x5eed_ef14,
+            64,
+            config,
+            &ScriptedArchiveMutator,
+        )
+        .expect("first generated-mutator archive campaign");
+        let replay = run_smb_archive_search_with_generated_mutator(
+            &rom,
+            &initial,
+            0x5eed_ef14,
+            64,
+            config,
+            &ScriptedArchiveMutator,
+        )
+        .expect("replayed generated-mutator archive campaign");
+        assert_eq!(first, replay);
+        assert!(first.generated_mutator.installed);
+        assert!(first.generated_mutator.attempts > 0);
+        assert!(first.generated_mutator.offspring > 0);
     }
 }
