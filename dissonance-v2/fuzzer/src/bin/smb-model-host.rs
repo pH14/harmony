@@ -712,7 +712,7 @@ fn write_m13_evidence(
     fs::write(
         view.join("fuzzer_stats"),
         format!(
-            "target : nes-super-mario-bros\nexecs_done : {}\ncorpus_count : {}\n",
+            "target : deterministic-platform-target\nexecs_done : {}\ncorpus_count : {}\n",
             archive.executions,
             archive.entries.len(),
         ),
@@ -975,7 +975,7 @@ fn write_m12_evidence(
     fs::write(
         view.join("fuzzer_stats"),
         format!(
-            "target : nes-super-mario-bros\nexecs_done : {}\ncorpus_count : {}\nmax_position_bucket : {}\nflag_observed : {}\nlevel_1_2_observed : {}\n",
+            "target : deterministic-platform-target\nexecs_done : {}\ncorpus_count : {}\nmax_position_bucket : {}\nflag_observed : {}\nlevel_1_2_observed : {}\n",
             report.campaign.executions,
             report.campaign.corpus.len(),
             report.campaign.milestones.max_1_1_scroll_bucket,
@@ -1061,7 +1061,7 @@ fn write_operator_scaffold(
     fs::write(
         view.join("fuzzer_stats"),
         format!(
-            "target : nes-super-mario-bros\nexecs_done : {}\ncorpus_count : {}\nmax_position_bucket : {}\nflag_observed : {}\nlevel_1_2_observed : {}\n",
+            "target : deterministic-platform-target\nexecs_done : {}\ncorpus_count : {}\nmax_position_bucket : {}\nflag_observed : {}\nlevel_1_2_observed : {}\n",
             source.executions,
             source.corpus.len(),
             source.milestones.max_1_1_scroll_bucket,
@@ -1207,7 +1207,7 @@ fn initial_strategy_journal() -> StrategyJournal {
         ],
         failed_approaches: vec![
             "At this boundary, repeated panels for longer suffix bursts, broader frontier scheduling, progress-band scheduling, a fixed interaction macro, generated archive mutation, and checkpoint retention did not exceed progress 39.".to_owned(),
-            "Earlier generated rankings at separately film-validated boundaries did not meet their registered SMB promotion rules.".to_owned(),
+            "Earlier generated rankings at separately film-validated boundaries did not meet their registered promotion rules.".to_owned(),
         ],
         open_questions: vec![
             "Which recorded non-progress state attributes distinguish prefixes prepared to produce descendant novelty beyond the current boundary?".to_owned(),
@@ -2476,6 +2476,8 @@ mod tests {
         assert!(dynamics.contains("This game may differ from any game it resembles. Where your expectations disagree with the recorded observations, the observations are correct."));
         assert!(!dynamics.contains("Mario"));
         assert!(!dynamics.contains("Super"));
+        assert!(!semantics.contains("Mario"));
+        assert!(!semantics.contains("Super"));
     }
 
     #[test]
