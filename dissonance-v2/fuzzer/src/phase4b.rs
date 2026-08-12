@@ -989,6 +989,9 @@ pub struct SmbCampaignReport {
     pub executions: u64,
     /// Strongest milestone values observed over the campaign.
     pub milestones: SmbMilestones,
+    /// Furthest per-frame mechanical position observed, including action interiors.
+    #[serde(default)]
+    pub progress_watermark: SmbProgressWatermark,
     /// First execution reaching each boolean ladder rung.
     pub first_reached: SmbMilestoneTimes,
     /// First testcase reaching each rung, for exact replay and film generation.
@@ -1004,6 +1007,17 @@ pub struct SmbCampaignReport {
     /// Deterministic executor work counters.
     #[serde(default)]
     pub executor_work: SmbExecutionWork,
+}
+
+/// Maximum route-agnostic mechanical position observed at any emulated frame.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SmbProgressWatermark {
+    /// Zero-based world number.
+    pub world: u8,
+    /// Zero-based level number within the world.
+    pub level: u8,
+    /// Current 16-pixel horizontal progress bucket.
+    pub progress: u16,
 }
 
 /// Report for an M6 arm with host-owned generated-artifact accounting.
@@ -1184,6 +1198,20 @@ where
         self.last_cached
             .as_ref()
             .map_or(&[], |cached| cached.observations())
+    }
+
+    /// Furthest per-frame position in the most recently executed input.
+    #[must_use]
+    pub fn last_progress_watermark(&self) -> SmbProgressWatermark {
+        self.last_observations()
+            .iter()
+            .map(|observation| SmbProgressWatermark {
+                world: observation.decoded.world,
+                level: observation.decoded.level,
+                progress: observation.decoded.progress,
+            })
+            .max()
+            .unwrap_or_default()
     }
 
     fn last_input(&self) -> &SmbInput {
@@ -1672,6 +1700,7 @@ pub fn run_smb_ratchet_with_executor(
         NonZeroUsize::MIN,
     ));
     let mut milestones = executor.last_milestones();
+    let mut progress_watermark = executor.last_progress_watermark();
     let mut first_reached = SmbMilestoneTimes::default();
     let mut first_inputs = SmbMilestoneInputs::default();
     while *state.executions() < execution_budget {
@@ -1688,6 +1717,7 @@ pub fn run_smb_ratchet_with_executor(
             *state.executions(),
             executor.last_input(),
         );
+        progress_watermark = progress_watermark.max(executor.last_progress_watermark());
     }
 
     let corpus_entries = smb_semantic_corpus(state.corpus())?;
@@ -1699,6 +1729,7 @@ pub fn run_smb_ratchet_with_executor(
         seed,
         executions: *state.executions(),
         milestones,
+        progress_watermark,
         first_reached,
         first_inputs,
         corpus,
@@ -1763,6 +1794,7 @@ where
         NonZeroUsize::MIN,
     ));
     let mut milestones = executor.last_milestones();
+    let mut progress_watermark = executor.last_progress_watermark();
     let mut first_reached = SmbMilestoneTimes::default();
     let mut first_inputs = SmbMilestoneInputs::default();
     while *state.executions() < execution_budget {
@@ -1779,6 +1811,7 @@ where
             *state.executions(),
             executor.last_input(),
         );
+        progress_watermark = progress_watermark.max(executor.last_progress_watermark());
     }
 
     let corpus_entries = smb_semantic_corpus(state.corpus())?;
@@ -1790,6 +1823,7 @@ where
         seed,
         executions: *state.executions(),
         milestones,
+        progress_watermark,
         first_reached,
         first_inputs,
         corpus,
@@ -1973,6 +2007,7 @@ where
     )?;
 
     let mut milestones = SmbMilestones::default();
+    let mut progress_watermark = SmbProgressWatermark::default();
     let mut first_reached = SmbMilestoneTimes::default();
     let mut first_inputs = SmbMilestoneInputs::default();
     let mut labeled_ids = BTreeMap::new();
@@ -1993,6 +2028,7 @@ where
             0,
             &entry.input,
         );
+        progress_watermark = progress_watermark.max(executor.last_progress_watermark());
     }
     *state.executions_mut() = 0;
 
@@ -2029,6 +2065,7 @@ where
                 *state.executions(),
                 executor.last_input(),
             );
+            progress_watermark = progress_watermark.max(executor.last_progress_watermark());
         }
         if *state.executions() == execution_budget || label_events.len() >= max_triage_calls {
             continue;
@@ -2074,6 +2111,7 @@ where
         seed,
         executions: *state.executions(),
         milestones,
+        progress_watermark,
         first_reached,
         first_inputs,
         corpus,
@@ -2100,6 +2138,7 @@ pub fn run_smb_random_mash(
     let mut rand = StdRand::with_seed(seed);
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let mut milestones = SmbMilestones::default();
+    let mut progress_watermark = SmbProgressWatermark::default();
     let mut first_reached = SmbMilestoneTimes::default();
     let mut first_inputs = SmbMilestoneInputs::default();
     let mut input = SmbInput::default();
@@ -2124,6 +2163,13 @@ pub fn run_smb_random_mash(
         let mut run = smb_milestones_from_wram(target.wram());
         for action in &input.actions {
             target.apply(action);
+            for observation in target.last_action_observations() {
+                progress_watermark = progress_watermark.max(SmbProgressWatermark {
+                    world: observation.decoded.world,
+                    level: observation.decoded.level,
+                    progress: observation.decoded.progress,
+                });
+            }
             run.merge(smb_milestones_from_wram(target.wram()));
             if target.is_dead() || target.exit_kind() != ExitKind::Ok {
                 break;
@@ -2142,6 +2188,7 @@ pub fn run_smb_random_mash(
         seed,
         executions: execution_budget,
         milestones,
+        progress_watermark,
         first_reached,
         first_inputs,
         corpus: Vec::new(),

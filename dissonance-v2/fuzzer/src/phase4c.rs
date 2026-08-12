@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     phase4b::{
         ButtonChord, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS, SmbInput, SmbMacro, SmbMilestoneInputs,
-        SmbMilestoneTimes, SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget,
-        smb_mechanical_state_from_wram, smb_milestones_from_wram,
+        SmbMilestoneTimes, SmbMilestones, SmbObservations, SmbProgressWatermark, SmbSnapshot,
+        SmbTarget, smb_mechanical_state_from_wram, smb_milestones_from_wram,
     },
     target::Target,
 };
@@ -27,9 +27,6 @@ const GENERATED_MUTATOR_RETIRE_AFTER: u64 = 128;
 const FRONTIER_PROGRESS_BAND: u16 = 8;
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 const FROZEN_BUTTON_MASKS: [u8; 9] = [0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10];
-const EXPERIMENTAL_BUTTON_MASKS: [u8; 14] = [
-    0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10, 0x41, 0x42, 0xc0, 0xc1, 0xc2,
-];
 
 /// Largest bounded action horizon accepted by the completion-only archive.
 pub const MAX_SMB_COMPLETION_ACTIONS: usize = 512;
@@ -161,6 +158,9 @@ pub struct SmbArchiveReport {
     pub executions: u64,
     /// Strongest milestone values reached.
     pub milestones: SmbMilestones,
+    /// Furthest per-frame mechanical position, including action interiors.
+    #[serde(default)]
+    pub progress_watermark: SmbProgressWatermark,
     /// First execution reaching each frozen milestone rung.
     pub first_reached: SmbMilestoneTimes,
     /// First clean-reset input reaching each rung.
@@ -183,6 +183,56 @@ pub struct SmbArchiveReport {
     /// Execution-count accounting for the optional generated archive mutator.
     #[serde(default)]
     pub generated_mutator: SmbGeneratedMutatorAccounting,
+}
+
+/// Mechanical outcome of one fixed frontier-viability continuation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SmbViabilityClass {
+    /// The continuation reached player engine kill state `$0b`.
+    KillState,
+    /// The continuation ended in vertical bucket 15 without registering kill.
+    BelowPlayable,
+    /// The continuation ended outside the two doomed classes.
+    Controllable,
+}
+
+/// Viability result for one active archive representative.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbViabilityEntry {
+    /// Stable source archive identifier.
+    pub id: u64,
+    /// Whether this entry belongs to the maximal progress-39 frontier.
+    pub frontier: bool,
+    /// Recorded archive key at the audited endpoint.
+    pub key: SmbArchiveKey,
+    /// No-input continuation followed by the nine frozen controller masks.
+    pub continuations: Vec<SmbViabilityClass>,
+    /// True only when no continuation remains controllable.
+    pub doomed: bool,
+}
+
+/// Count summary for one audited archive slice.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbViabilityCounts {
+    /// Audited active representatives.
+    pub total: u64,
+    /// Representatives with no controllable continuation.
+    pub doomed: u64,
+}
+
+/// Deterministic D27 frontier-viability report.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbFrontierViabilityReport {
+    /// Frames applied by every fixed continuation.
+    pub continuation_frames: u8,
+    /// No-input plus frozen mask order used by every entry.
+    pub continuation_masks: Vec<Option<u8>>,
+    /// Maximal progress-39 counts.
+    pub frontier: SmbViabilityCounts,
+    /// Inclusive progress-32-through-39 approach-band counts.
+    pub approach_band: SmbViabilityCounts,
+    /// Stable per-entry evidence in input lexical order.
+    pub entries: Vec<SmbViabilityEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -415,6 +465,118 @@ pub fn run_smb_archive_search(
     )
 }
 
+/// Audit whether active frontier and approach-band representatives can recover.
+pub fn audit_smb_frontier_viability(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+) -> Result<SmbFrontierViabilityReport, Box<dyn Error>> {
+    let active = active_source_entries(source);
+    let mut selected = active
+        .into_iter()
+        .filter(|entry| {
+            entry.key.world == 0 && entry.key.level == 2 && (32..=39).contains(&entry.key.progress)
+        })
+        .collect::<Vec<_>>();
+    selected.sort_by_key(|entry| (entry.input.clone(), entry.id));
+    let continuation_masks = std::iter::once(None)
+        .chain(FROZEN_BUTTON_MASKS.into_iter().map(Some))
+        .collect::<Vec<_>>();
+    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    let genesis = target
+        .snapshot()
+        .ok_or("failed to snapshot audit genesis")?;
+    let mut prior_input = SmbInput::default();
+    let mut prior_snapshots = vec![genesis];
+    let mut entries = Vec::with_capacity(selected.len());
+    for entry in selected {
+        let common = prior_input
+            .actions
+            .iter()
+            .zip(&entry.input.actions)
+            .take_while(|(left, right)| left == right)
+            .count();
+        target.restore(&prior_snapshots[common])?;
+        prior_snapshots.truncate(common + 1);
+        for action in &entry.input.actions[common..] {
+            target.apply(action);
+            let snapshot = target
+                .snapshot()
+                .ok_or("failed to snapshot audit replay prefix")?;
+            prior_snapshots.push(snapshot);
+            if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+                break;
+            }
+        }
+        let endpoint = target
+            .snapshot()
+            .ok_or("failed to snapshot audit endpoint")?;
+        let mut continuations = Vec::with_capacity(continuation_masks.len());
+        for mask in &continuation_masks {
+            target.restore(&endpoint)?;
+            target.apply(&ButtonChord::new(mask.unwrap_or(0), 120));
+            let state = smb_mechanical_state_from_wram(target.wram());
+            continuations.push(if state.player_engine_state == 0x0b {
+                SmbViabilityClass::KillState
+            } else if state.player_y_bucket == 15 {
+                SmbViabilityClass::BelowPlayable
+            } else {
+                SmbViabilityClass::Controllable
+            });
+        }
+        let doomed = continuations
+            .iter()
+            .all(|class| *class != SmbViabilityClass::Controllable);
+        entries.push(SmbViabilityEntry {
+            id: entry.id,
+            frontier: entry.key.progress == 39,
+            key: entry.key,
+            continuations,
+            doomed,
+        });
+        prior_input = entry.input.clone();
+    }
+    let counts = |frontier: bool| {
+        let matching = entries.iter().filter(|entry| entry.frontier == frontier);
+        SmbViabilityCounts {
+            total: u64::try_from(matching.clone().count()).unwrap_or(u64::MAX),
+            doomed: u64::try_from(matching.filter(|entry| entry.doomed).count())
+                .unwrap_or(u64::MAX),
+        }
+    };
+    let frontier = counts(true);
+    let nonfrontier = counts(false);
+    Ok(SmbFrontierViabilityReport {
+        continuation_frames: 120,
+        continuation_masks,
+        frontier,
+        approach_band: SmbViabilityCounts {
+            total: frontier.total.saturating_add(nonfrontier.total),
+            doomed: frontier.doomed.saturating_add(nonfrontier.doomed),
+        },
+        entries,
+    })
+}
+
+fn active_source_entries(source: &SmbArchiveReport) -> Vec<&SmbArchiveEntryReport> {
+    let mut cells = BTreeMap::<SmbArchiveKey, Vec<&SmbArchiveEntryReport>>::new();
+    for entry in &source.entries {
+        let cell = cells.entry(entry.key).or_default();
+        if cell.len() < MAX_ENTRIES_PER_KEY {
+            cell.push(entry);
+            continue;
+        }
+        if let Some((index, existing)) = cell
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, existing)| entry_cost(existing))
+            && entry.input.actions.len() < existing.input.actions.len()
+        {
+            cell[index] = entry;
+        }
+    }
+    cells.into_values().flatten().collect()
+}
+
 /// Run completion search with an explicit bounded completion-only action horizon.
 pub fn run_smb_archive_search_with_action_limit(
     rom: &[u8],
@@ -592,6 +754,7 @@ fn run_smb_archive_search_internal(
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let mut archive = Archive::new(ranking, experimental_search);
     let mut aggregate = SmbMilestones::default();
+    let mut progress_watermark = SmbProgressWatermark::default();
     let mut first_reached = SmbMilestoneTimes::default();
     let mut first_inputs = SmbMilestoneInputs::default();
     let mut champion_input = SmbInput::default();
@@ -624,6 +787,7 @@ fn run_smb_archive_search_internal(
             }
             prefix.actions.push(*action);
             target.apply(action);
+            merge_progress_watermark(&mut progress_watermark, target.last_action_observations());
             merge_action_milestones(&mut milestones, &target)?;
             merge_milestones(&mut aggregate, milestones);
             update_first_inputs(
@@ -732,6 +896,7 @@ fn run_smb_archive_search_internal(
             }
             input.actions.push(action);
             target.apply(&action);
+            merge_progress_watermark(&mut progress_watermark, target.last_action_observations());
             merge_action_milestones(&mut milestones, &target)?;
             merge_milestones(&mut aggregate, milestones);
             update_first_inputs(
@@ -790,6 +955,7 @@ fn run_smb_archive_search_internal(
         seed,
         executions: execution_budget,
         milestones: aggregate,
+        progress_watermark,
         first_reached,
         first_inputs,
         champion_input,
@@ -805,6 +971,20 @@ fn run_smb_archive_search_internal(
         ranking: archive.ranking_accounting,
         generated_mutator: generated_mutator_accounting,
     })
+}
+
+fn merge_progress_watermark(
+    watermark: &mut SmbProgressWatermark,
+    observations: &[SmbObservations],
+) {
+    for observation in observations {
+        let decoded = observation.decoded;
+        *watermark = (*watermark).max(SmbProgressWatermark {
+            world: decoded.world,
+            level: decoded.level,
+            progress: decoded.progress,
+        });
+    }
 }
 
 fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
@@ -826,6 +1006,9 @@ fn sample_chord(
     experimental_search: bool,
 ) -> Result<ButtonChord, Box<dyn Error>> {
     let masks: &[u8] = if experimental_search {
+        const EXPERIMENTAL_BUTTON_MASKS: [u8; 14] = [
+            0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10, 0x41, 0x42, 0xc0, 0xc1, 0xc2,
+        ];
         &EXPERIMENTAL_BUTTON_MASKS
     } else {
         &FROZEN_BUTTON_MASKS
@@ -934,8 +1117,9 @@ fn entry_cost(entry: &SmbArchiveEntryReport) -> (usize, u64) {
 mod tests {
     use super::{
         Archive, SmbArchiveDurationPolicy, SmbArchiveSuffixPolicy, SmbGeneratedMutatorAccounting,
-        SmbRanking, SmbRankingSearchConfig, record_generated_mutator_result,
-        run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
+        SmbProgressWatermark, SmbRanking, SmbRankingSearchConfig, merge_progress_watermark,
+        record_generated_mutator_result, run_smb_archive_search,
+        run_smb_archive_search_with_config_and_suffix,
         run_smb_archive_search_with_generated_mutator, run_smb_archive_search_with_ranking,
     };
     use crate::phase4b::{ButtonChord, MAX_SMB_ACTIONS, SmbInput, SmbMacro, SmbObservations};
@@ -974,6 +1158,28 @@ mod tests {
             prg[vector..vector + 2].copy_from_slice(&0x8000_u16.to_le_bytes());
         }
         rom
+    }
+
+    #[test]
+    fn progress_watermark_uses_action_interiors() {
+        let mut watermark = SmbProgressWatermark::default();
+        let mut first = SmbObservations {
+            frame_count: 1,
+            wram: Vec::new(),
+            decoded: Default::default(),
+            milestones: Default::default(),
+            changed_indices: Vec::new(),
+            dead: false,
+            log_line: String::new(),
+        };
+        first.decoded.world = 0;
+        first.decoded.level = 2;
+        first.decoded.progress = 41;
+        let mut endpoint = first.clone();
+        endpoint.frame_count = 2;
+        endpoint.decoded.progress = 39;
+        merge_progress_watermark(&mut watermark, &[first, endpoint]);
+        assert_eq!(watermark.progress, 41);
     }
 
     #[test]

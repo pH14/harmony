@@ -19,7 +19,7 @@ use fuzzer::{
     },
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
-        SmbArchiveSuffixPolicy, run_smb_archive_search,
+        SmbArchiveSuffixPolicy, audit_smb_frontier_viability, run_smb_archive_search,
         run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_policies,
     },
 };
@@ -73,6 +73,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "archive" {
         return run_archive_mode(&mut args);
+    }
+    if mode == "audit-frontier-viability" {
+        return run_frontier_viability_mode(&mut args);
     }
     if mode == "archive-resume" {
         return run_archive_resume_mode(
@@ -238,6 +241,45 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !report.no_model_campaign_replay_verified || !report.champion_observation_replay_verified {
         return Err("frozen baseline replay diverged".into());
     }
+    Ok(())
+}
+
+fn run_frontier_viability_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    let replay_requested = parse_replay_flag(args, "audit-frontier-viability")?;
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let report = audit_smb_frontier_viability(&rom, &source)?;
+    fs::write(
+        output.join("viability-live.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    let replay_verified = if replay_requested {
+        let replay = audit_smb_frontier_viability(&rom, &source)?;
+        fs::write(
+            output.join("viability-replay.json"),
+            serde_json::to_vec_pretty(&replay)?,
+        )?;
+        Some(replay == report)
+    } else {
+        None
+    };
+    let summary = serde_json::json!({
+        "continuation_frames": report.continuation_frames,
+        "continuation_masks": report.continuation_masks,
+        "frontier": report.frontier,
+        "approach_band": report.approach_band,
+        "replay_verified": replay_verified,
+    });
+    fs::write(
+        output.join("viability-summary.json"),
+        serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }
 
@@ -431,33 +473,8 @@ fn run_archive_resume_mode(
         selection,
         ResumeSelection::Champion | ResumeSelection::Frontier | ResumeSelection::FrontierCellSet
     );
-    let report = if frozen_search {
-        run_smb_archive_search_with_config_and_suffix(
-            &rom,
-            &initial,
-            seed,
-            budget,
-            action_limit,
-            duration_policy,
-            suffix_policy,
-        )?
-    } else {
-        run_smb_archive_search_with_policies(
-            &rom,
-            &initial,
-            seed,
-            budget,
-            action_limit,
-            duration_policy,
-            suffix_policy,
-        )?
-    };
-    fs::write(
-        output.join("archive-live.json"),
-        serde_json::to_vec_pretty(&report)?,
-    )?;
-    let replay_verified = if replay_requested {
-        let replay = if frozen_search {
+    let run = |seed| {
+        if frozen_search {
             run_smb_archive_search_with_config_and_suffix(
                 &rom,
                 &initial,
@@ -466,7 +483,7 @@ fn run_archive_resume_mode(
                 action_limit,
                 duration_policy,
                 suffix_policy,
-            )?
+            )
         } else {
             run_smb_archive_search_with_policies(
                 &rom,
@@ -476,8 +493,16 @@ fn run_archive_resume_mode(
                 action_limit,
                 duration_policy,
                 suffix_policy,
-            )?
-        };
+            )
+        }
+    };
+    let report = run(seed)?;
+    fs::write(
+        output.join("archive-live.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    let replay_verified = if replay_requested {
+        let replay = run(seed)?;
         fs::write(
             output.join("archive-replay.json"),
             serde_json::to_vec_pretty(&replay)?,
@@ -510,6 +535,9 @@ fn run_archive_resume_mode(
             SmbArchiveSuffixPolicy::OneOrTwo => "one_or_two",
             SmbArchiveSuffixPolicy::BurstUpToFour => "burst_up_to_four",
         },
+        "controller_vocabulary": "frozen_nine_mask",
+        "parent_scheduler": if frozen_search { "frozen_frontier_128" } else { "progress_band" },
+        "executor_mode": "snapshot_resume_archive",
         "campaign": summary,
     });
     fs::write(

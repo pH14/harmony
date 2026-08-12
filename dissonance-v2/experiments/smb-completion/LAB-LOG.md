@@ -486,3 +486,302 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
 - Raw evidence is under
   `target/smb-completion/executor-phase1-identity/` and
   `/private/tmp/harmony-smb-dissonance-target/criterion/`.
+
+## H21 — preregistered current-plateau controller closure
+
+- Falsifiable claim: the independently filmed progress-39 obstacle is a large
+  1-3 gap, but the frozen nine-chord controller cannot hold run+right (`0x41`)
+  or run+jump+right (`0xc1`). Closing the existing horizontal × A/B chord
+  product, without changing the scheduler or suffix horizon, will advance
+  beyond corrected 1-3 progress 39 reproducibly.
+- Source remains H20 seed `0x5eed_e002`, selected mechanically for its maximum
+  corrected `(world, level, progress)` tuple. Controls are the completed M14
+  control arms, which use this same source, seeds `0x5eed_e000..=0x5eed_e005`,
+  5,000 executions, frozen H3 parent scheduler, stratified durations,
+  one-or-two suffixes, archive keys/retention, no ranking or generated mutator,
+  and a 512-action bound. Challengers differ only by adding the five symmetric
+  chord combinations already fixed in H8: B+right (`0x41`), B+left (`0x42`),
+  A+B (`0xc0`), A+B+right (`0xc1`), and A+B+left (`0xc2`).
+- H20 states at progress 39 use only 234–246 of 512 actions, so this is not an
+  action-cap test. M14's generated suffixes never emitted `0x41` or `0xc1`, so
+  its null does not cover the missing running-jump representation. H8 tested
+  the same global, state-blind closure at an earlier 1-2 boundary; H21 tests its
+  utility at the distinct film-validated 1-3 gap without carrying H8's
+  experimental progress-band scheduler.
+- Acceptance requires progress greater than 39 on at least 4/6 challenger
+  seeds, strictly more successes than the 0/6 controls, and no regression below
+  1-3. If accepted, repeat unchanged on held-out seeds
+  `0x5eed_e100..=0x5eed_e105`; a promotion must replay exactly without a model.
+  The snapshot-backed archive executor is fixed for every arm and recorded as
+  snapshot-resume; executor modes are never mixed inside a campaign. The six
+  challenger arms run in one wave, respecting the concurrency cap.
+- Raw destination: `target/smb-completion/h21-dev/` and, only after development
+  acceptance, `target/smb-completion/h21-held/`.
+
+### H21 result — rejected
+
+- Closed-vocabulary challengers exceeded corrected 1-3 progress 39 on 0/6
+  development seeds, matching the completed controls' 0/6 result. Every report
+  stopped at `(world 0, level 2, progress 39)`, so no held-out panel or
+  promotion replay is due.
+- Retained-entry counts were `[3720, 3808, 3867, 3668, 3525, 3411]`; deaths were
+  `[37, 27, 27, 39, 35, 33]`. Retained inputs contained respectively
+  `[19481, 19956, 21218, 19161, 17261, 17059]` occurrences of B+right or
+  A+B+right, proving the closed controller representation was active rather
+  than dormant.
+- Decision: reject controller closure alone at the progress-39 boundary. The
+  independently validated H20 raw/film diagnosis already covers this exact
+  uniform boundary, so the result is a search failure rather than a new decode
+  fault. Raw evidence: `target/smb-completion/h21-dev/`.
+
+## H22 — preregistered current-plateau progress-equivalent scheduling
+
+- Falsifiable claim: the nominal frozen 128-entry frontier ranks vertical
+  bucket, engine state, and state fingerprint after progress, collapsing
+  parent selection to a nearly uniform offscreen-state slice. Treating every
+  active entry at the strongest `(milestones, world, level, progress)` tuple as
+  progress-equivalent will advance beyond corrected 1-3 progress 39
+  reproducibly.
+- Direct audit of completed H21 seed e000 reconstructs the active archive and
+  frozen sort exactly: all 128 selected parents are progress 39, 118 have
+  `player_y_bucket=15`, the remaining 10 have bucket 14, and all 128 have
+  `player_engine_state=8`. Their inputs use only 236–244 of 512 actions. This
+  is the same generic tie-break failure signature diagnosed at H5, now at a
+  distinct film-validated obstacle.
+- Source remains H20/H21's exact H19 seed `0x5eed_e002` progress-39 report.
+  Controls are the completed M14 control arms. Challengers keep the frozen
+  nine-mask controller, stratified durations, one-or-two suffix, archive
+  keys/retention, no ranking or generated mutator, 512-action bound, and 5,000
+  executions. The sole change is the existing 3/4 frontier branch: uniformly
+  select from all active entries tied at maximum
+  `(milestone_key, world, level, progress)`, ignoring vertical/state/fingerprint
+  only for parent choice. The 1/4 global archive branch is unchanged.
+- Acceptance requires progress greater than 39 on at least 4/6 development
+  seeds, strictly more successes than the 0/6 controls, and no regression below
+  1-3. If accepted, repeat unchanged on held-out seeds
+  `0x5eed_e100..=0x5eed_e105`; a promotion must replay exactly without a model.
+  The snapshot-backed archive executor is fixed and recorded for every arm;
+  executor modes are never mixed. Run at most six arms concurrently.
+- Raw destination: `target/smb-completion/h22-dev/` and, only after development
+  acceptance, `target/smb-completion/h22-held/`.
+
+### H22 result — rejected
+
+- Progress-equivalent challengers exceeded corrected 1-3 progress 39 on 0/6
+  development seeds, matching the completed controls. Every report stopped at
+  `(world 0, level 2, progress 39)`, so no held-out panel or promotion replay is
+  due.
+- Retained-entry counts were `[3241, 3345, 3089, 3419, 3156, 2955]`; deaths were
+  `[37, 27, 29, 37, 44, 39]`. The changed corpus counts confirm that removing
+  the vertical/state/fingerprint tie-break affected scheduling, but it did not
+  traverse the boundary.
+- Decision: reject progress-equivalent scheduling alone. The result shifts the
+  next test from diversity among states at the lip to momentum preparation from
+  earlier approach states. Raw evidence: `target/smb-completion/h22-dev/`.
+
+## H23 — preregistered current-plateau approach-band scheduling
+
+- Falsifiable claim: selecting only progress-39 parents begins too late to
+  build the momentum required by the filmed large gap. Uniformly selecting on
+  the frontier branch from a fixed eight-bucket approach band will advance
+  beyond corrected 1-3 progress 39 reproducibly.
+- The exact H19/e002 source has 1,934 active representatives in corrected 1-3
+  progress buckets 32 through 39, with populated buckets
+  `[32, 33, 34, 35, 36, 37, 38, 39]` and all sixteen vertical buckets. The
+  approach evidence therefore exists in the retained source and does not
+  require new keys, bootstraps, ranking, or route knowledge.
+- Source, controls, seeds, 5,000-execution budget, frozen nine-mask controller,
+  stratified durations, one-or-two suffix, archive keys/retention, no generated
+  artifacts, and 512-action bound remain exactly H22's. The sole change is the
+  existing 3/4 frontier branch: select uniformly from all active entries tied
+  at maximum `(milestone_key, world, level)` and whose progress is within the
+  inclusive eight-bucket band ending at the maximum. The 1/4 global branch is
+  unchanged.
+- Acceptance requires progress greater than 39 on at least 4/6 development
+  seeds, strictly more successes than the 0/6 controls, and no regression below
+  1-3. If accepted, repeat unchanged on held-out seeds
+  `0x5eed_e100..=0x5eed_e105`; a promotion must replay exactly without a model.
+  The snapshot-backed archive executor is fixed and recorded; modes never mix.
+  Run at most six arms concurrently.
+- Raw destination: `target/smb-completion/h23-dev/` and, only after development
+  acceptance, `target/smb-completion/h23-held/`.
+
+### H23 result — rejected
+
+- Approach-band challengers exceeded corrected 1-3 progress 39 on 0/6
+  development seeds. Every report stopped at `(world 0, level 2, progress 39)`,
+  so no held-out panel or promotion replay is due.
+- Retained-entry counts were `[3647, 3858, 4028, 3871, 3716, 3452]`; deaths were
+  `[30, 27, 30, 40, 44, 29]`. The populated source band and changed campaign
+  corpora show the scheduler path was active, but earlier approach selection
+  with the frozen controller was insufficient.
+- Decision: reject approach-band scheduling alone. Raw evidence:
+  `target/smb-completion/h23-dev/`.
+
+## H24 — preregistered run-up controller interaction
+
+- Falsifiable claim: the large filmed gap requires an interaction that neither
+  isolated arm can express: choosing an earlier approach state and then holding
+  run+right or run+jump+right. Combining H23's eight-bucket approach band with
+  H21's symmetric A/B controller closure will advance beyond corrected 1-3
+  progress 39 reproducibly.
+- Source remains the exact H19/e002 progress-39 report. Controls are the
+  completed H23 arms. Seeds `0x5eed_e000..=0x5eed_e005`, 5,000 executions,
+  stratified durations, one-or-two suffix, archive keys/retention, no ranking
+  or generated mutator, and the 512-action bound remain fixed. Challengers add
+  only the five symmetric masks fixed before H8/H21 (`0x41`, `0x42`, `0xc0`,
+  `0xc1`, `0xc2`) to H23's already-tested approach-band scheduler.
+- This is a preregistered interaction test, not retroactive promotion of either
+  0/6 main effect. Acceptance requires progress greater than 39 on at least 4/6
+  challengers, strictly more successes than the 0/6 H23 controls, and no
+  regression below 1-3. If accepted, repeat unchanged on held-out seeds
+  `0x5eed_e100..=0x5eed_e105`; promotion requires exact no-model replay.
+  Snapshot-resume archive execution is fixed and recorded; modes never mix.
+  Run at most six arms concurrently.
+- Raw destination: `target/smb-completion/h24-dev/` and, only after development
+  acceptance, `target/smb-completion/h24-held/`.
+
+### H24 result — rejected
+
+- Run-up/controller interaction challengers exceeded corrected 1-3 progress 39
+  on 0/6 development seeds. Every report stopped at
+  `(world 0, level 2, progress 39)`, so no held-out panel or promotion replay is
+  due.
+- Retained-entry counts were `[3637, 3826, 3628, 3809, 3739, 3725]`; deaths were
+  `[26, 27, 36, 41, 40, 36]`. Combining the two active but individually null
+  mechanisms therefore did not traverse the boundary. Raw evidence:
+  `target/smb-completion/h24-dev/`.
+
+## H25 — preregistered duration-stratum closure
+
+- Falsifiable claim: the accepted stratified duration policy has a blind band:
+  every sampled chord lasts either 2–12 or 96–120 frames. Adding a bounded
+  middle hold stratum will advance beyond corrected 1-3 progress 39
+  reproducibly by allowing control edges between a tap and an approximately
+  two-second hold.
+- Source remains the exact H19/e002 progress-39 report. Controls are the
+  completed M14 control arms. Seeds `0x5eed_e000..=0x5eed_e005`, 5,000
+  executions, frozen parent scheduler, frozen nine-mask controller, one-or-two
+  suffix, archive keys/retention, no ranking or generated mutator, and the
+  512-action bound remain fixed. The sole change is duration sampling: choose
+  short 2–12, middle 32–64, or long 96–120 with equal seeded probability, then
+  sample uniformly inside the selected inclusive stratum.
+- Acceptance requires progress greater than 39 on at least 4/6 challengers,
+  strictly more successes than the 0/6 controls, and no regression below 1-3.
+  If accepted, repeat unchanged on held-out seeds
+  `0x5eed_e100..=0x5eed_e105`; promotion requires exact no-model replay.
+  Snapshot-resume archive execution is fixed and recorded; modes never mix.
+  Run at most six arms concurrently.
+- Raw destination: `target/smb-completion/h25-dev/` and, only after development
+  acceptance, `target/smb-completion/h25-held/`.
+
+### H25 result — rejected
+
+- Three-stratum challengers exceeded corrected 1-3 progress 39 on 0/6
+  development seeds. Every report stopped at
+  `(world 0, level 2, progress 39)`, so no held-out panel or promotion replay is
+  due.
+- Retained-entry counts were `[3780, 3783, 3465, 3395, 3538, 3618]`; deaths were
+  `[38, 27, 30, 40, 43, 21]`. Filling the duration blind band changed campaign
+  corpora without traversing the boundary. Raw evidence:
+  `target/smb-completion/h25-dev/`.
+
+## H26 — preregistered current-boundary checkpoint retention
+
+- Falsifiable claim: a long chord can pass through a viable post-gap state and
+  then fall before its endpoint, while Phase 4c retains snapshots only at chord
+  endpoints. Splitting each newly sampled chord into adjacent identical-button
+  segments of at most 12 frames will preserve an intermediate state that
+  advances beyond corrected 1-3 progress 39 reproducibly.
+- Source remains the exact H19/e002 progress-39 report. Controls are the
+  completed M14 control arms. Seeds `0x5eed_e000..=0x5eed_e005`, 5,000 target
+  executions, frozen parent scheduler, frozen nine-mask vocabulary, accepted
+  two-stratum durations, one-or-two sampled chords, archive keys/retention, no
+  ranking or generated mutator, and the 512-action bound remain fixed. The sole
+  change is deterministic representation: each sampled chord is encoded and
+  executed as consecutive same-button segments of at most 12 frames, admitting
+  the existing action-boundary snapshots after each segment. The concatenated
+  controller-frame stream is unchanged.
+- H4 tested the same generic checkpoint size at the earlier 1-2 boundary, where
+  a single-state bootstrap dominated; H26 tests the distinct, raw/film-validated
+  1-3 gap after plural source evidence and current-boundary rankings, bursts,
+  controllers, schedulers, and durations have all been measured null.
+- Acceptance requires progress greater than 39 on at least 4/6 challengers,
+  strictly more successes than the 0/6 controls, and no regression below 1-3.
+  If accepted, repeat unchanged on held-out seeds
+  `0x5eed_e100..=0x5eed_e105`; promotion requires exact no-model replay.
+  Snapshot-resume archive execution is fixed and recorded; modes never mix.
+  Run at most six arms concurrently.
+- Raw destination: `target/smb-completion/h26-dev/` and, only after development
+  acceptance, `target/smb-completion/h26-held/`.
+
+### H26 interrupted before result — superseded by frontier-viability steer
+
+- The integrator paused new mechanism panels after the six H26 development
+  processes had started but before any arm wrote a campaign report. All six
+  were terminated; completed-report count is zero. No partial process state or
+  outcome was inspected, scored, or used. H26 remains registered above but has
+  no decision.
+- The required next work is one no-search-change frontier-viability diagnostic
+  on the exact progress-39 frontier and H23 approach band, plus a per-frame
+  maximum-progress watermark. Raw empty/interrupted process logs remain under
+  `target/smb-completion/h26-dev/` as an audit trail.
+
+## D27 — preregistered frontier-viability diagnostic
+
+- Diagnostic claim: retained evaluation-end states at the progress-39 boundary
+  may already be below the playable area and unrecoverable before the engine
+  reaches kill state `$0b`; if so, the archive's apparent frontier is dominated
+  by doomed states rather than viable parents.
+- Source is the exact H19/e002 report used by H20–H26. Reconstruct the active
+  archive mechanically with the existing capacity-two, fewer-actions retention
+  rule. Audit every active entry in maximal corrected
+  `(world 0, level 2, progress 39)` cells and every active entry in the inclusive
+  H23 approach band at progress 32–39. No parent selection or search execution
+  occurs.
+- For each audited input, replay from clean gameplay genesis to its endpoint,
+  snapshot, then restore that identical snapshot once for each continuation:
+  (a) no input and (b) each of the nine frozen single chords. Each continuation
+  holds the chord for a fixed 120 frames. Classification is mechanical over the
+  continuation traces: `kill_state` if player engine state reaches `$0b`;
+  `below_playable` if the decoded y byte remains in bucket 15 at the end without
+  kill; otherwise `controllable`. A parent is `doomed` only if all ten
+  continuations classify as `kill_state` or `below_playable`; any controllable
+  continuation makes it viable. Report counts and doomed fractions separately
+  for the maximal frontier and approach band, with exact deterministic replay.
+- Independently amend campaign reports with a per-frame maximum mechanical
+  `(world, level, progress)` watermark so transient crossings inside an action
+  are recorded even when the endpoint is not retained. The watermark is
+  observation only and cannot affect novelty, keys, scheduling, parent choice,
+  or admission. Add deterministic tests for both the viability audit and
+  watermark replay.
+- Decision rule: `mostly unrecoverable` means doomed fraction strictly greater
+  than one half in the maximal frontier. If true, preregister the integrator's
+  mechanical admission cleanup and rerun H24 unchanged on the cleaned archive.
+  Otherwise record the diagnosis false and return to the existing hypothesis
+  order. No model is involved.
+- Raw destination: `target/smb-completion/d27-frontier-viability/`.
+
+### D27 result — frontier overwhelmingly viable; diagnosis false
+
+- The mechanically reconstructed active maximal frontier contains 374 entries;
+  only 15 are doomed under all ten fixed 120-frame continuations, a doomed
+  fraction of `15/374 = 4.01%`. The inclusive progress-32-through-39 approach
+  band contains 1,934 active entries; only 31 are doomed, `31/1934 = 1.60%`.
+- The audit used no-input plus masks
+  `[0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10]` and classified
+  every parent deterministically. Its complete live and replay reports are
+  byte-equal with SHA-256
+  `6a5f7065f89fc67f6555a5681dfdc7c3ad8c84b5760da3170e0692505a9cc75a`;
+  `viability-summary.json` records `replay_verified=true`.
+- Decision: the frontier is not mostly unrecoverable. The registered strict
+  majority threshold is missed by a wide margin, so the proposed doomed-state
+  archive-admission cleanup and cleaned-H24 panel are not authorized and will
+  not be implemented. Bucket-15 prevalence in the old 128-entry sorted window
+  was a scheduler tie-break artifact, not evidence that the underlying maximal
+  frontier was dominated by post-fall states.
+- Campaign reports now carry a report-only per-frame maximum mechanical
+  `(world, level, progress)` watermark, including action-interior crossings; a
+  deterministic unit fixture verifies an interior progress 41 remains recorded
+  when the endpoint returns to 39. It cannot affect search behavior. Raw
+  evidence: `target/smb-completion/d27-frontier-viability/`.
