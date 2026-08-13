@@ -2474,6 +2474,14 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   `target/smb-completion/h45-held/`, `target/smb-completion/h45-held-viable/`
   and the frozen-path gate at `target/smb-completion/h45-gate-frozen/`.
 
+- Correction recorded beside the decision above, because the wording overstated
+  what changed in the code. Both retention policies remain selectable and the
+  frozen one is still the default of every previously recorded mode, so every
+  panel from H1 through H44 continues to reproduce exactly. What the promotion
+  means in practice is that subsequent panels are run with the probing policy,
+  through the mode that selects it, and that the frozen policy is kept only for
+  reproducing recorded evidence.
+
 ### Standing summary after the admission probe
 
 - The frontier in viable terms: 39 under the frozen terminal condition, 62 after
