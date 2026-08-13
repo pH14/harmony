@@ -1224,6 +1224,8 @@ pub struct SmbResponsiveEntry {
     pub common_frames: u64,
     /// Largest differing column span at or below the recorded ceiling.
     pub largest_span: i32,
+    /// Equal-camera frames whose differing span exceeded the recorded ceiling.
+    pub wide_frames: u64,
     /// Whether the entry was admitted to the audited set.
     pub admitted: bool,
 }
@@ -1321,13 +1323,14 @@ fn select_responsive_audit_ids(
             entry.key.progress,
             PlayerColumnRules::SPREAD,
         )?;
-        let (responsive, common, largest_span) = player_column_responsive_frames(&recording);
+        let measured = player_column_responsive_frames(&recording);
         examined.push(SmbResponsiveEntry {
             id: entry.id,
             progress: entry.key.progress,
-            responsive_frames: responsive,
-            common_frames: common,
-            largest_span,
+            responsive_frames: measured.responsive,
+            common_frames: measured.common,
+            largest_span: measured.largest_span,
+            wide_frames: measured.wide,
             admitted: false,
         });
     }
@@ -1393,15 +1396,19 @@ fn select_responsive_audit_ids(
 }
 
 /// Count differing frames and the largest differing span the controller produces.
-fn player_column_responsive_frames(recording: &EntryRecording) -> (u64, u64, i32) {
-    let right = &recording.continuations[1].columns;
-    let left = &recording.continuations[2].columns;
-    let frames = right.len().min(left.len());
+fn player_column_responsive_frames(recording: &EntryRecording) -> PlayerColumnResponsiveness {
+    let right = &recording.continuations[1];
+    let left = &recording.continuations[2];
+    let frames = right.columns.len().min(left.columns.len());
     let mut responsive = 0_usize;
     let mut largest_span = 0_i32;
+    let mut wide = 0_u64;
     for frame in 0..frames {
+        if right.camera[frame] != left.camera[frame] {
+            continue;
+        }
         let differing = (0..256)
-            .filter(|column| right[frame][*column] != left[frame][*column])
+            .filter(|column| right.columns[frame][*column] != left.columns[frame][*column])
             .collect::<Vec<_>>();
         let (Some(lowest), Some(highest)) = (differing.first(), differing.last()) else {
             continue;
@@ -1411,13 +1418,24 @@ fn player_column_responsive_frames(recording: &EntryRecording) -> (u64, u64, i32
             i32::try_from(highest.saturating_sub(*lowest).saturating_add(1)).unwrap_or(i32::MAX);
         if span <= PLAYER_COLUMN_SPAN_MAX {
             largest_span = largest_span.max(span);
+        } else {
+            wide = wide.saturating_add(1);
         }
     }
-    (
-        u64::try_from(responsive).unwrap_or(u64::MAX),
-        u64::try_from(frames).unwrap_or(u64::MAX),
+    PlayerColumnResponsiveness {
+        responsive: u64::try_from(responsive).unwrap_or(u64::MAX),
+        common: u64::try_from(frames).unwrap_or(u64::MAX),
         largest_span,
-    )
+        wide,
+    }
+}
+
+/// Recorded shape of one entry's response to the two opposite masks.
+struct PlayerColumnResponsiveness {
+    responsive: u64,
+    common: u64,
+    largest_span: i32,
+    wide: u64,
 }
 
 /// Report whether the held-right and held-left continuations ever render differently.

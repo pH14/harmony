@@ -1986,3 +1986,55 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   selects nothing. It runs no search, changes no search behavior, and involves
   no model. Raw destination:
   `target/smb-completion/d40-player-column-decode/`.
+
+### D40 result — stopped; the retained frontier has almost no horizontal freedom
+
+- Restricting the measure to equal-camera frames removed the confound and did
+  not change the answer. Of 256 entries examined across the same 36 progress
+  buckets, **2** reach a largest span of 24, so the audit stopped as registered.
+- The ambiguity D39 recorded is gone. Wide frames are now counted separately and
+  are almost absent: 240 entries record none, fifteen record one, one records
+  two. Every one of the 183 entries with a largest span of 0 also records zero
+  responsive frames, so a zero now means what it says — at equal camera the two
+  opposite masks render the player identically on every frame.
+- The distribution is the finding. 183 of 256 states do not answer the
+  controller at all. 62 answer with a span of exactly 17 and eight with 16 —
+  one sprite width, the player turning to face the other way without moving.
+  One records 18. Only id 1610 at progress 40, with span 98, and id 1871 at
+  progress 59, with span 60, put the player anywhere.
+- Stated plainly: at the deepest buckets of the rebuilt archive the player is
+  almost always either falling or wedged. Assignment 1(b)'s premise was that
+  ranking could not prefer a nearer state because the field recording horizontal
+  position does not exist. The field is still missing and D37's evidence still
+  points at index 134, but the measurement says the field is not what is
+  limiting these states: 73 of 256 answer the controller at all, and 2 of 256
+  can move.
+- Raw evidence: `target/smb-completion/d40-player-column-decode/`.
+
+### Standing summary after the terminal-condition correction
+
+- The frozen terminal condition missed the fall-into-gap death entirely. D34
+  established it on eight recorded continuations, none of which the frozen
+  condition detects, and adopted `$00b5 >= 2` beside it under a rule fixed in
+  advance. M35 applied it with all five gates green.
+- Re-admitting the recorded archive under the corrected condition kept 1,188 of
+  4,832 entries and found 3,644 already below the play area at the endpoint at
+  which they had been retained. Every heavily populated bucket in the deepest
+  tuple kept nothing.
+- Rebuilding with the frozen protocol broke the boundary that had held on every
+  arm from H20 through H27. Deaths rose from 45 to about 3,300 per 5,000
+  executions and one of six arms reached progress 74 where twelve consecutive
+  arms had stopped at exactly 39. Nothing but the death condition changed.
+- The live frontier is progress 62, not 74. Progress 63 through 74 are falls in
+  flight: the player leaves an edge, keeps travelling right while falling, and
+  the camera scrolls with him, so an action boundary landing in that window is
+  retained at a bucket no live state reached. A vertical threshold cannot close
+  that window, because recorded live play reaches `$00ce` 240 on page 1 and a
+  fall passes through the same values on its way down.
+- Below that, the retained states are wedged. Of 256 live states examined from
+  progress 74 down to 33, 183 do not answer the controller at all, 70 answer
+  only by changing which way the player faces, and 2 move him more than one
+  sprite width.
+- Both of those are properties of what the archive **retains**, not of what the
+  observation state records. Correcting them is a search change of the same kind
+  as the terminal condition, so it is reported rather than taken.
