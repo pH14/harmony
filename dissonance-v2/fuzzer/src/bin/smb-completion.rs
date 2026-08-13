@@ -25,10 +25,10 @@ use fuzzer::{
         audit_smb_player_column_spread, audit_smb_player_column_with_selection,
         audit_smb_terminal_death, census_smb_control_authority, diagnose_smb_film_columns,
         diagnose_smb_film_measurements, diagnose_smb_left_direction, diagnose_smb_player_column,
-        gate_smb_live_control, readmit_smb_archive, run_smb_archive_search,
-        run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_policies,
-        select_smb_responsive_audit_ids, select_smb_span_audit_ids, select_smb_spread_audit_ids,
-        select_smb_steered_audit_ids,
+        gate_smb_live_control, measure_smb_viable_progress, readmit_smb_archive,
+        run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
+        run_smb_archive_search_with_policies, select_smb_responsive_audit_ids,
+        select_smb_span_audit_ids, select_smb_spread_audit_ids, select_smb_steered_audit_ids,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -125,6 +125,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "diagnose-left-direction" {
         return run_left_direction_diagnosis_mode(&mut args);
+    }
+    if mode == "measure-viable-progress" {
+        return run_viable_progress_mode(&mut args);
     }
     if mode == "gate-live-control" {
         return run_live_control_gate_mode(&mut args);
@@ -805,6 +808,25 @@ fn run_left_direction_diagnosis_mode(
         serde_json::to_vec(&candidates)?,
     )?;
     println!("entries {} candidates {}", entries.len(), candidates.len());
+    Ok(())
+}
+
+fn run_viable_progress_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output file")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let report = measure_smb_viable_progress(&rom, &source)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 

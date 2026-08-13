@@ -1239,6 +1239,122 @@ pub fn select_smb_steered_audit_ids(
     })
 }
 
+const VIABLE_PROGRESS_BUCKET_SCAN: usize = 8;
+
+/// One examined progress bucket of the viable-progress measurement.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbViableBucket {
+    /// Recorded progress bucket.
+    pub progress: u16,
+    /// Entries of this bucket whose no-input continuation was run.
+    pub examined: u64,
+    /// Entries whose no-input continuation survived the fixed horizon.
+    pub viable: u64,
+}
+
+/// Deepest progress bucket holding a state that survives doing nothing.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbViableProgressReport {
+    /// Fixed no-input horizon in frames.
+    pub horizon: u8,
+    /// Fixed number of entries examined per bucket.
+    pub per_bucket: u64,
+    /// Deepest bucket with at least one viable entry, when one exists.
+    pub viable_progress: Option<u16>,
+    /// Maximum recorded progress bucket at the deepest tuple, viable or not.
+    pub recorded_progress: Option<u16>,
+    /// Buckets examined, deepest first, up to and including the first viable one.
+    pub buckets: Vec<SmbViableBucket>,
+}
+
+/// Measure the deepest progress bucket that holds a state surviving a no-input horizon.
+///
+/// This is a measurement, not a retention rule: it changes nothing the search
+/// does. It exists because the archive admits states the corrected terminal
+/// condition stops a few frames later, so the recorded maximum bucket overstates
+/// how far live play has reached.
+///
+/// # Errors
+///
+/// Returns an error when emulation or snapshotting fails.
+pub fn measure_smb_viable_progress(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+) -> Result<SmbViableProgressReport, Box<dyn Error>> {
+    let active = active_source_entries(source);
+    let Some(max_tuple) = active
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level))
+        .max()
+    else {
+        return Ok(SmbViableProgressReport {
+            horizon: PLAYER_COLUMN_FRAMES,
+            per_bucket: u64::try_from(VIABLE_PROGRESS_BUCKET_SCAN).unwrap_or(u64::MAX),
+            viable_progress: None,
+            recorded_progress: None,
+            buckets: Vec::new(),
+        });
+    };
+    let mut entries = active
+        .iter()
+        .copied()
+        .filter(|entry| (entry.key.world, entry.key.level) == max_tuple)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| (Reverse(entry.key.progress), entry.input.clone(), entry.id));
+    let recorded_progress = entries.first().map(|entry| entry.key.progress);
+    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    let mut prefix = PlayerColumnPrefix::new(&mut target)?;
+    let mut buckets: Vec<SmbViableBucket> = Vec::new();
+    let mut viable_progress = None;
+    let per_bucket = u64::try_from(VIABLE_PROGRESS_BUCKET_SCAN).unwrap_or(u64::MAX);
+    for entry in entries {
+        if viable_progress.is_some() {
+            break;
+        }
+        if buckets
+            .last()
+            .is_none_or(|bucket| bucket.progress != entry.key.progress)
+        {
+            buckets.push(SmbViableBucket {
+                progress: entry.key.progress,
+                examined: 0,
+                viable: 0,
+            });
+        }
+        let Some(bucket) = buckets.last_mut() else {
+            return Err("viable-progress bucket list is empty".into());
+        };
+        if bucket.examined >= per_bucket {
+            continue;
+        }
+        bucket.examined = bucket.examined.saturating_add(1);
+        let endpoint = replay_player_column_endpoint(&mut target, &mut prefix, entry)?;
+        target.restore(&endpoint)?;
+        let mut survived = true;
+        for _ in 0..PLAYER_COLUMN_FRAMES {
+            target.apply(&ButtonChord::new(PLAYER_COLUMN_MASKS[0], 1));
+            if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+                survived = false;
+                break;
+            }
+        }
+        if survived {
+            let Some(bucket) = buckets.last_mut() else {
+                return Err("viable-progress bucket list is empty".into());
+            };
+            bucket.viable = bucket.viable.saturating_add(1);
+            viable_progress = Some(entry.key.progress);
+        }
+    }
+    Ok(SmbViableProgressReport {
+        horizon: PLAYER_COLUMN_FRAMES,
+        per_bucket,
+        viable_progress,
+        recorded_progress,
+        buckets,
+    })
+}
+
 /// One examined entry of the responsiveness scan.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbResponsiveEntry {

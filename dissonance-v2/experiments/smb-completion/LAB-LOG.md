@@ -2236,3 +2236,52 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   `524fc2992b55c56d60e8f1e5b93050de8de0c4fc55c3164aa0afa863e29ec65d`, and its
   journal SHA-256 is
   `834c6dd144ea9582d766be1ae2f23243e7cc54cef8cdc5e08e4379a0e835dfdb`.
+
+## H44 — preregistered journal-informed ranking at the rebuilt frontier
+
+- Falsifiable claim: with the corrected terminal condition, the corrected field
+  semantics and dynamics, and the re-seeded journal, the instrumentor can infer a
+  non-progress within-cell ranking that preserves states better prepared to
+  produce descendant novelty beyond the rebuilt frontier.
+- Source is the M35-selected rebuilt archive
+  `target/smb-completion/m35-rebuild/e000/archive-live.json`, seed
+  `0x5eed_e000`, built under the corrected terminal condition. Film evidence is
+  generated from that same archive by the existing frontier film path and
+  supplied as the recorded manifest and video. The operator view contains M43's
+  corrected context and re-seeded journal and no suggested ranking term, field,
+  action, route, layout, item or goal.
+- H27's protocol is otherwise unchanged: one ranking invocation through the
+  existing decision schema with at most three compile and fixture attempts;
+  the existing pure and deterministic source checks with progress terms still
+  forbidden; observation fixtures; the fixed seed `0x5eed_ef00` 256-execution
+  isolation pilot and its exact replay; the recorded-journal chain replay;
+  development controls and ranking arms on seeds
+  `0x5eed_e000..=0x5eed_e005` at 5,000 executions each; the frozen scheduler,
+  nine-mask vocabulary, stratified durations, one-or-two suffix and 512-action
+  bound; the ranking consulted only for full-cell replacement with fewer actions
+  as the final tie-breaker; no other generated artifact; no arm at or above
+  20,000 executions; at most six arms concurrent.
+- Exposure stated before execution. The source's maximum recorded tuple is a
+  fall in flight, and the unchanged protocol selects the shortest input at that
+  tuple as the resume input, so both controls and ranking arms begin from a
+  prefix the corrected condition stops within a few frames. Bootstrapping that
+  prefix still inserts every live action boundary along it, so the archive is
+  not empty of live states, but the frontier scheduler will still favour the
+  buckets that are falls. This is the fenced retention question showing up
+  inside the panel; the protocol is not altered to hide it.
+- Acceptance is measured on viable progress rather than recorded progress,
+  because recorded progress counts falls in flight. Viable progress is the
+  deepest bucket at the maximum tuple holding a state whose no-input
+  continuation survives 120 frames, measured by examining at most eight entries
+  per bucket in descending order and stopping at the first bucket with one. The
+  same measurement is applied to the source archive and to every arm's archive.
+  It is a measurement only and changes nothing the search does.
+- Acceptance requires the ranking arms to exceed the source archive's viable
+  progress on at least 4/6 development seeds, with strictly more successes than
+  the controls, and no arm regressing below the deepest recorded tuple. Only
+  then repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105` with the
+  same threshold. Any promotion must replay exactly from recorded seed,
+  observations, generated files, labels and journals with no model. Otherwise
+  record the ranking as a registered null.
+- Raw destination: `target/smb-completion/h44-luna/` and the film evidence at
+  `target/smb-completion/h44-frontier-film/`.
