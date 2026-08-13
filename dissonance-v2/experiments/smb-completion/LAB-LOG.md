@@ -1190,3 +1190,40 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
 - The diagnosis inspected a small hand-chosen set of byte indices. The follow-up
   audit does not use that inspection: it remains a blind scan of all 2,048
   indices under fixed filters, verified against rendered frames.
+
+## D30 — preregistered steerable-entry player-column decode audit
+
+- D29 remains frozen above with its inconclusive result. D30 repeats the same
+  diagnostic claim on entries the controller actually steers: a work-RAM byte
+  measures the player's horizontal column within the visible screen, and it can
+  be identified mechanically from this program's own recorded raw work RAM and
+  rendered frames, without a disassembly, route, layout, or external table.
+- Source, active-archive reconstruction, slice progress buckets 39 and 32,
+  `(input, id)` ordering, three fixed continuations `0x00`, `0x01`, `0x02` of
+  120 single-frame chords, per-frame work RAM and 256-column frame signatures,
+  truncation at engine state `$0b`, the video-enabled target, the film check,
+  the four-byte-stride rejection, lowest-index selection, the byte-equal
+  live-and-replay gate, and the rendered PNG set are exactly D29's.
+- The sole change is which entries are audited. Scan the ordered active entries
+  of each slice and keep an entry only if it is steerable: the recorded work RAM
+  at the last recorded frame of the right continuation differs from the left
+  continuation's. This is a mechanical control-authority test over the same
+  fixed continuations and uses no route, layout, or field meaning. Scan at most
+  64 candidates per slice and audit the first eight steerable entries found in
+  each. Record, per slice, the number scanned and the number steerable.
+- Because the audited count is no longer fixed at sixteen, C2's threshold
+  becomes at least three quarters of the audited entries, rounded up, instead of
+  at least twelve. C0, C1, C3, C4, and the film check are unchanged. If fewer
+  than eight entries are steerable in total, the audit records the counts and
+  reports itself inconclusive without selecting an index.
+- The steerable counts are themselves the registered evidence for how much of
+  this frontier the controller can move, independent of whether an index is
+  found.
+- If the audit selects an index, the field name, the exact operator sentence,
+  the unchanged-key requirement, and the fixed seed `0x5eed_ef00`,
+  256-execution byte-identical archive gate are exactly as fixed in D29. The
+  pre-change gate report is already recorded with SHA-256
+  `383bc917ec0b1d3b6911059f1526cfd853b31f91bf10b32aeb9ee57a41fa7111` at
+  `target/smb-completion/d29-field-gate-before/`.
+- The audit runs no search, changes no search behavior, and involves no model.
+  Raw destination: `target/smb-completion/d30-player-column-decode/`.
