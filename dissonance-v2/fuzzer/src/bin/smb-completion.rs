@@ -84,6 +84,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if mode == "audit-steerable-player-column" {
         return run_player_column_mode(&mut args, SmbPlayerColumnSelection::FirstSteerable);
     }
+    if mode == "audit-advancing-player-column" {
+        return run_player_column_mode(&mut args, SmbPlayerColumnSelection::FirstCameraAdvancing);
+    }
     if mode == "diagnose-player-column" {
         return run_player_column_diagnosis_mode(&mut args);
     }

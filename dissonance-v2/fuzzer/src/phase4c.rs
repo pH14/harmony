@@ -660,6 +660,7 @@ const PLAYER_COLUMN_FILM_MIN_WIDTH: i32 = 4;
 const PLAYER_COLUMN_FILM_MAX_WIDTH: i32 = 40;
 const PLAYER_COLUMN_STRIDES: [u16; 3] = [4, 8, 12];
 const PLAYER_COLUMN_SCAN_CAP: usize = 64;
+const PLAYER_COLUMN_ADVANCING_SCAN_CAP: usize = 128;
 const PLAYER_COLUMN_RENDERED_COMPARISONS: usize = 4;
 
 /// One ordered audit candidate: an active entry and its slice progress bucket.
@@ -672,6 +673,9 @@ pub enum SmbPlayerColumnSelection {
     FirstOrdered,
     /// D30: the first eight ordered active entries the controller steers.
     FirstSteerable,
+    /// D31: the first eight ordered active entries whose right continuation
+    /// advances the recorded camera.
+    FirstCameraAdvancing,
 }
 
 struct ContinuationRecording {
@@ -728,6 +732,7 @@ pub fn audit_smb_player_column_with_selection(
 ) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
     let candidates = player_column_candidates(source, selection_mode)?;
     let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
+    let mut prefix = PlayerColumnPrefix::new(&mut target)?;
     let mut selected = Vec::new();
     let mut recordings = Vec::new();
     let mut scanned_per_slice = Vec::new();
@@ -741,7 +746,7 @@ pub fn audit_smb_player_column_with_selection(
                 break;
             }
             scanned = scanned.saturating_add(1);
-            let recording = record_player_column_entry(&mut target, entry, *progress)?;
+            let recording = record_player_column_entry(&mut target, &mut prefix, entry, *progress)?;
             let keep = match selection_mode {
                 SmbPlayerColumnSelection::FirstOrdered => true,
                 SmbPlayerColumnSelection::FirstSteerable => {
@@ -751,6 +756,13 @@ pub fn audit_smb_player_column_with_selection(
                     }
                     steered
                 }
+                SmbPlayerColumnSelection::FirstCameraAdvancing => {
+                    let advanced = player_column_advances_camera(&recording);
+                    if advanced {
+                        steerable = steerable.saturating_add(1);
+                    }
+                    advanced
+                }
             };
             if keep {
                 selected.push((*entry, *progress));
@@ -758,7 +770,7 @@ pub fn audit_smb_player_column_with_selection(
                 audited = audited.saturating_add(1);
             }
         }
-        if selection_mode == SmbPlayerColumnSelection::FirstSteerable {
+        if selection_mode != SmbPlayerColumnSelection::FirstOrdered {
             scanned_per_slice.push(scanned);
             steerable_per_slice.push(steerable);
         }
@@ -809,6 +821,7 @@ fn player_column_candidates(
     let cap = match selection_mode {
         SmbPlayerColumnSelection::FirstOrdered => PLAYER_COLUMN_SLICE_SIZE,
         SmbPlayerColumnSelection::FirstSteerable => PLAYER_COLUMN_SCAN_CAP,
+        SmbPlayerColumnSelection::FirstCameraAdvancing => PLAYER_COLUMN_ADVANCING_SCAN_CAP,
     };
     let mut slices = Vec::with_capacity(PLAYER_COLUMN_SLICES.len());
     for progress in PLAYER_COLUMN_SLICES {
@@ -834,6 +847,11 @@ fn player_column_candidates(
     Ok(slices)
 }
 
+fn player_column_advances_camera(recording: &EntryRecording) -> bool {
+    let camera = &recording.continuations[1].camera;
+    camera[camera.len().saturating_sub(1)].saturating_sub(camera[0]) >= PLAYER_COLUMN_CAMERA_ADVANCE
+}
+
 fn player_column_is_steerable(recording: &EntryRecording) -> bool {
     let right = &recording.continuations[1].wram;
     let left = &recording.continuations[2].wram;
@@ -850,17 +868,50 @@ fn first_audited_entry_per_slice(recordings: &[EntryRecording]) -> Vec<usize> {
         .collect()
 }
 
+/// Reusable genesis-rooted prefix so consecutive ordered candidates share replay work.
+struct PlayerColumnPrefix {
+    input: SmbInput,
+    snapshots: Vec<SmbSnapshot>,
+}
+
+impl PlayerColumnPrefix {
+    fn new(target: &mut SmbTarget) -> Result<Self, Box<dyn Error>> {
+        target.reset();
+        let genesis = target
+            .snapshot()
+            .ok_or("failed to snapshot audit genesis")?;
+        Ok(Self {
+            input: SmbInput::default(),
+            snapshots: vec![genesis],
+        })
+    }
+}
+
 fn replay_player_column_endpoint(
     target: &mut SmbTarget,
+    prefix: &mut PlayerColumnPrefix,
     entry: &SmbArchiveEntryReport,
 ) -> Result<SmbSnapshot, Box<dyn Error>> {
-    target.reset();
-    for action in &entry.input.actions {
+    let common = prefix
+        .input
+        .actions
+        .iter()
+        .zip(&entry.input.actions)
+        .take_while(|(left, right)| left == right)
+        .count();
+    target.restore(&prefix.snapshots[common])?;
+    prefix.snapshots.truncate(common + 1);
+    for action in &entry.input.actions[common..] {
         target.apply(action);
+        let snapshot = target
+            .snapshot()
+            .ok_or("failed to snapshot audit replay prefix")?;
+        prefix.snapshots.push(snapshot);
         if target.is_dead() || target.exit_kind() != ExitKind::Ok {
             break;
         }
     }
+    prefix.input = entry.input.clone();
     target
         .snapshot()
         .ok_or_else(|| "failed to snapshot audit endpoint".into())
@@ -868,10 +919,11 @@ fn replay_player_column_endpoint(
 
 fn record_player_column_entry(
     target: &mut SmbTarget,
+    prefix: &mut PlayerColumnPrefix,
     entry: &SmbArchiveEntryReport,
     progress: u16,
 ) -> Result<EntryRecording, Box<dyn Error>> {
-    let endpoint = replay_player_column_endpoint(target, entry)?;
+    let endpoint = replay_player_column_endpoint(target, prefix, entry)?;
     // The emulator's frame buffer is not part of a restored snapshot, so the endpoint
     // image is captured once here and reused as every continuation's frame zero.
     let endpoint_columns = column_signatures(&target.frame_rgba())?;
@@ -1257,9 +1309,11 @@ pub fn diagnose_smb_player_column(
         .flatten()
         .collect::<Vec<_>>();
     let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
+    let mut prefix = PlayerColumnPrefix::new(&mut target)?;
     let mut traces = Vec::with_capacity(selected.len());
     for (source_entry, progress) in &selected {
-        let recording = record_player_column_entry(&mut target, source_entry, *progress)?;
+        let recording =
+            record_player_column_entry(&mut target, &mut prefix, source_entry, *progress)?;
         traces.push(SmbPlayerColumnTrace {
             id: source_entry.id,
             progress: *progress,
@@ -1316,6 +1370,7 @@ fn render_player_column_frames(
     requests: &BTreeSet<(usize, usize, usize)>,
 ) -> Result<Vec<SmbAuditFrame>, Box<dyn Error>> {
     let mut frames = Vec::new();
+    let mut prefix = PlayerColumnPrefix::new(target)?;
     let mut entries = requests
         .iter()
         .map(|(entry, _, _)| *entry)
@@ -1323,7 +1378,7 @@ fn render_player_column_frames(
     entries.dedup();
     for entry in entries {
         let (source, _) = selected[entry];
-        let endpoint = replay_player_column_endpoint(target, source)?;
+        let endpoint = replay_player_column_endpoint(target, &mut prefix, source)?;
         let endpoint_rgba = target.frame_rgba();
         for (continuation, mask) in PLAYER_COLUMN_MASKS.into_iter().enumerate() {
             let wanted = requests
