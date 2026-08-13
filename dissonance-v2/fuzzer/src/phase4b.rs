@@ -915,8 +915,16 @@ pub fn smb_camera_pixels(wram: &[u8; WRAM_SIZE]) -> u32 {
     u32::from(wram[SCREEN_PAGE_OFFSET]) * 256 + u32::from(wram[SCREEN_X_OFFSET])
 }
 
+/// Lowest `$00b5` value D34 recorded only outside the play area.
+pub const PLAYER_BELOW_PLAY_AREA_PAGE: u8 = 2;
+
 fn smb_player_is_dead(wram: &[u8; WRAM_SIZE]) -> bool {
+    // The first clause is the frozen condition. The second is the M35 correction:
+    // D34 recorded `$00b5` never above 1 across 10,006 frames of live play and at
+    // or above 2 within 19 frames on every audited uncontrolled continuation, none
+    // of which the first clause detects at all.
     wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_KILLED_STATE
+        || wram[PLAYER_VERTICAL_PAGE_OFFSET] >= PLAYER_BELOW_PLAY_AREA_PAGE
 }
 
 fn smb_fingerprint_from_wram(wram: &[u8; WRAM_SIZE]) -> u64 {
@@ -2342,12 +2350,13 @@ mod tests {
 
     use super::{
         AppendButtonChordMutator, ButtonChord, DETECTOR_MAP_SIZE, MAX_SMB_ACTIONS, NullSmbDetector,
-        NullSmbMacro, SCREEN_PAGE_OFFSET, SCREEN_X_OFFSET, SMB_MAP_SIZE,
+        NullSmbMacro, PLAYER_BELOW_PLAY_AREA_PAGE, PLAYER_ENGINE_STATE_OFFSET, PLAYER_KILLED_STATE,
+        PLAYER_VERTICAL_PAGE_OFFSET, SCREEN_PAGE_OFFSET, SCREEN_X_OFFSET, SMB_MAP_SIZE,
         SMB_TRIAGE_BATCH_EXECUTIONS, SmbArtifactConfig, SmbDetector, SmbExecutor, SmbExecutorMode,
         SmbInput, SmbLabeledCorpusEntry, SmbMacro, SmbObservations, SmbTarget, SmbTriageScore,
         WRAM_SIZE, observe_smb_input, run_smb_configured, run_smb_ratchet_with_executor,
         run_smb_restart_configured_inner, sample_chord, slim_smb_observations,
-        smb_mechanical_state_from_wram, smb_milestones_from_wram,
+        smb_mechanical_state_from_wram, smb_milestones_from_wram, smb_player_is_dead,
     };
     use crate::phase2::{Interest, TriageLabels};
     use crate::target::{Target, execute_actions};
@@ -2686,6 +2695,23 @@ mod tests {
             })
             .collect::<std::collections::BTreeSet<_>>();
         assert!(buckets.len() > 2);
+    }
+
+    #[test]
+    fn the_corrected_terminal_condition_keeps_every_frozen_death() {
+        let mut wram = [0_u8; WRAM_SIZE];
+        assert!(!smb_player_is_dead(&wram));
+        wram[PLAYER_VERTICAL_PAGE_OFFSET] = PLAYER_BELOW_PLAY_AREA_PAGE - 1;
+        assert!(!smb_player_is_dead(&wram));
+        wram[PLAYER_VERTICAL_PAGE_OFFSET] = PLAYER_BELOW_PLAY_AREA_PAGE;
+        assert!(smb_player_is_dead(&wram));
+        // The frozen clause still decides on its own at every vertical page.
+        for page in 0..=u8::MAX {
+            let mut frozen = [0_u8; WRAM_SIZE];
+            frozen[PLAYER_ENGINE_STATE_OFFSET] = PLAYER_KILLED_STATE;
+            frozen[PLAYER_VERTICAL_PAGE_OFFSET] = page;
+            assert!(smb_player_is_dead(&frozen));
+        }
     }
 
     #[test]

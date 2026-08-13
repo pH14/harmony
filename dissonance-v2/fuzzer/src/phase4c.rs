@@ -17,8 +17,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     phase4b::{
         ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS,
-        PLAYER_KILLED_STATE, SmbDeathBytes, SmbInput, SmbMacro, SmbMechanicalState,
-        SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones, SmbObservations,
+        PLAYER_BELOW_PLAY_AREA_PAGE, PLAYER_KILLED_STATE, SmbDeathBytes, SmbInput, SmbMacro,
+        SmbMechanicalState, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones, SmbObservations,
         SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_camera_pixels, smb_death_bytes,
         smb_mechanical_state_from_wram, smb_milestones_from_wram,
     },
@@ -1854,6 +1854,165 @@ fn render_player_column_frames(
     Ok(frames)
 }
 
+/// One recorded progress bucket of the re-admission pass.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbReadmissionBucket {
+    /// Mechanical world number of the recorded entries.
+    pub world: u8,
+    /// Mechanical level number of the recorded entries.
+    pub level: u8,
+    /// Recorded progress bucket.
+    pub progress: u16,
+    /// Entries the source archive recorded in this bucket.
+    pub recorded: u64,
+    /// Entries of this bucket that survive the corrected terminal condition.
+    pub surviving: u64,
+}
+
+/// Complete report for re-admitting a recorded archive under the corrected condition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbReadmissionReport {
+    /// Entries recorded by the source archive.
+    pub recorded: u64,
+    /// Entries that survive the corrected terminal condition.
+    pub surviving: u64,
+    /// Entries already below the play area at their recorded endpoint.
+    pub below_play_area_at_endpoint: u64,
+    /// Per-bucket recorded and surviving counts, in key order.
+    pub buckets: Vec<SmbReadmissionBucket>,
+    /// Maximum surviving world, level and progress, when anything survives.
+    pub max_surviving: Option<(u8, u8, u16)>,
+}
+
+/// Replay a recorded archive under the corrected terminal condition and keep the survivors.
+///
+/// An entry survives when the corrected condition is false on every frame up to
+/// and including its endpoint. The pass runs no search and involves no model.
+///
+/// # Errors
+///
+/// Returns an error when emulation or snapshotting fails.
+pub fn readmit_smb_archive(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+) -> Result<(SmbReadmissionReport, SmbArchiveReport), Box<dyn Error>> {
+    let mut ordered = source.entries.iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        left.input
+            .cmp(&right.input)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    target.reset();
+    let mut snapshots = vec![
+        target
+            .snapshot()
+            .ok_or("failed to snapshot re-admission genesis")?,
+    ];
+    let mut replayed = SmbInput::default();
+    let mut surviving_ids = BTreeSet::new();
+    let mut below_play_area = 0_u64;
+    for entry in &ordered {
+        let common = replayed
+            .actions
+            .iter()
+            .zip(&entry.input.actions)
+            .take_while(|(left, right)| left == right)
+            .count();
+        target.restore(&snapshots[common])?;
+        snapshots.truncate(common + 1);
+        for action in &entry.input.actions[common..] {
+            target.apply(action);
+            snapshots.push(
+                target
+                    .snapshot()
+                    .ok_or("failed to snapshot a re-admission prefix")?,
+            );
+        }
+        replayed = entry.input.clone();
+        if target.exit_kind() != ExitKind::Ok {
+            return Err("re-admission replay failed to emulate a recorded entry".into());
+        }
+        if smb_death_bytes(target.wram()).vertical_page >= PLAYER_BELOW_PLAY_AREA_PAGE {
+            below_play_area = below_play_area.saturating_add(1);
+        }
+        if !target.is_dead() {
+            surviving_ids.insert(entry.id);
+        }
+    }
+    let mut buckets = BTreeMap::<(u8, u8, u16), (u64, u64)>::new();
+    for entry in &source.entries {
+        let counts = buckets
+            .entry((entry.key.world, entry.key.level, entry.key.progress))
+            .or_insert((0, 0));
+        counts.0 = counts.0.saturating_add(1);
+        if surviving_ids.contains(&entry.id) {
+            counts.1 = counts.1.saturating_add(1);
+        }
+    }
+    let survivors = source
+        .entries
+        .iter()
+        .filter(|entry| surviving_ids.contains(&entry.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let report = SmbReadmissionReport {
+        recorded: u64::try_from(source.entries.len()).unwrap_or(u64::MAX),
+        surviving: u64::try_from(survivors.len()).unwrap_or(u64::MAX),
+        below_play_area_at_endpoint: below_play_area,
+        buckets: buckets
+            .iter()
+            .map(
+                |((world, level, progress), (recorded, surviving))| SmbReadmissionBucket {
+                    world: *world,
+                    level: *level,
+                    progress: *progress,
+                    recorded: *recorded,
+                    surviving: *surviving,
+                },
+            )
+            .collect(),
+        max_surviving: survivors
+            .iter()
+            .map(|entry| (entry.key.world, entry.key.level, entry.key.progress))
+            .max(),
+    };
+    let mut milestones = SmbMilestones::default();
+    for entry in &survivors {
+        merge_milestones(&mut milestones, entry.milestones);
+    }
+    let champion_input = survivors
+        .iter()
+        .max_by_key(|entry| {
+            (
+                milestone_key(entry.milestones),
+                entry.key.world,
+                entry.key.level,
+                entry.key.progress,
+                Reverse(entry.input.actions.len()),
+            )
+        })
+        .map(|entry| entry.input.clone())
+        .unwrap_or_default();
+    let rebuilt = SmbArchiveReport {
+        seed: source.seed,
+        executions: 0,
+        milestones,
+        progress_watermark: SmbProgressWatermark::default(),
+        first_reached: SmbMilestoneTimes::default(),
+        first_inputs: SmbMilestoneInputs::default(),
+        champion_input,
+        retained: report.surviving,
+        rejected: 0,
+        deaths: 0,
+        entries: survivors,
+        progress_curve: Vec::new(),
+        ranking: SmbRankingAccounting::default(),
+        generated_mutator: SmbGeneratedMutatorAccounting::default(),
+    };
+    Ok((report, rebuilt))
+}
+
 const DEATH_AUDIT_ENTRIES: usize = 8;
 const DEATH_AUDIT_SCAN_CAP: usize = 128;
 const DEATH_AUDIT_BUCKET_CAP: usize = 2;
@@ -2006,6 +2165,55 @@ pub fn audit_smb_terminal_death(
         candidates,
         control_trace,
         uncontrolled_traces,
+    })
+}
+
+/// Result of replaying the recorded champion input under the current terminal condition.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbLiveControlReport {
+    /// Champion actions consumed before the maximum recorded tuple was reached.
+    pub actions: usize,
+    /// Frames recorded, including the genesis frame.
+    pub frames: u64,
+    /// Largest `$00b5` value seen anywhere along the replay.
+    pub max_vertical_page: u8,
+    /// Largest combined vertical position seen anywhere along the replay.
+    pub max_vertical_position: u32,
+}
+
+/// Gate the current terminal condition against the recorded champion input.
+///
+/// The replay must reach the maximum recorded tuple without terminating. A
+/// terminal condition that stops it is a false positive over recorded live play.
+///
+/// # Errors
+///
+/// Returns an error when the source has no active entries, when the replay
+/// terminates or fails, or when it never reaches the maximum recorded tuple.
+pub fn gate_smb_live_control(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+) -> Result<SmbLiveControlReport, Box<dyn Error>> {
+    let max_tuple = active_source_entries(source)
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level))
+        .max()
+        .ok_or("source archive has no active entries")?;
+    let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
+    let (trace, actions, _) = record_death_audit_control(&mut target, source, max_tuple)?;
+    Ok(SmbLiveControlReport {
+        actions,
+        frames: u64::try_from(trace.len()).unwrap_or(u64::MAX),
+        max_vertical_page: trace
+            .iter()
+            .map(|bytes| bytes.vertical_page)
+            .max()
+            .unwrap_or(0),
+        max_vertical_position: trace
+            .iter()
+            .map(|bytes| u32::from(bytes.vertical_page) * 256 + u32::from(bytes.vertical_low))
+            .max()
+            .unwrap_or(0),
     })
 }
 

@@ -23,9 +23,9 @@ use fuzzer::{
         audit_smb_frontier_viability, audit_smb_player_column_from_ids,
         audit_smb_player_column_spread, audit_smb_player_column_with_selection,
         audit_smb_terminal_death, census_smb_control_authority, diagnose_smb_film_columns,
-        diagnose_smb_film_measurements, diagnose_smb_player_column, run_smb_archive_search,
-        run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_policies,
-        select_smb_spread_audit_ids,
+        diagnose_smb_film_measurements, diagnose_smb_player_column, gate_smb_live_control,
+        readmit_smb_archive, run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
+        run_smb_archive_search_with_policies, select_smb_spread_audit_ids,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -103,6 +103,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "audit-terminal-death" {
         return run_terminal_death_mode(&mut args);
+    }
+    if mode == "gate-live-control" {
+        return run_live_control_gate_mode(&mut args);
+    }
+    if mode == "readmit-archive" {
+        return run_readmission_mode(&mut args);
     }
     if mode == "diagnose-film-measurements" {
         return run_film_measurement_mode(&mut args);
@@ -575,6 +581,74 @@ fn run_terminal_death_mode(
     println!("{}", serde_json::to_string_pretty(&summary)?);
     if replay_verified == Some(false) {
         return Err("terminal-death audit replay diverged".into());
+    }
+    Ok(())
+}
+
+fn run_live_control_gate_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let report = gate_smb_live_control(&rom, &source)?;
+    fs::write(
+        output.join("live-control-gate.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn run_readmission_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    let replay_requested = parse_replay_flag(args, "readmit-archive")?;
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let (report, rebuilt) = readmit_smb_archive(&rom, &source)?;
+    fs::write(
+        output.join("readmission-live.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    fs::write(
+        output.join("archive-live.json"),
+        serde_json::to_vec_pretty(&rebuilt)?,
+    )?;
+    let replay_verified = if replay_requested {
+        let (replay, replay_rebuilt) = readmit_smb_archive(&rom, &source)?;
+        Some(replay == report && replay_rebuilt == rebuilt)
+    } else {
+        None
+    };
+    let summary = serde_json::json!({
+        "recorded": report.recorded,
+        "surviving": report.surviving,
+        "below_play_area_at_endpoint": report.below_play_area_at_endpoint,
+        "max_surviving": report.max_surviving,
+        "occupied_buckets": report.buckets.len(),
+        "surviving_buckets": report
+            .buckets
+            .iter()
+            .filter(|bucket| bucket.surviving > 0)
+            .count(),
+        "replay_verified": replay_verified,
+    });
+    fs::write(
+        output.join("readmission-summary.json"),
+        serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    if replay_verified == Some(false) {
+        return Err("archive re-admission replay diverged".into());
     }
     Ok(())
 }
