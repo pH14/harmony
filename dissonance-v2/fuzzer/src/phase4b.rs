@@ -609,6 +609,9 @@ pub struct SmbTarget {
     action_observations: Vec<SmbObservations>,
     dead: bool,
     failed: bool,
+    // Deterministic work accounting only: never campaign state, never part of a
+    // snapshot, and never touched by restore, so counting cannot alter replay.
+    frames_clocked: u64,
 }
 
 impl SmbTarget {
@@ -643,6 +646,7 @@ impl SmbTarget {
             observation,
             dead: false,
             failed: false,
+            frames_clocked: 0,
         })
     }
 
@@ -675,12 +679,15 @@ impl SmbTarget {
         target.deck.joypad_mut(Player::One).buttons = JoypadBtnState::empty();
         for _ in 0..120 {
             let _ = target.deck.clock_frame()?;
+            target.frames_clocked = target.frames_clocked.saturating_add(1);
         }
         target.deck.joypad_mut(Player::One).buttons = JoypadBtnState::START;
         let _ = target.deck.clock_frame()?;
+        target.frames_clocked = target.frames_clocked.saturating_add(1);
         target.deck.joypad_mut(Player::One).buttons = JoypadBtnState::empty();
         for _ in 0..240 {
             let _ = target.deck.clock_frame()?;
+            target.frames_clocked = target.frames_clocked.saturating_add(1);
         }
         let mut genesis_state = Vec::new();
         target.deck.save_state(&mut genesis_state)?;
@@ -717,6 +724,7 @@ impl SmbTarget {
         if result.is_err() {
             self.failed = true;
         } else {
+            self.frames_clocked = self.frames_clocked.saturating_add(1);
             self.dead = smb_player_is_dead(self.deck.wram());
         }
         result.map(|_| ())
@@ -738,6 +746,7 @@ impl SmbTarget {
                 self.failed = true;
                 return false;
             }
+            self.frames_clocked = self.frames_clocked.saturating_add(1);
             if smb_player_is_dead(self.deck.wram()) {
                 self.dead = true;
                 return false;
@@ -762,6 +771,16 @@ impl SmbTarget {
     #[must_use]
     pub fn is_dead(&self) -> bool {
         self.dead
+    }
+
+    /// Return the total frames this instance has emulated since construction.
+    ///
+    /// This is deterministic work accounting over the instance's whole life,
+    /// probes and bootstrap included. It is not campaign state: snapshots do
+    /// not carry it and `restore` does not touch it.
+    #[must_use]
+    pub fn frames_clocked(&self) -> u64 {
+        self.frames_clocked
     }
 
     /// Return every observer event emitted by the most recently applied action.
@@ -823,6 +842,7 @@ impl Target for SmbTarget {
                 break;
             }
             executed_frames = executed_frames.saturating_add(1);
+            self.frames_clocked = self.frames_clocked.saturating_add(1);
             let current_bucket = smb_scroll_bucket(self.deck.wram());
             self.dead = smb_player_is_dead(self.deck.wram());
             if current_bucket != prior_bucket || self.dead {

@@ -354,26 +354,26 @@ pub struct SmbFrontierViabilityReport {
 }
 
 #[derive(Clone, Debug)]
-struct ArchiveEntry {
-    report: SmbArchiveEntryReport,
-    snapshot: SmbSnapshot,
-    observations: Vec<SmbObservations>,
+pub(crate) struct ArchiveEntry {
+    pub(crate) report: SmbArchiveEntryReport,
+    pub(crate) snapshot: SmbSnapshot,
+    pub(crate) observations: Vec<SmbObservations>,
     ranking_lineage: bool,
 }
 
-struct ArchiveCandidate {
-    input: SmbInput,
-    key: SmbArchiveKey,
-    milestones: SmbMilestones,
+pub(crate) struct ArchiveCandidate {
+    pub(crate) input: SmbInput,
+    pub(crate) key: SmbArchiveKey,
+    pub(crate) milestones: SmbMilestones,
 }
 
-struct Archive<'a> {
-    entries: Vec<ArchiveEntry>,
-    active: Vec<bool>,
-    cells: BTreeMap<SmbArchiveKey, Vec<usize>>,
-    input_ids: BTreeMap<SmbInput, usize>,
-    retained: u64,
-    rejected: u64,
+pub(crate) struct Archive<'a> {
+    pub(crate) entries: Vec<ArchiveEntry>,
+    pub(crate) active: Vec<bool>,
+    pub(crate) cells: BTreeMap<SmbArchiveKey, Vec<usize>>,
+    pub(crate) input_ids: BTreeMap<SmbInput, usize>,
+    pub(crate) retained: u64,
+    pub(crate) rejected: u64,
     ranking: Option<&'a dyn SmbRanking>,
     ranking_accounting: SmbRankingAccounting,
     first_ranking_replacement: Option<u64>,
@@ -382,7 +382,7 @@ struct Archive<'a> {
 }
 
 impl<'a> Archive<'a> {
-    fn new(ranking: Option<&'a dyn SmbRanking>, experimental_search: bool) -> Self {
+    pub(crate) fn new(ranking: Option<&'a dyn SmbRanking>, experimental_search: bool) -> Self {
         Self {
             entries: Vec::new(),
             active: Vec::new(),
@@ -402,7 +402,7 @@ impl<'a> Archive<'a> {
         }
     }
 
-    fn insert(
+    pub(crate) fn insert(
         &mut self,
         parent_id: Option<usize>,
         execution: u64,
@@ -520,7 +520,7 @@ impl<'a> Archive<'a> {
             .collect()
     }
 
-    fn choose_parent(
+    pub(crate) fn choose_parent(
         &self,
         rand: &mut StdRand,
         max_actions: usize,
@@ -3564,6 +3564,7 @@ pub fn run_smb_archive_search_with_config_and_suffix(
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
     )
+    .map(|(report, _)| report)
 }
 
 /// Run completion search with explicit bounded duration and suffix policies.
@@ -3591,6 +3592,7 @@ pub fn run_smb_archive_search_with_policies(
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
     )
+    .map(|(report, _)| report)
 }
 
 /// Run frozen completion search with an explicit admission retention policy.
@@ -3627,6 +3629,7 @@ pub fn run_smb_archive_search_with_retention(
         key_policy,
         ladder_policy,
     )
+    .map(|(report, _)| report)
 }
 
 /// Run completion search with a generated ranking and an explicit retention policy.
@@ -3659,6 +3662,46 @@ pub fn run_smb_archive_search_with_ranking_and_retention<R: SmbRanking>(
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Extended,
     )
+    .map(|(report, _)| report)
+}
+
+/// Run the retention-policy search and additionally report its emulated frames.
+///
+/// The report is byte-identical to [`run_smb_archive_search_with_retention`]
+/// at the same arguments. The second value is the target's deterministic
+/// lifetime frame total — bootstrap, execution, and admission probes included —
+/// recorded as throughput evidence and never part of the report.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as
+/// [`run_smb_archive_search_with_retention`].
+#[allow(clippy::too_many_arguments)]
+pub fn run_smb_archive_search_with_retention_and_work(
+    rom: &[u8],
+    initial_inputs: &[SmbInput],
+    seed: u64,
+    execution_budget: u64,
+    max_actions: usize,
+    duration_policy: SmbArchiveDurationPolicy,
+    suffix_policy: SmbArchiveSuffixPolicy,
+    retention_policy: SmbArchiveRetentionPolicy,
+) -> Result<(SmbArchiveReport, u64), Box<dyn Error>> {
+    run_smb_archive_search_internal(
+        rom,
+        initial_inputs,
+        seed,
+        execution_budget,
+        max_actions,
+        duration_policy,
+        suffix_policy,
+        None,
+        None,
+        false,
+        retention_policy,
+        SmbArchiveKeyPolicy::Frozen,
+        SmbArchiveLadderPolicy::Frozen,
+    )
 }
 
 /// Run completion search with a generated ranking confined to full-cell replacement.
@@ -3685,6 +3728,7 @@ pub fn run_smb_archive_search_with_ranking<R: SmbRanking>(
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
     )
+    .map(|(report, _)| report)
 }
 
 /// Run frozen completion search with one bounded generated semantic mutator choice.
@@ -3711,6 +3755,7 @@ pub fn run_smb_archive_search_with_generated_mutator<M: SmbMacro>(
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
     )
+    .map(|(report, _)| report)
 }
 
 fn record_generated_mutator_result(
@@ -3745,7 +3790,7 @@ fn run_smb_archive_search_internal(
     retention_policy: SmbArchiveRetentionPolicy,
     key_policy: SmbArchiveKeyPolicy,
     ladder_policy: SmbArchiveLadderPolicy,
-) -> Result<SmbArchiveReport, Box<dyn Error>> {
+) -> Result<(SmbArchiveReport, u64), Box<dyn Error>> {
     if initial_inputs.is_empty() {
         return Err("SMB archive search requires a nonempty initial corpus".into());
     }
@@ -3977,7 +4022,7 @@ fn run_smb_archive_search_internal(
         }
     }
 
-    Ok(SmbArchiveReport {
+    let report = SmbArchiveReport {
         seed,
         executions: execution_budget,
         milestones: aggregate,
@@ -4014,7 +4059,8 @@ fn run_smb_archive_search_internal(
                     .collect(),
             },
         },
-    })
+    };
+    Ok((report, target.frames_clocked()))
 }
 
 /// Report whether some fixed probe mask keeps this candidate alive for the horizon.
@@ -4022,7 +4068,7 @@ fn run_smb_archive_search_internal(
 /// The target is restored to `snapshot` exactly before returning, so execution
 /// continues as if the probe had not run. The probe emits no observer events and
 /// consumes no randomness.
-fn admission_is_viable(
+pub(crate) fn admission_is_viable(
     target: &mut SmbTarget,
     snapshot: &SmbSnapshot,
     policy: SmbArchiveRetentionPolicy,
@@ -4061,7 +4107,7 @@ fn record_ladder(
     record.1 = record.1.max(state.progress);
 }
 
-fn merge_progress_watermark(
+pub(crate) fn merge_progress_watermark(
     watermark: &mut SmbProgressWatermark,
     observations: &[SmbObservations],
 ) {
@@ -4075,7 +4121,7 @@ fn merge_progress_watermark(
     }
 }
 
-fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> SmbArchiveKey {
+pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> SmbArchiveKey {
     let state = smb_mechanical_state_from_wram(wram);
     let digest = Sha256::digest(wram);
     // The decoded observation field keeps its recorded 0..=15 meaning; only the
@@ -4097,7 +4143,7 @@ fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> SmbArchiveKey
     }
 }
 
-fn sample_chord(
+pub(crate) fn sample_chord(
     rand: &mut StdRand,
     duration_policy: SmbArchiveDurationPolicy,
     experimental_search: bool,
@@ -4137,7 +4183,7 @@ fn sample_chord(
     Ok(ButtonChord::new(buttons, hold_frames))
 }
 
-fn merge_action_milestones(
+pub(crate) fn merge_action_milestones(
     milestones: &mut SmbMilestones,
     target: &SmbTarget,
 ) -> Result<(), Box<dyn Error>> {
@@ -4152,7 +4198,7 @@ fn merge_action_milestones(
     Ok(())
 }
 
-fn merge_milestones(aggregate: &mut SmbMilestones, current: SmbMilestones) {
+pub(crate) fn merge_milestones(aggregate: &mut SmbMilestones, current: SmbMilestones) {
     aggregate.max_1_1_scroll_bucket = aggregate
         .max_1_1_scroll_bucket
         .max(current.max_1_1_scroll_bucket);
@@ -4161,7 +4207,7 @@ fn merge_milestones(aggregate: &mut SmbMilestones, current: SmbMilestones) {
     aggregate.reached_onward |= current.reached_onward;
 }
 
-fn update_first_inputs(
+pub(crate) fn update_first_inputs(
     times: &mut SmbMilestoneTimes,
     inputs: &mut SmbMilestoneInputs,
     current: SmbMilestones,
@@ -4188,7 +4234,7 @@ fn update_first_inputs(
     }
 }
 
-fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16) {
+pub(crate) fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16) {
     (
         milestones.reached_onward,
         milestones.reached_1_2,
