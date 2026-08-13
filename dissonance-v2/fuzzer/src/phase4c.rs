@@ -631,6 +631,34 @@ pub struct SmbPlayerColumnReport {
     pub selected: Option<SmbPlayerColumnFilmEvidence>,
 }
 
+/// Control-authority counts for one progress bucket.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbControlCensusBucket {
+    /// Corrected progress bucket.
+    pub progress: u16,
+    /// Active representatives in the bucket.
+    pub active: u64,
+    /// Representatives whose right continuation advanced the camera.
+    pub admitted: u64,
+}
+
+/// Deterministic control-authority census over one archive level.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbControlCensusReport {
+    /// Frames applied by the single right continuation.
+    pub continuation_frames: u8,
+    /// Camera pixels an admitted continuation must advance.
+    pub camera_advance: u32,
+    /// Per-bucket counts in ascending progress order.
+    pub buckets: Vec<SmbControlCensusBucket>,
+    /// Active representatives examined.
+    pub active: u64,
+    /// Representatives admitted anywhere.
+    pub admitted: u64,
+    /// Admitted entry identifiers in descending progress then `(input, id)` order.
+    pub admitted_ids: Vec<u64>,
+}
+
 /// One rendered audit frame retained for direct visual inspection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SmbAuditFrame {
@@ -779,8 +807,18 @@ pub fn audit_smb_player_column_with_selection(
     report.scanned_per_slice = scanned_per_slice;
     report.steerable_per_slice = steerable_per_slice;
     let report = report;
+    let requests = player_column_frame_requests(&recordings, &comparisons, &report);
+    let frames = render_player_column_frames(&mut target, &selected, &requests)?;
+    Ok((report, frames))
+}
+
+fn player_column_frame_requests(
+    recordings: &[EntryRecording],
+    comparisons: &[FilmComparison],
+    report: &SmbPlayerColumnReport,
+) -> BTreeSet<(usize, usize, usize)> {
     let mut requests = BTreeSet::new();
-    for entry in first_audited_entry_per_slice(&recordings) {
+    for entry in first_audited_entry_per_slice(recordings) {
         let Some(recording) = recordings.get(entry) else {
             continue;
         };
@@ -795,7 +833,7 @@ pub fn audit_smb_player_column_with_selection(
         for comparison in comparisons
             .iter()
             .filter(|comparison| {
-                film_offset(&recordings, comparison, selection.index).is_some_and(
+                film_offset(recordings, comparison, selection.index).is_some_and(
                     |(offset, width)| {
                         (offset - i32::from(selection.offset)).abs() <= PLAYER_COLUMN_FILM_TOLERANCE
                             && (PLAYER_COLUMN_FILM_MIN_WIDTH..=PLAYER_COLUMN_FILM_MAX_WIDTH)
@@ -809,6 +847,46 @@ pub fn audit_smb_player_column_with_selection(
             requests.insert((comparison.entry, comparison.right, comparison.frame));
         }
     }
+    requests
+}
+
+/// Audit the horizontal-column byte over an explicit list of source entries.
+///
+/// D32 uses this with the highest-progress entries its control-authority census
+/// admitted. Recording, filters, film check, selection, and rendering are the
+/// audit's own.
+///
+/// # Errors
+///
+/// Returns an error when an identifier is absent from the source or when
+/// emulation, snapshotting, or rendering fails.
+pub fn audit_smb_player_column_from_ids(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    ids: &[u64],
+) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
+    let active = active_source_entries(source);
+    let mut selected = Vec::with_capacity(ids.len());
+    for id in ids {
+        let entry = active
+            .iter()
+            .find(|entry| entry.id == *id)
+            .ok_or("audit identifier is not an active source entry")?;
+        selected.push((*entry, entry.key.progress));
+    }
+    let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
+    let mut prefix = PlayerColumnPrefix::new(&mut target)?;
+    let mut recordings = Vec::with_capacity(selected.len());
+    for (entry, progress) in &selected {
+        recordings.push(record_player_column_entry(
+            &mut target,
+            &mut prefix,
+            entry,
+            *progress,
+        )?);
+    }
+    let (report, comparisons) = analyze_player_column(&recordings);
+    let requests = player_column_frame_requests(&recordings, &comparisons, &report);
     let frames = render_player_column_frames(&mut target, &selected, &requests)?;
     Ok((report, frames))
 }
@@ -845,6 +923,64 @@ fn player_column_candidates(
         );
     }
     Ok(slices)
+}
+
+/// Count how many retained representatives per progress bucket the controller
+/// can still move rightwards.
+///
+/// # Errors
+///
+/// Returns an error when emulation or snapshotting fails.
+pub fn census_smb_control_authority(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+) -> Result<SmbControlCensusReport, Box<dyn Error>> {
+    let mut entries = active_source_entries(source)
+        .into_iter()
+        .filter(|entry| entry.key.world == 0 && entry.key.level == 2)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| (entry.key.progress, entry.input.clone(), entry.id));
+    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    let mut prefix = PlayerColumnPrefix::new(&mut target)?;
+    let mut buckets = BTreeMap::<u16, (u64, u64)>::new();
+    let mut admitted_entries = Vec::new();
+    for entry in &entries {
+        let endpoint = replay_player_column_endpoint(&mut target, &mut prefix, entry)?;
+        target.restore(&endpoint)?;
+        let first = smb_camera_pixels(target.wram());
+        let mut last = first;
+        for _ in 0..PLAYER_COLUMN_FRAMES {
+            if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+                break;
+            }
+            target.apply(&ButtonChord::new(PLAYER_COLUMN_MASKS[1], 1));
+            last = smb_camera_pixels(target.wram());
+        }
+        let admitted = last.saturating_sub(first) >= PLAYER_COLUMN_CAMERA_ADVANCE;
+        let counts = buckets.entry(entry.key.progress).or_insert((0, 0));
+        counts.0 = counts.0.saturating_add(1);
+        if admitted {
+            counts.1 = counts.1.saturating_add(1);
+            admitted_entries.push(*entry);
+        }
+    }
+    admitted_entries
+        .sort_by_key(|entry| (Reverse(entry.key.progress), entry.input.clone(), entry.id));
+    Ok(SmbControlCensusReport {
+        continuation_frames: PLAYER_COLUMN_FRAMES,
+        camera_advance: PLAYER_COLUMN_CAMERA_ADVANCE,
+        buckets: buckets
+            .iter()
+            .map(|(progress, (active, admitted))| SmbControlCensusBucket {
+                progress: *progress,
+                active: *active,
+                admitted: *admitted,
+            })
+            .collect(),
+        active: u64::try_from(entries.len()).unwrap_or(u64::MAX),
+        admitted: u64::try_from(admitted_entries.len()).unwrap_or(u64::MAX),
+        admitted_ids: admitted_entries.iter().map(|entry| entry.id).collect(),
+    })
 }
 
 fn player_column_advances_camera(recording: &EntryRecording) -> bool {

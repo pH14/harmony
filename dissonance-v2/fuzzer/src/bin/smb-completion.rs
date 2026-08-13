@@ -19,8 +19,10 @@ use fuzzer::{
     },
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
-        SmbArchiveSuffixPolicy, SmbPlayerColumnSelection, audit_smb_frontier_viability,
-        audit_smb_player_column_with_selection, diagnose_smb_player_column, run_smb_archive_search,
+        SmbArchiveSuffixPolicy, SmbControlCensusReport, SmbPlayerColumnSelection,
+        audit_smb_frontier_viability, audit_smb_player_column_from_ids,
+        audit_smb_player_column_with_selection, census_smb_control_authority,
+        diagnose_smb_player_column, run_smb_archive_search,
         run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_policies,
     },
 };
@@ -30,6 +32,7 @@ use sha2::{Digest, Sha256};
 const M12_PILOT_SEED: u64 = 0x5eed_dc00;
 const M12_PILOT_EXECUTIONS: u64 = 500;
 const FRONTIER_RESUME_INPUTS: usize = 64;
+const CENSUS_AUDIT_ENTRIES: usize = 8;
 
 #[derive(Clone, Copy)]
 enum ResumeSelection {
@@ -86,6 +89,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "audit-advancing-player-column" {
         return run_player_column_mode(&mut args, SmbPlayerColumnSelection::FirstCameraAdvancing);
+    }
+    if mode == "census-control-authority" {
+        return run_control_census_mode(&mut args);
+    }
+    if mode == "audit-census-player-column" {
+        return run_census_player_column_mode(&mut args);
     }
     if mode == "diagnose-player-column" {
         return run_player_column_diagnosis_mode(&mut args);
@@ -355,6 +364,129 @@ fn run_player_column_mode(
     println!("{}", serde_json::to_string_pretty(&summary)?);
     if replay_verified == Some(false) {
         return Err("player-column audit replay diverged".into());
+    }
+    Ok(())
+}
+
+fn run_control_census_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    let replay_requested = parse_replay_flag(args, "census-control-authority")?;
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let report = census_smb_control_authority(&rom, &source)?;
+    fs::write(
+        output.join("census-live.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    let replay_verified = if replay_requested {
+        let replay = census_smb_control_authority(&rom, &source)?;
+        fs::write(
+            output.join("census-replay.json"),
+            serde_json::to_vec_pretty(&replay)?,
+        )?;
+        Some(replay == report)
+    } else {
+        None
+    };
+    let summary = serde_json::json!({
+        "continuation_frames": report.continuation_frames,
+        "camera_advance": report.camera_advance,
+        "active": report.active,
+        "admitted": report.admitted,
+        "buckets": report.buckets,
+        "replay_verified": replay_verified,
+    });
+    fs::write(
+        output.join("census-summary.json"),
+        serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    if replay_verified == Some(false) {
+        return Err("control-authority census replay diverged".into());
+    }
+    Ok(())
+}
+
+fn run_census_player_column_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let census_path = PathBuf::from(args.next().ok_or("missing census report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    let replay_requested = parse_replay_flag(args, "audit-census-player-column")?;
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let census: SmbControlCensusReport = serde_json::from_slice(&fs::read(census_path)?)?;
+    let ids = census
+        .admitted_ids
+        .iter()
+        .copied()
+        .take(CENSUS_AUDIT_ENTRIES)
+        .collect::<Vec<_>>();
+    if ids.len() < CENSUS_AUDIT_ENTRIES {
+        let summary = serde_json::json!({
+            "audited_entries": ids.len(),
+            "admitted": census.admitted,
+            "selected": serde_json::Value::Null,
+            "inconclusive": "fewer than eight admitted entries",
+        });
+        fs::write(
+            output.join("player-column-summary.json"),
+            serde_json::to_vec_pretty(&summary)?,
+        )?;
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+        return Ok(());
+    }
+    let (report, frames) = audit_smb_player_column_from_ids(&rom, &source, &ids)?;
+    fs::write(
+        output.join("player-column-live.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    let frame_directory = output.join("frames");
+    fs::create_dir_all(&frame_directory)?;
+    for frame in &frames {
+        fs::write(
+            frame_directory.join(&frame.name),
+            encode_smb_frame_png(&frame.rgba)?,
+        )?;
+    }
+    let replay_verified = if replay_requested {
+        let (replay, replay_frames) = audit_smb_player_column_from_ids(&rom, &source, &ids)?;
+        fs::write(
+            output.join("player-column-replay.json"),
+            serde_json::to_vec_pretty(&replay)?,
+        )?;
+        Some(replay == report && replay_frames == frames)
+    } else {
+        None
+    };
+    let summary = serde_json::json!({
+        "audited_ids": ids,
+        "audited_entries": report.audited.len(),
+        "distinct_value_survivors": report.distinct_value_survivors,
+        "smooth_survivors": report.smooth_survivors,
+        "left_direction_survivors": report.left_direction_survivors,
+        "right_direction_survivors": report.right_direction_survivors,
+        "qualifying_right_continuations": report.qualifying_right_continuations,
+        "camera_relative_survivors": report.camera_relative_survivors,
+        "film_survivors": report.film_survivors,
+        "stride_rejected": report.stride_rejected,
+        "selected": report.selected,
+        "rendered_frames": frames.len(),
+        "replay_verified": replay_verified,
+    });
+    fs::write(
+        output.join("player-column-summary.json"),
+        serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    if replay_verified == Some(false) {
+        return Err("census player-column audit replay diverged".into());
     }
     Ok(())
 }
