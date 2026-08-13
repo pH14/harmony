@@ -2718,3 +2718,35 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   failed on evidence rather than on sourcing.
 - Raw evidence: `target/smb-completion/d48-player-column-decode/` on both
   machines and `target/smb-completion/d48-diagnosis/`.
+
+## C49 — registered observational conquest campaigns
+
+- These are observational runs, not a test. There is no falsifiable claim, no
+  control, and no acceptance rule. The deliverable is the recorded archive, the
+  milestone ladder it reaches, and film of the furthest trajectory.
+- Stack: the promoted one. Corrected terminal condition from M35, probing
+  retention from H45, no model, no generated ranking and no generated mutator.
+  The frozen parent scheduler, nine-mask controller vocabulary, stratified
+  durations, one-or-two suffixes, capacity-two cells with fewer-actions
+  replacement and the 512-action bound are unchanged, and the vertical-page key
+  term is not part of these runs.
+- Source is the archive with the deepest recorded live frontier,
+  `target/smb-completion/h45-viability/probe-e001/archive-live.json` at viable
+  progress 114, resumed from its single shortest mechanical frontier input of
+  278 actions.
+- Two runs with distinct seeds. `0x5eed_c001` on the local machine at
+  `nice -n 10`; `0x5eed_c002` on the ARM machine under the recorded box rules,
+  also at `nice -n 10`. Executor is the snapshot-resume archive path in both.
+- 50,000 target executions each. The standing 20,000-execution ceiling is lifted
+  for these two runs only, by integrator authorization recorded here.
+- Constraint recorded in advance so it is not mistaken for difficulty later: the
+  resume input is 278 actions against the frozen 512-action bound, leaving 234
+  actions of headroom. If a run stops advancing while its deepest entries sit at
+  the bound, that is the bound.
+- No inline replay is run, because replaying 50,000 executions doubles a run of
+  several hours. The seed, source, mode and executor are recorded here so either
+  run reproduces on demand, and byte-exact determinism of this exact
+  configuration is already established by H45's replayed challenger arm.
+- World and level transitions are reported as they are observed. Raw
+  destinations: `target/smb-completion/c49-conquest-local/` and, on the ARM
+  machine, `target/smb-completion/c49-conquest-arm/`.
