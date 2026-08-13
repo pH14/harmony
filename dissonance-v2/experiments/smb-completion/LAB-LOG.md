@@ -1149,3 +1149,44 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   smoothly changing bytes in 5,760 recorded frames. Diagnose that before
   designing a second audit. Raw evidence:
   `target/smb-completion/d29-player-column-decode/`.
+
+### Post-D29 continuation diagnosis — fail; two observation faults at the frontier
+
+- The diagnosis re-ran D29's exact sixteen entries and recorded the program's own
+  decoded state and milestones at every continuation frame, plus work RAM every
+  tenth frame and frame strips every ten frames. It runs no search and involves
+  no model. Raw evidence: `target/smb-completion/d29-diagnosis/`.
+- On all sixteen entries the no-input, right, and left continuations are
+  bit-identical for all 120 frames. The controller has no authority at these
+  endpoints, which is why D29's direction filters had nothing to measure and why
+  no camera advance existed for its relative test.
+- The frame strips show why. At the audited endpoint the player is visible near
+  the left edge of the screen and is already falling; by frame 60 the player is
+  no longer drawn. Byte `$00ce`, the byte `player_y_bucket` is decoded from,
+  advances about four per frame and wraps repeatedly, while byte `$00b5`
+  increments once per wrap. The fall is therefore continuous, but the decoded
+  vertical bucket cycles through all sixteen values while it happens.
+- **First fault.** On ten of the sixteen entries the camera resets to page 0
+  x 0 within 120 frames, the engine byte passes `$08` to `$06` to `$00`, and
+  byte `$075a` decrements by exactly one at that frame. The decoded level tuple
+  stays `(world 0, level 2)` across the reset. Throughout every one of these
+  traces the program's own `decoded.dead` stays false, because the frozen
+  terminal-death condition is `$000e == $0b` and this death path never takes
+  that value. An execution that falls into the gap is therefore not stopped: it
+  keeps running from the restarted level, and its later action-boundary
+  snapshots are early-level states admitted under the same level tuple.
+- **Second fault.** Because the decoded vertical bucket is `$00ce / 16` with no
+  page term, one falling player passes through all sixteen vertical buckets at
+  one camera bucket. Archive keys therefore admit a whole column of cells per
+  fall. This is the mechanical origin of the vertical-bucket signatures already
+  noticed at H5 and H22 and of the large retained-entry counts at progress 39.
+- D27 and D28 could not see either fault. Their `kill_state` class requires
+  `$0b`, which never occurs on this path, and their `below_playable` class
+  requires vertical bucket 15 at the continuation endpoint, which the wrapping
+  byte usually is not. Both audits therefore classified free-falling and
+  already-restarted parents as controllable. Their registrations and reports
+  stand as recorded, but their shared conclusion that the maximal frontier is
+  overwhelmingly viable is not supported for this failure mode.
+- The diagnosis inspected a small hand-chosen set of byte indices. The follow-up
+  audit does not use that inspection: it remains a blind scan of all 2,048
+  indices under fixed filters, verified against rendered frames.

@@ -19,7 +19,7 @@ use fuzzer::{
     },
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
-        SmbArchiveSuffixPolicy, audit_smb_frontier_viability, audit_smb_player_screen_column,
+        SmbArchiveSuffixPolicy, audit_smb_frontier_viability, audit_smb_player_screen_column, diagnose_smb_player_column,
         run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
         run_smb_archive_search_with_policies,
     },
@@ -80,6 +80,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "audit-player-column" {
         return run_player_column_mode(&mut args);
+    }
+    if mode == "diagnose-player-column" {
+        return run_player_column_diagnosis_mode(&mut args);
     }
     if mode == "archive-resume" {
         return run_archive_resume_mode(
@@ -343,6 +346,34 @@ fn run_player_column_mode(
     if replay_verified == Some(false) {
         return Err("player-column audit replay diverged".into());
     }
+    Ok(())
+}
+
+fn run_player_column_diagnosis_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let (traces, frames) = diagnose_smb_player_column(&rom, &source)?;
+    fs::write(
+        output.join("player-column-traces.json"),
+        serde_json::to_vec(&traces)?,
+    )?;
+    let frame_directory = output.join("frames");
+    fs::create_dir_all(&frame_directory)?;
+    for frame in &frames {
+        fs::write(
+            frame_directory.join(&frame.name),
+            encode_smb_frame_png(&frame.rgba)?,
+        )?;
+    }
+    println!("traces {} frames {}", traces.len(), frames.len());
     Ok(())
 }
 

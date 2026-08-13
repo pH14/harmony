@@ -18,7 +18,7 @@ use crate::{
     phase4b::{
         ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS, SmbInput,
         SmbMacro, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones, SmbObservations,
-        SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_camera_pixels,
+        SmbMechanicalState, SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_camera_pixels,
         smb_mechanical_state_from_wram, smb_milestones_from_wram,
     },
     target::Target,
@@ -1096,6 +1096,107 @@ fn film_evidence(
         agreeing_comparisons: u64::try_from(best.0).unwrap_or(u64::MAX),
         comparisons: u64::try_from(measured.len()).unwrap_or(u64::MAX),
     })
+}
+
+/// One recorded frame of a screen-column diagnosis continuation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbPlayerColumnFrame {
+    /// Recorded frame index, with zero the audited endpoint.
+    pub frame: u16,
+    /// Raw screen-page byte.
+    pub camera_page: u8,
+    /// Raw screen-x byte.
+    pub camera_x: u8,
+    /// Raw player vertical-position byte.
+    pub player_y: u8,
+    /// Raw player engine-state byte.
+    pub engine_state: u8,
+    /// Program's own decoded mechanical state at this frame.
+    pub decoded: SmbMechanicalState,
+    /// Program's own decoded milestone ladder at this frame.
+    pub milestones: SmbMilestones,
+}
+
+/// Per-entry continuation traces recorded for the screen-column diagnosis.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbPlayerColumnTrace {
+    /// Stable source archive identifier.
+    pub id: u64,
+    /// Recorded progress bucket of the audited slice.
+    pub progress: u16,
+    /// One frame list per fixed continuation mask.
+    pub continuations: Vec<Vec<SmbPlayerColumnFrame>>,
+    /// Work RAM sampled every tenth recorded frame of every continuation.
+    pub raw_wram: Vec<Vec<Vec<u8>>>,
+}
+
+/// Record continuation traces and frame strips for the audited screen-column slices.
+///
+/// This diagnosis runs no search, changes no search behavior, and involves no
+/// model. It exposes recorded evidence about the same sixteen entries the audit
+/// selected.
+///
+/// # Errors
+///
+/// Returns an error when the source lacks the audit slices or when emulation,
+/// snapshotting, or rendering fails.
+pub fn diagnose_smb_player_column(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+) -> Result<(Vec<SmbPlayerColumnTrace>, Vec<SmbAuditFrame>), Box<dyn Error>> {
+    let selected = player_column_slices(source)?;
+    let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
+    let mut traces = Vec::with_capacity(selected.len());
+    for (source_entry, progress) in &selected {
+        let recording = record_player_column_entry(&mut target, source_entry, *progress)?;
+        traces.push(SmbPlayerColumnTrace {
+            id: source_entry.id,
+            progress: *progress,
+            continuations: recording
+                .continuations
+                .iter()
+                .map(|continuation| {
+                    continuation
+                        .wram
+                        .iter()
+                        .enumerate()
+                        .map(|(frame, wram)| SmbPlayerColumnFrame {
+                            frame: u16::try_from(frame).unwrap_or(u16::MAX),
+                            camera_page: wram[0x071a],
+                            camera_x: wram[0x071c],
+                            player_y: wram[0x00ce],
+                            engine_state: wram[0x000e],
+                            decoded: smb_mechanical_state_from_wram(wram),
+                            milestones: smb_milestones_from_wram(wram),
+                        })
+                        .collect()
+                })
+                .collect(),
+            raw_wram: recording
+                .continuations
+                .iter()
+                .map(|continuation| {
+                    continuation
+                        .wram
+                        .iter()
+                        .step_by(10)
+                        .map(|wram| wram.to_vec())
+                        .collect()
+                })
+                .collect(),
+        });
+    }
+    let mut requests = BTreeSet::new();
+    for slice in 0..PLAYER_COLUMN_SLICES.len() {
+        let entry = slice.saturating_mul(PLAYER_COLUMN_SLICE_SIZE);
+        for continuation in 0..PLAYER_COLUMN_MASKS.len() {
+            for frame in (0..=usize::from(PLAYER_COLUMN_FRAMES)).step_by(10) {
+                requests.insert((entry, continuation, frame));
+            }
+        }
+    }
+    let frames = render_player_column_frames(&mut target, &selected, &requests)?;
+    Ok((traces, frames))
 }
 
 fn render_player_column_frames(
