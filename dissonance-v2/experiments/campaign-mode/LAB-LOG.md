@@ -362,3 +362,21 @@
   the search worker's two full-load runs throughout. M15's recorded ratios
   stand. The binary's own acceptance flag is false only through its withdrawn
   tenfold clause, as M15 records.
+
+### Gate-1 base verification — the campaign branch is behaviorally inert
+
+- The same gate was rebuilt and run from the untouched base commit
+  `7fab4ce5`, from a binary verified to differ from the branch build. Its
+  report is equal to the campaign branch's on every field that matters: all
+  three identity bits true, maze and adventure at their frozen hashes, and
+  SMB at the same post-M35 hash
+  `3ff148641ed3db6f8f6432549019d654081d164c5428d2cd3e554aaa72bc111b` with
+  identical work counters (legacy 645,931 frames, snapshot-resume 411,927
+  frames) on both trees.
+- Conclusion recorded for gate 1: the serial path is untouched — the branch
+  and its base are bit-equal on the identity gate — and the frozen M15 SMB
+  reference `085c22ee…` is unreproducible on any tree at or after the
+  promoted M35 terminal-condition correction. Re-freezing that reference is
+  put to the integrator; it is not a campaign-mode defect. Evidence:
+  `target/perf-evidence/campaign-mode/executor-identity/` and
+  `target/perf-evidence/campaign-mode/executor-identity-base/`.
