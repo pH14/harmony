@@ -2418,3 +2418,74 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   recorded terms, that is recorded as a weak result rather than an acceptance.
 - One challenger arm replays exactly, and its live and replay reports must be
   byte-equal. Raw destination: `target/smb-completion/h45-viability/`.
+
+### H45 result — accepted on development and held-out seeds
+
+- Gates first. The frozen retention path reproduces the recorded M35 seed
+  `0x5eed_e000` arm byte for byte after the change, SHA-256
+  `40bf875ca4e43f82042855549c50501cf42bd2e4a8346b466a48693f9c0281ff`, so the
+  probe is inert when it is not asked for. A unit test holds the two policies
+  byte-identical on a target whose terminal condition never fires and holds the
+  probed policy identical across repeated runs. The six frozen control arms are
+  byte-identical to H44's six control arms at the same seeds, which
+  independently confirms the two campaign paths agree. All four quality gates
+  pass with 70 tests.
+- Development panel, viable progress against the source's 62. Controls
+  `[94, 62, 108, 61, 112, 61]`, three successes. Challengers
+  `[102, 114, 97, 107, 94, 99]`, **six successes**. The registration required at
+  least 5/6 and strictly more than the controls, so development accepts.
+- Held-out panel on seeds `0x5eed_e100..=0x5eed_e105`, run unchanged. Controls
+  `[89, 74, 91, 64, 62, 112]`, five successes. Challengers
+  `[94, 93, 97, 105, 94, 112]`, **six successes**. The held-out threshold is met
+  as well, so the mechanism is accepted.
+- What it actually did, stated carefully: it removed the stall, not the ceiling.
+  The worst arm across all twelve challengers is viable 93; the worst across all
+  twelve controls is 61. Challenger medians are 100.5 and 95.5 against control
+  medians of 78 and 81.5. But on two development seeds the challenger scored
+  **below** its own control — 97 against 108 and 94 against 112 — and on
+  held-out seed `0x5eed_e105` the two tie at 112. The probe reliably prevents an
+  arm from being trapped at the source frontier; it does not reliably make a
+  good arm better.
+- The declared shared clause did not carry the result. Recorded maximum progress
+  moved with viable progress rather than apart from it: ten of the twelve
+  challenger arms record exactly their viable bucket and the other two are
+  within 2, while the controls run 5 to 21 buckets ahead of their viable figure
+  — control `0x5eed_e103` records 85 and is viable at 64. On the three
+  development seeds where the controls stalled, the challengers advanced in
+  recorded terms too, from exactly 74 to 114, 107 and 101. That is the claim
+  measured on the axis the shared clause does not touch.
+- Mechanical accounting. Deaths per 5,000 executions fell from about 2,500 to
+  3,400 down to about 1,100 to 1,300, because the archive no longer holds
+  doomed parents to expand from. Rejections rose from about 65 to 150 up to
+  about 420 to 1,036, which is the probe refusing candidates. Retained entries
+  rose from about 2,300 to 3,400 up to about 3,580 to 4,092.
+- Promotion replay: the seed `0x5eed_e000` challenger arm and its no-model
+  replay are byte-equal with SHA-256
+  `8991d328e40cc111ad9fd8b28089e138931658e0c4eb5eaac86f955c74c8f8d1`, and the
+  summary records `replay_verified=true`. No model is involved anywhere in this
+  panel.
+- Decision: **promote the viability test at admission.** Retention now refuses a
+  candidate that none of the fixed masks `0x00`, `0x01` and `0x81` keeps alive
+  for 120 frames. Archive keys, novelty, the parent scheduler, the controller
+  vocabulary, the duration and suffix policies, the action bound and ranking are
+  unchanged, and the vertical-page key term stays fenced.
+- Raw evidence: `target/smb-completion/h45-viability/`,
+  `target/smb-completion/h45-viable-progress/`,
+  `target/smb-completion/h45-held/`, `target/smb-completion/h45-held-viable/`
+  and the frozen-path gate at `target/smb-completion/h45-gate-frozen/`.
+
+### Standing summary after the admission probe
+
+- The frontier in viable terms: 39 under the frozen terminal condition, 62 after
+  correcting it, 94 to 112 on the better half of the arms resumed from that
+  rebuild, and 93 to 114 on **every** arm once retention refuses states nothing
+  can keep alive. Two changes, both to what counts as dead or worth keeping,
+  and none to the scheduler, the controller vocabulary, the timing, the suffix
+  policy, the archive keys or the budget.
+- Two generated rankings have been measured at two boundaries and neither met
+  its promotion rule. Both mechanical corrections in this stretch did.
+- The observation state still records no horizontal position within the screen.
+  D36 through D42 could not verify one because too few retained states moved the
+  player; the rebuilt archives now retain far more live states, so that audit is
+  worth re-running before the question is called closed.
+- The vertical-page key term remains fenced and is the next single variable.
