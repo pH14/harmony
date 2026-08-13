@@ -121,6 +121,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if mode == "audit-two-state-player-column" {
         return run_responsive_player_column_mode(&mut args, true, TWO_STATE_AUDIT_ENTRIES, false);
     }
+    if mode == "audit-probed-player-column" {
+        return run_responsive_player_column_mode(&mut args, true, CENSUS_AUDIT_ENTRIES, true);
+    }
     if mode == "audit-separation-player-column" {
         return run_responsive_player_column_mode(&mut args, true, TWO_STATE_AUDIT_ENTRIES, true);
     }
