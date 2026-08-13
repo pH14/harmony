@@ -1124,3 +1124,28 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   that tolerates a constant sprite offset and unrelated moving pixels; and the
   field name, its exact operator sentence, and the no-behavior-change gate are
   fixed here rather than left to be chosen after the result.
+
+### D29 result — inconclusive; the audited continuations do not exercise the claim
+
+- The audit ran exactly as registered on the sixteen selected entries. All eight
+  progress-39 endpoints share camera pixel 635 and all eight progress-32
+  endpoints share camera pixel 522; every one of the 48 continuations recorded
+  its full 121 frames without reaching engine state `$0b`.
+- Filter counts: 158 of 2,048 indices took at least eight distinct values, 2 of
+  those also changed by at most 8 between consecutive frames, and 0 survived the
+  left-direction filter. No right continuation advanced the camera by 32 pixels
+  or more, so C4 was inapplicable by its registered rule. Nothing survived, the
+  film half had no candidate to check, and the audit selected no index. No
+  observation field is added and the registered no-behavior-change gate is not
+  due.
+- Live and no-model replay reports are byte-equal with SHA-256
+  `cc24f4c74fe1ca6dc5b934df5abb4db32e04a334b0b2289d18516fbd22453f83`, the 18
+  rendered frames are identical between the two passes, and
+  `player-column-summary.json` records `replay_verified=true`. The audit
+  therefore failed to identify a byte; it did not fail to run.
+- The registered filters assume the audited endpoints are states the three
+  continuations actually steer. Two independent recorded facts say these
+  sixteen are not: no camera advance in any right continuation, and only two
+  smoothly changing bytes in 5,760 recorded frames. Diagnose that before
+  designing a second audit. Raw evidence:
+  `target/smb-completion/d29-player-column-decode/`.
