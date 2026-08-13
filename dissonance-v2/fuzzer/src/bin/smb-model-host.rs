@@ -1129,7 +1129,7 @@ decoded.level measures the zero-based visible level in the inclusive range 0..=2
 decoded.progress measures horizontal position in the inclusive range 0..=4095 as 16-pixel buckets from the recorded screen-page and screen-x bytes, with larger values farther to the right.\n\
 decoded.player_y_bucket measures the recorded player vertical-position byte divided into sixteen-value buckets in the inclusive range 0..=15, with larger values lower on the screen.\n\
 decoded.player_engine_state measures the recorded player-engine-state byte without adding route meaning.\n\
-decoded.dead reports whether the verified kill-state value is active.\n\
+decoded.dead reports whether the verified terminal condition is active, which holds when the player-engine byte equals the verified kill-state value or the recorded vertical page byte is at or above 2.\n\
 decoded.flag_active reports whether the recorded level-end flag-task byte is nonzero.\n\
 milestones.max_1_1_scroll_bucket measures the greatest verified 16-pixel horizontal bucket observed in the first level in the inclusive range 0..=4095, with larger values farther to the right.\n\
 milestones.reached_1_1_flag reports whether the first-level end-task byte has been observed active.\n\
@@ -1141,7 +1141,7 @@ log_line records only the frame count and changed work-RAM indices.\n",
     )?;
     fs::write(
         view.join("verified-dynamics.txt"),
-        "Progress is the route-agnostic horizontal bucket computed as screen_page * 16 + floor(screen_x / 16), and world then corrected visible level then progress form the mechanical position tuple. A run ends at the first observed player-engine kill state $0b; state $08 is verified ordinary play. After a death, already accumulated campaign milestones and retained nonterminal archive snapshots persist, while the dead evaluation itself is not extended and later evaluations resume from deterministic retained snapshots or gameplay genesis. The frozen milestone ladder is nonzero progress in the first level, the first-level end task, entry into the second level, and entry into any later level. Raw work RAM and films independently confirmed the progress decode at the recorded plateaus and the one-step level correction while the level-advance task is active.\n\nThis game may differ from any game it resembles. Where your expectations disagree with the recorded observations, the observations are correct.\n",
+        "Progress is the route-agnostic horizontal bucket computed as screen_page * 16 + floor(screen_x / 16), and world then corrected visible level then progress form the mechanical position tuple. A run ends at the first frame whose player-engine byte holds the verified kill state $0b or whose recorded vertical page byte $00b5 is at or above 2; state $08 is verified ordinary play. The second clause was added after a recorded audit: the first clause fires on none of eight recorded uncontrolled continuations, while the second is false on all 10,006 frames of a recorded live control and true within 19 frames on every one of those continuations. After a death, already accumulated campaign milestones and retained nonterminal archive snapshots persist, while the dead evaluation itself is not extended and later evaluations resume from deterministic retained snapshots or gameplay genesis. The frozen milestone ladder is nonzero progress in the first level, the first-level end task, entry into the second level, and entry into any later level. Raw work RAM and films independently confirmed the progress decode at the recorded plateaus and the one-step level correction while the level-advance task is active.\n\nThis game may differ from any game it resembles. Where your expectations disagree with the recorded observations, the observations are correct.\n",
     )?;
     Ok(())
 }
@@ -1231,20 +1231,25 @@ fn read_strategy_journal(output: &Path) -> Result<StrategyJournal, Box<dyn Error
 fn initial_strategy_journal() -> StrategyJournal {
     StrategyJournal {
         beliefs: vec![
-            "Raw work RAM and film independently validate the current progress-39 boundary in the third decoded level.".to_owned(),
-            "The archive grows normally at the boundary and the corrected viability audit found only 15 of 374 maximal-frontier entries doomed under ten fixed continuations.".to_owned(),
+            "Raw work RAM and film independently validate the recorded horizontal decode at the boundaries where it was checked.".to_owned(),
             "Field-semantics correction after H27: horizontal progress ranges from 0 through 4095 and larger values are farther right; vertical buckets range from 0 through 15 and larger values are lower on the screen; world and level bytes range from 0 through 255 in increasing numeric order.".to_owned(),
+            "The terminal condition was corrected. It now ends a run at the verified kill state or at a recorded vertical page byte at or above 2. The earlier condition detected neither on eight recorded uncontrolled continuations, and the added clause is false on all 10,006 frames of a recorded live control.".to_owned(),
+            "Re-admitting the previous archive under the corrected condition kept 1,188 of 4,832 retained states, and 3,644 of them were already past the terminal threshold at the boundary where they had been retained.".to_owned(),
+            "Rebuilding with the same scheduler, controller vocabulary, durations, suffixes, retention and budget raised recorded deaths from 45 to about 3,300 per 5,000 executions, and one arm of six reached a horizontal bucket twenty-three past the boundary that twelve earlier arms had shared exactly.".to_owned(),
+            "The highest buckets of the rebuilt archive hold states the corrected condition stops within a few frames of any continuation.".to_owned(),
+            "Of 256 examined retained states, 183 show no rendered response to the controller on any frame, 70 respond only by changing the direction the player is drawn facing, and 2 move him more than one sprite width.".to_owned(),
         ],
         failed_approaches: vec![
-            "At this boundary, repeated panels for longer suffix bursts, broader frontier scheduling, progress-band scheduling, a fixed interaction macro, generated archive mutation, and checkpoint retention did not exceed progress 39.".to_owned(),
+            "At the earlier boundary, repeated panels for longer suffix bursts, broader frontier scheduling, progress-band scheduling, a fixed interaction macro, generated archive mutation, and checkpoint retention did not exceed it.".to_owned(),
             "Earlier generated rankings at separately film-validated boundaries did not meet their registered promotion rules.".to_owned(),
-            "H27's journal-informed ranking made 466 to 699 replacements and 142 to 190 descendant novelties per seed but exceeded corrected progress 39 on zero of six seeds; its interpretation of larger vertical buckets as a higher vertical peak was opposite the now-explicit screen direction.".to_owned(),
+            "H27's journal-informed ranking made 466 to 699 replacements and 142 to 190 descendant novelties per seed but exceeded the boundary on zero of six seeds; its interpretation of larger vertical buckets as a higher vertical peak was opposite the now-explicit screen direction.".to_owned(),
+            "A registered audit attempted to decode a screen-relative horizontal position from this archive's own film and memory evidence and returned no verified field, because too few retained states move the player at all.".to_owned(),
         ],
         open_questions: vec![
             "Which recorded non-progress state attributes distinguish prefixes prepared to produce descendant novelty beyond the current boundary?".to_owned(),
         ],
         current_plan: vec![
-            "Use only the supplied corpus, decoded observations, raw milestone evidence, and recorded plateau history to choose one bounded generated artifact for the current frontier.".to_owned(),
+            "Use only the supplied corpus, decoded observations, raw milestone evidence, and recorded history to choose one bounded generated artifact for the current frontier.".to_owned(),
         ],
     }
 }

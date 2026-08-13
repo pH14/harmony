@@ -2206,3 +2206,33 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   standalone no-model record of the corrected context and re-seeded journal is
   written. No model call and no search panel are part of M43.
 - Raw destination: `target/smb-completion/post-m35-model-context/`.
+
+### M43 result — accepted
+
+- Both model views now state the corrected terminal condition. The
+  verified-dynamics text says a run ends at the first frame whose player-engine
+  byte holds the verified kill state or whose recorded vertical page byte is at
+  or above 2, and records why the second clause was added: the first fires on
+  none of the eight recorded uncontrolled continuations, while the second is
+  false on all 10,006 frames of the recorded live control and true within 19
+  frames on every one of those continuations. The `decoded.dead` sentence states
+  the same disjunction.
+- The next strategy journal carries seven beliefs and four failed approaches. It
+  keeps the M16 direction correction and H27's immutable null, drops the
+  superseded viability belief, and adds the correction and its measured effects,
+  the re-admission counts, the rebuilt-arm outcome, the character of the highest
+  buckets, the 183/70/2 controller-response census, and the recorded fact that a
+  registered attempt to decode a screen-relative horizontal position returned no
+  verified field. No ranking term, field, action, route, layout, item or goal is
+  suggested anywhere in either view or the journal.
+- The focused context fixture passes, including its rejection of game names and
+  its check of the complete field list, and the recorded-journal chain still
+  replays without a model. All 69 tests pass, and formatting, Clippy with
+  `-D warnings` and the dependency check are clean.
+- The standalone no-model record is
+  `target/smb-completion/post-m35-model-context/`. Its field-semantics SHA-256
+  is `869d7deea161c057a846614c3c469e7bbf71aa6dc02de7fad9c2f99dd012a479`, its
+  verified-dynamics SHA-256 is
+  `524fc2992b55c56d60e8f1e5b93050de8de0c4fc55c3164aa0afa863e29ec65d`, and its
+  journal SHA-256 is
+  `834c6dd144ea9582d766be1ae2f23243e7cc54cef8cdc5e08e4379a0e835dfdb`.
