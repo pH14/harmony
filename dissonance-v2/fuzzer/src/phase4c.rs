@@ -1009,12 +1009,16 @@ pub fn diagnose_smb_film_columns(
             let differing = (0..256)
                 .filter(|column| still.columns[frame][*column] != left.columns[frame][*column])
                 .collect::<Vec<_>>();
-            lowest.push(differing.first().map_or(-1, |column| {
-                i32::try_from(*column).unwrap_or(i32::MAX)
-            }));
-            highest.push(differing.last().map_or(-1, |column| {
-                i32::try_from(*column).unwrap_or(i32::MAX)
-            }));
+            lowest.push(
+                differing
+                    .first()
+                    .map_or(-1, |column| i32::try_from(*column).unwrap_or(i32::MAX)),
+            );
+            highest.push(
+                differing
+                    .last()
+                    .map_or(-1, |column| i32::try_from(*column).unwrap_or(i32::MAX)),
+            );
         }
         traces.push(SmbFilmColumnTrace {
             id: *id,
@@ -1022,7 +1026,10 @@ pub fn diagnose_smb_film_columns(
             camera: still.camera[..frames].to_vec(),
             lowest,
             highest,
-            left_wram: left.wram[..frames].iter().map(|wram| wram.to_vec()).collect(),
+            left_wram: left.wram[..frames]
+                .iter()
+                .map(|wram| wram.to_vec())
+                .collect(),
             still_wram: still.wram[..frames]
                 .iter()
                 .map(|wram| wram.to_vec())
@@ -1090,8 +1097,9 @@ pub fn diagnose_smb_film_measurements(
         for comparison in &comparisons {
             let recording = &recordings[comparison.entry];
             let position = usize::from(*index);
-            let left =
-                i32::from(recording.continuations[comparison.left].wram[comparison.frame][position]);
+            let left = i32::from(
+                recording.continuations[comparison.left].wram[comparison.frame][position],
+            );
             let right = i32::from(
                 recording.continuations[comparison.right].wram[comparison.frame][position],
             );
