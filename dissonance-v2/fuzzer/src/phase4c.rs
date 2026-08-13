@@ -96,6 +96,21 @@ pub enum SmbArchiveSuffixPolicy {
     BurstUpToFour,
 }
 
+/// Whether admission probes a candidate for viability before retaining it.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SmbArchiveRetentionPolicy {
+    /// Frozen behaviour: every non-terminal action boundary is a retention candidate.
+    #[default]
+    Frozen,
+    /// H45: retain only candidates some fixed probe mask keeps alive for the horizon.
+    ProbeAtAdmission,
+}
+
+/// Fixed masks the admission probe tries, in order, stopping at the first survivor.
+const VIABILITY_PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
+/// Fixed admission-probe horizon in frames.
+const VIABILITY_PROBE_FRAMES: u16 = 120;
+
 /// Frozen search parameters used by a generated-ranking archive campaign.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbRankingSearchConfig {
@@ -3243,6 +3258,7 @@ pub fn run_smb_archive_search_with_config_and_suffix(
         None,
         None,
         false,
+        SmbArchiveRetentionPolicy::Frozen,
     )
 }
 
@@ -3267,6 +3283,39 @@ pub fn run_smb_archive_search_with_policies(
         None,
         None,
         true,
+        SmbArchiveRetentionPolicy::Frozen,
+    )
+}
+
+/// Run frozen completion search with an explicit admission retention policy.
+///
+/// # Errors
+///
+/// Returns an error when the initial corpus is empty, when an input exceeds the
+/// action bound, or when emulation or snapshotting fails.
+#[allow(clippy::too_many_arguments)]
+pub fn run_smb_archive_search_with_retention(
+    rom: &[u8],
+    initial_inputs: &[SmbInput],
+    seed: u64,
+    execution_budget: u64,
+    max_actions: usize,
+    duration_policy: SmbArchiveDurationPolicy,
+    suffix_policy: SmbArchiveSuffixPolicy,
+    retention_policy: SmbArchiveRetentionPolicy,
+) -> Result<SmbArchiveReport, Box<dyn Error>> {
+    run_smb_archive_search_internal(
+        rom,
+        initial_inputs,
+        seed,
+        execution_budget,
+        max_actions,
+        duration_policy,
+        suffix_policy,
+        None,
+        None,
+        false,
+        retention_policy,
     )
 }
 
@@ -3290,6 +3339,7 @@ pub fn run_smb_archive_search_with_ranking<R: SmbRanking>(
         Some(ranking),
         None,
         false,
+        SmbArchiveRetentionPolicy::Frozen,
     )
 }
 
@@ -3313,6 +3363,7 @@ pub fn run_smb_archive_search_with_generated_mutator<M: SmbMacro>(
         None,
         Some(generated_mutator),
         false,
+        SmbArchiveRetentionPolicy::Frozen,
     )
 }
 
@@ -3345,6 +3396,7 @@ fn run_smb_archive_search_internal(
     ranking: Option<&dyn SmbRanking>,
     generated_mutator: Option<&dyn SmbMacro>,
     experimental_search: bool,
+    retention_policy: SmbArchiveRetentionPolicy,
 ) -> Result<SmbArchiveReport, Box<dyn Error>> {
     if initial_inputs.is_empty() {
         return Err("SMB archive search requires a nonempty initial corpus".into());
@@ -3414,16 +3466,21 @@ fn run_smb_archive_search_internal(
             let snapshot = target
                 .snapshot()
                 .ok_or("failed to snapshot SMB bootstrap prefix")?;
+            let observations = target.last_action_observations().to_vec();
+            let key = archive_key(target.wram());
+            if !admission_is_viable(&mut target, &snapshot, retention_policy)? {
+                continue;
+            }
             if let Some(id) = archive.insert(
                 Some(parent_id),
                 0,
                 ArchiveCandidate {
                     input: prefix.clone(),
-                    key: archive_key(target.wram()),
+                    key,
                     milestones,
                 },
                 snapshot,
-                target.last_action_observations(),
+                &observations,
             )? {
                 parent_id = id;
             }
@@ -3525,16 +3582,21 @@ fn run_smb_archive_search_internal(
                 break;
             }
             let snapshot = target.snapshot().ok_or("failed to snapshot SMB suffix")?;
+            let observations = target.last_action_observations().to_vec();
+            let key = archive_key(target.wram());
+            if !admission_is_viable(&mut target, &snapshot, retention_policy)? {
+                continue;
+            }
             if let Some(id) = archive.insert(
                 Some(current_parent),
                 execution,
                 ArchiveCandidate {
                     input: input.clone(),
-                    key: archive_key(target.wram()),
+                    key,
                     milestones,
                 },
                 snapshot,
-                target.last_action_observations(),
+                &observations,
             )? {
                 current_parent = id;
             }
@@ -3578,6 +3640,31 @@ fn run_smb_archive_search_internal(
         ranking: archive.ranking_accounting,
         generated_mutator: generated_mutator_accounting,
     })
+}
+
+/// Report whether some fixed probe mask keeps this candidate alive for the horizon.
+///
+/// The target is restored to `snapshot` exactly before returning, so execution
+/// continues as if the probe had not run. The probe emits no observer events and
+/// consumes no randomness.
+fn admission_is_viable(
+    target: &mut SmbTarget,
+    snapshot: &SmbSnapshot,
+    policy: SmbArchiveRetentionPolicy,
+) -> Result<bool, Box<dyn Error>> {
+    if policy == SmbArchiveRetentionPolicy::Frozen {
+        return Ok(true);
+    }
+    let mut viable = false;
+    for mask in VIABILITY_PROBE_MASKS {
+        target.restore(snapshot)?;
+        if target.survives_probe(mask, VIABILITY_PROBE_FRAMES) {
+            viable = true;
+            break;
+        }
+    }
+    target.restore(snapshot)?;
+    Ok(viable)
 }
 
 fn merge_progress_watermark(
@@ -3729,6 +3816,7 @@ mod tests {
         record_generated_mutator_result, run_smb_archive_search,
         run_smb_archive_search_with_config_and_suffix,
         run_smb_archive_search_with_generated_mutator, run_smb_archive_search_with_ranking,
+        run_smb_archive_search_with_retention,
     };
     use crate::phase4b::{ButtonChord, MAX_SMB_ACTIONS, SmbInput, SmbMacro, SmbObservations};
 
@@ -4050,6 +4138,50 @@ mod tests {
         endpoint.decoded.progress = 39;
         merge_progress_watermark(&mut watermark, &[first, endpoint]);
         assert_eq!(watermark.progress, 41);
+    }
+
+    #[test]
+    fn admission_probe_is_deterministic_and_inert_where_nothing_dies() {
+        let rom = synthetic_nrom();
+        let initial = vec![SmbInput::default()];
+        let frozen = run_smb_archive_search_with_retention(
+            &rom,
+            &initial,
+            0x5eed_e000,
+            12,
+            MAX_SMB_ACTIONS,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            super::SmbArchiveRetentionPolicy::Frozen,
+        )
+        .expect("frozen retention campaign");
+        let probed = run_smb_archive_search_with_retention(
+            &rom,
+            &initial,
+            0x5eed_e000,
+            12,
+            MAX_SMB_ACTIONS,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            super::SmbArchiveRetentionPolicy::ProbeAtAdmission,
+        )
+        .expect("probed retention campaign");
+        // On a target whose terminal condition never fires, every candidate is
+        // viable, so the probe may not change one byte of the recorded report.
+        assert_eq!(frozen.deaths, 0);
+        assert_eq!(frozen, probed);
+        let repeated = run_smb_archive_search_with_retention(
+            &rom,
+            &initial,
+            0x5eed_e000,
+            12,
+            MAX_SMB_ACTIONS,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            super::SmbArchiveRetentionPolicy::ProbeAtAdmission,
+        )
+        .expect("repeated probed retention campaign");
+        assert_eq!(probed, repeated);
     }
 
     #[test]

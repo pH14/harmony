@@ -722,6 +722,31 @@ impl SmbTarget {
         result.map(|_| ())
     }
 
+    /// Clock one fixed mask for a bounded horizon and report whether the run stays alive.
+    ///
+    /// This is an admission probe: it emits no observer events, consumes no
+    /// randomness, and leaves the caller responsible for restoring the state it
+    /// started from. It reads the same terminal condition execution reads.
+    pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
+        if self.failed || self.dead {
+            return false;
+        }
+        self.deck.joypad_mut(Player::One).buttons =
+            JoypadBtnState::from_bits_truncate(u16::from(buttons));
+        for _ in 0..frames {
+            if self.deck.clock_frame().is_err() {
+                self.failed = true;
+                return false;
+            }
+            if smb_player_is_dead(self.deck.wram()) {
+                self.dead = true;
+                return false;
+            }
+        }
+        self.deck.joypad_mut(Player::One).buttons = JoypadBtnState::empty();
+        true
+    }
+
     /// Release every controller button after a filmed chord.
     pub fn release_buttons_for_film(&mut self) {
         self.deck.joypad_mut(Player::One).buttons = JoypadBtnState::empty();

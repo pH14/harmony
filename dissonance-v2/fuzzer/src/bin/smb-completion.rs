@@ -19,16 +19,17 @@ use fuzzer::{
     },
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
-        SmbArchiveSuffixPolicy, SmbControlCensusReport, SmbPlayerColumnSelection,
-        SmbSteerScanReport, audit_smb_frontier_viability, audit_smb_player_column_contrast,
-        audit_smb_player_column_from_ids, audit_smb_player_column_separation,
-        audit_smb_player_column_spread, audit_smb_player_column_with_selection,
-        audit_smb_terminal_death, census_smb_control_authority, diagnose_smb_film_columns,
-        diagnose_smb_film_measurements, diagnose_smb_left_direction, diagnose_smb_player_column,
-        gate_smb_live_control, measure_smb_viable_progress, readmit_smb_archive,
-        run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
-        run_smb_archive_search_with_policies, select_smb_responsive_audit_ids,
-        select_smb_span_audit_ids, select_smb_spread_audit_ids, select_smb_steered_audit_ids,
+        SmbArchiveRetentionPolicy, SmbArchiveSuffixPolicy, SmbControlCensusReport,
+        SmbPlayerColumnSelection, SmbSteerScanReport, audit_smb_frontier_viability,
+        audit_smb_player_column_contrast, audit_smb_player_column_from_ids,
+        audit_smb_player_column_separation, audit_smb_player_column_spread,
+        audit_smb_player_column_with_selection, audit_smb_terminal_death,
+        census_smb_control_authority, diagnose_smb_film_columns, diagnose_smb_film_measurements,
+        diagnose_smb_left_direction, diagnose_smb_player_column, gate_smb_live_control,
+        measure_smb_viable_progress, readmit_smb_archive, run_smb_archive_search,
+        run_smb_archive_search_with_policies, run_smb_archive_search_with_retention,
+        select_smb_responsive_audit_ids, select_smb_span_audit_ids, select_smb_spread_audit_ids,
+        select_smb_steered_audit_ids,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -150,6 +151,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveDurationPolicy::Legacy,
             SmbArchiveSuffixPolicy::OneOrTwo,
             ResumeSelection::Champion,
+            SmbArchiveRetentionPolicy::Frozen,
         );
     }
     if mode == "archive-resume-temporal" {
@@ -158,6 +160,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveDurationPolicy::Stratified,
             SmbArchiveSuffixPolicy::OneOrTwo,
             ResumeSelection::Champion,
+            SmbArchiveRetentionPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier" {
@@ -166,6 +169,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveDurationPolicy::Stratified,
             SmbArchiveSuffixPolicy::OneOrTwo,
             ResumeSelection::Frontier,
+            SmbArchiveRetentionPolicy::Frozen,
+        );
+    }
+    if mode == "archive-resume-frontier-viable" {
+        return run_archive_resume_mode(
+            &mut args,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            ResumeSelection::Frontier,
+            SmbArchiveRetentionPolicy::ProbeAtAdmission,
         );
     }
     if mode == "archive-resume-frontier-burst" {
@@ -174,6 +187,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveDurationPolicy::Stratified,
             SmbArchiveSuffixPolicy::BurstUpToFour,
             ResumeSelection::Frontier,
+            SmbArchiveRetentionPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier-cell-set" {
@@ -182,6 +196,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveDurationPolicy::Stratified,
             SmbArchiveSuffixPolicy::OneOrTwo,
             ResumeSelection::FrontierCellSet,
+            SmbArchiveRetentionPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier-set" {
@@ -190,6 +205,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveDurationPolicy::Stratified,
             SmbArchiveSuffixPolicy::OneOrTwo,
             ResumeSelection::FrontierSet,
+            SmbArchiveRetentionPolicy::Frozen,
         );
     }
     if mode == "archive-resume-burst" {
@@ -198,6 +214,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveDurationPolicy::Stratified,
             SmbArchiveSuffixPolicy::BurstUpToFour,
             ResumeSelection::FrontierSet,
+            SmbArchiveRetentionPolicy::Frozen,
         );
     }
     if mode == "archive-resume-band-burst" {
@@ -206,6 +223,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveDurationPolicy::Stratified,
             SmbArchiveSuffixPolicy::BurstUpToFour,
             ResumeSelection::FrontierBandSet,
+            SmbArchiveRetentionPolicy::Frozen,
         );
     }
     if mode != "reproduce-baseline" {
@@ -1092,6 +1110,7 @@ fn run_archive_resume_mode(
     duration_policy: SmbArchiveDurationPolicy,
     suffix_policy: SmbArchiveSuffixPolicy,
     selection: ResumeSelection,
+    retention_policy: SmbArchiveRetentionPolicy,
 ) -> Result<(), Box<dyn Error>> {
     let source = PathBuf::from(args.next().ok_or("missing source archive report")?);
     let seed = parse_u64(&args.next().ok_or("missing seed")?.to_string_lossy())?;
@@ -1164,7 +1183,7 @@ fn run_archive_resume_mode(
     );
     let run = |seed| {
         if frozen_search {
-            run_smb_archive_search_with_config_and_suffix(
+            run_smb_archive_search_with_retention(
                 &rom,
                 &initial,
                 seed,
@@ -1172,6 +1191,7 @@ fn run_archive_resume_mode(
                 action_limit,
                 duration_policy,
                 suffix_policy,
+                retention_policy,
             )
         } else {
             run_smb_archive_search_with_policies(
@@ -1220,6 +1240,10 @@ fn run_archive_resume_mode(
             ResumeSelection::FrontierBandSet => "mechanical_frontier_band_set",
         },
         "source_inputs": initial.len(),
+        "retention_policy": match retention_policy {
+            SmbArchiveRetentionPolicy::Frozen => "frozen",
+            SmbArchiveRetentionPolicy::ProbeAtAdmission => "probe_at_admission",
+        },
         "suffix_policy": match suffix_policy {
             SmbArchiveSuffixPolicy::OneOrTwo => "one_or_two",
             SmbArchiveSuffixPolicy::BurstUpToFour => "burst_up_to_four",
