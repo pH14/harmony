@@ -1501,3 +1501,50 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   termination and admission, and a vertical page term alters archive keys — so
   it is not taken here. It is reported to the integrator with the evidence
   above.
+
+## D34 — preregistered terminal-death decode audit
+
+- Falsifiable claim: the frozen terminal condition `$000e == $0b` misses a death
+  mode, and a condition over the current work RAM plus one byte's value at the
+  start of a replay is false on every frame of recorded live play and true
+  within 240 frames on every recorded uncontrolled continuation.
+- Source is the unchanged recorded archive
+  `target/smb-completion/h19-dev/e002-burst/archive-live.json`, seed
+  `0x5eed_e002`, and the video-enabled target used by D29 through D33.
+- Control population, fixed before execution: the recorded champion input
+  replayed one frame at a time from gameplay genesis and truncated at the first
+  frame whose decoded tuple equals the maximum tuple recorded anywhere in the
+  source. Every frame up to and including that one is a control frame. This
+  prefix is live by construction — it crosses two recorded tuple transitions —
+  and it spans the recorded underground section, which is where a vertical
+  threshold is most likely to be wrong.
+- Uncontrolled population, fixed before execution: scan active entries at the
+  maximum recorded tuple in descending progress bucket, breaking ties by
+  `(input, id)`, and admit an entry when its no-input and its held-left
+  120-frame continuations produce identical rendered column signatures on every
+  frame in common. That identity is model-free evidence that the controller has
+  no rendered effect. Admit at most two per bucket and stop at eight, scanning
+  at most 128 entries. Each admitted entry is then continued 240 frames with no
+  input, and every frame of that continuation is an uncontrolled frame.
+- Candidate conditions, fixed before execution and evaluated per frame:
+  `K0` is `$000e == $0b`; `K1` is `$075a` strictly below its value at the start
+  of the replay; `K2(t)` for each `t` in `1..=7` is `$00b5 >= t`; `K3(t)` for
+  each `t` in `1..=7` is `$00b5 * 256 + $00ce >= 256 * t`.
+- Acceptance, fixed before execution: a candidate passes when it is true on zero
+  control frames and true on at least one frame of every one of the eight
+  uncontrolled continuations. The audit reports, per candidate, its true-frame
+  count over the controls, the uncontrolled continuations on which it never
+  trips, and for passers the median and maximum first-trip frame index.
+- Adoption rule, stated now and executed in the separate correction rather than
+  here: the correction adopts `K0 or P`, where `P` is the passing candidate with
+  the smallest maximum first-trip frame, ties broken toward the earlier
+  candidate in the order listed above. Disjoining with `K0` keeps every death
+  the frozen condition already detects. If no candidate passes, the audit
+  reports itself inconclusive and no correction follows from it.
+- The audit additionally records, for every control and uncontrolled frame, the
+  raw values of `$000e`, `$075a`, `$00b5`, `$00ce`, the screen page and x bytes,
+  and the decoded tuple, so the adopted condition can be rechecked against the
+  same evidence later.
+- The audit runs no search, changes no search behavior, and involves no model.
+  Live and no-model replay reports must be byte-equal. Raw destination:
+  `target/smb-completion/d34-death-decode/`.
