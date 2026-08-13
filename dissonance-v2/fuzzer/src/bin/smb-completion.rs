@@ -20,12 +20,13 @@ use fuzzer::{
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
         SmbArchiveSuffixPolicy, SmbControlCensusReport, SmbPlayerColumnSelection,
-        SmbSteerScanReport, audit_smb_frontier_viability, audit_smb_player_column_from_ids,
-        audit_smb_player_column_spread, audit_smb_player_column_with_selection,
-        audit_smb_terminal_death, census_smb_control_authority, diagnose_smb_film_columns,
-        diagnose_smb_film_measurements, diagnose_smb_left_direction, diagnose_smb_player_column,
-        gate_smb_live_control, readmit_smb_archive, run_smb_archive_search,
-        run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_policies,
+        SmbSteerScanReport, audit_smb_frontier_viability, audit_smb_player_column_contrast,
+        audit_smb_player_column_from_ids, audit_smb_player_column_spread,
+        audit_smb_player_column_with_selection, audit_smb_terminal_death,
+        census_smb_control_authority, diagnose_smb_film_columns, diagnose_smb_film_measurements,
+        diagnose_smb_left_direction, diagnose_smb_player_column, gate_smb_live_control,
+        readmit_smb_archive, run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
+        run_smb_archive_search_with_policies, select_smb_responsive_audit_ids,
         select_smb_spread_audit_ids, select_smb_steered_audit_ids,
     },
 };
@@ -107,6 +108,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "audit-steered-player-column" {
         return run_steered_player_column_mode(&mut args);
+    }
+    if mode == "audit-responsive-player-column" {
+        return run_responsive_player_column_mode(&mut args);
     }
     if mode == "diagnose-left-direction" {
         return run_left_direction_diagnosis_mode(&mut args);
@@ -671,6 +675,86 @@ fn run_steered_player_column_mode(
     println!("{}", serde_json::to_string_pretty(&summary)?);
     if replay_verified == Some(false) {
         return Err("steered player-column audit replay diverged".into());
+    }
+    Ok(())
+}
+
+fn run_responsive_player_column_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    let replay_requested = parse_replay_flag(args, "audit-responsive-player-column")?;
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let scan = select_smb_responsive_audit_ids(&rom, &source, CENSUS_AUDIT_ENTRIES)?;
+    fs::write(
+        output.join("responsive-scan.json"),
+        serde_json::to_vec_pretty(&scan)?,
+    )?;
+    if scan.steered_ids.len() < CENSUS_AUDIT_ENTRIES {
+        let summary = serde_json::json!({
+            "scanned": scan.scanned,
+            "responsive": scan.responsive,
+            "audited_entries": scan.steered_ids.len(),
+            "selected": serde_json::Value::Null,
+            "inconclusive": "fewer than eight responsive entries",
+        });
+        fs::write(
+            output.join("player-column-summary.json"),
+            serde_json::to_vec_pretty(&summary)?,
+        )?;
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+        return Ok(());
+    }
+    let (report, frames) = audit_smb_player_column_contrast(&rom, &source, &scan.steered_ids)?;
+    fs::write(
+        output.join("player-column-live.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    let frame_directory = output.join("frames");
+    fs::create_dir_all(&frame_directory)?;
+    for frame in &frames {
+        fs::write(
+            frame_directory.join(&frame.name),
+            encode_smb_frame_png(&frame.rgba)?,
+        )?;
+    }
+    let replay_verified = if replay_requested {
+        let replay_scan = select_smb_responsive_audit_ids(&rom, &source, CENSUS_AUDIT_ENTRIES)?;
+        let (replay, replay_frames) =
+            audit_smb_player_column_contrast(&rom, &source, &replay_scan.steered_ids)?;
+        fs::write(
+            output.join("player-column-replay.json"),
+            serde_json::to_vec_pretty(&replay)?,
+        )?;
+        Some(replay_scan == scan && replay == report && replay_frames == frames)
+    } else {
+        None
+    };
+    let summary = serde_json::json!({
+        "scanned": scan.scanned,
+        "responsive": scan.responsive,
+        "audited_ids": scan.steered_ids,
+        "audited_entries": report.audited.len(),
+        "distinct_value_survivors": report.distinct_value_survivors,
+        "smooth_survivors": report.smooth_survivors,
+        "left_direction_survivors": report.left_direction_survivors,
+        "camera_relative_survivors": report.camera_relative_survivors,
+        "film_survivors": report.film_survivors,
+        "stride_rejected": report.stride_rejected,
+        "selected": report.selected,
+        "rendered_frames": frames.len(),
+        "replay_verified": replay_verified,
+    });
+    fs::write(
+        output.join("player-column-summary.json"),
+        serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    if replay_verified == Some(false) {
+        return Err("responsive player-column audit replay diverged".into());
     }
     Ok(())
 }

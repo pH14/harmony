@@ -697,6 +697,9 @@ const PLAYER_COLUMN_RENDERED_COMPARISONS: usize = 4;
 const PLAYER_COLUMN_CAMERA_SPREAD: u32 = 16;
 const PLAYER_COLUMN_BUCKET_CAP: usize = 2;
 const PLAYER_COLUMN_BUCKET_SCAN_CAP: usize = 4;
+const PLAYER_COLUMN_RESPONSIVE_BUCKET_SCAN: usize = 8;
+const PLAYER_COLUMN_RESPONSIVE_SCAN_CAP: usize = 256;
+const PLAYER_COLUMN_RESPONSIVE_FRAMES: usize = 60;
 
 /// One ordered audit candidate: an active entry and its slice progress bucket.
 type PlayerColumnCandidate<'a> = (&'a SmbArchiveEntryReport, u16);
@@ -720,6 +723,7 @@ struct PlayerColumnRules {
     require_right_direction: bool,
     require_camera_relative: bool,
     require_camera_spread: bool,
+    left_versus_right: bool,
 }
 
 impl PlayerColumnRules {
@@ -729,6 +733,7 @@ impl PlayerColumnRules {
         require_right_direction: true,
         require_camera_relative: true,
         require_camera_spread: false,
+        left_versus_right: false,
     };
 
     /// D33: one camera epoch per continuation, C3 and C4 replaced by camera spread.
@@ -737,6 +742,16 @@ impl PlayerColumnRules {
         require_right_direction: false,
         require_camera_relative: false,
         require_camera_spread: true,
+        left_versus_right: false,
+    };
+
+    /// D38: the direction filter contrasts the two opposite masks at the same frame.
+    const CONTRAST: Self = Self {
+        truncate_on_camera_decrease: true,
+        require_right_direction: false,
+        require_camera_relative: false,
+        require_camera_spread: true,
+        left_versus_right: true,
     };
 }
 
@@ -921,6 +936,20 @@ pub fn audit_smb_player_column_spread(
     ids: &[u64],
 ) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
     audit_player_column_from_ids(rom, source, ids, PlayerColumnRules::SPREAD)
+}
+
+/// Audit the horizontal-column byte under D38's opposite-mask direction filter.
+///
+/// # Errors
+///
+/// Returns an error when an identifier is absent from the source or when
+/// emulation, snapshotting, or rendering fails.
+pub fn audit_smb_player_column_contrast(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    ids: &[u64],
+) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
+    audit_player_column_from_ids(rom, source, ids, PlayerColumnRules::CONTRAST)
 }
 
 fn audit_player_column_from_ids(
@@ -1178,6 +1207,152 @@ pub fn select_smb_steered_audit_ids(
         steered_ids,
         buckets: buckets.into_values().collect(),
     })
+}
+
+/// One examined entry of the responsiveness scan.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbResponsiveEntry {
+    /// Stable source archive identifier.
+    pub id: u64,
+    /// Recorded progress bucket.
+    pub progress: u16,
+    /// Frames on which the opposite-mask continuations differ in a rendered column.
+    pub responsive_frames: u64,
+    /// Frames the two opposite-mask continuations have in common.
+    pub common_frames: u64,
+    /// Whether the entry was admitted to the audited set.
+    pub admitted: bool,
+}
+
+/// Report for the responsiveness scan that sources the D38 audit.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbResponsiveScanReport {
+    /// Fixed continuation length.
+    pub continuation_frames: u8,
+    /// Fixed responsive-frame threshold for admission.
+    pub responsive_threshold: u64,
+    /// Entries whose continuations were run.
+    pub scanned: u64,
+    /// Entries reaching the responsive-frame threshold.
+    pub responsive: u64,
+    /// Identifiers admitted, in admission order.
+    pub steered_ids: Vec<u64>,
+    /// Every examined entry, in descending responsive frames.
+    pub entries: Vec<SmbResponsiveEntry>,
+}
+
+/// Select audited entries by how many frames answer the controller.
+///
+/// D37 recorded that depth does not supply horizontal motion in this archive:
+/// its deepest buckets are falls in flight and half its admitted entries were
+/// pinned against terrain. This scan ranks by a rendered measurement that names
+/// no work-RAM index, so it is not circular with what the audit is looking for.
+///
+/// # Errors
+///
+/// Returns an error when emulation or snapshotting fails.
+pub fn select_smb_responsive_audit_ids(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    wanted: usize,
+) -> Result<SmbResponsiveScanReport, Box<dyn Error>> {
+    let active = active_source_entries(source);
+    let max_tuple = active
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level))
+        .max()
+        .ok_or("source archive has no active entries")?;
+    let mut entries = active
+        .iter()
+        .copied()
+        .filter(|entry| (entry.key.world, entry.key.level) == max_tuple)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| (Reverse(entry.key.progress), entry.input.clone(), entry.id));
+    let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
+    let mut prefix = PlayerColumnPrefix::new(&mut target)?;
+    let mut examined = Vec::new();
+    let mut per_bucket = BTreeMap::<u16, usize>::new();
+    for entry in entries {
+        if examined.len() >= PLAYER_COLUMN_RESPONSIVE_SCAN_CAP {
+            break;
+        }
+        let taken = per_bucket.entry(entry.key.progress).or_insert(0);
+        if *taken >= PLAYER_COLUMN_RESPONSIVE_BUCKET_SCAN {
+            continue;
+        }
+        *taken = taken.saturating_add(1);
+        let recording = record_player_column_entry(
+            &mut target,
+            &mut prefix,
+            entry,
+            entry.key.progress,
+            PlayerColumnRules::SPREAD,
+        )?;
+        let (responsive, common) = player_column_responsive_frames(&recording);
+        examined.push(SmbResponsiveEntry {
+            id: entry.id,
+            progress: entry.key.progress,
+            responsive_frames: responsive,
+            common_frames: common,
+            admitted: false,
+        });
+    }
+    let threshold = u64::try_from(PLAYER_COLUMN_RESPONSIVE_FRAMES).unwrap_or(u64::MAX);
+    let mut order = (0..examined.len()).collect::<Vec<_>>();
+    order.sort_by_key(|position| {
+        let entry = examined[*position];
+        (
+            Reverse(entry.responsive_frames),
+            Reverse(entry.progress),
+            *position,
+        )
+    });
+    let mut admitted_per_bucket = BTreeMap::<u16, usize>::new();
+    let mut steered_ids = Vec::with_capacity(wanted);
+    for position in order {
+        if steered_ids.len() >= wanted {
+            break;
+        }
+        if examined[position].responsive_frames < threshold {
+            break;
+        }
+        let taken = admitted_per_bucket
+            .entry(examined[position].progress)
+            .or_insert(0);
+        if *taken >= PLAYER_COLUMN_BUCKET_CAP {
+            continue;
+        }
+        *taken = taken.saturating_add(1);
+        examined[position].admitted = true;
+        steered_ids.push(examined[position].id);
+    }
+    let responsive = examined
+        .iter()
+        .filter(|entry| entry.responsive_frames >= threshold)
+        .count();
+    examined.sort_by_key(|entry| (Reverse(entry.responsive_frames), Reverse(entry.progress)));
+    Ok(SmbResponsiveScanReport {
+        continuation_frames: PLAYER_COLUMN_FRAMES,
+        responsive_threshold: threshold,
+        scanned: u64::try_from(examined.len()).unwrap_or(u64::MAX),
+        responsive: u64::try_from(responsive).unwrap_or(u64::MAX),
+        steered_ids,
+        entries: examined,
+    })
+}
+
+/// Count the frames on which the opposite-mask continuations render differently.
+fn player_column_responsive_frames(recording: &EntryRecording) -> (u64, u64) {
+    let right = &recording.continuations[1].columns;
+    let left = &recording.continuations[2].columns;
+    let frames = right.len().min(left.len());
+    let responsive = (0..frames)
+        .filter(|frame| right[*frame] != left[*frame])
+        .count();
+    (
+        u64::try_from(responsive).unwrap_or(u64::MAX),
+        u64::try_from(frames).unwrap_or(u64::MAX),
+    )
 }
 
 /// Report whether the held-right and held-left continuations ever render differently.
@@ -1545,7 +1720,12 @@ fn analyze_player_column_with_rules(
             continue;
         }
         smooth_survivors = smooth_survivors.saturating_add(1);
-        if !player_column_left_direction(recordings, index) {
+        let directed = if rules.left_versus_right {
+            player_column_left_versus_right(recordings, index)
+        } else {
+            player_column_left_direction(recordings, index)
+        };
+        if !directed {
             continue;
         }
         left_direction_survivors = left_direction_survivors.saturating_add(1);
@@ -1783,6 +1963,26 @@ fn player_column_left_direction(recordings: &[EntryRecording], index: usize) -> 
             return false;
         }
         if last <= first - PLAYER_COLUMN_LEFT_DECREASE {
+            decreasing = decreasing.saturating_add(1);
+        }
+    }
+    decreasing >= player_column_left_threshold(recordings.len())
+}
+
+/// Contrast the held-left and held-right endpoints of the same entry.
+///
+/// D37 recorded that comparing the held-left endpoint against the entry's own
+/// starting value is confounded by momentum and by pinning. The two opposite
+/// masks at the same frame are the contrast the film rule itself uses.
+fn player_column_left_versus_right(recordings: &[EntryRecording], index: usize) -> bool {
+    let mut decreasing = 0_usize;
+    for recording in recordings {
+        let left = continuation_endpoints(recording, 2, index).1;
+        let right = continuation_endpoints(recording, 1, index).1;
+        if left > right + PLAYER_COLUMN_LEFT_SLACK {
+            return false;
+        }
+        if left <= right - PLAYER_COLUMN_LEFT_DECREASE {
             decreasing = decreasing.saturating_add(1);
         }
     }

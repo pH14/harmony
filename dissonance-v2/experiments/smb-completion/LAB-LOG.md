@@ -1877,3 +1877,63 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   reports itself inconclusive and selects nothing.
 - The audit runs no search, changes no search behavior, and involves no model.
   Raw destination: `target/smb-completion/d38-player-column-decode/`.
+
+### D38 result — inconclusive; the responsiveness measure ranks facing, not motion
+
+- The scan examined 256 entries across the deepest buckets, found 45 reaching 60
+  responsive frames, and admitted eight: ids 1845, 2223, 1609, 2222, 1654, 1898,
+  1721 and 1746, at progress 60, 59, 59, 58, 58, 57, 56 and 56. 152 indices took
+  at least eight distinct values and 25 were also smooth. Zero survived the
+  corrected direction filter, so nothing reached verification and nothing was
+  selected. Live and no-model replay agree and the summary records
+  `replay_verified=true`.
+- The measure saturated, which is the giveaway. Every one of the top fourteen
+  entries scored exactly 119 responsive frames out of 121 — the maximum a
+  121-frame continuation can reach. A measure that assigns the same maximum to
+  every candidate is not ranking them.
+- The reason is recorded in the endpoints. On all eight admitted entries the
+  held-left and held-right continuations end with **identical** work RAM at every
+  smooth candidate index. The continuations render differently on 119 frames and
+  finish in the same state. What the two masks changed was the direction the
+  player is drawn facing, which repaints his sprite on almost every frame while
+  moving him nowhere. Counting frames that differ therefore ranks pinned states
+  highest, which is the opposite of what the audit needs.
+- A second, structural weakness is visible in the same run. C0 and C1 are
+  conjunctive across the whole audited set, so one heterogeneous entry removes a
+  candidate for all of them: index 134, which D37 recorded behaving like a
+  screen-relative horizontal position, is absent from this run's 25 smooth
+  survivors because a single audited entry steps it by more than 8 in one frame.
+- The measurement that separates facing from motion is already available in the
+  same film evidence and names no work-RAM index: the **width of the differing
+  column span**. A facing flip repaints one sprite, so its span is about one
+  sprite wide; two players genuinely apart produce a span of their separation
+  plus a sprite width.
+- Raw evidence: `target/smb-completion/d38-player-column-decode/` and
+  `target/smb-completion/d38-diagnosis/`.
+
+## D39 — preregistered span-sourced player-column decode audit
+
+- Same falsifiable claim, source archive, video-enabled target, continuations,
+  camera-decrease truncation, filters C0 and C1, opposite-mask direction filter
+  C2, film verification with the camera-spread requirement, four-byte-stride
+  rejection, lowest-index selection, rendered PNG set, field name, operator
+  sentence, and byte-equal live-and-replay gate as D38.
+- The single change is the sourcing measure. For every examined entry, take the
+  frames on which the held-right and held-left continuations differ in a
+  rendered column, discard those whose differing span exceeds 128 columns
+  because a half-screen difference is a scroll or an unrelated actor rather than
+  the player, and record the largest remaining span. Admit entries in descending
+  largest span, breaking ties by descending progress and then `(input, id)`, at
+  most two per progress bucket, requiring a largest span of at least 24, until
+  eight are admitted. Scanning is unchanged at eight per bucket and 256 in
+  total.
+- Twenty-four is not a free parameter. The film rule only forms comparisons
+  where the candidate values differ by at least 8 and accepts a width in
+  `4..=40`, so a usable comparison has a span of at least 8 plus 4. Requiring
+  24 asks for a separation clear of one sprite width.
+- The scan reports every examined entry's largest span alongside its responsive
+  frames, so the two measures can be compared directly. If fewer than eight
+  entries reach a span of 24 the audit reports the scan and stops. If no index
+  passes verification it reports itself inconclusive and selects nothing.
+- The audit runs no search, changes no search behavior, and involves no model.
+  Raw destination: `target/smb-completion/d39-player-column-decode/`.
