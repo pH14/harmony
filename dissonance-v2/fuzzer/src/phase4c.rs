@@ -17,8 +17,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     phase4b::{
         ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS, SmbInput,
-        SmbMacro, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones, SmbObservations,
-        SmbMechanicalState, SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_camera_pixels,
+        SmbMacro, SmbMechanicalState, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
+        SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_camera_pixels,
         smb_mechanical_state_from_wram, smb_milestones_from_wram,
     },
     target::Target,
@@ -605,6 +605,12 @@ pub struct SmbPlayerColumnReport {
     pub continuation_masks: Vec<u8>,
     /// Audited representatives in selection order.
     pub audited: Vec<SmbPlayerColumnAuditedEntry>,
+    /// Ordered active entries examined per slice before auditing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scanned_per_slice: Vec<u64>,
+    /// Examined entries the controller steered, per slice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steerable_per_slice: Vec<u64>,
     /// Indices taking at least the required number of distinct values.
     pub distinct_value_survivors: u64,
     /// Indices additionally changing by at most the frame-step bound.
@@ -643,6 +649,7 @@ const PLAYER_COLUMN_MAX_STEP: i32 = 8;
 const PLAYER_COLUMN_LEFT_DECREASE: i32 = 8;
 const PLAYER_COLUMN_LEFT_SLACK: i32 = 4;
 const PLAYER_COLUMN_LEFT_ENTRIES: usize = 12;
+const PLAYER_COLUMN_LEFT_ENTRIES_BASE: usize = 16;
 const PLAYER_COLUMN_RIGHT_SLACK: i32 = 16;
 const PLAYER_COLUMN_CAMERA_ADVANCE: u32 = 32;
 const PLAYER_COLUMN_FILM_GAP: i32 = 8;
@@ -652,7 +659,20 @@ const PLAYER_COLUMN_FILM_MIN_AGREE: usize = 8;
 const PLAYER_COLUMN_FILM_MIN_WIDTH: i32 = 4;
 const PLAYER_COLUMN_FILM_MAX_WIDTH: i32 = 40;
 const PLAYER_COLUMN_STRIDES: [u16; 3] = [4, 8, 12];
+const PLAYER_COLUMN_SCAN_CAP: usize = 64;
 const PLAYER_COLUMN_RENDERED_COMPARISONS: usize = 4;
+
+/// One ordered audit candidate: an active entry and its slice progress bucket.
+type PlayerColumnCandidate<'a> = (&'a SmbArchiveEntryReport, u16);
+
+/// Which active entries a screen-column audit records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SmbPlayerColumnSelection {
+    /// D29: the first eight ordered active entries of each slice.
+    FirstOrdered,
+    /// D30: the first eight ordered active entries the controller steers.
+    FirstSteerable,
+}
 
 struct ContinuationRecording {
     wram: Vec<[u8; 2_048]>,
@@ -689,16 +709,66 @@ pub fn audit_smb_player_screen_column(
     rom: &[u8],
     source: &SmbArchiveReport,
 ) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
-    let selected = player_column_slices(source)?;
+    audit_smb_player_column_with_selection(rom, source, SmbPlayerColumnSelection::FirstOrdered)
+}
+
+/// Identify the horizontal-column byte using an explicit audited-entry selection.
+///
+/// `FirstOrdered` reproduces the frozen D29 audit byte for byte. `FirstSteerable`
+/// records D30's control-authority test and its per-slice scan counts.
+///
+/// # Errors
+///
+/// Returns an error when the source lacks the registered audit slices or when
+/// emulation, snapshotting, or rendering fails.
+pub fn audit_smb_player_column_with_selection(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    selection_mode: SmbPlayerColumnSelection,
+) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
+    let candidates = player_column_candidates(source, selection_mode)?;
     let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
-    let mut recordings = Vec::with_capacity(selected.len());
-    for (entry, progress) in &selected {
-        recordings.push(record_player_column_entry(&mut target, entry, *progress)?);
+    let mut selected = Vec::new();
+    let mut recordings = Vec::new();
+    let mut scanned_per_slice = Vec::new();
+    let mut steerable_per_slice = Vec::new();
+    for slice in &candidates {
+        let mut scanned = 0_u64;
+        let mut steerable = 0_u64;
+        let mut audited = 0_usize;
+        for (entry, progress) in slice {
+            if audited >= PLAYER_COLUMN_SLICE_SIZE {
+                break;
+            }
+            scanned = scanned.saturating_add(1);
+            let recording = record_player_column_entry(&mut target, entry, *progress)?;
+            let keep = match selection_mode {
+                SmbPlayerColumnSelection::FirstOrdered => true,
+                SmbPlayerColumnSelection::FirstSteerable => {
+                    let steered = player_column_is_steerable(&recording);
+                    if steered {
+                        steerable = steerable.saturating_add(1);
+                    }
+                    steered
+                }
+            };
+            if keep {
+                selected.push((*entry, *progress));
+                recordings.push(recording);
+                audited = audited.saturating_add(1);
+            }
+        }
+        if selection_mode == SmbPlayerColumnSelection::FirstSteerable {
+            scanned_per_slice.push(scanned);
+            steerable_per_slice.push(steerable);
+        }
     }
-    let (report, comparisons) = analyze_player_column(&recordings);
+    let (mut report, comparisons) = analyze_player_column(&recordings);
+    report.scanned_per_slice = scanned_per_slice;
+    report.steerable_per_slice = steerable_per_slice;
+    let report = report;
     let mut requests = BTreeSet::new();
-    for slice in 0..PLAYER_COLUMN_SLICES.len() {
-        let entry = slice.saturating_mul(PLAYER_COLUMN_SLICE_SIZE);
+    for entry in first_audited_entry_per_slice(&recordings) {
         let Some(recording) = recordings.get(entry) else {
             continue;
         };
@@ -731,11 +801,16 @@ pub fn audit_smb_player_screen_column(
     Ok((report, frames))
 }
 
-fn player_column_slices(
+fn player_column_candidates(
     source: &SmbArchiveReport,
-) -> Result<Vec<(&SmbArchiveEntryReport, u16)>, Box<dyn Error>> {
+    selection_mode: SmbPlayerColumnSelection,
+) -> Result<Vec<Vec<PlayerColumnCandidate<'_>>>, Box<dyn Error>> {
     let active = active_source_entries(source);
-    let mut selected = Vec::with_capacity(PLAYER_COLUMN_SLICES.len() * PLAYER_COLUMN_SLICE_SIZE);
+    let cap = match selection_mode {
+        SmbPlayerColumnSelection::FirstOrdered => PLAYER_COLUMN_SLICE_SIZE,
+        SmbPlayerColumnSelection::FirstSteerable => PLAYER_COLUMN_SCAN_CAP,
+    };
+    let mut slices = Vec::with_capacity(PLAYER_COLUMN_SLICES.len());
     for progress in PLAYER_COLUMN_SLICES {
         let mut slice = active
             .iter()
@@ -748,10 +823,31 @@ fn player_column_slices(
         if slice.len() < PLAYER_COLUMN_SLICE_SIZE {
             return Err("audit slice has fewer than eight active entries".into());
         }
-        slice.truncate(PLAYER_COLUMN_SLICE_SIZE);
-        selected.extend(slice.into_iter().map(|entry| (entry, progress)));
+        slice.truncate(cap);
+        slices.push(
+            slice
+                .into_iter()
+                .map(|entry| (entry, progress))
+                .collect::<Vec<_>>(),
+        );
     }
-    Ok(selected)
+    Ok(slices)
+}
+
+fn player_column_is_steerable(recording: &EntryRecording) -> bool {
+    let right = &recording.continuations[1].wram;
+    let left = &recording.continuations[2].wram;
+    right.last() != left.last()
+}
+
+fn first_audited_entry_per_slice(recordings: &[EntryRecording]) -> Vec<usize> {
+    let mut seen = BTreeSet::new();
+    recordings
+        .iter()
+        .enumerate()
+        .filter(|(_, recording)| seen.insert(recording.progress))
+        .map(|(entry, _)| entry)
+        .collect()
 }
 
 fn replay_player_column_endpoint(
@@ -905,6 +1001,8 @@ fn analyze_player_column(
             continuation_frames: PLAYER_COLUMN_FRAMES,
             continuation_masks: PLAYER_COLUMN_MASKS.to_vec(),
             audited,
+            scanned_per_slice: Vec::new(),
+            steerable_per_slice: Vec::new(),
             distinct_value_survivors,
             smooth_survivors,
             left_direction_survivors,
@@ -961,7 +1059,17 @@ fn player_column_left_direction(recordings: &[EntryRecording], index: usize) -> 
             decreasing = decreasing.saturating_add(1);
         }
     }
-    decreasing >= PLAYER_COLUMN_LEFT_ENTRIES
+    decreasing >= player_column_left_threshold(recordings.len())
+}
+
+fn player_column_left_threshold(audited: usize) -> usize {
+    if audited == PLAYER_COLUMN_LEFT_ENTRIES_BASE {
+        return PLAYER_COLUMN_LEFT_ENTRIES;
+    }
+    audited
+        .saturating_mul(3)
+        .saturating_add(3)
+        .saturating_div(4)
 }
 
 fn player_column_right_direction(recordings: &[EntryRecording], index: usize) -> bool {
@@ -1144,7 +1252,10 @@ pub fn diagnose_smb_player_column(
     rom: &[u8],
     source: &SmbArchiveReport,
 ) -> Result<(Vec<SmbPlayerColumnTrace>, Vec<SmbAuditFrame>), Box<dyn Error>> {
-    let selected = player_column_slices(source)?;
+    let selected = player_column_candidates(source, SmbPlayerColumnSelection::FirstOrdered)?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
     let mut traces = Vec::with_capacity(selected.len());
     for (source_entry, progress) in &selected {
@@ -1201,7 +1312,7 @@ pub fn diagnose_smb_player_column(
 
 fn render_player_column_frames(
     target: &mut SmbTarget,
-    selected: &[(&SmbArchiveEntryReport, u16)],
+    selected: &[PlayerColumnCandidate<'_>],
     requests: &BTreeSet<(usize, usize, usize)>,
 ) -> Result<Vec<SmbAuditFrame>, Box<dyn Error>> {
     let mut frames = Vec::new();
@@ -1931,6 +2042,31 @@ mod tests {
         assert_eq!(report.qualifying_right_continuations, 0);
         assert!(report.camera_relative_survivors.is_empty());
         assert!(report.selected.is_none());
+    }
+
+    #[test]
+    fn player_column_steerability_and_left_threshold_scale_with_the_audited_set() {
+        let steerable = scripted_recording(0);
+        assert!(super::player_column_is_steerable(&steerable));
+        let mut frozen = scripted_recording(1);
+        let right = frozen.continuations[1].wram.clone();
+        frozen.continuations[2].wram = right;
+        assert!(!super::player_column_is_steerable(&frozen));
+        assert_eq!(super::player_column_left_threshold(16), 12);
+        assert_eq!(super::player_column_left_threshold(8), 6);
+        assert_eq!(super::player_column_left_threshold(9), 7);
+        assert_eq!(super::player_column_left_threshold(4), 3);
+    }
+
+    #[test]
+    fn player_column_audit_still_selects_with_a_smaller_audited_set() {
+        let recordings = (0..8).map(scripted_recording).collect::<Vec<_>>();
+        let (report, _) = analyze_player_column(&recordings);
+        let selected = report.selected.expect("conclusive audit");
+        assert_eq!(
+            selected.index,
+            u16::try_from(SCREEN_COLUMN_INDEX).expect("index")
+        );
     }
 
     struct ScriptedFrameRanking;

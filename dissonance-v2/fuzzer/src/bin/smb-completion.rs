@@ -19,9 +19,9 @@ use fuzzer::{
     },
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
-        SmbArchiveSuffixPolicy, audit_smb_frontier_viability, audit_smb_player_screen_column, diagnose_smb_player_column,
-        run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
-        run_smb_archive_search_with_policies,
+        SmbArchiveSuffixPolicy, SmbPlayerColumnSelection, audit_smb_frontier_viability,
+        audit_smb_player_column_with_selection, diagnose_smb_player_column, run_smb_archive_search,
+        run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_policies,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -79,7 +79,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         return run_frontier_viability_mode(&mut args);
     }
     if mode == "audit-player-column" {
-        return run_player_column_mode(&mut args);
+        return run_player_column_mode(&mut args, SmbPlayerColumnSelection::FirstOrdered);
+    }
+    if mode == "audit-steerable-player-column" {
+        return run_player_column_mode(&mut args, SmbPlayerColumnSelection::FirstSteerable);
     }
     if mode == "diagnose-player-column" {
         return run_player_column_diagnosis_mode(&mut args);
@@ -292,6 +295,7 @@ fn run_frontier_viability_mode(
 
 fn run_player_column_mode(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
+    selection: SmbPlayerColumnSelection,
 ) -> Result<(), Box<dyn Error>> {
     let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
@@ -299,7 +303,7 @@ fn run_player_column_mode(
     fs::create_dir_all(&output)?;
     let rom = read_rom()?;
     let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
-    let (report, frames) = audit_smb_player_screen_column(&rom, &source)?;
+    let (report, frames) = audit_smb_player_column_with_selection(&rom, &source, selection)?;
     fs::write(
         output.join("player-column-live.json"),
         serde_json::to_vec_pretty(&report)?,
@@ -313,7 +317,8 @@ fn run_player_column_mode(
         )?;
     }
     let replay_verified = if replay_requested {
-        let (replay, replay_frames) = audit_smb_player_screen_column(&rom, &source)?;
+        let (replay, replay_frames) =
+            audit_smb_player_column_with_selection(&rom, &source, selection)?;
         fs::write(
             output.join("player-column-replay.json"),
             serde_json::to_vec_pretty(&replay)?,
@@ -326,6 +331,8 @@ fn run_player_column_mode(
         "continuation_frames": report.continuation_frames,
         "continuation_masks": report.continuation_masks,
         "audited_entries": report.audited.len(),
+        "scanned_per_slice": report.scanned_per_slice,
+        "steerable_per_slice": report.steerable_per_slice,
         "distinct_value_survivors": report.distinct_value_survivors,
         "smooth_survivors": report.smooth_survivors,
         "left_direction_survivors": report.left_direction_survivors,
