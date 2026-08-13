@@ -2038,3 +2038,43 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
 - Both of those are properties of what the archive **retains**, not of what the
   observation state records. Correcting them is a search change of the same kind
   as the terminal condition, so it is reported rather than taken.
+
+## D41 — preregistered two-state film-discriminated player-column audit
+
+- Falsifiable claim: one work-RAM index holds the player's horizontal position
+  within the rendered screen, and D33's film rule can identify it from the only
+  two recorded states in which the controller moves the player at all. D37's
+  evidence points at index 134; this audit is registered to confirm or refute
+  that, and it selects by its own rule rather than by that expectation.
+- Audited entries are not chosen here. They are whatever D40's registered scan
+  admits when asked for two: the same examination order, the same eight per
+  bucket and 256 in total, the same equal-camera span measure, the same
+  descending-span admission with at most two per progress bucket and a minimum
+  span of 24. On the recorded rebuilt archive that scan admits ids 1610 at
+  progress 40 and 1871 at progress 59, and the audit fails rather than proceeds
+  if it admits fewer than two.
+- Everything else is D38's: the video-enabled target, three fixed continuations
+  of 120 single-frame chords with masks `0x00`, `0x01` and `0x02`,
+  camera-decrease truncation, filter C0 requiring at least eight distinct
+  values, filter C1 requiring consecutive frames to differ by at most 8, filter
+  C2 contrasting the two opposite masks at the same frame, four-byte-stride
+  rejection, lowest-index selection, the rendered PNG set, the field name
+  `player_screen_column`, the operator sentence fixed in D29, and the byte-equal
+  live-and-replay gate.
+- With two audited entries, C2's three-quarters threshold rounds to two, so both
+  entries must show the held-left final value at least 8 below the held-right
+  final value, and neither may exceed it by more than 4.
+- The weakness of a two-entry set is stated plainly: C0 and C1 discriminate less
+  with fewer recordings, so more indices will reach verification than in an
+  eight-entry audit. The film rule is what carries the audit, and it is not
+  weakened. It still requires at least eight comparisons agreeing on one offset
+  within a tolerance of 6 with a width in `4..=40`, and it still requires two of
+  those agreeing comparisons to come from recorded camera positions at least 16
+  pixels apart. The two admitted entries sit at camera positions hundreds of
+  pixels apart, so that requirement can only be met by comparisons drawn from
+  both of them — which is precisely the discriminator that separates a
+  screen-relative byte from an absolute one.
+- The audit reports every index that passes the film rule, not only the selected
+  one, so whether the selection is unique is visible in the record.
+- The audit runs no search, changes no search behavior, and involves no model.
+  Raw destination: `target/smb-completion/d41-player-column-decode/`.
