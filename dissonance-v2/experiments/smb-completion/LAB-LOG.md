@@ -1319,3 +1319,35 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   mutator change cannot matter when the parents it chooses among have no
   control authority. Raw evidence:
   `target/smb-completion/d31-player-column-decode/`.
+
+## D32 — preregistered control-authority census and sourced column audit
+
+- Diagnostic claim: the retained archive at this source is largely occupied by
+  states with no rightward control authority, and the fraction that retains it
+  varies systematically with the progress bucket. If that is false, every
+  populated bucket will show a similar admitted fraction.
+- Census: reconstruct the active archive of the same exact H19 seed
+  `0x5eed_e002` source with the existing capacity-two, fewer-actions rule. Take
+  every active entry with corrected `(world 0, level 2)`, order them by
+  `(progress, input, id)`, replay each to its endpoint with the prefix-shared
+  path, and run one continuation of 120 single-frame right chords, truncating at
+  engine state `$0b`. An entry is admitted when the recorded camera,
+  `screen_page * 256 + screen_x`, advances by 32 pixels or more. Report per
+  progress bucket the active count and the admitted count. No search runs, no
+  search behavior changes, and no model is involved. Live and no-model replay
+  reports must be byte-equal.
+- Sourced audit, fixed here so no bucket is chosen after seeing the census: take
+  the admitted entries in descending progress bucket, breaking ties by
+  `(input, id)`, and audit the first eight. Everything else — the three
+  continuations, per-frame work RAM and column signatures, C0 through C4 with
+  C2 at three quarters of the audited entries, the film check, the four-byte
+  stride rejection, lowest-index selection, the rendered PNG set, and the
+  byte-equal live-and-replay gate — is exactly D29's. If fewer than eight
+  entries are admitted anywhere, the audit reports itself inconclusive.
+- If the audit selects an index, the field name `player_screen_column`, its
+  exact operator sentence, the unchanged-key requirement, and the fixed seed
+  `0x5eed_ef00`, 256-execution byte-identical archive gate are exactly as fixed
+  in D29, whose pre-change report is recorded with SHA-256
+  `383bc917ec0b1d3b6911059f1526cfd853b31f91bf10b32aeb9ee57a41fa7111`.
+- Raw destinations: `target/smb-completion/d32-control-census/` and
+  `target/smb-completion/d32-player-column-decode/`.
