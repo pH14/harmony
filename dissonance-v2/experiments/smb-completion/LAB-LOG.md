@@ -2810,3 +2810,13 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   quantity. The conquest campaign registered as local stays local and keeps its
   lane; the ARM machine runs its own conquest campaign plus at most five panel
   arms, so neither machine exceeds six concurrent arms.
+
+### C49 correction recorded beside the registration
+
+- The registration says world and level transitions are reported as they are
+  observed. The campaign binary writes its report only when a run finishes, so
+  for these two runs transitions become observable at completion and not before.
+  Nothing was changed in the running campaigns to alter that; a progress file
+  would have to be added to the campaign path and that is a code change to a
+  running experiment. The deliverable is unchanged and the transitions will be
+  reported from the recorded milestone ladder and progress curve.
