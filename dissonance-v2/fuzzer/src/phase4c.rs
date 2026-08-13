@@ -700,6 +700,8 @@ const PLAYER_COLUMN_BUCKET_SCAN_CAP: usize = 4;
 const PLAYER_COLUMN_RESPONSIVE_BUCKET_SCAN: usize = 8;
 const PLAYER_COLUMN_RESPONSIVE_SCAN_CAP: usize = 256;
 const PLAYER_COLUMN_RESPONSIVE_FRAMES: usize = 60;
+const PLAYER_COLUMN_SPAN_MIN: i32 = 24;
+const PLAYER_COLUMN_SPAN_MAX: i32 = 128;
 
 /// One ordered audit candidate: an active entry and its slice progress bucket.
 type PlayerColumnCandidate<'a> = (&'a SmbArchiveEntryReport, u16);
@@ -1220,6 +1222,8 @@ pub struct SmbResponsiveEntry {
     pub responsive_frames: u64,
     /// Frames the two opposite-mask continuations have in common.
     pub common_frames: u64,
+    /// Largest differing column span at or below the recorded ceiling.
+    pub largest_span: i32,
     /// Whether the entry was admitted to the audited set.
     pub admitted: bool,
 }
@@ -1231,6 +1235,8 @@ pub struct SmbResponsiveScanReport {
     pub continuation_frames: u8,
     /// Fixed responsive-frame threshold for admission.
     pub responsive_threshold: u64,
+    /// Whether admission ranked by largest differing span rather than frame count.
+    pub by_span: bool,
     /// Entries whose continuations were run.
     pub scanned: u64,
     /// Entries reaching the responsive-frame threshold.
@@ -1255,6 +1261,33 @@ pub fn select_smb_responsive_audit_ids(
     rom: &[u8],
     source: &SmbArchiveReport,
     wanted: usize,
+) -> Result<SmbResponsiveScanReport, Box<dyn Error>> {
+    select_responsive_audit_ids(rom, source, wanted, false)
+}
+
+/// Select audited entries by the largest rendered separation the controller produces.
+///
+/// D38 recorded that counting differing frames ranks facing changes, which
+/// repaint one sprite while moving the player nowhere. The width of the
+/// differing span separates the two: a facing flip spans about one sprite,
+/// while two players genuinely apart span their separation plus a sprite.
+///
+/// # Errors
+///
+/// Returns an error when emulation or snapshotting fails.
+pub fn select_smb_span_audit_ids(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    wanted: usize,
+) -> Result<SmbResponsiveScanReport, Box<dyn Error>> {
+    select_responsive_audit_ids(rom, source, wanted, true)
+}
+
+fn select_responsive_audit_ids(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    wanted: usize,
+    by_span: bool,
 ) -> Result<SmbResponsiveScanReport, Box<dyn Error>> {
     let active = active_source_entries(source);
     let max_tuple = active
@@ -1288,12 +1321,13 @@ pub fn select_smb_responsive_audit_ids(
             entry.key.progress,
             PlayerColumnRules::SPREAD,
         )?;
-        let (responsive, common) = player_column_responsive_frames(&recording);
+        let (responsive, common, largest_span) = player_column_responsive_frames(&recording);
         examined.push(SmbResponsiveEntry {
             id: entry.id,
             progress: entry.key.progress,
             responsive_frames: responsive,
             common_frames: common,
+            largest_span,
             admitted: false,
         });
     }
@@ -1301,11 +1335,12 @@ pub fn select_smb_responsive_audit_ids(
     let mut order = (0..examined.len()).collect::<Vec<_>>();
     order.sort_by_key(|position| {
         let entry = examined[*position];
-        (
-            Reverse(entry.responsive_frames),
-            Reverse(entry.progress),
-            *position,
-        )
+        let rank = if by_span {
+            u64::try_from(entry.largest_span).unwrap_or(0)
+        } else {
+            entry.responsive_frames
+        };
+        (Reverse(rank), Reverse(entry.progress), *position)
     });
     let mut admitted_per_bucket = BTreeMap::<u16, usize>::new();
     let mut steered_ids = Vec::with_capacity(wanted);
@@ -1313,7 +1348,12 @@ pub fn select_smb_responsive_audit_ids(
         if steered_ids.len() >= wanted {
             break;
         }
-        if examined[position].responsive_frames < threshold {
+        let qualifies = if by_span {
+            examined[position].largest_span >= PLAYER_COLUMN_SPAN_MIN
+        } else {
+            examined[position].responsive_frames >= threshold
+        };
+        if !qualifies {
             break;
         }
         let taken = admitted_per_bucket
@@ -1328,12 +1368,23 @@ pub fn select_smb_responsive_audit_ids(
     }
     let responsive = examined
         .iter()
-        .filter(|entry| entry.responsive_frames >= threshold)
+        .filter(|entry| {
+            if by_span {
+                entry.largest_span >= PLAYER_COLUMN_SPAN_MIN
+            } else {
+                entry.responsive_frames >= threshold
+            }
+        })
         .count();
-    examined.sort_by_key(|entry| (Reverse(entry.responsive_frames), Reverse(entry.progress)));
+    if by_span {
+        examined.sort_by_key(|entry| (Reverse(entry.largest_span), Reverse(entry.progress)));
+    } else {
+        examined.sort_by_key(|entry| (Reverse(entry.responsive_frames), Reverse(entry.progress)));
+    }
     Ok(SmbResponsiveScanReport {
         continuation_frames: PLAYER_COLUMN_FRAMES,
         responsive_threshold: threshold,
+        by_span,
         scanned: u64::try_from(examined.len()).unwrap_or(u64::MAX),
         responsive: u64::try_from(responsive).unwrap_or(u64::MAX),
         steered_ids,
@@ -1341,17 +1392,31 @@ pub fn select_smb_responsive_audit_ids(
     })
 }
 
-/// Count the frames on which the opposite-mask continuations render differently.
-fn player_column_responsive_frames(recording: &EntryRecording) -> (u64, u64) {
+/// Count differing frames and the largest differing span the controller produces.
+fn player_column_responsive_frames(recording: &EntryRecording) -> (u64, u64, i32) {
     let right = &recording.continuations[1].columns;
     let left = &recording.continuations[2].columns;
     let frames = right.len().min(left.len());
-    let responsive = (0..frames)
-        .filter(|frame| right[*frame] != left[*frame])
-        .count();
+    let mut responsive = 0_usize;
+    let mut largest_span = 0_i32;
+    for frame in 0..frames {
+        let differing = (0..256)
+            .filter(|column| right[frame][*column] != left[frame][*column])
+            .collect::<Vec<_>>();
+        let (Some(lowest), Some(highest)) = (differing.first(), differing.last()) else {
+            continue;
+        };
+        responsive = responsive.saturating_add(1);
+        let span =
+            i32::try_from(highest.saturating_sub(*lowest).saturating_add(1)).unwrap_or(i32::MAX);
+        if span <= PLAYER_COLUMN_SPAN_MAX {
+            largest_span = largest_span.max(span);
+        }
+    }
     (
         u64::try_from(responsive).unwrap_or(u64::MAX),
         u64::try_from(frames).unwrap_or(u64::MAX),
+        largest_span,
     )
 }
 

@@ -1937,3 +1937,52 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   passes verification it reports itself inconclusive and selects nothing.
 - The audit runs no search, changes no search behavior, and involves no model.
   Raw destination: `target/smb-completion/d39-player-column-decode/`.
+
+### D39 result — stopped; only two of 256 states separate the player at all
+
+- The scan examined 256 entries across 36 progress buckets from 74 down to 33.
+  Only **2** reached a largest differing span of 24, so the audit stopped as
+  registered without auditing anything.
+- The recorded span distribution is bimodal and says exactly what the measure
+  was built to say. 176 entries record a largest span of 0, 63 record exactly
+  17, eight record 16, five record 13, one records 14 and one 18. Two exceed the
+  threshold: id 1610 at progress 40 with span 98, and id 1871 at progress 59
+  with span 60. Seventeen columns is one sprite width. The 63-entry spike at 17
+  is the facing flip D38 identified, now measured directly and separated from
+  motion.
+- The measure has a recorded confound and it matters. Frames whose differing
+  span exceeds 128 columns are discarded as scroll or unrelated actors, and a
+  span of 0 therefore means either that nothing differed on any frame or that
+  everything that differed was screen-wide. Id 1526 records 85 responsive frames
+  and a largest span of 0, so for that entry every differing frame was
+  screen-wide.
+- The cause is visible by comparing against D37. Id 2223 recorded a 42-unit
+  separation between its held-left and held-right endpoints at index 134, which
+  should span about 58 columns, yet this scan records 17 for it. The frames on
+  which the two continuations are genuinely apart are exactly the frames on
+  which their **cameras** have also diverged, and a camera difference shifts the
+  whole screen. The film verification already handles this by comparing only
+  frames whose recorded camera bytes are equal; the sourcing measure did not.
+- Raw evidence: `target/smb-completion/d39-player-column-decode/`.
+
+## D40 — preregistered equal-camera span sourcing
+
+- Same falsifiable claim, source archive, target, continuations, filters, film
+  verification, stride rejection, selection, field name, operator sentence, and
+  byte-equal live-and-replay gate as D39.
+- The single change: the largest differing span is measured only over frames on
+  which the two continuations record **equal screen-page and screen-x bytes**.
+  That is the same condition the film verification already imposes on every
+  comparison it forms, so sourcing and verification now agree about which frames
+  carry usable evidence. The 128-column ceiling is kept and the count of frames
+  it discards is reported separately from the count of frames with no difference
+  at all, so a span of 0 is no longer ambiguous.
+- Admission is otherwise unchanged: descending largest span, ties by descending
+  progress and then `(input, id)`, at most two per progress bucket, requiring at
+  least 24, until eight are admitted; eight examined per bucket and 256 in
+  total.
+- If fewer than eight entries reach a span of 24 the audit reports the scan and
+  stops. If no index passes verification it reports itself inconclusive and
+  selects nothing. It runs no search, changes no search behavior, and involves
+  no model. Raw destination:
+  `target/smb-completion/d40-player-column-decode/`.

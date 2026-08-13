@@ -27,7 +27,7 @@ use fuzzer::{
         diagnose_smb_left_direction, diagnose_smb_player_column, gate_smb_live_control,
         readmit_smb_archive, run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
         run_smb_archive_search_with_policies, select_smb_responsive_audit_ids,
-        select_smb_spread_audit_ids, select_smb_steered_audit_ids,
+        select_smb_span_audit_ids, select_smb_spread_audit_ids, select_smb_steered_audit_ids,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -110,7 +110,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         return run_steered_player_column_mode(&mut args);
     }
     if mode == "audit-responsive-player-column" {
-        return run_responsive_player_column_mode(&mut args);
+        return run_responsive_player_column_mode(&mut args, false);
+    }
+    if mode == "audit-span-player-column" {
+        return run_responsive_player_column_mode(&mut args, true);
     }
     if mode == "diagnose-left-direction" {
         return run_left_direction_diagnosis_mode(&mut args);
@@ -681,14 +684,20 @@ fn run_steered_player_column_mode(
 
 fn run_responsive_player_column_mode(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
+    by_span: bool,
 ) -> Result<(), Box<dyn Error>> {
+    let select = if by_span {
+        select_smb_span_audit_ids
+    } else {
+        select_smb_responsive_audit_ids
+    };
     let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let replay_requested = parse_replay_flag(args, "audit-responsive-player-column")?;
     fs::create_dir_all(&output)?;
     let rom = read_rom()?;
     let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
-    let scan = select_smb_responsive_audit_ids(&rom, &source, CENSUS_AUDIT_ENTRIES)?;
+    let scan = select(&rom, &source, CENSUS_AUDIT_ENTRIES)?;
     fs::write(
         output.join("responsive-scan.json"),
         serde_json::to_vec_pretty(&scan)?,
@@ -722,7 +731,7 @@ fn run_responsive_player_column_mode(
         )?;
     }
     let replay_verified = if replay_requested {
-        let replay_scan = select_smb_responsive_audit_ids(&rom, &source, CENSUS_AUDIT_ENTRIES)?;
+        let replay_scan = select(&rom, &source, CENSUS_AUDIT_ENTRIES)?;
         let (replay, replay_frames) =
             audit_smb_player_column_contrast(&rom, &source, &replay_scan.steered_ids)?;
         fs::write(
