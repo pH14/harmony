@@ -1548,3 +1548,46 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
 - The audit runs no search, changes no search behavior, and involves no model.
   Live and no-model replay reports must be byte-equal. Raw destination:
   `target/smb-completion/d34-death-decode/`.
+
+### D34 result — pass; the frozen condition misses every audited death
+
+- Reading fixed before the numbers below were inspected: "the start of the
+  replay" is gameplay genesis in both populations, so `K1` compares against the
+  genesis value of `$075a` in the control and in every continuation.
+- The control replay consumed all 220 recorded champion actions and 10,006
+  frames before reaching the maximum recorded tuple, spanning 2,924 frames at
+  tuple `(0, 0)`, 7,080 at `(0, 1)` and 2 at `(0, 2)`. Over all of them `$075a`
+  never moved from 2, `$00b5` took only the values 1 and 0 — 9,795 and 211
+  frames — and the largest recorded `$00b5 * 256 + $00ce` was 496.
+- The uncontrolled scan admitted the first eight entries it tested, ids 4395,
+  4396, 4394, 4083, 4056, 4029, 4180 and 4055, at progress 39, 39, 38, 38, 37,
+  37, 36 and 36. On every one of them the no-input and held-left continuations
+  render identically on all 121 frames in common.
+- `K0` is true on zero control frames and trips on **none** of the eight
+  continuations. The frozen terminal condition detects none of these deaths.
+- `K1` is true on zero control frames and trips on only two of the eight, at
+  frames 137 and 132. `$075a` falls from 2 to 1 on ids 4395 and 4396 and does
+  not move within 240 frames on the other six.
+- `K2(1)` and `K3(1)` are true on 9,795 control frames and fail. `K2(t)` and
+  `K3(t)` are identical for every `t` at or above 2, which is a consequence of
+  their definitions rather than independent agreement. `K2(2)` through `K2(5)`
+  and `K3(2)` through `K3(5)` are true on zero control frames and trip on all
+  eight continuations; `K2(6)` trips on two and `K2(7)` on none.
+- The registered adoption rule selects **`K2(2)`**, `$00b5 >= 2`: zero control
+  frames, first-trip frames `[0, 0, 10, 7, 11, 17, 19, 19]`, median 11 and
+  maximum 19. `K3(2)` is the same condition and loses the tie by order.
+- The recorded trajectories say what the population is. Ids 4395 and 4396, both
+  at the maximal frontier bucket, are already at `$00b5 = 3` at their recorded
+  archive endpoint: they are stored states that had already left the play area
+  before they were retained. The other six begin at `$00b5 = 1` and reach
+  `$00b5 = 5` within 240 frames while `$000e` never leaves 8, a descent of more
+  than four pages with the engine state unchanged.
+- Limitation recorded plainly: the control is one recorded input. It is 10,006
+  frames long and crosses three recorded tuples including the whole second one,
+  but a condition that is never true across a single trajectory is weaker
+  evidence than one tested across many. The correction below therefore keeps
+  `K0` disjoined and states the exposure.
+- Live and no-model replay reports are byte-equal with SHA-256
+  `ac0fa58e9067d2a394c79814aa7372cea6af3b1a5888ed6c48508d3a3037218e` and the
+  summary records `replay_verified=true`. Raw evidence:
+  `target/smb-completion/d34-death-decode/`.
