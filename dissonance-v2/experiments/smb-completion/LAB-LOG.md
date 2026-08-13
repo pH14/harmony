@@ -1638,3 +1638,58 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   fewest retained entries and then by the smaller seed.
 - Raw destinations: `target/smb-completion/m35-readmission/` and
   `target/smb-completion/m35-rebuild/`.
+
+### M35 result — accepted; the plateau broke on the correction alone
+
+- The corrected terminal condition is `$000e == $0b` or `$00b5 >= 2`, as adopted.
+- G1 passes: a unit test holds the frozen clause decisive at every value of the
+  vertical page byte, so no death the frozen condition detected is lost.
+- G2 passes exactly. Under the corrected condition the recorded champion input
+  still replays from gameplay genesis to the maximum recorded tuple in 220
+  actions and 10,006 frames, with a largest `$00b5` of 1 and a largest combined
+  vertical position of 496 — the same numbers D34 recorded.
+- G3 passes: `cargo fmt --check`, `cargo clippy --all-features` with
+  `-D warnings`, 69 tests run and 69 passed under `cargo nextest run
+  --all-features`, and `cargo deny check` reporting advisories, bans, licenses
+  and sources ok. Clippy prints only the known pre-existing configuration
+  warning for the removed `rand::thread_rng` path.
+- G4 passes: the re-admission pass records `replay_verified=true`.
+- G5 passes: re-admitting the selected rebuilt arm returns 2,947 of 2,947
+  entries surviving and zero below the play area at any endpoint.
+- Re-admission of the recorded source archive: of 4,832 recorded entries, 1,188
+  survive and **3,644 were already below the play area at the endpoint at which
+  they were retained**. Per tuple the survivors are 235 of 242, 701 of 803, and
+  252 of 3,787.
+- The per-bucket table names the fault exactly. In the deepest tuple every
+  heavily populated bucket is entirely dead: progress 34 keeps 0 of 1,502,
+  progress 32 keeps 0 of 229, progress 33 keeps 0 of 94, progress 30 keeps 0 of
+  96, progress 29 keeps 0 of 46, progress 19 keeps 0 of 44, and progress 17
+  keeps 1 of 257. Progress 39 keeps 1 of 382. The sparse buckets are the live
+  ones: 38 keeps 4 of 4, 37 keeps 6 of 6, 36 keeps 3 of 3, 35 keeps 2 of 2. A
+  1,502-entry bucket that retains nothing is one fall recorded sixteen vertical
+  buckets deep, over and over.
+- Resume panel, six arms, frozen protocol, 5,000 executions each. Retained
+  counts were `[2947, 2235, 2182, 2091, 2156, 2240]` and deaths were
+  `[2777, 3302, 3358, 3431, 3387, 3300]`, against the 45 deaths the same
+  protocol recorded on the same source before the correction. Every arm records
+  `replay_verified=true`.
+- The registered claim is accepted. The six arms did **not** all stop at one
+  identical maximum progress: seed `0x5eed_e000` reached
+  `(world 0, level 2, progress 74)` while the other five reached progress 39.
+  Progress 74 is the first advance past the boundary that held on 12/12 arms in
+  H20 and on every arm of H21 through H27. Nothing about the scheduler, the
+  controller vocabulary, the durations, the suffixes, the retention rule, the
+  budget or the ranking changed; only undetected deaths stopped being admitted.
+- The selected arm is `0x5eed_e000`, the unique maximum. Its deepest tuple holds
+  a continuous live ladder from progress 47 to 74 — 131 entries at 74, 42 at 71,
+  62 at 64, 84 at 49 — where the pre-correction archive had a single live entry
+  above progress 38.
+- Recorded consequence for the earlier audits: D29 through D34 continued their
+  fixed 120- and 240-frame continuations past deaths the frozen condition did
+  not detect, so under the corrected condition they cannot reproduce and are not
+  expected to. Their recorded reports stand as evidence of what the frozen
+  target did, and D34's adoption decision was taken before the correction was
+  applied.
+- Raw evidence: `target/smb-completion/m35-readmission/`,
+  `target/smb-completion/m35-rebuild/`, and
+  `target/smb-completion/m35-gate-g5/`.
