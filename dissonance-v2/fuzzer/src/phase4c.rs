@@ -1059,6 +1059,116 @@ pub struct SmbFilmMeasurement {
     pub width: i32,
 }
 
+/// One recorded progress bucket of the steered-entry scan.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbSteerScanBucket {
+    /// Recorded progress bucket.
+    pub progress: u16,
+    /// Entries of this bucket whose continuations were run.
+    pub scanned: u64,
+    /// Entries of this bucket whose rendered frames answer the controller.
+    pub steered: u64,
+}
+
+/// Report for the steered-entry scan that sources the corrected column audit.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbSteerScanReport {
+    /// Fixed continuation length.
+    pub continuation_frames: u8,
+    /// Fixed camera advance the held-right continuation must reach, in pixels.
+    pub camera_advance: u32,
+    /// Entries whose continuations were run.
+    pub scanned: u64,
+    /// Entries admitted by both clauses.
+    pub steered: u64,
+    /// Identifiers admitted, in scan order.
+    pub steered_ids: Vec<u64>,
+    /// Per-bucket scan counts, in progress order.
+    pub buckets: Vec<SmbSteerScanBucket>,
+}
+
+/// Select audited entries whose rendered frames actually answer the controller.
+///
+/// An entry is admitted when its held-right continuation advances the recorded
+/// camera by the fixed pixel threshold and its held-right and held-left
+/// continuations differ in at least one rendered column on at least one frame.
+/// The second clause is what a camera advance alone cannot establish: a falling
+/// player coasts the camera forward while rendering identically under every mask.
+///
+/// # Errors
+///
+/// Returns an error when emulation or snapshotting fails.
+pub fn select_smb_steered_audit_ids(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    wanted: usize,
+) -> Result<SmbSteerScanReport, Box<dyn Error>> {
+    let active = active_source_entries(source);
+    let max_tuple = active
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level))
+        .max()
+        .ok_or("source archive has no active entries")?;
+    let mut entries = active
+        .iter()
+        .copied()
+        .filter(|entry| (entry.key.world, entry.key.level) == max_tuple)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| (Reverse(entry.key.progress), entry.input.clone(), entry.id));
+    let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
+    let mut prefix = PlayerColumnPrefix::new(&mut target)?;
+    let mut buckets = BTreeMap::<u16, (u64, u64)>::new();
+    let mut steered_ids = Vec::with_capacity(wanted);
+    let mut scanned = 0_usize;
+    for entry in entries {
+        if steered_ids.len() >= wanted || scanned >= PLAYER_COLUMN_ADVANCING_SCAN_CAP {
+            break;
+        }
+        let taken = buckets.entry(entry.key.progress).or_insert((0, 0));
+        if taken.1 >= u64::try_from(PLAYER_COLUMN_BUCKET_CAP).unwrap_or(u64::MAX) {
+            continue;
+        }
+        scanned = scanned.saturating_add(1);
+        let recording = record_player_column_entry(
+            &mut target,
+            &mut prefix,
+            entry,
+            entry.key.progress,
+            PlayerColumnRules::SPREAD,
+        )?;
+        let counts = buckets.entry(entry.key.progress).or_insert((0, 0));
+        counts.0 = counts.0.saturating_add(1);
+        if player_column_advances_camera(&recording) && player_column_answers_controller(&recording)
+        {
+            counts.1 = counts.1.saturating_add(1);
+            steered_ids.push(entry.id);
+        }
+    }
+    Ok(SmbSteerScanReport {
+        continuation_frames: PLAYER_COLUMN_FRAMES,
+        camera_advance: PLAYER_COLUMN_CAMERA_ADVANCE,
+        scanned: u64::try_from(scanned).unwrap_or(u64::MAX),
+        steered: u64::try_from(steered_ids.len()).unwrap_or(u64::MAX),
+        steered_ids,
+        buckets: buckets
+            .iter()
+            .map(|(progress, (scanned, steered))| SmbSteerScanBucket {
+                progress: *progress,
+                scanned: *scanned,
+                steered: *steered,
+            })
+            .collect(),
+    })
+}
+
+/// Report whether the held-right and held-left continuations ever render differently.
+fn player_column_answers_controller(recording: &EntryRecording) -> bool {
+    let right = &recording.continuations[1].columns;
+    let left = &recording.continuations[2].columns;
+    let frames = right.len().min(left.len());
+    (0..frames).any(|frame| right[frame] != left[frame])
+}
+
 /// Record every film-check measurement for the indices that reach verification.
 ///
 /// # Errors
