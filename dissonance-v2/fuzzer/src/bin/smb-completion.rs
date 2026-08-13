@@ -14,13 +14,14 @@ use fuzzer::{
     phase2::{Flag, Interest, TriageLabels},
     phase4b::{
         NullSmbDetector, NullSmbMacro, SmbArtifactConfig, SmbCampaignReport, SmbConfiguredReport,
-        SmbInput, SmbLabeledCorpusEntry, SmbMilestones, observe_smb_input,
+        SmbInput, SmbLabeledCorpusEntry, SmbMilestones, encode_smb_frame_png, observe_smb_input,
         run_smb_restart_configured, smb_milestones_from_wram,
     },
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
-        SmbArchiveSuffixPolicy, audit_smb_frontier_viability, run_smb_archive_search,
-        run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_policies,
+        SmbArchiveSuffixPolicy, audit_smb_frontier_viability, audit_smb_player_screen_column,
+        run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
+        run_smb_archive_search_with_policies,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -76,6 +77,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "audit-frontier-viability" {
         return run_frontier_viability_mode(&mut args);
+    }
+    if mode == "audit-player-column" {
+        return run_player_column_mode(&mut args);
     }
     if mode == "archive-resume" {
         return run_archive_resume_mode(
@@ -280,6 +284,65 @@ fn run_frontier_viability_mode(
         serde_json::to_vec_pretty(&summary)?,
     )?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn run_player_column_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    let replay_requested = parse_replay_flag(args, "audit-player-column")?;
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let (report, frames) = audit_smb_player_screen_column(&rom, &source)?;
+    fs::write(
+        output.join("player-column-live.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    let frame_directory = output.join("frames");
+    fs::create_dir_all(&frame_directory)?;
+    for frame in &frames {
+        fs::write(
+            frame_directory.join(&frame.name),
+            encode_smb_frame_png(&frame.rgba)?,
+        )?;
+    }
+    let replay_verified = if replay_requested {
+        let (replay, replay_frames) = audit_smb_player_screen_column(&rom, &source)?;
+        fs::write(
+            output.join("player-column-replay.json"),
+            serde_json::to_vec_pretty(&replay)?,
+        )?;
+        Some(replay == report && replay_frames == frames)
+    } else {
+        None
+    };
+    let summary = serde_json::json!({
+        "continuation_frames": report.continuation_frames,
+        "continuation_masks": report.continuation_masks,
+        "audited_entries": report.audited.len(),
+        "distinct_value_survivors": report.distinct_value_survivors,
+        "smooth_survivors": report.smooth_survivors,
+        "left_direction_survivors": report.left_direction_survivors,
+        "right_direction_survivors": report.right_direction_survivors,
+        "qualifying_right_continuations": report.qualifying_right_continuations,
+        "camera_relative_survivors": report.camera_relative_survivors,
+        "film_survivors": report.film_survivors,
+        "stride_rejected": report.stride_rejected,
+        "selected": report.selected,
+        "rendered_frames": frames.len(),
+        "replay_verified": replay_verified,
+    });
+    fs::write(
+        output.join("player-column-summary.json"),
+        serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    if replay_verified == Some(false) {
+        return Err("player-column audit replay diverged".into());
+    }
     Ok(())
 }
 

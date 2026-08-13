@@ -908,6 +908,12 @@ fn smb_scroll_bucket(wram: &[u8; WRAM_SIZE]) -> u16 {
     u16::from(wram[SCREEN_PAGE_OFFSET]) * 16 + u16::from(wram[SCREEN_X_OFFSET] / 16)
 }
 
+/// Report the recorded camera position in pixels rather than 16-pixel buckets.
+#[must_use]
+pub fn smb_camera_pixels(wram: &[u8; WRAM_SIZE]) -> u32 {
+    u32::from(wram[SCREEN_PAGE_OFFSET]) * 256 + u32::from(wram[SCREEN_X_OFFSET])
+}
+
 fn smb_player_is_dead(wram: &[u8; WRAM_SIZE]) -> bool {
     wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_KILLED_STATE
 }
@@ -2196,6 +2202,93 @@ pub fn run_smb_random_mash(
         executor_mode: SmbExecutorMode::Legacy,
         executor_work: SmbExecutionWork::default(),
     })
+}
+
+/// Rendered frame width in pixels.
+pub const FRAME_WIDTH: usize = 256;
+/// Rendered frame height in pixels.
+pub const FRAME_HEIGHT: usize = 240;
+
+/// Encode one rendered RGBA frame as an uncompressed PNG.
+///
+/// # Errors
+///
+/// Returns an error when the buffer is not exactly one `FRAME_WIDTH` by
+/// `FRAME_HEIGHT` RGBA frame.
+pub fn encode_smb_frame_png(rgba: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let expected = FRAME_WIDTH
+        .checked_mul(FRAME_HEIGHT)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or("PNG dimensions overflow")?;
+    if rgba.len() != expected {
+        return Err("unexpected TetaNES RGBA frame length".into());
+    }
+    let mut scanlines = Vec::with_capacity(expected + FRAME_HEIGHT);
+    for row in rgba.chunks_exact(FRAME_WIDTH * 4) {
+        scanlines.push(0);
+        scanlines.extend_from_slice(row);
+    }
+    let compressed = zlib_stored(&scanlines)?;
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&u32::try_from(FRAME_WIDTH)?.to_be_bytes());
+    ihdr.extend_from_slice(&u32::try_from(FRAME_HEIGHT)?.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    append_png_chunk(&mut png, *b"IHDR", &ihdr)?;
+    append_png_chunk(&mut png, *b"IDAT", &compressed)?;
+    append_png_chunk(&mut png, *b"IEND", &[])?;
+    Ok(png)
+}
+
+fn zlib_stored(data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut result = vec![0x78, 0x01];
+    let mut remaining = data;
+    while !remaining.is_empty() {
+        let length = remaining.len().min(u16::MAX as usize);
+        let final_block = length == remaining.len();
+        result.push(u8::from(final_block));
+        let length_u16 = u16::try_from(length)?;
+        result.extend_from_slice(&length_u16.to_le_bytes());
+        result.extend_from_slice(&(!length_u16).to_le_bytes());
+        result.extend_from_slice(&remaining[..length]);
+        remaining = &remaining[length..];
+    }
+    result.extend_from_slice(&adler32(data).to_be_bytes());
+    Ok(result)
+}
+
+fn append_png_chunk(png: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) -> Result<(), Box<dyn Error>> {
+    png.extend_from_slice(&u32::try_from(data.len())?.to_be_bytes());
+    png.extend_from_slice(&kind);
+    png.extend_from_slice(data);
+    let mut checksum_input = Vec::with_capacity(4 + data.len());
+    checksum_input.extend_from_slice(&kind);
+    checksum_input.extend_from_slice(data);
+    png.extend_from_slice(&crc32(&checksum_input).to_be_bytes());
+    Ok(())
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    const MODULUS: u32 = 65_521;
+    let mut a = 1_u32;
+    let mut b = 0_u32;
+    for byte in data {
+        a = (a + u32::from(*byte)) % MODULUS;
+        b = (b + a) % MODULUS;
+    }
+    (b << 16) | a
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in data {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = 0_u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
 }
 
 #[cfg(test)]

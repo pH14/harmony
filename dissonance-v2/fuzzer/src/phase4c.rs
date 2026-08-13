@@ -2,7 +2,12 @@
 
 //! Deterministic snapshot-backed quality-diversity search for SMB completion.
 
-use std::{cmp::Reverse, collections::BTreeMap, error::Error, num::NonZeroUsize};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    num::NonZeroUsize,
+};
 
 use libafl::executors::ExitKind;
 use libafl_bolts::rands::{Rand, StdRand};
@@ -11,9 +16,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     phase4b::{
-        ButtonChord, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS, SmbInput, SmbMacro, SmbMilestoneInputs,
-        SmbMilestoneTimes, SmbMilestones, SmbObservations, SmbProgressWatermark, SmbSnapshot,
-        SmbTarget, smb_mechanical_state_from_wram, smb_milestones_from_wram,
+        ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS, SmbInput,
+        SmbMacro, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones, SmbObservations,
+        SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_camera_pixels,
+        smb_mechanical_state_from_wram, smb_milestones_from_wram,
     },
     target::Target,
 };
@@ -560,6 +566,589 @@ pub fn audit_smb_frontier_viability(
         },
         entries,
     })
+}
+
+/// One audited representative in the screen-relative player-column decode audit.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbPlayerColumnAuditedEntry {
+    /// Stable source archive identifier.
+    pub id: u64,
+    /// Recorded progress bucket of the audited slice.
+    pub progress: u16,
+    /// Whether the entry belongs to the maximal frontier slice.
+    pub frontier: bool,
+    /// Camera position in pixels at the audited endpoint.
+    pub endpoint_camera: u32,
+    /// Recorded frame count per continuation, including the endpoint.
+    pub recorded_frames: Vec<u16>,
+}
+
+/// Film-check evidence for one candidate work-RAM index.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbPlayerColumnFilmEvidence {
+    /// Work-RAM index under test.
+    pub index: u16,
+    /// Smallest offset with at least the required agreeing comparisons.
+    pub offset: i16,
+    /// Comparisons agreeing with that offset inside the fixed tolerance.
+    pub agreeing_comparisons: u64,
+    /// Comparisons available for this index.
+    pub comparisons: u64,
+}
+
+/// Deterministic screen-relative player-column decode report.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbPlayerColumnReport {
+    /// Frames requested by every continuation.
+    pub continuation_frames: u8,
+    /// Fixed continuation masks in execution order.
+    pub continuation_masks: Vec<u8>,
+    /// Audited representatives in selection order.
+    pub audited: Vec<SmbPlayerColumnAuditedEntry>,
+    /// Indices taking at least the required number of distinct values.
+    pub distinct_value_survivors: u64,
+    /// Indices additionally changing by at most the frame-step bound.
+    pub smooth_survivors: u64,
+    /// Indices additionally decreasing under the left continuation.
+    pub left_direction_survivors: u64,
+    /// Indices additionally not decreasing under the right continuation.
+    pub right_direction_survivors: u64,
+    /// Right continuations whose camera advance qualifies for the relative test.
+    pub qualifying_right_continuations: u64,
+    /// Indices surviving every mechanical filter, in ascending order.
+    pub camera_relative_survivors: Vec<u16>,
+    /// Surviving indices that additionally pass the film check.
+    pub film_survivors: Vec<SmbPlayerColumnFilmEvidence>,
+    /// Film survivors discarded as members of a four-byte-stride group.
+    pub stride_rejected: Vec<u16>,
+    /// Selected index, if the audit is conclusive.
+    pub selected: Option<SmbPlayerColumnFilmEvidence>,
+}
+
+/// One rendered audit frame retained for direct visual inspection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SmbAuditFrame {
+    /// Stable file name for the rendered frame.
+    pub name: String,
+    /// Raw RGBA pixels in rendering order.
+    pub rgba: Vec<u8>,
+}
+
+const PLAYER_COLUMN_MASKS: [u8; 3] = [0x00, 0x01, 0x02];
+const PLAYER_COLUMN_FRAMES: u8 = 120;
+const PLAYER_COLUMN_SLICES: [u16; 2] = [39, 32];
+const PLAYER_COLUMN_SLICE_SIZE: usize = 8;
+const PLAYER_COLUMN_MIN_DISTINCT: usize = 8;
+const PLAYER_COLUMN_MAX_STEP: i32 = 8;
+const PLAYER_COLUMN_LEFT_DECREASE: i32 = 8;
+const PLAYER_COLUMN_LEFT_SLACK: i32 = 4;
+const PLAYER_COLUMN_LEFT_ENTRIES: usize = 12;
+const PLAYER_COLUMN_RIGHT_SLACK: i32 = 16;
+const PLAYER_COLUMN_CAMERA_ADVANCE: u32 = 32;
+const PLAYER_COLUMN_FILM_GAP: i32 = 8;
+const PLAYER_COLUMN_FILM_OFFSETS: i32 = 24;
+const PLAYER_COLUMN_FILM_TOLERANCE: i32 = 6;
+const PLAYER_COLUMN_FILM_MIN_AGREE: usize = 8;
+const PLAYER_COLUMN_FILM_MIN_WIDTH: i32 = 4;
+const PLAYER_COLUMN_FILM_MAX_WIDTH: i32 = 40;
+const PLAYER_COLUMN_STRIDES: [u16; 3] = [4, 8, 12];
+const PLAYER_COLUMN_RENDERED_COMPARISONS: usize = 4;
+
+struct ContinuationRecording {
+    wram: Vec<[u8; 2_048]>,
+    columns: Vec<[u64; 256]>,
+    camera: Vec<u32>,
+}
+
+struct EntryRecording {
+    id: u64,
+    progress: u16,
+    frontier: bool,
+    continuations: Vec<ContinuationRecording>,
+}
+
+struct FilmComparison {
+    entry: usize,
+    left: usize,
+    right: usize,
+    frame: usize,
+    lowest: i32,
+    highest: i32,
+}
+
+/// Identify the work-RAM byte holding the player's horizontal column on screen.
+///
+/// The audit runs no search and consults no model. It returns its deterministic
+/// report together with the rendered frames that support the visual half.
+///
+/// # Errors
+///
+/// Returns an error when the source lacks the registered audit slices or when
+/// emulation, snapshotting, or rendering fails.
+pub fn audit_smb_player_screen_column(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
+    let selected = player_column_slices(source)?;
+    let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
+    let mut recordings = Vec::with_capacity(selected.len());
+    for (entry, progress) in &selected {
+        recordings.push(record_player_column_entry(&mut target, entry, *progress)?);
+    }
+    let (report, comparisons) = analyze_player_column(&recordings);
+    let mut requests = BTreeSet::new();
+    for slice in 0..PLAYER_COLUMN_SLICES.len() {
+        let entry = slice.saturating_mul(PLAYER_COLUMN_SLICE_SIZE);
+        let Some(recording) = recordings.get(entry) else {
+            continue;
+        };
+        for (continuation, recorded) in recording.continuations.iter().enumerate() {
+            let last = recorded.wram.len().saturating_sub(1);
+            for frame in [0, last / 2, last] {
+                requests.insert((entry, continuation, frame));
+            }
+        }
+    }
+    if let Some(selection) = report.selected {
+        for comparison in comparisons
+            .iter()
+            .filter(|comparison| {
+                film_offset(&recordings, comparison, selection.index).is_some_and(
+                    |(offset, width)| {
+                        (offset - i32::from(selection.offset)).abs() <= PLAYER_COLUMN_FILM_TOLERANCE
+                            && (PLAYER_COLUMN_FILM_MIN_WIDTH..=PLAYER_COLUMN_FILM_MAX_WIDTH)
+                                .contains(&width)
+                    },
+                )
+            })
+            .take(PLAYER_COLUMN_RENDERED_COMPARISONS)
+        {
+            requests.insert((comparison.entry, comparison.left, comparison.frame));
+            requests.insert((comparison.entry, comparison.right, comparison.frame));
+        }
+    }
+    let frames = render_player_column_frames(&mut target, &selected, &requests)?;
+    Ok((report, frames))
+}
+
+fn player_column_slices(
+    source: &SmbArchiveReport,
+) -> Result<Vec<(&SmbArchiveEntryReport, u16)>, Box<dyn Error>> {
+    let active = active_source_entries(source);
+    let mut selected = Vec::with_capacity(PLAYER_COLUMN_SLICES.len() * PLAYER_COLUMN_SLICE_SIZE);
+    for progress in PLAYER_COLUMN_SLICES {
+        let mut slice = active
+            .iter()
+            .filter(|entry| {
+                entry.key.world == 0 && entry.key.level == 2 && entry.key.progress == progress
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        slice.sort_by_key(|entry| (entry.input.clone(), entry.id));
+        if slice.len() < PLAYER_COLUMN_SLICE_SIZE {
+            return Err("audit slice has fewer than eight active entries".into());
+        }
+        slice.truncate(PLAYER_COLUMN_SLICE_SIZE);
+        selected.extend(slice.into_iter().map(|entry| (entry, progress)));
+    }
+    Ok(selected)
+}
+
+fn replay_player_column_endpoint(
+    target: &mut SmbTarget,
+    entry: &SmbArchiveEntryReport,
+) -> Result<SmbSnapshot, Box<dyn Error>> {
+    target.reset();
+    for action in &entry.input.actions {
+        target.apply(action);
+        if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+            break;
+        }
+    }
+    target
+        .snapshot()
+        .ok_or_else(|| "failed to snapshot audit endpoint".into())
+}
+
+fn record_player_column_entry(
+    target: &mut SmbTarget,
+    entry: &SmbArchiveEntryReport,
+    progress: u16,
+) -> Result<EntryRecording, Box<dyn Error>> {
+    let endpoint = replay_player_column_endpoint(target, entry)?;
+    // The emulator's frame buffer is not part of a restored snapshot, so the endpoint
+    // image is captured once here and reused as every continuation's frame zero.
+    let endpoint_columns = column_signatures(&target.frame_rgba())?;
+    let mut continuations = Vec::with_capacity(PLAYER_COLUMN_MASKS.len());
+    for mask in PLAYER_COLUMN_MASKS {
+        target.restore(&endpoint)?;
+        let mut recording = ContinuationRecording {
+            wram: vec![*target.wram()],
+            columns: vec![endpoint_columns],
+            camera: vec![smb_camera_pixels(target.wram())],
+        };
+        for _ in 0..PLAYER_COLUMN_FRAMES {
+            if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+                break;
+            }
+            target.apply(&ButtonChord::new(mask, 1));
+            push_player_column_frame(target, &mut recording)?;
+        }
+        continuations.push(recording);
+    }
+    Ok(EntryRecording {
+        id: entry.id,
+        progress,
+        frontier: progress == PLAYER_COLUMN_SLICES[0],
+        continuations,
+    })
+}
+
+fn push_player_column_frame(
+    target: &mut SmbTarget,
+    recording: &mut ContinuationRecording,
+) -> Result<(), Box<dyn Error>> {
+    recording.wram.push(*target.wram());
+    recording.camera.push(smb_camera_pixels(target.wram()));
+    recording
+        .columns
+        .push(column_signatures(&target.frame_rgba())?);
+    Ok(())
+}
+
+fn column_signatures(rgba: &[u8]) -> Result<[u64; 256], Box<dyn Error>> {
+    if rgba.len() != FRAME_WIDTH * FRAME_HEIGHT * 4 {
+        return Err("unexpected TetaNES RGBA frame length".into());
+    }
+    let mut signatures = [0xcbf2_9ce4_8422_2325_u64; 256];
+    for row in rgba.chunks_exact(FRAME_WIDTH * 4) {
+        for (column, pixel) in row.chunks_exact(4).enumerate() {
+            let mut hash = signatures[column];
+            for byte in pixel {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            signatures[column] = hash;
+        }
+    }
+    Ok(signatures)
+}
+
+fn analyze_player_column(
+    recordings: &[EntryRecording],
+) -> (SmbPlayerColumnReport, Vec<FilmComparison>) {
+    let mut distinct_value_survivors = 0_u64;
+    let mut smooth_survivors = 0_u64;
+    let mut left_direction_survivors = 0_u64;
+    let mut right_direction_survivors = 0_u64;
+    let mut camera_relative_survivors = Vec::new();
+    let qualifying = qualifying_right_continuations(recordings);
+    for index in 0..2_048_usize {
+        if !player_column_distinct(recordings, index) {
+            continue;
+        }
+        distinct_value_survivors = distinct_value_survivors.saturating_add(1);
+        if !player_column_smooth(recordings, index) {
+            continue;
+        }
+        smooth_survivors = smooth_survivors.saturating_add(1);
+        if !player_column_left_direction(recordings, index) {
+            continue;
+        }
+        left_direction_survivors = left_direction_survivors.saturating_add(1);
+        if !player_column_right_direction(recordings, index) {
+            continue;
+        }
+        right_direction_survivors = right_direction_survivors.saturating_add(1);
+        if qualifying.is_empty() || !player_column_camera_relative(recordings, index, &qualifying) {
+            continue;
+        }
+        camera_relative_survivors.push(u16::try_from(index).unwrap_or(u16::MAX));
+    }
+    let comparisons = film_comparisons(recordings);
+    let film_survivors = camera_relative_survivors
+        .iter()
+        .filter_map(|index| film_evidence(recordings, &comparisons, *index))
+        .collect::<Vec<_>>();
+    let stride_rejected = film_survivors
+        .iter()
+        .map(|evidence| evidence.index)
+        .filter(|index| {
+            film_survivors.iter().any(|other| {
+                PLAYER_COLUMN_STRIDES.iter().any(|stride| {
+                    other.index == index.saturating_add(*stride)
+                        || other.index.saturating_add(*stride) == *index
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let selected = film_survivors
+        .iter()
+        .find(|evidence| !stride_rejected.contains(&evidence.index))
+        .copied();
+    let audited = recordings
+        .iter()
+        .map(|recording| SmbPlayerColumnAuditedEntry {
+            id: recording.id,
+            progress: recording.progress,
+            frontier: recording.frontier,
+            endpoint_camera: recording.continuations[0].camera[0],
+            recorded_frames: recording
+                .continuations
+                .iter()
+                .map(|continuation| u16::try_from(continuation.wram.len()).unwrap_or(u16::MAX))
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    (
+        SmbPlayerColumnReport {
+            continuation_frames: PLAYER_COLUMN_FRAMES,
+            continuation_masks: PLAYER_COLUMN_MASKS.to_vec(),
+            audited,
+            distinct_value_survivors,
+            smooth_survivors,
+            left_direction_survivors,
+            right_direction_survivors,
+            qualifying_right_continuations: u64::try_from(qualifying.len()).unwrap_or(u64::MAX),
+            camera_relative_survivors,
+            film_survivors,
+            stride_rejected,
+            selected,
+        },
+        comparisons,
+    )
+}
+
+fn player_column_distinct(recordings: &[EntryRecording], index: usize) -> bool {
+    let mut seen = [false; 256];
+    let mut distinct = 0_usize;
+    for recording in recordings {
+        for continuation in &recording.continuations {
+            for wram in &continuation.wram {
+                let value = usize::from(wram[index]);
+                if !seen[value] {
+                    seen[value] = true;
+                    distinct = distinct.saturating_add(1);
+                    if distinct >= PLAYER_COLUMN_MIN_DISTINCT {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn player_column_smooth(recordings: &[EntryRecording], index: usize) -> bool {
+    recordings.iter().all(|recording| {
+        recording.continuations.iter().all(|continuation| {
+            continuation.wram.windows(2).all(|pair| {
+                (i32::from(pair[1][index]) - i32::from(pair[0][index])).abs()
+                    <= PLAYER_COLUMN_MAX_STEP
+            })
+        })
+    })
+}
+
+fn player_column_left_direction(recordings: &[EntryRecording], index: usize) -> bool {
+    let mut decreasing = 0_usize;
+    for recording in recordings {
+        let (first, last) = continuation_endpoints(recording, 2, index);
+        if last > first + PLAYER_COLUMN_LEFT_SLACK {
+            return false;
+        }
+        if last <= first - PLAYER_COLUMN_LEFT_DECREASE {
+            decreasing = decreasing.saturating_add(1);
+        }
+    }
+    decreasing >= PLAYER_COLUMN_LEFT_ENTRIES
+}
+
+fn player_column_right_direction(recordings: &[EntryRecording], index: usize) -> bool {
+    recordings.iter().all(|recording| {
+        let (first, last) = continuation_endpoints(recording, 1, index);
+        last >= first - PLAYER_COLUMN_RIGHT_SLACK
+    })
+}
+
+fn continuation_endpoints(
+    recording: &EntryRecording,
+    continuation: usize,
+    index: usize,
+) -> (i32, i32) {
+    let frames = &recording.continuations[continuation].wram;
+    let first = i32::from(frames[0][index]);
+    let last = i32::from(frames[frames.len().saturating_sub(1)][index]);
+    (first, last)
+}
+
+fn qualifying_right_continuations(recordings: &[EntryRecording]) -> Vec<usize> {
+    recordings
+        .iter()
+        .enumerate()
+        .filter(|(_, recording)| {
+            let camera = &recording.continuations[1].camera;
+            camera[camera.len().saturating_sub(1)].saturating_sub(camera[0])
+                >= PLAYER_COLUMN_CAMERA_ADVANCE
+        })
+        .map(|(entry, _)| entry)
+        .collect()
+}
+
+fn player_column_camera_relative(
+    recordings: &[EntryRecording],
+    index: usize,
+    qualifying: &[usize],
+) -> bool {
+    qualifying.iter().all(|entry| {
+        let recording = &recordings[*entry];
+        let camera = &recording.continuations[1].camera;
+        let advance = camera[camera.len().saturating_sub(1)].saturating_sub(camera[0]);
+        let (first, last) = continuation_endpoints(recording, 1, index);
+        u32::try_from((last - first).abs()).unwrap_or(u32::MAX) < advance
+    })
+}
+
+fn film_comparisons(recordings: &[EntryRecording]) -> Vec<FilmComparison> {
+    let mut comparisons = Vec::new();
+    for (entry, recording) in recordings.iter().enumerate() {
+        for left in 0..recording.continuations.len() {
+            for right in left.saturating_add(1)..recording.continuations.len() {
+                let first = &recording.continuations[left];
+                let second = &recording.continuations[right];
+                for frame in 0..first.wram.len().min(second.wram.len()) {
+                    if first.camera[frame] != second.camera[frame] {
+                        continue;
+                    }
+                    let differing = (0..256)
+                        .filter(|column| {
+                            first.columns[frame][*column] != second.columns[frame][*column]
+                        })
+                        .collect::<Vec<_>>();
+                    let (Some(lowest), Some(highest)) = (differing.first(), differing.last())
+                    else {
+                        continue;
+                    };
+                    comparisons.push(FilmComparison {
+                        entry,
+                        left,
+                        right,
+                        frame,
+                        lowest: i32::try_from(*lowest).unwrap_or(i32::MAX),
+                        highest: i32::try_from(*highest).unwrap_or(i32::MAX),
+                    });
+                }
+            }
+        }
+    }
+    comparisons
+}
+
+fn film_offset(
+    recordings: &[EntryRecording],
+    comparison: &FilmComparison,
+    index: u16,
+) -> Option<(i32, i32)> {
+    let recording = &recordings[comparison.entry];
+    let index = usize::from(index);
+    let left = i32::from(recording.continuations[comparison.left].wram[comparison.frame][index]);
+    let right = i32::from(recording.continuations[comparison.right].wram[comparison.frame][index]);
+    let difference = (left - right).abs();
+    if difference < PLAYER_COLUMN_FILM_GAP {
+        return None;
+    }
+    let offset = comparison.lowest - left.min(right);
+    let width = comparison.highest - comparison.lowest + 1 - difference;
+    Some((offset, width))
+}
+
+fn film_evidence(
+    recordings: &[EntryRecording],
+    comparisons: &[FilmComparison],
+    index: u16,
+) -> Option<SmbPlayerColumnFilmEvidence> {
+    let measured = comparisons
+        .iter()
+        .filter_map(|comparison| film_offset(recordings, comparison, index))
+        .collect::<Vec<_>>();
+    // Pass or fail is "some offset agrees at least PLAYER_COLUMN_FILM_MIN_AGREE times";
+    // the offset reported is the one the most comparisons agree with, so the recorded
+    // number describes the identification rather than the low edge of the tolerance band.
+    let best = (-PLAYER_COLUMN_FILM_OFFSETS..=PLAYER_COLUMN_FILM_OFFSETS)
+        .map(|offset| {
+            let agreeing = measured
+                .iter()
+                .filter(|(measured_offset, width)| {
+                    (measured_offset - offset).abs() <= PLAYER_COLUMN_FILM_TOLERANCE
+                        && (PLAYER_COLUMN_FILM_MIN_WIDTH..=PLAYER_COLUMN_FILM_MAX_WIDTH)
+                            .contains(width)
+                })
+                .count();
+            (agreeing, offset)
+        })
+        .max_by_key(|(agreeing, offset)| (*agreeing, Reverse(offset.abs()), Reverse(*offset)))?;
+    if best.0 < PLAYER_COLUMN_FILM_MIN_AGREE {
+        return None;
+    }
+    Some(SmbPlayerColumnFilmEvidence {
+        index,
+        offset: i16::try_from(best.1).unwrap_or(i16::MAX),
+        agreeing_comparisons: u64::try_from(best.0).unwrap_or(u64::MAX),
+        comparisons: u64::try_from(measured.len()).unwrap_or(u64::MAX),
+    })
+}
+
+fn render_player_column_frames(
+    target: &mut SmbTarget,
+    selected: &[(&SmbArchiveEntryReport, u16)],
+    requests: &BTreeSet<(usize, usize, usize)>,
+) -> Result<Vec<SmbAuditFrame>, Box<dyn Error>> {
+    let mut frames = Vec::new();
+    let mut entries = requests
+        .iter()
+        .map(|(entry, _, _)| *entry)
+        .collect::<Vec<_>>();
+    entries.dedup();
+    for entry in entries {
+        let (source, _) = selected[entry];
+        let endpoint = replay_player_column_endpoint(target, source)?;
+        let endpoint_rgba = target.frame_rgba();
+        for (continuation, mask) in PLAYER_COLUMN_MASKS.into_iter().enumerate() {
+            let wanted = requests
+                .iter()
+                .filter(|(request_entry, request_continuation, _)| {
+                    *request_entry == entry && *request_continuation == continuation
+                })
+                .map(|(_, _, frame)| *frame)
+                .collect::<Vec<_>>();
+            let Some(last) = wanted.last().copied() else {
+                continue;
+            };
+            target.restore(&endpoint)?;
+            for frame in 0..=last {
+                if frame > 0 {
+                    if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+                        break;
+                    }
+                    target.apply(&ButtonChord::new(mask, 1));
+                }
+                if wanted.contains(&frame) {
+                    frames.push(SmbAuditFrame {
+                        name: format!(
+                            "entry-{entry:02}-id-{}-mask-{mask:02x}-frame-{frame:03}.png",
+                            source.id
+                        ),
+                        rgba: if frame == 0 {
+                            endpoint_rgba.clone()
+                        } else {
+                            target.frame_rgba()
+                        },
+                    });
+                }
+            }
+        }
+    }
+    Ok(frames)
 }
 
 fn active_source_entries(source: &SmbArchiveReport) -> Vec<&SmbArchiveEntryReport> {
@@ -1121,13 +1710,127 @@ fn entry_cost(entry: &SmbArchiveEntryReport) -> (usize, u64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Archive, SmbArchiveDurationPolicy, SmbArchiveSuffixPolicy, SmbGeneratedMutatorAccounting,
-        SmbProgressWatermark, SmbRanking, SmbRankingSearchConfig, merge_progress_watermark,
+        Archive, ContinuationRecording, EntryRecording, SmbArchiveDurationPolicy,
+        SmbArchiveSuffixPolicy, SmbGeneratedMutatorAccounting, SmbProgressWatermark, SmbRanking,
+        SmbRankingSearchConfig, analyze_player_column, merge_progress_watermark,
         record_generated_mutator_result, run_smb_archive_search,
         run_smb_archive_search_with_config_and_suffix,
         run_smb_archive_search_with_generated_mutator, run_smb_archive_search_with_ranking,
     };
     use crate::phase4b::{ButtonChord, MAX_SMB_ACTIONS, SmbInput, SmbMacro, SmbObservations};
+
+    const SCREEN_COLUMN_INDEX: usize = 100;
+    const ABSOLUTE_INDEX: usize = 200;
+    const CONSTANT_INDEX: usize = 150;
+    const NOISY_INDEX: usize = 160;
+    const RISING_UNDER_LEFT_INDEX: usize = 170;
+    const REPLICATED_INDICES: [usize; 4] = [300, 304, 308, 312];
+
+    fn scripted_column(entry: usize, continuation: usize, frame: usize) -> i32 {
+        let start = 40 + i32::try_from(entry).expect("entry index");
+        let frame = i32::try_from(frame).expect("frame index");
+        match continuation {
+            1 => start + frame.min(60),
+            2 => (start - frame).max(0),
+            _ => start,
+        }
+    }
+
+    fn scripted_camera(continuation: usize, frame: usize) -> u32 {
+        let frame = u32::try_from(frame).expect("frame index");
+        if continuation == 1 {
+            2 * frame.saturating_sub(60)
+        } else {
+            0
+        }
+    }
+
+    fn scripted_signatures(column: i32) -> [u64; 256] {
+        let mut signatures = [0_u64; 256];
+        for offset in 0..16 {
+            let lit = usize::try_from(column + offset).expect("lit column");
+            if lit < signatures.len() {
+                signatures[lit] = 1;
+            }
+        }
+        signatures
+    }
+
+    fn scripted_recording(entry: usize) -> EntryRecording {
+        let mut continuations = Vec::new();
+        for continuation in 0..3 {
+            let mut recording = ContinuationRecording {
+                wram: Vec::new(),
+                columns: Vec::new(),
+                camera: Vec::new(),
+            };
+            for frame in 0..=120 {
+                let column = scripted_column(entry, continuation, frame);
+                let camera = scripted_camera(continuation, frame);
+                let mut wram = [0_u8; 2_048];
+                let byte = u8::try_from(column).expect("column byte");
+                wram[SCREEN_COLUMN_INDEX] = byte;
+                for index in REPLICATED_INDICES {
+                    wram[index] = byte;
+                }
+                wram[ABSOLUTE_INDEX] =
+                    u8::try_from(column + i32::try_from(camera).expect("camera"))
+                        .unwrap_or(u8::MAX);
+                wram[CONSTANT_INDEX] = 7;
+                wram[NOISY_INDEX] = if frame % 2 == 0 { 0 } else { 200 };
+                wram[RISING_UNDER_LEFT_INDEX] = u8::try_from(frame).unwrap_or(u8::MAX);
+                recording.wram.push(wram);
+                recording.camera.push(camera);
+                recording.columns.push(scripted_signatures(column));
+            }
+            continuations.push(recording);
+        }
+        EntryRecording {
+            id: u64::try_from(entry).expect("entry id"),
+            progress: if entry < 8 { 39 } else { 32 },
+            frontier: entry < 8,
+            continuations,
+        }
+    }
+
+    #[test]
+    fn player_column_audit_selects_the_screen_relative_byte() {
+        let recordings = (0..16).map(scripted_recording).collect::<Vec<_>>();
+        let (report, comparisons) = analyze_player_column(&recordings);
+        assert!(!comparisons.is_empty());
+        assert_eq!(report.qualifying_right_continuations, 16);
+        let survivors = report.camera_relative_survivors.clone();
+        assert!(survivors.contains(&u16::try_from(SCREEN_COLUMN_INDEX).expect("index")));
+        assert!(!survivors.contains(&u16::try_from(ABSOLUTE_INDEX).expect("index")));
+        assert!(!survivors.contains(&u16::try_from(CONSTANT_INDEX).expect("index")));
+        assert!(!survivors.contains(&u16::try_from(NOISY_INDEX).expect("index")));
+        assert!(!survivors.contains(&u16::try_from(RISING_UNDER_LEFT_INDEX).expect("index")));
+        for index in REPLICATED_INDICES {
+            let index = u16::try_from(index).expect("index");
+            assert!(report.stride_rejected.contains(&index));
+        }
+        let selected = report.selected.expect("conclusive audit");
+        assert_eq!(
+            selected.index,
+            u16::try_from(SCREEN_COLUMN_INDEX).expect("index")
+        );
+        assert_eq!(selected.offset, 0);
+        assert!(selected.agreeing_comparisons >= 8);
+    }
+
+    #[test]
+    fn player_column_audit_reports_nothing_without_a_camera_advance() {
+        let mut recordings = (0..16).map(scripted_recording).collect::<Vec<_>>();
+        for recording in &mut recordings {
+            for camera in &mut recording.continuations[1].camera {
+                *camera = 0;
+            }
+        }
+        let (report, _) = analyze_player_column(&recordings);
+        assert_eq!(report.qualifying_right_continuations, 0);
+        assert!(report.camera_relative_survivors.is_empty());
+        assert!(report.selected.is_none());
+    }
 
     struct ScriptedFrameRanking;
 

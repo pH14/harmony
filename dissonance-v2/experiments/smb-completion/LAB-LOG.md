@@ -1080,8 +1080,11 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   whose rendered pixels differ, `d` the candidate difference,
   `offset = L - min(candidate values)`, and `width = (H - L + 1) - d`. An index
   passes when some integer `o` in `-24..=24` has at least eight comparisons with
-  `|offset - o| <= 6` and `width` in `4..=40`; the audit records the smallest
-  such `o` and its agreeing count. If no index passes, the film half is reported
+  `|offset - o| <= 6` and `width` in `4..=40`. Clarified before execution: the
+  pass rule is exactly that existence test, and the `o` recorded beside it is
+  the one the most comparisons agree with, breaking ties toward zero, so the
+  recorded offset describes the identification rather than the low edge of the
+  tolerance band. If no index passes, the film half is reported
   inconclusive and nothing is selected. The tolerance is deliberate: a byte that
   places a sprite may sit at a constant nonzero offset from the lowest column
   whose pixels actually differ, and occasional unrelated moving pixels must not
