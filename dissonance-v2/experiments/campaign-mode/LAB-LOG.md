@@ -300,3 +300,65 @@
   every entry shares one key, so the frontier resume selection legitimately
   returns the empty genesis input; the archive-origin unit test asserts the
   round trip, not a nonempty resume input.
+
+## CM3 — the smb-campaign binary and the real-ROM smoke
+
+- The binary has three modes. `run` records a live campaign into
+  `stream.jsonl`, `archive-live.json`, and `campaign-report.json`, with wall
+  measurements confined to a separate live-only `throughput-live.json`.
+  `replay` re-executes a recorded run serially, writes `archive-replay.json`
+  and `campaign-report-replay.json`, byte-compares them against the live
+  files, and exits nonzero on any divergence. `serial-arm` runs the untouched
+  serial engine on the same origin selection for the throughput gate,
+  reporting its report plus exact emulated frames.
+- Cross-instance proof on the real ROM, before the smoke: a W = 2, 40-
+  execution genesis campaign — where workers routinely execute jobs from
+  snapshots another instance produced — replayed byte-identically on a single
+  fresh instance, every result digest, frame count, and admission decision
+  matching. Evidence: `target/perf-evidence/campaign-mode/smoke-tiny/`.
+- The smoke: genesis origin, campaign seed `0x5eed_ca10`, W = 6, 500
+  executions, 512-action limit, on the local machine while the search
+  worker's two full-load runs shared it. It completed 500 executions in 34.5
+  seconds (14.5 executions per second live, co-tenant), emulated 102,782
+  frames including probes and bootstrap, retained 486 entries, rejected 35,
+  refused 38 candidates at the probe, skipped no duplicates, observed 53
+  deaths, and reached 16-pixel progress bucket 30 in 1-1 with jobs spread
+  `[82, 86, 83, 79, 79, 91]` across the six workers.
+- Its serial replay is byte-identical: `replay_verified=true`, archive
+  SHA-256 `489ab4ae76e80c19ad264e1fc495961dac1f4e0dfd5ef3aa44c974a16e57d09a`,
+  report SHA-256
+  `3236b51bfbcf4866bce74ff5b86f9f3c5f4f13227fa9c6e2474db337c1d3a40d`, stream
+  SHA-256
+  `b0b5dcb3100e9d1331a7a56a3338133a250c1ecad2fa0109a0c8ff0c28531803`.
+- The unchanged film renderer read the campaign's `archive-live.json`
+  directly and wrote the frontier strip and SHA-pinned manifest under
+  `target/perf-evidence/campaign-mode/smoke-genesis-500/film/`.
+
+### CM1 identity-gate result — recorded with a finding
+
+- All three identity bits are true: legacy and snapshot-resume reports are
+  bit-identical after normalizing only executor mode and work counters, on
+  maze, adventure, and SMB, at the frozen seed `0x5eed_ee01` and 5,000
+  executions.
+- Maze and adventure semantic hashes equal the frozen M15 references exactly:
+  `6e1500f1f0baa2a479f5828158e68995deef395d2ac5b6eeb45d858f5c6b7844` and
+  `8debc5e902d71df10c18ab868df375a4b84478338686cc2bdff8f97f42a62153`.
+- The SMB semantic hash is
+  `3ff148641ed3db6f8f6432549019d654081d164c5428d2cd3e554aaa72bc111b`, not the
+  frozen M15 value, and the legacy arm emulated 645,931 frames against
+  M15's recorded 730,736. The explanation on the record: the frozen M15
+  reference predates the promoted M35 terminal-condition correction, which
+  changed `smb_player_is_dead` for every SMB path, ratchet included, so no
+  tree at or after M35 can reproduce the M15-era SMB hash. The completion lab
+  log records no re-frozen identity hash after M35.
+- Consequence for gate 1, stated plainly rather than reinterpreted silently:
+  the maze and adventure frozen hashes hold; the SMB frozen hash is
+  unsatisfiable on this base for reasons unrelated to campaign mode. The
+  substitute evidence run next is the same gate at the untouched base commit
+  `7fab4ce5`: if it produces the same SMB hash, the campaign-mode changes are
+  proven behaviorally inert, and the gate-1 SMB criterion is put to the
+  integrator as needing a re-frozen post-M35 reference.
+- Wall ratios from this run are non-evidence; the machine concurrently hosted
+  the search worker's two full-load runs throughout. M15's recorded ratios
+  stand. The binary's own acceptance flag is false only through its withdrawn
+  tenfold clause, as M15 records.
