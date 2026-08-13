@@ -1591,3 +1591,50 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   `ac0fa58e9067d2a394c79814aa7372cea6af3b1a5888ed6c48508d3a3037218e` and the
   summary records `replay_verified=true`. Raw evidence:
   `target/smb-completion/d34-death-decode/`.
+
+## M35 — preregistered corrected terminal condition and frontier rebuild
+
+- Mechanism claim: the target's terminal condition becomes `$000e == $0b` or
+  `$00b5 >= 2`, the disjunction D34's registered adoption rule selected. It
+  changes when an execution stops and therefore which states are admitted, and
+  nothing else. Archive keys, novelty, the parent scheduler, the nine-mask
+  controller vocabulary, the stratified duration policy, the one-or-two suffix
+  policy, retention, the 512-action bound, and ranking are all unchanged. The
+  vertical archive key keeps its recorded form; this registration does not touch
+  it.
+- Exposure stated plainly: the second clause rests on one 10,006-frame control
+  trajectory. Keeping `K0` disjoined means the correction can only add detected
+  deaths, never remove one, so a wrong second clause can truncate live play but
+  cannot resurrect a death the frozen condition already caught.
+- Gates fixed before execution. G1: the frozen condition implies the corrected
+  one, as a unit test over both clauses. G2: the recorded champion input replays
+  under the corrected target from gameplay genesis to the maximum recorded tuple
+  without terminating, in the same 220 actions and 10,006 frames D34 recorded.
+  G3: `cargo fmt --check`, `cargo clippy --all-features` with `-D warnings`,
+  `cargo nextest run --all-features`, and `cargo deny check` all pass. G4: the
+  re-admission pass below is byte-equal across two runs. G5: no entry retained
+  by any rebuilt archive has `$00b5 >= 2` at its endpoint.
+- Rebuild, part one — re-admission. Every entry of the recorded source archive
+  is replayed from gameplay genesis under the corrected target. An entry
+  survives when the corrected condition is false on every frame up to and
+  including its endpoint. The pass reports the surviving count, the surviving
+  count per tuple and per progress bucket, and the maximum surviving
+  `(world, level, progress)`, and writes the survivors as an archive report. It
+  runs no search and involves no model.
+- Rebuild, part two — resume. From the surviving archive, resume the frozen
+  protocol unchanged: frozen parent scheduler, nine-mask vocabulary, stratified
+  durations, one-or-two suffixes, archive keys and retention, no ranking,
+  512-action bound, 5,000 executions, single shortest mechanical frontier input.
+  Six arms on the development seeds `0x5eed_e000..=0x5eed_e005`, at `nice -n 10`,
+  at most six concurrently.
+- Falsifiable claim for part two: the twelve-panel plateau was an artifact of
+  undetected deaths, so the six corrected arms will **not** all stop at one
+  identical maximum progress bucket at the maximum tuple they reach. Recorded
+  control: H20's twelve arms all stopped at exactly progress 39. If the six
+  corrected arms again agree exactly, the diagnosis is incomplete and this is
+  recorded as such rather than explained away.
+- Selection fixed now to prevent post-hoc choice: assignment work continues on
+  the arm with the maximum `(world, level, progress)` tuple, ties broken by the
+  fewest retained entries and then by the smaller seed.
+- Raw destinations: `target/smb-completion/m35-readmission/` and
+  `target/smb-completion/m35-rebuild/`.
