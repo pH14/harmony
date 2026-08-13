@@ -1227,3 +1227,68 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   `target/smb-completion/d29-field-gate-before/`.
 - The audit runs no search, changes no search behavior, and involves no model.
   Raw destination: `target/smb-completion/d30-player-column-decode/`.
+
+### D30 result — inconclusive; the steerability test admitted every entry
+
+- The scan examined 8 entries in each slice and classified 8 of 8 as steerable
+  in each, so D30 audited exactly D29's sixteen entries and reproduced its
+  filter counts: 158 indices with at least eight distinct values, 2 also smooth,
+  0 surviving the left-direction filter, 0 qualifying right continuations, no
+  film candidate, and no selected index. Live and no-model replay reports are
+  byte-equal with SHA-256
+  `ccaddbcdcf076adc9fd697445aa6f3604a979ac84f9d2555c26894b7c4b02b99` and the
+  summary records `replay_verified=true`.
+- The registered test compared complete work RAM at the last recorded frame of
+  the right and left continuations. Direct inspection of the recorded diagnosis
+  traces shows that on these entries exactly four work-RAM bytes differ between
+  those continuations — indices `$000a`, `$000d`, `$06fc`, and `$074a` — and all
+  four hold the controller mask that was just applied. The test therefore
+  measured that the two continuations pressed different buttons, not that the
+  player moved, so it can never reject an entry.
+- The frozen D29 audit was re-run under the refactored code and reproduced its
+  recorded report byte for byte, so the shared audit path is unchanged. Raw
+  evidence: `target/smb-completion/d30-player-column-decode/` and
+  `target/smb-completion/d29-reproduction-check/`.
+- Decision: reject whole-work-RAM difference as a control-authority test. The
+  replacement must be stated over quantities this program has already decoded
+  and verified.
+
+## D31 — preregistered camera-advancing player-column decode audit
+
+- Same diagnostic claim as D29 and D30: a work-RAM byte measures the player's
+  horizontal column within the visible screen, identifiable mechanically from
+  this program's own recorded raw work RAM and rendered frames without a
+  disassembly, route, layout, or external table.
+- Source, active-archive reconstruction, slice progress buckets 39 and 32,
+  `(input, id)` ordering, the three fixed continuations of 120 single-frame
+  chords, per-frame work RAM and 256-column frame signatures, truncation at
+  engine state `$0b`, the video-enabled target, filters C0 through C4, the film
+  check, four-byte-stride rejection, lowest-index selection, the byte-equal
+  live-and-replay gate, and the rendered PNG set are exactly D29's, with C2's
+  threshold scaled to three quarters of the audited entries as fixed in D30.
+- The sole change is again which entries are audited. An entry is admitted only
+  when its right continuation advances the recorded camera, `screen_page * 256 +
+  screen_x`, by at least 32 pixels between the endpoint and the last recorded
+  frame. The camera is the only quantity used, it is already decoded and film
+  validated by this program, and it cannot be moved by a player who has no
+  control. Scan at most 128 ordered active candidates per slice and audit the
+  first eight admitted in each. Record, per slice, the number scanned and the
+  number admitted.
+- The admitted counts are registered evidence in their own right: they measure
+  how much of this frontier and approach band the controller can still move
+  rightwards, independent of whether an index is found. If fewer than eight
+  entries are admitted in total, the audit records the counts and reports itself
+  inconclusive without selecting an index.
+- Implementation note recorded before execution: the endpoint replay now shares
+  the longest common action prefix between consecutive ordered candidates, the
+  same way D27 and D28 do, because scanning up to 256 candidates from gameplay
+  genesis is otherwise too slow. Snapshot and restore are exact, so this changes
+  cost and not results; the frozen D29 audit is re-run afterwards and must still
+  reproduce its recorded report byte for byte.
+- If the audit selects an index, the field name, the exact operator sentence,
+  the unchanged-key requirement, and the fixed seed `0x5eed_ef00`,
+  256-execution byte-identical archive gate are exactly as fixed in D29, whose
+  pre-change report is recorded with SHA-256
+  `383bc917ec0b1d3b6911059f1526cfd853b31f91bf10b32aeb9ee57a41fa7111`.
+- The audit runs no search, changes no search behavior, and involves no model.
+  Raw destination: `target/smb-completion/d31-player-column-decode/`.
