@@ -1292,3 +1292,30 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   `383bc917ec0b1d3b6911059f1526cfd853b31f91bf10b32aeb9ee57a41fa7111`.
 - The audit runs no search, changes no search behavior, and involves no model.
   Raw destination: `target/smb-completion/d31-player-column-decode/`.
+
+### D31 result — inconclusive; no scanned frontier or approach entry has rightward control
+
+- The scan examined the registered maximum of 128 ordered active entries in each
+  slice. Zero of 128 at progress 39 and zero of 128 at progress 32 advanced the
+  recorded camera by 32 pixels or more under 120 frames of held right. Nothing
+  was admitted, nothing was audited, and no index was selected. Live and no-model
+  replay reports are byte-equal with SHA-256
+  `37306c90568dec881c306025a3960f4e0f64bf51ed03ce6f194b0be57a569801` and the
+  summary records `replay_verified=true`.
+- This is the registered evidence the audit was also meant to produce, and it is
+  a stronger statement than the audit itself. Across 256 retained
+  representatives spanning a third of the maximal frontier and more than half of
+  the progress-32 bucket, holding right for two seconds never moves the camera
+  once. Combined with the post-D29 diagnosis, the plain reading is that these
+  cells are occupied by states in which the player has already fallen past the
+  gap and cannot be steered anywhere.
+- Consequence for the missing-field work: the horizontal column cannot be
+  identified from this frontier, because identifying it requires states whose
+  horizontal position responds to the controller and none of the scanned ones
+  do. The audit mechanism is sound and reproduces exactly; it needs live source
+  states.
+- Consequence for the plateau: twelve consecutive mechanism panels selected
+  parents from this pool. A scheduler, vocabulary, duration, burst, ranking, or
+  mutator change cannot matter when the parents it chooses among have no
+  control authority. Raw evidence:
+  `target/smb-completion/d31-player-column-decode/`.
