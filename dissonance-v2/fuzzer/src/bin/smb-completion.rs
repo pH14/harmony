@@ -21,13 +21,14 @@ use fuzzer::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
         SmbArchiveSuffixPolicy, SmbControlCensusReport, SmbPlayerColumnSelection,
         SmbSteerScanReport, audit_smb_frontier_viability, audit_smb_player_column_contrast,
-        audit_smb_player_column_from_ids, audit_smb_player_column_spread,
-        audit_smb_player_column_with_selection, audit_smb_terminal_death,
-        census_smb_control_authority, diagnose_smb_film_columns, diagnose_smb_film_measurements,
-        diagnose_smb_left_direction, diagnose_smb_player_column, gate_smb_live_control,
-        readmit_smb_archive, run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
-        run_smb_archive_search_with_policies, select_smb_responsive_audit_ids,
-        select_smb_span_audit_ids, select_smb_spread_audit_ids, select_smb_steered_audit_ids,
+        audit_smb_player_column_from_ids, audit_smb_player_column_separation,
+        audit_smb_player_column_spread, audit_smb_player_column_with_selection,
+        audit_smb_terminal_death, census_smb_control_authority, diagnose_smb_film_columns,
+        diagnose_smb_film_measurements, diagnose_smb_left_direction, diagnose_smb_player_column,
+        gate_smb_live_control, readmit_smb_archive, run_smb_archive_search,
+        run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_policies,
+        select_smb_responsive_audit_ids, select_smb_span_audit_ids, select_smb_spread_audit_ids,
+        select_smb_steered_audit_ids,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -111,13 +112,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         return run_steered_player_column_mode(&mut args);
     }
     if mode == "audit-responsive-player-column" {
-        return run_responsive_player_column_mode(&mut args, false, CENSUS_AUDIT_ENTRIES);
+        return run_responsive_player_column_mode(&mut args, false, CENSUS_AUDIT_ENTRIES, false);
     }
     if mode == "audit-span-player-column" {
-        return run_responsive_player_column_mode(&mut args, true, CENSUS_AUDIT_ENTRIES);
+        return run_responsive_player_column_mode(&mut args, true, CENSUS_AUDIT_ENTRIES, false);
     }
     if mode == "audit-two-state-player-column" {
-        return run_responsive_player_column_mode(&mut args, true, TWO_STATE_AUDIT_ENTRIES);
+        return run_responsive_player_column_mode(&mut args, true, TWO_STATE_AUDIT_ENTRIES, false);
+    }
+    if mode == "audit-separation-player-column" {
+        return run_responsive_player_column_mode(&mut args, true, TWO_STATE_AUDIT_ENTRIES, true);
     }
     if mode == "diagnose-left-direction" {
         return run_left_direction_diagnosis_mode(&mut args);
@@ -690,7 +694,13 @@ fn run_responsive_player_column_mode(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
     by_span: bool,
     wanted: usize,
+    separation: bool,
 ) -> Result<(), Box<dyn Error>> {
+    let audit = if separation {
+        audit_smb_player_column_separation
+    } else {
+        audit_smb_player_column_contrast
+    };
     let select = if by_span {
         select_smb_span_audit_ids
     } else {
@@ -722,7 +732,7 @@ fn run_responsive_player_column_mode(
         println!("{}", serde_json::to_string_pretty(&summary)?);
         return Ok(());
     }
-    let (report, frames) = audit_smb_player_column_contrast(&rom, &source, &scan.steered_ids)?;
+    let (report, frames) = audit(&rom, &source, &scan.steered_ids)?;
     fs::write(
         output.join("player-column-live.json"),
         serde_json::to_vec_pretty(&report)?,
@@ -737,8 +747,7 @@ fn run_responsive_player_column_mode(
     }
     let replay_verified = if replay_requested {
         let replay_scan = select(&rom, &source, wanted)?;
-        let (replay, replay_frames) =
-            audit_smb_player_column_contrast(&rom, &source, &replay_scan.steered_ids)?;
+        let (replay, replay_frames) = audit(&rom, &source, &replay_scan.steered_ids)?;
         fs::write(
             output.join("player-column-replay.json"),
             serde_json::to_vec_pretty(&replay)?,

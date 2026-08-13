@@ -726,11 +726,13 @@ struct PlayerColumnRules {
     require_camera_relative: bool,
     require_camera_spread: bool,
     left_versus_right: bool,
+    separation_frame: bool,
 }
 
 impl PlayerColumnRules {
     /// D29 through D32: no camera-epoch truncation, with filters C3 and C4.
     const LEGACY: Self = Self {
+        separation_frame: false,
         truncate_on_camera_decrease: false,
         require_right_direction: true,
         require_camera_relative: true,
@@ -740,6 +742,7 @@ impl PlayerColumnRules {
 
     /// D33: one camera epoch per continuation, C3 and C4 replaced by camera spread.
     const SPREAD: Self = Self {
+        separation_frame: false,
         truncate_on_camera_decrease: true,
         require_right_direction: false,
         require_camera_relative: false,
@@ -749,11 +752,22 @@ impl PlayerColumnRules {
 
     /// D38: the direction filter contrasts the two opposite masks at the same frame.
     const CONTRAST: Self = Self {
+        separation_frame: false,
         truncate_on_camera_decrease: true,
         require_right_direction: false,
         require_camera_relative: false,
         require_camera_spread: true,
         left_versus_right: true,
+    };
+
+    /// D42: the direction filter contrasts at each entry's maximum-separation frame.
+    const SEPARATION: Self = Self {
+        truncate_on_camera_decrease: true,
+        require_right_direction: false,
+        require_camera_relative: false,
+        require_camera_spread: true,
+        left_versus_right: true,
+        separation_frame: true,
     };
 }
 
@@ -952,6 +966,20 @@ pub fn audit_smb_player_column_contrast(
     ids: &[u64],
 ) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
     audit_player_column_from_ids(rom, source, ids, PlayerColumnRules::CONTRAST)
+}
+
+/// Audit the horizontal-column byte under D42's maximum-separation direction filter.
+///
+/// # Errors
+///
+/// Returns an error when an identifier is absent from the source or when
+/// emulation, snapshotting, or rendering fails.
+pub fn audit_smb_player_column_separation(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    ids: &[u64],
+) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
+    audit_player_column_from_ids(rom, source, ids, PlayerColumnRules::SEPARATION)
 }
 
 fn audit_player_column_from_ids(
@@ -1794,6 +1822,14 @@ fn analyze_player_column_with_rules(
     let mut right_direction_survivors = 0_u64;
     let mut camera_relative_survivors = Vec::new();
     let qualifying = qualifying_right_continuations(recordings);
+    let separation_frames = if rules.separation_frame {
+        recordings
+            .iter()
+            .map(player_column_max_span_frame)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     for index in 0..2_048_usize {
         if !player_column_distinct(recordings, index) {
             continue;
@@ -1803,7 +1839,9 @@ fn analyze_player_column_with_rules(
             continue;
         }
         smooth_survivors = smooth_survivors.saturating_add(1);
-        let directed = if rules.left_versus_right {
+        let directed = if rules.separation_frame {
+            player_column_separation_direction(recordings, &separation_frames, index)
+        } else if rules.left_versus_right {
             player_column_left_versus_right(recordings, index)
         } else {
             player_column_left_direction(recordings, index)
@@ -1895,6 +1933,10 @@ pub struct SmbLeftDirectionEntry {
     pub still: Vec<SmbDeathBytes>,
     /// Raw recorded bytes per frame of the held-right continuation.
     pub right: Vec<SmbDeathBytes>,
+    /// Frame of largest equal-camera differing span, when one exists.
+    pub separation_frame: Option<usize>,
+    /// Largest equal-camera differing span and its lowest and highest columns.
+    pub separation_span: Option<(i32, i32, i32)>,
 }
 
 /// One smooth candidate index's endpoint values across the audited entries.
@@ -1910,6 +1952,10 @@ pub struct SmbLeftDirectionCandidate {
     pub left_min: Vec<i32>,
     /// Value at the last recorded frame of each held-right continuation.
     pub right_final: Vec<i32>,
+    /// Held-left value at each entry's maximum-separation frame.
+    pub left_at_separation: Vec<i32>,
+    /// Held-right value at each entry's maximum-separation frame.
+    pub right_at_separation: Vec<i32>,
 }
 
 /// Record why the left-direction filter accepted or rejected each smooth index.
@@ -1964,6 +2010,21 @@ pub fn diagnose_smb_left_direction(
                 .iter()
                 .map(smb_death_bytes)
                 .collect(),
+            separation_frame: player_column_max_span_frame(recording),
+            separation_span: player_column_max_span_frame(recording).map(|frame| {
+                let right = &recording.continuations[1].columns[frame];
+                let left = &recording.continuations[2].columns[frame];
+                let differing = (0..256)
+                    .filter(|column| right[*column] != left[*column])
+                    .collect::<Vec<_>>();
+                let lowest = differing
+                    .first()
+                    .map_or(-1, |column| i32::try_from(*column).unwrap_or(i32::MAX));
+                let highest = differing
+                    .last()
+                    .map_or(-1, |column| i32::try_from(*column).unwrap_or(i32::MAX));
+                (highest - lowest + 1, lowest, highest)
+            }),
         })
         .collect::<Vec<_>>();
     let smooth = (0..2_048_usize)
@@ -2000,6 +2061,22 @@ pub fn diagnose_smb_left_direction(
                 right_final: recordings
                     .iter()
                     .map(|recording| continuation_endpoints(recording, 1, position).1)
+                    .collect(),
+                left_at_separation: recordings
+                    .iter()
+                    .map(|recording| {
+                        player_column_max_span_frame(recording).map_or(-1, |frame| {
+                            i32::from(recording.continuations[2].wram[frame][position])
+                        })
+                    })
+                    .collect(),
+                right_at_separation: recordings
+                    .iter()
+                    .map(|recording| {
+                        player_column_max_span_frame(recording).map_or(-1, |frame| {
+                            i32::from(recording.continuations[1].wram[frame][position])
+                        })
+                    })
                     .collect(),
             }
         })
@@ -2046,6 +2123,61 @@ fn player_column_left_direction(recordings: &[EntryRecording], index: usize) -> 
             return false;
         }
         if last <= first - PLAYER_COLUMN_LEFT_DECREASE {
+            decreasing = decreasing.saturating_add(1);
+        }
+    }
+    decreasing >= player_column_left_threshold(recordings.len())
+}
+
+/// Report the frame of largest equal-camera differing span, if any.
+fn player_column_max_span_frame(recording: &EntryRecording) -> Option<usize> {
+    let right = &recording.continuations[1];
+    let left = &recording.continuations[2];
+    let frames = right.columns.len().min(left.columns.len());
+    let mut best: Option<(i32, usize)> = None;
+    for frame in 0..frames {
+        if right.camera[frame] != left.camera[frame] {
+            continue;
+        }
+        let differing = (0..256)
+            .filter(|column| right.columns[frame][*column] != left.columns[frame][*column])
+            .collect::<Vec<_>>();
+        let (Some(lowest), Some(highest)) = (differing.first(), differing.last()) else {
+            continue;
+        };
+        let span =
+            i32::try_from(highest.saturating_sub(*lowest).saturating_add(1)).unwrap_or(i32::MAX);
+        if span > PLAYER_COLUMN_SPAN_MAX {
+            continue;
+        }
+        if best.is_none_or(|(recorded, _)| span > recorded) {
+            best = Some((span, frame));
+        }
+    }
+    best.map(|(_, frame)| frame)
+}
+
+/// Contrast the two opposite masks at each entry's maximum-separation frame.
+///
+/// D41 recorded that a continuation ending in death makes its final frame
+/// meaningless for a positional contrast. At the maximum-separation frame both
+/// continuations are still running and their recorded cameras are equal.
+fn player_column_separation_direction(
+    recordings: &[EntryRecording],
+    separation_frames: &[Option<usize>],
+    index: usize,
+) -> bool {
+    let mut decreasing = 0_usize;
+    for (recording, frame) in recordings.iter().zip(separation_frames) {
+        let Some(frame) = frame else {
+            return false;
+        };
+        let left = i32::from(recording.continuations[2].wram[*frame][index]);
+        let right = i32::from(recording.continuations[1].wram[*frame][index]);
+        if left > right + PLAYER_COLUMN_LEFT_SLACK {
+            return false;
+        }
+        if left <= right - PLAYER_COLUMN_LEFT_DECREASE {
             decreasing = decreasing.saturating_add(1);
         }
     }

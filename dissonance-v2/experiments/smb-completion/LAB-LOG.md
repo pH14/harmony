@@ -2129,3 +2129,37 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
 - The audit reports every index that passes the film rule, not only the selected
   one. It runs no search, changes no search behavior, and involves no model.
   Raw destination: `target/smb-completion/d42-player-column-decode/`.
+
+### D42 result — inconclusive; neither audited entry separates the player
+
+- The audit ran on the same two admitted entries. 170 indices took at least
+  eight distinct values and 24 were also smooth. Zero survived filter C2 at the
+  maximum-separation frame, so nothing reached the film rule and nothing was
+  selected. Live and no-model replay agree and the summary records
+  `replay_verified=true`. Index 134 is neither confirmed nor refuted.
+- Moving C2 to the maximum-separation frame removed the death confound and
+  exposed a deeper one. The two entries' maximum-separation frames are frame 36
+  for id 1610, spanning 98 columns from 40 to 137, and frame 120 for id 1871,
+  spanning 60 columns from 1 to 60.
+- On id 1610 at frame 36 **every** smooth candidate index holds the same value
+  in both continuations — index 953 reads 150 under both masks. The two frames
+  differ across 98 columns while no smooth, distinct work-RAM index differs at
+  all, so whatever is repainted there is not tracked by any candidate the audit
+  can verify.
+- On id 1871 at frame 120 the differing columns are 1 through 60, at the far
+  left of the screen, while index 953 reads 108 under held left and 184 under
+  held right. The one candidate with a large, correctly-signed contrast places
+  the player nowhere near the columns that actually differ. The 60-column
+  difference is not the player.
+- The conclusion is the honest one and it is about the archive, not the method.
+  The rebuilt archive contains no pair of continuations in which the controller
+  visibly moves the player far enough, at an equal camera, for the film rule to
+  identify a horizontal-position byte. D40 measured that directly — 2 of 256
+  states separate by more than one sprite width — and D42 shows that both of
+  those two separate something other than the player.
+- Assignment 1(b) closes without a verified field. The candidate index 134
+  remains recorded as suggestive from D37 and unverified. Nothing was added to
+  the decoded observation state or to either operator view, so the search,
+  the archive keys, the novelty map and the scheduler are untouched.
+- Raw evidence: `target/smb-completion/d42-player-column-decode/` and
+  `target/smb-completion/d42-diagnosis/`.
