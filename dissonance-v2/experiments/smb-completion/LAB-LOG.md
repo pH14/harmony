@@ -2285,3 +2285,52 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   record the ranking as a registered null.
 - Raw destination: `target/smb-completion/h44-luna/` and the film evidence at
   `target/smb-completion/h44-frontier-film/`.
+
+### H44 result — ranking rejected; the corrected condition kept paying without it
+
+- Source viability, measured before the panel: the rebuilt archive's recorded
+  maximum bucket is 74 and its viable progress is **62**. Buckets 74 down to 63
+  hold zero viable states among eight examined each, so the registered
+  acceptance baseline is 62.
+- The instrumentor returned a usable artifact on its first attempt: an
+  installed ranking named `vertical_activity_ranking` scoring bounded ordinary
+  engine state, absolute vertical bucket movement, and distinct changed work-RAM
+  addresses, penalising terminal observations. Its source SHA-256 is
+  `3b6641fff9527b7b502c98c1d8bfa43294f5e04895ee6ac57096e11a8e387b49`. It passed
+  the deterministic source checks with progress terms still forbidden, the
+  observation fixtures, the fixed seed `0x5eed_ef00` 256-execution isolation
+  pilot with its exact replay, and the recorded-journal chain replay. Its
+  166-word journal passed without compression.
+- Across the panel the ranking stayed active and made `[97, 80, 57, 73, 86, 54]`
+  replacements, which produced `[129, 22, 19, 35, 67, 7]` descendant novelties.
+  The seed-`0x5eed_e000` ranking arm and its no-model replay are byte-equal with
+  SHA-256 `37296fd9089c289af5d399425f691b1375d98b0420d4307ebc0f2accab038d6e`,
+  and the report records `replay_verified=true`.
+- Viable progress by arm. Controls: `[94, 62, 108, 61, 112, 61]`. Ranking arms:
+  `[94, 62, 65, 62, 144, 62]`. Against the baseline of 62 the controls succeed
+  on 3/6 and the ranking arms on 3/6.
+- **Decision: reject.** The registration required at least 4/6 ranking successes
+  and strictly more than the controls; the panel delivered 3/6 and a tie. No
+  held-out panel and no promotion are due. The single best arm in the whole
+  panel is a ranking arm at viable progress 144, and one arm is not the
+  threshold.
+- The controls carry the larger result. Resuming the same frozen protocol from
+  the rebuilt archive, with no generated artifact at all, raised viable progress
+  from 62 to 94, 108 and 112 on three of six seeds. The correction is still
+  paying out on its own two panels later.
+- The outcome is bimodal in both groups. Three control arms and three ranking
+  arms stayed at viable 61 or 62 with a recorded maximum of exactly 74 — the
+  source's own fall-in-flight bucket — while the others reached 94 and beyond.
+  An arm either leaves the source frontier or it does not move at all, which is
+  what the fenced retention question predicts: every arm resumes from a prefix
+  the corrected condition stops within a few frames, and whether an arm escapes
+  depends on the sampling that follows.
+- Recorded progress overstates all of this and the gap is now large: the
+  controls record 99, 108 and 123 where they are viable at 94, 108 and 112, and
+  the best ranking arm records 144 and is viable at 144. Reporting the recorded
+  maximum alone would have claimed advances that are partly falls.
+- Raw evidence: `target/smb-completion/h44-luna/`,
+  `target/smb-completion/h44-viability/`,
+  `target/smb-completion/h44-luna-source-viability.json` and the film at
+  `target/smb-completion/h44-frontier-film/`. The panel report is 715 MB
+  because it embeds all thirteen archives.
