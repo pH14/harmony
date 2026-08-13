@@ -1839,3 +1839,41 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   `target/smb-completion/d37-diagnosis/`,
   `target/smb-completion/d37-deep-diagnosis/` and
   `target/smb-completion/d37-film-columns/`.
+
+## D38 — preregistered responsiveness-sourced player-column decode audit
+
+- Same falsifiable claim, source archive, video-enabled target, three fixed
+  continuations of 120 single-frame chords with masks `0x00`, `0x01` and `0x02`,
+  camera-decrease truncation, filter C0, filter C1, film verification with the
+  camera-spread requirement, four-byte-stride rejection, lowest-index selection,
+  rendered PNG set, field name `player_screen_column`, operator sentence, and
+  byte-equal live-and-replay gate as D37.
+- Corrected sourcing. For every active entry at the maximum tuple, in descending
+  progress bucket with ties by `(input, id)`, examining at most eight per bucket
+  and at most 256 in total, record the number of frames on which the held-right
+  and held-left continuations differ in at least one rendered column. Call it
+  the entry's responsive frames. Admit entries in descending responsive frames,
+  breaking ties by descending progress and then `(input, id)`, at most two per
+  progress bucket, requiring at least 60 responsive frames, until eight are
+  admitted. Ranking by responsive frames is not circular: it is a rendered
+  measurement that names no work-RAM index.
+- The reason, stated before the numbers are seen: D37 established that the
+  deepest buckets of this archive are falls in flight and that four of its eight
+  admitted entries were pinned against terrain and could not move at all. An
+  audit that must observe horizontal motion has to source the states that have
+  some, and depth is not what supplies it. Camera spread across the audited set
+  is still supplied by the per-bucket admission cap.
+- Corrected filter C2. For at least three quarters of the audited entries,
+  rounded up, the held-left continuation's final value is at most the held-right
+  continuation's final value minus 8, and on no audited entry does it exceed the
+  held-right final value by more than 4. This replaces D29's comparison against
+  the entry's own starting value, which D37 showed is confounded by momentum and
+  by pinning. The threshold of 8 is not free: the film rule only forms
+  comparisons where the candidate values differ by at least 8, so a candidate
+  that never reaches that separation could not be verified in any case.
+- The scan reports, per bucket, entries examined, their responsive-frame counts,
+  and entries admitted. If fewer than eight entries reach 60 responsive frames
+  the audit reports the scan and stops. If no index passes verification it
+  reports itself inconclusive and selects nothing.
+- The audit runs no search, changes no search behavior, and involves no model.
+  Raw destination: `target/smb-completion/d38-player-column-decode/`.
