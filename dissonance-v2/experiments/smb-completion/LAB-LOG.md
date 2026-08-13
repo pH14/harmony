@@ -1693,3 +1693,51 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
 - Raw evidence: `target/smb-completion/m35-readmission/`,
   `target/smb-completion/m35-rebuild/`, and
   `target/smb-completion/m35-gate-g5/`.
+
+## D36 — preregistered player-column decode audit at the rebuilt frontier
+
+- Falsifiable claim: one work-RAM index holds the player's horizontal position
+  within the rendered screen, and it is identifiable from the program's own film
+  and memory evidence once the audited states are alive. D29 through D33 could
+  not test this claim because no state they could source responded to the
+  controller.
+- Source is the M35-selected rebuilt archive
+  `target/smb-completion/m35-rebuild/e000/archive-live.json`, whose maximum
+  tuple is `(world 0, level 2, progress 74)`, built under the corrected terminal
+  condition. The video-enabled target, the three fixed continuations of 120
+  single-frame chords with masks `0x00`, `0x01` and `0x02`, the per-frame work
+  RAM and 256-column frame signatures, four-byte-stride rejection, lowest-index
+  selection, the rendered PNG set, the field name `player_screen_column`, the
+  operator sentence fixed in D29, and the byte-equal live-and-replay gate are
+  unchanged.
+- Audited entries: scan active entries at the maximum tuple in descending
+  progress bucket, breaking ties by `(input, id)`, at most two admitted per
+  bucket and at most 128 scanned, until eight are admitted. An entry is admitted
+  when its held-right continuation advances the recorded camera by at least 32
+  pixels **and** its held-right and held-left continuations differ in at least
+  one rendered column on at least one frame in common. The second clause is the
+  D33 correction: a camera advance alone admits a falling player who coasts,
+  while a rendered difference between opposite masks cannot.
+- Continuations truncate at the first frame whose recorded camera is below the
+  previous frame's, retaining that frame, and at the corrected terminal
+  condition.
+- Filters, fixed before execution: C0 requires at least eight distinct values
+  across all audited frames; C1 requires consecutive recorded frames to differ
+  by at most 8; C2 requires the left continuation's final value to be at least 8
+  below the endpoint value on at least three quarters of the audited entries,
+  rounded up, and to exceed the endpoint value by more than 4 on none.
+- Verification is D33's camera-spread rule verbatim. A comparison is a pair of
+  continuations of the same entry at the same recorded frame index, present in
+  both, with equal screen-page and screen-x bytes and candidate values differing
+  by at least 8. With `L` and `H` the lowest and highest differing rendered
+  columns and `d` the candidate difference, `offset = L - min(candidate values)`
+  and `width = (H - L + 1) - d`. An index passes when some integer `o` in
+  `-24..=24` has at least eight comparisons with `|offset - o| <= 6` and `width`
+  in `4..=40`, and those agreeing comparisons include two whose recorded camera
+  positions differ by at least 16 pixels. The audit records the offset the most
+  comparisons agree with, breaking ties toward zero, with its agreeing count and
+  camera spread.
+- If fewer than eight entries are admitted the audit reports the scan and stops.
+  If no index passes it reports itself inconclusive and selects nothing.
+- The audit runs no search, changes no search behavior, and involves no model.
+  Raw destination: `target/smb-completion/d36-player-column-decode/`.
