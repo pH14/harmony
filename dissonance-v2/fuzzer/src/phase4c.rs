@@ -16,9 +16,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     phase4b::{
-        ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS, SmbInput,
-        SmbMacro, SmbMechanicalState, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
-        SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_camera_pixels,
+        ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS,
+        PLAYER_KILLED_STATE, SmbDeathBytes, SmbInput, SmbMacro, SmbMechanicalState,
+        SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones, SmbObservations,
+        SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_camera_pixels, smb_death_bytes,
         smb_mechanical_state_from_wram, smb_milestones_from_wram,
     },
     target::Target,
@@ -1853,6 +1854,321 @@ fn render_player_column_frames(
     Ok(frames)
 }
 
+const DEATH_AUDIT_ENTRIES: usize = 8;
+const DEATH_AUDIT_SCAN_CAP: usize = 128;
+const DEATH_AUDIT_BUCKET_CAP: usize = 2;
+const DEATH_AUDIT_FRAMES: usize = 240;
+const DEATH_AUDIT_THRESHOLDS: [u8; 7] = [1, 2, 3, 4, 5, 6, 7];
+
+/// One candidate terminal condition evaluated by the D34 audit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeathCandidate {
+    /// The frozen condition: engine state equals its killed value.
+    FrozenKill,
+    /// The life counter is strictly below its value at the start of the replay.
+    LifeCounterBelowStart,
+    /// The vertical page byte is at least a fixed threshold.
+    VerticalPageAtLeast(u8),
+    /// The combined vertical position is at least a fixed threshold of pages.
+    VerticalPositionAtLeast(u8),
+}
+
+impl DeathCandidate {
+    fn name(self) -> String {
+        match self {
+            Self::FrozenKill => "K0".to_owned(),
+            Self::LifeCounterBelowStart => "K1".to_owned(),
+            Self::VerticalPageAtLeast(threshold) => format!("K2({threshold})"),
+            Self::VerticalPositionAtLeast(threshold) => format!("K3({threshold})"),
+        }
+    }
+
+    fn holds(self, bytes: SmbDeathBytes, start_life_counter: u8) -> bool {
+        match self {
+            Self::FrozenKill => bytes.engine_state == PLAYER_KILLED_STATE,
+            Self::LifeCounterBelowStart => bytes.life_counter < start_life_counter,
+            Self::VerticalPageAtLeast(threshold) => bytes.vertical_page >= threshold,
+            Self::VerticalPositionAtLeast(threshold) => {
+                u32::from(bytes.vertical_page) * 256 + u32::from(bytes.vertical_low)
+                    >= u32::from(threshold) * 256
+            }
+        }
+    }
+}
+
+fn death_candidate_order() -> Vec<DeathCandidate> {
+    let mut candidates = vec![
+        DeathCandidate::FrozenKill,
+        DeathCandidate::LifeCounterBelowStart,
+    ];
+    candidates.extend(DEATH_AUDIT_THRESHOLDS.map(DeathCandidate::VerticalPageAtLeast));
+    candidates.extend(DEATH_AUDIT_THRESHOLDS.map(DeathCandidate::VerticalPositionAtLeast));
+    candidates
+}
+
+/// One evaluated candidate terminal condition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbDeathCandidateReport {
+    /// Fixed candidate name from the registration.
+    pub name: String,
+    /// Control frames on which the candidate is true; zero is required to pass.
+    pub control_true_frames: u64,
+    /// First-trip frame index per uncontrolled continuation, or `-1` when it never trips.
+    pub trip_frames: Vec<i32>,
+    /// Identifiers of the uncontrolled continuations on which the candidate never trips.
+    pub without_trip: Vec<u64>,
+    /// Median first-trip frame index, recorded only for a passing candidate.
+    pub median_trip_frame: Option<u16>,
+    /// Largest first-trip frame index, recorded only for a passing candidate.
+    pub max_trip_frame: Option<u16>,
+    /// Whether the registered acceptance rule admits this candidate.
+    pub passes: bool,
+}
+
+/// One recorded uncontrolled continuation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbDeathTrace {
+    /// Stable source archive identifier.
+    pub id: u64,
+    /// Recorded progress bucket of the continued entry.
+    pub progress: u16,
+    /// Whether the life counter was already below its genesis value at the endpoint.
+    pub life_counter_below_genesis_at_endpoint: bool,
+    /// Raw recorded bytes per frame, starting at the endpoint.
+    pub frames: Vec<SmbDeathBytes>,
+}
+
+/// Complete terminal-death decode audit report.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbTerminalDeathReport {
+    /// Champion actions consumed before the control replay was truncated.
+    pub control_actions: usize,
+    /// Control frames recorded, including the genesis frame.
+    pub control_frames: u64,
+    /// Fixed uncontrolled continuation length.
+    pub continuation_frames: u16,
+    /// Entries whose continuations were run during the qualification scan.
+    pub scanned: u64,
+    /// Identifiers admitted into the uncontrolled population.
+    pub uncontrolled_ids: Vec<u64>,
+    /// Every candidate in its fixed registered order.
+    pub candidates: Vec<SmbDeathCandidateReport>,
+    /// The candidate the registered adoption rule would select, if any.
+    pub adoption_rule_selects: Option<String>,
+    /// Raw recorded bytes per control frame.
+    pub control_trace: Vec<SmbDeathBytes>,
+    /// Raw recorded bytes per uncontrolled continuation.
+    pub uncontrolled_traces: Vec<SmbDeathTrace>,
+}
+
+/// Audit candidate terminal-death conditions against recorded live and uncontrolled play.
+///
+/// # Errors
+///
+/// Returns an error when the source has no active entries, when the recorded
+/// champion input never reaches the maximum recorded tuple, or when emulation
+/// or snapshotting fails.
+pub fn audit_smb_terminal_death(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+) -> Result<SmbTerminalDeathReport, Box<dyn Error>> {
+    let active = active_source_entries(source);
+    let max_tuple = active
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level))
+        .max()
+        .ok_or("source archive has no active entries")?;
+    let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
+    let (control_trace, control_actions, genesis_life) =
+        record_death_audit_control(&mut target, source, max_tuple)?;
+    let (uncontrolled_traces, scanned) =
+        record_death_audit_uncontrolled(&mut target, &active, max_tuple, genesis_life)?;
+    let complete = uncontrolled_traces.len() == DEATH_AUDIT_ENTRIES;
+    let candidates = death_candidate_order()
+        .into_iter()
+        .map(|candidate| {
+            evaluate_death_candidate(
+                candidate,
+                &control_trace,
+                &uncontrolled_traces,
+                genesis_life,
+                complete,
+            )
+        })
+        .collect::<Vec<_>>();
+    Ok(SmbTerminalDeathReport {
+        control_actions,
+        control_frames: u64::try_from(control_trace.len()).unwrap_or(u64::MAX),
+        continuation_frames: u16::try_from(DEATH_AUDIT_FRAMES).unwrap_or(u16::MAX),
+        scanned,
+        uncontrolled_ids: uncontrolled_traces.iter().map(|trace| trace.id).collect(),
+        adoption_rule_selects: adopt_death_candidate(&candidates),
+        candidates,
+        control_trace,
+        uncontrolled_traces,
+    })
+}
+
+fn record_death_audit_control(
+    target: &mut SmbTarget,
+    source: &SmbArchiveReport,
+    max_tuple: (u8, u8),
+) -> Result<(Vec<SmbDeathBytes>, usize, u8), Box<dyn Error>> {
+    target.reset();
+    let genesis_life = smb_death_bytes(target.wram()).life_counter;
+    let mut trace = vec![smb_death_bytes(target.wram())];
+    let mut actions = 0_usize;
+    for action in &source.champion_input.actions {
+        actions = actions.saturating_add(1);
+        for _ in 0..action.bounded_hold_frames() {
+            if target.is_dead() {
+                return Err("champion control replay reached the frozen terminal condition".into());
+            }
+            target.apply(&ButtonChord::new(action.buttons, 1));
+            if target.exit_kind() != ExitKind::Ok {
+                return Err("champion control replay failed to emulate".into());
+            }
+            trace.push(smb_death_bytes(target.wram()));
+            let decoded = smb_mechanical_state_from_wram(target.wram());
+            if (decoded.world, decoded.level) == max_tuple {
+                return Ok((trace, actions, genesis_life));
+            }
+        }
+    }
+    Err("the recorded champion input never reaches the maximum recorded tuple".into())
+}
+
+fn record_death_audit_uncontrolled(
+    target: &mut SmbTarget,
+    active: &[&SmbArchiveEntryReport],
+    max_tuple: (u8, u8),
+    genesis_life: u8,
+) -> Result<(Vec<SmbDeathTrace>, u64), Box<dyn Error>> {
+    let mut entries = active
+        .iter()
+        .copied()
+        .filter(|entry| (entry.key.world, entry.key.level) == max_tuple)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| (Reverse(entry.key.progress), entry.input.clone(), entry.id));
+    let mut prefix = PlayerColumnPrefix::new(target)?;
+    let mut per_bucket = BTreeMap::<u16, usize>::new();
+    let mut traces = Vec::with_capacity(DEATH_AUDIT_ENTRIES);
+    let mut scanned = 0_usize;
+    for entry in entries {
+        if traces.len() >= DEATH_AUDIT_ENTRIES || scanned >= DEATH_AUDIT_SCAN_CAP {
+            break;
+        }
+        let taken = per_bucket.entry(entry.key.progress).or_insert(0);
+        if *taken >= DEATH_AUDIT_BUCKET_CAP {
+            continue;
+        }
+        scanned = scanned.saturating_add(1);
+        let endpoint = replay_player_column_endpoint(target, &mut prefix, entry)?;
+        // The frame buffer survives no restore, so the endpoint image is captured here.
+        let endpoint_columns = column_signatures(&target.frame_rgba())?;
+        let endpoint_bytes = smb_death_bytes(target.wram());
+        if !death_audit_is_uncontrolled(target, &endpoint, endpoint_columns)? {
+            continue;
+        }
+        *per_bucket.entry(entry.key.progress).or_insert(0) += 1;
+        target.restore(&endpoint)?;
+        let mut frames = vec![endpoint_bytes];
+        for _ in 0..DEATH_AUDIT_FRAMES {
+            target.apply(&ButtonChord::new(PLAYER_COLUMN_MASKS[0], 1));
+            if target.exit_kind() != ExitKind::Ok {
+                break;
+            }
+            frames.push(smb_death_bytes(target.wram()));
+            if target.is_dead() {
+                break;
+            }
+        }
+        traces.push(SmbDeathTrace {
+            id: entry.id,
+            progress: entry.key.progress,
+            life_counter_below_genesis_at_endpoint: endpoint_bytes.life_counter < genesis_life,
+            frames,
+        });
+    }
+    Ok((traces, u64::try_from(scanned).unwrap_or(u64::MAX)))
+}
+
+/// Report whether the controller has no rendered effect over the fixed continuation.
+fn death_audit_is_uncontrolled(
+    target: &mut SmbTarget,
+    endpoint: &SmbSnapshot,
+    endpoint_columns: [u64; 256],
+) -> Result<bool, Box<dyn Error>> {
+    let mut recorded = Vec::with_capacity(2);
+    for mask in [PLAYER_COLUMN_MASKS[0], PLAYER_COLUMN_MASKS[2]] {
+        target.restore(endpoint)?;
+        let mut columns = vec![endpoint_columns];
+        for _ in 0..PLAYER_COLUMN_FRAMES {
+            if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+                break;
+            }
+            target.apply(&ButtonChord::new(mask, 1));
+            columns.push(column_signatures(&target.frame_rgba())?);
+        }
+        recorded.push(columns);
+    }
+    let frames = recorded[0].len().min(recorded[1].len());
+    Ok((0..frames).all(|frame| recorded[0][frame] == recorded[1][frame]))
+}
+
+fn evaluate_death_candidate(
+    candidate: DeathCandidate,
+    control: &[SmbDeathBytes],
+    uncontrolled: &[SmbDeathTrace],
+    genesis_life: u8,
+    complete: bool,
+) -> SmbDeathCandidateReport {
+    let control_true_frames = control
+        .iter()
+        .filter(|bytes| candidate.holds(**bytes, genesis_life))
+        .count();
+    let mut trip_frames = Vec::with_capacity(uncontrolled.len());
+    let mut without_trip = Vec::new();
+    for trace in uncontrolled {
+        match trace
+            .frames
+            .iter()
+            .position(|bytes| candidate.holds(*bytes, genesis_life))
+        {
+            Some(frame) => trip_frames.push(i32::try_from(frame).unwrap_or(i32::MAX)),
+            None => {
+                trip_frames.push(-1);
+                without_trip.push(trace.id);
+            }
+        }
+    }
+    let passes = complete && control_true_frames == 0 && without_trip.is_empty();
+    let mut sorted = trip_frames.clone();
+    sorted.sort_unstable();
+    let median = sorted
+        .get(sorted.len() / 2)
+        .and_then(|frame| u16::try_from(*frame).ok());
+    let largest = sorted.last().and_then(|frame| u16::try_from(*frame).ok());
+    SmbDeathCandidateReport {
+        name: candidate.name(),
+        control_true_frames: u64::try_from(control_true_frames).unwrap_or(u64::MAX),
+        trip_frames,
+        without_trip,
+        median_trip_frame: passes.then_some(median).flatten(),
+        max_trip_frame: passes.then_some(largest).flatten(),
+        passes,
+    }
+}
+
+/// Apply the registered adoption rule: the passing candidate that trips earliest.
+fn adopt_death_candidate(candidates: &[SmbDeathCandidateReport]) -> Option<String> {
+    candidates
+        .iter()
+        .filter(|candidate| candidate.passes)
+        .min_by_key(|candidate| candidate.max_trip_frame.unwrap_or(u16::MAX))
+        .map(|candidate| candidate.name.clone())
+}
+
 fn active_source_entries(source: &SmbArchiveReport) -> Vec<&SmbArchiveEntryReport> {
     let mut cells = BTreeMap::<SmbArchiveKey, Vec<&SmbArchiveEntryReport>>::new();
     for entry in &source.entries {
@@ -2413,8 +2729,8 @@ fn entry_cost(entry: &SmbArchiveEntryReport) -> (usize, u64) {
 mod tests {
     use super::{
         Archive, ContinuationRecording, EntryRecording, SmbArchiveDurationPolicy,
-        SmbArchiveSuffixPolicy, SmbGeneratedMutatorAccounting, SmbProgressWatermark, SmbRanking,
-        SmbRankingSearchConfig, analyze_player_column, merge_progress_watermark,
+        SmbArchiveSuffixPolicy, SmbDeathBytes, SmbGeneratedMutatorAccounting, SmbProgressWatermark,
+        SmbRanking, SmbRankingSearchConfig, analyze_player_column, merge_progress_watermark,
         record_generated_mutator_result, run_smb_archive_search,
         run_smb_archive_search_with_config_and_suffix,
         run_smb_archive_search_with_generated_mutator, run_smb_archive_search_with_ranking,
@@ -2557,6 +2873,130 @@ mod tests {
             selected.index,
             u16::try_from(SCREEN_COLUMN_INDEX).expect("index")
         );
+    }
+
+    fn scripted_death_trace(id: u64, frames: &[(u8, u8, u8, u8)]) -> super::SmbDeathTrace {
+        super::SmbDeathTrace {
+            id,
+            progress: 0,
+            life_counter_below_genesis_at_endpoint: false,
+            frames: frames
+                .iter()
+                .map(
+                    |(engine_state, life_counter, vertical_page, vertical_low)| SmbDeathBytes {
+                        engine_state: *engine_state,
+                        life_counter: *life_counter,
+                        vertical_page: *vertical_page,
+                        vertical_low: *vertical_low,
+                        ..SmbDeathBytes::default()
+                    },
+                )
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn death_candidates_read_only_the_bytes_they_are_named_for() {
+        let falling = SmbDeathBytes {
+            engine_state: 0x06,
+            life_counter: 1,
+            vertical_page: 3,
+            vertical_low: 0x20,
+            ..SmbDeathBytes::default()
+        };
+        assert!(!super::DeathCandidate::FrozenKill.holds(falling, 2));
+        assert!(super::DeathCandidate::LifeCounterBelowStart.holds(falling, 2));
+        assert!(!super::DeathCandidate::LifeCounterBelowStart.holds(falling, 1));
+        assert!(super::DeathCandidate::VerticalPageAtLeast(3).holds(falling, 2));
+        assert!(!super::DeathCandidate::VerticalPageAtLeast(4).holds(falling, 2));
+        assert!(super::DeathCandidate::VerticalPositionAtLeast(3).holds(falling, 2));
+        assert!(!super::DeathCandidate::VerticalPositionAtLeast(4).holds(falling, 2));
+    }
+
+    #[test]
+    fn death_audit_rejects_a_candidate_that_is_true_during_live_play() {
+        let control = vec![SmbDeathBytes {
+            vertical_page: 1,
+            ..SmbDeathBytes::default()
+        }];
+        let uncontrolled = (0..8)
+            .map(|id| scripted_death_trace(id, &[(0x00, 2, 1, 0x00), (0x00, 2, 3, 0x00)]))
+            .collect::<Vec<_>>();
+        let report = super::evaluate_death_candidate(
+            super::DeathCandidate::VerticalPageAtLeast(1),
+            &control,
+            &uncontrolled,
+            2,
+            true,
+        );
+        assert_eq!(report.control_true_frames, 1);
+        assert!(!report.passes);
+        let later = super::evaluate_death_candidate(
+            super::DeathCandidate::VerticalPageAtLeast(3),
+            &control,
+            &uncontrolled,
+            2,
+            true,
+        );
+        assert_eq!(later.control_true_frames, 0);
+        assert!(later.passes);
+        assert_eq!(later.max_trip_frame, Some(1));
+    }
+
+    #[test]
+    fn death_audit_requires_a_trip_on_every_uncontrolled_continuation() {
+        let mut uncontrolled = (0..7)
+            .map(|id| scripted_death_trace(id, &[(0x00, 2, 3, 0x00)]))
+            .collect::<Vec<_>>();
+        uncontrolled.push(scripted_death_trace(7, &[(0x00, 2, 1, 0x00)]));
+        let report = super::evaluate_death_candidate(
+            super::DeathCandidate::VerticalPageAtLeast(3),
+            &[],
+            &uncontrolled,
+            2,
+            true,
+        );
+        assert_eq!(report.without_trip, vec![7]);
+        assert!(!report.passes);
+        assert_eq!(report.max_trip_frame, None);
+    }
+
+    #[test]
+    fn death_audit_adopts_the_passing_candidate_that_trips_earliest() {
+        let candidates = vec![
+            super::SmbDeathCandidateReport {
+                name: "K0".to_owned(),
+                control_true_frames: 0,
+                trip_frames: vec![-1],
+                without_trip: vec![0],
+                median_trip_frame: None,
+                max_trip_frame: None,
+                passes: false,
+            },
+            super::SmbDeathCandidateReport {
+                name: "K1".to_owned(),
+                control_true_frames: 0,
+                trip_frames: vec![90],
+                without_trip: Vec::new(),
+                median_trip_frame: Some(90),
+                max_trip_frame: Some(90),
+                passes: true,
+            },
+            super::SmbDeathCandidateReport {
+                name: "K2(3)".to_owned(),
+                control_true_frames: 0,
+                trip_frames: vec![12],
+                without_trip: Vec::new(),
+                median_trip_frame: Some(12),
+                max_trip_frame: Some(12),
+                passes: true,
+            },
+        ];
+        assert_eq!(
+            super::adopt_death_candidate(&candidates),
+            Some("K2(3)".to_owned())
+        );
+        assert_eq!(super::adopt_death_candidate(&candidates[..1]), None);
     }
 
     struct ScriptedFrameRanking;

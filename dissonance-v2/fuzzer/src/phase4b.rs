@@ -122,7 +122,8 @@ const SCREEN_PAGE_OFFSET: usize = 0x071a;
 const SCREEN_X_OFFSET: usize = 0x071c;
 const PLAYER_Y_OFFSET: usize = 0x00ce;
 const PLAYER_ENGINE_STATE_OFFSET: usize = 0x000e;
-const PLAYER_KILLED_STATE: u8 = 0x0b;
+/// Engine-state value that the frozen terminal condition tests for.
+pub const PLAYER_KILLED_STATE: u8 = 0x0b;
 const WORLD_NUMBER_OFFSET: usize = 0x075f;
 const LEVEL_NUMBER_OFFSET: usize = 0x075c;
 const FLAG_TASK_OFFSET: usize = 0x0746;
@@ -1579,6 +1580,50 @@ pub fn smb_mechanical_state_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMechanicalSt
         player_engine_state: wram[PLAYER_ENGINE_STATE_OFFSET],
         dead: smb_player_is_dead(wram),
         flag_active: wram[FLAG_TASK_OFFSET] != 0,
+    }
+}
+
+/// Work-RAM index of the byte the post-D29 diagnosis recorded decrementing at a death.
+const LIFE_COUNTER_OFFSET: usize = 0x075a;
+/// Work-RAM index of the byte the post-D29 diagnosis recorded rising as `$00ce` wraps.
+const PLAYER_VERTICAL_PAGE_OFFSET: usize = 0x00b5;
+
+/// Raw work-RAM bytes recorded per frame by the terminal-death decode audit.
+///
+/// This is evidence collection, not a decoder: the fields are named for the
+/// bytes they read, and no meaning beyond the recorded diagnoses is asserted.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SmbDeathBytes {
+    /// Byte `$000e`, whose value `$0b` is the frozen terminal condition.
+    pub engine_state: u8,
+    /// Byte `$075a`.
+    pub life_counter: u8,
+    /// Byte `$00b5`.
+    pub vertical_page: u8,
+    /// Byte `$00ce`.
+    pub vertical_low: u8,
+    /// Byte `$071a`.
+    pub screen_page: u8,
+    /// Byte `$071c`.
+    pub screen_x: u8,
+    /// Byte `$075f`.
+    pub world: u8,
+    /// Byte `$075c`.
+    pub level: u8,
+}
+
+/// Read the raw bytes the terminal-death decode audit records for one frame.
+#[must_use]
+pub fn smb_death_bytes(wram: &[u8; WRAM_SIZE]) -> SmbDeathBytes {
+    SmbDeathBytes {
+        engine_state: wram[PLAYER_ENGINE_STATE_OFFSET],
+        life_counter: wram[LIFE_COUNTER_OFFSET],
+        vertical_page: wram[PLAYER_VERTICAL_PAGE_OFFSET],
+        vertical_low: wram[PLAYER_Y_OFFSET],
+        screen_page: wram[SCREEN_PAGE_OFFSET],
+        screen_x: wram[SCREEN_X_OFFSET],
+        world: wram[WORLD_NUMBER_OFFSET],
+        level: wram[LEVEL_NUMBER_OFFSET],
     }
 }
 

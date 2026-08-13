@@ -22,8 +22,8 @@ use fuzzer::{
         SmbArchiveSuffixPolicy, SmbControlCensusReport, SmbPlayerColumnSelection,
         audit_smb_frontier_viability, audit_smb_player_column_from_ids,
         audit_smb_player_column_spread, audit_smb_player_column_with_selection,
-        census_smb_control_authority, diagnose_smb_film_columns, diagnose_smb_film_measurements,
-        diagnose_smb_player_column, run_smb_archive_search,
+        audit_smb_terminal_death, census_smb_control_authority, diagnose_smb_film_columns,
+        diagnose_smb_film_measurements, diagnose_smb_player_column, run_smb_archive_search,
         run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_policies,
         select_smb_spread_audit_ids,
     },
@@ -100,6 +100,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "audit-spread-player-column" {
         return run_census_player_column_mode(&mut args, true);
+    }
+    if mode == "audit-terminal-death" {
+        return run_terminal_death_mode(&mut args);
     }
     if mode == "diagnose-film-measurements" {
         return run_film_measurement_mode(&mut args);
@@ -508,6 +511,70 @@ fn run_census_player_column_mode(
     println!("{}", serde_json::to_string_pretty(&summary)?);
     if replay_verified == Some(false) {
         return Err("census player-column audit replay diverged".into());
+    }
+    Ok(())
+}
+
+fn run_terminal_death_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    let replay_requested = parse_replay_flag(args, "audit-terminal-death")?;
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let report = audit_smb_terminal_death(&rom, &source)?;
+    fs::write(
+        output.join("terminal-death-live.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    let replay_verified = if replay_requested {
+        let replay = audit_smb_terminal_death(&rom, &source)?;
+        fs::write(
+            output.join("terminal-death-replay.json"),
+            serde_json::to_vec_pretty(&replay)?,
+        )?;
+        Some(replay == report)
+    } else {
+        None
+    };
+    let summary = serde_json::json!({
+        "control_actions": report.control_actions,
+        "control_frames": report.control_frames,
+        "continuation_frames": report.continuation_frames,
+        "scanned": report.scanned,
+        "uncontrolled_ids": report.uncontrolled_ids,
+        "already_below_genesis": report
+            .uncontrolled_traces
+            .iter()
+            .filter(|trace| trace.life_counter_below_genesis_at_endpoint)
+            .count(),
+        "candidates": report
+            .candidates
+            .iter()
+            .map(|candidate| {
+                serde_json::json!({
+                    "name": candidate.name,
+                    "control_true_frames": candidate.control_true_frames,
+                    "trip_frames": candidate.trip_frames,
+                    "without_trip": candidate.without_trip.len(),
+                    "median_trip_frame": candidate.median_trip_frame,
+                    "max_trip_frame": candidate.max_trip_frame,
+                    "passes": candidate.passes,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "adoption_rule_selects": report.adoption_rule_selects,
+        "replay_verified": replay_verified,
+    });
+    fs::write(
+        output.join("terminal-death-summary.json"),
+        serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    if replay_verified == Some(false) {
+        return Err("terminal-death audit replay diverged".into());
     }
     Ok(())
 }
