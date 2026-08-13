@@ -2537,3 +2537,74 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
 - The audit runs no search, changes no search behaviour, and involves no model.
   Raw destination: `target/smb-completion/d46-player-column-decode/` locally and
   the same relative path under `/root/harmony-smb-goal/` on the ARM machine.
+
+### D46 result — inconclusive, but the evidence base did change and both hosts agree
+
+- All three host gates pass. The ARM machine verified the ROM SHA-256 as
+  `0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea`, matching
+  the recorded value. Its live and no-model replay reports are byte-equal and
+  the summary records `replay_verified=true`. And the third gate holds: run on
+  both machines from the same source bytes, the audit's report and its scan
+  record are byte-equal — SHA-256
+  `ae63aba30f3adf9afdf9aa4c8ba87e782793f36be4dfc516833eab40b799b368` and
+  `b85a9c4b9e69109b6ab355db13a7c968c70163e374970dabba21985d376361a3` on both —
+  as is the combined checksum of all 45 rendered frames,
+  `6abd4e6419fae0b6c4fec4cc8d6683f16c12560d8411430e0308dcee51a6340f`. Remote
+  audit evidence reproduces the recorded program exactly.
+- The evidence base changed as predicted. Scanning 256 entries across 37 buckets
+  from progress 114 down to 62, **26** reach a differing span of 24 or more
+  against D40's 2 of 256 on the unprobed archive, with recorded spans of 128,
+  118, 115, 98, 95, 92, 90, 89, 88, 87, 82, 81, 80, 72, 48, 39, 35, 31, 28 and
+  24. 132 entries still show only a sprite-width difference and 90 show none.
+- The audit nonetheless returned nothing. Eight entries were admitted, 243
+  indices took at least eight distinct values and 51 were also smooth, and zero
+  survived filter C2, so nothing reached the film rule.
+- The diagnosis is the same shape as before and now it is decisive about the
+  filter rather than the archive. At the maximum-separation frame, six of the
+  eight audited entries hold **identical** candidate values in both
+  continuations while 95 to 128 columns of the picture differ; only ids 1772 and
+  2577 separate a candidate, and there the stride-4 family at indices 519
+  through 547, 941, 1196, 1198 and 1877 reads 26 against 48 and 26 against 55.
+  A wide rendered difference is not by itself the player, and the span measure
+  cannot tell the two apart.
+- C2 is now the binding constraint and it cannot be satisfied. It demands the
+  candidate separate on at least three quarters of the audited entries, while
+  the evidence says only a minority of any span-sourced set separates the player
+  at all. C2 was inherited from D29, written before the audit had a film rule
+  strong enough to discriminate on its own.
+- Raw evidence: `target/smb-completion/d46-player-column-decode/` on both
+  machines and `target/smb-completion/d46-diagnosis/`.
+
+## D47 — preregistered audit with verification in place of the direction filter
+
+- Same falsifiable claim, source archive, target, sourcing scan, filters C0 and
+  C1, four-byte-stride rejection, lowest-index selection, rendered PNG set,
+  field name, operator sentence, byte-equal live-and-replay gate, and host gates
+  as D46.
+- The single change: filter C2 is removed from the gate chain. Every index that
+  passes C0 and C1 goes to the film rule, which is unchanged — at least eight
+  comparisons agreeing on one offset within a tolerance of 6 with a width in
+  `4..=40`, including two whose recorded camera positions differ by at least 16
+  pixels.
+- The reason, stated before the numbers are seen: C2 is a pre-filter that
+  demands three quarters of the audited entries separate the candidate, and D46
+  measured that only a minority of any span-sourced set separates the player at
+  all. The film rule needs no such majority. It asks whether one index predicts
+  the differing columns with a consistent offset across cameras that are far
+  apart, and comparisons that carry no separation simply fail to agree.
+- Polarity is recorded rather than required. For each index that survives the
+  film rule, count the comparisons at equal camera whose candidate values differ
+  by at least 8, and the fraction of those in which the held-left continuation
+  holds the smaller value. Report the index as right-increasing when that
+  fraction is at least three quarters, left-increasing when it is at most one
+  quarter, and inconsistent otherwise, with the counts. A selected index whose
+  polarity is inconsistent is reported as selected-without-direction, and no
+  direction is claimed for it.
+- The risk is stated plainly: without a direction pre-filter more indices reach
+  verification, so a false positive is likelier than in D29's design. What must
+  carry the audit is the film rule's eight-comparison agreement, its width
+  bounds, its camera-spread requirement and the stride rejection. Every
+  surviving index is reported so that whether the selection is unique is
+  visible in the record.
+- The audit runs no search, changes no search behaviour, and involves no model.
+  Raw destination: `target/smb-completion/d47-player-column-decode/`.
