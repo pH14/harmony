@@ -2608,3 +2608,38 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   visible in the record.
 - The audit runs no search, changes no search behaviour, and involves no model.
   Raw destination: `target/smb-completion/d47-player-column-decode/`.
+
+### D47 result — inconclusive; a verified family with the wrong direction, all stride-rejected
+
+- Host gates pass again. The report is byte-equal across the two machines with
+  SHA-256 `881ab8700eda31160c4bab7669a1c353db8ee6861233d6a0d59710f2c8f90372`,
+  and live and no-model replay agree on each.
+- Removing filter C2 did what it was registered to do: all 51 smooth candidates
+  reached the film rule, and six of them passed it — indices 516, 520, 524, 528,
+  532 and 536. Each records 84 agreeing comparisons out of 914, a camera spread
+  of 265 pixels, 457 separating comparisons, and offsets of −3, −3, −11, −11,
+  −19 and −19 in index order.
+- Nothing was selected. The six survivors are spaced exactly four apart, so the
+  four-byte-stride rejection removed every one of them. That rule exists to stop
+  the audit picking an arbitrary member of an object table, and this is exactly
+  the case it was written for: the six carry identical agreement statistics and
+  offsets that step by 8 in pairs, so they are one quantity recorded at several
+  fixed displacements rather than six independent bytes.
+- The recorded polarity argues against the family being the field. On 457
+  separating comparisons the held-left continuation holds the **larger** value
+  383 times, so this quantity increases leftward. A screen-relative horizontal
+  position increases rightward. The family behaves like a mirrored or
+  right-referenced coordinate.
+- The polarity-correct family failed verification. Indices 519, 523, 527, 531,
+  535, 539, 543, 547, 941, 1196, 1198 and 1877 — the same table read four bytes
+  across, and the family D46 recorded reading 26 against 48 and 26 against 55
+  under the two masks, which is the rightward direction — all reached the film
+  rule and none passed it. Index 134, the candidate D37 recorded as suggestive,
+  also reached the film rule and failed.
+- So the two halves of the claim now fail on different indices: the family the
+  film rule verifies has the wrong direction and is a table, and the family with
+  the right direction is not verified. That is a sharper result than the earlier
+  nulls and it is not a starvation problem — 26 of 256 states separate the
+  player and 914 comparisons were available.
+- Raw evidence: `target/smb-completion/d47-player-column-decode/` on both
+  machines.

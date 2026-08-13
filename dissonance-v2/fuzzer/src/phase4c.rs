@@ -600,7 +600,7 @@ pub struct SmbPlayerColumnAuditedEntry {
 }
 
 /// Film-check evidence for one candidate work-RAM index.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbPlayerColumnFilmEvidence {
     /// Work-RAM index under test.
     pub index: u16,
@@ -613,6 +613,15 @@ pub struct SmbPlayerColumnFilmEvidence {
     /// Largest recorded camera difference among the agreeing comparisons.
     #[serde(default)]
     pub camera_spread: u32,
+    /// Equal-camera comparisons whose candidate values differ by at least the film gap.
+    #[serde(default)]
+    pub separating_comparisons: u64,
+    /// Of those, the count in which the held-left continuation holds the smaller value.
+    #[serde(default)]
+    pub left_is_smaller: u64,
+    /// Recorded direction: "right_increasing", "left_increasing" or "inconsistent".
+    #[serde(default)]
+    pub polarity: String,
 }
 
 /// Deterministic screen-relative player-column decode report.
@@ -742,11 +751,13 @@ struct PlayerColumnRules {
     require_camera_spread: bool,
     left_versus_right: bool,
     separation_frame: bool,
+    skip_direction_filter: bool,
 }
 
 impl PlayerColumnRules {
     /// D29 through D32: no camera-epoch truncation, with filters C3 and C4.
     const LEGACY: Self = Self {
+        skip_direction_filter: false,
         separation_frame: false,
         truncate_on_camera_decrease: false,
         require_right_direction: true,
@@ -757,6 +768,7 @@ impl PlayerColumnRules {
 
     /// D33: one camera epoch per continuation, C3 and C4 replaced by camera spread.
     const SPREAD: Self = Self {
+        skip_direction_filter: false,
         separation_frame: false,
         truncate_on_camera_decrease: true,
         require_right_direction: false,
@@ -767,6 +779,7 @@ impl PlayerColumnRules {
 
     /// D38: the direction filter contrasts the two opposite masks at the same frame.
     const CONTRAST: Self = Self {
+        skip_direction_filter: false,
         separation_frame: false,
         truncate_on_camera_decrease: true,
         require_right_direction: false,
@@ -775,8 +788,20 @@ impl PlayerColumnRules {
         left_versus_right: true,
     };
 
+    /// D47: no direction pre-filter; the film rule alone selects and polarity is recorded.
+    const VERIFIED: Self = Self {
+        skip_direction_filter: true,
+        separation_frame: false,
+        truncate_on_camera_decrease: true,
+        require_right_direction: false,
+        require_camera_relative: false,
+        require_camera_spread: true,
+        left_versus_right: false,
+    };
+
     /// D42: the direction filter contrasts at each entry's maximum-separation frame.
     const SEPARATION: Self = Self {
+        skip_direction_filter: false,
         truncate_on_camera_decrease: true,
         require_right_direction: false,
         require_camera_relative: false,
@@ -916,7 +941,7 @@ fn player_column_frame_requests(
             }
         }
     }
-    if let Some(selection) = report.selected {
+    if let Some(selection) = &report.selected {
         for comparison in comparisons
             .iter()
             .filter(|comparison| {
@@ -995,6 +1020,20 @@ pub fn audit_smb_player_column_separation(
     ids: &[u64],
 ) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
     audit_player_column_from_ids(rom, source, ids, PlayerColumnRules::SEPARATION)
+}
+
+/// Audit the horizontal-column byte with the film rule alone deciding.
+///
+/// # Errors
+///
+/// Returns an error when an identifier is absent from the source or when
+/// emulation, snapshotting, or rendering fails.
+pub fn audit_smb_player_column_verified(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    ids: &[u64],
+) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
+    audit_player_column_from_ids(rom, source, ids, PlayerColumnRules::VERIFIED)
 }
 
 fn audit_player_column_from_ids(
@@ -1970,7 +2009,9 @@ fn analyze_player_column_with_rules(
             continue;
         }
         smooth_survivors = smooth_survivors.saturating_add(1);
-        let directed = if rules.separation_frame {
+        let directed = if rules.skip_direction_filter {
+            true
+        } else if rules.separation_frame {
             player_column_separation_direction(recordings, &separation_frames, index)
         } else if rules.left_versus_right {
             player_column_left_versus_right(recordings, index)
@@ -2013,7 +2054,7 @@ fn analyze_player_column_with_rules(
     let selected = film_survivors
         .iter()
         .find(|evidence| !stride_rejected.contains(&evidence.index))
-        .copied();
+        .cloned();
     let audited = recordings
         .iter()
         .map(|recording| SmbPlayerColumnAuditedEntry {
@@ -2482,13 +2523,61 @@ fn film_evidence(
                 && (!rules.require_camera_spread || *spread >= PLAYER_COLUMN_CAMERA_SPREAD)
         })
         .max_by_key(|(agreeing, offset, _)| (*agreeing, Reverse(offset.abs()), Reverse(*offset)))?;
+    let (separating, left_smaller) = film_polarity(recordings, comparisons, index);
     Some(SmbPlayerColumnFilmEvidence {
         index,
         offset: i16::try_from(best.1).unwrap_or(i16::MAX),
         agreeing_comparisons: u64::try_from(best.0).unwrap_or(u64::MAX),
         comparisons: u64::try_from(measured.len()).unwrap_or(u64::MAX),
         camera_spread: best.2,
+        separating_comparisons: separating,
+        left_is_smaller: left_smaller,
+        polarity: film_polarity_name(separating, left_smaller),
     })
+}
+
+/// Count separating comparisons and those in which the held-left value is smaller.
+///
+/// Only the held-right and held-left pair carries a direction, so comparisons
+/// drawn from other continuation pairs are ignored.
+fn film_polarity(
+    recordings: &[EntryRecording],
+    comparisons: &[FilmComparison],
+    index: u16,
+) -> (u64, u64) {
+    let position = usize::from(index);
+    let mut separating = 0_u64;
+    let mut left_smaller = 0_u64;
+    for comparison in comparisons {
+        if (comparison.left, comparison.right) != (1, 2) {
+            continue;
+        }
+        let recording = &recordings[comparison.entry];
+        let right = i32::from(recording.continuations[1].wram[comparison.frame][position]);
+        let left = i32::from(recording.continuations[2].wram[comparison.frame][position]);
+        if (right - left).abs() < PLAYER_COLUMN_FILM_GAP {
+            continue;
+        }
+        separating = separating.saturating_add(1);
+        if left < right {
+            left_smaller = left_smaller.saturating_add(1);
+        }
+    }
+    (separating, left_smaller)
+}
+
+/// Name the recorded direction from the separating-comparison counts.
+fn film_polarity_name(separating: u64, left_smaller: u64) -> String {
+    if separating == 0 {
+        return "inconsistent".to_owned();
+    }
+    if left_smaller.saturating_mul(4) >= separating.saturating_mul(3) {
+        return "right_increasing".to_owned();
+    }
+    if left_smaller.saturating_mul(4) <= separating {
+        return "left_increasing".to_owned();
+    }
+    "inconsistent".to_owned()
 }
 
 /// One recorded frame of a screen-column diagnosis continuation.

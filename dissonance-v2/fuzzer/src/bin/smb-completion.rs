@@ -23,13 +23,13 @@ use fuzzer::{
         SmbPlayerColumnSelection, SmbSteerScanReport, audit_smb_frontier_viability,
         audit_smb_player_column_contrast, audit_smb_player_column_from_ids,
         audit_smb_player_column_separation, audit_smb_player_column_spread,
-        audit_smb_player_column_with_selection, audit_smb_terminal_death,
-        census_smb_control_authority, diagnose_smb_film_columns, diagnose_smb_film_measurements,
-        diagnose_smb_left_direction, diagnose_smb_player_column, gate_smb_live_control,
-        measure_smb_viable_progress, readmit_smb_archive, run_smb_archive_search,
-        run_smb_archive_search_with_policies, run_smb_archive_search_with_retention,
-        select_smb_responsive_audit_ids, select_smb_span_audit_ids, select_smb_spread_audit_ids,
-        select_smb_steered_audit_ids,
+        audit_smb_player_column_verified, audit_smb_player_column_with_selection,
+        audit_smb_terminal_death, census_smb_control_authority, diagnose_smb_film_columns,
+        diagnose_smb_film_measurements, diagnose_smb_left_direction, diagnose_smb_player_column,
+        gate_smb_live_control, measure_smb_viable_progress, readmit_smb_archive,
+        run_smb_archive_search, run_smb_archive_search_with_policies,
+        run_smb_archive_search_with_retention, select_smb_responsive_audit_ids,
+        select_smb_span_audit_ids, select_smb_spread_audit_ids, select_smb_steered_audit_ids,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -113,19 +113,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         return run_steered_player_column_mode(&mut args);
     }
     if mode == "audit-responsive-player-column" {
-        return run_responsive_player_column_mode(&mut args, false, CENSUS_AUDIT_ENTRIES, false);
+        return run_responsive_player_column_mode(&mut args, false, CENSUS_AUDIT_ENTRIES, 0);
     }
     if mode == "audit-span-player-column" {
-        return run_responsive_player_column_mode(&mut args, true, CENSUS_AUDIT_ENTRIES, false);
+        return run_responsive_player_column_mode(&mut args, true, CENSUS_AUDIT_ENTRIES, 0);
     }
     if mode == "audit-two-state-player-column" {
-        return run_responsive_player_column_mode(&mut args, true, TWO_STATE_AUDIT_ENTRIES, false);
+        return run_responsive_player_column_mode(&mut args, true, TWO_STATE_AUDIT_ENTRIES, 0);
     }
     if mode == "audit-probed-player-column" {
-        return run_responsive_player_column_mode(&mut args, true, CENSUS_AUDIT_ENTRIES, true);
+        return run_responsive_player_column_mode(&mut args, true, CENSUS_AUDIT_ENTRIES, 1);
+    }
+    if mode == "audit-verified-player-column" {
+        return run_responsive_player_column_mode(&mut args, true, CENSUS_AUDIT_ENTRIES, 2);
     }
     if mode == "audit-separation-player-column" {
-        return run_responsive_player_column_mode(&mut args, true, TWO_STATE_AUDIT_ENTRIES, true);
+        return run_responsive_player_column_mode(&mut args, true, TWO_STATE_AUDIT_ENTRIES, 1);
     }
     if mode == "diagnose-left-direction" {
         return run_left_direction_diagnosis_mode(&mut args);
@@ -718,12 +721,12 @@ fn run_responsive_player_column_mode(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
     by_span: bool,
     wanted: usize,
-    separation: bool,
+    direction_rule: u8,
 ) -> Result<(), Box<dyn Error>> {
-    let audit = if separation {
-        audit_smb_player_column_separation
-    } else {
-        audit_smb_player_column_contrast
+    let audit = match direction_rule {
+        2 => audit_smb_player_column_verified,
+        1 => audit_smb_player_column_separation,
+        _ => audit_smb_player_column_contrast,
     };
     let select = if by_span {
         select_smb_span_audit_ids
