@@ -1014,3 +1014,110 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   focused clippy gate pass. Clippy still prints the pre-existing workspace
   configuration warning for the removed `rand::thread_rng` path; it reports no
   code warning.
+
+
+## D29 — preregistered screen-relative player-column decode audit
+
+- Integrator steer after H27: the uniform progress-39 watermark points at a
+  missing observation field rather than a search failure. Progress is computed
+  from the recorded screen-page and screen-x bytes, which measure the camera.
+  Two retained states in the same progress bucket and vertical bucket are
+  therefore indistinguishable even when one is most of a screen width behind
+  the other, fewer-actions replacement plausibly keeps whichever input reaches
+  the camera bucket first, and no ranking can prefer a nearer state because the
+  quantity is not recorded anywhere.
+- Diagnostic claim: a work-RAM byte measures the player's horizontal column
+  within the visible screen, and it can be identified mechanically from this
+  program's own recorded raw work RAM and rendered frames, without a
+  disassembly, route, layout, or any external table.
+- This registration revises an earlier draft of the same audit that was written
+  but never executed. No process, report, or classification existed against
+  that draft, so revising it is not an alteration of a frozen registration. The
+  revisions are itemized in the final bullet.
+- Source is the exact H19 development seed `0x5eed_e002` archive already used by
+  H20 through H27. Reconstruct the active archive with the existing
+  capacity-two, fewer-actions retention rule, order entries by `(input, id)`
+  exactly as D27 and D28 do, and audit two fixed slices: the first eight active
+  entries at the maximal corrected tuple `(world 0, level 2, progress 39)`, and
+  the first eight at corrected `(world 0, level 2, progress 32)`. Direct
+  reconstruction of the source counts 374 active entries at progress 39 and 228
+  at progress 32, which is the lowest populated bucket of the registered
+  progress-32-through-39 approach band. The second slice exists because a filter
+  below requires continuations in which the recorded camera actually advances,
+  and that is not guaranteed at the boundary itself.
+- For each audited entry, replay from clean gameplay genesis to its endpoint and
+  snapshot. From that identical snapshot run three continuations of 120
+  single-frame chords each: no buttons `0x00`, right `0x01`, and left `0x02`.
+  Record the complete 2 KiB work RAM and a 256-column rendered-frame signature
+  at the endpoint and after every continuation frame. A continuation reaching
+  player engine state `$0b` is truncated at that frame, which is retained, and
+  only the recorded prefix is used. Rendering uses the video-enabled target; M4
+  established that video-enabled and headless execution produce identical
+  complete work-RAM traces.
+- Write `camera` for `screen_page * 256 + screen_x` in pixels, `v(e, c, f)` for
+  the audited index's value on entry `e`, continuation `c`, and recorded frame
+  `f`, with `f = 0` the endpoint. Candidate filters, fixed before execution,
+  applied to each of the 2,048 work-RAM indices:
+  - C0: the index takes at least eight distinct values across all audited
+    entries, continuations, and frames.
+  - C1: the absolute change between consecutive recorded frames is at most 8
+    everywhere.
+  - C2: in the left continuation the final value is at least 8 below the
+    endpoint value on at least twelve of the sixteen entries, and exceeds the
+    endpoint value by more than 4 on none.
+  - C3: in the right continuation the final value is never more than 16 below
+    the endpoint value.
+  - C4: a right continuation qualifies when its camera advances by 32 pixels or
+    more. At least one audited right continuation must qualify, and in every
+    qualifying continuation the index's absolute change must be strictly less
+    than that continuation's camera advance. This separates a screen-relative
+    byte from an absolute one. If no continuation qualifies, the audit reports
+    C4 inapplicable and selects nothing.
+- Film check, fixed before execution. A comparison is a pair of continuations of
+  the same entry at the same recorded frame index, present in both, whose
+  screen-page and screen-x bytes are equal in both and whose two candidate
+  values differ by at least 8. Let `L` and `H` be the lowest and highest columns
+  whose rendered pixels differ, `d` the candidate difference,
+  `offset = L - min(candidate values)`, and `width = (H - L + 1) - d`. An index
+  passes when some integer `o` in `-24..=24` has at least eight comparisons with
+  `|offset - o| <= 6` and `width` in `4..=40`; the audit records the smallest
+  such `o` and its agreeing count. If no index passes, the film half is reported
+  inconclusive and nothing is selected. The tolerance is deliberate: a byte that
+  places a sprite may sit at a constant nonzero offset from the lowest column
+  whose pixels actually differ, and occasional unrelated moving pixels must not
+  falsify a real identification.
+- Selection: record every index surviving C0 through C4 and the film check.
+  Reject any survivor that has another survivor exactly 4, 8, or 12 bytes away
+  in either direction, because a replicated four-byte-stride group is a
+  rendering buffer rather than an engine variable. Choose the lowest remaining
+  index. If none remains, the audit is inconclusive and no observation field is
+  added.
+- Fixed before execution, so a selected index cannot be described after the
+  fact: if the audit selects an index, the decoded observation state gains
+  exactly one field, `player_screen_column`, carrying that raw byte, and both
+  model operator views gain exactly this sentence: "decoded.player_screen_column
+  measures the verified player horizontal column within the visible screen in
+  the inclusive range 0..=255, with larger values farther right on the screen;
+  it is screen-relative and does not by itself indicate position within the
+  level." Archive keys, the base novelty map, retention, scheduling, parent
+  choice, admission, and milestones stay unchanged; the field is observation and
+  ranking input only. The no-behavior-change gate is a fixed seed
+  `0x5eed_ef00`, 256-execution archive campaign from the same source whose
+  complete report must be byte-identical before and after the field is added.
+- The audit runs no search, changes no search behavior, and involves no model.
+  Its live and no-model replay reports must be byte-equal, and the replay's
+  recorded frames must equal the live pass's. Rendered PNGs are written for the
+  first, middle, and final recorded frame of every continuation of the first
+  audited entry in each source slice, and for both frames of the first four
+  agreeing film-check comparisons of the selected index, so the visual half can
+  be inspected directly.
+- Raw destination: `target/smb-completion/d29-player-column-decode/`.
+- Revisions to the unrun draft: the audited set gains a second eight-entry slice
+  at progress 32; continuations run 120 frames rather than 60, matching D27 and
+  D28; the camera is stated in pixels; C4 states its qualifying threshold and
+  its inapplicable outcome instead of failing silently; C0 excludes constant
+  bytes; the film check replaces "the lowest differing column is within 4 of the
+  smaller candidate value" and its span-spread rule with an agreeing-offset rule
+  that tolerates a constant sprite offset and unrelated moving pixels; and the
+  field name, its exact operator sentence, and the no-behavior-change gate are
+  fixed here rather than left to be chosen after the result.
