@@ -696,6 +696,7 @@ const PLAYER_COLUMN_ADVANCING_SCAN_CAP: usize = 128;
 const PLAYER_COLUMN_RENDERED_COMPARISONS: usize = 4;
 const PLAYER_COLUMN_CAMERA_SPREAD: u32 = 16;
 const PLAYER_COLUMN_BUCKET_CAP: usize = 2;
+const PLAYER_COLUMN_BUCKET_SCAN_CAP: usize = 4;
 
 /// One ordered audit candidate: an active entry and its slice progress bucket.
 type PlayerColumnCandidate<'a> = (&'a SmbArchiveEntryReport, u16);
@@ -1060,14 +1061,18 @@ pub struct SmbFilmMeasurement {
 }
 
 /// One recorded progress bucket of the steered-entry scan.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbSteerScanBucket {
     /// Recorded progress bucket.
     pub progress: u16,
     /// Entries of this bucket whose continuations were run.
     pub scanned: u64,
-    /// Entries of this bucket whose rendered frames answer the controller.
-    pub steered: u64,
+    /// Entries whose held-right continuation advances the recorded camera.
+    pub camera_advancing: u64,
+    /// Entries whose opposite-mask continuations differ in a rendered column.
+    pub answering: u64,
+    /// Entries of this bucket admitted to the audited set.
+    pub admitted: u64,
 }
 
 /// Report for the steered-entry scan that sources the corrected column audit.
@@ -1075,11 +1080,15 @@ pub struct SmbSteerScanBucket {
 pub struct SmbSteerScanReport {
     /// Fixed continuation length.
     pub continuation_frames: u8,
-    /// Fixed camera advance the held-right continuation must reach, in pixels.
+    /// Fixed camera advance recorded alongside each entry, in pixels.
     pub camera_advance: u32,
     /// Entries whose continuations were run.
     pub scanned: u64,
-    /// Entries admitted by both clauses.
+    /// Entries whose held-right continuation advances the recorded camera.
+    pub camera_advancing: u64,
+    /// Entries whose opposite-mask continuations differ in a rendered column.
+    pub answering: u64,
+    /// Entries admitted to the audited set.
     pub steered: u64,
     /// Identifiers admitted, in scan order.
     pub steered_ids: Vec<u64>,
@@ -1087,13 +1096,14 @@ pub struct SmbSteerScanReport {
     pub buckets: Vec<SmbSteerScanBucket>,
 }
 
-/// Select audited entries whose rendered frames actually answer the controller.
+/// Select audited entries whose rendered frames answer the controller.
 ///
-/// An entry is admitted when its held-right continuation advances the recorded
-/// camera by the fixed pixel threshold and its held-right and held-left
-/// continuations differ in at least one rendered column on at least one frame.
-/// The second clause is what a camera advance alone cannot establish: a falling
-/// player coasts the camera forward while rendering identically under every mask.
+/// An entry is admitted when its held-right and held-left continuations differ
+/// in at least one rendered column on at least one frame in common. That is the
+/// discriminator a camera advance cannot supply: a falling player coasts the
+/// camera forward while rendering identically under every mask. The scan
+/// examines a bounded number of entries per bucket so that one unresponsive
+/// bucket cannot consume the whole budget, and records both clauses separately.
 ///
 /// # Errors
 ///
@@ -1117,18 +1127,26 @@ pub fn select_smb_steered_audit_ids(
     entries.sort_by_key(|entry| (Reverse(entry.key.progress), entry.input.clone(), entry.id));
     let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
     let mut prefix = PlayerColumnPrefix::new(&mut target)?;
-    let mut buckets = BTreeMap::<u16, (u64, u64)>::new();
+    let mut buckets = BTreeMap::<u16, SmbSteerScanBucket>::new();
     let mut steered_ids = Vec::with_capacity(wanted);
     let mut scanned = 0_usize;
+    let bucket_scan_cap = u64::try_from(PLAYER_COLUMN_BUCKET_SCAN_CAP).unwrap_or(u64::MAX);
+    let bucket_admit_cap = u64::try_from(PLAYER_COLUMN_BUCKET_CAP).unwrap_or(u64::MAX);
     for entry in entries {
         if steered_ids.len() >= wanted || scanned >= PLAYER_COLUMN_ADVANCING_SCAN_CAP {
             break;
         }
-        let taken = buckets.entry(entry.key.progress).or_insert((0, 0));
-        if taken.1 >= u64::try_from(PLAYER_COLUMN_BUCKET_CAP).unwrap_or(u64::MAX) {
+        let bucket = buckets
+            .entry(entry.key.progress)
+            .or_insert_with(|| SmbSteerScanBucket {
+                progress: entry.key.progress,
+                ..SmbSteerScanBucket::default()
+            });
+        if bucket.scanned >= bucket_scan_cap || bucket.admitted >= bucket_admit_cap {
             continue;
         }
         scanned = scanned.saturating_add(1);
+        bucket.scanned = bucket.scanned.saturating_add(1);
         let recording = record_player_column_entry(
             &mut target,
             &mut prefix,
@@ -1136,11 +1154,17 @@ pub fn select_smb_steered_audit_ids(
             entry.key.progress,
             PlayerColumnRules::SPREAD,
         )?;
-        let counts = buckets.entry(entry.key.progress).or_insert((0, 0));
-        counts.0 = counts.0.saturating_add(1);
-        if player_column_advances_camera(&recording) && player_column_answers_controller(&recording)
-        {
-            counts.1 = counts.1.saturating_add(1);
+        let advancing = player_column_advances_camera(&recording);
+        let answering = player_column_answers_controller(&recording);
+        let bucket = buckets
+            .get_mut(&entry.key.progress)
+            .ok_or("scan bucket vanished between lookups")?;
+        if advancing {
+            bucket.camera_advancing = bucket.camera_advancing.saturating_add(1);
+        }
+        if answering {
+            bucket.answering = bucket.answering.saturating_add(1);
+            bucket.admitted = bucket.admitted.saturating_add(1);
             steered_ids.push(entry.id);
         }
     }
@@ -1148,16 +1172,11 @@ pub fn select_smb_steered_audit_ids(
         continuation_frames: PLAYER_COLUMN_FRAMES,
         camera_advance: PLAYER_COLUMN_CAMERA_ADVANCE,
         scanned: u64::try_from(scanned).unwrap_or(u64::MAX),
+        camera_advancing: buckets.values().map(|bucket| bucket.camera_advancing).sum(),
+        answering: buckets.values().map(|bucket| bucket.answering).sum(),
         steered: u64::try_from(steered_ids.len()).unwrap_or(u64::MAX),
         steered_ids,
-        buckets: buckets
-            .iter()
-            .map(|(progress, (scanned, steered))| SmbSteerScanBucket {
-                progress: *progress,
-                scanned: *scanned,
-                steered: *steered,
-            })
-            .collect(),
+        buckets: buckets.into_values().collect(),
     })
 }
 
@@ -1596,6 +1615,133 @@ fn analyze_player_column_with_rules(
         },
         comparisons,
     )
+}
+
+/// One audited entry's continuation shape, recorded for diagnosis.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbLeftDirectionEntry {
+    /// Stable source archive identifier.
+    pub id: u64,
+    /// Recorded progress bucket.
+    pub progress: u16,
+    /// Recorded frames per continuation, in mask order.
+    pub frames: Vec<u16>,
+    /// Recorded camera at the first and last frame of the no-input continuation.
+    pub camera: (u32, u32),
+    /// Raw recorded bytes per frame of the no-input continuation.
+    pub still: Vec<SmbDeathBytes>,
+    /// Raw recorded bytes per frame of the held-right continuation.
+    pub right: Vec<SmbDeathBytes>,
+}
+
+/// One smooth candidate index's endpoint values across the audited entries.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbLeftDirectionCandidate {
+    /// Work-RAM index under test.
+    pub index: u16,
+    /// Value at each entry's endpoint.
+    pub endpoint: Vec<i32>,
+    /// Value at the last recorded frame of each held-left continuation.
+    pub left_final: Vec<i32>,
+    /// Smallest value anywhere in each held-left continuation.
+    pub left_min: Vec<i32>,
+    /// Value at the last recorded frame of each held-right continuation.
+    pub right_final: Vec<i32>,
+}
+
+/// Record why the left-direction filter accepted or rejected each smooth index.
+///
+/// # Errors
+///
+/// Returns an error when an identifier is absent from the source or when
+/// emulation or snapshotting fails.
+pub fn diagnose_smb_left_direction(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    ids: &[u64],
+) -> Result<(Vec<SmbLeftDirectionEntry>, Vec<SmbLeftDirectionCandidate>), Box<dyn Error>> {
+    let active = active_source_entries(source);
+    let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
+    let mut prefix = PlayerColumnPrefix::new(&mut target)?;
+    let mut recordings = Vec::with_capacity(ids.len());
+    for id in ids {
+        let entry = active
+            .iter()
+            .find(|entry| entry.id == *id)
+            .ok_or("audit identifier is not an active source entry")?;
+        recordings.push(record_player_column_entry(
+            &mut target,
+            &mut prefix,
+            entry,
+            entry.key.progress,
+            PlayerColumnRules::SPREAD,
+        )?);
+    }
+    let entries = recordings
+        .iter()
+        .map(|recording| SmbLeftDirectionEntry {
+            id: recording.id,
+            progress: recording.progress,
+            frames: recording
+                .continuations
+                .iter()
+                .map(|continuation| u16::try_from(continuation.wram.len()).unwrap_or(u16::MAX))
+                .collect(),
+            camera: (
+                recording.continuations[0].camera[0],
+                recording.continuations[0].camera[recording.continuations[0].camera.len() - 1],
+            ),
+            still: recording.continuations[0]
+                .wram
+                .iter()
+                .map(smb_death_bytes)
+                .collect(),
+            right: recording.continuations[1]
+                .wram
+                .iter()
+                .map(smb_death_bytes)
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    let smooth = (0..2_048_usize)
+        .filter(|index| {
+            player_column_distinct(&recordings, *index) && player_column_smooth(&recordings, *index)
+        })
+        .filter_map(|index| u16::try_from(index).ok())
+        .collect::<Vec<_>>();
+    let candidates = smooth
+        .iter()
+        .map(|index| {
+            let position = usize::from(*index);
+            SmbLeftDirectionCandidate {
+                index: *index,
+                endpoint: recordings
+                    .iter()
+                    .map(|recording| i32::from(recording.continuations[2].wram[0][position]))
+                    .collect(),
+                left_final: recordings
+                    .iter()
+                    .map(|recording| continuation_endpoints(recording, 2, position).1)
+                    .collect(),
+                left_min: recordings
+                    .iter()
+                    .map(|recording| {
+                        recording.continuations[2]
+                            .wram
+                            .iter()
+                            .map(|wram| i32::from(wram[position]))
+                            .min()
+                            .unwrap_or(-1)
+                    })
+                    .collect(),
+                right_final: recordings
+                    .iter()
+                    .map(|recording| continuation_endpoints(recording, 1, position).1)
+                    .collect(),
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok((entries, candidates))
 }
 
 fn player_column_distinct(recordings: &[EntryRecording], index: usize) -> bool {

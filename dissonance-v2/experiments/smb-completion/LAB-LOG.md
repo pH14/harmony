@@ -1783,3 +1783,59 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   The two clauses are recorded separately whatever the outcome.
 - The audit runs no search, changes no search behavior, and involves no model.
   Raw destination: `target/smb-completion/d37-player-column-decode/`.
+
+### D37 result — inconclusive; no candidate survived the left-direction filter
+
+- The corrected scan worked as registered. It examined 54 entries across sixteen
+  progress buckets, recorded 22 whose held-right continuation advances the
+  camera and 8 whose opposite-mask continuations differ in a rendered column,
+  and admitted those 8, at progress 62, 62, 61, 61, 60, 60, 59 and 59. 150
+  indices took at least eight distinct values and 48 were also smooth. **Zero**
+  survived filter C2, so nothing reached verification and nothing was selected.
+  Live and no-model replay agree and the summary records
+  `replay_verified=true`.
+- The two clauses separate cleanly and the separation is the finding. Per bucket
+  the camera-advancing counts are 0, 0, 4, 4, 1, 2, 1, 0, 1, 1, 2, 4 at progress
+  74 down to 63, with zero answering anywhere in that range; at progress 62 down
+  to 59 the counts invert to zero advancing and two answering per bucket. No
+  entry in the deepest twelve buckets answers the controller at all.
+- A diagnosis of the deepest buckets says why, and it is the same fault one
+  threshold later. Eight entries sampled at progress 74, 73, 72 and 63 record
+  continuations lasting 2, 2, 4, 8, 10, 14, 16, 22 and 25 frames before the
+  corrected condition stops them, with `$00ce` already at 176 to 253 on page 1
+  and rising every frame, identical trajectories under all three masks, and the
+  camera advancing 1161 to 1199 while it happens. **Those buckets are falls in
+  flight.** The player runs off an edge, keeps travelling right while falling,
+  and the camera scrolls with him, so an action boundary that lands in that
+  window is retained at a progress bucket no live state ever reached.
+- The corrected condition stops such a run within a few frames, but it cannot
+  stop it before the boundary, because a vertical threshold that admits recorded
+  live play — which reaches `$00ce` 240 on page 1 — necessarily also admits the
+  first part of a fall. The live frontier of the rebuilt archive is therefore
+  progress 62, not 74. That is still an advance of 23 buckets over the boundary
+  that held from H20 through H27, and it is the number the standing summary
+  should carry.
+- The eight admitted entries were then measured directly. On four of them, ids
+  1546, 2051, 1951 and 1770, the no-input and held-left continuations render
+  identically on all 121 frames and every candidate index ends where it started:
+  the player is pinned and cannot move left at all. Those four were admitted
+  only because held-right differs from held-left somewhere, which a one-frame
+  difference satisfies. On the other four the recorded horizontal excursion
+  between the held-left and held-right endpoints is 5, 6, 42 and 6 units.
+- The index that behaves like a screen-relative horizontal position is already
+  visible in this evidence: index 134 ends at `[80, 80, 82, 79, 76, 76, 40, 74]`
+  under held left and `[80, 80, 82, 79, 81, 82, 82, 80]` under held right, lower
+  under left on every entry that moves at all and equal on every entry that does
+  not. Indices 1820, 1821 and 1855 carry the same quantity, and index 587 and
+  its stride-4 relatives carry its mirror. This is suggestive and is **not** a
+  selection: D29's verification requires candidate differences of at least 8 at
+  equal camera, and only one of the eight entries produces one.
+- The filter that rejected everything is C2, which compares the held-left
+  endpoint against the entry's own starting value. That comparison is confounded
+  by momentum — on entry 1762 the no-input continuation drifts further left than
+  the held-left continuation does — and by pinning. The contrast the film rule
+  actually needs is between the two opposite masks at the same frame.
+- Raw evidence: `target/smb-completion/d37-player-column-decode/`,
+  `target/smb-completion/d37-diagnosis/`,
+  `target/smb-completion/d37-deep-diagnosis/` and
+  `target/smb-completion/d37-film-columns/`.

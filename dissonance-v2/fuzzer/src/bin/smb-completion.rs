@@ -20,13 +20,13 @@ use fuzzer::{
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
         SmbArchiveSuffixPolicy, SmbControlCensusReport, SmbPlayerColumnSelection,
-        audit_smb_frontier_viability, audit_smb_player_column_from_ids,
+        SmbSteerScanReport, audit_smb_frontier_viability, audit_smb_player_column_from_ids,
         audit_smb_player_column_spread, audit_smb_player_column_with_selection,
         audit_smb_terminal_death, census_smb_control_authority, diagnose_smb_film_columns,
-        diagnose_smb_film_measurements, diagnose_smb_player_column, gate_smb_live_control,
-        readmit_smb_archive, run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
-        run_smb_archive_search_with_policies, select_smb_spread_audit_ids,
-        select_smb_steered_audit_ids,
+        diagnose_smb_film_measurements, diagnose_smb_left_direction, diagnose_smb_player_column,
+        gate_smb_live_control, readmit_smb_archive, run_smb_archive_search,
+        run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_policies,
+        select_smb_spread_audit_ids, select_smb_steered_audit_ids,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -107,6 +107,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "audit-steered-player-column" {
         return run_steered_player_column_mode(&mut args);
+    }
+    if mode == "diagnose-left-direction" {
+        return run_left_direction_diagnosis_mode(&mut args);
     }
     if mode == "gate-live-control" {
         return run_live_control_gate_mode(&mut args);
@@ -606,6 +609,8 @@ fn run_steered_player_column_mode(
     if scan.steered_ids.len() < CENSUS_AUDIT_ENTRIES {
         let summary = serde_json::json!({
             "scanned": scan.scanned,
+            "camera_advancing": scan.camera_advancing,
+            "answering": scan.answering,
             "steered": scan.steered,
             "audited_entries": scan.steered_ids.len(),
             "selected": serde_json::Value::Null,
@@ -645,6 +650,8 @@ fn run_steered_player_column_mode(
     };
     let summary = serde_json::json!({
         "scanned": scan.scanned,
+        "camera_advancing": scan.camera_advancing,
+        "answering": scan.answering,
         "steered": scan.steered,
         "audited_ids": scan.steered_ids,
         "audited_entries": report.audited.len(),
@@ -665,6 +672,32 @@ fn run_steered_player_column_mode(
     if replay_verified == Some(false) {
         return Err("steered player-column audit replay diverged".into());
     }
+    Ok(())
+}
+
+fn run_left_direction_diagnosis_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let scan_path = PathBuf::from(args.next().ok_or("missing steer scan report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let scan: SmbSteerScanReport = serde_json::from_slice(&fs::read(scan_path)?)?;
+    let (entries, candidates) = diagnose_smb_left_direction(&rom, &source, &scan.steered_ids)?;
+    fs::write(
+        output.join("left-direction-entries.json"),
+        serde_json::to_vec_pretty(&entries)?,
+    )?;
+    fs::write(
+        output.join("left-direction-candidates.json"),
+        serde_json::to_vec(&candidates)?,
+    )?;
+    println!("entries {} candidates {}", entries.len(), candidates.len());
     Ok(())
 }
 
