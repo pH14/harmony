@@ -235,3 +235,68 @@
   Skips at that scale would themselves be recorded evidence.
 - Genesis-origin campaigns pass a single empty input as the initial corpus,
   which retains gameplay genesis alone, exactly as the serial engine does.
+
+## CM1 — shared campaign surface
+
+- `SmbTarget` gained a monotonic `frames_clocked` counter incremented at every
+  deck clock site — construction bootstrap, `apply`, the admission probe, and
+  film clocking — with a getter. It is work accounting only: no snapshot
+  carries it, `restore` and `reset` do not touch it, and no serial report
+  reads it.
+- `phase4c` items needed by the coordinator became `pub(crate)`: the archive
+  and its insert and parent-selection methods, the admission probe, the key,
+  the chord sampler, and the milestone and watermark merge helpers. One
+  additive wrapper, `run_smb_archive_search_with_retention_and_work`, returns
+  the unchanged serial report together with the target's lifetime frame
+  total; the five existing wrappers discard the new second value. No control
+  flow changed anywhere in either file.
+- Quality gates at this state: build clean, `cargo fmt --check` clean, clippy
+  under `-D warnings` printing only the known pre-existing configuration
+  warning, `cargo nextest run --all-features` 70 of 70 passed, and
+  `cargo deny check` ok. One nextest run flagged one test leaky; it passed,
+  the flag did not recur, and no change here spawns a process.
+- The executor-identity gate result is recorded below when its SMB arm
+  completes; the acceptance is the three identity bits plus the frozen M15
+  semantic hashes, with the binary's own tenfold clause recorded false and
+  superseded by the integrator's EXECUTOR-REWORK amendment-3 ruling. Wall
+  ratios measured on this run are non-evidence: the machine concurrently
+  hosts the active search worker's two full-load runs, and M15's recorded
+  ratios stand.
+
+## CM2 — coordinator and replay
+
+- The module is `fuzzer/src/campaign.rs` plus one added `pub mod campaign;`
+  line in `lib.rs`. Every other existing file is untouched since CM1.
+- The single admission lock is realized as the coordinator thread's serial
+  event loop, a strictly stronger serialization with identical semantics:
+  workers only execute jobs and return results over a channel; selection,
+  admission, budget reservation, and stream writing all happen on the
+  coordinator, so every archive mutation and every stream append is ordered
+  by one thread and the archive state at any stream position is identical
+  live and replayed. The arrival order of worker results is the run's only
+  nondeterminism.
+- A drawn job ships to its worker as (parent snapshot, parent length, parent
+  milestones, suffix); the suffix expands from the mutation seed alone
+  through the shared frozen samplers. Workers compute the admission-probe
+  verdict per boundary, because it is a pure function of the snapshot, so
+  admission needs no emulator. Archive entries are append-only and immutable
+  once inserted, which is why a parent selected early and admitted against
+  later is the same parent bytes replay reads at the job's stream position.
+- Replay re-executes every recorded job serially from (parent id, mutation
+  seed), and verifies four things per job against the stream: the result
+  digest over the complete serialized result including snapshots, the exact
+  emulated frame count including probes, the admission sequence number, and
+  every recomputed admission decision. Recorded skips are verified to be true
+  full-prefix duplicates at their stream position. Any mismatch is an error,
+  not a warning.
+- Unit tests on the synthetic NROM, no SMB ROM read: worker-seed derivation
+  stability, suffix purity and bounds, job purity across two independently
+  constructed target instances, a threaded W = 4 live campaign whose replay
+  is equal as a structure and byte-identical as serialized JSON, a tampered
+  skip record failing replay loudly, and an archive-origin campaign round-
+  tripping through replay. Full gates: 76 of 76 tests passed, fmt, clippy,
+  and deny clean.
+- One synthetic-NROM finding recorded for honesty: with all-zero work RAM
+  every entry shares one key, so the frontier resume selection legitimately
+  returns the empty genesis input; the archive-origin unit test asserts the
+  round trip, not a nonempty resume input.
