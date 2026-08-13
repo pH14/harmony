@@ -2356,3 +2356,65 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   deepest buckets, and every resumed arm therefore starts from one. Half the
   arms in H44 never left it. A viability test at admission is the registered
   next hypothesis.
+
+## H45 — preregistered viability test at admission
+
+- Motivating evidence, recorded before this registration. The archive retains
+  states the corrected terminal condition stops a few frames later. D37 sampled
+  the rebuilt archive's deepest buckets and recorded continuations lasting 2, 2,
+  4, 8, 10, 14, 16, 22 and 25 frames under every mask. H44 measured the source
+  archive's viable progress at 62 against a recorded maximum of 74, with zero
+  viable states among eight examined in each of buckets 74 down to 63. And H44's
+  own arms came out bimodal: three of six controls and three of six ranking arms
+  never left the source frontier, finishing at viable 61 or 62 with a recorded
+  maximum of exactly 74 — the source's own fall-in-flight bucket — while the
+  others reached 94, 108, 112 and 144. Every arm resumes from a prefix the
+  corrected condition stops within a few frames, and whether an arm escapes it
+  is left to sampling.
+- Falsifiable claim: refusing to retain a state that no fixed continuation can
+  keep alive removes those prefixes from the archive, so arms stop stalling at
+  the source frontier. Challenger arms will exceed the source archive's viable
+  progress of 62 on at least 5 of 6 development seeds, with strictly more
+  successes than the controls.
+- Mechanism, and it is the only variable. Before a candidate snapshot is
+  admitted, the target is probed from that snapshot with each of the fixed masks
+  `0x00`, `0x01` and `0x81` for at most 120 frames, stopping at the first mask
+  that survives the corrected terminal condition. The candidate is admitted only
+  if some mask survives, and the snapshot is restored exactly afterwards so
+  execution continues unchanged. The probe emits no observations, consumes no
+  randomness, and is applied identically in the bootstrap walk and the suffix
+  loop.
+- Three masks rather than one, stated as a design choice with its reason: a
+  single no-input probe would also reject every state that survives only by
+  acting immediately, which is exactly the kind of state the search needs. Doing
+  nothing, holding right, and the recorded button-plus-right mask cover the
+  neutral case, the forward case and the case that leaves the ground. A state is
+  refused only when all three die.
+- Everything else is unchanged: archive keys, novelty, the frozen parent
+  scheduler, the nine-mask controller vocabulary, the stratified duration
+  policy, the one-or-two suffix policy, capacity-two cells with fewer-actions
+  replacement, the 512-action bound, no ranking and no other generated artifact.
+  The vertical-page key term stays fenced.
+- Source is the same M35-selected rebuilt archive
+  `target/smb-completion/m35-rebuild/e000/archive-live.json` with the same single
+  shortest mechanical frontier input. Controls run the frozen retention rule and
+  challengers run the probe, on seeds `0x5eed_e000..=0x5eed_e005`, 5,000
+  executions each, at `nice -n 10`, at most six arms concurrently, no arm at or
+  above 20,000 executions.
+- Acceptance is measured with H44's registered viable-progress measurement,
+  unchanged: the deepest bucket at the maximum tuple holding a state whose
+  no-input continuation survives 120 frames, examining at most eight entries per
+  bucket. Acceptance requires challenger viable progress above 62 on at least
+  5/6 seeds and strictly more successes than the controls. Only then repeat
+  unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105` with the same
+  threshold; a promotion must replay exactly with no model.
+- The shared clause is declared rather than hidden: the admission probe and the
+  acceptance measurement both ask whether a state survives 120 frames, and the
+  probe's first mask is the measurement's only mask. A challenger archive is
+  therefore expected to score better on the measurement partly by construction.
+  What the claim is really about is distance, so the panel additionally reports
+  each arm's recorded maximum progress and the gap between recorded and viable.
+  If the challengers clear the threshold without also travelling further in
+  recorded terms, that is recorded as a weak result rather than an acceptance.
+- One challenger arm replays exactly, and its live and replay reports must be
+  byte-equal. Raw destination: `target/smb-completion/h45-viability/`.
