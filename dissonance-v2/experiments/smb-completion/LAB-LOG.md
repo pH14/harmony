@@ -2643,3 +2643,42 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   player and 914 comparisons were available.
 - Raw evidence: `target/smb-completion/d47-player-column-decode/` on both
   machines.
+
+## D48 — preregistered complement of the verified family
+
+- Falsifiable claim: the screen-relative horizontal position is the byte
+  complement of the family D47 verified. That family increases leftward; if it
+  is a right-referenced coordinate, then `255 - raw` is the same quantity
+  measured from the left, and it must pass the film rule on its own with
+  rightward polarity.
+- The family, recorded in full: indices 516, 520, 524, 528, 532 and 536, each
+  with 84 agreeing comparisons of 914, camera spread 265, and offsets −3, −3,
+  −11, −11, −19, −19 in index order. The representative is the lowest surviving
+  index, **516**, chosen by that rule and not by inspection.
+- Exactly one transform is tried: `derived = 255 - raw` applied to index 516.
+  No other constant, no other index, no other form. If this fails the field
+  question closes as a registered null.
+- The audit evaluates exactly one candidate, so the four-byte-stride rejection
+  cannot fire. That is stated rather than relied on.
+- Filters C0 and C1 are unchanged and are preserved exactly by a complement —
+  it maps distinct values to distinct values and leaves every frame-to-frame
+  step size identical — so neither can be the reason the derived value passes.
+  The film rule is verbatim: the offset searched over `-24..=24`, a tolerance of
+  6, a width in `4..=40`, at least eight agreeing comparisons, and at least two
+  of them from recorded camera positions 16 or more pixels apart.
+- Acceptance additionally requires the recorded polarity to be right-increasing,
+  meaning the held-left continuation holds the smaller value on at least three
+  quarters of the separating comparisons. A derived value that verifies with the
+  wrong direction is a null, not a selection.
+- Prediction fixed before execution: if the hypothesis is right the agreeing
+  count should rise well above the raw byte's 84 of 914, because a complement
+  turns an offset that varies with the pair of values into one that does not.
+  An agreeing count near 84 would mean the complement changed nothing and the
+  agreement was coincidental.
+- Source archive, sourcing scan, audited entries, replay gate and both host
+  gates are unchanged from D47.
+- If it verifies, the field is admitted in a separate mechanism entry that
+  states its derivation, its inclusive range and its direction in both operator
+  views, and carries a no-behaviour-change gate over the search. This audit
+  admits nothing by itself.
+- Raw destination: `target/smb-completion/d48-player-column-decode/`.
