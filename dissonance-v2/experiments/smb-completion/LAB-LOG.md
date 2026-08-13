@@ -2078,3 +2078,54 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   one, so whether the selection is unique is visible in the record.
 - The audit runs no search, changes no search behavior, and involves no model.
   Raw destination: `target/smb-completion/d41-player-column-decode/`.
+
+### D41 result — inconclusive; one audited entry dies under held left
+
+- The scan admitted exactly the two entries the registration named, ids 1610 at
+  progress 40 and 1871 at progress 59. 170 indices took at least eight distinct
+  values and 24 were also smooth. Zero survived filter C2, so nothing reached
+  the film rule and nothing was selected. Live and no-model replay agree and the
+  summary records `replay_verified=true`.
+- The recorded continuation lengths say why. On id 1610 the no-input and
+  held-left continuations both stop after 105 frames while the held-right
+  continuation runs the full 121: holding left walks that player off an edge and
+  the corrected terminal condition stops him. C2 compares the two masks at their
+  **final** recorded frames, so on that entry it compares a falling player
+  against a walking one, and no index can satisfy it.
+- The evidence that survives the confound is worth recording. Index 953 ends at
+  108 under held left and 184 under held right on id 1871, a separation of 76
+  columns with the polarity a screen-relative horizontal position would have. On
+  id 1610 the same index ends at 222 against 227, five apart, because the
+  held-left value is the value at the moment of death. One entry is not a
+  verification and this is not a selection.
+- The frame the audit should compare at is already computed. D40's sourcing
+  measure records, for every entry, the frame of largest equal-camera differing
+  span — the moment of maximum separation, at equal camera, with both
+  continuations still running. That is the same frame the film rule would draw
+  its comparison from.
+- Raw evidence: `target/smb-completion/d41-player-column-decode/` and
+  `target/smb-completion/d41-diagnosis/`.
+
+## D42 — preregistered maximum-separation direction filter
+
+- Same falsifiable claim, source archive, admitted entries, target,
+  continuations, filters C0 and C1, film verification with the camera-spread
+  requirement, four-byte-stride rejection, lowest-index selection, rendered PNG
+  set, field name, operator sentence, and byte-equal live-and-replay gate as
+  D41.
+- The single change: filter C2 is evaluated at each entry's frame of largest
+  equal-camera differing span rather than at the final recorded frame. At that
+  frame both continuations are still running, their recorded cameras are equal,
+  and the player is as far apart as the controller ever puts him. The rule
+  itself is unchanged — for at least three quarters of the audited entries,
+  rounded up, the held-left value is at most the held-right value minus 8, and
+  on no entry does it exceed the held-right value by more than 4 — and with two
+  entries that means both.
+- The reason is stated before the numbers are seen: D41 recorded that a
+  continuation which ends in death makes its final frame meaningless for a
+  positional contrast, and the maximum-separation frame is both live and
+  equal-camera by construction. It is also the frame the film rule already
+  prefers, so C2 and verification now test the same evidence.
+- The audit reports every index that passes the film rule, not only the selected
+  one. It runs no search, changes no search behavior, and involves no model.
+  Raw destination: `target/smb-completion/d42-player-column-decode/`.

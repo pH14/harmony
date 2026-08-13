@@ -37,6 +37,7 @@ const M12_PILOT_SEED: u64 = 0x5eed_dc00;
 const M12_PILOT_EXECUTIONS: u64 = 500;
 const FRONTIER_RESUME_INPUTS: usize = 64;
 const CENSUS_AUDIT_ENTRIES: usize = 8;
+const TWO_STATE_AUDIT_ENTRIES: usize = 2;
 
 #[derive(Clone, Copy)]
 enum ResumeSelection {
@@ -110,10 +111,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         return run_steered_player_column_mode(&mut args);
     }
     if mode == "audit-responsive-player-column" {
-        return run_responsive_player_column_mode(&mut args, false);
+        return run_responsive_player_column_mode(&mut args, false, CENSUS_AUDIT_ENTRIES);
     }
     if mode == "audit-span-player-column" {
-        return run_responsive_player_column_mode(&mut args, true);
+        return run_responsive_player_column_mode(&mut args, true, CENSUS_AUDIT_ENTRIES);
+    }
+    if mode == "audit-two-state-player-column" {
+        return run_responsive_player_column_mode(&mut args, true, TWO_STATE_AUDIT_ENTRIES);
     }
     if mode == "diagnose-left-direction" {
         return run_left_direction_diagnosis_mode(&mut args);
@@ -685,6 +689,7 @@ fn run_steered_player_column_mode(
 fn run_responsive_player_column_mode(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
     by_span: bool,
+    wanted: usize,
 ) -> Result<(), Box<dyn Error>> {
     let select = if by_span {
         select_smb_span_audit_ids
@@ -697,12 +702,12 @@ fn run_responsive_player_column_mode(
     fs::create_dir_all(&output)?;
     let rom = read_rom()?;
     let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
-    let scan = select(&rom, &source, CENSUS_AUDIT_ENTRIES)?;
+    let scan = select(&rom, &source, wanted)?;
     fs::write(
         output.join("responsive-scan.json"),
         serde_json::to_vec_pretty(&scan)?,
     )?;
-    if scan.steered_ids.len() < CENSUS_AUDIT_ENTRIES {
+    if scan.steered_ids.len() < wanted {
         let summary = serde_json::json!({
             "scanned": scan.scanned,
             "responsive": scan.responsive,
@@ -731,7 +736,7 @@ fn run_responsive_player_column_mode(
         )?;
     }
     let replay_verified = if replay_requested {
-        let replay_scan = select(&rom, &source, CENSUS_AUDIT_ENTRIES)?;
+        let replay_scan = select(&rom, &source, wanted)?;
         let (replay, replay_frames) =
             audit_smb_player_column_contrast(&rom, &source, &replay_scan.steered_ids)?;
         fs::write(
