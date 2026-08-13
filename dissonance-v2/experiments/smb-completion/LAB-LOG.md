@@ -1351,3 +1351,96 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   `383bc917ec0b1d3b6911059f1526cfd853b31f91bf10b32aeb9ee57a41fa7111`.
 - Raw destinations: `target/smb-completion/d32-control-census/` and
   `target/smb-completion/d32-player-column-decode/`.
+
+### D32 census result — six percent of the retained level has rightward control
+
+- The census replayed all 3,292 active `(world 0, level 2)` representatives of
+  the exact H19 seed `0x5eed_e002` source and admitted 211, or 6.4%. Live and
+  no-model replay reports are byte-equal with SHA-256
+  `a0ce35b930c5a0ac18bf469e3271fab8e452b9389915eba0f9fc9f15cbbf1d8e` and the
+  summary records `replay_verified=true`.
+- The registered claim that the admitted fraction is roughly uniform is false by
+  a wide margin. Every heavily populated bucket is entirely uncontrollable:
+  progress 17 admitted 0 of 257, progress 29 admitted 0 of 46, progress 30
+  admitted 0 of 96, progress 32 admitted 0 of 228, progress 33 admitted 0 of 93,
+  progress 34 admitted 0 of 1,224, and progress 39 admitted 0 of 374. The
+  admitted entries sit almost entirely in the sparse early buckets — for example
+  26 of 30 at progress 7 and 24 of 29 at progress 6 — plus ten scattered
+  entries at progress 35, 36, and 37.
+- The registered progress-32-through-39 approach band therefore contains 1,934
+  active representatives of which exactly 10 can be moved rightwards at all.
+  H23, H24, and every later panel selected parents uniformly from that band.
+- This is the plateau in one line. The scheduler's frontier branch always ranks
+  the maximum progress tuple highest, every one of the 374 representatives at
+  that tuple has already fallen past the gap, and the handful of live states a
+  screen behind it are never treated as the frontier. Raw evidence:
+  `target/smb-completion/d32-control-census/`.
+
+### D32 sourced audit result — inconclusive; filter C3 was wrong
+
+- The audit sourced the eight highest-progress admitted entries, five at
+  progress 37 and three at progress 36, with endpoint cameras from 577 to 602.
+  All eight right continuations qualified for the camera-relative test, against
+  zero in D29 and D31. 130 indices took at least eight distinct values, 34 were
+  also smooth, and 7 survived the left-direction filter. All 7 were then
+  rejected by C3, which requires the right continuation's final value to stay
+  within 16 of the endpoint value, so nothing reached the film check and no
+  index was selected. Live and no-model replay reports are byte-equal with
+  SHA-256 `395bd27af22329f8ce3a2d0820298fbe44c1840deb87d921560d54246daedd0f`
+  and the summary records `replay_verified=true`.
+- C3 encodes a false assumption. A screen-relative column falls when the camera
+  catches up: a player ahead of the scroll anchor who then holds right pushes
+  the camera until the anchor settles, and the recorded column drops by far more
+  than 16 while the player is moving right the whole time. C3 therefore rejects
+  exactly the quantity the audit is looking for. No continuation restarted the
+  level in this panel, so this is the anchor effect and not the missed death.
+- C4 is weak for the same reason. Once a relative column may change by more than
+  a hundred, requiring its change to stay below the camera advance rejects true
+  candidates whenever the advance is modest.
+- The reproducible part is now clear: seven smooth candidates that fall under
+  held left, from live source states, with no verification step reached. Raw
+  evidence: `target/smb-completion/d32-player-column-decode/`.
+
+## D33 — preregistered camera-spread player-column decode audit
+
+- Same diagnostic claim as D29 through D32. The source, active-archive
+  reconstruction, the three fixed continuations of 120 single-frame chords,
+  per-frame work RAM and 256-column frame signatures, the video-enabled target,
+  four-byte-stride rejection, lowest-index selection, the rendered PNG set, the
+  field name and operator sentence fixed in D29, and the byte-equal
+  live-and-replay gate are unchanged.
+- Audited entries: from the recorded D32 census, take admitted entries in
+  descending progress bucket, breaking ties by `(input, id)`, and take at most
+  two per bucket, until eight are chosen. Capping per bucket guarantees the
+  audited endpoints span several camera positions, which the verification below
+  requires.
+- Continuations additionally truncate at the first frame whose recorded camera
+  is below the previous frame's, retaining that frame, as well as at engine
+  state `$0b`. The recorded camera never decreases during continuous play, so
+  this bounds every continuation to one camera epoch and keeps a level reload
+  out of the filters.
+- Filters, fixed before execution: C0 requires at least eight distinct values
+  across all audited frames; C1 requires consecutive recorded frames to differ
+  by at most 8; C2 requires the left continuation's final value to be at least 8
+  below the endpoint value on at least three quarters of the audited entries,
+  rounded up, and to exceed the endpoint value by more than 4 on none. D29's C3
+  and C4 are removed for the reasons recorded above; their counts are no longer
+  reported.
+- Verification replaces them. A comparison is a pair of continuations of the
+  same entry at the same recorded frame index, present in both, with equal
+  screen-page and screen-x bytes and candidate values differing by at least 8.
+  With `L` and `H` the lowest and highest differing rendered columns and `d` the
+  candidate difference, `offset = L - min(candidate values)` and
+  `width = (H - L + 1) - d`. An index passes when some integer `o` in `-24..=24`
+  has at least eight comparisons with `|offset - o| <= 6` and `width` in
+  `4..=40`, and those agreeing comparisons include two whose recorded camera
+  positions differ by at least 16 pixels. The camera-spread requirement is the
+  discriminator D29 tried to get from C4: a byte holding an absolute position
+  predicts the rendered column with an offset that shifts by the camera
+  difference, so it cannot agree within a tolerance of 6 across cameras 16 or
+  more apart, while a screen-relative byte agrees at every camera.
+- The audit records the offset the most comparisons agree with, breaking ties
+  toward zero, and its agreeing count and camera spread. If no index passes, the
+  audit reports itself inconclusive and selects nothing.
+- The audit runs no search, changes no search behavior, and involves no model.
+  Raw destination: `target/smb-completion/d33-player-column-decode/`.
