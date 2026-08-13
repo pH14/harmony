@@ -21,13 +21,14 @@ use fuzzer::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
         SmbArchiveRetentionPolicy, SmbArchiveSuffixPolicy, SmbControlCensusReport,
         SmbPlayerColumnSelection, SmbSteerScanReport, audit_smb_frontier_viability,
-        audit_smb_player_column_contrast, audit_smb_player_column_from_ids,
-        audit_smb_player_column_separation, audit_smb_player_column_spread,
-        audit_smb_player_column_verified, audit_smb_player_column_with_selection,
-        audit_smb_terminal_death, census_smb_control_authority, diagnose_smb_film_columns,
-        diagnose_smb_film_measurements, diagnose_smb_left_direction, diagnose_smb_player_column,
-        gate_smb_live_control, measure_smb_viable_progress, readmit_smb_archive,
-        run_smb_archive_search, run_smb_archive_search_with_policies,
+        audit_smb_player_column_contrast, audit_smb_player_column_derived,
+        audit_smb_player_column_from_ids, audit_smb_player_column_separation,
+        audit_smb_player_column_spread, audit_smb_player_column_verified,
+        audit_smb_player_column_with_selection, audit_smb_terminal_death,
+        census_smb_control_authority, diagnose_smb_film_columns, diagnose_smb_film_measurements,
+        diagnose_smb_film_measurements_derived, diagnose_smb_left_direction,
+        diagnose_smb_player_column, gate_smb_live_control, measure_smb_viable_progress,
+        readmit_smb_archive, run_smb_archive_search, run_smb_archive_search_with_policies,
         run_smb_archive_search_with_retention, select_smb_responsive_audit_ids,
         select_smb_span_audit_ids, select_smb_spread_audit_ids, select_smb_steered_audit_ids,
     },
@@ -127,6 +128,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if mode == "audit-verified-player-column" {
         return run_responsive_player_column_mode(&mut args, true, CENSUS_AUDIT_ENTRIES, 2);
     }
+    if mode == "audit-derived-player-column" {
+        return run_responsive_player_column_mode(&mut args, true, CENSUS_AUDIT_ENTRIES, 3);
+    }
     if mode == "audit-separation-player-column" {
         return run_responsive_player_column_mode(&mut args, true, TWO_STATE_AUDIT_ENTRIES, 1);
     }
@@ -143,7 +147,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         return run_readmission_mode(&mut args);
     }
     if mode == "diagnose-film-measurements" {
-        return run_film_measurement_mode(&mut args);
+        return run_film_measurement_mode(&mut args, false);
+    }
+    if mode == "diagnose-derived-measurements" {
+        return run_film_measurement_mode(&mut args, true);
     }
     if mode == "diagnose-film-columns" {
         return run_film_column_mode(&mut args);
@@ -724,6 +731,7 @@ fn run_responsive_player_column_mode(
     direction_rule: u8,
 ) -> Result<(), Box<dyn Error>> {
     let audit = match direction_rule {
+        3 => audit_smb_player_column_derived,
         2 => audit_smb_player_column_verified,
         1 => audit_smb_player_column_separation,
         _ => audit_smb_player_column_contrast,
@@ -924,6 +932,7 @@ fn run_readmission_mode(
 
 fn run_film_measurement_mode(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
+    derived: bool,
 ) -> Result<(), Box<dyn Error>> {
     let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
     let census_path = PathBuf::from(args.next().ok_or("missing census report")?);
@@ -935,8 +944,16 @@ fn run_film_measurement_mode(
     let rom = read_rom()?;
     let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
     let census: SmbControlCensusReport = serde_json::from_slice(&fs::read(census_path)?)?;
-    let ids = select_smb_spread_audit_ids(&source, &census.admitted_ids, CENSUS_AUDIT_ENTRIES)?;
-    let measurements = diagnose_smb_film_measurements(&rom, &source, &ids)?;
+    let ids = if census.admitted_ids.len() == CENSUS_AUDIT_ENTRIES {
+        census.admitted_ids.clone()
+    } else {
+        select_smb_spread_audit_ids(&source, &census.admitted_ids, CENSUS_AUDIT_ENTRIES)?
+    };
+    let measurements = if derived {
+        diagnose_smb_film_measurements_derived(&rom, &source, &ids)?
+    } else {
+        diagnose_smb_film_measurements(&rom, &source, &ids)?
+    };
     fs::write(
         output.join("film-measurements.json"),
         serde_json::to_vec(&measurements)?,

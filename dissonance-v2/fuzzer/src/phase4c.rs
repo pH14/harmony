@@ -721,6 +721,8 @@ const PLAYER_COLUMN_RENDERED_COMPARISONS: usize = 4;
 const PLAYER_COLUMN_CAMERA_SPREAD: u32 = 16;
 const PLAYER_COLUMN_BUCKET_CAP: usize = 2;
 const PLAYER_COLUMN_BUCKET_SCAN_CAP: usize = 4;
+/// D48 representative: the lowest index of the family D47's film rule verified.
+const DERIVED_COLUMN_INDEX: u16 = 516;
 const PLAYER_COLUMN_RESPONSIVE_BUCKET_SCAN: usize = 8;
 const PLAYER_COLUMN_RESPONSIVE_SCAN_CAP: usize = 256;
 const PLAYER_COLUMN_RESPONSIVE_FRAMES: usize = 60;
@@ -752,11 +754,15 @@ struct PlayerColumnRules {
     left_versus_right: bool,
     separation_frame: bool,
     skip_direction_filter: bool,
+    complement_index: Option<u16>,
+    require_right_polarity: bool,
 }
 
 impl PlayerColumnRules {
     /// D29 through D32: no camera-epoch truncation, with filters C3 and C4.
     const LEGACY: Self = Self {
+        complement_index: None,
+        require_right_polarity: false,
         skip_direction_filter: false,
         separation_frame: false,
         truncate_on_camera_decrease: false,
@@ -768,6 +774,8 @@ impl PlayerColumnRules {
 
     /// D33: one camera epoch per continuation, C3 and C4 replaced by camera spread.
     const SPREAD: Self = Self {
+        complement_index: None,
+        require_right_polarity: false,
         skip_direction_filter: false,
         separation_frame: false,
         truncate_on_camera_decrease: true,
@@ -779,6 +787,8 @@ impl PlayerColumnRules {
 
     /// D38: the direction filter contrasts the two opposite masks at the same frame.
     const CONTRAST: Self = Self {
+        complement_index: None,
+        require_right_polarity: false,
         skip_direction_filter: false,
         separation_frame: false,
         truncate_on_camera_decrease: true,
@@ -790,6 +800,21 @@ impl PlayerColumnRules {
 
     /// D47: no direction pre-filter; the film rule alone selects and polarity is recorded.
     const VERIFIED: Self = Self {
+        complement_index: None,
+        require_right_polarity: false,
+        skip_direction_filter: true,
+        separation_frame: false,
+        truncate_on_camera_decrease: true,
+        require_right_direction: false,
+        require_camera_relative: false,
+        require_camera_spread: true,
+        left_versus_right: false,
+    };
+
+    /// D48: one complemented byte evaluated alone, with rightward polarity required.
+    const DERIVED: Self = Self {
+        complement_index: Some(DERIVED_COLUMN_INDEX),
+        require_right_polarity: true,
         skip_direction_filter: true,
         separation_frame: false,
         truncate_on_camera_decrease: true,
@@ -801,6 +826,8 @@ impl PlayerColumnRules {
 
     /// D42: the direction filter contrasts at each entry's maximum-separation frame.
     const SEPARATION: Self = Self {
+        complement_index: None,
+        require_right_polarity: false,
         skip_direction_filter: false,
         truncate_on_camera_decrease: true,
         require_right_direction: false,
@@ -1036,6 +1063,20 @@ pub fn audit_smb_player_column_verified(
     audit_player_column_from_ids(rom, source, ids, PlayerColumnRules::VERIFIED)
 }
 
+/// Audit the single complemented byte D48 registered, with rightward polarity required.
+///
+/// # Errors
+///
+/// Returns an error when an identifier is absent from the source or when
+/// emulation, snapshotting, or rendering fails.
+pub fn audit_smb_player_column_derived(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    ids: &[u64],
+) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
+    audit_player_column_from_ids(rom, source, ids, PlayerColumnRules::DERIVED)
+}
+
 fn audit_player_column_from_ids(
     rom: &[u8],
     source: &SmbArchiveReport,
@@ -1062,6 +1103,9 @@ fn audit_player_column_from_ids(
             *progress,
             rules,
         )?);
+    }
+    if let Some(index) = rules.complement_index {
+        complement_recorded_index(&mut recordings, index);
     }
     let (report, comparisons) = analyze_player_column_with_rules(&recordings, rules);
     let requests = player_column_frame_requests(&recordings, &comparisons, &report);
@@ -1650,10 +1694,33 @@ fn player_column_answers_controller(recording: &EntryRecording) -> bool {
 ///
 /// Returns an error when an identifier is absent from the source or when
 /// emulation or snapshotting fails.
+pub fn diagnose_smb_film_measurements_derived(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    ids: &[u64],
+) -> Result<Vec<SmbFilmMeasurement>, Box<dyn Error>> {
+    diagnose_film_measurements(rom, source, ids, PlayerColumnRules::DERIVED)
+}
+
+/// Record every film-check measurement for the indices that reach verification.
+///
+/// # Errors
+///
+/// Returns an error when an identifier is absent from the source or when
+/// emulation or snapshotting fails.
 pub fn diagnose_smb_film_measurements(
     rom: &[u8],
     source: &SmbArchiveReport,
     ids: &[u64],
+) -> Result<Vec<SmbFilmMeasurement>, Box<dyn Error>> {
+    diagnose_film_measurements(rom, source, ids, PlayerColumnRules::SPREAD)
+}
+
+fn diagnose_film_measurements(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    ids: &[u64],
+    rules: PlayerColumnRules,
 ) -> Result<Vec<SmbFilmMeasurement>, Box<dyn Error>> {
     let active = active_source_entries(source);
     let mut selected = Vec::with_capacity(ids.len());
@@ -1673,11 +1740,13 @@ pub fn diagnose_smb_film_measurements(
             &mut prefix,
             entry,
             *progress,
-            PlayerColumnRules::SPREAD,
+            rules,
         )?);
     }
-    let (report, comparisons) =
-        analyze_player_column_with_rules(&recordings, PlayerColumnRules::SPREAD);
+    if let Some(index) = rules.complement_index {
+        complement_recorded_index(&mut recordings, index);
+    }
+    let (report, comparisons) = analyze_player_column_with_rules(&recordings, rules);
     let mut measurements = Vec::new();
     for index in &report.camera_relative_survivors {
         for comparison in &comparisons {
@@ -1982,6 +2051,22 @@ fn analyze_player_column(
     analyze_player_column_with_rules(recordings, PlayerColumnRules::LEGACY)
 }
 
+/// Replace one byte of every recorded frame with its complement.
+///
+/// A complement maps distinct values to distinct values and preserves every
+/// frame-to-frame step size, so filters C0 and C1 decide exactly as they would
+/// on the raw byte.
+fn complement_recorded_index(recordings: &mut [EntryRecording], index: u16) {
+    let position = usize::from(index);
+    for recording in recordings.iter_mut() {
+        for continuation in &mut recording.continuations {
+            for wram in &mut continuation.wram {
+                wram[position] = u8::MAX - wram[position];
+            }
+        }
+    }
+}
+
 fn analyze_player_column_with_rules(
     recordings: &[EntryRecording],
     rules: PlayerColumnRules,
@@ -1992,6 +2077,10 @@ fn analyze_player_column_with_rules(
     let mut right_direction_survivors = 0_u64;
     let mut camera_relative_survivors = Vec::new();
     let qualifying = qualifying_right_continuations(recordings);
+    let indices: Vec<usize> = match rules.complement_index {
+        Some(index) => vec![usize::from(index)],
+        None => (0..2_048_usize).collect(),
+    };
     let separation_frames = if rules.separation_frame {
         recordings
             .iter()
@@ -2000,7 +2089,7 @@ fn analyze_player_column_with_rules(
     } else {
         Vec::new()
     };
-    for index in 0..2_048_usize {
+    for index in indices {
         if !player_column_distinct(recordings, index) {
             continue;
         }
@@ -2053,7 +2142,10 @@ fn analyze_player_column_with_rules(
         .collect::<Vec<_>>();
     let selected = film_survivors
         .iter()
-        .find(|evidence| !stride_rejected.contains(&evidence.index))
+        .find(|evidence| {
+            !stride_rejected.contains(&evidence.index)
+                && (!rules.require_right_polarity || evidence.polarity == "right_increasing")
+        })
         .cloned();
     let audited = recordings
         .iter()

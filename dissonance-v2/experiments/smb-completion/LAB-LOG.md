@@ -2682,3 +2682,39 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   views, and carries a no-behaviour-change gate over the search. This audit
   admits nothing by itself.
 - Raw destination: `target/smb-completion/d48-player-column-decode/`.
+
+### D48 result — rejected; the complement is decisively wrong
+
+- Host gates pass. The report is byte-equal across both machines with SHA-256
+  `7da2ecd979bf2c5db3dd9ee7fe27bff089a74f3f98c0839e64ca19270d271359`, and live
+  and no-model replay agree on each.
+- The single derived candidate behaved exactly as the registration predicted it
+  would if the complement preserved the filters: one index took at least eight
+  distinct values, one was smooth, and one reached the film rule. So C0 and C1
+  decided nothing, as stated in advance.
+- The film rule rejected it. `255 - raw` at index 516 produced no offset in
+  `-24..=24` with eight agreeing comparisons, so no evidence was recorded and
+  nothing was selected.
+- A measurement dump over the same 914 comparisons says how badly. Only 212 have
+  a width in the required `4..=40`, and among those the computed offsets run
+  from −171 to 33 and no offset in the searched window collects even one
+  agreeing comparison within the tolerance of 6. The registered prediction was
+  that a correct complement would raise agreement well above the raw byte's 84
+  of 914; it fell to zero. The relationship is not a complement about 255, and
+  it is not marginally wrong.
+- **The field question is closed as a registered null.** The observation state
+  records no horizontal position within the screen, nothing was added to it or
+  to either operator view, and the search, archive keys, novelty map and
+  scheduler remain untouched by this line of work.
+- What the whole sequence D29 through D48 established, stated plainly so it is
+  not re-litigated by accident. The audit mechanism is sound and reproduces byte
+  for byte, including across two processor architectures. The two failures that
+  it did find — a terminal condition that missed a whole death mode, and a
+  retention rule that kept states nothing could keep alive — were both real,
+  both correctable, and together moved the frontier from 39 to between 93 and
+  114. What it never found is the field it was built to find. Twelve audits over
+  four archives could not verify any work-RAM byte, raw or derived, as the
+  player's horizontal position within the screen, and the last two attempts
+  failed on evidence rather than on sourcing.
+- Raw evidence: `target/smb-completion/d48-player-column-decode/` on both
+  machines and `target/smb-completion/d48-diagnosis/`.
