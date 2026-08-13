@@ -1388,7 +1388,7 @@ kernel half is patch 0004 (`kvm-patches/`, box-validated — see `kvm-patches/RE
 
 - **Gate the arm on the EXISTING `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`, no separate
   `KVM_CAP_X86_DETERMINISTIC_PREEMPT`.** The task title floated a new cap; the pinned design
-  (decision log 2026-06-29) folds the force-exit into the one per-VM determinism opt-in — simpler,
+  folds the force-exit into the one per-VM determinism opt-in — simpler,
   one ratification surface, and the box runs the patched backend exclusively. Stock `KvmBackend`
   has `preempt_exit_capable = false`, so it never issues the ioctl (it would `EINVAL`).
 - **A vcpu ioctl (`KVM_ARM_PREEMPT_EXIT`), not a `kvm_run` input flag.** No ABI-offset churn in

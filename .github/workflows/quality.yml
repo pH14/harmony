@@ -71,8 +71,7 @@ jobs:
       - name: cargo deny (guest + fuzz manifests)
         run: |
           cargo deny --manifest-path consonance/acceptance-suite/payloads/Cargo.toml check --config deny.toml licenses
-          cargo deny --manifest-path dissonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
-          cargo deny --manifest-path dissonance/flow/fuzz/Cargo.toml check --config deny.toml licenses
+          cargo deny --manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
         run: cargo nextest run --all-features
       # The ARCH-BOUNDARY seam gate (tasks/108). The whole point of the `Arch` trait
@@ -121,25 +120,8 @@ jobs:
       - name: consonance/acceptance-suite/payloads sdk-demo build (bare metal, from its dir)
         working-directory: consonance/acceptance-suite/payloads
         run: cargo build -p sdk-demo
-      # harmony-linux/flow-agent (task 61) is out-of-workspace (its own manifest), like
-      # harmony-linux/sdk, so the root fmt/clippy/nextest/deny above never see it. Gate it
-      # explicitly on its own manifest — the flow-agent brain (answer→policy,
-      # enforcement plan, decider) + its cfg(linux) doorbell must stay green like any
-      # other crate, or the crate rots green (the gap that just red-mained us).
-      - name: harmony-linux/flow-agent gates (out-of-workspace manifest)
-        run: |
-          cargo fmt --manifest-path harmony-linux/flow-agent/Cargo.toml --all -- --check
-          cargo clippy --manifest-path harmony-linux/flow-agent/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --manifest-path harmony-linux/flow-agent/Cargo.toml --all-features
-          cargo deny --manifest-path harmony-linux/flow-agent/Cargo.toml check --config deny.toml licenses
-          # Build the static musl target it actually ships as (a std-leak or a
-          # cfg(linux) doorbell regression only surfaces on a real Linux target —
-          # ubuntu-latest runs Linux, so the cfg(target_os="linux") FFI is compiled
-          # here, which the macOS dev host and codex both skip).
-          rustup target add x86_64-unknown-linux-musl
-          cargo build --manifest-path harmony-linux/flow-agent/Cargo.toml --bin flow-agent --target x86_64-unknown-linux-musl
-      # harmony-linux/play-agent (task 86) is out-of-workspace (its own manifest), like
-      # flow-agent — gate it explicitly or it rots green. The portable brain
+      # harmony-linux/play-agent (task 86) is out-of-workspace (its own manifest).
+      # Gate it explicitly or it rots green. The portable brain
       # (chord decode, RAM map, billboard, mock-core agent loop) tests everywhere;
       # the native bin build compiles the cfg(linux) libretro-FFI + hugetlb +
       # doorbell glue, which the macOS dev host skips. Dynamic glibc build (it
@@ -161,9 +143,9 @@ jobs:
       # gated here even though the guest-image repro that installs the .so is box-only.
       - name: harmony-linux/libvoidstar ABI (C subtree, out-of-workspace)
         run: make -C harmony-linux test-libvoidstar
-      # dissonance/differential-lineage is a standalone workspace root (workspace
-      # members path-depend on it), so the root gates above never see it — gate it
-      # explicitly or its test suite rots green. --locked: the committed Cargo.lock
+      # dissonance/differential-lineage is a standalone workspace root, so the
+      # root gates above never see it — gate it explicitly or its test suite
+      # rots green. --locked: the committed Cargo.lock
       # pins differential-dataflow/timely.
       # (Benchmarks are NOT run here — REPORT.md documents the local command.)
       - name: dissonance/differential-lineage gates (out-of-workspace manifest)
@@ -214,11 +196,7 @@ jobs:
       # task-21 determinism backend (`…/src/patched_kvm.rs`), the task-47 run_until
       # PMU syscall orchestration (`…/src/pmu_sys.rs` — its PURE config `pmu.rs`
       # stays covered), vmm-core's `perf_event` work counter
-      # (`consonance/vmm-core/src/work_perf.rs`), and campaign-runner's box composition
-      # root (`dissonance/campaign-runner/src/boxrun.rs`, issue #69 — every function in
-      # it needs a real `/dev/kvm` + patched KVM + a built guest image; split out
-      # of `main.rs` so the portable CLI dispatch logic around it stays
-      # coverage-*counted* — see `dissonance/campaign-runner/IMPLEMENTATION.md`). This
+      # (`consonance/vmm-core/src/work_perf.rs`). This
       # coverage job runs **without `--ignored`** (and on every crate's matrix), so
       # the box-only `#[ignore]` integration tests that exercise the FFI / perf
       # orchestration end-to-end never run here — counting those paths would only
@@ -227,8 +205,8 @@ jobs:
       # those `#[ignore]` box tests and by Miri (which still *executes* `kvm.rs`'s
       # synthetic-`kvm_run` unit tests — incl. the KVM_EXIT_DETERMINISM decode — so a
       # logic regression still fails the suite, just not coverage-*counted*).
-      # `consonance/acceptance-suite/src/realvmm.rs` is excluded on the same grounds as
-      # `boxrun.rs`: it is the acceptance runner's real-VMM composition root and needs a
+      # `consonance/acceptance-suite/src/realvmm.rs` is excluded on the same grounds:
+      # it is the acceptance runner's real-VMM composition root and needs a
       # real `/dev/kvm`, the patched modules, and built payloads, so no portable test can
       # reach it. The
       # coverage-gated set is the portable, platform-agnostic logic the splits
@@ -238,7 +216,7 @@ jobs:
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/vendor/x86/work_perf\.rs|dissonance/campaign-runner/src/boxrun\.rs|consonance/acceptance-suite/src/realvmm\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/vendor/x86/work_perf\.rs|consonance/acceptance-suite/src/realvmm\.rs' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()
@@ -344,27 +322,12 @@ jobs:
             echo "::warning::cargo-mutants infrastructure failure (exit $rc), attempt $attempt/2 — retrying on this runner"; sleep 15
           done
           echo "::error::cargo-mutants infrastructure failure persisted after 2 attempts (exit $rc)"; exit "$rc"
-      # harmony-linux/flow-agent (task 61) is out-of-workspace too — mutate its diffed lines
-      # on its own manifest so the flow-agent brain (answer→policy / enforcement plan
-      # / decider) is gated like harmony-linux/sdk, not left ungated by the root run.
-      - name: cargo mutants --in-diff (harmony-linux/flow-agent, out-of-workspace manifest)
-        # Infra-only retry (same contract as the root step above).
-        run: |
-          for attempt in 1 2; do
-            set +e; cargo mutants --manifest-path harmony-linux/flow-agent/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4; rc=$?; set -e
-            if [ "$rc" -eq 0 ]; then exit 0; fi
-            if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
-              echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"
-            fi
-            echo "::warning::cargo-mutants infrastructure failure (exit $rc), attempt $attempt/2 — retrying on this runner"; sleep 15
-          done
-          echo "::error::cargo-mutants infrastructure failure persisted after 2 attempts (exit $rc)"; exit "$rc"
 
   # Gating (quality-f): formal proofs on saturating/bounded integer arithmetic
   # via Kani (bounded model checking). The `#[cfg(kani)]` harnesses in
   # `consonance/vtime/src/clock.rs`, `consonance/lapic/src/device.rs`,
   # `consonance/vmm-backend/src/region_proofs.rs`, and
-  # `dissonance/environment/src/envcodec.rs` prove "never panics / law holds for
+  # `consonance/environment/src/envcodec.rs` prove "never panics / law holds for
   # ALL inputs" — strictly stronger than the proptest sampling. Kani is
   # Linux-only, so this job runs on a Linux runner. The proof files are
   # `cfg(kani)`-only (not compiled by the normal test suite, excluded from the
@@ -442,12 +405,8 @@ jobs:
       - name: public-api snapshot tests
         run: |
           cargo test \
-            -p hypercall-proto -p hypercall-doorbell -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p telemetry -p environment -p control-proto -p explorer -p sdk-events -p flow -p matcher -p runtrace -p campaign-runner -p maze -p tactics-regime -p logtmpl -p resolution -p acceptance-suite \
+            -p hypercall-proto -p hypercall-doorbell -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p telemetry -p environment -p control-proto -p acceptance-suite \
             --test public_api -- --ignored --nocapture
-          # revision-coordinator's snapshot test is NOT #[ignore]d (tasks/121,
-          # PR #124 F12: it also gates the plain nextest suite), so it runs
-          # without the `--ignored` filter above.
-          cargo test -p revision-coordinator --test public_api -- --nocapture
           # harmony-linux/sdk is out-of-workspace (its own manifest), so it is not in the
           # `-p` list above — freeze its public surface on its own manifest.
           cargo test --manifest-path harmony-linux/sdk/Cargo.toml \

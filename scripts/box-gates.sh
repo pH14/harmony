@@ -332,27 +332,6 @@ gate_seal_rate() {
         -- --ignored --nocapture --test-threads=1
 }
 
-gate_materialization() {
-    require_patched_modules
-    with_stock_revert run taskset -c "${CORE_PIN_MEASURE}" timeout 7200 \
-        cargo test -p campaign-runner --test live_materialization \
-        -- --ignored --nocapture --test-threads=1
-}
-
-gate_harmony_bridge() {
-    require_patched_modules
-    with_stock_revert run taskset -c "${CORE_PIN_FRONTIER}" \
-        cargo test --release -p campaign-runner --test live_harmony_bridge \
-        -- --ignored --nocapture --test-threads=1
-}
-
-gate_film() {
-    require_patched_modules
-    with_stock_revert run taskset -c "${CORE_PIN_FRONTIER}" timeout 7200 \
-        cargo test -p campaign-runner --test live_film \
-        -- --ignored --nocapture --test-threads=1
-}
-
 gate_exec_improvisation() {
     require_patched_modules
     with_stock_revert run env INITRAMFS=initramfs-exec.cpio.gz \
@@ -382,20 +361,6 @@ gate_k3s_postgres() {
         -- --ignored --nocapture --test-threads=1 k2_k3s_postgres_deterministic_twice_patched
 }
 
-gate_draw_probe_pair() {
-    require_patched_modules
-    with_stock_revert run taskset -c "${CORE_PIN_FRONTIER}" \
-        cargo test --release -p campaign-runner --test live_draw_probe_pair \
-        -- --ignored --nocapture --test-threads=1
-}
-
-gate_draw_probe_diagnosis() {
-    require_patched_modules
-    with_stock_revert run taskset -c "${CORE_PIN_FRONTIER}" \
-        cargo test --release -p campaign-runner --test live_draw_probe_diagnosis \
-        -- --ignored --nocapture --test-threads=1
-}
-
 # name|rung|description|function — the execution order is this array's order.
 GATES=(
     "kvm-smoke|2|live KvmBackend smoke (stock)|gate_kvm_smoke"
@@ -418,11 +383,9 @@ GATES=(
     "corpus|5|the C1 acceptance cells, both entry points|gate_corpus"
     "postgres|5|bare-Postgres workload identity|gate_postgres"
     "seal-rate|5|the seal-rate sweep|gate_seal_rate"
-    "materialization|5|lazy materialization|gate_materialization"
-    "harmony-bridge|5|the campaign bridge|gate_harmony_bridge"
-    "draw-probe-pair|5|the game workload's draw probe|gate_draw_probe_pair"
-    "draw-probe-diagnosis|5|draw-probe diagnostic|gate_draw_probe_diagnosis"
-    "film|5|film the game workload|gate_film"
+    # The v1 campaign gates (materialization, harmony-bridge, draw-probe-pair,
+    # draw-probe-diagnosis, film) left with the v1 dissonance tree — their
+    # campaign-runner live tests no longer exist.
     # The multi-hour container/orchestrator workloads. LAST by design: they are
     # the most expensive cells in the matrix, and a window that cannot afford
     # them should still have run everything above. `--skip` them explicitly when
