@@ -2750,3 +2750,49 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
 - World and level transitions are reported as they are observed. Raw
   destinations: `target/smb-completion/c49-conquest-local/` and, on the ARM
   machine, `target/smb-completion/c49-conquest-arm/`.
+
+## H51 — preregistered vertical-page term in the archive key
+
+- Motivating evidence. The archive's vertical key term is the recorded low
+  position byte divided by sixteen, with no page term. D34 recorded that live
+  play occupies vertical pages 0 and 1 — 211 frames on page 0 and 9,795 on page
+  1 across a 10,006-frame control — so the key gives the same bucket to a state
+  at page 0 and one 256 pixels lower at page 1. That aliasing is the last
+  surviving piece of the fault that produced the progress-39 plateau: it is what
+  let a single fall walk through all sixteen buckets, and H45 removed the falls
+  without removing the aliasing.
+- Falsifiable claim: separating the two vertical pages in the archive key gives
+  the search distinct cells for states it currently merges, so arms reach
+  further. Challenger arms will exceed the source archive's viable progress on
+  at least 4 of 6 development seeds, with strictly more successes than the
+  controls.
+- The threshold is 4/6 rather than H45's 5/6, and the reason is stated before
+  execution rather than after. H45 targeted a failure that trapped half the
+  arms, so most arms could be expected to change. This panel starts from a
+  frontier where the controls already advance, so the discriminating
+  requirement is the comparison against the controls, not the raw count.
+- Mechanism, and it is the only variable. The archive key's vertical term
+  becomes the recorded vertical page byte times sixteen plus the recorded low
+  position byte divided by sixteen, clamped to the byte range. Live states hold
+  pages 0 and 1, so the term ranges over 0 through 31 where it previously ranged
+  over 0 through 15.
+- The decoded observation state is deliberately **not** changed. Its
+  `player_y_bucket` keeps its recorded meaning and its documented range of 0
+  through 15, so both operator views stay true and no model-facing text moves.
+  This panel changes one archive key term and nothing else: novelty, the parent
+  scheduler, the controller vocabulary, the duration and suffix policies,
+  retention capacity, fewer-actions replacement, the 512-action bound, the
+  corrected terminal condition and the probing retention rule are all unchanged.
+- Gate fixed before execution: with the previous key term selected, a resumed
+  arm must reproduce H45's recorded challenger arm at the same seed byte for
+  byte, so the change is inert when it is not asked for.
+- Source is `target/smb-completion/h45-viability/probe-e001/archive-live.json`
+  at viable progress 114, with the same single shortest mechanical frontier
+  input. Controls carry the previous key term and challengers the new one, both
+  on the promoted stack, on seeds `0x5eed_e000..=0x5eed_e005` at 5,000
+  executions each, at `nice -n 10`, with at most five arms concurrent so the
+  running conquest campaign keeps a lane.
+- Acceptance uses the registered viable-progress measurement unchanged. If it
+  accepts, repeat on held-out seeds `0x5eed_e100..=0x5eed_e105` with the same
+  threshold; a promotion must replay exactly with no model.
+- Raw destination: `target/smb-completion/h51-vertical-key/`.
