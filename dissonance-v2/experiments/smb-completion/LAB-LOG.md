@@ -2163,3 +2163,46 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   the archive keys, the novelty map and the scheduler are untouched.
 - Raw evidence: `target/smb-completion/d42-player-column-decode/` and
   `target/smb-completion/d42-diagnosis/`.
+
+## M43 — preregistered context amendment for the corrected terminal condition
+
+- H27's recorded view and result remain immutable, as does the M16 amendment.
+  Before the next instrumentor call, both model views must state the terminal
+  condition the target actually applies, because the recorded one is now wrong.
+- The verified-dynamics text currently says a run ends at the first observed
+  player-engine kill state. M35 replaced that with a disjunction, so the
+  sentence is amended to state both clauses as decode facts: a run ends at the
+  first frame whose player-engine byte holds the verified kill value **or**
+  whose vertical page byte is at or above 2, and the second clause was adopted
+  because a recorded audit found a death mode the first clause detects on none
+  of eight recorded uncontrolled continuations, while the second is false on all
+  10,006 frames of a recorded live control. The `decoded.dead` field sentence is
+  amended to match.
+- This is decode polarity and terminal semantics, not route knowledge. It names
+  no game, no route, no layout, no item, and suggests no artifact field, score
+  term, action, or goal.
+- The next strategy journal is re-seeded from the record. It retains the M16
+  amendment's direction correction and H27's immutable null, removes the
+  superseded belief that the earlier viability audit found few doomed frontier
+  entries, and adds, in plain mechanical language: that the terminal condition
+  was corrected and what it measured; that re-admitting the previous archive
+  kept 1,188 of 4,832 entries with 3,644 already past the terminal threshold
+  when retained; that rebuilding under the corrected condition raised deaths
+  from 45 to about 3,300 per 5,000 executions and produced one arm of six
+  reaching a bucket twenty-three past the boundary twelve earlier arms shared;
+  that the buckets above the live boundary are states the corrected condition
+  stops within a few frames; and that of 256 examined retained states, 183 show
+  no rendered response to the controller at all, 70 respond only by changing the
+  direction the player is drawn facing, and 2 move him more than one sprite
+  width. It also records that a registered attempt to decode a screen-relative
+  horizontal position from this archive returned no verified field.
+- No suggested ranking term, field, action, route, layout, item or goal is added.
+  The observations-over-expectations sentence stays verbatim.
+- Acceptance: the amended sentences are present and mechanically checked by the
+  existing focused fixture, which also still rejects game names and verifies the
+  complete field list; the recorded-journal chain still replays without a model;
+  and `cargo fmt --check`, `cargo clippy --all-features` with `-D warnings`,
+  `cargo nextest run --all-features` and `cargo deny check` all pass. A
+  standalone no-model record of the corrected context and re-seeded journal is
+  written. No model call and no search panel are part of M43.
+- Raw destination: `target/smb-completion/post-m35-model-context/`.
