@@ -2334,3 +2334,25 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   `target/smb-completion/h44-luna-source-viability.json` and the film at
   `target/smb-completion/h44-frontier-film/`. The panel report is 715 MB
   because it embeds all thirteen archives.
+
+### Standing summary after the ranking panel
+
+- Viable progress is now the number that matters, and it is defined here: the
+  deepest bucket at the maximum tuple holding a state whose no-input
+  continuation survives 120 frames, measured over at most eight entries per
+  bucket. Recorded progress counts falls in flight and overstates the frontier;
+  the two differ by 5 to 11 buckets on the arms measured so far.
+- The boundary history in viable terms: progress 39 held on every arm from H20
+  through H27 under the frozen terminal condition. Correcting that condition and
+  rebuilding gave viable 62. Resuming once more from the rebuilt archive gave
+  viable 94, 108 and 112 on three of six control seeds and 144 on one ranking
+  seed. Nothing in the scheduler, controller vocabulary, durations, suffixes,
+  retention rule or budget changed across any of it.
+- Two registered generated rankings have now been measured at two different
+  boundaries and neither met its promotion rule. H27's failed 0/6 at a boundary
+  that was an artifact; H44's tied its controls at 3/6 at a real one.
+- The unresolved item is unchanged and still fenced: the archive retains states
+  the corrected terminal condition stops a few frames later, they occupy the
+  deepest buckets, and every resumed arm therefore starts from one. Half the
+  arms in H44 never left it. A viability test at admission is the registered
+  next hypothesis.
