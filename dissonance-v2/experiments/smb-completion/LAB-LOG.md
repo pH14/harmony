@@ -2497,3 +2497,43 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   player; the rebuilt archives now retain far more live states, so that audit is
   worth re-running before the question is called closed.
 - The vertical-page key term remains fenced and is the next single variable.
+
+## D46 — preregistered player-column decode audit on a probed archive
+
+- Same falsifiable claim as D36 through D42: one work-RAM index holds the
+  player's horizontal position within the rendered screen, identifiable from the
+  program's own film and memory evidence. D40 and D42 returned nothing because
+  the archives they could source from held almost no state the controller moves.
+  Every state a probed archive retains survived the H45 admission probe, so the
+  evidence base has changed and the claim is worth testing again.
+- Source is fixed by rule rather than chosen: the H45 challenger arm with the
+  maximum viable progress, ties broken by fewest retained entries and then the
+  smaller seed. On the recorded panel that is seed `0x5eed_e001` at viable
+  progress 114, `target/smb-completion/h45-viability/probe-e001/archive-live.json`.
+- Sourcing is D40's, unchanged: eight entries examined per progress bucket and
+  256 in total, in descending progress with ties by `(input, id)`; the largest
+  differing column span measured only on frames whose recorded camera bytes are
+  equal, discarding spans above 128 columns; admission in descending largest
+  span with ties by descending progress, at most two per bucket, requiring at
+  least 24, until eight are admitted.
+- Filters C0 and C1 are unchanged. C2 is D42's contrast at each entry's
+  maximum-separation frame. Verification is D33's camera-spread film rule
+  verbatim, with four-byte-stride rejection and lowest-index selection, and
+  every index that passes the film rule is reported, not only the selected one.
+- If fewer than eight entries reach a span of 24 the audit reports the scan and
+  stops. If no index passes verification it reports itself inconclusive and
+  selects nothing.
+- Execution host. This audit may run on the ARM machine. Two gates cover that.
+  The host must verify the ROM's SHA-256 equals the recorded
+  `0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea` before the
+  audit runs; and the audit's live and no-model replay reports must be
+  byte-equal on that host, exactly as locally.
+- A third gate tests the assumption that permits remote work at all: the same
+  audit is run on both machines from the same source bytes, and the two reports
+  must be byte-equal. Emulation, decoded observations and rendered column
+  signatures are all integer arithmetic over the same ROM, so a difference would
+  mean one of the two hosts is not reproducing the recorded program and would
+  invalidate remote evidence rather than merely this audit.
+- The audit runs no search, changes no search behaviour, and involves no model.
+  Raw destination: `target/smb-completion/d46-player-column-decode/` locally and
+  the same relative path under `/root/harmony-smb-goal/` on the ARM machine.
