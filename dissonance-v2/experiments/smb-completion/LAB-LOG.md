@@ -2796,3 +2796,17 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   accepts, repeat on held-out seeds `0x5eed_e100..=0x5eed_e105` with the same
   threshold; a promotion must replay exactly with no model.
 - Raw destination: `target/smb-completion/h51-vertical-key/`.
+
+### H51 execution note — recorded beside the registration
+
+- The panel started on the local machine and was moved to the ARM machine after
+  four arms had run. The local machine's load average reached 145 on ten cores
+  because another experiment with priority was running there, and the five panel
+  arms were each getting about two thirds of a core. Nothing was kept from the
+  local attempt; the panel was restarted from the beginning on the ARM machine.
+- The registration fixes the source, seeds, budget, policies and acceptance rule
+  but not the host, and D46 established that this program's audits and reports
+  are byte-equal across the two architectures, so the move changes no recorded
+  quantity. The conquest campaign registered as local stays local and keeps its
+  lane; the ARM machine runs its own conquest campaign plus at most five panel
+  arms, so neither machine exceeds six concurrent arms.
