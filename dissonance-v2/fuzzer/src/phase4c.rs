@@ -594,6 +594,9 @@ pub struct SmbPlayerColumnFilmEvidence {
     pub agreeing_comparisons: u64,
     /// Comparisons available for this index.
     pub comparisons: u64,
+    /// Largest recorded camera difference among the agreeing comparisons.
+    #[serde(default)]
+    pub camera_spread: u32,
 }
 
 /// Deterministic screen-relative player-column decode report.
@@ -690,6 +693,8 @@ const PLAYER_COLUMN_STRIDES: [u16; 3] = [4, 8, 12];
 const PLAYER_COLUMN_SCAN_CAP: usize = 64;
 const PLAYER_COLUMN_ADVANCING_SCAN_CAP: usize = 128;
 const PLAYER_COLUMN_RENDERED_COMPARISONS: usize = 4;
+const PLAYER_COLUMN_CAMERA_SPREAD: u32 = 16;
+const PLAYER_COLUMN_BUCKET_CAP: usize = 2;
 
 /// One ordered audit candidate: an active entry and its slice progress bucket.
 type PlayerColumnCandidate<'a> = (&'a SmbArchiveEntryReport, u16);
@@ -704,6 +709,33 @@ pub enum SmbPlayerColumnSelection {
     /// D31: the first eight ordered active entries whose right continuation
     /// advances the recorded camera.
     FirstCameraAdvancing,
+}
+
+/// Which registered filter and truncation rules an audit applies.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PlayerColumnRules {
+    truncate_on_camera_decrease: bool,
+    require_right_direction: bool,
+    require_camera_relative: bool,
+    require_camera_spread: bool,
+}
+
+impl PlayerColumnRules {
+    /// D29 through D32: no camera-epoch truncation, with filters C3 and C4.
+    const LEGACY: Self = Self {
+        truncate_on_camera_decrease: false,
+        require_right_direction: true,
+        require_camera_relative: true,
+        require_camera_spread: false,
+    };
+
+    /// D33: one camera epoch per continuation, C3 and C4 replaced by camera spread.
+    const SPREAD: Self = Self {
+        truncate_on_camera_decrease: true,
+        require_right_direction: false,
+        require_camera_relative: false,
+        require_camera_spread: true,
+    };
 }
 
 struct ContinuationRecording {
@@ -726,6 +758,7 @@ struct FilmComparison {
     frame: usize,
     lowest: i32,
     highest: i32,
+    camera: u32,
 }
 
 /// Identify the work-RAM byte holding the player's horizontal column on screen.
@@ -774,7 +807,13 @@ pub fn audit_smb_player_column_with_selection(
                 break;
             }
             scanned = scanned.saturating_add(1);
-            let recording = record_player_column_entry(&mut target, &mut prefix, entry, *progress)?;
+            let recording = record_player_column_entry(
+                &mut target,
+                &mut prefix,
+                entry,
+                *progress,
+                PlayerColumnRules::LEGACY,
+            )?;
             let keep = match selection_mode {
                 SmbPlayerColumnSelection::FirstOrdered => true,
                 SmbPlayerColumnSelection::FirstSteerable => {
@@ -865,6 +904,29 @@ pub fn audit_smb_player_column_from_ids(
     source: &SmbArchiveReport,
     ids: &[u64],
 ) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
+    audit_player_column_from_ids(rom, source, ids, PlayerColumnRules::LEGACY)
+}
+
+/// Audit the horizontal-column byte under D33's camera-epoch and camera-spread rules.
+///
+/// # Errors
+///
+/// Returns an error when an identifier is absent from the source or when
+/// emulation, snapshotting, or rendering fails.
+pub fn audit_smb_player_column_spread(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    ids: &[u64],
+) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
+    audit_player_column_from_ids(rom, source, ids, PlayerColumnRules::SPREAD)
+}
+
+fn audit_player_column_from_ids(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    ids: &[u64],
+    rules: PlayerColumnRules,
+) -> Result<(SmbPlayerColumnReport, Vec<SmbAuditFrame>), Box<dyn Error>> {
     let active = active_source_entries(source);
     let mut selected = Vec::with_capacity(ids.len());
     for id in ids {
@@ -883,12 +945,47 @@ pub fn audit_smb_player_column_from_ids(
             &mut prefix,
             entry,
             *progress,
+            rules,
         )?);
     }
-    let (report, comparisons) = analyze_player_column(&recordings);
+    let (report, comparisons) = analyze_player_column_with_rules(&recordings, rules);
     let requests = player_column_frame_requests(&recordings, &comparisons, &report);
     let frames = render_player_column_frames(&mut target, &selected, &requests)?;
     Ok((report, frames))
+}
+
+/// Choose census-admitted entries in descending progress with a per-bucket cap.
+///
+/// The cap makes the audited endpoints span several camera positions, which the
+/// camera-spread verification requires.
+///
+/// # Errors
+///
+/// Returns an error when an admitted identifier is absent from the source.
+pub fn select_smb_spread_audit_ids(
+    source: &SmbArchiveReport,
+    admitted: &[u64],
+    wanted: usize,
+) -> Result<Vec<u64>, Box<dyn Error>> {
+    let active = active_source_entries(source);
+    let mut per_bucket = BTreeMap::<u16, usize>::new();
+    let mut chosen = Vec::with_capacity(wanted);
+    for id in admitted {
+        if chosen.len() >= wanted {
+            break;
+        }
+        let entry = active
+            .iter()
+            .find(|entry| entry.id == *id)
+            .ok_or("admitted identifier is not an active source entry")?;
+        let taken = per_bucket.entry(entry.key.progress).or_insert(0);
+        if *taken >= PLAYER_COLUMN_BUCKET_CAP {
+            continue;
+        }
+        *taken = taken.saturating_add(1);
+        chosen.push(*id);
+    }
+    Ok(chosen)
 }
 
 fn player_column_candidates(
@@ -1058,6 +1155,7 @@ fn record_player_column_entry(
     prefix: &mut PlayerColumnPrefix,
     entry: &SmbArchiveEntryReport,
     progress: u16,
+    rules: PlayerColumnRules,
 ) -> Result<EntryRecording, Box<dyn Error>> {
     let endpoint = replay_player_column_endpoint(target, prefix, entry)?;
     // The emulator's frame buffer is not part of a restored snapshot, so the endpoint
@@ -1077,6 +1175,13 @@ fn record_player_column_entry(
             }
             target.apply(&ButtonChord::new(mask, 1));
             push_player_column_frame(target, &mut recording)?;
+            if rules.truncate_on_camera_decrease {
+                let camera = &recording.camera;
+                let last = camera.len().saturating_sub(1);
+                if last > 0 && camera[last] < camera[last - 1] {
+                    break;
+                }
+            }
         }
         continuations.push(recording);
     }
@@ -1121,6 +1226,13 @@ fn column_signatures(rgba: &[u8]) -> Result<[u64; 256], Box<dyn Error>> {
 fn analyze_player_column(
     recordings: &[EntryRecording],
 ) -> (SmbPlayerColumnReport, Vec<FilmComparison>) {
+    analyze_player_column_with_rules(recordings, PlayerColumnRules::LEGACY)
+}
+
+fn analyze_player_column_with_rules(
+    recordings: &[EntryRecording],
+    rules: PlayerColumnRules,
+) -> (SmbPlayerColumnReport, Vec<FilmComparison>) {
     let mut distinct_value_survivors = 0_u64;
     let mut smooth_survivors = 0_u64;
     let mut left_direction_survivors = 0_u64;
@@ -1140,11 +1252,14 @@ fn analyze_player_column(
             continue;
         }
         left_direction_survivors = left_direction_survivors.saturating_add(1);
-        if !player_column_right_direction(recordings, index) {
+        if rules.require_right_direction && !player_column_right_direction(recordings, index) {
             continue;
         }
         right_direction_survivors = right_direction_survivors.saturating_add(1);
-        if qualifying.is_empty() || !player_column_camera_relative(recordings, index, &qualifying) {
+        if rules.require_camera_relative
+            && (qualifying.is_empty()
+                || !player_column_camera_relative(recordings, index, &qualifying))
+        {
             continue;
         }
         camera_relative_survivors.push(u16::try_from(index).unwrap_or(u16::MAX));
@@ -1152,7 +1267,7 @@ fn analyze_player_column(
     let comparisons = film_comparisons(recordings);
     let film_survivors = camera_relative_survivors
         .iter()
-        .filter_map(|index| film_evidence(recordings, &comparisons, *index))
+        .filter_map(|index| film_evidence(recordings, &comparisons, *index, rules))
         .collect::<Vec<_>>();
     let stride_rejected = film_survivors
         .iter()
@@ -1332,6 +1447,7 @@ fn film_comparisons(recordings: &[EntryRecording]) -> Vec<FilmComparison> {
                         frame,
                         lowest: i32::try_from(*lowest).unwrap_or(i32::MAX),
                         highest: i32::try_from(*highest).unwrap_or(i32::MAX),
+                        camera: first.camera[frame],
                     });
                 }
             }
@@ -1362,10 +1478,14 @@ fn film_evidence(
     recordings: &[EntryRecording],
     comparisons: &[FilmComparison],
     index: u16,
+    rules: PlayerColumnRules,
 ) -> Option<SmbPlayerColumnFilmEvidence> {
     let measured = comparisons
         .iter()
-        .filter_map(|comparison| film_offset(recordings, comparison, index))
+        .filter_map(|comparison| {
+            film_offset(recordings, comparison, index)
+                .map(|(offset, width)| (offset, width, comparison.camera))
+        })
         .collect::<Vec<_>>();
     // Pass or fail is "some offset agrees at least PLAYER_COLUMN_FILM_MIN_AGREE times";
     // the offset reported is the one the most comparisons agree with, so the recorded
@@ -1374,23 +1494,30 @@ fn film_evidence(
         .map(|offset| {
             let agreeing = measured
                 .iter()
-                .filter(|(measured_offset, width)| {
+                .filter(|(measured_offset, width, _)| {
                     (measured_offset - offset).abs() <= PLAYER_COLUMN_FILM_TOLERANCE
                         && (PLAYER_COLUMN_FILM_MIN_WIDTH..=PLAYER_COLUMN_FILM_MAX_WIDTH)
                             .contains(width)
                 })
-                .count();
-            (agreeing, offset)
+                .map(|(_, _, camera)| *camera)
+                .collect::<Vec<_>>();
+            let spread = match (agreeing.iter().min(), agreeing.iter().max()) {
+                (Some(low), Some(high)) => high.saturating_sub(*low),
+                _ => 0,
+            };
+            (agreeing.len(), offset, spread)
         })
-        .max_by_key(|(agreeing, offset)| (*agreeing, Reverse(offset.abs()), Reverse(*offset)))?;
-    if best.0 < PLAYER_COLUMN_FILM_MIN_AGREE {
-        return None;
-    }
+        .filter(|(agreeing, _, spread)| {
+            *agreeing >= PLAYER_COLUMN_FILM_MIN_AGREE
+                && (!rules.require_camera_spread || *spread >= PLAYER_COLUMN_CAMERA_SPREAD)
+        })
+        .max_by_key(|(agreeing, offset, _)| (*agreeing, Reverse(offset.abs()), Reverse(*offset)))?;
     Some(SmbPlayerColumnFilmEvidence {
         index,
         offset: i16::try_from(best.1).unwrap_or(i16::MAX),
         agreeing_comparisons: u64::try_from(best.0).unwrap_or(u64::MAX),
         comparisons: u64::try_from(measured.len()).unwrap_or(u64::MAX),
+        camera_spread: best.2,
     })
 }
 
@@ -1448,8 +1575,13 @@ pub fn diagnose_smb_player_column(
     let mut prefix = PlayerColumnPrefix::new(&mut target)?;
     let mut traces = Vec::with_capacity(selected.len());
     for (source_entry, progress) in &selected {
-        let recording =
-            record_player_column_entry(&mut target, &mut prefix, source_entry, *progress)?;
+        let recording = record_player_column_entry(
+            &mut target,
+            &mut prefix,
+            source_entry,
+            *progress,
+            PlayerColumnRules::LEGACY,
+        )?;
         traces.push(SmbPlayerColumnTrace {
             id: source_entry.id,
             progress: *progress,

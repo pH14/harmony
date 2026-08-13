@@ -21,9 +21,10 @@ use fuzzer::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
         SmbArchiveSuffixPolicy, SmbControlCensusReport, SmbPlayerColumnSelection,
         audit_smb_frontier_viability, audit_smb_player_column_from_ids,
-        audit_smb_player_column_with_selection, census_smb_control_authority,
-        diagnose_smb_player_column, run_smb_archive_search,
+        audit_smb_player_column_spread, audit_smb_player_column_with_selection,
+        census_smb_control_authority, diagnose_smb_player_column, run_smb_archive_search,
         run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_policies,
+        select_smb_spread_audit_ids,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -94,7 +95,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         return run_control_census_mode(&mut args);
     }
     if mode == "audit-census-player-column" {
-        return run_census_player_column_mode(&mut args);
+        return run_census_player_column_mode(&mut args, false);
+    }
+    if mode == "audit-spread-player-column" {
+        return run_census_player_column_mode(&mut args, true);
     }
     if mode == "diagnose-player-column" {
         return run_player_column_diagnosis_mode(&mut args);
@@ -413,6 +417,7 @@ fn run_control_census_mode(
 
 fn run_census_player_column_mode(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
+    spread: bool,
 ) -> Result<(), Box<dyn Error>> {
     let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
     let census_path = PathBuf::from(args.next().ok_or("missing census report")?);
@@ -422,12 +427,16 @@ fn run_census_player_column_mode(
     let rom = read_rom()?;
     let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
     let census: SmbControlCensusReport = serde_json::from_slice(&fs::read(census_path)?)?;
-    let ids = census
-        .admitted_ids
-        .iter()
-        .copied()
-        .take(CENSUS_AUDIT_ENTRIES)
-        .collect::<Vec<_>>();
+    let ids = if spread {
+        select_smb_spread_audit_ids(&source, &census.admitted_ids, CENSUS_AUDIT_ENTRIES)?
+    } else {
+        census
+            .admitted_ids
+            .iter()
+            .copied()
+            .take(CENSUS_AUDIT_ENTRIES)
+            .collect::<Vec<_>>()
+    };
     if ids.len() < CENSUS_AUDIT_ENTRIES {
         let summary = serde_json::json!({
             "audited_entries": ids.len(),
@@ -442,7 +451,12 @@ fn run_census_player_column_mode(
         println!("{}", serde_json::to_string_pretty(&summary)?);
         return Ok(());
     }
-    let (report, frames) = audit_smb_player_column_from_ids(&rom, &source, &ids)?;
+    let audit = if spread {
+        audit_smb_player_column_spread
+    } else {
+        audit_smb_player_column_from_ids
+    };
+    let (report, frames) = audit(&rom, &source, &ids)?;
     fs::write(
         output.join("player-column-live.json"),
         serde_json::to_vec_pretty(&report)?,
@@ -456,7 +470,7 @@ fn run_census_player_column_mode(
         )?;
     }
     let replay_verified = if replay_requested {
-        let (replay, replay_frames) = audit_smb_player_column_from_ids(&rom, &source, &ids)?;
+        let (replay, replay_frames) = audit(&rom, &source, &ids)?;
         fs::write(
             output.join("player-column-replay.json"),
             serde_json::to_vec_pretty(&replay)?,
