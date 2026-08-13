@@ -1444,3 +1444,60 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   audit reports itself inconclusive and selects nothing.
 - The audit runs no search, changes no search behavior, and involves no model.
   Raw destination: `target/smb-completion/d33-player-column-decode/`.
+
+### D33 result — inconclusive; the census admitted momentum, not control
+
+- The audit ran on eight admitted entries, two each at progress 37, 36, 35, and
+  28, with endpoint cameras from 461 to 600. 149 indices took at least eight
+  distinct values, 34 were also smooth, 5 survived the left-direction filter and
+  reached verification: work-RAM indices 136, 137, 1208, 1210, and 1984. None
+  passed the film check and no index was selected. Live and no-model replay
+  reports are byte-equal with SHA-256
+  `cadd2db2aadeb97a7c271b65111e08fdad812e18bcc4d8061980c28293708961` and the
+  summary records `replay_verified=true`.
+- A measurement dump over the same eight entries recorded zero film comparisons
+  for all five candidates: on no frame did any of them differ by 8 or more
+  between two continuations at an equal camera. They are not position bytes.
+- A second dump explains why. On all eight entries the no-input and the held-left
+  continuations render identically on every single frame; no rendered column
+  ever differs. Byte `$00b5` rises from 1 to 3 while `$00ce` wraps, exactly the
+  free-fall signature of the post-D29 diagnosis. The camera nevertheless advances
+  — 592 to 635 on the first entry — because the player still carries rightward
+  momentum while falling.
+- The D32 census test is therefore not a control-authority test. A camera advance
+  under held right admits a falling player who happens to be coasting. The
+  census's 211 admitted entries are an upper bound on live states, not a count of
+  them, and its per-bucket zeros stand unchanged.
+- Raw evidence: `target/smb-completion/d33-player-column-decode/` and
+  `target/smb-completion/d33-diagnosis/`.
+
+### Standing summary of the completion boundary
+
+- Across D29 through D33 the audit mechanism itself is sound: every pass
+  reproduced byte for byte with no model, and the frozen D29 audit still
+  reproduces its recorded report under all later refactors. What it could not
+  find is a source state whose horizontal position responds to the controller.
+- The reason is a single instrumentation fault with two consequences. The frozen
+  terminal-death condition is `$000e == $0b`, and the fall-into-gap death does
+  not take that value: the engine byte goes `$08` to `$06` to `$00`, byte
+  `$075a` decrements by one, and the level reloads. An execution that dies this
+  way is never stopped, so its action-boundary snapshots keep being admitted, and
+  because the decoded vertical bucket is `$00ce / 16` with no page term, one
+  fall walks through all sixteen vertical buckets and fills a column of archive
+  cells at whatever camera bucket it fell from.
+- The measured result is that 0 of 374 representatives at the maximal frontier,
+  0 of 1,224 at progress 34, 0 of 228 at progress 32, and 0 of 257 at progress 17
+  can be moved rightwards at all, and the handful outside those buckets that
+  appeared to move turned out to be falling with momentum.
+- This is a sufficient explanation for the exact progress-39 watermark in H21
+  through H27 and for H26's and H27's unchanged per-frame watermarks. Those
+  panels varied the scheduler, the controller vocabulary, hold durations, suffix
+  depth, checkpoint retention, generated mutation, and generated ranking, while
+  every parent they could choose among had already died.
+- It also supersedes the shared conclusion of D27 and D28. Their `kill_state`
+  class requires `$0b` and their `below_playable` class requires vertical bucket
+  15 at a continuation endpoint; this failure mode produces neither.
+- Correcting it is a search change — the death condition alters execution
+  termination and admission, and a vertical page term alters archive keys — so
+  it is not taken here. It is reported to the integrator with the evidence
+  above.

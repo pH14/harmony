@@ -22,7 +22,9 @@ use fuzzer::{
         SmbArchiveSuffixPolicy, SmbControlCensusReport, SmbPlayerColumnSelection,
         audit_smb_frontier_viability, audit_smb_player_column_from_ids,
         audit_smb_player_column_spread, audit_smb_player_column_with_selection,
-        census_smb_control_authority, diagnose_smb_player_column, run_smb_archive_search,
+        census_smb_control_authority, diagnose_smb_film_columns, diagnose_smb_film_measurements,
+        diagnose_smb_player_column,
+        run_smb_archive_search,
         run_smb_archive_search_with_config_and_suffix, run_smb_archive_search_with_policies,
         select_smb_spread_audit_ids,
     },
@@ -99,6 +101,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "audit-spread-player-column" {
         return run_census_player_column_mode(&mut args, true);
+    }
+    if mode == "diagnose-film-measurements" {
+        return run_film_measurement_mode(&mut args);
+    }
+    if mode == "diagnose-film-columns" {
+        return run_film_column_mode(&mut args);
     }
     if mode == "diagnose-player-column" {
         return run_player_column_diagnosis_mode(&mut args);
@@ -502,6 +510,52 @@ fn run_census_player_column_mode(
     if replay_verified == Some(false) {
         return Err("census player-column audit replay diverged".into());
     }
+    Ok(())
+}
+
+fn run_film_measurement_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let census_path = PathBuf::from(args.next().ok_or("missing census report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let census: SmbControlCensusReport = serde_json::from_slice(&fs::read(census_path)?)?;
+    let ids = select_smb_spread_audit_ids(&source, &census.admitted_ids, CENSUS_AUDIT_ENTRIES)?;
+    let measurements = diagnose_smb_film_measurements(&rom, &source, &ids)?;
+    fs::write(
+        output.join("film-measurements.json"),
+        serde_json::to_vec(&measurements)?,
+    )?;
+    println!("measurements {}", measurements.len());
+    Ok(())
+}
+
+fn run_film_column_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let census_path = PathBuf::from(args.next().ok_or("missing census report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    fs::create_dir_all(&output)?;
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let census: SmbControlCensusReport = serde_json::from_slice(&fs::read(census_path)?)?;
+    let ids = select_smb_spread_audit_ids(&source, &census.admitted_ids, CENSUS_AUDIT_ENTRIES)?;
+    let traces = diagnose_smb_film_columns(&rom, &source, &ids)?;
+    fs::write(
+        output.join("film-columns.json"),
+        serde_json::to_vec(&traces)?,
+    )?;
+    println!("traces {}", traces.len());
     Ok(())
 }
 

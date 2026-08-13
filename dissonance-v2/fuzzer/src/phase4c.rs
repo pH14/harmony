@@ -954,6 +954,165 @@ fn audit_player_column_from_ids(
     Ok((report, frames))
 }
 
+/// Per-frame rendered-difference and work-RAM record for one audited entry.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbFilmColumnTrace {
+    /// Stable source archive identifier.
+    pub id: u64,
+    /// Recorded progress bucket.
+    pub progress: u16,
+    /// Recorded camera per frame of the no-input continuation.
+    pub camera: Vec<u32>,
+    /// Lowest differing rendered column per frame, or -1 when none differs.
+    pub lowest: Vec<i32>,
+    /// Highest differing rendered column per frame, or -1 when none differs.
+    pub highest: Vec<i32>,
+    /// Complete work RAM per frame of the left continuation.
+    pub left_wram: Vec<Vec<u8>>,
+    /// Complete work RAM per frame of the no-input continuation.
+    pub still_wram: Vec<Vec<u8>>,
+}
+
+/// Record the rendered difference between the no-input and left continuations.
+///
+/// # Errors
+///
+/// Returns an error when an identifier is absent from the source or when
+/// emulation or snapshotting fails.
+pub fn diagnose_smb_film_columns(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    ids: &[u64],
+) -> Result<Vec<SmbFilmColumnTrace>, Box<dyn Error>> {
+    let active = active_source_entries(source);
+    let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
+    let mut prefix = PlayerColumnPrefix::new(&mut target)?;
+    let mut traces = Vec::with_capacity(ids.len());
+    for id in ids {
+        let entry = active
+            .iter()
+            .find(|entry| entry.id == *id)
+            .ok_or("audit identifier is not an active source entry")?;
+        let recording = record_player_column_entry(
+            &mut target,
+            &mut prefix,
+            entry,
+            entry.key.progress,
+            PlayerColumnRules::SPREAD,
+        )?;
+        let still = &recording.continuations[0];
+        let left = &recording.continuations[2];
+        let frames = still.wram.len().min(left.wram.len());
+        let mut lowest = Vec::with_capacity(frames);
+        let mut highest = Vec::with_capacity(frames);
+        for frame in 0..frames {
+            let differing = (0..256)
+                .filter(|column| still.columns[frame][*column] != left.columns[frame][*column])
+                .collect::<Vec<_>>();
+            lowest.push(differing.first().map_or(-1, |column| {
+                i32::try_from(*column).unwrap_or(i32::MAX)
+            }));
+            highest.push(differing.last().map_or(-1, |column| {
+                i32::try_from(*column).unwrap_or(i32::MAX)
+            }));
+        }
+        traces.push(SmbFilmColumnTrace {
+            id: *id,
+            progress: entry.key.progress,
+            camera: still.camera[..frames].to_vec(),
+            lowest,
+            highest,
+            left_wram: left.wram[..frames].iter().map(|wram| wram.to_vec()).collect(),
+            still_wram: still.wram[..frames]
+                .iter()
+                .map(|wram| wram.to_vec())
+                .collect(),
+        });
+    }
+    Ok(traces)
+}
+
+/// One film-check measurement recorded for diagnosis.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbFilmMeasurement {
+    /// Work-RAM index under test.
+    pub index: u16,
+    /// Audited entry position.
+    pub entry: u16,
+    /// Recorded camera at the compared frame.
+    pub camera: u32,
+    /// Recorded frame index.
+    pub frame: u16,
+    /// Absolute difference of the two candidate values.
+    pub difference: i32,
+    /// Lowest differing rendered column minus the smaller candidate value.
+    pub offset: i32,
+    /// Differing span minus the candidate difference.
+    pub width: i32,
+}
+
+/// Record every film-check measurement for the indices that reach verification.
+///
+/// # Errors
+///
+/// Returns an error when an identifier is absent from the source or when
+/// emulation or snapshotting fails.
+pub fn diagnose_smb_film_measurements(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    ids: &[u64],
+) -> Result<Vec<SmbFilmMeasurement>, Box<dyn Error>> {
+    let active = active_source_entries(source);
+    let mut selected = Vec::with_capacity(ids.len());
+    for id in ids {
+        let entry = active
+            .iter()
+            .find(|entry| entry.id == *id)
+            .ok_or("audit identifier is not an active source entry")?;
+        selected.push((*entry, entry.key.progress));
+    }
+    let mut target = SmbTarget::from_smb_rom_bytes(rom)?;
+    let mut prefix = PlayerColumnPrefix::new(&mut target)?;
+    let mut recordings = Vec::with_capacity(selected.len());
+    for (entry, progress) in &selected {
+        recordings.push(record_player_column_entry(
+            &mut target,
+            &mut prefix,
+            entry,
+            *progress,
+            PlayerColumnRules::SPREAD,
+        )?);
+    }
+    let (report, comparisons) =
+        analyze_player_column_with_rules(&recordings, PlayerColumnRules::SPREAD);
+    let mut measurements = Vec::new();
+    for index in &report.camera_relative_survivors {
+        for comparison in &comparisons {
+            let recording = &recordings[comparison.entry];
+            let position = usize::from(*index);
+            let left =
+                i32::from(recording.continuations[comparison.left].wram[comparison.frame][position]);
+            let right = i32::from(
+                recording.continuations[comparison.right].wram[comparison.frame][position],
+            );
+            let difference = (left - right).abs();
+            if difference < PLAYER_COLUMN_FILM_GAP {
+                continue;
+            }
+            measurements.push(SmbFilmMeasurement {
+                index: *index,
+                entry: u16::try_from(comparison.entry).unwrap_or(u16::MAX),
+                camera: comparison.camera,
+                frame: u16::try_from(comparison.frame).unwrap_or(u16::MAX),
+                difference,
+                offset: comparison.lowest - left.min(right),
+                width: comparison.highest - comparison.lowest + 1 - difference,
+            });
+        }
+    }
+    Ok(measurements)
+}
+
 /// Choose census-admitted entries in descending progress with a per-bucket cap.
 ///
 /// The cap makes the audited endpoints span several camera positions, which the
