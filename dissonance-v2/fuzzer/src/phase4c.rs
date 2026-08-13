@@ -96,6 +96,16 @@ pub enum SmbArchiveSuffixPolicy {
     BurstUpToFour,
 }
 
+/// Whether the archive key separates the two live vertical pages.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SmbArchiveKeyPolicy {
+    /// Frozen behaviour: the vertical term is the low position byte over sixteen.
+    #[default]
+    Frozen,
+    /// H51: the vertical term also carries the recorded vertical page byte.
+    VerticalPage,
+}
+
 /// Whether admission probes a candidate for viability before retaining it.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SmbArchiveRetentionPolicy {
@@ -3440,6 +3450,7 @@ pub fn run_smb_archive_search_with_config_and_suffix(
         None,
         false,
         SmbArchiveRetentionPolicy::Frozen,
+        SmbArchiveKeyPolicy::Frozen,
     )
 }
 
@@ -3465,6 +3476,7 @@ pub fn run_smb_archive_search_with_policies(
         None,
         true,
         SmbArchiveRetentionPolicy::Frozen,
+        SmbArchiveKeyPolicy::Frozen,
     )
 }
 
@@ -3484,6 +3496,7 @@ pub fn run_smb_archive_search_with_retention(
     duration_policy: SmbArchiveDurationPolicy,
     suffix_policy: SmbArchiveSuffixPolicy,
     retention_policy: SmbArchiveRetentionPolicy,
+    key_policy: SmbArchiveKeyPolicy,
 ) -> Result<SmbArchiveReport, Box<dyn Error>> {
     run_smb_archive_search_internal(
         rom,
@@ -3497,6 +3510,7 @@ pub fn run_smb_archive_search_with_retention(
         None,
         false,
         retention_policy,
+        key_policy,
     )
 }
 
@@ -3521,6 +3535,7 @@ pub fn run_smb_archive_search_with_ranking<R: SmbRanking>(
         None,
         false,
         SmbArchiveRetentionPolicy::Frozen,
+        SmbArchiveKeyPolicy::Frozen,
     )
 }
 
@@ -3545,6 +3560,7 @@ pub fn run_smb_archive_search_with_generated_mutator<M: SmbMacro>(
         Some(generated_mutator),
         false,
         SmbArchiveRetentionPolicy::Frozen,
+        SmbArchiveKeyPolicy::Frozen,
     )
 }
 
@@ -3578,6 +3594,7 @@ fn run_smb_archive_search_internal(
     generated_mutator: Option<&dyn SmbMacro>,
     experimental_search: bool,
     retention_policy: SmbArchiveRetentionPolicy,
+    key_policy: SmbArchiveKeyPolicy,
 ) -> Result<SmbArchiveReport, Box<dyn Error>> {
     if initial_inputs.is_empty() {
         return Err("SMB archive search requires a nonempty initial corpus".into());
@@ -3601,7 +3618,7 @@ fn run_smb_archive_search_internal(
     let mut champion_milestones = SmbMilestones::default();
 
     target.reset();
-    let genesis_key = archive_key(target.wram());
+    let genesis_key = archive_key(target.wram(), key_policy);
     let genesis_snapshot = target.snapshot().ok_or("failed to snapshot SMB genesis")?;
     let genesis_id = archive
         .insert(
@@ -3648,7 +3665,7 @@ fn run_smb_archive_search_internal(
                 .snapshot()
                 .ok_or("failed to snapshot SMB bootstrap prefix")?;
             let observations = target.last_action_observations().to_vec();
-            let key = archive_key(target.wram());
+            let key = archive_key(target.wram(), key_policy);
             if !admission_is_viable(&mut target, &snapshot, retention_policy)? {
                 continue;
             }
@@ -3764,7 +3781,7 @@ fn run_smb_archive_search_internal(
             }
             let snapshot = target.snapshot().ok_or("failed to snapshot SMB suffix")?;
             let observations = target.last_action_observations().to_vec();
-            let key = archive_key(target.wram());
+            let key = archive_key(target.wram(), key_policy);
             if !admission_is_viable(&mut target, &snapshot, retention_policy)? {
                 continue;
             }
@@ -3862,14 +3879,23 @@ fn merge_progress_watermark(
     }
 }
 
-fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
+fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> SmbArchiveKey {
     let state = smb_mechanical_state_from_wram(wram);
     let digest = Sha256::digest(wram);
+    // The decoded observation field keeps its recorded 0..=15 meaning; only the
+    // key term carries the page, so both operator views stay true.
+    let vertical = match policy {
+        SmbArchiveKeyPolicy::Frozen => state.player_y_bucket,
+        SmbArchiveKeyPolicy::VerticalPage => smb_death_bytes(wram)
+            .vertical_page
+            .saturating_mul(16)
+            .saturating_add(state.player_y_bucket),
+    };
     SmbArchiveKey {
         world: state.world,
         level: state.level,
         progress: state.progress,
-        player_y_bucket: state.player_y_bucket,
+        player_y_bucket: vertical,
         player_engine_state: state.player_engine_state,
         state_fingerprint: digest[0] & STATE_FINGERPRINT_MASK,
     }
@@ -4334,6 +4360,7 @@ mod tests {
             SmbArchiveDurationPolicy::Stratified,
             SmbArchiveSuffixPolicy::OneOrTwo,
             super::SmbArchiveRetentionPolicy::Frozen,
+            super::SmbArchiveKeyPolicy::Frozen,
         )
         .expect("frozen retention campaign");
         let probed = run_smb_archive_search_with_retention(
@@ -4345,6 +4372,7 @@ mod tests {
             SmbArchiveDurationPolicy::Stratified,
             SmbArchiveSuffixPolicy::OneOrTwo,
             super::SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            super::SmbArchiveKeyPolicy::Frozen,
         )
         .expect("probed retention campaign");
         // On a target whose terminal condition never fires, every candidate is
@@ -4360,6 +4388,7 @@ mod tests {
             SmbArchiveDurationPolicy::Stratified,
             SmbArchiveSuffixPolicy::OneOrTwo,
             super::SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            super::SmbArchiveKeyPolicy::Frozen,
         )
         .expect("repeated probed retention campaign");
         assert_eq!(probed, repeated);
