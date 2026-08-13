@@ -1741,3 +1741,45 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   If no index passes it reports itself inconclusive and selects nothing.
 - The audit runs no search, changes no search behavior, and involves no model.
   Raw destination: `target/smb-completion/d36-player-column-decode/`.
+
+### D36 result — inconclusive; the registered scan rule never left one bucket
+
+- The scan ran to its 128-entry limit without admitting a single entry, so no
+  audit was performed and nothing was selected. Recorded per bucket: 119 entries
+  scanned at progress 74 and 9 at progress 73, with zero admitted in either.
+- The registration is at fault, and the fault is stated rather than repaired in
+  place. It capped the number of entries **admitted** per bucket at two but put
+  no cap on the number **scanned** per bucket. The rebuilt frontier bucket holds
+  131 entries, so a bucket that admits nothing consumes the whole scan budget
+  before any other bucket is reached. Only two of the deepest tuple's buckets
+  were ever examined.
+- A second deficiency shows in the same numbers: the report records only the
+  conjunction, so the zero cannot be attributed to the camera-advance clause or
+  to the rendered-difference clause. Both are recorded separately below.
+- Raw evidence: `target/smb-completion/d36-player-column-decode/`.
+
+## D37 — preregistered corrected scan for the player-column decode audit
+
+- Same falsifiable claim, source, target, continuations, filters, verification,
+  field name, operator sentence, and byte-equal live-and-replay gate as D36.
+- Corrected scan rule: scan active entries at the maximum tuple in descending
+  progress bucket, breaking ties by `(input, id)`, examining at most four
+  entries per bucket, admitting at most two per bucket, and examining at most
+  128 in total, until eight are admitted. Capping the entries examined per
+  bucket is what D36 lacked; it guarantees the scan reaches at least
+  thirty-two buckets before exhausting its budget.
+- Corrected admission rule: an entry is admitted when its held-right and its
+  held-left continuations differ in at least one rendered column on at least one
+  frame in common. D36's camera-advance clause is dropped, and the reason is
+  stated before the numbers are seen: the audit needs states whose horizontal
+  position answers the controller, and a rebuilt archive already contains only
+  live states, so requiring the camera to move as well tests reachable terrain
+  rather than controllability and can reject exactly the states the audit needs.
+  Camera spread across the audited set is supplied by the per-bucket admission
+  cap, which forces eight admitted entries to span at least four buckets.
+- The scan reports, per bucket, entries examined, entries whose held-right
+  continuation advances the recorded camera by at least 32 pixels, entries whose
+  opposite-mask continuations differ in a rendered column, and entries admitted.
+  The two clauses are recorded separately whatever the outcome.
+- The audit runs no search, changes no search behavior, and involves no model.
+  Raw destination: `target/smb-completion/d37-player-column-decode/`.
