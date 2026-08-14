@@ -3158,3 +3158,37 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   the observation fixtures, the fixed seed `0x5eed_ef00` 256-execution isolation
   pilot with its exact replay, and the recorded-journal chain replay.
 - The arm phase is executing on the ARM machine. Its result follows.
+
+### Campaign-mode merge — recorded here because it touches this experiment's modules
+
+- On the integrator's ruling, `exec/campaign-mode` was merged into this branch as
+  a strict fast-forward from `0b7ea732` to `4a97e2f2`. Twelve commits, adding a
+  campaign coordinator, its binary and its own lab log, and touching two modules
+  this experiment owns.
+- What it changed here, checked before merging. `phase4b` gains a lifetime frame
+  counter documented as work accounting only: it is not campaign state, no
+  snapshot carries it and `restore` does not touch it, so it cannot alter
+  replay. `phase4c` widens the archive internals to crate visibility, which is
+  no behaviour change, and threads an emulated-frame total out of the internal
+  search so every existing wrapper maps it away and returns exactly the report
+  it returned before.
+- All four gates pass on the merged tree: `cargo fmt --check`, `cargo clippy
+  --all-features` with `-D warnings`, 76 tests run and 76 passed under
+  `cargo nextest run --all-features` — six more than before the merge, all of
+  them the incoming campaign tests — and `cargo deny check` reporting
+  advisories, bans, licenses and sources ok.
+- A determinism spot-check of this experiment's own path was run beyond the
+  required gates, because every recorded result here depends on byte-exact
+  reproduction. The M53 gate campaign, seed `0x5eed_ef00` for 256 executions on
+  the conquest archive under probing retention and the extended ladder,
+  reproduces its recorded SHA-256
+  `88f8ace7a5322813eea000a0b08792b41107a06048ca8ae8d58f35eca0ad6360` across the
+  merge.
+- Landmine recorded on the integrator's instruction: the executor-identity
+  binary composes its process exit code from a superseded tenfold
+  frame-reduction criterion, so it exits non-zero even when the ruling-level
+  acceptance passes — identity bits plus semantic hashes against the re-frozen
+  reference. Judge that binary by the contents of its report, never by its exit
+  status.
+- The H54 arm phase was not touched. It runs from a copy synced to the ARM
+  machine before the merge and is unaffected by anything in this worktree.
