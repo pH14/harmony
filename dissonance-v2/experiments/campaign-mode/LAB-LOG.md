@@ -546,3 +546,41 @@
   the search problem the campaign leaves standing; the demonstration's claim
   is the mode — all-cores throughput, a complete recorded stream, exact
   replay, film — and that claim holds.
+
+## Integration — rebased onto the search head, both modes verified unperturbed
+
+- Step one, the one-time rebase: `exec/campaign-mode` was rebased onto the
+  search branch head `0b7ea732b475b97f5f94934b519ab2bfed45b2f6`, thirteen
+  commits past the old base, carrying the vertical-page archive key policy,
+  the extended milestone ladder, and the recorded world-2 conquest results.
+  Exactly one file conflicted — `phase4c.rs`, the shared-surface commit
+  against the new policy plumbing — resolved by taking the search branch's
+  code whole and re-applying the three minimal campaign edits on top:
+  `pub(crate)` visibility, the work-returning internal, and the
+  work-reporting wrapper.
+- One adaptation commit follows the rebase: the campaign's three
+  `archive_key` call sites pass `SmbArchiveKeyPolicy::Frozen` explicitly, and
+  campaign archives carry the absent ladder, which serializes to nothing —
+  so recorded campaign artifacts keep their byte shape. Campaign mode
+  continues to run only the promoted stack; neither the vertical-page key
+  term nor the extended ladder is part of it.
+- Step two, gates on the rebased tree. `cargo fmt --check` clean, clippy
+  under `-D warnings` printing only the known configuration warning, 76 of
+  76 tests passed — the search branch added no unit tests, so that is the
+  full union — and `cargo deny check` ok.
+- Identity gate on the rebased tree against the re-frozen reference: all
+  three identity bits true, and all three semantic hashes equal to the
+  reference frozen at base `7fab4ce5` — maze `6e1500f1…`, adventure
+  `8debc5e9…`, SMB `3ff14864…`. The search branch's thirteen commits and the
+  rebase both left the serial path untouched. Evidence:
+  `target/perf-evidence/campaign-mode/executor-identity-rebased/`.
+- Recorded-campaign re-verification: the rebased binary re-replayed the
+  recorded gate-2 stream — 20,000 executions, W = 6 — to byte identity with
+  the recorded live artifacts, reproducing the recorded hashes exactly:
+  archive `5613ab357ade74011e17422c8edcc003668b3d6e170ef0c7d9a398f46b53cc01`,
+  report `03210261f4900202c276ded0d91e9c0a007a2b5d33ce004cad0ca246c810f111`,
+  stream `689ef0eeb16f5e906dcd1d4debaedb268dd3027fe22599b0153de5a3d812f88f`.
+  The rebase perturbed neither experiment mode nor campaign mode.
+- The pre-rebase history is preserved locally on
+  `backup/campaign-mode-pre-rebase`. Nothing is pushed; the branch is parked
+  for integrator review.
