@@ -481,3 +481,32 @@
   to test properly.
 - Raw evidence: `target/perf-evidence/campaign-mode/gate4/` with
   `serial/serial-arm.json`, `campaign/`, and `throughput-comparison.json`.
+
+## CM6 — registered demonstration conquest into the second world
+
+- Integrator direction: the origin is the frozen conquest archive published
+  at `/Users/phemberger/workspace/steers/c49-world2-origin/archive-live.json`
+  — the completed C49 local run, seed `0x5eed_c001`, 50,000 executions,
+  23,248 entries. Its SHA-256 was verified against the manifest beside it
+  before use:
+  `b57e72e42c2c87942b02947ba43014d18c88ee70fdadeebb63d7d0251f9f1273`.
+- The source's maximum tuple is `(world 1, level 0, progress 144)` — one
+  retained entry in the second world — and the resume selection picks its
+  single shortest mechanical frontier input: 351 actions, source id 7495,
+  leaving 161 actions of headroom against the frozen 512-action bound.
+  Recorded in advance so it is not mistaken for difficulty later: if the
+  run stops advancing while its deepest entries sit at the bound, that is
+  the bound. Likewise, at roughly the retention rates gates 2 and 4
+  measured, 50,000 executions may approach the frozen 32,768-entry archive
+  bound late in the run; rejections from a full archive are the bound, not
+  difficulty.
+- Fixed configuration: campaign seed `0x5eed_ca50`, W = 10 — every core of
+  the local machine — 50,000 executions, 512-action limit, promoted stack,
+  `nice -n 10`. The search worker's local runs have completed, so the
+  machine's cores are free for the all-cores push. The specification itself
+  authorizes the size.
+- Deliverables, per the registration: the recorded stream, the exact serial
+  replay (run to completion after the live run, unlike C49's replay-on-
+  demand, because the demonstration registration requires it), and film of
+  the furthest trajectory rendered by the unchanged renderer.
+- Raw destination: `target/perf-evidence/campaign-mode/cm6-conquest/`.
