@@ -3088,3 +3088,31 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   recorded seed, observations, generated files, labels and journals with no
   model.
 - Raw destination: `target/smb-completion/h54-luna/`.
+
+### H54 first decision phase — host defect, no decision produced
+
+- The decision phase exhausted its three attempts and produced no ranking. The
+  three attempts failed for two different reasons and only the first is about
+  the model.
+- Attempt 1 was rejected by the existing validator: the returned source used the
+  forbidden token `progress`. That is a real, recorded model outcome of the same
+  kind as H27's first attempt, which used `flag`.
+- Attempts 2 and 3 failed to compile with `cannot find function
+  run_smb_archive_search_with_retention in this scope`. That is my defect, not
+  the model's. M53 changed the harness template to call the probing retention
+  path but the matching edit to the template's import block did not apply,
+  because the block spans more lines than the text I matched, and the edit
+  silently changed nothing. Two of the three attempts were consumed by a broken
+  host.
+- The import block is corrected, and the corrected template was compiled offline
+  against attempt 3's own recorded ranking source before any further model call,
+  so the fix is verified rather than assumed. The failed directory is retained as
+  `target/smb-completion/h54-luna-failed/`; its recorded model sources under
+  `artifact-validation/` are untouched, and only its scratch build tree was
+  reused for that compile check.
+- The registration's three-attempt limit is a limit on what the model is asked
+  to do, and a host that cannot compile its own template did not ask it. The
+  decision phase is re-run from a clean directory with the same fixed source,
+  film, context, journal, seeds, budgets and validators. This follows the
+  precedent recorded at H27, where a launch-boundary failure produced no
+  decision and the panel was resumed unchanged.

@@ -2185,9 +2185,10 @@ use fuzzer::{
     phase4b::{SmbInput, observe_smb_input},
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
+        SmbArchiveKeyPolicy, SmbArchiveLadderPolicy, SmbArchiveRetentionPolicy,
         SmbArchiveSuffixPolicy, SmbRanking, SmbRankingSearchConfig,
-        run_smb_archive_search_with_config,
-        run_smb_archive_search_with_ranking,
+        run_smb_archive_search_with_ranking_and_retention,
+        run_smb_archive_search_with_retention,
     },
 };
 use ranking::InstalledRanking;
@@ -2268,8 +2269,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     SmbArchiveDurationPolicy::Stratified,
                     SmbArchiveSuffixPolicy::OneOrTwo,
                     SmbArchiveRetentionPolicy::ProbeAtAdmission,
-                    fuzzer::phase4c::SmbArchiveKeyPolicy::Frozen,
-                    fuzzer::phase4c::SmbArchiveLadderPolicy::Extended,
+                    SmbArchiveKeyPolicy::Frozen,
+                    SmbArchiveLadderPolicy::Extended,
                 )?,
                 Some("ranking") => run_smb_archive_search_with_ranking_and_retention(
                     &rom,
