@@ -446,3 +446,38 @@
   `target/perf-evidence/campaign-mode/gate3-a/`, and
   `target/perf-evidence/campaign-mode/gate3-b/`, each holding the stream,
   live and replay archives and reports, and the replay verdict.
+
+## CM5 — gate 4 throughput, W = 6 versus serial at one wall budget
+
+- Configuration: both arms from clean genesis at seed `0x5eed_ca40`,
+  512-action limit, promoted stack, local machine, co-tenant with the search
+  worker's two full-load runs, both arms back-to-back under the same ambient
+  load at `nice -n 10`. The serial arm is the untouched serial engine through
+  the work-reporting wrapper at a fixed 5,000 executions; its measured wall,
+  1,203 seconds, became the campaign arm's reservation cutoff. The cutoff
+  stops issuing reservations only and never enters campaign state; the
+  campaign arm's stream remains reproducible on demand, and replay exactness
+  of this exact configuration is already established twice by gates 2 and 3,
+  so no inline replay was run here.
+- Serial arm: 5,000 executions, 973,861 emulated frames, 3,887 entries, 936
+  deaths, furthest corrected watermark `(world 0, level 0, progress 119)`,
+  maximum retained key tuple `(0, 0, 113)`, no 1-1 flag.
+- Campaign arm, W = 6, same 1,203-second wall: 27,941 executions, 5,708,693
+  emulated frames, 19,133 entries, 10,201 rejected, 1,828 probe-refused, 106
+  duplicates skipped, 3,138 deaths, jobs
+  `[4706, 4638, 4651, 4659, 4647, 4640]` across the six workers. It crossed
+  the 1-1 flag, 1-2, and genuine onward: the corrected watermark reached
+  `(world 0, level 2, progress 47)` and the archive retained live 1-3 states
+  up to key tuple `(0, 2, 45)`.
+- Measured scaling at W = 6: 5.59x executions and 5.86x frames per unit
+  wall — near-linear, at 93 to 98 percent efficiency, under co-tenancy.
+  Reported as measured; the expectation is met. Gate 4 passes.
+- Context stated carefully rather than claimed: the milestone gap between
+  the arms is a same-wall-budget observation, not an equal-compute
+  comparison — the serial arm received one fifth the executions. What gate 4
+  establishes is the throughput; that the extra throughput turned into
+  retained 1-3 territory from clean genesis in twenty minutes is an
+  observation consistent with the conquest purpose, recorded for the C-series
+  to test properly.
+- Raw evidence: `target/perf-evidence/campaign-mode/gate4/` with
+  `serial/serial-arm.json`, `campaign/`, and `throughput-comparison.json`.
