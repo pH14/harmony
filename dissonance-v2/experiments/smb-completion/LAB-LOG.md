@@ -2953,3 +2953,48 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   measurements are byte-equal across two runs on the same archive.
 - No search campaign, no acceptance rule about progress, and no model are part
   of M52. Raw destination: `target/smb-completion/m52-ladder/`.
+
+### M52 result — accepted
+
+- G1 passes exactly. Under the frozen ladder policy a resumed arm reproduces
+  H45's recorded challenger arm byte for byte, SHA-256
+  `20a5dea2578787f857e52768f2b153c1736d9609c99666fce893ee7820999403`, and the
+  written report contains no ladder field at all. Every earlier recorded
+  campaign keeps its recorded ladder and replays exactly.
+- G2 passes. The offline derivation over the local conquest archive returns
+  version 2, maximum tuple `(1, 0, 144)`, and exactly the five observed pairs
+  whose counts were recorded by hand in the C49 entry.
+- G3 passes: formatting, Clippy with `-D warnings`, 70 tests, and the dependency
+  check. G4 passes: the play and viable measurement is byte-equal across two
+  runs on the same archive, SHA-256
+  `2f6cbd5f4f95ee959322ca0fe3a2896a851924a1b8fbb47b3a8567df03a4048d`.
+- The play measurement does what C49 asked for. On the local conquest archive it
+  reports play 124 against viable 144: the deepest bucket survives 120 frames of
+  no input but its rendered frames do not answer the controller, which is the
+  scripted level-completion sequence. The two figures are now reported
+  separately wherever they differ, with play primary.
+- The ladder cannot saturate. It records the maximum corrected tuple and every
+  observed `(world, level)` with the execution at which it first appeared and
+  the deepest progress reached inside it, so a campaign that completes a world
+  is still measured by it.
+
+### C49 ARM result — the same two transitions, independently
+
+- Seed `0x5eed_c002`, 50,000 executions, 20,055 retained, 31,477 rejected,
+  5,820 deaths.
+- Its ladder records the same five pairs and the same two crossings the local
+  run made: the fourth level of the first world first reached at execution
+  1,959 against the local run's 1,579, and the first level of the second world
+  at execution 8,051 against 8,872. Two independent seeds crossed both
+  boundaries at comparable cost, so this is behaviour of the promoted stack and
+  not a lucky seed.
+- Depth inside the second world differs. The ARM run reports play 97, viable 97
+  and recorded 97 — its deepest state is ordinary play, with no scripted
+  sequence above it — against the local run's play 124 and viable 144. Reported
+  on the primary figure the two runs reached 124 and 97.
+- Both runs spent the large majority of their budget inside the second world:
+  the local run entered it at execution 8,872 of 50,000 and the ARM run at
+  8,051, so roughly forty thousand executions each were spent there without
+  leaving it.
+- Raw evidence: `target/smb-completion/c49-conquest-arm/` on the ARM machine and
+  `target/smb-completion/m52-ladder/` on both.

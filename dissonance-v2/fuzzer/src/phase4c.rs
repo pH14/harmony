@@ -96,6 +96,89 @@ pub enum SmbArchiveSuffixPolicy {
     BurstUpToFour,
 }
 
+/// Version stamped into every extended ladder record.
+pub const SMB_LADDER_VERSION: u32 = 2;
+
+/// Whether a campaign records the extended, non-saturating ladder.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SmbArchiveLadderPolicy {
+    /// Frozen behaviour: only the four named rungs, and no extended record at all.
+    #[default]
+    Frozen,
+    /// M52: additionally record the maximum tuple and every observed transition.
+    Extended,
+}
+
+/// One observed `(world, level)` pair and what was reached inside it.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SmbLadderTransition {
+    /// Decoded world number.
+    pub world: u8,
+    /// Decoded level number, corrected the same way the archive key corrects it.
+    pub level: u8,
+    /// Earliest execution that produced a retained state here; zero is bootstrap.
+    pub first_execution: u64,
+    /// Deepest progress bucket reached here.
+    pub max_progress: u16,
+}
+
+/// A ladder that grows with the campaign instead of saturating.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbLadder {
+    /// Stamped version of this record; zero means no extended ladder was kept.
+    pub version: u32,
+    /// Maximum corrected world, level and progress observed.
+    pub max_tuple: Option<(u8, u8, u16)>,
+    /// Every observed pair, in key order.
+    pub transitions: Vec<SmbLadderTransition>,
+}
+
+impl SmbLadder {
+    /// Report whether this record should be omitted from a report entirely.
+    ///
+    /// A frozen-ladder campaign must serialize exactly the fields it serialized
+    /// before this mechanism existed, so an absent ladder writes nothing.
+    #[must_use]
+    pub fn is_absent(&self) -> bool {
+        self.version == 0 && self.max_tuple.is_none() && self.transitions.is_empty()
+    }
+}
+
+/// Derive the extended ladder from a recorded archive without emulating anything.
+///
+/// Frames are not recorded per entry, so this reports each pair's first creating
+/// execution but not its first frame.
+#[must_use]
+pub fn derive_smb_ladder(source: &SmbArchiveReport) -> SmbLadder {
+    let mut observed = BTreeMap::<(u8, u8), (u64, u16)>::new();
+    for entry in &source.entries {
+        let record = observed
+            .entry((entry.key.world, entry.key.level))
+            .or_insert((u64::MAX, 0));
+        record.0 = record.0.min(entry.created_execution);
+        record.1 = record.1.max(entry.key.progress);
+    }
+    SmbLadder {
+        version: SMB_LADDER_VERSION,
+        max_tuple: source
+            .entries
+            .iter()
+            .map(|entry| (entry.key.world, entry.key.level, entry.key.progress))
+            .max(),
+        transitions: observed
+            .into_iter()
+            .map(
+                |((world, level), (first_execution, max_progress))| SmbLadderTransition {
+                    world,
+                    level,
+                    first_execution,
+                    max_progress,
+                },
+            )
+            .collect(),
+    }
+}
+
 /// Whether the archive key separates the two live vertical pages.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SmbArchiveKeyPolicy {
@@ -215,6 +298,9 @@ pub struct SmbArchiveReport {
     /// Execution-count accounting for the optional generated archive mutator.
     #[serde(default)]
     pub generated_mutator: SmbGeneratedMutatorAccounting,
+    /// Extended ladder record, omitted entirely under the frozen ladder policy.
+    #[serde(default, skip_serializing_if = "SmbLadder::is_absent")]
+    pub ladder: SmbLadder,
 }
 
 /// Mechanical outcome of one fixed frontier-viability continuation.
@@ -1369,6 +1455,9 @@ pub struct SmbViableProgressReport {
     pub per_bucket: u64,
     /// Deepest bucket with at least one viable entry, when one exists.
     pub viable_progress: Option<u16>,
+    /// Deepest bucket holding a state whose rendered frames answer the controller.
+    #[serde(default)]
+    pub play_progress: Option<u16>,
     /// Maximum recorded progress bucket at the deepest tuple, viable or not.
     pub recorded_progress: Option<u16>,
     /// Buckets examined, deepest first, up to and including the first viable one.
@@ -1399,6 +1488,7 @@ pub fn measure_smb_viable_progress(
             horizon: PLAYER_COLUMN_FRAMES,
             per_bucket: u64::try_from(VIABLE_PROGRESS_BUCKET_SCAN).unwrap_or(u64::MAX),
             viable_progress: None,
+            play_progress: None,
             recorded_progress: None,
             buckets: Vec::new(),
         });
@@ -1414,9 +1504,12 @@ pub fn measure_smb_viable_progress(
     let mut prefix = PlayerColumnPrefix::new(&mut target)?;
     let mut buckets: Vec<SmbViableBucket> = Vec::new();
     let mut viable_progress = None;
+    let mut play_progress = None;
+    let mut video = SmbTarget::from_smb_rom_bytes(rom)?;
+    let mut video_prefix = PlayerColumnPrefix::new(&mut video)?;
     let per_bucket = u64::try_from(VIABLE_PROGRESS_BUCKET_SCAN).unwrap_or(u64::MAX);
     for entry in entries {
-        if viable_progress.is_some() {
+        if viable_progress.is_some() && play_progress.is_some() {
             break;
         }
         if buckets
@@ -1451,13 +1544,30 @@ pub fn measure_smb_viable_progress(
                 return Err("viable-progress bucket list is empty".into());
             };
             bucket.viable = bucket.viable.saturating_add(1);
-            viable_progress = Some(entry.key.progress);
+            if viable_progress.is_none() {
+                viable_progress = Some(entry.key.progress);
+            }
+        }
+        if play_progress.is_none() {
+            // The rendered test D37 established: a scripted sequence survives
+            // doing nothing but does not answer the controller.
+            let recording = record_player_column_entry(
+                &mut video,
+                &mut video_prefix,
+                entry,
+                entry.key.progress,
+                PlayerColumnRules::SPREAD,
+            )?;
+            if player_column_answers_controller(&recording) {
+                play_progress = Some(entry.key.progress);
+            }
         }
     }
     Ok(SmbViableProgressReport {
         horizon: PLAYER_COLUMN_FRAMES,
         per_bucket,
         viable_progress,
+        play_progress,
         recorded_progress,
         buckets,
     })
@@ -3002,6 +3112,7 @@ pub fn readmit_smb_archive(
         progress_curve: Vec::new(),
         ranking: SmbRankingAccounting::default(),
         generated_mutator: SmbGeneratedMutatorAccounting::default(),
+        ladder: SmbLadder::default(),
     };
     Ok((report, rebuilt))
 }
@@ -3451,6 +3562,7 @@ pub fn run_smb_archive_search_with_config_and_suffix(
         false,
         SmbArchiveRetentionPolicy::Frozen,
         SmbArchiveKeyPolicy::Frozen,
+        SmbArchiveLadderPolicy::Frozen,
     )
 }
 
@@ -3477,6 +3589,7 @@ pub fn run_smb_archive_search_with_policies(
         true,
         SmbArchiveRetentionPolicy::Frozen,
         SmbArchiveKeyPolicy::Frozen,
+        SmbArchiveLadderPolicy::Frozen,
     )
 }
 
@@ -3497,6 +3610,7 @@ pub fn run_smb_archive_search_with_retention(
     suffix_policy: SmbArchiveSuffixPolicy,
     retention_policy: SmbArchiveRetentionPolicy,
     key_policy: SmbArchiveKeyPolicy,
+    ladder_policy: SmbArchiveLadderPolicy,
 ) -> Result<SmbArchiveReport, Box<dyn Error>> {
     run_smb_archive_search_internal(
         rom,
@@ -3511,6 +3625,7 @@ pub fn run_smb_archive_search_with_retention(
         false,
         retention_policy,
         key_policy,
+        ladder_policy,
     )
 }
 
@@ -3536,6 +3651,7 @@ pub fn run_smb_archive_search_with_ranking<R: SmbRanking>(
         false,
         SmbArchiveRetentionPolicy::Frozen,
         SmbArchiveKeyPolicy::Frozen,
+        SmbArchiveLadderPolicy::Frozen,
     )
 }
 
@@ -3561,6 +3677,7 @@ pub fn run_smb_archive_search_with_generated_mutator<M: SmbMacro>(
         false,
         SmbArchiveRetentionPolicy::Frozen,
         SmbArchiveKeyPolicy::Frozen,
+        SmbArchiveLadderPolicy::Frozen,
     )
 }
 
@@ -3595,6 +3712,7 @@ fn run_smb_archive_search_internal(
     experimental_search: bool,
     retention_policy: SmbArchiveRetentionPolicy,
     key_policy: SmbArchiveKeyPolicy,
+    ladder_policy: SmbArchiveLadderPolicy,
 ) -> Result<SmbArchiveReport, Box<dyn Error>> {
     if initial_inputs.is_empty() {
         return Err("SMB archive search requires a nonempty initial corpus".into());
@@ -3616,6 +3734,8 @@ fn run_smb_archive_search_internal(
     let mut first_inputs = SmbMilestoneInputs::default();
     let mut champion_input = SmbInput::default();
     let mut champion_milestones = SmbMilestones::default();
+    let mut ladder_max: Option<(u8, u8, u16)> = None;
+    let mut ladder_observed = BTreeMap::<(u8, u8), (u64, u16)>::new();
 
     target.reset();
     let genesis_key = archive_key(target.wram(), key_policy);
@@ -3669,6 +3789,7 @@ fn run_smb_archive_search_internal(
             if !admission_is_viable(&mut target, &snapshot, retention_policy)? {
                 continue;
             }
+            record_ladder(&mut ladder_max, &mut ladder_observed, target.wram(), 0);
             if let Some(id) = archive.insert(
                 Some(parent_id),
                 0,
@@ -3785,6 +3906,12 @@ fn run_smb_archive_search_internal(
             if !admission_is_viable(&mut target, &snapshot, retention_policy)? {
                 continue;
             }
+            record_ladder(
+                &mut ladder_max,
+                &mut ladder_observed,
+                target.wram(),
+                execution,
+            );
             if let Some(id) = archive.insert(
                 Some(current_parent),
                 execution,
@@ -3837,6 +3964,24 @@ fn run_smb_archive_search_internal(
         deaths,
         ranking: archive.ranking_accounting,
         generated_mutator: generated_mutator_accounting,
+        ladder: match ladder_policy {
+            SmbArchiveLadderPolicy::Frozen => SmbLadder::default(),
+            SmbArchiveLadderPolicy::Extended => SmbLadder {
+                version: SMB_LADDER_VERSION,
+                max_tuple: ladder_max,
+                transitions: ladder_observed
+                    .into_iter()
+                    .map(
+                        |((world, level), (first_execution, max_progress))| SmbLadderTransition {
+                            world,
+                            level,
+                            first_execution,
+                            max_progress,
+                        },
+                    )
+                    .collect(),
+            },
+        },
     })
 }
 
@@ -3863,6 +4008,25 @@ fn admission_is_viable(
     }
     target.restore(snapshot)?;
     Ok(viable)
+}
+
+/// Accumulate the extended ladder from one admitted state.
+fn record_ladder(
+    max_tuple: &mut Option<(u8, u8, u16)>,
+    observed: &mut BTreeMap<(u8, u8), (u64, u16)>,
+    wram: &[u8; 2_048],
+    execution: u64,
+) {
+    let state = smb_mechanical_state_from_wram(wram);
+    let tuple = (state.world, state.level, state.progress);
+    if max_tuple.is_none_or(|recorded| tuple > recorded) {
+        *max_tuple = Some(tuple);
+    }
+    let record = observed
+        .entry((state.world, state.level))
+        .or_insert((execution, 0));
+    record.0 = record.0.min(execution);
+    record.1 = record.1.max(state.progress);
 }
 
 fn merge_progress_watermark(
@@ -4361,6 +4525,7 @@ mod tests {
             SmbArchiveSuffixPolicy::OneOrTwo,
             super::SmbArchiveRetentionPolicy::Frozen,
             super::SmbArchiveKeyPolicy::Frozen,
+            super::SmbArchiveLadderPolicy::Frozen,
         )
         .expect("frozen retention campaign");
         let probed = run_smb_archive_search_with_retention(
@@ -4373,6 +4538,7 @@ mod tests {
             SmbArchiveSuffixPolicy::OneOrTwo,
             super::SmbArchiveRetentionPolicy::ProbeAtAdmission,
             super::SmbArchiveKeyPolicy::Frozen,
+            super::SmbArchiveLadderPolicy::Frozen,
         )
         .expect("probed retention campaign");
         // On a target whose terminal condition never fires, every candidate is
@@ -4389,6 +4555,7 @@ mod tests {
             SmbArchiveSuffixPolicy::OneOrTwo,
             super::SmbArchiveRetentionPolicy::ProbeAtAdmission,
             super::SmbArchiveKeyPolicy::Frozen,
+            super::SmbArchiveLadderPolicy::Frozen,
         )
         .expect("repeated probed retention campaign");
         assert_eq!(probed, repeated);

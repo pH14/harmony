@@ -19,19 +19,19 @@ use fuzzer::{
     },
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveKeyPolicy,
-        SmbArchiveReport, SmbArchiveRetentionPolicy, SmbArchiveSuffixPolicy,
-        SmbControlCensusReport, SmbPlayerColumnSelection, SmbSteerScanReport,
-        audit_smb_frontier_viability, audit_smb_player_column_contrast,
+        SmbArchiveLadderPolicy, SmbArchiveReport, SmbArchiveRetentionPolicy,
+        SmbArchiveSuffixPolicy, SmbControlCensusReport, SmbPlayerColumnSelection,
+        SmbSteerScanReport, audit_smb_frontier_viability, audit_smb_player_column_contrast,
         audit_smb_player_column_derived, audit_smb_player_column_from_ids,
         audit_smb_player_column_separation, audit_smb_player_column_spread,
         audit_smb_player_column_verified, audit_smb_player_column_with_selection,
-        audit_smb_terminal_death, census_smb_control_authority, diagnose_smb_film_columns,
-        diagnose_smb_film_measurements, diagnose_smb_film_measurements_derived,
-        diagnose_smb_left_direction, diagnose_smb_player_column, gate_smb_live_control,
-        measure_smb_viable_progress, readmit_smb_archive, run_smb_archive_search,
-        run_smb_archive_search_with_policies, run_smb_archive_search_with_retention,
-        select_smb_responsive_audit_ids, select_smb_span_audit_ids, select_smb_spread_audit_ids,
-        select_smb_steered_audit_ids,
+        audit_smb_terminal_death, census_smb_control_authority, derive_smb_ladder,
+        diagnose_smb_film_columns, diagnose_smb_film_measurements,
+        diagnose_smb_film_measurements_derived, diagnose_smb_left_direction,
+        diagnose_smb_player_column, gate_smb_live_control, measure_smb_viable_progress,
+        readmit_smb_archive, run_smb_archive_search, run_smb_archive_search_with_policies,
+        run_smb_archive_search_with_retention, select_smb_responsive_audit_ids,
+        select_smb_span_audit_ids, select_smb_spread_audit_ids, select_smb_steered_audit_ids,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -138,6 +138,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if mode == "diagnose-left-direction" {
         return run_left_direction_diagnosis_mode(&mut args);
     }
+    if mode == "derive-ladder" {
+        return run_derive_ladder_mode(&mut args);
+    }
     if mode == "measure-viable-progress" {
         return run_viable_progress_mode(&mut args);
     }
@@ -167,6 +170,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ResumeSelection::Champion,
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Frozen,
         );
     }
     if mode == "archive-resume-temporal" {
@@ -177,6 +181,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ResumeSelection::Champion,
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier" {
@@ -187,6 +192,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             ResumeSelection::Frontier,
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Frozen,
+        );
+    }
+    if mode == "archive-resume-frontier-viable-ladder" {
+        return run_archive_resume_mode(
+            &mut args,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            ResumeSelection::Frontier,
+            SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Extended,
         );
     }
     if mode == "archive-resume-frontier-viable" {
@@ -197,6 +214,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ResumeSelection::Frontier,
             SmbArchiveRetentionPolicy::ProbeAtAdmission,
             SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier-viable-page" {
@@ -207,6 +225,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ResumeSelection::Frontier,
             SmbArchiveRetentionPolicy::ProbeAtAdmission,
             SmbArchiveKeyPolicy::VerticalPage,
+            SmbArchiveLadderPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier-burst" {
@@ -217,6 +236,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ResumeSelection::Frontier,
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier-cell-set" {
@@ -227,6 +247,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ResumeSelection::FrontierCellSet,
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier-set" {
@@ -237,6 +258,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ResumeSelection::FrontierSet,
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Frozen,
         );
     }
     if mode == "archive-resume-burst" {
@@ -247,6 +269,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ResumeSelection::FrontierSet,
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Frozen,
         );
     }
     if mode == "archive-resume-band-burst" {
@@ -257,6 +280,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ResumeSelection::FrontierBandSet,
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Frozen,
         );
     }
     if mode != "reproduce-baseline" {
@@ -863,6 +887,24 @@ fn run_left_direction_diagnosis_mode(
     Ok(())
 }
 
+fn run_derive_ladder_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output file")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let ladder = derive_smb_ladder(&source);
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec_pretty(&ladder)?)?;
+    println!("{}", serde_json::to_string_pretty(&ladder)?);
+    Ok(())
+}
+
 fn run_viable_progress_mode(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<(), Box<dyn Error>> {
@@ -1155,6 +1197,7 @@ fn run_archive_resume_mode(
     selection: ResumeSelection,
     retention_policy: SmbArchiveRetentionPolicy,
     key_policy: SmbArchiveKeyPolicy,
+    ladder_policy: SmbArchiveLadderPolicy,
 ) -> Result<(), Box<dyn Error>> {
     let source = PathBuf::from(args.next().ok_or("missing source archive report")?);
     let seed = parse_u64(&args.next().ok_or("missing seed")?.to_string_lossy())?;
@@ -1237,6 +1280,7 @@ fn run_archive_resume_mode(
                 suffix_policy,
                 retention_policy,
                 key_policy,
+                ladder_policy,
             )
         } else {
             run_smb_archive_search_with_policies(
@@ -1285,6 +1329,10 @@ fn run_archive_resume_mode(
             ResumeSelection::FrontierBandSet => "mechanical_frontier_band_set",
         },
         "source_inputs": initial.len(),
+        "ladder_policy": match ladder_policy {
+            SmbArchiveLadderPolicy::Frozen => "frozen",
+            SmbArchiveLadderPolicy::Extended => "extended",
+        },
         "key_policy": match key_policy {
             SmbArchiveKeyPolicy::Frozen => "frozen",
             SmbArchiveKeyPolicy::VerticalPage => "vertical_page",
