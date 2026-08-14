@@ -510,3 +510,39 @@
   demand, because the demonstration registration requires it), and film of
   the furthest trajectory rendered by the unchanged renderer.
 - Raw destination: `target/perf-evidence/campaign-mode/cm6-conquest/`.
+
+### CM6 result — recorded, exactly replayed, filmed; the frontier held
+
+- Live: 50,000 executions on all ten cores in 2,246 seconds — 22.3
+  executions and 4,884 frames per second — 10,968,768 frames emulated
+  including probes and bootstrap, jobs
+  `[4950, 4941, 5004, 5048, 4968, 5066, 5001, 4998, 5024, 5000]` across the
+  ten workers. Retained 16,697 entries, rejected 42,372, refused 1,324 at
+  the probe, skipped 623 duplicate jobs before execution, observed 1,987
+  deaths.
+- Replay: the complete 50,000-job serial re-execution finished in three
+  hours forty minutes and is byte-identical to the live run:
+  `replay_verified=true`, archive SHA-256
+  `848d3573c9238906e3651876a9d0f1959bb9e8990c193e2dd9ef4da3eb3bc32f`,
+  report SHA-256
+  `b3192774e807faaf697dba5d646a7790cac74ed2666ad000217dd25b9ffdbf79`,
+  stream SHA-256
+  `5a83e95139d5b98654b098c112fdaba8834d51ba7370821a6bed18a330a6ddc6`.
+- Film: the furthest trajectory — the 351-action frontier input ending
+  visibly in 2-1 at progress 144 — rendered by the unchanged renderer as
+  352 boundary frames with the SHA-pinned manifest, under
+  `target/perf-evidence/campaign-mode/cm6-conquest/film/`.
+- The territorial result, stated honestly: the corrected watermark finished
+  at `(world 1, level 0, progress 144)` — equal to the source frontier, not
+  past it. The neither-bound caveat registered in advance did not bind: the
+  longest retained input is 421 actions against the 512 cap, and the
+  archive's 16,697 entries sit far under the 32,768 bound. What the archive
+  shows instead is a shelf: 12,823 retained world-2 entries whose mass tops
+  out at progress 124 — 1,513 entries there — an empty span from 125
+  through 143 in which no action boundary survived the admission probe, and
+  the lone 144 state, which is the resume input's own endpoint. The 42,372
+  rejections are capacity-two cells filling on that shelf. Extending past
+  144 from a single viable state across a nineteen-bucket non-viable span is
+  the search problem the campaign leaves standing; the demonstration's claim
+  is the mode — all-cores throughput, a complete recorded stream, exact
+  replay, film — and that claim holds.
