@@ -223,3 +223,122 @@ together or not at all.
   printing only the known pre-existing configuration warning from
   `clippy.toml`; `cargo nextest run --all-features` 83 of 83 passed;
   `cargo deny check` advisories, bans, licenses, sources ok.
+
+### Ruling — the dual-policy structure is temporary
+
+- Integrator ruling, received 2026-08-14 while the SC4 evidence runs were in
+  flight: the frozen selector survives only as long as the acceptance panel
+  needs it as the control arm. Immediately after the corrected selector is
+  promoted, the frozen selector path is deleted outright in a follow-up
+  commit — the corrected selector becomes the only picker, and historical
+  results re-verify by checking out the commit that recorded them, not by
+  carrying dead code forward.
+- Recorded here so the merge record shows the carry is scheduled for
+  deletion. Nothing in this build assumes the frozen path is permanent: the
+  frozen selector is one untouched function behind one dispatch method, the
+  policy enum and its threading are the deletion surface, and the corrected
+  path shares no code with the frozen one beyond the uniform draw, so the
+  follow-up deletion is a removal, not a rewrite.
+- The gates below are unchanged by the ruling and were finished as specified.
+
+## SC4 — gate evidence
+
+### G1, inertness, experiment mode — PASS exactly
+
+- The rebuilt tree reran the recorded M53 gate campaign through the untouched
+  command-line mode: `archive-resume-frontier-viable-ladder` on the verified
+  conquest archive, seed `0x5eed_ef00`, 256 executions, 512-action bound,
+  probing retention, extended ladder, release build.
+- The reproduced `archive-live.json` has SHA-256
+  `88f8ace7a5322813eea000a0b08792b41107a06048ca8ae8d58f35eca0ad6360` — equal
+  byte for byte to the recorded artifact. 597 entries, 597 retained, 1
+  rejected, summary `parent_scheduler` `frozen_frontier_128`, exactly as
+  recorded. This also confirms the recipe identification from the setup note:
+  the recorded gate resumed by the mechanical-frontier rule.
+- Evidence: `target/perf-evidence/selection-correction/m53-gate-repro/`.
+
+### G1, inertness, campaign mode — PASS exactly
+
+- The rebuilt `smb-campaign` binary replayed the recorded gate-2 stream —
+  genesis origin, 20,000 executions, W = 6 — serially to completion.
+  `replay_verified=true`, and every hash equals the recorded value: archive
+  `5613ab357ade74011e17422c8edcc003668b3d6e170ef0c7d9a398f46b53cc01`, report
+  `03210261f4900202c276ded0d91e9c0a007a2b5d33ce004cad0ca246c810f111`, stream
+  `689ef0eeb16f5e906dcd1d4debaedb268dd3027fe22599b0153de5a3d812f88f`. The
+  recorded frozen-policy stream deserializes, replays and re-serializes with
+  no selector field anywhere, so every recorded campaign artifact keeps its
+  bytes under the new code.
+- Input provenance: the recorded stream and live artifacts were taken from
+  the integrator's published copies and verified against
+  `MANIFEST-SHA256.txt` before and after staging.
+- Evidence: `target/perf-evidence/selection-correction/gate2-20000/`.
+
+### G2, determinism, campaign mode — PASS
+
+- One corrected live campaign on the real ROM: conquest-archive origin
+  (resume input the recorded 351-action frontier entry), campaign seed
+  `0x5eed_ca60`, W = 6, 500 executions, 512-action bound,
+  `--selector corrected_tie_class`. Its complete serial replay is
+  byte-identical: `replay_verified=true`, archive SHA-256
+  `2169317d5e4c37b0a3b49c6263ee1694996dba55063a3e3498e9d6c77dc999f6`, report
+  SHA-256 `7e1d418f4b7400f4e5ce604c7cf84c08b60a2afeba61602930d3f32a6f515dd0`,
+  stream SHA-256
+  `0dd0a5468d51afe1215d2cd95a8dcd2312d30f39451d3e458442a3af8e9d55a0`.
+- The header and report record `parent_scheduler` `corrected_tie_class`; every
+  stream record carries its draw annotation.
+- G4 accounting readback, internally consistent: 174 uniform draws plus 432
+  tie-class draws equals the 500 executed jobs plus 106 pre-execution skips;
+  all 674 entries carry per-entry counters; per-entry selected sums to the
+  same 606; 296 selections were productive. No class was skipped and no
+  counter reset fired in this arm — recorded honestly: at 500 executions from
+  the frontier origin the deepest band kept producing, so exhaustion never
+  starved it; the starvation, fall-through and reset behaviours are pinned by
+  the unit tests and are expected to appear in longer arms.
+- Evidence: `target/perf-evidence/selection-correction/g2-campaign-corrected/`.
+
+### G2, determinism, experiment mode — PASS
+
+- One corrected serial arm through the new
+  `archive-resume-play-viable-ladder-corrected` mode: the verified conquest
+  archive resumed by the M53 play-bucket rule at bucket 124 (the H56 source
+  shape — the 422-action shortest input at the deepest play bucket), seed
+  `0x5eed_ef01`, 1,000 executions, 512-action bound, no model, run twice by
+  `--replay`. Both runs are byte-identical: `replay_verified=true`, both
+  `archive-live.json` and `archive-replay.json` at SHA-256
+  `faf856a1bde4511a16952aa07faaa6f23eff63c7cb3d18e6a73728a76a2d555b`.
+- The run is a real corrected-selector workout at the acceptance shape:
+  1,288 entries retained, 305 rejected, 24 deaths, watermark and ladder
+  maximum `(1, 0, 124)`.
+- G4 accounting readback, internally consistent: 253 uniform plus 747
+  tie-class draws equals the 1,000 executions; per-entry counters present on
+  all 1,288 entries and summing to the same 1,000 selected; 750 selections
+  productive. No class skip and no reset fired here either — with
+  three-quarters of selections productive, the deepest band kept refreshing
+  its exhaustion counters — and no entry reached the threshold without
+  producing. The summary records `parent_scheduler` `corrected_tie_class`,
+  `source_selection` `deepest_play_bucket`, `play_bucket` 124.
+- Evidence: `target/perf-evidence/selection-correction/g2-serial-corrected/`.
+
+## Closing status — all gates green, mechanism complete, stopping as specced
+
+- G1 inertness passed exactly in both modes: the recorded M53 experiment-mode
+  gate reproduces at its recorded SHA-256 on this tree, and the recorded
+  gate-2 campaign stream replays to its three recorded hashes with the
+  rebuilt binary. G2 determinism passed in both modes: a corrected serial arm
+  at the acceptance shape is byte-identical across two runs from one seed,
+  and a corrected live campaign replays byte-identically from its stream. G3
+  quality gates passed at every commit. G4 honesty holds: every corrected
+  report carries the selection and novelty counters, the classes-skipped and
+  counter-reset counts, and per-entry counters, with the readbacks above
+  checked against the draw totals.
+- One honest negative for the record: neither G2 arm exercised a class skip
+  or a counter reset in flight — at these budgets the deepest band stayed
+  productive. Those behaviours are pinned by unit tests
+  (`corrected_selector_starves_exhausted_parents_and_falls_through`,
+  `corrected_selector_resets_deterministically_when_all_are_exhausted`), and
+  their live appearance is expected at the panel's 5,000-execution budgets.
+- Per the registration's division of labour, the acceptance arms —
+  controls against challengers on the development seeds — are not run here.
+  They return to the search experiment once this mechanism merges. The
+  dual-policy carry is temporary per the integrator's ruling above, scheduled
+  for deletion after promotion.
