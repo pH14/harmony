@@ -401,3 +401,48 @@
   subsequent identity-gate run in this program is compared against these
   three hashes; any future intended semantic change must re-freeze with its
   lineage recorded the same way.
+
+## CM4 — gate 2 replay exactness and gate 3 honest nondeterminism
+
+- Gate 2 configuration: genesis origin, campaign seed `0x5eed_ca20`, W = 6,
+  20,000 executions, 512-action limit, local machine, co-tenant with the
+  search worker's two full-load runs, everything at `nice -n 10`. The
+  specification authorizes the size past the standing 20,000-execution
+  ceiling.
+- Gate 2 live: 20,000 executions in 940.3 seconds — 21.3 executions and
+  4,331 frames per second aggregate — 4,072,409 frames emulated including
+  probes and bootstrap, 16,639 entries retained, 3,920 rejected, 1,318
+  refused by the probe, 58 duplicate jobs skipped before execution, 2,570
+  deaths, jobs `[3343, 3370, 3356, 3293, 3348, 3290]` across the six
+  workers. From clean genesis the campaign crossed the 1-1 flag, entered
+  1-2, and pushed the per-frame watermark to `(world 0, level 1, progress
+  125)`.
+- Gate 2 replay: the complete serial re-execution of the recorded stream —
+  every result digest, frame count, sequence number, admission decision, and
+  all 58 skip records verified — finished in 81 minutes and is byte-identical
+  to the live run: `replay_verified=true`, archive SHA-256
+  `5613ab357ade74011e17422c8edcc003668b3d6e170ef0c7d9a398f46b53cc01`, report
+  SHA-256
+  `03210261f4900202c276ded0d91e9c0a007a2b5d33ce004cad0ca246c810f111`, stream
+  SHA-256
+  `689ef0eeb16f5e906dcd1d4debaedb268dd3027fe22599b0153de5a3d812f88f`.
+  Gate 2 passes.
+- Gate 3 configuration: two live runs at one seed `0x5eed_ca30`, genesis
+  origin, W = 6, 5,000 executions each, then both replayed.
+- Gate 3 result: the two streams differ and the two archives differ, as the
+  documented trade predicts — arm A retained 3,999 entries with 747 deaths
+  and watermark `(0, 0, 124)`, arm B retained 4,195 entries with 916 deaths
+  and watermark `(0, 0, 119)`. Each report carries its own stream, and both
+  replay byte-identically: arm A `replay_verified=true`, stream SHA-256
+  `396ae028c2f6fcac2008b325c4e83ff90a4b399a14c30896640e640a4e74c95b`,
+  archive SHA-256
+  `0e73aed3c2a97e62b5b5026d9b3e75cb8543cff1a930a4c08ac631f265b55839`; arm B
+  `replay_verified=true`, stream SHA-256
+  `3682f00b2e93f123e7d9a81b4b027ef2bb9023ff5a744cc5cb299cc5d6036394`,
+  archive SHA-256
+  `384903582dfb93711ae90591d0c43595420209e820fa73d9792ea6d20461c800`.
+  Gate 3 passes.
+- Raw evidence: `target/perf-evidence/campaign-mode/gate2-20000/`,
+  `target/perf-evidence/campaign-mode/gate3-a/`, and
+  `target/perf-evidence/campaign-mode/gate3-b/`, each holding the stream,
+  live and replay archives and reports, and the replay verdict.
