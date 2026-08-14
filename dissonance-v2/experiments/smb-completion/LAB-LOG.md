@@ -2910,3 +2910,46 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   ladder records nothing about this run. A campaign that has completed a world
   needs a ladder that can still measure it.
 - The companion run on the ARM machine, seed `0x5eed_c002`, is still executing.
+
+## M52 — preregistered extended milestone ladder and play measurement
+
+- Mechanism claim, in three parts. First, the recorded ladder becomes a
+  quantity that cannot saturate: the maximum corrected `(world, level,
+  progress)` tuple, and every distinct `(world, level)` observed with the
+  execution at which it first appears and the deepest progress reached in it.
+  The four fixed named rungs are kept exactly as they are and are not replaced;
+  they simply stop being the only thing recorded.
+- Second, the ladder is versioned and selectable, so nothing recorded moves. A
+  campaign run under the frozen ladder policy serializes precisely the fields it
+  serialized before — the extended ladder is omitted from the report entirely
+  rather than written as an empty value — so every earlier recorded campaign
+  keeps its recorded ladder and reproduces byte for byte. Only a campaign run
+  under the extended policy carries the new record, stamped with its version.
+- Third, an offline derivation, because the two conquest campaigns already ran
+  under the frozen ladder and must not be re-run to be measured. Every archive
+  entry records its key and its creating execution, so the maximum tuple, the
+  set of observed `(world, level)` pairs, each one's first creating execution
+  and each one's deepest progress are all derivable from a recorded archive
+  without emulation. The difference from the in-campaign record is stated: the
+  offline derivation reports first execution but not first frame, because frames
+  are not recorded per entry.
+- Fourth, the play measurement. The viable-progress measure counts a state that
+  survives 120 frames of no input, and C49 showed that a scripted
+  level-completion sequence satisfies it — the local run's deepest bucket, 144,
+  is a cutscene with the same engine-state byte as ordinary play, so no decoded
+  field separates them. Play progress is therefore measured with the rendered
+  test D37 established: the deepest bucket at the maximum tuple holding a state
+  whose held-right and held-left 120-frame continuations differ in at least one
+  rendered column. Examining at most eight entries per bucket in descending
+  order, stopping at the first bucket that qualifies, mirrors the viable
+  measurement exactly. Both figures are reported wherever they differ, with play
+  as the primary one.
+- Gates fixed before execution. G1: with the frozen ladder policy selected, a
+  resumed arm reproduces a recorded arm byte for byte, proving the change is
+  inert when it is not asked for. G2: the offline derivation applied to the
+  local conquest archive reproduces the tuple counts already recorded in this
+  log by hand — 463, 1,030, 4,137, 7,243 and 10,375 — and its maximum tuple is
+  `(1, 0, 144)`. G3: the four quality gates pass. G4: the play and viable
+  measurements are byte-equal across two runs on the same archive.
+- No search campaign, no acceptance rule about progress, and no model are part
+  of M52. Raw destination: `target/smb-completion/m52-ladder/`.
