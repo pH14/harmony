@@ -2871,3 +2871,42 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
 - Nothing else in the search is currently under suspicion from recorded
   evidence. The next question is what a model panel can do on an honest
   frontier, which is the assignment that follows.
+
+### C49 local result — the first world completed and the second entered
+
+- Seed `0x5eed_c001`, 50,000 executions, 23,248 retained, 29,996 rejected by the
+  admission probe, 4,592 deaths. No entry reached the 512-action bound; the
+  longest retained input is 435 actions, so the bound did not bind.
+- The decoded tuple advanced twice. Retained entries by tuple: 463 at
+  `(0, 0)`, 1,030 at `(0, 1)`, 4,137 at `(0, 2)`, **7,243 at `(0, 3)`** and
+  **10,375 at `(1, 0)`**. The source archive's deepest tuple was `(0, 2)`, so
+  this run crossed two transitions the program had never crossed.
+- Film confirms both, independently of the decode. The furthest trajectory ends
+  on the level-completion sequence of the fourth level of the first world — a
+  castle interior at frame 300, then the end-of-castle message — and a separate
+  film of a deep `(1, 0)` state shows ordinary play in the first level of the
+  second world, with its own scenery, pipes and enemies. Raw work RAM and the
+  rendered frames agree.
+- The deepest genuine play in the second world is progress bucket 124, held by
+  1,276 retained entries, with buckets 121 through 124 holding 2,173 between
+  them. The single entry at bucket 144 is the castle-completion sequence of the
+  previous level, not play.
+- That exposes a limitation of the viable-progress measure worth recording: it
+  reports 144 for this archive, because a cutscene state trivially survives 120
+  frames of no input. The measure was built to exclude falls and it does; it
+  does not distinguish play from a scripted sequence. Where the two differ, the
+  play figure is the honest one.
+- The progress curve is unremarkable and healthy: active entries rise from 355
+  at 100 executions to 18,570 at 45,100, occupied cells from 349 to 13,573, and
+  deaths accumulate steadily from 12 to 4,431. The archive never exhausted and
+  never stalled.
+- Deliverables: the recorded archive at
+  `target/smb-completion/c49-conquest-local/`, film of the furthest trajectory
+  at `target/smb-completion/c49-film-local/` including `film.mp4`, and film of
+  the deepest second-world play at `target/smb-completion/c49-film-w2b/`.
+- The frozen milestone ladder is now saturated. All four of its rungs —
+  progress in the first level, that level's end task, entry into the second
+  level, entry beyond it — were already true in the source archive, so the
+  ladder records nothing about this run. A campaign that has completed a world
+  needs a ladder that can still measure it.
+- The companion run on the ARM machine, seed `0x5eed_c002`, is still executing.
