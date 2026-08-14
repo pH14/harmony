@@ -3409,3 +3409,58 @@ bucket.
   rather than asserted.
 - The acceptance arms registered above return to this experiment once the
   mechanism merges.
+
+### H56 result — rejected at one paired win of six
+
+- The mechanism merged as a strict fast-forward from `746eedfa` to `5c73d677`
+  and cleared every gate. G1, inertness: the M53 gate campaign reproduces its
+  recorded SHA-256
+  `88f8ace7a5322813eea000a0b08792b41107a06048ca8ae8d58f35eca0ad6360` on the
+  merged tree, and a frozen-selector archive carries no selector field at all.
+  G2, determinism: the corrected seed `0x5eed_e000` arm and its no-model replay
+  are byte-equal with SHA-256
+  `97cfb6700fcb0e0b717adf7818e974bbe547349133874d00a16fcf14ab273a47`. G3:
+  formatting, Clippy with `-D warnings`, 83 tests run and 83 passed, and the
+  dependency check. G4, accounting honesty: every corrected archive reports its
+  policy and its counters.
+- Paired play progress against the frozen selector, from the conquest archive at
+  its deepest play bucket, seeds `0x5eed_e000..=0x5eed_e005` at 5,000 executions
+  each. Controls `[124, 124, 124, 124, 124, 124]`. Challengers
+  `[124, 124, 129, 124, 124, 124]`. **One paired win of six against a threshold
+  of four. Rejected.** No held-out panel is due.
+- The panel is a weak discriminator and the reason is mine. Eleven of twelve arms
+  finished at exactly the play bucket they resumed from. The source reached that
+  bucket only after roughly forty thousand executions inside the second world,
+  so five thousand executions from it is a regime in which neither selector was
+  going to move, and a rule that compares two selectors in a regime where
+  nothing advances mostly measures noise. This is the same family of
+  registration flaw H51 recorded — there the success count saturated, here the
+  budget is too small for the measure to resolve anything — and it is recorded
+  beside the registration rather than by amending it. The rejection stands on
+  the registered rule.
+- The action bound was not the constraint. No entry in any arm reached the
+  512-action cap; the longest recorded input is 434.
+- What the corrected selector demonstrably did change is worth recording,
+  because it is not nothing and it is not the acceptance measure. It retains
+  substantially more and dies substantially less: retained
+  `[3333, 3438, 3303, 3359, 3379, 3450]` against the controls'
+  `[2582, 2655, 2608, 2642, 2696, 2674]`, and deaths `[64, 69, 77, 71, 91, 93]`
+  against `[138, 120, 123, 122, 115, 116]`. The archive shape differs the way
+  tie-class sampling predicts: the control concentrates 797 of its entries in
+  the single deepest bucket and leaves 121 through 123 thin, while the
+  challenger spreads 659, 704, 552 and 500 across those four buckets. The
+  frontier is being sampled instead of sliced.
+- The exhaustion machinery never engaged. Across the corrected arms
+  `classes_skipped` is zero and `counter_resets` is zero, because roughly
+  sixty-eight percent of tie-class selections produced a retained descendant and
+  no parent came near the sixty-four-selection barren threshold. The third of
+  the three corrections is therefore **untested** by this panel: it was
+  exercised by the builder's own gates but never fired in a real arm. Any future
+  claim about starving exhausted parents needs a regime where parents actually
+  exhaust, which means a longer budget or a harder frontier.
+- The uniform draw behaved as designed and as diagnosed: about 1,250 of 5,000
+  selections went to it, a quarter of the budget spread across the whole shelf.
+  It remains unchanged and remains the recorded follow-up.
+- Raw evidence: `target/smb-completion/h56-selection/` and
+  `target/smb-completion/h56-progress/` on the ARM machine, with summaries and
+  progress reports copied locally.
