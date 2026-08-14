@@ -2820,3 +2820,54 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   would have to be added to the campaign path and that is a code change to a
   running experiment. The deliverable is unchanged and the transitions will be
   reported from the recorded milestone ladder and progress curve.
+
+### H51 result — rejected; the key term is mostly inert once falls are not retained
+
+- The inertness gate passes completely. With the previous key term selected, all
+  six control arms reproduce H45's recorded challenger arms byte for byte:
+  `8991d328…`, `20a5dea2…`, `0f2c52bf…`, `1528afb6…`, `63a0a476…` and
+  `31eaa2b9…`. Those H45 arms were produced on the local machine and these on
+  the ARM machine, so the gate also establishes byte-equal reproduction of a
+  complete 5,000-execution campaign across the two architectures — a stronger
+  result than D46's audit-level equality.
+- Viable progress by arm against the source archive's 62. Controls
+  `[102, 114, 97, 107, 94, 99]`, six successes. Challengers
+  `[102, 114, 113, 94, 94, 111]`, six successes.
+- **Decision: reject.** The registration required at least 4/6 and strictly more
+  successes than the controls; the panel delivered 6/6 against 6/6, a tie.
+- The per-seed comparison is where the real answer is, and it is close to
+  nothing. Seeds `e000`, `e001` and `e004` finish at exactly the same viable
+  progress, retained count, rejection count and death count as their controls.
+  Seed `e002` gains 16 buckets and `e005` gains 12; seed `e003` loses 13. Median
+  viable progress moves from 100.5 to 106.5. All twelve archives differ byte for
+  byte, so the key term does change which states are kept — it just does not
+  change where the arms get to.
+- The mechanism explains itself. The key term separates two vertical pages, and
+  H45's admission probe already refuses the states that sit on the second one,
+  so on half the seeds there was nothing left for it to separate. Fencing this
+  change until after the retention rule was the right order; what it also shows
+  is that the retention rule absorbed most of what this term was for.
+- A flaw in my own registration, recorded beside it rather than by editing it.
+  The acceptance rule counted successes against the source archive's viable
+  progress of 62, but both groups resume from a probed archive that clears 62 on
+  every seed, so the success count saturated at 6/6 and carried no information.
+  The comparison that carries information here is per-seed against the paired
+  control, and a future panel at a deep frontier should register that instead.
+  The rejection stands on the registered rule and is also what the per-seed
+  numbers say.
+- Raw evidence: `target/smb-completion/h51-vertical-key/` and
+  `target/smb-completion/h51-viable/` on the ARM machine, with summaries and
+  viability reports copied locally.
+
+### Standing summary after the vertical-page panel
+
+- Three mechanical changes have now been measured against the frozen stack. The
+  corrected terminal condition and the admission probe both met their promotion
+  rules and together moved viable progress from 39 to between 93 and 114. The
+  vertical-page key term did not, and the reason is that the probe had already
+  removed the states it was meant to distinguish.
+- Two generated rankings have been measured at two boundaries and neither met
+  its rule. The horizontal-position field is a closed registered null.
+- Nothing else in the search is currently under suspicion from recorded
+  evidence. The next question is what a model panel can do on an honest
+  frontier, which is the assignment that follows.
