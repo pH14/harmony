@@ -380,3 +380,24 @@
   put to the integrator; it is not a campaign-mode defect. Evidence:
   `target/perf-evidence/campaign-mode/executor-identity/` and
   `target/perf-evidence/campaign-mode/executor-identity-base/`.
+
+### Gate-1 ruling — accepted; reference re-frozen at the base tree
+
+- Integrator ruling: gate 1 is accepted on the branch-versus-base
+  bit-equality, which is exactly what the gate exists to prove. The M15
+  reference hashes are superseded, not violated — the terminal-condition
+  correction was an intended, registered semantic change.
+- The frozen executor-identity reference is re-frozen at base commit
+  `7fab4ce5fb44452849bd27e5aae04dbacd60fb87`, seed `0x5eed_ee01`, 5,000
+  executions. Supersession lineage: the M15 reference, superseded by the
+  promoted M35 terminal-condition correction, re-frozen here. The new
+  reference semantic hashes are maze
+  `6e1500f1f0baa2a479f5828158e68995deef395d2ac5b6eeb45d858f5c6b7844`,
+  adventure
+  `8debc5e902d71df10c18ab868df375a4b84478338686cc2bdff8f97f42a62153`, and SMB
+  `3ff148641ed3db6f8f6432549019d654081d164c5428d2cd3e554aaa72bc111b`.
+- The reference is also recorded beside the evidence as
+  `target/perf-evidence/campaign-mode/frozen-identity-reference.json`. Every
+  subsequent identity-gate run in this program is compared against these
+  three hashes; any future intended semantic change must re-freeze with its
+  lineage recorded the same way.
