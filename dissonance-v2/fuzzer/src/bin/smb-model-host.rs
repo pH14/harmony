@@ -533,7 +533,12 @@ fn run_m13(
     let source_archive: SmbArchiveReport = read_json(&source_archive_path)?;
     let operator_view = output.join("operator-view");
     if resume_prepared_evidence {
-        validate_prepared_m13_evidence(&operator_view, &output)?;
+        // The guard exists to stop a decision phase resuming a half-run model
+        // trial. The arm phase consumes a completed decision, so it does not
+        // apply there.
+        if phase != M13Phase::Panel {
+            validate_prepared_m13_evidence(&operator_view, &output)?;
+        }
     } else {
         fs::create_dir_all(operator_view.join("corpus"))?;
         write_m13_evidence(
