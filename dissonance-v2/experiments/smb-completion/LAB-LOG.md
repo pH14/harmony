@@ -3050,3 +3050,41 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   replays without a model.
 - No search acceptance rule and no progress claim are part of M53. Raw
   destination: `target/smb-completion/m53-panel-prerequisites/`.
+
+## H54 — preregistered journal-informed ranking at the second-world play frontier
+
+- Falsifiable claim: with the corrected context, the re-seeded journal and a
+  frontier inside the second world, the instrumentor can infer a non-progress
+  within-cell ranking that preserves states better prepared to produce
+  descendant novelty beyond that frontier.
+- Source is fixed by rule: the conquest campaign with the greater play progress,
+  ties by fewer retained entries and then the smaller seed. That is the local
+  run, seed `0x5eed_c001`, at play progress 124 inside the second decoded world,
+  `target/smb-completion/c49-conquest-local/archive-live.json`. Film evidence is
+  the recorded film of that same play bucket at
+  `target/smb-completion/c49-film-w2b/`.
+- Protocol is H27's with M53's four changes and nothing else: one ranking
+  invocation through the existing decision schema with at most three
+  compile-and-fixture attempts; the existing pure and deterministic source
+  checks with progress terms still forbidden; observation fixtures; the fixed
+  seed `0x5eed_ef00` 256-execution isolation pilot and its exact replay; the
+  recorded-journal chain replay; controls and ranking arms on seeds
+  `0x5eed_e000..=0x5eed_e005` at 5,000 executions each; the frozen scheduler,
+  nine-mask vocabulary, stratified durations, one-or-two suffix and 512-action
+  bound; the ranking consulted only for full-cell replacement with fewer actions
+  as the final tie-breaker; no other generated artifact; at most six arms
+  concurrent on either machine.
+- Acceptance is paired, which is the lesson H51 recorded. Each ranking arm is
+  compared against the control arm at the same seed, and acceptance requires the
+  ranking arm's play progress to be strictly greater than its paired control's
+  on at least 4 of 6 development seeds. Counting successes against a fixed
+  baseline saturates at a deep frontier and carries no information, which is
+  exactly how H51's rule failed.
+- Play progress is M52's measurement and is primary. Viable progress and
+  recorded progress are reported alongside it for every arm, and any arm where
+  they differ is recorded with all three figures.
+- If it accepts, repeat unchanged on held-out seeds `0x5eed_e100..=0x5eed_e105`
+  with the same paired threshold. Any promotion must replay exactly from
+  recorded seed, observations, generated files, labels and journals with no
+  model.
+- Raw destination: `target/smb-completion/h54-luna/`.

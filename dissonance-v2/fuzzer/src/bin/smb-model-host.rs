@@ -113,7 +113,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         return run_m12(&mut args);
     }
     if first == "m13" {
-        return run_m13(&mut args);
+        return run_m13(&mut args, M13Phase::All);
+    }
+    if first == "m13-decide" {
+        return run_m13(&mut args, M13Phase::Decide);
+    }
+    if first == "m13-panel" {
+        return run_m13(&mut args, M13Phase::Panel);
     }
     if first == "m14" {
         return run_m14(&mut args);
@@ -477,12 +483,40 @@ fn run_m12(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
     Ok(())
 }
 
-fn run_m13(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {
+/// Which half of a ranking panel this invocation performs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum M13Phase {
+    /// The single model invocation, its validators, and the recorded decision.
+    Decide,
+    /// The arms, rebuilt from a recorded decision on whichever machine runs them.
+    Panel,
+    /// Both, as before this mechanism existed.
+    All,
+}
+
+fn run_m13(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+    phase: M13Phase,
+) -> Result<(), Box<dyn Error>> {
     let output = required_path(args, "M13 output directory")?;
     let source_archive_path = required_path(args, "source archive report")?;
-    let film_manifest = required_path(args, "plateau film manifest")?;
-    let film_video = required_path(args, "plateau film video")?;
-    let instrumentor_agent = required_path(args, "instrumentor-agent binary")?;
+    let selected_play_bucket: u16 = args
+        .next()
+        .ok_or("missing deepest play bucket")?
+        .to_string_lossy()
+        .parse()?;
+    PLAY_BUCKET
+        .set(selected_play_bucket)
+        .map_err(|_| "play bucket was already set")?;
+    let (film_manifest, film_video, instrumentor_agent) = if phase == M13Phase::Panel {
+        (PathBuf::new(), PathBuf::new(), PathBuf::new())
+    } else {
+        (
+            required_path(args, "plateau film manifest")?,
+            required_path(args, "plateau film video")?,
+            required_path(args, "instrumentor-agent binary")?,
+        )
+    };
     if args.next().is_some() {
         return Err("unexpected extra M13 argument".into());
     }
@@ -490,6 +524,7 @@ fn run_m13(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
     if !resume_prepared_evidence {
         fs::create_dir(&output)?;
     }
+    let decision_path = output.join("m13-decision.json");
     let rom_path = PathBuf::from(
         env::var_os("HARMONY_SMB_ROM")
             .ok_or("HARMONY_SMB_ROM must name the external Super Mario Bros ROM")?,
@@ -510,27 +545,38 @@ fn run_m13(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
         )?;
         write_ranking_interface(&operator_view)?;
     }
-    let records = output.join("model-records/instrumentor");
-    let ranking_decision = obtain_ranking(
-        &operator_view,
-        &records,
-        &instrumentor_agent,
-        &output,
-        &rom_path,
-        &source_archive_path,
-    )?
-    .ok_or("ranking artifact exhausted the predeclared attempts")?;
-    replay_recorded_strategy_journals(&output)?;
+    let ranking_decision = if phase == M13Phase::Panel {
+        read_json(&decision_path)?
+    } else {
+        let records = output.join("model-records/instrumentor");
+        let decision = obtain_ranking(
+            &operator_view,
+            &records,
+            &instrumentor_agent,
+            &output,
+            &rom_path,
+            &source_archive_path,
+        )?
+        .ok_or("ranking artifact exhausted the predeclared attempts")?;
+        replay_recorded_strategy_journals(&output)?;
+        write_json(&decision_path, &decision)?;
+        decision
+    };
     let binary = build_generated_ranking(&output, &ranking_decision.rust_source, "m13-final")
         .map_err(|error| format!("M13 final ranking build failed: {error}"))?;
     run_checked(
         Command::new(&binary)
             .arg("verify")
             .arg(&rom_path)
-            .arg(&source_archive_path),
+            .arg(&source_archive_path)
+            .arg(play_bucket()),
         &output.join("artifact-validation/m13-final-fixture"),
     )?;
 
+    if phase == M13Phase::Decide {
+        println!("{}", serde_json::to_string_pretty(&ranking_decision)?);
+        return Ok(());
+    }
     let mut controls = Vec::new();
     let mut rankings = Vec::new();
     for seed in M13_SEEDS {
@@ -860,7 +906,11 @@ fn validate_built_ranking(
 ) -> Result<(), String> {
     let stem = format!("ranking-trial-3-attempt-{attempt}");
     if let Err(error) = run_checked(
-        Command::new(binary).arg("verify").arg(rom).arg(archive),
+        Command::new(binary)
+            .arg("verify")
+            .arg(rom)
+            .arg(archive)
+            .arg(play_bucket()),
         &output
             .join("artifact-validation")
             .join(format!("{stem}-fixture")),
@@ -1141,7 +1191,7 @@ log_line records only the frame count and changed work-RAM indices.\n",
     )?;
     fs::write(
         view.join("verified-dynamics.txt"),
-        "Progress is the route-agnostic horizontal bucket computed as screen_page * 16 + floor(screen_x / 16), and world then corrected visible level then progress form the mechanical position tuple. A run ends at the first frame whose player-engine byte holds the verified kill state $0b or whose recorded vertical page byte $00b5 is at or above 2; state $08 is verified ordinary play. The second clause was added after a recorded audit: the first clause fires on none of eight recorded uncontrolled continuations, while the second is false on all 10,006 frames of a recorded live control and true within 19 frames on every one of those continuations. After a death, already accumulated campaign milestones and retained nonterminal archive snapshots persist, while the dead evaluation itself is not extended and later evaluations resume from deterministic retained snapshots or gameplay genesis. The frozen milestone ladder is nonzero progress in the first level, the first-level end task, entry into the second level, and entry into any later level. Raw work RAM and films independently confirmed the progress decode at the recorded plateaus and the one-step level correction while the level-advance task is active.\n\nThis game may differ from any game it resembles. Where your expectations disagree with the recorded observations, the observations are correct.\n",
+        "Progress is the route-agnostic horizontal bucket computed as screen_page * 16 + floor(screen_x / 16), and world then corrected visible level then progress form the mechanical position tuple. A run ends at the first frame whose player-engine byte holds the verified kill state $0b or whose recorded vertical page byte $00b5 is at or above 2; state $08 is verified ordinary play. The second clause was added after a recorded audit: the first clause fires on none of eight recorded uncontrolled continuations, while the second is false on all 10,006 frames of a recorded live control and true within 19 frames on every one of those continuations. After a death, already accumulated campaign milestones and retained nonterminal archive snapshots persist, while the dead evaluation itself is not extended and later evaluations resume from deterministic retained snapshots or gameplay genesis. The frozen milestone ladder is nonzero progress in the first level, the first-level end task, entry into the second level, and entry into any later level; it saturated, so an extended ladder now also records the maximum decoded tuple and every decoded pair observed with the execution at which it first appeared. Progress is measured within the current pair and restarts when the pair advances, so a larger progress in a later pair is not comparable with a smaller progress in an earlier one. Raw work RAM and films independently confirmed the progress decode at the recorded plateaus and the one-step level correction while the level-advance task is active.\n\nThis game may differ from any game it resembles. Where your expectations disagree with the recorded observations, the observations are correct.\n",
     )?;
     Ok(())
 }
@@ -1231,19 +1281,19 @@ fn read_strategy_journal(output: &Path) -> Result<StrategyJournal, Box<dyn Error
 fn initial_strategy_journal() -> StrategyJournal {
     StrategyJournal {
         beliefs: vec![
-            "Raw work RAM and film independently validate the recorded horizontal decode at the boundaries where it was checked.".to_owned(),
-            "Field-semantics correction after H27: horizontal progress ranges from 0 through 4095 and larger values are farther right; vertical buckets range from 0 through 15 and larger values are lower on the screen; world and level bytes range from 0 through 255 in increasing numeric order.".to_owned(),
-            "The terminal condition was corrected. It now ends a run at the verified kill state or at a recorded vertical page byte at or above 2. The earlier condition detected neither on eight recorded uncontrolled continuations, and the added clause is false on all 10,006 frames of a recorded live control.".to_owned(),
-            "Re-admitting the previous archive under the corrected condition kept 1,188 of 4,832 retained states, and 3,644 of them were already past the terminal threshold at the boundary where they had been retained.".to_owned(),
-            "Rebuilding with the same scheduler, controller vocabulary, durations, suffixes, retention and budget raised recorded deaths from 45 to about 3,300 per 5,000 executions, and one arm of six reached a horizontal bucket twenty-three past the boundary that twelve earlier arms had shared exactly.".to_owned(),
-            "The highest buckets of the rebuilt archive hold states the corrected condition stops within a few frames of any continuation.".to_owned(),
-            "Of 256 examined retained states, 183 show no rendered response to the controller on any frame, 70 respond only by changing the direction the player is drawn facing, and 2 move him more than one sprite width.".to_owned(),
+            "Field-semantics correction: horizontal progress ranges from 0 through 4095 and larger values are farther right; vertical buckets range from 0 through 15 and larger values are lower on the screen; world and level bytes range from 0 through 255 in increasing numeric order. Progress restarts when the decoded pair advances.".to_owned(),
+            "The terminal condition was corrected to end a run at the verified kill state or at a recorded vertical page byte at or above 2. The earlier condition detected neither on eight recorded uncontrolled continuations, and the added clause is false on all 10,006 frames of a recorded live control.".to_owned(),
+            "Retention now refuses a candidate that none of three fixed probe masks keeps alive for 120 frames. That change met its promotion rule on development and held-out seeds and removed a failure in which half of all arms never left their starting boundary.".to_owned(),
+            "Those two corrections together moved the measured frontier from one boundary that twelve consecutive arms had shared exactly to boundaries between 93 and 114 on every arm, with no change to the scheduler, the controller vocabulary, the durations, the suffixes, the archive keys or the budget.".to_owned(),
+            "Two free-running campaigns of 50,000 executions each, on different seeds and different machines, both advanced two decoded pairs beyond their source. Both entered the deeper pair at a comparable cost, near execution 8,000 of 50,000, and then spent roughly forty thousand executions inside it without leaving it.".to_owned(),
+            "Two progress figures are now recorded and they can differ. One counts a state that survives 120 frames of no input; the other counts a state whose rendered frames answer the controller. On one campaign these read 144 and 124, because the deeper state is a scripted sequence that no controller input changes. The second figure is the primary one.".to_owned(),
+            "Of 256 examined retained states at one frontier, 183 showed no rendered response to the controller on any frame, 70 responded only by changing the direction the player is drawn facing, and 2 moved him more than one sprite width.".to_owned(),
         ],
         failed_approaches: vec![
-            "At the earlier boundary, repeated panels for longer suffix bursts, broader frontier scheduling, progress-band scheduling, a fixed interaction macro, generated archive mutation, and checkpoint retention did not exceed it.".to_owned(),
-            "Earlier generated rankings at separately film-validated boundaries did not meet their registered promotion rules.".to_owned(),
-            "H27's journal-informed ranking made 466 to 699 replacements and 142 to 190 descendant novelties per seed but exceeded the boundary on zero of six seeds; its interpretation of larger vertical buckets as a higher vertical peak was opposite the now-explicit screen direction.".to_owned(),
-            "A registered audit attempted to decode a screen-relative horizontal position from this archive's own film and memory evidence and returned no verified field, because too few retained states move the player at all.".to_owned(),
+            "At an earlier boundary, repeated panels for longer suffix bursts, broader frontier scheduling, progress-band scheduling, a fixed interaction macro, generated archive mutation, and checkpoint retention did not exceed it.".to_owned(),
+            "Two earlier generated rankings were measured at two different boundaries. The first exceeded its boundary on zero of six seeds; the second tied its controls at three of six and was rejected.".to_owned(),
+            "A registered audit attempted to decode a screen-relative horizontal position from the recorded film and memory evidence, over four archives and twelve passes including one derived value, and returned no verified field. That question is closed; no such field exists in the recorded observations.".to_owned(),
+            "Separating the two vertical pages in the archive key was measured and rejected: three of six seeds finished identically to their controls, because the retention rule had already removed the states the term was meant to distinguish.".to_owned(),
         ],
         open_questions: vec![
             "Which recorded non-progress state attributes distinguish prefixes prepared to produce descendant novelty beyond the current boundary?".to_owned(),
@@ -2142,19 +2192,24 @@ use fuzzer::{
 };
 use ranking::InstalledRanking;
 
-fn sampled_inputs(report: &SmbArchiveReport) -> Result<Vec<SmbInput>, Box<dyn Error>> {
-    let frontier = report
+fn sampled_inputs(report: &SmbArchiveReport, play_bucket: u16) -> Result<Vec<SmbInput>, Box<dyn Error>> {
+    // M53: resume from the deepest bucket whose states answer the controller,
+    // measured by the host, so the resume source and the acceptance measure
+    // agree about where the frontier is.
+    let tuple = report
         .entries
         .iter()
-        .map(|entry| (entry.key.world, entry.key.level, entry.key.progress))
+        .map(|entry| (entry.key.world, entry.key.level))
         .max()
         .ok_or("source archive contains no entries")?;
     let input = report
         .entries
         .iter()
-        .filter(|entry| (entry.key.world, entry.key.level, entry.key.progress) == frontier)
+        .filter(|entry| {
+            (entry.key.world, entry.key.level) == tuple && entry.key.progress == play_bucket
+        })
         .min_by_key(|entry| (entry.input.actions.len(), entry.id))
-        .ok_or("source archive contains no frontier input")?
+        .ok_or("source archive contains no input at the supplied play bucket")?
         .input
         .clone();
     Ok(vec![input])
@@ -2165,9 +2220,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mode = args.next().ok_or("missing mode")?;
     let rom_path = PathBuf::from(args.next().ok_or("missing ROM path")?);
     let archive_path = PathBuf::from(args.next().ok_or("missing archive path")?);
+    let play_bucket: u16 = args
+        .next()
+        .ok_or("missing play bucket")?
+        .to_string_lossy()
+        .parse()?;
     let rom = fs::read(rom_path)?;
     let source: SmbArchiveReport = serde_json::from_slice(&fs::read(archive_path)?)?;
-    let inputs = sampled_inputs(&source)?;
+    let inputs = sampled_inputs(&source, play_bucket)?;
     match mode.to_str() {
         Some("verify") => {
             if args.next().is_some() {
@@ -2199,15 +2259,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return Err("unexpected run argument".into());
             }
             let report = match arm.to_str() {
-                Some("control") => run_smb_archive_search_with_config(
+                Some("control") => run_smb_archive_search_with_retention(
                     &rom,
                     &inputs,
                     seed,
                     budget,
                     MAX_SMB_COMPLETION_ACTIONS,
                     SmbArchiveDurationPolicy::Stratified,
+                    SmbArchiveSuffixPolicy::OneOrTwo,
+                    SmbArchiveRetentionPolicy::ProbeAtAdmission,
+                    fuzzer::phase4c::SmbArchiveKeyPolicy::Frozen,
+                    fuzzer::phase4c::SmbArchiveLadderPolicy::Extended,
                 )?,
-                Some("ranking") => run_smb_archive_search_with_ranking(
+                Some("ranking") => run_smb_archive_search_with_ranking_and_retention(
                     &rom,
                     &inputs,
                     seed,
@@ -2218,6 +2282,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         suffix_policy: SmbArchiveSuffixPolicy::OneOrTwo,
                     },
                     &InstalledRanking,
+                    SmbArchiveRetentionPolicy::ProbeAtAdmission,
                 )?,
                 _ => return Err("unknown ranking arm".into()),
             };
@@ -2228,6 +2293,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 "#
+}
+
+/// Deepest play bucket the host measured, passed to every generated-ranking call.
+///
+/// It is set once from the command line before any arm runs, so every
+/// invocation in one panel sees the same value.
+static PLAY_BUCKET: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+fn play_bucket() -> String {
+    PLAY_BUCKET.get().copied().unwrap_or_default().to_string()
 }
 
 fn run_generated_ranking(
@@ -2244,6 +2319,7 @@ fn run_generated_ranking(
             .arg("run")
             .arg(rom)
             .arg(archive)
+            .arg(play_bucket())
             .arg(arm)
             .arg(output)
             .arg(seed.to_string())

@@ -3629,6 +3629,38 @@ pub fn run_smb_archive_search_with_retention(
     )
 }
 
+/// Run completion search with a generated ranking and an explicit retention policy.
+///
+/// # Errors
+///
+/// Returns an error when the initial corpus is empty, when an input exceeds the
+/// action bound, or when emulation or snapshotting fails.
+pub fn run_smb_archive_search_with_ranking_and_retention<R: SmbRanking>(
+    rom: &[u8],
+    initial_inputs: &[SmbInput],
+    seed: u64,
+    execution_budget: u64,
+    config: SmbRankingSearchConfig,
+    ranking: &R,
+    retention_policy: SmbArchiveRetentionPolicy,
+) -> Result<SmbArchiveReport, Box<dyn Error>> {
+    run_smb_archive_search_internal(
+        rom,
+        initial_inputs,
+        seed,
+        execution_budget,
+        config.max_actions,
+        config.duration_policy,
+        config.suffix_policy,
+        Some(ranking),
+        None,
+        false,
+        retention_policy,
+        SmbArchiveKeyPolicy::Frozen,
+        SmbArchiveLadderPolicy::Extended,
+    )
+}
+
 /// Run completion search with a generated ranking confined to full-cell replacement.
 pub fn run_smb_archive_search_with_ranking<R: SmbRanking>(
     rom: &[u8],
