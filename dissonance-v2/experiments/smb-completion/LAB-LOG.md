@@ -3358,3 +3358,54 @@ bucket.
   does not.
 - Depends on M52 for its ordering semantics and on H45 for the retention rule
   that makes the tie classes live states rather than falls.
+
+### H56 requirements for the mechanism builder
+
+- Division of labour, recorded so the record shows who did what: this experiment
+  wrote the registration above and owns the science. The mechanism is
+  implemented by a separate builder in its own worktree against these
+  requirements. **No selector code was written here**; a partial implementation
+  begun before this ruling was reverted and the tree carries none of it.
+- **Requirement one — the selection key, in M52 ladder terms.** Selection must
+  rank by the corrected `(world, level, progress)` tuple, ordered
+  lexicographically. A later pair always outranks an earlier one, and a larger
+  progress inside an earlier pair never outranks a later pair, because progress
+  is measured within the current pair and restarts when the pair advances. The
+  four frozen named rungs must play no part in ranking; they remain in every
+  report untouched.
+- **Requirement two — principled tie handling.** The 128-entry sorted slice must
+  go. The frontier is a tie class, not a slice: all active entries at the best
+  `(world, level)` within a fixed band of the deepest progress in that pair,
+  sampled uniformly. Classes are considered in descending order, and a class
+  every member of which is exhausted must be **skipped** so the frontier falls
+  through. That fall-through is a requirement, not an optimisation: on the
+  recorded conquest archive the maximal tuple holds exactly one entry and it is
+  a scripted sequence, so a selector that cannot fall through would spend three
+  draws in four on a state that cannot produce.
+- **Requirement three — per-entry accounting that starves exhausted parents.**
+  Each entry must record how often it has been selected as a parent and how
+  often a selection produced at least one retained descendant. A parent whose
+  selections since its last retained descendant reach a fixed threshold is
+  exhausted and is not sampled while any unexhausted member of its class
+  remains. A retained descendant resets it. If every active entry is exhausted
+  the counters reset deterministically rather than the search deadlocking, and
+  that reset must be counted and reported.
+- **Hard constraint — a new explicit policy beside the frozen one.** The
+  corrected selector must be a new selector policy carried alongside the frozen
+  one, in exactly the pattern the retention policy and the archive-key policy
+  already use, selected per campaign and defaulting to frozen. Every recorded
+  artifact in this experiment must continue to replay byte-exact on the frozen
+  path. This is not stylistic: the entire evidence chain from H20 onward depends
+  on byte-exact reproduction of recorded archives, and three separate gates in
+  this log are byte-equality against recorded arms.
+- **Gates the mechanism must clear before the acceptance arms run.** Inertness:
+  with the frozen selector selected, a resumed arm reproduces a recorded arm
+  byte for byte. Determinism: one corrected arm replays byte-identically from
+  its recorded seed with no model. Quality: `cargo fmt --check`, `cargo clippy
+  --all-features` with `-D warnings`, `cargo nextest run --all-features`, and
+  `cargo deny check`. Honesty: the selection and novelty counters, the count of
+  skipped classes and the count of counter resets are reported per campaign, so
+  the claim that exhausted parents were starved is checkable from the record
+  rather than asserted.
+- The acceptance arms registered above return to this experiment once the
+  mechanism merges.
