@@ -20,17 +20,18 @@ use fuzzer::{
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveKeyPolicy,
         SmbArchiveLadderPolicy, SmbArchiveReport, SmbArchiveRetentionPolicy,
-        SmbArchiveSuffixPolicy, SmbControlCensusReport, SmbPlayerColumnSelection,
-        SmbSteerScanReport, audit_smb_frontier_viability, audit_smb_player_column_contrast,
-        audit_smb_player_column_derived, audit_smb_player_column_from_ids,
-        audit_smb_player_column_separation, audit_smb_player_column_spread,
-        audit_smb_player_column_verified, audit_smb_player_column_with_selection,
-        audit_smb_terminal_death, census_smb_control_authority, derive_smb_ladder,
-        diagnose_smb_film_columns, diagnose_smb_film_measurements,
-        diagnose_smb_film_measurements_derived, diagnose_smb_left_direction,
-        diagnose_smb_player_column, gate_smb_live_control, measure_smb_viable_progress,
-        readmit_smb_archive, run_smb_archive_search, run_smb_archive_search_with_policies,
-        run_smb_archive_search_with_retention, select_smb_responsive_audit_ids,
+        SmbArchiveSelectorPolicy, SmbArchiveSuffixPolicy, SmbControlCensusReport,
+        SmbPlayerColumnSelection, SmbSteerScanReport, audit_smb_frontier_viability,
+        audit_smb_player_column_contrast, audit_smb_player_column_derived,
+        audit_smb_player_column_from_ids, audit_smb_player_column_separation,
+        audit_smb_player_column_spread, audit_smb_player_column_verified,
+        audit_smb_player_column_with_selection, audit_smb_terminal_death,
+        census_smb_control_authority, derive_smb_ladder, diagnose_smb_film_columns,
+        diagnose_smb_film_measurements, diagnose_smb_film_measurements_derived,
+        diagnose_smb_left_direction, diagnose_smb_player_column, gate_smb_live_control,
+        measure_smb_viable_progress, readmit_smb_archive, run_smb_archive_search,
+        run_smb_archive_search_with_policies, run_smb_archive_search_with_retention,
+        run_smb_archive_search_with_selector, select_smb_responsive_audit_ids,
         select_smb_span_audit_ids, select_smb_spread_audit_ids, select_smb_steered_audit_ids,
     },
 };
@@ -50,6 +51,9 @@ enum ResumeSelection {
     FrontierCellSet,
     FrontierSet,
     FrontierBandSet,
+    /// M53 rule: shortest input at an operator-supplied play bucket of the
+    /// source archive's maximal `(world, level)` pair.
+    PlayBucket,
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,6 +175,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
+            SmbArchiveSelectorPolicy::Frozen,
         );
     }
     if mode == "archive-resume-temporal" {
@@ -182,6 +187,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
+            SmbArchiveSelectorPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier" {
@@ -193,6 +199,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
+            SmbArchiveSelectorPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier-viable-ladder" {
@@ -204,6 +211,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::ProbeAtAdmission,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Extended,
+            SmbArchiveSelectorPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier-viable" {
@@ -215,6 +223,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::ProbeAtAdmission,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
+            SmbArchiveSelectorPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier-viable-page" {
@@ -226,6 +235,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::ProbeAtAdmission,
             SmbArchiveKeyPolicy::VerticalPage,
             SmbArchiveLadderPolicy::Frozen,
+            SmbArchiveSelectorPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier-burst" {
@@ -237,6 +247,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
+            SmbArchiveSelectorPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier-cell-set" {
@@ -248,6 +259,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
+            SmbArchiveSelectorPolicy::Frozen,
         );
     }
     if mode == "archive-resume-frontier-set" {
@@ -259,6 +271,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
+            SmbArchiveSelectorPolicy::Frozen,
         );
     }
     if mode == "archive-resume-burst" {
@@ -270,6 +283,31 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
+            SmbArchiveSelectorPolicy::Frozen,
+        );
+    }
+    if mode == "archive-resume-play-viable-ladder" {
+        return run_archive_resume_mode(
+            &mut args,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            ResumeSelection::PlayBucket,
+            SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Extended,
+            SmbArchiveSelectorPolicy::Frozen,
+        );
+    }
+    if mode == "archive-resume-play-viable-ladder-corrected" {
+        return run_archive_resume_mode(
+            &mut args,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            ResumeSelection::PlayBucket,
+            SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Extended,
+            SmbArchiveSelectorPolicy::CorrectedTieClass,
         );
     }
     if mode == "archive-resume-band-burst" {
@@ -281,6 +319,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
+            SmbArchiveSelectorPolicy::Frozen,
         );
     }
     if mode != "reproduce-baseline" {
@@ -1190,6 +1229,7 @@ fn run_archive_mode(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_archive_resume_mode(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
     duration_policy: SmbArchiveDurationPolicy,
@@ -1198,8 +1238,19 @@ fn run_archive_resume_mode(
     retention_policy: SmbArchiveRetentionPolicy,
     key_policy: SmbArchiveKeyPolicy,
     ladder_policy: SmbArchiveLadderPolicy,
+    selector_policy: SmbArchiveSelectorPolicy,
 ) -> Result<(), Box<dyn Error>> {
     let source = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let play_bucket = if matches!(selection, ResumeSelection::PlayBucket) {
+        Some(u16::try_from(parse_u64(
+            &args
+                .next()
+                .ok_or("missing deepest play bucket")?
+                .to_string_lossy(),
+        )?)?)
+    } else {
+        None
+    };
     let seed = parse_u64(&args.next().ok_or("missing seed")?.to_string_lossy())?;
     let budget = parse_u64(
         &args
@@ -1263,13 +1314,31 @@ fn run_archive_resume_mode(
                 .take(FRONTIER_RESUME_INPUTS)
                 .collect()
         }
+        ResumeSelection::PlayBucket => {
+            let bucket = play_bucket.ok_or("play-bucket resume is missing its bucket")?;
+            vec![play_bucket_resume_input(&source, bucket)?]
+        }
     };
     let frozen_search = matches!(
         selection,
         ResumeSelection::Champion | ResumeSelection::Frontier | ResumeSelection::FrontierCellSet
     );
     let run = |seed| {
-        if frozen_search {
+        if matches!(selection, ResumeSelection::PlayBucket) {
+            run_smb_archive_search_with_selector(
+                &rom,
+                &initial,
+                seed,
+                budget,
+                action_limit,
+                duration_policy,
+                suffix_policy,
+                retention_policy,
+                key_policy,
+                ladder_policy,
+                selector_policy,
+            )
+        } else if frozen_search {
             run_smb_archive_search_with_retention(
                 &rom,
                 &initial,
@@ -1327,6 +1396,7 @@ fn run_archive_resume_mode(
             ResumeSelection::FrontierCellSet => "mechanical_frontier_cell_set",
             ResumeSelection::FrontierSet => "mechanical_frontier_set",
             ResumeSelection::FrontierBandSet => "mechanical_frontier_band_set",
+            ResumeSelection::PlayBucket => "deepest_play_bucket",
         },
         "source_inputs": initial.len(),
         "ladder_policy": match ladder_policy {
@@ -1346,10 +1416,23 @@ fn run_archive_resume_mode(
             SmbArchiveSuffixPolicy::BurstUpToFour => "burst_up_to_four",
         },
         "controller_vocabulary": "frozen_nine_mask",
-        "parent_scheduler": if frozen_search { "frozen_frontier_128" } else { "progress_band" },
+        "parent_scheduler": if matches!(selection, ResumeSelection::PlayBucket) {
+            match selector_policy {
+                SmbArchiveSelectorPolicy::Frozen => "frozen_frontier_128",
+                SmbArchiveSelectorPolicy::CorrectedTieClass => "corrected_tie_class",
+            }
+        } else if frozen_search {
+            "frozen_frontier_128"
+        } else {
+            "progress_band"
+        },
         "executor_mode": "snapshot_resume_archive",
         "campaign": summary,
     });
+    let mut summary = summary;
+    if let Some(bucket) = play_bucket {
+        summary["play_bucket"] = bucket.into();
+    }
     fs::write(
         output.join("archive-summary.json"),
         serde_json::to_vec_pretty(&summary)?,
@@ -1374,6 +1457,29 @@ fn frontier_entries(
         .collect::<Vec<_>>();
     entries.sort_by_key(|entry| (entry.input.actions.len(), entry.id));
     Ok(entries)
+}
+
+/// M53 resume rule: the shortest input at the supplied play bucket of the
+/// source archive's maximal `(world, level)` pair, earlier id on ties.
+fn play_bucket_resume_input(
+    source: &SmbArchiveReport,
+    play_bucket: u16,
+) -> Result<SmbInput, Box<dyn Error>> {
+    let pair = source
+        .entries
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level))
+        .max()
+        .ok_or("source archive contains no retained entries")?;
+    source
+        .entries
+        .iter()
+        .filter(|entry| {
+            (entry.key.world, entry.key.level) == pair && entry.key.progress == play_bucket
+        })
+        .min_by_key(|entry| (entry.input.actions.len(), entry.id))
+        .map(|entry| entry.input.clone())
+        .ok_or_else(|| "source archive contains no input at the supplied play bucket".into())
 }
 
 fn frontier_band_entries(

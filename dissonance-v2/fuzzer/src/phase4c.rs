@@ -199,6 +199,82 @@ pub enum SmbArchiveRetentionPolicy {
     ProbeAtAdmission,
 }
 
+/// How the archive chooses expansion parents.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmbArchiveSelectorPolicy {
+    /// Frozen behaviour: sort by `(milestone_key, archive key, id)`, expand the
+    /// last 128.
+    #[default]
+    Frozen,
+    /// H56: corrected `(world, level, progress)` key, tie-class frontier with
+    /// fall-through, per-entry exhaustion accounting.
+    CorrectedTieClass,
+}
+
+/// Selections since the last retained descendant at which a parent is exhausted.
+const SELECTION_EXHAUSTION_THRESHOLD: u64 = 64;
+
+/// Which selection path one recorded draw took.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmbSelectorPath {
+    /// The untouched one-in-four uniform draw over all active entries.
+    Uniform,
+    /// The corrected tie-class frontier draw.
+    TieClass,
+}
+
+/// One corrected-selector draw, recorded so selection-time state is checkable.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbSelectorDraw {
+    /// Path this draw took.
+    pub path: SmbSelectorPath,
+    /// Fully exhausted tie classes skipped before this draw found its class.
+    pub classes_skipped: u64,
+    /// Whether this draw found every active entry exhausted and reset the
+    /// exhaustion counters.
+    pub counter_reset: bool,
+}
+
+/// Per-campaign accounting for the selector policy that ran.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbSelectorAccounting {
+    /// Selector policy that chose every parent in this campaign.
+    pub policy: SmbArchiveSelectorPolicy,
+    /// Parent selections drawn through the uniform path.
+    pub uniform_selections: u64,
+    /// Parent selections drawn through the tie-class path.
+    pub tie_class_selections: u64,
+    /// Selections that produced at least one retained descendant.
+    pub productive_selections: u64,
+    /// Fully exhausted tie classes skipped across all draws.
+    pub classes_skipped: u64,
+    /// Deterministic all-exhausted counter resets.
+    pub counter_resets: u64,
+}
+
+impl SmbSelectorAccounting {
+    /// Report whether this record should be omitted from a report entirely.
+    ///
+    /// A frozen-selector campaign must serialize exactly the fields it
+    /// serialized before this mechanism existed, so a frozen record writes
+    /// nothing.
+    #[must_use]
+    pub fn is_absent(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Per-entry selection counters reported under the corrected selector policy.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbEntrySelectorCounters {
+    /// Times this entry was selected as a parent.
+    pub selected: u64,
+    /// Selections of this entry that produced at least one retained descendant.
+    pub productive: u64,
+}
+
 /// Fixed masks the admission probe tries, in order, stopping at the first survivor.
 const VIABILITY_PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
 /// Fixed admission-probe horizon in frames.
@@ -247,6 +323,9 @@ pub struct SmbArchiveEntryReport {
     pub key: SmbArchiveKey,
     /// Strongest milestones observed along this input.
     pub milestones: SmbMilestones,
+    /// Selection counters, present only under the corrected selector policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<SmbEntrySelectorCounters>,
 }
 
 /// Deterministic progress sample from one archive campaign.
@@ -301,6 +380,9 @@ pub struct SmbArchiveReport {
     /// Extended ladder record, omitted entirely under the frozen ladder policy.
     #[serde(default, skip_serializing_if = "SmbLadder::is_absent")]
     pub ladder: SmbLadder,
+    /// Selector accounting, omitted entirely under the frozen selector policy.
+    #[serde(default, skip_serializing_if = "SmbSelectorAccounting::is_absent")]
+    pub selector: SmbSelectorAccounting,
 }
 
 /// Mechanical outcome of one fixed frontier-viability continuation.
@@ -379,10 +461,19 @@ pub(crate) struct Archive<'a> {
     first_ranking_replacement: Option<u64>,
     last_descendant_novelty: Option<u64>,
     experimental_search: bool,
+    selector_policy: SmbArchiveSelectorPolicy,
+    selected: Vec<u64>,
+    productive: Vec<u64>,
+    since_retained: Vec<u64>,
+    selector_accounting: SmbSelectorAccounting,
 }
 
 impl<'a> Archive<'a> {
-    pub(crate) fn new(ranking: Option<&'a dyn SmbRanking>, experimental_search: bool) -> Self {
+    pub(crate) fn new(
+        ranking: Option<&'a dyn SmbRanking>,
+        experimental_search: bool,
+        selector_policy: SmbArchiveSelectorPolicy,
+    ) -> Self {
         Self {
             entries: Vec::new(),
             active: Vec::new(),
@@ -399,6 +490,14 @@ impl<'a> Archive<'a> {
             first_ranking_replacement: None,
             last_descendant_novelty: None,
             experimental_search,
+            selector_policy,
+            selected: Vec::new(),
+            productive: Vec::new(),
+            since_retained: Vec::new(),
+            selector_accounting: SmbSelectorAccounting {
+                policy: selector_policy,
+                ..SmbSelectorAccounting::default()
+            },
         }
     }
 
@@ -482,6 +581,7 @@ impl<'a> Archive<'a> {
             input: input.clone(),
             key,
             milestones,
+            selector: None,
         };
         self.entries.push(ArchiveEntry {
             report,
@@ -490,6 +590,9 @@ impl<'a> Archive<'a> {
             ranking_lineage,
         });
         self.active.push(true);
+        self.selected.push(0);
+        self.productive.push(0);
+        self.since_retained.push(0);
         cell.push(id);
         self.input_ids.insert(input, id);
         self.retained = self.retained.saturating_add(1);
@@ -564,6 +667,188 @@ impl<'a> Archive<'a> {
             })
             .collect::<Vec<_>>();
         Ok(frontier[rand.below(NonZeroUsize::new(frontier.len()).ok_or("empty frontier")?)])
+    }
+
+    /// Choose a parent under the configured selector policy.
+    ///
+    /// The frozen policy routes to the untouched [`Self::choose_parent`] and
+    /// reports no draw record; the corrected policy reports one per draw.
+    pub(crate) fn select_parent(
+        &mut self,
+        rand: &mut StdRand,
+        max_actions: usize,
+    ) -> Result<(usize, Option<SmbSelectorDraw>), Box<dyn Error>> {
+        match self.selector_policy {
+            SmbArchiveSelectorPolicy::Frozen => Ok((self.choose_parent(rand, max_actions)?, None)),
+            SmbArchiveSelectorPolicy::CorrectedTieClass => self
+                .choose_parent_corrected(rand, max_actions)
+                .map(|(id, draw)| (id, Some(draw))),
+        }
+    }
+
+    /// H56 corrected selection: corrected key, tie-class frontier with
+    /// fall-through, exhaustion-aware sampling.
+    fn choose_parent_corrected(
+        &mut self,
+        rand: &mut StdRand,
+        max_actions: usize,
+    ) -> Result<(usize, SmbSelectorDraw), Box<dyn Error>> {
+        let active = self.active_ids(max_actions);
+        if active.is_empty() {
+            return Err("SMB archive has no expandable entry".into());
+        }
+        let use_frontier = rand.below(NonZeroUsize::new(4).ok_or("invalid frontier odds")?) != 0;
+        if !use_frontier {
+            let id = active[rand.below(NonZeroUsize::new(active.len()).ok_or("empty archive")?)];
+            return Ok((
+                id,
+                SmbSelectorDraw {
+                    path: SmbSelectorPath::Uniform,
+                    classes_skipped: 0,
+                    counter_reset: false,
+                },
+            ));
+        }
+        let mut classes_skipped = 0_u64;
+        let mut counter_reset = false;
+        loop {
+            if let Some(class) = self.best_unexhausted_class(&active, &mut classes_skipped) {
+                let id =
+                    class[rand.below(NonZeroUsize::new(class.len()).ok_or("empty tie class")?)];
+                return Ok((
+                    id,
+                    SmbSelectorDraw {
+                        path: SmbSelectorPath::TieClass,
+                        classes_skipped,
+                        counter_reset,
+                    },
+                ));
+            }
+            if counter_reset {
+                return Err("selection counter reset freed no entry".into());
+            }
+            for counter in &mut self.since_retained {
+                *counter = 0;
+            }
+            counter_reset = true;
+        }
+    }
+
+    /// The unexhausted members of the best surviving tie class, or `None` when
+    /// every active entry is exhausted.
+    ///
+    /// Classes are `(world, level)` pairs in descending order, banded within a
+    /// pair by successive `FRONTIER_PROGRESS_BAND` windows below each deepest
+    /// remaining progress. Fully exhausted classes are counted and skipped.
+    fn best_unexhausted_class(
+        &self,
+        active: &[usize],
+        classes_skipped: &mut u64,
+    ) -> Option<Vec<usize>> {
+        let mut pairs = BTreeMap::<(u8, u8), Vec<usize>>::new();
+        for id in active {
+            let key = self.entries[*id].report.key;
+            pairs.entry((key.world, key.level)).or_default().push(*id);
+        }
+        for (_, mut members) in pairs.into_iter().rev() {
+            members.sort_by_key(|id| (Reverse(self.entries[*id].report.key.progress), *id));
+            let mut start = 0;
+            while start < members.len() {
+                let anchor = self.entries[members[start]].report.key.progress;
+                let mut end = start;
+                while end < members.len()
+                    && self.entries[members[end]]
+                        .report
+                        .key
+                        .progress
+                        .saturating_add(FRONTIER_PROGRESS_BAND - 1)
+                        >= anchor
+                {
+                    end += 1;
+                }
+                let unexhausted = members[start..end]
+                    .iter()
+                    .copied()
+                    .filter(|id| self.since_retained[*id] < SELECTION_EXHAUSTION_THRESHOLD)
+                    .collect::<Vec<_>>();
+                if !unexhausted.is_empty() {
+                    return Some(unexhausted);
+                }
+                *classes_skipped = classes_skipped.saturating_add(1);
+                start = end;
+            }
+        }
+        None
+    }
+
+    /// Account one recorded selection of `id`; a no-op under the frozen policy.
+    pub(crate) fn record_selection(&mut self, id: usize, draw: &SmbSelectorDraw) {
+        if self.selector_policy == SmbArchiveSelectorPolicy::Frozen {
+            return;
+        }
+        self.selected[id] = self.selected[id].saturating_add(1);
+        self.since_retained[id] = self.since_retained[id].saturating_add(1);
+        match draw.path {
+            SmbSelectorPath::Uniform => {
+                self.selector_accounting.uniform_selections = self
+                    .selector_accounting
+                    .uniform_selections
+                    .saturating_add(1);
+            }
+            SmbSelectorPath::TieClass => {
+                self.selector_accounting.tie_class_selections = self
+                    .selector_accounting
+                    .tie_class_selections
+                    .saturating_add(1);
+            }
+        }
+        self.selector_accounting.classes_skipped = self
+            .selector_accounting
+            .classes_skipped
+            .saturating_add(draw.classes_skipped);
+        self.selector_accounting.counter_resets = self
+            .selector_accounting
+            .counter_resets
+            .saturating_add(u64::from(draw.counter_reset));
+    }
+
+    /// Account whether a recorded selection of `id` retained a descendant; a
+    /// no-op under the frozen policy.
+    pub(crate) fn record_selection_outcome(&mut self, id: usize, retained_descendant: bool) {
+        if self.selector_policy == SmbArchiveSelectorPolicy::Frozen || !retained_descendant {
+            return;
+        }
+        self.productive[id] = self.productive[id].saturating_add(1);
+        self.since_retained[id] = 0;
+        self.selector_accounting.productive_selections = self
+            .selector_accounting
+            .productive_selections
+            .saturating_add(1);
+    }
+
+    /// The per-campaign selector accounting for the report.
+    pub(crate) fn selector_report(&self) -> SmbSelectorAccounting {
+        self.selector_accounting
+    }
+
+    /// Extract the entry reports, stamping per-entry selection counters under
+    /// the corrected policy and leaving them absent under the frozen one.
+    pub(crate) fn take_entry_reports(&mut self) -> Vec<SmbArchiveEntryReport> {
+        let corrected = self.selector_policy != SmbArchiveSelectorPolicy::Frozen;
+        std::mem::take(&mut self.entries)
+            .into_iter()
+            .enumerate()
+            .map(|(id, entry)| {
+                let mut report = entry.report;
+                if corrected {
+                    report.selector = Some(SmbEntrySelectorCounters {
+                        selected: self.selected[id],
+                        productive: self.productive[id],
+                    });
+                }
+                report
+            })
+            .collect()
     }
 }
 
@@ -3113,6 +3398,7 @@ pub fn readmit_smb_archive(
         ranking: SmbRankingAccounting::default(),
         generated_mutator: SmbGeneratedMutatorAccounting::default(),
         ladder: SmbLadder::default(),
+        selector: SmbSelectorAccounting::default(),
     };
     Ok((report, rebuilt))
 }
@@ -3563,6 +3849,7 @@ pub fn run_smb_archive_search_with_config_and_suffix(
         SmbArchiveRetentionPolicy::Frozen,
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
+        SmbArchiveSelectorPolicy::Frozen,
     )
     .map(|(report, _)| report)
 }
@@ -3591,6 +3878,7 @@ pub fn run_smb_archive_search_with_policies(
         SmbArchiveRetentionPolicy::Frozen,
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
+        SmbArchiveSelectorPolicy::Frozen,
     )
     .map(|(report, _)| report)
 }
@@ -3628,6 +3916,49 @@ pub fn run_smb_archive_search_with_retention(
         retention_policy,
         key_policy,
         ladder_policy,
+        SmbArchiveSelectorPolicy::Frozen,
+    )
+    .map(|(report, _)| report)
+}
+
+/// Run completion search with an explicit parent-selector policy.
+///
+/// At [`SmbArchiveSelectorPolicy::Frozen`] this is byte-identical to
+/// [`run_smb_archive_search_with_retention`] at the same arguments.
+///
+/// # Errors
+///
+/// Returns an error when the initial corpus is empty, when an input exceeds the
+/// action bound, or when emulation or snapshotting fails.
+#[allow(clippy::too_many_arguments)]
+pub fn run_smb_archive_search_with_selector(
+    rom: &[u8],
+    initial_inputs: &[SmbInput],
+    seed: u64,
+    execution_budget: u64,
+    max_actions: usize,
+    duration_policy: SmbArchiveDurationPolicy,
+    suffix_policy: SmbArchiveSuffixPolicy,
+    retention_policy: SmbArchiveRetentionPolicy,
+    key_policy: SmbArchiveKeyPolicy,
+    ladder_policy: SmbArchiveLadderPolicy,
+    selector_policy: SmbArchiveSelectorPolicy,
+) -> Result<SmbArchiveReport, Box<dyn Error>> {
+    run_smb_archive_search_internal(
+        rom,
+        initial_inputs,
+        seed,
+        execution_budget,
+        max_actions,
+        duration_policy,
+        suffix_policy,
+        None,
+        None,
+        false,
+        retention_policy,
+        key_policy,
+        ladder_policy,
+        selector_policy,
     )
     .map(|(report, _)| report)
 }
@@ -3661,6 +3992,7 @@ pub fn run_smb_archive_search_with_ranking_and_retention<R: SmbRanking>(
         retention_policy,
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Extended,
+        SmbArchiveSelectorPolicy::Frozen,
     )
     .map(|(report, _)| report)
 }
@@ -3701,6 +4033,7 @@ pub fn run_smb_archive_search_with_retention_and_work(
         retention_policy,
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
+        SmbArchiveSelectorPolicy::Frozen,
     )
 }
 
@@ -3727,6 +4060,7 @@ pub fn run_smb_archive_search_with_ranking<R: SmbRanking>(
         SmbArchiveRetentionPolicy::Frozen,
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
+        SmbArchiveSelectorPolicy::Frozen,
     )
     .map(|(report, _)| report)
 }
@@ -3754,6 +4088,7 @@ pub fn run_smb_archive_search_with_generated_mutator<M: SmbMacro>(
         SmbArchiveRetentionPolicy::Frozen,
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
+        SmbArchiveSelectorPolicy::Frozen,
     )
     .map(|(report, _)| report)
 }
@@ -3790,9 +4125,13 @@ fn run_smb_archive_search_internal(
     retention_policy: SmbArchiveRetentionPolicy,
     key_policy: SmbArchiveKeyPolicy,
     ladder_policy: SmbArchiveLadderPolicy,
+    selector_policy: SmbArchiveSelectorPolicy,
 ) -> Result<(SmbArchiveReport, u64), Box<dyn Error>> {
     if initial_inputs.is_empty() {
         return Err("SMB archive search requires a nonempty initial corpus".into());
+    }
+    if experimental_search && selector_policy != SmbArchiveSelectorPolicy::Frozen {
+        return Err("the experimental scheduler does not take a selector policy".into());
     }
     if !(1..=MAX_SMB_COMPLETION_ACTIONS).contains(&max_actions) {
         return Err("SMB completion action limit is outside its bounded range".into());
@@ -3804,7 +4143,7 @@ fn run_smb_archive_search_internal(
         return Err("SMB archive input exceeds the configured action limit".into());
     }
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
-    let mut archive = Archive::new(ranking, experimental_search);
+    let mut archive = Archive::new(ranking, experimental_search, selector_policy);
     let mut aggregate = SmbMilestones::default();
     let mut progress_watermark = SmbProgressWatermark::default();
     let mut first_reached = SmbMilestoneTimes::default();
@@ -3892,7 +4231,10 @@ fn run_smb_archive_search_internal(
         ..SmbGeneratedMutatorAccounting::default()
     };
     for execution in 1..=execution_budget {
-        let parent_id = archive.choose_parent(&mut rand, max_actions)?;
+        let (parent_id, selector_draw) = archive.select_parent(&mut rand, max_actions)?;
+        if let Some(draw) = &selector_draw {
+            archive.record_selection(parent_id, draw);
+        }
         let parent = archive.entries[parent_id].clone();
         target.restore(&parent.snapshot)?;
         let mut input = parent.report.input.clone();
@@ -4010,6 +4352,7 @@ fn run_smb_archive_search_internal(
                 execution,
             );
         }
+        archive.record_selection_outcome(parent_id, archive.retained > retained_before);
         archive.finish_execution(execution);
         if execution % 100 == 0 || execution == execution_budget {
             curve.push(SmbArchiveProgressPoint {
@@ -4022,6 +4365,7 @@ fn run_smb_archive_search_internal(
         }
     }
 
+    let entries = archive.take_entry_reports();
     let report = SmbArchiveReport {
         seed,
         executions: execution_budget,
@@ -4030,11 +4374,7 @@ fn run_smb_archive_search_internal(
         first_reached,
         first_inputs,
         champion_input,
-        entries: archive
-            .entries
-            .into_iter()
-            .map(|entry| entry.report)
-            .collect(),
+        entries,
         progress_curve: curve,
         retained: archive.retained,
         rejected: archive.rejected,
@@ -4059,6 +4399,7 @@ fn run_smb_archive_search_internal(
                     .collect(),
             },
         },
+        selector: archive.selector_report(),
     };
     Ok((report, target.frames_clocked()))
 }
@@ -4259,15 +4600,25 @@ fn entry_cost(entry: &SmbArchiveEntryReport) -> (usize, u64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Archive, ContinuationRecording, EntryRecording, SmbArchiveDurationPolicy,
-        SmbArchiveSuffixPolicy, SmbDeathBytes, SmbGeneratedMutatorAccounting, SmbProgressWatermark,
-        SmbRanking, SmbRankingSearchConfig, analyze_player_column, merge_progress_watermark,
+        Archive, ArchiveCandidate, ContinuationRecording, EntryRecording,
+        SELECTION_EXHAUSTION_THRESHOLD, SmbArchiveDurationPolicy, SmbArchiveKey,
+        SmbArchiveKeyPolicy, SmbArchiveLadderPolicy, SmbArchiveRetentionPolicy,
+        SmbArchiveSelectorPolicy, SmbArchiveSuffixPolicy, SmbDeathBytes,
+        SmbGeneratedMutatorAccounting, SmbProgressWatermark, SmbRanking, SmbRankingSearchConfig,
+        SmbSelectorDraw, SmbSelectorPath, analyze_player_column, merge_progress_watermark,
         record_generated_mutator_result, run_smb_archive_search,
         run_smb_archive_search_with_config_and_suffix,
         run_smb_archive_search_with_generated_mutator, run_smb_archive_search_with_ranking,
-        run_smb_archive_search_with_retention,
+        run_smb_archive_search_with_retention, run_smb_archive_search_with_selector,
     };
-    use crate::phase4b::{ButtonChord, MAX_SMB_ACTIONS, SmbInput, SmbMacro, SmbObservations};
+    use crate::{
+        phase4b::{
+            ButtonChord, MAX_SMB_ACTIONS, SmbInput, SmbMacro, SmbObservations, SmbSnapshot,
+            SmbTarget,
+        },
+        target::Target,
+    };
+    use libafl_bolts::rands::StdRand;
 
     const SCREEN_COLUMN_INDEX: usize = 100;
     const ABSOLUTE_INDEX: usize = 200;
@@ -4710,7 +5061,11 @@ mod tests {
         .expect("replayed ranked archive campaign");
         assert_eq!(first, second);
         assert!(first.ranking.installed);
-        let mut archive = Archive::new(Some(&ScriptedFrameRanking), false);
+        let mut archive = Archive::new(
+            Some(&ScriptedFrameRanking),
+            false,
+            super::SmbArchiveSelectorPolicy::Frozen,
+        );
         archive.ranking_accounting.replacements = 1;
         archive.first_ranking_replacement = Some(1);
         archive.finish_execution(1_024);
@@ -4774,5 +5129,228 @@ mod tests {
         assert!(first.generated_mutator.installed);
         assert!(first.generated_mutator.attempts > 0);
         assert!(first.generated_mutator.offspring > 0);
+    }
+
+    fn selector_snapshot() -> SmbSnapshot {
+        let rom = synthetic_nrom();
+        let mut target =
+            SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load selector target");
+        target.reset();
+        target.snapshot().expect("snapshot selector genesis")
+    }
+
+    fn selector_archive(keys: &[(u8, u8, u16)]) -> Archive<'static> {
+        let snapshot = selector_snapshot();
+        let mut archive = Archive::new(None, false, SmbArchiveSelectorPolicy::CorrectedTieClass);
+        for (index, (world, level, progress)) in keys.iter().enumerate() {
+            let input = SmbInput {
+                actions: vec![ButtonChord::new(
+                    0,
+                    u8::try_from(index + 1).expect("hold frames"),
+                )],
+            };
+            let key = SmbArchiveKey {
+                world: *world,
+                level: *level,
+                progress: *progress,
+                player_y_bucket: 0,
+                player_engine_state: 0,
+                state_fingerprint: u8::try_from(index % 64).expect("fingerprint"),
+            };
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        input,
+                        key,
+                        milestones: crate::phase4b::SmbMilestones::default(),
+                    },
+                    snapshot.clone(),
+                    &[],
+                )
+                .expect("insert selector entry")
+                .expect("retain selector entry");
+        }
+        archive
+    }
+
+    #[test]
+    fn corrected_selector_draws_only_the_maximal_pair_band() {
+        let mut keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144)];
+        keys.extend(std::iter::repeat_n((0, 0, 100), 6));
+        keys.extend([(1, 0, 124), (1, 0, 120), (0, 1, 60)]);
+        let mut archive = selector_archive(&keys);
+        let mut rand = StdRand::with_seed(0x5eed_5e1e);
+        let mut tie_class_draws = 0;
+        for _ in 0..64 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .expect("corrected selection");
+            let draw = draw.expect("corrected draw record");
+            if draw.path == SmbSelectorPath::TieClass {
+                tie_class_draws += 1;
+                assert_eq!(
+                    id, 0,
+                    "tie-class draws must come from the (1, 0, 144) entry"
+                );
+                assert_eq!(draw.classes_skipped, 0);
+                assert!(!draw.counter_reset);
+            }
+        }
+        assert!(tie_class_draws > 0);
+    }
+
+    #[test]
+    fn corrected_selector_starves_exhausted_parents_and_falls_through() {
+        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 124), (1, 0, 123), (0, 0, 100)];
+        let mut archive = selector_archive(&keys);
+        let exhausting_draw = SmbSelectorDraw {
+            path: SmbSelectorPath::TieClass,
+            classes_skipped: 0,
+            counter_reset: false,
+        };
+        for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
+            archive.record_selection(0, &exhausting_draw);
+        }
+        let mut rand = StdRand::with_seed(0x5eed_5e1f);
+        let mut fell_through = 0;
+        for _ in 0..64 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .expect("corrected selection");
+            let draw = draw.expect("corrected draw record");
+            if draw.path == SmbSelectorPath::TieClass {
+                fell_through += 1;
+                assert!(
+                    id == 1 || id == 2,
+                    "tie-class draws must fall through to the 124 band"
+                );
+                assert_eq!(draw.classes_skipped, 1);
+                assert!(!draw.counter_reset);
+            }
+        }
+        assert!(fell_through > 0);
+        assert_eq!(
+            archive.selector_report().tie_class_selections,
+            SELECTION_EXHAUSTION_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn corrected_selector_resets_deterministically_when_all_are_exhausted() {
+        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (0, 0, 100)];
+        let mut archive = selector_archive(&keys);
+        let exhausting_draw = SmbSelectorDraw {
+            path: SmbSelectorPath::TieClass,
+            classes_skipped: 0,
+            counter_reset: false,
+        };
+        for id in 0..keys.len() {
+            for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
+                archive.record_selection(id, &exhausting_draw);
+            }
+        }
+        let mut rand = StdRand::with_seed(0x5eed_5e20);
+        let mut reset_seen = false;
+        for _ in 0..256 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .expect("corrected selection");
+            let draw = draw.expect("corrected draw record");
+            if draw.path == SmbSelectorPath::TieClass {
+                assert!(
+                    draw.counter_reset,
+                    "the first tie-class draw after full exhaustion must reset"
+                );
+                assert_eq!(draw.classes_skipped, 2);
+                assert_eq!(id, 0);
+                archive.record_selection(id, &draw);
+                reset_seen = true;
+                break;
+            }
+        }
+        assert!(reset_seen);
+        assert_eq!(archive.selector_report().counter_resets, 1);
+    }
+
+    #[test]
+    fn frozen_selector_wrapper_is_byte_identical_and_absent_from_reports() {
+        let rom = synthetic_nrom();
+        let initial = vec![SmbInput::default()];
+        let frozen = run_smb_archive_search_with_selector(
+            &rom,
+            &initial,
+            0x5eed_ef21,
+            32,
+            MAX_SMB_ACTIONS,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            SmbArchiveRetentionPolicy::Frozen,
+            SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Frozen,
+            SmbArchiveSelectorPolicy::Frozen,
+        )
+        .expect("frozen-selector search");
+        let reference = run_smb_archive_search_with_retention(
+            &rom,
+            &initial,
+            0x5eed_ef21,
+            32,
+            MAX_SMB_ACTIONS,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            SmbArchiveRetentionPolicy::Frozen,
+            SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Frozen,
+        )
+        .expect("frozen reference search");
+        assert_eq!(frozen, reference);
+        let serialized = serde_json::to_string(&frozen).expect("serialize frozen report");
+        assert!(!serialized.contains("\"selector\""));
+    }
+
+    #[test]
+    fn corrected_selector_search_replays_and_reports_accounting() {
+        let rom = synthetic_nrom();
+        let initial = vec![SmbInput::default()];
+        let run = || {
+            run_smb_archive_search_with_selector(
+                &rom,
+                &initial,
+                0x5eed_ef22,
+                64,
+                MAX_SMB_ACTIONS,
+                SmbArchiveDurationPolicy::Stratified,
+                SmbArchiveSuffixPolicy::OneOrTwo,
+                SmbArchiveRetentionPolicy::Frozen,
+                SmbArchiveKeyPolicy::Frozen,
+                SmbArchiveLadderPolicy::Frozen,
+                SmbArchiveSelectorPolicy::CorrectedTieClass,
+            )
+        };
+        let first = run().expect("corrected search");
+        let replay = run().expect("corrected replay");
+        assert_eq!(first, replay);
+        let accounting = first.selector;
+        assert_eq!(
+            accounting.policy,
+            SmbArchiveSelectorPolicy::CorrectedTieClass
+        );
+        assert_eq!(
+            accounting
+                .uniform_selections
+                .checked_add(accounting.tie_class_selections),
+            Some(64)
+        );
+        assert!(first.entries.iter().all(|entry| entry.selector.is_some()));
+        let selected_total: u64 = first
+            .entries
+            .iter()
+            .map(|entry| entry.selector.expect("entry counters").selected)
+            .sum();
+        assert_eq!(selected_total, 64);
+        let serialized = serde_json::to_string(&first).expect("serialize corrected report");
+        assert!(serialized.contains("corrected_tie_class"));
     }
 }

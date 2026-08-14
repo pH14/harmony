@@ -21,9 +21,10 @@ use crate::{
     phase4b::{ButtonChord, SmbInput, SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget},
     phase4c::{
         Archive, ArchiveCandidate, SmbArchiveDurationPolicy, SmbArchiveKey, SmbArchiveKeyPolicy,
-        SmbArchiveProgressPoint, SmbArchiveReport, SmbArchiveRetentionPolicy, admission_is_viable,
-        archive_key, merge_action_milestones, merge_milestones, merge_progress_watermark,
-        milestone_key, update_first_inputs,
+        SmbArchiveProgressPoint, SmbArchiveReport, SmbArchiveRetentionPolicy,
+        SmbArchiveSelectorPolicy, SmbSelectorDraw, admission_is_viable, archive_key,
+        merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
+        update_first_inputs,
     },
     target::Target,
 };
@@ -76,6 +77,8 @@ pub struct SmbCampaignConfig {
     /// It never enters campaign state: the stream that was recorded up to the
     /// cutoff still replays exactly.
     pub wall_budget: Option<Duration>,
+    /// Parent-selector policy, frozen unless the campaign explicitly asks.
+    pub selector_policy: SmbArchiveSelectorPolicy,
 }
 
 /// First line of the stream: everything a replay needs to know about the run.
@@ -158,6 +161,9 @@ pub struct SmbCampaignJobRecord {
     pub result_sha256: String,
     /// Ordered admission decisions for the job's candidates.
     pub decisions: Vec<SmbCampaignAdmissionDecision>,
+    /// Selector draw record, present only under the corrected selector policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<SmbSelectorDraw>,
 }
 
 /// Stream record for one job skipped before execution as a known duplicate.
@@ -169,6 +175,9 @@ pub struct SmbCampaignSkipRecord {
     pub parent_id: u64,
     /// Mutation seed whose full prefix chain was already archived.
     pub mutation_seed: u64,
+    /// Selector draw record, present only under the corrected selector policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<SmbSelectorDraw>,
 }
 
 /// One line of the recorded stream after the header.
@@ -278,6 +287,46 @@ pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInpu
         .min_by_key(|entry| (entry.input.actions.len(), entry.id))
         .map(|entry| entry.input.clone())
         .ok_or_else(|| "source archive contains no frontier entries".into())
+}
+
+/// Header identifier for a parent-selector policy.
+#[must_use]
+pub fn selector_identifier(policy: SmbArchiveSelectorPolicy) -> &'static str {
+    match policy {
+        SmbArchiveSelectorPolicy::Frozen => "frozen_frontier_128",
+        SmbArchiveSelectorPolicy::CorrectedTieClass => "corrected_tie_class",
+    }
+}
+
+/// Parent-selector policy named by a recorded header identifier.
+///
+/// # Errors
+///
+/// Returns an error when the identifier names no known selector policy.
+pub fn selector_from_identifier(
+    identifier: &str,
+) -> Result<SmbArchiveSelectorPolicy, Box<dyn Error>> {
+    match identifier {
+        "frozen_frontier_128" => Ok(SmbArchiveSelectorPolicy::Frozen),
+        "corrected_tie_class" => Ok(SmbArchiveSelectorPolicy::CorrectedTieClass),
+        _ => Err("campaign stream parent scheduler is not recognized".into()),
+    }
+}
+
+/// Reject streams whose selector annotations disagree with the header policy.
+fn verify_selector_annotation(
+    policy: SmbArchiveSelectorPolicy,
+    annotation: Option<&SmbSelectorDraw>,
+) -> Result<(), Box<dyn Error>> {
+    match (policy, annotation) {
+        (SmbArchiveSelectorPolicy::Frozen, Some(_)) => {
+            Err("frozen-selector stream carries a selector annotation".into())
+        }
+        (SmbArchiveSelectorPolicy::CorrectedTieClass, None) => {
+            Err("corrected-selector stream is missing a selector annotation".into())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Derive one worker's stream seed from the campaign seed and worker index.
@@ -420,9 +469,9 @@ struct CoordinatorCore<'a> {
 }
 
 impl CoordinatorCore<'_> {
-    fn new(max_actions: usize) -> Self {
+    fn new(max_actions: usize, selector_policy: SmbArchiveSelectorPolicy) -> Self {
         Self {
-            archive: Archive::new(None, false),
+            archive: Archive::new(None, false, selector_policy),
             aggregate: SmbMilestones::default(),
             watermark: crate::phase4b::SmbProgressWatermark::default(),
             first_reached: crate::phase4b::SmbMilestoneTimes::default(),
@@ -651,7 +700,8 @@ impl CoordinatorCore<'_> {
         true
     }
 
-    fn into_archive_report(self, campaign_seed: u64) -> SmbArchiveReport {
+    fn into_archive_report(mut self, campaign_seed: u64) -> SmbArchiveReport {
+        let entries = self.archive.take_entry_reports();
         SmbArchiveReport {
             seed: campaign_seed,
             executions: self.sequence,
@@ -660,12 +710,7 @@ impl CoordinatorCore<'_> {
             first_reached: self.first_reached,
             first_inputs: self.first_inputs,
             champion_input: self.champion_input,
-            entries: self
-                .archive
-                .entries
-                .into_iter()
-                .map(|entry| entry.report)
-                .collect(),
+            entries,
             progress_curve: self.curve,
             retained: self.archive.retained,
             rejected: self.archive.rejected,
@@ -675,6 +720,8 @@ impl CoordinatorCore<'_> {
             // Frozen ladder policy: absent, so campaign archives keep their
             // recorded byte shape.
             ladder: Default::default(),
+            // Absent under the frozen selector for the same reason.
+            selector: self.archive.selector_report(),
         }
     }
 }
@@ -733,7 +780,7 @@ fn stream_header(
         duration_policy: "stratified".to_owned(),
         suffix_policy: "one_or_two".to_owned(),
         retention_policy: "probe_at_admission".to_owned(),
-        parent_scheduler: "frozen_frontier_128".to_owned(),
+        parent_scheduler: selector_identifier(config.selector_policy).to_owned(),
         executor_mode: "snapshot_resume_archive".to_owned(),
         worker_seed_derivation: "sha256(campaign_seed_le || worker_index_le)[0..8] as u64 le"
             .to_owned(),
@@ -848,6 +895,7 @@ struct JobSpec {
 struct PendingJob {
     parent_id: u64,
     mutation_seed: u64,
+    selector: Option<SmbSelectorDraw>,
 }
 
 struct WorkerReply {
@@ -884,7 +932,7 @@ pub fn run_smb_campaign(
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
 
-    let mut core = CoordinatorCore::new(config.action_limit);
+    let mut core = CoordinatorCore::new(config.action_limit, config.selector_policy);
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = bootstrap_target.frames_clocked();
@@ -968,7 +1016,7 @@ pub fn run_smb_campaign(
         drop(reply_sender);
 
         // Select one job for one worker, recording skips, or report exhaustion.
-        let select = |core: &CoordinatorCore<'_>,
+        let select = |core: &mut CoordinatorCore<'_>,
                       rands: &mut [StdRand],
                       writer: &mut StreamWriter<'_>,
                       counters: &mut CampaignCounters,
@@ -984,9 +1032,10 @@ pub fn run_smb_campaign(
                 return Ok(None);
             }
             let rand = &mut rands[worker as usize];
+            let max_actions = core.max_actions;
             let mut consecutive_skips = 0_u64;
             loop {
-                let parent_index = core.archive.choose_parent(rand, core.max_actions)?;
+                let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
                 let mutation_seed = rand.next();
                 let suffix = derive_suffix(mutation_seed)?;
                 if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
@@ -996,7 +1045,11 @@ pub fn run_smb_campaign(
                         worker,
                         parent_id: u64::try_from(parent_index)?,
                         mutation_seed,
+                        selector,
                     }))?;
+                    if let Some(draw) = &selector {
+                        core.archive.record_selection(parent_index, draw);
+                    }
                     counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                     counters.skips_per_worker[worker as usize] =
                         counters.skips_per_worker[worker as usize].saturating_add(1);
@@ -1015,6 +1068,7 @@ pub fn run_smb_campaign(
                     PendingJob {
                         parent_id: u64::try_from(parent_index)?,
                         mutation_seed,
+                        selector,
                     },
                 )));
             }
@@ -1023,7 +1077,7 @@ pub fn run_smb_campaign(
         let mut in_flight = 0_usize;
         for worker in 0..config.workers {
             match select(
-                &core,
+                &mut core,
                 &mut rands,
                 &mut writer,
                 &mut counters,
@@ -1058,6 +1112,16 @@ pub fn run_smb_campaign(
                 .take()
                 .ok_or("campaign worker replied without a pending job")?;
             let (sequence, decisions) = core.admit_job(pending_job.parent_id, &result)?;
+            if let Some(draw) = &pending_job.selector {
+                let parent_index = usize::try_from(pending_job.parent_id)?;
+                core.archive.record_selection(parent_index, draw);
+                core.archive.record_selection_outcome(
+                    parent_index,
+                    decisions.iter().any(|decision| {
+                        matches!(decision, SmbCampaignAdmissionDecision::Retained { .. })
+                    }),
+                );
+            }
             writer.write_line(&SmbCampaignStreamRecord::Job(SmbCampaignJobRecord {
                 sequence,
                 worker: reply.worker,
@@ -1066,13 +1130,14 @@ pub fn run_smb_campaign(
                 frames,
                 result_sha256: result_sha256(&result)?,
                 decisions,
+                selector: pending_job.selector,
             }))?;
             counters.jobs_per_worker[worker_index] =
                 counters.jobs_per_worker[worker_index].saturating_add(1);
             counters.job_frames = counters.job_frames.saturating_add(frames);
             in_flight -= 1;
             match select(
-                &core,
+                &mut core,
                 &mut rands,
                 &mut writer,
                 &mut counters,
@@ -1156,7 +1221,8 @@ pub fn replay_smb_campaign(
         return Err("campaign replay resume input does not match the recorded stream".into());
     }
 
-    let mut core = CoordinatorCore::new(header.action_limit);
+    let selector_policy = selector_from_identifier(&header.parent_scheduler)?;
+    let mut core = CoordinatorCore::new(header.action_limit, selector_policy);
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = target.frames_clocked();
@@ -1178,6 +1244,10 @@ pub fn replay_smb_campaign(
                 let worker = usize::try_from(skip.worker)?;
                 if worker >= counters.skips_per_worker.len() {
                     return Err("recorded skip names an unknown worker".into());
+                }
+                verify_selector_annotation(selector_policy, skip.selector.as_ref())?;
+                if let Some(draw) = &skip.selector {
+                    core.archive.record_selection(parent_index, draw);
                 }
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                 counters.skips_per_worker[worker] =
@@ -1234,6 +1304,16 @@ pub fn replay_smb_campaign(
                     )
                     .into());
                 }
+                verify_selector_annotation(selector_policy, job.selector.as_ref())?;
+                if let Some(draw) = &job.selector {
+                    core.archive.record_selection(parent_index, draw);
+                    core.archive.record_selection_outcome(
+                        parent_index,
+                        decisions.iter().any(|decision| {
+                            matches!(decision, SmbCampaignAdmissionDecision::Retained { .. })
+                        }),
+                    );
+                }
                 let worker = usize::try_from(job.worker)?;
                 if worker >= counters.jobs_per_worker.len() {
                     return Err("recorded job names an unknown worker".into());
@@ -1270,6 +1350,7 @@ mod tests {
     };
     use crate::{
         phase4b::{ButtonChord, SmbMilestones, SmbTarget},
+        phase4c::SmbArchiveSelectorPolicy,
         target::Target,
     };
 
@@ -1354,6 +1435,7 @@ mod tests {
             action_limit: 96,
             host: "unit-test".to_owned(),
             wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::Frozen,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -1377,6 +1459,7 @@ mod tests {
             action_limit: 96,
             host: "unit-test".to_owned(),
             wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::Frozen,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -1406,6 +1489,7 @@ mod tests {
             action_limit: 96,
             host: "unit-test".to_owned(),
             wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::Frozen,
         };
         let mut seed_stream = Vec::new();
         let seed_campaign = run_smb_campaign(
@@ -1424,6 +1508,7 @@ mod tests {
             action_limit: 96,
             host: "unit-test".to_owned(),
             wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::Frozen,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(
@@ -1441,5 +1526,87 @@ mod tests {
             .expect("replay archive-origin campaign");
         assert_eq!(live, replayed);
         assert_eq!(live.origin.kind, "archive");
+    }
+
+    #[test]
+    fn frozen_campaign_stream_and_report_carry_no_selector_fields() {
+        let rom = synthetic_nrom();
+        let config = SmbCampaignConfig {
+            campaign_seed: 0x5eed_ca07,
+            workers: 2,
+            execution_budget: 8,
+            action_limit: 96,
+            host: "unit-test".to_owned(),
+            wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::Frozen,
+        };
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("frozen live campaign");
+        let text = String::from_utf8(stream).expect("stream is utf-8");
+        assert!(
+            text.lines()
+                .next()
+                .expect("header")
+                .contains("frozen_frontier_128")
+        );
+        assert!(!text.contains("\"selector\""));
+        let report = String::from_utf8(serde_json::to_vec_pretty(&live).expect("serialize report"))
+            .expect("report is utf-8");
+        assert!(!report.contains("\"selector\""));
+    }
+
+    #[test]
+    fn corrected_campaign_replays_byte_identically_with_annotations() {
+        let rom = synthetic_nrom();
+        let config = SmbCampaignConfig {
+            campaign_seed: 0x5eed_ca08,
+            workers: 4,
+            execution_budget: 32,
+            action_limit: 96,
+            host: "unit-test".to_owned(),
+            wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::CorrectedTieClass,
+        };
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("corrected live campaign");
+        assert_eq!(live.executions_completed, 32);
+        let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
+        assert!(
+            text.lines()
+                .next()
+                .expect("header")
+                .contains("corrected_tie_class")
+        );
+        assert!(
+            text.lines()
+                .skip(1)
+                .all(|line| line.contains("\"selector\"")),
+            "every corrected job and skip record must carry a selector annotation"
+        );
+        let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay corrected campaign");
+        assert_eq!(live, replayed);
+        let live_bytes = serde_json::to_vec_pretty(&live).expect("serialize live report");
+        let replay_bytes = serde_json::to_vec_pretty(&replayed).expect("serialize replayed report");
+        assert_eq!(live_bytes, replay_bytes);
+        let accounting = live.archive.selector;
+        assert_eq!(
+            accounting.policy,
+            SmbArchiveSelectorPolicy::CorrectedTieClass
+        );
+        assert_eq!(
+            accounting
+                .uniform_selections
+                .checked_add(accounting.tie_class_selections),
+            live.executions_completed
+                .checked_add(live.duplicates_skipped)
+        );
+        assert!(
+            live.archive
+                .entries
+                .iter()
+                .all(|entry| entry.selector.is_some())
+        );
     }
 }

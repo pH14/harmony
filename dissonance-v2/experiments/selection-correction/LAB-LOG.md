@@ -179,3 +179,47 @@
 - SC3 — the two command-line surfaces.
 - SC4 — gate evidence: G1 both modes, G2 both modes, G4 readback, G3
   throughout; recorded here with numbers.
+
+## SC1–SC3 — the mechanism, both modes, both surfaces
+
+Built and committed as one change: the archive constructor carries the policy,
+so the serial engine, the campaign coordinator and the binaries thread it
+together or not at all.
+
+- `phase4c.rs`. The policy enum and the accounting types; three per-entry
+  counter vectors and the campaign accounting inside `Archive`; the
+  `select_parent` dispatch, with `choose_parent` — the frozen selector — not
+  edited at all; the corrected algorithm as registered (corrected key,
+  descending pair order, successive progress bands of the recorded width 8,
+  uniform draw over unexhausted class members, fall-through with skip
+  counting, deterministic all-exhausted reset); `record_selection` and
+  `record_selection_outcome` as the only counter-mutation points, both no-ops
+  under the frozen policy; the `run_smb_archive_search_with_selector` wrapper;
+  the report fields, absent under frozen by the ladder's own serde pattern.
+  Every existing wrapper passes the frozen policy explicitly.
+- `campaign.rs`. The config, header and replay carry the policy through the
+  `parent_scheduler` identifier; skip and job records carry the optional draw
+  annotation; the coordinator records selections at the two stream-write
+  points so replay reproduces every counter from the stream; replay rejects
+  annotation presence that disagrees with the header policy and otherwise
+  adopts draws as recorded identity, recomputing everything
+  admission-derivable.
+- Binaries. `smb-campaign run` takes `--selector corrected_tie_class`
+  (replay needs nothing — the header decides); `smb-completion` gains
+  `archive-resume-play-viable-ladder` and
+  `archive-resume-play-viable-ladder-corrected`, both resuming by the M53
+  play-bucket rule with the bucket as an explicit argument. No existing mode's
+  call path changed.
+- Unit tests, seven new, 83 total. The corrected selector draws only from the
+  maximal-pair band; starves an exhausted singleton and falls through to the
+  band below with the skip counted; resets deterministically when everything
+  is exhausted and counts the reset; the frozen wrapper is equal to the
+  frozen reference and serializes no selector field; a corrected serial run
+  replays equal with selections summing to the budget; a frozen campaign
+  stream and report carry no selector fields; a corrected campaign replays
+  byte-identically with an annotation on every record and counters summing to
+  jobs plus skips.
+- Gates at this commit: `cargo fmt --check` clean; clippy under `-D warnings`
+  printing only the known pre-existing configuration warning from
+  `clippy.toml`; `cargo nextest run --all-features` 83 of 83 passed;
+  `cargo deny check` advisories, bans, licenses, sources ok.

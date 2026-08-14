@@ -8,12 +8,12 @@ use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 use fuzzer::{
     campaign::{
         SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin, replay_smb_campaign,
-        run_smb_campaign, select_frontier_resume_input,
+        run_smb_campaign, select_frontier_resume_input, selector_from_identifier,
     },
     phase4b::SmbInput,
     phase4c::{
         MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
-        SmbArchiveRetentionPolicy, SmbArchiveSuffixPolicy,
+        SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy, SmbArchiveSuffixPolicy,
         run_smb_archive_search_with_retention_and_work,
     },
 };
@@ -92,21 +92,27 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         .to_string_lossy()
         .into_owned();
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
-    let wall_budget = match args.next() {
-        None => None,
-        Some(flag) if flag == "--wall-seconds" => {
+    let mut wall_budget = None;
+    let mut selector_policy = SmbArchiveSelectorPolicy::Frozen;
+    while let Some(flag) = args.next() {
+        if flag == "--wall-seconds" {
             let seconds = parse_u64(
                 &args
                     .next()
                     .ok_or("missing --wall-seconds value")?
                     .to_string_lossy(),
             )?;
-            Some(Duration::from_secs(seconds))
+            wall_budget = Some(Duration::from_secs(seconds));
+        } else if flag == "--selector" {
+            selector_policy = selector_from_identifier(
+                &args
+                    .next()
+                    .ok_or("missing --selector value")?
+                    .to_string_lossy(),
+            )?;
+        } else {
+            return Err("unexpected run argument".into());
         }
-        Some(_) => return Err("unexpected run argument".into()),
-    };
-    if args.next().is_some() {
-        return Err("unexpected extra run argument".into());
     }
     if action_limit > MAX_SMB_COMPLETION_ACTIONS {
         return Err("action limit exceeds the compiled completion bound".into());
@@ -121,6 +127,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         action_limit,
         host,
         wall_budget,
+        selector_policy,
     };
 
     let stream_path = output.join("stream.jsonl");
