@@ -3192,3 +3192,41 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   status.
 - The H54 arm phase was not touched. It runs from a copy synced to the ARM
   machine before the merge and is unaffected by anything in this worktree.
+
+### H54 arm phase — VOID on defective substrate, by integrator ruling
+
+- The arm phase was stopped in flight on the integrator's ruling and its verdict
+  is void. It is recorded as substrate-confounded: **no acceptance verdict was
+  computed, and none should be read into the recorded arms in either direction.**
+- The ruling's rationale, checked here against `phase4c` before the abort. The
+  frozen selector — the one both the control and the ranking arms run — sorts
+  active entries by `(milestone_key, archive key, id)` and expands the last 128.
+  At this depth `milestone_key` saturates: **21,756 of the source archive's
+  23,248 entries hold the identical maximal value**, so the primary sort key
+  distinguishes nothing and ordering falls through to the archive key, whose
+  fields after progress are the vertical bucket, the engine-state byte and a
+  six-bit fingerprint. The resulting window is **entirely at vertical bucket 11
+  and engine state 8**, and it contains 127 of the 1,276 entries at the deepest
+  play bucket — the ones that happen to sort last by fingerprint. Three draws in
+  four came from that slice. A ranking measured against a control that draws
+  from the same arbitrary slice is confounded whichever way it falls, which is
+  the same reasoning that voided the Scale Panel.
+- State at the abort: twelve of thirteen arms had completed — six controls and
+  six ranking arms on seeds `0x5eed_e000..=0x5eed_e005` — and the thirteenth,
+  the no-model replay arm, was 21 minutes in. No `m13-report.json` was written,
+  so no aggregate ever existed.
+- Everything is retained. All twelve completed arm reports, their process logs,
+  `h54.log`, the recorded decision, the model records, the strategy-journal
+  artifacts and the failed first-decision directory are untouched on the ARM
+  machine. The chain was stopped by explicit process identifier only, never by
+  pattern match, because pattern matching self-matches wrapper argv on that box.
+- **The decision phase stands.** The accepted ranking `archive-ranking-changed-state`,
+  its source with SHA-256
+  `2a27043379213d4eb73359b883514105c26929bab68e7db24c6a212c35aa9e4a`, its
+  138-word journal, its validator record and its isolation pilot are valid and
+  exactly replayable. Re-testing that ranking on a corrected selector requires
+  no new model call: the arm phase reads the recorded decision and rebuilds from
+  it.
+- The registration that follows is the corrected selector. The ranking panel is
+  not re-registered here; whether and when to re-run it on the corrected
+  substrate is a separate decision.
