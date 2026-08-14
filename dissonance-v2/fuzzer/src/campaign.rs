@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     phase4b::{ButtonChord, SmbInput, SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget},
     phase4c::{
-        Archive, ArchiveCandidate, SmbArchiveDurationPolicy, SmbArchiveKey,
+        Archive, ArchiveCandidate, SmbArchiveDurationPolicy, SmbArchiveKey, SmbArchiveKeyPolicy,
         SmbArchiveProgressPoint, SmbArchiveReport, SmbArchiveRetentionPolicy, admission_is_viable,
         archive_key, merge_action_milestones, merge_milestones, merge_progress_watermark,
         milestone_key, update_first_inputs,
@@ -373,7 +373,7 @@ fn execute_job(
             let snapshot = target
                 .snapshot()
                 .ok_or("failed to snapshot campaign suffix")?;
-            let key = archive_key(target.wram());
+            let key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
             let viable = admission_is_viable(
                 target,
                 &snapshot,
@@ -455,7 +455,7 @@ impl CoordinatorCore<'_> {
             return Err("campaign bootstrap input exceeds the configured action limit".into());
         }
         target.reset();
-        let genesis_key = archive_key(target.wram());
+        let genesis_key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
         let genesis_snapshot = target
             .snapshot()
             .ok_or("failed to snapshot campaign genesis")?;
@@ -505,7 +505,7 @@ impl CoordinatorCore<'_> {
                     .snapshot()
                     .ok_or("failed to snapshot campaign bootstrap prefix")?;
                 let observations = target.last_action_observations().to_vec();
-                let key = archive_key(target.wram());
+                let key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
                 if !admission_is_viable(
                     target,
                     &snapshot,
@@ -672,6 +672,9 @@ impl CoordinatorCore<'_> {
             deaths: self.deaths,
             ranking: Default::default(),
             generated_mutator: Default::default(),
+            // Frozen ladder policy: absent, so campaign archives keep their
+            // recorded byte shape.
+            ladder: Default::default(),
         }
     }
 }
