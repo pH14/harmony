@@ -2998,3 +2998,55 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   leaving it.
 - Raw evidence: `target/smb-completion/c49-conquest-arm/` on the ARM machine and
   `target/smb-completion/m52-ladder/` on both.
+
+## M53 — preregistered panel prerequisites for the second-world frontier
+
+- Four changes, all to how the host runs a model panel, none to what the model
+  is asked for. The artifact interface, the decision schema, the trait the
+  generated ranking implements, the validators, the forbidden progress tokens
+  and the journal contract are untouched.
+- **One: the panel runs the promoted stack.** The generated-ranking harness
+  calls the frozen retention path for both its control and its ranking arm, so a
+  panel run today would execute without the admission probe H45 promoted. Both
+  arms are changed to the probing retention path. The control's existing call
+  already resolves to the one-or-two suffix policy, so the change is retention
+  and nothing else. Without it the panel would measure a generated ranking
+  against a search that has been retired, with controls that stall the way H44's
+  did.
+- **Two: the resume source becomes the deepest play bucket.** The frozen rule
+  takes the shortest input at the maximum recorded tuple. On the conquest
+  archives that is a scripted level-completion sequence, not play. The rule
+  becomes the shortest input at the deepest bucket whose states answer the
+  controller, measured by M52's play measurement on the host and passed to the
+  harness. The rationale is recorded: the resume source and the acceptance
+  measure must agree about what the frontier is, and H44 showed the cost of the
+  mismatch — its recorded progress ran up to eleven buckets ahead of its viable
+  progress and would have claimed advances that were partly falls.
+- **Three: the panel splits into a decision phase and an arm phase.** The model
+  is reachable only from the local machine, and the local machine is carrying
+  another experiment at a load average above 150, while thirteen arms at five
+  thousand executions with the admission probe is several hours of work. The
+  decision phase performs the single model invocation, the validators, the fixed
+  isolation pilot and its replay, and the journal-chain replay, and records the
+  decision. The arm phase rebuilds the generated ranking from that recorded
+  source on whichever machine runs it and executes the arms. Nothing about the
+  decision, the validation or the arms changes; only where they run.
+- **Four: the context and journal are amended a third time.** Both operator
+  views gain the extended ladder and the fact that progress is measured within
+  the current level and restarts when the tuple advances, which is a decode fact
+  from the recorded conquest archives. The journal is re-seeded with the
+  vertical-page null, the closed horizontal-field question, the world completed
+  and the second entered, the play-versus-viable distinction, and the replicated
+  fact that both conquest seeds spent roughly forty thousand of their fifty
+  thousand executions inside the second world without leaving it. No ranking
+  term, field, action, route, layout, item or goal is suggested.
+- Gates fixed before execution. G1: the harness control arm and the equivalent
+  command-line campaign, both under probing retention at a fixed seed and a
+  fixed small budget, produce byte-equal reports. G2: the recorded decision's
+  generated source has the same SHA-256 on both machines and the arm rebuilt
+  from it produces byte-equal reports on both for one seed. G3: the four quality
+  gates pass. G4: the amended context fixture passes, still rejecting game names
+  and checking the complete field list, and the recorded-journal chain still
+  replays without a model.
+- No search acceptance rule and no progress claim are part of M53. Raw
+  destination: `target/smb-completion/m53-panel-prerequisites/`.
