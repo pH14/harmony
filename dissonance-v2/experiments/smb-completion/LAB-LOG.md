@@ -3116,3 +3116,45 @@ Hypothesis: a larger frozen prefix cache plus per-action prefix snapshots would 
   film, context, journal, seeds, budgets and validators. This follows the
   precedent recorded at H27, where a launch-boundary failure produced no
   decision and the panel was resumed unchanged.
+
+### M53 result — accepted
+
+- G1 passes exactly. The generated-ranking harness's control arm and the
+  equivalent command-line campaign, both under probing retention from the same
+  initial input at seed `0x5eed_ef00` for 256 executions, produce byte-equal
+  reports with SHA-256
+  `88f8ace7a5322813eea000a0b08792b41107a06048ca8ae8d58f35eca0ad6360`. The panel
+  now runs the promoted stack.
+- The source-selection change is verified against the recorded archive: the
+  deepest play bucket 124 holds 1,276 entries whose shortest input is 422
+  actions, while the maximum recorded tuple holds a single entry of 351 actions
+  that is the scripted level-completion sequence. The panel resumes from the
+  former.
+- The split into a decision phase and an arm phase works. The decision phase ran
+  locally, where the model is reachable; the arm phase rebuilt the generated
+  ranking from the recorded decision on the ARM machine and is executing there.
+- G3 passes: formatting, Clippy with `-D warnings`, 70 tests, and the dependency
+  check. G4 passes: the amended context fixture passes and the recorded-journal
+  chain replays without a model. The amended context is recorded at
+  `target/smb-completion/m53-panel-prerequisites/context/` with field-semantics
+  SHA-256 `869d7deea161c057a846614c3c469e7bbf71aa6dc02de7fad9c2f99dd012a479`,
+  verified-dynamics `6c7bbf11e735611fb5f68f7a9f4efda8c2e38f891da5de382e777f66dcb2225f`
+  and journal `7a6d0aaa0b369501e158feddb4f8b64de86d8d718b0465c5534ecfbbf59ea0f8`.
+- One defect found and fixed during execution, recorded rather than smoothed
+  over: the arm phase initially refused to start because the guard that stops a
+  decision phase resuming a half-run model trial also fired for the arm phase,
+  which legitimately consumes a completed decision. The guard is now applied to
+  the decision phase only.
+
+### H54 decision phase — accepted on the first attempt
+
+- The instrumentor returned a usable artifact on attempt 1: an installed ranking
+  named `archive-ranking-changed-state` scoring distinct changed work-RAM
+  addresses, transitions in the size of the changed-address footprint, and the
+  number of records showing any change at all. Its source SHA-256 is
+  `2a27043379213d4eb73359b883514105c26929bab68e7db24c6a212c35aa9e4a` and its
+  138-word journal passed without compression.
+- It passed the deterministic source checks with progress terms still forbidden,
+  the observation fixtures, the fixed seed `0x5eed_ef00` 256-execution isolation
+  pilot with its exact replay, and the recorded-journal chain replay.
+- The arm phase is executing on the ARM machine. Its result follows.
