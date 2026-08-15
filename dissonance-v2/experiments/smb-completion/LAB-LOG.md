@@ -3563,3 +3563,37 @@ bucket.
   deleted outright in the immediately following commit, with historical
   re-verification moving to checkout of the recording commits.
 - Raw destination: `target/smb-completion/h58-selection/`.
+
+## Standing method — cheapest test first
+
+- Recorded as method on the integrator's instruction, and binding on every
+  registration after the H58 re-test. It exists because two expensive panels
+  were lost to assumptions that a free measurement would have caught: H54's arms
+  drew from a frontier window that was an arbitrary key-order slice, and H56's
+  arms ran at a budget where neither selector could move. Both defects were
+  checkable against recorded artifacts at registration time, before a single arm
+  launched.
+- **One — assumption checks before arms.** Every registration lists its
+  load-bearing assumptions explicitly. The recurring ones are that the frontier
+  is real, that the measure can move in the regime being run, and that the key
+  or filter being relied on still discriminates at this depth. Every assumption
+  that is checkable against recorded artifacts is checked, and its result is
+  recorded in the registration, before any arm launches. An assumption that
+  cannot be checked for free is stated as an exposure instead.
+- **Two — pilot before fleet.** One arm at the registered budget must
+  demonstrate the measure can move before the remaining arms launch. A pilot
+  that cannot move voids the panel at a twelfth of its cost. The pilot is part
+  of the panel and its seed is fixed in the registration, not chosen afterwards.
+- **Three — preregistered early stopping.** Multi-seed panels state an honest
+  stop rule in advance. The worked example: stop after three exactly-tied pairs
+  and record the panel as unresolvable in this regime. The rule is registered so
+  that stopping is neither peeking nor theatre — a panel that has already shown
+  it cannot discriminate is halted and recorded as such rather than run to a
+  full count for appearances.
+- These three are conditions on registration and execution, not on judgement.
+  They do not relax any acceptance rule, do not permit an acceptance threshold
+  to move after the fact, and do not licence reading a result before its
+  registration is complete.
+- The H58 re-test proceeds unchanged. Its regime is already evidence-validated:
+  D57 recorded one arm reaching bucket 129, above the resume bucket, so the
+  measure is known to be able to move there.
