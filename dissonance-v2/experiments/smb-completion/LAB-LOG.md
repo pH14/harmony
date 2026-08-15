@@ -4155,3 +4155,39 @@ one variable of science only when a link stalls.
 - The determinism gate is in flight at the time of writing: the serial replay
   of the recorded stream is running and its verdict is recorded below when it
   lands. One live run, no retry taken or permitted.
+
+### C61 replay verdict — verified
+
+- The serial replay of the recorded stream completed all 50,000 executions and
+  is byte-identical: `replay_verified` true, replay stream SHA-256
+  `3e969f0f63930e606dbc4edb626455df9a2d639a95d9171a507b9473bb57fa1b` equal to
+  the live stream, replayed archive SHA-256
+  `4d1c28f1ced20c0f62abb94c0aec69176b275c8d9b0b62c792db5240d4d2a176`. C61 is
+  complete evidence: recorded, verified, measured and filmed. Verdict at
+  `target/smb-completion/c61-conquest/replay-verdict.json`.
+
+## C63 — registered concentrated conquest, third link of the chain
+
+- Observational, in the C49/C61 pattern: no falsifiable claim, no control, no
+  acceptance rule. The deliverables are the recorded archive, the extended
+  ladder, and film.
+- One live concentrated-policy conquest campaign, 50,000 executions, on the
+  local machine at its ten cores, campaign seed `0x5eed_c005`, sourced from
+  C61's verified archive `target/smb-completion/c61-conquest/archive-live.json`,
+  SHA-256 `4d1c28f1ced20c0f62abb94c0aec69176b275c8d9b0b62c792db5240d4d2a176`.
+  One live run, no retries, serial replay of the recorded stream as the
+  determinism gate.
+- Choice of origin under the standing chain ruling — relaunch from the deeper
+  archive: C61's ladder tops at `(world 1, level 1, progress 27)`, verified;
+  C62's live ladder tops at `(world 1, level 1, progress 25)`, two buckets
+  shallower, its replay still in flight on the ARM machine. C61 is the deeper
+  archive and the only verified one, so the chain resumes from it. If C62's
+  replay later verifies it remains evidence, but it does not seed this link.
+- Resume-rule assumption check, run against the recorded artifact before
+  launch and recorded in the C61 result above: the play measurement at the
+  origin's maximum pair returns recorded 27, viable 27, play 27. The frontier
+  is settled genuine play, so `select_frontier_resume_input` — the shortest
+  input at the maximum recorded tuple — resumes from the same state family the
+  film shows, and no derived origin is needed. The D57/H59 failure mode, a
+  resume rule landing on a level-transition artifact, is checked absent here.
+- Raw destination: `target/smb-completion/c63-conquest/`.
