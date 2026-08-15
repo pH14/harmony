@@ -3828,3 +3828,54 @@ bucket.
   re-execution and remains the determinism gate. Small recorded-artifact
   diagnostics, such as the span walks and the progress measurements, are
   unaffected and stay as they are.
+
+### H59 pilot result — the twice-stalled seed advanced, decisively
+
+- The registered pilot question was: does the concentrated policy advance play
+  past bucket 124 from the source where the frozen scheduler massed at 124?
+  **It does.** One live concentrated campaign, 20,000 executions on twelve
+  cores, campaign seed derived from `0x5eed_e000`, from the derived
+  play-bucket-124 origin.
+- The recorded run completed 20,000 executions, retained 12,662 entries against
+  11,344 rejected with 946 deaths, emulated 4,353,601 frames, and its stream
+  hashes to `cdfed5f0edda6819073b4f23da9821fc826ff8856682f9ceae4678800ab03628`.
+- Its extended ladder reaches `(world 1, level 0, progress 197)` and then a new
+  pair, `(world 1, level 1)`, first retained at execution 19,674 with 233
+  entries. The origin's deepest play bucket was 124.
+- The advance is dense, not a single artifact entry. Above bucket 120 the
+  second-world pair holds 892, 1048, 755 and 820 entries at 121 through 124,
+  then 195, 241, 198, 138, 161, 81 and 54 across 126 through 132, and continues
+  through 136 to 147, 155, 156, 168, 174 to 184, 192, 193 and six entries at
+  197. This is a populated corridor, not a lucky boundary.
+- The comparison set, all from recorded artifacts. Serial arms with the frozen
+  selector from this exact origin: six arms, 120,000 executions, **every one at
+  exactly 124** (H58). Serial with the corrected uncapped selector from the same
+  origin: five at 124, one at 145. Campaign mode with the frozen selector at
+  50,000 executions: a shelf topping out at 124 with 1,513 entries there and an
+  empty span above it (CM6, recorded in the campaign-mode log). Campaign mode
+  with the concentrated selector at 20,000 executions: **197 and a new level.**
+- **The mechanism did not work the way its rationale said, and the assumption
+  check predicted exactly that.** The recorded concentration accounting is
+  window cap 128, final window size 128, 15,129 window draws, **10,281 distinct
+  parents through the window**, and 1.471 draws per parent — *lower* than the
+  2.6 the uncapped corrected selector recorded, because campaign mode retains
+  more and so churns the window faster. `classes_skipped` and `counter_resets`
+  are both zero again: exhaustion still never fires, at any budget, under any
+  selector yet built.
+- What the cap changes is what the registration's assumption check said it would
+  change: not draws per parent, but **which** parents receive them. Every
+  frontier draw goes to one of the 128 most recently retained members instead of
+  being spread across a band of five to six thousand, most of which are old and
+  shallow. The recency half of the rationale is supported; the exhaustion half
+  remains inert and untested in a real arm across three panels.
+- Stated exposure, because it bounds what this pilot licenses: no campaign-mode
+  arm exists with the corrected **uncapped** selector. The pilot therefore
+  separates concentrated-campaign from frozen-campaign and from both serial
+  selectors, but it does **not** separate the recency cap from the tie-class
+  correction under campaign mode. A fleet that wants that separation needs the
+  uncapped corrected policy as its control rather than the frozen one.
+- Determinism gate in flight at the time of writing: the serial replay of the
+  recorded stream is running and its result is recorded below when it lands. The
+  arm of record is the recorded stream; the replay verifies it, and no retry was
+  taken or is permitted.
+- Raw evidence: `target/smb-completion/h59-pilot/` on the ARM machine.
