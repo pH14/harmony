@@ -3511,3 +3511,55 @@ bucket.
   span. The open question stays what it was — depth in the second world — and
   the recorded budget flaw in H56 remains the first thing a re-test must fix.
 - Raw evidence: `target/smb-completion/d57-span/`.
+
+## H58 — preregistered selection re-test at a budget that can resolve it
+
+- Falsifiable claim, unchanged from H56: the corrected selector reaches deeper
+  play than the frozen one. Controls run the frozen selector and challengers the
+  corrected one, from the same source, on development seeds
+  `0x5eed_e000..=0x5eed_e005`. Acceptance requires the challenger's play
+  progress to be strictly greater than its paired control's on at least 4 of 6
+  seeds. On acceptance, repeat unchanged on held-out seeds
+  `0x5eed_e100..=0x5eed_e105` with the same paired threshold.
+- **The only change is the budget: 20,000 executions per arm, against H56's
+  5,000.** The standing ceiling of twenty thousand is lifted for these arms by
+  explicit integrator authorization, recorded here as C49's was.
+- What changes at this budget, stated before execution. H56's own numbers are
+  the argument: eleven of its twelve arms finished at exactly the bucket they
+  resumed from, and the source archive needed roughly forty thousand executions
+  inside the second world to reach that bucket. At five thousand neither
+  selector could move, so the paired comparison mostly measured noise; at
+  twenty thousand both can move, so it measures selection. D57 removed the
+  competing explanation: the span above the resume bucket is not a wall, no
+  boundary there fails the admission probe, and one H56 arm already crossed into
+  it, so a longer budget is the right lever rather than a mechanism change.
+- **The exhaustion machinery is expected to fire in a real arm for the first
+  time.** H56 recorded `classes_skipped` zero and `counter_resets` zero, because
+  about sixty-eight percent of tie-class selections produced a retained
+  descendant and no parent approached the sixty-four-selection barren threshold.
+  At four times the budget parents should begin to exhaust. The selector
+  counters — tie-class selections, productive selections, classes skipped and
+  counter resets — are reported prominently for every corrected arm **either
+  way**. If they remain zero at twenty thousand executions that is itself a
+  finding about the threshold, and it must be reported as such rather than
+  omitted.
+- Source, and a stated deviation from the mechanical rule. H56's source rule
+  selects the recorded archive with the greatest play progress, which is now the
+  corrected seed `0x5eed_e002` arm at play 129. This registration instead keeps
+  **H56's own source**, the conquest archive at play bucket 124, for two
+  reasons: it makes the two panels differ in exactly one variable, which is the
+  point of a re-test; and it avoids sourcing a comparison between two selectors
+  from an archive that one of them produced. The deviation is recorded here
+  rather than taken silently.
+- Gates, unchanged from H56. Inertness: the frozen path reproduces a recorded
+  campaign byte for byte. Determinism: one corrected arm replays byte-identically
+  from its recorded seed with no model. Quality: the four gates. Honesty: the
+  selector accounting is reported per corrected arm.
+- Execution: the ARM machine under the standing box rules, six arms concurrent,
+  `nice -n 10`. Several hours are expected.
+- Lineage: this supersedes H56's budget and nothing else. H56's rejection stands
+  as recorded, at the rule it was registered under. Promotion on held-out
+  acceptance triggers the standing ruling that the frozen selector path is
+  deleted outright in the immediately following commit, with historical
+  re-verification moving to checkout of the recording commits.
+- Raw destination: `target/smb-completion/h58-selection/`.
