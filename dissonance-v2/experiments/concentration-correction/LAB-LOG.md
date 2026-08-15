@@ -92,6 +92,16 @@
   parent has ever reached the barren threshold in a real arm; a unit test pins
   the chosen behaviour.
 
+### Ruling — the unexhausted-members reading is ratified
+
+- Integrator ruling, received 2026-08-15 while the CC2 evidence runs were in
+  flight: the window over unexhausted members is the correct reading. A
+  raw-recency window could mark a class skippable while unexhausted members
+  sit outside the window, which would rewrite the registered fall-through
+  semantics instead of preserving them; the chosen reading keeps both the
+  individual-starvation invariant and skip-only-when-all-exhausted intact.
+  The pinning unit test stands as the record of the behaviour.
+
 ### Accounting, shaped so the assumption-check figure is in the record
 
 - The H59 assumption check turned on draws per parent, so the record reports
@@ -168,3 +178,92 @@
   `campaign.rs`, with unit tests, plus the one command-line mode.
 - CC2 — gate evidence: G1 on both existing paths, G2 both modes, G4 readback,
   G3 throughout; recorded here with numbers.
+
+## CC2 — gate evidence
+
+All five evidence runs executed on this tree at the CC1 mechanism commit,
+`nice -n 10`, release binaries, the verified external ROM, artifacts under
+`target/perf-evidence/concentration-correction/`. Every hash below is a
+SHA-256 of the artifact bytes.
+
+### G1 — inertness of both existing selector paths
+
+- **Frozen, experiment mode — pass, byte-exact.** The recorded M53 gate rerun
+  (`archive-resume-frontier-viable-ladder` on the verified conquest source,
+  seed `0x5eed_ef00`, 256 executions, 512-action bound) produced
+  `m53-gate-repro/archive-live.json` at
+  `88f8ace7a5322813eea000a0b08792b41107a06048ca8ae8d58f35eca0ad6360`, equal to
+  the published reference. 597 entries, 597 retained, 1 rejected,
+  `parent_scheduler` `frozen_frontier_128`.
+- **Corrected, experiment mode — pass, byte-exact.** The H56 corrected arm
+  rerun (`archive-resume-play-viable-ladder-corrected` on the same source at
+  play bucket 124, seed `0x5eed_e000`, 5,000 executions) produced
+  `h56-corrected-repro/archive-live.json` at
+  `97cfb6700fcb0e0b717adf7818e974bbe547349133874d00a16fcf14ab273a47`, equal to
+  the published reference. 3,333 entries, 3,142 rejected, `parent_scheduler`
+  `corrected_tie_class`. The corrected report carries no concentration field
+  anywhere in its bytes, which is what byte-equality requires and the unit
+  suite pins.
+- **Frozen, campaign mode — pass, byte-exact.** The recorded gate-2
+  20,000-execution stream replayed from genesis with `replay_verified: true`
+  and reproduced all three recorded hashes: archive
+  `5613ab357ade74011e17422c8edcc003668b3d6e170ef0c7d9a398f46b53cc01`, report
+  `03210261f4900202c276ded0d91e9c0a007a2b5d33ce004cad0ca246c810f111`, stream
+  `689ef0eeb16f5e906dcd1d4debaedb268dd3027fe22599b0153de5a3d812f88f`
+  (`gate2-20000/replay-verdict.json`).
+
+### G2 — determinism of the concentrated path, both modes
+
+- **Experiment mode — pass, byte-identical.** One concentrated arm
+  (`archive-resume-play-viable-ladder-concentrated`, conquest source at play
+  bucket 124, seed `0x5eed_ef02`, 1,000 executions, no model) run twice from
+  the one seed; both archives hash
+  `268ce6137a8f764d9255b8905bf2e83b14d33b837b9666aa3e1aed4f3b9b4a2e` and the
+  second run's built-in comparison reports `replay_verified: true`. 1,386
+  entries, 254 rejected, `parent_scheduler` `concentrated_recency_128`.
+- **Campaign mode — pass, byte-identical.** One concentrated live campaign on
+  the real ROM (conquest-archive origin, seed `0x5eed_ca61`, 6 workers, 500
+  executions) followed by replay from its recorded stream:
+  `replay_verified: true`, archive
+  `ef2467d743c0c68cecefe1da30f083b2fb2be2b825f7a3b88a4687e773d739ae`, report
+  `5556024c222a999ea9966591bd14152673ee2b8a49a5df38529739ac51a5d874`, stream
+  `5fc073d5d468220aa802804666b2c81d3ac09cdaa0261e59dd20ae3880114353`. The
+  stream header records `concentrated_recency_128`; 612 entries, 112
+  duplicates skipped, 294 rejected, progress watermark (1, 0, 144).
+
+### G4 — accounting readback, with numbers
+
+- **Serial concentrated arm.** 280 uniform draws and 720 tie-class draws sum
+  to the 1,000 executions. Concentration block: window cap 128, sampled-set
+  size at the final draw 128 — the cap engaged at this budget — 720 window
+  draws, 805 distinct parents ever through the sampled set,
+  `draws_per_parent_milli` 894, i.e. 0.894 draws per parent. Distinct parents
+  exceed draws because a single draw can admit up to 128 first-time members;
+  the denominator is membership, not sampling, exactly the H59 arithmetic's
+  denominator. At this budget the window turns over faster than draws
+  accumulate on it, which is the concentration the correction was registered
+  to produce. `classes_skipped` 0, `counter_resets` 0.
+- **Live concentrated campaign.** 128 uniform draws and 484 tie-class draws
+  sum to the 612 selections (500 jobs plus 112 duplicate skips).
+  Concentration block: final window size 1, 484 window draws, 1 distinct
+  parent, `draws_per_parent_milli` 484000. Read honestly: from the conquest
+  origin the deepest corrected class (1, 0, 144) is a singleton, so every
+  tie-class draw sampled its one member — an origin-specific fact, not a
+  defect; the serial arm above shows the cap engaging when the class is deep.
+  The replayed report reproduces the identical concentration block from the
+  stream alone. `classes_skipped` 0, `counter_resets` 0.
+
+### G3 — quality
+
+`cargo fmt --check` clean, `cargo clippy --all-features -- -D warnings` exit
+0 (the pre-existing `clippy.toml` configuration notice only),
+`cargo nextest run --all-features` all tests passing, `cargo deny check`
+clean — run at the CC1 commit and rerun at this commit.
+
+### Verdict
+
+All gates green. The mechanism, its threading through both modes, the
+inertness of both existing paths against published recorded artifacts, and
+the determinism and accounting of the new path are in evidence. Per the
+dispatch, the registered pilot and any fleet return to the search experiment;
+this experiment stops here.
