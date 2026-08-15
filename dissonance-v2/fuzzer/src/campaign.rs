@@ -293,8 +293,6 @@ pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInpu
 #[must_use]
 pub fn selector_identifier(policy: SmbArchiveSelectorPolicy) -> &'static str {
     match policy {
-        SmbArchiveSelectorPolicy::Frozen => "frozen_frontier_128",
-        SmbArchiveSelectorPolicy::CorrectedTieClass => "corrected_tie_class",
         SmbArchiveSelectorPolicy::ConcentratedRecency => "concentrated_recency_128",
     }
 }
@@ -308,9 +306,10 @@ pub fn selector_from_identifier(
     identifier: &str,
 ) -> Result<SmbArchiveSelectorPolicy, Box<dyn Error>> {
     match identifier {
-        "frozen_frontier_128" => Ok(SmbArchiveSelectorPolicy::Frozen),
-        "corrected_tie_class" => Ok(SmbArchiveSelectorPolicy::CorrectedTieClass),
         "concentrated_recency_128" => Ok(SmbArchiveSelectorPolicy::ConcentratedRecency),
+        // The frozen and uncapped-corrected selectors were deleted on
+        // promotion. A stream recorded under either replays only at the commit
+        // that recorded it.
         _ => Err("campaign stream parent scheduler is not recognized".into()),
     }
 }
@@ -321,18 +320,8 @@ fn verify_selector_annotation(
     annotation: Option<&SmbSelectorDraw>,
 ) -> Result<(), Box<dyn Error>> {
     match (policy, annotation) {
-        (SmbArchiveSelectorPolicy::Frozen, Some(_)) => {
-            Err("frozen-selector stream carries a selector annotation".into())
-        }
-        (
-            SmbArchiveSelectorPolicy::CorrectedTieClass
-            | SmbArchiveSelectorPolicy::ConcentratedRecency,
-            None,
-        ) => Err("corrected-selector stream is missing a selector annotation".into()),
-        (SmbArchiveSelectorPolicy::CorrectedTieClass, Some(draw))
-            if draw.concentration.is_some() =>
-        {
-            Err("corrected-selector draw carries a concentration record".into())
+        (SmbArchiveSelectorPolicy::ConcentratedRecency, None) => {
+            Err("concentrated-selector stream is missing a selector annotation".into())
         }
         (SmbArchiveSelectorPolicy::ConcentratedRecency, Some(draw)) => {
             match (draw.path, draw.concentration) {
@@ -345,7 +334,6 @@ fn verify_selector_annotation(
                 _ => Ok(()),
             }
         }
-        _ => Ok(()),
     }
 }
 
@@ -489,9 +477,9 @@ struct CoordinatorCore<'a> {
 }
 
 impl CoordinatorCore<'_> {
-    fn new(max_actions: usize, selector_policy: SmbArchiveSelectorPolicy) -> Self {
+    fn new(max_actions: usize, _selector_policy: SmbArchiveSelectorPolicy) -> Self {
         Self {
-            archive: Archive::new(None, false, selector_policy),
+            archive: Archive::new(None),
             aggregate: SmbMilestones::default(),
             watermark: crate::phase4b::SmbProgressWatermark::default(),
             first_reached: crate::phase4b::SmbMilestoneTimes::default(),
@@ -1455,7 +1443,7 @@ mod tests {
             action_limit: 96,
             host: "unit-test".to_owned(),
             wall_budget: None,
-            selector_policy: SmbArchiveSelectorPolicy::Frozen,
+            selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -1479,7 +1467,7 @@ mod tests {
             action_limit: 96,
             host: "unit-test".to_owned(),
             wall_budget: None,
-            selector_policy: SmbArchiveSelectorPolicy::Frozen,
+            selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -1509,7 +1497,7 @@ mod tests {
             action_limit: 96,
             host: "unit-test".to_owned(),
             wall_budget: None,
-            selector_policy: SmbArchiveSelectorPolicy::Frozen,
+            selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
         };
         let mut seed_stream = Vec::new();
         let seed_campaign = run_smb_campaign(
@@ -1528,7 +1516,7 @@ mod tests {
             action_limit: 96,
             host: "unit-test".to_owned(),
             wall_budget: None,
-            selector_policy: SmbArchiveSelectorPolicy::Frozen,
+            selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(
@@ -1546,92 +1534,6 @@ mod tests {
             .expect("replay archive-origin campaign");
         assert_eq!(live, replayed);
         assert_eq!(live.origin.kind, "archive");
-    }
-
-    #[test]
-    fn frozen_campaign_stream_and_report_carry_no_selector_fields() {
-        let rom = synthetic_nrom();
-        let config = SmbCampaignConfig {
-            campaign_seed: 0x5eed_ca07,
-            workers: 2,
-            execution_budget: 8,
-            action_limit: 96,
-            host: "unit-test".to_owned(),
-            wall_budget: None,
-            selector_policy: SmbArchiveSelectorPolicy::Frozen,
-        };
-        let mut stream = Vec::new();
-        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
-            .expect("frozen live campaign");
-        let text = String::from_utf8(stream).expect("stream is utf-8");
-        assert!(
-            text.lines()
-                .next()
-                .expect("header")
-                .contains("frozen_frontier_128")
-        );
-        assert!(!text.contains("\"selector\""));
-        let report = String::from_utf8(serde_json::to_vec_pretty(&live).expect("serialize report"))
-            .expect("report is utf-8");
-        assert!(!report.contains("\"selector\""));
-    }
-
-    #[test]
-    fn corrected_campaign_replays_byte_identically_with_annotations() {
-        let rom = synthetic_nrom();
-        let config = SmbCampaignConfig {
-            campaign_seed: 0x5eed_ca08,
-            workers: 4,
-            execution_budget: 32,
-            action_limit: 96,
-            host: "unit-test".to_owned(),
-            wall_budget: None,
-            selector_policy: SmbArchiveSelectorPolicy::CorrectedTieClass,
-        };
-        let mut stream = Vec::new();
-        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
-            .expect("corrected live campaign");
-        assert_eq!(live.executions_completed, 32);
-        let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
-        assert!(
-            text.lines()
-                .next()
-                .expect("header")
-                .contains("corrected_tie_class")
-        );
-        assert!(
-            text.lines()
-                .skip(1)
-                .all(|line| line.contains("\"selector\"")),
-            "every corrected job and skip record must carry a selector annotation"
-        );
-        let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay corrected campaign");
-        assert_eq!(live, replayed);
-        let live_bytes = serde_json::to_vec_pretty(&live).expect("serialize live report");
-        let replay_bytes = serde_json::to_vec_pretty(&replayed).expect("serialize replayed report");
-        assert_eq!(live_bytes, replay_bytes);
-        let accounting = live.archive.selector;
-        assert_eq!(
-            accounting.policy,
-            SmbArchiveSelectorPolicy::CorrectedTieClass
-        );
-        assert_eq!(
-            accounting
-                .uniform_selections
-                .checked_add(accounting.tie_class_selections),
-            live.executions_completed
-                .checked_add(live.duplicates_skipped)
-        );
-        assert!(
-            live.archive
-                .entries
-                .iter()
-                .all(|entry| entry.selector.is_some())
-        );
-        assert!(
-            !text.contains("\"concentration\""),
-            "a corrected stream must not carry concentration records"
-        );
     }
 
     #[test]

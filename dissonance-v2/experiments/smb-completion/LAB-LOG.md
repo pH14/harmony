@@ -3981,3 +3981,37 @@ bucket.
   every panel to H58, and supersedes the uncapped corrected selector promoted
   into the tree at H56 and never accepted by a panel. H59's pilot is the
   accepting evidence; H60 is the attribution.
+
+### Deletion of the frozen and uncapped-corrected selectors
+
+- Executed on the integrator's ruling, in the commit immediately following the
+  promotion record. `SmbArchiveSelectorPolicy` now has one variant,
+  `ConcentratedRecency`, and it is the default.
+- Deleted outright: the frozen `choose_parent` with its `milestone_key` sort and
+  its 128-entry window; the `FRONTIER_WINDOW` constant; `frontier_quality`; the
+  uncapped tie-class draw branch; the `experimental_search` and
+  `selector_policy` fields of the archive, both dead once the frozen path went;
+  the two command-line modes that named the deleted selectors; and the header
+  identifiers `frozen_frontier_128` and `corrected_tie_class`, which a recorded
+  stream can no longer resolve.
+- Two unit tests were retired rather than repaired because the behaviour they
+  pinned no longer exists: the frozen-wrapper byte-identity test and the
+  frozen-campaign no-selector-fields test. The remaining selector tests were
+  repointed at the sole policy and now assert that concentration accounting is
+  present rather than absent. 84 tests run, 84 pass.
+- Gates on the deleted tree: `cargo fmt --check`, `cargo clippy --all-features`
+  with `-D warnings`, 84 tests, `cargo deny check` all clean.
+- **Reference re-frozen.** The M53 inertness reference
+  `88f8ace7a5322813eea000a0b08792b41107a06048ca8ae8d58f35eca0ad6360` measured
+  the frozen path and is now unreproducible on head. The same campaign — seed
+  `0x5eed_ef00`, 256 executions, the conquest archive, probing retention,
+  extended ladder — under the concentrated selector is
+  **`fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`**, and
+  that is the standing inertness reference from this commit forward.
+- The cost, stated once and plainly: **every campaign recorded before this
+  commit reproduces only at the commit that recorded it.** That includes the
+  M53 reference, the H45 and H51 byte-equality gates, all H56 and H58 arms, CM6,
+  the C49 conquests, and the H59 pilot and H60 attribution arms. Their recorded
+  artifacts and hashes stand as evidence; re-verification is by
+  `git checkout` of the recording commit, which is exactly what the standing
+  ruling intends.

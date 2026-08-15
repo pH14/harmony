@@ -27,7 +27,6 @@ use crate::{
 
 const MAX_ARCHIVE_ENTRIES: usize = 32_768;
 const MAX_ENTRIES_PER_KEY: usize = 2;
-const FRONTIER_WINDOW: usize = 128;
 const RANKING_REBUILD_INTERVAL: u64 = 512;
 const RANKING_STALE_EXECUTIONS: u64 = 1_024;
 const GENERATED_MUTATOR_RETIRE_AFTER: u64 = 128;
@@ -203,15 +202,12 @@ pub enum SmbArchiveRetentionPolicy {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SmbArchiveSelectorPolicy {
-    /// Frozen behaviour: sort by `(milestone_key, archive key, id)`, expand the
-    /// last 128.
+    /// The only selector: corrected tuple key, tie-class frontier with
+    /// fall-through, exhaustion accounting, and the H59 recency window.
+    ///
+    /// The frozen and uncapped-corrected paths were deleted on promotion; a
+    /// campaign recorded under either reproduces only at its recording commit.
     #[default]
-    Frozen,
-    /// H56: corrected `(world, level, progress)` key, tie-class frontier with
-    /// fall-through, per-entry exhaustion accounting.
-    CorrectedTieClass,
-    /// H59: corrected selection with tie-class draws concentrated on the
-    /// winning class's `CONCENTRATION_WINDOW` most recently created members.
     ConcentratedRecency,
 }
 
@@ -498,8 +494,6 @@ pub(crate) struct Archive<'a> {
     ranking_accounting: SmbRankingAccounting,
     first_ranking_replacement: Option<u64>,
     last_descendant_novelty: Option<u64>,
-    experimental_search: bool,
-    selector_policy: SmbArchiveSelectorPolicy,
     selected: Vec<u64>,
     productive: Vec<u64>,
     since_retained: Vec<u64>,
@@ -508,11 +502,7 @@ pub(crate) struct Archive<'a> {
 }
 
 impl<'a> Archive<'a> {
-    pub(crate) fn new(
-        ranking: Option<&'a dyn SmbRanking>,
-        experimental_search: bool,
-        selector_policy: SmbArchiveSelectorPolicy,
-    ) -> Self {
+    pub(crate) fn new(ranking: Option<&'a dyn SmbRanking>) -> Self {
         Self {
             entries: Vec::new(),
             active: Vec::new(),
@@ -528,19 +518,16 @@ impl<'a> Archive<'a> {
             },
             first_ranking_replacement: None,
             last_descendant_novelty: None,
-            experimental_search,
-            selector_policy,
             selected: Vec::new(),
             productive: Vec::new(),
             since_retained: Vec::new(),
             in_window_ever: Vec::new(),
             selector_accounting: SmbSelectorAccounting {
-                policy: selector_policy,
-                concentration: (selector_policy == SmbArchiveSelectorPolicy::ConcentratedRecency)
-                    .then_some(SmbConcentrationAccounting {
-                        window_cap: u64::try_from(CONCENTRATION_WINDOW).unwrap_or(u64::MAX),
-                        ..SmbConcentrationAccounting::default()
-                    }),
+                policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+                concentration: Some(SmbConcentrationAccounting {
+                    window_cap: u64::try_from(CONCENTRATION_WINDOW).unwrap_or(u64::MAX),
+                    ..SmbConcentrationAccounting::default()
+                }),
                 ..SmbSelectorAccounting::default()
             },
         }
@@ -669,68 +656,14 @@ impl<'a> Archive<'a> {
             .collect()
     }
 
-    pub(crate) fn choose_parent(
-        &self,
-        rand: &mut StdRand,
-        max_actions: usize,
-    ) -> Result<usize, Box<dyn Error>> {
-        let active = self.active_ids(max_actions);
-        if active.is_empty() {
-            return Err("SMB archive has no expandable entry".into());
-        }
-        let use_frontier = rand.below(NonZeroUsize::new(4).ok_or("invalid frontier odds")?) != 0;
-        if !use_frontier {
-            return Ok(active[rand.below(NonZeroUsize::new(active.len()).ok_or("empty archive")?)]);
-        }
-        if !self.experimental_search {
-            let mut ordered = active;
-            ordered.sort_by_key(|id| {
-                (
-                    milestone_key(self.entries[*id].report.milestones),
-                    self.entries[*id].report.key,
-                    self.entries[*id].report.id,
-                )
-            });
-            let start = ordered.len().saturating_sub(FRONTIER_WINDOW);
-            let frontier = &ordered[start..];
-            return Ok(
-                frontier[rand.below(NonZeroUsize::new(frontier.len()).ok_or("empty frontier")?)]
-            );
-        }
-        let best = active
-            .iter()
-            .map(|id| frontier_quality(&self.entries[*id].report))
-            .max()
-            .ok_or("empty frontier")?;
-        let frontier = active
-            .into_iter()
-            .filter(|id| {
-                let quality = frontier_quality(&self.entries[*id].report);
-                quality.0 == best.0
-                    && quality.1 == best.1
-                    && quality.2 == best.2
-                    && quality.3.saturating_add(FRONTIER_PROGRESS_BAND - 1) >= best.3
-            })
-            .collect::<Vec<_>>();
-        Ok(frontier[rand.below(NonZeroUsize::new(frontier.len()).ok_or("empty frontier")?)])
-    }
-
-    /// Choose a parent under the configured selector policy.
-    ///
-    /// The frozen policy routes to the untouched [`Self::choose_parent`] and
-    /// reports no draw record; the corrected policy reports one per draw.
+    /// Choose a parent. There is one selector, so every draw reports a record.
     pub(crate) fn select_parent(
         &mut self,
         rand: &mut StdRand,
         max_actions: usize,
     ) -> Result<(usize, Option<SmbSelectorDraw>), Box<dyn Error>> {
-        match self.selector_policy {
-            SmbArchiveSelectorPolicy::Frozen => Ok((self.choose_parent(rand, max_actions)?, None)),
-            SmbArchiveSelectorPolicy::CorrectedTieClass
-            | SmbArchiveSelectorPolicy::ConcentratedRecency => self
-                .choose_parent_corrected(rand, max_actions)
-                .map(|(id, draw)| (id, Some(draw))),
-        }
+        self.choose_parent_corrected(rand, max_actions)
+            .map(|(id, draw)| (id, Some(draw)))
     }
 
     /// H56 corrected selection: corrected key, tie-class frontier with
@@ -842,10 +775,6 @@ impl<'a> Archive<'a> {
         rand: &mut StdRand,
         mut class: Vec<usize>,
     ) -> Result<(usize, Option<SmbConcentrationDraw>), Box<dyn Error>> {
-        if self.selector_policy != SmbArchiveSelectorPolicy::ConcentratedRecency {
-            let id = class[rand.below(NonZeroUsize::new(class.len()).ok_or("empty tie class")?)];
-            return Ok((id, None));
-        }
         class.sort_unstable();
         let window = &class[class.len().saturating_sub(CONCENTRATION_WINDOW)..];
         let mut entered_window = 0_u64;
@@ -865,11 +794,8 @@ impl<'a> Archive<'a> {
         ))
     }
 
-    /// Account one recorded selection of `id`; a no-op under the frozen policy.
+    /// Account one recorded selection of `id`.
     pub(crate) fn record_selection(&mut self, id: usize, draw: &SmbSelectorDraw) {
-        if self.selector_policy == SmbArchiveSelectorPolicy::Frozen {
-            return;
-        }
         self.selected[id] = self.selected[id].saturating_add(1);
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
         match draw.path {
@@ -911,10 +837,9 @@ impl<'a> Archive<'a> {
         }
     }
 
-    /// Account whether a recorded selection of `id` retained a descendant; a
-    /// no-op under the frozen policy.
+    /// Account whether a recorded selection of `id` retained a descendant.
     pub(crate) fn record_selection_outcome(&mut self, id: usize, retained_descendant: bool) {
-        if self.selector_policy == SmbArchiveSelectorPolicy::Frozen || !retained_descendant {
+        if !retained_descendant {
             return;
         }
         self.productive[id] = self.productive[id].saturating_add(1);
@@ -930,10 +855,9 @@ impl<'a> Archive<'a> {
         self.selector_accounting
     }
 
-    /// Extract the entry reports, stamping per-entry selection counters under
-    /// the corrected policy and leaving them absent under the frozen one.
+    /// Extract the entry reports, stamping per-entry selection counters.
     pub(crate) fn take_entry_reports(&mut self) -> Vec<SmbArchiveEntryReport> {
-        let corrected = self.selector_policy != SmbArchiveSelectorPolicy::Frozen;
+        let corrected = true;
         std::mem::take(&mut self.entries)
             .into_iter()
             .enumerate()
@@ -4086,7 +4010,7 @@ pub fn run_smb_archive_search_with_config_and_suffix(
         SmbArchiveRetentionPolicy::Frozen,
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
-        SmbArchiveSelectorPolicy::Frozen,
+        SmbArchiveSelectorPolicy::ConcentratedRecency,
     )
     .map(|(report, _)| report)
 }
@@ -4115,7 +4039,7 @@ pub fn run_smb_archive_search_with_policies(
         SmbArchiveRetentionPolicy::Frozen,
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
-        SmbArchiveSelectorPolicy::Frozen,
+        SmbArchiveSelectorPolicy::ConcentratedRecency,
     )
     .map(|(report, _)| report)
 }
@@ -4153,14 +4077,14 @@ pub fn run_smb_archive_search_with_retention(
         retention_policy,
         key_policy,
         ladder_policy,
-        SmbArchiveSelectorPolicy::Frozen,
+        SmbArchiveSelectorPolicy::ConcentratedRecency,
     )
     .map(|(report, _)| report)
 }
 
 /// Run completion search with an explicit parent-selector policy.
 ///
-/// At [`SmbArchiveSelectorPolicy::Frozen`] this is byte-identical to
+/// At [`SmbArchiveSelectorPolicy::ConcentratedRecency`] this is byte-identical to
 /// [`run_smb_archive_search_with_retention`] at the same arguments.
 ///
 /// # Errors
@@ -4229,7 +4153,7 @@ pub fn run_smb_archive_search_with_ranking_and_retention<R: SmbRanking>(
         retention_policy,
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Extended,
-        SmbArchiveSelectorPolicy::Frozen,
+        SmbArchiveSelectorPolicy::ConcentratedRecency,
     )
     .map(|(report, _)| report)
 }
@@ -4270,7 +4194,7 @@ pub fn run_smb_archive_search_with_retention_and_work(
         retention_policy,
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
-        SmbArchiveSelectorPolicy::Frozen,
+        SmbArchiveSelectorPolicy::ConcentratedRecency,
     )
 }
 
@@ -4297,7 +4221,7 @@ pub fn run_smb_archive_search_with_ranking<R: SmbRanking>(
         SmbArchiveRetentionPolicy::Frozen,
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
-        SmbArchiveSelectorPolicy::Frozen,
+        SmbArchiveSelectorPolicy::ConcentratedRecency,
     )
     .map(|(report, _)| report)
 }
@@ -4325,7 +4249,7 @@ pub fn run_smb_archive_search_with_generated_mutator<M: SmbMacro>(
         SmbArchiveRetentionPolicy::Frozen,
         SmbArchiveKeyPolicy::Frozen,
         SmbArchiveLadderPolicy::Frozen,
-        SmbArchiveSelectorPolicy::Frozen,
+        SmbArchiveSelectorPolicy::ConcentratedRecency,
     )
     .map(|(report, _)| report)
 }
@@ -4367,7 +4291,7 @@ fn run_smb_archive_search_internal(
     if initial_inputs.is_empty() {
         return Err("SMB archive search requires a nonempty initial corpus".into());
     }
-    if experimental_search && selector_policy != SmbArchiveSelectorPolicy::Frozen {
+    if experimental_search && selector_policy != SmbArchiveSelectorPolicy::ConcentratedRecency {
         return Err("the experimental scheduler does not take a selector policy".into());
     }
     if !(1..=MAX_SMB_COMPLETION_ACTIONS).contains(&max_actions) {
@@ -4380,7 +4304,7 @@ fn run_smb_archive_search_internal(
         return Err("SMB archive input exceeds the configured action limit".into());
     }
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
-    let mut archive = Archive::new(ranking, experimental_search, selector_policy);
+    let mut archive = Archive::new(ranking);
     let mut aggregate = SmbMilestones::default();
     let mut progress_watermark = SmbProgressWatermark::default();
     let mut first_reached = SmbMilestoneTimes::default();
@@ -4818,15 +4742,6 @@ pub(crate) fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16
         milestones.reached_1_2,
         milestones.reached_1_1_flag,
         milestones.max_1_1_scroll_bucket,
-    )
-}
-
-fn frontier_quality(entry: &SmbArchiveEntryReport) -> ((bool, bool, bool, u16), u8, u8, u16) {
-    (
-        milestone_key(entry.milestones),
-        entry.key.world,
-        entry.key.level,
-        entry.key.progress,
     )
 }
 
@@ -5298,11 +5213,7 @@ mod tests {
         .expect("replayed ranked archive campaign");
         assert_eq!(first, second);
         assert!(first.ranking.installed);
-        let mut archive = Archive::new(
-            Some(&ScriptedFrameRanking),
-            false,
-            super::SmbArchiveSelectorPolicy::Frozen,
-        );
+        let mut archive = Archive::new(Some(&ScriptedFrameRanking));
         archive.ranking_accounting.replacements = 1;
         archive.first_ranking_replacement = Some(1);
         archive.finish_execution(1_024);
@@ -5377,15 +5288,8 @@ mod tests {
     }
 
     fn selector_archive(keys: &[(u8, u8, u16)]) -> Archive<'static> {
-        selector_archive_with_policy(keys, SmbArchiveSelectorPolicy::CorrectedTieClass)
-    }
-
-    fn selector_archive_with_policy(
-        keys: &[(u8, u8, u16)],
-        policy: SmbArchiveSelectorPolicy,
-    ) -> Archive<'static> {
         let snapshot = selector_snapshot();
-        let mut archive = Archive::new(None, false, policy);
+        let mut archive = Archive::new(None);
         for (index, (world, level, progress)) in keys.iter().enumerate() {
             let input = SmbInput {
                 actions: vec![ButtonChord::new(
@@ -5524,8 +5428,7 @@ mod tests {
     fn concentrated_selector_samples_only_the_recency_window() {
         // 140 entries in one tie class: the window is the 128 greatest ids.
         let keys: Vec<(u8, u8, u16)> = (0..140).map(|index| (1, 0, 118 + (index % 7))).collect();
-        let mut archive =
-            selector_archive_with_policy(&keys, SmbArchiveSelectorPolicy::ConcentratedRecency);
+        let mut archive = selector_archive(&keys);
         let mut rand = StdRand::with_seed(0x5eed_5e21);
         let mut tie_class_draws = 0;
         for _ in 0..256 {
@@ -5557,8 +5460,7 @@ mod tests {
         // all of them exhaust, the sampled set must refill from the
         // next-most-recent unexhausted member below, not skip the class.
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 124); 129];
-        let mut archive =
-            selector_archive_with_policy(&keys, SmbArchiveSelectorPolicy::ConcentratedRecency);
+        let mut archive = selector_archive(&keys);
         let exhausting_draw = SmbSelectorDraw {
             path: SmbSelectorPath::TieClass,
             classes_skipped: 0,
@@ -5638,43 +5540,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_selector_wrapper_is_byte_identical_and_absent_from_reports() {
-        let rom = synthetic_nrom();
-        let initial = vec![SmbInput::default()];
-        let frozen = run_smb_archive_search_with_selector(
-            &rom,
-            &initial,
-            0x5eed_ef21,
-            32,
-            MAX_SMB_ACTIONS,
-            SmbArchiveDurationPolicy::Stratified,
-            SmbArchiveSuffixPolicy::OneOrTwo,
-            SmbArchiveRetentionPolicy::Frozen,
-            SmbArchiveKeyPolicy::Frozen,
-            SmbArchiveLadderPolicy::Frozen,
-            SmbArchiveSelectorPolicy::Frozen,
-        )
-        .expect("frozen-selector search");
-        let reference = run_smb_archive_search_with_retention(
-            &rom,
-            &initial,
-            0x5eed_ef21,
-            32,
-            MAX_SMB_ACTIONS,
-            SmbArchiveDurationPolicy::Stratified,
-            SmbArchiveSuffixPolicy::OneOrTwo,
-            SmbArchiveRetentionPolicy::Frozen,
-            SmbArchiveKeyPolicy::Frozen,
-            SmbArchiveLadderPolicy::Frozen,
-        )
-        .expect("frozen reference search");
-        assert_eq!(frozen, reference);
-        let serialized = serde_json::to_string(&frozen).expect("serialize frozen report");
-        assert!(!serialized.contains("\"selector\""));
-    }
-
-    #[test]
-    fn corrected_selector_search_replays_and_reports_accounting() {
+    fn the_selector_search_replays_and_reports_accounting() {
         let rom = synthetic_nrom();
         let initial = vec![SmbInput::default()];
         let run = || {
@@ -5689,16 +5555,16 @@ mod tests {
                 SmbArchiveRetentionPolicy::Frozen,
                 SmbArchiveKeyPolicy::Frozen,
                 SmbArchiveLadderPolicy::Frozen,
-                SmbArchiveSelectorPolicy::CorrectedTieClass,
+                SmbArchiveSelectorPolicy::ConcentratedRecency,
             )
         };
-        let first = run().expect("corrected search");
-        let replay = run().expect("corrected replay");
+        let first = run().expect("selector search");
+        let replay = run().expect("selector replay");
         assert_eq!(first, replay);
         let accounting = first.selector;
         assert_eq!(
             accounting.policy,
-            SmbArchiveSelectorPolicy::CorrectedTieClass
+            SmbArchiveSelectorPolicy::ConcentratedRecency
         );
         assert_eq!(
             accounting
@@ -5713,11 +5579,11 @@ mod tests {
             .map(|entry| entry.selector.expect("entry counters").selected)
             .sum();
         assert_eq!(selected_total, 64);
-        let serialized = serde_json::to_string(&first).expect("serialize corrected report");
-        assert!(serialized.contains("corrected_tie_class"));
+        let serialized = serde_json::to_string(&first).expect("serialize selector report");
+        assert!(serialized.contains("concentrated_recency"));
         assert!(
-            !serialized.contains("concentration"),
-            "a corrected report must not carry concentration fields"
+            serialized.contains("concentration"),
+            "the sole selector reports its concentration accounting"
         );
     }
 }

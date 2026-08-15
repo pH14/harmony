@@ -93,7 +93,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         .into_owned();
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let mut wall_budget = None;
-    let mut selector_policy = SmbArchiveSelectorPolicy::Frozen;
+    let mut selector_policy = SmbArchiveSelectorPolicy::ConcentratedRecency;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
             let seconds = parse_u64(

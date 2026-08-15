@@ -179,7 +179,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
-            SmbArchiveSelectorPolicy::Frozen,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
         );
     }
     if mode == "archive-resume-temporal" {
@@ -191,7 +191,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
-            SmbArchiveSelectorPolicy::Frozen,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
         );
     }
     if mode == "archive-resume-frontier" {
@@ -203,7 +203,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
-            SmbArchiveSelectorPolicy::Frozen,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
         );
     }
     if mode == "archive-resume-frontier-viable-ladder" {
@@ -215,7 +215,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::ProbeAtAdmission,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Extended,
-            SmbArchiveSelectorPolicy::Frozen,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
         );
     }
     if mode == "archive-resume-frontier-viable" {
@@ -227,7 +227,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::ProbeAtAdmission,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
-            SmbArchiveSelectorPolicy::Frozen,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
         );
     }
     if mode == "archive-resume-frontier-viable-page" {
@@ -239,7 +239,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::ProbeAtAdmission,
             SmbArchiveKeyPolicy::VerticalPage,
             SmbArchiveLadderPolicy::Frozen,
-            SmbArchiveSelectorPolicy::Frozen,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
         );
     }
     if mode == "archive-resume-frontier-burst" {
@@ -251,7 +251,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
-            SmbArchiveSelectorPolicy::Frozen,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
         );
     }
     if mode == "archive-resume-frontier-cell-set" {
@@ -263,7 +263,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
-            SmbArchiveSelectorPolicy::Frozen,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
         );
     }
     if mode == "archive-resume-frontier-set" {
@@ -275,7 +275,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
-            SmbArchiveSelectorPolicy::Frozen,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
         );
     }
     if mode == "archive-resume-burst" {
@@ -287,34 +287,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
-            SmbArchiveSelectorPolicy::Frozen,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
         );
     }
     if mode == "archive-resume-play-viable-ladder" {
-        return run_archive_resume_mode(
-            &mut args,
-            SmbArchiveDurationPolicy::Stratified,
-            SmbArchiveSuffixPolicy::OneOrTwo,
-            ResumeSelection::PlayBucket,
-            SmbArchiveRetentionPolicy::ProbeAtAdmission,
-            SmbArchiveKeyPolicy::Frozen,
-            SmbArchiveLadderPolicy::Extended,
-            SmbArchiveSelectorPolicy::Frozen,
-        );
-    }
-    if mode == "archive-resume-play-viable-ladder-corrected" {
-        return run_archive_resume_mode(
-            &mut args,
-            SmbArchiveDurationPolicy::Stratified,
-            SmbArchiveSuffixPolicy::OneOrTwo,
-            ResumeSelection::PlayBucket,
-            SmbArchiveRetentionPolicy::ProbeAtAdmission,
-            SmbArchiveKeyPolicy::Frozen,
-            SmbArchiveLadderPolicy::Extended,
-            SmbArchiveSelectorPolicy::CorrectedTieClass,
-        );
-    }
-    if mode == "archive-resume-play-viable-ladder-concentrated" {
         return run_archive_resume_mode(
             &mut args,
             SmbArchiveDurationPolicy::Stratified,
@@ -335,7 +311,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveRetentionPolicy::Frozen,
             SmbArchiveKeyPolicy::Frozen,
             SmbArchiveLadderPolicy::Frozen,
-            SmbArchiveSelectorPolicy::Frozen,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
         );
     }
     if mode != "reproduce-baseline" {
@@ -1467,8 +1443,6 @@ fn run_archive_resume_mode(
         "controller_vocabulary": "frozen_nine_mask",
         "parent_scheduler": if matches!(selection, ResumeSelection::PlayBucket) {
             match selector_policy {
-                SmbArchiveSelectorPolicy::Frozen => "frozen_frontier_128",
-                SmbArchiveSelectorPolicy::CorrectedTieClass => "corrected_tie_class",
                 SmbArchiveSelectorPolicy::ConcentratedRecency => "concentrated_recency_128",
             }
         } else if frozen_search {
