@@ -3932,3 +3932,52 @@ bucket.
   integrator's direction. Both this and H60 are conditional on the H59 pilot
   replay verifying first.
 - Raw destination: `target/smb-completion/c61-conquest/`.
+
+### H60 result — the uncapped corrected policy stalls at the shelf; attribution settled
+
+- Recorded as **observational-unverified**: the live run completed and its ladder
+  was derived, and its serial replay was stopped in flight by integrator ruling
+  once the ladder had answered the question. The recorded stream hashes to
+  `2dff73dbd6d6c9e7f86c8e89b495dc656dcbea49042fd596c8305fec9d6b48c4` and the run
+  is reproducible on demand from it, but no replay verdict was produced, so this
+  arm carries less evidential weight than a verified one. That is stated rather
+  than glossed.
+- Twenty thousand executions, twelve workers, the derived play-124 origin,
+  campaign seed derived from `0x5eed_e000` — every parameter identical to the
+  H59 pilot except the selector.
+- **Its ladder stops at `(world 1, level 0, progress 124)`.** Not 125, not 145:
+  exactly the shelf, exactly where 170,000 frozen-selector executions and
+  140,000 uncapped-corrected serial executions had already stopped. The
+  concentrated pilot from the same origin, seed and worker count reached 197 and
+  opened a new level.
+- Its selector accounting reads 4,938 uniform selections, 15,118 tie-class
+  selections, 6,695 productive, and — for the third panel running —
+  `classes_skipped` zero and `counter_resets` zero.
+- The registered decision rule fires as written: a stall anywhere in 124 to 145
+  settles attribution to the cap. **Attribution is settled.** The advance is the
+  recency window, not the tie-class correction, and not campaign mode.
+
+### Promotion of the concentrated selector, by integrator ruling
+
+- The concentrated recency policy becomes the only selector. The record cited:
+  170,000 frozen-selector executions and 140,000 uncapped-corrected executions
+  immobile at bucket 124 from this origin, against a single 20,000-execution
+  concentrated arm reaching progress 197 and opening `(world 1, level 1)`, with
+  that arm's determinism replay verified byte-identical.
+- Per the standing ruling this promotion is followed immediately by deleting the
+  frozen and uncapped-corrected selector paths outright. The consequence is
+  recorded plainly because it is a real loss: **campaigns recorded under those
+  selectors no longer reproduce on head.** Every such artifact — the M53
+  inertness reference, the H45 and H51 byte-equality gates, the H56 and H58
+  arms, CM6 — reproduces only by checking out the commit that recorded it. The
+  identity and inertness references are re-frozen against the concentrated path
+  on the new tree.
+- What is not in this change, on the integrator's instruction: nothing about
+  exhaustion. `classes_skipped` and `counter_resets` have now been zero across
+  four panels and every selector ever built, so the exhaustion machinery has
+  never fired in a real arm. It is an open mechanism question for after
+  promotion and no exhaustion change is folded in here.
+- Lineage: supersedes the parent scheduler frozen at H3 and carried through
+  every panel to H58, and supersedes the uncapped corrected selector promoted
+  into the tree at H56 and never accepted by a panel. H59's pilot is the
+  accepting evidence; H60 is the attribution.
