@@ -3816,8 +3816,15 @@ bucket.
   registered slot, **no retries**, replay-exactness of the recorded stream as
   the determinism gate, and pairing by campaign seed.
 - Future fleets default to campaign arms split across both machines.
-- Seed-pure serial arms remain available and are required where a registration
-  specifically needs seed-derivability.
 - The one-live-run-no-retries clause is the load-bearing part: a campaign arm's
   value as evidence rests on it being the run that was registered, not the best
   of several.
+- **Superseded within this entry, on a further instruction and recorded plainly
+  rather than by editing the sentence above.** Serial execution is dropped
+  entirely for arms of record. There is no seed-derivability carve-out: every
+  registered arm from here is a recorded campaign, including where a serial arm
+  would be more convenient. Serial re-execution survives only as what replay
+  verification inherently is — the replay of a recorded stream is a serial
+  re-execution and remains the determinism gate. Small recorded-artifact
+  diagnostics, such as the span walks and the progress measurements, are
+  unaffected and stay as they are.
