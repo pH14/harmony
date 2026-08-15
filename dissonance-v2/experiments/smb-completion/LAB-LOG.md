@@ -4191,3 +4191,53 @@ one variable of science only when a link stalls.
   film shows, and no derived origin is needed. The D57/H59 failure mode, a
   resume rule landing on a level-transition artifact, is checked absent here.
 - Raw destination: `target/smb-completion/c63-conquest/`.
+
+### C62 result — verified; the independent seed lands two buckets shy
+
+- The ARM machine's conquest, campaign seed `0x5eed_c004`, twelve workers,
+  50,000 executions from the same H59 pilot origin as C61: 15,255 retained
+  against 36,782 rejected with 1,017 deaths, 9,444,262 frames emulated, 1,088
+  duplicates skipped and 544 probe refusals. Live stream SHA-256
+  `83c50bb9b625b995b79c5cc0ab50ef88bd506df9c7cc84717f382394fd70e9f6`.
+- **The serial replay verified byte-identical**: `replay_verified` true, replay
+  stream equal to the live stream, replayed archive SHA-256
+  `1f66a92898fffb9dcb850b3734185ab7796f145b7359dbd0b266e9b797646762`. Verdict
+  at `target/smb-completion/c62-conquest/replay-verdict.json` on the ARM
+  machine.
+- Its ladder holds the same six pairs as C61 with maximum tuple
+  `(world 1, level 1, progress 25)`. The play measurement returns recorded 25,
+  viable 25, play 25 — settled genuine play, so one film. The new level holds
+  3,839 entries with its densest buckets at 358 to 413 across 18 through 20
+  and 328 at the frontier bucket 25.
+- Two independent campaign seeds from the same origin reached 27 and 25 in the
+  second world's second level, so the depth is behaviour of the promoted stack
+  and not a lucky seed — the C49 replication pattern, one level deeper.
+- Selector accounting: 12,919 uniform selections, 38,169 tie-class selections,
+  12,665 productive. Concentration: 38,169 window draws over **828 distinct
+  parents — 46.097 draws per parent**, the closest approach the barren
+  threshold of 64 has ever seen. `classes_skipped` and `counter_resets` are
+  zero for the sixth panel running; if the chain keeps concentrating this
+  hard, the exhaustion machinery may fire in a real arm for the first time,
+  and its first firing should be watched for and reported.
+- Film of the furthest trajectory cut from the shortest input at `(1, 1, 25)`
+  and delivered; frames rendered on the ARM machine, encoded at sixty frames a
+  second, `target/smb-completion/c62-film/` on both machines.
+
+## C64 — registered concentrated conquest, parallel seed of the third link
+
+- Observational, in the C61/C62 pattern: the third link runs as two live
+  conquest campaigns from the same verified origin on separate machines,
+  differing only in campaign seed and worker count. C63 is the local arm; this
+  is the ARM machine's arm.
+- One live concentrated-policy conquest campaign, 50,000 executions, twelve
+  workers on the ARM machine, campaign seed `0x5eed_c006`, sourced from C61's
+  verified archive copied to the ARM machine and hash-verified there:
+  SHA-256 `4d1c28f1ced20c0f62abb94c0aec69176b275c8d9b0b62c792db5240d4d2a176`,
+  byte-identical to the local original. One live run, no retries, serial
+  replay of the recorded stream as the determinism gate.
+- The resume-rule assumption check is C63's, unchanged: the shared origin's
+  frontier at `(1, 1, 27)` measures recorded 27, viable 27, play 27 — settled
+  play, no derived origin needed. The check binds to the origin, not the
+  machine, so it is not repeated.
+- Raw destination: `target/smb-completion/c64-conquest/` on the ARM machine,
+  log `c64.log`.
