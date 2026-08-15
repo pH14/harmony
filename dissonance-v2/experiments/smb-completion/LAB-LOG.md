@@ -4015,3 +4015,97 @@ bucket.
   artifacts and hashes stand as evidence; re-verification is by
   `git checkout` of the recording commit, which is exactly what the standing
   ruling intends.
+
+## HANDOFF
+
+This session is retired here. The successor owns the program from its first
+message. Everything below is state, not advice.
+
+### Tree
+
+- Branch `codex/smb-completion`, head `976fd0e8`, working tree clean, **nothing
+  has ever been pushed** on this branch. Gates on head: `cargo fmt --check`,
+  `cargo clippy --all-features` with `-D warnings`, 84 tests, `cargo deny check`
+  — all clean.
+- The concentrated recency selector is the only selector. The frozen and
+  uncapped-corrected paths are deleted. The standing inertness reference is
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24` — seed
+  `0x5eed_ef00`, 256 executions, the C49 conquest archive, probing retention,
+  extended ladder, via `archive-resume-frontier-viable-ladder`.
+- Promoted stack in force: corrected terminal condition (M35), probing retention
+  at admission (H45), extended ladder (M52), concentrated recency selector
+  (H59/H60). Rejected and not in force: the vertical-page archive key (H51), two
+  generated rankings (H27, H44), the horizontal-position field (closed null,
+  D29–D48).
+
+### Running now
+
+- **C61, local machine.** Concentrated conquest, campaign seed `0x5eed_c003`,
+  ten workers, 50,000 executions, origin the H59 pilot archive. **Live run
+  finished**: stream SHA-256
+  `3e969f0f63930e606dbc4edb626455df9a2d639a95d9171a507b9473bb57fa1b`, ladder
+  written, maximum tuple `(world 1, level 1, progress 27)` — it advanced inside
+  the second world's second level. Its serial replay is running as PID 77064 and
+  is the determinism gate; expect roughly three to four hours from its start.
+  Evidence at `target/smb-completion/c61-conquest/`; log at
+  `target/smb-completion/logs/c61.log`, which prints `C61_REPLAY_EXIT` and
+  `C61_DONE`.
+- **C62, ARM machine.** Concentrated conquest, campaign seed `0x5eed_c004`,
+  twelve workers, 50,000 executions, same origin. Live run in progress as PID
+  229090 under wrapper 229085. Evidence at
+  `/root/harmony-smb-goal/dissonance-v2/target/smb-completion/c62-conquest/`;
+  log at `/root/harmony-smb-goal/c62.log`, which prints `C62_RUN_EXIT`,
+  `C62_LADDER_DONE`, `C62_REPLAY_EXIT`, `C62_DONE`. Expect roughly an hour live
+  and several more for its replay.
+- No watcher processes of mine survive; the successor should start its own.
+  Neither conquest has film yet — film is the outstanding deliverable for both,
+  per C49 practice: `smb-film archive-key <archive> <world> <level> <progress>
+  <out>` then `ffmpeg` at framerate 60.
+
+### Open threads, in the order I would take them
+
+1. **Conquest completion.** Both replays must land verified before either
+   conquest is evidence. If a replay fails, that conquest is void — one live
+   run per slot, no retries, per the standing method.
+2. **Film gates.** Neither C61 nor C62 has film. C49's practice is film of the
+   furthest trajectory plus a second film of the deepest genuine play where they
+   differ. They differ often: see D57 and the H58 refinement.
+3. **Exhaustion inertness.** `classes_skipped` and `counter_resets` have been
+   zero in every real arm across four panels and every selector ever built. The
+   sixty-four-selection barren threshold has never once fired. The integrator
+   deferred this deliberately and it is the largest untested piece of promoted
+   machinery.
+4. **Track-2 ladder** at `steers/TRACK2-STRATEGIC-CALLS.md`, outside this
+   worktree. I never read or touched it.
+5. **H54 ranking re-test.** The instrumentor ranking
+   `archive-ranking-changed-state` was accepted, validated and never fairly
+   measured — its panel was voided on defective substrate, not on its merits.
+   Its recorded decision, source hash
+   `2a27043379213d4eb73359b883514105c26929bab68e7db24c6a212c35aa9e4a`, journal
+   and validators are intact at
+   `/root/harmony-smb-goal/dissonance-v2/target/smb-completion/h54-luna/`, so a
+   re-test on the concentrated selector costs **no model call**: the arm phase
+   rebuilds from the recorded decision.
+
+### Landmines not already in the log
+
+- **The campaign engine's resume rule is not the serial one.**
+  `select_frontier_resume_input` takes the shortest input at the maximum
+  recorded tuple; the serial play-bucket mode takes the deepest bucket that
+  answers the controller. On archives whose maximum tuple is a level-transition
+  artifact these differ, and the difference silently voids a comparison. This
+  caught me once. The fix used here is a derived single-entry origin archive;
+  see the H59 pilot amendment.
+- **The executor-identity binary's exit code is composed from a superseded
+  frame-reduction criterion.** It exits non-zero even when ruling-level
+  acceptance passes. Judge its report contents, never its exit status.
+- **`pgrep -f` and `pkill -f` self-match wrapper argv on the ARM box.** Kill by
+  explicit process identifier only; a pattern kill takes down the harness that
+  issued it.
+- **`git checkout` of a recording commit is now the only way to reproduce any
+  pre-`976fd0e8` campaign.** Nothing before that commit replays on head.
+- **The `/tmp` path is `/private/tmp` on this machine and is off limits.** All
+  scratch belongs under `target/smb-completion/`.
+- **Long `ssh` commands time out at the tool boundary and get backgrounded**,
+  which can look like a failure while the remote job runs on happily. Verify
+  remote state directly before concluding anything died.
