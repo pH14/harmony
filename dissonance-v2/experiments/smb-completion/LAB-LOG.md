@@ -3464,3 +3464,50 @@ bucket.
 - Raw evidence: `target/smb-completion/h56-selection/` and
   `target/smb-completion/h56-progress/` on the ARM machine, with summaries and
   progress reports copied locally.
+
+### D57 — measurement: the 125-to-143 span is neither a wall nor a stretch of terrain
+
+- A recorded-artifact measurement dispatched by the integrator. It runs no
+  search, changes no mechanism, involves no model, and retains nothing. It walks
+  recorded inputs action by action, and at every action boundary inside a
+  requested progress span it runs the three admission-probe masks from a
+  snapshot and records how long each survived and which clause of the terminal
+  condition ended it.
+- **The span holds no terrain on the 144-reaching input.** That input, 351
+  actions, produces exactly **one** action boundary at the deepest decoded pair:
+  its last, at progress 144 and camera 2304. It never passes through 125 to 143
+  because it never plays there.
+- **Bucket 144 is not second-world terrain.** The deepest genuine play any
+  recorded trajectory reached is the 422-action input ending at progress 124 and
+  camera **1986**, which walks the second world continuously — 67 boundaries
+  from progress 0 and camera 0 up to 124, every one of them admitted by the
+  probe on all three masks. The 144 entry sits at camera 2304 with the previous
+  level's scenery, reached by a **shorter** input, and the film already recorded
+  it as the castle-completion sequence. A shorter input reaching a higher bucket
+  at an unrelated camera is the signature of a stale camera during a level
+  transition, which is exactly the caveat M52 attached to progress restarting
+  when the pair advances.
+- **The span is reachable and retainable.** Across thirteen probed archives —
+  the twelve H56 arms and the ARM conquest — exactly one entry lies in 125 to
+  143: the corrected seed `0x5eed_e002` arm at bucket **129**, camera 2071. That
+  arm is also H56's single paired win. Walking its input, boundaries at 121,
+  123 and 129 all survive the probe; at 129 the no-input and held-right masks
+  survive the full horizon and only the button-plus-right mask dies, at frame 50,
+  below the play area. The probe admits it.
+- **Answer to the question asked.** The span is **not structurally
+  unretainable**. There is no stretch where the player is committed and no-input
+  always dies; on every boundary any recorded trajectory produced there, no-input
+  survives the full probe horizon. The wall is not a retention-mechanism
+  problem, and nothing here argues for changing the admission probe.
+- What the gap actually is: the end of the deepest recorded trajectory, plus a
+  transition artifact nineteen buckets above it that no play ever connects to.
+  Progress 124 was never a barrier — it is where the recorded input stops. One
+  corrected arm extended it to 129 in five thousand executions, which is
+  ordinary search depth, not a crossing.
+- Consequence for what gets registered next, recorded so the inference is not
+  made later by accident: H56 resumed from 124 believing it faced a frontier,
+  and the measure it was scored on could only move by extending an ordinary
+  trajectory. Neither the selector nor the retention rule is implicated by this
+  span. The open question stays what it was — depth in the second world — and
+  the recorded budget flaw in H56 remains the first thing a re-test must fix.
+- Raw evidence: `target/smb-completion/d57-span/`.

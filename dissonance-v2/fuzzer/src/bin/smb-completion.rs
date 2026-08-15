@@ -28,11 +28,12 @@ use fuzzer::{
         audit_smb_player_column_with_selection, audit_smb_terminal_death,
         census_smb_control_authority, derive_smb_ladder, diagnose_smb_film_columns,
         diagnose_smb_film_measurements, diagnose_smb_film_measurements_derived,
-        diagnose_smb_left_direction, diagnose_smb_player_column, gate_smb_live_control,
-        measure_smb_viable_progress, readmit_smb_archive, run_smb_archive_search,
-        run_smb_archive_search_with_policies, run_smb_archive_search_with_retention,
-        run_smb_archive_search_with_selector, select_smb_responsive_audit_ids,
-        select_smb_span_audit_ids, select_smb_spread_audit_ids, select_smb_steered_audit_ids,
+        diagnose_smb_left_direction, diagnose_smb_player_column, diagnose_smb_span,
+        gate_smb_live_control, measure_smb_viable_progress, readmit_smb_archive,
+        run_smb_archive_search, run_smb_archive_search_with_policies,
+        run_smb_archive_search_with_retention, run_smb_archive_search_with_selector,
+        select_smb_responsive_audit_ids, select_smb_span_audit_ids, select_smb_spread_audit_ids,
+        select_smb_steered_audit_ids,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -144,6 +145,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "derive-ladder" {
         return run_derive_ladder_mode(&mut args);
+    }
+    if mode == "diagnose-span" {
+        return run_span_diagnosis_mode(&mut args);
     }
     if mode == "measure-viable-progress" {
         return run_viable_progress_mode(&mut args);
@@ -941,6 +945,39 @@ fn run_derive_ladder_mode(
     }
     fs::write(&output, serde_json::to_vec_pretty(&ladder)?)?;
     println!("{}", serde_json::to_string_pretty(&ladder)?);
+    Ok(())
+}
+
+fn run_span_diagnosis_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let endpoint = parse_u64(
+        &args
+            .next()
+            .ok_or("missing endpoint bucket")?
+            .to_string_lossy(),
+    )?;
+    let low = parse_u64(&args.next().ok_or("missing span low")?.to_string_lossy())?;
+    let high = parse_u64(&args.next().ok_or("missing span high")?.to_string_lossy())?;
+    let output = PathBuf::from(args.next().ok_or("missing output file")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let boundaries = diagnose_smb_span(
+        &rom,
+        &source,
+        u16::try_from(endpoint)?,
+        u16::try_from(low)?,
+        u16::try_from(high)?,
+    )?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec_pretty(&boundaries)?)?;
+    println!("boundaries {}", boundaries.len());
     Ok(())
 }
 

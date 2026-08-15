@@ -1720,6 +1720,144 @@ pub fn select_smb_steered_audit_ids(
 
 const VIABLE_PROGRESS_BUCKET_SCAN: usize = 8;
 
+/// One action boundary of a walked input, with what the admission probe does there.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbSpanBoundary {
+    /// Actions consumed from the walked input.
+    pub action_index: usize,
+    /// Decoded world, level and progress at the boundary.
+    pub world: u8,
+    /// Decoded level.
+    pub level: u8,
+    /// Decoded progress bucket.
+    pub progress: u16,
+    /// Raw engine-state byte.
+    pub engine_state: u8,
+    /// Raw vertical page byte.
+    pub vertical_page: u8,
+    /// Raw low vertical byte.
+    pub vertical_low: u8,
+    /// Change in combined vertical position across the action that produced this boundary.
+    pub vertical_trend: i32,
+    /// Recorded camera in pixels.
+    pub camera: u32,
+    /// Frames the no-input probe survived, and what stopped it.
+    pub still_frames: u16,
+    /// Which clause ended the no-input probe: "kill_state", "below_play_area" or "survived".
+    pub still_outcome: String,
+    /// Frames the held-right probe survived.
+    pub right_frames: u16,
+    /// Which clause ended the held-right probe.
+    pub right_outcome: String,
+    /// Frames the button-plus-right probe survived.
+    pub jump_frames: u16,
+    /// Which clause ended the button-plus-right probe.
+    pub jump_outcome: String,
+    /// Whether the admission probe would retain this boundary.
+    pub probe_admits: bool,
+}
+
+/// Walk one recorded input and characterise the admission probe across a progress span.
+///
+/// This is a measurement over recorded artifacts. It runs no search, changes no
+/// search behaviour, involves no model, and retains nothing.
+///
+/// # Errors
+///
+/// Returns an error when the source has no entry at the requested endpoint or
+/// when emulation or snapshotting fails.
+pub fn diagnose_smb_span(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    endpoint_progress: u16,
+    low: u16,
+    high: u16,
+) -> Result<Vec<SmbSpanBoundary>, Box<dyn Error>> {
+    let tuple = source
+        .entries
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level))
+        .max()
+        .ok_or("source archive contains no entries")?;
+    let walked = source
+        .entries
+        .iter()
+        .filter(|entry| {
+            (entry.key.world, entry.key.level) == tuple && entry.key.progress == endpoint_progress
+        })
+        .min_by_key(|entry| (entry.input.actions.len(), entry.id))
+        .ok_or("source archive contains no entry at the requested endpoint")?
+        .input
+        .clone();
+    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    target.reset();
+    let mut boundaries = Vec::new();
+    let mut previous_vertical = 0_i32;
+    for (action_index, action) in walked.actions.iter().enumerate() {
+        target.apply(action);
+        if target.exit_kind() != ExitKind::Ok {
+            break;
+        }
+        let bytes = smb_death_bytes(target.wram());
+        let decoded = smb_mechanical_state_from_wram(target.wram());
+        let vertical = i32::from(bytes.vertical_page) * 256 + i32::from(bytes.vertical_low);
+        let trend = vertical - previous_vertical;
+        previous_vertical = vertical;
+        if (decoded.world, decoded.level) != tuple
+            || decoded.progress < low
+            || decoded.progress > high
+        {
+            continue;
+        }
+        let resume = target
+            .snapshot()
+            .ok_or("failed to snapshot a span boundary")?;
+        let mut probes = Vec::with_capacity(3);
+        for mask in VIABILITY_PROBE_MASKS {
+            target.restore(&resume)?;
+            probes.push(probe_outcome(&mut target, mask));
+        }
+        target.restore(&resume)?;
+        boundaries.push(SmbSpanBoundary {
+            action_index,
+            world: decoded.world,
+            level: decoded.level,
+            progress: decoded.progress,
+            engine_state: bytes.engine_state,
+            vertical_page: bytes.vertical_page,
+            vertical_low: bytes.vertical_low,
+            vertical_trend: trend,
+            camera: smb_camera_pixels(target.wram()),
+            still_frames: probes[0].0,
+            still_outcome: probes[0].1.clone(),
+            right_frames: probes[1].0,
+            right_outcome: probes[1].1.clone(),
+            jump_frames: probes[2].0,
+            jump_outcome: probes[2].1.clone(),
+            probe_admits: probes.iter().any(|probe| probe.1 == "survived"),
+        });
+    }
+    Ok(boundaries)
+}
+
+/// Run one probe mask and report how long it lasted and what stopped it.
+fn probe_outcome(target: &mut SmbTarget, mask: u8) -> (u16, String) {
+    for frame in 0..VIABILITY_PROBE_FRAMES {
+        target.apply(&ButtonChord::new(mask, 1));
+        if target.exit_kind() != ExitKind::Ok {
+            return (frame, "emulation_failed".to_owned());
+        }
+        let bytes = smb_death_bytes(target.wram());
+        if bytes.engine_state == PLAYER_KILLED_STATE {
+            return (frame.saturating_add(1), "kill_state".to_owned());
+        }
+        if bytes.vertical_page >= PLAYER_BELOW_PLAY_AREA_PAGE {
+            return (frame.saturating_add(1), "below_play_area".to_owned());
+        }
+    }
+    (VIABILITY_PROBE_FRAMES, "survived".to_owned())
+}
+
 /// One examined progress bucket of the viable-progress measurement.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbViableBucket {
