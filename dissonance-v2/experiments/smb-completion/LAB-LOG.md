@@ -3597,3 +3597,69 @@ bucket.
 - The H58 re-test proceeds unchanged. Its regime is already evidence-validated:
   D57 recorded one arm reaching bucket 129, above the resume bucket, so the
   measure is known to be able to move there.
+
+### H58 result — rejected at one paired win of six, again
+
+- Gates first. Determinism: the corrected seed `0x5eed_e000` arm and its
+  no-model replay are byte-equal with SHA-256
+  `ce11b5988d7e9781d7f9a7457088633610cc49004ed2004358122fe1b8db472a` and the
+  summary records `replay_verified=true`. Inertness: a frozen-selector archive
+  carries no selector field. Quality gates pass. Accounting is reported for
+  every corrected arm.
+- Paired play progress at 20,000 executions per arm. Controls
+  `[124, 124, 124, 124, 124, 124]`. Challengers
+  `[124, 124, 145, 124, 124, 124]`. **One paired win of six against a threshold
+  of four. Rejected.** No held-out panel is due and the standing deletion ruling
+  does not fire.
+- Quadrupling the budget did not change the verdict, and the shape of the
+  failure is sharper than H56's. **Not one control arm moved a single bucket in
+  120,000 executions**, and five of six challengers did not either. The only
+  arm that advanced is seed `0x5eed_e002`, which is the same seed that produced
+  H56's single win: 129 at five thousand executions, 145 at twenty thousand. The
+  win is reproducible and seed-specific, not budget-driven.
+- The 145 result is genuine play, checked rather than assumed. Walking that
+  arm's input, the boundaries run 123 at camera 1970, 129 at 2071, 129 at 2079,
+  140 at 2250, 141 at 2270, 144 at 2312, 144 at 2316 and 145 at 2320 — a
+  monotone camera through continuous terrain. Its archive populates the span
+  D57 examined: four entries at 129, three at 130, one at 131, two at 140, 168
+  at 141, 223 at 142, 76 at 143, 50 at 144 and two at 145.
+- A refinement to D57, recorded because it corrects a reading rather than the
+  finding. Bucket 144 occurs in two physically different situations that happen
+  to share a camera value: the conquest archive's 144 sits at camera 2304 during
+  the previous level's completion sequence, while this arm's 144 sits at camera
+  2312 in second-world play. D57's conclusion that the conquest 144 is a
+  transition artifact stands; the additional fact is that real terrain also
+  passes through that bucket.
+- The three-mask admission probe earned its design at the tip. At the deepest
+  two boundaries the **no-input** mask dies — below the play area at frames 27
+  and 40 — and the button-plus-right mask dies to the kill state, while
+  held-right survives the full horizon. A single no-input probe, which is what
+  H45 registered against, would have refused exactly the states that reach 145.
+- **The exhaustion machinery still never fired, and the arithmetic says it
+  cannot.** Across all six corrected arms `classes_skipped` is zero and
+  `counter_resets` is zero. The reason is the size of the tie class. On a
+  stalled arm the class holds 5,749 and 6,487 members against about 15,000
+  tie-class draws, which is **2.6 and 2.3 draws per parent** against a barren
+  threshold of 64 — unreachable by a factor of twenty-five. On the arm that
+  advanced the class is 521 members and 28.6 draws per parent, still under the
+  threshold but an order of magnitude closer.
+- That is the finding this panel bought, and it is about the correction itself.
+  The frozen selector concentrated three draws in four on an arbitrary
+  128-entry slice. The corrected selector removed the arbitrariness but replaced
+  it with a tie class of five to six thousand members, so per-parent effort fell
+  to roughly two and a half selections in twenty thousand executions. Sampling a
+  band uniformly at this depth spreads effort as thinly as the uniform draw it
+  was meant to improve on. Whether the small class on the advancing arm is cause
+  or consequence of advancing is **not** established here: advancing lifts the
+  deepest bucket and the band follows it, discarding the shallow population, so
+  the two are confounded in this data.
+- Recorded against the new standing method: this panel ended with five exactly
+  tied pairs. The stop rule the method gives as its worked example — halt after
+  three exact ties and record the panel unresolvable in regime — would have
+  stopped it after roughly half the arms. H58 was registered before the method
+  took effect and the integrator directed it to proceed unchanged, so it ran to
+  a full count; the next multi-seed panel carries a stop rule.
+- Raw evidence: `target/smb-completion/h58-selection/` and
+  `target/smb-completion/h58-progress/` on the ARM machine, with summaries and
+  progress reports copied locally, and the walked boundaries at
+  `target/smb-completion/d57-span/corrected-e002-145-boundaries.json`.
