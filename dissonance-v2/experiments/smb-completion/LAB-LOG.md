@@ -3663,3 +3663,112 @@ bucket.
   `target/smb-completion/h58-progress/` on the ARM machine, with summaries and
   progress reports copied locally, and the walked boundaries at
   `target/smb-completion/d57-span/corrected-e002-145-boundaries.json`.
+
+## H59 — preregistered concentration correction
+
+- First registration under the standing cheapest-test-first method, and its
+  assumption checks are recorded below **before** any arm launches. One of them
+  fails, and the failure is recorded here rather than discovered by a fleet.
+- Falsifiable claim: concentrating frontier draws on recently discovered members
+  of the winning tie class reaches deeper play than spreading them across the
+  whole class. Mechanism as dispatched: within the winning tie class, sample
+  uniformly from only its `K` most recently retained members, with retention
+  order taken as entry creation order so the choice is deterministic and free of
+  key-order accident, and `K` fixed at 128. Band, fall-through, and the
+  sixty-four-selection barren threshold are unchanged.
+
+### Assumption checks, run against recorded artifacts before any arm
+
+- **Assumption one: the measure can move in this regime. HOLDS.** H58's seed
+  `0x5eed_e002` reached play bucket 145 from the same source and budget, with a
+  monotone camera through continuous terrain, and D57 established that the span
+  above 124 is not a wall. A twenty-thousand-execution arm from this source can
+  move.
+- **Assumption two: the frontier is real. HOLDS.** D57 walked the deepest
+  recorded trajectory and found every boundary probe-admissible, with no
+  committed stretch where no-input always dies. Bucket 124 is where the recorded
+  input stops, not a barrier.
+- **Assumption three: capping the class at 128 makes the barren threshold of 64
+  reachable. FAILS, by a factor of about twenty-five.** The dispatched
+  arithmetic divides roughly fifteen thousand tie-class draws by a window of 128
+  and obtains about 117 draws per parent. That assumes the 128 members are a
+  fixed set. They are not: a recency window turns over once per retention into
+  the class, so every class member passes through it. Measured on H58's own
+  archives, the band on stalled seed `0x5eed_e000` holds 5,749 members of which
+  **5,740 were created during the run**, and on seed `0x5eed_e004` 6,487 of
+  which 6,478 were. Fifteen thousand draws spread across 5,740 parents passing
+  through the window is **2.6 draws per parent**, which is exactly the figure
+  H58 already recorded for sampling the whole class, and 2.3 on `e004`. On the
+  advancing seed `0x5eed_e002` the band is 521 members, all created in-run, and
+  the figure is 28.6 either way.
+- Consequence, stated plainly: **a recency-ordered cap does not change average
+  draws per parent at all.** It changes when a parent's draws arrive — in a
+  burst shortly after its retention — and which parents receive them. That may
+  be worth testing on its own merits, and the pilot below tests it. But the
+  stated rationale that the cap makes exhaustion reachable does not survive
+  contact with the recorded data, and no arm needed to be spent to find that out.
+
+### The fork this exposes, for the integrator's ruling
+
+- The 117-draws figure is correct under a different eviction rule: a window that
+  holds `K` parents and releases one **only when it exhausts**, rather than when
+  a newer retention displaces it. Under that reading the resident set is nearly
+  static, a parent accumulates draws until it reaches the barren threshold, and
+  exhaustion genuinely becomes reachable.
+- These are two different mechanisms with different predictions, and the
+  registration does not silently choose between them. **Recency-displacement**
+  concentrates in time and tests whether recently discovered states are better
+  parents. **Exhaustion-eviction** concentrates in population and tests whether
+  starving barren parents advances the frontier. The builder specification must
+  say which is being built; the requirements below are written for both and
+  marked.
+
+### Pilot before fleet
+
+- One arm, corrected plus capped, seed `0x5eed_e000`, at 20,000 executions,
+  from H58's source at play bucket 124. That seed stalled at exactly 124 in both
+  H56 and H58, under both selectors, so it is the sharpest available test.
+- Preregistered pilot question: **does a twice-stalled seed advance past play
+  bucket 124 under concentration?** If it moves, the paired fleet runs. If it
+  does not, this registration voids at one twelfth of the fleet's cost and is
+  recorded as such.
+- The pilot's seed is fixed here and is not chosen after the fact.
+
+### Fleet, on a moving pilot
+
+- Paired as before: frozen controls against corrected-plus-capped challengers,
+  seeds `0x5eed_e000..=0x5eed_e005` at 20,000 executions, acceptance requiring
+  the challenger's play progress strictly greater than its paired control's on
+  at least 4 of 6. Held-out `0x5eed_e100..=0x5eed_e105` on acceptance.
+- **Stop rule, preregistered:** the fleet halts after three exactly tied pairs
+  and is recorded as unresolvable in this regime. H58 ended with five such
+  ties and ran to a full count only because it predated the method.
+- Promotion on held-out acceptance triggers the standing deletion ruling for the
+  frozen selector path.
+
+### Builder requirements
+
+- **No selector code is written in this experiment's tree.** The mechanism is
+  built by a separate builder, as with H56.
+- The cap is a **new explicit policy value beside the existing frozen and
+  corrected ones**, defaulting to the existing behaviour, in the same pattern as
+  the retention, key, ladder and selector policies. Every recorded artifact must
+  continue to replay byte-exact on the frozen path and on the uncapped corrected
+  path; three gates in this log are byte-equality against recorded arms.
+- Under **recency-displacement**: the sampled set is the `K` members of the
+  winning tie class with the greatest entry identifiers, `K` fixed at 128;
+  membership is recomputed per draw; a member leaves when 128 newer class
+  members exist. Barren accounting is unchanged.
+- Under **exhaustion-eviction**: the sampled set is a resident set of at most
+  `K` class members admitted in entry-identifier order; a resident leaves only
+  when its barren count reaches the threshold, and a new member is admitted in
+  its place. Barren counts persist for residents across draws.
+- Accounting must report, per campaign, the sampled-set size, how many distinct
+  parents passed through it, the draws per parent it produced, and the existing
+  skipped-class and counter-reset counts. The draws-per-parent figure is the
+  number the assumption check above turned on, so it must be measurable from the
+  record rather than recomputed by hand.
+- Gates before the pilot: inertness on both existing paths, one corrected arm
+  replaying byte-identically, the four quality gates, and the accounting
+  reported.
+- Raw destination: `target/smb-completion/h59-concentration/`.
