@@ -314,6 +314,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             SmbArchiveSelectorPolicy::CorrectedTieClass,
         );
     }
+    if mode == "archive-resume-play-viable-ladder-concentrated" {
+        return run_archive_resume_mode(
+            &mut args,
+            SmbArchiveDurationPolicy::Stratified,
+            SmbArchiveSuffixPolicy::OneOrTwo,
+            ResumeSelection::PlayBucket,
+            SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            SmbArchiveKeyPolicy::Frozen,
+            SmbArchiveLadderPolicy::Extended,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
+        );
+    }
     if mode == "archive-resume-band-burst" {
         return run_archive_resume_mode(
             &mut args,
@@ -1457,6 +1469,7 @@ fn run_archive_resume_mode(
             match selector_policy {
                 SmbArchiveSelectorPolicy::Frozen => "frozen_frontier_128",
                 SmbArchiveSelectorPolicy::CorrectedTieClass => "corrected_tie_class",
+                SmbArchiveSelectorPolicy::ConcentratedRecency => "concentrated_recency_128",
             }
         } else if frozen_search {
             "frozen_frontier_128"

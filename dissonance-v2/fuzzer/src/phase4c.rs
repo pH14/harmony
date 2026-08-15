@@ -210,10 +210,17 @@ pub enum SmbArchiveSelectorPolicy {
     /// H56: corrected `(world, level, progress)` key, tie-class frontier with
     /// fall-through, per-entry exhaustion accounting.
     CorrectedTieClass,
+    /// H59: corrected selection with tie-class draws concentrated on the
+    /// winning class's `CONCENTRATION_WINDOW` most recently created members.
+    ConcentratedRecency,
 }
 
 /// Selections since the last retained descendant at which a parent is exhausted.
 const SELECTION_EXHAUSTION_THRESHOLD: u64 = 64;
+
+/// H59 recency window: a concentrated tie-class draw samples only this many of
+/// the winning class's greatest-id members.
+const CONCENTRATION_WINDOW: usize = 128;
 
 /// Which selection path one recorded draw took.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -235,6 +242,18 @@ pub struct SmbSelectorDraw {
     /// Whether this draw found every active entry exhausted and reset the
     /// exhaustion counters.
     pub counter_reset: bool,
+    /// Sampled-set state, present only on concentrated tie-class draws.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concentration: Option<SmbConcentrationDraw>,
+}
+
+/// Concentrated sampled-set state at one tie-class draw.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbConcentrationDraw {
+    /// Members of the concentrated sampled set at this draw.
+    pub window_size: u64,
+    /// Sampled-set members at this draw that were never members before.
+    pub entered_window: u64,
 }
 
 /// Per-campaign accounting for the selector policy that ran.
@@ -252,6 +271,25 @@ pub struct SmbSelectorAccounting {
     pub classes_skipped: u64,
     /// Deterministic all-exhausted counter resets.
     pub counter_resets: u64,
+    /// Concentrated-window accounting, absent under every other policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concentration: Option<SmbConcentrationAccounting>,
+}
+
+/// Per-campaign accounting for the concentrated recency window.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbConcentrationAccounting {
+    /// Fixed cap on the sampled set.
+    pub window_cap: u64,
+    /// Sampled-set size at the most recent concentrated tie-class draw.
+    pub final_window_size: u64,
+    /// Tie-class draws taken through the concentrated window.
+    pub window_draws: u64,
+    /// Distinct parents that were ever sampled-set members.
+    pub distinct_window_parents: u64,
+    /// Draws per parent through the window, in thousandths:
+    /// `window_draws * 1000 / distinct_window_parents`, floored.
+    pub draws_per_parent_milli: u64,
 }
 
 impl SmbSelectorAccounting {
@@ -465,6 +503,7 @@ pub(crate) struct Archive<'a> {
     selected: Vec<u64>,
     productive: Vec<u64>,
     since_retained: Vec<u64>,
+    in_window_ever: Vec<bool>,
     selector_accounting: SmbSelectorAccounting,
 }
 
@@ -494,8 +533,14 @@ impl<'a> Archive<'a> {
             selected: Vec::new(),
             productive: Vec::new(),
             since_retained: Vec::new(),
+            in_window_ever: Vec::new(),
             selector_accounting: SmbSelectorAccounting {
                 policy: selector_policy,
+                concentration: (selector_policy == SmbArchiveSelectorPolicy::ConcentratedRecency)
+                    .then_some(SmbConcentrationAccounting {
+                        window_cap: u64::try_from(CONCENTRATION_WINDOW).unwrap_or(u64::MAX),
+                        ..SmbConcentrationAccounting::default()
+                    }),
                 ..SmbSelectorAccounting::default()
             },
         }
@@ -593,6 +638,7 @@ impl<'a> Archive<'a> {
         self.selected.push(0);
         self.productive.push(0);
         self.since_retained.push(0);
+        self.in_window_ever.push(false);
         cell.push(id);
         self.input_ids.insert(input, id);
         self.retained = self.retained.saturating_add(1);
@@ -680,14 +726,16 @@ impl<'a> Archive<'a> {
     ) -> Result<(usize, Option<SmbSelectorDraw>), Box<dyn Error>> {
         match self.selector_policy {
             SmbArchiveSelectorPolicy::Frozen => Ok((self.choose_parent(rand, max_actions)?, None)),
-            SmbArchiveSelectorPolicy::CorrectedTieClass => self
+            SmbArchiveSelectorPolicy::CorrectedTieClass
+            | SmbArchiveSelectorPolicy::ConcentratedRecency => self
                 .choose_parent_corrected(rand, max_actions)
                 .map(|(id, draw)| (id, Some(draw))),
         }
     }
 
     /// H56 corrected selection: corrected key, tie-class frontier with
-    /// fall-through, exhaustion-aware sampling.
+    /// fall-through, exhaustion-aware sampling. Under the H59 concentrated
+    /// policy the final tie-class draw narrows to the recency window.
     fn choose_parent_corrected(
         &mut self,
         rand: &mut StdRand,
@@ -706,6 +754,7 @@ impl<'a> Archive<'a> {
                     path: SmbSelectorPath::Uniform,
                     classes_skipped: 0,
                     counter_reset: false,
+                    concentration: None,
                 },
             ));
         }
@@ -713,14 +762,14 @@ impl<'a> Archive<'a> {
         let mut counter_reset = false;
         loop {
             if let Some(class) = self.best_unexhausted_class(&active, &mut classes_skipped) {
-                let id =
-                    class[rand.below(NonZeroUsize::new(class.len()).ok_or("empty tie class")?)];
+                let (id, concentration) = self.draw_from_class(rand, class)?;
                 return Ok((
                     id,
                     SmbSelectorDraw {
                         path: SmbSelectorPath::TieClass,
                         classes_skipped,
                         counter_reset,
+                        concentration,
                     },
                 ));
             }
@@ -781,6 +830,41 @@ impl<'a> Archive<'a> {
         None
     }
 
+    /// Uniform draw within the winning tie class; the H59 concentrated policy
+    /// narrows it to the class's `CONCENTRATION_WINDOW` greatest-id members.
+    ///
+    /// Entry ids are creation order, so the greatest ids are the class's most
+    /// recently retained members. Membership is recomputed at every draw: a
+    /// member leaves when `CONCENTRATION_WINDOW` newer sampleable class
+    /// members exist, or immediately when it exhausts.
+    fn draw_from_class(
+        &mut self,
+        rand: &mut StdRand,
+        mut class: Vec<usize>,
+    ) -> Result<(usize, Option<SmbConcentrationDraw>), Box<dyn Error>> {
+        if self.selector_policy != SmbArchiveSelectorPolicy::ConcentratedRecency {
+            let id = class[rand.below(NonZeroUsize::new(class.len()).ok_or("empty tie class")?)];
+            return Ok((id, None));
+        }
+        class.sort_unstable();
+        let window = &class[class.len().saturating_sub(CONCENTRATION_WINDOW)..];
+        let mut entered_window = 0_u64;
+        for id in window {
+            if !self.in_window_ever[*id] {
+                self.in_window_ever[*id] = true;
+                entered_window = entered_window.saturating_add(1);
+            }
+        }
+        let id = window[rand.below(NonZeroUsize::new(window.len()).ok_or("empty tie window")?)];
+        Ok((
+            id,
+            Some(SmbConcentrationDraw {
+                window_size: u64::try_from(window.len())?,
+                entered_window,
+            }),
+        ))
+    }
+
     /// Account one recorded selection of `id`; a no-op under the frozen policy.
     pub(crate) fn record_selection(&mut self, id: usize, draw: &SmbSelectorDraw) {
         if self.selector_policy == SmbArchiveSelectorPolicy::Frozen {
@@ -810,6 +894,21 @@ impl<'a> Archive<'a> {
             .selector_accounting
             .counter_resets
             .saturating_add(u64::from(draw.counter_reset));
+        if let (Some(accounting), Some(concentration)) = (
+            self.selector_accounting.concentration.as_mut(),
+            draw.concentration.as_ref(),
+        ) {
+            accounting.window_draws = accounting.window_draws.saturating_add(1);
+            accounting.final_window_size = concentration.window_size;
+            accounting.distinct_window_parents = accounting
+                .distinct_window_parents
+                .saturating_add(concentration.entered_window);
+            accounting.draws_per_parent_milli = accounting
+                .window_draws
+                .saturating_mul(1000)
+                .checked_div(accounting.distinct_window_parents)
+                .unwrap_or(0);
+        }
     }
 
     /// Account whether a recorded selection of `id` retained a descendant; a
@@ -5278,20 +5377,27 @@ mod tests {
     }
 
     fn selector_archive(keys: &[(u8, u8, u16)]) -> Archive<'static> {
+        selector_archive_with_policy(keys, SmbArchiveSelectorPolicy::CorrectedTieClass)
+    }
+
+    fn selector_archive_with_policy(
+        keys: &[(u8, u8, u16)],
+        policy: SmbArchiveSelectorPolicy,
+    ) -> Archive<'static> {
         let snapshot = selector_snapshot();
-        let mut archive = Archive::new(None, false, SmbArchiveSelectorPolicy::CorrectedTieClass);
+        let mut archive = Archive::new(None, false, policy);
         for (index, (world, level, progress)) in keys.iter().enumerate() {
             let input = SmbInput {
                 actions: vec![ButtonChord::new(
-                    0,
-                    u8::try_from(index + 1).expect("hold frames"),
+                    u8::try_from(index / 120).expect("chord mask"),
+                    u8::try_from((index % 120) + 1).expect("hold frames"),
                 )],
             };
             let key = SmbArchiveKey {
                 world: *world,
                 level: *level,
                 progress: *progress,
-                player_y_bucket: 0,
+                player_y_bucket: u8::try_from(index / 64).expect("vertical bucket"),
                 player_engine_state: 0,
                 state_fingerprint: u8::try_from(index % 64).expect("fingerprint"),
             };
@@ -5347,6 +5453,7 @@ mod tests {
             path: SmbSelectorPath::TieClass,
             classes_skipped: 0,
             counter_reset: false,
+            concentration: None,
         };
         for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
             archive.record_selection(0, &exhausting_draw);
@@ -5383,6 +5490,7 @@ mod tests {
             path: SmbSelectorPath::TieClass,
             classes_skipped: 0,
             counter_reset: false,
+            concentration: None,
         };
         for id in 0..keys.len() {
             for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
@@ -5410,6 +5518,123 @@ mod tests {
         }
         assert!(reset_seen);
         assert_eq!(archive.selector_report().counter_resets, 1);
+    }
+
+    #[test]
+    fn concentrated_selector_samples_only_the_recency_window() {
+        // 140 entries in one tie class: the window is the 128 greatest ids.
+        let keys: Vec<(u8, u8, u16)> = (0..140).map(|index| (1, 0, 118 + (index % 7))).collect();
+        let mut archive =
+            selector_archive_with_policy(&keys, SmbArchiveSelectorPolicy::ConcentratedRecency);
+        let mut rand = StdRand::with_seed(0x5eed_5e21);
+        let mut tie_class_draws = 0;
+        for _ in 0..256 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .expect("concentrated selection");
+            let draw = draw.expect("concentrated draw record");
+            match draw.path {
+                SmbSelectorPath::TieClass => {
+                    tie_class_draws += 1;
+                    assert!(
+                        id >= 12,
+                        "tie-class draws must come from the 128 most recent members, got {id}"
+                    );
+                    let concentration = draw.concentration.expect("concentration record");
+                    assert_eq!(concentration.window_size, 128);
+                }
+                SmbSelectorPath::Uniform => {
+                    assert!(draw.concentration.is_none());
+                }
+            }
+        }
+        assert!(tie_class_draws > 0);
+    }
+
+    #[test]
+    fn concentrated_window_slides_off_exhausted_members() {
+        // 129 members at one progress: the window starts as ids 1..=128; when
+        // all of them exhaust, the sampled set must refill from the
+        // next-most-recent unexhausted member below, not skip the class.
+        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 124); 129];
+        let mut archive =
+            selector_archive_with_policy(&keys, SmbArchiveSelectorPolicy::ConcentratedRecency);
+        let exhausting_draw = SmbSelectorDraw {
+            path: SmbSelectorPath::TieClass,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        for id in 1..=128 {
+            for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
+                archive.record_selection(id, &exhausting_draw);
+            }
+        }
+        let mut rand = StdRand::with_seed(0x5eed_5e22);
+        let mut slid = false;
+        for _ in 0..64 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .expect("concentrated selection");
+            let draw = draw.expect("concentrated draw record");
+            if draw.path == SmbSelectorPath::TieClass {
+                assert_eq!(id, 0, "the only unexhausted member must be sampled");
+                assert_eq!(draw.classes_skipped, 0);
+                assert!(!draw.counter_reset);
+                let concentration = draw.concentration.expect("concentration record");
+                assert_eq!(concentration.window_size, 1);
+                slid = true;
+            }
+        }
+        assert!(slid);
+    }
+
+    #[test]
+    fn concentrated_selector_search_replays_and_reports_accounting() {
+        let rom = synthetic_nrom();
+        let initial = vec![SmbInput::default()];
+        let run = || {
+            run_smb_archive_search_with_selector(
+                &rom,
+                &initial,
+                0x5eed_ef23,
+                64,
+                MAX_SMB_ACTIONS,
+                SmbArchiveDurationPolicy::Stratified,
+                SmbArchiveSuffixPolicy::OneOrTwo,
+                SmbArchiveRetentionPolicy::Frozen,
+                SmbArchiveKeyPolicy::Frozen,
+                SmbArchiveLadderPolicy::Frozen,
+                SmbArchiveSelectorPolicy::ConcentratedRecency,
+            )
+        };
+        let first = run().expect("concentrated search");
+        let replay = run().expect("concentrated replay");
+        assert_eq!(first, replay);
+        let accounting = first.selector;
+        assert_eq!(
+            accounting.policy,
+            SmbArchiveSelectorPolicy::ConcentratedRecency
+        );
+        assert_eq!(
+            accounting
+                .uniform_selections
+                .checked_add(accounting.tie_class_selections),
+            Some(64)
+        );
+        let concentration = accounting.concentration.expect("concentration accounting");
+        assert_eq!(concentration.window_cap, 128);
+        assert_eq!(concentration.window_draws, accounting.tie_class_selections);
+        assert!(concentration.distinct_window_parents > 0);
+        assert!(concentration.final_window_size > 0);
+        assert_eq!(
+            concentration.draws_per_parent_milli,
+            concentration.window_draws * 1000 / concentration.distinct_window_parents
+        );
+        assert!(first.entries.iter().all(|entry| entry.selector.is_some()));
+        let serialized = serde_json::to_string(&first).expect("serialize concentrated report");
+        assert!(serialized.contains("concentrated_recency"));
+        assert!(serialized.contains("draws_per_parent_milli"));
     }
 
     #[test]
@@ -5490,5 +5715,9 @@ mod tests {
         assert_eq!(selected_total, 64);
         let serialized = serde_json::to_string(&first).expect("serialize corrected report");
         assert!(serialized.contains("corrected_tie_class"));
+        assert!(
+            !serialized.contains("concentration"),
+            "a corrected report must not carry concentration fields"
+        );
     }
 }

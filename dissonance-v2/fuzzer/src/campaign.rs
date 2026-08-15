@@ -22,9 +22,9 @@ use crate::{
     phase4c::{
         Archive, ArchiveCandidate, SmbArchiveDurationPolicy, SmbArchiveKey, SmbArchiveKeyPolicy,
         SmbArchiveProgressPoint, SmbArchiveReport, SmbArchiveRetentionPolicy,
-        SmbArchiveSelectorPolicy, SmbSelectorDraw, admission_is_viable, archive_key,
-        merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
-        update_first_inputs,
+        SmbArchiveSelectorPolicy, SmbSelectorDraw, SmbSelectorPath, admission_is_viable,
+        archive_key, merge_action_milestones, merge_milestones, merge_progress_watermark,
+        milestone_key, update_first_inputs,
     },
     target::Target,
 };
@@ -295,6 +295,7 @@ pub fn selector_identifier(policy: SmbArchiveSelectorPolicy) -> &'static str {
     match policy {
         SmbArchiveSelectorPolicy::Frozen => "frozen_frontier_128",
         SmbArchiveSelectorPolicy::CorrectedTieClass => "corrected_tie_class",
+        SmbArchiveSelectorPolicy::ConcentratedRecency => "concentrated_recency_128",
     }
 }
 
@@ -309,6 +310,7 @@ pub fn selector_from_identifier(
     match identifier {
         "frozen_frontier_128" => Ok(SmbArchiveSelectorPolicy::Frozen),
         "corrected_tie_class" => Ok(SmbArchiveSelectorPolicy::CorrectedTieClass),
+        "concentrated_recency_128" => Ok(SmbArchiveSelectorPolicy::ConcentratedRecency),
         _ => Err("campaign stream parent scheduler is not recognized".into()),
     }
 }
@@ -322,8 +324,26 @@ fn verify_selector_annotation(
         (SmbArchiveSelectorPolicy::Frozen, Some(_)) => {
             Err("frozen-selector stream carries a selector annotation".into())
         }
-        (SmbArchiveSelectorPolicy::CorrectedTieClass, None) => {
-            Err("corrected-selector stream is missing a selector annotation".into())
+        (
+            SmbArchiveSelectorPolicy::CorrectedTieClass
+            | SmbArchiveSelectorPolicy::ConcentratedRecency,
+            None,
+        ) => Err("corrected-selector stream is missing a selector annotation".into()),
+        (SmbArchiveSelectorPolicy::CorrectedTieClass, Some(draw))
+            if draw.concentration.is_some() =>
+        {
+            Err("corrected-selector draw carries a concentration record".into())
+        }
+        (SmbArchiveSelectorPolicy::ConcentratedRecency, Some(draw)) => {
+            match (draw.path, draw.concentration) {
+                (SmbSelectorPath::TieClass, None) => {
+                    Err("concentrated tie-class draw is missing its concentration record".into())
+                }
+                (SmbSelectorPath::Uniform, Some(_)) => {
+                    Err("concentrated uniform draw carries a concentration record".into())
+                }
+                _ => Ok(()),
+            }
         }
         _ => Ok(()),
     }
@@ -1607,6 +1627,78 @@ mod tests {
                 .entries
                 .iter()
                 .all(|entry| entry.selector.is_some())
+        );
+        assert!(
+            !text.contains("\"concentration\""),
+            "a corrected stream must not carry concentration records"
+        );
+    }
+
+    #[test]
+    fn concentrated_campaign_replays_byte_identically_with_annotations() {
+        let rom = synthetic_nrom();
+        let config = SmbCampaignConfig {
+            campaign_seed: 0x5eed_ca09,
+            workers: 4,
+            execution_budget: 32,
+            action_limit: 96,
+            host: "unit-test".to_owned(),
+            wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+        };
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("concentrated live campaign");
+        assert_eq!(live.executions_completed, 32);
+        let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
+        assert!(
+            text.lines()
+                .next()
+                .expect("header")
+                .contains("concentrated_recency_128")
+        );
+        for line in text.lines().skip(1) {
+            assert!(
+                line.contains("\"selector\""),
+                "every concentrated job and skip record must carry a selector annotation"
+            );
+            if line.contains("\"tie_class\"") {
+                assert!(
+                    line.contains("\"concentration\""),
+                    "every concentrated tie-class draw must carry its window record"
+                );
+            } else {
+                assert!(
+                    !line.contains("\"concentration\""),
+                    "uniform draws must not carry a window record"
+                );
+            }
+        }
+        let replayed =
+            replay_smb_campaign(&rom, &stream, None).expect("replay concentrated campaign");
+        assert_eq!(live, replayed);
+        let live_bytes = serde_json::to_vec_pretty(&live).expect("serialize live report");
+        let replay_bytes = serde_json::to_vec_pretty(&replayed).expect("serialize replayed report");
+        assert_eq!(live_bytes, replay_bytes);
+        let accounting = live.archive.selector;
+        assert_eq!(
+            accounting.policy,
+            SmbArchiveSelectorPolicy::ConcentratedRecency
+        );
+        assert_eq!(
+            accounting
+                .uniform_selections
+                .checked_add(accounting.tie_class_selections),
+            live.executions_completed
+                .checked_add(live.duplicates_skipped)
+        );
+        let concentration = accounting.concentration.expect("concentration accounting");
+        assert_eq!(concentration.window_cap, 128);
+        assert_eq!(concentration.window_draws, accounting.tie_class_selections);
+        assert!(concentration.distinct_window_parents > 0);
+        assert_eq!(
+            concentration.draws_per_parent_milli,
+            concentration.window_draws * 1000 / concentration.distinct_window_parents
         );
     }
 }
