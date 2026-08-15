@@ -4109,3 +4109,49 @@ message. Everything below is state, not advice.
 - **Long `ssh` commands time out at the tool boundary and get backgrounded**,
   which can look like a failure while the remote job runs on happily. Verify
   remote state directly before concluding anything died.
+
+The successor session takes the program from here. The standing direction,
+ruled at take-over: the conquest chain is the program — film, verify, relaunch
+from the deeper archive, a resume-rule assumption check before every link, and
+one variable of science only when a link stalls.
+
+### C61 live result — the conquest entered the second world's second level
+
+- The live run completed its full 50,000 executions on ten workers, campaign
+  seed `0x5eed_c003`, from the H59 pilot archive: 15,755 retained against
+  38,642 rejected with 779 deaths, 9,807,356 frames emulated, 183 duplicates
+  skipped and 423 probe refusals. The recorded stream hashes to
+  `3e969f0f63930e606dbc4edb626455df9a2d639a95d9171a507b9473bb57fa1b`.
+- Its extended ladder holds six `(world, level)` pairs — the first world's four
+  levels at deepest progress 195, 195, 148 and 144, the second world's first
+  level at 197 — and a maximum tuple of **`(world 1, level 1, progress 27)`**:
+  the second world's second level, the deepest recorded play in the program's
+  history. All six pairs carry first execution zero because the origin archive
+  already contained them; the depth inside the new level is this run's work.
+- The advance is dense in the C49/H59 sense, not a boundary artifact: the new
+  level holds 6,960 entries, with a populated corridor of 794, 857, 775, 803,
+  759 and 917 entries across buckets 20 through 25, then 296 at 26 and 446 at
+  the frontier bucket 27.
+- Selector accounting, reported per the standing honesty gate: 12,538 uniform
+  selections, 37,645 tie-class selections, 13,387 productive. Concentration:
+  window cap 128, final window size 128, 37,645 window draws over 3,165
+  distinct parents — **11.894 draws per parent**, an order of magnitude above
+  the pilot's 1.471, because a conquest that stalls inside one level churns
+  the window far more slowly than a run sweeping fresh territory.
+  `classes_skipped` and `counter_resets` are zero for the fifth panel running;
+  the exhaustion machinery has still never fired, now at 11.9 draws per parent
+  against the barren threshold of 64.
+- The play measurement on the recorded archive answers the next link's
+  resume-rule assumption check before anything launches: at the maximum pair
+  the recorded, viable and play figures are all **27** — the frontier is
+  settled genuine play, not a transition artifact, so the campaign resume rule
+  and the play frontier coincide on this archive and the next link may resume
+  from it directly. Measurement at
+  `target/smb-completion/c61-conquest/play-measurement.json`.
+- Film of the furthest trajectory is cut and delivered: the shortest input at
+  `(1, 1, 27)`, 510 actions rendered to 511 frames and encoded at sixty frames
+  a second, `target/smb-completion/c61-film/`. The play and viable figures
+  coincide, so C49 practice calls for the one film.
+- The determinism gate is in flight at the time of writing: the serial replay
+  of the recorded stream is running and its verdict is recorded below when it
+  lands. One live run, no retry taken or permitted.
