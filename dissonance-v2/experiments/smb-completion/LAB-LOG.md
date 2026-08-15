@@ -3879,3 +3879,56 @@ bucket.
   arm of record is the recorded stream; the replay verifies it, and no retry was
   taken or is permitted.
 - Raw evidence: `target/smb-completion/h59-pilot/` on the ARM machine.
+
+## H60 — preregistered attribution arm
+
+- The integrator applied the pilot-before-fleet rule to their own fleet dispatch
+  and replaced it with a single attribution arm. Registered before execution;
+  nothing has run against it.
+- Falsifiable question, fixed here: **does the uncapped corrected policy under
+  campaign mode also advance well past bucket 124, or does it stall near the old
+  shelf?** The H59 pilot showed a concentrated campaign reaching 197 and a new
+  level, but no campaign arm has ever run the corrected policy without the cap,
+  so the pilot could not separate the recency cap from the tie-class correction.
+  This arm separates them.
+- One live uncapped-corrected campaign, one run, **no retries**: the derived
+  play-bucket-124 origin
+  `target/smb-completion/h59-pilot/origin-play124.json`, SHA-256
+  `e6373e65b0b324bf1df76b13f3c58bdcce991089720454f5c9c22d2c146cb40e`, 20,000
+  executions, campaign seed derived from `0x5eed_e000`, twelve workers on the
+  ARM machine. Every one of those matches the pilot exactly; the selector is the
+  only difference, which is the point.
+- Decision rule, fixed before execution. If it stalls at or near the recorded
+  shelf — anywhere in 124 to 145 — attribution to the cap is settled and the
+  concentrated policy proceeds to lean confirmation: held-out seeds
+  `0x5eed_e100..=0x5eed_e105` as concentrated campaign arms, paired against this
+  recorded attribution arm and the H58 evidence, with **no fresh development
+  fleet**. If it also surges toward 197, execution stops and the result is
+  reported for a fresh ruling, because the mechanism story would then be about
+  the tie-class correction under campaign mode rather than the cap.
+- The recorded stream is the arm of record and its serial replay is the
+  determinism gate, per the standing method.
+- Raw destination: `target/smb-completion/h60-attribution/`.
+
+## C61 — registered concentrated conquest
+
+- Observational, in the C49 pattern: no falsifiable claim, no control, no
+  acceptance rule. The deliverable is the recorded archive, the extended
+  milestone ladder, and film of the furthest trajectory.
+- One live concentrated-policy conquest campaign, 50,000 executions, on the
+  local machine at its ten cores, sourced from the H59 pilot's own recorded
+  archive `target/smb-completion/h59-pilot/run/archive-live.json` — the run that
+  reached `(world 1, level 0, progress 197)` and opened `(world 1, level 1)`.
+  One live run, no retries, replay as the determinism gate.
+- Property of the origin recorded before launch, because D57 taught this lesson:
+  the source's maximum tuple is `(world 1, level 1, progress 0)` with 233
+  entries, and the play measurement returned no play bucket there, which is the
+  signature of a level-transition moment rather than settled play. The campaign
+  resume rule takes the shortest input at that maximum tuple, so this conquest
+  resumes from the transition into the new level. For an observational conquest
+  that is acceptable and is how CM6 resumed; it is recorded so the ladder is not
+  later misread.
+- Science and territory proceed simultaneously on separate machines by the
+  integrator's direction. Both this and H60 are conditional on the H59 pilot
+  replay verifying first.
+- Raw destination: `target/smb-completion/c61-conquest/`.
