@@ -4296,3 +4296,36 @@ one variable of science only when a link stalls.
   carries its own limit of 512 and replay reads the header. The limit value
   and its sizing against archive growth and replay cost are put to the
   integrator rather than chosen here.
+
+### Ruling on the action cap — the ceiling rises to 4096
+
+- The integrator ruled 4096, with the reasoning recorded: the cap is a
+  ceiling, not an allocation. Archives grow with actual trajectory depth under
+  any cap value, so 2048 and 4096 cost the same until real play exceeds 2048 —
+  and at that point the only difference is whether the stall-diagnose-rule-
+  re-verify cycle, roughly half a day, recurs in the middle of the endgame. At
+  4096 it does not recur. The recurring-stall pattern is precisely the class
+  of loss the program has standing instruction to engineer away.
+- The change: `MAX_SMB_COMPLETION_ACTIONS` raised from 512 to 4096. The
+  per-campaign action limit stays an explicit registered value at every link,
+  so the record remains honest about what each campaign ran under.
+- One adjacent surface deliberately untouched: the model-host's
+  generated-mutator prompt text still reads "at most 512 chords". It is part
+  of the recorded-decision machinery, which must rebuild recorded artifacts
+  exactly, so it is not edited. The ceiling raise only loosens that path's
+  output validator, which is benign; the stale figure in the prompt is noted
+  here as a known residue for whenever that machinery is next registered.
+- **Inertness re-verification passes.** The standing reference campaign —
+  seed `0x5eed_ef00`, 256 executions from the C49 conquest archive, probing
+  retention, extended ladder, concentrated selector, action limit 512 — re-run
+  on the raised-ceiling tree produces an archive byte-identical to the
+  standing reference,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`. The
+  reference stands unchanged.
+- The four quality gates pass on the changed tree.
+- Recorded on the integrator's instruction as standing method: **D57 and D65
+  are the first two entries of the diagnostic pattern library** — before any
+  mechanism ruling on a stall or an anomaly, a recorded-artifact measurement
+  is run and recorded, so the ruling reads evidence rather than hypothesis.
+  The pattern's shape: no search, no mechanism change, no model; walk or
+  census the recorded artifacts until the failure is mechanical fact.
