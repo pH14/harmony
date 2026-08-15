@@ -4241,3 +4241,58 @@ one variable of science only when a link stalls.
   machine, so it is not repeated.
 - Raw destination: `target/smb-completion/c64-conquest/` on the ARM machine,
   log `c64.log`.
+
+### C63 live result — the local arm stalls at exactly its origin's frontier
+
+- The live run completed its full 50,000 executions, ten workers, campaign
+  seed `0x5eed_c005`, from C61's verified archive: 14,855 retained against
+  38,995 rejected with 889 deaths, 9,721,531 frames emulated, 201 duplicates
+  skipped and 535 probe refusals. Live stream SHA-256
+  `00902c8a455ba3382bcaecc297d13eb47b6827f373ad0e5421156adeb4e68f96`; serial
+  replay in flight at the time of writing.
+- **Its ladder tops at `(world 1, level 1, progress 27)` — exactly the
+  origin's frontier, zero new buckets in 50,000 executions.** The frontier
+  densified — 461 entries at bucket 27 against the origin's 446, 447 at 26 —
+  but never moved. Selector accounting: 37,477 window draws over 1,962
+  distinct parents, 19.101 draws per parent, `classes_skipped` and
+  `counter_resets` zero again.
+- The film's terrain and the ladder agree on where the program is: the second
+  world's second level is the water level, and the stall is in swimming play.
+
+### D65 — measurement: the input-action cap binds at the third link's frontier
+
+- A recorded-artifact measurement in the D57 pattern, run before any ruling on
+  the stall: no search, no mechanism change, no model.
+- **The stall is not a wall.** The three-mask span walk over C63's deepest
+  trajectory in buckets 15 through 27 finds four action boundaries, every one
+  admitted by the probe with all three masks surviving the full 120-frame
+  horizon — swimming states do not even die to the no-input mask. The frontier
+  camera is 435, early in a long level; there is no terrain barrier and no
+  retention defect. Evidence at
+  `target/smb-completion/c63-diagnosis/span-15-27.json`.
+- **The stall is the input-action cap.** The engine's hard ceiling
+  `MAX_SMB_COMPLETION_ACTIONS` is 512, every registered campaign has run at an
+  action limit of 512, and the executor silently drops any suffix action past
+  the limit, so a parent at the cap yields children identical to itself. The
+  census against the recorded archives: C63's resume input is 510 actions; at
+  its frontier buckets 25 through 27 the median input length is 511 to 512
+  with 2,160 entries at exactly 512. The chain walked into the ceiling link by
+  link — the H59 pilot resumed a 422-action input and its archive already
+  holds 508-action entries; C61 resumed at 498 and reached the cap; C63
+  resumed at 510 with two actions of headroom and moved zero buckets. C61's
+  own second-half slowdown (twelve actions of extension in 50,000 executions,
+  against the pilot's seventy-six in 20,000) was the cap tightening, visible
+  in hindsight.
+- **Prediction, recorded before the C64 arm lands:** C64 resumes the same
+  510-action input under the same 512 cap, so it must stall at bucket 27 or
+  within the one or two buckets that two appended actions can buy, regardless
+  of seed. If it instead advances well past 27, this diagnosis is wrong and
+  the entry says so.
+- Consequence, stated for the ruling this measurement feeds: the third link
+  stalled on a mechanical ceiling, not on search quality. The one-variable
+  change the standing chain ruling licenses at a stall is raising the action
+  limit — an engine constant bump plus a registered per-campaign limit, with
+  inertness on recorded artifacts unaffected because every recorded header
+  carries its own limit of 512 and replay reads the header. The limit value
+  and its sizing against archive growth and replay cost are put to the
+  integrator rather than chosen here.
