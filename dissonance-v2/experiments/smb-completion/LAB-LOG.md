@@ -3772,3 +3772,52 @@ bucket.
   replaying byte-identically, the four quality gates, and the accounting
   reported.
 - Raw destination: `target/smb-completion/h59-concentration/`.
+
+### H59 pilot amendment — campaign-mode arm of record
+
+- Amended **before execution**, on the integrator's latency directive. Nothing
+  had run against the pilot as first registered; the serial arm was never
+  launched, so this is a revision rather than an alteration of a frozen
+  registration.
+- The pilot becomes one live concentrated-policy **campaign** arm on the ARM
+  machine at all twelve cores, 20,000 executions, campaign seed derived from
+  `0x5eed_e000`, with the recorded stream as the arm of record and its serial
+  replay as the determinism evidence. Roughly thirty-five minutes of wall time
+  instead of two and a half hours. The pilot question is unchanged in substance:
+  does the concentrated policy advance play past bucket 124 from the source
+  where the frozen scheduler massed at 124 across the conquest run's 50,000
+  executions and H58's 120,000 control executions?
+- **Assumption check run before launching, and it failed.** The campaign engine
+  resolves an archive origin with `select_frontier_resume_input`, which takes the
+  shortest input at the maximum recorded `(world, level, progress)`. On the
+  conquest archive that is entry 7495 at bucket **144** with 351 actions — the
+  scripted castle-completion state D57 identified — not entry 17324 at bucket
+  **124** with 422 actions, which is what H56 and H58 resumed from. Launching the
+  campaign against the conquest archive directly would have compared a
+  concentrated arm starting from a cutscene against serial arms starting from
+  play, and the pilot question would have been unanswerable.
+- Correction, recorded as a derived artifact rather than a mechanism change: the
+  pilot's origin is a single-entry archive holding exactly the entry the serial
+  arms resumed from, entry 17324. The campaign's own frontier rule then selects
+  that entry trivially and provably. The derived origin is
+  `target/smb-completion/h59-pilot/origin-play124.json` with SHA-256
+  `e6373e65b0b324bf1df76b13f3c58bdcce991089720454f5c9c22d2c146cb40e`, and its
+  resume input matches the serial arms'. The campaign uses an origin only to
+  choose a resume input, so nothing else about the source is in play.
+- The pilot's decision rule is unchanged: if it advances past 124 the paired
+  fleet runs with the three-exact-ties stop rule; if it does not, the
+  registration voids.
+
+### Standing method amendment — arms of record may be recorded campaigns
+
+- Recorded on the integrator's instruction, alongside cheapest-test-first.
+- An arm of record **may** be a recorded campaign rather than a seed-pure serial
+  run, subject to the same discipline: preregistered, one live run per
+  registered slot, **no retries**, replay-exactness of the recorded stream as
+  the determinism gate, and pairing by campaign seed.
+- Future fleets default to campaign arms split across both machines.
+- Seed-pure serial arms remain available and are required where a registration
+  specifically needs seed-derivability.
+- The one-live-run-no-retries clause is the load-bearing part: a campaign arm's
+  value as evidence rests on it being the run that was registered, not the best
+  of several.
