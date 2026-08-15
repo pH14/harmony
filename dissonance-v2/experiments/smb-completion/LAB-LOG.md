@@ -4329,3 +4329,61 @@ one variable of science only when a link stalls.
   is run and recorded, so the ruling reads evidence rather than hypothesis.
   The pattern's shape: no search, no mechanism change, no model; walk or
   census the recorded artifacts until the failure is mechanical fact.
+
+### C63 replay verdict — verified
+
+- The serial replay completed all 50,000 executions byte-identically:
+  `replay_verified` true, replay stream equal to the live stream, replayed
+  archive SHA-256
+  `624ba5152b4767287cb6ca5faf1243801a48d18a4938cfe9f7cf791db4d8db6f`. C63 is
+  evidence: a verified 50,000-execution demonstration that the 512 cap
+  freezes this frontier.
+- Its film deliverable is cut and is **byte-identical to C61's film** — the
+  shortest input at `(1, 1, 27)` is the origin entry itself, unextended. The
+  film of a stall is the film of its origin's frontier; recorded as fact
+  rather than skipped.
+
+### C64 live result — the prediction confirms out of sample
+
+- The ARM arm's live run completed: 50,000 executions, twelve workers,
+  campaign seed `0x5eed_c006`, 15,349 retained against 38,566 rejected, live
+  stream SHA-256
+  `8635c019a0993c21401fdf8a6d546f9f2bc655031fc8b17cc940a9fec726d4bb`, serial
+  replay in flight.
+- **Its ladder tops at `(world 1, level 1, progress 27)` — exactly as D65
+  predicted before the run landed.** A different campaign seed from the same
+  origin under the same 512 limit: zero new buckets, 2,747 entries at exactly
+  512 actions, maximum input length 512. Two independent seeds now establish
+  the cap as the stall's cause; the diagnosis has survived its out-of-sample
+  test. Concentration accounting: 37,718 window draws over 2,815 distinct
+  parents, 13.398 draws per parent, `classes_skipped` and `counter_resets`
+  zero.
+
+## C65 — registered concentrated conquest, fourth link at the raised limit
+
+- Observational, in the C49/C61 pattern: no falsifiable claim, no control, no
+  acceptance rule. Deliverables are the recorded archive, the extended ladder,
+  and film. This is the first registered campaign at an action limit above
+  512, and its purpose is the one-variable consequence of the D65 ruling: the
+  same promoted stack, the same frontier, with the cap no longer binding.
+- One live concentrated-policy conquest campaign, 50,000 executions, ten
+  workers on the local machine, campaign seed `0x5eed_c007`, **action limit
+  4096**, sourced from C63's verified archive
+  `target/smb-completion/c63-conquest/archive-live.json`, SHA-256
+  `624ba5152b4767287cb6ca5faf1243801a48d18a4938cfe9f7cf791db4d8db6f`. One
+  live run, no retries, serial replay of the recorded stream as the
+  determinism gate.
+- Choice of origin: C63 and C61 tie at `(1, 1, 27)` and both are verified;
+  C63 is the later link with the denser frontier — 461 entries at bucket 27
+  against C61's 446 — and its recency window at close of run holds the
+  youngest frontier population, so the chain resumes from C63.
+- Resume-rule assumption check, run against the recorded artifact before
+  launch: the play measurement on C63's archive returns recorded 27, viable
+  27, play 27 — settled genuine play. The resume input is the 510-action
+  frontier entry, now with 3,586 actions of headroom under the registered
+  limit.
+- Expectation stated for honesty, not as an acceptance rule: if D65's
+  diagnosis is right, this arm should move past bucket 27 the way C61 moved
+  through the level before it; if it stalls at 27 with headroom available,
+  the cap was not the cause and the diagnosis is wrong.
+- Raw destination: `target/smb-completion/c65-conquest/`.
