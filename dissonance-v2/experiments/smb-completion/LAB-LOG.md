@@ -4741,6 +4741,14 @@ one variable of science only when a link stalls.
   the maximum pair, no derived origin needed.
 - Raw destination: `target/smb-completion/c68-conquest/` on the ARM machine,
   log `c68.log`.
+- Launch note, recorded plainly: the first launch attempt exited at argument
+  parsing — the ARM machine's binary predated the retention flag because the
+  source sync had covered the origin archive but not the new policy code.
+  **No stream was written and zero executions ran**, so the registered arm
+  was not consumed and this is not a retry; the tree was synced, rebuilt and
+  the same registered arm launched. The pre-launch checklist for cross-
+  machine links now includes verifying the remote binary accepts the
+  registered flags, alongside the origin hash.
 
 ### C66 audit verdict — passed
 
