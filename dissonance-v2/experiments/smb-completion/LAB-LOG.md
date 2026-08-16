@@ -4453,3 +4453,13 @@ one variable of science only when a link stalls.
   `(1, 1, 59)`.
 - Raw destination: `target/smb-completion/c66-conquest/` on the ARM machine,
   log `c66.log`.
+
+### C64 audit verdict — passed
+
+- The serial replay of C64's recorded stream completed all 50,000 executions
+  byte-identically: `replay_verified` true, replay stream equal to the live
+  stream `8635c019…`, replayed archive SHA-256
+  `e2c9fe7bef441d83d6d7cbedc5cb68bd533ad349d068ea3d7cb0ddf6cb75c172`. The
+  first audit recorded under the audit-not-gate method; C64 is fully audited
+  evidence and the third link's book is closed — both its seeds stalled at
+  the cap exactly as D65 predicted, and both replays verified.
