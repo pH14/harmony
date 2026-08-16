@@ -4854,7 +4854,76 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c70-conquest/` on the ARM machine,
   log `c70.log`.
 
-### Ruling on the archive ceiling — raised to 131,072, recorded per run
+### C70 live result — the ninth link stalls at the warp-zone room
+
+- The live run completed its full 50,000 executions, twelve workers, campaign
+  seed `0x5eed_c00c`, action limit 4096, retention `probe_at_admission_45`,
+  archive bound 131,072 as registered, from C69's archive: 22,279 retained
+  against 40,299 rejected with 943 deaths. **Its ladder tops at
+  `(3, 1, 208)` — exactly the origin frontier, zero new buckets**, watermark
+  equal, no cap bind, `classes_skipped` and `counter_resets` zero,
+  concentration 37,511 draws over 13,856 parents at 2.71 draws per parent.
+  Serial replay running as a background audit. A genuine stall.
+
+### D71 — measurement: the frontier is a warp-zone room and the controller cannot press Down
+
+- Diagnostic pattern library, recorded-artifact measurement before any
+  mechanism ruling.
+- **The frontier scene, from the recorded film**: C69's furthest trajectory
+  rides the elevator platforms, runs along the ceiling, and ends standing in
+  the level's warp-zone room beside a single downward pipe — the film's
+  final frame shows the warp greeting and the pipe. Camera progress ends in
+  that room; bucket 208 is its camera position, and C70's archive populates
+  every vertical band of it. The only forward move the room offers is
+  entering the pipe from above, which requires the Down button.
+- **The controller vocabulary has no Down.** From the emulator's own joypad
+  bit definitions — A `0x01`, B `0x02`, Select `0x04`, Start `0x08`, Up
+  `0x10`, Down `0x20`, Left `0x40`, Right `0x80` — the frozen nine-mask
+  campaign vocabulary decodes as none, A, B, Left, Right, Right+A, Right+B,
+  Right+A+B, and Up. `0x20` appears nowhere. The search has been unable to
+  press Down for the program's entire history; this room is the first place
+  the game demands it.
+- **Corrigendum, recorded because the record must decode its own masks
+  correctly**: D67 and D68 named the probe masks under the wrong bit order —
+  "held right (0x01)" is in fact A, "swim-stroke plus right (0x81)" is in
+  fact Right+A, and the D68 grid's schedule names are shifted the same way.
+  Every hash, count and byte of those measurements stands unchanged; only
+  the human-readable mask names were wrong. Correctly decoded, the D68
+  result strengthens: the masks that survived longest in the water corridor
+  are the A-carrying ones — swim strokes — which is what water physics
+  predicts.
+- The alternative branch, measured: buckets 205 through 207 hold hundreds of
+  floor-band states inside the winning eight-bucket frontier band, so the
+  level's normal exit route was populated and drawn from for 100,000
+  executions across C69's tail and all of C70 without producing a level
+  transition. Whatever the normal exit demands — a down-entry, or a maneuver
+  the repertoire lacks — the present vocabulary did not find it at this
+  budget from this population.
+- **The strategic fact that frames the fork: the game cannot be completed
+  without Down.** The final castle's mandatory route passes through pipes
+  entered from above. The button is not an optional shortcut key; it is
+  required equipment for the program's objective, and this room is merely
+  where its absence first binds.
+- The fork, stated for the integrator's ruling rather than chosen here.
+  Adding Down to the mutation vocabulary is index-visible to suffix
+  derivation — an eleventh mask changes every derived suffix — so it must
+  register as a **new vocabulary policy value** recorded per run in the
+  header, legacy streams replaying under the frozen nine-mask list, same
+  doctrine as the retention and ceiling changes. The options:
+  - **Vocabulary variant with Down** — unlocks the warp pipe at the current
+    frontier immediately (the pipe in the room leads three worlds ahead),
+    unlocks every future down-entry including the final castle's, and is
+    required for completion regardless. Route consequence: the chain would
+    advance by warp, skipping the remainder of the fourth world.
+  - **Derived floor origin under the current vocabulary** — no mechanism
+    change; resume from the deepest floor-band state and hope the normal
+    exit yields to the existing repertoire at a fresh budget. The census
+    above prices this: the floor route was already in the winning band for
+    100,000 executions and did not exit.
+  - **Both**, sequenced by the integrator's route preference — warp for
+    depth now, or full clear of world four first.
+- Execution holds for the ruling; both machines are running their audit
+  backlog meanwhile (C67, C68, C69, C70).
 
 - The integrator ruled on the C68 ceiling finding, same doctrine as the
   action cap: a ceiling is not an allocation, memory cost tracks actual
