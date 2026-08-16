@@ -4684,6 +4684,13 @@ one variable of science only when a link stalls.
   corpses is itself a finding and escalates the threshold.
 - Raw destination: `target/smb-completion/c67-conquest/`.
 
+### C66 audit verdict — passed
+
+- The serial replay of C66's recorded stream completed all 50,000 executions
+  byte-identically: `replay_verified` true, replay stream equal to the live
+  stream `47826cfa…`. Every chain link through C66 is now fully audited;
+  nothing is in quarantine and the audit backlog is empty.
+
 ### C65 audit verdict — passed
 
 - The serial replay of C65's recorded stream completed all 50,000 executions
