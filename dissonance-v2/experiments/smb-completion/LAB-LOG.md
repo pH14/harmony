@@ -4463,3 +4463,74 @@ one variable of science only when a link stalls.
   first audit recorded under the audit-not-gate method; C64 is fully audited
   evidence and the third link's book is closed — both its seeds stalled at
   the cap exactly as D65 predicted, and both replays verified.
+
+### C66 live result — the fifth link stalls at its origin's frontier
+
+- The live run completed its full 50,000 executions, twelve workers, campaign
+  seed `0x5eed_c008`, action limit 4096, from C65's live archive: 25,403
+  retained against 28,906 rejected with 3,137 deaths, 10,714,067 frames
+  emulated, 112 duplicates skipped and 5,048 probe refusals. Live stream
+  SHA-256
+  `47826cfa4110b0e35df7635208162af1da8c78a269f6c188d49e0176b0dd9504`; its
+  serial replay runs as a background audit.
+- **Its retained ladder tops at `(1, 1, 59)` — exactly the origin frontier,
+  zero new buckets — while its progress watermark saw 65.** C65's own run
+  showed the same signature: watermark 65, deepest retained 59. Two
+  independent seeds now reach buckets 60 through 65 and never retain a single
+  state there. The play measurement returns recorded 59, viable 59, play 59.
+- Not the cap this time: the action limit is 4096 and the frontier inputs sit
+  at 553 actions with thousands of actions of headroom.
+- Concentration accounting: 37,572 window draws over 21,066 distinct parents,
+  1.783 draws per parent — the heavy retention churns the window fast.
+  `classes_skipped` and `counter_resets` zero for the seventh panel running.
+- Film deliverable: C66's shortest input at `(1, 1, 59)` is byte-identical to
+  C65's — the same 553-action entry, input SHA-256 `9104b954…` in both
+  archives — so its film is C65's film and is not re-cut.
+
+### D67 — measurement: the admission probe walls off the Blooper corridor
+
+- Third entry in the diagnostic pattern library: recorded-artifact
+  measurement before any mechanism ruling. No search, no mechanism change, no
+  model.
+- The admission rule, stated exactly from the engine: a candidate state is
+  retained only if **at least one of three fixed input continuations — no
+  input (0x00), held right (0x01), swim-stroke plus right (0x81) — survives
+  120 frames** from the candidate's snapshot.
+- **The recorded path is clean.** The three-mask span walk over C65's deepest
+  trajectory in buckets 40 through 59 finds twenty-one boundaries, every one
+  admitted with all three masks surviving the full horizon. The frontier
+  boundary sits at camera 945. Evidence at
+  `target/smb-completion/c65-diagnosis/span-40-59.json`.
+- **The frontier scene explains what changes past it.** The film's final
+  frame at bucket 59 shows a narrow coral corridor guarded by two of the
+  water level's homing enemies, with a third above. A fixed 120-frame input
+  continuation cannot evade a homing enemy; live play survives there by
+  reacting.
+- **The refusal census is decisive.** Joining every probe-refused decision in
+  C65's stream to its parent's archive key: 4,220 of 4,398 refusals have
+  parents in the second world's second level, and 3,609 — eighty-two percent
+  of all refusals in the run — have parents at buckets 55 through 59, massed
+  exactly against the corridor. C66 repeats the shape with 5,048 refusals.
+  Children reaching 60 through 65 are being produced and are being refused
+  admission; the watermark sees them and the archive never keeps them.
+- The lineage of this rule, recorded for fairness: H45's probing retention is
+  promoted machinery that demonstrably helped, and H58 recorded the
+  three-mask design "earning its place at the tip" when a single-mask probe
+  would have refused the states that reached 145. The masks were built for
+  running-and-jumping terrain. The water corridor is the first place the
+  fixed repertoire itself is the wall.
+- The fork, stated for the integrator's ruling rather than chosen here. All
+  variants would register as a **new explicit retention policy value**
+  alongside the existing one, which stays the default so every recorded
+  artifact keeps replaying byte-exact; the builder pattern is the same as the
+  cap's. Candidates, one variable each:
+  - **Shorter horizon** — drop the probe horizon (120 frames) for the new
+    policy value, on the reasoning that two fixed-input seconds is an
+    unreasonable survival demand near homing enemies.
+  - **Evasive masks** — add fixed continuations suited to water evasion
+    (swim-stroke alone, swim-stroke plus left) to the any-mask-survives set.
+  - **Both**, if the integrator prefers one decisive move over two rulings,
+    at the cost of confounding which half mattered.
+- Execution stays busy during the pause: both machines are running their
+  audits, and no chain link launches until the ruling lands, because any next
+  link from a bucket-59 origin runs into the same wall.
