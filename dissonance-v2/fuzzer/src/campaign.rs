@@ -81,6 +81,21 @@ pub struct SmbCampaignConfig {
     pub selector_policy: SmbArchiveSelectorPolicy,
     /// Admission retention policy, recorded in the header and report.
     pub retention_policy: SmbArchiveRetentionPolicy,
+    /// Archive entry bound for this run, recorded in the header and report.
+    pub archive_entry_limit: usize,
+}
+
+/// Archive entry bound of every stream recorded before the bound was a
+/// header field.
+const LEGACY_ARCHIVE_ENTRY_LIMIT: usize = 32_768;
+
+fn legacy_archive_entry_limit() -> usize {
+    LEGACY_ARCHIVE_ENTRY_LIMIT
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_legacy_archive_entry_limit(limit: &usize) -> bool {
+    *limit == LEGACY_ARCHIVE_ENTRY_LIMIT
 }
 
 /// First line of the stream: everything a replay needs to know about the run.
@@ -110,6 +125,13 @@ pub struct SmbCampaignStreamHeader {
     pub wall_budget_seconds: Option<u64>,
     /// Bounded clean-reset action horizon.
     pub action_limit: usize,
+    /// Archive entry bound the run retained under; streams recorded before
+    /// this field existed ran at, and replay under, 32,768.
+    #[serde(
+        default = "legacy_archive_entry_limit",
+        skip_serializing_if = "is_legacy_archive_entry_limit"
+    )]
+    pub archive_entry_limit: usize,
     /// Frozen duration policy identifier.
     pub duration_policy: String,
     /// Frozen suffix policy identifier.
@@ -234,6 +256,13 @@ pub struct SmbCampaignModeReport {
     pub wall_budget_seconds: Option<u64>,
     /// Bounded clean-reset action horizon.
     pub action_limit: usize,
+    /// Archive entry bound the run retained under; reports recorded before
+    /// this field existed ran at 32,768.
+    #[serde(
+        default = "legacy_archive_entry_limit",
+        skip_serializing_if = "is_legacy_archive_entry_limit"
+    )]
+    pub archive_entry_limit: usize,
     /// Frozen duration policy identifier.
     pub duration_policy: String,
     /// Frozen suffix policy identifier.
@@ -507,9 +536,12 @@ impl CoordinatorCore<'_> {
         max_actions: usize,
         _selector_policy: SmbArchiveSelectorPolicy,
         retention_policy: SmbArchiveRetentionPolicy,
+        archive_entry_limit: usize,
     ) -> Self {
+        let mut archive = Archive::new(None);
+        archive.max_entries = archive_entry_limit;
         Self {
-            archive: Archive::new(None),
+            archive,
             aggregate: SmbMilestones::default(),
             watermark: crate::phase4b::SmbProgressWatermark::default(),
             first_reached: crate::phase4b::SmbMilestoneTimes::default(),
@@ -812,6 +844,7 @@ fn stream_header(
         execution_budget: config.execution_budget,
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
+        archive_entry_limit: config.archive_entry_limit,
         duration_policy: "stratified".to_owned(),
         suffix_policy: "one_or_two".to_owned(),
         retention_policy: retention_identifier(config.retention_policy).to_owned(),
@@ -894,6 +927,7 @@ fn build_report(
         executions_completed,
         wall_budget_seconds: header.wall_budget_seconds,
         action_limit: header.action_limit,
+        archive_entry_limit: header.archive_entry_limit,
         duration_policy: header.duration_policy.clone(),
         suffix_policy: header.suffix_policy.clone(),
         retention_policy: header.retention_policy.clone(),
@@ -962,6 +996,11 @@ pub fn run_smb_campaign(
     {
         return Err("campaign action limit is outside its bounded range".into());
     }
+    if config.archive_entry_limit == 0
+        || config.archive_entry_limit > crate::phase4c::MAX_ARCHIVE_ENTRIES
+    {
+        return Err("campaign archive entry limit is outside its bounded range".into());
+    }
     let resolved = resolve_origin(origin)?;
     let header = stream_header(config, &resolved.record, rom);
     let mut writer = StreamWriter::new(stream);
@@ -971,6 +1010,7 @@ pub fn run_smb_campaign(
         config.action_limit,
         config.selector_policy,
         config.retention_policy,
+        config.archive_entry_limit,
     );
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
@@ -1264,7 +1304,12 @@ pub fn replay_smb_campaign(
 
     let selector_policy = selector_from_identifier(&header.parent_scheduler)?;
     let retention_policy = retention_from_identifier(&header.retention_policy)?;
-    let mut core = CoordinatorCore::new(header.action_limit, selector_policy, retention_policy);
+    let mut core = CoordinatorCore::new(
+        header.action_limit,
+        selector_policy,
+        retention_policy,
+        header.archive_entry_limit,
+    );
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = target.frames_clocked();
@@ -1836,6 +1881,7 @@ mod tests {
             wall_budget: None,
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            archive_entry_limit: 32_768,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -1861,6 +1907,7 @@ mod tests {
             wall_budget: None,
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            archive_entry_limit: 32_768,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -1892,6 +1939,7 @@ mod tests {
             wall_budget: None,
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            archive_entry_limit: 32_768,
         };
         let mut seed_stream = Vec::new();
         let seed_campaign = run_smb_campaign(
@@ -1912,6 +1960,7 @@ mod tests {
             wall_budget: None,
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            archive_entry_limit: 32_768,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(
@@ -1943,6 +1992,7 @@ mod tests {
             wall_budget: None,
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            archive_entry_limit: 32_768,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)

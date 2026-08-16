@@ -138,6 +138,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         wall_budget,
         selector_policy,
         retention_policy,
+        archive_entry_limit: fuzzer::phase4c::MAX_ARCHIVE_ENTRIES,
     };
 
     let stream_path = output.join("stream.jsonl");

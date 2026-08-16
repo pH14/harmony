@@ -4815,6 +4815,28 @@ one variable of science only when a link stalls.
   reported per link while the cap ruling is pending.
 - Raw destination: `target/smb-completion/c69-conquest/`.
 
+### Ruling on the archive ceiling — raised to 131,072, recorded per run
+
+- The integrator ruled on the C68 ceiling finding, same doctrine as the
+  action cap: a ceiling is not an allocation, memory cost tracks actual
+  retention, and at roughly 37 KB per entry even a full ceiling stays under
+  5 GB on either machine. Sized so a future doubled-budget link still fits
+  and this ruling class dies.
+- The build follows the action-cap pattern exactly, because replay
+  correctness demands it: **the entry bound is now recorded per run in the
+  stream header and report, and replay retains under the recorded bound.**
+  Streams recorded before the field existed — including C68's, which hit the
+  old cap, and C69's, launched under the old binary — carry no field and
+  default to 32,768, so every recorded stream replays byte-exact on the new
+  tree without depending on which binary runs the audit. New runs record
+  131,072. The compiled constant becomes the validation ceiling.
+- C69, live at the time of this ruling, runs and audits at 32,768 by
+  construction and its registration stands unmodified; C70 onward registers
+  at the raised bound.
+- The four quality gates pass; the standing inertness reference re-verifies
+  byte-identical on the changed tree,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+
 ### Ruling note — the exhaustion incompatibility is deferred by design
 
 - Recorded on the integrator's instruction. The C67 measurement is accepted:
@@ -4828,6 +4850,13 @@ one variable of science only when a link stalls.
   **(b)** remove the exhaustion leg outright — provably byte-inert on every
   recorded artifact precisely because it has never fired, per the standing
   no-dead-code preference. Neither registers now.
+- **Withdrawn by the integrator after C68, recorded beside the original as
+  instructed**: the menu above is overtaken by evidence. The leg fired for
+  the first time against C68's full archive and behaved exactly as designed
+  — bands exhausted in sequence, fall-through clean — so removal is off the
+  table, and the threshold question is moot while displacement handles the
+  productive regime. The escalation menu is void; no exhaustion change is
+  pending under any condition currently registered.
 
 ### C66 audit verdict — passed
 

@@ -25,7 +25,11 @@ use crate::{
     target::Target,
 };
 
-const MAX_ARCHIVE_ENTRIES: usize = 32_768;
+/// Compiled ceiling on archive entries. Raised from 32,768 by the same
+/// doctrine as the action ceiling: a ceiling is not an allocation, and
+/// memory tracks actual retention. Campaign runs register their own
+/// per-run bound at or below this.
+pub const MAX_ARCHIVE_ENTRIES: usize = 131_072;
 const MAX_ENTRIES_PER_KEY: usize = 2;
 const RANKING_REBUILD_INTERVAL: u64 = 512;
 const RANKING_STALE_EXECUTIONS: u64 = 1_024;
@@ -492,6 +496,9 @@ pub(crate) struct ArchiveCandidate {
 }
 
 pub(crate) struct Archive<'a> {
+    /// Retention stops when the entry count reaches this bound; campaign
+    /// runs record their bound in the stream header and replay under it.
+    pub(crate) max_entries: usize,
     pub(crate) entries: Vec<ArchiveEntry>,
     pub(crate) active: Vec<bool>,
     pub(crate) cells: BTreeMap<SmbArchiveKey, Vec<usize>>,
@@ -512,6 +519,7 @@ pub(crate) struct Archive<'a> {
 impl<'a> Archive<'a> {
     pub(crate) fn new(ranking: Option<&'a dyn SmbRanking>) -> Self {
         Self {
+            max_entries: MAX_ARCHIVE_ENTRIES,
             entries: Vec::new(),
             active: Vec::new(),
             cells: BTreeMap::new(),
@@ -591,7 +599,7 @@ impl<'a> Archive<'a> {
             self.rejected = self.rejected.saturating_add(1);
             return Ok(None);
         }
-        if self.entries.len() >= MAX_ARCHIVE_ENTRIES {
+        if self.entries.len() >= self.max_entries {
             self.rejected = self.rejected.saturating_add(1);
             return Ok(None);
         }
