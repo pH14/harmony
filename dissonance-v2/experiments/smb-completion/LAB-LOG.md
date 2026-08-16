@@ -4815,6 +4815,45 @@ one variable of science only when a link stalls.
   reported per link while the cap ruling is pending.
 - Raw destination: `target/smb-completion/c69-conquest/`.
 
+### C69 live result — world four's first level complete, its second driven deep
+
+- The live run completed its full 50,000 executions, ten workers, campaign
+  seed `0x5eed_c00b`, action limit 4096, retention `probe_at_admission_45`,
+  archive bound 32,768 as registered, from the derived play-150 origin:
+  25,822 retained against 34,021 rejected with 2,696 deaths, 6,290,982
+  frames emulated. Live stream SHA-256 recorded in the campaign report;
+  serial replay running as a background audit.
+- **The fourth world's first level is complete at bucket 224, and its second
+  level opened at execution 1,485 and reached bucket 208** — recorded,
+  viable and play all 208, no sinker divergence this time, so the next link
+  resumes directly. The cap never bound: the last retention landed at
+  execution 50,000 exactly, and `classes_skipped` and `counter_resets` are
+  zero again — consistent with the C68 diagnosis that the firing was the
+  full archive, not the frontier.
+- Deaths fell to 2,696, a quarter of the water-level links — running terrain
+  suits the suffix repertoire. Concentration: 37,578 window draws over
+  15,429 distinct parents, 2.44 draws per parent.
+
+## C70 — registered concentrated conquest, ninth link
+
+- Observational, in the C49/C61 pattern. One live concentrated-policy
+  conquest campaign, 50,000 executions, twelve workers on the ARM machine,
+  campaign seed `0x5eed_c00c`, action limit 4096, retention
+  `probe_at_admission_45`, **archive entry bound 131,072 — the first link
+  registered at the raised ceiling, recorded in its header**. One live run,
+  no retries; serial replay as a background audit.
+- Origin: C69's live archive, SHA-256
+  `023e2aa14f9e334d2193e9e013fc0ab4856ad331cb009e8f1a9fe20eb651563c`,
+  copied to the ARM machine and hash-verified there, with the remote binary
+  verified against the registered flags per the C68 launch note. The play
+  measurement returns recorded 208, viable 208, play 208 at the maximum
+  pair, so the campaign resume rule and the play frontier coincide and no
+  derived origin is needed.
+- Quarantine lineage: C70 depends on the audits of C67, C68, C69 and its
+  own; the last audited link is C66.
+- Raw destination: `target/smb-completion/c70-conquest/` on the ARM machine,
+  log `c70.log`.
+
 ### Ruling on the archive ceiling — raised to 131,072, recorded per run
 
 - The integrator ruled on the C68 ceiling finding, same doctrine as the
