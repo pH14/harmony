@@ -4406,3 +4406,50 @@ one variable of science only when a link stalls.
   replay, queued behind its live run, continue as audits. Link five registers
   and launches from C65's live archive the moment C65's ladder lands, on
   whichever machine is free, without waiting for any replay.
+
+### C65 live result — the cap was the stall; the frontier moves thirty-two buckets
+
+- The live run completed its full 50,000 executions in roughly twenty-five
+  minutes of wall time, ten workers, campaign seed `0x5eed_c007`, action
+  limit 4096, from C63's archive: 26,797 retained against 28,390 rejected
+  with 2,854 deaths, 10,769,491 frames emulated, 95 duplicates skipped and
+  4,398 probe refusals. Live stream SHA-256
+  `03a0b6901b78bc54c9212a9af400a10f053467034f6eba5f859b4662b8c0c0d0`; its
+  serial replay runs as a background audit under the new standing method.
+- **The registered expectation resolves in the diagnosis's favour: the ladder
+  moves from `(1, 1, 27)` to `(1, 1, 59)`** — thirty-two buckets in one run,
+  after 100,000 executions at the old cap had moved zero. The progress
+  watermark saw 65; the deepest retained bucket is 59. D65's cap diagnosis is
+  now confirmed three ways: the census, the C64 out-of-sample stall, and the
+  headroom release.
+- The water level fights back in the numbers: deaths more than triple C63's
+  (2,854 against 889) and probe refusals rise eightfold (4,398 against 535) —
+  swimming states near enemies fail admission far more often than running
+  states ever did. Retention is nonetheless the largest of any link, 26,797
+  entries, and the play measurement returns recorded 59, viable 59, play 59 —
+  the frontier is settled genuine play.
+- The archive now weighs 1.16 GB — trajectory depth, as the cap ruling
+  anticipated: growth follows actual play, not the ceiling.
+
+## C66 — registered concentrated conquest, fifth link
+
+- Observational, in the C49/C61 pattern; the first link registered under the
+  audit-not-gate method — its origin is a live archive whose audit is still
+  in flight, recorded here plainly.
+- One live concentrated-policy conquest campaign, 50,000 executions, twelve
+  workers on the ARM machine, campaign seed `0x5eed_c008`, action limit 4096,
+  sourced from C65's live archive
+  `target/smb-completion/c65-conquest/archive-live.json`, SHA-256
+  `64ead1a337921aa357129f11277288d7863303274c4ea569633f713b8d3076b6`, copied
+  to the ARM machine and hash-verified there before launch. One live run, no
+  retries; its serial replay runs as a background audit.
+- Quarantine lineage, recorded for the audit bookkeeping: C66 depends on
+  C65's audit and its own. C65 depends on C63's audit, which already passed
+  as a gate. A failed C65 audit quarantines C65 and C66 and re-derives the
+  chain from C63.
+- Resume-rule assumption check, run before launch: the play measurement on
+  C65's live archive returns recorded 59, viable 59, play 59 — settled play,
+  no derived origin needed. The resume input is the shortest entry at
+  `(1, 1, 59)`.
+- Raw destination: `target/smb-completion/c66-conquest/` on the ARM machine,
+  log `c66.log`.
