@@ -4534,3 +4534,43 @@ one variable of science only when a link stalls.
 - Execution stays busy during the pause: both machines are running their
   audits, and no chain link launches until the ruling lands, because any next
   link from a bucket-59 origin runs into the same wall.
+
+## D68 — preregistered refused-candidate probe grid
+
+- Ruled by the integrator on the D67 fork: neither probe variant registers
+  yet, because a cheaper decisive measurement exists. Fourth entry in the
+  diagnostic pattern library — measurement, not mechanism: no new policy
+  value, no model, no campaign.
+- Mechanism of the measurement, fixed before execution. The refused
+  candidates are re-derived from the recorded streams exactly as the workers
+  produced them: the parent's recorded input replays from reset to its
+  snapshot, the suffix re-derives from the recorded mutation seed, and the
+  stream's decision order maps one-to-one onto alive candidates, so each
+  probe-refused decision names one concrete re-derived state. Each refused
+  candidate at the frontier pair in buckets 60 through 65 is probed under a
+  fixed grid: masks {no input, held right, swim-stroke plus right,
+  swim-stroke alone, swim-stroke plus left, alternating stroke — pressed 4
+  frames, released 12, period 16, the one cadence the fixed-input probe can
+  express} × horizons {120, 90, 60, 45 frames}, recording the survival frame
+  of every probe.
+- Sample rule, fixed before execution: the first 500 refusal jobs in stream
+  order whose parent sits at the frontier pair in buckets 55 through 59, per
+  stream, both recorded streams — C65's and C66's. Refused candidates landing
+  outside 60 through 65 are tallied by key rather than probed, so if the
+  60-to-65 states turn out to die rather than be refused, the measurement
+  says so instead of assuming.
+- Validation, fixed before execution: the promoted probe's own three masks at
+  the full horizon must refuse every re-derived candidate — any survival
+  there is a re-derivation divergence and voids the measurement. The report
+  carries the count.
+- Decision rule, as ruled: a mask surviving at 120 for most refused states
+  means the repertoire was the problem and the evasive-mask variant registers
+  with that mask set; nothing surviving 120 but a mask surviving at a
+  measured shorter horizon means the demand length was the problem and the
+  shorter-horizon variant registers at the measured value; no fixed
+  continuation surviving at any horizon for most of the corridor kills both
+  variants at zero registration cost and escalates to a design ruling.
+- The diagnostic lives in `diagnose-refused-grid`; the four quality gates
+  pass on the tree carrying it.
+- Raw destinations: `target/smb-completion/d68-refused-grid/` on each
+  machine.

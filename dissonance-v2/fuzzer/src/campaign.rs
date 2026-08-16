@@ -1350,6 +1350,353 @@ pub fn replay_smb_campaign(
     ))
 }
 
+/// Fixed probe horizon shared by the refused-candidate grid and the
+/// promoted admission probe.
+const GRID_PROBE_FRAMES: u16 = 120;
+
+/// Button mask applied at one probe frame of a grid schedule.
+type GridMaskSchedule = fn(u16) -> u8;
+
+/// One mask schedule of the refused-candidate probe grid: a name and the
+/// button mask applied at each probe frame.
+const GRID_MASK_SCHEDULES: [(&str, GridMaskSchedule); 6] = [
+    ("still", |_| 0x00),
+    ("held_right", |_| 0x01),
+    ("stroke_right", |_| 0x81),
+    ("stroke", |_| 0x80),
+    ("stroke_left", |_| 0x82),
+    // One expressible alternating swim cadence: press for 4 frames, release
+    // for 12, period 16.
+    ("stroke_alternating", |frame| {
+        if frame % 16 < 4 { 0x80 } else { 0x00 }
+    }),
+];
+
+/// One probe of one mask schedule from one refused candidate.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbGridProbeOutcome {
+    /// Mask schedule name from the fixed grid.
+    pub mask: String,
+    /// Frames survived before the outcome, capped at the grid horizon.
+    pub frames: u16,
+    /// `survived`, `kill_state`, `below_play_area`, or `emulation_failed`.
+    pub outcome: String,
+}
+
+/// One refused candidate re-derived from the recorded stream.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbRefusedCandidateProbe {
+    /// Stream sequence of the job that produced the candidate.
+    pub sequence: u64,
+    /// Archive id of the parent the worker extended.
+    pub parent_id: u64,
+    /// Parent progress bucket at the frontier pair.
+    pub parent_progress: u16,
+    /// Candidate mechanical key.
+    pub world: u8,
+    /// Candidate mechanical key.
+    pub level: u8,
+    /// Candidate mechanical key.
+    pub progress: u16,
+    /// Camera pixels at the candidate state.
+    pub camera: u32,
+    /// Grid outcomes, one per mask schedule.
+    pub probes: Vec<SmbGridProbeOutcome>,
+}
+
+/// Survival fractions for one mask schedule across the probed candidates.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbGridMaskAggregate {
+    /// Mask schedule name.
+    pub mask: String,
+    /// Candidates surviving at least 45, 60, 90 and 120 frames.
+    pub survived_at_45: u64,
+    /// See `survived_at_45`.
+    pub survived_at_60: u64,
+    /// See `survived_at_45`.
+    pub survived_at_90: u64,
+    /// See `survived_at_45`.
+    pub survived_at_120: u64,
+}
+
+/// Report of the refused-candidate probe grid over one recorded stream.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbRefusedGridReport {
+    /// Frontier `(world, level)` pair the sample was drawn against.
+    pub frontier_pair: (u8, u8),
+    /// Inclusive parent-progress bounds of sampled refusal jobs.
+    pub parent_range: (u16, u16),
+    /// Inclusive candidate-progress bounds probed by the grid.
+    pub candidate_range: (u16, u16),
+    /// Maximum refusal jobs re-derived, in stream order.
+    pub sample_cap: usize,
+    /// Refusal jobs re-derived.
+    pub jobs_sampled: usize,
+    /// Refused candidates re-derived across the sampled jobs.
+    pub refused_candidates: u64,
+    /// Refused candidates inside the candidate range, each probed by the grid.
+    pub probed_candidates: u64,
+    /// Refused candidates whose key fell outside the candidate range, by key.
+    pub out_of_range: Vec<((u8, u8, u16), u64)>,
+    /// Probed candidates that survived a promoted-probe mask for the full
+    /// horizon; any nonzero value means the re-derivation diverged.
+    pub derivation_mismatches: u64,
+    /// Survival fractions per mask schedule.
+    pub aggregate: Vec<SmbGridMaskAggregate>,
+    /// Every probed candidate with its grid outcomes.
+    pub candidates: Vec<SmbRefusedCandidateProbe>,
+}
+
+/// Run one grid mask schedule from the current target state.
+fn grid_probe(target: &mut SmbTarget, mask_for_frame: fn(u16) -> u8) -> (u16, String) {
+    use crate::phase4b::{PLAYER_BELOW_PLAY_AREA_PAGE, PLAYER_KILLED_STATE, smb_death_bytes};
+    for frame in 0..GRID_PROBE_FRAMES {
+        target.apply(&ButtonChord::new(mask_for_frame(frame), 1));
+        if target.exit_kind() != ExitKind::Ok {
+            return (frame, "emulation_failed".to_owned());
+        }
+        let bytes = smb_death_bytes(target.wram());
+        if bytes.engine_state == PLAYER_KILLED_STATE {
+            return (frame.saturating_add(1), "kill_state".to_owned());
+        }
+        if bytes.vertical_page >= PLAYER_BELOW_PLAY_AREA_PAGE {
+            return (frame.saturating_add(1), "below_play_area".to_owned());
+        }
+    }
+    (GRID_PROBE_FRAMES, "survived".to_owned())
+}
+
+/// Re-derive probe-refused candidates from a recorded stream and probe each
+/// under the fixed mask-schedule grid.
+///
+/// The sample is the first `sample_cap` job records, in stream order, that
+/// carry at least one probe-refused decision and whose parent sits at the
+/// frontier `(world, level)` pair within `parent_range`. Each sampled job is
+/// re-derived exactly as the worker executed it: the parent's recorded input
+/// is executed from reset, the suffix is re-derived from the recorded
+/// mutation seed, and decision order maps one-to-one onto alive candidates.
+/// Candidates whose recorded decision was probe-refused and whose key falls
+/// inside `candidate_range` at the frontier pair are probed under every grid
+/// schedule; refused candidates outside the range are tallied by key.
+///
+/// # Errors
+///
+/// Returns an error when the stream is malformed, the ROM does not match the
+/// recorded header, a parent is missing from the source archive, or
+/// emulation fails.
+pub fn diagnose_refused_grid(
+    rom: &[u8],
+    stream_text: &str,
+    source: &SmbArchiveReport,
+    parent_range: (u16, u16),
+    candidate_range: (u16, u16),
+    sample_cap: usize,
+) -> Result<SmbRefusedGridReport, Box<dyn Error>> {
+    use crate::phase4b::smb_camera_pixels;
+    use std::collections::BTreeMap;
+    type EntryIndex<'a> = BTreeMap<u64, &'a crate::phase4c::SmbArchiveEntryReport>;
+    let mut lines = stream_text.lines();
+    let header: SmbCampaignStreamHeader =
+        serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
+    if header.format != CAMPAIGN_STREAM_FORMAT {
+        return Err("campaign stream format is not recognized".into());
+    }
+    if header.rom_sha256 != format!("{:x}", Sha256::digest(rom)) {
+        return Err("grid diagnosis ROM does not match the recorded stream".into());
+    }
+    let frontier_pair = source
+        .entries
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level))
+        .max()
+        .ok_or("source archive has no entries")?;
+    let by_id: EntryIndex<'_> = source
+        .entries
+        .iter()
+        .map(|entry| (entry.id, entry))
+        .collect();
+    struct SampledJob {
+        sequence: u64,
+        parent_id: u64,
+        parent_progress: u16,
+        mutation_seed: u64,
+        decisions: Vec<SmbCampaignAdmissionDecision>,
+    }
+    let mut sample: Vec<SampledJob> = Vec::new();
+    for line in lines {
+        if sample.len() >= sample_cap {
+            break;
+        }
+        let record: SmbCampaignStreamRecord = serde_json::from_str(line)?;
+        let SmbCampaignStreamRecord::Job(job) = record else {
+            continue;
+        };
+        if !job
+            .decisions
+            .iter()
+            .any(|decision| matches!(decision, SmbCampaignAdmissionDecision::ProbeRefused))
+        {
+            continue;
+        }
+        let parent = by_id
+            .get(&job.parent_id)
+            .ok_or("recorded refusal names a parent the source archive does not hold")?;
+        if (parent.key.world, parent.key.level) != frontier_pair
+            || parent.key.progress < parent_range.0
+            || parent.key.progress > parent_range.1
+        {
+            continue;
+        }
+        sample.push(SampledJob {
+            sequence: job.sequence,
+            parent_id: job.parent_id,
+            parent_progress: parent.key.progress,
+            mutation_seed: job.mutation_seed,
+            decisions: job.decisions,
+        });
+    }
+    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    let mut parent_snapshots: BTreeMap<u64, SmbSnapshot> = BTreeMap::new();
+    let mut out_of_range: BTreeMap<(u8, u8, u16), u64> = BTreeMap::new();
+    let mut candidates: Vec<SmbRefusedCandidateProbe> = Vec::new();
+    let mut refused_candidates = 0_u64;
+    let mut derivation_mismatches = 0_u64;
+    let jobs_sampled = sample.len();
+    for job in &sample {
+        let parent_snapshot = match parent_snapshots.entry(job.parent_id) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.get().clone(),
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                let parent = by_id
+                    .get(&job.parent_id)
+                    .ok_or("sampled parent is missing from the source archive")?;
+                target.reset();
+                for action in &parent.input.actions {
+                    target.apply(action);
+                }
+                if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+                    return Err("a sampled parent input replays to a dead state".into());
+                }
+                let snapshot = target
+                    .snapshot()
+                    .ok_or("failed to snapshot a sampled parent")?;
+                slot.insert(snapshot).clone()
+            }
+        };
+        let parent_actions = by_id
+            .get(&job.parent_id)
+            .ok_or("sampled parent is missing from the source archive")?
+            .input
+            .actions
+            .len();
+        target.restore(&parent_snapshot)?;
+        let suffix = derive_suffix(job.mutation_seed)?;
+        let mut length = parent_actions;
+        let mut candidate_index = 0_usize;
+        for action in &suffix {
+            if target.is_dead() || length >= header.action_limit {
+                break;
+            }
+            length = length.saturating_add(1);
+            target.apply(action);
+            let dead = target.is_dead();
+            let failed = target.exit_kind() != ExitKind::Ok;
+            if dead || failed {
+                break;
+            }
+            let refused = matches!(
+                job.decisions.get(candidate_index),
+                Some(SmbCampaignAdmissionDecision::ProbeRefused)
+            );
+            if refused {
+                refused_candidates = refused_candidates.saturating_add(1);
+                let key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
+                if (key.world, key.level) == frontier_pair
+                    && key.progress >= candidate_range.0
+                    && key.progress <= candidate_range.1
+                {
+                    let camera = smb_camera_pixels(target.wram());
+                    let resume = target
+                        .snapshot()
+                        .ok_or("failed to snapshot a refused candidate")?;
+                    let mut probes = Vec::with_capacity(GRID_MASK_SCHEDULES.len());
+                    for (name, schedule) in GRID_MASK_SCHEDULES {
+                        target.restore(&resume)?;
+                        let (frames, outcome) = grid_probe(&mut target, schedule);
+                        probes.push(SmbGridProbeOutcome {
+                            mask: (*name).to_owned(),
+                            frames,
+                            outcome,
+                        });
+                    }
+                    if probes
+                        .iter()
+                        .take(3)
+                        .any(|probe| probe.outcome == "survived")
+                    {
+                        derivation_mismatches = derivation_mismatches.saturating_add(1);
+                    }
+                    candidates.push(SmbRefusedCandidateProbe {
+                        sequence: job.sequence,
+                        parent_id: job.parent_id,
+                        parent_progress: job.parent_progress,
+                        world: key.world,
+                        level: key.level,
+                        progress: key.progress,
+                        camera,
+                        probes,
+                    });
+                    target.restore(&resume)?;
+                } else {
+                    *out_of_range
+                        .entry((key.world, key.level, key.progress))
+                        .or_insert(0) += 1;
+                }
+            }
+            candidate_index = candidate_index.saturating_add(1);
+        }
+    }
+    let aggregate = GRID_MASK_SCHEDULES
+        .iter()
+        .map(|(name, _)| {
+            let survived_past = |horizon: u16| {
+                candidates
+                    .iter()
+                    .filter_map(|candidate| {
+                        candidate.probes.iter().find(|probe| probe.mask == *name)
+                    })
+                    .filter(|probe| probe.outcome == "survived" || probe.frames > horizon)
+                    .count() as u64
+            };
+            SmbGridMaskAggregate {
+                mask: (*name).to_owned(),
+                survived_at_45: survived_past(45),
+                survived_at_60: survived_past(60),
+                survived_at_90: survived_past(90),
+                survived_at_120: candidates
+                    .iter()
+                    .filter_map(|candidate| {
+                        candidate.probes.iter().find(|probe| probe.mask == *name)
+                    })
+                    .filter(|probe| probe.outcome == "survived")
+                    .count() as u64,
+            }
+        })
+        .collect();
+    Ok(SmbRefusedGridReport {
+        frontier_pair,
+        parent_range,
+        candidate_range,
+        sample_cap,
+        jobs_sampled,
+        refused_candidates,
+        probed_candidates: candidates.len() as u64,
+        out_of_range: out_of_range.into_iter().collect(),
+        derivation_mismatches,
+        aggregate,
+        candidates,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

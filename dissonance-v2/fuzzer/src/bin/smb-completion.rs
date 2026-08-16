@@ -149,6 +149,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if mode == "diagnose-span" {
         return run_span_diagnosis_mode(&mut args);
     }
+    if mode == "diagnose-refused-grid" {
+        return run_refused_grid_mode(&mut args);
+    }
     if mode == "measure-viable-progress" {
         return run_viable_progress_mode(&mut args);
     }
@@ -933,6 +936,72 @@ fn run_derive_ladder_mode(
     }
     fs::write(&output, serde_json::to_vec_pretty(&ladder)?)?;
     println!("{}", serde_json::to_string_pretty(&ladder)?);
+    Ok(())
+}
+
+fn run_refused_grid_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let stream_path = PathBuf::from(args.next().ok_or("missing stream path")?);
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let parent_low = u16::try_from(parse_u64(
+        &args.next().ok_or("missing parent low")?.to_string_lossy(),
+    )?)?;
+    let parent_high = u16::try_from(parse_u64(
+        &args.next().ok_or("missing parent high")?.to_string_lossy(),
+    )?)?;
+    let candidate_low = u16::try_from(parse_u64(
+        &args
+            .next()
+            .ok_or("missing candidate low")?
+            .to_string_lossy(),
+    )?)?;
+    let candidate_high = u16::try_from(parse_u64(
+        &args
+            .next()
+            .ok_or("missing candidate high")?
+            .to_string_lossy(),
+    )?)?;
+    let sample_cap = usize::try_from(parse_u64(
+        &args.next().ok_or("missing sample cap")?.to_string_lossy(),
+    )?)?;
+    let output = PathBuf::from(args.next().ok_or("missing output file")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let rom = read_rom()?;
+    let stream_text = fs::read_to_string(&stream_path)?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let report = fuzzer::campaign::diagnose_refused_grid(
+        &rom,
+        &stream_text,
+        &source,
+        (parent_low, parent_high),
+        (candidate_low, candidate_high),
+        sample_cap,
+    )?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    println!(
+        "jobs {} refused {} probed {} mismatches {}",
+        report.jobs_sampled,
+        report.refused_candidates,
+        report.probed_candidates,
+        report.derivation_mismatches
+    );
+    for row in &report.aggregate {
+        println!(
+            "{}: 45={} 60={} 90={} 120={} of {}",
+            row.mask,
+            row.survived_at_45,
+            row.survived_at_60,
+            row.survived_at_90,
+            row.survived_at_120,
+            report.probed_candidates
+        );
+    }
     Ok(())
 }
 
