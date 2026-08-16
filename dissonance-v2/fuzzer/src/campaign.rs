@@ -1400,6 +1400,10 @@ pub struct SmbRefusedCandidateProbe {
     pub progress: u16,
     /// Camera pixels at the candidate state.
     pub camera: u32,
+    /// Player vertical page at the candidate state; 2 is below the play area.
+    pub vertical_page: u8,
+    /// Player vertical position low byte at the candidate state.
+    pub vertical_low: u8,
     /// Grid outcomes, one per mask schedule.
     pub probes: Vec<SmbGridProbeOutcome>,
 }
@@ -1615,6 +1619,7 @@ pub fn diagnose_refused_grid(
                     && key.progress <= candidate_range.1
                 {
                     let camera = smb_camera_pixels(target.wram());
+                    let death_bytes = crate::phase4b::smb_death_bytes(target.wram());
                     let resume = target
                         .snapshot()
                         .ok_or("failed to snapshot a refused candidate")?;
@@ -1643,6 +1648,8 @@ pub fn diagnose_refused_grid(
                         level: key.level,
                         progress: key.progress,
                         camera,
+                        vertical_page: death_bytes.vertical_page,
+                        vertical_low: death_bytes.vertical_low,
                         probes,
                     });
                     target.restore(&resume)?;
