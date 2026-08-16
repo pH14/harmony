@@ -1862,6 +1862,225 @@ pub fn diagnose_refused_grid(
     })
 }
 
+/// SMB player horizontal page byte, `$006d`.
+const PLAYER_HORIZONTAL_PAGE_OFFSET: usize = 0x006d;
+/// SMB player horizontal position byte within the page, `$0086`.
+const PLAYER_HORIZONTAL_LOW_OFFSET: usize = 0x0086;
+
+/// One Down press re-derived from a recorded stream.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbDownPressRecord {
+    /// Stream sequence of the job.
+    pub sequence: u64,
+    /// Parent archive id.
+    pub parent_id: u64,
+    /// Player level-x before the press: page times 256 plus low byte.
+    pub player_x: u32,
+    /// Player screen-x before the press: level-x minus camera pixels.
+    pub screen_x: i64,
+    /// Player vertical page before the press.
+    pub vertical_page: u8,
+    /// Player vertical low byte before the press.
+    pub vertical_low: u8,
+    /// Engine state before the press.
+    pub engine_state_before: u8,
+    /// Engine state after the held chord.
+    pub engine_state_after: u8,
+    /// World byte after the held chord.
+    pub world_after: u8,
+    /// Whether the chord ended dead.
+    pub dead: bool,
+}
+
+/// Report of the Down-press census over one recorded stream.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbDownCensusReport {
+    /// Frontier `(world, level)` pair sampled.
+    pub frontier_pair: (u8, u8),
+    /// Inclusive parent-progress bounds sampled.
+    pub parent_range: (u16, u16),
+    /// Maximum Down-carrying jobs re-derived, in stream order.
+    pub sample_cap: usize,
+    /// Jobs re-derived.
+    pub jobs_sampled: usize,
+    /// Down presses recorded.
+    pub down_presses: u64,
+    /// Presses whose engine state changed across the hold.
+    pub engine_state_changes: u64,
+    /// Presses after which the world byte differed from the frontier world.
+    pub world_changes: u64,
+    /// Distinct sampled parents with their player level-x and vertical low.
+    pub parent_positions: Vec<(u64, u32, u8)>,
+    /// Every Down press.
+    pub presses: Vec<SmbDownPressRecord>,
+}
+
+/// Re-derive jobs whose suffix presses Down from frontier parents and record
+/// where the player stood when Down was pressed and what it did.
+///
+/// # Errors
+///
+/// Returns an error when the stream is malformed, the ROM mismatches, a
+/// parent is missing, or emulation fails.
+pub fn diagnose_down_census(
+    rom: &[u8],
+    stream_text: &str,
+    source: &SmbArchiveReport,
+    parent_range: (u16, u16),
+    sample_cap: usize,
+) -> Result<SmbDownCensusReport, Box<dyn Error>> {
+    use crate::phase4b::smb_camera_pixels;
+    use std::collections::BTreeMap;
+    type EntryIndex<'a> = BTreeMap<u64, &'a crate::phase4c::SmbArchiveEntryReport>;
+    let mut lines = stream_text.lines();
+    let header: SmbCampaignStreamHeader =
+        serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
+    if header.format != CAMPAIGN_STREAM_FORMAT {
+        return Err("campaign stream format is not recognized".into());
+    }
+    if header.rom_sha256 != format!("{:x}", Sha256::digest(rom)) {
+        return Err("down census ROM does not match the recorded stream".into());
+    }
+    let vocabulary = vocabulary_from_identifier(&header.controller_vocabulary)?;
+    let frontier_pair = source
+        .entries
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level))
+        .max()
+        .ok_or("source archive has no entries")?;
+    let by_id: EntryIndex<'_> = source
+        .entries
+        .iter()
+        .map(|entry| (entry.id, entry))
+        .collect();
+    struct SampledJob {
+        sequence: u64,
+        parent_id: u64,
+        mutation_seed: u64,
+    }
+    let mut sample: Vec<SampledJob> = Vec::new();
+    for line in lines {
+        if sample.len() >= sample_cap {
+            break;
+        }
+        let record: SmbCampaignStreamRecord = serde_json::from_str(line)?;
+        let SmbCampaignStreamRecord::Job(job) = record else {
+            continue;
+        };
+        let Some(parent) = by_id.get(&job.parent_id) else {
+            continue;
+        };
+        if (parent.key.world, parent.key.level) != frontier_pair
+            || parent.key.progress < parent_range.0
+            || parent.key.progress > parent_range.1
+        {
+            continue;
+        }
+        let suffix = derive_suffix(job.mutation_seed, vocabulary)?;
+        if !suffix.iter().any(|chord| chord.buttons & 0x20 != 0) {
+            continue;
+        }
+        sample.push(SampledJob {
+            sequence: job.sequence,
+            parent_id: job.parent_id,
+            mutation_seed: job.mutation_seed,
+        });
+    }
+    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    let mut parent_snapshots: BTreeMap<u64, SmbSnapshot> = BTreeMap::new();
+    let mut parent_positions: BTreeMap<u64, (u32, u8)> = BTreeMap::new();
+    let mut presses: Vec<SmbDownPressRecord> = Vec::new();
+    let jobs_sampled = sample.len();
+    for job in &sample {
+        let parent_snapshot = match parent_snapshots.entry(job.parent_id) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.get().clone(),
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                let parent = by_id
+                    .get(&job.parent_id)
+                    .ok_or("sampled parent is missing from the source archive")?;
+                target.reset();
+                for action in &parent.input.actions {
+                    target.apply(action);
+                }
+                if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+                    return Err("a sampled parent input replays to a dead state".into());
+                }
+                let wram = target.wram();
+                let x = u32::from(wram[PLAYER_HORIZONTAL_PAGE_OFFSET]) * 256
+                    + u32::from(wram[PLAYER_HORIZONTAL_LOW_OFFSET]);
+                parent_positions.insert(job.parent_id, (x, wram[0x00ce]));
+                let snapshot = target
+                    .snapshot()
+                    .ok_or("failed to snapshot a sampled parent")?;
+                slot.insert(snapshot).clone()
+            }
+        };
+        target.restore(&parent_snapshot)?;
+        let suffix = derive_suffix(job.mutation_seed, vocabulary)?;
+        for chord in &suffix {
+            if target.is_dead() {
+                break;
+            }
+            let is_down = chord.buttons & 0x20 != 0;
+            let (player_x, screen_x, vertical_page, vertical_low, engine_before) = if is_down {
+                let wram = target.wram();
+                let x = u32::from(wram[PLAYER_HORIZONTAL_PAGE_OFFSET]) * 256
+                    + u32::from(wram[PLAYER_HORIZONTAL_LOW_OFFSET]);
+                let camera = i64::from(smb_camera_pixels(wram));
+                let bytes = crate::phase4b::smb_death_bytes(wram);
+                (
+                    x,
+                    i64::from(x) - camera,
+                    bytes.vertical_page,
+                    bytes.vertical_low,
+                    bytes.engine_state,
+                )
+            } else {
+                (0, 0, 0, 0, 0)
+            };
+            target.apply(chord);
+            if is_down {
+                let wram = target.wram();
+                let bytes = crate::phase4b::smb_death_bytes(wram);
+                presses.push(SmbDownPressRecord {
+                    sequence: job.sequence,
+                    parent_id: job.parent_id,
+                    player_x,
+                    screen_x,
+                    vertical_page,
+                    vertical_low,
+                    engine_state_before: engine_before,
+                    engine_state_after: bytes.engine_state,
+                    world_after: bytes.world,
+                    dead: target.is_dead(),
+                });
+            }
+        }
+    }
+    let engine_state_changes = presses
+        .iter()
+        .filter(|press| press.engine_state_after != press.engine_state_before)
+        .count() as u64;
+    let world_changes = presses
+        .iter()
+        .filter(|press| press.world_after != frontier_pair.0)
+        .count() as u64;
+    Ok(SmbDownCensusReport {
+        frontier_pair,
+        parent_range,
+        sample_cap,
+        jobs_sampled,
+        down_presses: presses.len() as u64,
+        engine_state_changes,
+        world_changes,
+        parent_positions: parent_positions
+            .into_iter()
+            .map(|(id, (x, y))| (id, x, y))
+            .collect(),
+        presses,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

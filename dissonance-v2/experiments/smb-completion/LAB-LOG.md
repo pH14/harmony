@@ -4969,6 +4969,41 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c72-conquest/` on the ARM machine,
   log `c72.log`.
 
+### C72 live result — Down alone does not enter the pipe
+
+- The live run completed its full 50,000 executions, twelve workers, campaign
+  seed `0x5eed_c00d`, vocabulary `down_ten_mask` confirmed in the recorded
+  header, from C70's warp-room archive: 22,176 retained against 40,576
+  rejected with 938 deaths. **Its ladder tops at `(3, 1, 208)` — zero new
+  pairs — and the watermark never moved.** The preregistered question
+  resolves no: retention did not pass through a down-entered pipe.
+- The unmoved watermark is itself evidence: the watermark merges every
+  action's observations, so a warp transition that ever began would have
+  surfaced the loaded area's world byte. **No pipe entry ever started** —
+  the button was in the table and the pipe was never entered, which points
+  at positioning, not at the button.
+- Serial replay as a background audit. A stall of the pilot, handled by the
+  standing method: measurement before mechanism.
+
+## D73 — preregistered Down-press census
+
+- Fifth entry in the diagnostic pattern library. Question, fixed before
+  execution: **where does the player stand when Down is pressed, and does
+  any press occur on top of the warp pipe?** The census re-derives, from
+  C72's recorded stream in order, the first 600 jobs whose parent sits at
+  the frontier pair in bucket 208 and whose derived suffix contains a Down
+  chord; for each press it records the player's level-x and screen-x (the
+  camera is frozen in the room, so screen-x locates the player against the
+  pipe), vertical bytes, and the engine state and world byte across the
+  hold; it also records every sampled parent's position.
+- Expected under the stall: zero world-byte changes — consistency check
+  against the watermark — and a screen-x distribution that says whether the
+  room's population ever stands on the pipe at all.
+- The diagnostic lives in `diagnose-down-census`; gates pass on the tree
+  carrying it.
+- Raw destination: `target/smb-completion/d73-down-census/` on the ARM
+  machine.
+
 ### Ruling on the archive ceiling — raised to 131,072, recorded per run
 
 - The integrator ruled on the C68 ceiling finding, same doctrine as the

@@ -152,6 +152,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if mode == "diagnose-refused-grid" {
         return run_refused_grid_mode(&mut args);
     }
+    if mode == "diagnose-down-census" {
+        return run_down_census_mode(&mut args);
+    }
     if mode == "measure-viable-progress" {
         return run_viable_progress_mode(&mut args);
     }
@@ -936,6 +939,45 @@ fn run_derive_ladder_mode(
     }
     fs::write(&output, serde_json::to_vec_pretty(&ladder)?)?;
     println!("{}", serde_json::to_string_pretty(&ladder)?);
+    Ok(())
+}
+
+fn run_down_census_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let stream_path = PathBuf::from(args.next().ok_or("missing stream path")?);
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let parent_low = u16::try_from(parse_u64(
+        &args.next().ok_or("missing parent low")?.to_string_lossy(),
+    )?)?;
+    let parent_high = u16::try_from(parse_u64(
+        &args.next().ok_or("missing parent high")?.to_string_lossy(),
+    )?)?;
+    let sample_cap = usize::try_from(parse_u64(
+        &args.next().ok_or("missing sample cap")?.to_string_lossy(),
+    )?)?;
+    let output = PathBuf::from(args.next().ok_or("missing output file")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let rom = read_rom()?;
+    let stream_text = fs::read_to_string(&stream_path)?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let report = fuzzer::campaign::diagnose_down_census(
+        &rom,
+        &stream_text,
+        &source,
+        (parent_low, parent_high),
+        sample_cap,
+    )?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    println!(
+        "jobs {} presses {} engine_changes {} world_changes {}",
+        report.jobs_sampled, report.down_presses, report.engine_state_changes, report.world_changes
+    );
     Ok(())
 }
 
