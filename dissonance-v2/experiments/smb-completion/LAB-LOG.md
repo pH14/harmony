@@ -4574,3 +4574,12 @@ one variable of science only when a link stalls.
   pass on the tree carrying it.
 - Raw destinations: `target/smb-completion/d68-refused-grid/` on each
   machine.
+
+### C65 audit verdict — passed
+
+- The serial replay of C65's recorded stream completed all 50,000 executions
+  byte-identically: `replay_verified` true, replay stream equal to the live
+  stream `03a0b690…`, replayed archive SHA-256
+  `64ead1a337921aa357129f11277288d7863303274c4ea569633f713b8d3076b6` — the
+  exact hash C66's registration launched from. The chain is fully audited
+  through C65; no quarantine attaches to C66's origin.
