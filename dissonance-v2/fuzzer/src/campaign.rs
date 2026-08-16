@@ -83,6 +83,8 @@ pub struct SmbCampaignConfig {
     pub retention_policy: SmbArchiveRetentionPolicy,
     /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
+    /// Controller vocabulary for this run, recorded in the header and report.
+    pub vocabulary: SmbCampaignVocabulary,
 }
 
 /// Archive entry bound of every stream recorded before the bound was a
@@ -132,6 +134,13 @@ pub struct SmbCampaignStreamHeader {
         skip_serializing_if = "is_legacy_archive_entry_limit"
     )]
     pub archive_entry_limit: usize,
+    /// Controller vocabulary identifier; streams recorded before this field
+    /// existed derived suffixes from, and replay under, the frozen nine masks.
+    #[serde(
+        default = "legacy_vocabulary_identifier",
+        skip_serializing_if = "is_legacy_vocabulary_identifier"
+    )]
+    pub controller_vocabulary: String,
     /// Frozen duration policy identifier.
     pub duration_policy: String,
     /// Frozen suffix policy identifier.
@@ -263,6 +272,13 @@ pub struct SmbCampaignModeReport {
         skip_serializing_if = "is_legacy_archive_entry_limit"
     )]
     pub archive_entry_limit: usize,
+    /// Controller vocabulary identifier; reports recorded before this field
+    /// existed ran under the frozen nine masks.
+    #[serde(
+        default = "legacy_vocabulary_identifier",
+        skip_serializing_if = "is_legacy_vocabulary_identifier"
+    )]
+    pub controller_vocabulary: String,
     /// Frozen duration policy identifier.
     pub duration_policy: String,
     /// Frozen suffix policy identifier.
@@ -412,7 +428,10 @@ fn derive_worker_seed(campaign_seed: u64, worker_index: u32) -> Result<u64, Box<
 /// sampled by the same shared code the serial engine uses, from a fresh RNG
 /// seeded with the mutation seed alone. This is what makes a job a pure
 /// function of (parent snapshot, mutation seed).
-fn derive_suffix(mutation_seed: u64) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
+fn derive_suffix(
+    mutation_seed: u64,
+    vocabulary: SmbCampaignVocabulary,
+) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
     let mut rand = StdRand::with_seed(mutation_seed);
     let suffix_len = if rand.below(NonZeroUsize::new(4).ok_or("invalid suffix odds")?) == 0 {
         2
@@ -421,13 +440,68 @@ fn derive_suffix(mutation_seed: u64) -> Result<Vec<ButtonChord>, Box<dyn Error>>
     };
     let mut suffix = Vec::with_capacity(suffix_len);
     for _ in 0..suffix_len {
-        suffix.push(crate::phase4c::sample_chord(
+        suffix.push(crate::phase4c::sample_chord_from_masks(
             &mut rand,
             SmbArchiveDurationPolicy::Stratified,
-            false,
+            vocabulary.masks(),
         )?);
     }
     Ok(suffix)
+}
+
+/// Controller vocabulary a campaign derives suffixes from, recorded in the
+/// stream header; the table's length is index-visible to suffix derivation,
+/// so legacy streams replay only under the frozen nine masks.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SmbCampaignVocabulary {
+    /// The program's historical nine masks; every stream recorded before the
+    /// vocabulary was a header field ran under this.
+    #[default]
+    FrozenNineMask,
+    /// D71 ruling: the nine masks plus Down, for down-entry pipes.
+    DownTenMask,
+}
+
+impl SmbCampaignVocabulary {
+    fn masks(self) -> &'static [u8] {
+        match self {
+            Self::FrozenNineMask => &crate::phase4c::FROZEN_BUTTON_MASKS,
+            Self::DownTenMask => &crate::phase4c::DOWN_TEN_BUTTON_MASKS,
+        }
+    }
+}
+
+/// Header identifier for a controller vocabulary.
+#[must_use]
+pub fn vocabulary_identifier(vocabulary: SmbCampaignVocabulary) -> &'static str {
+    match vocabulary {
+        SmbCampaignVocabulary::FrozenNineMask => "frozen_nine_mask",
+        SmbCampaignVocabulary::DownTenMask => "down_ten_mask",
+    }
+}
+
+/// Controller vocabulary named by a recorded header identifier.
+///
+/// # Errors
+///
+/// Returns an error when the identifier names no known vocabulary.
+pub fn vocabulary_from_identifier(
+    identifier: &str,
+) -> Result<SmbCampaignVocabulary, Box<dyn Error>> {
+    match identifier {
+        "frozen_nine_mask" => Ok(SmbCampaignVocabulary::FrozenNineMask),
+        "down_ten_mask" => Ok(SmbCampaignVocabulary::DownTenMask),
+        _ => Err("campaign stream controller vocabulary is not recognized".into()),
+    }
+}
+
+fn legacy_vocabulary_identifier() -> String {
+    "frozen_nine_mask".to_owned()
+}
+
+#[allow(clippy::ptr_arg)]
+fn is_legacy_vocabulary_identifier(identifier: &String) -> bool {
+    identifier == "frozen_nine_mask"
 }
 
 /// One candidate boundary inside a job result.
@@ -845,6 +919,7 @@ fn stream_header(
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
+        controller_vocabulary: vocabulary_identifier(config.vocabulary).to_owned(),
         duration_policy: "stratified".to_owned(),
         suffix_policy: "one_or_two".to_owned(),
         retention_policy: retention_identifier(config.retention_policy).to_owned(),
@@ -928,6 +1003,7 @@ fn build_report(
         wall_budget_seconds: header.wall_budget_seconds,
         action_limit: header.action_limit,
         archive_entry_limit: header.archive_entry_limit,
+        controller_vocabulary: header.controller_vocabulary.clone(),
         duration_policy: header.duration_policy.clone(),
         suffix_policy: header.suffix_policy.clone(),
         retention_policy: header.retention_policy.clone(),
@@ -1118,7 +1194,7 @@ pub fn run_smb_campaign(
             loop {
                 let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
                 let mutation_seed = rand.next();
-                let suffix = derive_suffix(mutation_seed)?;
+                let suffix = derive_suffix(mutation_seed, config.vocabulary)?;
                 if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                     && core.all_prefixes_archived(parent_index, &suffix)
                 {
@@ -1304,6 +1380,7 @@ pub fn replay_smb_campaign(
 
     let selector_policy = selector_from_identifier(&header.parent_scheduler)?;
     let retention_policy = retention_from_identifier(&header.retention_policy)?;
+    let vocabulary = vocabulary_from_identifier(&header.controller_vocabulary)?;
     let mut core = CoordinatorCore::new(
         header.action_limit,
         selector_policy,
@@ -1324,7 +1401,7 @@ pub fn replay_smb_campaign(
                 if parent_index >= core.archive.entries.len() {
                     return Err("recorded skip names a parent the archive does not hold".into());
                 }
-                let suffix = derive_suffix(skip.mutation_seed)?;
+                let suffix = derive_suffix(skip.mutation_seed, vocabulary)?;
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
@@ -1350,7 +1427,7 @@ pub fn replay_smb_campaign(
                 let snapshot = entry.snapshot.clone();
                 let parent_actions = entry.report.input.actions.len();
                 let parent_milestones = entry.report.milestones;
-                let suffix = derive_suffix(job.mutation_seed)?;
+                let suffix = derive_suffix(job.mutation_seed, vocabulary)?;
                 let job_frames_before = target.frames_clocked();
                 let result = execute_job(
                     &mut target,
@@ -1588,6 +1665,7 @@ pub fn diagnose_refused_grid(
     if header.rom_sha256 != format!("{:x}", Sha256::digest(rom)) {
         return Err("grid diagnosis ROM does not match the recorded stream".into());
     }
+    let grid_vocabulary = vocabulary_from_identifier(&header.controller_vocabulary)?;
     let frontier_pair = source
         .entries
         .iter()
@@ -1673,7 +1751,7 @@ pub fn diagnose_refused_grid(
             .actions
             .len();
         target.restore(&parent_snapshot)?;
-        let suffix = derive_suffix(job.mutation_seed)?;
+        let suffix = derive_suffix(job.mutation_seed, grid_vocabulary)?;
         let mut length = parent_actions;
         let mut candidate_index = 0_usize;
         for action in &suffix {
@@ -1823,8 +1901,10 @@ mod tests {
     #[test]
     fn suffix_derivation_is_pure_and_bounded() {
         for seed in [0_u64, 0x5eed_ca01, u64::MAX] {
-            let first = derive_suffix(seed).expect("derive suffix");
-            let second = derive_suffix(seed).expect("derive suffix again");
+            let first = derive_suffix(seed, super::SmbCampaignVocabulary::FrozenNineMask)
+                .expect("derive suffix");
+            let second = derive_suffix(seed, super::SmbCampaignVocabulary::FrozenNineMask)
+                .expect("derive suffix again");
             assert_eq!(first, second);
             assert!((1..=2).contains(&first.len()));
             assert!(
@@ -1843,7 +1923,8 @@ mod tests {
         first.reset();
         first.apply(&ButtonChord::new(0x81, 12));
         let snapshot = first.snapshot().expect("snapshot prefix");
-        let suffix = derive_suffix(0x5eed_ca02).expect("derive suffix");
+        let suffix = derive_suffix(0x5eed_ca02, super::SmbCampaignVocabulary::FrozenNineMask)
+            .expect("derive suffix");
         // Disturb the first instance so the job must depend on the snapshot alone.
         first.apply(&ButtonChord::new(0x02, 30));
         let on_first = execute_job(
@@ -1882,6 +1963,7 @@ mod tests {
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
+            vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -1908,6 +1990,7 @@ mod tests {
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
+            vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -1940,6 +2023,7 @@ mod tests {
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
+            vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
         };
         let mut seed_stream = Vec::new();
         let seed_campaign = run_smb_campaign(
@@ -1961,6 +2045,7 @@ mod tests {
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
+            vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(
@@ -1993,6 +2078,7 @@ mod tests {
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
+            vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)

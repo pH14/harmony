@@ -4925,6 +4925,52 @@ one variable of science only when a link stalls.
 - Execution holds for the ruling; both machines are running their audit
   backlog meanwhile (C67, C68, C69, C70).
 
+### Ruling on the vocabulary fork — warp-first; Down registers as a policy value
+
+- The integrator ruled route (a), with the rationale recorded: the Down
+  vocabulary is required equipment for completion regardless of route — the
+  final castle binds on it — so adding it is not the decision, only the
+  sequencing, and the sequencing answers itself: the mission is completing
+  the game, the warp is legitimate play advancing that mission by several
+  worlds in one link, and the alternative was priced by the census at
+  100,000 executions of already-failed evidence. Full-clearing the fourth
+  world and the skipped worlds becomes optional secondary territory after
+  the completion claim — on the map, not on the critical path.
+- The build, on the standing doctrine, implemented in-session per the
+  horizon-45 precedent: `down_ten_mask` — the frozen nine masks plus Down
+  (`0x20`), appended so the shared prefix keeps its order — beside
+  `frozen_nine_mask`, selected per run by `--vocabulary`, recorded in the
+  stream header and report, with legacy streams carrying no field and
+  replaying under the frozen nine masks. The table length is index-visible
+  to suffix derivation, which is exactly why the vocabulary is
+  header-recorded like the retention policy and both ceilings.
+- The four quality gates pass; the standing inertness reference re-verifies
+  byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+
+## C72 — registered concentrated conquest, tenth link, pilot-and-link with Down
+
+- Per the ruling, pilot and chain link in one: the first campaign under the
+  Down-inclusive vocabulary. **Preregistered question: does retention pass
+  through a down-entered pipe** — concretely, does the ladder record a pair
+  beyond the fourth world reached from the warp-zone room.
+- One live run, no retries: 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c00d`, action limit 4096, retention
+  `probe_at_admission_45`, archive bound 131,072, vocabulary
+  `down_ten_mask`. Serial replay as a background audit.
+- Origin: C70's live archive — the later and denser of the two tied
+  warp-room frontiers, resident on the launching machine — SHA-256
+  `b893671ae9553b6aeb433f397961192f283978405df45c39e937ea5542da5cfc`. The
+  play measurement returns recorded 208, viable 208, play 208, so the
+  resume rule lands on settled play; the resume entry is a warp-room state,
+  which is precisely where the new button matters.
+- Quarantine lineage: C72 depends on the audits of C67 through C70 and its
+  own; the last audited link is C66, with four audits in flight.
+- Raw destination: `target/smb-completion/c72-conquest/` on the ARM machine,
+  log `c72.log`.
+
+### Ruling on the archive ceiling — raised to 131,072, recorded per run
+
 - The integrator ruled on the C68 ceiling finding, same doctrine as the
   action cap: a ceiling is not an allocation, memory cost tracks actual
   retention, and at roughly 37 KB per entry even a full ceiling stays under

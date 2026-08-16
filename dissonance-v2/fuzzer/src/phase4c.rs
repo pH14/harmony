@@ -36,7 +36,8 @@ const RANKING_STALE_EXECUTIONS: u64 = 1_024;
 const GENERATED_MUTATOR_RETIRE_AFTER: u64 = 128;
 const FRONTIER_PROGRESS_BAND: u16 = 8;
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;
-const FROZEN_BUTTON_MASKS: [u8; 9] = [0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10];
+pub(crate) const FROZEN_BUTTON_MASKS: [u8; 9] =
+    [0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10];
 
 /// Largest bounded action horizon accepted by the completion-only archive.
 /// Raised from 512 so the ceiling covers a full-game trajectory; every
@@ -4663,6 +4664,12 @@ pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> Sm
     }
 }
 
+/// D71 ruling: the frozen nine masks plus Down (`0x20`), appended so the
+/// shared prefix keeps its order. Selecting this table changes every
+/// derived suffix, so campaigns record their vocabulary in the header.
+pub const DOWN_TEN_BUTTON_MASKS: [u8; 10] =
+    [0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10, 0x20];
+
 pub(crate) fn sample_chord(
     rand: &mut StdRand,
     duration_policy: SmbArchiveDurationPolicy,
@@ -4676,6 +4683,14 @@ pub(crate) fn sample_chord(
     } else {
         &FROZEN_BUTTON_MASKS
     };
+    sample_chord_from_masks(rand, duration_policy, masks)
+}
+
+pub(crate) fn sample_chord_from_masks(
+    rand: &mut StdRand,
+    duration_policy: SmbArchiveDurationPolicy,
+    masks: &[u8],
+) -> Result<ButtonChord, Box<dyn Error>> {
     let buttons =
         masks[rand.below(NonZeroUsize::new(masks.len()).ok_or("empty SMB button vocabulary")?)];
     let hold_frames = match duration_policy {
