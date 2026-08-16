@@ -4575,6 +4575,49 @@ one variable of science only when a link stalls.
 - Raw destinations: `target/smb-completion/d68-refused-grid/` on each
   machine.
 
+### D68 result — both probe variants dead on arrival, and the wall is not the enemies
+
+- Both grids are valid: 500 refusal jobs re-derived per stream, zero
+  derivation mismatches on either — every re-derived candidate is refused by
+  the promoted probe's own masks at the full horizon, exactly as the stream
+  recorded. C65's grid probed 312 candidates in buckets 60 through 65, C66's
+  315; refused candidates landing at 55 through 59 were tallied out of range
+  as registered (230 and 224).
+- **The registered third branch fires: no fixed continuation survives the
+  full horizon for a single refused candidate in either stream — zero of 312
+  and zero of 315, across all six masks.** At the shortest horizon of 45
+  frames the best mask saves 24 of 312 (7.7 percent) and 46 of 315 (14.6
+  percent). Both preregistered variants — shorter horizon and evasive masks —
+  are dead on arrival for the corridor's majority, at zero registration cost.
+- **The mechanism is not the visible enemies.** Every probe death in both
+  grids — 1,872 and 1,890 probes — is the below-play-area clause; not one is
+  the kill state. The vertical supplement pins it: refused candidates sit at
+  vertical page 1 with vertical low 189 through 255, median 243 — a median of
+  thirteen pixels above the page-2 death threshold — and the no-input death
+  frame tracks the remaining pixels almost linearly. These are states in free
+  descent through an opening in the corridor's floor, past the depth where
+  swimming physics applies; no fixed input arrests the fall, and fall physics
+  means no reactive input would either. **The probe is refusing the majority
+  correctly: they are genuinely dead states that have not finished dying.**
+- The recoverable minority is real and is measured: the past-45-frame tail
+  clusters at the shallow end, buckets 60 through 63, and is exactly the
+  population a 45-frame horizon would admit — along with some slow sinkers
+  that die near frame 67, which fixed probes cannot separate from it.
+- One candidate mechanism is closed by inspection: the frozen archive key
+  already carries a sixteen-pixel vertical band, so altitude diversity is
+  already retained per bucket. The wall is admission alone, not key
+  granularity.
+- Escalated to the integrator for a design ruling, as the registration
+  requires. What the data argues: a blanket probe-exempt corridor would
+  retain a majority of truly-dead falling states as parents; a 45-frame
+  horizon rescues the measured shallow tail but admits doomed sinkers with
+  it; and the deeper shape of the problem is that the corridor's viable line
+  demands staying out of the floor opening, which no admission rule alone
+  steers toward — it is a selection-pressure question as much as a retention
+  one. No campaign launches until the ruling lands.
+- Raw evidence: `target/smb-completion/d68-refused-grid/` on both machines,
+  with the vertical supplement in `c65-grid-vertical.json`.
+
 ### C65 audit verdict — passed
 
 - The serial replay of C65's recorded stream completed all 50,000 executions
