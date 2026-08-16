@@ -4387,3 +4387,22 @@ one variable of science only when a link stalls.
   through the level before it; if it stalls at 27 with headroom available,
   the cap was not the cause and the diagnosis is wrong.
 - Raw destination: `target/smb-completion/c65-conquest/`.
+
+## Standing method — replay verification leaves the chain-link critical path
+
+- Ruled by the integrator, effective immediately, and recorded with the
+  rationale as given.
+- For conquest chain links, the next link launches from the live archive the
+  moment its ladder lands. The link's serial replay still runs, but as a
+  background **audit** in spare capacity — niced, or on whichever machine is
+  idle — and its verdict is recorded when it lands.
+- A failed audit **quarantines** that link and everything sourced from it,
+  and the chain re-derives from the last audited link. Every recorded stream
+  is kept, so nothing is ever lost — only re-verified.
+- Replay remains a **gate**, not an audit, for registered experiments —
+  panels and pilots — and for the eventual completion claim, which receives
+  full verification and film. Chain links are territory, not claims.
+- Applied on ruling: C64's replay, in flight on the ARM machine, and C65's
+  replay, queued behind its live run, continue as audits. Link five registers
+  and launches from C65's live archive the moment C65's ladder lands, on
+  whichever machine is free, without waiting for any replay.
