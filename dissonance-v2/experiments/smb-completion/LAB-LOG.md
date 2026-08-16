@@ -4684,6 +4684,64 @@ one variable of science only when a link stalls.
   corpses is itself a finding and escalates the threshold.
 - Raw destination: `target/smb-completion/c67-conquest/`.
 
+### C67 live result — horizon 45 completes the water level and opens the next
+
+- **The preregistered question resolves yes, decisively: retention extended
+  past bucket 65** — through it, through the corridor, through the rest of
+  the water level to its completion region at bucket 195, and into the
+  second world's third level, first retained at execution 45,467 and driven
+  to bucket 165 in the remaining 4,533 executions with watermark 173. The
+  chain continues at horizon 45 and this link counts as territory.
+- The live run completed its full 50,000 executions, ten workers, campaign
+  seed `0x5eed_c009`, action limit 4096, retention `probe_at_admission_45`,
+  from C65's audited archive: 30,988 retained against 15,659 rejected,
+  5,294,979 frames emulated — half the frame cost of the 120-horizon links,
+  the shorter probes paying for themselves — 115 duplicates skipped and
+  2,605 probe refusals, roughly half the refusal count of either 120-horizon
+  run. Live stream SHA-256
+  `7fedc068facc2eccafb5d82ba53d460a0d57b208586522db0dfecd313ed86aa7`; serial
+  replay running as a background audit.
+- **The corpse load arrived exactly as the ruling predicted: 11,274 deaths,
+  nearly four times any previous link** — horizon-45 admissions include slow
+  sinkers whose children die. The play measurement still returns recorded
+  165, viable 165, play 165 at the new frontier: settled genuine play.
+- **The exhaustion accounting, reported prominently as the registration
+  requires: `classes_skipped` zero, `counter_resets` zero — again, in
+  exactly the corpse-seeding regime the threshold was designed for.** The
+  structural reason is now measurable: 37,659 tie-class draws spread over
+  23,218 distinct parents passing through the recency window is 1.62 draws
+  per parent, so no parent can approach sixty-four barren draws before the
+  window displaces it. Recency displacement and the barren threshold are
+  structurally incompatible at high retention rates: the window churns
+  parents out long before starvation can bind. Per the ruling, the
+  sixty-four-draw threshold now has its own escalation data; recorded here
+  for the integrator's threshold ruling, without pausing the chain.
+- Level-ladder note for honest reading: the water level's deepest bucket 195
+  sits in its completion region, and the third level's opening at execution
+  45,467 means over ninety percent of the budget was spent inside the water
+  level; the third level's 165 buckets in 4,533 executions is the fastest
+  per-execution advance any link has recorded, consistent with terrain that
+  rewards held-right play.
+
+## C68 — registered concentrated conquest, seventh link at horizon 45
+
+- Observational, in the C49/C61 pattern; the chain continues at horizon 45
+  per the C67 pilot resolution. One live concentrated-policy conquest
+  campaign, 50,000 executions, twelve workers on the ARM machine, campaign
+  seed `0x5eed_c00a`, action limit 4096, retention `probe_at_admission_45`,
+  sourced from C67's live archive, SHA-256
+  `6efb1780d5dfa7f6ac41543a7ac2174482ffe24d987251abbf35ea9f2d0120e6`,
+  copied to the ARM machine and hash-verified there before launch. One live
+  run, no retries; serial replay as a background audit.
+- Quarantine lineage: C68 depends on C67's audit and its own; C67 depends on
+  C65's audit, which passed as recorded. A failed C67 audit quarantines C67
+  and C68 and re-derives from C65.
+- Resume-rule assumption check, run before launch: the play measurement on
+  C67's archive returns recorded 165, viable 165, play 165 — settled play at
+  the maximum pair, no derived origin needed.
+- Raw destination: `target/smb-completion/c68-conquest/` on the ARM machine,
+  log `c68.log`.
+
 ### C66 audit verdict — passed
 
 - The serial replay of C66's recorded stream completed all 50,000 executions
