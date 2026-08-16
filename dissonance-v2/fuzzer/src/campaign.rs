@@ -79,6 +79,8 @@ pub struct SmbCampaignConfig {
     pub wall_budget: Option<Duration>,
     /// Parent-selector policy, frozen unless the campaign explicitly asks.
     pub selector_policy: SmbArchiveSelectorPolicy,
+    /// Admission retention policy, recorded in the header and report.
+    pub retention_policy: SmbArchiveRetentionPolicy,
 }
 
 /// First line of the stream: everything a replay needs to know about the run.
@@ -314,6 +316,32 @@ pub fn selector_from_identifier(
     }
 }
 
+/// Header identifier for an admission retention policy.
+#[must_use]
+pub fn retention_identifier(policy: SmbArchiveRetentionPolicy) -> &'static str {
+    match policy {
+        SmbArchiveRetentionPolicy::Frozen => "frozen",
+        SmbArchiveRetentionPolicy::ProbeAtAdmission => "probe_at_admission",
+        SmbArchiveRetentionPolicy::ProbeAtAdmission45 => "probe_at_admission_45",
+    }
+}
+
+/// Admission retention policy named by a recorded header identifier.
+///
+/// # Errors
+///
+/// Returns an error when the identifier names no known retention policy.
+pub fn retention_from_identifier(
+    identifier: &str,
+) -> Result<SmbArchiveRetentionPolicy, Box<dyn Error>> {
+    match identifier {
+        "frozen" => Ok(SmbArchiveRetentionPolicy::Frozen),
+        "probe_at_admission" => Ok(SmbArchiveRetentionPolicy::ProbeAtAdmission),
+        "probe_at_admission_45" => Ok(SmbArchiveRetentionPolicy::ProbeAtAdmission45),
+        _ => Err("campaign stream retention policy is not recognized".into()),
+    }
+}
+
 /// Reject streams whose selector annotations disagree with the header policy.
 fn verify_selector_annotation(
     policy: SmbArchiveSelectorPolicy,
@@ -409,6 +437,7 @@ fn execute_job(
     parent_milestones: SmbMilestones,
     suffix: &[ButtonChord],
     max_actions: usize,
+    retention_policy: SmbArchiveRetentionPolicy,
 ) -> Result<SmbCampaignJobResult, Box<dyn Error>> {
     target.restore(parent_snapshot)?;
     let mut milestones = parent_milestones;
@@ -431,11 +460,7 @@ fn execute_job(
                 .snapshot()
                 .ok_or("failed to snapshot campaign suffix")?;
             let key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
-            let viable = admission_is_viable(
-                target,
-                &snapshot,
-                SmbArchiveRetentionPolicy::ProbeAtAdmission,
-            )?;
+            let viable = admission_is_viable(target, &snapshot, retention_policy)?;
             Some(SmbCampaignCandidate {
                 key,
                 viable,
@@ -474,10 +499,15 @@ struct CoordinatorCore<'a> {
     sequence: u64,
     probe_refused: u64,
     max_actions: usize,
+    retention_policy: SmbArchiveRetentionPolicy,
 }
 
 impl CoordinatorCore<'_> {
-    fn new(max_actions: usize, _selector_policy: SmbArchiveSelectorPolicy) -> Self {
+    fn new(
+        max_actions: usize,
+        _selector_policy: SmbArchiveSelectorPolicy,
+        retention_policy: SmbArchiveRetentionPolicy,
+    ) -> Self {
         Self {
             archive: Archive::new(None),
             aggregate: SmbMilestones::default(),
@@ -491,6 +521,7 @@ impl CoordinatorCore<'_> {
             sequence: 0,
             probe_refused: 0,
             max_actions,
+            retention_policy,
         }
     }
 
@@ -563,11 +594,7 @@ impl CoordinatorCore<'_> {
                     .ok_or("failed to snapshot campaign bootstrap prefix")?;
                 let observations = target.last_action_observations().to_vec();
                 let key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
-                if !admission_is_viable(
-                    target,
-                    &snapshot,
-                    SmbArchiveRetentionPolicy::ProbeAtAdmission,
-                )? {
+                if !admission_is_viable(target, &snapshot, self.retention_policy)? {
                     continue;
                 }
                 if let Some(id) = self.archive.insert(
@@ -787,7 +814,7 @@ fn stream_header(
         action_limit: config.action_limit,
         duration_policy: "stratified".to_owned(),
         suffix_policy: "one_or_two".to_owned(),
-        retention_policy: "probe_at_admission".to_owned(),
+        retention_policy: retention_identifier(config.retention_policy).to_owned(),
         parent_scheduler: selector_identifier(config.selector_policy).to_owned(),
         executor_mode: "snapshot_resume_archive".to_owned(),
         worker_seed_derivation: "sha256(campaign_seed_le || worker_index_le)[0..8] as u64 le"
@@ -940,7 +967,11 @@ pub fn run_smb_campaign(
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
 
-    let mut core = CoordinatorCore::new(config.action_limit, config.selector_policy);
+    let mut core = CoordinatorCore::new(
+        config.action_limit,
+        config.selector_policy,
+        config.retention_policy,
+    );
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = bootstrap_target.frames_clocked();
@@ -978,6 +1009,7 @@ pub fn run_smb_campaign(
             let (job_sender, job_receiver) = mpsc::channel::<JobSpec>();
             let reply_sender = reply_sender.clone();
             let max_actions = config.action_limit;
+            let retention_policy = config.retention_policy;
             scope.spawn(move || {
                 let mut target = match SmbTarget::from_smb_rom_bytes_headless(rom) {
                     Ok(target) => target,
@@ -998,6 +1030,7 @@ pub fn run_smb_campaign(
                         spec.parent_milestones,
                         &spec.suffix,
                         max_actions,
+                        retention_policy,
                     )
                     .map(|result| {
                         (
@@ -1230,7 +1263,8 @@ pub fn replay_smb_campaign(
     }
 
     let selector_policy = selector_from_identifier(&header.parent_scheduler)?;
-    let mut core = CoordinatorCore::new(header.action_limit, selector_policy);
+    let retention_policy = retention_from_identifier(&header.retention_policy)?;
+    let mut core = CoordinatorCore::new(header.action_limit, selector_policy, retention_policy);
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = target.frames_clocked();
@@ -1280,6 +1314,7 @@ pub fn replay_smb_campaign(
                     parent_milestones,
                     &suffix,
                     header.action_limit,
+                    retention_policy,
                 )?;
                 let frames = target.frames_clocked().saturating_sub(job_frames_before);
                 if frames != job.frames {
@@ -1712,7 +1747,7 @@ mod tests {
     };
     use crate::{
         phase4b::{ButtonChord, SmbMilestones, SmbTarget},
-        phase4c::SmbArchiveSelectorPolicy,
+        phase4c::{SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy},
         target::Target,
     };
 
@@ -1773,6 +1808,7 @@ mod tests {
             SmbMilestones::default(),
             &suffix,
             96,
+            SmbArchiveRetentionPolicy::ProbeAtAdmission,
         )
         .expect("execute job on first instance");
         let on_second = execute_job(
@@ -1782,6 +1818,7 @@ mod tests {
             SmbMilestones::default(),
             &suffix,
             96,
+            SmbArchiveRetentionPolicy::ProbeAtAdmission,
         )
         .expect("execute job on second instance");
         assert_eq!(on_first, on_second);
@@ -1798,6 +1835,7 @@ mod tests {
             host: "unit-test".to_owned(),
             wall_budget: None,
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+            retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -1822,6 +1860,7 @@ mod tests {
             host: "unit-test".to_owned(),
             wall_budget: None,
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+            retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -1852,6 +1891,7 @@ mod tests {
             host: "unit-test".to_owned(),
             wall_budget: None,
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+            retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
         };
         let mut seed_stream = Vec::new();
         let seed_campaign = run_smb_campaign(
@@ -1871,6 +1911,7 @@ mod tests {
             host: "unit-test".to_owned(),
             wall_budget: None,
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+            retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(
@@ -1901,6 +1942,7 @@ mod tests {
             host: "unit-test".to_owned(),
             wall_budget: None,
             selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+            retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)

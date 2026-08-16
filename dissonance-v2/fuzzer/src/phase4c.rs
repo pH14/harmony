@@ -198,6 +198,10 @@ pub enum SmbArchiveRetentionPolicy {
     Frozen,
     /// H45: retain only candidates some fixed probe mask keeps alive for the horizon.
     ProbeAtAdmission,
+    /// D68 corridor ruling: the same probe at a 45-frame horizon, admitting
+    /// the measured shallow tail the 120-frame demand refuses.
+    #[serde(rename = "probe_at_admission_45")]
+    ProbeAtAdmission45,
 }
 
 /// How the archive chooses expansion parents.
@@ -315,6 +319,8 @@ pub struct SmbEntrySelectorCounters {
 const VIABILITY_PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
 /// Fixed admission-probe horizon in frames.
 const VIABILITY_PROBE_FRAMES: u16 = 120;
+/// D68 corridor ruling: the shortened admission-probe horizon in frames.
+const VIABILITY_PROBE_FRAMES_SHORT: u16 = 45;
 
 /// Frozen search parameters used by a generated-ranking archive campaign.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -4577,13 +4583,15 @@ pub(crate) fn admission_is_viable(
     snapshot: &SmbSnapshot,
     policy: SmbArchiveRetentionPolicy,
 ) -> Result<bool, Box<dyn Error>> {
-    if policy == SmbArchiveRetentionPolicy::Frozen {
-        return Ok(true);
-    }
+    let horizon = match policy {
+        SmbArchiveRetentionPolicy::Frozen => return Ok(true),
+        SmbArchiveRetentionPolicy::ProbeAtAdmission => VIABILITY_PROBE_FRAMES,
+        SmbArchiveRetentionPolicy::ProbeAtAdmission45 => VIABILITY_PROBE_FRAMES_SHORT,
+    };
     let mut viable = false;
     for mask in VIABILITY_PROBE_MASKS {
         target.restore(snapshot)?;
-        if target.survives_probe(mask, VIABILITY_PROBE_FRAMES) {
+        if target.survives_probe(mask, horizon) {
             viable = true;
             break;
         }

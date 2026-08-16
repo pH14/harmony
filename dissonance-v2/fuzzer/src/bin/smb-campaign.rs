@@ -8,7 +8,8 @@ use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 use fuzzer::{
     campaign::{
         SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin, replay_smb_campaign,
-        run_smb_campaign, select_frontier_resume_input, selector_from_identifier,
+        retention_from_identifier, run_smb_campaign, select_frontier_resume_input,
+        selector_from_identifier,
     },
     phase4b::SmbInput,
     phase4c::{
@@ -94,6 +95,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let mut wall_budget = None;
     let mut selector_policy = SmbArchiveSelectorPolicy::ConcentratedRecency;
+    let mut retention_policy = SmbArchiveRetentionPolicy::ProbeAtAdmission;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
             let seconds = parse_u64(
@@ -108,6 +110,13 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                 &args
                     .next()
                     .ok_or("missing --selector value")?
+                    .to_string_lossy(),
+            )?;
+        } else if flag == "--retention" {
+            retention_policy = retention_from_identifier(
+                &args
+                    .next()
+                    .ok_or("missing --retention value")?
                     .to_string_lossy(),
             )?;
         } else {
@@ -128,6 +137,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         host,
         wall_budget,
         selector_policy,
+        retention_policy,
     };
 
     let stream_path = output.join("stream.jsonl");

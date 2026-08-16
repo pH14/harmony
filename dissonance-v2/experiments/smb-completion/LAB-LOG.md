@@ -4618,6 +4618,72 @@ one variable of science only when a link stalls.
 - Raw evidence: `target/smb-completion/d68-refused-grid/` on both machines,
   with the vertical supplement in `c65-grid-vertical.json`.
 
+### Ruling on the corridor — the 45-frame horizon registers; exemption is dead
+
+- The integrator ruled on D68, with the rationale recorded. Blanket
+  probe-exemption is dead: the grids proved the refusal majority genuinely
+  unrecoverable, and an archive seeded with falling corpses is the failure
+  H45 exists to prevent. The 45-frame probe horizon registers as a **new
+  policy value beside the 120-frame default** — per-campaign, recorded in
+  every header and report, every recorded artifact replaying under its own
+  recorded horizon.
+- Rationale as ruled: the grids measured a real rescuable population — 7.7
+  and 14.6 percent, clustered at the corridor entrance — that only a shorter
+  horizon admits. The known cost, slow sinkers dying near frame 67, is
+  exactly the load the concentration-plus-exhaustion system was designed to
+  carry: doomed admissions become barren parents and starvation is their
+  bound. **This is the regime where the exhaustion leg finally bears
+  weight**; the counters are reported prominently either way, and if doomed
+  parents accumulate while starvation still never fires, the sixty-four-draw
+  threshold gets its own ruling with this data.
+- The build: `probe_at_admission_45` beside `probe_at_admission`, threaded
+  through campaign configuration, worker execution, bootstrap, the stream
+  header and replay; `--retention` selects it per run and replay reads the
+  header. The four quality gates pass, and the standing inertness reference
+  re-verifies byte-identical on the changed tree,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24` — the
+  default path is untouched.
+
+## C67 — registered concentrated conquest, sixth link, pilot-and-link at horizon 45
+
+- Per the ruling, pilot and chain link in one: one live concentrated-policy
+  conquest campaign at the new retention value. If retention extends past
+  bucket 65 the chain continues at horizon 45 and this link counts as
+  territory; if it stalls, one link bought the decisive test and
+  steering-over-the-gap escalates back to the integrator as
+  selection-pressure design, with the track-2 waypoint mechanism the
+  motivated candidate. The no-launch hold is lifted.
+- **Preregistered question: does retention extend past bucket 65** — the
+  watermark ceiling both 120-horizon runs saw and never kept.
+- One live run, no retries: 50,000 executions, ten workers on the local
+  machine, campaign seed `0x5eed_c009`, action limit 4096, retention
+  `probe_at_admission_45`, selector concentrated recency. Serial replay runs
+  as a background audit per the standing method.
+- Origin, under the standard source rule: C65's archive and C66's tie at
+  `(1, 1, 59)` and share the identical shortest frontier input — the same
+  553-action entry, input SHA-256 `9104b954…` in both — so the resume state
+  is identical either way. C65 is chosen: it is fully audited where C66's
+  audit is still in flight, and it is already on the launching machine.
+  Archive SHA-256
+  `64ead1a337921aa357129f11277288d7863303274c4ea569633f713b8d3076b6`.
+- Assumption checks, against recorded artifacts: the measure can move —
+  D68 measured 24 and 46 refused candidates per stream surviving past 45
+  frames at buckets 60 through 63, exactly the population this horizon
+  admits, so admission past 59 is arithmetically possible where under the
+  120 horizon it was measured impossible. The frontier is real and settled —
+  recorded 59, viable 59, play 59, and the span walk admits every recorded
+  boundary. The exposure that cannot be checked for free is stated: whether
+  the admitted tail contains states from which the search can climb out of
+  the floor opening's pull, which is the pilot question itself.
+- **Exhaustion expectation, stated as the ruling requires**: horizon-45
+  admission will seed doomed parents — slow sinkers whose children all die —
+  and these should become barren and be starved by the sixty-four-draw
+  threshold. The selector counters, the concentration accounting, and
+  `classes_skipped` and `counter_resets` are reported prominently in this
+  link's result **either way**. Zero firings against a corpus of admitted
+  corpses is itself a finding and escalates the threshold.
+- Raw destination: `target/smb-completion/c67-conquest/`.
+
 ### C65 audit verdict — passed
 
 - The serial replay of C65's recorded stream completed all 50,000 executions
