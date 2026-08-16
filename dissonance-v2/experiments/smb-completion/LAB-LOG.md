@@ -4750,6 +4750,20 @@ one variable of science only when a link stalls.
   machine links now includes verifying the remote binary accepts the
   registered flags, alongside the origin hash.
 
+### Ruling note — the exhaustion incompatibility is deferred by design
+
+- Recorded on the integrator's instruction. The C67 measurement is accepted:
+  recency displacement and the sixty-four-draw barren threshold are
+  structurally incompatible at high retention, and displacement itself
+  bounds corpse waste in that regime — which is why the corpse-heavy link
+  still broke through. The chain is uncontested.
+- The ruling point arrives at the next genuine stall. The escalation menu
+  fixed now, so it is not invented then: **(a)** lower the barren threshold
+  to a value the stall regime can actually reach, justified by this data, or
+  **(b)** remove the exhaustion leg outright — provably byte-inert on every
+  recorded artifact precisely because it has never fired, per the standing
+  no-dead-code preference. Neither registers now.
+
 ### C66 audit verdict — passed
 
 - The serial replay of C66's recorded stream completed all 50,000 executions
