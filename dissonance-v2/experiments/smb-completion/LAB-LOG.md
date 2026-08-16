@@ -4750,6 +4750,71 @@ one variable of science only when a link stalls.
   machine links now includes verifying the remote binary accepts the
   registered flags, alongside the origin hash.
 
+### C68 live result — seven levels in one link, the exhaustion leg's first firing, and a new ceiling
+
+- The live run completed its full 50,000 executions, twelve workers, campaign
+  seed `0x5eed_c00a`, action limit 4096, retention `probe_at_admission_45`,
+  from C67's archive: 32,768 retained against 14,483 rejected with 10,895
+  deaths, 5,438,253 frames emulated, 2,923 probe refusals. Live stream
+  SHA-256
+  `5e607b1f8506755c30d56efa205b0387674fb3eaa71859a04fd8970a75d92c2e`; serial
+  replay running as a background audit.
+- **Seven levels of new territory in one link.** The ladder: the second
+  world's third level driven to 221 and its castle opened at execution 2,977
+  and completed; the third world's four levels crossed in sequence — 206,
+  208, 147, 144, first reached at executions 12,631, 18,674, 24,207 and
+  29,434 — and **the fourth world opened at execution 40,462**, reaching
+  bucket 153 with watermark 156. Half the game's worlds have now been
+  entered.
+- **The exhaustion machinery fired for the first time in the program's
+  history: `classes_skipped` 5,418**, against zero across every prior panel
+  and link; `counter_resets` stays zero. The firing is real but it is a
+  symptom, not frontier pressure — see the ceiling below: once the archive
+  froze, every parent went barren by construction, the deepest bands
+  exhausted in turn, and selection correctly fell through band after band.
+  The leg works as designed; what it was starving on was a full archive, not
+  a hard frontier.
+- **The new ceiling: `MAX_ARCHIVE_ENTRIES` is 32,768 and C68 hit it.** The
+  last retention happened at execution 42,482; the final 7,518 executions —
+  fifteen percent of the budget — could retain nothing, because a full
+  archive rejects every candidate including new-key states. At horizon-45
+  retention rates every future link will fill the archive at roughly this
+  point. Same class as the action-limit ceiling: a compiled bound the chain
+  has now outgrown. Flagged for the integrator's ruling; the chain continues
+  uncontested meanwhile, carrying roughly fifteen percent tail waste per
+  link until ruled.
+- **First recorded divergence between the mechanical resume rule and the
+  play frontier under horizon 45**: the play measurement returns recorded
+  153, viable 150, play 150. The single bucket-153 entry was admitted by the
+  45-frame probe but does not survive the measurement's 120-frame no-input
+  horizon — precisely the admitted-sinker class the D68 ruling accepted as
+  cost. The assumption check caught it before launch, as it exists to do.
+
+## C69 — registered concentrated conquest, eighth link at horizon 45
+
+- Observational, in the C49/C61 pattern. One live concentrated-policy
+  conquest campaign, 50,000 executions, ten workers on the local machine,
+  campaign seed `0x5eed_c00b`, action limit 4096, retention
+  `probe_at_admission_45`. One live run, no retries; serial replay as a
+  background audit.
+- Origin, per the H59 derived-origin precedent because the resume rule and
+  play frontier diverge on C68's archive: a **single-entry origin holding
+  exactly the play-frontier entry** — C68's entry 32,767 at
+  `(world 3, level 0, progress 150)`, 1,399 actions, the archive's last
+  admitted entry, and the sole entry at its bucket so the choice is forced.
+  Derived origin
+  `target/smb-completion/c68-conquest/origin-play150.json`, SHA-256
+  `82c6b5dea04cb74b3dd7e018c5beaa83c3974d13a15c13b25d2f12656d4fef53`,
+  hash-verified identical on both machines. The campaign resume rule
+  resolves it trivially.
+- Quarantine lineage: C69 depends on C68's audit, C67's audit, and its own;
+  a failure anywhere in that chain quarantines everything downstream of the
+  failing link and re-derives from the last audited archive (currently C65).
+- Exhaustion and concentration accounting reported prominently in the
+  result, per standing practice; the archive-cap fill execution is now also
+  reported per link while the cap ruling is pending.
+- Raw destination: `target/smb-completion/c69-conquest/`.
+
 ### Ruling note — the exhaustion incompatibility is deferred by design
 
 - Recorded on the integrator's instruction. The C67 measurement is accepted:
