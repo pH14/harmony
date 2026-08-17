@@ -5327,6 +5327,36 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/d82-loop-diff/` on the ARM
   machine, versioned output, progress lines on.
 
+### D82 findings so far — no route variable; the correct lane is unoccupied
+
+- **First probe, buckets 66 through 73: four hundred of four hundred states
+  loop under held Right, zero advance.** No advancing class existed, so no
+  differential was possible. Joined with the archive keys, the entire
+  frontier population sits in vertical bands 8 through 11 — the lower
+  corridors — and bands 0 through 7 hold zero retained states anywhere in
+  buckets 50 through 73.
+- **Corrigendum, recorded because a wrong reading nearly launched a link**:
+  the second probe over buckets 50 through 69 reported 89 states
+  "advanced", and a derived origin was drafted from one before its own
+  numbers were checked — the tool classified *advanced* relative to the
+  sampled range's top, not the checkpoint, and the true crossing count was
+  **zero**; every "advance" was a walk from 69 to the wall at 70 to 72. The
+  drafted origin was deleted unregistered, and the tool now takes an
+  explicit advance threshold instead of inferring one.
+- The weak discriminators the second probe surfaced are positional and
+  timing bytes, none separating — consistent with the loop check being a
+  positional test at the crossing rather than a stored route flag.
+- The census upstream: upper-band states exist only in buckets 0 through
+  29 — 86 entries — and vanish from 30 on; the population loses altitude
+  early in the section and never regains it. The third probe, registered
+  with the corrected explicit threshold of 73, samples 500 entries from
+  buckets 0 through 29 under thirty held-Right chords to answer whether
+  any retained entrance state crosses the whole maze — the last free
+  question before this escalates as selection-pressure design.
+- The exhaustion note for the eventual ruling: the loop keeps retention
+  fertile — 24,231 entries retained inside it — so the barren-threshold
+  leg, which measures retention rather than progress, cannot see this trap.
+
 ### Ruling on the action ceiling — raised to 8192 ahead of need
 
 - The integrator ruled on the standing headroom flag before any link could

@@ -2196,6 +2196,7 @@ pub fn diagnose_loop_differential(
     rom: &[u8],
     source: &SmbArchiveReport,
     bucket_range: (u16, u16),
+    advance_threshold: u16,
     sample_cap: usize,
     probe_chords: u16,
     output_discriminators: usize,
@@ -2285,7 +2286,7 @@ pub fn diagnose_loop_differential(
                 break;
             }
         }
-        let outcome = if max_progress > bucket_range.1 {
+        let outcome = if max_progress > advance_threshold {
             advanced_wram.push(start_wram);
             "advanced"
         } else if min_progress + 4 < entry.key.progress {

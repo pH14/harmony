@@ -958,6 +958,12 @@ fn run_loop_differential_mode(
     let bucket_high = u16::try_from(parse_u64(
         &args.next().ok_or("missing bucket high")?.to_string_lossy(),
     )?)?;
+    let advance_threshold = u16::try_from(parse_u64(
+        &args
+            .next()
+            .ok_or("missing advance threshold")?
+            .to_string_lossy(),
+    )?)?;
     let sample_cap = usize::try_from(parse_u64(
         &args.next().ok_or("missing sample cap")?.to_string_lossy(),
     )?)?;
@@ -974,6 +980,7 @@ fn run_loop_differential_mode(
         &rom,
         &source,
         (bucket_low, bucket_high),
+        advance_threshold,
         sample_cap,
         probe_chords,
         24,
