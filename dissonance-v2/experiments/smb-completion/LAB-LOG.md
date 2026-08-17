@@ -5259,6 +5259,39 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c80-conquest/` on the ARM
   machine, log `c80.log`.
 
+### C80 live result — half the castle maze
+
+- The live run completed its full 50,000 executions, twelve workers,
+  campaign seed `0x5eed_c012`, the full promoted stack, from C79's archive:
+  31,747 retained against 32,419 rejected with only 884 deaths. **The
+  seventh world's castle advanced from bucket 18 to 73** — watermark equal.
+  The number shape is the castle's looping maze rather than combat: deaths
+  collapsed while rejections doubled, wrong routes snapping back into
+  already-keyed states. Not a stall — fifty-five buckets gained — and the
+  maze diagnosis stands ready if the next link flattens. Serial replay as a
+  background audit.
+- The assumption check returns recorded 73, viable 73, play 72; per
+  precedent the next link launches from a derived single-entry origin at
+  the play frontier — 1,124 entries sit at bucket 72, the loop's
+  concentration point, and the shortest is entry 21063 at 3,082 actions.
+  Derived origin `target/smb-completion/c80-conquest/origin-play72.json`,
+  SHA-256
+  `bb6a0a808ef574c3c3ab2baac81d44695c23ab82b425e8b12cb29933f86f522c`.
+- Headroom flag, recorded ahead of need: the resume input is 3,082 of the
+  4,096-action limit, and links consume roughly 250 to 300 actions; the
+  action ceiling may approach again near the eighth world's end, and a
+  raise there would be a ruling, not a surprise.
+
+## C81 — registered concentrated conquest, fifteenth link
+
+- Observational, in the C49/C61 pattern. One live concentrated-policy
+  conquest campaign, 50,000 executions, twelve workers on the ARM machine,
+  campaign seed `0x5eed_c013`, the full promoted stack unchanged, from the
+  derived play-72 origin above. One live run, no retries; serial replay as
+  a background audit.
+- Raw destination: `target/smb-completion/c81-conquest/` on the ARM
+  machine, log `c81.log`.
+
 ### Ruling on the archive ceiling — raised to 131,072, recorded per run
 
 - The integrator ruled on the C68 ceiling finding, same doctrine as the
