@@ -5190,6 +5190,31 @@ one variable of science only when a link stalls.
   path was corrected and the same arm launched. Films: C76's furthest
   trajectory through the warp and the fifth world is cut and delivered.
 
+### C77 live result — two more levels of the sixth world
+
+- The live run completed its full 50,000 executions, twelve workers,
+  campaign seed `0x5eed_c00f`, the full promoted stack, from the derived
+  play-165 origin: 29,942 retained against 16,366 rejected with 11,995
+  deaths, ceiling never bound. **The sixth world's first level completed at
+  bucket 213, its second opened at execution 739 and completed at 213, and
+  its third opened at execution 22,537, driven to bucket 49** with
+  watermark 58. Serial replay as a background audit.
+- The assumption check returns recorded 49, viable 48, play 49: the
+  frontier answers the controller — genuine play — while needing active
+  input to survive the no-input horizon, which is combat, not a sinker.
+  Play equals recorded, so the next link resumes directly.
+
+## C78 — registered concentrated conquest, twelfth link
+
+- Observational, in the C49/C61 pattern. One live concentrated-policy
+  conquest campaign, 50,000 executions, twelve workers on the ARM machine,
+  campaign seed `0x5eed_c010`, the full promoted stack unchanged, sourced
+  from C77's live archive, SHA-256
+  `9b3fbba8c5f7936ea856b1a9a63ae26d9ad0225445c80c00386ba0c4da49a805`. One
+  live run, no retries; serial replay as a background audit.
+- Raw destination: `target/smb-completion/c78-conquest/` on the ARM
+  machine, log `c78.log`.
+
 ### Ruling on the archive ceiling — raised to 131,072, recorded per run
 
 - The integrator ruled on the C68 ceiling finding, same doctrine as the
