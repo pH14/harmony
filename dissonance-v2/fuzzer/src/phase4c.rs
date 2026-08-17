@@ -40,9 +40,10 @@ pub(crate) const FROZEN_BUTTON_MASKS: [u8; 9] =
     [0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10];
 
 /// Largest bounded action horizon accepted by the completion-only archive.
-/// Raised from 512 so the ceiling covers a full-game trajectory; every
-/// campaign still registers its own explicit per-run action limit.
-pub const MAX_SMB_COMPLETION_ACTIONS: usize = 4096;
+/// Raised from 512, then from 4096 when the endgame lineage approached it;
+/// a ceiling is not an allocation, and every campaign registers its own
+/// explicit per-run action limit that replay retains and validates under.
+pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 
 /// Pure generated score used only to choose a replacement inside a full archive cell.
 pub trait SmbRanking {

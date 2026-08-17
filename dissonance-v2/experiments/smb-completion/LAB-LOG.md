@@ -5292,6 +5292,47 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c81-conquest/` on the ARM
   machine, log `c81.log`.
 
+### Ruling on the action ceiling — raised to 8192 ahead of need
+
+- The integrator ruled on the standing headroom flag before any link could
+  wait on it: the compiled action ceiling rises from 4096 to 8192, same
+  doctrine as both precedents — a ceiling is not an allocation. The
+  arithmetic breaches before the final castle: 3,082 actions consumed at
+  the C81 origin plus roughly 250 to 300 per link across four or more
+  remaining links.
+- This is the light case of the three ceilings: the per-run action limit
+  has been recorded in every stream header since campaign mode began, and
+  replay already retains and validates under the recorded value, so the
+  change is the validation ceiling alone. Every recorded stream replays
+  under its recorded limit unchanged.
+- The four quality gates pass; the standing inertness reference
+  re-verifies byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+  Landed at a natural pause with C81 in flight untouched; C81's audit
+  replays under its recorded 4096.
+
+## Completion-claim protocol — registered ahead of the final link
+
+- Registered on the integrator's ruling so the endgame's evidence standard
+  exists before any link needs it. **The completion claim is gated, not
+  audited.** Preregistered pass criteria:
+  - **Replay gate (a)**: the winning link's campaign replay must be
+    byte-exact — stream, archive and report — *and* a full from-power-on
+    serial replay of the completion lineage's input must reproduce the
+    identical extended ladder and final state hash on the ARM machine,
+    before any claim is made.
+  - **Film (b)**: the full-game film is rendered from the recorded stream,
+    power-on through the final castle's axe, and is the deliverable.
+  - **Evidence set (c)**: the winning stream, the origin archive chain back
+    to genesis, the recording commit hashes, and the gate outputs are
+    preserved together so the claim re-derives from git plus artifacts
+    alone.
+  - **Cross-machine replay (d)**: a Mac replay of the same stream is
+    desirable as determinism evidence and is run and reported — divergence
+    included — but does not gate the claim.
+- On the maze fork the standing plan holds as stated, no new ruling unless
+  the diagnosis surprises.
+
 ### Ruling on the archive ceiling — raised to 131,072, recorded per run
 
 - The integrator ruled on the C68 ceiling finding, same doctrine as the
