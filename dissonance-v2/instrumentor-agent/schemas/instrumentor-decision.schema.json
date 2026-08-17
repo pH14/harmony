@@ -8,30 +8,98 @@
     "rust_source",
     "scope_to_lineage",
     "rationale",
-    "strategy_journal"
+    "strategy_journal",
+    "scope",
+    "policy_family",
+    "policy_identifier"
   ],
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["install_detector", "install_mutator", "install_ranking", "none"]
+      "enum": [
+        "install_detector",
+        "install_mutator",
+        "install_ranking",
+        "install_policy_value",
+        "none"
+      ]
     },
-    "name": { "type": "string" },
-    "rust_source": { "type": "string" },
+    "name": {
+      "type": "string"
+    },
+    "rust_source": {
+      "type": "string"
+    },
     "scope_to_lineage": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 0
     },
-    "rationale": { "type": "string" },
+    "rationale": {
+      "type": "string"
+    },
     "strategy_journal": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["beliefs", "failed_approaches", "open_questions", "current_plan"],
+      "required": [
+        "beliefs",
+        "failed_approaches",
+        "open_questions",
+        "current_plan"
+      ],
       "properties": {
-        "beliefs": { "type": "array", "items": { "type": "string" } },
-        "failed_approaches": { "type": "array", "items": { "type": "string" } },
-        "open_questions": { "type": "array", "items": { "type": "string" } },
-        "current_plan": { "type": "array", "items": { "type": "string" } }
+        "beliefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "failed_approaches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "current_plan": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
+    },
+    "scope": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "policy_family": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "retention_policy",
+        "controller_vocabulary",
+        "key_policy",
+        "parent_scheduler",
+        null
+      ]
+    },
+    "policy_identifier": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   }
 }

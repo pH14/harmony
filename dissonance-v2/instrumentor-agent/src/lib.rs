@@ -650,6 +650,7 @@ mod tests {
             InstrumentorAction::InstallDetector,
             InstrumentorAction::InstallMutator,
             InstrumentorAction::InstallRanking,
+            InstrumentorAction::InstallPolicyValue,
             InstrumentorAction::None,
         ]
         .into_iter()

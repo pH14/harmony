@@ -2538,6 +2538,8 @@ mod tests {
             rust_source: "pub struct InstalledDetector; impl fuzzer::phase4b::SmbDetector for InstalledDetector { fn features(&self, _: &[fuzzer::phase4b::SmbObservations]) -> Vec<u64> { Vec::new() } }".to_owned(),
             scope_to_lineage: Some(7),
             scope: None,
+            policy_family: None,
+            policy_identifier: None,
             rationale: "fixture".to_owned(),
             strategy_journal: Default::default(),
         };
@@ -2554,6 +2556,8 @@ mod tests {
             rust_source: "pub struct InstalledRanking; impl fuzzer::phase4c::SmbRanking for InstalledRanking { fn score(&self, observations: &[fuzzer::phase4b::SmbObservations]) -> i64 { observations.last().map_or(0, |event| i64::from(event.wram[0x071a])) } }".to_owned(),
             scope_to_lineage: None,
             scope: None,
+            policy_family: None,
+            policy_identifier: None,
             rationale: "fixture".to_owned(),
             strategy_journal: Default::default(),
         };
@@ -2634,6 +2638,8 @@ mod tests {
                 rust_source: String::new(),
                 scope_to_lineage: None,
                 scope: None,
+                policy_family: None,
+                policy_identifier: None,
                 rationale: "journal fixture".to_owned(),
                 strategy_journal: output,
             };

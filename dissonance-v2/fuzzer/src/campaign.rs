@@ -795,6 +795,58 @@ pub fn key_policy_from_identifier(identifier: &str) -> Result<SmbArchiveKeyPolic
     Err("campaign stream key policy is not recognized".into())
 }
 
+/// One parsed campaign-scale policy-value proposal: a registered policy
+/// family named by its header field, carrying the family's own parsed value.
+///
+/// This is the ruled constraint on policy-value attempts: a proposal names
+/// a registered family and parameters through that family's recorded header
+/// identifier — never arbitrary code — so every expressible proposal is an
+/// instance the engine already knows how to run, record, and replay.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SmbCampaignPolicyValue {
+    /// The `retention_policy` header slot.
+    Retention(SmbArchiveRetentionPolicy),
+    /// The `controller_vocabulary` header slot.
+    Vocabulary(SmbCampaignVocabulary),
+    /// The `key_policy` header slot.
+    Key(SmbArchiveKeyPolicy),
+    /// The `parent_scheduler` header slot.
+    Selector(SmbArchiveSelectorPolicy),
+}
+
+/// Parse one policy-value proposal from its family (a header field name)
+/// and the proposed value's header identifier.
+///
+/// # Errors
+///
+/// Returns an error when the family is not one of the four registered
+/// header slots, or the identifier is not a registered value of that
+/// family.
+pub fn policy_value_from_family(
+    family: &str,
+    identifier: &str,
+) -> Result<SmbCampaignPolicyValue, Box<dyn Error>> {
+    match family {
+        "retention_policy" => Ok(SmbCampaignPolicyValue::Retention(
+            retention_from_identifier(identifier)?,
+        )),
+        "controller_vocabulary" => Ok(SmbCampaignPolicyValue::Vocabulary(
+            vocabulary_from_identifier(identifier)?,
+        )),
+        "key_policy" => Ok(SmbCampaignPolicyValue::Key(key_policy_from_identifier(
+            identifier,
+        )?)),
+        "parent_scheduler" => Ok(SmbCampaignPolicyValue::Selector(selector_from_identifier(
+            identifier,
+        )?)),
+        _ => Err(
+            "policy-value family must name a registered header slot: retention_policy, \
+             controller_vocabulary, key_policy, or parent_scheduler"
+                .into(),
+        ),
+    }
+}
+
 fn legacy_key_policy_identifier() -> String {
     "frozen".to_owned()
 }

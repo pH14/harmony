@@ -31,6 +31,68 @@ use crate::{
 /// with every attempt attached.
 pub const SMB_STALL_ATTEMPT_CAP: u8 = 3;
 
+/// Request failures — invalid decisions, build failures, fixture-verify
+/// failures — one attempt slot may consume before the loop refuses further
+/// installs for it. Bounds the retry surface inside each attempt, so a
+/// model that cannot produce working output stops burning budget outside
+/// the attempt cap.
+pub const SMB_STALL_REQUEST_RETRY_CAP: u8 = 3;
+
+/// File name of one attempt's recorded request failures.
+pub const SMB_STALL_REQUEST_FAILURES: &str = "request-failures.json";
+
+/// Read one attempt slot's recorded request failures, in order.
+///
+/// # Errors
+///
+/// Returns an error when the failure record exists but cannot be parsed.
+pub fn read_smb_request_failures(attempt_dir: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    let path = attempt_dir.join(SMB_STALL_REQUEST_FAILURES);
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    Ok(serde_json::from_slice(&fs::read(&path)?)?)
+}
+
+/// Record one request failure for an attempt slot, returning the total so
+/// far. Every failed attempt at working output is written before another
+/// retry, the M12 discipline.
+///
+/// # Errors
+///
+/// Returns an error when the failure record cannot be read or written.
+pub fn record_smb_request_failure(
+    attempt_dir: &Path,
+    error_text: &str,
+) -> Result<u8, Box<dyn Error>> {
+    fs::create_dir_all(attempt_dir)?;
+    let mut failures = read_smb_request_failures(attempt_dir)?;
+    failures.push(error_text.to_owned());
+    fs::write(
+        attempt_dir.join(SMB_STALL_REQUEST_FAILURES),
+        serde_json::to_vec_pretty(&failures)?,
+    )?;
+    Ok(u8::try_from(failures.len()).unwrap_or(u8::MAX))
+}
+
+/// Refuse further installs for an attempt slot whose request retry cap is
+/// consumed.
+///
+/// # Errors
+///
+/// Returns an error when the cap is consumed, or the record cannot be read.
+pub fn enforce_smb_request_retry_cap(attempt_dir: &Path) -> Result<(), Box<dyn Error>> {
+    let failures = read_smb_request_failures(attempt_dir)?;
+    if failures.len() >= usize::from(SMB_STALL_REQUEST_RETRY_CAP) {
+        return Err(format!(
+            "this attempt slot has consumed its {SMB_STALL_REQUEST_RETRY_CAP}-retry request cap; \
+             record a stop decision or escalate"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// Mechanical proof that one finished campaign stalled: its recorded
 /// watermark never advanced past its origin's frontier.
 ///
@@ -324,15 +386,28 @@ pub struct SmbFrontierFilmPointer {
 pub struct SmbStallAttemptRecord {
     /// One-based attempt number within this stall.
     pub attempt: u8,
-    /// Requested instrumentor action, `install_detector` or `install_mutator`.
+    /// Requested instrumentor action: `install_detector`, `install_mutator`,
+    /// or `install_policy_value`.
     pub action: String,
-    /// Provenance record of the installed artifact: name, source hash, scope.
-    pub artifact: SmbCampaignArtifactRecord,
+    /// Provenance record of an installed authored artifact: name, source
+    /// hash, scope. Absent for policy-value attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<SmbCampaignArtifactRecord>,
+    /// Registered policy family of a policy-value attempt, named by its
+    /// header field. Absent for authored-artifact attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_family: Option<String>,
+    /// Proposed policy value as its recorded header identifier. Absent for
+    /// authored-artifact attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_identifier: Option<String>,
     /// The instrumentor's recorded rationale.
     pub rationale: String,
     /// Complete authored source, carried so a re-summoned model reads its
-    /// prior attempt instead of repeating it.
-    pub authored_source: String,
+    /// prior attempt instead of repeating it. Absent for policy-value
+    /// attempts, whose whole content is the family and identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authored_source: Option<String>,
     /// Deterministic summary of the run the attempt launched.
     pub run: SmbStallAttemptRunSummary,
     /// Stall proof re-evaluated on the attempt's own recorded outputs.
@@ -737,13 +812,15 @@ mod tests {
         SmbStallAttemptRecord {
             attempt,
             action: "install_mutator".to_owned(),
-            artifact: SmbCampaignArtifactRecord {
+            artifact: Some(SmbCampaignArtifactRecord {
                 name: format!("attempt_{attempt}"),
                 source_sha256: "00".to_owned(),
                 scope: "6,3,60,73".to_owned(),
-            },
+            }),
+            policy_family: None,
+            policy_identifier: None,
             rationale: "test".to_owned(),
-            authored_source: "pub struct InstalledMacro;".to_owned(),
+            authored_source: Some("pub struct InstalledMacro;".to_owned()),
             run: SmbStallAttemptRunSummary {
                 campaign_seed: 7,
                 workers: 2,
@@ -822,6 +899,33 @@ mod tests {
         assert_eq!(read_back, escalation);
         assert_eq!(read_back.attempts.len(), 3);
         let _ = fs::remove_dir_all(&stall_dir);
+    }
+
+    #[test]
+    fn request_retry_cap_bounds_the_request_surface_per_attempt() {
+        let attempt_dir = std::env::temp_dir().join("fuzzer-instrumentor-request-retry-test");
+        let _ = fs::remove_dir_all(&attempt_dir);
+        fs::create_dir_all(&attempt_dir).expect("create attempt dir");
+        assert!(super::enforce_smb_request_retry_cap(&attempt_dir).is_ok());
+        for failure in 1..=super::SMB_STALL_REQUEST_RETRY_CAP {
+            let total = super::record_smb_request_failure(
+                &attempt_dir,
+                &format!("failure {failure}: authored source contains forbidden token"),
+            )
+            .expect("record failure");
+            assert_eq!(total, failure);
+        }
+        // The cap refuses further installs for this attempt slot, and every
+        // recorded failure survives for the next summons to read.
+        assert!(super::enforce_smb_request_retry_cap(&attempt_dir).is_err());
+        let failures =
+            super::read_smb_request_failures(&attempt_dir).expect("read recorded failures");
+        assert_eq!(
+            failures.len(),
+            usize::from(super::SMB_STALL_REQUEST_RETRY_CAP)
+        );
+        assert!(failures[0].starts_with("failure 1"));
+        let _ = fs::remove_dir_all(&attempt_dir);
     }
 
     /// A minimal recorded stream: real header shape, no records needed for

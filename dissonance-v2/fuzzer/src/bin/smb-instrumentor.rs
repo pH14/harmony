@@ -17,11 +17,15 @@ use std::{env, error::Error, ffi::OsString, fs, path::PathBuf, process::Command}
 
 use fuzzer::{
     campaign::{
-        SmbCampaignArtifactRecord, SmbCampaignModeReport, scope_from_identifier, scope_identifier,
+        SmbCampaignArtifactRecord, SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin,
+        SmbCampaignStreamHeader, key_policy_from_identifier, policy_value_from_family,
+        retention_from_identifier, run_smb_campaign, scope_from_identifier, scope_identifier,
+        selector_from_identifier, vocabulary_from_identifier,
     },
     instrumentor::{
         SmbStallAttemptRecord, SmbStallEscalationRecord, assemble_smb_stall_operator_view,
-        file_sha256, next_smb_stall_attempt, prove_smb_campaign_plateau, read_smb_stall_attempts,
+        enforce_smb_request_retry_cap, file_sha256, next_smb_stall_attempt,
+        prove_smb_campaign_plateau, read_smb_stall_attempts, record_smb_request_failure,
         smb_stall_attempt_run_summary, write_smb_stall_escalation,
     },
     phase4a::{InstrumentorAction, InstrumentorDecision},
@@ -118,27 +122,73 @@ impl ArtifactKind {
     }
 }
 
-/// Validate one campaign-scale instrumentor decision and return its kind
-/// and declared scope.
-fn validate_decision(
-    decision: &InstrumentorDecision,
-) -> Result<(ArtifactKind, SmbArtifactScope), Box<dyn Error>> {
+/// What one validated campaign-scale decision installs.
+#[derive(Clone, Debug, PartialEq)]
+enum AttemptPlan {
+    /// An authored detector or macro with its declared scope.
+    Authored {
+        kind: ArtifactKind,
+        scope: SmbArtifactScope,
+    },
+    /// A policy value: a parameterized instance of a registered policy
+    /// family, named through the family's header field and identifier —
+    /// never arbitrary code.
+    PolicyValue { family: String, identifier: String },
+}
+
+/// Validate one campaign-scale instrumentor decision into an attempt plan.
+fn validate_decision(decision: &InstrumentorDecision) -> Result<AttemptPlan, Box<dyn Error>> {
+    if decision.scope_to_lineage.is_some() {
+        return Err(
+            "campaign artifacts are scoped by region: scope_to_lineage must be null".into(),
+        );
+    }
+    if decision.action == InstrumentorAction::InstallPolicyValue {
+        let family = decision
+            .policy_family
+            .as_deref()
+            .ok_or("a policy-value install must name its registered policy family")?;
+        let identifier = decision
+            .policy_identifier
+            .as_deref()
+            .ok_or("a policy-value install must carry the proposed header identifier")?;
+        // The registered-family constraint: the proposal must parse through
+        // the family's own recorded-header codec, so nothing outside the
+        // registered families is expressible.
+        policy_value_from_family(family, identifier)?;
+        if !decision.rust_source.is_empty() {
+            return Err(
+                "a policy-value install names a family and parameters, never code: \
+                 rust_source must be empty"
+                    .into(),
+            );
+        }
+        if decision.scope.is_some() {
+            return Err(
+                "a policy-value install carries its scope inside the identifier, \
+                 the room-tuple pattern: the scope field must be null"
+                    .into(),
+            );
+        }
+        return Ok(AttemptPlan::PolicyValue {
+            family: family.to_owned(),
+            identifier: identifier.to_owned(),
+        });
+    }
     let kind = match decision.action {
         InstrumentorAction::InstallDetector => ArtifactKind::Detector,
         InstrumentorAction::InstallMutator => ArtifactKind::Mutator,
         _ => {
             return Err(format!(
-                "campaign install supports only install_detector and install_mutator, not {:?}; \
-                 policy-value attempts launch through the smb-campaign flags",
+                "campaign install supports install_detector, install_mutator, and \
+                 install_policy_value, not {:?}",
                 decision.action
             )
             .into());
         }
     };
-    if decision.scope_to_lineage.is_some() {
-        return Err(
-            "campaign artifacts are scoped by region: scope_to_lineage must be null".into(),
-        );
+    if decision.policy_family.is_some() || decision.policy_identifier.is_some() {
+        return Err("an authored-artifact install must not carry policy-value fields".into());
     }
     let scope = scope_from_identifier(decision.scope.as_deref().ok_or(
         "campaign artifacts must declare a scope: world,level,progress_min,progress_max",
@@ -194,7 +244,7 @@ fn validate_decision(
             return Err(format!("authored source contains forbidden token {forbidden:?}").into());
         }
     }
-    Ok((kind, scope))
+    Ok(AttemptPlan::Authored { kind, scope })
 }
 
 /// Install one authored attempt: validate, build, fixture-verify, launch
@@ -222,136 +272,157 @@ fn install(args: &mut impl Iterator<Item = OsString>) -> Result<(), Box<dyn Erro
     }
 
     // The three-attempt cap fires before any work: a capped stall escalates
-    // instead of consuming a fourth run.
+    // instead of consuming a fourth run. The per-attempt request retry cap
+    // fires next, so a model that cannot produce working output stops
+    // burning budget outside the attempt cap.
     let attempt = next_smb_stall_attempt(&stall_dir)?;
-    let decision: InstrumentorDecision = serde_json::from_slice(&fs::read(&decision_path)?)?;
-    let (kind, scope) = validate_decision(&decision)?;
-    let artifact_name = format!("stall_attempt_{attempt}_{}", kind.label());
-
     let attempt_dir = stall_dir.join(format!("attempt-{attempt}"));
     fs::create_dir_all(&attempt_dir)?;
+    enforce_smb_request_retry_cap(&attempt_dir)?;
+
+    // The request surface — decision parse, validation, build, fixture
+    // verify — records every failure before the caller may retry, and each
+    // failure consumes one of the attempt slot's bounded retries.
+    let request_failed = |error: Box<dyn Error>| -> Box<dyn Error> {
+        match record_smb_request_failure(&attempt_dir, &error.to_string()) {
+            Ok(total) => format!(
+                "{error} (request failure {total}/{} for attempt {attempt})",
+                fuzzer::instrumentor::SMB_STALL_REQUEST_RETRY_CAP
+            )
+            .into(),
+            Err(record_error) => {
+                format!("{error}; recording the failure also failed: {record_error}").into()
+            }
+        }
+    };
+    let decision: InstrumentorDecision = fs::read(&decision_path)
+        .map_err(Box::<dyn Error>::from)
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(Box::<dyn Error>::from))
+        .map_err(request_failed)?;
+    let plan = validate_decision(&decision).map_err(request_failed)?;
     fs::write(
         attempt_dir.join("decision.json"),
         serde_json::to_vec_pretty(&decision)?,
     )?;
-    let authored_source = if decision
-        .rust_source
-        .starts_with("// SPDX-License-Identifier:")
-    {
-        decision.rust_source.clone()
-    } else {
-        format!(
-            "// SPDX-License-Identifier: AGPL-3.0-or-later\n\n{}",
-            decision.rust_source
-        )
-    };
-    fs::write(attempt_dir.join("artifact.rs"), &authored_source)?;
-    let source_sha256 = file_sha256(&attempt_dir.join("artifact.rs"))?;
 
-    // Build the installed binary from the authored source, offline, in an
-    // ignored crate, exactly as the M2 install harness does.
-    let build_dir = attempt_dir.join("build/installed-campaign-artifact");
-    let source_dir = build_dir.join("src");
-    fs::create_dir_all(&source_dir)?;
-    let dependency_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let dependency_path = dependency_path
-        .to_str()
-        .ok_or("fuzzer dependency path is not UTF-8")?
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    fs::write(
-        build_dir.join("Cargo.toml"),
-        format!(
-            "[package]\nname = \"installed-campaign-artifact\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"AGPL-3.0-or-later\"\n\n[dependencies]\nfuzzer = {{ path = \"{dependency_path}\" }}\nserde_json = \"1\"\nsha2 = \"0.10\"\n\n[workspace]\n"
-        ),
-    )?;
-    fs::copy(
-        attempt_dir.join("artifact.rs"),
-        source_dir.join("artifact.rs"),
-    )?;
-    fs::write(
-        source_dir.join("main.rs"),
-        installed_main_source(kind, &artifact_name, &source_sha256, scope),
-    )?;
-    let target_dir = attempt_dir.join("build/target");
-    let build = Command::new("cargo")
-        .arg("build")
-        .arg("--quiet")
-        .arg("--manifest-path")
-        .arg(build_dir.join("Cargo.toml"))
-        .arg("--target-dir")
-        .arg(&target_dir)
-        .env("CARGO_NET_OFFLINE", "true")
-        .output()?;
-    fs::write(attempt_dir.join("build.stdout"), &build.stdout)?;
-    fs::write(attempt_dir.join("build.stderr"), &build.stderr)?;
-    if !build.status.success() {
-        return Err(format!(
-            "authored artifact build failed: {}",
-            bounded_lossy(&build.stderr)
-        )
-        .into());
-    }
-    let binary = target_dir.join("debug").join(if cfg!(windows) {
-        "installed-campaign-artifact.exe"
-    } else {
-        "installed-campaign-artifact"
-    });
-
-    // Determinism fixture verify, non-negotiable before any launch: a
-    // nondeterministic artifact silently poisons every stream recorded
-    // with it.
-    let verify = Command::new(&binary)
-        .arg("verify")
-        .arg(&stalled_run_dir)
-        .output()?;
-    fs::write(attempt_dir.join("verify.stdout"), &verify.stdout)?;
-    fs::write(attempt_dir.join("verify.stderr"), &verify.stderr)?;
-    if !verify.status.success() {
-        return Err(format!(
-            "authored artifact fixture verify failed: {}",
-            bounded_lossy(&verify.stderr)
-        )
-        .into());
-    }
-
-    // Launch the next run with the artifact active: bounded budget,
-    // header-recorded, from the stalled link's archive under its policies.
     let run_dir = attempt_dir.join("run");
-    let run = Command::new(&binary)
-        .arg("run")
-        .arg(&stalled_run_dir)
-        .arg(&run_dir)
-        .arg(campaign_seed.to_string())
-        .arg(workers.to_string())
-        .arg(execution_budget.to_string())
-        .arg(&host)
-        .output()?;
-    fs::write(attempt_dir.join("run.stdout"), &run.stdout)?;
-    fs::write(attempt_dir.join("run.stderr"), &run.stderr)?;
-    if !run.status.success() {
-        return Err(format!(
-            "installed campaign run failed: {}",
-            bounded_lossy(&run.stderr)
-        )
-        .into());
-    }
-    if replay {
-        let replayed = Command::new(&binary)
-            .arg("replay")
-            .arg(&run_dir)
-            .arg(&stalled_run_dir)
-            .output()?;
-        fs::write(attempt_dir.join("replay.stdout"), &replayed.stdout)?;
-        fs::write(attempt_dir.join("replay.stderr"), &replayed.stderr)?;
-        if !replayed.status.success() {
-            return Err(format!(
-                "installed campaign replay diverged: {}",
-                bounded_lossy(&replayed.stderr)
+    let (action, artifact, authored_source, policy_family, policy_identifier) = match &plan {
+        AttemptPlan::Authored { kind, scope } => {
+            let kind = *kind;
+            let scope = *scope;
+            let artifact_name = format!("stall_attempt_{attempt}_{}", kind.label());
+            let authored_source = if decision
+                .rust_source
+                .starts_with("// SPDX-License-Identifier:")
+            {
+                decision.rust_source.clone()
+            } else {
+                format!(
+                    "// SPDX-License-Identifier: AGPL-3.0-or-later\n\n{}",
+                    decision.rust_source
+                )
+            };
+            fs::write(attempt_dir.join("artifact.rs"), &authored_source)?;
+            let source_sha256 = file_sha256(&attempt_dir.join("artifact.rs"))?;
+            let binary =
+                build_installed_binary(&attempt_dir, kind, &artifact_name, &source_sha256, scope)
+                    .map_err(request_failed)?;
+
+            // Determinism fixture verify, non-negotiable before any launch:
+            // a nondeterministic artifact silently poisons every stream
+            // recorded with it.
+            let verify = Command::new(&binary)
+                .arg("verify")
+                .arg(&stalled_run_dir)
+                .output()?;
+            fs::write(attempt_dir.join("verify.stdout"), &verify.stdout)?;
+            fs::write(attempt_dir.join("verify.stderr"), &verify.stderr)?;
+            if !verify.status.success() {
+                return Err(request_failed(
+                    format!(
+                        "authored artifact fixture verify failed: {}",
+                        bounded_lossy(&verify.stderr)
+                    )
+                    .into(),
+                ));
+            }
+
+            // Launch the next run with the artifact active: bounded budget,
+            // header-recorded, from the stalled link's archive under its
+            // policies.
+            let run = Command::new(&binary)
+                .arg("run")
+                .arg(&stalled_run_dir)
+                .arg(&run_dir)
+                .arg(campaign_seed.to_string())
+                .arg(workers.to_string())
+                .arg(execution_budget.to_string())
+                .arg(&host)
+                .output()?;
+            fs::write(attempt_dir.join("run.stdout"), &run.stdout)?;
+            fs::write(attempt_dir.join("run.stderr"), &run.stderr)?;
+            if !run.status.success() {
+                return Err(format!(
+                    "installed campaign run failed: {}",
+                    bounded_lossy(&run.stderr)
+                )
+                .into());
+            }
+            if replay {
+                let replayed = Command::new(&binary)
+                    .arg("replay")
+                    .arg(&run_dir)
+                    .arg(&stalled_run_dir)
+                    .output()?;
+                fs::write(attempt_dir.join("replay.stdout"), &replayed.stdout)?;
+                fs::write(attempt_dir.join("replay.stderr"), &replayed.stderr)?;
+                if !replayed.status.success() {
+                    return Err(format!(
+                        "installed campaign replay diverged: {}",
+                        bounded_lossy(&replayed.stderr)
+                    )
+                    .into());
+                }
+            }
+            (
+                match kind {
+                    ArtifactKind::Detector => "install_detector".to_owned(),
+                    ArtifactKind::Mutator => "install_mutator".to_owned(),
+                },
+                Some(SmbCampaignArtifactRecord {
+                    name: artifact_name,
+                    source_sha256,
+                    scope: scope_identifier(scope),
+                }),
+                Some(authored_source),
+                None,
+                None,
             )
-            .into());
         }
-    }
+        AttemptPlan::PolicyValue { family, identifier } => {
+            // A policy value needs no codegen and no authored-code verify:
+            // it is a registered engine value, launched in-process with the
+            // proposed slot overridden and header-recorded like every
+            // policy.
+            run_policy_value_campaign(
+                &stalled_run_dir,
+                &run_dir,
+                family,
+                identifier,
+                campaign_seed,
+                u32::try_from(workers)?,
+                execution_budget,
+                &host,
+            )?;
+            (
+                "install_policy_value".to_owned(),
+                None,
+                None,
+                Some(family.clone()),
+                Some(identifier.clone()),
+            )
+        }
+    };
 
     // The loop's one exit test: does the stall proof still hold against the
     // attempt's own recorded outputs?
@@ -378,15 +449,10 @@ fn install(args: &mut impl Iterator<Item = OsString>) -> Result<(), Box<dyn Erro
         serde_json::from_slice(&fs::read(run_dir.join("campaign-report.json"))?)?;
     let record = SmbStallAttemptRecord {
         attempt,
-        action: match kind {
-            ArtifactKind::Detector => "install_detector".to_owned(),
-            ArtifactKind::Mutator => "install_mutator".to_owned(),
-        },
-        artifact: SmbCampaignArtifactRecord {
-            name: artifact_name,
-            source_sha256,
-            scope: scope_identifier(scope),
-        },
+        action,
+        artifact,
+        policy_family,
+        policy_identifier,
         rationale: decision.rationale.clone(),
         authored_source,
         run: smb_stall_attempt_run_summary(&report),
@@ -426,6 +492,137 @@ fn install(args: &mut impl Iterator<Item = OsString>) -> Result<(), Box<dyn Erro
     } else {
         println!("stall_broken=false attempt={attempt} loop=re-fires");
     }
+    Ok(())
+}
+
+/// Build the installed binary from the authored source, offline, in an
+/// ignored crate, exactly as the M2 install harness does. Returns the
+/// built binary's path.
+fn build_installed_binary(
+    attempt_dir: &std::path::Path,
+    kind: ArtifactKind,
+    artifact_name: &str,
+    source_sha256: &str,
+    scope: SmbArtifactScope,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let build_dir = attempt_dir.join("build/installed-campaign-artifact");
+    let source_dir = build_dir.join("src");
+    fs::create_dir_all(&source_dir)?;
+    let dependency_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dependency_path = dependency_path
+        .to_str()
+        .ok_or("fuzzer dependency path is not UTF-8")?
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    fs::write(
+        build_dir.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"installed-campaign-artifact\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"AGPL-3.0-or-later\"\n\n[dependencies]\nfuzzer = {{ path = \"{dependency_path}\" }}\nserde_json = \"1\"\nsha2 = \"0.10\"\n\n[workspace]\n"
+        ),
+    )?;
+    fs::copy(
+        attempt_dir.join("artifact.rs"),
+        source_dir.join("artifact.rs"),
+    )?;
+    fs::write(
+        source_dir.join("main.rs"),
+        installed_main_source(kind, artifact_name, source_sha256, scope),
+    )?;
+    let target_dir = attempt_dir.join("build/target");
+    let build = Command::new("cargo")
+        .arg("build")
+        .arg("--quiet")
+        .arg("--manifest-path")
+        .arg(build_dir.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(&target_dir)
+        .env("CARGO_NET_OFFLINE", "true")
+        .output()?;
+    fs::write(attempt_dir.join("build.stdout"), &build.stdout)?;
+    fs::write(attempt_dir.join("build.stderr"), &build.stderr)?;
+    if !build.status.success() {
+        return Err(format!(
+            "authored artifact build failed: {}",
+            bounded_lossy(&build.stderr)
+        )
+        .into());
+    }
+    Ok(target_dir.join("debug").join(if cfg!(windows) {
+        "installed-campaign-artifact.exe"
+    } else {
+        "installed-campaign-artifact"
+    }))
+}
+
+/// Run one policy-value campaign in-process: the stalled link's policies
+/// with the proposed family slot overridden, from the stalled archive.
+#[allow(clippy::too_many_arguments)]
+fn run_policy_value_campaign(
+    stalled_run_dir: &std::path::Path,
+    run_dir: &std::path::Path,
+    family: &str,
+    identifier: &str,
+    campaign_seed: u64,
+    workers: u32,
+    execution_budget: u64,
+    host: &str,
+) -> Result<(), Box<dyn Error>> {
+    let rom_path = PathBuf::from(
+        env::var_os("HARMONY_SMB_ROM")
+            .ok_or("HARMONY_SMB_ROM must name the external Super Mario Bros ROM")?,
+    );
+    let rom = fs::read(rom_path)?;
+    let stream_text = fs::read_to_string(stalled_run_dir.join("stream.jsonl"))?;
+    let header: SmbCampaignStreamHeader = serde_json::from_str(
+        stream_text
+            .lines()
+            .next()
+            .ok_or("stalled stream is empty")?,
+    )?;
+    let mut retention_identifier = header.retention_policy.clone();
+    let mut vocabulary_identifier = header.controller_vocabulary.clone();
+    let mut key_identifier = header.key_policy.clone();
+    let mut selector_identifier = header.parent_scheduler.clone();
+    match family {
+        "retention_policy" => retention_identifier = identifier.to_owned(),
+        "controller_vocabulary" => vocabulary_identifier = identifier.to_owned(),
+        "key_policy" => key_identifier = identifier.to_owned(),
+        "parent_scheduler" => selector_identifier = identifier.to_owned(),
+        _ => return Err("policy-value family is not a registered header slot".into()),
+    }
+    let archive_path = stalled_run_dir.join("archive-live.json");
+    let archive_bytes = fs::read(&archive_path)?;
+    let origin = SmbCampaignOrigin::Archive {
+        path: archive_path.to_string_lossy().into_owned(),
+        file_sha256: file_sha256(&archive_path)?,
+        report: Box::new(serde_json::from_slice(&archive_bytes)?),
+    };
+    let config = SmbCampaignConfig {
+        campaign_seed,
+        workers,
+        execution_budget,
+        action_limit: header.action_limit,
+        host: host.to_owned(),
+        wall_budget: None,
+        selector_policy: selector_from_identifier(&selector_identifier)?,
+        retention_policy: retention_from_identifier(&retention_identifier)?,
+        archive_entry_limit: header.archive_entry_limit,
+        vocabulary: vocabulary_from_identifier(&vocabulary_identifier)?,
+        key_policy: key_policy_from_identifier(&key_identifier)?,
+    };
+    fs::create_dir_all(run_dir)?;
+    let stream_file = fs::File::create(run_dir.join("stream.jsonl"))?;
+    let mut stream = std::io::BufWriter::new(stream_file);
+    let report = run_smb_campaign(&rom, &config, &origin, &mut stream)?;
+    drop(stream);
+    fs::write(
+        run_dir.join("archive-live.json"),
+        serde_json::to_vec_pretty(&report.archive)?,
+    )?;
+    fs::write(
+        run_dir.join("campaign-report.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
     Ok(())
 }
 
@@ -682,7 +879,7 @@ fn parse_u64(value: &str) -> Result<u64, Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArtifactKind, installed_main_source, validate_decision};
+    use super::{ArtifactKind, AttemptPlan, installed_main_source, validate_decision};
     use fuzzer::{
         phase4a::{InstrumentorAction, InstrumentorDecision},
         phase4c::SmbArtifactScope,
@@ -699,6 +896,22 @@ mod tests {
             rust_source: source.to_owned(),
             scope_to_lineage: None,
             scope: scope.map(str::to_owned),
+            policy_family: None,
+            policy_identifier: None,
+            rationale: "fixture".to_owned(),
+            strategy_journal: Default::default(),
+        }
+    }
+
+    fn policy_decision(family: Option<&str>, identifier: Option<&str>) -> InstrumentorDecision {
+        InstrumentorDecision {
+            action: InstrumentorAction::InstallPolicyValue,
+            name: "suggested".to_owned(),
+            rust_source: String::new(),
+            scope_to_lineage: None,
+            scope: None,
+            policy_family: family.map(str::to_owned),
+            policy_identifier: identifier.map(str::to_owned),
             rationale: "fixture".to_owned(),
             strategy_journal: Default::default(),
         }
@@ -709,20 +922,26 @@ mod tests {
 
     #[test]
     fn validation_accepts_the_exact_facades_with_a_scope() {
-        let (kind, scope) = validate_decision(&decision(
+        let plan = validate_decision(&decision(
             InstrumentorAction::InstallDetector,
             DETECTOR_SOURCE,
             Some("6,3,60,73"),
         ))
         .expect("detector decision validates");
+        let AttemptPlan::Authored { kind, scope } = plan else {
+            panic!("detector decision must plan an authored artifact");
+        };
         assert_eq!(kind, ArtifactKind::Detector);
         assert!(scope.contains(6, 3, 73));
-        let (kind, _) = validate_decision(&decision(
+        let plan = validate_decision(&decision(
             InstrumentorAction::InstallMutator,
             MACRO_SOURCE,
             Some("6,3,60,73"),
         ))
         .expect("macro decision validates");
+        let AttemptPlan::Authored { kind, .. } = plan else {
+            panic!("macro decision must plan an authored artifact");
+        };
         assert_eq!(kind, ArtifactKind::Mutator);
     }
 
@@ -743,6 +962,65 @@ mod tests {
         );
         lineage.scope_to_lineage = Some(1);
         assert!(validate_decision(&lineage).is_err());
+    }
+
+    #[test]
+    fn validation_accepts_registered_policy_values_only() {
+        // Every registered family accepts one of its recorded identifiers.
+        for (family, identifier) in [
+            ("retention_policy", "probe_at_admission_45"),
+            ("controller_vocabulary", "down_ten_mask"),
+            ("key_policy", "frozen_room_x_16:3,1,208"),
+            ("parent_scheduler", "concentrated_recency_128"),
+        ] {
+            let plan = validate_decision(&policy_decision(Some(family), Some(identifier)))
+                .expect("registered policy value validates");
+            assert_eq!(
+                plan,
+                AttemptPlan::PolicyValue {
+                    family: family.to_owned(),
+                    identifier: identifier.to_owned(),
+                }
+            );
+        }
+        // An unregistered family, an unregistered identifier, and a
+        // family/identifier mismatch all fail closed through the codecs.
+        assert!(
+            validate_decision(&policy_decision(Some("suffix_policy"), Some("one_or_two"))).is_err()
+        );
+        assert!(
+            validate_decision(&policy_decision(
+                Some("retention_policy"),
+                Some("probe_at_admission_30"),
+            ))
+            .is_err()
+        );
+        assert!(
+            validate_decision(&policy_decision(
+                Some("key_policy"),
+                Some("probe_at_admission_45"),
+            ))
+            .is_err()
+        );
+        // Both fields are required.
+        assert!(validate_decision(&policy_decision(None, Some("down_ten_mask"))).is_err());
+        assert!(validate_decision(&policy_decision(Some("controller_vocabulary"), None)).is_err());
+        // Never arbitrary code, and never a separate scope field: a policy
+        // value's scope rides inside the identifier, the room-tuple pattern.
+        let mut with_code = policy_decision(Some("retention_policy"), Some("probe_at_admission"));
+        with_code.rust_source = "pub struct InstalledDetector;".to_owned();
+        assert!(validate_decision(&with_code).is_err());
+        let mut with_scope = policy_decision(Some("retention_policy"), Some("probe_at_admission"));
+        with_scope.scope = Some("3,1,208,208".to_owned());
+        assert!(validate_decision(&with_scope).is_err());
+        // An authored install must not carry policy-value fields.
+        let mut mixed = decision(
+            InstrumentorAction::InstallDetector,
+            DETECTOR_SOURCE,
+            Some("6,3,60,73"),
+        );
+        mixed.policy_family = Some("retention_policy".to_owned());
+        assert!(validate_decision(&mixed).is_err());
     }
 
     #[test]
