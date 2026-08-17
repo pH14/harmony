@@ -31,6 +31,11 @@ use crate::{
 /// per-run bound at or below this.
 pub const MAX_ARCHIVE_ENTRIES: usize = 131_072;
 const MAX_ENTRIES_PER_KEY: usize = 2;
+/// Auxiliary per-cell bound for cells inside a registered waypoint region.
+/// The waypoint's retention preference is exactly this widened cell: the
+/// region holds finitely many cells, each capped here, so waypoint states
+/// cannot flood the archive.
+const WAYPOINT_ENTRIES_PER_KEY: usize = 4;
 const RANKING_REBUILD_INTERVAL: u64 = 512;
 const RANKING_STALE_EXECUTIONS: u64 = 1_024;
 const GENERATED_MUTATOR_RETIRE_AFTER: u64 = 128;
@@ -253,6 +258,65 @@ pub enum SmbArchiveSelectorPolicy {
     },
 }
 
+/// Whether a declared waypoint region receives auxiliary retention and
+/// selection preference.
+///
+/// The mechanism is region-agnostic: the region arrives as a registered
+/// runtime parameter, exactly as the room key policy carries its room tuple,
+/// and every decision derives from recorded keys and the registered region.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SmbArchiveWaypointPolicy {
+    /// Frozen behaviour: no waypoint; retention and selection are untouched.
+    #[default]
+    Absent,
+    /// Track-2 stage 3: states of the registered pair whose progress bucket
+    /// and vertical bucket both land inside the inclusive windows form the
+    /// waypoint region. In-region cells retain up to
+    /// [`WAYPOINT_ENTRIES_PER_KEY`] entries, in-region candidates are exempt
+    /// from the snapback refusal, and tie-class selection prefers unexhausted
+    /// in-region parents under the concentrated recency draw.
+    Region {
+        /// Registered pair world.
+        world: u8,
+        /// Registered pair level.
+        level: u8,
+        /// Inclusive window low progress bucket.
+        low: u16,
+        /// Inclusive window high progress bucket.
+        high: u16,
+        /// Inclusive vertical band low bucket, in the key's vertical term.
+        band_low: u8,
+        /// Inclusive vertical band high bucket, in the key's vertical term.
+        band_high: u8,
+    },
+}
+
+impl SmbArchiveWaypointPolicy {
+    /// Report whether a recorded key lands inside the registered region.
+    ///
+    /// Membership is defined over the key exactly as the active key policy
+    /// recorded it, so the band composes with whatever vertical term that
+    /// policy wrote; `Absent` contains nothing.
+    #[must_use]
+    pub fn contains(self, key: &SmbArchiveKey) -> bool {
+        match self {
+            Self::Absent => false,
+            Self::Region {
+                world,
+                level,
+                low,
+                high,
+                band_low,
+                band_high,
+            } => {
+                (key.world, key.level) == (world, level)
+                    && (low..=high).contains(&key.progress)
+                    && (band_low..=band_high).contains(&key.player_y_bucket)
+            }
+        }
+    }
+}
+
 /// Selections since the last retained descendant at which a parent is exhausted.
 const SELECTION_EXHAUSTION_THRESHOLD: u64 = 64;
 
@@ -283,6 +347,15 @@ pub struct SmbSelectorDraw {
     /// Sampled-set state, present only on concentrated tie-class draws.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concentration: Option<SmbConcentrationDraw>,
+    /// Whether this tie-class draw was taken through the waypoint
+    /// preference; false — and omitted from serialization — everywhere
+    /// else, so streams without a waypoint policy are byte-identical.
+    #[serde(default, skip_serializing_if = "waypoint_draw_is_absent")]
+    pub waypoint: bool,
+}
+
+fn waypoint_draw_is_absent(waypoint: &bool) -> bool {
+    !*waypoint
 }
 
 /// Concentrated sampled-set state at one tie-class draw.
@@ -312,6 +385,14 @@ pub struct SmbSelectorAccounting {
     /// Concentrated-window accounting, absent under every other policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concentration: Option<SmbConcentrationAccounting>,
+    /// Tie-class draws taken through the waypoint preference; zero — and
+    /// omitted — whenever no waypoint policy is registered.
+    #[serde(default, skip_serializing_if = "waypoint_selections_is_absent")]
+    pub waypoint_selections: u64,
+}
+
+fn waypoint_selections_is_absent(count: &u64) -> bool {
+    *count == 0
 }
 
 /// Per-campaign accounting for the concentrated recency window.
@@ -555,11 +636,22 @@ pub(crate) struct Archive<'a> {
     since_retained: Vec<u64>,
     in_window_ever: Vec<bool>,
     selector_accounting: SmbSelectorAccounting,
+    waypoint_policy: SmbArchiveWaypointPolicy,
+    waypoint_retained: u64,
 }
 
 impl<'a> Archive<'a> {
     pub(crate) fn set_selector_policy(&mut self, policy: SmbArchiveSelectorPolicy) {
         self.selector_accounting.policy = policy;
+    }
+
+    pub(crate) fn set_waypoint_policy(&mut self, policy: SmbArchiveWaypointPolicy) {
+        self.waypoint_policy = policy;
+    }
+
+    /// Candidates retained through the waypoint auxiliary cell capacity.
+    pub(crate) fn waypoint_retained(&self) -> u64 {
+        self.waypoint_retained
     }
 
     pub(crate) fn new(ranking: Option<&'a dyn SmbRanking>) -> Self {
@@ -591,6 +683,8 @@ impl<'a> Archive<'a> {
                 }),
                 ..SmbSelectorAccounting::default()
             },
+            waypoint_policy: SmbArchiveWaypointPolicy::Absent,
+            waypoint_retained: 0,
         }
     }
 
@@ -610,10 +704,19 @@ impl<'a> Archive<'a> {
         if let Some(existing) = self.input_ids.get(&input) {
             return Ok(Some(*existing));
         }
+        // Waypoint retention preference: cells inside the registered region
+        // retain up to the auxiliary bound before the replacement rules
+        // apply; every other cell keeps the base bound, so an absent policy
+        // is byte-identical to base.
+        let entries_per_key = if self.waypoint_policy.contains(&key) {
+            WAYPOINT_ENTRIES_PER_KEY
+        } else {
+            MAX_ENTRIES_PER_KEY
+        };
         let cell = self.cells.entry(key).or_default();
         let new_cell = cell.is_empty();
         let mut ranking_replacement = false;
-        let replace = if cell.len() < MAX_ENTRIES_PER_KEY {
+        let replace = if cell.len() < entries_per_key {
             None
         } else if self.ranking_accounting.active {
             let ranking = self.ranking.ok_or("active SMB ranking is missing")?;
@@ -640,13 +743,16 @@ impl<'a> Archive<'a> {
                 .max_by_key(|id| entry_cost(&self.entries[*id].report))
                 .filter(|id| input.actions.len() < self.entries[*id].report.input.actions.len())
         };
-        if cell.len() >= MAX_ENTRIES_PER_KEY && replace.is_none() {
+        if cell.len() >= entries_per_key && replace.is_none() {
             self.rejected = self.rejected.saturating_add(1);
             return Ok(None);
         }
         if self.entries.len() >= self.max_entries {
             self.rejected = self.rejected.saturating_add(1);
             return Ok(None);
+        }
+        if replace.is_none() && cell.len() >= MAX_ENTRIES_PER_KEY {
+            self.waypoint_retained = self.waypoint_retained.saturating_add(1);
         }
         if let Some(replaced) = replace {
             self.active[replaced] = false;
@@ -772,12 +878,46 @@ impl<'a> Archive<'a> {
                     classes_skipped: 0,
                     counter_reset: false,
                     concentration: None,
+                    waypoint: false,
                 },
             ));
         }
         let mut classes_skipped = 0_u64;
         let mut counter_reset = false;
         loop {
+            // Waypoint selection preference. While the region holds
+            // unexhausted pool members, every tie-class draw samples them
+            // through the same concentrated recency draw a winning class
+            // gets; the uniform path stays untouched. Composition with the
+            // pinned window is pool-first: the pin narrowed the pool above,
+            // so a waypoint outside the pin finds no members here and the
+            // draw falls through — the pin outranks the preference. The
+            // preference is bounded by the exhaustion discipline: each
+            // member barrens after the standing threshold of unproductive
+            // selections, after which the promoted class walk resumes.
+            if self.waypoint_policy != SmbArchiveWaypointPolicy::Absent {
+                let members: Vec<usize> = pool
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        self.waypoint_policy.contains(&self.entries[*id].report.key)
+                            && self.since_retained[*id] < SELECTION_EXHAUSTION_THRESHOLD
+                    })
+                    .collect();
+                if !members.is_empty() {
+                    let (id, concentration) = self.draw_from_class(rand, members)?;
+                    return Ok((
+                        id,
+                        SmbSelectorDraw {
+                            path: SmbSelectorPath::TieClass,
+                            classes_skipped,
+                            counter_reset,
+                            concentration,
+                            waypoint: true,
+                        },
+                    ));
+                }
+            }
             if let Some(class) = self.best_unexhausted_class(&pool, &mut classes_skipped) {
                 let (id, concentration) = self.draw_from_class(rand, class)?;
                 return Ok((
@@ -787,6 +927,7 @@ impl<'a> Archive<'a> {
                         classes_skipped,
                         counter_reset,
                         concentration,
+                        waypoint: false,
                     },
                 ));
             }
@@ -904,6 +1045,10 @@ impl<'a> Archive<'a> {
             .selector_accounting
             .counter_resets
             .saturating_add(u64::from(draw.counter_reset));
+        self.selector_accounting.waypoint_selections = self
+            .selector_accounting
+            .waypoint_selections
+            .saturating_add(u64::from(draw.waypoint));
         if let (Some(accounting), Some(concentration)) = (
             self.selector_accounting.concentration.as_mut(),
             draw.concentration.as_ref(),
@@ -4878,7 +5023,7 @@ mod tests {
         Archive, ArchiveCandidate, ContinuationRecording, EntryRecording,
         SELECTION_EXHAUSTION_THRESHOLD, SmbArchiveDurationPolicy, SmbArchiveKey,
         SmbArchiveKeyPolicy, SmbArchiveLadderPolicy, SmbArchiveRetentionPolicy,
-        SmbArchiveSelectorPolicy, SmbArchiveSuffixPolicy, SmbDeathBytes,
+        SmbArchiveSelectorPolicy, SmbArchiveSuffixPolicy, SmbArchiveWaypointPolicy, SmbDeathBytes,
         SmbGeneratedMutatorAccounting, SmbProgressWatermark, SmbRanking, SmbRankingSearchConfig,
         SmbSelectorDraw, SmbSelectorPath, analyze_player_column, merge_progress_watermark,
         record_generated_mutator_result, run_smb_archive_search,
@@ -5482,6 +5627,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            waypoint: false,
         };
         for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
             archive.record_selection(0, &exhausting_draw);
@@ -5519,6 +5665,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            waypoint: false,
         };
         for id in 0..keys.len() {
             for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
@@ -5590,6 +5737,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            waypoint: false,
         };
         for id in 1..=128 {
             for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
@@ -5709,5 +5857,186 @@ mod tests {
             serialized.contains("concentration"),
             "the sole selector reports its concentration accounting"
         );
+    }
+
+    fn waypoint_probe_key(world: u8, level: u8, progress: u16, vertical: u8) -> SmbArchiveKey {
+        SmbArchiveKey {
+            world,
+            level,
+            progress,
+            player_y_bucket: vertical,
+            player_engine_state: 0,
+            state_fingerprint: 0,
+            room_x_bucket: 0,
+        }
+    }
+
+    #[test]
+    fn waypoint_region_membership_is_inclusive_and_pair_scoped() {
+        let region = SmbArchiveWaypointPolicy::Region {
+            world: 2,
+            level: 1,
+            low: 10,
+            high: 20,
+            band_low: 4,
+            band_high: 8,
+        };
+        assert!(region.contains(&waypoint_probe_key(2, 1, 10, 4)));
+        assert!(region.contains(&waypoint_probe_key(2, 1, 20, 8)));
+        assert!(region.contains(&waypoint_probe_key(2, 1, 15, 6)));
+        assert!(!region.contains(&waypoint_probe_key(2, 1, 9, 6)));
+        assert!(!region.contains(&waypoint_probe_key(2, 1, 21, 6)));
+        assert!(!region.contains(&waypoint_probe_key(2, 1, 15, 3)));
+        assert!(!region.contains(&waypoint_probe_key(2, 1, 15, 9)));
+        assert!(!region.contains(&waypoint_probe_key(2, 0, 15, 6)));
+        assert!(!region.contains(&waypoint_probe_key(1, 1, 15, 6)));
+        assert!(!SmbArchiveWaypointPolicy::Absent.contains(&waypoint_probe_key(2, 1, 15, 6)));
+    }
+
+    #[test]
+    fn waypoint_cells_retain_auxiliary_entries() {
+        let snapshot = selector_snapshot();
+        let waypoint = SmbArchiveWaypointPolicy::Region {
+            world: 1,
+            level: 0,
+            low: 16,
+            high: 47,
+            band_low: 0,
+            band_high: 15,
+        };
+        let mut archive = Archive::new(None);
+        archive.set_waypoint_policy(waypoint);
+        let insert = |archive: &mut Archive<'_>, key: SmbArchiveKey, actions: usize| {
+            // Distinct masks per cell keep the inputs distinct, so the
+            // input-hash duplicate check never short-circuits the bound.
+            let mask = if key.progress == 30 { 0x02 } else { 0x01 };
+            let input = SmbInput {
+                actions: vec![
+                    ButtonChord::new(mask, u8::try_from(actions).expect("hold frames"));
+                    actions
+                ],
+            };
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        input,
+                        key,
+                        milestones: crate::phase4b::SmbMilestones::default(),
+                    },
+                    snapshot.clone(),
+                    &[],
+                )
+                .expect("insert waypoint candidate")
+        };
+        // Outside the region the base cell bound holds: a longer third input
+        // neither fits nor replaces.
+        let outside = waypoint_probe_key(1, 0, 60, 5);
+        assert!(insert(&mut archive, outside, 1).is_some());
+        assert!(insert(&mut archive, outside, 2).is_some());
+        assert!(insert(&mut archive, outside, 3).is_none());
+        // Inside the region the auxiliary bound retains two more entries
+        // before the same replacement discipline applies.
+        let inside = waypoint_probe_key(1, 0, 30, 5);
+        assert!(insert(&mut archive, inside, 1).is_some());
+        assert!(insert(&mut archive, inside, 2).is_some());
+        assert!(insert(&mut archive, inside, 3).is_some());
+        assert!(insert(&mut archive, inside, 4).is_some());
+        assert!(insert(&mut archive, inside, 5).is_none());
+        assert_eq!(archive.waypoint_retained(), 2);
+    }
+
+    #[test]
+    fn waypoint_selection_prefers_region_members_until_exhausted() {
+        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 140), (0, 0, 100), (0, 0, 101)];
+        let mut archive = selector_archive(&keys);
+        archive.set_waypoint_policy(SmbArchiveWaypointPolicy::Region {
+            world: 0,
+            level: 0,
+            low: 64,
+            high: 127,
+            band_low: 0,
+            band_high: 15,
+        });
+        let mut rand = StdRand::with_seed(0x5eed_3a10);
+        let mut waypoint_draws = 0;
+        for _ in 0..32 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .expect("waypoint preference draw");
+            let draw = draw.expect("selector annotation");
+            if draw.path == SmbSelectorPath::TieClass {
+                assert!(draw.waypoint, "tie-class draw must prefer the region");
+                assert!([2, 3].contains(&id), "waypoint draw left the region");
+                assert!(draw.concentration.is_some());
+                waypoint_draws += 1;
+            } else {
+                assert!(!draw.waypoint, "uniform draws never claim the waypoint");
+            }
+        }
+        assert!(waypoint_draws > 0);
+        // Exhaust both region members; the preference falls through to the
+        // promoted class walk and the deepest pair wins again.
+        let exhausting_draw = SmbSelectorDraw {
+            path: SmbSelectorPath::TieClass,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+            waypoint: true,
+        };
+        for id in [2, 3] {
+            for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
+                archive.record_selection(id, &exhausting_draw);
+            }
+        }
+        let mut fell_through = 0;
+        for _ in 0..32 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .expect("post-exhaustion draw");
+            let draw = draw.expect("selector annotation");
+            if draw.path == SmbSelectorPath::TieClass {
+                assert!(!draw.waypoint, "exhausted region must not be preferred");
+                assert!([0, 1].contains(&id), "fall-through left the best class");
+                fell_through += 1;
+            }
+        }
+        assert!(fell_through > 0);
+    }
+
+    #[test]
+    fn pinned_window_outranks_the_waypoint_preference() {
+        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 140), (0, 0, 100), (0, 0, 101)];
+        let mut archive = selector_archive(&keys);
+        archive.set_selector_policy(SmbArchiveSelectorPolicy::PinnedWindow {
+            world: 1,
+            level: 0,
+            low: 128,
+            high: 191,
+        });
+        archive.set_waypoint_policy(SmbArchiveWaypointPolicy::Region {
+            world: 0,
+            level: 0,
+            low: 64,
+            high: 127,
+            band_low: 0,
+            band_high: 15,
+        });
+        let mut rand = StdRand::with_seed(0x5eed_3a11);
+        for _ in 0..64 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .expect("pinned draw");
+            let draw = draw.expect("selector annotation");
+            assert!(
+                [0, 1].contains(&id),
+                "the pin narrows every draw to the registered window"
+            );
+            assert!(
+                !draw.waypoint,
+                "a waypoint outside the pin finds no members and defers"
+            );
+        }
     }
 }
